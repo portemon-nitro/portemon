@@ -304,8 +304,8 @@ function T.tests.title_is_presented_while_menu_and_first_play_are_pending()
       )
     end
     Assert.deepEqual(
-      { startupRequests[1], startupRequests[2], startupRequests[3] },
-      { "startup-loader", "startup-title", "bootstrap" },
+      { startupRequests[1], startupRequests[2], startupRequests[3], startupRequests[4] },
+      { "startup-loader", "startup-title", "bootstrap", "startup-audio" },
       "the first startup demand batch prioritizes title before broad bootstrap"
     )
   end)
@@ -586,6 +586,13 @@ end
 
 function T.tests.title_audio_events_use_the_bounded_borrowed_callbacks()
   withStartup(function()
+    local baseObserve = App.service.observe
+    App.service.observe = function(self, epoch, selector)
+      if selector.requestKind == "milestone" and selector.name == "startup-audio" then
+        return active.audioReady == true, nil
+      end
+      return baseObserve(self, epoch, selector)
+    end
     local events = { titleReady = 0, prompt = 0, skip = 0 }
     StartupAudioSession.new = function()
       return {
@@ -604,7 +611,10 @@ function T.tests.title_audio_events_use_the_bounded_borrowed_callbacks()
     end
 
     local state = startTitle()
-    Assert.equal(events.titleReady, 1, "title readiness emits one bounded audio event")
+    Assert.equal(events.titleReady, 0, "pending optional audio emits no title event behind the visible title")
+    active.audioReady = true
+    App.update(1 / 30)
+    Assert.equal(events.titleReady, 1, "audio readiness emits one bounded audio event")
     App.keypressed("return", "return", false)
     Assert.equal(events.prompt, 1, "the first title press emits the prompt/cry event")
     Assert.equal(events.skip, 0, "the transition cue waits for actual menu readiness")
@@ -650,13 +660,23 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
     end
     StartupAudioSession.new = newSession
 
+    local baseObserve = App.service.observe
+    App.service.observe = function(self, epoch, selector)
+      if selector.requestKind == "milestone" and selector.name == "startup-audio" then
+        return active.audioReady == true, nil
+      end
+      return baseObserve(self, epoch, selector)
+    end
     active.titleAssetsReady = false
     local title = startTitle()
     Assert.equal(#active.audioSessions, 0, "pending startup-title audio assets cannot construct a session")
     active.titleAssetsReady = true
     App.update(1 / 30)
     Assert.isTrue(isStartupTitle(title), "the selected title remains the active App state")
-    Assert.equal(#active.audioSessions, 1, "title readiness creates one app-owned audio session")
+    Assert.equal(#active.audioSessions, 0, "visual readiness alone cannot construct a session")
+    active.audioReady = true
+    App.update(1 / 30)
+    Assert.equal(#active.audioSessions, 1, "audio readiness creates one app-owned audio session")
     local session = active.audioSessions[1]
     Assert.deepEqual(session.events, { "title" }, "the title theme starts once after title readiness")
     local menuUpdateCount = session.updates
@@ -726,6 +746,431 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
     Assert.equal(active.audioSessions[3].versionId, "soulsilver")
     App.quit()
     Assert.equal(active.audioSessions[3].disposals, 1, "quit releases the current edition session once")
+  end)
+end
+
+function T.tests.post_install_warmup_failure_keeps_the_single_installed_menu()
+  withStartup(function()
+    local state = startTitle()
+    Assert.isTrue(isStartupTitle(state), "the selected title is active before the skip")
+    local provisioner = assert(App.provisioner, "the selection owns its provisioner through handoff")
+    local epoch = App.epoch
+    provisioner.startBackgroundWarmup = function(_)
+      error("synthetic post-install warmup failure")
+    end
+
+    App.keypressed("return", "return", false)
+    Assert.isTrue(state.skipRequested, "the press latches skip intent before menu readiness")
+    for _ = 1, 30 do
+      App.update(1 / 30)
+    end
+    Assert.equal(App.state, state, "pending menu readiness keeps the title installed")
+
+    active.bootstrapReady = true
+    for _ = 1, 120 do
+      App.update(1 / 30)
+      if App.state ~= state then
+        break
+      end
+    end
+    local menu = App.state
+    Assert.equal(#active.menus, 1, "the failed warmup never reconstructs the menu")
+    Assert.equal(menu, active.menus[1], "exactly the staged menu installs despite the post-install failure")
+    Assert.equal(menu.disposed, 0, "the installed menu stays alive")
+    Assert.equal(active.scenes[1].disposed, 1, "the title scene releases once at handoff")
+    Assert.equal(state.phase, "transferred", "a committed handoff never returns to the title phase")
+    Assert.isNil(state.stagedMenu, "the committed title holds no menu to resurrect")
+    Assert.equal(App.epoch, epoch, "the selected epoch survives the optional failure")
+    Assert.isTrue(App.provisioner == provisioner, "the selected provisioner survives the optional failure")
+    Assert.equal(#active.epochs, 1, "no replacement selection is minted by the failure")
+    for _ = 1, 30 do
+      App.update(1 / 30)
+    end
+    Assert.equal(App.state, menu, "later updates keep the single installed menu")
+  end)
+end
+
+function T.tests.title_and_menu_proceed_while_optional_audio_is_pending()
+  local function observeAudio(service, baseObserve)
+    service.observe = function(self, epoch, selector)
+      if selector.requestKind == "milestone" and selector.name == "startup-audio" then
+        if active.audioFailed then
+          return false, "synthetic audio bank failure"
+        end
+        if active.audioReady then
+          return true, nil
+        end
+        return false, nil
+      end
+      return baseObserve(self, epoch, selector)
+    end
+  end
+  local function countingAudio(sessions)
+    StartupAudioSession.new = function()
+      local session = { cues = {} }
+      function session:beginTitle()
+        self.cues[#self.cues + 1] = "title"
+      end
+      function session:notifySkip()
+        self.cues[#self.cues + 1] = "cry"
+      end
+      function session:beginFade()
+        self.cues[#self.cues + 1] = "fade"
+      end
+      function session:playMenuCue()
+        self.cues[#self.cues + 1] = "menu"
+      end
+      function session:update() end
+      function session:dispose() end
+      sessions[#sessions + 1] = session
+      return session
+    end
+  end
+
+  withStartup(function()
+    observeAudio(App.service, App.service.observe)
+    local sessions = {}
+    countingAudio(sessions)
+    local state = startTitle()
+    Assert.isTrue(isStartupTitle(state), "the visual title presents while audio is still pending")
+    Assert.equal(#sessions, 0, "pending optional audio constructs no session behind the visible title")
+    local sawAudio, audioUrgency = false, nil
+    for _, request in ipairs(active.requests) do
+      local selector = request.selector
+      if selector.requestKind == "milestone" and selector.name == "startup-audio" then
+        sawAudio = true
+        audioUrgency = selector.urgency
+      end
+    end
+    Assert.isTrue(sawAudio, "the selected title demands its optional audio milestone independently")
+    Assert.equal(audioUrgency, "near", "optional audio never outranks visual work")
+
+    active.audioReady = true
+    App.update(1 / 30)
+    App.update(1 / 30)
+    Assert.equal(#sessions, 1, "audio readiness starts one session while the title is still visible")
+    Assert.deepEqual(sessions[1].cues, { "title" }, "ready-before-skip starts the title theme once")
+    Assert.isTrue(isStartupTitle(App.state), "audio readiness does not dismiss the unpressed title")
+    Assert.isFalse(state.skipRequested, "audio readiness synthesizes no skip intent")
+
+    App.keypressed("return", "return", false)
+    Assert.deepEqual(sessions[1].cues, { "title", "cry" }, "the first skip requests one cry")
+    for _ = 1, 30 do
+      App.update(1 / 30)
+    end
+    Assert.equal(App.state, state, "the title waits for the pending menu after the skip")
+
+    active.bootstrapReady = true
+    for _ = 1, 120 do
+      App.update(1 / 30)
+      if App.state ~= state then
+        break
+      end
+    end
+    Assert.equal(App.state, active.menus[1], "the staged menu installs after the fade")
+    Assert.equal(#sessions, 1, "handoff constructs no second session")
+    Assert.deepEqual(sessions[1].cues, { "title", "cry", "fade" }, "the skip fade emits one cue only")
+  end)
+
+  withStartup(function()
+    observeAudio(App.service, App.service.observe)
+    local sessions = {}
+    local lateCues = {}
+    StartupAudioSession.new = function()
+      local session = {}
+      function session:beginTitle()
+        lateCues[#lateCues + 1] = "title"
+      end
+      function session:notifySkip()
+        lateCues[#lateCues + 1] = "cry"
+      end
+      function session:beginFade()
+        lateCues[#lateCues + 1] = "fade"
+      end
+      function session:playMenuCue()
+        lateCues[#lateCues + 1] = "menu"
+      end
+      function session:update() end
+      function session:dispose() end
+      sessions[#sessions + 1] = session
+      return session
+    end
+    active.bootstrapReady = true
+    local state = startTitle()
+    Assert.isTrue(isStartupTitle(state), "the visual title presents while audio is still pending")
+    Assert.equal(#sessions, 0, "pending optional audio constructs no session behind the visible title")
+    App.keypressed("return", "return", false)
+    for _ = 1, 10 do
+      App.update(1 / 30)
+    end
+    Assert.isTrue(state.phase == "fadeOut" or state.phase == "fadeIn", "latched skip starts the fade")
+    active.audioReady = true
+    for _ = 1, 120 do
+      App.update(1 / 30)
+      if App.state ~= state then
+        break
+      end
+    end
+    Assert.equal(App.state, active.menus[1], "the menu installs even though audio arrived mid-fade")
+    for _, cue in ipairs(lateCues) do
+      Assert.isFalse(cue == "title", "audio that arrives after the skip never starts a belated title theme")
+      Assert.isFalse(cue == "cry", "audio that arrives after the skip never plays a belated cry")
+    end
+    Assert.equal(#active.menus, 1, "the late audio never reconstructs the menu")
+  end)
+end
+
+function T.tests.pending_skip_transfers_once_and_the_retry_key_stays_useful()
+  withStartup(function()
+    local state = startTitle()
+    Assert.isTrue(isStartupTitle(state), "the title is active before the skip")
+    App.keypressed("return", "return", false)
+    Assert.isTrue(state.skipRequested, "the first press latches skip intent")
+    for _ = 1, 30 do
+      App.update(1 / 30)
+    end
+    Assert.equal(App.state, state, "the title keeps animating while the menu is pending")
+    Assert.equal(#active.menus, 0, "no menu stages before bootstrap readiness")
+    active.bootstrapReady = true
+    App.update(1 / 30)
+    Assert.equal(#active.menus, 1, "bootstrap readiness stages the menu once")
+    Assert.isTrue(
+      state.phase == "fadeOut" or state.phase == "fadeIn",
+      "latched intent starts the fade without another press"
+    )
+    for _ = 1, 80 do
+      if App.state ~= state then
+        break
+      end
+      App.update(1 / 30)
+    end
+    Assert.equal(App.state, active.menus[1], "the exact staged menu installs after the fade")
+    Assert.equal(#active.menus, 1, "handoff never reconstructs the menu")
+  end)
+
+  withStartup(function()
+    local state = startTitle()
+    Assert.isTrue(isStartupTitle(state), "the title owns the pending menu construction")
+    App.keypressed("return", "return", false)
+    active.failMenuConstruction = true
+    active.bootstrapReady = true
+    App.update(1 / 30)
+    Assert.equal(App.state, state, "a failed menu keeps the title installed")
+    Assert.isTrue(state.skipRequested, "the failure preserves the pending skip")
+    Assert.equal(active.menuAttempts, 1, "the failure consumes exactly one construction attempt")
+    App.keypressed("r", "r", false)
+    Assert.equal(active.menuAttempts, 2, "the retry key rebuilds the menu once")
+    Assert.isTrue(
+      state.phase == "fadeOut" or state.phase == "fadeIn",
+      "the preserved skip starts the fade after the retry"
+    )
+    for _ = 1, 80 do
+      if App.state ~= state then
+        break
+      end
+      App.update(1 / 30)
+    end
+    Assert.equal(App.state, active.menus[1], "the retried menu receives the existing skip intent")
+    Assert.equal(active.menuAttempts, 2, "retry transfers the same menu without reconstructing it")
+  end)
+
+  withStartup(function()
+    local state = startTitle()
+    Assert.isTrue(isStartupTitle(state), "the healthy title is active before the retry key")
+    App.keypressed("r", "r", false)
+    Assert.isTrue(state.skipRequested, "the retry key acts as ordinary skip intent when nothing needs retry")
+  end)
+end
+
+function T.tests.title_skip_honors_the_full_input_family_with_exact_pointer_identity()
+  withStartup(function()
+    App._swallowedPointers = {}
+    local state = startTitle()
+    Assert.isTrue(isStartupTitle(state), "the title is active before secondary input")
+    App.mousepressed(400, 300, 2, false, 1)
+    App.mousepressed(400, 300, 3, false, 1)
+    App.keypressed("lshift", "lshift", false)
+    App.keypressed("lctrl", "lctrl", false)
+    Assert.isFalse(state.skipRequested, "secondary buttons and modifier keys never request skip")
+    Assert.equal(App.state, state, "ignored input keeps the title installed")
+  end)
+
+  withStartup(function()
+    App._swallowedPointers = {}
+    local state = startTitle()
+    App.keypressed("a", "a", false)
+    Assert.isTrue(state.skipRequested, "an ordinary key requests skip")
+  end)
+
+  withStartup(function()
+    App._swallowedPointers = {}
+    local state = startTitle()
+    App.keypressed("left", "left", false)
+    Assert.isTrue(state.skipRequested, "an arrow key requests skip")
+  end)
+
+  withStartup(function()
+    App._swallowedPointers = {}
+    local state = startTitle()
+    App.gamepadpressed({}, "b")
+    Assert.isTrue(state.skipRequested, "a discrete gamepad button requests skip")
+  end)
+
+  withStartup(function()
+    App._swallowedPointers = {}
+    local state = startTitle()
+    App.gamepadpressed({}, "dpleft")
+    Assert.isTrue(state.skipRequested, "a gamepad direction requests skip")
+  end)
+
+  withStartup(function()
+    App._swallowedPointers = {}
+    local state = startTitle()
+    App.mousepressed(400, 300, 1, false, 1)
+    Assert.isTrue(state.skipRequested, "the primary button requests skip")
+  end)
+
+  withStartup(function()
+    App._swallowedPointers = {}
+    local state = startTitle()
+    state:touchpressed(9, 400, 300)
+    Assert.equal(state.pointerCapture, "touch:9", "press captures the normalized touch identity")
+    Assert.isTrue(state.skipRequested, "touch press inside the scene requests skip")
+    state:touchreleased(9)
+    Assert.isNil(state.pointerCapture, "release clears the capture under the same identity")
+    Assert.deepEqual(state.canceledPointers, {}, "release clears the consumed pointer record")
+  end)
+
+  withStartup(function()
+    App._swallowedPointers = {}
+    local state = startTitle()
+    App.touchpressed(11, 400, 300, 0, 0, 1)
+    Assert.equal(state.pointerCapture, "touch:11", "the host press captures the normalized touch identity")
+    App.touchreleased(11, 400, 300, 0, 0, 1)
+    Assert.isNil(state.pointerCapture, "the active title clears its capture before the release is swallowed")
+    Assert.deepEqual(state.canceledPointers, {}, "the active title clears its consumed record on release")
+    Assert.deepEqual(App._swallowedPointers, {}, "the consumed release never reaches a later owner")
+  end)
+
+  withStartup(function()
+    local RomImporter = require("romdump.src.source.RomImporter")
+    RomImporter.isReady = function(_)
+      return true
+    end
+    App._swallowedPointers = {}
+    local state = startTitle("heartgold")
+    Assert.isTrue(isStartupTitle(state), "the current edition title remains active")
+    App.mousepressed(790, 590, 1, false, 1)
+    Assert.equal(App.selectedVersionId, "soulsilver", "the corner control selects the alternate edition")
+    Assert.isFalse(state.skipRequested, "the edition control is not also a title skip")
+  end)
+
+  withStartup(function()
+    App._swallowedPointers = {}
+    local state = startTitle()
+    App.mousepressed(400, 300, 1, false, 1)
+    Assert.equal(state.pointerCapture, "mouse:1", "press captures the normalized primary identity")
+    App.focus(false)
+    Assert.isNil(state.pointerCapture, "losing focus drops the pending capture")
+    Assert.deepEqual(state.canceledPointers, {}, "losing focus drops consumed records")
+    Assert.deepEqual(App._swallowedPointers, {}, "losing focus drops the host barrier")
+  end)
+end
+
+function T.tests.failed_optional_audio_never_blocks_the_menu()
+  withStartup(function()
+    local baseObserve = App.service.observe
+    App.service.observe = function(self, epoch, selector)
+      if selector.requestKind == "milestone" and selector.name == "startup-audio" then
+        return false, "synthetic audio bank failure"
+      end
+      return baseObserve(self, epoch, selector)
+    end
+    local sessions = 0
+    StartupAudioSession.new = function()
+      sessions = sessions + 1
+      return {
+        beginTitle = function() end,
+        notifySkip = function() end,
+        beginFade = function() end,
+        playMenuCue = function() end,
+        update = function() end,
+        dispose = function() end,
+      }
+    end
+    active.bootstrapReady = true
+    local state = startTitle()
+    Assert.isTrue(isStartupTitle(state), "the visual title presents while audio has failed")
+    Assert.equal(sessions, 0, "failed optional audio constructs no session")
+    App.keypressed("return", "return", false)
+    for _ = 1, 120 do
+      if App.state ~= state then
+        break
+      end
+      App.update(1 / 30)
+    end
+    Assert.equal(App.state, active.menus[1], "the staged menu installs despite failed audio")
+    Assert.equal(sessions, 0, "the failed audio never constructs a session")
+    Assert.equal(#active.menus, 1, "the failure never reconstructs the menu")
+  end)
+end
+
+function T.tests.throwing_transfer_callback_propagates_without_resurrecting_the_title()
+  withStartup(function()
+    local StartupTitleState = require("app.src.launcher.StartupTitleState")
+    local host = {
+      requestMilestone = function(name, _)
+        return true, nil
+      end,
+      milestoneStatus = function(_)
+        return { state = "ready", ready = 1, total = 1, failure = nil }
+      end,
+    }
+    local transfers = 0
+    local menu = {
+      draw = function() end,
+      dispose = function() end,
+    }
+    local state = StartupTitleState.new({
+      versionId = "heartgold",
+      epoch = 7,
+      derivedAssets = host,
+      stageMenu = function()
+        return menu
+      end,
+      onFinished = function(_)
+        transfers = transfers + 1
+        error("synthetic commit failure after install")
+      end,
+      onSwitchEdition = function() end,
+      isCurrent = function()
+        return true
+      end,
+      width = 800,
+      height = 600,
+    })
+    for _ = 1, 5 do
+      state:update(1 / 30)
+    end
+    Assert.equal(state.phase, "title", "visual readiness presents the title before input")
+    state:keypressed("return", "return", false)
+    Assert.isTrue(state.skipRequested, "the press latches skip intent")
+    local failure = nil
+    for _ = 1, 120 do
+      local ok, err = pcall(state.update, state, 1 / 30)
+      if not ok then
+        failure = err
+        break
+      end
+    end
+    Assert.isTrue(failure ~= nil, "a true commit failure propagates to the caller")
+    Assert.equal(transfers, 1, "the transfer callback runs exactly once")
+    Assert.isTrue(state.transferred, "the transfer stays committed")
+    Assert.equal(state.phase, "transferred", "a failed callback never returns the title phase")
+    Assert.isNil(state.stagedMenu, "the committed title holds no menu to resurrect")
+    state:update(1 / 30)
+    Assert.equal(transfers, 1, "later updates never re-enter the transfer")
+    state:dispose()
   end)
 end
 

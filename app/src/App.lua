@@ -93,6 +93,7 @@ end
 -- Retires the selected source interest without joining controller work.
 -- The process service is reused; stale results cannot publish afterwards.
 function App._retireSelection()
+  App._swallowedPointers = {}
   App._releaseStartupAudio()
   local warmup = App._startupWarmup
   App._startupWarmup = nil
@@ -123,6 +124,30 @@ function App._recordStartupAudioError(failure)
   print("Startup audio disabled: " .. diagnostic)
 end
 
+-- Optional audio readiness for the selected epoch. The session must never
+-- be constructed while its banks are still pending or have failed: absence
+-- of audio stays silent and retryable instead of blocking the visuals.
+---@return boolean
+local function startupAudioReady()
+  local provisioner = App.provisioner
+  if provisioner == nil or type(provisioner.gameHost) ~= "function" then
+    return false
+  end
+  local okHost, host = pcall(provisioner.gameHost, provisioner)
+  if not okHost or type(host) ~= "table" or type(host.requestMilestone) ~= "function" then
+    return false
+  end
+  local ok, ready, failure = pcall(host.requestMilestone, "startup-audio", "near")
+  if not ok then
+    return false
+  end
+  if failure ~= nil then
+    App._recordStartupAudioError(failure)
+    return false
+  end
+  return ready == true
+end
+
 ---@param versionId string
 ---@param epoch integer
 ---@return StartupAudioSession|nil
@@ -133,6 +158,9 @@ function App._ensureStartupAudio(versionId, epoch, titleRecord)
   end
   if App.startupAudioSession ~= nil then
     return App.startupAudioSession
+  end
+  if not startupAudioReady() then
+    return nil
   end
   local ok, sessionOrError = pcall(function()
     return StartupAudioSession.new({
@@ -256,11 +284,20 @@ function App._launchMenuWithProvisioner(versionId, stagedMenu)
     assert(type(stagedMenu) == "table" and type(stagedMenu.dispose) == "function")
     App.setState(stagedMenu)
   end
+  -- The transfer above is committed: every optional step below is
+  -- individually contained so it can only record a diagnostic, never throw
+  -- back into a rollback of the installed menu.
   local host = provisioner:gameHost()
-  host.requestMilestone("new-game-intro", "near")
-  host.requestMilestone("field-planning", "near")
-  host.requestMilestone("field-runtime", "near")
-  provisioner:startBackgroundWarmup()
+  for _, name in ipairs({ "new-game-intro", "field-planning", "field-runtime" }) do
+    local ok, failure = pcall(host.requestMilestone, name, "near")
+    if not ok then
+      App.startupWarmupError = tostring(failure)
+    end
+  end
+  local warmupOk, warmupFailure = pcall(provisioner.startBackgroundWarmup, provisioner)
+  if not warmupOk then
+    App.startupWarmupError = tostring(warmupFailure)
+  end
 end
 
 -- Optional near-priority preparation runs beside the startup presentation;
@@ -279,12 +316,16 @@ function App._maybeStartFirstPlayWarmup(versionId, epoch)
   if provisioner == nil then
     return
   end
-  local preparation = HgssGame.newFirstPlayCachePreparation({
+  local ok, preparation = pcall(HgssGame.newFirstPlayCachePreparation, {
     versionId = versionId,
     derivedAssets = provisioner:gameHost(),
     completion = App._firstPlayGateway(versionId),
     urgency = "near",
   })
+  if not ok then
+    App.startupWarmupError = tostring(preparation)
+    return
+  end
   App._startupWarmup = { epoch = epoch, versionId = versionId, preparation = preparation }
 end
 
@@ -902,6 +943,7 @@ function App.resize(width, height)
   App.drawableWidth = width
   App.drawableHeight = height
   App.pixelRatio = love.graphics.getDPIScale()
+  App._swallowedPointers = {}
   if App.state and App.state.resize then
     App.state:resize(width, height)
   end
@@ -1010,6 +1052,10 @@ function App.mousereleased(x, y, button, istouch, presses)
   App._syncDrawableSize()
   local pointerId = "mouse:" .. tostring(button)
   if App._swallowedPointers ~= nil and App._swallowedPointers[pointerId] then
+    local state = App.state
+    if state ~= nil and getmetatable(state) == StartupTitleState then
+      state:mousereleased(x, y, button, istouch, presses)
+    end
     App._swallowedPointers[pointerId] = nil
     return
   end
@@ -1047,6 +1093,10 @@ function App.touchreleased(id, x, y, dx, dy, pressure)
   App._syncDrawableSize()
   local pointerId = "touch:" .. tostring(id)
   if App._swallowedPointers ~= nil and App._swallowedPointers[pointerId] then
+    local state = App.state
+    if state ~= nil and getmetatable(state) == StartupTitleState then
+      state:touchreleased(id, x, y, dx, dy, pressure)
+    end
     App._swallowedPointers[pointerId] = nil
     return
   end
