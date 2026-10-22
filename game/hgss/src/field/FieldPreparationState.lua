@@ -21,6 +21,7 @@ local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentatio
 ---@field saveId string? Continue only: the catalog-visible save to load on the first update
 ---@field candidate table<string, unknown>? New Game only: the finalized Oak candidate
 ---@field versionId string selected game version, carried for diagnostics
+---@field startupPairIndex integer selected 1..32 walking pair, decorative only
 ---@field derivedAssets table<string, function> semantic derived-asset host
 ---@field saveStore table<string, unknown>? Continue only: the normalizing save store
 ---@field createLoader fun(): table<string, unknown> loader factory owned by the HGSS composition
@@ -40,6 +41,7 @@ local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentatio
 ---@field saveId string?
 ---@field candidate table<string, unknown>?
 ---@field versionId string
+---@field startupPairIndex integer
 ---@field derivedAssets table<string, function>
 ---@field saveStore table<string, unknown>?
 ---@field createLoader fun(): table<string, unknown>
@@ -57,6 +59,7 @@ local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentatio
 ---@field loading FieldPreparationLoading?
 ---@field loaderArtObserved boolean
 ---@field loaderArtFailure unknown?
+---@field drawObserved boolean one genuine loader draw while actually active
 local FieldPreparationState = {}
 FieldPreparationState.__index = FieldPreparationState
 
@@ -66,6 +69,13 @@ function FieldPreparationState.new(options)
   assert(type(options) == "table", "field preparation requires its composition")
   assert(options.kind == "continue" or options.kind == "newgame", "field preparation kind is continue or newgame")
   assert(type(options.versionId) == "string" and options.versionId ~= "", "field preparation requires a versionId")
+  assert(
+    type(options.startupPairIndex) == "number"
+      and options.startupPairIndex % 1 == 0
+      and options.startupPairIndex >= 1
+      and options.startupPairIndex <= 32,
+    "field preparation requires the selected walking pair 1..32"
+  )
   assert(type(options.derivedAssets) == "table", "field preparation requires the derived-asset host")
   assert(type(options.createLoader) == "function", "field preparation requires its metadata-only loader factory")
   assert(type(options.enterField) == "function", "field preparation requires its field transfer")
@@ -94,14 +104,17 @@ function FieldPreparationState.new(options)
     target = nil,
     transferred = false,
     cancelled = false,
-    loading = options.kind == "continue" and HgssLoadingPresentation.new({
+    startupPairIndex = options.startupPairIndex,
+    loading = HgssLoadingPresentation.new({
       versionId = options.versionId,
+      pairIndex = options.startupPairIndex,
       width = love.graphics.getWidth(),
       height = love.graphics.getHeight(),
       displayContext = options.displayContext,
-    }) or nil,
+    }),
     loaderArtObserved = false,
     loaderArtFailure = nil,
+    drawObserved = false,
   }, FieldPreparationState)
 end
 
@@ -111,8 +124,8 @@ function FieldPreparationState:_pollLoaderArt()
   end
   -- The loading cover is decorative: any failure in this whole sequence
   -- latches once as a cosmetic diagnostic and never blocks or cancels the
-  -- required preparation below. A pending milestone stays retryable.
-  local observed, ready, failure = pcall(self.derivedAssets.requestMilestone, "startup-loader", "near")
+  -- required preparation below. A pending pair demand stays retryable.
+  local observed, ready, failure = pcall(self.derivedAssets.requestStartupWalker, self.startupPairIndex, "near")
   if not observed then
     self.loaderArtFailure = ready
     self.loaderArtObserved = true
@@ -218,6 +231,12 @@ function FieldPreparationState:_pollGeometry()
     -- pending, but the transfer waits until both closures are ready.
     return
   end
+  -- One genuine loader frame precedes the transfer: an otherwise ready
+  -- entry never skips its visible stage. Destination planning and geometry
+  -- demand above keep running while the first frame is still pending.
+  if not self.drawObserved then
+    return
+  end
   local record = assert(self.record, "field transfer requires its record")
   if self.kind == "newgame" then
     self.enterField(record, { initialFadeIn = true })
@@ -274,6 +293,9 @@ end
 function FieldPreparationState:draw()
   if self.loading ~= nil then
     self.loading:draw({ message = "Loading your saved game", artFailure = self.loaderArtFailure })
+    if not self.transferred and not self.cancelled and self.phase ~= "done" then
+      self.drawObserved = true
+    end
   end
 end
 

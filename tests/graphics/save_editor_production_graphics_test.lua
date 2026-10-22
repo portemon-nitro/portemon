@@ -43,6 +43,7 @@ local function readyHost()
     return true
   end
   return {
+    requestStartupWalker = ready,
     requestMilestone = ready,
     requestField = ready,
     requestLogicalField = ready,
@@ -108,6 +109,7 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     state = State.new({
       versionId = fixture.versionId,
       saveId = fixture.saveId,
+      startupPairIndex = 1,
       width = width,
       height = height,
       derivedAssets = readyHost(),
@@ -560,6 +562,7 @@ function T.tests.production_party_uses_generic_selector_without_retail_manifest(
     state = State.new({
       versionId = fixture.versionId,
       saveId = fixture.saveId,
+      startupPairIndex = 1,
       width = 1280,
       height = 720,
       derivedAssets = readyHost(),
