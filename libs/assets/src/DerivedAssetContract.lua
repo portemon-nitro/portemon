@@ -564,8 +564,13 @@ DerivedAssetContract.startupWalker = {
   schema = "g4-startup-walker-v1",
 }
 
+-- startupTitle schema 2: the title manifest carries the source projection
+-- (Nitro half-angle index, source aspect and clip facts) plus the constant
+-- two-light title lighting record, and publishes exactly the two runtime
+-- surface roles. A v1 bundle with the retired third surface or without
+-- projection/lighting must rebuild.
 DerivedAssetContract.startupTitle = {
-  schema = "g4-startup-title-v1",
+  schema = "g4-startup-title-v2",
 }
 
 -- The mesh batch format constants (magic, version, stride, header size,

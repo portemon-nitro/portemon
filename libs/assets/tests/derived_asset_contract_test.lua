@@ -208,7 +208,7 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-startup-walker-v1",
     },
     startupTitle = {
-      schema = "g4-startup-title-v1",
+      schema = "g4-startup-title-v2",
     },
   })
 end

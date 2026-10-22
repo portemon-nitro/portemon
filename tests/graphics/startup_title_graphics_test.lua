@@ -116,17 +116,17 @@ local function renderEdition(scope, versionId)
       layout.configuration,
       "the selected composition controls production drawing"
     )
+    local stageDraws = countTitleImageDraws(scene, scope, layout.width, layout.height)
+    Assert.equal(stageDraws.decor, 0, "no layout paints the retired text art")
     if layout.configuration == "wide" then
       Assert.isFalse(
         composition.stageWidth == 512 and composition.stageHeight == 192,
         "wide title uses one panoramic stage, not two peer screens"
       )
       Assert.isFalse(composition.lowerPanel == true, "wide title has no peer lower panel")
-      local wideDraws = countTitleImageDraws(scene, scope, layout.width, layout.height)
-      Assert.equal(wideDraws.canvas, 1, "wide title draws the live animated canvas exactly once")
-      Assert.equal(wideDraws.logo, 1, "wide title keeps the source edition mark visible as a subordinate accent")
-      Assert.equal(wideDraws.lower, 0, "wide title does not paint a second full lower screen")
-      Assert.equal(wideDraws.decor, 0, "wide title does not paint a second full decor screen")
+      Assert.equal(stageDraws.canvas, 1, "wide title draws the live animated canvas exactly once")
+      Assert.equal(stageDraws.logo, 0, "wide title carries no edition logo")
+      Assert.equal(stageDraws.lower, 1, "wide title keeps the lower accent above the legendary")
       local beforeWide = drawBytes(scene, scope, layout.width, layout.height)
       for _ = 1, 30 do
         scene:updateFixed()
@@ -142,12 +142,16 @@ local function renderEdition(scope, versionId)
         Assert.isTrue(buttonCenter < boundsCenter, "SoulSilver edition control stays in the bottom-left corner")
       end
     elseif layout.configuration == "tall" then
-      Assert.equal(composition.stageHeight, 384, "tall title stacks two source roles")
-      Assert.equal(composition.legend.y, 0, "tall legend remains in the upper source role")
-      Assert.equal(composition.lower.y, 192, "tall lower-screen art stays beneath the legend")
+      Assert.isTrue(composition.lowerPanel == true, "tall title keeps its lower panel")
+      Assert.isTrue(composition.upper ~= nil and composition.lower ~= nil, "tall title stacks two source roles")
+      Assert.equal(stageDraws.canvas, 1, "tall upper stage renders the legendary exactly once")
+      Assert.equal(stageDraws.logo, 1, "tall lower stage shows the edition mark")
+      Assert.equal(stageDraws.lower, 1, "tall lower stage keeps its lower art")
     elseif layout.configuration == "nativeLike" then
-      Assert.equal(composition.stageWidth, 256, "4:3 keeps one native logical stage")
-      Assert.equal(composition.stageHeight, 192, "4:3 keeps native logical height")
+      Assert.isFalse(composition.lowerPanel == true, "4:3 keeps a single 3D stage")
+      Assert.equal(stageDraws.canvas, 1, "4:3 draws the live animated canvas exactly once")
+      Assert.equal(stageDraws.logo, 0, "4:3 carries no edition logo")
+      Assert.equal(stageDraws.lower, 1, "4:3 keeps the lower accent above the legendary")
     else
       local primary, secondary = scene.layout.primary, scene.layout.secondary
       Assert.isTrue(secondary ~= nil, "physical dual display preserves both source surfaces")
@@ -193,8 +197,489 @@ local function renderAvailableEditions(scope, context)
   end
 end
 
+local function readyVersionsOrSkip(context)
+  local versions = {}
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
+    end
+  end
+  if #versions == 0 then
+    context:skip("no supported user-owned ROM is ready")
+  end
+  return versions
+end
+
+local function openTitleScene(scope, versionId, width, height, kind)
+  local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
+  local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology(kind) })
+  local scene = HgssTitleScene.new({
+    versionId = versionId,
+    cacheFs = CacheFs.forVersion(versionId),
+    width = width,
+    height = height,
+    displayContext = context,
+  })
+  scope:own({
+    release = function()
+      scene:dispose()
+    end,
+  })
+  return scene
+end
+
+local function sourceVerticalFov(projection)
+  return 2 * math.atan(1 / projection[6])
+end
+
+local function withRendererCapture(scene, fn)
+  local seen = {}
+  local renderer = assert(scene.renderer)
+  local originalDraw = renderer.draw
+  renderer.draw = function(self, environment, camera, ...)
+    seen.environment = environment
+    seen.camera = camera
+    return originalDraw(self, environment, camera, ...)
+  end
+  local ok, failure = pcall(fn, seen)
+  renderer.draw = originalDraw
+  if not ok then
+    error(failure, 0)
+  end
+  return seen
+end
+
+local function assertTwoWhiteSceneLights(lighting, message)
+  Assert.notNil(lighting, message or "title hands the renderer a lighting record")
+  Assert.isTrue(type(lighting.records) == "table" and #lighting.records > 0, "title lighting carries records")
+  local lights = assert(lighting.records[1].lights, "title lighting record carries lights")
+  local enabled = {}
+  for _, light in ipairs(lights) do
+    if light.enabled ~= false then
+      enabled[#enabled + 1] = light
+    end
+  end
+  Assert.equal(#enabled, 2, "title enables exactly two scene lights")
+  for _, light in ipairs(enabled) do
+    local color = assert(light.color or light.colour, "title light carries a color")
+    Assert.equal(color[1], color[2], "title light is neutral white")
+    Assert.equal(color[2], color[3], "title light is neutral white")
+    Assert.isTrue(color[1] > 0, "title light is on")
+  end
+end
+
+local function titleDeliversSourceCameraAndLighting(scope, context)
+  local Matrix4 = require("libs.math.src.Matrix4")
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, 512, 384, "single")
+    local camera = scene:_camera()
+    local halfAngle = (0xB60 / 65536) * (2 * math.pi)
+    Assert.near(sourceVerticalFov(camera.projection()), 2 * halfAngle, 0.02, "title uses the source half-angle")
+    local timeline = assert(scene.bundle.timeline, "title bundle carries its camera timeline")
+    Assert.deepEqual(
+      camera.view(),
+      Matrix4.lookAt(timeline.camera.endPosition, timeline.camera.target, { 0, 1, 0 }),
+      "title opens on its sourced end pose"
+    )
+    withRendererCapture(scene, function(seen)
+      scene:_drawModel()
+      assertTwoWhiteSceneLights(seen.environment and seen.environment.lighting)
+    end)
+    scene:dispose()
+  end
+end
+
+local function titleOverlayPhasesFollowTheirSourcedSchedule(scope, context)
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, 512, 384, "single")
+    local promptText = assert(scene.bundle.prompt.text, "title bundle carries its start prompt")
+    local graphics = love.graphics
+    local originalPrintf, originalDraw = graphics.printf, graphics.draw
+    local printed, overlayDraws = {}, {}
+    graphics.printf = function(text, ...)
+      printed[#printed + 1] = text
+      return originalPrintf(text, ...)
+    end
+    graphics.draw = function(drawable, ...)
+      local surfaces = scene.surfaces or {}
+      if
+        drawable == surfaces.editionLogo
+        or drawable == surfaces.subscreenLower
+        or drawable == surfaces.subscreenDecor
+      then
+        local red, green, blue, alpha = graphics.getColor()
+        overlayDraws[#overlayDraws + 1] = { drawable = drawable, color = { red, green, blue, alpha } }
+      end
+      return originalDraw(drawable, ...)
+    end
+    local promptAt, overlayAt = {}, {}
+    local samples = {}
+    for _, tick in ipairs({ 0, 1, 2, 20, 29, 30, 31, 40, 45, 59, 60, 74, 75, 100, 110, 143, 160 }) do
+      samples[tick] = true
+    end
+    local function record()
+      for _, text in ipairs(printed) do
+        if text == promptText then
+          promptAt[scene.tick] = true
+          break
+        end
+      end
+      if promptAt[scene.tick] == nil then
+        promptAt[scene.tick] = false
+      end
+      local signature = {}
+      for _, draw in ipairs(overlayDraws) do
+        signature[#signature + 1] = string.format(
+          "%s:%.2f,%.2f,%.2f,%.2f",
+          tostring(draw.drawable),
+          draw.color[1],
+          draw.color[2],
+          draw.color[3],
+          draw.color[4]
+        )
+      end
+      overlayAt[scene.tick] = table.concat(signature, "|")
+    end
+    local drawOk, drawFailure = pcall(function()
+      printed, overlayDraws = {}, {}
+      scene:draw()
+      record()
+      for _ = 1, 160 do
+        scene:updateFixed()
+        if samples[scene.tick] then
+          printed, overlayDraws = {}, {}
+          scene:draw()
+          record()
+        end
+      end
+    end)
+    graphics.printf, graphics.draw = originalPrintf, originalDraw
+    Assert.isTrue(drawOk, tostring(drawFailure))
+    for _, tick in ipairs({ 0, 1, 2, 29 }) do
+      Assert.isFalse(promptAt[tick], "start prompt stays hidden through its opening delay")
+    end
+    for _, tick in ipairs({ 30, 31, 45, 59 }) do
+      Assert.isTrue(promptAt[tick], "start prompt shows after its opening delay")
+    end
+    for _, tick in ipairs({ 60, 74 }) do
+      Assert.isFalse(promptAt[tick], "start prompt hides again after its visible window")
+    end
+    for _, tick in ipairs({ 75, 100 }) do
+      Assert.isTrue(promptAt[tick], "start prompt repeats after its hidden window")
+    end
+    Assert.isTrue(overlayAt[1] ~= overlayAt[20], "title reveal executes across its transition")
+    Assert.isTrue(overlayAt[40] ~= overlayAt[110], "title glow cycles instead of holding one palette")
+    scene:dispose()
+  end
+end
+
+local function rectOf(record, width, height)
+  return { x = record.x, y = record.y, width = width * record.sx, height = height * record.sy }
+end
+
+local function covers(rect, region)
+  return rect.x <= region.x
+    and rect.y <= region.y
+    and rect.x + rect.width >= region.x + region.width
+    and rect.y + rect.height >= region.y + region.height
+end
+
+local function overlaps(a, b)
+  return a.x < b.x + b.width and b.x < a.x + a.width and a.y < b.y + b.height and b.y < a.y + a.height
+end
+
+local function captureComposedDraws(scene, scope, width, height)
+  local graphics = love.graphics
+  local originalDraw, originalRectangle = graphics.draw, graphics.rectangle
+  local draws, rectangles = {}, {}
+  graphics.draw = function(drawable, x, y, rotation, sx, sy, ...)
+    if type(x) == "number" then
+      local red, green, blue, alpha = graphics.getColor()
+      draws[#draws + 1] =
+        { drawable = drawable, x = x, y = y, sx = sx or 1, sy = sy or sx or 1, color = { red, green, blue, alpha } }
+    end
+    return originalDraw(drawable, x, y, rotation, sx, sy, ...)
+  end
+  graphics.rectangle = function(mode, x, y, w, h, ...)
+    local red, green, blue, alpha = graphics.getColor()
+    rectangles[#rectangles + 1] = { mode = mode, x = x, y = y, w = w, h = h, color = { red, green, blue, alpha } }
+    return originalRectangle(mode, x, y, w, h, ...)
+  end
+  local ok, failure = pcall(drawBytes, scene, scope, width, height)
+  graphics.draw, graphics.rectangle = originalDraw, originalRectangle
+  if not ok then
+    error(failure, 0)
+  end
+  return draws, rectangles
+end
+
+local function drawsOf(draws, image)
+  local found = {}
+  for _, record in ipairs(draws) do
+    if record.drawable == image then
+      found[#found + 1] = record
+    end
+  end
+  return found
+end
+
+local function compactAndWideFillWithTheLegend(scope, context)
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    for _, layout in ipairs({
+      { width = 512, height = 384 },
+      { width = 1280, height = 720 },
+      { width = 1680, height = 720 },
+    }) do
+      local scene = openTitleScene(scope, versionId, layout.width, layout.height, "single")
+      local bounds = assert(scene.layout.composition.bounds, "title composition has drawable bounds")
+      local canvasWidth, canvasHeight = scene.canvas:getDimensions()
+      Assert.isTrue(
+        canvasWidth <= 1024 and canvasHeight <= 576,
+        "title 3D target stays bounded instead of matching the window"
+      )
+      local draws, rectangles = captureComposedDraws(scene, scope, layout.width, layout.height)
+      local surfaces = assert(scene.surfaces)
+      Assert.equal(#drawsOf(draws, surfaces.editionLogo), 0, "compact and wide stages draw no edition logo")
+      Assert.equal(#drawsOf(draws, surfaces.subscreenDecor), 0, "compact and wide stages draw no retired text art")
+      for _, rectangle in ipairs(rectangles) do
+        if rectangle.mode == "fill" then
+          Assert.isTrue(
+            rectangle.w * rectangle.h < bounds.width * bounds.height * 0.5,
+            "compact and wide stages carry no fullscreen edition card"
+          )
+        end
+      end
+      local canvasDraws = drawsOf(draws, scene.canvas)
+      Assert.isTrue(#canvasDraws >= 1, "compact and wide stages render the legendary")
+      local legendRect = rectOf(canvasDraws[1], canvasWidth, canvasHeight)
+      Assert.isTrue(covers(legendRect, bounds), "legendary fills the compositional stage")
+      local lowerDraws = drawsOf(draws, surfaces.subscreenLower)
+      Assert.isTrue(#lowerDraws >= 1, "compact and wide stages keep the lower accent")
+      local lowerWidth, lowerHeight = surfaces.subscreenLower:getDimensions()
+      local lowerRect = rectOf(lowerDraws[1], lowerWidth, lowerHeight)
+      Assert.isFalse(overlaps(legendRect, lowerRect), "lower accent never covers the legendary")
+      scene:dispose()
+    end
+  end
+end
+
+local function tallAndDualKeepTheirSourceRoles(scope, context)
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, 600, 1000, "single")
+    local tick = scene.tick
+    local draws = captureComposedDraws(scene, scope, 600, 1000)
+    local surfaces = assert(scene.surfaces)
+    local bounds = assert(scene.layout.composition.bounds, "tall composition has drawable bounds")
+    local lowerHalf =
+      { x = bounds.x, y = bounds.y + bounds.height / 2, width = bounds.width, height = bounds.height / 2 }
+    local logoDraws = drawsOf(draws, surfaces.editionLogo)
+    Assert.isTrue(#logoDraws >= 1, "tall lower stage shows the edition mark")
+    local logoWidth, logoHeight = surfaces.editionLogo:getDimensions()
+    Assert.isTrue(
+      covers(rectOf(logoDraws[1], logoWidth, logoHeight), lowerHalf),
+      "tall edition mark covers its half without edge bars"
+    )
+    local lowerDraws = drawsOf(draws, surfaces.subscreenLower)
+    Assert.isTrue(#lowerDraws >= 1, "tall lower stage keeps its lower art")
+    Assert.equal(lowerDraws[1].sx, math.floor(lowerDraws[1].sx), "tall lower art scales by an integer factor")
+    Assert.isTrue(lowerDraws[1].sx >= 1, "tall lower art never shrinks when its native size fits")
+    local lowerWidth, lowerHeight = surfaces.subscreenLower:getDimensions()
+    local lowerRect = rectOf(lowerDraws[1], lowerWidth, lowerHeight)
+    Assert.isTrue(
+      lowerRect.x >= lowerHalf.x
+        and lowerRect.y >= lowerHalf.y - 1
+        and lowerRect.x + lowerRect.width <= lowerHalf.x + lowerHalf.width + 1
+        and lowerRect.y + lowerRect.height <= lowerHalf.y + lowerHalf.height + 1,
+      "tall lower art stays inside its half"
+    )
+    Assert.near(lowerRect.y, lowerHalf.y, 2, "tall lower art aligns to the top of its half")
+    local canvasDraws = drawsOf(draws, scene.canvas)
+    Assert.isTrue(#canvasDraws >= 1, "tall upper stage renders the legendary")
+    local canvasWidth, canvasHeight = scene.canvas:getDimensions()
+    Assert.isFalse(
+      overlaps(rectOf(canvasDraws[1], canvasWidth, canvasHeight), lowerRect),
+      "tall upper legendary never collides with its lower art"
+    )
+    scene:resize(700, 1200)
+    Assert.equal(scene.tick, tick, "resizing never restarts title timing")
+    captureComposedDraws(scene, scope, 700, 1200)
+    scene:dispose()
+
+    local dual = openTitleScene(scope, versionId, 512, 384, "dual")
+    local dualDraws = captureComposedDraws(dual, scope, 512, 384)
+    local dualSurfaces = assert(dual.surfaces)
+    Assert.isTrue(#drawsOf(dualDraws, dual.canvas) >= 1, "dual principal renders the legendary")
+    Assert.isTrue(#drawsOf(dualDraws, dualSurfaces.editionLogo) >= 1, "dual auxiliary keeps the edition mark")
+    Assert.isTrue(#drawsOf(dualDraws, dualSurfaces.subscreenLower) >= 1, "dual auxiliary keeps its lower art")
+    Assert.equal(#drawsOf(dualDraws, dualSurfaces.subscreenDecor), 0, "dual auxiliary draws no retired text art")
+    local button = dual:editionButtonBounds()
+    local center = button.x + button.width / 2
+    if versionId == "heartgold" then
+      Assert.isTrue(center > 256, "edition control stays in its edition corner")
+    else
+      Assert.isTrue(center < 256, "edition control stays in its edition corner")
+    end
+    dual:dispose()
+  end
+end
+
+local function retiredTextArtHasNoRuntimeImageOrDraw(scope, context)
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, 512, 384, "single")
+    local names = {}
+    for name in pairs(assert(scene.surfaces)) do
+      names[#names + 1] = name
+    end
+    table.sort(names)
+    Assert.deepEqual(names, { "editionLogo", "subscreenLower" })
+    scene:dispose()
+    for _, layout in ipairs({
+      { kind = "single", width = 512, height = 384 },
+      { kind = "single", width = 1280, height = 720 },
+      { kind = "single", width = 600, height = 1000 },
+      { kind = "dual", width = 512, height = 384 },
+    }) do
+      local staged = openTitleScene(scope, versionId, layout.width, layout.height, layout.kind)
+      local draws = captureComposedDraws(staged, scope, layout.width, layout.height)
+      local canvasCount, logoCount, lowerCount, decorCount = 0, 0, 0, 0
+      local surfaces = staged.surfaces or {}
+      for _, record in ipairs(draws) do
+        if record.drawable == staged.canvas then
+          canvasCount = canvasCount + 1
+        elseif record.drawable == surfaces.editionLogo then
+          logoCount = logoCount + 1
+        elseif record.drawable == surfaces.subscreenLower then
+          lowerCount = lowerCount + 1
+        elseif record.drawable == surfaces.subscreenDecor then
+          decorCount = decorCount + 1
+        end
+      end
+      Assert.equal(decorCount, 0, "retired text art is never drawn")
+      Assert.isTrue(canvasCount + logoCount + lowerCount > 0, "title still draws its two retained roles")
+      staged:dispose()
+    end
+  end
+end
+
+local function titleResizeKeepsSourceTimingAndCameraPose(scope, context)
+  local Matrix4 = require("libs.math.src.Matrix4")
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, 512, 384, "single")
+    for _ = 1, 45 do
+      scene:updateFixed()
+    end
+    local tick, view = scene.tick, scene:_camera().view()
+    scene.displayContext = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("single") })
+    scene:resize(1280, 720)
+    Assert.equal(scene.tick, tick, "resizing never restarts title timing")
+    Assert.deepEqual(scene:_camera().view(), view, "resizing never moves the sourced camera")
+    Assert.equal(scene.layout.configuration, "wide", "the resized host selects the wide composition")
+    scene:resize(600, 1000)
+    Assert.equal(scene.tick, tick, "a second resize still preserves title timing")
+    Assert.deepEqual(scene:_camera().view(), view, "a second resize still preserves the camera pose")
+    drawBytes(scene, scope, 600, 1000)
+    scene:dispose()
+  end
+end
+
+local function titleCanvasStaysBoundedOnLargeHosts(scope, context)
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, 3840, 2160, "single")
+    local canvasWidth, canvasHeight = scene.canvas:getDimensions()
+    Assert.isTrue(canvasWidth <= 1024 and canvasHeight <= 576, "no full-window 4K title canvas")
+    local bounds = assert(scene.layout.composition.bounds, "large-host composition has drawable bounds")
+    local draws, _ = captureComposedDraws(scene, scope, 3840, 2160)
+    local canvasDraws = drawsOf(draws, scene.canvas)
+    Assert.isTrue(#canvasDraws >= 1, "large hosts still render the legendary")
+    Assert.isTrue(
+      covers(rectOf(canvasDraws[1], canvasWidth, canvasHeight), bounds),
+      "the bounded target fills the stage"
+    )
+    scene:dispose()
+  end
+end
+
+local function titleCanvasFailureReleasesStagedAssets(scope, context)
+  local versions = readyVersionsOrSkip(context)
+  local graphics = love.graphics
+  local realNewCanvas = graphics.newCanvas
+  for _, versionId in ipairs(versions) do
+    local before = graphics.getStats()
+    graphics.newCanvas = function()
+      error("injected title canvas failure")
+    end
+    local ok, failure = pcall(openTitleScene, scope, versionId, 512, 384, "single")
+    graphics.newCanvas = realNewCanvas
+    Assert.isFalse(ok, "a canvas allocation failure stops title construction")
+    Assert.isTrue(tostring(failure):find("canvas") ~= nil, "the failure names the canvas allocation")
+    local after = graphics.getStats()
+    Assert.equal(after.images, before.images, "a failed construction releases its staged images")
+    Assert.equal(after.canvases, before.canvases, "a failed construction releases its staged canvases")
+  end
+end
+
+local function titleMissingSurfaceFailsCleanly(scope, context)
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local realFs = CacheFs.forVersion(versionId)
+    local hollowFs = {
+      loadLua = function(_, path)
+        return realFs:loadLua(path)
+      end,
+      exists = function(_, path, kind)
+        return realFs:exists(path, kind)
+      end,
+      read = function(_, path)
+        if path:find("subscreen", 1, true) ~= nil then
+          return nil
+        end
+        return realFs:read(path)
+      end,
+    }
+    local before = love.graphics.getStats()
+    local ok, failure = pcall(HgssTitleScene.new, {
+      versionId = versionId,
+      cacheFs = hollowFs,
+      width = 512,
+      height = 384,
+      displayContext = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("single") }),
+    })
+    Assert.isFalse(ok, "a missing title surface stops title construction")
+    Assert.isTrue(tostring(failure):find("subscreen") ~= nil, "the failure names the missing surface")
+    local after = love.graphics.getStats()
+    Assert.equal(after.images, before.images, "a failed construction releases its staged images")
+    Assert.equal(after.canvases, before.canvases, "a failed construction leaves no canvas behind")
+  end
+end
+
+local function titleDeliversItsCompiledLightingRecord(scope, context)
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, 512, 384, "single")
+    withRendererCapture(scene, function(seen)
+      scene:_drawModel()
+      Assert.equal(
+        seen.environment and seen.environment.lighting,
+        scene.bundle.lighting,
+        "the renderer receives the compiled lighting record untouched"
+      )
+    end)
+    scene:dispose()
+  end
+end
+
 local T = GraphicsSmoke.suite({
   ["generated HGSS titles render, animate and fit each supported display"] = renderAvailableEditions,
+  ["title scene delivers the sourced camera framing and lit legendary"] = titleDeliversSourceCameraAndLighting,
+  ["title overlay phases follow their sourced schedule"] = titleOverlayPhasesFollowTheirSourcedSchedule,
+  ["compact and wide stages fill with the legendary"] = compactAndWideFillWithTheLegend,
+  ["tall and dual stages keep their source roles"] = tallAndDualKeepTheirSourceRoles,
+  ["retired title text art has no runtime image or draw"] = retiredTextArtHasNoRuntimeImageOrDraw,
+  ["title resize keeps source timing and camera pose"] = titleResizeKeepsSourceTimingAndCameraPose,
+  ["title canvas stays bounded on large hosts"] = titleCanvasStaysBoundedOnLargeHosts,
+  ["title canvas failure releases staged assets"] = titleCanvasFailureReleasesStagedAssets,
+  ["title missing surface fails cleanly"] = titleMissingSurfaceFailsCleanly,
+  ["title delivers its compiled lighting record"] = titleDeliversItsCompiledLightingRecord,
 })
 T.metadata.capabilities = { "graphics", "rom_dump" }
 T.metadata.derivedAssets = { "startup-title:global" }
