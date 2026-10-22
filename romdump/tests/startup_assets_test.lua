@@ -14,12 +14,17 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local T = {}
 
 function T.startup_families_are_closed_global_artifacts()
-  for _, kind in ipairs({ "startup-loader", "startup-title" }) do
-    Assert.isTrue(ArtifactState.KINDS[kind] == true, kind .. " is a known family")
-    Assert.equal(ArtifactState.path(kind, "global"), "data/generated/jobs/" .. kind .. "/global.lua")
-    Assert.isFalse(pcall(ArtifactState.path, kind, "1"), kind .. " rejects numeric selectors")
-    Assert.isTrue(pcall(ArtifactJobs.sizeClass, kind), kind .. " has a worker descriptor")
-  end
+  Assert.isTrue(ArtifactState.KINDS["startup-loader"] == true, "startup-loader is a known family")
+  Assert.equal(ArtifactState.path("startup-loader", "1"), "data/generated/jobs/startup-loader/1.lua")
+  Assert.equal(ArtifactState.path("startup-loader", "32"), "data/generated/jobs/startup-loader/32.lua")
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "global"), "startup-loader rejects the legacy global key")
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "0"), "startup-loader keys start at one")
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "33"), "startup-loader keys end at thirty-two")
+  Assert.isTrue(pcall(ArtifactJobs.sizeClass, "startup-loader"), "startup-loader has a worker descriptor")
+  Assert.isTrue(ArtifactState.KINDS["startup-title"] == true, "startup-title is a known family")
+  Assert.equal(ArtifactState.path("startup-title", "global"), "data/generated/jobs/startup-title/global.lua")
+  Assert.isFalse(pcall(ArtifactState.path, "startup-title", "1"), "startup-title rejects numeric selectors")
+  Assert.isTrue(pcall(ArtifactJobs.sizeClass, "startup-title"), "startup-title has a worker descriptor")
 end
 
 function T.startup_jobs_are_present_in_the_full_corpus_iterator()
@@ -39,142 +44,54 @@ function T.startup_jobs_are_present_in_the_full_corpus_iterator()
     if job == nil then
       break
     end
-    if job.kind == "startup-loader" or job.kind == "startup-title" then
+    if job.kind == "startup-loader" then
+      found[job.kind] = (found[job.kind] or 0) + 1
+    elseif job.kind == "startup-title" then
       found[job.kind] = job.key == "global"
     end
   end
-  Assert.deepEqual(found, { ["startup-loader"] = true, ["startup-title"] = true })
+  Assert.isNil(found["startup-loader"], "the selected walking pair never joins the eager corpus sweep")
+  Assert.deepEqual(found, { ["startup-title"] = true })
 end
 
 function T.startup_manifests_have_fixed_versioned_paths()
   local ok, StartupAssetCache = pcall(require, "libs.assets.src.StartupAssetCache")
   Assert.isTrue(ok, "strict startup manifest reader exists")
-  Assert.equal(StartupAssetCache.loaderPath(), "data/generated/startup/loader.lua")
+  Assert.equal(StartupAssetCache.walkerPath(5), "data/generated/startup/loader/pairs/5.lua")
   Assert.equal(StartupAssetCache.titlePath(), "data/generated/startup/title.lua")
 end
 
-function T.loader_manifest_requires_its_generated_backdrop_file()
+function T.walker_manifest_requires_its_generated_atlas_files()
+  local visual = {
+    render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
+    pivot = { x = 0.5, y = 1 },
+    directions = {
+      east = { walk = { frames = { { frameIndex = 1, ticks = 1 }, { frameIndex = 2, ticks = 1 } } } },
+    },
+  }
   local manifest = {
-    schema = StartupAssetContract.startupLoader.schema,
+    schema = StartupAssetContract.startupWalker.schema,
     versionId = "heartgold",
     generationId = "generation-a",
-    heroes = {
-      ethan = {
-        atlasPath = "assets/generated/startup/loader/ethan.png",
-        visual = {
-          render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-          directions = {
-            east = {
-              walk = {
-                frames = {
-                  { frameIndex = 1, ticks = 1 },
-                  { frameIndex = 2, ticks = 1 },
-                },
-              },
-            },
-          },
-        },
-      },
-      lyra = {
-        atlasPath = "assets/generated/startup/loader/lyra.png",
-        visual = {
-          render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-          directions = {
-            east = {
-              walk = {
-                frames = {
-                  { frameIndex = 1, ticks = 1 },
-                  { frameIndex = 2, ticks = 1 },
-                },
-              },
-            },
-          },
-        },
-      },
+    pairIndex = 5,
+    hero = { atlasPath = "assets/generated/startup/loader/pairs/5/hero.png", visual = visual },
+    follower = {
+      speciesId = 25,
+      atlasPath = "assets/generated/startup/loader/pairs/5/follower.png",
+      visual = visual,
     },
-    followers = {
-      {
-        speciesId = 1,
-        atlasPath = "assets/generated/startup/loader/f1.png",
-        visual = {
-          render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-          directions = {
-            east = {
-              walk = {
-                frames = {
-                  { frameIndex = 1, ticks = 1 },
-                  { frameIndex = 2, ticks = 1 },
-                },
-              },
-            },
-          },
-        },
-      },
-      {
-        speciesId = 2,
-        atlasPath = "assets/generated/startup/loader/f2.png",
-        visual = {
-          render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-          directions = {
-            east = {
-              walk = {
-                frames = {
-                  { frameIndex = 1, ticks = 1 },
-                  { frameIndex = 2, ticks = 1 },
-                },
-              },
-            },
-          },
-        },
-      },
-      {
-        speciesId = 3,
-        atlasPath = "assets/generated/startup/loader/f3.png",
-        visual = {
-          render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-          directions = {
-            east = {
-              walk = {
-                frames = {
-                  { frameIndex = 1, ticks = 1 },
-                  { frameIndex = 2, ticks = 1 },
-                },
-              },
-            },
-          },
-        },
-      },
-      {
-        speciesId = 4,
-        atlasPath = "assets/generated/startup/loader/f4.png",
-        visual = {
-          render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-          directions = {
-            east = {
-              walk = {
-                frames = {
-                  { frameIndex = 1, ticks = 1 },
-                  { frameIndex = 2, ticks = 1 },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    backdrop = { kind = "authored", width = 256, height = 192 },
   }
   local cacheFs = {
     loadLua = function()
       return manifest
     end,
     exists = function()
-      return true
+      return false
     end,
   }
-  local loaded, err = StartupAssetCache.loadLoader(cacheFs)
+  local loaded, err = StartupAssetCache.loadWalker(cacheFs, 5)
   Assert.isNil(loaded)
-  Assert.notNil(err, "a backdrop without its generated image path is invalid")
+  Assert.notNil(err, "a walking pair with missing atlas files is not ready")
 end
 
 -- The visual startup scopes own no audio membership even beside an
@@ -195,10 +112,15 @@ function T.title_visual_scopes_ignore_adopted_audio_membership()
       },
     },
   }
-  for _, kind in ipairs({ "startup-loader", "startup-title" }) do
-    local dependencies, complete = ArtifactJobs.dependencies(kind, "global", plan)
-    Assert.isTrue(complete, kind .. " stays final beside an adopted audio plan")
-    Assert.deepEqual(dependencies, {}, kind .. " keeps no audio prerequisite")
+  do
+    local dependencies, complete = ArtifactJobs.dependencies("startup-title", "global", plan)
+    Assert.isTrue(complete, "startup-title stays final beside an adopted audio plan")
+    Assert.deepEqual(dependencies, {}, "startup-title keeps no audio prerequisite")
+  end
+  do
+    local dependencies, complete = ArtifactJobs.dependencies("startup-loader", "5", plan)
+    Assert.isTrue(complete, "startup-loader stays final beside an adopted audio plan")
+    Assert.deepEqual(dependencies, {}, "startup-loader keeps no audio prerequisite")
   end
   Assert.deepEqual(ArtifactJobs.startupTitleJobs(), { { kind = "startup-title", key = "global" } })
   local roster, resolved = ArtifactJobs.startupAudioJobs(plan.audioPlan)
@@ -247,138 +169,49 @@ function T.startup_writer_owns_disjoint_roots_and_stages_manifest_last()
       roots[#roots + 1] = path
     end,
   }
+  local function pairVisual(frameWidth, frameHeight)
+    return {
+      render = { kind = "atlas", frameWidth = frameWidth, frameHeight = frameHeight, frameCount = 2 },
+      pivot = { x = 0.5, y = 1 },
+      directions = {
+        east = { walk = { frames = { { frameIndex = 1, ticks = 1 }, { frameIndex = 2, ticks = 1 } } } },
+      },
+    }
+  end
+  local heroPixels = string.char(200, 180, 120, 255) .. string.char(0, 0, 0, 0)
+  local followerPixels = string.char(200, 180, 120, 255) .. string.char(0, 0, 0, 0)
   local bundle = {
     manifest = {
-      schema = "g4-startup-loader-v1",
+      schema = "g4-startup-walker-v1",
       versionId = "heartgold",
-      generationId = "generation-a",
-      heroes = {
-        ethan = {
-          atlasPath = "assets/generated/startup/loader/hero-ethan.png",
-          visual = {
-            render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-            directions = {
-              east = {
-                walk = {
-                  frames = {
-                    { frameIndex = 1, ticks = 1 },
-                    { frameIndex = 2, ticks = 1 },
-                  },
-                },
-              },
-            },
-          },
-        },
-        lyra = {
-          atlasPath = "assets/generated/startup/loader/hero-lyra.png",
-          visual = {
-            render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-            directions = {
-              east = {
-                walk = {
-                  frames = {
-                    { frameIndex = 1, ticks = 1 },
-                    { frameIndex = 2, ticks = 1 },
-                  },
-                },
-              },
-            },
-          },
-        },
+      pairIndex = 5,
+      hero = {
+        atlasPath = "assets/generated/startup/loader/pairs/5/hero.png",
+        visual = pairVisual(1, 1),
       },
-      followers = {
-        {
-          speciesId = 1,
-          atlasPath = "assets/generated/startup/loader/follower-1.png",
-          visual = {
-            render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-            directions = {
-              east = {
-                walk = {
-                  frames = {
-                    { frameIndex = 1, ticks = 1 },
-                    { frameIndex = 2, ticks = 1 },
-                  },
-                },
-              },
-            },
-          },
-        },
-        {
-          speciesId = 2,
-          atlasPath = "assets/generated/startup/loader/follower-2.png",
-          visual = {
-            render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-            directions = {
-              east = {
-                walk = {
-                  frames = {
-                    { frameIndex = 1, ticks = 1 },
-                    { frameIndex = 2, ticks = 1 },
-                  },
-                },
-              },
-            },
-          },
-        },
-        {
-          speciesId = 3,
-          atlasPath = "assets/generated/startup/loader/follower-3.png",
-          visual = {
-            render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-            directions = {
-              east = {
-                walk = {
-                  frames = {
-                    { frameIndex = 1, ticks = 1 },
-                    { frameIndex = 2, ticks = 1 },
-                  },
-                },
-              },
-            },
-          },
-        },
-        {
-          speciesId = 4,
-          atlasPath = "assets/generated/startup/loader/follower-4.png",
-          visual = {
-            render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-            directions = {
-              east = {
-                walk = {
-                  frames = {
-                    { frameIndex = 1, ticks = 1 },
-                    { frameIndex = 2, ticks = 1 },
-                  },
-                },
-              },
-            },
-          },
-        },
+      follower = {
+        speciesId = 25,
+        atlasPath = "assets/generated/startup/loader/pairs/5/follower.png",
+        visual = pairVisual(1, 1),
       },
-      backdrop = { kind = "authored", width = 256, height = 192 },
     },
     atlases = {
-      ["assets/generated/startup/loader/hero-ethan.png"] = { width = 1, height = 1, pixels = "rgba" },
-      ["assets/generated/startup/loader/hero-lyra.png"] = { width = 1, height = 1, pixels = "rgba" },
-      ["assets/generated/startup/loader/follower-1.png"] = { width = 1, height = 1, pixels = "rgba" },
-      ["assets/generated/startup/loader/follower-2.png"] = { width = 1, height = 1, pixels = "rgba" },
-      ["assets/generated/startup/loader/follower-3.png"] = { width = 1, height = 1, pixels = "rgba" },
-      ["assets/generated/startup/loader/follower-4.png"] = { width = 1, height = 1, pixels = "rgba" },
+      ["assets/generated/startup/loader/pairs/5/hero.png"] = { width = 2, height = 1, pixels = heroPixels },
+      ["assets/generated/startup/loader/pairs/5/follower.png"] = { width = 2, height = 1, pixels = followerPixels },
     },
-    backdrop = { width = 256, height = 192, pixels = string.rep("\0", 256 * 192 * 4) },
     dependencies = { versionId = "heartgold" },
     sourceHash = "source-hash",
   }
-  Assert.isTrue(pcall(StartupCacheWriter.stageLoader, artifact, bundle, "generation-a"))
-  Assert.equal(#roots, 2, "one manifest file and one asset directory are owned")
+  Assert.isTrue(pcall(StartupCacheWriter.stageLoader, artifact, bundle, "generation-a", 5))
+  Assert.equal(#roots, 2, "one manifest file and one pair directory are owned")
   local rootSet = {}
   for _, path in ipairs(roots) do
     rootSet[path] = true
   end
-  Assert.isTrue(rootSet["data/generated/startup/loader.lua"])
-  Assert.isTrue(rootSet["assets/generated/startup/loader"])
-  Assert.equal(writes[#writes].path, StartupAssetCache.loaderPath(), "manifest is the last staged file")
+  Assert.isTrue(rootSet["data/generated/startup/loader/pairs/5.lua"])
+  Assert.isTrue(rootSet["assets/generated/startup/loader/pairs/5"])
+  Assert.isNil(rootSet["assets/generated/startup/loader"], "staging one pair never owns the shared loader root")
+  Assert.equal(writes[#writes].path, StartupAssetCache.walkerPath(5), "manifest is the last staged file")
   Assert.equal(writes[#writes].record.generationId, "generation-a")
 end
 
@@ -594,12 +427,17 @@ end
 -- The visual startup scopes publish from their own compiled artifacts: no
 -- source inventory or audio bank is a prerequisite of either visual job.
 function T.startup_visual_dependencies_are_empty_and_final()
-  for _, kind in ipairs({ "startup-loader", "startup-title" }) do
-    local dependencies, complete = ArtifactJobs.dependencies(kind, "global", {})
-    Assert.isTrue(complete, kind .. " resolves without adopted plans")
-    Assert.deepEqual(dependencies, {}, kind .. " carries no prerequisite jobs")
+  do
+    local dependencies, complete = ArtifactJobs.dependencies("startup-title", "global", {})
+    Assert.isTrue(complete, "startup-title resolves without adopted plans")
+    Assert.deepEqual(dependencies, {}, "startup-title carries no prerequisite jobs")
   end
-  Assert.deepEqual(ArtifactJobs.startupLoaderJobs(), { { kind = "startup-loader", key = "global" } })
+  do
+    local dependencies, complete = ArtifactJobs.dependencies("startup-loader", "5", {})
+    Assert.isTrue(complete, "startup-loader resolves without adopted plans")
+    Assert.deepEqual(dependencies, {}, "startup-loader carries no prerequisite jobs")
+  end
+  Assert.deepEqual(ArtifactJobs.startupLoaderJobs(5), { { kind = "startup-loader", key = "5" } })
   Assert.deepEqual(ArtifactJobs.startupTitleJobs(), { { kind = "startup-title", key = "global" } })
 end
 
@@ -984,6 +822,312 @@ function T.title_reader_rejects_malformed_structure()
   local mismatchedLoaded, mismatchedErr = StartupAssetCache.loadTitle(titleCacheFs(mismatched, nil), "heartgold")
   Assert.isNil(mismatchedLoaded, "mismatched prompt tokens are not a ready title")
   Assert.notNil(mismatchedErr, "mismatched prompt tokens report their cause")
+end
+
+-- One selected walking pair is a canonical 32-way choice: indices 1..16
+-- name Ethan with each of the sixteen followers in fixed order, 17..32
+-- name Lyra with the same order, and the inverse maps back exactly.
+function T.startup_pair_choice_covers_both_heroes_and_sixteen_followers()
+  Assert.isTrue(
+    type(StartupAssetCache.walkerChoice) == "function",
+    "the startup cache owns the canonical 32-choice pair map"
+  )
+  Assert.isTrue(
+    type(StartupAssetCache.walkerIndex) == "function",
+    "the startup cache inverts the 32-choice pair map"
+  )
+  local species = { 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }
+  for index = 1, 32 do
+    local choice = StartupAssetCache.walkerChoice(index)
+    local ordinal = (index - 1) % 16 + 1
+    local heroId = index <= 16 and "ethan" or "lyra"
+    Assert.equal(choice.heroId, heroId, "pair " .. index .. " names its hero")
+    Assert.equal(choice.followerSpeciesId, species[ordinal], "pair " .. index .. " names its follower species")
+    Assert.equal(
+      StartupAssetCache.walkerIndex(choice.heroId, choice.followerSpeciesId),
+      index,
+      "pair " .. index .. " round-trips through the inverse map"
+    )
+  end
+  for _, badIndex in ipairs({ 0, 33, 1.5, "1" }) do
+    local ok, _ = pcall(StartupAssetCache.walkerChoice, badIndex)
+    Assert.isFalse(ok, "pair index " .. tostring(badIndex) .. " is rejected")
+  end
+  local unknownOk, _ = pcall(StartupAssetCache.walkerIndex, "ethan", 999999)
+  Assert.isFalse(unknownOk, "an unknown follower species inverts to no pair")
+  local heroOk, _ = pcall(StartupAssetCache.walkerIndex, "red", 1)
+  Assert.isFalse(heroOk, "an unknown hero inverts to no pair")
+end
+
+local function startupPairVisual(frameWidth, frameHeight)
+  return {
+    render = { kind = "atlas", frameWidth = frameWidth, frameHeight = frameHeight, frameCount = 2 },
+    pivot = { x = 0.5, y = 1 },
+    directions = {
+      east = {
+        walk = {
+          frames = {
+            { frameIndex = 1, ticks = 1 },
+            { frameIndex = 2, ticks = 3 },
+          },
+        },
+      },
+    },
+  }
+end
+
+local function startupPairManifest(pairIndex, versionId)
+  return {
+    schema = "g4-startup-walker-v1",
+    versionId = versionId,
+    generationId = "generation-a",
+    pairIndex = pairIndex,
+    hero = {
+      atlasPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/hero.png",
+      visual = startupPairVisual(16, 24),
+    },
+    follower = {
+      speciesId = 25,
+      atlasPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/follower.png",
+      visual = startupPairVisual(12, 20),
+    },
+  }
+end
+
+-- Keyed pair readiness is isolated per selection: numeric pair keys address
+-- their own receipt and manifest roots, the legacy global key addresses
+-- nothing, and only the manifest matching the requested pair validates.
+function T.startup_pair_receipts_are_keyed_and_isolated()
+  Assert.equal(ArtifactState.path("startup-loader", "1"), "data/generated/jobs/startup-loader/1.lua")
+  Assert.equal(ArtifactState.path("startup-loader", "32"), "data/generated/jobs/startup-loader/32.lua")
+  Assert.isFalse(
+    pcall(ArtifactState.path, "startup-loader", "global"),
+    "the legacy global key no longer addresses a walking pair"
+  )
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "0"), "pair keys start at one")
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "33"), "pair keys end at thirty-two")
+  Assert.isTrue(
+    type(StartupAssetCache.walkerPath) == "function",
+    "the startup cache owns the per-pair manifest path"
+  )
+  Assert.equal(StartupAssetCache.walkerPath(5), "data/generated/startup/loader/pairs/5.lua")
+  Assert.isTrue(
+    type(StartupAssetCache.loadWalker) == "function",
+    "the startup cache reads one strict pair manifest"
+  )
+  local manifest = startupPairManifest(5, "heartgold")
+  local cacheFs = {
+    loadLua = function()
+      return manifest
+    end,
+    exists = function()
+      return true
+    end,
+  }
+  local loaded, loadErr = StartupAssetCache.loadWalker(cacheFs, 5)
+  Assert.notNil(loaded, "the strict pair manifest loads: " .. tostring(loadErr))
+  Assert.equal(loaded.pairIndex, 5, "the loaded pair carries its selection")
+  Assert.equal(loaded.follower.speciesId, 25, "the loaded pair names its follower species")
+  local wrongPair, wrongErr = StartupAssetCache.loadWalker(cacheFs, 6)
+  Assert.isNil(wrongPair, "a manifest for another pair never authorizes this pair")
+  Assert.notNil(wrongErr, "the wrong-pair manifest reports its cause")
+  local missingFs = {
+    loadLua = function()
+      return manifest
+    end,
+    exists = function()
+      return false
+    end,
+  }
+  local missing, missingErr = StartupAssetCache.loadWalker(missingFs, 5)
+  Assert.isNil(missing, "a pair with missing atlas files is not ready")
+  Assert.notNil(missingErr, "the missing atlas reports its cause")
+  local legacyFs = {
+    loadLua = function()
+      return { schema = StartupAssetContract.startupLoader.schema, versionId = "heartgold" }
+    end,
+    exists = function()
+      return true
+    end,
+  }
+  local legacy, legacyErr = StartupAssetCache.loadWalker(legacyFs, 5)
+  Assert.isNil(legacy, "the legacy global manifest never reads as a pair")
+  Assert.notNil(legacyErr, "the legacy manifest reports its cause")
+end
+
+-- The pair reader rejects invalid selections, stale editions, and pivot or
+-- clip defects without touching the cache.
+function T.startup_pair_reader_rejects_invalid_selection_and_defects()
+  for _, badIndex in ipairs({ 0, 33, 1.5, "5" }) do
+    Assert.isFalse(pcall(StartupAssetCache.loadWalker, {}, badIndex), "pair " .. tostring(badIndex) .. " is rejected")
+    Assert.isFalse(pcall(StartupAssetCache.walkerPath, badIndex), "pair path " .. tostring(badIndex) .. " is rejected")
+  end
+  local manifest = startupPairManifest(5, "heartgold")
+  local badPivot = startupPairManifest(5, "heartgold")
+  badPivot.hero.visual.pivot = { x = 0, y = 0 }
+  local pivotFs = {
+    loadLua = function()
+      return badPivot
+    end,
+    exists = function()
+      return true
+    end,
+  }
+  local rejected, rejectErr = StartupAssetCache.loadWalker(pivotFs, 5)
+  Assert.isNil(rejected, "a manifest without the source bottom-center pivot is rejected")
+  Assert.notNil(rejectErr, "the pivot defect reports its cause")
+end
+
+-- Staging one pair never touches its siblings: the writer owns only its
+-- manifest and pair directory, and no staged file escapes its pair root.
+function T.startup_pair_writer_preserves_sibling_pairs()
+  local StartupCacheWriter = require("romdump.src.digest.startup.StartupCacheWriter")
+  local function stagePairWrites(pairIndex)
+    local writes, roots = {}, {}
+    local stage = {
+      write = function(_, path, bytes)
+        writes[#writes + 1] = { path = path, bytes = bytes }
+      end,
+      writeLua = function(_, path, record)
+        writes[#writes + 1] = { path = path, record = record }
+      end,
+      loadLua = function(_, path)
+        for _, write in ipairs(writes) do
+          if write.path == path then
+            return write.record
+          end
+        end
+      end,
+      exists = function(_, path, kind)
+        for _, write in ipairs(writes) do
+          if write.path == path then
+            return true
+          end
+        end
+        return false
+      end,
+    }
+    local artifact = {
+      stageFs = function()
+        return stage
+      end,
+      addOwnedRoot = function(_, path)
+        roots[#roots + 1] = path
+      end,
+    }
+    local pixels = string.char(200, 180, 120, 255) .. string.char(0, 0, 0, 0)
+    local bundle = {
+      manifest = {
+        schema = "g4-startup-walker-v1",
+        versionId = "heartgold",
+        pairIndex = pairIndex,
+        hero = {
+          atlasPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/hero.png",
+          visual = startupPairVisual(1, 1),
+        },
+        follower = {
+          speciesId = 25,
+          atlasPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/follower.png",
+          visual = startupPairVisual(1, 1),
+        },
+      },
+      atlases = {
+        ["assets/generated/startup/loader/pairs/" .. pairIndex .. "/hero.png"] = {
+          width = 2,
+          height = 1,
+          pixels = pixels,
+        },
+        ["assets/generated/startup/loader/pairs/" .. pairIndex .. "/follower.png"] = {
+          width = 2,
+          height = 1,
+          pixels = pixels,
+        },
+      },
+      dependencies = { versionId = "heartgold" },
+    }
+    Assert.isTrue(pcall(StartupCacheWriter.stageLoader, artifact, bundle, "generation-a", pairIndex))
+    return writes, roots
+  end
+  local writes5, roots5 = stagePairWrites(5)
+  local writes6, roots6 = stagePairWrites(6)
+  for _, write in ipairs(writes5) do
+    Assert.isNil(write.path:find("pairs/6", 1, true), "staging pair 5 never writes sibling pair 6 files")
+  end
+  for _, write in ipairs(writes6) do
+    Assert.isNil(write.path:find("pairs/5", 1, true), "staging pair 6 never writes sibling pair 5 files")
+  end
+  local rootSet5 = {}
+  for _, root in ipairs(roots5) do
+    rootSet5[root] = true
+  end
+  Assert.isTrue(rootSet5["data/generated/startup/loader/pairs/5.lua"], "pair 5 owns its manifest")
+  Assert.isTrue(rootSet5["assets/generated/startup/loader/pairs/5"], "pair 5 owns its directory")
+  Assert.isNil(rootSet5["data/generated/startup/loader/pairs/6.lua"], "pair 5 never owns its sibling manifest")
+  Assert.isNil(rootSet5["assets/generated/startup/loader"], "pair 5 never owns the shared loader root")
+  Assert.isTrue(StartupAssetCache.walkerPath(5) ~= StartupAssetCache.walkerPath(6), "sibling pairs address distinct manifests")
+  Assert.isTrue(
+    ArtifactState.path("startup-loader", "5") ~= ArtifactState.path("startup-loader", "6"),
+    "sibling pairs address distinct receipts"
+  )
+end
+
+-- An atlas without transparent pixels is malformed: the writer fails the
+-- stage instead of publishing an opaque square.
+function T.startup_pair_writer_rejects_opaque_atlases()
+  local StartupCacheWriter = require("romdump.src.digest.startup.StartupCacheWriter")
+  local writes = {}
+  local stage = {
+    write = function(_, path, bytes)
+      writes[#writes + 1] = { path = path, bytes = bytes }
+    end,
+    writeLua = function(_, path, record)
+      writes[#writes + 1] = { path = path, record = record }
+    end,
+    loadLua = function(_, path)
+      for _, write in ipairs(writes) do
+        if write.path == path then
+          return write.record
+        end
+      end
+    end,
+    exists = function(_, path, kind)
+      for _, write in ipairs(writes) do
+        if write.path == path then
+          return true
+        end
+      end
+      return false
+    end,
+  }
+  local artifact = {
+    stageFs = function()
+      return stage
+    end,
+    addOwnedRoot = function() end,
+  }
+  local opaque = string.rep(string.char(200, 180, 120, 255), 2)
+  local bundle = {
+    manifest = {
+      schema = "g4-startup-walker-v1",
+      versionId = "heartgold",
+      pairIndex = 5,
+      hero = {
+        atlasPath = "assets/generated/startup/loader/pairs/5/hero.png",
+        visual = startupPairVisual(1, 1),
+      },
+      follower = {
+        speciesId = 25,
+        atlasPath = "assets/generated/startup/loader/pairs/5/follower.png",
+        visual = startupPairVisual(1, 1),
+      },
+    },
+    atlases = {
+      ["assets/generated/startup/loader/pairs/5/hero.png"] = { width = 2, height = 1, pixels = opaque },
+      ["assets/generated/startup/loader/pairs/5/follower.png"] = { width = 2, height = 1, pixels = opaque },
+    },
+    dependencies = { versionId = "heartgold" },
+  }
+  Assert.isFalse(pcall(StartupCacheWriter.stageLoader, artifact, bundle, "generation-a", 5))
 end
 
 return { tests = T }

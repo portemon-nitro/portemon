@@ -136,7 +136,6 @@ local MILESTONE_FILES = {
   ["new-game-intro"] = "data/generated/new-game-intro.lua",
   ["field-planning"] = "data/generated/field-planning.lua",
   ["field-runtime"] = "data/generated/field-runtime.lua",
-  ["startup-loader"] = "data/generated/startup-loader.lua",
   ["startup-title"] = "data/generated/startup-title.lua",
   ["startup-audio"] = "data/generated/startup-audio.lua",
 }
@@ -149,7 +148,6 @@ local STATUS_MILESTONES = {
   "new-game-intro",
   "field-planning",
   "field-runtime",
-  "startup-loader",
   "startup-title",
   "startup-audio",
 }
@@ -851,6 +849,13 @@ function InteractiveCacheBuild:_payload(kind, key)
   elseif kind == "mon-portrait-page" then
     payload.pageKind = "portraits"
     payload.pageId = tonumber(key)
+  elseif kind == "startup-loader" then
+    local pairIndex = tonumber(key)
+    assert(
+      pairIndex ~= nil and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
+      "walking pair index must be an integer 1..32"
+    )
+    payload.pairIndex = pairIndex
   end
   return payload
 end
@@ -901,7 +906,6 @@ function InteractiveCacheBuild:_noteTerminal(entry)
     "new-game-intro",
     "field-planning",
     "field-runtime",
-    "startup-loader",
     "startup-title",
     "startup-audio",
   }) do
@@ -1309,7 +1313,7 @@ function InteractiveCacheBuild:_requestDirect(kind, key, urgency)
   return entry
 end
 
----@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, startup-title, or startup-audio
+---@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-title, or startup-audio
 ---@param members { kind: string, key: string }[]
 ---@return boolean ready
 ---@return string|nil failure
@@ -1392,7 +1396,6 @@ function InteractiveCacheBuild:_milestoneMembers(name)
       or name == "new-game-intro"
       or name == "field-planning"
       or name == "field-runtime"
-      or name == "startup-loader"
       or name == "startup-title"
       or name == "startup-audio",
     "unknown cache milestone: " .. tostring(name)
@@ -1405,9 +1408,6 @@ function InteractiveCacheBuild:_milestoneMembers(name)
   end
   if name == "field-runtime" then
     return ArtifactJobs.fieldRuntimeJobs()
-  end
-  if name == "startup-loader" then
-    return ArtifactJobs.startupLoaderJobs()
   end
   if name == "startup-title" then
     return ArtifactJobs.startupTitleJobs()
@@ -1822,10 +1822,9 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
       or name == "new-game-intro"
       or name == "field-planning"
       or name == "field-runtime"
-      or name == "startup-loader"
       or name == "startup-title"
       or name == "startup-audio",
-    "milestones accept only bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, startup-title, or startup-audio"
+    "milestones accept only bootstrap, new-game-intro, field-planning, field-runtime, startup-title, or startup-audio"
   )
   ArtifactJobs.priorityFor(urgency)
   local current = self.milestones[name]
@@ -2186,6 +2185,20 @@ function InteractiveCacheBuild:requestMonPortraitPage(pageId, urgency)
     )
   end
   return self:_answer(self:_requestDirect("mon-portrait-page", key, urgency))
+end
+
+---@param pairIndex integer
+---@param urgency string
+---@return boolean
+---@return string|nil
+function InteractiveCacheBuild:requestStartupWalker(pairIndex, urgency)
+  assert(not self.retired, "generation session is retired")
+  assert(
+    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
+    "walking pair index must be an integer 1..32"
+  )
+  ArtifactJobs.priorityFor(urgency)
+  return self:_answer(self:_requestDirect("startup-loader", tostring(pairIndex), urgency))
 end
 
 ---@param kind string
@@ -2805,7 +2818,6 @@ function InteractiveCacheBuild:update()
   self:_publishMilestone("new-game-intro")
   self:_publishMilestone("field-planning")
   self:_publishMilestone("field-runtime")
-  self:_publishMilestone("startup-loader")
   self:_publishMilestone("startup-title")
   self:_publishMilestone("startup-audio")
   self.planningPending = self:_hasRunnablePlanning()
@@ -2946,7 +2958,7 @@ function InteractiveCacheBuild:nextPlanningWakeDelay()
   return completion ~= nil and completion:nextPlanningWakeDelay() or nil
 end
 
----@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, startup-title, or startup-audio
+---@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-title, or startup-audio
 ---@param requested boolean an explicit milestone intent observes this scope
 ---@return string state ready, failed, or pending from retained readiness facts
 ---@return boolean failed the scope settles its requested work with a failure
@@ -3102,7 +3114,7 @@ function InteractiveCacheBuild:status()
   }
 end
 
----@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, startup-title, or startup-audio
+---@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-title, or startup-audio
 ---@return { state: string, ready: integer, total: integer|nil, failure: string|nil } read-only milestone-local progress snapshot
 function InteractiveCacheBuild:milestoneStatus(name)
   -- Read-only milestone-local progress projection. It inspects only the
@@ -3116,10 +3128,9 @@ function InteractiveCacheBuild:milestoneStatus(name)
       or name == "new-game-intro"
       or name == "field-planning"
       or name == "field-runtime"
-      or name == "startup-loader"
       or name == "startup-title"
       or name == "startup-audio",
-    "milestones accept only bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, startup-title, or startup-audio"
+    "milestones accept only bootstrap, new-game-intro, field-planning, field-runtime, startup-title, or startup-audio"
   )
   local members = self.roster[name]
   local rosterFailure = self.rosterFailure[name]
@@ -3158,7 +3169,6 @@ function InteractiveCacheBuild:milestoneStatus(name)
   local final = name == "bootstrap"
     or name == "field-planning"
     or name == "field-runtime"
-    or name == "startup-loader"
     or name == "startup-title"
     or ((name == "new-game-intro" or name == "startup-audio") and self.sourceLoaded)
   if not final then

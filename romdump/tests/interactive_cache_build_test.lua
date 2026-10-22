@@ -2633,7 +2633,7 @@ function T.persisted_startup_milestones_answer_ready_without_worker_work()
   local backend = FakeCache.new()
   local generation = "startup-milestone-restart-generation"
   local cacheFs = CacheFs.forVersion("heartgold", backend)
-  for _, name in ipairs({ "startup-loader", "startup-title" }) do
+  for _, name in ipairs({ "startup-title" }) do
     cacheFs:writeLua("data/generated/" .. name .. ".lua", {
       schema = ArtifactJobs.MILESTONE_SCHEMA,
       generationId = generation,
@@ -2643,7 +2643,7 @@ function T.persisted_startup_milestones_answer_ready_without_worker_work()
   end
   local pool = recordingPool()
   local session, _ = isolatedSession(generation, pool, backend)
-  for _, name in ipairs({ "startup-loader", "startup-title" }) do
+  for _, name in ipairs({ "startup-title" }) do
     local ready, failure = session:requestMilestone(name, "required")
     Assert.isTrue(ready, name .. " returns its current persisted answer")
     Assert.isNil(failure, name .. " has no failure")
@@ -2653,24 +2653,26 @@ function T.persisted_startup_milestones_answer_ready_without_worker_work()
   end
   Assert.equal(#pool.submitted, 0, "trusted startup attestations enroll no worker work")
   Assert.isNil(session.byKey["source-plan:global"], "trusted startup attestations do not request source inventory")
-  for _, name in ipairs({ "startup-loader", "startup-title" }) do
+  for _, name in ipairs({ "startup-title" }) do
     local ready, failure = session:requestMilestone(name, "required")
     Assert.isTrue(ready, name .. " continues to report ready")
     Assert.isNil(failure, name .. " continues to report no failure")
   end
 end
 
--- Visual startup scopes stay pending without scheduling the source
--- inventory; only the optional audio closure registers that dependency.
+-- The title scope and one selected walking pair stay pending without
+-- scheduling the source inventory; only the optional audio closure
+-- registers that dependency.
 function T.unbuilt_startup_milestones_answer_pending_and_audio_requests_source_inventory()
   local backend = FakeCache.new()
   local pool = recordingPool()
   local session, _ = isolatedSession("startup-milestone-pending-generation", pool, backend)
-  for _, name in ipairs({ "startup-loader", "startup-title" }) do
-    local ready, failure = session:requestMilestone(name, "required")
-    Assert.isFalse(ready, name .. " remains pending before its artifacts are ready")
-    Assert.isNil(failure, name .. " has no premature failure")
-  end
+  local titleReady, titleFailure = session:requestMilestone("startup-title", "required")
+  Assert.isFalse(titleReady, "startup-title remains pending before its artifacts are ready")
+  Assert.isNil(titleFailure, "startup-title has no premature failure")
+  local walkerReady, walkerFailure = session:requestStartupWalker(5, "required")
+  Assert.isFalse(walkerReady, "the selected walking pair remains pending before its artifacts are ready")
+  Assert.isNil(walkerFailure, "the selected walking pair has no premature failure")
   Assert.isNil(session.byKey["source-plan:global"], "visual scopes enroll no source inventory")
   local audioReady, audioFailure = session:requestMilestone("startup-audio", "near")
   Assert.isFalse(audioReady, "startup-audio remains pending before adoption")
@@ -2679,7 +2681,6 @@ function T.unbuilt_startup_milestones_answer_pending_and_audio_requests_source_i
     session.byKey["source-plan:global"] ~= nil,
     "the optional audio closure registers its source inventory dependency"
   )
-  Assert.equal(session:milestoneStatus("startup-loader").state, "pending")
   Assert.equal(session:milestoneStatus("startup-title").state, "pending")
   Assert.equal(session:milestoneStatus("startup-audio").state, "pending")
 end
@@ -2757,24 +2758,24 @@ function T.title_visual_scope_certifies_while_optional_audio_bank_fails()
   end
 end
 
--- The loader scope compiles from its bounded actor inputs: it enrolls no
--- source inventory and pulls no field corpus.
+-- One selected walking pair compiles from its bounded actor inputs: it
+-- enrolls no source inventory and pulls no field corpus.
 function T.loader_scope_publishes_without_source_inventory_demand()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
   local session, _ = isolatedSession("loader-bounded-generation", pool, backend)
-  local ready, failure = session:requestMilestone("startup-loader", "required")
-  Assert.isFalse(ready, "the loader scope stays pending while cold")
-  Assert.isNil(failure, "the loader scope reports no failure while pending")
-  Assert.isNil(session.byKey["source-plan:global"], "the bounded loader enrolls no source inventory")
-  pool.states["startup-loader:global"] = "ready"
+  local ready, failure = session:requestStartupWalker(5, "required")
+  Assert.isFalse(ready, "the selected pair stays pending while cold")
+  Assert.isNil(failure, "the selected pair reports no failure while pending")
+  Assert.isNil(session.byKey["source-plan:global"], "the bounded pair enrolls no source inventory")
+  pool.states["startup-loader:5"] = "ready"
   for _ = 1, 10 do
     session:update()
   end
-  local again, againFailure = session:requestMilestone("startup-loader", "required")
-  Assert.isTrue(again, "the bounded loader certifies from its own visual job")
-  Assert.isNil(againFailure, "the bounded loader reports no failure on success")
-  Assert.isNil(session.byKey["actors:global"], "the loader pulls no actor corpus")
+  local again, againFailure = session:requestStartupWalker(5, "required")
+  Assert.isTrue(again, "the bounded pair certifies from its own visual job")
+  Assert.isNil(againFailure, "the bounded pair reports no failure on success")
+  Assert.isNil(session.byKey["actors:global"], "the pair pulls no actor corpus")
 end
 
 -- A milestone file from a previous generation never answers ready: trust

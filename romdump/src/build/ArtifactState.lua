@@ -160,7 +160,13 @@ local function checkKey(kind, key)
     assert(key == "global", "pc artifacts require the global key")
     return
   end
-  if kind == "startup-loader" or kind == "startup-title" then
+  if kind == "startup-loader" then
+    assert(type(key) == "string" and key:match("^[1-9][0-9]*$") ~= nil, "invalid artifact key: " .. key)
+    local index = tonumber(key)
+    assert(index ~= nil and index % 1 == 0 and index >= 1 and index <= 32, "invalid artifact key: " .. key)
+    return
+  end
+  if kind == "startup-title" then
     assert(key == "global", kind .. " artifacts require the global key")
     return
   end
