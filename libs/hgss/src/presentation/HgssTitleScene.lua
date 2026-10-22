@@ -36,6 +36,7 @@ local Matrix4 = require("libs.math.src.Matrix4")
 ---@field renderer FieldRenderer?
 ---@field legend ModelInstance?
 ---@field sparkle ModelInstance?
+---@field proceedRequested boolean latched accepted title input; the prompt holds steady instead of flashing
 ---@field bundle table<string, unknown>
 ---@field sourceEnvironment table<string, unknown>?
 ---@field surfaces table<string, love.Image>?
@@ -328,7 +329,13 @@ end
 local function promptVisible(self)
   local flash = self.bundle.prompt.flash
   local elapsed = self.tick - flash.initialDelayFrames
-  return elapsed >= 0 and (elapsed % flash.cycleFrames) < flash.visibleFrames
+  if elapsed < 0 then
+    return false
+  end
+  if self.proceedRequested then
+    return true
+  end
+  return (elapsed % flash.cycleFrames) < flash.visibleFrames
 end
 
 local function overlayTone(self)
@@ -353,6 +360,7 @@ function HgssTitleScene.new(options)
     height = options.height,
     tick = 0,
     promptFrame = 0,
+    proceedRequested = false,
     cameraPos = nil,
     cameraPointIndex = nil,
     cameraWait = nil,
@@ -397,6 +405,14 @@ function HgssTitleScene.new(options)
     error(failure, 0)
   end
   return self
+end
+
+-- Records the single accepted title input. The latched flag only holds the
+-- start prompt steady for the white-fade handoff; camera, lighting and
+-- model animation keep advancing on the source tick.
+function HgssTitleScene:beginProceed()
+  assert(not self.disposed, "disposed title cannot proceed")
+  self.proceedRequested = true
 end
 
 function HgssTitleScene:updateFixed()

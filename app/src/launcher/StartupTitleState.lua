@@ -2,6 +2,7 @@
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
+local HgssOpeningMovie = require("libs.hgss.src.presentation.HgssOpeningMovie")
 local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 
 ---@class StartupTitleLoading
@@ -26,9 +27,22 @@ local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 ---@field initialImport boolean
 ---@field phase string
 ---@field loading StartupTitleLoading?
+---@field movie table<string, unknown>?
+---@field movieScenes table[]?
+---@field movieCompleted boolean
+---@field openingObserved boolean[]
+---@field openingStarted boolean
+---@field promotedScenes boolean
+---@field promotedBootstrap boolean
+---@field sceneError unknown?
+---@field sceneFailed boolean
 ---@field title HgssTitleScene?
 ---@field stagedMenu table<string, unknown>?
 ---@field skipRequested boolean
+---@field pendingLegendaryCry boolean
+---@field fadeStarted boolean
+---@field titleElapsed integer
+---@field titleReadyPending boolean
 ---@field menuError unknown?
 ---@field titleError unknown?
 ---@field bootstrapError unknown?
@@ -57,6 +71,7 @@ local FRAME_SECONDS = 1 / 30
 local FADE_OUT_FRAMES = 60
 local FADE_IN_FRAMES = 18
 local EDITIONS = { heartgold = "soulsilver", soulsilver = "heartgold" }
+local OPENING_SCENE_COUNT = 5
 
 ---@class StartupTitleState.Options
 ---@field versionId string
@@ -70,6 +85,7 @@ local EDITIONS = { heartgold = "soulsilver", soulsilver = "heartgold" }
 ---@field onTitleReady (fun())?
 ---@field audio table<string, function>? borrowed App-owned callbacks
 ---@field initialImport boolean?
+---@field loading StartupTitleLoading? one transferred C02 presentation; a default is built only on test/special paths
 ---@field width number
 ---@field height number
 
@@ -80,11 +96,33 @@ function StartupTitleState.new(options)
   assert(EDITIONS[options.versionId] ~= nil, "startup title requires a supported edition")
   assert(type(options.epoch) == "number" and options.epoch % 1 == 0, "startup title requires its selected epoch")
   assert(type(options.derivedAssets) == "table", "startup title requires the selected derived host")
+  -- Production collaborators are required: the five-scene opening selector
+  -- is part of the locked movie-first journey, never an optional feature
+  -- with a title-only fallback.
+  assert(
+    type(options.derivedAssets.requestOpeningScene) == "function",
+    "startup title requires the five-scene opening selector"
+  )
   assert(type(options.stageMenu) == "function", "startup title requires menu staging")
   assert(type(options.onFinished) == "function", "startup title requires the menu transfer")
   assert(type(options.onSwitchEdition) == "function", "startup title requires edition routing")
   assert(type(options.isCurrent) == "function", "startup title requires an epoch guard")
   assert(type(options.width) == "number" and type(options.height) == "number")
+  -- The normal App path transfers the single live boot presentation; only
+  -- test and special selection paths that never pass C02 build a default.
+  local loading = options.loading
+  if loading ~= nil then
+    assert(
+      type(loading.update) == "function" and type(loading.draw) == "function" and type(loading.dispose) == "function",
+      "the transferred boot presentation is unusable"
+    )
+  else
+    loading = HgssLoadingPresentation.new({
+      versionId = options.versionId,
+      width = options.width,
+      height = options.height,
+    }) --[[@as StartupTitleLoading]]
+  end
   local self = setmetatable({
     versionId = options.versionId,
     epoch = options.epoch,
@@ -98,14 +136,23 @@ function StartupTitleState.new(options)
     audio = options.audio,
     initialImport = options.initialImport == true,
     phase = "loading",
-    loading = HgssLoadingPresentation.new({
-      versionId = options.versionId,
-      width = options.width,
-      height = options.height,
-    }),
+    loading = loading,
+    movie = nil,
+    movieScenes = nil,
+    movieCompleted = false,
+    openingObserved = { false, false, false, false, false },
+    openingStarted = false,
+    promotedScenes = false,
+    promotedBootstrap = false,
+    sceneError = nil,
+    sceneFailed = false,
     title = nil,
     stagedMenu = nil,
     skipRequested = false,
+    pendingLegendaryCry = false,
+    fadeStarted = false,
+    titleElapsed = 0,
+    titleReadyPending = false,
     menuError = nil,
     titleError = nil,
     bootstrapError = nil,
@@ -146,29 +193,70 @@ function StartupTitleState:_request(name, urgency)
   return ready == true, nil
 end
 
+function StartupTitleState:_requestOpeningScene(sceneNumber, urgency)
+  local ok, ready, failure = pcall(self.derivedAssets.requestOpeningScene, sceneNumber, urgency)
+  if not ok then
+    return false, ready
+  end
+  if failure ~= nil then
+    return false, failure
+  end
+  return ready == true, nil
+end
+
 function StartupTitleState:_startRequests()
   if self.requested then
     return
   end
   self.requested = true
-  -- Request order preserves title priority ahead of broad menu/gameplay work.
-  -- Optional audio is an independent near demand: it never gates the visuals.
-  for _, name in ipairs({ "startup-loader", "startup-title", "bootstrap" }) do
+  -- The five numbered opening scenes are demanded first: scene 1 starts
+  -- required while scenes 2..5 start near and are promoted to required
+  -- before playback. Optional audio is an independent near demand: it
+  -- never gates the visuals.
+  do
+    local ready, failure = self:_requestOpeningScene(1, "required")
+    if failure ~= nil then
+      self.sceneError = failure
+      self.sceneFailed = true
+      self.phase = "error"
+    else
+      self.openingObserved[1] = ready
+    end
+    for sceneNumber = 2, OPENING_SCENE_COUNT do
+      local sceneReady, sceneFailure = self:_requestOpeningScene(sceneNumber, "near")
+      if sceneFailure ~= nil then
+        self.sceneError = sceneFailure
+        self.sceneFailed = true
+        self.phase = "error"
+      else
+        self.openingObserved[sceneNumber] = sceneReady
+      end
+    end
+  end
+  -- Request order preserves title priority ahead of broad menu/gameplay
+  -- work. Bootstrap stays near until the title pipeline shows progress.
+  for _, name in ipairs({ "startup-loader", "startup-title" }) do
     local ready, failure = self:_request(name)
     if name == "startup-loader" and ready then
       self:_adoptLoader()
     elseif name == "startup-title" and ready then
-      self:_adoptTitle()
-    elseif name == "bootstrap" and ready then
-      self.bootstrapObserved = true
+      if not self.movieCompleted then
+        self.titleReadyPending = true
+      else
+        self:_adoptTitle()
+      end
     elseif failure ~= nil then
       if name == "startup-title" then
         self.titleError = failure
         self.phase = "error"
-      elseif name == "bootstrap" then
-        self.bootstrapError = failure
       end
     end
+  end
+  local bootstrapReady, bootstrapFailure = self:_request("bootstrap", "near")
+  if bootstrapReady then
+    self.bootstrapObserved = true
+  elseif bootstrapFailure ~= nil then
+    self.bootstrapError = bootstrapFailure
   end
   local audioReady, audioFailure = self:_request("startup-audio", "near")
   if audioReady then
@@ -198,6 +286,115 @@ function StartupTitleState:_adoptLoader()
   end
 end
 
+-- Polls the five numbered scene demands, promotes scenes 2..5 to required
+-- once scene 1 is ready, and constructs the movie only after all five
+-- validated packages are current. A terminal worker failure becomes a
+-- visible recoverable error; pending scenes simply keep the loader.
+function StartupTitleState:_pollOpeningScenes()
+  if self.sceneFailed or self.movie ~= nil or self.movieCompleted then
+    return
+  end
+  local allReady = true
+  for sceneNumber = 1, OPENING_SCENE_COUNT do
+    local urgency = "required"
+    if sceneNumber > 1 and not self.promotedScenes then
+      urgency = "near"
+    end
+    local ready, failure = self:_requestOpeningScene(sceneNumber, urgency)
+    if failure ~= nil then
+      self.sceneError = failure
+      self.sceneFailed = true
+      self.phase = "error"
+      return
+    end
+    self.openingObserved[sceneNumber] = ready
+    if not ready then
+      allReady = false
+    end
+  end
+  if self.openingObserved[1] then
+    self.promotedScenes = true
+  end
+  if allReady and self.phase == "loading" then
+    self:_adoptMovie()
+  end
+end
+
+-- Constructs the movie transactionally from five strictly validated scene
+-- packages. The loader is retained until the movie's first frame is proven
+-- drawable; a failed acquisition stays a visible error, never a fake title.
+function StartupTitleState:_adoptMovie()
+  if self.movie ~= nil or not self:_live() then
+    return
+  end
+  for sceneNumber = 1, OPENING_SCENE_COUNT do
+    if not self.openingObserved[sceneNumber] then
+      return
+    end
+  end
+  local okFs, cacheFs = pcall(CacheFs.forVersion, self.versionId)
+  if not okFs then
+    self.sceneError = cacheFs
+    self.phase = "error"
+    return
+  end
+  local scenes, failure = HgssOpeningMovie.loadValidatedScenes(cacheFs, self.versionId)
+  if scenes == nil then
+    self.sceneError = failure
+    self.phase = "error"
+    return
+  end
+  local ok, movie = pcall(HgssOpeningMovie.new, {
+    versionId = self.versionId,
+    scenes = scenes,
+    cacheFs = cacheFs,
+    width = self.width,
+    height = self.height,
+  })
+  if not ok then
+    self.sceneError = movie
+    self.phase = "error"
+    return
+  end
+  self.movie = assert(movie)
+  self.movieScenes = scenes
+  self.phase = "movie"
+  self:_maybeStartAudio()
+  -- A zero-length movie completes synchronously instead of waiting a tick.
+  if movie:isFinished() then
+    self:_finishMovie()
+  end
+end
+
+-- Retires the finished or skipped movie exactly once. An independently
+-- ready title follows; otherwise the retained loader stays visible rather
+-- than a black interstitial.
+function StartupTitleState:_finishMovie()
+  local movie = self.movie
+  if movie == nil then
+    return
+  end
+  self.movie = nil
+  self.movieCompleted = true
+  movie:dispose()
+  if self.titleReadyPending then
+    self.titleReadyPending = false
+    self:_adoptTitle()
+    return
+  end
+  local ready, failure = self:_request("startup-title")
+  if failure ~= nil then
+    self.titleError = failure
+    self.phase = "error"
+    return
+  end
+  if ready then
+    self:_adoptTitle()
+  else
+    self.phase = "loading"
+  end
+end
+
 function StartupTitleState:_adoptTitle()
   if self.titleObserved or not self:_live() then
     return
@@ -217,7 +414,9 @@ function StartupTitleState:_adoptTitle()
     return
   end
   self.title = assert(result)
+  self.titleElapsed = 0
   self.phase = "title"
+  self:_notifyTitleReady()
   self:_maybeStartAudio()
 end
 
@@ -231,17 +430,41 @@ function StartupTitleState:_notifyTitleReady()
   end
 end
 
--- Starts the optional title theme exactly once, and only while the title
--- is still visible and unskipped. Audio that arrives after the skip or
--- during the fade stays silent; the menu stages cues lazily instead.
+-- Phase-aware audio dispatch. The opening track starts once when the movie
+-- becomes active; the title track starts once on unskipped title entry; a
+-- pending legendary cry is delivered exactly once while a latched skip is
+-- still waiting for the menu fade. A phase that already ended never starts
+-- its track belatedly.
 function StartupTitleState:_maybeStartAudio()
-  if self.audioStarted or not self.audioReady or not self:_live() then
+  if not self.audioReady or not self:_live() or self.audio == nil then
     return
   end
-  if self.phase ~= "title" or self.skipRequested or self.title == nil then
+  if self.phase == "movie" and self.movie ~= nil then
+    if not self.openingStarted and type(self.audio.openingReady) == "function" then
+      self.openingStarted = true
+      self.audio.openingReady()
+    end
     return
   end
-  if self.audio == nil or type(self.audio.titleReady) ~= "function" then
+  if self.phase ~= "title" or self.title == nil then
+    return
+  end
+  if self.pendingLegendaryCry and not self.fadeStarted then
+    -- Consume the pending cry only against a currently ready milestone;
+    -- while audio is still absent the memory survives until the fade.
+    local readyNow = self:_request("startup-audio", "near")
+    if readyNow then
+      if type(self.audio.prompt) == "function" then
+        self.audio.prompt({ crySpeciesId = self.title.bundle.crySpeciesId })
+      end
+      self.pendingLegendaryCry = false
+    end
+    return
+  end
+  if self.skipRequested or self.audioStarted then
+    return
+  end
+  if type(self.audio.titleReady) ~= "function" then
     return
   end
   self.audioStarted = true
@@ -267,6 +490,10 @@ function StartupTitleState:_pollAssets()
   if not self.requested or not self:_live() then
     return
   end
+  self:_pollOpeningScenes()
+  if self.phase == "error" then
+    return
+  end
   if not self.loaderObserved then
     local ready, failure = self:_request("startup-loader")
     if failure ~= nil then
@@ -283,11 +510,24 @@ function StartupTitleState:_pollAssets()
       self.phase = "error"
       self.titleObserved = true
     elseif ready then
-      self:_adoptTitle()
+      if not self.movieCompleted then
+        self.titleReadyPending = true
+      else
+        self:_adoptTitle()
+      end
     end
   end
   if not self.bootstrapObserved then
-    local ready, failure = self:_request("bootstrap")
+    -- Bootstrap rides near until the cinematic pipeline shows progress,
+    -- then it is promoted so the menu stages promptly behind the title.
+    local urgency = "near"
+    if (self.phase == "movie" or self.phase == "title") and not self.promotedBootstrap then
+      self.promotedBootstrap = true
+    end
+    if self.promotedBootstrap then
+      urgency = "required"
+    end
+    local ready, failure = self:_request("bootstrap", urgency)
     if failure ~= nil then
       self.bootstrapError = failure
     elseif ready then
@@ -315,10 +555,71 @@ function StartupTitleState:_beginFade()
   if self.phase == "title" and self.skipRequested and self.stagedMenu ~= nil then
     self.phase = "fadeOut"
     self.fadeFrame = 0
+    -- The actual staged-menu fade starts the music fade and makes a
+    -- previously unplayed cry permanently ineligible.
+    self.fadeStarted = true
+    self.pendingLegendaryCry = false
     if self.audio and type(self.audio.skip) == "function" then
       self.audio.skip()
     end
   end
+end
+
+-- Retail title idle timeout, measured in fixed title ticks from the title
+-- entry behind the enabled prompt. Re-enters the opening movie loop without
+-- selecting a new epoch, dropping the staged menu, or rescanning the
+-- source. Disabled after skip intent and during the white fade.
+---@return number fixed ticks before the idle title loops back to the movie
+function StartupTitleState:_titleTimeoutFrames()
+  local title = self.title
+  local start = title ~= nil and title.bundle ~= nil and title.bundle.timeline ~= nil and title.bundle.timeline.start
+    or nil
+  local frames = start ~= nil and start.activeDurationFrames or nil
+  if type(frames) == "number" and frames > 0 then
+    return frames
+  end
+  return math.huge
+end
+
+-- Re-enters the movie loop on title idle timeout. The title GPU graph is
+-- released before the movie scenes are re-acquired; the epoch, the staged
+-- menu, and bootstrap readiness survive the loop.
+function StartupTitleState:_reenterMovie()
+  if not self:_live() or self.phase ~= "title" or self.skipRequested then
+    return
+  end
+  if self.movieScenes == nil then
+    return
+  end
+  local title = self.title
+  self.title = nil
+  self.titleObserved = false
+  self.titleReadyPending = true
+  self.movieCompleted = false
+  self.titleElapsed = 0
+  if title ~= nil then
+    title:dispose()
+  end
+  local okFs, cacheFs = pcall(CacheFs.forVersion, self.versionId)
+  if not okFs then
+    self.sceneError = cacheFs
+    self.phase = "error"
+    return
+  end
+  local ok, movie = pcall(HgssOpeningMovie.new, {
+    versionId = self.versionId,
+    scenes = self.movieScenes,
+    cacheFs = cacheFs,
+    width = self.width,
+    height = self.height,
+  })
+  if not ok then
+    self.sceneError = movie
+    self.phase = "error"
+    return
+  end
+  self.movie = movie
+  self.phase = "movie"
 end
 
 -- Ownership order only: detach before callback, never restore once the
@@ -336,10 +637,36 @@ function StartupTitleState:_finish()
 end
 
 function StartupTitleState:_tick()
-  if self.title ~= nil then
+  if self.phase == "movie" then
+    local movie = self.movie
+    if movie == nil then
+      self.phase = "loading"
+      return
+    end
+    local ok, failure = pcall(movie.updateFixed, movie)
+    if not ok then
+      self.sceneError = failure
+      self.phase = "error"
+      self.movie = nil
+      pcall(movie.dispose, movie)
+      return
+    end
+    if movie:isFinished() then
+      self:_finishMovie()
+    end
+    return
+  end
+  if self.title ~= nil and (self.phase == "title" or self.phase == "fadeOut" or self.phase == "fadeIn") then
     self.title:updateFixed()
   end
   if self.phase == "title" then
+    if not self.skipRequested then
+      self.titleElapsed = self.titleElapsed + 1
+      if self.titleElapsed >= self:_titleTimeoutFrames() then
+        self:_reenterMovie()
+        return
+      end
+    end
     self:_beginFade()
   elseif self.phase == "fadeOut" then
     self.fadeFrame = self.fadeFrame + 1
@@ -370,10 +697,20 @@ function StartupTitleState:update(dt)
   while self.accumulator >= FRAME_SECONDS and not self.disposed do
     self.accumulator = self.accumulator - FRAME_SECONDS
     self:_tick()
+    if self.phase == "error" or self.phase == "transferred" then
+      self.accumulator = 0
+    end
   end
 end
 
 function StartupTitleState:_status()
+  if self.sceneError ~= nil and (self.phase == "error" or self.movie == nil) then
+    return {
+      label = "Movie unavailable",
+      error = tostring(self.sceneError),
+      detail = "Press Esc to return",
+    }
+  end
   if self.titleError ~= nil or self.phase == "error" then
     local detail = self.titleError or self.menuError or self.bootstrapError
     return {
@@ -397,7 +734,22 @@ function StartupTitleState:draw()
   if self.disposed then
     return
   end
-  if self.title ~= nil and self.phase ~= "loading" and self.phase ~= "error" then
+  if self.phase == "movie" and self.movie ~= nil then
+    local graphics = love.graphics
+    graphics.push("all")
+    local ok, failure = pcall(self.movie.draw, self.movie)
+    graphics.pop()
+    if not ok then
+      self.sceneError = tostring(failure)
+      self.phase = "error"
+      local movie = self.movie
+      self.movie = nil
+      if movie ~= nil then
+        pcall(movie.dispose, movie)
+      end
+      self.loading:draw(self:_status())
+    end
+  elseif self.title ~= nil and self.phase ~= "loading" and self.phase ~= "error" then
     local graphics = love.graphics
     graphics.push("all")
     local ok, failure = pcall(self.title.draw, self.title, {
@@ -431,6 +783,9 @@ function StartupTitleState:resize(width, height)
   assert(width > 0 and height > 0, "startup title dimensions must be positive")
   self.width, self.height = width, height
   self.loading:resize(width, height)
+  if self.movie ~= nil then
+    self.movie:resize(width, height)
+  end
   if self.title ~= nil then
     self.title:resize(width, height)
   end
@@ -462,6 +817,15 @@ function StartupTitleState:_pressPointer(pointerId, x, y)
   if not self:_live() then
     return
   end
+  -- The movie owns its own input: a press that skips the movie is captured
+  -- and swallowed here so it can never become the newly presented title's
+  -- skip. The edition corner is a title control, not a movie control.
+  if self.phase == "movie" and self.movie ~= nil then
+    self.pointerCapture = pointerId
+    self.canceledPointers[pointerId] = true
+    self:_requestMovieSkip()
+    return
+  end
   if (self.phase == "title" or self.phase == "error") and self.title ~= nil then
     if contains(self:_switchBounds(), x, y) then
       self.pointerCapture = pointerId
@@ -477,14 +841,30 @@ function StartupTitleState:_pressPointer(pointerId, x, y)
   end
 end
 
+function StartupTitleState:_requestMovieSkip()
+  if self.phase ~= "movie" or self.movie == nil then
+    return
+  end
+  if self.movie:requestSkip() then
+    self:_finishMovie()
+  end
+end
+
 function StartupTitleState:_requestSkip()
   if self.phase ~= "title" or self.title == nil then
     return
   end
   if not self.skipRequested then
     self.skipRequested = true
-    if self.audio and type(self.audio.prompt) == "function" then
-      self.audio.prompt()
+    -- The accepted press remembers one legendary cry regardless of whether
+    -- optional audio is ready: delivery happens now when the milestone is
+    -- currently ready, otherwise once the session arrives before the fade.
+    self.pendingLegendaryCry = true
+    self.title:beginProceed()
+    local readyNow = self:_request("startup-audio", "near")
+    if readyNow and not self.fadeStarted and self.audio and type(self.audio.prompt) == "function" then
+      self.audio.prompt({ crySpeciesId = self.title.bundle.crySpeciesId })
+      self.pendingLegendaryCry = false
     end
   end
   self:_beginFade()
@@ -496,7 +876,7 @@ function StartupTitleState:_retryMenu()
   end
   if self.bootstrapError ~= nil and not self.bootstrapObserved then
     self.bootstrapError = nil
-    local ready, failure = self:_request("bootstrap")
+    local ready, failure = self:_request("bootstrap", "near")
     if failure ~= nil then
       self.bootstrapError = failure
       return
@@ -537,6 +917,17 @@ function StartupTitleState:_releasePointer(pointerId)
   end
 end
 
+-- One discrete press intent for the visible stage: the movie owns its skip
+-- while it plays, the title owns its skip once it presents. Neither input
+-- leaks into the next stage.
+function StartupTitleState:_pressAction()
+  if self.phase == "movie" then
+    self:_requestMovieSkip()
+  else
+    self:_requestSkip()
+  end
+end
+
 function StartupTitleState:keypressed(key, _, isrepeat)
   if isrepeat then
     return
@@ -550,15 +941,15 @@ function StartupTitleState:keypressed(key, _, isrepeat)
     if self.menuError ~= nil or self.bootstrapError ~= nil then
       self:_retryMenu()
     else
-      self:_requestSkip()
+      self:_pressAction()
     end
   elseif not MODIFIER_KEYS[key] then
-    self:_requestSkip()
+    self:_pressAction()
   end
 end
 
 function StartupTitleState:gamepadpressed(_, _)
-  self:_requestSkip()
+  self:_pressAction()
 end
 
 function StartupTitleState:mousepressed(x, y, button)
@@ -602,8 +993,8 @@ function StartupTitleState:dispose()
     return
   end
   self.disposed = true
-  local menu, title, loading = self.stagedMenu, self.title, self.loading
-  self.stagedMenu, self.title, self.loading = nil, nil, nil
+  local menu, title, movie, loading = self.stagedMenu, self.title, self.movie, self.loading
+  self.stagedMenu, self.title, self.movie, self.loading = nil, nil, nil, nil
   self.derivedAssets = nil
   self.audio = nil
   if menu ~= nil then
@@ -611,6 +1002,9 @@ function StartupTitleState:dispose()
   end
   if title ~= nil then
     title:dispose()
+  end
+  if movie ~= nil then
+    movie:dispose()
   end
   if loading ~= nil then
     loading:dispose()

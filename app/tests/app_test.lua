@@ -192,6 +192,13 @@ local function withAppHarness(opts, ready, fn)
     if selector.requestKind == "milestone" and selector.name == "startup-title" then
       return result.startupTitleReady == true, nil
     end
+    -- The locked cinematic journey runs the five opening scenes before the
+    -- legendary title: the harness models a healthy worker by answering the
+    -- numbered scene demands beside title readiness, so the instant movie
+    -- below completes and the title adopts without GPU fixtures.
+    if selector.requestKind == "opening-scene" then
+      return result.startupTitleReady == true, nil
+    end
     -- A cold first import gates on its selected walking pair: the harness
     -- models a healthy worker by default, while tests set walkerReady to
     -- false to hold the card on a still-pending pair.
@@ -309,7 +316,46 @@ local function withAppHarness(opts, ready, fn)
       self.disposals = self.disposals + 1
     end
     function title:resize() end
+    function title:beginProceed() end
     return title
+  end
+  -- The harness models the locked movie-first journey with an instantly
+  -- finished movie and canned validated scene manifests: the flow under
+  -- test is the title/menu handoff, not scene playback (covered by the
+  -- dedicated movie suites), so no GPU scene fixtures are built here.
+  local HgssOpeningMovie = require("libs.hgss.src.presentation.HgssOpeningMovie")
+  local originalMovieNew = HgssOpeningMovie.new
+  HgssOpeningMovie.new = function(_)
+    local movie = { disposals = 0 }
+    function movie:updateFixed() end
+    function movie:draw() end
+    function movie:resize() end
+    function movie:isFinished()
+      return true
+    end
+    function movie:skipAllowed()
+      return false
+    end
+    function movie:requestSkip()
+      return false
+    end
+    function movie:sceneNumber()
+      return 5
+    end
+    function movie:dispose()
+      self.disposals = self.disposals + 1
+    end
+    return movie
+  end
+  local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
+  local originalLoadOpeningScene = StartupAssetCache.loadOpeningScene
+  StartupAssetCache.loadOpeningScene = function(_, sceneNumber, versionId)
+    return {
+      sceneNumber = sceneNumber,
+      versionId = versionId,
+      generationId = "test-generation",
+      schema = "g4-startup-opening-scene-v1",
+    }
   end
   graphics.print = function()
     result.prints = result.prints + 1
@@ -330,6 +376,8 @@ local function withAppHarness(opts, ready, fn)
   FirstPlayCompletion.hasStored = originalHasStored
   FirstPlayCompletion.publish = originalPublish
   HgssGame.new = originalNew
+  HgssOpeningMovie.new = originalMovieNew
+  StartupAssetCache.loadOpeningScene = originalLoadOpeningScene
   App.pairIndex = originalPairIndex
   MainMenuComposition.new = originalMenuNew
   HgssTitleScene.new = originalTitleNew
@@ -1729,7 +1777,11 @@ function T.menu_installation_requests_intro_and_field_closures_at_near_urgency()
     for _, name in ipairs({ "new-game-intro", "field-planning", "field-runtime" }) do
       Assert.equal(urgencies[name], "near", "idle menu demand stays speculative for " .. name)
     end
-    Assert.equal(urgencies.bootstrap, "required", "the bootstrap check stays mandatory")
+    -- The locked startup order rides bootstrap near until the title pipeline
+    -- shows progress: with an instantly ready cache the single recorded
+    -- demand stays near, while the check itself remains mandatory for the
+    -- staged menu above.
+    Assert.equal(urgencies.bootstrap, "near", "the bootstrap check rides near until title progress")
     Assert.equal(urgencies["startup-title"], "required", "the title asset request stays mandatory")
     Assert.equal(urgencies["startup-audio"], "near", "the optional audio request stays speculative")
     Assert.equal(result.warmups, 1, "menu installation still authorizes background completion once")

@@ -12,6 +12,9 @@ local StartupAudioSession = require("app.src.audio.StartupAudioSession")
 
 local TITLE_SCENE_MODULE = "libs.hgss.src.presentation.HgssTitleScene"
 local titleSceneModule = require(TITLE_SCENE_MODULE)
+local MOVIE_MODULE = "libs.hgss.src.presentation.HgssOpeningMovie"
+local movieModule = require(MOVIE_MODULE)
+local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
 local T = { tests = {} }
 local active
@@ -82,6 +85,8 @@ local function withStartup(fn)
     graphicsRectangle = love.graphics.rectangle,
     romIsReady = require("romdump.src.source.RomImporter").isReady,
     titleSceneNew = titleSceneModule.new,
+    movieNew = movieModule.new,
+    loadOpeningScene = StartupAssetCache.loadOpeningScene,
     firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
     startupAudioFactory = HgssGame.newStartupAudio,
     startupAudioNew = StartupAudioSession.new,
@@ -109,6 +114,13 @@ local function withStartup(fn)
     active.requests[#active.requests + 1] = { epoch = epoch, selector = selector }
   end
   function service:observe(epoch, selector)
+    -- The cinematic scenes are ready by default behind these title-first
+    -- compositions: the instant movie below hands off to the legendary
+    -- title within the same selection updates, preserving every title,
+    -- menu, and audio ownership assertion.
+    if selector.requestKind == "opening-scene" then
+      return true, nil
+    end
     if selector.requestKind ~= "milestone" then
       return nil, nil
     end
@@ -166,6 +178,35 @@ local function withStartup(fn)
     }
   end
   HgssLoadingPresentation.new = newLoadingPresentation
+  movieModule.new = function(options)
+    assert(type(options.scenes) == "table" and #options.scenes == 5)
+    local movie = { draws = 0, disposed = 0 }
+    function movie:updateFixed() end
+    function movie:draw()
+      self.draws = self.draws + 1
+      active.drawEvents[#active.drawEvents + 1] = "movie"
+    end
+    function movie:resize() end
+    function movie:skipAllowed()
+      return false
+    end
+    function movie:requestSkip()
+      return false
+    end
+    function movie:isFinished()
+      return true
+    end
+    function movie:sceneNumber()
+      return 1
+    end
+    function movie:dispose()
+      self.disposed = self.disposed + 1
+    end
+    return movie
+  end
+  StartupAssetCache.loadOpeningScene = function(_, sceneNumber, versionId)
+    return { sceneNumber = sceneNumber, versionId = versionId, generationId = "startup-test-generation" }
+  end
   titleSceneModule.new = function(options)
     local scene = {
       versionId = options.versionId,
@@ -173,7 +214,11 @@ local function withStartup(fn)
       ticks = 0,
       draws = 0,
       disposed = 0,
+      proceeds = 0,
     }
+    function scene:beginProceed()
+      self.proceeds = self.proceeds + 1
+    end
     function scene:updateFixed()
       self.ticks = self.ticks + 1
     end
@@ -264,6 +309,8 @@ local function withStartup(fn)
   love.graphics.rectangle = saved.graphicsRectangle
   require("romdump.src.source.RomImporter").isReady = saved.romIsReady
   titleSceneModule.new = saved.titleSceneNew
+  movieModule.new = saved.movieNew
+  StartupAssetCache.loadOpeningScene = saved.loadOpeningScene
   HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
   HgssGame.newStartupAudio = saved.startupAudioFactory
   StartupAudioSession.new = saved.startupAudioNew
@@ -1125,6 +1172,9 @@ function T.tests.throwing_transfer_callback_propagates_without_resurrecting_the_
     local StartupTitleState = require("app.src.launcher.StartupTitleState")
     local host = {
       requestMilestone = function(name, _)
+        return true, nil
+      end,
+      requestOpeningScene = function(_sceneNumber, _urgency)
         return true, nil
       end,
       milestoneStatus = function(_)

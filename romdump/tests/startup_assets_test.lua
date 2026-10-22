@@ -104,8 +104,10 @@ function T.title_visual_scopes_ignore_adopted_audio_membership()
         sequences = {
           [41] = { bankId = 7 },
           [42] = { bankId = 8 },
+          [43] = { bankId = 7 },
         },
         sequenceBySymbol = {
+          SEQ_GS_TITLE = 43,
           SEQ_GS_POKEMON_THEME = 41,
           SEQ_SE_DP_SELECT = 42,
         },
@@ -441,15 +443,15 @@ function T.startup_visual_dependencies_are_empty_and_final()
   Assert.deepEqual(ArtifactJobs.startupTitleJobs(), { { kind = "startup-title", key = "global" } })
 end
 
--- The optional audio closure resolves exactly the title theme, menu effect,
--- and legendary cry banks from the adopted index, independent of either
--- visual milestone.
+-- The optional audio closure resolves exactly the opening theme, title theme,
+-- menu effect, and legendary cry banks from the adopted index, independent
+-- of either visual milestone.
 function T.startup_audio_closure_resolves_only_its_required_banks()
   local plan = {
     index = {
       version = "heartgold",
-      sequences = { [41] = { bankId = 7 }, [42] = { bankId = 8 } },
-      sequenceBySymbol = { SEQ_GS_POKEMON_THEME = 41, SEQ_SE_DP_SELECT = 42 },
+      sequences = { [41] = { bankId = 7 }, [42] = { bankId = 8 }, [43] = { bankId = 9 } },
+      sequenceBySymbol = { SEQ_GS_TITLE = 43, SEQ_GS_POKEMON_THEME = 41, SEQ_SE_DP_SELECT = 42 },
     },
   }
   local ok, jobs, complete = pcall(ArtifactJobs.startupAudioJobs, plan)
@@ -465,6 +467,7 @@ function T.startup_audio_closure_resolves_only_its_required_banks()
       "audio-catalog:global",
       "audio-bank:7",
       "audio-bank:8",
+      "audio-bank:9",
       "audio-bank:250",
     }) do
       Assert.isTrue(set[member] == true, "the optional roster carries " .. member)
@@ -492,7 +495,7 @@ function T.startup_audio_closure_dedupes_shared_banks_and_names_missing_symbols(
     index = {
       version = "soulsilver",
       sequences = { [41] = { bankId = 7 } },
-      sequenceBySymbol = { SEQ_GS_POKEMON_THEME = 41, SEQ_SE_DP_SELECT = 41 },
+      sequenceBySymbol = { SEQ_GS_TITLE = 41, SEQ_GS_POKEMON_THEME = 41, SEQ_SE_DP_SELECT = 41 },
     },
   }
   local ok, jobs, complete = pcall(ArtifactJobs.startupAudioJobs, shared)
@@ -512,7 +515,13 @@ function T.startup_audio_closure_dedupes_shared_banks_and_names_missing_symbols(
     end
     Assert.isTrue(set["7"] == true, "the shared bank is present")
     Assert.isTrue(set["249"] == true, "the soulsilver cry bank is present")
-    local missing = { index = { version = "heartgold", sequences = {}, sequenceBySymbol = {} } }
+    local missing = {
+      index = {
+        version = "heartgold",
+        sequences = { [43] = { bankId = 9 } },
+        sequenceBySymbol = { SEQ_GS_TITLE = 43 },
+      },
+    }
     local missingOk, missingErr = pcall(ArtifactJobs.startupAudioJobs, missing)
     Assert.isFalse(missingOk, "a missing theme symbol fails the optional roster")
     Assert.isTrue(

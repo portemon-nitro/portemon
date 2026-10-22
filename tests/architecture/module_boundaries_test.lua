@@ -287,7 +287,13 @@ local TARGET_PACKAGE_PREFIXES = {
 
 local GOVERNED_TARGET_PREFIXES = { "libs.", "app.", "game.", "romdump." }
 
-local APP_HGSS_IMPORTS = { ["game.hgss.src.HgssGame"] = true }
+-- The app startup audio owner composes the concrete game audio mixer directly:
+-- the forwarding HgssGame audio factory was deleted by design, so this audio
+-- seam is the sanctioned composition point, not a layering exception.
+local APP_HGSS_IMPORTS = {
+  ["game.hgss.src.HgssGame"] = true,
+  ["game.hgss.src.audio.GameAudio"] = true,
+}
 local APP_ROMDUMP_IMPORTS = {
   ["romdump.src.source.GameVersion"] = true,
   ["romdump.src.source.RomImporter"] = true,
@@ -480,6 +486,7 @@ end
 function T.app_cross_package_imports_match_exact_semantic_seams()
   local fixtures = {
     { module = "game.hgss.src.HgssGame", allowed = true },
+    { module = "game.hgss.src.audio.GameAudio", allowed = true },
     { module = "libs.hgss.src.save.GameSaveStore", allowed = true },
     { module = "libs.ui.src.LayoutGeometry", allowed = true },
     { module = "libs.storage.src.SaveFs", allowed = true },
