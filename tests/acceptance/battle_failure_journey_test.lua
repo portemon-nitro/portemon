@@ -2,9 +2,9 @@
 -- swap, a repeated completion reuses its receipt instead of republishing,
 -- refused presentation readiness publishes nothing, invalid replies return
 -- typed errors without consuming the battle, a scenario-free lifecycle
--- ends without a result, and a full party refuses the capture batch
--- before any publication instead of storing the mon anywhere. Failing
--- operations leave revisions, quantities, order, and files unchanged.
+-- ends without a result, and a full party spills the capture into box
+-- storage instead of refusing it. Failing operations leave revisions,
+-- quantities, order, and files unchanged.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -360,8 +360,8 @@ function T.tests.invalid_replies_return_typed_errors_and_the_battle_still_comple
   Assert.isNil(love.filesystem.getInfo(namespace), "teardown removes the isolated save namespace")
 end
 
-function T.tests.full_party_capture_fails_before_any_publication()
-  local Committer = requirePresent(COMMITTER_MODULE, "cross-owner result publication without hidden storage")
+function T.tests.full_party_capture_spills_to_box()
+  local Committer = requirePresent(COMMITTER_MODULE, "cross-owner result publication with box storage")
   local party = newPartyOwner()
   local species = { "CHIKORITA", "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE", "EEVEE" }
   local catalog = CatalogFixture.makeCatalog()
@@ -371,18 +371,37 @@ function T.tests.full_party_capture_fails_before_any_publication()
       Assert.isTrue(party:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = name }))))
     end
   end
-  Assert.equal(party:partyCount(), 6, "the refusal needs a genuinely full party")
+  Assert.equal(party:partyCount(), 6, "the spillover needs a genuinely full party")
+  local before = {}
+  for slot = 0, 5 do
+    before[slot] = party:partyMon(slot)
+  end
   local revisionBefore = party:partyRevision()
+  local active = party:activeBox()
   local caught = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE", level = 4 }))
 
-  local ok, err = pcall(Committer.prepare, {
-    outcome = { id = "outcome-full-party-refused", result = "capture" },
+  local prepared = Committer.prepare({
+    outcome = { id = "outcome-full-party-spills", result = "capture" },
     partyOwner = party,
     captures = { { captureId = 41, ball = "POKE_BALL", success = true, mon = caught } },
   })
-  Assert.isFalse(ok, "a capture without retention never stages: " .. tostring(err))
-  Assert.equal(party:partyCount(), 6, "the refusal stores the mon nowhere")
-  Assert.equal(party:partyRevision(), revisionBefore, "the refusal moves no live revision")
+  local receipt = Committer.commit(prepared)
+  Assert.isTrue(receipt.committed, "the spillover batch commits")
+  Assert.equal(#receipt.placements, 1, "the spillover reports its single placement")
+  local placement = receipt.placements[1]
+  Assert.equal(placement.captureId, 41, "the placement echoes its capture")
+  Assert.isTrue(placement.retained, "the spillover retains the mon")
+  Assert.equal(placement.destination, "box", "a full party spills the catch into storage")
+  Assert.equal(placement.box, active, "the spillover scans forward from the active box")
+  Assert.equal(placement.slot, 0, "the spillover takes the first empty box slot")
+  Assert.equal(party:partyCount(), 6, "the spillover stores the mon nowhere in the party")
+  for slot = 0, 5 do
+    Assert.deepEqual(party:partyMon(slot), before[slot], "slot " .. tostring(slot) .. " stays untouched")
+  end
+  Assert.equal(party:partyRevision(), revisionBefore, "the spillover moves no party revision")
+  local boxed = assert(party:boxMon(active, 0), "the box holds the spilled catch")
+  Assert.equal(boxed.species, "TOTODILE", "the boxed mon keeps its caught species")
+  Assert.equal(boxed.personality, caught.personality, "the boxed mon keeps its caught identity")
 end
 
 return T

@@ -56,6 +56,76 @@ end
 
 local T = {}
 
+---@return HgssMonService party owner holding a full six-mon party and empty boxes
+local function newFullPartyOwner()
+  local catalog = CatalogFixture.makeCatalog()
+  local owner = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture()),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+    mapSection = 7,
+    date = CatalogFixture.metDate(),
+  })
+  local factory = CatalogFixture.makeFactory(0xB0000001, catalog)
+  local species = { "CHIKORITA", "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE", "EEVEE" }
+  for _, key in ipairs(species) do
+    Assert.isTrue(owner:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = key }))))
+  end
+  Assert.equal(owner:partyCount(), 6, "the exhaustion setup needs a full party")
+  return owner
+end
+
+-- A caught mon that fits nowhere must refuse during preparation with its
+-- capacity context, before any live owner publishes anything.
+function T.total_storage_exhaustion_refuses_before_any_publication()
+  local Committer = requirePresent(COMMITTER_MODULE, "capture overflow staging")
+  local owner = newFullPartyOwner()
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0xB0000002, catalog)
+  local filler = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE" }))
+  local filling = {}
+  for box = 0, owner:boxCount() - 1 do
+    for slot = 0, 29 do
+      filling[#filling + 1] = { box = box, slot = slot, mon = filler }
+    end
+  end
+  local staged, stageErr = owner:preparePcChanges({
+    partyRevision = owner:partyRevision(),
+    boxRevision = owner:boxRevision(),
+  }, { boxUpdates = filling })
+  Assert.notNil(staged, "the exhaustion setup fills every box slot: " .. tostring(stageErr))
+  assert(staged ~= nil, "the filling preparation stages")
+  staged.publish()
+  for box = 0, owner:boxCount() - 1 do
+    for slot = 0, 29 do
+      Assert.notNil(owner:boxMon(box, slot), "every box slot is occupied before the attempt")
+    end
+  end
+  local partyRevision = owner:partyRevision()
+  local boxRevision = owner:boxRevision()
+  local caught = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
+  local ok, err = pcall(Committer.prepare, {
+    outcome = { id = "outcome-storage-exhausted", result = "capture" },
+    partyOwner = owner,
+    partyUpdates = {},
+    captures = { { captureId = "exhausted-1", success = true, mon = caught } },
+  })
+  Assert.isFalse(ok, "total exhaustion refuses during preparation")
+  Assert.isTrue(
+    type(err) == "string" and err:find("box", 1, true) ~= nil,
+    "the refusal names box capacity: " .. tostring(err)
+  )
+  Assert.equal(owner:partyRevision(), partyRevision, "the refusal publishes no party change")
+  Assert.equal(owner:boxRevision(), boxRevision, "the refusal publishes no box change")
+end
+
 function T.staged_owners_publish_together_exactly_once()
   local party = newPartyOwner()
   local bag = newBagOwner()

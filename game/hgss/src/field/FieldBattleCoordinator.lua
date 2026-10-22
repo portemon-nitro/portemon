@@ -34,6 +34,49 @@ local function fieldRuntime(self)
   return assert(self.runtime, "field battle coordinator is disposed")
 end
 
+-- Freezes the evolution world facts at battle composition: the encounter
+-- clock band the gameplay already uses, with morning folded into day
+-- for the source morning/day check, plus the standing map identity.
+-- Reads only, never the live clock after return; without a readable
+-- field clock or map the context stays absent and no evolution stages.
+---@param self FieldBattleCoordinator
+---@return table<string, unknown>? frozen evolution context for the launched battle
+local function frozenEvolutionContext(self)
+  local runtime = self.runtime
+  if type(runtime) ~= "table" then
+    return nil
+  end
+  if type(runtime.encounterTimeOfDay) ~= "function" then
+    return nil
+  end
+  local okClock, band = pcall(function()
+    return runtime:encounterTimeOfDay()
+  end)
+  if not okClock or type(band) ~= "string" or band == "" then
+    return nil
+  end
+  -- Source day checks answer morning beside day; only night stays late.
+  local timeOfDay = band
+  if timeOfDay == "morning" then
+    timeOfDay = "day"
+  elseif timeOfDay ~= "day" and timeOfDay ~= "night" then
+    return nil
+  end
+  local context = { timeOfDay = timeOfDay } --[[@as table<string, unknown>]]
+  local session = runtime.session
+  local map = nil
+  if type(session) == "table" then
+    map = session.currentMap
+  end
+  if map == nil then
+    map = runtime.runtimeMap
+  end
+  if type(map) == "table" and type(map.mapId) == "number" then
+    context.mapId = map.mapId
+  end
+  return context
+end
+
 -- Records one terminal launch failure without touching owned battle ports,
 -- holds, or audio: the caller keeps owning whichever resources its phase
 -- actually acquired. The launch keeps the raw failure identity while the
@@ -273,7 +316,7 @@ function FieldBattleCoordinator:startBattle(args)
       presentation = self.battlePresentation
     end
   end
-  local battle = BattleRuntime.new({
+  local battleArgs = {
     request = request,
     scenario = scenario,
     presentation = presentation,
@@ -283,7 +326,14 @@ function FieldBattleCoordinator:startBattle(args)
     player = playerFacts,
     pokegear = pokegear,
     seed = args.seed,
-  })
+  }
+  -- The frozen evolution clock and map ride the same composition into
+  -- the runtime; an unreadable field simply stages no evolution.
+  local evolutionContext = frozenEvolutionContext(self)
+  if evolutionContext ~= nil then
+    battleArgs.evolutionContext = evolutionContext
+  end
+  local battle = BattleRuntime.new(battleArgs)
   self.battleRuntime = battle
   if fieldRuntime(self).session ~= nil then
     fieldRuntime(self).session:setBattleActive(true)

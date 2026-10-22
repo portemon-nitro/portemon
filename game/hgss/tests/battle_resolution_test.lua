@@ -181,6 +181,37 @@ local function driveToSettlement(battle, scenario)
   end
 end
 
+---@return table headless seven-operation port answering nickname decisions with an explicit decline
+local function headlessDecliningPort()
+  local record = { opened = {}, answered = {} }
+  local port = {}
+  function port.enter(_plan)
+    return true
+  end
+  function port.present(_packet) end
+  function port.ready()
+    return true
+  end
+  function port.leave(_plan)
+    return true
+  end
+  function port.dispose() end
+  function port.openCompletion(intent)
+    record.opened[#record.opened + 1] = intent
+    return true
+  end
+  function port.takeCompletion()
+    local intent = record.opened[#record.opened]
+    if intent == nil or record.answered[intent.completionId] then
+      return nil
+    end
+    record.answered[intent.completionId] = true
+    return { launchId = intent.launchId, completionId = intent.completionId, kind = "declined" }
+  end
+  port.record = record
+  return port
+end
+
 ---@param trainers table trainer entries fielding the enemy side
 ---@param ctx table scenario context carrying the live owners
 ---@return table trainer scenario fragment
@@ -347,11 +378,11 @@ function T.capture_stages_party_dex_and_bag_through_the_committer()
   battle:dispose()
 end
 
--- With no storage behind a full party, the capture batch fails the commit
--- preparation before any owner publishes: the resolution reports the
--- failure instead of a receipt, and the live party, dex knowledge, and
--- bag stay exactly as they were.
-function T.full_party_capture_fails_without_publishing_any_consequence()
+-- With a full party behind the capture, the batch spills into the first
+-- empty box slot instead of failing: the resolution carries a receipt
+-- naming the box destination, and the live party, dex knowledge, and bag
+-- publish exactly once beside the spillover.
+function T.full_party_capture_spills_into_the_first_empty_box_slot()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
 
@@ -361,7 +392,7 @@ function T.full_party_capture_fails_without_publishing_any_consequence()
   local species = { "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE", "EEVEE" }
   for _, key in ipairs(species) do
     local record = factory:createNormal(CatalogFixture.normalRequest({ species = key }))
-    Assert.isTrue(party:addMon(record), "the refused case needs a full party")
+    Assert.isTrue(party:addMon(record), "the spillover case needs a full party")
   end
   Assert.equal(party:partyCount(), 6, "the party starts full")
   local bag = newBagOwner()
@@ -381,14 +412,22 @@ function T.full_party_capture_fails_without_publishing_any_consequence()
     bagDeltas = { { op = "take", item = "POKE_BALL", quantity = 1 } },
     dex = dex,
     captures = { { captureId = 22, ball = "POKE_BALL", success = true, mon = caught } },
+    presentation = headlessDecliningPort(),
   })
   driveToSettlement(battle, scenario)
-  Assert.equal(battle:status().phase, "failed", "the capture without retention fails the resolution")
-  Assert.isNil(battle:status().outcomeReceipt, "a refused batch carries no commit receipt")
-  Assert.notNil(battle:status().error, "the failure names its missing retention")
+  Assert.equal(battle:status().phase, "complete", "the capture past a full party settles the resolution")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(receipt.committed, "the spillover batch commits")
+  Assert.equal(#receipt.placements, 1, "the spillover reports its single placement")
+  Assert.equal(receipt.placements[1].destination, "box", "a full party spills the catch into storage")
+  local stored = assert(
+    party:boxMon(receipt.placements[1].box, receipt.placements[1].slot),
+    "the spilled catch is readable in its box slot"
+  )
+  Assert.equal(stored.personality, caught.personality, "the boxed mon keeps its caught identity")
   Assert.equal(party:partyCount(), 6, "the live party is unchanged")
-  Assert.isFalse(dex:isCaught("EEVEE"), "the refused batch registers no caught knowledge")
-  Assert.equal(bag:quantity("POKE_BALL"), 5, "the refused batch consumes no ball")
+  Assert.isTrue(dex:isCaught("EEVEE"), "the spillover registers caught knowledge")
+  Assert.equal(bag:quantity("POKE_BALL"), 4, "the spillover consumes its ball exactly once")
   battle:dispose()
 end
 
@@ -592,8 +631,8 @@ end
 -- Captures shaped by the throw owner commit through the runtime mapping
 -- without reconstruction: the generated record carries no hand-written
 -- species or level, yet the party keeps the exact mon, dex knowledge
--- lands, and the ball stays consumed; a full party fails the batch
--- before any publication instead.
+-- lands, and the ball stays consumed; a full party spills into the first
+-- empty box slot instead.
 function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
@@ -674,11 +713,23 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
     captures = { thrownCapture() },
   })
   driveToSettlement(fullBattle, fullScenario)
-  Assert.equal(fullBattle:status().phase, "failed", "the capture without retention fails the resolution")
-  Assert.isNil(fullBattle:status().outcomeReceipt, "a refused batch carries no commit receipt")
+  Assert.equal(fullBattle:status().phase, "complete", "the capture past a full party settles the resolution")
+  local fullReceipt = assert(fullBattle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(fullReceipt.committed, "the spillover batch commits")
+  Assert.equal(#fullReceipt.placements, 1, "the spillover reports its single placement")
+  Assert.equal(
+    fullReceipt.placements[1].destination,
+    "box",
+    "a full party spills the catch into storage"
+  )
+  local spilled = assert(
+    fullParty:boxMon(fullReceipt.placements[1].box, fullReceipt.placements[1].slot),
+    "the spilled catch is readable in its box slot"
+  )
+  Assert.equal(spilled.species, "TOTODILE", "the boxed mon keeps its caught species")
   Assert.equal(fullParty:partyCount(), 6, "the live party is unchanged")
-  Assert.isFalse(fullDex:isCaught("TOTODILE"), "the refused batch registers no caught knowledge")
-  Assert.equal(fullBag:quantity("GREAT_BALL"), 1, "the refused batch consumes no ball")
+  Assert.isTrue(fullDex:isCaught("TOTODILE"), "the spillover registers caught knowledge")
+  Assert.equal(fullBag:quantity("GREAT_BALL"), 0, "the spillover consumes its ball exactly once")
   fullBattle:dispose()
 end
 

@@ -1,27 +1,25 @@
 -- Battle-local child selection over detached battle data. Voluntary
 -- switch, forced replacement, bag browsing, item-target picking, and
--- move learning run on small battle-owned cursor records over the
--- detached snapshots the parent intent carries. Party focus walks the
--- shared six-slot/cancel neighbor topology while skipping rows the
--- kernel did not project; bag browsing keeps its per-pocket cursor,
--- scroll, and focus through the shared bag cursor and native pocket
--- order with six visible cells. Every success copies a kernel-projected
--- choice fragment bound to the opening launch and request, every
--- permitted Back reports a bound cancellation, and stale or foreign
--- input never seals. No field screen is constructed, no hidden clock is
--- stepped, and no live party, bag, or save owner is touched; the kernel
--- executes and the committer publishes.
+-- move learning run on one native child controller at a time over the
+-- detached snapshots the parent intent carries: the native Party, Bag,
+-- and Summary controllers own focus, animation, and terminal results
+-- while this barrier retains only request identity, the staged item or
+-- learning confirmation, and the open intent behind recomposition.
+-- Semantic edges buffer until the accepted source tick, one native
+-- controller tick runs per tick, and every success copies a
+-- kernel-projected choice fragment bound to the opening launch and
+-- request while every permitted Back reports a bound cancellation. Stale
+-- or foreign input never seals. No field screen is constructed and no
+-- live party, bag, or save owner is touched; the kernel executes and the
+-- committer publishes.
 
-local BagCursor = require("libs.hgss.src.items.BagCursor")
-local BagSave = require("libs.hgss.src.save.BagSave")
 local BattleChildApplications = require("game.hgss.src.battle.BattleChildApplications")
-local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 
 ---@class BattleSubflows
 ---@field _launchId string owning launch identity
 ---@field _itemCatalog table<string, unknown>? borrowed immutable item catalog for pocket grouping
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
----@field _active string? live child kind: party, bag, target, or learn
+---@field _active string? live child kind: party, bag, target, learn, or naming
 ---@field _purpose string? selection purpose behind the active child
 ---@field _cancellable boolean cancel permission behind the active child
 ---@field _requestId integer open request identity behind the active child
@@ -31,14 +29,11 @@ local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 ---@field _notice string? refusal explanation behind the active child
 ---@field _openOptionsValue table<string, unknown>? decision options behind the active child
 ---@field _openPartyValue table<integer, table<string, unknown>>? party snapshot behind the active child
----@field _party table<string, unknown>? battle-local party/target picker cursor behind selection
 ---@field _stagedItem string? staged battle item behind target selection
----@field _bag table<string, unknown>? battle-local bag browser behind bag selection
----@field _retained table<string, unknown>? retained bag browser behind target selection
----@field _learn table<string, unknown>? active learning prompt state
+---@field _learnConfirm table<string, unknown>? staged learning confirmation behind its explicit confirm
 ---@field _composed table<string, unknown>? concrete battle child application behind the active child
----@field _actors table<integer, table<string, unknown>>? addressed actor entries behind batch selection
----@field _served table<integer, boolean>? actor combatants with a staged reply behind batch selection
+---@field _queued table<integer, table<string, unknown>> buffered semantic edges behind the next source tick
+---@field _intent table<string, unknown>? validated open intent behind recomposition
 ---@field _disposed boolean
 local BattleSubflows = {}
 BattleSubflows.__index = BattleSubflows
@@ -106,14 +101,11 @@ function BattleSubflows.new(opts)
     _notice = nil,
     _openOptionsValue = nil,
     _openPartyValue = nil,
-    _party = nil,
     _stagedItem = nil,
-    _bag = nil,
-    _retained = nil,
-    _learn = nil,
+    _learnConfirm = nil,
     _composed = nil,
-    _actors = nil,
-    _served = nil,
+    _queued = {},
+    _intent = nil,
     _disposed = false,
   }, BattleSubflows)
 end
@@ -134,38 +126,6 @@ local function checkIntent(intent)
   assert(type(intent.options) == "table", "child intents carry their options")
   assert(type(intent.party) == "table", "child intents carry their party snapshot")
   assert(type(intent.inventory) == "table", "child intents carry their inventory snapshot")
-end
-
--- Collects the addressed actor entries behind batch selection: every actor
--- keeps its combatant identity with its own enabled switch fragments by
--- replacement, in actor order. A reserve already staged by another actor
--- stays excludable through the served set the coordinator keeps.
----@param options table<string, unknown> decision options under projection
----@return table<integer, table<string, unknown>> addressed actor entries in order
-local function actorSwitchEntries(options)
-  local entries = {}
-  if type(options.actors) ~= "table" then
-    return entries
-  end
-  for _, actor in ipairs(options.actors) do
-    if type(actor) == "table" and type(actor.combatant) == "number" and type(actor.choices) == "table" then
-      local byReplacement = {}
-      for _, choice in ipairs(actor.choices) do
-        if
-          type(choice) == "table"
-          and choice.enabled == true
-          and type(choice.choice) == "table"
-          and choice.choice.kind == "switch"
-          and type(choice.choice.payload) == "table"
-          and type(choice.choice.payload.replacement) == "number"
-        then
-          byReplacement[choice.choice.payload.replacement] = choice.choice
-        end
-      end
-      entries[#entries + 1] = { actor = actor.combatant, byReplacement = byReplacement }
-    end
-  end
-  return entries
 end
 
 ---@param options table<string, unknown> decision options under projection
@@ -244,7 +204,9 @@ function BattleSubflows:_bind(fragment)
 end
 
 -- Records the open identity and clears any previous child state. A new
--- open supersedes its predecessor without applying it.
+-- open supersedes its predecessor without applying it. The validated
+-- intent stays behind recomposition so a refused cancel can rebuild the
+-- same native picker without inventing a request.
 ---@param intent table<string, unknown> validated child intent under capture
 function BattleSubflows:_capture(intent)
   self:closeChild()
@@ -256,8 +218,12 @@ function BattleSubflows:_capture(intent)
   self._controller = intent.controller --[[@as string]]
   self._openOptionsValue = intent.options --[[@as table<string, unknown>]]
   self._openPartyValue = intent.party --[[@as table<integer, table<string, unknown>>]]
+  self._intent = intent
   self._pending = nil
   self._notice = nil
+  self._stagedItem = nil
+  self._learnConfirm = nil
+  self._queued = {}
 end
 
 ---@return table<string, unknown> decision options behind the active child
@@ -268,555 +234,6 @@ end
 ---@return table<integer, table<string, unknown>> party snapshot behind the active child
 function BattleSubflows:_openParty()
   return assert(self._openPartyValue, "the party snapshot travels with the active child")
-end
-
--- Party picker cursors: one battle-local focus over the six roster
--- slots plus Cancel. Only occupied rows carrying a kernel-projected
--- fragment are selectable; every other row keeps its visible refusal
--- instead of submitting. Focus topology reuses the shared default
--- slot-column neighbors; navigation skips rows that cannot seal.
-
----@param state table<string, unknown> battle-local picker state under inspection
----@param node integer|string slot or Cancel under inspection
----@return boolean selectable true while confirming the node can seal
-local function partySelectable(state, node)
-  if node == "cancel" then
-    return state.cancellable == true
-  end
-  if type(node) ~= "number" or node % 1 ~= 0 or node < 0 or node > 5 then
-    return false
-  end
-  local slots = state.slots --[[@as table<integer, table<string, unknown>>]]
-  local record = slots[node]
-  if type(record) ~= "table" or type(record.combatant) ~= "number" then
-    return false
-  end
-  local eligible = state.eligible --[[@as table<integer, boolean>]]
-  return eligible[record.combatant] == true
-end
-
----@param state table<string, unknown> battle-local picker state under inspection
----@param from integer? slot to scan forward from under inspection
----@return integer|string? first selectable node in slot order, nil when nothing seals
-local function partyNearest(state, from)
-  local start = 0
-  if type(from) == "number" then
-    start = from
-  end
-  for offset = 0, 5 do
-    local candidate = (start + offset) % 6
-    if partySelectable(state, candidate) then
-      return candidate
-    end
-  end
-  if state.cancellable == true then
-    return "cancel"
-  end
-  return nil
-end
-
--- Walks one direction through the shared neighbor topology, skipping
--- rows that cannot seal. Dropping into Cancel remembers the column so
--- rising from Cancel restores it instead of the fixed return.
----@param state table<string, unknown> battle-local picker state under motion
----@param direction string navigation direction under motion
-local function partyMove(state, direction)
-  assert(
-    direction == "up" or direction == "down" or direction == "left" or direction == "right",
-    "unknown UI direction"
-  )
-  local neighbors = PartyScreenLayout.defaultNeighbors(state.cancellable == true)
-  local start = state.focus --[[@as integer|string]]
-  local node = start
-  if node == "cancel" and direction == "up" then
-    local remembered = 4 + (
-        state.footerColumn --[[@as integer?]]
-        or 1
-      )
-    if partySelectable(state, remembered) then
-      state.focus = remembered
-      return
-    end
-    node = remembered
-  end
-  local seen = { [start] = true }
-  for _ = 1, 8 do
-    local links = neighbors[node]
-    if type(links) ~= "table" then
-      return
-    end
-    local following = links[direction]
-    if following == nil or following == node or seen[following] then
-      return
-    end
-    seen[following] = true
-    if following == "cancel" and type(node) == "number" then
-      state.footerColumn = node % 2
-    end
-    if partySelectable(state, following) then
-      state.focus = following
-      return
-    end
-    node = following
-  end
-end
-
--- Opens one battle-local party picker over the detached roster: slot
--- occupancy comes from the snapshot, eligibility from the already
--- narrowed native fragments, and focus rests on the first selectable
--- slot in slot order. Construction failures report a reason instead of
--- opening a half-owned selection.
----@param roster table<integer, table<string, unknown>> detached own-party snapshot under opening
----@param eligible table<integer, boolean> eligible combatants under opening
----@param fragments table<integer, table<string, unknown>> projected fragments by eligible combatant
----@param cancellable boolean cancel permission under opening
----@return table<string, unknown>? battle-local picker state, nil on failure
----@return string? failure cause
-local function openPartyPicker(roster, eligible, fragments, cancellable)
-  ---@type table<integer, table<string, unknown>>
-  local slots = {}
-  for _, record in ipairs(roster) do
-    if type(record) == "table" and type(record.slot) == "number" and type(record.combatant) == "number" then
-      assert(slots[record.slot] == nil, "battle roster slots stay unique")
-      slots[record.slot] = record
-    end
-  end
-  ---@type table<string, unknown>
-  local state = {
-    cancellable = cancellable,
-    focus = 0,
-    eligible = eligible,
-    fragments = fragments,
-    slots = slots,
-    footerColumn = 1,
-  }
-  local focus = partyNearest(state, 0)
-  if focus == nil then
-    return nil, "the picker has no selectable slot"
-  end
-  state.focus = focus
-  return state
-end
-
--- Stages one reserve combatant through the first unserved actor offering
--- it, marking that actor served so batch reservations never supersede
--- each other. The single-fragment target path keeps its direct map.
----@param combatant number reserve combatant under staging
----@return boolean staged
-local function stageReserve(self, combatant)
-  local served = self._served
-  if served == nil then
-    local state = assert(self._party, "target selection stages its own picker")
-    local fragments = state.fragments --[[@as table<integer, table<string, unknown>>]]
-    local fragment = fragments[combatant]
-    if fragment == nil then
-      return false
-    end
-    self._pending = { kind = "choice", reply = self:_bind(fragment) }
-    return true
-  end
-  for _, entry in ipairs(assert(self._actors, "batch selection keeps its actor entries")) do
-    if not served[entry.actor] then
-      local fragment = entry.byReplacement[combatant]
-      if fragment ~= nil then
-        served[entry.actor] = true
-        self._pending = { kind = "choice", reply = self:_bind(fragment) }
-        return true
-      end
-    end
-  end
-  return false
-end
-
--- Confirms one picker slot: an eligible row stages its exact projected
--- fragment once, while a visibly disabled row explains itself without
--- submitting. Focus never moves onto the refusal.
----@param slot integer roster slot under confirmation
-local function confirmPartySlot(self, slot)
-  local state = assert(self._party, "party selection confirms its own picker")
-  local slots = state.slots --[[@as table<integer, table<string, unknown>>]]
-  local record = slots[slot]
-  local combatant = type(record) == "table" and record.combatant or nil
-  if type(combatant) == "number" and stageReserve(self, combatant) then
-    return
-  end
-  local hp = type(record) == "table" and record.hp or nil
-  if type(hp) == "number" and hp <= 0 then
-    self._notice = "It is fainted."
-  else
-    self._notice = refusalText(nil)
-  end
-end
-
--- Cancels target selection back to the retained bag browser without
--- sealing or moving stock. The retained browser keeps its pocket,
--- focus, scroll, and counts.
-local function cancelTarget(self)
-  if self._composed ~= nil then
-    self._composed:closeTarget()
-  end
-  self._bag = assert(self._retained, "target cancel reactivates its bag")
-  self._retained = nil
-  self._party = nil
-  self._active = "bag"
-  self._stagedItem = nil
-  self._notice = nil
-end
-
--- Cancels picker selection without ever auto-choosing: backing out of
--- the target picker reactivates the retained bag browser, backing out
--- of a cancellable picker reports its bound cancellation, and a forced
--- picker holds silently at its input boundary.
-local function cancelParty(self)
-  if self._active == "target" then
-    cancelTarget(self)
-    return
-  end
-  if not self._cancellable then
-    return
-  end
-  self._pending = {
-    kind = "cancelled",
-    requestId = self._requestId,
-    epoch = self._epoch,
-    controller = self._controller,
-    launchId = self._launchId,
-  }
-end
-
--- Bag browser cursors: one battle-local browse record over the detached
--- stock. Pocket identity follows the native pocket order, per-pocket
--- position and scroll ride the shared bag cursor, and focus walks a
--- small grid/tab/Cancel graph: grid siblings sideways, the top row up
--- to the active tab, the last logical row down to Cancel, tabs wrapping
--- through the pocket order while switching pockets at once, and Cancel
--- rising back to the remembered cell.
-
----@param node unknown browse node under inspection
----@return integer? absolute grid cell, nil outside the grid
-local function parseSlotNode(node)
-  if type(node) ~= "string" then
-    return nil
-  end
-  local absolute = node:match("^slot:(%d+)$")
-  if absolute == nil then
-    return nil
-  end
-  return math.floor(assert(tonumber(absolute), "slot nodes carry a numeric cell"))
-end
-
----@param node unknown browse node under inspection
----@return string? pocket identity, nil outside the tabs
-local function parseTabNode(node)
-  if type(node) ~= "string" then
-    return nil
-  end
-  local pocketKey = node:match("^tab:(.+)$")
-  if pocketKey == nil then
-    return nil
-  end
-  for _, known in ipairs(BagSave.POCKET_ORDER) do
-    if known == pocketKey then
-      return pocketKey
-    end
-  end
-  return nil
-end
-
----@param itemCatalog table<string, unknown>? borrowed immutable item catalog
----@param monCatalog table<string, unknown>? borrowed immutable mon catalog
----@param inventory table<string, integer> detached battle stock under indexing
----@return table<string, table<integer, table<string, unknown>>>? stocked entries by native pocket, nil on failure
----@return string? failure cause
-local function bagItemsFor(itemCatalog, monCatalog, inventory)
-  ---@type table<integer, { item: string, quantity: integer, pocket: string }>
-  local stocked = {}
-  for key, quantity in pairs(inventory) do
-    if type(quantity) == "number" and quantity >= 1 then
-      if itemCatalog == nil then
-        return nil, "the stocked bag needs its item catalog"
-      end
-      local ok, record = pcall(catalogItem, itemCatalog, key)
-      if not ok then
-        return nil, "the stocked bag names an unknown item"
-      end
-      assert(type(record) == "table", "stocked items resolve through the catalog")
-      if record.tmhmMoveNativeId ~= nil and monCatalog == nil then
-        return nil, "machine display needs its mon catalog"
-      end
-      local pocket = record.pocket
-      assert(type(pocket) == "string", "stocked items group into a native pocket")
-      stocked[#stocked + 1] = { item = key, quantity = quantity, pocket = pocket }
-    end
-  end
-  ---@type table<string, table<integer, table<string, unknown>>>
-  local items = {}
-  for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
-    ---@type table<integer, { item: string, quantity: integer }>
-    local list = {}
-    for _, entry in ipairs(stocked) do
-      if entry.pocket == pocketKey then
-        list[#list + 1] = { item = entry.item, quantity = entry.quantity }
-      end
-    end
-    table.sort(list, function(a, b)
-      return a.item < b.item
-    end)
-    items[pocketKey] = list
-  end
-  return items
-end
-
----@param bag table<string, unknown> battle-local browser under inspection
----@return integer stocked count in the current pocket
-local function bagCount(bag)
-  local cursor = bag.cursor --[[@as BagCursor]]
-  local items = bag.items --[[@as table<string, table<integer, table<string, unknown>>>]]
-  return #items[cursor:currentPocket()]
-end
-
----@param count integer stocked count under windowing
----@param scroll integer borrowed scroll offset under windowing
----@return integer clamped even window start
-local function clampBagStart(count, scroll)
-  if count <= 6 then
-    return 0
-  end
-  local start = math.min(math.max(scroll, 0), count - 1)
-  return start - (start % 2)
-end
-
--- The logical browse grid covers the six currently visible cells and
--- otherwise pads occupied items to a complete two-column row, so a
--- visible trailing cell can own focus without inventing inventory.
----@param bag table<string, unknown> battle-local browser under inspection
----@return integer logical cell count
-local function bagSlotCount(bag)
-  local cursor = bag.cursor --[[@as BagCursor]]
-  local count = bagCount(bag)
-  local padded = math.max(6, math.ceil(count / 2) * 2)
-  local start = clampBagStart(count, cursor:scroll(cursor:currentPocket()))
-  return math.max(padded, start + 6)
-end
-
--- Builds the ephemeral browse graph over the current pocket, item count,
--- and remembered cell. Grid adjacency is absolute: same-row siblings
--- sideways (missing neighbors stay put, never wrap), two cells
--- vertically, the top row up to the active-pocket tab, and the last
--- logical row down to Cancel. Tabs wrap through the pocket order and
--- travel vertically back to the remembered cell, as does Cancel upward.
----@param bag table<string, unknown> battle-local browser under inspection
----@return table<string, table<string, string?>> single-target browse graph
-local function bagGraph(bag)
-  local cursor = bag.cursor --[[@as BagCursor]]
-  local pocket = cursor:currentPocket()
-  local slotCount = bagSlotCount(bag)
-  local remembered = "slot:" .. tostring(math.min(math.max(bag.lastSlot --[[@as integer]], 0), slotCount - 1))
-  local graph = {}
-  for absolute = 0, slotCount - 1 do
-    local id = "slot:" .. tostring(absolute)
-    local left = nil
-    if absolute % 2 == 1 then
-      left = "slot:" .. tostring(absolute - 1)
-    end
-    local right = nil
-    if absolute % 2 == 0 and absolute + 1 < slotCount then
-      right = "slot:" .. tostring(absolute + 1)
-    end
-    local up = "tab:" .. pocket
-    if absolute - 2 >= 0 then
-      up = "slot:" .. tostring(absolute - 2)
-    end
-    local down = "cancel"
-    if absolute + 2 < slotCount then
-      down = "slot:" .. tostring(absolute + 2)
-    end
-    graph[id] = { up = up, down = down, left = left, right = right }
-  end
-  local order = BagSave.POCKET_ORDER
-  for position, pocketKey in ipairs(order) do
-    local previous = order[((position - 2) % #order) + 1]
-    local following = order[(position % #order) + 1]
-    graph["tab:" .. pocketKey] = {
-      left = "tab:" .. previous,
-      right = "tab:" .. following,
-      up = remembered,
-      down = remembered,
-    }
-  end
-  graph["cancel"] = { up = remembered }
-  return graph
-end
-
--- Enters a pocket through the cursor API: the stored per-pocket offsets
--- return, clamped to whatever the pocket holds now. Focus stays with the
--- caller, so keyboard tab travel keeps tab focus while pointer travel
--- moves to the grid explicitly at its own call site. The remembered grid
--- cell follows the clamped per-pocket cursor position either way.
----@param bag table<string, unknown> battle-local browser under entry
----@param pocketKey string pocket identity under entry
-local function bagEnterPocket(bag, pocketKey)
-  local cursor = bag.cursor --[[@as BagCursor]]
-  local items = bag.items --[[@as table<string, table<integer, table<string, unknown>>>]]
-  cursor:setPocket(pocketKey)
-  local count = #items[pocketKey]
-  if count == 0 then
-    cursor:setPosition(pocketKey, 0)
-    cursor:setScroll(pocketKey, 0)
-    bag.lastSlot = 0
-    return
-  end
-  local position = cursor:position(pocketKey)
-  cursor:setPosition(pocketKey, math.min(math.max(position, 0), count - 1))
-  local start = cursor:scroll(pocketKey)
-  if start > count - 1 then
-    start = count - 1
-  end
-  if start < 0 then
-    start = 0
-  end
-  cursor:setScroll(pocketKey, start - (start % 2))
-  bag.lastSlot = cursor:position(pocketKey)
-end
-
--- Focuses one absolute grid cell: the window slides in row steps until
--- the cell is visible, an occupied cell also becomes the cursor
--- selection, and an empty cell leaves the cursor alone. Requests past
--- the logical grid clamp to its last cell.
----@param bag table<string, unknown> battle-local browser under focus
----@param absolute integer absolute grid cell under focus
-local function bagFocusSlot(bag, absolute)
-  local cursor = bag.cursor --[[@as BagCursor]]
-  local pocket = cursor:currentPocket()
-  local count = bagCount(bag)
-  local slotCount = bagSlotCount(bag)
-  local clamped = math.min(math.max(absolute, 0), slotCount - 1)
-  bag.focusNode = "slot:" .. tostring(clamped)
-  bag.lastSlot = clamped
-  local start = cursor:scroll(pocket)
-  while clamped < start do
-    start = start - 2
-  end
-  while clamped >= start + 6 do
-    start = start + 2
-  end
-  if start ~= cursor:scroll(pocket) then
-    cursor:setScroll(pocket, start)
-  end
-  if clamped < count then
-    cursor:setPosition(pocket, clamped)
-  end
-end
-
--- Applies one resolved browse node: grid cells focus through the shared
--- slot path, while tabs switch pockets at once and only move focus.
----@param bag table<string, unknown> battle-local browser under focus
----@param node string resolved browse node under focus
-local function bagApplyFocus(bag, node)
-  local absolute = parseSlotNode(node)
-  if absolute ~= nil then
-    bagFocusSlot(bag, absolute)
-    return
-  end
-  assert(node == "cancel" or parseTabNode(node) ~= nil, "focus nodes stay inside the browse graph")
-  local tab = parseTabNode(node)
-  if tab ~= nil then
-    local cursor = bag.cursor --[[@as BagCursor]]
-    if tab ~= cursor:currentPocket() then
-      bagEnterPocket(bag, tab)
-    end
-  end
-  bag.focusNode = node
-end
-
----@param bag table<string, unknown> battle-local browser under motion
----@param direction string navigation direction under motion
-local function bagMove(bag, direction)
-  assert(
-    direction == "up" or direction == "down" or direction == "left" or direction == "right",
-    "unknown UI direction"
-  )
-  local graph = bagGraph(bag)
-  if
-    graph[
-      bag.focusNode --[[@as string]]
-    ] == nil
-  then
-    bag.focusNode = "slot:" .. tostring(bag.lastSlot --[[@as integer]])
-  end
-  local links = graph[
-    bag.focusNode --[[@as string]]
-  ]
-  if type(links) ~= "table" then
-    return
-  end
-  local target = links[direction]
-  if target == nil then
-    return
-  end
-  bagApplyFocus(bag, target)
-end
-
--- Steps pocket focus through the same semantic edges keyboard travel
--- uses: up to the tab strip, one step sideways across tabs (which
--- switches pockets at once), then down to the grid. Pointer tabs and
--- keyboard tab hops land on the same remembered cell.
----@param direction string lateral tab travel under stepping: "left" or "right"
-local function stepPocket(self, direction)
-  local bag = assert(self._bag, "pocket travel keeps its browser")
-  assert(bag.empty ~= true, "pocket travel keeps its stock")
-  assert(direction == "left" or direction == "right", "pocket travel steps sideways")
-  local cursor = bag.cursor --[[@as BagCursor]]
-  bagApplyFocus(bag, "tab:" .. cursor:currentPocket())
-  bagMove(bag, direction)
-  bagMove(bag, "down")
-end
-
--- Confirms the focused bag node: Cancel closes back, tabs keep their
--- focus, an occupied cell stages through the item path only while
--- kernel-legal, and a refused cell names its native reason. Empty cells
--- never activate.
-local function confirmBagCell(self)
-  local bag = assert(self._bag, "the bag confirms its own cells")
-  local node = bag.focusNode --[[@as string]]
-  if node == "cancel" then
-    self._pending = {
-      kind = "cancelled",
-      requestId = self._requestId,
-      epoch = self._epoch,
-      controller = self._controller,
-      launchId = self._launchId,
-    }
-    return
-  end
-  local tab = parseTabNode(node)
-  if tab ~= nil then
-    local cursor = bag.cursor --[[@as BagCursor]]
-    if tab ~= cursor:currentPocket() then
-      bagEnterPocket(bag, tab)
-    end
-    return
-  end
-  local absolute = parseSlotNode(node)
-  if absolute == nil then
-    return
-  end
-  local cursor = bag.cursor --[[@as BagCursor]]
-  local items = bag.items --[[@as table<string, table<integer, table<string, unknown>>>]]
-  local list = items[cursor:currentPocket()]
-  if absolute >= #list then
-    return
-  end
-  local entry = list[absolute + 1]
-  local key = entry.item
-  assert(type(key) == "string", "stocked cells carry their item key")
-  local options = self:_openOptions()
-  local legal, reason = itemLegality(options, key)
-  if legal == true then
-    self:stageItem(key)
-  else
-    self._notice = refusalText(reason)
-  end
 end
 
 -- Composes the concrete child application before the barrier captures:
@@ -831,45 +248,32 @@ local function composeChild(self, intent)
   return BattleChildApplications.open(intent, { itemCatalog = self._itemCatalog, monCatalog = self._monCatalog })
 end
 
+-- Rebuilds the same native picker after a refused cancel closed it: the
+-- barrier disposes the sealed controller and composes a fresh one over
+-- the stored open intent, so the child keeps owning input with its
+-- request identity intact.
+function BattleSubflows:_reopenComposed()
+  local intent = assert(self._intent, "reopen keeps its open intent")
+  local child, childErr = composeChild(self, intent)
+  if child == nil then
+    self._notice = tostring(childErr or "the child failed to reopen")
+    return
+  end
+  if self._composed ~= nil then
+    self._composed:dispose()
+  end
+  self._composed = child
+end
+
 ---@param intent table<string, unknown> party selection intent under opening
 ---@return boolean opened
 ---@return string? failure cause
 local function openParty(self, intent)
-  local options = intent.options --[[@as table<string, unknown>]]
-  local roster = intent.party --[[@as table<integer, table<string, unknown>>]]
-  -- Batch reservations open per addressed actor without superseding: the
-  -- union of unserved offers drives the picker while every actor keeps
-  -- its own fragments for staged binding.
-  local entries = actorSwitchEntries(options)
-  local fragments = {}
-  for _, entry in ipairs(entries) do
-    for replacement, fragment in pairs(entry.byReplacement) do
-      if fragments[replacement] == nil then
-        fragments[replacement] = fragment
-      end
-    end
-  end
-  if next(fragments) == nil then
-    return false, "no eligible reserve answers the request"
-  end
-  local eligible = {}
-  for combatant in pairs(fragments) do
-    eligible[combatant] = true
-  end
   local child, childErr = composeChild(self, intent)
   if child == nil then
     return false, childErr
   end
   self:_capture(intent)
-  local picker, pickerErr = openPartyPicker(roster, eligible, fragments, self._cancellable)
-  if picker == nil then
-    child:dispose()
-    self:closeChild()
-    return false, pickerErr
-  end
-  self._party = picker
-  self._actors = entries
-  self._served = {}
   self._composed = child
   return true
 end
@@ -878,36 +282,11 @@ end
 ---@return boolean opened
 ---@return string? failure cause
 local function openBag(self, intent)
-  local inventory = intent.inventory --[[@as table<string, integer>]]
-  local items, itemsErr = bagItemsFor(self._itemCatalog, self._monCatalog, inventory)
-  if items == nil then
-    return false, itemsErr
-  end
-  local stocked = false
-  for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
-    if #items[pocketKey] > 0 then
-      stocked = true
-      break
-    end
-  end
-  if not stocked then
-    self:_capture(intent)
-    self._bag = { empty = true }
-    return true
-  end
   local child, childErr = composeChild(self, intent)
   if child == nil then
     return false, childErr
   end
   self:_capture(intent)
-  local cursor = BagCursor.new()
-  local bag = { cursor = cursor, items = items, focusNode = "slot:0", lastSlot = 0 }
-  local pocket = cursor:currentPocket()
-  local count = #items[pocket]
-  if count > 0 then
-    cursor:setPosition(pocket, 0)
-  end
-  self._bag = bag
   self._composed = child
   return true
 end
@@ -951,16 +330,12 @@ local function openLearn(self, intent)
   if type(request.incomingMove) ~= "string" or request.incomingMove == "" then
     return false, "learning prompts name their incoming move"
   end
-  local fragments = {}
   for slot = 0, 3 do
-    local fragment = learnFragment(options, "learn:replace:" .. tostring(slot))
-    if fragment == nil then
+    if learnFragment(options, "learn:replace:" .. tostring(slot)) == nil then
       return false, "the held slot stays replaceable"
     end
-    fragments[slot] = fragment
   end
-  local decline = learnFragment(options, "learn:decline")
-  if decline == nil then
+  if learnFragment(options, "learn:decline") == nil then
     return false, "the prompt stays declinable"
   end
   local child, childErr = composeChild(self, intent)
@@ -968,15 +343,6 @@ local function openLearn(self, intent)
     return false, childErr
   end
   self:_capture(intent)
-  self._learn = {
-    recipient = actors[1].combatant,
-    incomingMove = request.incomingMove,
-    currentMoves = copyValue(moves),
-    replace = fragments,
-    decline = decline,
-    focus = 1,
-    confirmation = nil,
-  }
   self._composed = child
   return true
 end
@@ -1066,10 +432,10 @@ local NAMING_EVENTS = {
   name_control = true,
 }
 
--- Stages one battle item: capture throws directly at the opposing
--- holder through its native fragment, while servings retain the local
--- bag browser and open admitted-target selection on a second local
--- picker. Refused staging explains itself.
+-- Stages one battle item from the native browser selection: capture
+-- throws directly through its opposing-holder fragment, while servings
+-- open admitted-target selection on the native item-target picker beside
+-- the retained browser. Refused staging explains itself.
 ---@param itemKey string staged battle item identity under routing
 function BattleSubflows:stageItem(itemKey)
   local intentOptions = self:_openOptions()
@@ -1082,10 +448,10 @@ function BattleSubflows:stageItem(itemKey)
   end
   local targets = enabledItemTargets(intentOptions, itemKey)
   local foeFragment = nil
-  local ownFragments = {}
+  local ownCount = 0
   for combatant, fragment in pairs(targets) do
     if own[combatant] then
-      ownFragments[combatant] = fragment
+      ownCount = ownCount + 1
     elseif foeFragment == nil then
       foeFragment = fragment
     end
@@ -1106,164 +472,165 @@ function BattleSubflows:stageItem(itemKey)
     self._pending = { kind = "choice", reply = self:_bind(foeFragment) }
     return
   end
-  if next(ownFragments) == nil then
+  if ownCount == 0 then
     self._notice = refusalText(nil)
     return
   end
-  local eligible = {}
-  for combatant in pairs(ownFragments) do
-    eligible[combatant] = true
-  end
-  local picker, pickerErr = openPartyPicker(roster, eligible, ownFragments, true)
-  assert(picker ~= nil, tostring(pickerErr or "target selection opens its picker"))
-  self._retained = assert(self._bag, "target selection retains its bag")
-  self._bag = nil
-  self._active = "target"
   self._stagedItem = itemKey
-  self._party = picker
+  self._active = "target"
+  self._notice = nil
   -- The composed bag child opens the native item-target picker beside
   -- the retained browser. A target composition failure unwinds to the
   -- resting browser with its refusal instead of half-opening selection.
   local composed = assert(self._composed, "target selection keeps its composed child")
-  local targeted, targetErr = pcall(composed.openTarget, composed, itemKey)
-  if not targeted then
-    cancelTarget(self)
+  local ok, targetErr = pcall(composed.openTarget, composed, itemKey)
+  if not ok then
+    self._active = "bag"
+    self._stagedItem = nil
     self._notice = tostring(targetErr or "target selection stays unavailable")
   end
 end
 
----@param direction string navigation direction under learning focus
-local function moveLearnFocus(self, direction)
-  local learn = assert(self._learn, "learning moves its own focus")
-  local focus = learn.focus --[[@as integer]]
-  if direction == "down" then
-    focus = math.min(focus + 1, 5)
-  elseif direction == "up" then
-    focus = math.max(focus - 1, 1)
-  else
+-- Stages one item-target choice from the native target picker outcome:
+-- the tapped slot translates against the current options, so only a
+-- kernel-projected serving for the addressed roster seals.
+---@param slot integer native roster slot under staging
+---@param itemKey string staged battle item identity under staging
+function BattleSubflows:_stageTarget(slot, itemKey)
+  local roster = self:_openParty()
+  local combatant = nil
+  for _, record in ipairs(roster) do
+    if type(record) == "table" and record.slot == slot and type(record.combatant) == "number" then
+      combatant = record.combatant
+      break
+    end
+  end
+  local fragment = nil
+  if combatant ~= nil then
+    fragment = enabledItemTargets(self:_openOptions(), itemKey)[combatant]
+  end
+  if fragment == nil then
+    self._notice = "The selection expired."
     return
   end
-  learn.focus = focus
+  self._pending = { kind = "choice", reply = self:_bind(fragment) }
 end
 
--- Confirms the focused learning row: a move stages its replace
--- confirmation, the decline row stages its decline confirmation, and
--- confirming a staged confirmation seals its projected fragment. No path
--- declines without an explicit confirmation.
-local function confirmLearn(self)
-  local learn = assert(self._learn, "learning confirms its own rows")
-  if learn.confirmation == nil then
-    local focus = learn.focus --[[@as integer]]
-    if focus <= 4 then
-      learn.confirmation = { kind = "replace", slot = focus - 1 }
-    else
-      learn.confirmation = { kind = "decline" }
-    end
-    return
-  end
-  local confirmation = learn.confirmation --[[@as table<string, unknown>]]
-  if confirmation.kind == "replace" then
-    local fragments = learn.replace --[[@as table<integer, table<string, unknown>>]]
-    local fragment = assert(fragments[confirmation.slot], "confirmed slots project their fragment")
-    self._pending = { kind = "choice", reply = self:_bind(fragment) }
-  else
-    local decline = assert(learn.decline, "declines project their fragment")
-    self._pending = { kind = "choice", reply = self:_bind(decline) }
-  end
-end
-
--- Cancels learning without ever auto-declining: backing out of the list
--- opens the explicit stop confirmation, rejecting any confirmation
--- returns to the list with its focus kept.
-local function cancelLearn(self)
-  local learn = assert(self._learn, "learning cancels its own rows")
-  if learn.confirmation == nil then
-    learn.confirmation = { kind = "stop" }
-    return
-  end
-  learn.confirmation = nil
-end
-
--- Confirms the stop-learning prompt: only this explicit confirmation
--- declines the prompt without replacing a move.
-local function confirmStopLearn(self)
-  local learn = assert(self._learn, "stop confirmations decline their prompt")
-  local decline = assert(learn.decline, "declines project their fragment")
-  self._pending = { kind = "choice", reply = self:_bind(decline) }
-end
-
----@param event table<string, unknown> semantic input under learning routing
-local function updateLearn(self, event)
-  local learn = assert(self._learn, "learning owns its input lane")
-  if event.type == "navigate" then
-    if learn.confirmation == nil then
-      moveLearnFocus(self, event.direction --[[@as string]])
-    end
-  elseif event.type == "confirm" then
-    if learn.confirmation == nil then
-      confirmLearn(self)
-    elseif learn.confirmation.kind == "stop" then
-      confirmStopLearn(self)
-    else
-      confirmLearn(self)
-    end
-  elseif event.type == "cancel" then
-    cancelLearn(self)
-  elseif event.type == "pointer_cancel" then
-    self:cancelPointerCapture()
-  end
-end
-
----@param events table<integer, table<string, unknown>> semantic input batch under lockstep
-local function routeComposed(self, events)
-  -- The composed child application owns the same semantic edges in
-  -- lockstep: navigation, confirmation, cancellation, and pointer-capture
-  -- release travel to the native controller while pointer press topology
-  -- stays with the barrier. Native intents drain as evidence; the barrier
-  -- keeps binding authoritative kernel fragments for the legacy kinds.
-  if self._composed ~= nil then
-    self._composed:input(events)
-  end
-end
-
+-- Queues one semantic input batch behind the next accepted source tick.
+-- Nothing steps here: the single native controller tick runs in tick(),
+-- so input and tick never advance the same controller twice.
+---@param events table<integer, table<string, unknown>> semantic input batch under buffering
 function BattleSubflows:update(events)
   if self._disposed or self._active == nil or self._pending ~= nil then
     return
   end
   assert(type(events) == "table", "child input arrives as an event list")
-  routeComposed(self, events)
+  local allowed = LIST_EVENTS
+  if self._active == "bag" or self._active == "target" then
+    allowed = BAG_EVENTS
+  elseif self._active == "naming" then
+    allowed = NAMING_EVENTS
+  end
   for _, event in ipairs(events) do
-    if self._pending ~= nil then
-      break
-    end
     if type(event) ~= "table" or type(event.type) ~= "string" then
       break
     end
-    if self._active == "party" or self._active == "target" then
-      if not laneEvent(LIST_EVENTS, event) then
+    if not laneEvent(allowed, event) then
+      break
+    end
+    self._queued[#self._queued + 1] = event
+  end
+end
+
+-- Runs the single native controller tick: flushes the buffered batch
+-- through the one composed child, advances its presentation clock once,
+-- then drains only its final native outcomes into staged barrier results.
+-- A staged learning confirmation owns its barrier edges instead: the
+-- native picker already sealed, so confirm seals the stored fragment and
+-- cancel rebuilds the native list.
+function BattleSubflows:tick()
+  if self._disposed or self._active == nil then
+    self._queued = {}
+    return
+  end
+  if self._pending ~= nil then
+    self._queued = {}
+    return
+  end
+  local composed = assert(self._composed, "the active child keeps its composed child")
+  if self._active == "naming" then
+    if #self._queued > 0 then
+      composed:input(self._queued)
+    end
+    self._queued = {}
+    composed:stepSourceTick(1)
+    return
+  end
+  if self._learnConfirm ~= nil then
+    for _, event in ipairs(self._queued) do
+      if self._pending ~= nil then
         break
       end
-      local state = assert(self._party, "the picker owns its input lane")
-      if event.type == "navigate" then
-        partyMove(state, event.direction --[[@as string]])
-      elseif event.type == "confirm" then
-        if state.focus == "cancel" then
-          cancelParty(self)
-        else
-          confirmPartySlot(self, state.focus --[[@as integer]])
+      if type(event) == "table" and event.type == "confirm" then
+        local confirmation = self._learnConfirm --[[@as table<string, unknown>]]
+        self._learnConfirm = nil
+        self._pending = {
+          kind = "choice",
+          reply = self:_bind(assert(confirmation.fragment, "confirmations carry their fragment")),
+        }
+      elseif type(event) == "table" and event.type == "cancel" then
+        -- Rejecting the confirmation returns to the native list with its
+        -- focus restored. The rebuilt picker opens on its first row and
+        -- the native picker resolves one action per tick, so the barrier
+        -- walks it back to the staged row with one edge per step inside
+        -- this same tick; no user edge is duplicated and later ticks
+        -- resume the single-tick path.
+        local confirmation = self._learnConfirm --[[@as table<string, unknown>]]
+        local focus = tonumber(confirmation.focus) or 0
+        self._learnConfirm = nil
+        self:_reopenComposed()
+        local fresh = self._composed
+        if fresh ~= nil then
+          local target = math.min(math.max(math.floor(focus), 0), 4)
+          local stepped = 0
+          while stepped < target do
+            fresh:input({ { type = "navigate", direction = "down" } })
+            stepped = stepped + 1
+          end
         end
-      elseif event.type == "cancel" then
-        cancelParty(self)
       end
-    elseif self._active == "bag" then
-      if not laneEvent(BAG_EVENTS, event) then
-        break
+    end
+    self._queued = {}
+    return
+  end
+  if #self._queued > 0 then
+    composed:input(self._queued)
+    self._queued = {}
+  end
+  composed:stepSourceTick(1)
+  if self._active == "party" then
+    local result = composed:takeResult()
+    if result ~= nil then
+      if result.kind == "choice" then
+        self._pending = result
+      elseif result.kind == "cancelled" then
+        if self._cancellable then
+          self._pending = result
+        else
+          self._notice = "That choice cannot be cancelled."
+          self:_reopenComposed()
+        end
       end
-      local bag = assert(self._bag, "the browser owns its input lane")
-      if event.type == "pointer_cancel" then
-        self:cancelPointerCapture()
-      elseif bag.empty == true then
-        if event.type == "cancel" then
+    end
+  elseif self._active == "bag" then
+    local intent = composed:takeBagIntent()
+    if intent ~= nil then
+      self:stageItem(intent.item --[[@as string]])
+    end
+    if self._pending == nil and self._active == "bag" then
+      local close = composed:takeBagClose()
+      if close ~= nil then
+        if self._cancellable then
           self._pending = {
             kind = "cancelled",
             requestId = self._requestId,
@@ -1271,48 +638,52 @@ function BattleSubflows:update(events)
             controller = self._controller,
             launchId = self._launchId,
           }
+        else
+          self._notice = "That choice cannot be cancelled."
         end
-      else
-        if event.type == "navigate" then
-          bagMove(assert(self._bag, "the browser owns its input lane"), event.direction --[[@as string]])
-        elseif event.type == "confirm" then
-          confirmBagCell(self)
-        elseif event.type == "cancel" then
-          if not self._cancellable then
-            self._notice = "That choice cannot be cancelled."
+      end
+    end
+  elseif self._active == "target" then
+    local outcome = composed:takeTargetOutcome()
+    if outcome ~= nil then
+      if outcome.kind == "use_item" then
+        self:_stageTarget(outcome.slot --[[@as integer]], outcome.item --[[@as string]])
+      elseif outcome.kind == "cancelled" then
+        composed:closeTarget()
+        self._active = "bag"
+        self._stagedItem = nil
+        self._notice = nil
+      end
+    end
+  elseif self._active == "learn" then
+    local outcome = composed:takeLearnOutcome()
+    if outcome ~= nil then
+      if outcome.kind == "move_selected" then
+        local fragment = composed:translateSelection(outcome.moveSlot --[[@as integer]])
+        if fragment ~= nil then
+          self._learnConfirm = {
+            kind = "replace",
+            slot = outcome.moveSlot,
+            focus = outcome.moveSlot,
+            fragment = fragment,
+          }
+        else
+          self._notice = "The selection expired."
+        end
+      elseif outcome.kind == "cancelled" then
+        local decline = composed:translateSelection(4)
+        if outcome.focus == 4 and decline ~= nil then
+          self._learnConfirm = { kind = "decline", focus = 4, fragment = decline }
+        else
+          local stop = learnFragment(self:_openOptions(), "learn:decline")
+          if stop ~= nil then
+            self._learnConfirm = { kind = "stop", focus = outcome.focus, fragment = stop }
           else
-            self._pending = {
-              kind = "cancelled",
-              requestId = self._requestId,
-              epoch = self._epoch,
-              controller = self._controller,
-              launchId = self._launchId,
-            }
+            self._notice = "The selection expired."
           end
         end
       end
-    elseif self._active == "learn" then
-      if not laneEvent(LIST_EVENTS, event) then
-        break
-      end
-      updateLearn(self, event)
-    elseif self._active == "naming" then
-      -- The composed naming child owns this lane outright: the barrier
-      -- only admits the naming vocabulary so no foreign edge leaks into
-      -- the native screen. Staging and sealing live behind takeResult.
-      if not laneEvent(NAMING_EVENTS, event) then
-        break
-      end
     end
-  end
-end
-
--- Steps the composed child presentation clock: the naming presentation
--- advances its cursor and subject clocks while browser and picker kinds
--- stay event-stepped and keep no transient clock.
-function BattleSubflows:tick()
-  if self._composed ~= nil and self._active ~= nil and not self._disposed then
-    self._composed:stepSourceTick(1)
   end
 end
 
@@ -1332,16 +703,17 @@ local function learnMoveLabel(entry)
   return "Unknown"
 end
 
--- Detached party/target rows for paint and hit regions: every roster
--- slot lists with its display name, level, health, and eligibility.
--- Only kernel-projected fragments enable a row; anything else names
--- its refusal without submitting.
----@param self BattleSubflows
+-- Projects the native party/target roster rows for paint and hit
+-- regions: the native controller status carries slot occupancy, kernel
+-- eligibility, and focus while the barrier only maps them onto the
+-- existing modal rows. Only kernel-projected fragments enable a row;
+-- anything else names its refusal without submitting.
+---@param native table<string, unknown> native party status record under projection
+---@param kind string projected child kind under mapping
 ---@return table<string, unknown> detached party/target child view
-local function partyChildView(self)
-  local state = self._party
+local function projectRosterRows(self, native, kind)
   local shell = {
-    kind = self._active,
+    kind = kind,
     purpose = self._purpose,
     interactive = true,
     notice = self._notice,
@@ -1349,58 +721,37 @@ local function partyChildView(self)
     rows = {},
     focusId = nil,
   } --[[@as table<string, unknown>]]
-  if state == nil then
+  local view = type(native) == "table" and native.view or nil
+  if type(native) ~= "table" or native.open == false or type(view) ~= "table" then
+    if self._composed ~= nil then
+      shell.application = self._composed:application()
+    end
     return shell
   end
   if self._composed ~= nil then
     shell.application = self._composed:application()
   end
-  local slots = state.slots --[[@as table<integer, table<string, unknown>>]]
-  local fragments = state.fragments --[[@as table<integer, table<string, unknown>>]]
-  -- Batch eligibility excludes reserves already staged by another actor:
-  -- a row stays enabled only while an unserved actor offers it. The
-  -- single-fragment target path keeps its direct map.
-  local offered = nil
-  if self._actors ~= nil then
-    offered = {}
-    local served = self._served or {}
-    for _, entry in ipairs(self._actors) do
-      if not served[entry.actor] then
-        for replacement in pairs(entry.byReplacement) do
-          offered[replacement] = true
-        end
-      end
-    end
-  end
+  local slots = view.slots --[[@as table<integer, table<string, unknown>>]]
   local rows = {}
   for slot = 0, 5 do
-    local record = slots[slot]
+    local record = slots[slot + 1]
     local label = "Empty"
     local sub = nil
     local detail = ""
     local enabled = false
     local reason = nil
     local occupied = false
-    if type(record) == "table" then
+    if type(record) == "table" and record.occupied == true then
       occupied = true
-      local name = record.name
+      local name = record.displayName
       label = tostring(type(name) == "string" and name ~= "" and name or "Unknown")
       if type(record.level) == "number" then
         sub = "Lv" .. tostring(record.level)
       end
-      local hp = tonumber(record.hp) or 0
+      local hp = tonumber(record.currentHp) or 0
       local maxHp = tonumber(record.maxHp) or 0
       detail = "HP " .. tostring(hp) .. "/" .. tostring(maxHp)
-      local combatant = record.combatant
-      local selectable = false
-      if type(combatant) == "number" then
-        if offered ~= nil then
-          selectable = offered[combatant] == true
-        else
-          selectable = fragments[combatant] ~= nil
-        end
-      end
-      if selectable then
+      if record.eligible == true then
         enabled = true
         detail = detail .. " OK"
       elseif hp <= 0 then
@@ -1420,37 +771,43 @@ local function partyChildView(self)
       occupied = occupied,
     }
   end
-  local focus = state.focus --[[@as integer|string]]
-  if type(focus) == "number" then
-    shell.focusId = "party:" .. tostring(focus)
-  elseif focus == "cancel" then
+  local cursor = native.cursorNode
+  if type(cursor) == "number" then
+    shell.focusId = "party:" .. tostring(cursor)
+  elseif cursor == "cancel" then
     shell.focusId = "back"
   end
   shell.rows = rows
+  if kind == "target" then
+    shell.stagedItem = self._stagedItem
+  end
   return shell
 end
 
----@param self BattleSubflows
----@param key string stocked item identity under labeling
----@return string visible item name for one stocked key
-local function bagItemLabel(self, key)
-  local catalog = assert(self._itemCatalog, "stocked cells resolve their catalog")
-  local record = catalogItem(catalog, key)
-  if type(record.name) == "string" and record.name ~= "" then
-    return record.name --[[@as string]]
-  end
-  return key
-end
-
--- Detached bag rows for paint and hit regions: the six visible pocket
--- cells with their catalog names, quantities, and kernel legality,
--- plus pocket identity and page facts. Empty cells stay visible but
--- never activate.
----@param self BattleSubflows
+-- Projects the native bag browser rows for paint and hit regions: the
+-- six visible pocket cells with their catalog names, quantities, and
+-- kernel legality, plus pocket identity and page facts read from the
+-- native status. Empty cells stay visible but never activate.
+---@param native table<string, unknown> native bag status record under projection
 ---@return table<string, unknown> detached bag child view
-local function bagChildView(self)
-  local bag = self._bag
-  if bag == nil or bag.empty == true then
+local function projectBagRows(self, native)
+  if type(native) ~= "table" or native.open == false then
+    local shell = {
+      kind = "bag",
+      purpose = self._purpose,
+      interactive = true,
+      notice = self._notice,
+      cancellable = self._cancellable,
+      rows = {},
+      focusId = nil,
+    } --[[@as table<string, unknown>]]
+    if self._composed ~= nil then
+      shell.application = self._composed:application()
+    end
+    return shell
+  end
+  local slots = native.slots --[[@as table<integer, table<string, unknown>>?]]
+  if slots == nil or #slots == 0 then
     return {
       kind = "bag",
       purpose = self._purpose,
@@ -1465,33 +822,18 @@ local function bagChildView(self)
       empty = true,
     } --[[@as table<string, unknown>]]
   end
-  local cursor = bag.cursor --[[@as BagCursor]]
-  local items = bag.items --[[@as table<string, table<integer, table<string, unknown>>>]]
-  local pocket = cursor:currentPocket()
-  local list = items[pocket]
-  local count = #list
-  local start = clampBagStart(count, cursor:scroll(pocket))
-  local position = cursor:position(pocket)
-  local selected = 0
-  if count > 0 then
-    selected = math.min(math.max(position, 0), count - 1)
-  end
-  local pageCount = math.max(1, math.ceil(count / 6))
-  local pageCurrent = 1
-  if count > 0 then
-    pageCurrent = math.min(math.floor(selected / 6) + 1, pageCount)
-  end
   local options = self:_openOptions()
+  local cells = native.visibleSlots --[[@as table<integer, table<string, unknown>>?]]
   local rows = {}
   for cell = 1, 6 do
-    local entry = list[start + cell]
-    if entry ~= nil then
+    local entry = type(cells) == "table" and cells[cell] or nil
+    if type(entry) == "table" and entry.empty ~= true then
       local key = entry.item
       assert(type(key) == "string", "stocked cells carry their item key")
       local legal, reason = itemLegality(options, key)
       rows[#rows + 1] = {
         id = "bag:" .. tostring(cell - 1),
-        label = bagItemLabel(self, key),
+        label = tostring(entry.name or key),
         sub = "x" .. tostring(entry.quantity or 0),
         detail = legal == true and "OK" or refusalText(reason),
         enabled = legal == true,
@@ -1508,16 +850,21 @@ local function bagChildView(self)
     end
   end
   local focusId = nil
-  local node = bag.focusNode --[[@as string]]
-  local absolute = parseSlotNode(node)
-  if absolute ~= nil then
-    focusId = "bag:" .. tostring(absolute - start)
-  elseif node == "cancel" then
+  local focused = native.focusedVisibleIndex
+  if type(focused) == "number" then
+    focusId = "bag:" .. tostring(focused)
+  elseif native.focus == "cancel" then
     focusId = "back"
   end
   local pockets = {}
-  for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
-    pockets[#pockets + 1] = pocketKey
+  if type(native.pockets) == "table" then
+    for _, tab in
+      ipairs(native.pockets --[[@as table<integer, table<string, unknown>>]])
+    do
+      if type(tab) == "table" and type(tab.pocket) == "string" then
+        pockets[#pockets + 1] = tab.pocket
+      end
+    end
   end
   local view = {
     kind = "bag",
@@ -1528,9 +875,9 @@ local function bagChildView(self)
     rows = rows,
     focusId = focusId,
     pockets = pockets,
-    currentPocket = pocket,
-    page = { current = pageCurrent, count = pageCount },
-    stock = count,
+    currentPocket = native.pocket,
+    page = copyValue(native.page) or { current = 1, count = 1 },
+    stock = #slots,
   } --[[@as table<string, unknown>]]
   if self._composed ~= nil then
     view.application = self._composed:application()
@@ -1538,18 +885,15 @@ local function bagChildView(self)
   return view
 end
 
--- Detached learning rows for paint and hit regions: the four held
--- moves, the decline entry, the focused row, and the staged
--- confirmation. Rows never seal on their own; taps route through the
--- same focus/confirm helpers as keyboard input.
----@param self BattleSubflows
+-- Projects the native learning rows for paint and hit regions: the four
+-- held moves from the staged prompt, the decline entry, the native
+-- picker focus, and the staged barrier confirmation. Rows never seal on
+-- their own; taps route through the same native focus as keyboard input.
 ---@return table<string, unknown>? detached learning child view, nil without its prompt
-local function learnChildView(self)
-  local learn = self._learn
-  if learn == nil then
-    return nil
-  end
-  local moves = learn.currentMoves --[[@as table<integer, unknown>]]
+local function projectLearnRows(self)
+  local intent = assert(self._intent, "learning projects its open intent")
+  local request = intent.request --[[@as table<string, unknown>]]
+  local moves = request.currentMoves --[[@as table<integer, unknown>]]
   -- Held-move detail facts come from the composed native summary owner:
   -- the same battle-local facts model the move-pick presentation
   -- navigates. The decline row carries no held facts.
@@ -1577,7 +921,18 @@ local function learnChildView(self)
     rows[#rows + 1] = row
   end
   rows[#rows + 1] = { id = "learn:decline", label = "Decline", detail = "Keep moves", enabled = true }
-  local focus = learn.focus --[[@as integer]]
+  local focusId = nil
+  if self._composed ~= nil then
+    local ok, native = pcall(self._composed.draw, self._composed, nil)
+    if ok and type(native) == "table" and native.open ~= false then
+      local moveSlot = native.moveSlot
+      if type(moveSlot) == "number" and moveSlot >= 0 and moveSlot <= 3 then
+        focusId = "learn:" .. tostring(moveSlot)
+      elseif moveSlot == 4 then
+        focusId = "learn:decline"
+      end
+    end
+  end
   local view = {
     kind = "learn",
     purpose = self._purpose,
@@ -1585,9 +940,9 @@ local function learnChildView(self)
     notice = self._notice,
     cancellable = false,
     rows = rows,
-    focusId = focus <= 4 and ("learn:" .. tostring(focus - 1)) or "learn:decline",
-    confirmation = copyValue(learn.confirmation),
-    incomingMove = learn.incomingMove,
+    focusId = focusId,
+    confirmation = copyValue(self._learnConfirm),
+    incomingMove = request.incomingMove,
   } --[[@as table<string, unknown>]]
   if self._composed ~= nil then
     view.application = self._composed:application()
@@ -1599,7 +954,6 @@ end
 -- screen kind with its application receipt, the staged text (never sealed
 -- by reading), and the barrier identity. Taps route through the same
 -- control mapping as keyboard input.
----@param self BattleSubflows
 ---@return table<string, unknown>? detached naming child view, nil without its composed child
 local function namingChildView(self)
   local child = self._composed
@@ -1646,12 +1000,20 @@ function BattleSubflows:status()
   if self._stagedItem ~= nil then
     record.stagedItem = self._stagedItem
   end
-  if self._learn ~= nil then
-    local learn = self._learn --[[@as table<string, unknown>]]
-    record.focus = learn.focus
-    record.confirmation = copyValue(learn.confirmation)
-    record.incomingMove = learn.incomingMove
-    record.currentMoves = copyValue(learn.currentMoves)
+  if self._active == "learn" then
+    record.confirmation = copyValue(self._learnConfirm)
+    local intent = self._intent
+    if type(intent) == "table" and type(intent.request) == "table" then
+      local request = intent.request --[[@as table<string, unknown>]]
+      record.incomingMove = request.incomingMove
+      record.currentMoves = copyValue(request.currentMoves)
+    end
+    if self._composed ~= nil then
+      local ok, native = pcall(self._composed.draw, self._composed, nil)
+      if ok and type(native) == "table" and native.open ~= false then
+        record.focus = native.moveSlot
+      end
+    end
   end
   if self._active == "naming" and self._composed ~= nil then
     local namingText = self._composed.namingText
@@ -1667,204 +1029,50 @@ function BattleSubflows:status()
 end
 
 -- Projects the detached child view for paint and hit regions from the
--- current battle-local cursor state. Party/target rows read the picker
--- slots, focus, and projected fragments; bag rows read the browser
--- pocket window and kernel item policy; learning rows read the staged
--- prompt. Read-only snapshots only.
+-- native controller status. Party/target rows read the native roster
+-- status with its focus and kernel eligibility; bag rows read the native
+-- pocket window and kernel item policy; learning rows read the native
+-- picker focus with the staged prompt. Read-only snapshots only.
 ---@return table<string, unknown>? detached child view, nil while no child owns input
 function BattleSubflows:_projectChildView()
   if self._disposed or self._active == nil then
     return nil
   end
-  if self._active == "party" or self._active == "target" then
-    return partyChildView(self)
+  if self._composed == nil then
+    return nil
+  end
+  if self._active == "party" then
+    local ok, native = pcall(self._composed.draw, self._composed, nil)
+    if not ok then
+      return nil
+    end
+    return projectRosterRows(self, native --[[@as table<string, unknown>]], "party")
+  elseif self._active == "target" then
+    local native = self._composed:targetStatus()
+    if native == nil then
+      return nil
+    end
+    return projectRosterRows(self, native, "target")
   elseif self._active == "bag" then
-    return bagChildView(self)
+    local ok, native = pcall(self._composed.draw, self._composed, nil)
+    if not ok then
+      return nil
+    end
+    return projectBagRows(self, native --[[@as table<string, unknown>]])
   elseif self._active == "learn" then
-    return learnChildView(self)
+    return projectLearnRows(self)
   elseif self._active == "naming" then
     return namingChildView(self)
   end
   return nil
 end
 
----@param id string stable row/control identity under activation
----@return boolean consumed true when the tap belonged to the open child
-function BattleSubflows:_activatePartyControl(id)
-  if id == "back" then
-    if self._active == "target" then
-      cancelParty(self)
-      return true
-    end
-    if not self._cancellable then
-      self._notice = "That choice cannot be cancelled."
-      return true
-    end
-    cancelParty(self)
-    return true
-  end
-  local slot = tonumber(id:match("^party:(%d+)$") or "")
-  if slot == nil or slot < 0 or slot > 5 then
-    return false
-  end
-  local state = assert(self._party, "picker taps keep their picker")
-  local slots = state.slots --[[@as table<integer, table<string, unknown>>]]
-  local record = slots[slot]
-  local combatant = type(record) == "table" and record.combatant or nil
-  if type(combatant) == "number" and stageReserve(self, combatant) then
-    return true
-  end
-  -- A visibly disabled row explains itself without submitting.
-  local hp = type(record) == "table" and record.hp or nil
-  if type(hp) == "number" and hp <= 0 then
-    self._notice = "It is fainted."
-  else
-    self._notice = refusalText(nil)
-  end
-  return true
-end
-
----@param id string stable row/control identity under activation
----@return boolean consumed true when the tap belonged to the open child
-function BattleSubflows:_activateBagControl(id)
-  local bag = self._bag
-  if bag == nil then
-    return false
-  end
-  if id == "back" then
-    if not self._cancellable then
-      self._notice = "That choice cannot be cancelled."
-      return true
-    end
-    if bag.empty == true then
-      self._pending = {
-        kind = "cancelled",
-        requestId = self._requestId,
-        epoch = self._epoch,
-        controller = self._controller,
-        launchId = self._launchId,
-      }
-      return true
-    end
-    self._pending = {
-      kind = "cancelled",
-      requestId = self._requestId,
-      epoch = self._epoch,
-      controller = self._controller,
-      launchId = self._launchId,
-    }
-    return true
-  end
-  if bag.empty == true then
-    return false
-  end
-  if id == "pocket_prev" then
-    stepPocket(self, "left")
-    return true
-  end
-  if id == "pocket_next" then
-    stepPocket(self, "right")
-    return true
-  end
-  local cell = tonumber(id:match("^bag:(%d+)$") or "")
-  if cell == nil or cell < 0 or cell > 5 then
-    return false
-  end
-  local cursor = bag.cursor --[[@as BagCursor]]
-  local items = bag.items --[[@as table<string, table<integer, table<string, unknown>>>]]
-  local list = items[cursor:currentPocket()]
-  local start = clampBagStart(#list, cursor:scroll(cursor:currentPocket()))
-  local entry = list[start + cell + 1]
-  if entry == nil then
-    return true
-  end
-  local key = entry.item
-  assert(type(key) == "string", "stocked cells carry their item key")
-  local options = self:_openOptions()
-  local legal, reason = itemLegality(options, key)
-  if legal == true then
-    self:stageItem(key)
-  else
-    self._notice = refusalText(reason)
-  end
-  return true
-end
-
----@param id string stable row/control identity under activation
----@return boolean consumed true when the tap belonged to the open child
-function BattleSubflows:_activateLearnControl(id)
-  local learn = self._learn
-  if learn == nil then
-    return false
-  end
-  if id == "back" then
-    cancelLearn(self)
-    return true
-  end
-  if id == "confirm" then
-    local confirmation = learn.confirmation --[[@as table<string, unknown>?]]
-    if confirmation == nil then
-      return true
-    end
-    if confirmation.kind == "stop" then
-      confirmStopLearn(self)
-    else
-      confirmLearn(self)
-    end
-    return true
-  end
-  local tapped = nil
-  local slot = tonumber(id:match("^learn:(%d+)$") or "")
-  if slot ~= nil and slot >= 0 and slot <= 3 then
-    tapped = slot
-    learn.focus = slot + 1
-  elseif id == "learn:decline" then
-    tapped = "decline"
-    learn.focus = 5
-  else
-    return false
-  end
-  -- Taps stage their explicit confirmation without ever sealing on
-  -- their own: only the shared confirmation helper seals, exactly
-  -- like the keyboard flow. Tapping another row restages instead,
-  -- and tapping away from the stop prompt abandons it.
-  if tapped == "decline" then
-    learn.confirmation = { kind = "decline" }
-  else
-    learn.confirmation = { kind = "replace", slot = tapped }
-  end
-  return true
-end
-
--- Routes one tap to the current bound fragments through the existing
--- bind/stage/learn helpers, never a second policy. Party and target
--- rows bind their already projected switch/item fragment, bag item
--- rows stage through the existing item path only while visible and
--- legal, and learn rows share the keyboard focus/confirm helpers. A
--- tap on a visibly disabled row shows its reason without submitting;
--- unknown ids never seal.
----@param id string stable row/control identity under activation
----@return boolean consumed true when the tap belonged to the open child
-function BattleSubflows:_activateNamingControl(id)
-  -- Naming taps operate the native keyboard controls directly: pages
-  -- twist, glyphs insert, Back deletes one glyph, and OK submits. Barrier
-  -- cancellation arrives through the update cancel edge, never a tap, so
-  -- a tap can neither abandon nor seal behind the screen's back.
-  if
-    id ~= "upper"
-    and id ~= "lower"
-    and id ~= "symbols"
-    and id ~= "back"
-    and id ~= "ok"
-    and id:sub(1, 6) ~= "glyph:"
-  then
-    return false
-  end
-  local child = assert(self._composed, "naming taps keep their composed child")
-  child:input({ { type = "name_control", id = id } })
-  return true
-end
-
+-- Routes one tap to the native controller through the barrier tap queue:
+-- the tap validates against the projected rows, then the next source
+-- tick synthesizes its matched pointer pair at the same canonical center
+-- the paint and hit-testing share. A tap on a visibly disabled row shows
+-- its reason through the next projection without submitting; unknown ids
+-- never seal.
 ---@param id string stable row/control identity under activation
 ---@return boolean consumed true when the tap belonged to the open child
 function BattleSubflows:activateControl(id)
@@ -1872,16 +1080,56 @@ function BattleSubflows:activateControl(id)
     return false
   end
   assert(type(id) == "string" and id ~= "", "child taps name their control")
-  if self._active == "party" or self._active == "target" then
-    return self:_activatePartyControl(id)
-  elseif self._active == "bag" then
-    return self:_activateBagControl(id)
-  elseif self._active == "learn" then
-    return self:_activateLearnControl(id)
-  elseif self._active == "naming" then
-    return self:_activateNamingControl(id)
+  if self._active == "naming" then
+    if
+      id ~= "upper"
+      and id ~= "lower"
+      and id ~= "symbols"
+      and id ~= "back"
+      and id ~= "ok"
+      and id:sub(1, 6) ~= "glyph:"
+    then
+      return false
+    end
+    self._queued[#self._queued + 1] = { type = "name_control", id = id }
+    return true
   end
-  return false
+  -- The staged learning confirmation owns its barrier edges: confirm
+  -- seals the stored fragment while Back rebuilds the native list.
+  if self._learnConfirm ~= nil then
+    if id == "confirm" then
+      self._queued[#self._queued + 1] = { type = "confirm" }
+      return true
+    end
+    if id == "back" then
+      self._queued[#self._queued + 1] = { type = "cancel" }
+      return true
+    end
+    return false
+  end
+  local view = self:_projectChildView()
+  if view == nil then
+    return false
+  end
+  local known = id == "back"
+  if not known and type(view.rows) == "table" then
+    for _, row in
+      ipairs(view.rows --[[@as table<integer, table<string, unknown>>]])
+    do
+      if type(row) == "table" and row.id == id then
+        known = true
+        break
+      end
+    end
+  end
+  if not known and self._active == "bag" and (id == "pocket_prev" or id == "pocket_next") then
+    known = view.empty ~= true
+  end
+  if not known then
+    return false
+  end
+  self._queued[#self._queued + 1] = { type = "tap", id = id }
+  return true
 end
 
 ---@return table<string, unknown>? staged bound result, exactly once
@@ -1904,23 +1152,19 @@ function BattleSubflows:takeResult()
   return result
 end
 
--- Closes the active child and drops its retained browser. The battle
--- owns every cursor record, so closing only clears references without
--- sealing. The composed child disposes exactly once: borrowed catalogs
--- stay usable while owned controller state releases. Staged state clears
--- without sealing.
+-- Closes the active child and drops its buffered edges. Closing only
+-- clears references without sealing. The composed child disposes exactly
+-- once: borrowed catalogs stay usable while owned controller state
+-- releases. Staged state clears without sealing.
 function BattleSubflows:closeChild()
   if self._composed ~= nil then
     self._composed:dispose()
     self._composed = nil
   end
-  self._party = nil
   self._stagedItem = nil
-  self._bag = nil
-  self._retained = nil
-  self._learn = nil
-  self._actors = nil
-  self._served = nil
+  self._learnConfirm = nil
+  self._queued = {}
+  self._intent = nil
   self._active = nil
   self._purpose = nil
   self._pending = nil
@@ -1929,14 +1173,24 @@ function BattleSubflows:closeChild()
   self._openPartyValue = nil
 end
 
--- Cancels a held press through the active composed child so a stale
--- release never activates after remeasure. The battle keeps no held-press
--- state of its own: press arming lives with the parent, and cursor focus
--- and stored request identity stay put.
+-- Cancels a held press through the single controller tick path: queued
+-- taps drop (press topology belongs to the barrier, so a remeasure
+-- invalidates the armed activation) while the release edge itself buffers
+-- behind the next accepted tick. The battle keeps no held-press state of
+-- its own: press arming lives with the parent, and stored request
+-- identity stays put.
 function BattleSubflows:cancelPointerCapture()
-  if self._composed ~= nil and self._active ~= nil and not self._disposed then
-    self._composed:input({ { type = "pointer_cancel" } })
+  if self._disposed or self._active == nil or self._pending ~= nil then
+    return
   end
+  local kept = {}
+  for _, event in ipairs(self._queued) do
+    if type(event) ~= "table" or event.type ~= "tap" then
+      kept[#kept + 1] = event
+    end
+  end
+  self._queued = kept
+  self._queued[#self._queued + 1] = { type = "pointer_cancel" }
 end
 
 -- Idempotent release of the child lifetime: staged results clear, and

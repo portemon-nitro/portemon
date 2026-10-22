@@ -690,4 +690,295 @@ function T.rejecting_cue_audio_fails_the_launch_with_context()
   state:dispose()
 end
 
+---@return table caller-owned dual-surface display facts
+local function musicDualMeasurement()
+  return {
+    width = 256,
+    height = 384,
+    topology = ScreenTopology.dualDisplay(
+      { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+      { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" },
+      "result-music:dual"
+    ),
+    pixelRatio = 1,
+    signature = "result-music:dual",
+  }
+end
+
+---@return table recording text boundary keeping every drawn string
+local function musicText()
+  local text = { draws = {} }
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(content, x, y)
+    text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y }
+  end
+  return text
+end
+
+---@return table recording window-frame boundary
+local function musicWindows()
+  local windows = { calls = {} }
+  function windows.drawWindow(box, frameKey, background)
+    windows.calls[#windows.calls + 1] = { box = box, frame = frameKey, background = background }
+  end
+  function windows.drawApplicationFrame(box, frameKey)
+    windows.calls[#windows.calls + 1] = { box = box, frame = frameKey }
+  end
+  return windows
+end
+
+-- A strict recording field-audio double behind the result BGM: an
+-- accepted start answers true once recorded, so silent or repeated
+-- swaps fail instead of passing quietly.
+---@return table recording field audio double
+local function strictMusicAudio()
+  local audio = { music = {}, attempts = 0 }
+  function audio:playMusic(symbol)
+    audio.attempts = audio.attempts + 1
+    audio.music[#audio.music + 1] = symbol
+    return true
+  end
+  return audio
+end
+
+-- A field-audio double that records its one attempt and then rejects
+-- it, so the envelope must latch the failure instead of retrying.
+---@return table rejecting field audio double
+local function rejectingMusicAudio()
+  local audio = { attempts = 0 }
+  function audio:playMusic(_)
+    audio.attempts = audio.attempts + 1
+    error("injected result-music fault", 0)
+  end
+  return audio
+end
+
+---@param launchId string owning launch identity under test driving
+---@return table stub launch host holding its phase with recorded notifications
+local function musicStubHost(launchId)
+  local host = { launchId = launchId, notifies = {} }
+  function host.status()
+    return { phase = "active" }
+  end
+  function host.advance() end
+  function host.submit(_)
+    return false, { message = "no open request" }
+  end
+  function host.notify(event, detail)
+    host.notifies[#host.notifies + 1] = { event = event, detail = detail }
+  end
+  return host
+end
+
+---@param fieldAudio table field audio double behind the result BGM
+---@param kind string launch kind behind the BGM lookup
+---@param launchTag string launch tag behind distinct identities
+---@return table live rig with the real envelope, screen, port, and stub host
+local function openMusicLaunch(fieldAudio, kind, launchTag)
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local cache = FieldStatePresentationFixture.cache()
+  cache:writeLua(BattlePresentationCache.manifestPath(), BattlePresentationManifestFixture.manifest())
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = musicWindows(),
+    text = musicText(),
+    audio = {
+      play = function(_, _)
+        return true
+      end,
+    },
+    measureDisplay = function()
+      return musicDualMeasurement()
+    end,
+  })
+  local launchId = "result-music-" .. launchTag
+  local host = musicStubHost(launchId)
+  local port = envelope:factory()({
+    launchId = launchId,
+    environment = { sceneKey = SCENE_KEY },
+    host = host,
+    audio = fieldAudio,
+    kind = kind,
+    textSpeed = "mid",
+  })
+  Assert.notNil(port, "the envelope admits its presented launch")
+  local screen = envelope:liveScreen()
+  Assert.notNil(screen, "the envelope owns its live screen")
+  return { envelope = envelope, screen = screen, port = port, host = host, fieldAudio = fieldAudio }
+end
+
+---@param word string terminal result word behind the fabricated delivery
+---@return table detached terminal delivery picturing the settled views
+local function musicTerminalPacket(launchId, packetId, word)
+  local view = {
+    own = {
+      {
+        combatant = 1,
+        activation = 1,
+        side = 1,
+        position = 1,
+        name = "LEAD",
+        species = "EEVEE",
+        level = 5,
+        hp = 20,
+        maxHp = 20,
+        active = true,
+      },
+    },
+    foes = {
+      {
+        combatant = 2,
+        activation = 1,
+        side = 2,
+        position = 2,
+        name = "Wild CHIKORITA",
+        species = "CHIKORITA",
+        level = 3,
+        hp = 0,
+        maxHp = 18,
+        active = true,
+      },
+    },
+  }
+  return {
+    launchId = launchId,
+    packetId = packetId,
+    events = {},
+    before = view,
+    after = view,
+    result = { word = word },
+  }
+end
+
+---@param rig table live rig under test driving
+---@param word string terminal result word under test driving
+---@param packetId integer delivery identity under test driving
+local function driveMusicToOutcome(rig, word, packetId)
+  rig.port.present(musicTerminalPacket(rig.host.launchId, packetId, word))
+  for _ = 1, 900 do
+    rig.screen:updateFixed(TICK)
+    if rig.screen:status().mode == "outcome" then
+      return
+    end
+    Assert.isTrue(rig.screen:status().mode ~= "failed", "the presented screen never fails: " .. tostring(rig.screen:status().error))
+  end
+  error("the presented screen never reached its outcome for " .. tostring(word), 0)
+end
+
+---@param rig table live rig under test driving
+local function acknowledgeOutcome(rig)
+  for _ = 1, 30 do
+    rig.screen:input({ { type = "confirm" } })
+    rig.screen:updateFixed(TICK)
+    if rig.port.leave({}) then
+      return
+    end
+  end
+  error("the terminal narration never acknowledged", 0)
+end
+
+-- Nonvictory terminals, replays, and a rejecting music sink stay safe:
+-- loss, flee, and draw voice no BGM, a duplicated terminal delivery
+-- replays no BGM, and a rejected win BGM reports once with its launch
+-- identity while the committed result still acknowledges and returns.
+-- A later nickname decision and launch teardown replay nothing.
+function T.nonvictory_duplicate_and_rejected_result_music_stays_single_and_safe()
+  for _, word in ipairs({ "loss", "flee", "draw" }) do
+    local rig = openMusicLaunch(strictMusicAudio(), "wild", word)
+    driveMusicToOutcome(rig, word, 1)
+    for _ = 1, 30 do
+      rig.envelope:updateFixed(TICK)
+    end
+    Assert.equal(#rig.fieldAudio.music, 0, word .. " voices no victory BGM")
+    acknowledgeOutcome(rig)
+    Assert.equal(#rig.fieldAudio.music, 0, word .. " still voices no victory BGM after ack")
+    Assert.isTrue(rig.port.leave({}), "the acknowledged " .. word .. " terminal returns")
+    rig.envelope:dispose()
+  end
+  do
+    local rig = openMusicLaunch(strictMusicAudio(), "wild", "duplicate")
+    driveMusicToOutcome(rig, "win", 1)
+    Assert.equal(#rig.fieldAudio.music, 1, "the win voices its BGM once")
+    rig.port.present(musicTerminalPacket(rig.host.launchId, 2, "win"))
+    for _ = 1, 60 do
+      rig.screen:updateFixed(TICK)
+      rig.envelope:updateFixed(TICK)
+    end
+    Assert.equal(#rig.fieldAudio.music, 1, "the duplicated terminal replays no BGM")
+    Assert.equal(rig.fieldAudio.attempts, 1, "the duplicated terminal retries no BGM start")
+    acknowledgeOutcome(rig)
+    Assert.equal(#rig.fieldAudio.music, 1, "the acknowledged win replays no BGM")
+    rig.envelope:dispose()
+  end
+  do
+    local rig = openMusicLaunch(rejectingMusicAudio(), "wild", "rejected")
+    driveMusicToOutcome(rig, "win", 1)
+    Assert.equal(rig.fieldAudio.attempts, 1, "the rejected BGM is attempted exactly once")
+    local failed = {}
+    for _, note in ipairs(rig.host.notifies) do
+      if note.event == "screen-failed" then
+        failed[#failed + 1] = note
+      end
+    end
+    Assert.equal(#failed, 1, "the rejected BGM reports exactly once")
+    local context = tostring(failed[1].detail)
+    Assert.isTrue(context:find(rig.host.launchId, 1, true) ~= nil, "the failure names its launch: " .. context)
+    Assert.isTrue(context:find("SEQ_GS_WIN2", 1, true) ~= nil, "the failure names its track: " .. context)
+    Assert.equal(rig.screen:status().mode, "outcome", "the committed win survives its rejected BGM")
+    for _ = 1, 30 do
+      rig.screen:updateFixed(TICK)
+      rig.envelope:updateFixed(TICK)
+    end
+    Assert.equal(rig.fieldAudio.attempts, 1, "the rejected BGM retries nothing per frame")
+    local refailed = 0
+    for _, note in ipairs(rig.host.notifies) do
+      if note.event == "screen-failed" then
+        refailed = refailed + 1
+      end
+    end
+    Assert.equal(refailed, 1, "the rejected BGM reports nothing twice")
+    acknowledgeOutcome(rig)
+    Assert.isTrue(rig.port.leave({}), "the committed win still returns after its rejected BGM")
+    rig.envelope:dispose()
+  end
+  do
+    local rig = openMusicLaunch(strictMusicAudio(), "wild", "completion")
+    driveMusicToOutcome(rig, "win", 1)
+    Assert.equal(#rig.fieldAudio.music, 1, "the win voices its BGM once")
+    acknowledgeOutcome(rig)
+    local catalog = CatalogFixture.makeCatalog()
+    local factory = CatalogFixture.makeFactory(0x1D000001, catalog)
+    local subject = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 4 }))
+    Assert.isTrue(
+      rig.port.openCompletion({
+        launchId = rig.host.launchId,
+        completionId = "nickname-1",
+        kind = "capture_nickname",
+        subject = subject,
+      }),
+      "the acknowledged terminal stores its nickname decision"
+    )
+    for _ = 1, 30 do
+      rig.screen:updateFixed(TICK)
+      rig.envelope:updateFixed(TICK)
+    end
+    Assert.equal(#rig.fieldAudio.music, 1, "the open completion retriggers no BGM")
+    rig.screen:input({ { type = "cancel" } })
+    rig.screen:updateFixed(TICK)
+    local declined = rig.port.takeCompletion()
+    Assert.notNil(declined, "the declined decision still seals")
+    Assert.equal(#rig.fieldAudio.music, 1, "the sealed completion retriggers no BGM")
+    Assert.isTrue(rig.port.leave({}), "the completed win still returns")
+    rig.port.dispose()
+    for _ = 1, 10 do
+      rig.screen:updateFixed(TICK)
+    end
+    Assert.equal(#rig.fieldAudio.music, 1, "launch teardown replays no BGM")
+    rig.envelope:dispose()
+  end
+end
+
 return { tests = T }

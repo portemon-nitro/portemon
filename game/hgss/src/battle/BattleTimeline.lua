@@ -16,8 +16,9 @@ local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 ---@class BattleTimeline
----@field _effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel
----@field _nativeSeen table<string, boolean> emitted native-effect identities by launch, action, effect key, and event kind
+---@field _effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire
+---@field _nativeSeen table<string, boolean> claimed visual occurrences by launch, action, executed effect key, and source phase
+---@field _announced table<string, boolean> narrated attack occurrences by the same occurrence identity
 ---@field _pendingSounds table<integer, table<string, unknown>> queued one-shot sound cues for the screen drain
 ---@field _battlers table<integer, table<string, unknown>> displayed facts by combatant identity
 ---@field _order integer[] player-first combatant identities for view order
@@ -92,7 +93,7 @@ end
 ---@field sound (fun(cue: table<string, unknown>))? sound-cue sink, drained immediately when supplied
 ---@field moveName (fun(move: string): string?)? display-name resolver for move identities the views never name
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
----@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel, absent without a screen owner
+---@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire, absent without a screen owner
 
 ---@param opts BattleTimeline.Options?
 ---@return BattleTimeline
@@ -106,6 +107,7 @@ function BattleTimeline.new(opts)
     _revealPolicy = revealPolicy,
     _effects = opts.effects,
     _nativeSeen = {},
+    _announced = {},
     _pendingSounds = {},
     _names = {},
     _ownMoves = {},
@@ -309,6 +311,10 @@ function BattleTimeline:reset(view)
   self._queue = {}
   self._active = nil
   self._flowIntroDone = false
+  -- A fresh opening starts new actions: occurrence and narration claims
+  -- never leak from the previous launch into the next one.
+  self._nativeSeen = {}
+  self._announced = {}
 end
 
 ---@param cue table<string, unknown>
@@ -386,35 +392,53 @@ local function nativeEffectKeyOf(event)
   return nil
 end
 
+--- One visual occurrence belongs to one action and one source phase: the
+--- launch, the action identity, the executed effect key, and the move
+--- phase. Every hit of a multi-hit sequence and every recipient of a
+--- spread move shares the source action identity, while a distinct action
+--- identity starts its own occurrence. The charged and struck halves of a
+--- two-turn action stay distinct through their source phases, so the
+--- strike half never collapses onto the charge cue. An action without an
+--- identity (a strike-only legacy emission) falls back to its event
+--- sequence; a present but mistyped action identity is malformed and
+--- claims nothing rather than silently visualizing another user's action.
 ---@param launch string owning launch identity under emission
 ---@param event table<string, unknown> sanitized kernel event under emission
----@return string action-scoped native identity behind exactly-once emission
-local function nativeIdentityOf(launch, event)
-  -- One action plays its full move animation once per hit of each phase:
-  -- every hit of a multi-hit sequence and every recipient of a spread
-  -- move shares the source action identity, while a distinct action
-  -- identity (or a distinct event sequence without one) starts its own
-  -- occurrence. The charged and struck phases of a two-turn action are
-  -- distinct occurrences (native opcode 13 selects the charge half on a
-  -- clear battle flag and the strike half on a set one), so the event
-  -- kind joins the identity: same-phase duplicates still collapse, but
-  -- the strike half never collapses onto the charge cue.
+---@return string? action-scoped occurrence identity, nil when the source action identity is malformed
+local function occurrenceIdentityOf(launch, event)
   local action = event.actionId
   if type(action) ~= "number" and type(action) ~= "string" then
+    if action ~= nil then
+      return nil
+    end
     action = event.sequence
   end
-  return launch .. "\0" .. tostring(action) .. "\0" .. tostring(event.effectKey) .. "\0" .. tostring(event.kind)
+  local phase = event.kind
+  local move = event.move --[[@as table<string, unknown>?]]
+  if type(move) == "table" and type(move.phase) == "string" then
+    phase = move.phase
+  end
+  return launch .. "\0" .. tostring(action) .. "\0" .. tostring(event.effectKey) .. "\0" .. tostring(phase)
+end
+
+---@param packet table<string, unknown> delivery carrying launch identity
+---@return string owning launch identity under emission, empty when unnamed
+local function launchOf(packet)
+  if type(packet.launchId) == "string" then
+    return packet.launchId --[[@as string]]
+  end
+  return ""
 end
 
 -- Demands the exact selected effect the first time its source event is
--- admitted, overlapping staging with narration. The cue itself stays
+-- admitted, once its announcement has played. The cue itself stays
 -- ordered behind the event narration and ahead of its hit and health
 -- work, and still holds every later cue until the player occurrence
 -- actually completes. Emission is exactly once per launch, action,
--- effect key, and event kind: later hits, spread recipients, and
--- redeliveries of the same action queue nothing new. Generic impact and effectiveness
--- voices stay silent on this path because the selected program owns
--- audio timing.
+-- executed effect key, and source phase: later hits, spread recipients,
+-- and redeliveries of the same action queue nothing new. Generic impact
+-- and effectiveness voices stay silent on this path because the selected
+-- program owns audio timing.
 ---@param self BattleTimeline
 ---@param cue table<string, unknown> native-effect cue under admission
 local function beginNativeEffect(self, cue)
@@ -460,13 +484,23 @@ local function beginNativeEffect(self, cue)
 end
 
 -- Queues one native-effect cue for an effect-keyed source event behind
--- the current narration and ahead of the event's hit and health work.
+-- its attack announcement and ahead of the event's hit and health work.
+-- A malformed source action identity claims nothing: the outcome still
+-- narrates, but no visual is assigned to another user's action.
 ---@param self BattleTimeline
 ---@param event table<string, unknown> sanitized kernel event carrying its accepted playback facts
 ---@param packet table<string, unknown> delivery carrying launch identity and event-time views
 local function enqueueNativeEffect(self, event, packet)
-  local launch = type(packet.launchId) == "string" and packet.launchId or ""
-  local identity = nativeIdentityOf(launch, event)
+  local launch = launchOf(packet)
+  local identity = occurrenceIdentityOf(launch, event)
+  if identity == nil then
+    self._diagnostics[#self._diagnostics + 1] = "native effect "
+      .. tostring(event.effectKey)
+      .. " for launch "
+      .. tostring(packet.launchId)
+      .. " names no usable action identity; the visual is skipped"
+    return
+  end
   if self._nativeSeen[identity] == true then
     return
   end
@@ -749,24 +783,35 @@ local function translateStruck(self, event, packet, narrated)
   end
   local moveKey = explicitMove(event)
   local attackerName = attacker ~= nil and combatName(self, attacker) or "The foe"
-  -- An effect-keyed strike leads with its selected native program so
-  -- the player occurrence is already stepping on its first tick: the
-  -- cue player holds every later cue until the exact program
-  -- completes. EffectKey-less strikes keep the legacy generic voices
-  -- exactly as before.
-  local nativeKey = nativeEffectKeyOf(event)
-  if nativeKey ~= nil then
-    enqueueNativeEffect(self, event, packet)
-  end
+  local wording = attackerName .. " used " .. moveName(self, attacker or -1, moveKey) .. "!"
   -- One attack occurrence narrates once across its hits: the first
   -- strike voices the attack while later hits keep their impact,
-  -- sound, and checkpoint motion in native order.
-  local narrationKey = BattlePresentationFlow.attackKey(attacker, moveKey)
-  local already = narrated ~= nil and narrated[narrationKey] == true
-  if not already then
-    enqueueMessage(self, attackerName .. " used " .. moveName(self, attacker or -1, moveKey) .. "!", false)
-    if narrated ~= nil then
-      narrated[narrationKey] = true
+  -- sound, and checkpoint motion in native order. The announcement
+  -- runs before the visual, and the visual runs once per action and
+  -- phase behind that announcement. EffectKey-less strikes keep the
+  -- legacy generic voices and per-delivery narration exactly as before.
+  local nativeKey = nativeEffectKeyOf(event)
+  local occurrence = nil
+  if nativeKey ~= nil then
+    occurrence = occurrenceIdentityOf(launchOf(packet), event)
+  end
+  if occurrence ~= nil then
+    if self._announced[occurrence] ~= true then
+      self._announced[occurrence] = true
+      enqueueMessage(self, wording, false)
+    end
+    enqueueNativeEffect(self, event, packet)
+  else
+    local narrationKey = BattlePresentationFlow.attackKey(attacker, moveKey)
+    local already = narrated ~= nil and narrated[narrationKey] == true
+    if not already then
+      enqueueMessage(self, wording, false)
+      if narrated ~= nil then
+        narrated[narrationKey] = true
+      end
+    end
+    if nativeKey ~= nil then
+      enqueueNativeEffect(self, event, packet)
     end
   end
   enqueue(self, {
@@ -1092,13 +1137,10 @@ end
 ---@param event table<string, unknown>
 ---@param packet table<string, unknown> delivery carrying launch identity and event-time views
 local function translateTransformed(self, event, packet)
-  -- An effect-keyed Transform leads with its selected native program
+  -- The transform narration runs before its selected native program
   -- while the essential appearance below still applies synchronously:
   -- the visual update is never silenced, even on paths where optional
   -- artwork is suppressed.
-  if nativeEffectKeyOf(event) ~= nil then
-    enqueueNativeEffect(self, event, packet)
-  end
   local payload = event.payload --[[@as table<string, unknown>]]
   local who = nameOrBattler(self, payload.target)
   local copied = payload.copiedFrom
@@ -1106,6 +1148,9 @@ local function translateTransformed(self, event, packet)
     enqueueMessage(self, who .. " transformed into " .. combatName(self, copied --[[@as integer]]) .. "!", false)
   else
     enqueueMessage(self, who .. " transformed.", false)
+  end
+  if nativeEffectKeyOf(event) ~= nil then
+    enqueueNativeEffect(self, event, packet)
   end
   -- The displayed appearance tracks the copied battler even when
   -- effects are suppressed: the disabled animation path still applies
@@ -1416,33 +1461,38 @@ local OTHER_TRANSLATORS = {
 local function translateOther(self, event, packet)
   local kind = event.kind --[[@as string]]
   if kind == "move-used" then
-    -- The use announcement never spends the action's single native
-    -- occurrence: the action's struck counterpart owns the visual, so
-    -- the program still runs after its use narration instead of ahead
-    -- of it.
+    -- A successful no-strike execution admits its visual behind its own
+    -- use announcement. A striking action owns the same occurrence
+    -- through its strike, so whichever event claims it first wins and
+    -- the other stays silent: one action still plays one visual.
     translateMoveUsed(self, event)
+    if nativeEffectKeyOf(event) ~= nil then
+      enqueueNativeEffect(self, event, packet)
+    end
     return
   end
   if kind == "transformed" then
     translateTransformed(self, event, packet)
     return
   end
-  -- Any other effect-keyed source event leads with its selected native
-  -- program: missed, protected, charged, delayed, and future
+  -- Any other effect-keyed source event narrates before its selected
+  -- native program: missed, protected, charged, delayed, and future
   -- source-attributed kinds visualize where the source names an
-  -- effect instead of collapsing onto a generic hit. The cue leads
-  -- so the occurrence steps from its first tick; later cues still
+  -- effect instead of collapsing onto a generic hit. Later cues still
   -- wait for real completion.
-  if nativeEffectKeyOf(event) ~= nil then
-    enqueueNativeEffect(self, event, packet)
-  end
   local translate = OTHER_TRANSLATORS[kind]
   if translate == nil then
     self._diagnostics[#self._diagnostics + 1] = "unrepresentable effect: " .. kind
     enqueueMessage(self, "Something unrepresentable happened (" .. kind .. ").", false)
+    if nativeEffectKeyOf(event) ~= nil then
+      enqueueNativeEffect(self, event, packet)
+    end
     return
   end
   translate(self, event)
+  if nativeEffectKeyOf(event) ~= nil then
+    enqueueNativeEffect(self, event, packet)
+  end
 end
 
 -- Accepts one delivery packet in order: unseen identities translate
@@ -1526,6 +1576,41 @@ function BattleTimeline:present(packet, sourceMessages)
     self._latest = packet.after
   end
   indexFacts(self, packet.after)
+  -- The use event of a no-strike execution closes its action: within
+  -- each action group it translates first, so its announcement and
+  -- visual lead the action's cue block and stage or status siblings
+  -- of the same action never play ahead of the visual they belong to.
+  -- Grouping never crosses actions and never rewrites kernel event
+  -- identities; only cue scheduling changes.
+  local groups = {} ---@type table<integer, table<integer, table<string, unknown>>>
+  local groupIndex = {} ---@type table<string, integer>
+  for _, event in ipairs(fresh) do
+    local action = event.actionId
+    if type(action) ~= "number" and type(action) ~= "string" then
+      action = event.sequence
+    end
+    local groupKey = launch .. "\0" .. tostring(action)
+    local slot = groupIndex[groupKey]
+    if slot == nil then
+      groups[#groups + 1] = {}
+      slot = #groups
+      groupIndex[groupKey] = slot
+    end
+    groups[slot][#groups[slot] + 1] = event
+  end
+  fresh = {}
+  for _, group in ipairs(groups) do
+    for _, event in ipairs(group) do
+      if event.kind == "move-used" then
+        fresh[#fresh + 1] = event
+      end
+    end
+    for _, event in ipairs(group) do
+      if event.kind ~= "move-used" then
+        fresh[#fresh + 1] = event
+      end
+    end
+  end
   -- One attack occurrence narrates once per delivery: the set lives
   -- only for this packet so later packets narrate their own attacks.
   local narrated = {} ---@type table<string, boolean>
@@ -1702,6 +1787,38 @@ local function pollNativeEffect(self, cue)
     return false
   end
   if phase == "complete" then
+    -- Only this consumption point releases the occurrence, after the
+    -- player advanced it to completion: the collaborator drops its
+    -- track and terminal record before the cue leaves the queue, so a
+    -- later poll never aliases a reused identity. Collaborators without
+    -- a release hook predate it and keep the legacy completion.
+    local retirer = type(self._effects) == "table" and self._effects.retire or nil
+    if type(retirer) == "function" then
+      local okRetire, retired = pcall(retirer, handle)
+      if not okRetire then
+        if cue.retireNoted ~= true then
+          cue.retireNoted = true
+          self._diagnostics[#self._diagnostics + 1] = "native effect "
+            .. tostring(cue.effectKey)
+            .. " for launch "
+            .. tostring(cue.launchId)
+            .. " retirement failed: "
+            .. tostring(retired)
+        end
+        return false
+      end
+      if retired ~= true then
+        if cue.retireNoted ~= true then
+          cue.retireNoted = true
+          self._diagnostics[#self._diagnostics + 1] = "native effect "
+            .. tostring(cue.effectKey)
+            .. " for launch "
+            .. tostring(cue.launchId)
+            .. " refuses retirement; the cue holds"
+        end
+        return false
+      end
+    end
     return true
   end
   if phase == "failed" and cue.failureNoted ~= true then

@@ -52,6 +52,7 @@ local VOICE_ESCAPE_TICKS = 90
 ---@field program table<string, unknown> admitted normalized program under execution
 ---@field phase string preparing, running, waiting, complete, cancelled, or failed
 ---@field pc integer one-based instruction position under execution
+---@field contestMode integer retail-zeroed contest-mode indicator behind opcode-71 branches
 ---@field scratch table<integer, integer> ten-slot source parameter context
 ---@field callStack integer[] return destinations behind subprogram calls
 ---@field loopSlots table<integer, table<string, unknown>> three native loop slots
@@ -181,6 +182,8 @@ function BattleAnimationPlayer:start(playback, program)
     program = program,
     phase = "preparing",
     pc = 1,
+    -- Retail zero-initializes the contest-mode indicator at interpreter construction (ov07_0221BEDC at pret/pokeheartgold@9d8b7591) with no writer and no contest host, so opcode-71 ==1 arms stay dead and branches fall through.
+    contestMode = 0,
     scratch = scratch,
     callStack = {},
     loopSlots = loopSlots,
@@ -668,6 +671,12 @@ function BattleAnimationPlayer:_exec(occurrence)
     end
     return nil
   end
+  -- Reports the retail-zeroed contest-mode indicator behind opcode-71
+  -- interpreter-state branches: construction zeroes it and no host
+  -- writes it, so the ==1 arm stays dead and branches fall through.
+  function exec.contestMode()
+    return occurrence.contestMode
+  end
   -- Reports the admitted occurrence move phase behind charge/strike
   -- dispatch. Only the two kernel-emitted phases select a half; a
   -- missing move record or any other phase value stays unresolved so
@@ -916,6 +925,32 @@ function BattleAnimationPlayer:stepSourceTick(tick)
       runOccurrence(self, occurrence, quantum)
     end
   end
+end
+
+-- Drops one terminal occurrence only after its consumer confirms
+-- receipt: live occurrences refuse, unknown handles refuse, and repeated
+-- calls after a successful drop refuse without touching anything. The
+-- drop keeps status silent afterwards and compacts the admission array
+-- so stepping visits only live or still-awaiting entries.
+---@param self BattleAnimationPlayer
+---@param handle table<string, unknown>? opaque occurrence handle under retirement
+---@return boolean retired true once a terminal record was dropped
+function BattleAnimationPlayer:retire(handle)
+  local occurrence = self:_occurrence(handle)
+  if occurrence == nil then
+    return false
+  end
+  if LIVE_PHASES[occurrence.phase] == true then
+    return false
+  end
+  self._byId[occurrence.id] = nil
+  for index, entry in ipairs(self._occurrences) do
+    if entry == occurrence then
+      table.remove(self._occurrences, index)
+      break
+    end
+  end
+  return true
 end
 
 -- Cancels one occurrence with a reason: children are retired, owned

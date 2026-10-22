@@ -41,6 +41,8 @@
 -- equal seeds with equal scenarios and replies replay equal mechanics.
 
 local Battle = require("gen4.battle")
+local BagSave = require("libs.hgss.src.save.BagSave")
+local EvolutionFlow = require("libs.hgss.src.mons.EvolutionFlow")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
 local HgssBattleContent = require("game.hgss.src.battle.HgssBattleContent")
@@ -59,12 +61,20 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@field ready fun(): boolean
 ---@field leave fun(plan: table<string, unknown>): boolean
 ---@field dispose fun()
+---@field openCompletion (fun(intent: table<string, unknown>): boolean)? bound capture-nickname completion under opening
+---@field takeCompletion (fun(): table<string, unknown>?)? one-shot bound completion answer
 
 ---@class BattlePartyOwner
 ---@field partyRevision fun(self: BattlePartyOwner): integer
+---@field partyCount (fun(self: BattlePartyOwner): integer)? reads the current live party size
+---@field derive (fun(self: BattlePartyOwner, mon: table<string, unknown>): table<string, unknown>)? projects derived battle facts for one mon record
 ---@field partyMon (fun(self: BattlePartyOwner, slot0: integer): table<string, unknown>)? reads the current live party slot record
+---@field boxRevision (fun(self: BattlePartyOwner): integer)? reads the current live box revision behind spillover
+---@field preparePartyChanges (fun(self: BattlePartyOwner, expectedRevision: integer, updates: table<integer, table<string, unknown>>): table<string, unknown>?, string?)? stages validated party replacements
+---@field preparePcChanges (fun(self: BattlePartyOwner, expected: table<string, integer>, changes: table<string, unknown>): table<string, unknown>?, string?)? stages the single party-and-box candidate
 
 ---@class BattleRuntimeArgs
+---@field evolutionContext table<string, unknown>? frozen launch world facts behind evolution planning
 ---@field request table<string, unknown> launch request carrying its identity and kind
 ---@field scenario table<string, unknown>? detached battle setup copied once at construction
 ---@field presentation table<string, unknown>? battle presentation port, headless when absent
@@ -110,6 +120,14 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@field _sourceResult integer
 ---@field _postTicks integer
 ---@field _runTicks integer
+---@field _stagedCaptures table<integer, table<string, unknown>>? committer-shaped captures behind the completion queue
+---@field _completions table<integer, table<string, unknown>> pending postbattle completions in receipt order
+---@field _activeCompletion table<string, unknown>? currently open postbattle completion
+---@field _completionError string? last refused postbattle answer behind a drained completion
+---@field _evolutionContext table<string, unknown>? frozen launch world facts behind evolution planning
+---@field _prebattleLevels table<integer, { level: integer, experience: unknown, species: unknown }> derived levels by source party slot before the battle
+---@field _evolutionPins { partyRevision: integer?, boxRevision: integer?, bagRevision: integer? }? owner revisions behind evolution staging
+---@field _evolutionReceipts table<integer, table<string, unknown>> committed evolution receipts by party slot
 ---@field _partyRevision integer?
 ---@field _bagRevision integer?
 ---@field _dexPlayerSide integer?
@@ -253,6 +271,20 @@ local function checkRequest(request)
 end
 
 ---@param args BattleRuntimeArgs construction record carrying the optional consequence inputs
+local function checkEvolutionContext(args)
+  if args.evolutionContext == nil then
+    return
+  end
+  assert(type(args.evolutionContext) == "table", "battle evolution context arrives as a record")
+  -- The frozen launch clock is mandatory: planning without it would
+  -- invent a default behind time-gated rules instead of refusing.
+  assert(
+    type(args.evolutionContext.timeOfDay) == "string" and args.evolutionContext.timeOfDay ~= "",
+    "battle evolution freezes its time of day"
+  )
+end
+
+---@param args BattleRuntimeArgs construction record carrying the optional consequence inputs
 local function checkConsequenceInputs(args)
   if args.bag ~= nil then
     assert(type(args.bag) == "table", "battle bag staging needs its live bag owner")
@@ -286,11 +318,69 @@ local function checkConsequenceInputs(args)
   end
 end
 
+---@param inner BattlePresentationPort presentation port under wrapping
+---@param launchId string owning launch identity behind the completion binding
+---@return BattlePresentationPort port with an explicit headless decline policy for both completion operations
+local function declineCompletionDriver(inner, launchId)
+  local active = nil
+  local consumed = {}
+  local port = {}
+  function port.enter(plan)
+    return inner.enter(plan)
+  end
+  function port.present(packet)
+    inner.present(packet)
+  end
+  function port.ready()
+    return inner.ready()
+  end
+  function port.leave(plan)
+    return inner.leave(plan)
+  end
+  function port.dispose()
+    inner.dispose()
+  end
+  ---@param intent table<string, unknown> bound completion intent under opening
+  ---@return boolean opened true while the decline driver owns the decision
+  function port.openCompletion(intent)
+    if type(intent) ~= "table" or intent.launchId ~= launchId then
+      return false
+    end
+    if type(intent.completionId) ~= "string" or intent.completionId == "" then
+      return false
+    end
+    if consumed[intent.completionId] then
+      return false
+    end
+    if active ~= nil and active.completionId ~= intent.completionId then
+      return false
+    end
+    active = intent
+    return true
+  end
+  ---@return table<string, unknown>? one-shot decline bound to the open decision
+  function port.takeCompletion()
+    if active == nil then
+      return nil
+    end
+    if consumed[active.completionId] then
+      active = nil
+      return nil
+    end
+    consumed[active.completionId] = true
+    local result = { launchId = active.launchId, completionId = active.completionId, kind = "declined" }
+    active = nil
+    return result
+  end
+  return port
+end
+
 ---@param presentation unknown
+---@param launchId string owning launch identity behind the completion binding
 ---@return BattlePresentationPort validated presentation port
-local function checkPresentation(presentation)
+local function checkPresentation(presentation, launchId)
   if presentation == nil then
-    return defaultPresentation()
+    return declineCompletionDriver(defaultPresentation(), launchId)
   end
   assert(type(presentation) == "table", "battle presentation stays a record")
   local port = presentation --[[@as BattlePresentationPort]]
@@ -299,6 +389,12 @@ local function checkPresentation(presentation)
   assert(type(port.ready) == "function", "battle presentation implements ready")
   assert(type(port.leave) == "function", "battle presentation implements leave")
   assert(type(port.dispose) == "function", "battle presentation implements dispose")
+  if type(port.openCompletion) ~= "function" or type(port.takeCompletion) ~= "function" then
+    -- Headless and legacy test drivers carry no nickname UI: they answer
+    -- every completion with an explicit decline instead of silently
+    -- skipping the required native screen the production port owns.
+    return declineCompletionDriver(port, launchId)
+  end
   return port
 end
 
@@ -320,8 +416,9 @@ function BattleRuntime.new(args)
   assert(type(args) == "table", "battle construction requires an argument record")
   checkRequest(args.request)
   checkConsequenceInputs(args)
+  checkEvolutionContext(args)
   local request = args.request --[[@as table<string, unknown>]]
-  local presentation = checkPresentation(args.presentation)
+  local presentation = checkPresentation(args.presentation, request.id --[[@as string]])
   if args.seed ~= nil then
     assert(
       type(args.seed) == "number" and args.seed % 1 == 0 and args.seed >= 0 and args.seed <= 0xFFFFFFFF,
@@ -365,6 +462,14 @@ function BattleRuntime.new(args)
     _sourceResult = BattleTask.SOURCE_NOT_WON,
     _postTicks = 0,
     _runTicks = 0,
+    _stagedCaptures = nil,
+    _completions = {},
+    _activeCompletion = nil,
+    _completionError = nil,
+    _evolutionContext = args.evolutionContext ~= nil and copyValue(args.evolutionContext) or nil,
+    _prebattleLevels = {},
+    _evolutionPins = nil,
+    _evolutionReceipts = {},
     _partyRevision = nil,
     _dexPlayerSide = nil,
     _dexOpened = false,
@@ -381,6 +486,7 @@ function BattleRuntime.new(args)
   if args.party ~= nil then
     local party = args.party --[[@as BattlePartyOwner]]
     self._partyRevision = party:partyRevision()
+    self:_recordPrebattleLevels(party)
   end
   if args.bag ~= nil then
     -- Exactly-once currency for the live bag mirrors the party guard: the
@@ -1980,6 +2086,7 @@ function BattleRuntime:_prepareCommit()
   self._sourceResult = (result == "win" or result == "capture") and BattleTask.SOURCE_WON or BattleTask.SOURCE_NOT_WON
   local updates = self:_partyUpdates()
   local captures = self:_commitCaptures()
+  self._stagedCaptures = captures
   local rewards = self:_commitRewards(result)
   local args = {
     outcome = { id = self._request.id, result = result },
@@ -2110,6 +2217,306 @@ function BattleRuntime:_prepareCommit()
   return HgssBattleCommitter.prepare(args)
 end
 
+-- Records the derived level behind every readable source party slot at
+-- construction: only slots whose derived level rises across the
+-- committed battle may enter evolution eligibility. Unreadable slots
+-- and owners without a derivation seam record nothing and stage no
+-- evolution instead of guessing.
+---@param party BattlePartyOwner live party owner under snapshotting
+function BattleRuntime:_recordPrebattleLevels(party)
+  if
+    type(party.partyMon) ~= "function" or type((party --[[@as table<string, unknown>]]).derive) ~= "function"
+  then
+    return
+  end
+  local deriveOf = (party --[[@as table<string, unknown>]]).derive --[[@as fun(self: table<string, unknown>, mon: table<string, unknown>): table<string, unknown>]]
+  for slot = 0, 5 do
+    local okMon, live = pcall(function()
+      local reader = assert(party.partyMon, "prebattle levels read their live slots")
+      return reader(party, slot)
+    end)
+    if okMon and type(live) == "table" then
+      local mon = live --[[@as table<string, unknown>]]
+      local okFacts, facts = pcall(function()
+        return deriveOf(party, mon)
+      end)
+      if okFacts and type(facts) == "table" and type(facts.level) == "number" then
+        self._prebattleLevels[slot] = { level = facts.level, experience = mon.experience, species = mon.species }
+      end
+    end
+  end
+end
+
+-- Snapshots the live bag stock as item quantities for evolution
+-- planning: side products read these facts and never the live owner.
+-- Bags without a pocket seam snapshot empty and stage no side product.
+---@return table<string, integer> detached item quantities
+function BattleRuntime:_bagSnapshot()
+  local inventory = {} ---@type table<string, integer>
+  local bag = self._bag --[[@as table<string, unknown>?]]
+  if type(bag) ~= "table" or type(bag.pocketItems) ~= "function" then
+    return inventory
+  end
+  local pocketsOf = bag.pocketItems --[[@as fun(self: table<string, unknown>, pocket: string): table<integer, table<string, unknown>>]]
+  for _, pocket in ipairs(BagSave.POCKET_ORDER) do
+    local ok, entries = pcall(function()
+      return pocketsOf(bag, pocket)
+    end)
+    if ok and type(entries) == "table" then
+      for _, entry in ipairs(entries) do
+        if type(entry) == "table" and type(entry.item) == "string" and type(entry.quantity) == "number" then
+          local key = entry.item --[[@as string]]
+          inventory[key] = (inventory[key] or 0) + entry.quantity
+        end
+      end
+    end
+  end
+  return inventory
+end
+
+-- Reads the current owner revisions behind evolution staging. Owners
+-- without a seam read as nil and pin nothing.
+---@return { partyRevision: integer?, boxRevision: integer?, bagRevision: integer? } current revisions
+function BattleRuntime:_currentRevisions()
+  local pins = {} ---@type { partyRevision: integer?, boxRevision: integer?, bagRevision: integer? }
+  local party = self._party --[[@as table<string, unknown>?]]
+  if type(party) == "table" then
+    if type(party.partyRevision) == "function" then
+      local revisionOf = party.partyRevision --[[@as fun(self: table<string, unknown>): integer]]
+      local ok, revision = pcall(function()
+        return revisionOf(party)
+      end)
+      if ok and type(revision) == "number" then
+        pins.partyRevision = revision
+      end
+    end
+    if type(party.boxRevision) == "function" then
+      local boxOf = party.boxRevision --[[@as fun(self: table<string, unknown>): integer]]
+      local okBox, boxRevision = pcall(function()
+        return boxOf(party)
+      end)
+      if okBox and type(boxRevision) == "number" then
+        pins.boxRevision = boxRevision
+      end
+    end
+  end
+  local bag = self._bag --[[@as table<string, unknown>?]]
+  if type(bag) == "table" and type(bag.revision) == "function" then
+    local bagOf = bag.revision --[[@as fun(self: table<string, unknown>): integer]]
+    local okBag, bagRevision = pcall(function()
+      return bagOf(bag)
+    end)
+    if okBag and type(bagRevision) == "number" then
+      pins.bagRevision = bagRevision
+    end
+  end
+  return pins
+end
+
+-- Probes one leveled slot through the staged domain flow: the first
+-- matching source rule queues exactly one evolution completion carrying
+-- the frozen launch clock, the final party, and the inventory snapshot.
+-- Slots with no matching rule advance without any UI.
+---@param slot integer source party slot under probing
+---@param live table<string, unknown> committed party slot record under probing
+---@param roster table<integer, table<string, unknown>> final party records by source slot
+---@param count integer live party size behind the roster
+---@param inventory table<string, integer> detached bag quantities under probing
+---@param catalog table<string, unknown> live mon catalog under probing
+function BattleRuntime:_queueEvolution(slot, live, roster, count, inventory, catalog)
+  local context = {
+    trigger = { kind = "level" },
+    timeOfDay = assert(self._evolutionContext, "evolution queues freeze their launch clock").timeOfDay,
+    party = {},
+    inventory = inventory,
+  } --[[@as table<string, unknown>]]
+  local frozen = self._evolutionContext --[[@as table<string, unknown>]]
+  if frozen.mapId ~= nil then
+    context.mapId = frozen.mapId
+  end
+  if frozen.location ~= nil then
+    context.location = frozen.location
+  end
+  local members = context.party --[[@as table<integer, table<string, unknown>>]]
+  for position = 0, count - 1 do
+    if roster[position] ~= nil then
+      members[#members + 1] = copyValue(roster[position])
+    end
+  end
+  local probe = EvolutionFlow.start(copyValue(live), context, catalog)
+  if probe == nil then
+    return
+  end
+  self._completions[#self._completions + 1] = {
+    completionId = self._request.id .. ":evolution:" .. tostring(slot),
+    kind = "evolution",
+    partySlot = slot,
+    subject = copyValue(live),
+    context = context,
+  }
+end
+
+-- Queues one evolution completion per actually leveled source party
+-- slot in party order behind any capture naming completions. Only
+-- slots of the same species whose experience and derived level both
+-- rose in this particular battle enter eligibility; every other slot —
+-- including already-eligible members that gained nothing — never opens
+-- any UI. Without a frozen launch context, a party derivation seam, or
+-- a fact catalog the queue stays empty instead of guessing.
+function BattleRuntime:_buildEvolutions()
+  if self._result ~= "win" and self._result ~= "capture" then
+    return
+  end
+  local party = self._party --[[@as BattlePartyOwner?]]
+  if party == nil or self._evolutionContext == nil then
+    return
+  end
+  if type(party.partyMon) ~= "function" then
+    return
+  end
+  local catalog = self:_factCatalog()
+  if catalog == nil then
+    return
+  end
+  local deriveOf = (party --[[@as table<string, unknown>]]).derive
+  if type(deriveOf) ~= "function" then
+    return
+  end
+  local derive = deriveOf --[[@as fun(self: table<string, unknown>, mon: table<string, unknown>): table<string, unknown>]]
+  local count = 6
+  if type(party.partyCount) == "function" then
+    local counter = party.partyCount --[[@as fun(self: BattlePartyOwner): integer]]
+    local okCount, size = pcall(function()
+      return counter(party)
+    end)
+    if okCount and type(size) == "number" and size >= 0 and size <= 6 then
+      count = size
+    end
+  end
+  local roster = {} ---@type table<integer, table<string, unknown>>
+  for slot = 0, count - 1 do
+    local okMon, live = pcall(function()
+      local reader = assert(party.partyMon, "evolution queues read their live slots")
+      return reader(party, slot)
+    end)
+    if okMon and type(live) == "table" then
+      roster[slot] = live --[[@as table<string, unknown>]]
+    end
+  end
+  local inventory = self:_bagSnapshot()
+  local queued = 0
+  for slot = 0, count - 1 do
+    local live = roster[slot]
+    local pre = self._prebattleLevels[slot]
+    if live ~= nil and pre ~= nil and live.species == pre.species then
+      local rose = type(live.experience) == "number"
+        and type(pre.experience) == "number"
+        and live.experience --[[@as integer]]
+          > pre.experience --[[@as integer]]
+      if rose then
+        local okFacts, facts = pcall(function()
+          return derive(party, live)
+        end)
+        if
+          okFacts
+          and type(facts) == "table"
+          and type(facts.level) == "number"
+          and facts.level --[[@as integer]]
+            > pre.level
+        then
+          self:_queueEvolution(slot, live, roster, count, inventory, catalog)
+          queued = queued + 1
+        end
+      end
+    end
+  end
+  if queued > 0 then
+    self._evolutionPins = self:_currentRevisions()
+  end
+end
+
+-- Publishes one answered evolution through the committer as a separate
+-- identity-bound progression record: the evolved mon replaces its exact
+-- committed party slot, permitted side products ride as uniquely
+-- identified captures through the existing party-or-box routing, and
+-- inventory deltas stage against the pinned bag revision. The original
+-- battle receipt is never touched: no rewards, money, or EXP republish.
+-- A stale owner or a moved subject fails before anything publishes.
+---@param completion table<string, unknown> open evolution completion carrying its receipt placement
+---@param staged table<string, unknown> answered staged domain result under publication
+function BattleRuntime:_applyEvolution(completion, staged)
+  if type(staged) ~= "table" or type(staged.mon) ~= "table" then
+    error("evolution answers carry their staged mon", 0)
+  end
+  local party = assert(self._party, "evolutions stage through their party owner")
+  local pins = assert(self._evolutionPins, "evolutions pin their owner revisions")
+  local current = self:_currentRevisions()
+  if current.partyRevision ~= pins.partyRevision or current.boxRevision ~= pins.boxRevision then
+    error("the evolution staging went stale", 0)
+  end
+  local reader = assert(party.partyMon, "evolutions reread their live slot")
+  local live = reader(party, completion.partySlot --[[@as integer]])
+  if
+    type(live) ~= "table"
+    or live.species ~= completion.subject.species
+    or live.experience ~= completion.subject.experience
+  then
+    error("the evolution subject left its party slot", 0)
+  end
+  local outcomeId = self._request.id .. ":evolution:" .. tostring(completion.partySlot)
+  local captures = {} ---@type table<integer, table<string, unknown>>
+  for index, extra in ipairs(staged.additionalMons or {}) do
+    if type(extra) ~= "table" then
+      error("evolution side products arrive as records", 0)
+    end
+    captures[#captures + 1] = {
+      captureId = outcomeId .. ":side:" .. tostring(index),
+      success = true,
+      mon = extra,
+    }
+  end
+  local args = {
+    outcome = { id = outcomeId, result = assert(self._result, "evolutions publish behind their battle result") },
+    partyOwner = party,
+    partyUpdates = { { slot = completion.partySlot, mon = staged.mon } },
+  } --[[@as table<string, unknown>]]
+  if #captures > 0 then
+    args.captures = captures
+  end
+  local deltas = {} ---@type table<integer, table<string, unknown>>
+  for _, delta in ipairs(staged.inventoryDeltas or {}) do
+    if type(delta) ~= "table" or type(delta.item) ~= "string" or type(delta.delta) ~= "number" then
+      error("evolution inventory deltas arrive as records", 0)
+    end
+    local amount = delta.delta --[[@as integer]]
+    if amount < 0 then
+      deltas[#deltas + 1] = { op = "take", item = delta.item, quantity = -amount }
+    elseif amount > 0 then
+      deltas[#deltas + 1] = { op = "add", item = delta.item, quantity = amount }
+    end
+  end
+  if #deltas > 0 then
+    local bag = assert(self._bag, "evolution consumption stages through its bag owner")
+    local prepare = (bag --[[@as table<string, unknown>]]).prepareInventoryChanges
+    assert(type(prepare) == "function", "the bag owner stages inventory changes")
+    local stage = prepare --[[@as fun(self: table<string, unknown>, revision: integer, deltas: table<integer, table<string, unknown>>): table<string, unknown>?]]
+    local prep, reason = stage(bag, assert(pins.bagRevision, "consuming evolutions pin their bag revision"), deltas)
+    if prep == nil then
+      error("the evolution bag staging went stale: " .. tostring(reason), 0)
+    end
+    args.bag = prep
+  end
+  if current.bagRevision ~= pins.bagRevision then
+    error("the evolution staging went stale", 0)
+  end
+  local prepared = HgssBattleCommitter.prepare(args)
+  local evoReceipt = HgssBattleCommitter.commit(prepared)
+  self._evolutionReceipts[
+    completion.partySlot --[[@as integer]]
+  ] = evoReceipt
+  self._evolutionPins = self:_currentRevisions()
+end
+
 function BattleRuntime:_updateResolving()
   if self._session == nil then
     self._phase = "postbattle"
@@ -2135,13 +2542,208 @@ function BattleRuntime:_updateResolving()
     return
   end
   self._receipt = receipt --[[@as table<string, unknown>]]
+  self:_buildCompletions(receipt)
+  -- Evolution eligibility reads the committed party behind the receipt:
+  -- a malformed roster fails the lifetime loudly while the committed
+  -- receipt itself is never rolled back.
+  local okEvo, evoErr = pcall(BattleRuntime._buildEvolutions, self)
+  if not okEvo then
+    self:_fail(tostring(evoErr))
+    return
+  end
   self._phase = "postbattle"
   self._postTicks = 0
 end
 
+-- Binds one nickname completion per successful capture in receipt order:
+-- each completion carries its stable identity, its receipt placement, and
+-- the exact committed caught mon. Failed attempts stage no completion.
+---@param receipt table<string, unknown> committed battle receipt carrying its placements
+function BattleRuntime:_buildCompletions(receipt)
+  local queue = {}
+  self._activeCompletion = nil
+  self._completionError = nil
+  local placements = receipt.placements
+  if type(placements) ~= "table" then
+    self._completions = queue
+    return
+  end
+  local subjects = {}
+  for _, capture in ipairs(self._stagedCaptures or {}) do
+    local entry = capture --[[@as table<string, unknown>]]
+    if entry.success == true and type(entry.mon) == "table" then
+      subjects[#subjects + 1] = entry
+    end
+  end
+  -- The rename pins the owner revisions at commit: any live move before
+  -- the pending rename reads as stale against these instead of the
+  -- drifting current revision.
+  local party = self._party --[[@as BattlePartyOwner?]]
+  local partyRevision = nil
+  local boxRevision = nil
+  if party ~= nil then
+    partyRevision = party:partyRevision()
+    if type(party.boxRevision) == "function" then
+      boxRevision = party:boxRevision()
+    end
+  end
+  for index, placement in ipairs(placements) do
+    local capture = subjects[index]
+    local mon = capture ~= nil and capture.mon or nil
+    local spot = placement --[[@as table<string, unknown>]]
+    if type(mon) == "table" then
+      local key = spot.captureId ~= nil and tostring(spot.captureId) or tostring(index)
+      queue[#queue + 1] = {
+        completionId = self._request.id .. ":nickname:" .. key,
+        kind = "capture_nickname",
+        placement = copyValue(spot),
+        subject = copyValue(mon),
+        partyRevision = partyRevision,
+        boxRevision = boxRevision,
+      }
+    end
+  end
+  self._completions = queue
+end
+
+-- Applies one answered nickname at its receipt location through the
+-- revision-checked mon preparation: party catches rewrite the party slot,
+-- box catches rewrite the box slot. Never re-runs the battle commit.
+-- A stale owner or a malformed nickname raises; the caller preserves the
+-- committed mon and outcome instead of rolling back.
+---@param completion table<string, unknown> open completion carrying its receipt placement
+---@param nickname unknown answered nickname text under application
+function BattleRuntime:_applyNickname(completion, nickname)
+  if type(nickname) ~= "string" or nickname == "" then
+    error("capture renames carry their nickname text", 0)
+  end
+  local party = assert(self._party, "capture renames stage through their owner")
+  local placement = assert(completion.placement, "completions carry their receipt placement")
+  local updated = copyValue(completion.subject) --[[@as table<string, unknown>]]
+  updated.nickname = nickname
+  if placement.destination == "box" then
+    local prepare = assert(party.preparePcChanges, "box renames stage through the PC preparation")
+    local staged, reason = prepare(party, {
+      partyRevision = assert(completion.partyRevision, "completions pin their party revision"),
+      boxRevision = assert(completion.boxRevision, "box completions pin their box revision"),
+    }, {
+      boxUpdates = { { box = placement.box, slot = placement.slot, mon = updated } },
+    })
+    if staged == nil then
+      error("the capture rename went stale: " .. tostring(reason), 0)
+    end
+    local publish = assert(staged.publish, "capture renames publish once")
+    publish()
+    return
+  end
+  if placement.destination ~= "party" then
+    error("capture renames answer their receipt placement", 0)
+  end
+  local revise = assert(party.preparePartyChanges, "party renames stage through their owner")
+  local staged, reason = revise(party, assert(completion.partyRevision, "completions pin their party revision"), {
+    { slot = placement.partySlot, mon = updated },
+  })
+  if staged == nil then
+    error("the capture rename went stale: " .. tostring(reason), 0)
+  end
+  local publish = assert(staged.publish, "capture renames publish once")
+  publish()
+end
+
+-- Applies one answered evolution: the staged domain result publishes
+-- once through the committer while a cancellation publishes nothing.
+-- A refused staging keeps the committed battle receipt and outcome and
+-- stays visible on the status while the queue drains.
+---@param active table<string, unknown> open evolution completion under answering
+---@param result table<string, unknown> bound evolution answer under applying
+function BattleRuntime:_answerEvolution(active, result)
+  if result.kind == "evolution_complete" then
+    local applied, applyErr = pcall(BattleRuntime._applyEvolution, self, active, result.staged)
+    if not applied then
+      self._completionError = tostring(applyErr)
+    end
+    return
+  end
+  if result.kind == "evolution_cancelled" or result.kind == "declined" then
+    return
+  end
+  self:_fail("the completion answer mismatches its open decision")
+end
+
+-- Drains one postbattle completion at a time behind the save gate: the
+-- intent opens exactly once, its answer is consumed once on a later tick,
+-- and only then does the queue advance toward returning. Capture naming
+-- drains first in receipt order, then each leveled party slot evolves in
+-- party order before field return.
+---@return boolean settled true when no completion work remains
+function BattleRuntime:_pollCompletion()
+  if self._activeCompletion == nil then
+    local pending = self._completions[1]
+    if pending == nil then
+      return true
+    end
+    local intent = {
+      launchId = self._request.id,
+      completionId = pending.completionId,
+      kind = pending.kind,
+      subject = copyValue(pending.subject),
+    }
+    if pending.kind == "evolution" then
+      intent.partySlot = pending.partySlot
+      intent.context = copyValue(pending.context)
+    end
+    local ok, accepted = pcall(self._presentation.openCompletion, intent)
+    if not ok then
+      self:_fail(tostring(accepted))
+      return false
+    end
+    if accepted ~= true then
+      return false
+    end
+    self._activeCompletion = pending
+    return false
+  end
+  local active = self._activeCompletion --[[@as table<string, unknown>]]
+  local ok, result = pcall(self._presentation.takeCompletion)
+  if not ok then
+    self:_fail(tostring(result))
+    return false
+  end
+  if result == nil then
+    return false
+  end
+  if type(result) ~= "table" or result.launchId ~= self._request.id or result.completionId ~= active.completionId then
+    self:_fail("the completion answer mismatches its open decision")
+    return false
+  end
+  if active.kind == "evolution" then
+    self:_answerEvolution(active, result)
+    if self._phase == "failed" then
+      return false
+    end
+  elseif result.kind == "named" then
+    local applied, applyErr = pcall(BattleRuntime._applyNickname, self, active, result.nickname)
+    if not applied then
+      -- The committed catch and outcome survive a refused rename: the
+      -- failure stays visible on the status while the queue drains.
+      self._completionError = tostring(applyErr)
+    end
+  elseif result.kind ~= "declined" then
+    self:_fail("the completion answer mismatches its open decision")
+    return false
+  end
+  table.remove(self._completions, 1)
+  self._activeCompletion = nil
+  return #self._completions == 0
+end
+
 function BattleRuntime:_updatePostbattle()
   -- The terminal outcome already shipped exactly once inside its
-  -- delivery packet; postbattle only paces the wait before returning.
+  -- delivery packet; postbattle first drains every nickname completion
+  -- behind the save gate, then paces the wait before returning.
+  if not self:_pollCompletion() then
+    return
+  end
   self._postTicks = self._postTicks + 1
   if self._postTicks >= 2 then
     self._phase = "returning"
@@ -2276,9 +2878,12 @@ function BattleRuntime:status()
     source = self._request.kind,
     request = copyValue(self._openRequest),
     outcomeReceipt = copyValue(self._receipt),
+    evolutionReceipts = copyValue(self._evolutionReceipts),
     result = self._result,
     sourceResult = self._sourceResult,
     error = self._error,
+    completionPending = #self._completions,
+    completionError = self._completionError,
   }
   return status
 end

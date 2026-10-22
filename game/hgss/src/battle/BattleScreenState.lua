@@ -17,6 +17,7 @@ local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentatio
 local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
+local BattleChildApplications = require("game.hgss.src.battle.BattleChildApplications")
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
@@ -63,6 +64,13 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _registrationComplete boolean true once the card completes its terminal return
 ---@field _pokedex table<string, unknown>? borrowed field presentation resource owner behind the card
 ---@field _registrationAudio table<string, unknown>? borrowed registration audio adapter behind the card
+---@field _onResultMusic fun(word: string): boolean? bound terminal-music beat behind the outcome narration
+---@field _resultMusicSent boolean true once the bound terminal-music beat fired for this screen
+---@field _completion table<string, unknown>? open capture-nickname completion behind its bound identity
+---@field _completionChild table<string, unknown>? composed native naming child behind the open completion
+---@field _completionResult table<string, unknown>? sealed one-shot completion answer behind consumption
+---@field _consumedCompletions table<string, boolean> consumed completion identities behind late-result refusal
+---@field _terminalRequest table<string, unknown>? mirrored terminal request identity behind the completion barrier
 ---@field _introBuilt boolean opening cues queued
 ---@field _kind string battle kind wording for the opening narration
 ---@field _queue table<integer, table<string, unknown>> queued raw input batches
@@ -202,6 +210,7 @@ end
 ---@field manifest table<string, unknown> planning manifest behind the demand
 ---@field model table<string, unknown> detached opening and packet boundary
 ---@field submit fun(reply: table<string, unknown>): boolean, table<string, unknown>? accepted-choice boundary
+---@field onResultMusic fun(word: string): boolean? bound terminal-music beat behind the outcome narration
 ---@field measureDisplay fun(): table<string, unknown> live display facts
 ---@field assets BattlePresentationAssets.Services preparation services carrying prepare/drawable/release
 ---@field text table<string, unknown> borrowed text services
@@ -683,7 +692,8 @@ end
 -- Polls every tracked native occurrence once: pending tokens promote
 -- when staged, failed programs fail the screen with provenance, and
 -- the live record clears once its occurrence settles so a later
--- effect admits against its own closure.
+-- effect admits against its own closure. The generic poll never
+-- releases: only the timeline consumption point retires a track.
 ---@param screen BattleScreenState owning screen behind occurrence polling
 local function pollNativeEffects(screen)
   local keys = {}
@@ -705,8 +715,84 @@ local function pollNativeEffects(screen)
   end
 end
 
+-- Releases one consumed native occurrence after its timeline cue
+-- observes completion: the track leaves the map, the player drops the
+-- terminal record, and the live record clears when it names the retired
+-- handle. Only the timeline consumption point calls this; the generic
+-- poll never retires. Unknown or already-released identities refuse
+-- without touching live work, and a release failure fails the launch
+-- with provenance instead of counting a false completion.
+---@param screen BattleScreenState owning screen behind occurrence retirement
+---@param handleOrToken table<string, unknown> player handle or pending token under release
+---@return boolean released true once the track and its terminal record were dropped
+local function nativeEffectRetire(screen, handleOrToken)
+  -- A promoted token keeps its stable track while admission also files
+  -- the admitted handle beside it, so one retired identity can own two
+  -- tracks. The release resolves the occurrence handle behind either
+  -- identity first, then drops every track naming the token or that
+  -- handle, and retires the single player occurrence behind them.
+  local handle = nil
+  local direct = screen._nativeHandles[handleOrToken]
+  if direct ~= nil then
+    handle = direct.handle
+  else
+    for _, track in pairs(screen._nativeHandles) do
+      if track.handle == handleOrToken then
+        handle = handleOrToken
+        break
+      end
+    end
+  end
+  if direct == nil and handle == nil then
+    return false
+  end
+  local keys = {}
+  local effectKey = nil
+  for key, track in pairs(screen._nativeHandles) do
+    if key == handleOrToken or (handle ~= nil and (key == handle or track.handle == handle)) then
+      keys[#keys + 1] = key
+      if effectKey == nil then
+        effectKey = track.effectKey
+      end
+    end
+  end
+  if handle == nil then
+    for _, key in ipairs(keys) do
+      screen._nativeHandles[key] = nil
+    end
+    return true
+  end
+  -- A refused player release leaves every track in place, so the next
+  -- poll still resolves and the launch fails loudly instead of
+  -- aliasing a live occurrence.
+  local ok, retired = pcall(screen._player.retire, screen._player, handle)
+  if not ok then
+    failNative(
+      screen,
+      "battle effect "
+        .. tostring(effectKey)
+        .. " failed for launch "
+        .. screen._launchId
+        .. ": release failure: "
+        .. tostring(retired)
+    )
+    return false
+  end
+  if retired ~= true then
+    return false
+  end
+  for _, key in ipairs(keys) do
+    screen._nativeHandles[key] = nil
+  end
+  if screen._liveEffectHandle == handle then
+    screen._liveEffectHandle = nil
+    screen._liveEffectRecord = nil
+  end
+  return true
+end
+
 ---@param screen BattleScreenState owning screen behind effect admission
----@return table<string, unknown> battle-private native-effect collaborator behind start/status/cancel
+---@return table<string, unknown> battle-private native-effect collaborator behind start/status/cancel/retire
 local function nativeEffectsFor(screen)
   ---@param cue table<string, unknown> native-effect cue carrying accepted event/packet identity and semantic effect key
   ---@return table<string, unknown>? player handle or pending token, nil on terminal refusal
@@ -723,7 +809,12 @@ local function nativeEffectsFor(screen)
   local function cancel(handleOrToken, reason)
     nativeEffectCancel(screen, handleOrToken, reason)
   end
-  return { start = start, status = status, cancel = cancel }
+  ---@param handleOrToken table<string, unknown> player handle or pending token under release
+  ---@return boolean released true once the track and its terminal record were dropped
+  local function retire(handleOrToken)
+    return nativeEffectRetire(screen, handleOrToken)
+  end
+  return { start = start, status = status, cancel = cancel, retire = retire }
 end
 
 ---@param opts BattleScreenState.Options
@@ -734,6 +825,9 @@ function BattleScreenState.new(opts)
   assert(type(opts.manifest) == "table", "the battle screen needs its planning manifest")
   assert(type(opts.model) == "table", "the battle screen needs its detached view boundary")
   assert(type(opts.submit) == "function", "the battle screen needs its accepted-choice boundary")
+  if opts.onResultMusic ~= nil then
+    assert(type(opts.onResultMusic) == "function", "the battle screen takes its terminal-music beat as a function")
+  end
   assert(type(opts.measureDisplay) == "function", "the battle screen needs its display facts")
   assert(type(opts.assets) == "table", "the battle screen needs its preparation services")
   assert(type(opts.text) == "table", "the battle screen borrows its text services")
@@ -807,6 +901,13 @@ function BattleScreenState.new(opts)
     _registrationComplete = false,
     _pokedex = opts.pokedex,
     _registrationAudio = opts.registrationAudio,
+    _onResultMusic = opts.onResultMusic,
+    _resultMusicSent = false,
+    _completion = nil,
+    _completionChild = nil,
+    _completionResult = nil,
+    _consumedCompletions = {},
+    _terminalRequest = nil,
     _introBuilt = false,
     _kind = "wild",
     _queue = {},
@@ -1299,6 +1400,21 @@ local function menuLabelText(tokens)
   return table.concat(glyphs)
 end
 
+-- Names the nickname question for one caught mon: the default explicit
+-- name when the catch carries one, else its caught species key.
+---@param subject table<string, unknown> exact committed caught mon under naming
+---@return string question wording for the Yes/No decision
+local function completionQuestionText(subject)
+  local name = subject.nickname
+  if type(name) ~= "string" or name == "" then
+    name = subject.species
+  end
+  if type(name) ~= "string" or name == "" then
+    name = "the caught mon"
+  end
+  return "Give a nickname to the caught " .. tostring(name) .. "?"
+end
+
 ---@param child table<string, unknown>? detached current child view
 ---@return table<string, unknown>? child view with source menu labels when confirmation is active
 function BattleScreenState:_twoOptionChildView(child)
@@ -1478,7 +1594,13 @@ function BattleScreenState:_snapshot()
     end
     side[visual.kind] = self._scene:gaugeTaskPatchTiles(self._manifest.hud.patchSpans, key, visual.sideType)
   end
-  local childView = self:_twoOptionChildView(copyValue(self._subflows:status().childView))
+  local childView = self:_completionChildView(self:_twoOptionChildView(copyValue(self._subflows:status().childView)))
+  -- While the nickname question waits for its answer, the prompt names
+  -- the decision instead of the settled terminal cue behind it.
+  local completionPrompt = nil
+  if self._completion ~= nil and self._outcomeAcked and self._completion.stage == "question" then
+    completionPrompt = completionQuestionText(self._completion.subject --[[@as table<string, unknown>]])
+  end
   return {
     battleKind = self._kind,
     menuMode = self:_menuMode(),
@@ -1491,7 +1613,7 @@ function BattleScreenState:_snapshot()
     selection = self._selection,
     armed = self._armed ~= nil and { scope = self._armed.scope, id = self._armed.id } or nil,
     requestId = self._request ~= nil and self._request.requestId or 0,
-    message = message,
+    message = (self._notice ~= nil and self._notice ~= "" and self._notice or completionPrompt or message),
     battlers = battlers,
     bgScroll = self._scene:scroll(),
     backgroundRaster = self._scene:hasBackground() and self._scene:backgroundRaster() or nil,
@@ -1824,16 +1946,558 @@ function BattleScreenState:status()
       plan = published
     end
   end
+  -- The decision is offered only after the terminal narration page was
+  -- explicitly acknowledged.
+  local completion = nil
+  if self._completion ~= nil and self._completionResult == nil and self._outcomeAcked then
+    local open = self._completion --[[@as table<string, unknown>]]
+    completion = {
+      completionId = open.completionId,
+      kind = open.kind,
+      stage = open.stage,
+    }
+    if open.kind == "evolution" and self._completionChild ~= nil then
+      local learnOf = self._completionChild.learnPrompt
+      if type(learnOf) == "function" then
+        local okLearn, pending = pcall(learnOf, self._completionChild)
+        if okLearn and pending ~= nil then
+          completion.stage = "learn"
+        else
+          completion.stage = "sequence"
+        end
+      end
+    end
+    if open.stage == "naming" and self._completionChild ~= nil then
+      local namingText = self._completionChild.namingText
+      if type(namingText) == "function" then
+        local ok, staged = pcall(namingText, self._completionChild)
+        if ok and type(staged) == "string" then
+          completion.text = staged
+        end
+      end
+    end
+  end
   return {
     mode = self._mode,
     ready = self:_ready(),
     request = copyValue(self._request),
     presentation = plan,
     error = self._error,
+    completion = completion,
   }
 end
 
----@return table<string, fun(...)> five closure operations sharing one idempotent release guard
+-- Opens one bound postbattle completion: capture-nickname or evolution.
+-- Idempotent for the same current identity; a different, foreign,
+-- consumed, or concurrent decision is refused without touching the open
+-- one. The lane stays exclusive: one completion at a time.
+---@param intent table<string, unknown> bound completion intent under opening
+---@return boolean opened true while this screen owns the decision
+function BattleScreenState:openCompletion(intent)
+  if self._disposed or self._mode == "failed" then
+    return false
+  end
+  if type(intent) ~= "table" then
+    return false
+  end
+  if intent.launchId ~= self._launchId then
+    return false
+  end
+  if type(intent.completionId) ~= "string" or intent.completionId == "" then
+    return false
+  end
+  if intent.kind ~= "capture_nickname" and intent.kind ~= "evolution" then
+    return false
+  end
+  if type(intent.subject) ~= "table" then
+    return false
+  end
+  if intent.kind == "evolution" then
+    -- The evolution lane carries its committed party slot and the full
+    -- frozen trigger context beside the subject; anything less refuses
+    -- instead of planning behind invented facts.
+    if type(intent.partySlot) ~= "number" or type(intent.context) ~= "table" then
+      return false
+    end
+  end
+  if self._consumedCompletions[intent.completionId] then
+    return false
+  end
+  if self._completion ~= nil then
+    return self._completion.completionId == intent.completionId
+  end
+  -- The completion lane never runs beside a battle-action child.
+  if self._child ~= nil or self._subflows:status().active then
+    return false
+  end
+  if intent.kind == "evolution" then
+    self._completion = {
+      launchId = self._launchId,
+      completionId = intent.completionId,
+      kind = "evolution",
+      subject = copyValue(intent.subject),
+      partySlot = intent.partySlot,
+      context = copyValue(intent.context),
+      stage = "sequence",
+    }
+  else
+    self._completion = {
+      launchId = self._launchId,
+      completionId = intent.completionId,
+      kind = "capture_nickname",
+      subject = copyValue(intent.subject),
+      stage = "question",
+      answer = 1,
+    }
+  end
+  self._completionChild = nil
+  self._completionResult = nil
+  return true
+end
+
+-- Consumes the sealed completion answer exactly once. Late answers after
+-- disposal or consumption read as nothing.
+---@return table<string, unknown>? bound completion answer, nil while unanswered
+function BattleScreenState:takeCompletion()
+  if self._disposed then
+    return nil
+  end
+  local result = self._completionResult
+  if result == nil then
+    return nil
+  end
+  self._completionResult = nil
+  if self._completionChild ~= nil then
+    self._completionChild:dispose()
+    self._completionChild = nil
+  end
+  if self._completion ~= nil then
+    self._consumedCompletions[self._completion.completionId] = true
+    self._completion = nil
+  end
+  return copyValue(result)
+end
+
+---@param result table<string, unknown> sealed completion answer under latching
+function BattleScreenState:_sealCompletion(result)
+  if self._completion == nil or self._completionResult ~= nil then
+    return
+  end
+  self._completionResult = copyValue(result)
+end
+
+---@param declined boolean true for an explicit No instead of a typed name
+function BattleScreenState:_answerCompletionQuestion(declined)
+  local completion = assert(self._completion, "answers bind the open completion")
+  if declined then
+    self:_sealCompletion({
+      launchId = completion.launchId,
+      completionId = completion.completionId,
+      kind = "declined",
+    })
+    return
+  end
+  self:_openCompletionNaming()
+end
+
+-- Resolves the native naming subject for the caught mon: a numeric
+-- species passes through, a species key resolves through the borrowed mon
+-- catalog, and anything else declines with the default name instead of
+-- inventing a subject.
+---@return table<string, unknown>? native naming subject, nil while unresolvable
+function BattleScreenState:_completionNamingSubject()
+  local completion = assert(self._completion, "naming resolves the open completion")
+  local subject = completion.subject --[[@as table<string, unknown>]]
+  if type(subject.species) == "number" then
+    local naming = { kind = "pokemon", species = subject.species }
+    if type(subject.form) == "number" then
+      naming.form = subject.form
+    end
+    return naming
+  end
+  if type(subject.species) == "string" and self._monCatalog ~= nil then
+    local catalog = assert(self._monCatalog, "naming resolves through the borrowed mon catalog")
+    local ok, facts = pcall(function()
+      return catalog:species(subject.species --[[@as string]])
+    end)
+    if ok and type(facts) == "table" and type(facts.nativeId) == "number" then
+      local naming = { kind = "pokemon", species = facts.nativeId }
+      if type(subject.form) == "number" then
+        naming.form = subject.form
+      end
+      return naming
+    end
+  end
+  return nil
+end
+
+-- Opens the native naming controller for the open completion with its
+-- actual caught subject. An unresolvable subject declines with the
+-- default name so the committed catch survives.
+function BattleScreenState:_openCompletionNaming()
+  local completion = assert(self._completion, "naming opens for the open completion")
+  local namingSubject = self:_completionNamingSubject()
+  if namingSubject == nil then
+    self:_answerCompletionQuestion(true)
+    return
+  end
+  local terminal = self._terminalRequest or { requestId = 0, epoch = 0, controller = "player" }
+  local child, childErr = BattleChildApplications.open({
+    kind = "naming",
+    purpose = "nickname",
+    launchId = self._launchId,
+    requestId = terminal.requestId,
+    epoch = terminal.epoch,
+    controller = terminal.controller,
+    cancellable = true,
+    subject = namingSubject,
+  }, {})
+  if child == nil then
+    self._mode = "failed"
+    self._error = "capture naming failed for launch " .. self._launchId .. ": " .. tostring(childErr)
+    return
+  end
+  self._completionChild = child
+  completion.stage = "naming"
+end
+
+-- Opens the native evolution controller for the open completion with
+-- its committed subject, party slot, and full frozen trigger context.
+-- A composition failure fails the screen loudly so the committed
+-- battle result survives instead of skipping a mandatory evolution.
+function BattleScreenState:_openCompletionEvolution()
+  local completion = assert(self._completion, "evolution opens for the open completion")
+  local terminal = self._terminalRequest or { requestId = 0, epoch = 0, controller = "player" }
+  local child, childErr = BattleChildApplications.open({
+    kind = "evolution",
+    purpose = "evolution",
+    launchId = self._launchId,
+    requestId = terminal.requestId,
+    epoch = terminal.epoch,
+    controller = terminal.controller,
+    cancellable = true,
+    subject = copyValue(completion.subject),
+    partySlot = completion.partySlot,
+    context = copyValue(completion.context),
+  }, { monCatalog = self._monCatalog })
+  if child == nil then
+    self._mode = "failed"
+    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(childErr)
+    return
+  end
+  self._completionChild = child
+  completion.stage = "sequence"
+  -- Edges that arrived before composition replay exactly once in order:
+  -- a cancel sent during the opening beat still meets its window.
+  local pending = completion.pendingInput
+  completion.pendingInput = nil
+  if type(pending) == "table" then
+    for _, event in ipairs(pending) do
+      if type(event) == "table" then
+        local ok, inputErr = pcall(function()
+          child:input({ event })
+        end)
+        if not ok then
+          self._mode = "failed"
+          self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(inputErr)
+          return
+        end
+      end
+    end
+  end
+end
+
+-- Routes one mapped semantic input to the open evolution lane. The
+-- sequence owns confirm, cancel, and navigate ahead of the battle
+-- handlers: confirmation never gates the beats, cancellation decides
+-- only where the source method permits it, and navigation steers the
+-- pending learned-move picker. Anything the lane refuses falls through.
+---@param event table<string, unknown> mapped semantic input under routing
+---@return boolean consumed true while the evolution lane owned the input
+function BattleScreenState:_consumeEvolutionCompletion(event)
+  local completion = assert(self._completion, "evolution input binds the open completion")
+  if
+    event.type ~= "confirm"
+    and event.type ~= "cancel"
+    and event.type ~= "navigate"
+    and event.type ~= "pointer_cancel"
+  then
+    return false
+  end
+  local child = self._completionChild
+  if child == nil then
+    -- The lane owns its edges even before the controller composes on
+    -- the next drain: buffer the edge for exactly-once replay at
+    -- composition so a held button neither leaks into the battle
+    -- handlers nor misses the animation window behind it.
+    local buffered = completion.pendingInput
+    if buffered == nil then
+      buffered = {}
+      completion.pendingInput = buffered
+    end
+    if #buffered < 8 then
+      buffered[#buffered + 1] = event
+    end
+    return true
+  end
+  local _ = completion
+  local ok, inputErr = pcall(function()
+    child:input({ event })
+  end)
+  if not ok then
+    self._mode = "failed"
+    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(inputErr)
+  end
+  return true
+end
+
+-- Advances the open evolution lane once: the native child steps its
+-- presentation clock and its sealed typed answer translates into the
+-- bound completion identity. The typed answer never enters the action
+-- reply parser or the battle-action child poll.
+---@param completion table<string, unknown> open evolution completion under advancing
+function BattleScreenState:_drainEvolutionCompletion(completion)
+  if not self._outcomeAcked then
+    return
+  end
+  if self._completionChild == nil then
+    self:_openCompletionEvolution()
+    if self._completionChild == nil then
+      return
+    end
+  end
+  local child = assert(self._completionChild, "evolution drains its open child")
+  local okStep, stepErr = pcall(function()
+    child:stepSourceTick(1)
+  end)
+  if not okStep then
+    self._mode = "failed"
+    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(stepErr)
+    return
+  end
+  local promptOf = child.learnPrompt
+  if type(promptOf) == "function" then
+    local okPrompt, pending = pcall(promptOf, child)
+    if okPrompt and pending ~= nil then
+      completion.stage = "learn"
+    else
+      completion.stage = "sequence"
+    end
+  end
+  local okTake, result = pcall(function()
+    return child:takeResult()
+  end)
+  if not okTake then
+    self._mode = "failed"
+    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(result)
+    return
+  end
+  if result == nil then
+    return
+  end
+  if result.kind == "evolution_complete" then
+    self:_sealCompletion({
+      launchId = completion.launchId,
+      completionId = completion.completionId,
+      kind = "evolution_complete",
+      staged = copyValue(result.staged),
+    })
+    return
+  end
+  if result.kind == "evolution_cancelled" then
+    self:_sealCompletion({
+      launchId = completion.launchId,
+      completionId = completion.completionId,
+      kind = "evolution_cancelled",
+      reason = result.reason,
+    })
+  end
+end
+
+-- Routes one mapped semantic input to the open completion. The question
+-- answers Yes on confirm, toggles on navigate, and declines on cancel;
+-- the naming lane forwards its semantic edges to the native controller.
+-- Every other input falls through to the battle handlers.
+---@param event table<string, unknown> mapped semantic input under routing
+---@return boolean consumed true while the completion owned the input
+function BattleScreenState:_consumeCompletion(event)
+  local completion = self._completion
+  if completion == nil or self._completionResult ~= nil then
+    return false
+  end
+  -- Postbattle choices run only after the terminal narration page was
+  -- explicitly acknowledged.
+  if not self._outcomeAcked then
+    return false
+  end
+  if completion.kind == "evolution" then
+    return self:_consumeEvolutionCompletion(event)
+  end
+  if completion.stage == "question" then
+    if event.type == "navigate" then
+      completion.answer = completion.answer == 1 and 2 or 1
+      return true
+    end
+    if event.type == "confirm" then
+      self:_answerCompletionQuestion(completion.answer ~= 1)
+      return true
+    end
+    if event.type == "cancel" then
+      self:_answerCompletionQuestion(true)
+      return true
+    end
+    return false
+  end
+  local child = self._completionChild
+  if child == nil then
+    return false
+  end
+  if
+    event.type == "confirm"
+    or event.type == "cancel"
+    or event.type == "navigate"
+    or event.type == "text"
+    or event.type == "name_cell"
+    or event.type == "name_control"
+    or event.type == "pointer_cancel"
+  then
+    child:input({ event })
+    return true
+  end
+  return false
+end
+
+-- Advances the open completion once: the native naming child steps its
+-- presentation clock and its sealed native answer translates into the
+-- bound completion identity. The typed answer never enters the action
+-- reply parser.
+function BattleScreenState:_drainCompletion()
+  local completion = self._completion
+  if completion == nil or self._completionResult ~= nil then
+    return
+  end
+  if completion.kind == "evolution" then
+    self:_drainEvolutionCompletion(completion)
+    return
+  end
+  if completion.stage ~= "naming" then
+    return
+  end
+  local child = self._completionChild
+  if child == nil then
+    return
+  end
+  child:stepSourceTick(1)
+  local result = child:takeResult()
+  if result == nil then
+    return
+  end
+  if result.kind == "cancelled" then
+    self:_sealCompletion({
+      launchId = completion.launchId,
+      completionId = completion.completionId,
+      kind = "declined",
+    })
+    return
+  end
+  if result.kind == "choice" and type(result.choice) == "table" and type(result.choice.text) == "string" then
+    self:_sealCompletion({
+      launchId = completion.launchId,
+      completionId = completion.completionId,
+      kind = "named",
+      nickname = result.choice.text,
+    })
+  end
+end
+
+---@param current table<string, unknown>? action child view under projection
+---@return table<string, unknown>? action child view with the completion question, naming, or evolution state
+function BattleScreenState:_completionChildView(current)
+  local completion = self._completion
+  if completion == nil or not self._outcomeAcked then
+    return current
+  end
+  if completion.kind == "evolution" then
+    local child = self._completionChild
+    if child == nil then
+      return {
+        kind = "evolution",
+        purpose = "evolution",
+        interactive = false,
+        cancellable = false,
+        application = "evolution",
+        phase = "sequence",
+      } --[[@as table<string, unknown>]]
+    end
+    local inner = child:status()
+    assert(type(inner) == "table", "the evolution child reports its status")
+    return {
+      kind = "evolution",
+      purpose = "evolution",
+      interactive = true,
+      cancellable = inner.canCancel == true,
+      application = "evolution",
+      phase = inner.phase,
+      learn = child:learnPrompt(),
+    } --[[@as table<string, unknown>]]
+  end
+  if completion.stage == "question" then
+    local view = {
+      kind = "naming",
+      purpose = "nickname",
+      interactive = true,
+      cancellable = true,
+      rows = {
+        { id = "yes", label = "Yes", detail = "", enabled = true },
+        { id = "no", label = "No", detail = "", enabled = true },
+      },
+      focusId = completion.answer == 1 and "yes" or "no",
+      prompt = completionQuestionText(completion.subject --[[@as table<string, unknown>]]),
+      application = "naming",
+    } --[[@as table<string, unknown>]]
+    local menus = self._manifest.menus
+    local routes = type(menus) == "table" and menus.routes or nil
+    local messages = self._manifest.messages
+    local entries = type(messages) == "table" and messages.entries or nil
+    local route = type(routes) == "table" and routes["menu/yes-no"] or nil
+    if type(route) == "table" and type(entries) == "table" then
+      local top = entries["label/yes"]
+      local bottom = entries["label/no"]
+      if type(top) == "table" and type(bottom) == "table" then
+        view.twoOption = {
+          route = "menu/yes-no",
+          top = menuLabelText(top.tokens --[[@as table<integer, table<string, unknown>>]]),
+          bottom = menuLabelText(bottom.tokens --[[@as table<integer, table<string, unknown>>]]),
+        }
+      end
+    end
+    return view
+  end
+  local child = self._completionChild
+  if child == nil then
+    return current
+  end
+  local text = ""
+  local namingText = child.namingText
+  if type(namingText) == "function" then
+    local ok, staged = pcall(namingText, child)
+    if ok and type(staged) == "string" then
+      text = staged
+    end
+  end
+  return {
+    kind = "naming",
+    purpose = "nickname",
+    interactive = true,
+    cancellable = true,
+    rows = {},
+    focusId = nil,
+    text = text,
+    application = "naming",
+  } --[[@as table<string, unknown>]]
+end
+
+---@return table<string, fun(...)> seven closure operations sharing one idempotent release guard
 function BattleScreenState:presentationPort()
   local screen = self
   ---@param plan table<string, unknown> runtime entry plan carrying the launch kind
@@ -1857,12 +2521,23 @@ function BattleScreenState:presentationPort()
   local function portDispose()
     screen:dispose()
   end
+  ---@param intent table<string, unknown> bound capture-nickname completion under opening
+  ---@return boolean opened true while the screen owns the decision
+  local function portOpenCompletion(intent)
+    return screen:openCompletion(intent)
+  end
+  ---@return table<string, unknown>? one-shot bound completion answer, nil while unanswered
+  local function portTakeCompletion()
+    return screen:takeCompletion()
+  end
   return {
     enter = portEnter,
     present = portPresent,
     ready = portReady,
     leave = portLeave,
     dispose = portDispose,
+    openCompletion = portOpenCompletion,
+    takeCompletion = portTakeCompletion,
   }
 end
 
@@ -2135,6 +2810,9 @@ function BattleScreenState:input(events)
     pcall(function()
       self._session:resolve(measurement, self:_snapshot())
     end)
+    -- Non-pointer semantic edges pass the published plan untouched, so
+    -- the completion lane owns its text and naming edges behind the
+    -- same contract the action children use.
     local converted = self._session:mapInput(events, self:_snapshot())
     for _, event in ipairs(converted) do
       self:_consume(event)
@@ -2996,6 +3674,11 @@ function BattleScreenState:_consume(event)
     self._subflows:cancelPointerCapture()
     return
   end
+  -- The bound nickname completion owns its semantic edges ahead of the
+  -- battle handlers; anything it refuses falls through below.
+  if self:_consumeCompletion(event) then
+    return
+  end
   if self._menuGateTicks > 0 then
     return
   end
@@ -3380,6 +4063,32 @@ function BattleScreenState:_outcomeText()
   return "The battle ended."
 end
 
+-- Fires the bound terminal-music beat once at the outcome narration
+-- entry: wins and captures notify exactly once per screen, before any
+-- explicit acknowledgement; other terminal words notify nothing and a
+-- headless screen without a bound beat keeps its cue contract. A
+-- rejected beat fails the screen with its launch provenance while the
+-- already-committed result keeps its existing return path.
+---@param word unknown terminal result word under notification
+function BattleScreenState:_notifyResultMusic(word)
+  if self._resultMusicSent then
+    return
+  end
+  if word ~= "win" and word ~= "capture" then
+    return
+  end
+  local notify = self._onResultMusic
+  if notify == nil then
+    return
+  end
+  self._resultMusicSent = true
+  local ok, err = pcall(notify, word)
+  if not ok then
+    self._mode = "failed"
+    self._error = "result music failed for launch " .. self._launchId .. ": " .. tostring(err)
+  end
+end
+
 -- Applies the retained delivery once its cues drain: reconcile exact
 -- final facts, then expose the next request or the terminal result.
 -- Exposure waits for a fully settled tick so the finished frame
@@ -3398,9 +4107,21 @@ function BattleScreenState:_drain(settledTick)
     return
   end
   if self._pendingResult ~= nil then
+    local word = self._pendingResult.word
     self._timeline:announce(self:_outcomeText(), true)
+    self:_notifyResultMusic(word)
     self._pendingResult = nil
     self._pendingRequest = nil
+    -- The terminal request identity stays behind for the completion
+    -- barrier: post-commit nickname children bind this settled decision
+    -- instead of inventing an action identity.
+    if self._request ~= nil then
+      self._terminalRequest = {
+        requestId = self._request.requestId,
+        epoch = self._request.epoch,
+        controller = self._request.controller,
+      }
+    end
     self._request = nil
     self._options = nil
     self._staged = {}
@@ -3561,6 +4282,7 @@ function BattleScreenState:updateFixed(dt)
   if self._mode == "failed" then
     self:_disposeRegistrationChild()
   end
+  self:_drainCompletion()
   -- The selection arrow consumes accepted source ticks, never host calls:
   -- whole ticks advance the cycle while a frame carrying less than one
   -- tick banks its fraction, and the frame mapping already skips
@@ -3724,6 +4446,15 @@ function BattleScreenState:dispose()
   -- The card releases before the borrowed presentation context: one
   -- idempotent release on the normal, failure, and disposal paths.
   self:_disposeRegistrationChild()
+  -- A disposed screen owns no input and seals nothing, so pending
+  -- completion evidence clears with it instead of leaking into a later
+  -- answer. Consumed identities persist so late replays stay refused.
+  if self._completionChild ~= nil then
+    self._completionChild:dispose()
+    self._completionChild = nil
+  end
+  self._completion = nil
+  self._completionResult = nil
   if self._subflows ~= nil then
     self._subflows:dispose()
   end

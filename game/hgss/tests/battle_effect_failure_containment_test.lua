@@ -700,6 +700,186 @@ function T.matching_resolved_move_power_admits_and_runs_to_its_checkpoint()
   screen:dispose()
 end
 
+-- A faulted occurrence keeps its provenance until the owner releases it:
+-- the real cue player holds the failed cue without retiring it, the
+-- failure names its launch, packet, program, and instruction, and only
+-- the explicit owner release drops the record, after which the handle
+-- answers nothing, late cancellation stays silent, and disposal performs
+-- no recurrent task work. The live screen reports the same failure with
+-- provenance, applies no health early, and keeps the diagnosis through
+-- disposal with no live work left.
+function T.faulted_occurrences_keep_provenance_until_the_owner_releases_them()
+  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local BattleAnimationPlayer = require("libs.hgss.src.presentation.BattleAnimationPlayer")
+  local audio = { played = {}, stopped = {} }
+  function audio.play(name)
+    audio.played[#audio.played + 1] = name
+  end
+  function audio.stop(name)
+    audio.stopped[#audio.stopped + 1] = name
+  end
+  function audio.isFinished(_name)
+    return true
+  end
+  local constructions = 0
+  local tasks = {}
+  function tasks.create(_kind, _args, _context, _services)
+    constructions = constructions + 1
+    return {}
+  end
+  local resources = {}
+  function resources.resolve(key)
+    return { key = key, lease = key }
+  end
+  function resources.release(_lease) end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = audio,
+    resources = resources,
+    tasks = tasks,
+  }))
+  local retired = {}
+  local admitted = nil
+  local effects = {
+    start = function(cue)
+      admitted = player:start({
+        launchId = cue.launchId,
+        packetId = cue.packetId,
+        event = cue.event,
+        visualSeed = cue.visualSeed,
+      }, {
+        entry = "main",
+        instructions = {
+          { op = "schedule-battle-task", taskKind = "battle-background-blend-transition", taskInputRule = "raw-rule", values = { 1 } },
+          { op = "interpreter-wait", values = { 5 } },
+        },
+        subprograms = {},
+        taskKinds = {},
+      })
+      return admitted
+    end,
+    status = function(handle)
+      return player:status(handle)
+    end,
+    cancel = function(handle, reason)
+      player:cancel(handle, reason)
+    end,
+    retire = function(handle)
+      retired[#retired + 1] = handle
+      if type(player.retire) == "function" then
+        return player:retire(handle)
+      end
+      return true
+    end,
+  }
+  local timeline = BattleTimeline.new({ effects = effects })
+  local view = failingView(57)
+  timeline:reset(view)
+  local packet = BattlePresentationModel.packet(view, {
+    events = {
+      {
+        sequence = 1,
+        kind = "struck",
+        cause = { key = "TACKLE", kind = "move" },
+        audience = "public",
+        actors = { { combatant = 1 } },
+        targets = { { combatant = 3 } },
+        move = { selected = "TACKLE", executed = "TACKLE", phase = "direct" },
+        actionId = 61,
+        hitIndex = 1,
+        effectKey = "TACKLE",
+        payload = { target = 3, damage = 14, hitIndex = 1 },
+        after = { hp = { [1] = 52, [3] = 43 } },
+        visualSeed = 4,
+      },
+    },
+  }, failingView(43), { launchId = "failure-containment-probe", packetId = 2 })
+  Assert.isTrue(timeline:present(packet), "the faulted strike is accepted")
+  for _ = 1, 6000 do
+    timeline:update(1 / 30, function(_)
+      return true
+    end)
+    player:stepSourceTick({ tick = 1 })
+    if admitted ~= nil and player:status(admitted) == "failed" then
+      break
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  local handle = admitted
+  Assert.notNil(handle, "the faulted cue admits its handle")
+  Assert.isTrue(player:status(handle) == "failed", "the faulted occurrence reports failed")
+  local fault = player:failure(handle)
+  Assert.notNil(fault, "the failure carries its provenance before any cleanup")
+  Assert.equal(fault.launchId, "failure-containment-probe", "the fault names its launch")
+  Assert.equal(fault.packetId, 2, "the fault names its packet")
+  Assert.equal(fault.op, "schedule-battle-task", "the fault names its instruction")
+  Assert.isFalse(timeline:settled(), "the failed cue never counts as a completed visual")
+  for _ = 1, 120 do
+    timeline:update(1 / 30, function(_)
+      return true
+    end)
+    player:stepSourceTick({ tick = 1 })
+  end
+  Assert.isFalse(timeline:settled(), "the failed cue holds instead of settling silently")
+  Assert.equal(#retired, 0, "the cue player never retires a failed occurrence")
+  local function diagnosticsMentionFailure()
+    for _, line in ipairs(timeline:diagnostics()) do
+      if tostring(line):find("TACKLE", 1, true) ~= nil then
+        return true
+      end
+    end
+    return false
+  end
+  Assert.isTrue(diagnosticsMentionFailure(), "the held cue records its failure diagnosis")
+  Assert.notNil(player:failure(handle), "provenance survives until the owner releases it")
+  local released = nil
+  if type(player.retire) == "function" then
+    released = player:retire(handle)
+  end
+  Assert.isTrue(released == true, "the owner release drops the faulted record")
+  Assert.isNil(player:status(handle), "the released handle answers nothing")
+  Assert.isNil(player:failure(handle), "the released handle carries no lingering fault")
+  Assert.equal(#player._occurrences, 0, "the released fault leaves no occurrence record")
+  player:cancel(handle, "late")
+  Assert.isNil(player:status(handle), "late cancellation stays silent")
+  Assert.equal(constructions, 1, "the faulted run constructs exactly once")
+  player:dispose()
+  player:dispose()
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(constructions, 1, "disposal performs no recurrent construction work")
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local launchId = "launch-fault-probe-screen"
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  staging:failEffect("TACKLE", "worker exploded")
+  local screen = openFailingScreen(launchId, staging)
+  presentFailingStrike(screen, launchId)
+  for _ = 1, 600 do
+    screen:updateFixed(1 / 30)
+  end
+  local status = screen:status()
+  Assert.equal(status.mode, "failed", "the missing dependency fails the screen, never a silent hit")
+  Assert.isTrue(
+    tostring(status.error):find("TACKLE", 1, true) ~= nil,
+    "the failure names its selected effect: " .. tostring(status.error)
+  )
+  Assert.isTrue(
+    tostring(status.error):find(launchId, 1, true) ~= nil,
+    "the failure names its launch: " .. tostring(status.error)
+  )
+  Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the failed cue applies no health early")
+  local live = 0
+  for _, occurrence in ipairs(screen._player._occurrences) do
+    if occurrence.phase == "preparing" or occurrence.phase == "running" or occurrence.phase == "waiting" then
+      live = live + 1
+    end
+  end
+  Assert.equal(live, 0, "the failed screen holds no live occurrence work")
+  screen:dispose()
+  Assert.equal(screen:status().mode, "failed", "disposal keeps the diagnosed failure")
+end
+
 -- A still-staging effect parks instead of failing or settling: once the
 -- worker closure validates, the same cue admits and runs its program
 -- to the exact checkpoint with no new decision sealed.
