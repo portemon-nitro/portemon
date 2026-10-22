@@ -33,7 +33,7 @@ function T.parse_rejects_missing_colon_empty_kind_or_empty_id()
   end, "id must not be empty")
 end
 
-function T.legend_ops_declare_their_appearance_need()
+function T.legend_ops_declare_the_appearance_need()
   local found = 0
   for name in pairs(Schema.OPERATIONS) do
     if name:match("^legend_cutscene_") or name == "legend_cinematic" then
@@ -111,7 +111,10 @@ function T.for_resource_unions_the_optional_needs_hint()
     steps = { { op = "legend_cutscene_bell_begin" } },
   })
   Assert.deepEqual(AssetNeeds.forResource(resource), { "custom:thing", HO_OH })
-  Assert.deepEqual(AssetNeeds.forResource(S.script({ api = 1, id = "test.asset_needs_none", steps = { S.stop() } })), {})
+  Assert.deepEqual(
+    AssetNeeds.forResource(S.script({ api = 1, id = "test.asset_needs_none", steps = { S.stop() } })),
+    {}
+  )
 end
 
 function T.validator_rejects_malformed_needs_hint()

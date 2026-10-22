@@ -842,6 +842,7 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
   assert(self._battleLaunch == nil and self.battleRuntime == nil, "a field-owned battle is already active")
   local binding = assert(self._battlePresentationFactory, "presented launches require their factory binding")
   local environment = self:_captureLaunchEnvironment(request, method)
+  local transitionContext = self:_captureTransitionContext(request, environment)
   local launch = {
     launchId = launchId,
     phase = "covering",
@@ -849,6 +850,7 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     presented = true,
     scripted = false,
     environment = environment,
+    transitionContext = transitionContext,
     coverComplete = false,
     battleCovered = false,
     revealed = false,
@@ -885,9 +887,11 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     kind = request.kind,
     scripted = false,
     environment = environment,
+    transitionContext = transitionContext,
     textSpeed = launchSpeed,
     audio = fieldRuntime(self).audio,
     musicRole = self:_battleMusicRole(request),
+    trainerClass = self:_battleTrainerClass(request),
     host = {
       status = presentedStatus,
       advance = presentedAdvance,
@@ -921,6 +925,99 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     audio:suspendFieldPolicy(launchId)
   end
   return launchId
+end
+
+-- Captures the semantic selector facts from the prepared request before
+-- the field changes. Trainer templates are read without materializing a
+-- party or consuming the world RNG.
+---@param request table<string, unknown> admitted source battle request
+---@param environment table<string, unknown> immutable field environment captured for this launch
+---@return table<string, unknown> normalized selector context
+function FieldBattleCoordinator:_captureTransitionContext(request, environment)
+  local payload = request.payload
+  assert(type(payload) == "table", "presented battle requests carry their source payload")
+  local sourceEnvironment = payload.environment
+  if type(sourceEnvironment) ~= "table" then
+    sourceEnvironment = {}
+  end
+  local function sourceFlag(key)
+    local value = payload[key]
+    if value == nil then
+      value = sourceEnvironment[key]
+    end
+    if value == nil then
+      return false
+    end
+    assert(type(value) == "boolean", "transition source flags are explicit booleans: " .. key)
+    return value
+  end
+
+  local timeOfDay = environment.time
+  if timeOfDay == "evening" or timeOfDay == "night" then
+    timeOfDay = "late"
+  end
+  local context = {
+    kind = request.kind,
+    doubleBattle = sourceFlag("doubleBattle") or payload.format == "double" or payload.format == "wild-double",
+    specialBattle = sourceFlag("specialBattle"),
+    alternateTransition = sourceFlag("alternateTransition"),
+    terrain = environment.terrain,
+    timeOfDay = timeOfDay,
+  }
+  local profileGender = assert(fieldRuntime(self).playerData.profile.gender, "player profile carries its gender")
+  assert(profileGender == 0 or profileGender == 1, "player profile gender is a normalized binary value")
+  context.playerGender = profileGender == 0 and "male" or "female"
+
+  if request.kind == "trainer" then
+    local trainer = payload.trainer
+    local trainers = payload.trainers
+    if type(trainers) == "table" and #trainers > 0 then
+      trainer = assert(trainers[1]).id
+      context.doubleBattle = true
+    end
+    assert(trainer ~= nil, "trainer transition context names its first trainer")
+    local catalog = assert(fieldRuntime(self)._trainerCatalog, "trainer transition context reads the trainer catalog")
+    local template = assert(
+      require("libs.hgss.src.battle.HgssTrainerCatalog").trainer(catalog, trainer),
+      "trainer transition context resolves its trainer template"
+    )
+    assert(
+      type(template.trainerClass) == "string" or type(template.trainerClass) == "number",
+      "trainer transition context resolves its trainer class for trainer " .. tostring(trainer)
+    )
+    if type(template.trainerClass) == "string" and template.trainerClass ~= "" then
+      context.trainerClass = template.trainerClass
+    elseif type(template.trainerClass) == "number" then
+      -- Numeric native classes ride the context untouched: the encounter
+      -- selector resolves them through the pinned class table while
+      -- genuinely-absent identities keep the designed unknown route and
+      -- music role there.
+      context.trainerClass = template.trainerClass
+    else
+      context.trainerClass = "SOURCE_UNKNOWN_TRAINER"
+    end
+    context.doubleBattle = context.doubleBattle or template.doubleBattle == true
+  elseif request.kind == "wild" then
+    local mon = payload.mon
+    local species = payload.species
+    if species == nil and type(mon) == "table" then
+      species = mon.species
+    end
+    context.wildSpecies = species
+    local fallback = payload.wildSetupFallback
+    if fallback == nil then
+      fallback = sourceEnvironment.wildSetupFallback
+    end
+    if fallback == nil then
+      fallback = species == nil
+    end
+    assert(type(fallback) == "boolean", "wild transition setup fallback is an explicit source fact")
+    context.wildSetupFallback = fallback
+  else
+    error("presented transition context requires a trainer or wild launch", 0)
+  end
+
+  return context
 end
 
 -- Captures the actual launch environment before the field changes: source
@@ -1023,12 +1120,54 @@ function FieldBattleCoordinator:_captureLaunchEnvironment(request, method)
   }
 end
 
--- Chooses the source-defined battle music role for one launch: ordinary
--- wild, trainer, or rival roles from the staged presentation manifest.
--- Banks resolve through the normalized audio catalog at playback; a
--- missing manifest or role selects no music instead of guessing.
+-- Chooses the source-defined battle music track for one launch: the
+-- wild special-species table wins first, then the trainer class table
+-- with the rival override, then the ordinary kind default, with the
+-- Kanto regional remap last. Selection consumes no battle or
+-- encounter randomness and never infers from display strings. Banks
+-- resolve through the normalized audio catalog at playback; a launch
+-- without staged roles selects no music instead of guessing.
 ---@param request table<string, unknown> launch request carrying its kind and payload
----@return string? symbolic battle music role
+---@return string|number? resolved trainer class key or numeric native class, nil for wild launches
+function FieldBattleCoordinator:_battleTrainerClass(request)
+  local payload = request.payload
+  if type(payload) ~= "table" then
+    payload = {}
+  end
+  local trainerClass = nil
+  if request.kind ~= "wild" and (payload.trainer ~= nil or payload.trainerClass ~= nil) then
+    if type(payload.trainerClass) == "string" or type(payload.trainerClass) == "number" then
+      trainerClass = payload.trainerClass
+    else
+      if fieldRuntime(self).trainerClassFor ~= nil then
+        local okClass, class = pcall(fieldRuntime(self).trainerClassFor, fieldRuntime(self), payload.trainer)
+        if okClass and type(class) == "string" then
+          trainerClass = class
+        elseif okClass and type(class) == "number" then
+          trainerClass = class
+        end
+      end
+      if trainerClass == nil and payload.trainer ~= nil then
+        -- The runtime class lookup answers string classes only, so numeric
+        -- catalog classes resolve from the template the transition capture
+        -- reads; selection maps them precisely while genuinely-absent
+        -- identities keep the ordinary default there.
+        local catalog = fieldRuntime(self)._trainerCatalog
+        if catalog ~= nil then
+          local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
+          local okTemplate, template = pcall(HgssTrainerCatalog.trainer, catalog, payload.trainer)
+          if okTemplate and type(template) == "table" and type(template.trainerClass) == "number" then
+            trainerClass = template.trainerClass
+          end
+        end
+      end
+    end
+  end
+  return trainerClass
+end
+
+---@param request table<string, unknown> launch request carrying its kind and payload
+---@return string? normalized battle-music sequence symbol
 function FieldBattleCoordinator:_battleMusicRole(request)
   if fieldRuntime(self).cacheFs == nil then
     return nil
@@ -1042,21 +1181,24 @@ function FieldBattleCoordinator:_battleMusicRole(request)
   if type(roles) ~= "table" then
     return nil
   end
-  if request.kind ~= "wild" then
-    local payload = request.payload
-    local rival = type(payload) == "table" and payload.rivalName
-    if type(rival) == "string" and rival ~= "" and type(roles.rival) == "string" then
-      return roles.rival
-    end
-    if type(roles.trainer) == "string" then
-      return roles.trainer
-    end
+  local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
+  local payload = request.payload
+  if type(payload) ~= "table" then
+    payload = {}
+  end
+  local species = type(payload.species) == "string" and payload.species or nil
+  local rivalName = type(payload.rivalName) == "string" and payload.rivalName or nil
+  local trainerClass = self:_battleTrainerClass(request)
+  local okSelect, selected = pcall(BattleMusicSelection.select, {
+    kind = request.kind,
+    species = species,
+    trainerClass = trainerClass,
+    rivalName = rivalName,
+  })
+  if not okSelect or type(selected) ~= "table" or type(selected.music) ~= "string" then
     return nil
   end
-  if type(roles.wild) == "string" then
-    return roles.wild
-  end
-  return nil
+  return selected.music --[[@as string]]
 end
 
 -- Presented-launch observation for the envelope's fixed driver: the launch

@@ -78,6 +78,7 @@ local VALID_KINDS = {
   ["battle-scene"] = true,
   ["audio-bank"] = true,
   pokedex = true,
+  ["battle-effect"] = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 
@@ -336,6 +337,10 @@ local function validateSelectors(params)
         return "pokedex request carries no " .. field .. " selector"
       end
     end
+  elseif kind == "battle-effect" then
+    if type(params.effectKey) ~= "string" or params.effectKey == "" or params.effectKey:find("/", 1, true) ~= nil then
+      return "battle-effect request needs its flat effectKey"
+    end
   end
   return nil
 end
@@ -364,6 +369,8 @@ function Worker:_invoke(params)
     return session:requestJob("pokedex", "global", urgency)
   elseif kind == "battle-scene" then
     return session:requestJob("battle-scene", params.sceneKey, urgency)
+  elseif kind == "battle-effect" then
+    return session:requestJob("battle-effect", params.effectKey, urgency)
   end
   error("unknown cache request kind: " .. tostring(kind), 0)
 end
@@ -565,6 +572,7 @@ function Worker:_applyRequest(command)
     pageId = command.pageId,
     sceneKey = command.sceneKey,
     bankId = command.bankId,
+    effectKey = command.effectKey,
   }
   local selectorError = validateSelectors(params)
   if selectorError ~= nil then

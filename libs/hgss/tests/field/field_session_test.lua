@@ -5027,6 +5027,276 @@ function T.foreground_hold_freezes_gameplay_but_not_script_polling()
   Assert.notNil(session:takeCommittedStep(), "steps complete after the hold")
 end
 
+-- A battle hold starts from a real committed walking step: the rising hold
+-- edge must settle player and camera interpolation exactly once at the
+-- committed anchor, so every render alpha across a long freeze samples the
+-- same tile and view. Releasing the hold must leave a fresh direction fully
+-- usable for the walk back.
+function T.battle_hold_keeps_the_committed_anchor_at_every_alpha()
+  local FieldCamera = require("libs.hgss.src.field.FieldCamera")
+  local profile = {
+    projectionType = "orthographic",
+    distanceTiles = 10,
+    angleXRaw = 0,
+    angleYRaw = 0,
+    halfFovRadians = math.rad(45),
+    fullVerticalFovRadians = math.rad(45),
+    nearTiles = 1,
+    farTiles = 100,
+    targetOffsetTiles = { x = 0, y = 0, z = 0 },
+  }
+  local map = {
+    mapId = 61,
+    cameraType = 4,
+    coordinateOrigin = { x = 0, z = 0 },
+    fieldData = { events = { warps = {} } },
+    updateAnimated = function() end,
+    collision = {
+      containsLocal = function(_, x, z)
+        return x >= 0 and x < 32 and z >= 0 and z < 32
+      end,
+      isBlockedLocal = function()
+        return false
+      end,
+    },
+    terrain = TerrainSurface.new({
+      plates = {
+        {
+          id = 0,
+          minX = 0,
+          minZ = 0,
+          maxX = 32,
+          maxZ = 32,
+          normal = { x = 0, y = 1, z = 0 },
+          distance = 0,
+          slopeClass = "flat",
+        },
+      },
+    }),
+  }
+  local player = FieldPlayer.new({
+    currentMap = map,
+    fieldX = 4,
+    fieldZ = 13,
+    surfaceId = 0,
+    facing = "east",
+    occupancy = function()
+      return nil
+    end,
+  })
+  local visual = FieldPlayerVisual.new({ player = player, spriteId = 0 })
+  local camera = FieldCamera.new(profile, { initialTarget = { x = 4, y = 0, z = 13 } })
+  local session = FieldSession.new(baseOptions({
+    currentMap = map,
+    player = player,
+    camera = camera,
+    playerVisual = visual,
+  }))
+  local function pointEquals(a, b)
+    return math.abs(a.x - b.x) <= 1e-9 and math.abs(a.y - b.y) <= 1e-9 and math.abs(a.z - b.z) <= 1e-9
+  end
+  local function snapshotView(view)
+    local copy = {}
+    for i = 1, 16 do
+      copy[i] = view[i]
+    end
+    return copy
+  end
+  local function viewsEqual(a, b)
+    for i = 1, 16 do
+      if math.abs(a[i] - b[i]) > 1e-9 then
+        return false
+      end
+    end
+    return true
+  end
+  -- Commit one real east step, the encounter admission tick.
+  session:updateFixed({ heldDirection = "east", pressedDirection = "east" })
+  for _ = 2, FieldPlayer.WALK_STEP_TICKS do
+    session:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(player.fieldX, 5, "one east step commits before the hold")
+  Assert.equal(player.fieldZ, 13, "the committed step holds its row")
+  Assert.equal(player.motion, "idle", "admission starts from a settled avatar")
+  local committed = session:takeCommittedStep()
+  Assert.notNil(committed, "the commit tick reports its step")
+  Assert.equal(committed.fieldX, 5, "the report carries the committed tile")
+  local anchor = { x = player.worldX, y = player.worldY, z = player.worldZ }
+  local heldTick = session.tick
+  -- Freeze under battle ownership for many updates.
+  session:setForegroundHold(true)
+  for _ = 1, 30 do
+    session:updateFixed({})
+  end
+  Assert.isTrue(session.tick > heldTick, "lifecycle clocks keep running under the hold")
+  for _, alpha in ipairs({ 0, 0.25, 0.5, 0.75, 1 }) do
+    local sampled = player:renderPosition(alpha)
+    Assert.isTrue(
+      pointEquals(sampled, anchor),
+      "held render alpha " .. tostring(alpha) .. " stays on the committed anchor"
+    )
+    local seen = snapshotView(camera:view(alpha))
+    Assert.isTrue(
+      viewsEqual(seen, snapshotView(camera:view(1))),
+      "held camera alpha " .. tostring(alpha) .. " keeps the committed view"
+    )
+  end
+  Assert.equal(player.fieldX, 5, "the freeze never advances to the next tile")
+  Assert.equal(player.fieldZ, 13, "the freeze never leaves the committed row")
+  Assert.equal(player.motion, "idle", "the freeze never restarts the gait")
+  Assert.equal(visual.pose, "idle", "the pose stays settled under the hold")
+  Assert.equal(visual.poseTick, 0, "no pose tick runs while frozen")
+  -- Releasing the hold returns a normal field: one fresh press walks on.
+  session:setForegroundHold(false)
+  session:updateFixed({ heldDirection = "east", pressedDirection = "east" })
+  Assert.equal(player.motion, "walking", "a fresh direction works after the hold")
+  for _ = 2, FieldPlayer.WALK_STEP_TICKS do
+    session:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(player.fieldX, 6, "the return walk commits its next tile")
+  Assert.equal(player.motion, "idle", "the return walk settles")
+end
+
+-- Repeating the battle hold (and sampling render state between repeats)
+-- must not push camera history, revise movement, or tick the pose clock:
+-- only the false-to-true edge settles, and settling stays idempotent.
+function T.repeated_battle_holds_never_resample_the_camera_or_pose()
+  local FieldCamera = require("libs.hgss.src.field.FieldCamera")
+  local profile = {
+    projectionType = "orthographic",
+    distanceTiles = 10,
+    angleXRaw = 0,
+    angleYRaw = 0,
+    halfFovRadians = math.rad(45),
+    fullVerticalFovRadians = math.rad(45),
+    nearTiles = 1,
+    farTiles = 100,
+    targetOffsetTiles = { x = 0, y = 0, z = 0 },
+  }
+  local map = {
+    mapId = 61,
+    cameraType = 4,
+    coordinateOrigin = { x = 0, z = 0 },
+    fieldData = { events = { warps = {} } },
+    updateAnimated = function() end,
+    collision = {
+      containsLocal = function(_, x, z)
+        return x >= 0 and x < 32 and z >= 0 and z < 32
+      end,
+      isBlockedLocal = function()
+        return false
+      end,
+    },
+    terrain = TerrainSurface.new({
+      plates = {
+        {
+          id = 0,
+          minX = 0,
+          minZ = 0,
+          maxX = 32,
+          maxZ = 32,
+          normal = { x = 0, y = 1, z = 0 },
+          distance = 0,
+          slopeClass = "flat",
+        },
+      },
+    }),
+  }
+  local player = FieldPlayer.new({
+    currentMap = map,
+    fieldX = 4,
+    fieldZ = 13,
+    surfaceId = 0,
+    facing = "east",
+    occupancy = function()
+      return nil
+    end,
+  })
+  local visual = FieldPlayerVisual.new({ player = player, spriteId = 0 })
+  local camera = FieldCamera.new(profile, { initialTarget = { x = 4, y = 0, z = 13 } })
+  local session = FieldSession.new(baseOptions({
+    currentMap = map,
+    player = player,
+    camera = camera,
+    playerVisual = visual,
+  }))
+  local function pointEquals(a, b)
+    return math.abs(a.x - b.x) <= 1e-9 and math.abs(a.y - b.y) <= 1e-9 and math.abs(a.z - b.z) <= 1e-9
+  end
+  session:updateFixed({ heldDirection = "east", pressedDirection = "east" })
+  for _ = 2, FieldPlayer.WALK_STEP_TICKS do
+    session:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(player.fieldX, 5, "one east step commits before the hold")
+  session:setForegroundHold(true)
+  session:updateFixed({})
+  local writes = camera.history.writes
+  Assert.isTrue(
+    pointEquals(player:renderPosition(0), player:renderPosition(1)),
+    "the rising hold edge settles the player pair"
+  )
+  -- Repeat the hold with render sampling and polling between repeats.
+  for _ = 1, 3 do
+    session:setForegroundHold(true)
+    for _ = 1, 5 do
+      session:updateFixed({})
+    end
+    local _ = session:renderAlpha()
+    local _ = camera:view(0.5)
+    local _ = player:renderPosition(0.5)
+  end
+  Assert.equal(camera.history.writes, writes, "repeated holds push no camera history")
+  Assert.equal(player.fieldX, 5, "repeated holds revise no movement")
+  Assert.equal(player.fieldZ, 13, "repeated holds revise no row")
+  Assert.equal(visual.poseTick, 0, "repeated holds tick no new pose")
+  Assert.equal(visual.pose, "idle", "repeated holds keep the settled pose")
+  Assert.isTrue(
+    pointEquals(player:renderPosition(0), player:renderPosition(1)),
+    "the settled pair survives repeated holds"
+  )
+  -- A release/re-hold cycle settles again without synthesizing movement.
+  -- The release tick is ordinary world time and samples the camera once,
+  -- so the history baseline moves there; only the re-hold edge and its
+  -- frozen tick must record nothing further.
+  session:setForegroundHold(false)
+  session:updateFixed({})
+  writes = camera.history.writes
+  session:setForegroundHold(true)
+  session:updateFixed({})
+  Assert.equal(camera.history.writes, writes, "re-holding after release pushes no history")
+  Assert.equal(player.fieldX, 5, "re-holding synthesizes no step")
+  Assert.equal(player.motion, "idle", "re-holding keeps the avatar settled")
+end
+
+-- A battle hold freezes world simulation but keeps field-audio policy live:
+-- every frozen tick still runs the audio update while actors stay still.
+function T.foreground_hold_keeps_field_audio_live()
+  local audioTicks = 0
+  local actorSteps = 0
+  local session = FieldSession.new(baseOptions({
+    player = steppingPlayer(),
+    audio = {
+      updateField = function()
+        audioTicks = audioTicks + 1
+      end,
+      play = function() end,
+    },
+    actors = {
+      beginFixedStep = function() end,
+      step = function()
+        actorSteps = actorSteps + 1
+      end,
+    },
+  }))
+  session:setForegroundHold(true)
+  for _ = 1, 5 do
+    session:updateFixed({})
+  end
+  Assert.equal(audioTicks, 5, "field audio policy ticks on every frozen update")
+  Assert.equal(actorSteps, 0, "actors stay frozen while audio runs")
+  session:setForegroundHold(false)
+end
+
 -- A locked area preview covers the destination while the covered map entry
 -- runs underneath it: the entry's own transition init, actor publication, and
 -- load script advance through the ordinary scheduler path, while gameplay

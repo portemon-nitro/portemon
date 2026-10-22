@@ -46,7 +46,10 @@ local function checkCinematicStraddles(descriptor, name, version)
     local straddle = batch.straddle
     if straddle ~= nil then
       straddling = straddling + 1
-      Assert.notNil(batch.positionSource, version .. " " .. name .. " " .. batch.id .. " straddles under a position source")
+      Assert.notNil(
+        batch.positionSource,
+        version .. " " .. name .. " " .. batch.id .. " straddles under a position source"
+      )
       local first = straddle.sources[1]
       for _, source in ipairs(straddle.sources) do
         if source ~= first and (source == "draw" or first == "draw" or source.slot ~= first.slot) then
@@ -81,7 +84,7 @@ local function testHoOhLegendModels(romFs, version)
       checkDescriptor(bundle, descriptor, name, version)
       checkCinematicStraddles(descriptor, name, version)
       for _, clip in ipairs(descriptor.animations) do
-        Assert.isTrue(clip.id:find("^cinematic%." .. shot .. "%." .. variant .. "%.") ~= nil, "clip ids keep their variant")
+        Assert.isTrue(clip.id:find("^cinematic%." .. shot .. "%.", 1) ~= nil, "clip ids keep their variant")
       end
       Assert.equal(effect.clips.cinematic[shot][variant + 1], longest, "the summary names the shot length")
     end

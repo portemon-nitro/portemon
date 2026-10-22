@@ -3257,6 +3257,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- history behind Last Resort accumulates until entries turn over.
     state.turnStrikes = {}
     state.turnActed = {}
+    -- The turn strike tally behind hit occurrence identities restarts
+    -- with the turn beside the revenge ledger: presentation only, so a
+    -- missing tally on older states simply starts at zero.
+    state.turnStrikeOrdinal = 0
     local stream = state.rng --[[@as table<string, unknown>]]
     assert(type(stream.nextU16) == "function", "native turns draw ties from the battle stream")
     -- The bridge stays function-local: the turn seam already holds the

@@ -192,6 +192,54 @@ local function executeBattleSceneJob(artifact, context, job)
   )
 end
 
+---@param key string semantic effect key without slashes
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesBattleEffect(key, plans)
+  assert(type(plans) == "table", "dependency edges require the session plans")
+  assert(
+    type(key) == "string" and key ~= "" and key:find("/", 1, true) == nil,
+    "invalid battle effect key: " .. tostring(key)
+  )
+  return { { kind = "battle-presentation", key = "global" } }, true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string compiler marker for the receipt
+local function executeBattleEffectJob(artifact, context, job)
+  local BattlePresentationCompiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local Errors = require("libs.errors.src.Errors")
+  local romFs = assert(context.romFs, "battle effect jobs require a source reader")
+  local versionId = assert(context.versionId, "battle effect jobs require a version")
+  local effect, compileErr = BattlePresentationCompiler.compileEffect(romFs, { versionId = versionId }, job.key)
+  if effect == nil then
+    if Errors.is(compileErr) then
+      error(compileErr, 0)
+    end
+    error("battle effect emission failed for generation " .. job.generationId .. ": " .. tostring(compileErr), 0)
+  end
+  assert(effect ~= nil, "battle effect emission produced no effect")
+  local metadata = romFs:metadata()
+  return BattlePresentationCompiler.stageEffect(
+    artifact,
+    effect,
+    BattlePresentationCompiler.effectMarker(metadata.sha1, effect)
+  )
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateBattleEffect(check)
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local record, _ = BattlePresentationCache.loadEffect(check.cacheFs, check.key)
+  if record == nil then
+    return false
+  end
+  return check.cacheFs:read(BattlePresentationCache.effectMarkerPath(check.key)) == check.marker
+end
+
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
 local function validateBattlePresentation(check)
@@ -220,5 +268,8 @@ ArtifactBattleJobs.dependenciesScene = dependenciesBattleScene
 ArtifactBattleJobs.executeScene = executeBattleSceneJob
 ArtifactBattleJobs.validatePresentation = validateBattlePresentation
 ArtifactBattleJobs.validateScene = validateBattleScene
+ArtifactBattleJobs.dependenciesEffect = dependenciesBattleEffect
+ArtifactBattleJobs.executeEffect = executeBattleEffectJob
+ArtifactBattleJobs.validateEffect = validateBattleEffect
 
 return ArtifactBattleJobs

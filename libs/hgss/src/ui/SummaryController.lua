@@ -86,10 +86,12 @@ SummaryController.SWITCH_PRESS_TOTAL_TICKS = 6
 ---@field mode "summary"|"move_pick"
 ---@field model table<string, unknown>
 ---@field request table<string, unknown>?
----@field reorderMoves fun(slot: integer, a: integer, b: integer, revision: integer): table<string, unknown>?
+-- Summary mode reorders through its injected command while move-pick mode
+-- forbids reordering; the navigation sample stays optional in both modes.
+---@field reorderMoves (fun(slot: integer, a: integer, b: integer, revision: integer): table<string, unknown>?)?
 ---@field resolveLayout fun(): table<string, unknown>
 ---@field manifest table<string, unknown>?
----@field readNavigation fun(): table<string, unknown>?
+---@field readNavigation (fun(): table<string, unknown>?)?
 ---@field allowReorder boolean?
 ---@field initialSlot integer?
 ---@field allowCancel boolean?

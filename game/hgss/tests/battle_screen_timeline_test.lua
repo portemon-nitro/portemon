@@ -6,24 +6,32 @@
 -- boundary, and sounds drain into a recording sink.
 
 local Assert = require("tests.support.Assert")
-local StubLease = require("tests.support.StubLease")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 local MonCache = require("libs.assets.src.MonCache")
 
 local T = {}
-local TICK = 1 / 60
+local TICK = 1 / 30
 
 ---@param sounds table<string, boolean>? names the sink must refuse (muted)
----@return table recording sound-intent sink
+---@return table recording sound-cue sink
 local function sink(muted)
   local records = { played = {}, muted = muted or {} }
-  function records.sound(name)
-    records.played[#records.played + 1] = name
+  function records.sound(cue)
+    records.played[#records.played + 1] = cue
   end
-  function records.count(name)
+  function records.countCry(species, foe)
     local total = 0
     for _, played in ipairs(records.played) do
-      if played == name then
+      if type(played) == "table" and played.kind == "cry" and played.species == species and played.foe == foe then
+        total = total + 1
+      end
+    end
+    return total
+  end
+  function records.countEffect(symbol)
+    local total = 0
+    for _, played in ipairs(records.played) do
+      if type(played) == "table" and played.kind == "effect" and played.symbol == symbol then
         total = total + 1
       end
     end
@@ -143,8 +151,8 @@ end
 function T.strike_plays_message_then_health_without_read_ahead()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -178,13 +186,25 @@ function T.strike_plays_message_then_health_without_read_ahead()
   Assert.equal(battler(timeline:battlers(), 1).hp, 52, "untouched health never moves")
 end
 
+function T.displayed_battlers_preserve_false_source_caught_state()
+  local view = openingView()
+  view.foes[1].caught = false
+  local timeline = BattleTimeline.new({})
+  timeline:reset(view)
+  Assert.equal(battler(timeline:battlers(), 3).caught, false, "an explicit false caught bit remains visible to the HUD")
+
+  view.foes[1].caught = true
+  timeline:reset(view)
+  Assert.equal(battler(timeline:battlers(), 3).caught, true, "an explicit true caught bit remains visible to the HUD")
+end
+
 -- Faint hides its battler only after the health checkpoint, and later
 -- checkpoints never resurrect it.
 function T.faint_hides_after_its_checkpoint_and_stays_hidden()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -219,8 +239,8 @@ end
 function T.duplicate_packets_are_rejected()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -228,10 +248,22 @@ function T.duplicate_packets_are_rejected()
   after.foes[1].hp = 43
   local first = packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)
   Assert.isTrue(timeline:present(first), "the first delivery is accepted")
+  advance(timeline, 10)
+  local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+  Assert.equal(
+    sounds.countEffect(BattleAudio.SINK_SOUNDS.impact),
+    1,
+    "a strike carries its impact voice exactly once"
+  )
+  Assert.equal(
+    sounds.countEffect(BattleAudio.SINK_SOUNDS.effectiveness),
+    1,
+    "a strike carries its effectiveness voice exactly once"
+  )
   Assert.isFalse(timeline:present(first), "the same packet identity is rejected")
   local soundsBefore = #sounds.played
   advance(timeline, 10)
-  Assert.equal(#sounds.played, soundsBefore, "a strike carries no sound intent of its own")
+  Assert.equal(#sounds.played, soundsBefore, "a duplicate delivery queues no new sound")
   Assert.isTrue(timeline:settled(), "the single delivery drains")
   Assert.equal(battler(timeline:battlers(), 3).hp, 43, "one delivery applies its checkpoint once")
 end
@@ -241,8 +273,8 @@ end
 function T.held_images_hold_their_cue()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -275,8 +307,8 @@ end
 function T.experience_animates_each_level_segment()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -301,8 +333,8 @@ end
 function T.unknown_effects_produce_a_diagnostic()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -346,6 +378,8 @@ function T.first_packet_events_play_after_the_opening_once()
   local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local manifest = require("tests.support.BattlePresentationManifestFixture").manifest()
+  manifest.scenes = { { key = "general/plain/day" } }
   local measurement = {
     width = 256,
     height = 384,
@@ -380,7 +414,19 @@ function T.first_packet_events_play_after_the_opening_once()
   end
   function assets.drawable(key)
     if assets.images[key] == nil then
-      assets.images[key] = StubLease.new(key)
+      assets.images[key] = {
+        handle = key,
+        getDimensions = function()
+          return 80, 80
+        end,
+        getWidth = function()
+          return 80
+        end,
+        getHeight = function()
+          return 80
+        end,
+        setFilter = function() end,
+      }
     end
     local stored = assets.images[key]
     if key:sub(1, 4) == "mon:" then
@@ -395,12 +441,7 @@ function T.first_packet_events_play_after_the_opening_once()
   local submits = {}
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = manifest,
     model = Model,
     submit = function(reply)
       submits[#submits + 1] = reply
@@ -561,8 +602,8 @@ function T.active_lead_names_and_cries_the_live_slot_not_slot_zero()
   local benchBack = MonCache.portraitSelector("EEVEE", 0, "male", false, "back")
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   local view = openingView()
@@ -637,8 +678,9 @@ function T.active_lead_names_and_cries_the_live_slot_not_slot_zero()
     Assert.isTrue(message:find("BENCH", 1, true) == nil, "no opening narration hails the fainted first slot")
   end
   Assert.isTrue(hailedLive, "the send-out hails the live lead by name")
-  Assert.equal(sounds.count("cry:TOTODILE"), 1, "the opening cries the live lead species once")
-  Assert.equal(sounds.count("cry:EEVEE"), 0, "the fainted first slot never lends its cry")
+  Assert.equal(sounds.countCry("TOTODILE", false), 1, "the opening cries the live lead species once")
+  Assert.equal(sounds.countCry("EEVEE", false), 0, "the fainted first slot never lends its cry")
+  Assert.equal(sounds.countCry("EEVEE", true), 1, "the opening cries the wild foe species once")
 end
 
 -- Each named narration pace reveals a bounded number of glyphs per
@@ -931,6 +973,973 @@ function T.knockout_reveal_keeps_vacated_slot_and_leaves_partner_alone()
   Assert.equal(final[3].position, 3, "the surviving partner keeps its slot")
   Assert.isTrue(final[3].visible, "the surviving partner stays visible")
   Assert.isTrue(revealedAt --[[@as integer]] >= faintAt --[[@as integer]], "the reveal never precedes the faint")
+end
+
+-- Shared source time reads the same on every host schedule: one accepted
+-- source tick is nominally 1/30 second however the host slices its frames.
+-- Narration pacing, waits, completion boundaries, drained sounds, and the
+-- displayed transcript must agree in source ticks while host frame counts
+-- are free to differ.
+function T.shared_source_time_agrees_across_host_partitions()
+  local text = "ABCDEFGHIJKLMNOPQRST"
+  local function announced()
+    local played = BattleTimeline.new({ sound = function(_) end })
+    played:announce(text, false)
+    return played
+  end
+  -- Cadence ownership at the middle pace: one glyph on the first source
+  -- tick, the next after its pause, and the page complete on its boundary.
+  local paced = announced()
+  for _ = 1, 5 do
+    advance(paced, 1 / 30)
+  end
+  Assert.equal(paced:message(), "AB", "five source ticks reveal two glyphs at the middle pace")
+  local bounded = announced()
+  for _ = 1, 44 do
+    advance(bounded, 1 / 30)
+  end
+  Assert.isFalse(bounded:settled(), "a paced page never finishes in half its source time")
+  for _ = 45, 88 do
+    advance(bounded, 1 / 30)
+  end
+  Assert.isTrue(bounded:settled(), "the paced page settles on its source-tick boundary")
+  Assert.equal(bounded:message(), text, "the settled page shows its full wording")
+  -- Partition equivalence over six accepted seconds: 30 Hz, 60 Hz,
+  -- 144 Hz, and an irregular schedule with zero-step calls all land the
+  -- same strike transcript.
+  local function struckOver(schedule)
+    local sounds = sink()
+    local played = BattleTimeline.new({
+      sound = function(name)
+        sounds.sound(name)
+      end,
+    })
+    played:reset(openingView())
+    local after = openingView()
+    after.foes[1].hp = 43
+    played:present(
+      packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)
+    )
+    for _, dt in ipairs(schedule) do
+      advance(played, dt)
+    end
+    return played, sounds
+  end
+  local at30, at60, at144, irregular = {}, {}, {}, {}
+  for _ = 1, 180 do
+    at30[#at30 + 1] = 1 / 30
+  end
+  for _ = 1, 360 do
+    at60[#at60 + 1] = 1 / 60
+  end
+  for _ = 1, 864 do
+    at144[#at144 + 1] = 1 / 144
+  end
+  for _ = 1, 60 do
+    irregular[#irregular + 1] = 0.05
+    irregular[#irregular + 1] = 0
+    irregular[#irregular + 1] = 0.03
+    irregular[#irregular + 1] = 0.02
+  end
+  local first, firstSounds = struckOver(at30)
+  local second, secondSounds = struckOver(at60)
+  local third, thirdSounds = struckOver(at144)
+  local fourth, fourthSounds = struckOver(irregular)
+  for index, other in ipairs({ second, third, fourth }) do
+    Assert.isTrue(other:settled(), "partition " .. tostring(index) .. " settles the strike")
+    Assert.equal(other:message(), first:message(), "partition " .. tostring(index) .. " reveals the same text")
+    Assert.equal(
+      battler(other:battlers(), 3).hp,
+      battler(first:battlers(), 3).hp,
+      "partition " .. tostring(index) .. " lands the same checkpoint"
+    )
+  end
+  Assert.isTrue(first:settled(), "the strike settles")
+  Assert.equal(battler(first:battlers(), 3).hp, 43, "the strike checkpoint lands")
+  Assert.deepEqual(secondSounds.played, firstSounds.played, "60 Hz drains the same sounds")
+  Assert.deepEqual(thirdSounds.played, firstSounds.played, "144 Hz drains the same sounds")
+  Assert.deepEqual(fourthSounds.played, firstSounds.played, "irregular frames drain the same sounds")
+  -- The opening cry drains exactly once on every schedule as well.
+  local function openedOver(schedule)
+    local sounds = sink()
+    local played = BattleTimeline.new({
+      sound = function(name)
+        sounds.sound(name)
+      end,
+    })
+    played:intro(openingView(), true)
+    for _, dt in ipairs(schedule) do
+      advance(played, dt)
+    end
+    return played, sounds
+  end
+  local _, cry30 = openedOver(at30)
+  local _, cry60 = openedOver(at60)
+  local _, cryIrregular = openedOver(irregular)
+  Assert.equal(cry30.countCry("EEVEE", false), 1, "the opening cries its lead once")
+  Assert.deepEqual(cry60.played, cry30.played, "60 Hz keeps the same audio ticks")
+  Assert.deepEqual(cryIrregular.played, cry30.played, "irregular frames keep the same audio ticks")
+end
+
+-- Source waits and zero-duration cues terminate on native control flow:
+-- a pure wait lasts exactly its ticks with no extra host-frame delay and
+-- no infinite loop, and a cue held on a missing image consumes no source
+-- time until its image arrives.
+function T.waits_terminate_on_their_own_ticks_without_holding_time()
+  local function fled()
+    local played = BattleTimeline.new({ sound = function(_) end })
+    played:reset(openingView())
+    played:present(packet(1, { event("flee", { escaped = true }, { [1] = 52, [3] = 57 }) }, openingView()))
+    return played
+  end
+  local bounded = fled()
+  for _ = 1, 5 do
+    advance(bounded, 1 / 30)
+  end
+  Assert.isFalse(bounded:settled(), "a six-tick wait never finishes after five source ticks")
+  advance(bounded, 1 / 30)
+  Assert.isTrue(bounded:settled(), "the wait terminates exactly on its sixth source tick")
+  local immediate = fled()
+  advance(immediate, 6 / 30)
+  Assert.isTrue(immediate:settled(), "one frame carrying the whole wait settles without another frame")
+  local long = fled()
+  advance(long, 3600)
+  Assert.isTrue(long:settled(), "a huge frame still terminates instead of looping")
+  -- A strike held on its missing portrait freezes: many updates, even
+  -- large ones, change neither the revealed text nor the displayed
+  -- health, and releasing the image resumes to the exact checkpoint.
+  local sounds = sink()
+  local held = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+  })
+  held:reset(openingView())
+  local after = openingView()
+  after.foes[1].hp = 43
+  held:present(packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after))
+  local foeKey = "mon:" .. MonCache.portraitSelector("EEVEE", 0, "male", false)
+  local ready = { [foeKey] = false }
+  local function available(key)
+    return ready[key] ~= false
+  end
+  for _ = 1, 60 do
+    held:update(1 / 30, available)
+  end
+  held:update(5, available)
+  local frozenText = held:message()
+  local frozenHp = battler(held:battlers(), 3).hp
+  for _ = 1, 20 do
+    held:update(1 / 30, available)
+  end
+  Assert.equal(held:message(), frozenText, "waiting changes readiness, never the revealed text")
+  Assert.equal(battler(held:battlers(), 3).hp, frozenHp, "waiting consumes no health ticks")
+  Assert.equal(frozenHp, 57, "the held checkpoint never leaks early")
+  Assert.isFalse(held:settled(), "the held cue reports unready instead of skipping")
+  ready[foeKey] = true
+  local remaining = 0
+  while not held:settled() and remaining < 2000 do
+    held:update(1 / 30, available)
+    remaining = remaining + 1
+  end
+  Assert.isTrue(held:settled(), "releasing the image resumes to completion")
+  Assert.equal(battler(held:battlers(), 3).hp, 43, "the exact checkpoint applies after release")
+end
+
+-- The source menu reveal advances on accepted battle time. Read its
+-- visible window boundary through the screen's real draw/input boundary,
+-- and make host partitioning irrelevant to both the frame trace and the
+-- input gate.
+function T.native_menu_reveal_frames_and_input_gate_follow_source_ticks()
+  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local Model = require("game.hgss.src.battle.BattlePresentationModel")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+
+  local expectedEdges = { 184, 174, 164, 154, 145 }
+  local expectedOutsideWidths = { 0, 63, 127, 191, 254 }
+  local expectedScroll = { 1, 64, 128, 192, 255 }
+  local function run(partition, doublePartner)
+    local measurement = {
+      width = 256,
+      height = 384,
+      topology = ScreenTopology.dualDisplay(
+        { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+        { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" },
+        "battle-menu-slide:dual"
+      ),
+      pixelRatio = 1,
+      signature = "battle-menu-slide:dual",
+    }
+    local text = { draws = {} }
+    function text.measure(content)
+      return { width = 8 * #tostring(content), height = 16 }
+    end
+    function text.drawText(content, x, y)
+      text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y }
+    end
+    local windows = { calls = {} }
+    function windows.drawWindow(box, frameKey, background)
+      windows.calls[#windows.calls + 1] = { box = box, frame = frameKey, background = background }
+    end
+    local audio = { plays = {} }
+    function audio.play(name)
+      audio.plays[#audio.plays + 1] = name
+      return true
+    end
+    local assets = { images = {}, released = {} }
+    function assets.prepare(_)
+      return true
+    end
+    function assets.drawable(key)
+      if assets.images[key] == nil then
+        assets.images[key] = {
+          handle = key,
+          width = 1648,
+          height = 80,
+          getWidth = function(self)
+            return self.width
+          end,
+          getHeight = function(self)
+            return self.height
+          end,
+          getDimensions = function(self)
+            return self.width, self.height
+          end,
+          setFilter = function() end,
+        }
+      end
+      return assets.images[key]
+    end
+    function assets.release(key)
+      assets.released[key] = (assets.released[key] or 0) + 1
+    end
+
+    local graphicsBase = FakeGraphics.new({})
+    local graphics = setmetatable({}, { __index = graphicsBase })
+    local draws = {}
+    local currentScissor = nil
+    local scissorStack = {}
+    function graphics.push(...)
+      scissorStack[#scissorStack + 1] = currentScissor ~= nil
+          and {
+            currentScissor[1],
+            currentScissor[2],
+            currentScissor[3],
+            currentScissor[4],
+          }
+        or nil
+      graphicsBase.push(...)
+    end
+    function graphics.pop(...)
+      graphicsBase.pop(...)
+      currentScissor = table.remove(scissorStack)
+    end
+    function graphics.getScissor()
+      if currentScissor == nil then
+        return nil
+      end
+      return currentScissor[1], currentScissor[2], currentScissor[3], currentScissor[4]
+    end
+    function graphics.setScissor(x, y, width, height)
+      if x == nil then
+        currentScissor = nil
+      else
+        currentScissor = { x, y, width, height }
+      end
+      graphicsBase.setScissor(x, y, width, height)
+    end
+    function graphics.intersectScissor(x, y, width, height)
+      if currentScissor == nil then
+        currentScissor = { x, y, width, height }
+      else
+        local old = currentScissor
+        local right = math.min(old[1] + old[3], x + width)
+        local bottom = math.min(old[2] + old[4], y + height)
+        currentScissor = {
+          math.max(old[1], x),
+          math.max(old[2], y),
+          math.max(0, right - math.max(old[1], x)),
+          math.max(0, bottom - math.max(old[2], y)),
+        }
+      end
+      graphicsBase.intersectScissor(x, y, width, height)
+    end
+    function graphics.draw(image, quad, x, y, rotation, scaleX, scaleY)
+      local handle = type(image) == "table" and image.handle or nil
+      draws[#draws + 1] = {
+        handle = handle,
+        x = type(quad) == "number" and quad or x,
+        y = type(quad) == "number" and x or y,
+        scissor = currentScissor,
+      }
+      graphicsBase.draw(image, quad, x, y, rotation, scaleX, scaleY)
+    end
+
+    local submits = {}
+    local launchId = "battle-menu-slide-" .. partition
+    local screen = BattleScreenState.new({
+      launchId = launchId,
+      manifest = ManifestFixture.manifest(),
+      model = Model,
+      submit = function(reply)
+        submits[#submits + 1] = reply
+        return true
+      end,
+      measureDisplay = function()
+        return measurement
+      end,
+      assets = assets,
+      text = text,
+      windows = windows,
+      audio = audio,
+    })
+    local opening = openingView()
+    local actorCombatant = doublePartner and 2 or 1
+    if doublePartner then
+      opening.own[1].position = 0
+      opening.own[2] = {
+        combatant = 2,
+        participant = 2,
+        side = 1,
+        controller = "player",
+        active = true,
+        position = 1,
+        hp = 48,
+        maxHp = 48,
+        species = "EEVEE",
+        form = 0,
+        name = "PARTNER",
+        level = 20,
+        selector = "back",
+        portraitSelector = MonCache.portraitSelector("EEVEE", 0, "male", false, "back"),
+        moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+        experience = 8000,
+      }
+    end
+    local actor = {
+      combatant = actorCombatant,
+      activation = 1,
+      kind = "action",
+      choices = {
+        {
+          id = "move:0",
+          role = "move",
+          display = { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 },
+          enabled = true,
+          choice = {
+            actor = { combatant = actorCombatant, activation = 1 },
+            kind = "attack",
+            payload = { moveSlot = 0, target = { kind = "position", position = 2 } },
+          },
+        },
+      },
+    }
+    local request = {
+      requestId = 93001,
+      epoch = 1,
+      controller = "player",
+      kind = "action",
+      actors = { actor },
+    }
+    request.options = {
+      requestId = request.requestId,
+      epoch = request.epoch,
+      controller = request.controller,
+      kind = request.kind,
+      actors = { actor },
+    }
+    screen:presentationPort().present({
+      launchId = launchId,
+      packetId = 1,
+      events = {},
+      before = opening,
+      after = opening,
+      request = request,
+    })
+
+    local function advanceHost(dt)
+      screen:updateFixed(dt)
+    end
+    local hostStep = 1 / 30
+    local hostIndex = 1
+    local irregular = { 1 / 120, 3 / 120, 0.05, 0.02, 0.03 }
+    for _ = 1, 2400 do
+      if partition == "60" then
+        hostStep = 1 / 60
+      elseif partition == "144" then
+        hostStep = 1 / 144
+      elseif partition == "irregular" then
+        hostStep = irregular[hostIndex]
+        hostIndex = hostIndex % #irregular + 1
+      end
+      advanceHost(hostStep)
+      if screen:status().mode == "command" then
+        break
+      end
+    end
+    Assert.equal(screen:status().mode, "command", "the opening reaches the first command prompt")
+
+    local trace = {}
+    local function drawMenuFrame()
+      draws = {}
+      local viewEdge = screen:view().menuRevealEdge
+      Assert.equal(viewEdge, expectedEdges[#trace + 1], "the detached view publishes each native reveal edge")
+      local menuWindows = assert(screen:view().menuWindows, "menu slide publishes immutable native window geometry")
+      Assert.equal(
+        menuWindows.edge,
+        expectedEdges[#trace + 1],
+        "W1 follows the source vertical boundary at step " .. tostring(#trace) .. ": " .. tostring(menuWindows.edge)
+      )
+      local index = #trace + 1
+      Assert.equal(
+        menuWindows.outsideTop.x,
+        doublePartner and ({ 256, 192, 128, 64, 1 })[index] or 1,
+        "W0 outside region follows the source battler side"
+      )
+      Assert.equal(
+        menuWindows.outsideTop.width,
+        doublePartner and ({ 0, 64, 128, 192, 255 })[index] or expectedOutsideWidths[index]
+      )
+      Assert.equal(
+        menuWindows.scroll[0].x,
+        doublePartner and ({ 0, 64, 128, 192, 255 })[index] or expectedScroll[index]
+      )
+      Assert.equal(menuWindows.scroll[1].x, menuWindows.scroll[0].x)
+      screen:draw({ graphics = graphics })
+      trace[#trace + 1] = viewEdge
+    end
+    drawMenuFrame()
+    local gateChecks = 0
+    local gateIntact = true
+    for frame = 1, 4 do
+      screen:input({ { type = "pointer_down", pointerId = "slide-bag", x = 40, y = 360 } })
+      screen:input({ { type = "pointer_up", pointerId = "slide-bag", x = 40, y = 360 } })
+      screen:input({ { type = "confirm" } })
+      local status = screen:status()
+      gateIntact = gateIntact and status.mode == "command" and status.request ~= nil and #submits == 0
+      gateChecks = gateChecks + 1
+
+      local left = TICK
+      while left > 1e-12 do
+        local dt = partition == "60" and math.min(left, 1 / 60)
+          or partition == "144" and math.min(left, 1 / 144)
+          or partition == "irregular" and math.min(left, irregular[hostIndex])
+          or left
+        if partition == "irregular" then
+          hostIndex = hostIndex % #irregular + 1
+        end
+        screen:updateFixed(dt)
+        left = left - dt
+      end
+      drawMenuFrame()
+    end
+    screen:input({ { type = "confirm" } })
+    screen:updateFixed(TICK)
+    screen:input({ { type = "confirm" } })
+    local openedAfterGate = screen:status().mode == "moves" and #submits == 0
+    local windowsClosedAfterEntry = screen:view().menuWindows == nil and screen:view().menuRevealEdge == nil
+    screen:dispose()
+    return trace, gateChecks, gateIntact, openedAfterGate, windowsClosedAfterEntry
+  end
+
+  local reference, checks, gateIntact, openedAfterGate, windowsClosedAfterEntry = run("30")
+  local partitionTraces = {}
+  local partitionGates = {}
+  local partitionOpens = {}
+  partitionTraces[1] = reference
+  partitionGates[1] = gateIntact
+  partitionOpens[1] = openedAfterGate
+  for index, partition in ipairs({ "60", "144", "irregular" }) do
+    local trace, partitionChecks, gate, opened, windowsClosed = run(partition)
+    Assert.equal(partitionChecks, checks, partition .. " Hz keeps the same number of gated frames")
+    partitionTraces[index + 1] = trace
+    partitionGates[index + 1] = gate
+    partitionOpens[index + 1] = opened
+    Assert.isTrue(windowsClosed, partition .. " Hz closes source windows after entry")
+  end
+  local partnerTrace = run("30", true)
+  Assert.deepEqual(partnerTrace, expectedEdges, "the second player-side slot uses the opposite source W0/scroll edge")
+  local failures = {}
+  local function expect(condition, message)
+    if not condition then
+      failures[#failures + 1] = message
+    end
+  end
+  local function describe(entries)
+    local fields = {}
+    for _, edge in ipairs(entries) do
+      fields[#fields + 1] = tostring(edge)
+    end
+    return table.concat(fields, ",")
+  end
+  expect(
+    describe(reference) == describe(expectedEdges),
+    "drawn reveal edges should be " .. describe(expectedEdges) .. " but were " .. describe(reference)
+  )
+  expect(checks == 4, "all four intermediate reveal frames should suppress input")
+  expect(gateIntact, "touch and confirm should stay suppressed through all slide frames")
+  expect(openedAfterGate, "the next confirmation should work after the native gate opens")
+  expect(windowsClosedAfterEntry, "native entry windows clear when the command switches to its child menu")
+  for index, partition in ipairs({ "60", "144", "irregular" }) do
+    expect(
+      describe(partitionTraces[index + 1]) == describe(reference),
+      partition .. " Hz should match the 30 Hz source slide trace"
+    )
+    expect(partitionGates[index + 1] == gateIntact, partition .. " Hz should keep the same input gate boundaries")
+    expect(partitionOpens[index + 1] == openedAfterGate, partition .. " Hz should open at the same source boundary")
+  end
+  Assert.isTrue(#failures == 0, table.concat(failures, "; "))
+end
+
+-- The source-selected bank entry enters the same paced timeline as other
+-- narration, while the detached C04 event remains unchanged.
+function T.source_capture_text_uses_the_battle_printer_timeline()
+  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local packet = {
+    launchId = "capture-message-source",
+    packetId = 1,
+    before = {},
+    after = {},
+    events = {
+      {
+        sequence = 4,
+        kind = "broke_free",
+        payload = { shakes = 2 },
+      },
+    },
+  }
+  local timeline = BattleTimeline.new({ textSpeed = "mid" })
+  local malformedAccepted = pcall(function()
+    timeline:present(packet)
+  end)
+  Assert.isFalse(malformedAccepted, "a capture outcome without selected source text is rejected")
+  local sourceMessages = { [4] = "Aargh!\nAlmost had it!" }
+  Assert.isTrue(timeline:present(packet, sourceMessages), "the valid retry of the same packet is accepted")
+  sourceMessages[4] = "Changed after delivery"
+  Assert.isNil(packet.events[1].sourceText, "source selection never mutates the delivery packet")
+  local nextPacket = {
+    launchId = "capture-message-next-launch",
+    packetId = 2,
+    before = {},
+    after = {},
+    events = { { sequence = 4, kind = "broke_free", payload = { shakes = 1 } } },
+  }
+  local reusedSource = pcall(function()
+    timeline:present(nextPacket)
+  end)
+  Assert.isFalse(reusedSource, "a prior packet's source map does not apply to a later launch")
+  Assert.isTrue(
+    timeline:present(nextPacket, { [4] = "One shake" }),
+    "a later packet uses only its own selected source text"
+  )
+  for _ = 1, 120 do
+    timeline:update(1 / 30, function()
+      return true
+    end)
+    if timeline:message() ~= "" then
+      break
+    end
+  end
+  Assert.isTrue(timeline:message():sub(1, 1) == "A", "the source template feeds the paced battle printer")
+end
+
+-- Live native-effect cue coverage: the cue player routes an effect-keyed
+-- source event through a task-aware recording collaborator backed by the
+-- real player/factory/scene path, never a synthesized completion. The
+-- selected program starts before its health checkpoint with no duplicate
+-- generic voices, progresses identically under every host partition, starts
+-- once per action across hits/spread/redelivery, and never settles silently
+-- without its collaborator.
+-- Native mechanism: the single 30 Hz source tick drives cue admission, the
+-- player occurrence, and the scene exactly once; narration, hit, and HP
+-- cues wait behind native completion.
+-- Headless: hand-built struck events carrying the accepted semantic effect
+-- key, action, and hit identity drive the real cue player; the recording
+-- collaborator runs the exact compiled program through the real factory.
+
+---@param value integer unsigned word under staging
+---@return string four little-endian bytes staging one command word
+local function nativeU32(value)
+  return string.char(
+    value % 256,
+    math.floor(value / 256) % 256,
+    math.floor(value / 65536) % 256,
+    math.floor(value / 16777216) % 256
+  )
+end
+
+---@param list table<integer, integer> command words under staging
+---@return string staged byte stream lowering one program
+local function nativeStreamOf(list)
+  local parts = {}
+  for _, word in ipairs(list) do
+    parts[#parts + 1] = nativeU32(word)
+  end
+  return table.concat(parts)
+end
+
+---@return table<string, unknown> compiled resourceless native program completing in three source ticks
+local function nativeProbeProgram()
+  local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
+  return assert(
+    BattleAnimationCompiler.compile({ key = "TACKLE", stream = nativeStreamOf({ 29, 50, 4 }) })
+  )
+end
+
+---@param program table<string, unknown> exact compiled program the collaborator admits
+---@return table task-aware recording native-effect collaborator over the real player path
+local function taskAwareEffects(program)
+  local Player = require("libs.hgss.src.presentation.BattleAnimationPlayer")
+  local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
+  local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+  local scene = BattleScene.new()
+  scene:observe({
+    { combatant = 1, activation = 1, visible = true },
+    { combatant = 3, activation = 3, visible = true },
+  })
+  local audio = { played = {} }
+  function audio.play(name)
+    audio.played[#audio.played + 1] = name
+  end
+  function audio.stop(_name) end
+  function audio.isFinished(_name)
+    return true
+  end
+  local resources = { acquired = {}, released = {} }
+  function resources.resolve(key)
+    resources.acquired[#resources.acquired + 1] = key
+    return { key = key, lease = key }
+  end
+  function resources.release(lease)
+    resources.released[#resources.released + 1] = lease
+  end
+  local player = assert(Player.new({ scene = scene, audio = audio, resources = resources, tasks = Factory }))
+  local rec = { starts = {}, player = player, audio = audio, resources = resources, scene = scene }
+  function rec.start(cue)
+    Assert.isTrue(type(cue) == "table", "native cues carry their cue record with launch and effect identity")
+    rec.starts[#rec.starts + 1] = cue
+    local occurrence = { sequence = cue.eventSequence, effectKey = cue.effectKey }
+    if type(cue.event) == "table" then
+      for field, value in pairs(cue.event --[[@as table<string, unknown>]]) do
+        if occurrence[field] == nil then
+          occurrence[field] = value
+        end
+      end
+    end
+    if occurrence.actionId == nil then
+      occurrence.actionId = cue.actionId
+    end
+    if occurrence.hitOrdinal == nil and cue.hitOrdinal ~= nil then
+      occurrence.hitOrdinal = cue.hitOrdinal
+    end
+    return player:start({
+      launchId = cue.launchId or "timeline-probe",
+      packetId = cue.packetId or 1,
+      event = occurrence,
+      visualSeed = cue.visualSeed or 1,
+      topology = {
+        attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
+        targets = { { combatant = 3, activation = 3, slot = "solo-enemy", sideType = 1 } },
+      },
+    }, program)
+  end
+  function rec.status(handle)
+    -- The double models the locked one-tick-advances-all contract:
+    -- every status poll advances the wrapped occurrence exactly once,
+    -- mirroring the screen's single-tick loop (cue, player, scene).
+    -- No catch-up loops: one poll steps one quantum.
+    player:stepSourceTick({ tick = 1 })
+    return player:status(handle)
+  end
+  function rec.cancel(handle, reason)
+    return player:cancel(handle, reason)
+  end
+  return rec
+end
+
+---@param sequence integer event sequence under test driving
+---@param actionId integer native action identity under test driving
+---@param hitIndex integer hit ordinal under test driving
+---@param effectKey string accepted semantic effect key under test driving
+---@param foeHp integer foe health after the checkpoint under test driving
+---@return table one struck event carrying its accepted native playback identity
+local function effectStrike(sequence, actionId, hitIndex, effectKey, foeHp)
+  local combatants = {
+    [1] = checkpoint(1, 52, 52),
+    [3] = checkpoint(3, foeHp, 57),
+  }
+  return {
+    sequence = sequence,
+    kind = "struck",
+    cause = { key = "TACKLE" },
+    audience = "public",
+    actors = { { combatant = 1, activation = 1 } },
+    targets = { { combatant = 3, activation = 3 } },
+    move = { executed = "TACKLE" },
+    actionId = actionId,
+    hitIndex = hitIndex,
+    effectKey = effectKey,
+    payload = { target = 3, damage = 57 - foeHp, hitIndex = hitIndex },
+    after = { hp = { [1] = 52, [3] = foeHp }, combatants = combatants },
+  }
+end
+
+-- The selected native program starts through the real player before its
+-- health checkpoint: the start carries the accepted semantic key, the
+-- checkpoint waits for real completion, the running program owns a visible
+-- scene change, and the generic impact/effectiveness voices stay silent
+-- while the native program owns audio timing.
+function T.native_effect_starts_its_selected_program_before_health_without_duplicate_voices()
+  local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+  local sounds = sink()
+  local fx = taskAwareEffects(nativeProbeProgram())
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+    effects = fx,
+  })
+  timeline:reset(openingView())
+  local after = openingView()
+  after.foes[1].hp = 43
+  Assert.isTrue(
+    timeline:present(packet(1, { effectStrike(11, 21, 1, "TACKLE", 43) }, after)),
+    "the effect-keyed strike is accepted"
+  )
+  Assert.isFalse(timeline:settled(), "the native cue leaves work pending")
+  for _ = 1, 5 do
+    if #fx.starts > 0 then
+      break
+    end
+    advance(timeline, TICK)
+  end
+  Assert.equal(#fx.starts, 1, "the selected native program starts through the real player")
+  Assert.equal(fx.starts[1].effectKey, "TACKLE", "the start carries the accepted semantic effect key")
+  Assert.equal(fx.starts[1].actionId, 21, "the start carries the accepted action identity")
+  Assert.equal(battler(timeline:battlers(), 3).hp, 57, "health waits for native completion instead of leaking early")
+  Assert.isFalse(timeline:settled(), "the running program holds the cue open")
+  Assert.equal(
+    #fx.scene:effectViews(),
+    0,
+    "state-only visual work publishes no drawable picture while running"
+  )
+  Assert.equal(
+    sounds.countEffect(BattleAudio.SINK_SOUNDS.impact),
+    0,
+    "the native program owns impact timing: no duplicate generic voice"
+  )
+  Assert.equal(
+    sounds.countEffect(BattleAudio.SINK_SOUNDS.effectiveness),
+    0,
+    "the native program owns effectiveness timing: no duplicate generic voice"
+  )
+  for _ = 1, 600 do
+    advance(timeline, TICK)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "the native cue settles after real completion")
+  Assert.equal(battler(timeline:battlers(), 3).hp, 43, "the exact checkpoint applies after native completion")
+  Assert.isTrue(
+    #fx.audio.played > 0,
+    "the completed program played its source-timed voice instead of staying silent"
+  )
+end
+
+-- One accepted source tick reads the same on every host schedule while a
+-- native program runs: 30 Hz and 60 Hz host slicing start the program once
+-- each, land the same checkpoint, drain the same voices, and expose the
+-- same per-tick scene frames.
+function T.native_effect_progress_agrees_across_host_partitions()
+  ---@param schedule number[] host frame durations under test driving
+  ---@return table played cue player behind the schedule
+  ---@return table drained voices behind the schedule
+  ---@return table recording collaborator behind the schedule
+  ---@return integer[] scene frame counts at each host step
+  local function runOver(schedule)
+    local sounds = sink()
+    local fx = taskAwareEffects(nativeProbeProgram())
+    local played = BattleTimeline.new({
+      sound = function(cue)
+        sounds.sound(cue)
+      end,
+      effects = fx,
+    })
+    played:reset(openingView())
+    local after = openingView()
+    after.foes[1].hp = 43
+    played:present(packet(1, { effectStrike(11, 21, 1, "TACKLE", 43) }, after))
+    local views = {}
+    for _, dt in ipairs(schedule) do
+      played:update(dt, function(_)
+        return true
+      end)
+      views[#views + 1] = #fx.scene:effectViews()
+    end
+    return played, sounds, fx, views
+  end
+  -- Four accepted seconds per schedule: the strike cue chain alone
+  -- needs 94 source ticks (paced narration, hit recoil, health
+  -- interpolation), so 90 ticks can never settle with or without a
+  -- native program. The budgets below cover the full chain with
+  -- margin while keeping the 30 Hz to 60 Hz two-to-one ratio.
+  local at30, at60 = {}, {}
+  for _ = 1, 120 do
+    at30[#at30 + 1] = 1 / 30
+  end
+  for _ = 1, 240 do
+    at60[#at60 + 1] = 1 / 60
+  end
+  local first, firstSounds, firstFx, firstViews = runOver(at30)
+  local second, secondSounds, secondFx, secondViews = runOver(at60)
+  Assert.equal(#firstFx.starts, 1, "the 30 Hz schedule starts the native program once")
+  Assert.equal(#secondFx.starts, 1, "the 60 Hz schedule starts the native program once")
+  Assert.isTrue(first:settled(), "the 30 Hz schedule settles the native cue")
+  Assert.isTrue(second:settled(), "the 60 Hz schedule settles the native cue")
+  Assert.equal(
+    battler(second:battlers(), 3).hp,
+    battler(first:battlers(), 3).hp,
+    "partitions land the same checkpoint"
+  )
+  Assert.deepEqual(secondSounds.played, firstSounds.played, "partitions drain the same voices")
+  local firstBoundaries, secondBoundaries = {}, {}
+  for _, count in ipairs(firstViews) do
+    firstBoundaries[#firstBoundaries + 1] = count
+  end
+  for index = 2, #secondViews, 2 do
+    secondBoundaries[#secondBoundaries + 1] = secondViews[index]
+  end
+  Assert.deepEqual(secondBoundaries, firstBoundaries, "partitions expose the same scene frame per source tick")
+end
+
+-- One action plays its full move animation once: a two-hit turn with one
+-- action identity starts a single occurrence, redelivery starts nothing
+-- new, and only a distinct action identity starts its own occurrence.
+function T.native_effect_starts_once_per_action_across_hits_spread_and_redelivery()
+  local sounds = sink()
+  local fx = taskAwareEffects(nativeProbeProgram())
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+    effects = fx,
+  })
+  timeline:reset(openingView())
+  local after = openingView()
+  after.foes[1].hp = 30
+  local first = packet(1, {
+    effectStrike(11, 21, 1, "TACKLE", 43),
+    effectStrike(12, 21, 2, "TACKLE", 30),
+  }, after)
+  Assert.isTrue(timeline:present(first), "the two-hit turn is accepted")
+  for _ = 1, 900 do
+    advance(timeline, TICK)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "the two-hit turn drains")
+  Assert.equal(#fx.starts, 1, "one action plays its full move animation once, never once per hit")
+  Assert.isFalse(timeline:present(first), "redelivery of the same packet queues nothing new")
+  Assert.equal(#fx.starts, 1, "redelivery starts nothing new")
+  local later = openingView()
+  later.foes[1].hp = 10
+  Assert.isTrue(
+    timeline:present(packet(2, { effectStrike(13, 22, 1, "TACKLE", 10) }, later)),
+    "the next action is accepted"
+  )
+  for _ = 1, 900 do
+    advance(timeline, TICK)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "the next action drains")
+  Assert.equal(#fx.starts, 2, "a distinct action identity starts its own occurrence")
+end
+
+-- A real source cue with no animation collaborator never counts as shown:
+-- without its player the cue must hold or diagnose, never settle as a
+-- silent generic success.
+function T.effect_keyed_source_cue_without_a_collaborator_never_settles_silently()
+  local sounds = sink()
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+  })
+  timeline:reset(openingView())
+  local after = openingView()
+  after.foes[1].hp = 43
+  timeline:present(packet(1, { effectStrike(11, 21, 1, "TACKLE", 43) }, after))
+  for _ = 1, 600 do
+    advance(timeline, TICK)
+  end
+  local settledQuietly = timeline:settled() and #timeline:diagnostics() == 0
+  Assert.isFalse(settledQuietly, "a real source cue with no animation collaborator never counts as shown")
+end
+
+---@param sequence integer event sequence under test driving
+---@param kind string kernel event kind under test driving
+---@param phase string occurrence move phase under test driving
+---@param foeHp integer foe health after the checkpoint under test driving
+---@return table one effect-keyed two-turn event carrying its native phase identity
+local function phaseEvent(sequence, kind, phase, foeHp)
+  local combatants = {
+    [1] = checkpoint(1, 52, 52),
+    [3] = checkpoint(3, foeHp, 57),
+  }
+  return {
+    sequence = sequence,
+    kind = kind,
+    cause = { key = "FLY" },
+    audience = "public",
+    actors = { { combatant = 1, activation = 1 } },
+    targets = { { combatant = 3, activation = 3 } },
+    move = { selected = "FLY", executed = "FLY", phase = phase },
+    actionId = 77,
+    effectKey = "FLY",
+    payload = { target = 3 },
+    after = { hp = { [1] = 52, [3] = foeHp }, combatants = combatants },
+  }
+end
+
+-- A two-turn action admits one native-effect cue per phase occurrence:
+-- the charged (charge) and struck (strike) halves of the same action are
+-- distinct occurrences, so each executes exactly once through the real
+-- player instead of the strike half collapsing onto the charge cue.
+function T.two_turn_phases_of_one_action_each_execute_their_own_cue()
+  local sounds = sink()
+  local fx = taskAwareEffects(nativeProbeProgram())
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+    effects = fx,
+  })
+  timeline:reset(openingView())
+  local after = openingView()
+  after.foes[1].hp = 50
+  local first = packet(1, {
+    phaseEvent(11, "charged", "charge", 57),
+    phaseEvent(12, "struck", "direct", 50),
+  }, after)
+  Assert.isTrue(timeline:present(first), "the two-phase action is accepted")
+  for _ = 1, 900 do
+    advance(timeline, TICK)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "both phase halves drain")
+  Assert.equal(#fx.starts, 2, "the charged and struck halves each start their own occurrence")
+  Assert.equal(fx.starts[1].event.kind, "charged", "the charge half leads")
+  Assert.equal(fx.starts[2].event.kind, "struck", "the strike half follows")
+  Assert.isFalse(timeline:present(first), "redelivery of the same packet queues nothing new")
+  Assert.equal(#fx.starts, 2, "redelivery starts no further occurrence")
 end
 
 return { tests = T }

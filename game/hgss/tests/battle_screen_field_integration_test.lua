@@ -50,6 +50,21 @@ local T = {
       "trainers:global",
       "encounters:global",
       "battle-presentation:global",
+      -- The presented battles strike with TACKLE through the live
+      -- native-effect cue, so the cue's selected program must be
+      -- staged from the verified dump instead of wedging pending.
+      "battle-effect:TACKLE",
+      -- The defeat legs meet a level-30 EEVEE whose real moveset the
+      -- live cue must also play: every executed route needs its staged
+      -- program, since an unstaged key would pend behind a host that
+      -- never stages instead of failing with provenance.
+      "battle-effect:SAND_ATTACK",
+      "battle-effect:GROWL",
+      "battle-effect:QUICK_ATTACK",
+      "battle-effect:BITE",
+      -- The stocked EEVEE leads with TAIL_WHIP in slot zero, and the
+      -- drivers always strike with slot zero, so its program stages too.
+      "battle-effect:TAIL_WHIP",
     },
     tags = { "field", "battle" },
   },
@@ -147,6 +162,13 @@ local function recordingGraphics()
   local graphics = { draws = {} }
   function graphics.push(_) end
   function graphics.pop() end
+  function graphics.getDepthMode()
+    return nil
+  end
+  function graphics.setDepthMode(_, _) end
+  function graphics.setShader(_) end
+  function graphics.setBlendMode(_, _) end
+  function graphics.setScissor(_, _, _, _) end
   function graphics.origin() end
   function graphics.intersectScissor(_, _, _, _) end
   function graphics.translate(_, _) end
@@ -162,19 +184,51 @@ local function recordingGraphics()
   function graphics.newQuad(x, y, w, h, imgW, imgH)
     return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
   end
-  -- Minimal sampler-driver surface: pooled battle leases draw through
-  -- the shared exact rule, which binds one shader per graphics
-  -- namespace, sends its sampling uniforms, and restores the caller
-  -- shader around each draw. Recorded draws stay exactly like raw draws.
+  -- The picture pass renders battler and effect planes through
+  -- canvas/mesh/shader objects: production always supplies these host
+  -- objects, so the recording double answers lightweight records with
+  -- the same release/configure/query surface instead of real GPU state.
+  function graphics.newCanvas(_, _, _)
+    local canvas = {}
+    function canvas.release() end
+    function canvas.setFilter(_, _) end
+    return canvas
+  end
+  function graphics.newMesh(_, _, _, _)
+    local mesh = {}
+    function mesh.release() end
+    function mesh.setTexture(_) end
+    function mesh.setVertices(_) end
+    return mesh
+  end
   function graphics.newShader(_)
     local shader = {}
-    function shader.send(_, _, _) end
+    function shader.release() end
+    function shader.send(_, _) end
     return shader
+  end
+  function graphics.getCanvas()
+    return nil
   end
   function graphics.getShader()
     return nil
   end
-  function graphics.setShader(_) end
+  function graphics.getBlendMode()
+    return nil
+  end
+  function graphics.getScissor()
+    return nil
+  end
+  function graphics.isWireframe()
+    return false
+  end
+  function graphics.getMeshCullMode()
+    return nil
+  end
+  function graphics.setCanvas(_, _) end
+  function graphics.clear(_, _, _, _, _, _) end
+  function graphics.setWireframe(_) end
+  function graphics.setMeshCullMode(_) end
   function graphics.draw(drawable, quad, x, y)
     if type(quad) == "number" then
       quad, x, y = nil, quad, x
@@ -294,6 +348,43 @@ local function bootFieldGame(versionId, map, fieldOptions)
   return harness, game
 end
 
+-- An upload-capable graphics double behind presented launches: staged
+-- effect bytes still validate through the exact descriptor contract while
+-- the owned handle stays a lightweight test record, so the run proves
+-- demand and readiness without GPU objects. Production always supplies its
+-- real graphics namespace here; the harness must supply the collaborator
+-- rather than leave uploads without a namespace.
+---@return table upload-capable graphics namespace
+local function uploadCapableGraphics()
+  local graphics = {}
+  function graphics.newImage(source)
+    local handle = {}
+    function handle.setFilter(...) end
+    -- Staged ImageData carries its exact extents, so the owned handle
+    -- answers them verbatim for UV math; a foreign payload keeps a
+    -- degenerate but well-formed size instead of failing the draw.
+    function handle.getDimensions()
+      local ok, width, height = pcall(function()
+        return source:getDimensions()
+      end)
+      if ok and type(width) == "number" and type(height) == "number" then
+        return width, height
+      end
+      return 1, 1
+    end
+    function handle.getWidth()
+      local width = handle.getDimensions()
+      return width
+    end
+    function handle.getHeight()
+      local _, height = handle.getDimensions()
+      return height
+    end
+    return handle
+  end
+  return graphics
+end
+
 ---@param game table live acceptance game under test driving
 ---@param versionId string ready game version under test driving
 ---@param measurement table caller-owned display facts under test driving
@@ -305,6 +396,7 @@ local function bindEnvelope(game, versionId, measurement, overrides)
   local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
   local options = {
     cacheFs = CacheFs.forVersion(versionId),
+    graphics = uploadCapableGraphics(),
     windows = doubles.windows,
     text = doubles.text,
     audio = doubles.audio,
@@ -839,7 +931,10 @@ function T.tests.covered_entry_waits_for_readiness_and_holds_music()
       Assert.notNil(runtime.battleCoordinator:activeBattle(), "the covered launch constructs its battle")
       Assert.equal(starts, 1, "one launch constructs one battle lifetime")
       local cover = envelope:cover()
-      Assert.isTrue(type(cover) == "table" and cover.coefficient == 16, "the battle starts under full cover")
+      -- Construction follows the full-cover leave by one accepted tick, and that
+      -- tick performs the reveal's single cover step first, so the battle starts
+      -- one step into the reveal beside its intro instead of under full cover.
+      Assert.isTrue(type(cover) == "table" and cover.coefficient == 14, "the battle starts one reveal step after full cover")
       -- The wild role starts once and survives presentation pumping and
       -- a layout change without restarting.
       local function wildPlays()

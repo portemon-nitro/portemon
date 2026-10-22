@@ -13,7 +13,8 @@
 -- learning child owner, so the run stays red until that owner lands.
 
 local Assert = require("tests.support.Assert")
-local StubLease = require("tests.support.StubLease")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -24,7 +25,7 @@ local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
-local TICK = 1 / 60
+local TICK = 1 / 30
 
 local CHILD_OWNER_MODULE = "game.hgss.src.battle.BattleSubflows"
 local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
@@ -40,6 +41,62 @@ local function requireChildOwner(behavior)
     "the battle screen owns its party, bag, and learning children: " .. behavior .. " (" .. CHILD_OWNER_MODULE .. ")"
   )
   assert(owner ~= nil, "the battle child owner loads")
+end
+
+---@param value unknown value under test preparation
+---@return unknown a detached copy sharing no table with the source
+local function deepCopy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local copy = {}
+  for key, item in pairs(value) do
+    copy[deepCopy(key)] = deepCopy(item)
+  end
+  return copy
+end
+
+---@return table detached schema-valid staged manifest for the child harness scene
+local function screenManifest()
+  local manifest = deepCopy(BattlePresentationManifestFixture.manifest())
+  manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
+  BattlePresentationSchema.assertManifest(manifest)
+  return manifest
+end
+
+---@param image table fake image handle under inspection
+---@return integer staged image width
+local function fakeImageWidth(image)
+  return image.width
+end
+
+---@param image table fake image handle under inspection
+---@return integer staged image height
+local function fakeImageHeight(image)
+  return image.height
+end
+
+---@param image table fake image handle under inspection
+---@return integer, integer staged image dimensions
+local function fakeImageDimensions(image)
+  return image.width, image.height
+end
+
+local function fakeImageSetFilter() end
+
+---@param key string image identity under test preparation
+---@return table fake image handle carrying the renderer-required dimensions
+local function fakeDrawable(key)
+  local hudImage = key:match("^hud:") ~= nil
+  return {
+    handle = key,
+    width = hudImage and 1648 or 80,
+    height = hudImage and 8 or 80,
+    getWidth = fakeImageWidth,
+    getHeight = fakeImageHeight,
+    getDimensions = fakeImageDimensions,
+    setFilter = fakeImageSetFilter,
+  }
 end
 
 ---@param layout string "paired" or "compact" surface arrangement under test driving
@@ -158,8 +215,10 @@ local function openRig(opts)
   function rig.windows.drawApplicationFrame(box, frameIndex)
     rig.windows.calls[#rig.windows.calls + 1] = { applicationBox = box, frame = frameIndex }
   end
-  function rig.audio.play(name)
-    rig.audio.plays[#rig.audio.plays + 1] = name
+  function rig.audio.play(first, second)
+    -- The production voice subsystem dispatches sink ports colon-style,
+    -- so the recorded semantic cue is the second argument when present.
+    rig.audio.plays[#rig.audio.plays + 1] = second ~= nil and second or first
     return true
   end
   function rig.assets.prepare(demand)
@@ -171,13 +230,9 @@ local function openRig(opts)
       rig.assets.images = {}
     end
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = StubLease.new(key)
+      rig.assets.images[key] = fakeDrawable(key)
     end
-    local stored = rig.assets.images[key]
-    if key:sub(1, 4) == "mon:" then
-      return { lease = stored, quad = { handle = "quad:" .. key } }
-    end
-    return stored
+    return rig.assets.images[key]
   end
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
@@ -250,12 +305,7 @@ local function openRig(opts)
   rig.scenario = scenario
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = screenManifest(),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -302,7 +352,7 @@ local function driveToMode(rig, mode)
     if status.mode == "failed" then
       error("the battle screen failed while driving to " .. mode .. ": " .. tostring(status.error), 0)
     end
-    if status.mode == mode then
+    if status.mode == mode and (mode ~= "command" and mode ~= "moves" or rig.screen:view().menuInputEnabled) then
       return status
     end
   end
@@ -328,7 +378,20 @@ local function ackNarration(rig)
 end
 
 ---@param rig table live screen rig under test driving, resting on its command prompt
+local function waitForMenuInput(rig)
+  -- Each entry to the command prompt reveals before it arms: menu
+  -- presses wait for the production input gate instead of racing it.
+  for _ = 1, 30 do
+    if rig.screen:status().mode ~= "command" or rig.screen:view().menuInputEnabled then
+      break
+    end
+    rig.pump(1)
+  end
+end
+
+---@param rig table live screen rig under test driving, resting on its command prompt
 local function openPartyFromCommand(rig)
+  waitForMenuInput(rig)
   press(rig, { type = "navigate", direction = "down" })
   press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "confirm" })
@@ -337,6 +400,7 @@ end
 
 ---@param rig table live screen rig under test driving, resting on its command prompt
 local function openBagFromCommand(rig)
+  waitForMenuInput(rig)
   press(rig, { type = "navigate", direction = "down" })
   press(rig, { type = "navigate", direction = "left" })
   press(rig, { type = "confirm" })

@@ -20,6 +20,7 @@ local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentat
 local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 local MonCache = require("libs.assets.src.MonCache")
 local PngWriter = require("libs.assets.src.PngWriter")
+local Validate = require("libs.assets.src.Validate")
 
 BattlePresentationCache.MANIFEST_SCHEMA = Contract.battlePresentation.schema
 BattlePresentationCache.SCENE_SCHEMA = Contract.battlePresentation.sceneSchema
@@ -71,6 +72,32 @@ BattlePresentationCache.TERRAINS = {
 
 BattlePresentationCache.TIMES = { "day", "evening", "night" }
 
+---@class BattlePresentationCache.SceneResource
+---@field key string semantic resource identity
+---@field path string generated cache path
+---@field format string normalized payload format
+
+---@class BattlePresentationCache.SceneLayer
+---@field key string semantic layer identity
+---@field backing { width: integer, height: integer, mapWidth: integer, mapHeight: integer }
+---@field viewport { x: integer, y: integer, width: integer, height: integer }
+---@field scroll { x: integer, y: integer }
+---@field characters BattlePresentationCache.SceneResource
+---@field map BattlePresentationCache.SceneResource
+---@field palette BattlePresentationCache.SceneResource
+
+---@class BattlePresentationCache.SceneRecord
+---@field schema string
+---@field key string
+---@field background string
+---@field terrain string
+---@field time string
+---@field canvasWidth integer
+---@field canvasHeight integer
+---@field viewport { x: integer, y: integer, width: integer, height: integer }
+---@field layers BattlePresentationCache.SceneLayer[]
+---@field imagePath string
+
 ---@return string
 function BattlePresentationCache.dir()
   return DATA_DIR
@@ -104,6 +131,14 @@ function BattlePresentationCache.globalImagePath(name)
   return ASSET_DIR .. "/" .. name .. ".png"
 end
 
+---@param resourceKey string semantic resource key
+---@return string cache-relative staged decoded resource path
+function BattlePresentationCache.globalResourcePath(resourceKey)
+  assert(type(resourceKey) == "string" and resourceKey ~= "", "global resource key is required")
+  assert(resourceKey:match("^[a-z0-9][a-z0-9/_-]*$") ~= nil, "global resource keys are path-safe")
+  return DATA_DIR .. "/resources/" .. resourceKey .. ".lua"
+end
+
 ---@param sceneKey string semantic scene key
 ---@return string file-safe scene file stem
 local function sceneStem(sceneKey)
@@ -126,9 +161,49 @@ function BattlePresentationCache.sceneImagePath(sceneKey)
 end
 
 ---@param sceneKey string semantic scene key
+---@return string cache-relative native BG3 character payload path
+function BattlePresentationCache.sceneCharactersPath(sceneKey)
+  return DATA_DIR .. "/scenes/" .. sceneStem(sceneKey) .. ".bg3.chars"
+end
+
+---@param sceneKey string semantic scene key
+---@return string cache-relative normalized BG3 tilemap path
+function BattlePresentationCache.sceneMapPath(sceneKey)
+  return DATA_DIR .. "/scenes/" .. sceneStem(sceneKey) .. ".bg3.map.lua"
+end
+
+---@param sceneKey string semantic scene key
+---@return string cache-relative normalized BG3 palette path
+function BattlePresentationCache.scenePalettePath(sceneKey)
+  return DATA_DIR .. "/scenes/" .. sceneStem(sceneKey) .. ".bg3.palette.lua"
+end
+
+---@param sceneKey string semantic scene key
+---@return string cache-relative build provenance path
+function BattlePresentationCache.sceneProvenancePath(sceneKey)
+  return DATA_DIR .. "/provenance/scenes/" .. sceneStem(sceneKey) .. ".lua"
+end
+
+---@param sceneKey string semantic scene key
 ---@return string cache-relative scene completion marker path
 function BattlePresentationCache.sceneMarkerPath(sceneKey)
   return DATA_DIR .. "/scenes/" .. sceneStem(sceneKey) .. ".complete"
+end
+
+---@param effectKey string semantic effect key without slashes
+---@return string cache-relative staged effect record path
+function BattlePresentationCache.effectPath(effectKey)
+  assert(type(effectKey) == "string" and effectKey ~= "", "effect keys are non-empty strings")
+  assert(effectKey:find("/", 1, true) == nil, "effect keys stay flat: " .. effectKey)
+  return DATA_DIR .. "/effects/" .. effectKey .. ".lua"
+end
+
+---@param effectKey string semantic effect key without slashes
+---@return string cache-relative effect completion marker path
+function BattlePresentationCache.effectMarkerPath(effectKey)
+  assert(type(effectKey) == "string" and effectKey ~= "", "effect keys are non-empty strings")
+  assert(effectKey:find("/", 1, true) == nil, "effect keys stay flat: " .. effectKey)
+  return DATA_DIR .. "/effects/" .. effectKey .. ".complete"
 end
 
 ---@param romSha1 string
@@ -226,7 +301,7 @@ end
 -- roles never fall back to planning data silently: the verified flag tells
 -- them apart.
 ---@param cacheFs CacheFs
----@return { schema: string, version: { id: string, language: string }, verified: boolean, scenes: { key: string, background: string, terrain: string, time: string }[], audioRoles?: { wild: string, trainer: string, rival: string, select: string, narrationBank: integer, cries: string } } global or planning manifest
+---@return { schema: string, version: { id: string, language: string }, verified: boolean, scenes: { key: string, background: string, terrain: string, time: string }[], audioRoles?: { wild: string, trainer: string, rival: string, select: string, cries: string } } global or planning manifest
 function BattlePresentationCache.load(cacheFs)
   assert(cacheFs ~= nil, "presentation loading requires a cache filesystem")
   local staged = cacheFs:loadLua(BattlePresentationCache.manifestPath())
@@ -243,7 +318,7 @@ end
 -- the requested key. A missing record is pending, never a fallback scene.
 ---@param cacheFs CacheFs
 ---@param sceneKey string
----@return { schema: string, key: string, background: string, terrain: string, time: string, canvasWidth: integer, canvasHeight: integer, viewport: { x: integer, y: integer, width: integer, height: integer }, imagePath: string }|nil scene record
+---@return BattlePresentationCache.SceneRecord|nil scene record
 ---@return unknown|nil reason
 function BattlePresentationCache.loadScene(cacheFs, sceneKey)
   assert(cacheFs ~= nil, "scene loading requires a cache filesystem")
@@ -252,7 +327,8 @@ function BattlePresentationCache.loadScene(cacheFs, sceneKey)
   end
   local record, loadErr = cacheFs:loadLua(BattlePresentationCache.scenePath(sceneKey))
   if record == nil then
-    return nil, loadErr or ("no staged battle scene for " .. sceneKey)
+    local reason = loadErr == nil and "no staged battle scene file" or tostring(loadErr)
+    return nil, "no staged battle scene for " .. tostring(sceneKey) .. ": " .. reason
   end
   local ok, schemaErr = pcall(BattlePresentationSchema.assertScene, record)
   if not ok then
@@ -263,6 +339,68 @@ function BattlePresentationCache.loadScene(cacheFs, sceneKey)
     return nil, "staged battle scene names " .. tostring(record.key) .. ", not " .. sceneKey
   end
   return record
+end
+
+---@param cacheFs CacheFs
+---@param record BattlePresentationCache.SceneRecord validated scene record
+---@return boolean
+local function hasSceneLayerClosure(cacheFs, record)
+  local layer = record.layers[1]
+  local characters = cacheFs:read(layer.characters.path)
+  if type(characters) ~= "string" or #characters ~= 65536 then
+    return false
+  end
+  local map = cacheFs:loadLua(layer.map.path)
+  if
+    type(map) ~= "table"
+    or map.width ~= 512
+    or map.height ~= 256
+    or type(map.entries) ~= "table"
+    or #map.entries ~= 2048
+  then
+    return false
+  end
+  for _, entry in ipairs(map.entries) do
+    if
+      type(entry) ~= "table"
+      or type(entry.tile) ~= "number"
+      or entry.tile % 1 ~= 0
+      or entry.tile < 0
+      or entry.tile > 1023
+      or type(entry.flipH) ~= "boolean"
+      or type(entry.flipV) ~= "boolean"
+      or type(entry.palette) ~= "number"
+      or entry.palette % 1 ~= 0
+      or entry.palette < 0
+      or entry.palette > 15
+    then
+      return false
+    end
+  end
+  local palette = cacheFs:loadLua(layer.palette.path)
+  if type(palette) ~= "table" or type(palette.colors) ~= "table" or #palette.colors ~= 256 then
+    return false
+  end
+  for _, color in ipairs(palette.colors) do
+    if
+      type(color) ~= "table"
+      or type(color.r) ~= "number"
+      or color.r % 1 ~= 0
+      or color.r < 0
+      or color.r > 255
+      or type(color.g) ~= "number"
+      or color.g % 1 ~= 0
+      or color.g < 0
+      or color.g > 255
+      or type(color.b) ~= "number"
+      or color.b % 1 ~= 0
+      or color.b < 0
+      or color.b > 255
+    then
+      return false
+    end
+  end
+  return true
 end
 
 ---@param selectors unknown
@@ -411,7 +549,11 @@ function BattlePresentationCache.isReady(cacheFs, demand)
       return false
     end
     local bytes = cacheFs:read(BattlePresentationCache.sceneImagePath(sceneKey))
-    if type(bytes) ~= "string" or #bytes ~= PngWriter.encodedSize(record.canvasWidth, record.canvasHeight) then
+    if
+      type(bytes) ~= "string"
+      or #bytes ~= PngWriter.encodedSize(record.canvasWidth, record.canvasHeight)
+      or not hasSceneLayerClosure(cacheFs, record)
+    then
       return false
     end
   end
@@ -466,7 +608,92 @@ function BattlePresentationCache.isSceneReady(cacheFs, sceneKey, expectedMarker)
     return false
   end
   local bytes = cacheFs:read(BattlePresentationCache.sceneImagePath(sceneKey))
-  return type(bytes) == "string" and #bytes == PngWriter.encodedSize(record.canvasWidth, record.canvasHeight)
+  return type(bytes) == "string"
+    and #bytes == PngWriter.encodedSize(record.canvasWidth, record.canvasHeight)
+    and hasSceneLayerClosure(cacheFs, record)
+end
+
+-- Load one staged effect record: the record must validate and name exactly
+-- the requested key. A missing record is pending, never a fallback effect.
+---@param cacheFs CacheFs
+---@param effectKey string
+---@return BattlePresentationEffect|nil effect record
+---@return unknown|nil reason
+function BattlePresentationCache.loadEffect(cacheFs, effectKey)
+  assert(cacheFs ~= nil, "effect loading requires a cache filesystem")
+  if type(effectKey) ~= "string" or effectKey == "" or effectKey:find("/", 1, true) ~= nil then
+    return nil, "unknown battle effect key: " .. tostring(effectKey)
+  end
+  local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
+  local record, loadErr = cacheFs:loadLua(BattlePresentationCache.effectPath(effectKey))
+  if record == nil then
+    return nil, loadErr or ("no staged battle effect for " .. effectKey)
+  end
+  local ok, schemaErr = pcall(BattleAnimationSchema.assertEffect, record)
+  if not ok then
+    return nil, schemaErr
+  end
+  assert(record ~= nil, "the staged effect carries its record")
+  if record.key ~= effectKey then
+    return nil, "staged battle effect names " .. tostring(record.key) .. ", not " .. effectKey
+  end
+  return record
+end
+
+-- True only when the staged effect record and requested closure agree and
+-- every payload path exists. Producer publication owns payload validation;
+-- this check uses file metadata and does not read or decode payload bytes.
+---@param cacheFs CacheFs
+---@param demand { key: string, resources: string[] } exact effect demand with its transitive resource keys
+---@return boolean true only when the closed effect is staged
+function BattlePresentationCache.isEffectReady(cacheFs, demand)
+  assert(cacheFs ~= nil, "effect readiness requires a cache filesystem")
+  if
+    type(demand) ~= "table"
+    or type(demand.key) ~= "string"
+    or demand.key == ""
+    or not Validate.isArray(demand.resources)
+  then
+    return false
+  end
+  local record, _ = BattlePresentationCache.loadEffect(cacheFs, demand.key)
+  if record == nil then
+    return false
+  end
+  local marker = cacheFs:read(BattlePresentationCache.effectMarkerPath(demand.key))
+  if type(marker) ~= "string" or marker == "" then
+    return false
+  end
+  local dependencies = record.dependencies
+  local resources = record.resources
+  if type(dependencies) ~= "table" or type(resources) ~= "table" or #demand.resources ~= #dependencies then
+    return false
+  end
+  local dependencySet = {}
+  for _, key in ipairs(dependencies) do
+    if type(key) ~= "string" or dependencySet[key] ~= nil or resources[key] == nil then
+      return false
+    end
+    dependencySet[key] = true
+  end
+  local demandedSet = {}
+  for _, key in ipairs(demand.resources) do
+    if type(key) ~= "string" or demandedSet[key] ~= nil or dependencySet[key] == nil then
+      return false
+    end
+    demandedSet[key] = true
+  end
+  local resourceCount = 0
+  for key, descriptor in pairs(resources) do
+    resourceCount = resourceCount + 1
+    if dependencySet[key] == nil or type(descriptor) ~= "table" then
+      return false
+    end
+    if type(descriptor.payload) ~= "string" or not cacheFs:exists(descriptor.payload, "file") then
+      return false
+    end
+  end
+  return resourceCount == #dependencies
 end
 
 return BattlePresentationCache

@@ -12,7 +12,8 @@
 -- owner, so the run stays red until that owner lands.
 
 local Assert = require("tests.support.Assert")
-local StubLease = require("tests.support.StubLease")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -34,7 +35,7 @@ local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
 local PRESENTATION_CACHE_MODULE = "libs.assets.src.battle.BattlePresentationCache"
 
-local TICK = 1 / 60
+local TICK = 1 / 30
 
 ---@param behavior string the missing screen responsibility naming this red
 ---@param primary string the scenario's own missing owner, loaded first so the red names it
@@ -201,13 +202,18 @@ local function tinyMeasurement()
   }
 end
 
----@param muted boolean? when true playback reports unavailable while still recording
+---@param muted boolean? when true playback stays silent while still recording
 ---@return table recording semantic sound boundary with per-name counts
 local function recordingAudio(muted)
   local audio = { plays = {}, muted = muted == true }
-  function audio.play(name)
-    audio.plays[#audio.plays + 1] = name
-    return not audio.muted
+  function audio.play(first, second)
+    -- The production voice subsystem dispatches sink ports colon-style,
+    -- so the recorded semantic cue is the second argument when present.
+    -- Muted playback still accepts every voice (silently): unavailability
+    -- is modeled by absent ports, never by a muted answer, so muted
+    -- cues drain instead of failing the screen.
+    audio.plays[#audio.plays + 1] = second ~= nil and second or first
+    return true
   end
   function audio.count(name)
     local total = 0
@@ -250,6 +256,43 @@ local function recordingText()
   return text
 end
 
+---@param image table fake image handle under inspection
+---@return integer staged image width
+local function fakeImageWidth(image)
+  return image.width
+end
+
+---@param image table fake image handle under inspection
+---@return integer staged image height
+local function fakeImageHeight(image)
+  return image.height
+end
+
+---@param image table fake image handle under inspection
+---@return integer, integer staged image dimensions
+local function fakeImageDimensions(image)
+  return image.width, image.height
+end
+
+local function fakeImageSetFilter() end
+
+---@param key string image identity under test preparation
+---@param width integer? staged image width, native default when absent
+---@param height integer? staged image height, native default when absent
+---@return table fake image handle carrying the renderer-required dimensions
+local function fakeDrawable(key, width, height)
+  local hudImage = key:match("^hud:") ~= nil
+  return {
+    handle = key,
+    width = width or (hudImage and 1648 or 80),
+    height = height or (hudImage and 8 or 80),
+    getWidth = fakeImageWidth,
+    getHeight = fakeImageHeight,
+    getDimensions = fakeImageDimensions,
+    setFilter = fakeImageSetFilter,
+  }
+end
+
 ---@param opts table? heldKeys: image keys reporting unavailable; failPrepare: preparation error; seedImages: pre-made handles
 ---@return table preparation double owning only the handles it hands out
 local function stubAssets(opts)
@@ -277,17 +320,9 @@ local function stubAssets(opts)
       return nil
     end
     if assets.images[key] == nil then
-      assets.images[key] = StubLease.new(key)
+      assets.images[key] = fakeDrawable(key)
     end
-    -- Portrait cells resolve the lease-plus-quad drawable shape
-    -- production draws; every other key resolves its bare lease.
-    -- Already-paired cells (test-overwritten demand portraits) pass
-    -- through instead of wrapping twice.
-    local stored = assets.images[key]
-    if key:sub(1, 4) == "mon:" and stored.lease == nil then
-      return { lease = stored, quad = { handle = "quad:" .. key } }
-    end
-    return stored
+    return assets.images[key]
   end
   function assets.release(key)
     assets.released[key] = (assets.released[key] or 0) + 1
@@ -307,6 +342,33 @@ local function planningManifest(sceneKey)
     verified = false,
     scenes = { { key = sceneKey } },
   }
+end
+
+---@param value unknown value under test preparation
+---@return unknown a detached copy sharing no table with the source
+local function deepCopy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local copy = {}
+  for key, item in pairs(value) do
+    copy[deepCopy(key)] = deepCopy(item)
+  end
+  return copy
+end
+
+---@param sceneKey string semantic scene identity under test preparation
+---@return table detached schema-valid staged manifest carrying the requested scene
+local function screenManifest(sceneKey)
+  local background, terrain, time = sceneKey:match("^([^/]+)/([^/]+)/([^/]+)$")
+  assert(
+    background ~= nil and terrain ~= nil and time ~= nil,
+    "the screen fixture needs a background/terrain/time scene key"
+  )
+  local manifest = deepCopy(BattlePresentationManifestFixture.manifest())
+  manifest.scenes = { { key = sceneKey, background = background, terrain = terrain, time = time } }
+  BattlePresentationSchema.assertManifest(manifest)
+  return manifest
 end
 
 ---@return string a valid semantic scene key assembled from the real presentation inventory
@@ -329,9 +391,13 @@ local function openRig(modules, opts)
     text = opts.text or recordingText(),
     assets = opts.assets or stubAssets({}),
   }
+  local sceneKey = testSceneKey()
+  if opts.overrides ~= nil and opts.overrides.sceneKey ~= nil then
+    sceneKey = opts.overrides.sceneKey
+  end
   local screen = modules.state.new({
     launchId = opts.launchId,
-    manifest = opts.manifest or planningManifest(testSceneKey()),
+    manifest = opts.manifest or screenManifest(sceneKey),
     model = modules.model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -420,7 +486,7 @@ local function driveToMode(rig, mode, budget)
     if status.mode == "failed" then
       error("the battle screen failed while driving to " .. mode .. ": " .. tostring(status.error), 0)
     end
-    if status.mode == mode then
+    if status.mode == mode and (mode ~= "command" and mode ~= "moves" or rig.screen:view().menuInputEnabled) then
       return status
     end
   end
@@ -591,7 +657,11 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
 
   -- Fight opens the true slots: one known move with its PP facts, the
   -- remaining slots visibly empty, and cancel returns to command.
+  -- The settled command root keeps its framed select prompt: the
+  -- top-screen narration names the acting lead while the command menu
+  -- stays open over it, so the view never goes chrome-only mid-decision.
   local openingView = rig.screen:view()
+  Assert.equal(openingView.message, "What will EEVEE do?", "the settled command root keeps the framed select prompt")
   Assert.equal(openingView.selection, "fight", "the command prompt rests on the first command")
   local commands = assert(openingView.commands, "the command prompt lists its four commands")
   Assert.equal(#commands, 4, "Fight, Bag, Pokemon and Run stay reachable")
@@ -608,6 +678,11 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
   rig.screen:input({ { type = "cancel" } })
   rig.pump(1)
   Assert.equal(rig.screen:status().mode, "command", "cancel from moves returns to command")
+  Assert.equal(
+    rig.screen:view().message,
+    "What will EEVEE do?",
+    "returning to command restores the framed select prompt"
+  )
   Assert.equal(#rig.submits, 0, "cancelling spends no turn")
 
   -- One accepted move seals exactly one reply: selecting the slot and
@@ -856,6 +931,22 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   -- interaction drawing, releasing elsewhere cancels, hovering alone
   -- seals nothing, and the sealed command still needs its release.
   local graphics = FakeGraphics.new({})
+  -- The picture pass reuses one mesh for every portrait, so a recorded
+  -- mesh always shows the last submitted texture: journal every texture
+  -- the renderer submits to prove each battler draws its own image.
+  local meshTextures = {}
+  do
+    local realNewMesh = graphics.newMesh
+    graphics.newMesh = function(...)
+      local mesh = realNewMesh(...)
+      local realSetTexture = mesh.setTexture
+      mesh.setTexture = function(self, texture)
+        meshTextures[#meshTextures + 1] = texture
+        return realSetTexture(self, texture)
+      end
+      return mesh
+    end
+  end
   local function drawNow()
     for key in pairs(graphics.draws) do
       graphics.draws[key] = nil
@@ -866,6 +957,9 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   tap(rig, 128, 175 + 192)
   rig.pump(1)
   Assert.equal(rig.screen:status().mode, "command", "the moves cancel anchor returns to command by pointer")
+  -- The re-entered prompt reveals before it arms: the press probes wait
+  -- for the production input gate instead of racing it.
+  driveToMode(rig, "command", 30)
   local released = drawNow()
   Assert.isTrue(#graphics.draws > 0, "the command composition draws through the recording boundary")
   rig.screen:input({ { type = "pointer_down", pointerId = "touch:3", x = 128, y = 83 + 192 } })
@@ -884,21 +978,16 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   -- Both battlers draw from their own images with narration framed by
   -- the selected window, redraws are inert, and borrowed graphics
   -- state returns exactly.
-  local playerBack = { handle = "battler:player-back" }
-  local enemyFront = { handle = "battler:enemy-front" }
+  local playerBack = fakeDrawable("battler:player-back")
+  local enemyFront = fakeDrawable("battler:enemy-front")
   -- Battlers draw their own exact canonical portraits, never the
   -- generic side keys: back selectors keep the back handle, front
   -- selectors the front handle, so each drawn image stays identifiable.
   for _, selector in ipairs(demandedPortraits(rig)) do
-    -- Portrait drawables pair their stub image with a stub cell quad,
-    -- matching the production image-plus-quad handle behind draws while
-    -- the drawn image stays the identifiable side handle.
     if selector:sub(-5) == "/back" then
-      rig.assets.images["mon:" .. selector] =
-        { lease = StubLease.over(playerBack), image = playerBack, quad = { handle = "quad:" .. selector } }
+      rig.assets.images["mon:" .. selector] = playerBack
     else
-      rig.assets.images["mon:" .. selector] =
-        { lease = StubLease.over(enemyFront), image = enemyFront, quad = { handle = "quad:" .. selector } }
+      rig.assets.images["mon:" .. selector] = enemyFront
     end
   end
   rig.pump(2)
@@ -906,6 +995,11 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   local function wasDrawn(image)
     for _, entry in ipairs(graphics.draws) do
       if entry.image == image then
+        return true
+      end
+    end
+    for _, texture in ipairs(meshTextures) do
+      if texture == image then
         return true
       end
     end
@@ -1181,26 +1275,44 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
   end
   local sounding = narratedOutcome(recordingAudio(false))
   Assert.isTrue(#sounding.audio.plays > 0, "cue starts play their sounds once each")
-  local cryCounts = {}
+  local cryPlays = {}
+  local otherCounts = {}
   for _, played in ipairs(sounding.audio.plays) do
-    cryCounts[played] = (cryCounts[played] or 0) + 1
+    if type(played) == "string" and played:sub(1, 4) == "cry:" then
+      cryPlays[#cryPlays + 1] = played
+    else
+      otherCounts[played] = (otherCounts[played] or 0) + 1
+    end
   end
-  for name, total in pairs(cryCounts) do
-    Assert.equal(total, 1, "every cue sound plays exactly once: " .. tostring(name))
+  for name, total in pairs(otherCounts) do
+    Assert.equal(total, 1, "every non-cry cue sound plays exactly once: " .. tostring(name))
   end
+  -- Retail voices all three: the wild foe send-out, the player
+  -- send-out, and the fainted foe. A same-species matchup keys all
+  -- three identically, so the exact ordered triple is the source
+  -- truth: a missing or extra cry fails.
+  Assert.deepEqual(
+    cryPlays,
+    { "cry:EEVEE", "cry:EEVEE", "cry:EEVEE" },
+    "the win voices exactly its three send-out and faint cries in order"
+  )
   local liveHp = sounding.party:partyMon(0).condition.currentHp
   Assert.equal(
     sounding.screen:view().battlers[1].hp,
     liveHp,
     "the drained view carries the exact final health, not an interpolation residue"
   )
+  -- Capture the terminal wording before teardown: a disposed screen
+  -- releases its scene, so the muted twin compares against the
+  -- retained copy instead of a released view.
+  local soundingMessage = sounding.screen:view().message
   sounding.screen:dispose()
   sounding.battle:dispose()
   local muted = narratedOutcome(recordingAudio(true))
   Assert.equal(muted.battle:status().phase, "complete", "muted playback never deadlocks a cue")
   Assert.equal(
     muted.screen:view().message,
-    sounding.screen:view().message,
+    soundingMessage,
     "muted playback narrates the same terminal result"
   )
   muted.screen:dispose()
@@ -1224,17 +1336,9 @@ function T.definitions_and_leases_follow_single_ownership()
   -- Selected content is actually drawn: the custom scene handle and
   -- the custom frame reach the recording boundary, vanilla handles
   -- never appear.
-  local customScene = { handle = "scene:custom-test" }
-  local vanillaScene = { handle = "scene:vanilla" }
-  -- Seeded drawables carry the lease surface over their stub image so the
-  -- scene draw records the seeded image through the sampler, exactly like
-  -- pooled production leases.
-  local assets = stubAssets({
-    seedImages = {
-      ["scene:custom"] = StubLease.over(customScene),
-      ["scene:vanilla"] = StubLease.over(vanillaScene),
-    },
-  })
+  local customScene = fakeDrawable("scene:custom", 512, 256)
+  local vanillaScene = fakeDrawable("scene:vanilla", 512, 256)
+  local assets = stubAssets({ seedImages = { ["scene:custom"] = customScene, ["scene:vanilla"] = vanillaScene } })
   local windows = recordingWindows()
   local rig = openWildRig(
     modules,
@@ -1411,6 +1515,424 @@ function T.definitions_and_leases_follow_single_ownership()
 
   rig.screen:dispose()
   rig.battle:dispose()
+end
+
+-- A malformed staged manifest never boots a runnable screen: with the
+-- required picture sections absent the real constructor fails naming
+-- the missing field, and the schema validator rejects the same copy,
+-- so no empty battle can pass as staged.
+function T.malformed_staged_manifest_fails_before_any_command_input()
+  local modules = battleScreenModules("strict staged manifest construction", STATE_MODULE)
+  local withoutPictures = screenManifest(testSceneKey())
+  withoutPictures.pictures = nil
+  local ok, err = pcall(modules.state.new, {
+    launchId = "launch-screen-malformed",
+    manifest = withoutPictures,
+    model = modules.model,
+    submit = function(_)
+      return true
+    end,
+    measureDisplay = dualMeasurement,
+    assets = stubAssets({}),
+    text = recordingText(),
+    windows = recordingWindows(),
+    audio = recordingAudio(false),
+  })
+  Assert.isFalse(ok, "a manifest without pictures never constructs a screen")
+  Assert.isTrue(
+    type(err) == "string" and err:find("pictures", 1) ~= nil,
+    "the constructor names its missing pictures section: " .. tostring(err)
+  )
+  local schemaOk = pcall(BattlePresentationSchema.assertManifest, withoutPictures)
+  Assert.isFalse(schemaOk, "the malformed copy also fails schema validation instead of reading as staged")
+end
+
+-- Detached scene selection never leaks between tests: retargeting one
+-- copied manifest leaves a second copy and the shared source on their
+-- own scenes, and every copy stays schema-valid.
+function T.detached_manifest_copies_keep_their_own_scene_key()
+  local Cache = require(PRESENTATION_CACHE_MODULE)
+  local otherKey = Cache.sceneKey(Cache.BACKGROUNDS[4], Cache.TERRAINS[3], Cache.TIMES[1])
+  local first = screenManifest(testSceneKey())
+  local second = screenManifest(otherKey)
+  Assert.equal(second.scenes[1].key, otherKey, "each copy carries its own requested scene")
+  second.scenes[1].key = testSceneKey()
+  second.scenes[1].background = Cache.BACKGROUNDS[1]
+  second.scenes[1].terrain = Cache.TERRAINS[1]
+  second.scenes[1].time = Cache.TIMES[1]
+  Assert.equal(first.scenes[1].key, testSceneKey(), "retargeting a sibling copy never touches this copy")
+  BattlePresentationSchema.assertManifest(first)
+  BattlePresentationSchema.assertManifest(second)
+  Assert.equal(
+    BattlePresentationManifestFixture.manifest().scenes[1].key,
+    "general/grass/day",
+    "per-test copies never mutate the shared source fixture"
+  )
+end
+
+---@param value integer unsigned word under staging
+---@return string four little-endian bytes staging one command word
+local function nativeU32(value)
+  return string.char(
+    value % 256,
+    math.floor(value / 256) % 256,
+    math.floor(value / 65536) % 256,
+    math.floor(value / 16777216) % 256
+  )
+end
+
+---@param list table<integer, integer> command words under staging
+---@return string staged byte stream lowering one program
+local function nativeStreamOf(list)
+  local parts = {}
+  for _, word in ipairs(list) do
+    parts[#parts + 1] = nativeU32(word)
+  end
+  return table.concat(parts)
+end
+
+---@param launchId string owning launch identity under test preparation
+---@return table staged-effect fixture holding a closed synthetic TACKLE program
+local function stagedTackle(launchId)
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  local record = EffectStagingFixture.effectRecord("TACKLE", {})
+  local program = assert(
+    BattleAnimationCompiler.compile({ key = "TACKLE", stream = nativeStreamOf({ 34, 1, 2, 3, 29, 50, 4 }) })
+  )
+  record.program = {
+    entry = program.entry,
+    instructions = program.instructions,
+    subprograms = program.subprograms,
+    taskKinds = program.taskKinds,
+  }
+  staging:stageEffect("TACKLE", record, {})
+  return staging
+end
+
+---@param staging table staged-effect fixture under test preparation
+---@return table preparation services serving portraits plus the staged TACKLE closure
+local function nativeScreenServices(staging)
+  local portraits = stubAssets({})
+  local services = {}
+  function services.prepare(demand)
+    return portraits.prepare(demand)
+  end
+  function services.drawable(key)
+    local staged = staging.services.drawable(key)
+    if staged ~= nil then
+      return staged
+    end
+    return portraits.drawable(key)
+  end
+  function services.release(key)
+    portraits.release(key)
+    return staging.services.release(key)
+  end
+  function services.requestEffect(key)
+    return staging.services.requestEffect(key)
+  end
+  function services.loadEffect(key)
+    return staging.services.loadEffect(key)
+  end
+  function services.resolveEffectResource(effect, resourceKey)
+    return staging.services.resolveEffectResource(effect, resourceKey)
+  end
+  function services.releaseEffectResource(lease)
+    return staging.services.releaseEffectResource(lease)
+  end
+  return services
+end
+
+---@return table detached own lead record under test driving
+local function nativeOwnRecord()
+  return {
+    combatant = 1,
+    participant = 1,
+    side = 1,
+    controller = "player",
+    active = true,
+    hp = 52,
+    maxHp = 52,
+    species = "EEVEE",
+    form = 0,
+    name = "LEAD",
+    level = 20,
+    selector = "back",
+    moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+  }
+end
+
+---@param hp integer foe health under test driving
+---@return table detached foe record under test driving
+local function nativeFoeRecord(hp)
+  return {
+    combatant = 3,
+    participant = 3,
+    side = 2,
+    controller = "wild",
+    active = true,
+    hp = hp,
+    maxHp = 57,
+    species = "EEVEE",
+    form = 0,
+    name = "FOE",
+    level = 20,
+    selector = "front",
+  }
+end
+
+---@param foeHp integer foe health after the view under test driving
+---@return table detached dynamic view under test driving
+local function nativeView(foeHp)
+  return { own = { nativeOwnRecord() }, foes = { nativeFoeRecord(foeHp) } }
+end
+
+---@return table detached active own lead record carrying real event-time slot facts
+local function activeLeadRecord()
+  local record = nativeOwnRecord()
+  record.activation = 7
+  record.position = 1
+  return record
+end
+
+---@param combatant integer benched reserve identity under test driving
+---@return table detached benched reserve record carrying no slot facts
+local function reserveRecord(combatant)
+  local record = nativeOwnRecord()
+  record.combatant = combatant
+  record.active = false
+  record.name = "RESERVE"
+  return record
+end
+
+---@param hp integer foe health under test driving
+---@return table detached active foe record carrying real event-time slot facts
+local function activeFoeRecord(hp)
+  local record = nativeFoeRecord(hp)
+  record.activation = 9
+  record.position = 2
+  return record
+end
+
+---@param foeHp integer foe health after the view under test driving
+---@return table detached production-shaped dynamic view picturing a full own roster
+local function rosterView(foeHp)
+  return {
+    own = { activeLeadRecord(), reserveRecord(2), reserveRecord(4) },
+    foes = { activeFoeRecord(foeHp) },
+  }
+end
+
+---@param view table displayed screen view under inspection
+---@return integer displayed foe health
+local function displayedFoeHp(view)
+  for _, entry in ipairs(view.battlers or {}) do
+    if entry.side == 2 then
+      return entry.hp
+    end
+  end
+  error("the displayed view names its foe", 0)
+end
+
+-- Live native-effect playback through the production screen: a Tackle
+-- strike packet carrying its accepted semantic effect key demands only
+-- that exact effect, runs the selected program through the screen-owned
+-- player before the health checkpoint, holds readiness until real
+-- completion, then applies the exact checkpoint and releases its
+-- occurrence exactly once on disposal. The fixed source tick stays 30 Hz.
+function T.live_tackle_strike_runs_its_selected_program_before_health()
+  local modules = battleScreenModules("live native effects through one screen-owned player", STATE_MODULE)
+  Assert.equal(modules.state.SOURCE_FRAME, 1 / 30, "the battle source tick is one accepted 30 Hz quantum")
+  local launchId = "launch-screen-native-tackle"
+  local staging = stagedTackle(launchId)
+  local Model = modules.model
+  local measurement = dualMeasurement()
+  local text = recordingText()
+  local windows = recordingWindows()
+  local audio = recordingAudio(false)
+  local submits = {}
+  local screen = modules.state.new({
+    launchId = launchId,
+    manifest = screenManifest(testSceneKey()),
+    model = Model,
+    submit = function(reply)
+      submits[#submits + 1] = reply
+      return true
+    end,
+    measureDisplay = function()
+      return measurement
+    end,
+    assets = nativeScreenServices(staging),
+    text = text,
+    windows = windows,
+    audio = audio,
+  })
+  local port = screen:presentationPort()
+  port.present({
+    launchId = launchId,
+    packetId = 1,
+    events = {},
+    before = nativeView(57),
+    after = nativeView(57),
+  })
+  port.present({
+    launchId = launchId,
+    packetId = 2,
+    events = {
+      {
+        sequence = 1,
+        kind = "struck",
+        cause = { key = "TACKLE" },
+        audience = "public",
+        actors = { { combatant = 1 } },
+        targets = { { combatant = 3 } },
+        move = { executed = "TACKLE" },
+        actionId = 51,
+        hitIndex = 1,
+        effectKey = "TACKLE",
+        payload = { target = 3, damage = 14, hitIndex = 1 },
+        after = { hp = { [1] = 52, [3] = 43 } },
+      },
+    },
+    before = nativeView(57),
+    after = nativeView(43),
+  })
+  for _ = 1, 900 do
+    local mode = screen:status().mode
+    if mode == "intro" or mode == "narration" or mode == "outcome" then
+      screen:input({ { type = "confirm" } })
+    end
+    screen:updateFixed(TICK)
+    if #staging.requests > 0 then
+      break
+    end
+  end
+  Assert.deepEqual(staging.requests, { "TACKLE" }, "only the selected TACKLE effect is ever demanded")
+  Assert.isFalse(screen:status().ready, "the cue holds readiness until real completion")
+  local settledHp = nil
+  for _ = 1, 1200 do
+    local mode = screen:status().mode
+    if mode == "intro" or mode == "narration" or mode == "outcome" then
+      screen:input({ { type = "confirm" } })
+    end
+    screen:updateFixed(TICK)
+    Assert.equal(
+      #screen:view().effectInstances,
+      0,
+      "state-only visual work publishes no drawable picture while running"
+    )
+    if displayedFoeHp(screen:view()) == 43 and screen:status().ready then
+      settledHp = 43
+      break
+    end
+  end
+  Assert.equal(settledHp, 43, "the exact checkpoint applies after real completion")
+  Assert.deepEqual(staging.requests, { "TACKLE" }, "settling demands nothing beyond the selected effect")
+  Assert.equal(#submits, 0, "presentation alone seals no reply")
+  screen:dispose()
+  Assert.deepEqual(staging.requests, { "TACKLE" }, "disposal starts no late effect work")
+  port.present({
+    launchId = launchId,
+    packetId = 3,
+    events = {},
+    before = nativeView(43),
+    after = nativeView(43),
+  })
+  Assert.deepEqual(staging.requests, { "TACKLE" }, "a late delivery after disposal demands nothing")
+end
+
+-- Benched reserves picture in the production own roster without slot
+-- facts, so the screen must not invent live side positions from their
+-- combatant identities: the strike still resolves the solo slots and
+-- runs its selected program before the health checkpoint instead of
+-- failing the topology with phantom positions.
+function T.benched_reserves_contribute_no_live_side_positions()
+  local modules = battleScreenModules("benched reserves keep no live side positions", STATE_MODULE)
+  local launchId = "launch-screen-native-bench"
+  local staging = stagedTackle(launchId)
+  local Model = modules.model
+  local measurement = dualMeasurement()
+  local text = recordingText()
+  local windows = recordingWindows()
+  local audio = recordingAudio(false)
+  local screen = modules.state.new({
+    launchId = launchId,
+    manifest = screenManifest(testSceneKey()),
+    model = Model,
+    submit = function(_)
+      return true
+    end,
+    measureDisplay = function()
+      return measurement
+    end,
+    assets = nativeScreenServices(staging),
+    text = text,
+    windows = windows,
+    audio = audio,
+  })
+  local port = screen:presentationPort()
+  port.present({
+    launchId = launchId,
+    packetId = 1,
+    events = {},
+    before = rosterView(57),
+    after = rosterView(57),
+  })
+  port.present({
+    launchId = launchId,
+    packetId = 2,
+    events = {
+      {
+        sequence = 1,
+        kind = "struck",
+        cause = { key = "TACKLE" },
+        audience = "public",
+        actors = { { combatant = 1, activation = 7 } },
+        targets = { { combatant = 3, activation = 9 } },
+        move = { executed = "TACKLE" },
+        actionId = 51,
+        hitIndex = 1,
+        effectKey = "TACKLE",
+        payload = { target = 3, damage = 14, hitIndex = 1 },
+        after = { hp = { [1] = 52, [3] = 43 } },
+      },
+    },
+    before = rosterView(57),
+    after = rosterView(43),
+  })
+  for _ = 1, 900 do
+    local mode = screen:status().mode
+    if mode == "intro" or mode == "narration" or mode == "outcome" then
+      screen:input({ { type = "confirm" } })
+    end
+    screen:updateFixed(TICK)
+    if #staging.requests > 0 then
+      break
+    end
+  end
+  Assert.deepEqual(staging.requests, { "TACKLE" }, "only the selected TACKLE effect is ever demanded")
+  Assert.isNil(screen:status().error, "benched reserves fail no source topology")
+  local settledHp = nil
+  for _ = 1, 1200 do
+    local mode = screen:status().mode
+    if mode == "intro" or mode == "narration" or mode == "outcome" then
+      screen:input({ { type = "confirm" } })
+    end
+    screen:updateFixed(TICK)
+    Assert.equal(
+      #screen:view().effectInstances,
+      0,
+      "state-only visual work publishes no drawable picture past benched reserves"
+    )
+    if displayedFoeHp(screen:view()) == 43 and screen:status().ready then
+      settledHp = 43
+      break
+    end
+  end
+  Assert.equal(settledHp, 43, "the exact checkpoint applies after real completion")
+  screen:dispose()
 end
 
 return { tests = T }

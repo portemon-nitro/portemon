@@ -964,29 +964,6 @@ local function publishEffectFamily(cache)
     model.animations = { joint, pattern, srt }
     return model
   end
-  local function lugiaAppearance()
-    local specs = {
-      { "eyeGlimmer", 3 },
-      { "cinematic.lugia.0", 4 },
-      { "cinematic.lugia.1", 1 },
-    }
-    local models = {}
-    for index, spec in ipairs(specs) do
-      local model = dynamicModel("field-effect:lugia-appearance:" .. spec[1])
-      local template = model.animations[1]
-      model.animations = {}
-      for clip = 1, spec[2] do
-        local animation = {}
-        for field, value in pairs(template) do
-          animation[field] = value
-        end
-        animation.id = "lugia." .. index .. "." .. clip
-        model.animations[clip] = animation
-      end
-      models[index] = model
-    end
-    return { models = models }
-  end
   -- The published Ho-Oh parts by kind: the core with its clip summary, and
   -- per cinematic shot one shared part plus one overlay per variant.
   local function hoOhAppearance()
@@ -1084,11 +1061,6 @@ local function publishEffectFamily(cache)
           definition = "celebi_time_travel",
           kind = "cinematic",
         },
-        lugia_appearance = {
-          path = EffectCache.definitionPath("lugia_appearance"),
-          definition = "lugia_appearance",
-          kind = "cinematic",
-        },
       },
     },
     effects = {
@@ -1143,7 +1115,6 @@ local function publishEffectFamily(cache)
         fanfare = "SEQ_ME_ASA",
       },
       celebi_time_travel = { model = celebiTimeTravelModel() },
-      lugia_appearance = lugiaAppearance(),
     },
     meshes = { ["mesh-key"] = {} },
     textures = { ["texture-key"] = { width = 1, height = 1, data = PngWriter.encode(1, 1, "rgba") } },
@@ -1152,6 +1123,33 @@ local function publishEffectFamily(cache)
     bundle.effects[kind] = definition
     bundle.index.effects[kind] = { path = EffectCache.definitionPath(kind), definition = kind, kind = "cinematic" }
   end
+  local lugiaModels = {}
+  for index, spec in ipairs({
+    { key = "field-effect:lugia-appearance:eyeGlimmer", clips = 3 },
+    { key = "field-effect:lugia-appearance:cinematic.lugia.0", clips = 4 },
+    { key = "field-effect:lugia-appearance:cinematic.lugia.1", clips = 1 },
+  }) do
+    local model = dynamicModel(spec.key)
+    local template = model.animations[1]
+    model.animations = {}
+    for clipIndex = 1, spec.clips do
+      local clip = {}
+      for field, value in pairs(template) do
+        clip[field] = value
+      end
+      clip.id = spec.key .. ".clip-" .. clipIndex
+      clip.name = clip.id
+      clip.semanticNames = { clip.id }
+      model.animations[clipIndex] = clip
+    end
+    lugiaModels[index] = model
+  end
+  bundle.effects.lugia_appearance = { models = lugiaModels }
+  bundle.index.effects.lugia_appearance = {
+    path = EffectCache.definitionPath("lugia_appearance"),
+    definition = "lugia_appearance",
+    kind = "cinematic",
+  }
   for selector = 1, 14 do
     local kind = "follower_reaction_" .. selector
     bundle.index.effects[kind] = {

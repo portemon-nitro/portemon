@@ -8,6 +8,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
 local EXPECTED_MARKER = "field-effect-cache-v16:rom:dep"
+local EXPECTED_MARKER = "field-effect-cache-v16:rom:dep"
 
 local function validModel()
   return {
@@ -198,6 +199,11 @@ local HOOH_CORE_MODELS = {
   { key = "wavesEffect", clips = 2 },
 }
 local HOOH_SHOT_CLIPS = { first = 4, second = 3 }
+local LUGIA_MODEL_CLIPS = {
+  { key = "eyeGlimmer", clips = 3 },
+  { key = "cinematic.lugia.0", clips = 4 },
+  { key = "cinematic.lugia.1", clips = 1 },
+}
 
 local function hoOhModel(key, clips, idPrefix)
   local model = validDynamicModel()
@@ -217,8 +223,6 @@ local function hoOhModel(key, clips, idPrefix)
   return model
 end
 
--- The published parts of the Ho-Oh record by effect kind: the core with its
--- clip summary, and per shot one shared part plus one overlay per variant.
 local function validHoOhParts()
   local parts = {}
   local models, frames = {}, {}
@@ -233,7 +237,8 @@ local function validHoOhParts()
     local variantModels = {}
     cinematic[shot] = {}
     for variant = 0, 2 do
-      variantModels[variant + 1] = hoOhModel("cinematic." .. shot .. "." .. variant, clips, "hooh.cin." .. shot .. "." .. variant)
+      variantModels[variant + 1] =
+        hoOhModel("cinematic." .. shot .. "." .. variant, clips, "hooh.cin." .. shot .. "." .. variant)
       local longest = 0
       for _, clip in ipairs(variantModels[variant + 1].animations) do
         longest = math.max(longest, clip.frameCount)
@@ -249,16 +254,6 @@ local function validHoOhParts()
   parts.ho_oh_appearance = { models = models, clips = { frames = frames, cinematic = cinematic } }
   return parts
 end
-
-local function isHoOhKind(kind)
-  return kind == "ho_oh_appearance" or kind:match("^ho_oh_cinematic_") ~= nil
-end
-
-local LUGIA_MODEL_CLIPS = {
-  { key = "eyeGlimmer", clips = 3 },
-  { key = "cinematic.lugia.0", clips = 4 },
-  { key = "cinematic.lugia.1", clips = 1 },
-}
 
 local function validLugiaDefinition()
   local models = {}
@@ -278,6 +273,10 @@ local function validLugiaDefinition()
     models[index] = model
   end
   return { models = models }
+end
+
+local function isHoOhKind(kind)
+  return kind == "ho_oh_appearance" or kind:match("^ho_oh_cinematic_") ~= nil
 end
 
 local function cache(model, present, marker, omitLifecycle, omitPlacement, extra)
@@ -491,7 +490,10 @@ T.tests["requires all three Celebi clip selectors and their exact semantic bindi
     ["grass.mesh"] = true,
   }
   local definition = validCelebiDefinition()
-  local ready, err = FieldEffectAssetCache.isReady(cache(validModel(), present, nil, nil, nil, { celebiDefinition = definition }), EXPECTED_MARKER)
+  local ready, err = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, nil, nil, nil, { celebiDefinition = definition }),
+    EXPECTED_MARKER
+  )
   Assert.isTrue(ready, tostring(err))
 
   local missingSrt = validCelebiDefinition()
@@ -723,6 +725,7 @@ T.tests["rejects trainer reveal with missing or malformed placement"] = function
   Assert.isFalse(malformed, "trainer reveal with non-finite placement must not be ready")
 end
 
+local SURF_MARKER = "field-effect-cache-v16:rom:dep"
 local SURF_MARKER = "field-effect-cache-v16:rom:dep"
 local SURF_INDEX_SCHEMA = "g4-field-effect-index-v4"
 T.tests["requires the complete generated Pokémon Center healing definition"] = function()
@@ -1149,7 +1152,10 @@ local PRESENT = {
 }
 
 local function readyWithHoOhParts(parts)
-  return FieldEffectAssetCache.isReady(cache(validModel(), PRESENT, nil, nil, nil, { hoOhParts = parts }), EXPECTED_MARKER)
+  return FieldEffectAssetCache.isReady(
+    cache(validModel(), PRESENT, nil, nil, nil, { hoOhParts = parts }),
+    EXPECTED_MARKER
+  )
 end
 
 T.tests["the published Ho-Oh parts make the cache ready"] = function()

@@ -3338,6 +3338,30 @@ function FieldRuntime:composeTrainers(compiled)
   })
 end
 
+-- Names one trainer template's class without materializing its party:
+-- battle-music selection reads the class while the factory keeps owning
+-- party builds and their randomness. Unknown trainers answer nil so the
+-- caller keeps the ordinary default instead of guessing.
+---@param key string|integer trainer identity behind the lookup
+---@return string? trainer class key, nil for unknown trainers or before composition
+function FieldRuntime:trainerClassFor(key)
+  local catalog = self._trainerCatalog
+  if catalog == nil then
+    return nil
+  end
+  local ok, template = pcall(function()
+    local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
+    return HgssTrainerCatalog.trainer(catalog, key)
+  end)
+  if not ok or type(template) ~= "table" then
+    return nil
+  end
+  if type(template.trainerClass) == "string" and template.trainerClass ~= "" then
+    return template.trainerClass --[[@as string]]
+  end
+  return nil
+end
+
 -- Runs one encounter attempt over the composed service. Without a service
 -- (or while a battle or preparation owns the field) there is nothing to
 -- attempt. A prepared encounter is held exactly once under its attempt
@@ -3609,13 +3633,30 @@ function FieldRuntime:_stepEncounterMethod(map, player)
   if behavior == nil then
     return nil
   end
-  if MetatileBehavior.isTallGrass(behavior) or MetatileBehavior.isVeryTallGrass(behavior) then
+  if self:_isSurfing() then
+    if self:_isSurfEncounterWater(behavior) then
+      return "surf"
+    end
+    return nil
+  end
+  if self:_isSurfEncounterWater(behavior) then
+    return nil
+  end
+  if MetatileBehavior.canGenerateWalkingEncounters(behavior) then
     return "grass"
   end
-  if MetatileBehavior.isSurfableWater(behavior) and self:_isSurfing() then
-    return "surf"
-  end
   return nil
+end
+
+-- Whether one arrival behavior carries surf encounters: the river and sea
+-- tiles behind the shared surfable-water predicate plus the two further
+-- source surfable-encounter water behaviors (pokeheartgold
+-- src/metatile_behavior.c). Surfable water without the encounter flag
+-- never encounters, and water on foot never reads the grass tables.
+---@param behavior integer? arrival metatile behavior under inspection
+---@return boolean true for surf-encounter water
+function FieldRuntime:_isSurfEncounterWater(behavior)
+  return MetatileBehavior.isSurfableWater(behavior) or behavior == 18 or behavior == 42
 end
 
 ---@return boolean true while the avatar surfs

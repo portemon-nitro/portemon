@@ -355,7 +355,21 @@ function MoveExecution.step(ctx, node)
       key = frame.executingMove --[[@as string]],
     }))
   end
-  return handler(ctx, frame)
+  -- The executing strike owns the facts its emissions capture: the
+  -- authoritative user, sampled recipients, and requested and executed
+  -- move identities travel on the context for exactly this step, then
+  -- the previous pin returns so resumed frames keep their own scope.
+  -- Pinning draws nothing and mutates nothing; emissions only read it.
+  local saved = ctx:moveScope()
+  ctx:setMoveScope({
+    actor = frame.actor,
+    targets = frame.targets,
+    requestedMove = frame.requestedMove,
+    executingMove = frame.executingMove,
+  })
+  local result = handler(ctx, frame)
+  ctx:setMoveScope(saved)
+  return result
 end
 
 return MoveExecution

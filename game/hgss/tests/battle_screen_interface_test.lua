@@ -5,7 +5,6 @@
 -- draw-state restoring render smoke through the recording boundary.
 
 local Assert = require("tests.support.Assert")
-local StubLease = require("tests.support.StubLease")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -16,6 +15,7 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 
 local T = {}
 local TICK = 1 / 60
@@ -91,8 +91,10 @@ end
 ---@param mode string controller mode under test driving
 ---@return table internal semantic snapshot for resolvers and renderers
 local function view(mode)
+  local manifest = BattlePresentationManifestFixture.manifest()
   return {
     mode = mode,
+    battleKind = "wild",
     selection = "fight",
     armed = nil,
     requestId = 7,
@@ -109,6 +111,17 @@ local function view(mode)
     foeCount = 1,
     arrowFrame = 0,
     childIntent = nil,
+    slotGeometry = manifest.battlefield.slots,
+    hudSections = { player = manifest.hud.player, enemy = manifest.hud.enemy },
+    gaugeFamilies = { player = manifest.hud.partyGauges[2], enemy = manifest.hud.partyGauges[1] },
+    menuLayers = {
+      command = manifest.menus.command.screens,
+      moves = manifest.menus.moves.screens,
+      target = manifest.menus.target.screens,
+      twoOption = manifest.menus.twoOption.screens,
+    },
+    hudPatchSpans = manifest.hud.patchSpans,
+    effectInstances = {},
   }
 end
 
@@ -168,6 +181,33 @@ function T.command_anchors_map_gaps_and_outside_do_not()
   )
 end
 
+function T.learn_confirmation_uses_the_native_two_option_scope_and_hit_regions()
+  local session = ApplicationPresentation.new(BattleScreenInterface.defaults(), nil)
+  local childView = view("child")
+  childView.childView = {
+    kind = "learn",
+    interactive = true,
+    confirmation = { kind = "replace", slot = 0 },
+    rows = { { id = "learn:0", label = "TACKLE" } },
+  }
+  local plan = session:resolve(dualMeasurement(), childView)
+  Assert.equal(plan.content.layout, "two-option", "a staged learning confirmation selects its source menu")
+  local top = plan.mapInput(
+    { type = "pointer_down", pointerId = "learn-confirm", x = 8, y = 40 },
+    childView,
+    plan
+  )
+  Assert.equal(top.type, "child_press", "the top source option retains child activation semantics")
+  Assert.equal(top.control.id, "confirm", "the top Forget/Yes option confirms the staged learning action")
+  local bottom = plan.mapInput(
+    { type = "pointer_down", pointerId = "learn-back", x = 8, y = 112 },
+    childView,
+    plan
+  )
+  Assert.equal(bottom.type, "child_press", "the bottom source option retains child activation semantics")
+  Assert.equal(bottom.control.id, "back", "the bottom Keep/No option returns to the learning list")
+end
+
 -- Move anchors map per slot with their cancel region; target anchors map
 -- per admitted target.
 function T.move_and_target_anchors_map()
@@ -191,6 +231,132 @@ function T.move_and_target_anchors_map()
     targets.mapInput({ type = "pointer_down", pointerId = "touch:0", x = 60, y = 116 }, view("target"), targets)
   Assert.notNil(aimed, "the admitted target anchor activates")
   Assert.equal(aimed.control.scope, "target", "target anchors carry the target scope")
+end
+
+-- Native target hitboxes are independent of the icon centers. Their
+-- source inclusive edges become half-open rectangles, leaving the center
+-- gutter and the edges between upper/lower slots unclaimed.
+function T.target_hitboxes_follow_the_native_source_bounds()
+  local session = ApplicationPresentation.new(BattleScreenInterface.defaults(), nil)
+  local plan = resolve(session, dualMeasurement(), "target")
+  local snapshot = view("target")
+  local function targetAt(x, y)
+    local mapped = plan.mapInput({ type = "pointer_down", pointerId = "target-bounds", x = x, y = y }, snapshot, plan)
+    return mapped ~= nil and mapped.control.id or nil
+  end
+
+  for _, sample in ipairs({
+    { x = 0, y = 88, target = "target:0" },
+    { x = 120, y = 100, target = "target:0" },
+    { x = 120, y = 144, target = "target:0" },
+    { x = 136, y = 8, target = "target:1" },
+    { x = 255, y = 8, target = "target:1" },
+    { x = 136, y = 80, target = "target:1" },
+    { x = 255, y = 80, target = "target:1" },
+    { x = 136, y = 88, target = "target:2" },
+    { x = 255, y = 88, target = "target:2" },
+    { x = 136, y = 144, target = "target:2" },
+    { x = 255, y = 144, target = "target:2" },
+    { x = 0, y = 8, target = "target:3" },
+    { x = 120, y = 8, target = "target:3" },
+    { x = 0, y = 80, target = "target:3" },
+    { x = 120, y = 80, target = "target:3" },
+  }) do
+    Assert.equal(targetAt(sample.x, sample.y), sample.target, "the source target rectangle includes its edge")
+  end
+
+  for _, point in ipairs({
+    { x = 121, y = 100 },
+    { x = 135, y = 100 },
+    { x = 100, y = 7 },
+    { x = 100, y = 81 },
+    { x = 100, y = 87 },
+    { x = 100, y = 145 },
+    { x = 136, y = 81 },
+    { x = 255, y = 81 },
+  }) do
+    Assert.isNil(targetAt(point.x, point.y), "gaps between source target regions claim no adjacent slot")
+  end
+  Assert.isNil(targetAt(0, 87), "the upper edge before a target row is excluded")
+  Assert.isNil(targetAt(121, 100), "the first pixel after a target row is excluded")
+end
+
+-- The source touch table uses adjacent command and move ranges and four
+-- independently admitted target ranges. Each sampled point resolves to
+-- at most one semantic control, including the pixels shared by boundaries.
+function T.source_hit_ranges_have_single_control_ownership()
+  local session = ApplicationPresentation.new(BattleScreenInterface.defaults(), nil)
+  local function assertRange(mode, candidates, samples)
+    local plan = resolve(session, dualMeasurement(), mode)
+    local snapshot = view(mode)
+    snapshot.targetCandidates = candidates
+    for _, sample in ipairs(samples) do
+      local mapped =
+        plan.mapInput({ type = "pointer_down", pointerId = "source-range", x = sample.x, y = sample.y }, snapshot, plan)
+      if sample.control == nil then
+        Assert.isNil(mapped, mode .. " leaves source gutter/outside pixels unclaimed")
+      else
+        Assert.notNil(mapped, mode .. " admits its source range")
+        Assert.equal(mapped.control.id, sample.control, mode .. " maps one source pixel to one control")
+        Assert.equal(mapped.type, "battle_press", mode .. " produces one press edge")
+      end
+    end
+  end
+
+  assertRange("command", nil, {
+    { x = 0, y = 24, control = "fight" },
+    { x = 255, y = 143, control = "fight" },
+    { x = 0, y = 144, control = "bag" },
+    { x = 79, y = 191, control = "bag" },
+    { x = 176, y = 144, control = "pokemon" },
+    { x = 255, y = 191, control = "pokemon" },
+    { x = 88, y = 152, control = "run" },
+    { x = 167, y = 191, control = "run" },
+    { x = 80, y = 160 },
+    { x = 168, y = 160 },
+    { x = 0, y = 23 },
+  })
+
+  assertRange("moves", nil, {
+    { x = 0, y = 24, control = "move:0" },
+    { x = 127, y = 79, control = "move:0" },
+    { x = 128, y = 24, control = "move:1" },
+    { x = 255, y = 79, control = "move:1" },
+    { x = 0, y = 88, control = "move:2" },
+    { x = 127, y = 143, control = "move:2" },
+    { x = 128, y = 88, control = "move:3" },
+    { x = 255, y = 143, control = "move:3" },
+    { x = 8, y = 152, control = "cancel" },
+    { x = 247, y = 191, control = "cancel" },
+    { x = 128, y = 80 },
+    { x = 0, y = 144 },
+  })
+
+  local candidates = {}
+  for index = 0, 3 do
+    candidates[#candidates + 1] = {
+      id = "target:" .. index,
+      position = index + 1,
+      combatant = index + 1,
+      enabled = true,
+      name = "FOE " .. index,
+      level = 20,
+    }
+  end
+  assertRange("target", candidates, {
+    { x = 0, y = 88, control = "target:0" },
+    { x = 120, y = 144, control = "target:0" },
+    { x = 136, y = 8, control = "target:1" },
+    { x = 255, y = 80, control = "target:1" },
+    { x = 136, y = 88, control = "target:2" },
+    { x = 255, y = 144, control = "target:2" },
+    { x = 0, y = 8, control = "target:3" },
+    { x = 120, y = 80, control = "target:3" },
+    { x = 121, y = 100 },
+    { x = 135, y = 100 },
+    { x = 100, y = 87 },
+    { x = 0, y = 87 },
+  })
 end
 
 -- A pair without room takes the compact pane instead of a squeezed
@@ -227,6 +393,24 @@ function T.render_restores_borrowed_state()
   local plan = resolve(session, dualMeasurement(), "command")
   local graphics = FakeGraphics.new({})
   local images = {}
+  local function image(key)
+    if images[key] == nil then
+      images[key] = {
+        handle = key,
+        getDimensions = function()
+          return 80, 80
+        end,
+        getWidth = function()
+          return 80
+        end,
+        getHeight = function()
+          return 80
+        end,
+        setFilter = function() end,
+      }
+    end
+    return images[key]
+  end
   local resources = {
     graphics = graphics,
     text = {
@@ -240,14 +424,7 @@ function T.render_restores_borrowed_state()
     },
     assets = {
       drawable = function(_, key)
-        if images[key] == nil then
-          images[key] = StubLease.new(key)
-        end
-        local stored = images[key]
-        if key:sub(1, 4) == "mon:" and stored.lease == nil then
-          return { lease = stored, quad = { handle = "quad:" .. key } }
-        end
-        return stored
+        return image(key)
       end,
     },
     frameKey = "default",
@@ -317,7 +494,19 @@ local function openInterfaceRig(opts)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = StubLease.new(key)
+      rig.assets.images[key] = {
+        handle = key,
+        getDimensions = function()
+          return 80, 80
+        end,
+        getWidth = function()
+          return 80
+        end,
+        getHeight = function()
+          return 80
+        end,
+        setFilter = function() end,
+      }
     end
     local stored = rig.assets.images[key]
     if key:sub(1, 4) == "mon:" then
@@ -331,12 +520,7 @@ local function openInterfaceRig(opts)
   local launchId = opts.launchId or "launch-pointer-cancel"
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = BattlePresentationManifestFixture.manifest(),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -458,9 +642,28 @@ end
 function T.cancelled_and_refused_pointer_edges_spend_nothing()
   local rig = openInterfaceRig({ launchId = "launch-pointer-cancel-local" })
   Assert.equal(rig.screen:status().mode, "command", "the pointer decision opens")
+  for _ = 1, 20 do
+    if rig.screen:view().menuInputEnabled then
+      break
+    end
+    rig.pump(1)
+  end
   rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "moves", "Fight opens move selection")
+  for _ = 1, 20 do
+    rig.pump(1)
+    if rig.screen:status().mode == "moves" and rig.screen:view().menuInputEnabled then
+      break
+    end
+  end
+  Assert.equal(
+    rig.screen:status().mode,
+    "moves",
+    "Fight opens move selection (got "
+      .. rig.screen:status().mode
+      .. ", gate "
+      .. tostring(rig.screen:view().menuInputEnabled)
+      .. ")"
+  )
   Assert.equal(rig.screen:view().selection, "move:0", "move selection rests on the first slot")
   rig.screen:input({ { type = "pointer_down", pointerId = "touch:disabled", x = 192, y = 236 } })
   rig.screen:input({ { type = "pointer_up", pointerId = "touch:disabled", x = 192, y = 236 } })
@@ -611,7 +814,19 @@ local function openChildRig(opts)
       rig.assets.images = {}
     end
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = StubLease.new(key)
+      rig.assets.images[key] = {
+        handle = key,
+        getDimensions = function()
+          return 80, 80
+        end,
+        getWidth = function()
+          return 80
+        end,
+        getHeight = function()
+          return 80
+        end,
+        setFilter = function() end,
+      }
     end
     local stored = rig.assets.images[key]
     if key:sub(1, 4) == "mon:" then
@@ -650,12 +865,7 @@ local function openChildRig(opts)
   }
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = BattlePresentationManifestFixture.manifest(),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -700,7 +910,7 @@ local function driveToMode(rig, mode)
     if status.mode == "failed" then
       error("the battle screen failed while driving to " .. mode .. ": " .. tostring(status.error), 0)
     end
-    if status.mode == mode then
+    if status.mode == mode and (mode ~= "command" and mode ~= "moves" or rig.screen:view().menuInputEnabled) then
       return status
     end
   end
@@ -727,6 +937,7 @@ end
 
 ---@param rig table live screen rig under test driving, resting on its command prompt
 local function openBagFromCommand(rig)
+  driveToMode(rig, "command")
   press(rig, { type = "navigate", direction = "down" })
   press(rig, { type = "navigate", direction = "left" })
   press(rig, { type = "confirm" })

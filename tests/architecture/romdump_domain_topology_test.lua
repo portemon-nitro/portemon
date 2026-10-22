@@ -70,9 +70,11 @@ local DOMAINS = {
     "MonPresentationCompiler",
   },
   battle = {
+    "BattleAnimationCompiler",
     "BattleDataCompiler",
     "BattlePresentationCompiler",
     "TrainerCatalogCompiler",
+    "TransitionCellNormalizer",
   },
   encounters = {
     "EncounterCatalogCompiler",

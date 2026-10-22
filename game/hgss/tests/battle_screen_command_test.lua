@@ -6,7 +6,6 @@
 -- Synthetic fixtures only.
 
 local Assert = require("tests.support.Assert")
-local StubLease = require("tests.support.StubLease")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -19,22 +18,44 @@ local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
-local TICK = 1 / 60
-
--- Portrait drawables pair their stub image with a stub cell quad,
--- matching the production image-plus-quad handle behind draws while
--- keeping the string identity assertions on the stub image intact.
-local function stubPortrait(key)
-  if key:sub(1, 4) == "mon:" then
-    return { lease = StubLease.new(key), quad = { handle = "quad:" .. key } }
-  end
-  return StubLease.new(key)
-end
+local TICK = 1 / 30
 
 local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
 local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
 local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+
+local function battleManifest()
+  return BattlePresentationManifestFixture.manifest()
+end
+
+local function fakeImageWidth(image)
+  return image.width
+end
+
+local function fakeImageHeight(image)
+  return image.height
+end
+
+local function fakeImageDimensions(image)
+  return image.width, image.height
+end
+
+local function fakeImageSetFilter() end
+
+local function fakeDrawable(key, width, height)
+  local hudImage = key:match("^hud:") ~= nil
+  return {
+    handle = key,
+    width = width or (hudImage and 1648 or 80),
+    height = height or (hudImage and 8 or 80),
+    getWidth = fakeImageWidth,
+    getHeight = fakeImageHeight,
+    getDimensions = fakeImageDimensions,
+    setFilter = fakeImageSetFilter,
+  }
+end
 
 ---@param species string
 ---@param level integer
@@ -49,7 +70,7 @@ local function foeRecord(species, level, seed)
 end
 
 ---@return table live party owner holding the described pair
-local function makeParty(leadSpec, reserveSpec, leadPp)
+local function makeParty(leadSpec, reserveSpec, leadPp, extraLeadMove)
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
   local catalog = CatalogFixture.makeCatalog()
   local owner = HgssMonService.new({
@@ -78,6 +99,9 @@ local function makeParty(leadSpec, reserveSpec, leadPp)
       pp = leadPp
     end
     record.moves = { { move = "TACKLE", pp = pp, ppUps = 0 } }
+    if index == 1 and extraLeadMove ~= nil then
+      record.moves[2] = extraLeadMove
+    end
     Assert.isTrue(owner:addMon(record), "the command path needs its live party member")
   end
   return owner
@@ -123,6 +147,12 @@ local function recordingText()
   function text.drawText(content, x, y)
     text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y }
   end
+  function text.drawTextForRole(role, content, x, y, colors)
+    text.draws[#text.draws + 1] = { role = role, content = tostring(content), x = x, y = y, colors = colors }
+  end
+  function text.measureForRole(_, content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
   return text
 end
 
@@ -151,7 +181,20 @@ local function openRig(opts)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = stubPortrait(key)
+      local isTypeIcon = key:match("^battle:move%-type%-icon:") ~= nil
+      local width = isTypeIcon and 64 or key == "shadow" and 64 or 80
+      local height = isTypeIcon and 16 or key == "shadow" and 64 or 80
+      rig.assets.images[key] = {
+        handle = key,
+        width = width,
+        height = height,
+        getWidth = fakeImageWidth,
+        getHeight = fakeImageHeight,
+        getDimensions = function()
+          return width, height
+        end,
+        setFilter = fakeImageSetFilter,
+      }
     end
     return rig.assets.images[key]
   end
@@ -161,7 +204,8 @@ local function openRig(opts)
   local party = makeParty(
     { species = "EEVEE", level = 20, seed = 0x33333333 },
     { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
-    opts.leadPp
+    opts.leadPp,
+    opts.extraLeadMove
   )
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local launchId = opts.launchId or "launch-screen-command"
@@ -184,12 +228,7 @@ local function openRig(opts)
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = opts.manifest or battleManifest(),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -235,11 +274,193 @@ local function driveToMode(rig, mode)
     if status.mode == "failed" then
       error("the battle screen failed while driving to " .. mode .. ": " .. tostring(status.error), 0)
     end
-    if status.mode == mode then
+    if status.mode == mode and (mode ~= "command" and mode ~= "moves" or rig.screen:view().menuInputEnabled) then
       return status
     end
   end
   error("the battle screen never reached " .. mode, 0)
+end
+
+function T.screen_exposes_health_task_progress_and_completion_to_controller_owners()
+  local rig = openRig()
+  local key = "health:activation-1:hit-1"
+  rig.screen:startHealthGaugeTask(key, { maximum = 64, current = 48, delta = 32, amount = 1, sideType = 0 })
+  Assert.isTrue(rig.screen:gaugeTaskActive(key), "the controller can observe its native gauge task as active")
+  Assert.equal(rig.screen:gaugeTaskValue(key), 48, "the first frame begins at the event-time checkpoint")
+  local initial = rig.screen:gaugeTaskPatchTiles(key, 0)
+  Assert.equal(#initial, 6, "the task exports all source health tile writes")
+  Assert.deepEqual(
+    { initial[1].tile, initial[1].sourceTile },
+    { 97, 10 },
+    "initial health patches use the source side span"
+  )
+  Assert.deepEqual(
+    rig.screen:_snapshot().gaugePatchTiles[0].health[1],
+    initial[1],
+    "the screen snapshot sends task character writes to the production renderer"
+  )
+  rig.screen:updateFixed(TICK)
+
+  Assert.equal(rig.screen:gaugeTaskValue(key), 47, "one accepted source tick advances the health task once")
+  for _ = 1, 31 do
+    rig.screen:updateFixed(TICK)
+  end
+  Assert.equal(rig.screen:gaugeTaskValue(key), 16, "the task reaches its supplied hit checkpoint")
+  Assert.isFalse(rig.screen:gaugeTaskActive(key), "the task exposes its source completion gate")
+  rig.screen:completeGaugeTask(key)
+  Assert.isNil(
+    rig.screen:_snapshot().gaugePatchTiles[0],
+    "completion removes the task override after its endpoint was observed"
+  )
+  rig.screen:dispose()
+end
+
+function T.transient_effect_picture_flows_through_screen_snapshot_and_picture_pass()
+  local rig = openRig()
+  local effect = rig.screen:allocateEffect("animation-picture")
+  local applied = rig.screen:setEffectPicture(effect.id, {
+    assetKey = "effect:staged-overlay",
+    selector = "PIKACHU/0/male/plain/front",
+    centerX = 128,
+    centerY = 92,
+    zCenter = -120,
+    width = 32,
+    height = 24,
+    alpha = 0.75,
+  })
+  Assert.isTrue(applied, "the staged selector is available before the effect becomes visible")
+
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local function draw()
+    local graphics = FakeGraphics.new({})
+    BattleRenderer.drawPane({
+      graphics = graphics,
+      text = rig.text,
+      windows = rig.windows,
+      assets = rig.screen._assets,
+      doublesHud = rig.screen._manifest.hud.doubles,
+      frameKey = rig.screen._assets:frameKey(),
+      sceneImageKey = rig.screen._assets:sceneImage(),
+    }, rig.screen:_snapshot(), "detail")
+    return graphics
+  end
+
+  local first = draw()
+  Assert.equal(
+    rig.screen:_snapshot().effectInstances[1].sourceKey,
+    "animation-picture",
+    "the immutable screen view retains the source route key"
+  )
+  local effectDraw = nil
+  for _, entry in ipairs(first.draws) do
+    if entry.meshTexture ~= nil and entry.meshTexture.handle == "effect:staged-overlay" then
+      effectDraw = entry
+    end
+  end
+  Assert.isTrue(effectDraw ~= nil, "an allocated staged effect reaches the native picture pass")
+  Assert.equal(effectDraw.color[4], 0.75, "the transient effect alpha reaches the picture mesh")
+
+  rig.screen:updateFixed(TICK)
+  Assert.equal(rig.screen:_snapshot().effectInstances[1].age, 1, "the screen snapshot exposes source-ticked effect age")
+  local demandedSelector = false
+  for _, selector in ipairs(rig.assets.prepared[#rig.assets.prepared].pages) do
+    demandedSelector = demandedSelector or selector == "PIKACHU/0/male/plain/front"
+  end
+  Assert.isTrue(demandedSelector, "the changed effect selector enters the launch resource demand before rendering")
+  local movedApplied = rig.screen:setEffectPicture(effect.id, {
+    assetKey = "effect:staged-overlay",
+    selector = "PIKACHU/0/male/plain/front",
+    centerX = 136,
+    centerY = 92,
+    zCenter = -120,
+    width = 32,
+    height = 24,
+    alpha = 0.75,
+  })
+  Assert.isTrue(movedApplied, "source-ticked effect updates retain their ready staged resource")
+  local moved = draw()
+  local movedDraw = nil
+  for _, entry in ipairs(moved.draws) do
+    if entry.meshTexture ~= nil and entry.meshTexture.handle == "effect:staged-overlay" then
+      movedDraw = entry
+    end
+  end
+  Assert.equal(
+    movedDraw.meshVertices[1][1] - effectDraw.meshVertices[1][1],
+    8,
+    "source updates move the staged effect mesh"
+  )
+  local resolveDrawable = rig.assets.drawable
+  rig.assets.drawable = function(key)
+    if key == "effect:pending-replacement" then
+      return nil
+    end
+    return resolveDrawable(key)
+  end
+  local replaced = rig.screen:setEffectPicture(effect.id, {
+    assetKey = "effect:pending-replacement",
+    selector = "PIKACHU/0/male/plain/front",
+    centerX = 180,
+    centerY = 92,
+    zCenter = -100,
+    width = 32,
+    height = 24,
+    alpha = 1,
+  })
+  Assert.isFalse(replaced, "an unavailable replacement remains pending")
+  Assert.equal(
+    rig.screen:_snapshot().effectInstances[1].picture.assetKey,
+    "effect:staged-overlay",
+    "a pending replacement preserves the last-good staged picture"
+  )
+  rig.assets.drawable = resolveDrawable
+  rig.screen:releaseEffect(effect.id)
+  local released = draw()
+  for _, entry in ipairs(released.draws) do
+    Assert.isFalse(
+      entry.meshTexture ~= nil and entry.meshTexture.handle == "effect:staged-overlay",
+      "released effects leave the production picture pass"
+    )
+  end
+  rig.screen:dispose()
+  rig.screen:dispose()
+  Assert.equal(
+    rig.assets.released["effect:staged-overlay"],
+    1,
+    "screen teardown releases the staged effect drawable exactly once"
+  )
+end
+
+function T.form_picture_state_expands_the_owned_portrait_asset_demand()
+  local rig = openRig()
+  local battler = {
+    combatant = 1,
+    activation = "transform-1",
+    side = 1,
+    position = 0,
+    visible = true,
+    portraitSelector = "LEAD/0/male/plain/back",
+  }
+  rig.screen:startPictureEntry(battler, 8)
+  rig.screen:applyPictureState(battler, {
+    portraitSelector = "EEVEE/f0/male/plain/front",
+    substitute = true,
+  })
+  rig.screen:updateFixed(TICK)
+  local pages = rig.assets.prepared[#rig.assets.prepared].pages
+  local found = false
+  for _, selector in ipairs(pages) do
+    if selector == "EEVEE/f0/male/plain/front" then
+      found = true
+    end
+  end
+  Assert.isTrue(found, "form visual changes add their exact portrait selector to the owned demand")
+  Assert.deepEqual(
+    rig.screen:restorePictureState(battler),
+    { portraitSelector = "LEAD/0/male/plain/back" },
+    "form restoration returns the original activation selector"
+  )
+  rig.screen:dispose()
 end
 
 ---@param rig table live screen rig under test driving
@@ -300,7 +521,7 @@ function T.command_walking_with_reentrant_edges_seals_once()
   driveToMode(rig, "command")
   assert(rig.screen:status().request ~= nil, "the prompt mirrors its request")
   rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
+  driveToMode(rig, "moves")
   Assert.equal(rig.screen:status().mode, "moves", "confirming Fight opens move selection")
   rig.screen:input({ { type = "confirm" } })
   rig.pump(1)
@@ -311,6 +532,292 @@ function T.command_walking_with_reentrant_edges_seals_once()
   rig.pump(2)
   Assert.equal(#rig.submits, 1, "reentrant confirms while waiting seal nothing more")
   Assert.isNil(rig.screen:status().request, "the answered request is no longer mirrored as open")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- A second confirmation delivered in the same input batch cannot cross
+-- the native transition into the move menu and seal a choice that was
+-- not visible when the batch began.
+function T.command_transition_does_not_consume_a_second_confirmation()
+  local rig = openRig({ launchId = "launch-screen-transition-gate" })
+  driveToMode(rig, "command")
+  rig.screen:input({ { type = "confirm" }, { type = "confirm" } })
+  rig.pump(1)
+  Assert.notNil(rig.screen:status().request, "the same input batch keeps the decision open")
+  Assert.equal(#rig.submits, 0, "the same input batch cannot seal an unseen move")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- The native button feedback task moves its text two pixels upward while
+-- pressed. This checks the production screen's recorded text boundary
+-- against the source task's visible pressed frame.
+function T.pressed_command_label_uses_the_native_feedback_offset()
+  local rig = openRig({ launchId = "launch-native-pressed-command-label" })
+  driveToMode(rig, "command")
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:feedback", x = 128, y = 275 } })
+  rig.screen:updateFixed(TICK)
+  rig.text.draws = {}
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  local fight = nil
+  for _, entry in ipairs(rig.text.draws) do
+    if entry.content == "FIGHT" then
+      fight = entry
+      break
+    end
+  end
+  Assert.notNil(fight, "the pressed command keeps its native label visible")
+  Assert.equal(
+    fight.y,
+    81,
+    "the source pressed task moves the command label up two pixels from y=83 (observed " .. tostring(fight.y) .. ")"
+  )
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+function T.picture_form_apply_and_restore_reaches_the_production_compositor()
+  local manifest = battleManifest()
+  local rig = openRig({ manifest = manifest, launchId = "launch-picture-form-composition" })
+  driveToMode(rig, "command")
+  local initial = rig.screen:_snapshot()
+  local changedBattler = nil
+  local unrelatedBattler = nil
+  for _, battler in ipairs(initial.battlers) do
+    if battler.visible ~= false and battler.active ~= false and type(battler.activation) == "number" then
+      if battler.side == 1 then
+        changedBattler = battler
+      elseif battler.side == 2 then
+        unrelatedBattler = battler
+      end
+    end
+  end
+  Assert.isTrue(
+    changedBattler ~= nil and unrelatedBattler ~= nil,
+    "the composed scene has independent live activations"
+  )
+
+  local function installPortrait(selector, sourceHeight, firstFrame, xOffset)
+    local species, form, gender, variant, facing = selector:match("^([A-Z0-9_]+)/f(%d+)/([a-z]+)/([a-z]+)/([a-z]+)$")
+    if species == nil then
+      species, form, gender, variant = selector:match("^([A-Z0-9_]+)/f(%d+)/([a-z]+)/([a-z]+)$")
+      facing = "front"
+    end
+    Assert.isTrue(
+      species ~= nil and (facing == "front" or facing == "back"),
+      "test portrait uses a canonical source selector: " .. tostring(selector)
+    )
+    local key = "pokemon/" .. species .. "/form-" .. form .. "/" .. gender .. "/" .. facing
+    local steps = {}
+    steps[1] = { next = firstFrame, duration = 4, xOffset = xOffset, auxiliary = 0 }
+    steps[2] = { next = -1, duration = 0, xOffset = 0, auxiliary = 0 }
+    for index = 3, 10 do
+      steps[index] = { next = 0, duration = 0, xOffset = 0, auxiliary = 0 }
+    end
+    manifest.pictures.selectors[key] = {
+      species = species,
+      form = tonumber(form),
+      gender = gender,
+      facing = facing,
+      attributes = key,
+    }
+    manifest.pictures.attributes[key] = { height = sourceHeight, animation = { steps = steps } }
+    local function frame(handle)
+      return {
+        handle = handle,
+        getDimensions = function()
+          return 80, 80
+        end,
+      }
+    end
+    rig.assets.images["mon:" .. selector] = {
+      frames = { frame(selector .. "/frame-0"), frame(selector .. "/frame-1") },
+    }
+  end
+
+  installPortrait(changedBattler.portraitSelector, 2, 0, 0)
+  installPortrait(unrelatedBattler.portraitSelector, 4, 0, 0)
+  local changedSelector = "EEVEE/f1/male/plain/front"
+  installPortrait(changedSelector, 9, 1, 5)
+  local before = rig.screen:_snapshot()
+  initial = before
+  changedBattler = nil
+  unrelatedBattler = nil
+  for _, battler in ipairs(before.battlers) do
+    if battler.visible ~= false and battler.active ~= false and type(battler.activation) == "number" then
+      if battler.side == 1 then
+        changedBattler = battler
+      elseif battler.side == 2 then
+        unrelatedBattler = battler
+      end
+    end
+  end
+  local originalSelector = assert(changedBattler).portraitSelector
+  local unrelatedSelector = assert(unrelatedBattler).portraitSelector
+  changedBattler.shadowSize = 1
+  changedBattler.shadowVisible = true
+  changedBattler.shadowAffine = false
+  changedBattler.shadowHeight = 0
+  local originalPictureFrame = changedBattler.pictureFrame
+
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local function drawSnapshot(snapshot, graphics)
+    BattleRenderer.drawPane({
+      graphics = graphics,
+      text = rig.text,
+      windows = rig.windows,
+      assets = rig.screen._assets,
+      doublesHud = manifest.hud.doubles,
+      frameKey = rig.screen._assets:frameKey(),
+      sceneImageKey = rig.screen._assets:sceneImage(),
+    }, snapshot, "detail")
+  end
+  local function pictureDraw(graphics, handle)
+    for _, draw in ipairs(graphics.draws) do
+      if draw.meshTexture ~= nil and draw.meshTexture.handle == handle then
+        return draw
+      end
+    end
+    error("the production picture pass draws " .. handle, 0)
+  end
+
+  local beforeGraphics = FakeGraphics.new({})
+  drawSnapshot(initial, beforeGraphics)
+  local originalFrame = rig.assets.images["mon:" .. originalSelector].frames[originalPictureFrame + 1]
+  local unrelatedFrame = rig.assets.images["mon:" .. unrelatedSelector].frames[1]
+  local beforeChangedDraw = pictureDraw(beforeGraphics, originalFrame.handle)
+  local beforeUnrelatedDraw = pictureDraw(beforeGraphics, unrelatedFrame.handle)
+
+  rig.screen:applyPictureState(changedBattler, {
+    portraitSelector = changedSelector,
+    rotationX = 0x1000,
+    rotationY = 0x2000,
+    rotationZ = 0x3000,
+    affineMode = true,
+    affineWidth = 0x180,
+    affineHeight = 0x80,
+    pictureTint = { r = 0.5, g = 1, b = 0.25, a = 0.75 },
+    polygonAlpha = 15,
+    shadowSize = 2,
+    shadowAffine = true,
+    shadowHeight = 3,
+    shadowTint = { r = 1, g = 0.5, b = 0.25, a = 1 },
+  })
+  local transformed = rig.screen:_snapshot()
+  local transformedBattler = nil
+  for _, battler in ipairs(transformed.battlers) do
+    if battler.combatant == changedBattler.combatant and battler.activation == changedBattler.activation then
+      transformedBattler = battler
+    end
+  end
+  Assert.isTrue(transformedBattler ~= nil, "the transformed activation remains in the screen snapshot")
+  Assert.equal(
+    transformedBattler.pictureFrame,
+    1,
+    "the form selector executes its authored frame: "
+      .. tostring(transformedBattler.pictureFrame)
+      .. ", height "
+      .. tostring(transformedBattler.sourceHeight)
+  )
+  Assert.equal(transformedBattler.sourceHeight, 9, "the form selector loads its own source height")
+  Assert.equal(transformedBattler.portraitSelector, changedSelector, "the scene snapshot carries the applied selector")
+  local transformedGraphics = FakeGraphics.new({})
+  drawSnapshot(transformed, transformedGraphics)
+  local transformedFrame = rig.assets.images["mon:" .. changedSelector].frames[2]
+  local transformedDraw = pictureDraw(transformedGraphics, transformedFrame.handle)
+  local unchangedDraw = pictureDraw(transformedGraphics, unrelatedFrame.handle)
+  local firstBefore, firstAfter = beforeChangedDraw.meshVertices[1], transformedDraw.meshVertices[1]
+  Assert.isTrue(
+    firstBefore[1] ~= firstAfter[1] or firstBefore[2] ~= firstAfter[2] or firstBefore[3] ~= firstAfter[3],
+    "authored affine changes alter the production picture vertices"
+  )
+  Assert.deepEqual(
+    transformedDraw.color,
+    { 0.5, 1, 0.25, 15 / 31 * 0.75 },
+    "picture palette tint and native polygon alpha reach the mesh"
+  )
+  local transformedUnrelated = nil
+  for _, battler in ipairs(transformed.battlers) do
+    if battler.combatant == unrelatedBattler.combatant and battler.activation == unrelatedBattler.activation then
+      transformedUnrelated = battler
+    end
+  end
+  Assert.equal(
+    transformedUnrelated.portraitSelector,
+    unrelatedBattler.portraitSelector,
+    "the unrelated activation keeps its source selector"
+  )
+  Assert.equal(
+    transformedUnrelated.pictureFrame,
+    unrelatedBattler.pictureFrame,
+    "the unrelated source frame is unchanged"
+  )
+  Assert.deepEqual(unchangedDraw.color, beforeUnrelatedDraw.color, "the unrelated picture palette is unchanged")
+  local shadowDraw = nil
+  for _, draw in ipairs(transformedGraphics.draws) do
+    if draw.meshTexture ~= nil and draw.meshTexture.handle == "shadow" then
+      shadowDraw = draw
+    end
+  end
+  Assert.isTrue(shadowDraw ~= nil, "the transformed native shadow reaches the same picture pass")
+  Assert.deepEqual(
+    shadowDraw.color,
+    { 1, 0.5, 0.25, 15 / 31 },
+    "the native shadow palette and polygon alpha reach its mesh"
+  )
+
+  local restoredPictureState = rig.screen:restorePictureState(changedBattler)
+  Assert.equal(restoredPictureState.shadowSize, 1, "the activation snapshot includes its native shadow size")
+  local restored = rig.screen:_snapshot()
+  local restoredBattler = nil
+  for _, battler in ipairs(restored.battlers) do
+    if battler.combatant == changedBattler.combatant and battler.activation == changedBattler.activation then
+      restoredBattler = battler
+    end
+  end
+  Assert.equal(
+    restoredBattler.portraitSelector,
+    originalSelector,
+    "restore reinstates the activation's original selector"
+  )
+  Assert.equal(restoredBattler.pictureFrame, originalPictureFrame, "restore resumes its source frame")
+  Assert.equal(restoredBattler.sourceHeight, 2, "restore reinstates the original selector height")
+  Assert.equal(restoredBattler.shadowSize, 1, "restore reinstates the source shadow size")
+  Assert.equal(restoredBattler.shadowVisible, true, "restore reinstates source shadow visibility")
+  local restoredGraphics = FakeGraphics.new({})
+  drawSnapshot(restored, restoredGraphics)
+  local restoredFrame = rig.assets.images["mon:" .. originalSelector].frames[restoredBattler.pictureFrame + 1]
+  local restoredDraw = pictureDraw(restoredGraphics, restoredFrame.handle)
+  Assert.deepEqual(
+    restoredDraw.meshVertices,
+    beforeChangedDraw.meshVertices,
+    "restored picture geometry matches the original"
+  )
+  Assert.equal(
+    rig.screen:_snapshot().battlers[1].portraitSelector,
+    restored.battlers[1].portraitSelector,
+    "restoring one activation leaves the unrelated snapshot unchanged"
+  )
+  local restoredShadow = nil
+  for _, draw in ipairs(restoredGraphics.draws) do
+    if draw.meshTexture ~= nil and draw.meshTexture.handle == "shadow" then
+      restoredShadow = draw
+    end
+  end
+  Assert.isTrue(restoredShadow ~= nil, "restoring the mon retains its source shadow resource")
+  local originalShadow = nil
+  for _, draw in ipairs(beforeGraphics.draws) do
+    if draw.meshTexture ~= nil and draw.meshTexture.handle == "shadow" then
+      originalShadow = draw
+    end
+  end
+  Assert.isTrue(originalShadow ~= nil, "the original appearance carries its source shadow")
+  Assert.deepEqual(
+    restoredShadow.color,
+    originalShadow.color,
+    "restoring the mon restores its shadow palette and alpha"
+  )
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -399,7 +906,7 @@ function T.paired_second_tap_seals_the_focused_move_once()
     },
   }, 9010)
   rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
+  driveToMode(rig, "moves")
   Assert.equal(rig.screen:status().mode, "moves", "Fight opens move selection")
   Assert.equal(rig.screen:view().selection, "move:0", "move selection rests on the first slot")
   local x, y = 192, 236
@@ -451,7 +958,7 @@ function openSealingScreen(launchId, specs, requestId)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = stubPortrait(key)
+      rig.assets.images[key] = fakeDrawable(key)
     end
     return rig.assets.images[key]
   end
@@ -460,12 +967,7 @@ function openSealingScreen(launchId, specs, requestId)
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = battleManifest(),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -581,7 +1083,12 @@ function openSealingScreen(launchId, specs, requestId)
     if status.mode == "failed" then
       error("the sealing screen failed while driving to command: " .. tostring(status.error), 0)
     end
-    if status.mode == "command" and status.request ~= nil and status.request.requestId == requestId then
+    if
+      status.mode == "command"
+      and rig.screen:view().menuInputEnabled
+      and status.request ~= nil
+      and status.request.requestId == requestId
+    then
       return rig
     end
   end
@@ -632,6 +1139,42 @@ function T.fight_with_no_usable_move_refuses_without_spending()
   rig.screen:dispose()
 end
 
+-- The settled command root keeps its framed select prompt: the
+-- top-screen narration names the acting lead while the command menu
+-- stays open over it, so the view never goes chrome-only mid-decision.
+function T.command_root_keeps_the_framed_select_prompt()
+  local rig = openRig({})
+  driveToMode(rig, "command")
+  Assert.equal(
+    rig.screen:view().message,
+    "What will EEVEE do?",
+    "the settled command root keeps the framed select prompt"
+  )
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- A command actor with no displayed battler still fails loudly: the
+-- resolver never invents a fallback actor, so a genuinely dangling
+-- entry trips the integer-slot binding instead of painting over
+-- corrupt display facts.
+function T.dangling_command_actor_still_trips_the_slot_assert()
+  local rig = openRig({})
+  driveToMode(rig, "command")
+  rig.screen._request.actors[1].combatant = 999
+  rig.screen._menuGateTicks = 1
+  local ok, err = pcall(function()
+    return rig.screen:_snapshot()
+  end)
+  Assert.isFalse(ok, "the dangling actor never resolves into a snapshot")
+  Assert.isTrue(
+    tostring(err):find("integer source battle slot", 1, true) ~= nil,
+    "the failure names the slot binding: " .. tostring(err)
+  )
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
 -- Complete projected intents seal unchanged: side-wide and field-wide
 -- fragments never open a picker and never rewrite their target.
 function T.projected_side_and_field_targets_seal_unchanged()
@@ -647,7 +1190,7 @@ function T.projected_side_and_field_targets_seal_unchanged()
     },
   }, 9001)
   side.screen:input({ { type = "confirm" } })
-  side.pump(1)
+  driveToMode(side, "moves")
   Assert.equal(side.screen:status().mode, "moves", "Fight opens move selection for the side intent")
   side.screen:input({ { type = "confirm" } })
   side.pump(1)
@@ -660,7 +1203,7 @@ function T.projected_side_and_field_targets_seal_unchanged()
     { id = "move:0", slot = 0, move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, target = { kind = "field" } },
   }, 9002)
   field.screen:input({ { type = "confirm" } })
-  field.pump(1)
+  driveToMode(field, "moves")
   Assert.equal(field.screen:status().mode, "moves", "Fight opens move selection for the field intent")
   field.screen:input({ { type = "pointer_down", pointerId = "touch:field", x = 64, y = 237 } })
   field.screen:input({ { type = "pointer_up", pointerId = "touch:field", x = 64, y = 237 } })
@@ -862,6 +1405,7 @@ local function nativeView(overrides)
     },
     foeCount = 2,
     arrowFrame = 1,
+    hudPatchSpans = battleManifest().hud.patchSpans,
     childIntent = nil,
   }
   if overrides ~= nil then
@@ -886,9 +1430,32 @@ local function drawNativePane(paneId, view, layout, held, doublesHud)
     windows.calls[#windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end
   local missing = {}
+  local pictureRecords = {}
   for _, key in ipairs(held or {}) do
     missing[key] = true
   end
+  local drawView = {}
+  for key, value in pairs(view) do
+    drawView[key] = value
+  end
+  drawView.effectInstances = drawView.effectInstances or {}
+  local manifest = battleManifest()
+  drawView.slotGeometry = manifest.battlefield.slots
+  drawView.hudSections = { player = manifest.hud.player, enemy = manifest.hud.enemy }
+  drawView.gaugeFamilies = {
+    player = manifest.hud.partyGauges[2],
+    enemy = manifest.hud.partyGauges[1],
+  }
+  drawView.menuLayers = view.menuLayers
+    or {
+      command = manifest.menus.command.screens,
+      moves = manifest.menus.moves.screens,
+      target = manifest.menus.target.screens,
+      twoOption = manifest.menus.twoOption.screens,
+    }
+  drawView.hudSections.player.componentBase = 128
+  drawView.hudSections.enemy.componentBase = 128
+  drawView.hudPatchSpans = manifest.hud.patchSpans
   local resources = {
     graphics = graphics,
     text = text,
@@ -898,116 +1465,40 @@ local function drawNativePane(paneId, view, layout, held, doublesHud)
         if missing[key] then
           return nil
         end
-        return stubPortrait(key)
+        local width = key == "gauges:player" and 512 or key == "gauges:enemy" and 128 or nil
+        return fakeDrawable(key, width, 8)
+      end,
+      renderPictures = function(_, _, pictures)
+        pictureRecords = pictures
+        return { handle = "picture-pass" }
       end,
     },
     frameKey = "default",
     sceneImageKey = "scene:test",
-    doublesHud = doublesHud or {
-      playerLeft = {
-        cells = {
-          {
-            objs = {
-              {
-                tile = 6,
-                width = 8,
-                height = 8,
-                x = -5,
-                y = -7,
-                flipH = false,
-                flipV = false,
-                palette = 0,
-                affine = false,
-                disabled = false,
-                mosaic = false,
-                objMode = "normal",
-                colorMode = "16-color",
-              },
-            },
-          },
-        },
-        animation = { frames = { { cell = 0 } } },
-      },
-      playerRight = {
-        cells = {
-          {
-            objs = {
-              {
-                tile = 14,
-                width = 16,
-                height = 8,
-                x = -9,
-                y = -11,
-                flipH = false,
-                flipV = false,
-                palette = 0,
-                affine = false,
-                disabled = false,
-                mosaic = false,
-                objMode = "normal",
-                colorMode = "16-color",
-              },
-            },
-          },
-        },
-        animation = { frames = { { cell = 0 } } },
-      },
-      enemyLeft = {
-        cells = {
-          {
-            objs = {
-              {
-                tile = 22,
-                width = 8,
-                height = 16,
-                x = -13,
-                y = -17,
-                flipH = false,
-                flipV = false,
-                palette = 0,
-                affine = false,
-                disabled = false,
-                mosaic = false,
-                objMode = "normal",
-                colorMode = "16-color",
-              },
-            },
-          },
-        },
-        animation = { frames = { { cell = 0 } } },
-      },
-      enemyRight = {
-        cells = {
-          {
-            objs = {
-              {
-                tile = 30,
-                width = 16,
-                height = 16,
-                x = -19,
-                y = -23,
-                flipH = false,
-                flipV = false,
-                palette = 0,
-                affine = false,
-                disabled = false,
-                mosaic = false,
-                objMode = "normal",
-                colorMode = "16-color",
-              },
-            },
-          },
-        },
-        animation = { frames = { { cell = 0 } } },
-      },
-    },
+    doublesHud = doublesHud or manifest.hud.doubles,
   }
   local content = {}
+  for _, section in pairs(resources.doublesHud) do
+    section.componentBase = 128
+  end
   if paneId == "interaction" then
     content = { layout = layout or "command" }
   end
-  BattleRenderer.drawPane(resources, view, paneId, content)
-  return { graphics = graphics, text = text, windows = windows }
+  BattleRenderer.drawPane(resources, drawView, paneId, content)
+  return { graphics = graphics, text = text, windows = windows, pictures = pictureRecords }
+end
+
+---@param pictures table[] rendered source picture records
+---@param handle string staged drawable identity
+---@return table[] matching source picture records
+local function pictureRecordsOf(pictures, handle)
+  local found = {}
+  for _, record in ipairs(pictures) do
+    if type(record.image) == "table" and record.image.handle == handle then
+      found[#found + 1] = record
+    end
+  end
+  return found
 end
 
 ---@param graphics table recording graphics boundary under inspection
@@ -1021,6 +1512,42 @@ local function drawsOf(graphics, handle)
     end
   end
   return found
+end
+
+-- Bar tiles patch the mapped source tile origin of their own strip:
+-- 8-pixel quads across the 48-pixel bar row. Cell objects sample
+-- cell-bank tiles at their own compiled offsets, so the draw position
+-- tells bar tiles apart where the sampled index cannot.
+local BAR_ORIGINS = {
+  ["hud:enemy-left"] = { y = 20, ranges = { { 56, 104 } } },
+  ["hud:enemy-right"] = { y = 49, ranges = { { 50, 98 } } },
+  ["hud:player-left"] = { y = 103, ranges = { { 192, 240 } } },
+  ["hud:player-right"] = { y = 132, ranges = { { 198, 246 } } },
+  ["hud:enemy"] = { y = 40, ranges = { { 50, 98 } } },
+  ["hud:player"] = { y = 116, ranges = { { 200, 248 } } },
+}
+
+---@param handle string staged strip identity under inspection
+---@param entry table recorded draw under inspection
+---@return boolean true while the draw patches its strip bar row
+local function isBarTile(handle, entry)
+  local quad = entry.quad --[[@as table?]]
+  if type(quad) ~= "table" or quad.w ~= 8 or quad.h ~= 8 then
+    return false
+  end
+  local origin = BAR_ORIGINS[handle]
+  if origin == nil then
+    return false
+  end
+  if entry.y ~= origin.y then
+    return false
+  end
+  for _, range in ipairs(origin.ranges) do
+    if entry.x >= range[1] and entry.x < range[2] then
+      return true
+    end
+  end
+  return false
 end
 
 ---@param text table recording text boundary under inspection
@@ -1037,60 +1564,191 @@ local function textAt(text, content, x, y)
   return false
 end
 
+function T.native_health_box_bounds_long_names_and_neighbor_fields()
+  local view = nativeView()
+  view.battlers[1].name = "LONGNICKNAMEBEYONDNATIVEWIDTH"
+  local drawn = drawNativePane("detail", view, nil, {})
+  local name = nil
+  local level = nil
+  for _, entry in ipairs(drawn.text.draws) do
+    if entry.y == 92 and entry.x == 144 then
+      name = entry.content
+    elseif entry.content == "Lv9" then
+      level = entry
+    end
+  end
+  Assert.isTrue(type(name) == "string", "the health box draws its long nickname")
+  Assert.isTrue(8 * #name <= 88, "the measured nickname fits the authored 88-pixel name span")
+  Assert.isFalse(name == "LONGNICKNAMEBEYONDNATIVEWIDTH", "the native name span clips excess nickname glyphs")
+  Assert.isTrue(level ~= nil and level.x == 144 and level.y == 104, "level keeps its adjacent native field anchor")
+
+  local manifest = battleManifest()
+  local section = manifest.hud.player
+  local cell = section.cells[section.animation.frames[1].cell + 1]
+  local statusPatches =
+    require("libs.hgss.src.presentation.BattleScene").hudIconPatchTiles(manifest.hud.patchSpans, 0, "burn", nil, nil)
+  local statusLeft = math.huge
+  local statusRight = -math.huge
+  local statusY = nil
+  for _, patch in ipairs(statusPatches) do
+    for _, object in ipairs(cell.objs) do
+      local columns = object.width / 8
+      local offset = patch.tile - object.tile
+      if offset >= 0 and offset < columns * object.height / 8 then
+        local x = 144 + object.x + offset % columns * 8
+        local y = 92 + object.y + math.floor(offset / columns) * 8
+        statusLeft = math.min(statusLeft, x)
+        statusRight = math.max(statusRight, x + 8)
+        statusY = y
+        break
+      end
+    end
+  end
+  Assert.isTrue(statusLeft < statusRight and type(statusY) == "number", "status art resolves to native cell tiles")
+  Assert.isTrue(statusRight <= 144, "the native status span ends before the nickname span begins")
+  Assert.isTrue(statusY == 92, "status art stays on its source row beside the nickname")
+  Assert.isTrue(level.x == 144 and level.y == 104, "the level occupies its separate source row")
+end
+
 -- The HUD composites draw at their anchors with the compiled local
 -- offsets: two 64x64 objects each, banded into 8-pixel quads over the
 -- staged strip row. The enemy anchor stays unclamped offscreen.
 function T.native_hud_composites_draw_at_anchors_with_compiled_offsets()
   local drawn = drawNativePane("detail", nativeView({ arrowFrame = 0 }), nil, {})
-  local player = drawsOf(drawn.graphics, "hud:player")
-  Assert.equal(#player, 16, "the player composite draws two banded objects")
+  -- Cell bands share their strip with the bar tiles, so the composite
+  -- geometry reads the banded object draws while the tiles patch after.
+  local function bands(graphics, handle)
+    local found = {}
+    for _, entry in ipairs(drawsOf(graphics, handle)) do
+      if #found < 16 then
+        found[#found + 1] = entry
+      end
+    end
+    return found
+  end
+  local player = bands(drawn.graphics, "hud:player")
+  Assert.equal(#player, 16, "the player composite draws eight rows for each source object")
   Assert.equal(player[1].x, 128, "the player composite starts at anchor.x-64")
   Assert.equal(player[1].y, 84, "the player composite starts at anchor.y-32")
   Assert.equal(player[1].quad.x, 0, "the player composite opens its first tile")
-  Assert.equal(player[1].quad.w, 64, "the player bands span the object width")
-  Assert.equal(player[1].quad.imgW, 1024, "the player quads reference the staged strip width")
+  Assert.equal(player[1].quad.w, 64, "the player object preserves its 64-pixel source row")
+  Assert.equal(player[1].quad.imgW, 1648, "the player quads reference the staged strip width")
   Assert.equal(player[8].y, 140, "the player first object bands cover 64 pixels")
   Assert.equal(player[9].x, 192, "the player second object starts at anchor.x")
   Assert.equal(player[9].y, 84, "the player second object shares the row")
-  Assert.equal(player[9].quad.x, 256, "the player second object opens tile 32")
-  local enemy = drawsOf(drawn.graphics, "hud:enemy")
-  Assert.equal(#enemy, 16, "the enemy composite draws two banded objects")
+  Assert.equal(player[9].quad.x, 512, "the player second object opens tile 64")
+  local enemy = bands(drawn.graphics, "hud:enemy")
+  Assert.equal(#enemy, 16, "the enemy composite draws eight rows for each source object")
   Assert.equal(enemy[1].x, -6, "the enemy composite starts offscreen unclamped")
   Assert.equal(enemy[1].y, 8, "the enemy composite starts at anchor.y-28")
   Assert.equal(enemy[1].quad.x, 0, "the enemy composite opens its first tile")
   Assert.equal(enemy[9].x, 58, "the enemy second object starts at anchor.x")
   Assert.equal(enemy[9].y, 8, "the enemy second object shares the row")
-  Assert.equal(enemy[9].quad.x, 256, "the enemy second object opens tile 32")
+  Assert.equal(enemy[9].quad.x, 512, "the enemy second object opens tile 64")
 end
 
 -- Dynamic HUD content sits in the composite geometry: names, levels, and
--- conditions on both sides, numeric health and experience on the player
--- side only, and a fraction bar per side. Foe numbers never print.
+-- conditions on both sides, numeric health on the player side only, and
+-- tile bars per side. Foe numbers and experience totals never print.
 function T.native_hud_dynamic_content_uses_composite_geometry()
   local drawn = drawNativePane("detail", nativeView({ arrowFrame = 0 }), nil, {})
   Assert.isTrue(textAt(drawn.text, "LEAD", 144, 92), "the player name keeps its anchor")
   Assert.isTrue(textAt(drawn.text, "Lv9", 144, 104), "the player level keeps its anchor")
-  Assert.isTrue(textAt(drawn.text, "30/30", 144, 116), "the player prints numeric health")
-  Assert.isTrue(textAt(drawn.text, "120", 192, 116), "the player prints numeric experience")
-  Assert.isTrue(textAt(drawn.text, "burn", 176, 104), "the player prints its major condition")
+  Assert.isFalse(textAt(drawn.text, "30/30", 144, 116), "the player renders native HP digit tiles")
+  for _, entry in ipairs(drawn.text.draws) do
+    Assert.isFalse(entry.content == "120", "the player never prints its experience total")
+  end
+  Assert.isFalse(textAt(drawn.text, "burn", 176, 104), "the player renders native status icon tiles")
   Assert.isTrue(textAt(drawn.text, "FOE", 8, 16), "the foe name keeps its anchor")
   Assert.isTrue(textAt(drawn.text, "Lv3", 8, 28), "the foe level keeps its anchor")
   for _, entry in ipairs(drawn.text.draws) do
     Assert.isFalse(entry.content == "12/12", "the foe prints no numeric health")
   end
-  local bars = {}
-  for _, entry in ipairs(drawn.graphics.rectangles) do
-    if entry.mode == "fill" then
-      bars[#bars + 1] = entry
+  Assert.equal(#drawn.graphics.rectangles, 0, "health bars never use painted rectangles")
+  local tiles = {}
+  for _, entry in ipairs(drawn.graphics.draws) do
+    if
+      type(entry.image) == "table"
+      and type(entry.image.handle) == "string"
+      and (entry.image.handle == "hud:player" or entry.image.handle == "hud:enemy")
+      and type(entry.quad) == "table"
+      and entry.quad.w == 8
+      and entry.quad.h == 8
+      and isBarTile(entry.image.handle --[[@as string]], entry)
+    then
+      tiles[#tiles + 1] = entry.image.handle .. ":" .. tostring(math.floor(entry.quad.x / 8))
     end
   end
-  Assert.equal(#bars, 2, "both sides fill their health bar")
-  Assert.equal(bars[1].x, 8, "the foe bar sits in the enemy composite")
-  Assert.equal(bars[1].y, 44, "the foe bar mirrors the player bar row")
-  Assert.equal(bars[1].w, 48, "the full foe bar spans its slot")
-  Assert.equal(bars[2].x, 144, "the player bar keeps its anchor")
-  Assert.equal(bars[2].y, 108, "the player bar keeps its row")
-  Assert.equal(bars[2].w, 48, "the full player bar spans its slot")
+  table.sort(tiles)
+  -- Full health on both sides fills every tile from the green base.
+  Assert.deepEqual(tiles, {
+    "hud:enemy:10",
+    "hud:enemy:10",
+    "hud:enemy:10",
+    "hud:enemy:10",
+    "hud:enemy:10",
+    "hud:enemy:10",
+    "hud:player:10",
+    "hud:player:10",
+    "hud:player:10",
+    "hud:player:10",
+    "hud:player:10",
+    "hud:player:10",
+  }, "both full sides fill their tile bars from the green base")
+end
+
+function T.native_health_box_icons_follow_side_and_encounter_visibility()
+  local function sourceTiles(handle, battleKind, playerGender)
+    local view = nativeView({ battleKind = battleKind })
+    view.battlers[1].condition = "poison"
+    view.battlers[1].gender = playerGender or "female"
+    view.battlers[1].caught = true
+    view.battlers[2].condition = "burn"
+    view.battlers[2].gender = "male"
+    view.battlers[2].caught = true
+    local drawn = drawNativePane("detail", view, nil, {})
+    local tiles = {}
+    for _, entry in ipairs(drawsOf(drawn.graphics, handle)) do
+      if type(entry.quad) == "table" and entry.quad.w == 8 and entry.quad.h == 8 then
+        local tile = math.floor(entry.quad.x / 8)
+        if tile >= 128 then
+          tiles[tile] = true
+        end
+      end
+    end
+    return tiles, drawn
+  end
+
+  local playerTiles, wildDraw = sourceTiles("hud:player", "wild")
+  for _, tile in ipairs({ 172, 173, 174, 188, 189, 200, 201 }) do
+    Assert.isTrue(playerTiles[tile], "player native status/gender patch includes component tile " .. tostring(tile))
+  end
+  Assert.isFalse(playerTiles[187], "the caught marker is absent from the player health box")
+
+  local genderlessTiles = sourceTiles("hud:player", "wild", "genderless")
+  for _, tile in ipairs({ 192, 193, 204, 205 }) do
+    Assert.isTrue(genderlessTiles[tile], "genderless player uses its native marker component tile " .. tostring(tile))
+  end
+  Assert.isFalse(genderlessTiles[200], "genderless player does not use the female marker")
+  Assert.isFalse(genderlessTiles[202], "genderless player does not use the male marker")
+
+  local wildFoeTiles = sourceTiles("hud:enemy", "wild")
+  for _, tile in ipairs({ 169, 170, 171, 190, 191, 202, 203, 187 }) do
+    Assert.isTrue(
+      wildFoeTiles[tile],
+      "wild foe native status/gender/caught patch includes component tile " .. tostring(tile)
+    )
+  end
+  Assert.isFalse(
+    textAt(wildDraw.text, "30/30", 144, 116),
+    "player HP remains native clipped text inside its source span"
+  )
+
+  local trainerFoeTiles = sourceTiles("hud:enemy", "trainer")
+  Assert.isFalse(trainerFoeTiles[187], "trainer battles suppress the native caught marker")
+  for _, tile in ipairs({ 169, 170, 171, 190, 191, 202, 203 }) do
+    Assert.isTrue(trainerFoeTiles[tile], "trainer enemy keeps visible status/gender tile " .. tostring(tile))
+  end
 end
 
 -- Missing strips draw nothing and never substitute: held keys skip their
@@ -1148,22 +1806,28 @@ end
 function T.native_arrow_cycles_through_authored_cells()
   local rig = openRig({})
   driveToMode(rig, "command")
+  Assert.equal(rig.screen:status().presentation.panes[1].id, "detail", "the dual display owns the detail pane")
   local cellOfQuadX = { [0] = 1, [16] = 2, [32] = 3, [56] = 4, [80] = 5 }
   local counts = { [1] = 0, [2] = 0, [3] = 0, [4] = 0, [5] = 0 }
   local order = {}
+  local displayed = 0
   for _ = 1, 68 do
     rig.pump(1)
     local graphics = FakeGraphics.new({})
     rig.screen:draw({ graphics = graphics })
     local bands = drawsOf(graphics, "arrow")
-    Assert.isTrue(#bands == 2 or #bands == 4, "every displayed arrow cell carries art")
-    local cell = cellOfQuadX[bands[1].quad.x]
-    Assert.notNil(cell, "every arrow band opens an authored tile")
-    counts[cell] = counts[cell] + 1
-    if order[#order] ~= cell then
-      order[#order + 1] = cell
+    if #bands > 0 then
+      Assert.isTrue(#bands == 2 or #bands == 4, "every displayed arrow cell carries art")
+      local cell = cellOfQuadX[bands[1].quad.x]
+      Assert.notNil(cell, "every arrow band opens an authored tile")
+      counts[cell] = counts[cell] + 1
+      displayed = displayed + 1
+      if order[#order] ~= cell then
+        order[#order + 1] = cell
+      end
     end
   end
+  Assert.equal(displayed, 68, "the zero-time opening cell does not count as visible: " .. tostring(displayed))
   Assert.deepEqual(counts, { [1] = 8, [2] = 8, [3] = 8, [4] = 32, [5] = 12 }, "two periods hold the authored counts")
   for index = 2, #order do
     Assert.equal(order[index], order[index - 1] % 5 + 1, "the cells cycle in authored order")
@@ -1178,21 +1842,90 @@ end
 function T.native_gauges_use_source_cells_by_roster_visibility()
   local drawn = drawNativePane("interaction", nativeView({}), "command", {})
   local player = drawsOf(drawn.graphics, "gauges:player")
-  Assert.equal(#player, 12, "the player row bands six cells")
-  Assert.equal(player[1].x, 4, "the player cells center on their slots")
-  Assert.equal(player[1].y, 5, "the player row keeps its origin")
-  Assert.equal(player[1].quad.x, 32, "the healthy lead selects its cell")
-  Assert.equal(player[1].quad.imgW, 128, "the gauge quads reference the staged strip width")
-  Assert.equal(player[3].quad.x, 64, "the fainted reserve selects its cell")
-  Assert.equal(player[5].quad.x, 0, "the empty slots keep the absent cell")
-  Assert.equal(player[5].x, 42, "the third slot keeps its pitch")
+  Assert.equal(#player, 24, "the source 32px player objects use four tile rows per cell")
+  Assert.equal(player[1].x, -4, "the source player object offset is preserved")
+  Assert.equal(player[1].y, -3, "the source player object offset is preserved vertically")
+  Assert.equal(player[1].quad.x, 128, "the healthy lead selects source cell two")
+  Assert.equal(player[1].quad.w, 32, "the player row uses the native 32px source family")
+  Assert.equal(player[1].quad.imgW, 512, "the player cell references its own staged source strip")
+  Assert.equal(player[5].quad.x, 256, "the fainted reserve selects source cell three")
+  Assert.equal(player[9].quad.x, 0, "the empty slots keep source cell one")
+  Assert.equal(player[9].x, 34, "the third slot keeps its source pitch and cell offset")
   local enemy = drawsOf(drawn.graphics, "gauges:enemy")
   Assert.equal(#enemy, 12, "the enemy row bands six cells")
-  Assert.equal(enemy[1].x, 222, "the enemy row keeps its right origin")
-  Assert.equal(enemy[1].y, 1, "the enemy row keeps its row")
-  Assert.equal(enemy[1].quad.x, 32, "the revealed foe selects its cell")
-  Assert.equal(enemy[3].quad.x, 32, "the second foe selects its cell")
+  Assert.equal(enemy[1].x, 238, "the source opponent object offset is preserved")
+  Assert.equal(enemy[1].y, 1, "the opponent row keeps its source anchor")
+  Assert.equal(enemy[1].quad.x, 32, "the revealed foe selects its source cell")
+  Assert.equal(enemy[1].quad.w, 16, "the opponent row uses the native 16px source family")
+  Assert.equal(enemy[1].quad.imgW, 128, "the opponent cell references its own staged source strip")
+  Assert.equal(enemy[3].quad.x, 32, "the second foe selects its source cell")
   Assert.equal(enemy[5].quad.x, 0, "unrevealed foes keep the absent cell")
+end
+
+function T.native_menu_draws_generated_layers_in_priority_order()
+  local drawn = drawNativePane(
+    "interaction",
+    nativeView({
+      menuLayers = {
+        command = {
+          { image = "screen-1", plane = 0, priority = 3 },
+          { image = "screen-2", plane = 2, priority = 3 },
+          { image = "screen-3", plane = 1, priority = 2 },
+        },
+      },
+    }),
+    "command",
+    {}
+  )
+  local menuOrder = {}
+  for _, entry in ipairs(drawn.graphics.draws) do
+    local key = type(entry.image) == "table" and entry.image.handle or nil
+    if type(key) == "string" and key:match("^menu:command:screen:") then
+      menuOrder[#menuOrder + 1] = key
+    end
+  end
+  Assert.deepEqual(
+    menuOrder,
+    { "menu:command:screen:2", "menu:command:screen:1", "menu:command:screen:3" },
+    "generated command layers draw by source priority, with physical plane order for ties"
+  )
+end
+
+function T.native_menu_selection_draws_its_generated_tilemap_patch()
+  for _, state in ipairs({ "selected", "pressed" }) do
+    local view = nativeView({
+      selection = "fight",
+      armed = state == "pressed" and { id = "fight", scope = "command" } or nil,
+      menuLayers = {
+        command = {
+          {
+            image = "screen-1",
+            plane = 1,
+            priority = 2,
+            feedback = {
+              fight = {
+                selected = { x = 16, y = 32, width = 224, height = 96 },
+                pressed = { x = 16, y = 32, width = 224, height = 96 },
+              },
+            },
+          },
+        },
+      },
+    })
+    local drawn = drawNativePane("interaction", view, "command", {})
+    local menuDraws = {}
+    for _, entry in ipairs(drawn.graphics.draws) do
+      local key = type(entry.image) == "table" and entry.image.handle or nil
+      if type(key) == "string" and (key:match("^menu:command:screen:") or key:match("^menu:command:feedback:")) then
+        menuDraws[#menuDraws + 1] = key
+      end
+    end
+    Assert.deepEqual(
+      menuDraws,
+      { "menu:command:screen:1", "menu:command:feedback:fight:" .. state },
+      "the focused command draws its generated " .. state .. " tilemap patch above the source layer"
+    )
+  end
 end
 
 -- The live roster behind the real battle selects the same cells: the
@@ -1201,17 +1934,37 @@ end
 function T.native_gauges_follow_the_live_roster()
   local rig = openRig({})
   driveToMode(rig, "command")
+  Assert.equal(rig.screen:status().presentation.panes[2].id, "interaction", "the dual display owns interaction")
   local graphics = FakeGraphics.new({})
   rig.screen:draw({ graphics = graphics })
   local player = drawsOf(graphics, "gauges:player")
-  Assert.equal(#player, 12, "the live player row bands six cells")
-  Assert.equal(player[1].quad.x, 32, "the live lead selects its cell")
-  Assert.equal(player[3].quad.x, 32, "the live reserve selects its cell")
-  Assert.equal(player[5].quad.x, 0, "the live empty slots keep the absent cell")
+  Assert.equal(#player, 24, "the live player row draws six native 32px source cells")
+  Assert.equal(player[1].quad.x, 128, "the live lead selects its source cell")
+  Assert.equal(player[1].quad.w, 32, "the live player row uses the native family")
+  Assert.equal(player[5].quad.x, 128, "the live reserve selects its source cell")
+  Assert.equal(player[9].quad.x, 0, "the live empty slots keep their absent cell")
   local enemy = drawsOf(graphics, "gauges:enemy")
   Assert.equal(#enemy, 12, "the live enemy row bands six cells")
-  Assert.equal(enemy[1].quad.x, 32, "the live foe selects its cell")
+  Assert.equal(enemy[1].quad.x, 32, "the live foe selects its source cell")
   Assert.equal(enemy[3].quad.x, 0, "unrevealed live foes keep the absent cell")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- Gauge source geometry belongs to a detached screen snapshot: a renderer
+-- consumer cannot mutate the generated manifest used by later snapshots.
+function T.gauge_families_are_detached_per_snapshot()
+  local rig = openRig({})
+  local first = rig.screen:_snapshot()
+  Assert.equal(first.gaugeFamilies.player.cells[2].objs[1].width, 32, "the snapshot exposes the native player family")
+  Assert.equal(first.gaugeFamilies.enemy.cells[2].objs[1].width, 16, "the snapshot exposes the native opponent family")
+  first.gaugeFamilies.player.cells[2].objs[1].width = 16
+  local nextSnapshot = rig.screen:_snapshot()
+  Assert.equal(
+    nextSnapshot.gaugeFamilies.player.cells[2].objs[1].width,
+    32,
+    "mutating a delivered snapshot cannot change the staged source geometry"
+  )
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -1237,11 +1990,66 @@ function T.native_move_facts_use_compiled_type_and_split_pp_anchors()
   rig.screen:draw({ graphics = graphics })
   local text = rig.text
   Assert.isTrue(textAt(text, first.name, 64, 45), "the first move name keeps its anchor: " .. tostring(first.name))
-  Assert.isTrue(
-    textAt(text, first.moveType, 32, 61),
-    "the type sits left on the lower row: " .. tostring(first.moveType)
+  local firstNameDraw = nil
+  for _, entry in ipairs(text.draws) do
+    if entry.content == first.name and entry.x == 64 and entry.y == 45 then
+      firstNameDraw = entry
+    end
+  end
+  Assert.equal(firstNameDraw.role, "menu", "move facts use the generated menu font role")
+  Assert.deepEqual(
+    firstNameDraw.colors,
+    { foreground = 7, shadow = 8, background = 9 },
+    "move names use the source text color slots"
   )
+  Assert.isFalse(textAt(text, first.moveType, 32, 61), "the source type sprite is not replaced by a text label")
+  local typeIcon = nil
+  for _, entry in ipairs(graphics.draws) do
+    local handle = type(entry.image) == "table" and entry.image.handle or nil
+    if handle == "battle:move-type-icon:" .. tostring(first.moveType):lower() then
+      typeIcon = entry
+    end
+  end
+  Assert.notNil(typeIcon, "the source type sprite is drawn for the occupied move slot")
+  Assert.equal(typeIcon.x, 0, "the 64px type sprite centers on its source X coordinate")
+  Assert.equal(typeIcon.y, 53, "the 16px type sprite centers on its source Y coordinate")
+  local typeAnchors = {
+    { x = 32, y = 61 },
+    { x = 160, y = 60 },
+    { x = 32, y = 124 },
+    { x = 160, y = 123 },
+  }
+  for _, move in ipairs(moves) do
+    if type(move.moveType) == "string" then
+      local anchor = typeAnchors[move.slot + 1]
+      local key = "battle:move-type-icon:" .. move.moveType:lower()
+      local matchingDraw = nil
+      for _, entry in ipairs(graphics.draws) do
+        local handle = type(entry.image) == "table" and entry.image.handle or nil
+        if handle == key then
+          local expectedX = anchor.x - math.floor(entry.image:getWidth() / 2)
+          local expectedY = anchor.y - math.floor(entry.image:getHeight() / 2)
+          if entry.x == expectedX and entry.y == expectedY then
+            matchingDraw = entry
+            break
+          end
+        end
+      end
+      Assert.notNil(matchingDraw, "every typed move slot draws its source icon at slot " .. tostring(move.slot))
+    end
+  end
   Assert.isTrue(textAt(text, tostring(first.pp), 59, 61), "the PP current keeps its field: " .. tostring(first.pp))
+  local ppDraw = nil
+  for _, entry in ipairs(text.draws) do
+    if entry.content == tostring(first.pp) and entry.x == 59 and entry.y == 61 then
+      ppDraw = entry
+    end
+  end
+  Assert.deepEqual(
+    ppDraw.colors,
+    { foreground = 1, shadow = 2, background = 0 },
+    "full PP uses the source normal PP color slots"
+  )
   Assert.isTrue(
     textAt(text, "/" .. tostring(first.maxPp), 76, 61),
     "the PP max keeps its field: " .. tostring(first.maxPp)
@@ -1256,13 +2064,81 @@ function T.native_move_facts_use_compiled_type_and_split_pp_anchors()
   rig.battle:dispose()
 end
 
+function T.native_narration_uses_its_source_font_role()
+  local drawn = drawNativePane("detail", nativeView({ message = "SOURCE MESSAGE" }), nil, {})
+  local narration = nil
+  for _, entry in ipairs(drawn.text.draws) do
+    if entry.content == "SOURCE MESSAGE" then
+      narration = entry
+      break
+    end
+  end
+  Assert.equal(narration.role, "narration", "battle narration uses the generated narration font role")
+end
+
+-- Zero PP stays visible at its own native fields, remains disabled, and
+-- does not become an activatable move.
+function T.native_zero_pp_move_keeps_its_disabled_facts()
+  local rig = openRig({
+    leadPp = 0,
+    extraLeadMove = { move = "GROWL", pp = 40, ppUps = 0 },
+    launchId = "launch-zero-pp-facts",
+  })
+  driveToMode(rig, "command")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "moves", "Fight opens the move list with zero PP")
+  local move = nil
+  for _, candidate in ipairs(assert(rig.screen:view().moves, "the move facts stay listed")) do
+    if candidate.slot == 0 then
+      move = candidate
+      break
+    end
+  end
+  move = assert(move, "the zero-PP slot stays listed")
+  Assert.equal(move.pp, 0, "the exhausted slot exposes zero current PP")
+  Assert.isFalse(move.enabled, "the exhausted slot is disabled")
+  local text = rig.text
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  Assert.isTrue(textAt(text, "0", 59, 61), "the zero current PP remains in its native field")
+  Assert.isTrue(textAt(text, "/35", 76, 61), "the exhausted move keeps its maximum PP field")
+  local zeroPp = nil
+  for _, entry in ipairs(text.draws) do
+    if entry.content == "0" and entry.x == 59 and entry.y == 61 then
+      zeroPp = entry
+      break
+    end
+  end
+  Assert.deepEqual(
+    zeroPp.colors,
+    { foreground = 7, shadow = 8, background = 0 },
+    "the exhausted move uses the native disabled PP palette"
+  )
+  rig.screen:input({ { type = "navigate", direction = "left" } })
+  Assert.equal(rig.screen:view().selection, "move:0", "the test focuses the disabled zero-PP slot")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, 0, "confirm cannot seal the exhausted move")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
 -- The arrow shows only while a decision is open: leaving the selection
 -- hides it while the composites and gauges keep drawing.
 function T.native_arrow_hides_outside_selection_modes()
   local rig = openRig({})
   driveToMode(rig, "command")
+  while rig.screen:view().arrowFrame == 0 do
+    rig.pump(1)
+  end
   local shown = FakeGraphics.new({})
   rig.screen:draw({ graphics = shown })
+  Assert.equal(
+    rig.screen:status().mode,
+    "command",
+    "drawing retains command mode: " .. tostring(rig.screen:status().error)
+  )
+  Assert.notNil(rig.assets.images.arrow, "the detail renderer resolves the staged arrow")
   Assert.isTrue(#drawsOf(shown, "arrow") > 0, "the command root shows the arrow")
   rig.screen:input({ { type = "confirm" } })
   rig.pump(1)
@@ -1347,7 +2223,7 @@ local function openWeakTerminalRig(launchId)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = stubPortrait(key)
+      rig.assets.images[key] = fakeDrawable(key)
     end
     return rig.assets.images[key]
   end
@@ -1378,12 +2254,7 @@ local function openWeakTerminalRig(launchId)
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = battleManifest(),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -1510,7 +2381,7 @@ local function openLongOutcomeRig(launchId)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = stubPortrait(key)
+      rig.assets.images[key] = fakeDrawable(key)
     end
     return rig.assets.images[key]
   end
@@ -1519,12 +2390,7 @@ local function openLongOutcomeRig(launchId)
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = battleManifest(),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -1727,7 +2593,7 @@ local function openPacedScreen(launchId, speed)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = stubPortrait(key)
+      rig.assets.images[key] = fakeDrawable(key)
     end
     return rig.assets.images[key]
   end
@@ -1736,12 +2602,7 @@ local function openPacedScreen(launchId, speed)
   end
   local options = {
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = battleManifest(),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -1855,7 +2716,8 @@ function T.launches_keep_their_own_narration_pace_and_edges()
   Assert.isTrue(finishedFinally, "a second deliberate edge acknowledges the revealed final page")
   local single = BattleTimeline.new({ sound = function(_) end, textSpeed = "slow" })
   single:announce("ABCDEFGHIJKLMNOPQRST", false)
-  single:update(4 / 60, function(_)
+  -- Equal accepted source time either way: one whole update carries four source ticks.
+  single:update(4 / 30, function(_)
     return true
   end)
   local batched = BattleTimeline.new({ sound = function(_) end, textSpeed = "slow" })
@@ -1950,6 +2812,7 @@ end
 ---@return table doubled detail snapshot with two live battlers per side
 local function doublesDetailView(overrides)
   local view = {
+    hudPatchSpans = battleManifest().hud.patchSpans,
     mode = "command",
     arrowFrame = 1,
     actor = { combatant = 5, index = 1, total = 2 },
@@ -2122,21 +2985,21 @@ end
 function T.doubled_portraits_settle_at_the_sourced_centers()
   local drawn = drawNativePane("detail", doublesDetailView(), nil, {})
   local expected = {
-    ["mon:STARLY/f0/male/plain/back"] = { x = 0, y = 72 },
-    ["mon:SHINX/f0/male/plain/back"] = { x = 40, y = 80 },
-    ["mon:BIDOOF/f0/male/plain/front"] = { x = 176, y = 10 },
-    ["mon:PICHU/f0/male/plain/front"] = { x = 136, y = 2 },
+    ["mon:STARLY/f0/male/plain/back"] = { x = 40, y = 112 },
+    ["mon:SHINX/f0/male/plain/back"] = { x = 80, y = 120 },
+    ["mon:BIDOOF/f0/male/plain/front"] = { x = 216, y = 50 },
+    ["mon:PICHU/f0/male/plain/front"] = { x = 176, y = 42 },
   }
   for handle, origin in pairs(expected) do
-    local found = drawsOf(drawn.graphics, handle)
+    local found = pictureRecordsOf(drawn.pictures, handle)
     Assert.equal(#found, 1, "the " .. handle .. " picture draws exactly once")
-    Assert.equal(found[1].x, origin.x, "the " .. handle .. " picture keeps its settled column")
-    Assert.equal(found[1].y, origin.y, "the " .. handle .. " picture keeps its settled row")
+    Assert.equal(found[1].centerX, origin.x, "the " .. handle .. " picture keeps its settled column")
+    Assert.equal(found[1].centerY, origin.y, "the " .. handle .. " picture keeps its settled row")
   end
-  local foeLeft = assert(firstDrawOf(drawn.graphics, "mon:BIDOOF/f0/male/plain/front"), "the foe left picture draws")
-  local foeRight = assert(firstDrawOf(drawn.graphics, "mon:PICHU/f0/male/plain/front"), "the foe right picture draws")
+  local foeLeft = assert(pictureRecordsOf(drawn.pictures, "mon:BIDOOF/f0/male/plain/front")[1])
+  local foeRight = assert(pictureRecordsOf(drawn.pictures, "mon:PICHU/f0/male/plain/front")[1])
   Assert.isTrue(
-    foeLeft.x > foeRight.x,
+    foeLeft.centerX > foeRight.centerX,
     "the first sorted foe slot sits screen-right of its partner, as the source rows lay out"
   )
 end
@@ -2147,20 +3010,32 @@ end
 -- anchor through the single-battle template offsets.
 function T.doubled_health_boxes_use_each_role_source_cell_and_default_fields()
   local drawn = drawNativePane("detail", doublesDetailView(), nil, {})
-  local objects = {
-    ["hud:player-left"] = { x = 187, y = 96, tile = 6, width = 8, height = 8 },
-    ["hud:player-right"] = { x = 189, y = 121, tile = 14, width = 16, height = 8 },
-    ["hud:enemy-left"] = { x = 51, y = -1, tile = 22, width = 8, height = 16 },
-    ["hud:enemy-right"] = { x = 39, y = 22, tile = 30, width = 16, height = 16 },
+  -- Bar tiles share their strip with the cell bands, so the source
+  -- object geometry reads the banded draws while the tiles patch after.
+  local function bands(graphics, handle)
+    local found = {}
+    for _, entry in ipairs(drawsOf(graphics, handle)) do
+      if #found < 16 then
+        found[#found + 1] = entry
+      end
+    end
+    return found
+  end
+  local rows = {
+    ["hud:player-left"] = { slot = 3, xOffset = -64, yOffset = -32 },
+    ["hud:player-right"] = { slot = 4, xOffset = -64, yOffset = -32 },
+    ["hud:enemy-left"] = { slot = 5, xOffset = -64, yOffset = -28 },
+    ["hud:enemy-right"] = { slot = 6, xOffset = -64, yOffset = -28 },
   }
-  for artKey, expected in pairs(objects) do
-    local bands = drawsOf(drawn.graphics, artKey)
-    Assert.equal(#bands, expected.height / 8, "the " .. artKey .. " draws its selected source object rows")
-    Assert.equal(bands[1].quad.x, expected.tile * 8, "the " .. artKey .. " applies the cell-bank mapping to its tile")
-    Assert.equal(bands[1].x, expected.x, "the " .. artKey .. " applies its source object x offset")
-    Assert.equal(bands[1].y, expected.y, "the " .. artKey .. " applies its source object y offset")
-    Assert.equal(bands[1].quad.w, expected.width, "the " .. artKey .. " keeps its source object width")
-    Assert.equal(bands[1].quad.imgW, 1024, "the " .. artKey .. " quads reference the staged strip width")
+  for artKey, expected in pairs(rows) do
+    local cellBands = bands(drawn.graphics, artKey)
+    Assert.equal(#cellBands, 16, "the " .. artKey .. " draws eight rows for each source object")
+    local row = battleManifest().battlefield.slots[expected.slot]
+    Assert.equal(cellBands[1].quad.x, 0, "the " .. artKey .. " opens its source tile zero")
+    Assert.equal(cellBands[1].x, row.hudX + expected.xOffset, "the " .. artKey .. " applies its source x offset")
+    Assert.equal(cellBands[1].y, row.hudY + expected.yOffset, "the " .. artKey .. " applies its source y offset")
+    Assert.equal(cellBands[1].quad.w, 64, "the " .. artKey .. " preserves the source object width")
+    Assert.equal(cellBands[1].quad.imgW, 1648, "the " .. artKey .. " quads reference the staged strip width")
   end
   Assert.equal(#drawsOf(drawn.graphics, "hud:player"), 0, "no doubled ally shares the single-battle strip")
   Assert.equal(#drawsOf(drawn.graphics, "hud:enemy"), 0, "no doubled foe shares the single-battle strip")
@@ -2175,22 +3050,42 @@ function T.doubled_health_boxes_use_each_role_source_cell_and_default_fields()
   Assert.isTrue(textAt(drawn.text, "Lv4", 88, 4), "the left foe level uses its mapped source patch")
   Assert.isTrue(textAt(drawn.text, "FOE-B", 8, 33), "the right foe names its own row")
   Assert.isTrue(textAt(drawn.text, "Lv5", 82, 33), "the right foe level uses its mapped source patch")
-  local bars = {}
-  for _, entry in ipairs(drawn.graphics.rectangles) do
-    if entry.mode == "fill" then
-      bars[#bars + 1] = entry
+  local tiles = {}
+  for _, entry in ipairs(drawn.graphics.draws) do
+    if
+      type(entry.image) == "table"
+      and type(entry.image.handle) == "string"
+      and entry.image.handle:sub(1, 4) == "hud:"
+      and isBarTile(entry.image.handle --[[@as string]], entry)
+    then
+      local handle = entry.image.handle --[[@as string]]
+      tiles[handle] = tiles[handle] or {}
+      tiles[handle][#tiles[handle] + 1] = {
+        x = entry.x,
+        y = entry.y,
+        tile = math.floor(entry.quad.x / 8),
+      }
     end
   end
-  Assert.equal(#bars, 4, "all four partners fill their own health bar")
-  local barOrigins = {
-    { x = 56, y = 20 },
-    { x = 50, y = 49 },
-    { x = 192, y = 107 },
-    { x = 198, y = 136 },
-  }
-  for index, origin in ipairs(barOrigins) do
-    Assert.equal(bars[index].x, origin.x, "health bar " .. index .. " uses its mapped source tile origin")
-    Assert.equal(bars[index].y, origin.y, "health bar " .. index .. " uses its mapped source tile row")
+  -- Full health on every slot fills each bar from the green base at its
+  -- mapped source tile origin.
+  for handle, origin in pairs(BAR_ORIGINS) do
+    if handle:find("%-left$") or handle:find("%-right$") then
+      local sampled = assert(tiles[handle], "the " .. handle .. " bar draws its tiles")
+      Assert.equal(#sampled, 6, "the " .. handle .. " bar fills every tile")
+      local fills = {}
+      for _, tile in ipairs(sampled) do
+        Assert.equal(tile.y, origin.y, "the " .. handle .. " tiles keep their mapped source tile row")
+        local insideSourceSpan = false
+        for _, range in ipairs(origin.ranges) do
+          insideSourceSpan = insideSourceSpan or tile.x >= range[1] and tile.x < range[2]
+        end
+        Assert.isTrue(insideSourceSpan, "the " .. handle .. " tiles span their mapped source tile origins")
+        fills[#fills + 1] = tile.tile
+      end
+      table.sort(fills)
+      Assert.deepEqual(fills, { 10, 10, 10, 10, 10, 10 }, "the " .. handle .. " fills from the source base")
+    end
   end
 end
 
@@ -2207,28 +3102,71 @@ function T.doubled_health_bars_follow_each_slot_without_numeric_or_experience_la
     battler.hp = values[1]
     battler.maxHp = values[2]
     if battler.combatant == 8 then
-      battler.condition = "PSN"
+      battler.condition = "poison"
     end
   end
   local first = drawNativePane("detail", view, nil, {})
-  local expectedWidths = {
-    ["56:20"] = 12,
-    ["50:49"] = 0.48,
-    ["192:107"] = 48,
-    ["198:136"] = 0,
-  }
-  local firstWidths = {}
-  local firstBarCount = 0
-  for _, bar in ipairs(first.graphics.rectangles) do
-    if bar.mode == "fill" then
-      local key = bar.x .. ":" .. bar.y
-      Assert.equal(bar.w, expectedWidths[key], "each sourced slot owns its health fraction at " .. key)
-      firstWidths[key] = bar.w
-      firstBarCount = firstBarCount + 1
+  -- Bar tiles key by their mapped source tile row; each row owns its
+  -- slot quantization independent of the other slots.
+  local function tilesByOrigin(drawn)
+    local grouped = {}
+    for _, entry in ipairs(drawn.graphics.draws) do
+      if
+        type(entry.image) == "table"
+        and type(entry.image.handle) == "string"
+        and entry.image.handle:sub(1, 4) == "hud:"
+        and isBarTile(entry.image.handle --[[@as string]], entry)
+      then
+        local key = tostring(entry.x) .. ":" .. tostring(entry.y)
+        grouped[key] = grouped[key] or {}
+        grouped[key][#grouped[key] + 1] = math.floor(entry.quad.x / 8)
+      end
+    end
+    local rows = {}
+    for key, sampled in pairs(grouped) do
+      local x, y = key:match("^([^:]+):([^:]+)$")
+      local row = tostring(y)
+      rows[row] = rows[row] or { x = tonumber(x), tiles = {} }
+      for _, tile in ipairs(sampled) do
+        rows[row].tiles[#rows[row].tiles + 1] = tile
+      end
+      if tonumber(x) < rows[row].x then
+        rows[row].x = tonumber(x)
+      end
+    end
+    for _, row in pairs(rows) do
+      table.sort(row.tiles)
+    end
+    return rows
+  end
+  local firstTiles = tilesByOrigin(first)
+  Assert.deepEqual(
+    firstTiles["20"].tiles,
+    { 15, 19 },
+    "the left foe slot quantizes its quarter health to yellow partial tiles"
+  )
+  Assert.equal(firstTiles["20"].x, 56, "the left foe tiles keep their mapped source tile origin")
+  Assert.deepEqual(firstTiles["49"].tiles, { 21 }, "the right foe slot keeps its minimum visible red tile")
+  Assert.equal(firstTiles["49"].x, 50, "the right foe tiles keep their mapped source tile origin")
+  Assert.deepEqual(
+    firstTiles["103"].tiles,
+    { 10, 10, 10, 10, 10, 10 },
+    "the full left ally fills its tiles from the green base"
+  )
+  Assert.equal(firstTiles["103"].x, 192, "the left ally tiles keep their mapped source tile origin")
+  Assert.isTrue(firstTiles["132"] == nil, "the empty right ally draws no bar tiles")
+  local foeStatusIcon = false
+  for _, entry in ipairs(first.graphics.draws) do
+    if
+      type(entry.image) == "table"
+      and entry.image.handle == "hud:enemy-left"
+      and type(entry.quad) == "table"
+      and entry.quad.x >= 128 * 8
+    then
+      foeStatusIcon = true
     end
   end
-  Assert.equal(firstBarCount, 4, "all four source slots have independent health bars")
-  Assert.isTrue(textAt(first.text, "PSN", 72, 4), "a supported foe condition stays on its own source row")
+  Assert.isTrue(foeStatusIcon, "a supported foe condition selects native status component tiles")
   for _, entry in ipairs(first.text.draws) do
     Assert.isNil(entry.content:match("%d+/%d+"), "native doubles do not show numeric current/max HP")
     Assert.isFalse(entry.content == "8000" or entry.content == "8100", "native doubles do not show player EXP")
@@ -2240,18 +3178,71 @@ function T.doubled_health_bars_follow_each_slot_without_numeric_or_experience_la
     end
   end
   local changed = drawNativePane("detail", view, nil, {})
-  local changedWidths = {}
-  for _, bar in ipairs(changed.graphics.rectangles) do
-    if bar.mode == "fill" then
-      changedWidths[bar.x .. ":" .. bar.y] = bar.w
+  local changedTiles = tilesByOrigin(changed)
+  Assert.deepEqual(changedTiles["103"].tiles, { 21 }, "only the changed ally bar follows its new HP")
+  for key, row in pairs(firstTiles) do
+    if key ~= "103" then
+      Assert.deepEqual(changedTiles[key].tiles, row.tiles, "row " .. key .. " retains its independent tiles")
+      Assert.equal(changedTiles[key].x, row.x, "row " .. key .. " retains its mapped origin")
     end
   end
-  Assert.near(changedWidths["192:107"], 1.2, 1e-9, "only the changed ally bar follows its new HP")
-  for key, width in pairs(firstWidths) do
-    if key ~= "192:107" then
-      Assert.equal(changedWidths[key], width, "slot " .. key .. " retains its independent HP")
+end
+
+function T.doubled_player_health_box_switches_between_native_gauge_and_number_cells()
+  local view = doublesDetailView()
+  view.battlers[2].healthBoxMode = "numbers"
+  local drawn = drawNativePane("detail", view, nil, {})
+  local leftGaugeTiles = {}
+  local leftModeTiles = {}
+  for _, entry in ipairs(drawsOf(drawn.graphics, "hud:player-left")) do
+    if type(entry.quad) == "table" and entry.quad.w == 8 and entry.quad.h == 8 then
+      local tile = math.floor(entry.quad.x / 8)
+      if entry.y == 103 and entry.x >= 176 and entry.x < 256 then
+        if tile < 128 then
+          leftGaugeTiles[#leftGaugeTiles + 1] = tile
+        else
+          leftModeTiles[#leftModeTiles + 1] = tile
+        end
+      end
     end
   end
+  Assert.deepEqual(leftGaugeTiles, {}, "number mode does not keep drawing the health gauge row")
+  Assert.isTrue(textAt(drawn.text, "40", 200, 103), "number mode prints the current HP inside its source span")
+  Assert.isTrue(textAt(drawn.text, "40", 224, 103), "number mode prints the maximum HP inside its source span")
+  table.sort(leftModeTiles)
+  Assert.deepEqual(leftModeTiles, { 197, 198, 199 }, "number mode patches the three native source cell components")
+
+  for _, entry in ipairs(drawsOf(drawn.graphics, "hud:player-right")) do
+    if isBarTile("hud:player-right", entry) then
+      Assert.isTrue(entry.quad.x < 128 * 8, "the unrelated partner remains in native gauge mode")
+    end
+  end
+end
+
+function T.doubled_enemy_caught_markers_follow_wild_and_trainer_visibility()
+  local function drawnFor(battleKind)
+    local view = doublesDetailView({ battleKind = battleKind })
+    for _, battler in ipairs(view.battlers) do
+      if battler.side == 2 then
+        battler.caught = true
+      end
+    end
+    return drawNativePane("detail", view, nil, {})
+  end
+  local wild = drawnFor("wild")
+  local trainer = drawnFor("trainer")
+  local function hasCaughtMark(drawn)
+    for _, art in ipairs({ "hud:enemy-left", "hud:enemy-right" }) do
+      for _, entry in ipairs(drawsOf(drawn.graphics, art)) do
+        if type(entry.quad) == "table" and entry.quad.x == 187 * 8 then
+          return true
+        end
+      end
+    end
+    return false
+  end
+  Assert.isTrue(hasCaughtMark(wild), "double wild foes display the native caught marker")
+  Assert.isFalse(hasCaughtMark(trainer), "double trainer foes suppress the native caught marker")
 end
 
 -- The doubled selection arrow follows the acting partner: its column
@@ -2327,11 +3318,11 @@ function T.hidden_singles_lead_keeps_singles_anchors_mid_switch()
     },
   })
   local drawn = drawNativePane("detail", hidden, nil, {})
-  local foe = drawsOf(drawn.graphics, "mon:EEVEE/f0/male/plain/front")
+  local foe = pictureRecordsOf(drawn.pictures, "mon:EEVEE/f0/male/plain/front")
   Assert.equal(#foe, 1, "the visible foe still draws exactly once")
-  Assert.equal(foe[1].x, 192, "the foe keeps its singles column mid-switch")
-  Assert.equal(foe[1].y, 56, "the foe keeps its singles row mid-switch")
-  Assert.equal(#drawsOf(drawn.graphics, "mon:EEVEE/f0/male/plain/back"), 0, "the hidden lead draws nothing")
+  Assert.equal(foe[1].centerX, 192, "the foe keeps its native column mid-switch")
+  Assert.equal(foe[1].centerY, 50, "the foe keeps its native row mid-switch")
+  Assert.equal(#pictureRecordsOf(drawn.pictures, "mon:EEVEE/f0/male/plain/back"), 0, "the hidden lead draws nothing")
   Assert.equal(#drawsOf(drawn.graphics, "hud:enemy-left"), 0, "no doubles strip draws in a single battle")
   Assert.equal(#drawsOf(drawn.graphics, "hud:player-left"), 0, "no doubles strip draws in a single battle")
   Assert.isTrue(#drawsOf(drawn.graphics, "hud:enemy") > 0, "the singles foe strip still draws")
@@ -2348,16 +3339,16 @@ function T.doubles_survivor_keeps_its_row_while_partner_hides()
     end
   end
   local drawn = drawNativePane("detail", gapped, nil, {})
-  local survivor = drawsOf(drawn.graphics, "mon:PICHU/f0/male/plain/front")
+  local survivor = pictureRecordsOf(drawn.pictures, "mon:PICHU/f0/male/plain/front")
   Assert.equal(#survivor, 1, "the surviving foe still draws exactly once")
-  Assert.equal(survivor[1].x, 136, "the survivor keeps its right column while its partner hides")
-  Assert.equal(survivor[1].y, 2, "the survivor keeps its right row while its partner hides")
-  local hidden = drawsOf(drawn.graphics, "mon:BIDOOF/f0/male/plain/front")
+  Assert.equal(survivor[1].centerX, 176, "the survivor keeps its right column while its partner hides")
+  Assert.equal(survivor[1].centerY, 42, "the survivor keeps its right row while its partner hides")
+  local hidden = pictureRecordsOf(drawn.pictures, "mon:BIDOOF/f0/male/plain/front")
   Assert.equal(#hidden, 0, "the hidden partner draws nothing")
-  local allyLeft = drawsOf(drawn.graphics, "mon:STARLY/f0/male/plain/back")
+  local allyLeft = pictureRecordsOf(drawn.pictures, "mon:STARLY/f0/male/plain/back")
   Assert.equal(#allyLeft, 1, "the undisturbed ally still draws exactly once")
-  Assert.equal(allyLeft[1].x, 0, "the undisturbed ally keeps its settled column")
-  Assert.equal(allyLeft[1].y, 72, "the undisturbed ally keeps its settled row")
+  Assert.equal(allyLeft[1].centerX, 40, "the undisturbed ally keeps its settled column")
+  Assert.equal(allyLeft[1].centerY, 112, "the undisturbed ally keeps its settled row")
 end
 
 return { tests = T }

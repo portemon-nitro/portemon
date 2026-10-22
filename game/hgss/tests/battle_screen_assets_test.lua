@@ -8,8 +8,10 @@
 local Assert = require("tests.support.Assert")
 local StubLease = require("tests.support.StubLease")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 
 local T = {}
+local SHADOW_REGIONS = BattlePresentationManifestFixture.manifest().pictures.shadow.regions
 
 ---@param opts table? heldKeys, failPrepare, seedImages
 ---@return table preparation double owning only the handles it hands out
@@ -52,7 +54,19 @@ local function holder(overrides, assets)
     sceneImage = "scene:probe",
     frameKey = overrides and overrides.frameKey,
     frames = overrides and overrides.frames,
+    shadowRegions = SHADOW_REGIONS,
   })
+end
+
+function T.shadow_size_selects_the_published_source_uv_rectangle()
+  local assets = holder()
+  Assert.deepEqual(assets:shadowRegion(0), SHADOW_REGIONS[1], "small shadow uses the first staged source rectangle")
+  Assert.deepEqual(assets:shadowRegion(1), SHADOW_REGIONS[2], "medium shadow preserves the source alias rectangle")
+  Assert.deepEqual(assets:shadowRegion(2), SHADOW_REGIONS[3], "large shadow uses the next source rectangle")
+  Assert.deepEqual(assets:shadowRegion(3), SHADOW_REGIONS[4], "extra-large shadow uses the final source rectangle")
+  local ok = pcall(assets.shadowRegion, assets, 4)
+  Assert.isFalse(ok, "unknown shadow sizes have no guessed texture region")
+  assets:dispose()
 end
 
 -- The default frame and a declared custom frame both prepare; their
@@ -95,6 +109,7 @@ function T.preparation_failure_surfaces()
     launchId = "assets-sad",
     sceneKey = "general/plain/day",
     sceneImage = "scene:sad",
+    shadowRegions = SHADOW_REGIONS,
   })
   bad:update()
   Assert.equal(bad:state(), "failed", "the preparation failure stops the holder")
@@ -128,6 +143,7 @@ function T.preparation_pending_and_typed_failures()
     launchId = "assets-patient",
     sceneKey = "general/plain/day",
     sceneImage = "scene:patient",
+    shadowRegions = SHADOW_REGIONS,
   })
   waiting:update()
   Assert.equal(waiting:state(), "pending", "a bare not-yet answer polls again without failing")
@@ -141,6 +157,7 @@ function T.preparation_pending_and_typed_failures()
     launchId = "assets-untyped",
     sceneKey = "general/plain/day",
     sceneImage = "scene:untyped",
+    shadowRegions = SHADOW_REGIONS,
   })
   untyped:update()
   Assert.equal(untyped:state(), "failed", "a nil answer with a message fails closed")
@@ -165,6 +182,7 @@ function T.preparation_pending_and_typed_failures()
     launchId = "assets-refused",
     sceneKey = "general/plain/day",
     sceneImage = "scene:refused",
+    shadowRegions = SHADOW_REGIONS,
   })
   refused:update()
   Assert.equal(refused:state(), "failed", "a not-yet answer carrying a failure string fails closed")
@@ -325,12 +343,7 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
   local launchId = "launch-portrait-rebind"
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = BattlePresentationManifestFixture.manifest(),
     model = {},
     submit = function(_)
       return true
@@ -462,7 +475,7 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
     packetId = 3,
     events = {
       {
-        sequence = 1,
+        sequence = 2,
         kind = "switch",
         cause = { key = "TACKLE" },
         audience = "public",
@@ -709,6 +722,7 @@ end
 -- index, nothing asks for the full mon summary, and no blank sprite
 -- paints while a page is still building.
 
+local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local PORTRAIT_SCENE_KEY = "general/grass/day"
 local PORTRAIT_MENU_IMAGE = "assets/generated/battle/menu-command-1.png"
 local PORTRAIT_FONT_PATH = "font-0"
@@ -727,106 +741,19 @@ local function solidPortraitPng(width, height)
   return PngWriter.encode(width, height, table.concat(pixels))
 end
 
--- The staged battle manifest the demand envelope loads: one scene, the
--- shared menu artwork, and the published wild/trainer/rival/select
--- audio roles. Shape mirrors the proven production-audio fixture so the
--- staged menu, HUD, font, and audio checks pass without a ROM dump.
+-- The staged battle manifest the demand envelope loads is the same valid
+-- current v2 manifest used by the schema and cache suites.
 ---@return table schema-valid staged battle manifest
 local function stagedPortraitBattleManifest()
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local images = {
-    [PORTRAIT_MENU_IMAGE] = { width = 8, height = 8 },
-    [BattlePresentationCache.sceneImagePath(PORTRAIT_SCENE_KEY)] = { width = 64, height = 64 },
-  }
-  local function sprite(image)
-    return {
-      image = image,
-      cells = {
-        {
-          objs = {
-            {
-              x = 0,
-              y = 0,
-              tile = 0,
-              flipH = false,
-              flipV = false,
-              palette = 0,
-              shape = 0,
-              size = 0,
-              width = 8,
-              height = 8,
-              affine = false,
-              disabled = false,
-              objMode = "normal",
-              mosaic = false,
-              colorMode = "16-color",
-              priority = 0,
-            },
-          },
-        },
-      },
-      animation = { playMode = "forward", loopStartFrameIdx = 0, frames = { { cell = 0, duration = 4 } } },
-      palette = { colors = { { r = 1, g = 2, b = 3 } } },
-    }
-  end
-  local function menu(image)
-    return {
-      image = image,
-      screens = { { image = image, width = 8, height = 8 } },
-    }
-  end
-  local command = menu(PORTRAIT_MENU_IMAGE)
-  return {
-    schema = "g4-battle-presentation-v1",
-    version = { id = "heartgold", language = "en" },
-    verified = true,
-    scenes = { { key = PORTRAIT_SCENE_KEY, background = "general", terrain = "grass", time = "day" } },
-    images = images,
-    command = command,
-    moves = command,
-    target = command,
-    twoOption = command,
-    lower = {
-      image = PORTRAIT_MENU_IMAGE,
-      palette = { colors = { { r = 1, g = 2, b = 3 } } },
-      variants = {
-        general = {
-          base = { colors = { { r = 1, g = 2, b = 3 } } },
-          touch = { colors = { { r = 1, g = 2, b = 3 } } },
-        },
-      },
-    },
-    playerHud = sprite(PORTRAIT_MENU_IMAGE),
-    enemyHud = sprite(PORTRAIT_MENU_IMAGE),
-    doublesHud = {
-      playerLeft = sprite(PORTRAIT_MENU_IMAGE),
-      playerRight = sprite(PORTRAIT_MENU_IMAGE),
-      enemyLeft = sprite(PORTRAIT_MENU_IMAGE),
-      enemyRight = sprite(PORTRAIT_MENU_IMAGE),
-    },
-    arrow = sprite(PORTRAIT_MENU_IMAGE),
-    partyGauges = {
-      sprite(PORTRAIT_MENU_IMAGE),
-      sprite(PORTRAIT_MENU_IMAGE),
-    },
-    terrain = {
-      type0 = { cells = sprite(PORTRAIT_MENU_IMAGE).cells, animation = sprite(PORTRAIT_MENU_IMAGE).animation },
-      type1 = { cells = sprite(PORTRAIT_MENU_IMAGE).cells, animation = sprite(PORTRAIT_MENU_IMAGE).animation },
-    },
-    textRoles = {
-      narration = { font = PORTRAIT_FONT_PATH, sourceFontId = 1 },
-      menu = { font = PORTRAIT_FONT_PATH },
-      hud = { font = PORTRAIT_FONT_PATH },
-    },
-    audioRoles = {
-      wild = "SEQ_GS_VS_NORAPOKE",
-      trainer = "SEQ_GS_VS_TRAINER",
-      rival = "SEQ_GS_VS_RIVAL",
-      select = PORTRAIT_SELECT_SYMBOL,
-      narrationBank = 197,
-      cries = "species",
-    },
-  }
+  local manifest = ManifestFixture.manifest()
+  manifest.menus.images[PORTRAIT_MENU_IMAGE] = { width = 8, height = 8 }
+  manifest.menus.images[BattlePresentationCache.sceneImagePath(PORTRAIT_SCENE_KEY)] = { width = 512, height = 256 }
+  manifest.messages.roles.narration.font = PORTRAIT_FONT_PATH
+  manifest.messages.roles.menu.font = PORTRAIT_FONT_PATH
+  manifest.messages.roles.hud.font = PORTRAIT_FONT_PATH
+  manifest.audioRoles.select = PORTRAIT_SELECT_SYMBOL
+  return manifest
 end
 
 -- An isolated layout-only versioned cache: the portrait selector manifest
@@ -839,20 +766,70 @@ local function layoutOnlyCache(portraitEntries)
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
   local MonCache = require("libs.assets.src.MonCache")
   local sceneImage = BattlePresentationCache.sceneImagePath(PORTRAIT_SCENE_KEY)
-  local cache = { versionId = "portrait-demand-probe", files = {}, lua = {}, loadedPaths = {} }
+  local charactersPath = BattlePresentationCache.sceneCharactersPath(PORTRAIT_SCENE_KEY)
+  local mapPath = BattlePresentationCache.sceneMapPath(PORTRAIT_SCENE_KEY)
+  local palettePath = BattlePresentationCache.scenePalettePath(PORTRAIT_SCENE_KEY)
+  local cache = { versionId = "portrait-demand-probe", files = {}, lua = {}, loadedPaths = {}, readPaths = {} }
   cache.files[PORTRAIT_MENU_IMAGE] = solidPortraitPng(8, 8)
   cache.files[PORTRAIT_FONT_PATH] = "staged-font"
-  cache.files[sceneImage] = solidPortraitPng(64, 64)
-  cache.lua[BattlePresentationCache.manifestPath()] = stagedPortraitBattleManifest()
+  local stagedManifest = stagedPortraitBattleManifest()
+  for _, menu in ipairs({ "command", "moves", "target" }) do
+    local image = stagedManifest.menus[menu].image
+    cache.files[image] = solidPortraitPng(8, 8)
+  end
+  local hud = stagedManifest.hud
+  for _, section in ipairs({ hud.player, hud.enemy }) do
+    cache.files[section.image] = solidPortraitPng(8, 8)
+  end
+  for _, section in pairs(hud.doubles) do
+    cache.files[section.image] = solidPortraitPng(8, 8)
+  end
+  cache.files[stagedManifest.pictures.shadow.image] = solidPortraitPng(64, 64)
+  cache.files[sceneImage] = solidPortraitPng(512, 256)
+  cache.files[charactersPath] = string.rep("\0", 65536)
+  local mapEntries = {}
+  for index = 1, 2048 do
+    mapEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
+  end
+  local paletteColors = {}
+  for index = 1, 256 do
+    paletteColors[index] = { r = 0, g = 0, b = 0 }
+  end
+  cache.lua[BattlePresentationCache.manifestPath()] = stagedManifest
+  cache.lua[mapPath] = { width = 512, height = 256, entries = mapEntries }
+  cache.lua[palettePath] = { colors = paletteColors }
   cache.lua[BattlePresentationCache.scenePath(PORTRAIT_SCENE_KEY)] = {
-    schema = "g4-battle-scene-v1",
+    schema = "g4-battle-scene-v2",
     key = PORTRAIT_SCENE_KEY,
     background = "general",
     terrain = "grass",
     time = "day",
-    canvasWidth = 64,
-    canvasHeight = 64,
-    viewport = { x = 0, y = 0, width = 64, height = 64 },
+    canvasWidth = 512,
+    canvasHeight = 256,
+    viewport = { x = 0, y = 0, width = 256, height = 192 },
+    layers = {
+      {
+        key = "background",
+        backing = { width = 512, height = 256, mapWidth = 64, mapHeight = 32 },
+        viewport = { x = 0, y = 0, width = 256, height = 192 },
+        scroll = { x = 0, y = 0 },
+        characters = {
+          key = "battle-scene/general-grass-day/background/characters",
+          path = charactersPath,
+          format = "indexed8",
+        },
+        map = {
+          key = "battle-scene/general-grass-day/background/map",
+          path = mapPath,
+          format = "tilemap",
+        },
+        palette = {
+          key = "battle-scene/general-grass-day/background/palette",
+          path = palettePath,
+          format = "rgb888",
+        },
+      },
+    },
     imagePath = sceneImage,
   }
   cache.lua[MonCache.portraitManifestPath()] = { entries = portraitEntries }
@@ -861,6 +838,7 @@ local function layoutOnlyCache(portraitEntries)
     return self.lua[path]
   end
   function cache:read(path)
+    self.readPaths[#self.readPaths + 1] = path
     return self.files[path]
   end
   function cache:exists(path, _)
@@ -872,7 +850,17 @@ end
 ---@param pageId integer zero-based portrait page identity under staging
 ---@return table manifest cell covering an 8x8 portrait at the page origin
 local function portraitEntry(pageId)
-  return { x = 0, y = 0, width = 8, height = 8, pageId = pageId }
+  return {
+    x = 0,
+    y = 0,
+    width = 8,
+    height = 8,
+    pageId = pageId,
+    frames = {
+      { x = 0, y = 0, width = 8, height = 8 },
+      { x = 8, y = 0, width = 8, height = 8 },
+    },
+  }
 end
 
 -- Stages one portrait page exactly like the page worker would publish
@@ -1212,6 +1200,7 @@ function T.grown_selector_set_reopens_pending_without_losing_leased_handles()
     assets = services,
     launchId = "portrait-growth-probe",
     sceneKey = PORTRAIT_SCENE_KEY,
+    shadowRegions = SHADOW_REGIONS,
   })
   owned:addSelectors({ leadBack, foeFront })
   owned:update()
@@ -1221,6 +1210,15 @@ function T.grown_selector_set_reopens_pending_without_losing_leased_handles()
   local menuHandle = owned:drawable("menu:command")
   Assert.notNil(sceneHandle, "the opening leases its scene handle")
   Assert.notNil(menuHandle, "the opening leases its menu handle")
+  Assert.notNil(owned:drawable("shadow"), "the production asset route resolves the staged native shadow PNG")
+  local shadowPathRead = false
+  for _, path in ipairs(cache.readPaths) do
+    shadowPathRead = shadowPathRead or path == BattlePresentationManifestFixture.manifest().pictures.shadow.image
+  end
+  Assert.isTrue(
+    shadowPathRead,
+    "shadow lookup reads the exact image path published by the global catalog"
+  )
   local callsBeforeGrowth = prepareCalls
   owned:addSelectors({ reserveBack })
   Assert.equal(owned:state(), "pending", "the grown selector set reopens pending until its page builds")
@@ -1369,6 +1367,7 @@ function T.portrait_page_worker_failure_names_its_selector_and_page_once()
     assets = services,
     launchId = "portrait-doomed-probe",
     sceneKey = PORTRAIT_SCENE_KEY,
+    shadowRegions = SHADOW_REGIONS,
   })
   owned:addSelectors({ leadBack, foeFront })
   owned:update()
@@ -1469,6 +1468,7 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
     assets = services,
     launchId = "portrait-missing-probe",
     sceneKey = PORTRAIT_SCENE_KEY,
+    shadowRegions = SHADOW_REGIONS,
   })
   owned:addSelectors({ leadBack })
   owned:update()
@@ -1507,6 +1507,306 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   Assert.equal(pool.requests, 1, "the undecodable upload is attempted once, never retried per tick")
   Assert.equal(#throwing.images, 0, "the undecodable page leaves no staged handle behind")
   stagedEnvelope:dispose()
+end
+
+-- Only the selected effect is requested and consumed through the real
+-- preparation services: a recording derived host plus a versioned cache
+-- holding a synthetic schema-valid staged effect. The demand stays pending
+-- while the marker or any dependency payload is missing, turns ready only
+-- with the complete staged closure, and never enqueues a sibling effect.
+local function recordingEffectHost()
+  local host = { asks = {}, answers = {} }
+  local derived = {}
+  function derived.requestBattleEffect(key, urgency)
+    host.asks[#host.asks + 1] = { key = key, urgency = urgency }
+    local answer = host.answers[key]
+    if type(answer) == "table" and answer.failure ~= nil then
+      return false, answer.failure
+    end
+    if answer == "ready" then
+      return true
+    end
+    return nil
+  end
+  host.derivedAssets = derived
+  return host
+end
+
+local function effectStagingEnvelope(cache, host)
+  local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local text = {}
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(_) end
+  local windows = {}
+  function windows.drawWindow(_, _, _) end
+  return FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = windows,
+    text = text,
+    measureDisplay = function()
+      return {
+        width = 256,
+        height = 384,
+        topology = ScreenTopology.dualDisplay(
+          { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+          { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+        ),
+        pixelRatio = 1,
+        signature = "effect-staging:dual",
+      }
+    end,
+    derivedAssets = host.derivedAssets,
+  })
+end
+
+function T.selected_effect_demand_reaches_ready_only_through_staged_closure()
+  local FakeCache = require("tests.support.FakeCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local cache = CacheFs.forVersion("probe-effect-staging", FakeCache.new())
+  local host = recordingEffectHost()
+  local envelope = effectStagingEnvelope(cache, host)
+  local services = envelope:_preparationServices()
+  local textureBytes = EffectStagingFixture.rgba(4, 4)
+  local textureIdentity = Hashing.sha1hex(textureBytes)
+  local texturePath = BattlePresentationCache.globalResourcePath("effect/content/" .. textureIdentity)
+  local record = EffectStagingFixture.effectRecord("TACKLE", {
+    { key = "probe-spark", kind = "texture", payload = texturePath, contentIdentity = textureIdentity },
+  })
+  cache:writeLua(BattlePresentationCache.effectPath("TACKLE"), record)
+  local owned = BattlePresentationAssets.new({
+    assets = services,
+    launchId = "probe-staging",
+    sceneKey = "probe/plain/day",
+    shadowRegions = SHADOW_REGIONS,
+  })
+  Assert.equal(owned:demandEffect("TACKLE"), false, "the unstaged effect polls pending without failing")
+  host.answers["TACKLE"] = "ready"
+  Assert.equal(owned:demandEffect("TACKLE"), false, "a ready worker without marker and payloads stays pending")
+  cache:write(BattlePresentationCache.effectMarkerPath("TACKLE"), "probe-marker")
+  Assert.equal(owned:demandEffect("TACKLE"), false, "a marker without dependency payloads stays pending")
+  cache:writeLua(texturePath, { width = 4, height = 4, rgba8888 = textureBytes })
+  Assert.equal(owned:demandEffect("TACKLE"), true, "the closed staged effect reads ready")
+  for _, ask in ipairs(host.asks) do
+    Assert.equal(ask.key, "TACKLE", "every host request names the selected effect, never a sibling")
+  end
+  Assert.isTrue(#host.asks >= 1, "the selected effect is actually requested through the host")
+  local effect = owned:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads")
+  Assert.equal(effect.key, "TACKLE", "the loaded record names the selected effect")
+  local missing, missingErr = owned:loadEffect("SPLASH")
+  Assert.isNil(missing, "an undemanded effect never loads a guess")
+  Assert.isTrue(type(missingErr) == "string" and missingErr ~= "", "the undemanded load fails with context")
+  local slashed, slashedErr = owned:demandEffect("HAS/SLASH")
+  Assert.isNil(slashed, "a non-flat effect key never reads ready")
+  Assert.isTrue(type(slashedErr) == "string" and slashedErr ~= "", "the non-flat key fails with context")
+  owned:dispose()
+  envelope:dispose()
+end
+
+-- An unconfigured production effect service fails loudly when used: no
+-- fake ready value, no silent pending, no guessed record or lease.
+function T.unconfigured_effect_service_fails_instead_of_reporting_ready()
+  local owned = holder(nil, stubAssets({}))
+  local ready, readyErr = owned:demandEffect("TACKLE")
+  Assert.isNil(ready, "an unconfigured effect service never reports ready")
+  Assert.isTrue(type(readyErr) == "string" and readyErr ~= "", "the unconfigured demand fails with context")
+  local record, recordErr = owned:loadEffect("TACKLE")
+  Assert.isNil(record, "nothing loads without a configured effect service")
+  Assert.isTrue(type(recordErr) == "string" and recordErr ~= "", "the unconfigured load fails with context")
+  local lease, leaseErr = owned:resolveEffectResource({ key = "TACKLE" }, "probe-spark")
+  Assert.isNil(lease, "nothing resolves without a configured effect service")
+  Assert.isTrue(type(leaseErr) == "string" and leaseErr ~= "", "the unconfigured resolve fails with context")
+  owned:dispose()
+end
+
+-- Two overlapping occurrences share one immutable texture: one cancel
+-- never releases the shared handle early, the last release withdraws it,
+-- launch disposal frees it exactly once, and a stale resolve after
+-- disposal publishes nothing.
+function T.overlapping_effect_leases_share_one_handle_and_release_exactly_once()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local staging = EffectStagingFixture.new({ launchId = "probe-overlap" })
+  local textureBytes = EffectStagingFixture.rgba(4, 4)
+  local textureIdentity = Hashing.sha1hex(textureBytes)
+  staging:stageEffect(
+    "TACKLE",
+    EffectStagingFixture.effectRecord("TACKLE", {
+      { key = "probe-spark", kind = "texture", payload = "effects/probe-spark.lua", contentIdentity = textureIdentity },
+    }),
+    { ["effects/probe-spark.lua"] = { width = 4, height = 4, rgba8888 = textureBytes } }
+  )
+  local owned = BattlePresentationAssets.new({
+    assets = staging.services,
+    launchId = "probe-overlap",
+    sceneKey = "probe/plain/day",
+    shadowRegions = SHADOW_REGIONS,
+  })
+  Assert.equal(owned:demandEffect("TACKLE"), true, "the staged closure reads ready")
+  local effect = owned:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads before resolving")
+  local first = owned:resolveEffectResource(effect, "probe-spark")
+  Assert.notNil(first, "the first occurrence resolves its texture")
+  Assert.equal(first.width, 4, "the texture lease carries its staged width")
+  Assert.equal(first.height, 4, "the texture lease carries its staged height")
+  Assert.equal(first.rgba8888, textureBytes, "the texture lease shares its exact staged bytes")
+  local second = owned:resolveEffectResource(effect, "probe-spark")
+  Assert.notNil(second, "the overlapping occurrence resolves the same texture")
+  Assert.equal(staging.uploads, 1, "duplicate semantic requests upload once and share")
+  Assert.notNil(owned:drawable("probe-spark"), "the shared texture resolves through drawables")
+  Assert.isTrue(owned:drawable("probe-spark") == owned:drawable("probe-spark"), "drawables stay stable")
+  owned:releaseEffectResource(first)
+  Assert.notNil(owned:drawable("probe-spark"), "one cancel never releases the shared texture early")
+  owned:releaseEffectResource(second)
+  Assert.isNil(owned:drawable("probe-spark"), "only the last release withdraws the shared texture")
+  owned:dispose()
+  local stale, staleErr = owned:resolveEffectResource(effect, "probe-spark")
+  Assert.isNil(stale, "a stale resolve after disposal publishes nothing")
+  Assert.isTrue(type(staleErr) == "string" and staleErr ~= "", "the stale resolve names its disposal")
+  Assert.equal(staging.drops["probe-spark"], 1, "the shared handle frees exactly once")
+  owned:dispose()
+  Assert.equal(staging.drops["probe-spark"], 1, "a second disposal never frees again")
+end
+
+-- A texture that fails upload after an earlier success is terminal with
+-- launch, effect, and resource context: previously acquired handles
+-- release once, the failure replays identically instead of hanging as
+-- pending, and the failed upload is never retried.
+function T.effect_upload_failure_releases_acquired_handles_and_stays_failed()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local staging = EffectStagingFixture.new({ launchId = "probe-upload-failure" })
+  local firstBytes = EffectStagingFixture.rgba(4, 4)
+  local secondBytes = EffectStagingFixture.rgba(2, 2)
+  local firstIdentity = Hashing.sha1hex(firstBytes)
+  local secondIdentity = Hashing.sha1hex(secondBytes)
+  staging:stageEffect(
+    "TACKLE",
+    EffectStagingFixture.effectRecord("TACKLE", {
+      { key = "probe-first", kind = "texture", payload = "effects/probe-first.lua", contentIdentity = firstIdentity },
+      {
+        key = "probe-second",
+        kind = "texture",
+        payload = "effects/probe-second.lua",
+        contentIdentity = secondIdentity,
+      },
+    }),
+    {
+      ["effects/probe-first.lua"] = { width = 4, height = 4, rgba8888 = firstBytes },
+      ["effects/probe-second.lua"] = { width = 2, height = 2, rgba8888 = secondBytes },
+    }
+  )
+  staging:failUploadFor("probe-second", "probe decode boom")
+  local owned = BattlePresentationAssets.new({
+    assets = staging.services,
+    launchId = "probe-upload-failure",
+    sceneKey = "probe/plain/day",
+    shadowRegions = SHADOW_REGIONS,
+  })
+  Assert.equal(owned:demandEffect("TACKLE"), true, "both payloads staged, so the effect reads ready")
+  local effect = owned:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads before resolving")
+  Assert.notNil(owned:resolveEffectResource(effect, "probe-first"), "the first texture resolves")
+  local lease, failure = owned:resolveEffectResource(effect, "probe-second")
+  Assert.isNil(lease, "the failed upload hands out no image")
+  Assert.isTrue(type(failure) == "string" and failure ~= "", "the failed upload is terminal with context")
+  local reason = failure --[[@as string]]
+  Assert.isTrue(reason:find("probe-second", 1, true) ~= nil, "the failure names its resource: " .. reason)
+  Assert.isTrue(reason:find("TACKLE", 1, true) ~= nil, "the failure names its effect: " .. reason)
+  Assert.isTrue(
+    reason:find("probe-upload-failure", 1, true) ~= nil,
+    "the failure names its launch: " .. reason
+  )
+  Assert.equal(staging.drops["probe-first"], 1, "handles acquired before the failure release once")
+  Assert.isNil(owned:drawable("probe-first"), "the rolled-back texture hands out nothing")
+  local again, againErr = owned:demandEffect("TACKLE")
+  Assert.isNil(again, "the failed effect never reads ready again")
+  Assert.equal(againErr, reason, "the terminal failure replays identically instead of hanging pending")
+  local third, thirdErr = owned:demandEffect("TACKLE")
+  Assert.isNil(third, "the failed effect stays failed across polls")
+  Assert.equal(thirdErr, reason, "no held queue loops forever")
+  owned:dispose()
+  Assert.equal(staging.drops["probe-first"], 1, "disposal never frees the rolled-back handle twice")
+  Assert.isNil(staging.drops["probe-second"], "the never-uploaded texture never releases")
+end
+
+-- Readiness probes never instantiate images: repeated pending and ready
+-- demands plus loads create nothing; only admission uploads.
+function T.readiness_probes_create_no_images()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local staging = EffectStagingFixture.new({ launchId = "probe-no-upload" })
+  local owned = BattlePresentationAssets.new({
+    assets = staging.services,
+    launchId = "probe-no-upload",
+    sceneKey = "probe/plain/day",
+    shadowRegions = SHADOW_REGIONS,
+  })
+  Assert.equal(owned:demandEffect("TACKLE"), false, "the unstaged effect polls pending")
+  Assert.equal(owned:demandEffect("TACKLE"), false, "repeated probes poll without uploading")
+  local missing, missingErr = owned:loadEffect("TACKLE")
+  Assert.isNil(missing, "nothing loads before readiness")
+  Assert.isTrue(type(missingErr) == "string" and missingErr ~= "", "the early load fails with context")
+  Assert.equal(staging.uploads, 0, "pending probes create no images")
+  local textureBytes = EffectStagingFixture.rgba(4, 4)
+  local textureIdentity = Hashing.sha1hex(textureBytes)
+  staging:stageEffect(
+    "TACKLE",
+    EffectStagingFixture.effectRecord("TACKLE", {
+      { key = "probe-spark", kind = "texture", payload = "effects/probe-spark.lua", contentIdentity = textureIdentity },
+    }),
+    { ["effects/probe-spark.lua"] = { width = 4, height = 4, rgba8888 = textureBytes } }
+  )
+  Assert.equal(owned:demandEffect("TACKLE"), true, "the staged effect reads ready")
+  Assert.equal(staging.uploads, 0, "a ready answer still creates no images")
+  local effect = owned:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads")
+  Assert.equal(staging.uploads, 0, "loads create no images")
+  Assert.notNil(owned:resolveEffectResource(effect, "probe-spark"), "admission resolves the texture")
+  Assert.equal(staging.uploads, 1, "only admission uploads")
+  owned:dispose()
+end
+
+-- A source-only effect with sound but no texture is ready without dummy
+-- pixels: the sound descriptor arrives as an immutable lease, never an
+-- invented image.
+function T.sound_only_effect_readies_without_texture()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local staging = EffectStagingFixture.new({ launchId = "probe-audio-only" })
+  local cryIdentity = Hashing.sha1hex("probe-effect-cry")
+  staging:stageEffect(
+    "GROWL",
+    EffectStagingFixture.effectRecord("GROWL", {
+      { key = "probe-cry", kind = "sound", payload = "effects/probe-cry.lua", contentIdentity = cryIdentity },
+    }),
+    { ["effects/probe-cry.lua"] = { format = "probe-sequence", steps = {} } }
+  )
+  local owned = BattlePresentationAssets.new({
+    assets = staging.services,
+    launchId = "probe-audio-only",
+    sceneKey = "probe/plain/day",
+    shadowRegions = SHADOW_REGIONS,
+  })
+  Assert.equal(owned:demandEffect("GROWL"), true, "the audio-only closure reads ready")
+  local effect = owned:loadEffect("GROWL")
+  Assert.notNil(effect, "the audio-only effect loads")
+  local lease = owned:resolveEffectResource(effect, "probe-cry")
+  Assert.notNil(lease, "the sound dependency resolves")
+  Assert.equal(lease.kind, "sound", "the sound lease keeps its kind")
+  Assert.equal(lease.payloadPath, "effects/probe-cry.lua", "the runtime lease names its staged path separately")
+  Assert.isNil(lease.payload, "the runtime lease never conflates the path field with decoded content")
+  Assert.deepEqual(lease.data, { format = "probe-sequence", steps = {} }, "the sound lease carries its decoded record")
+  Assert.isNil(lease.rgba8888, "the sound lease carries no pixels")
+  Assert.equal(staging.uploads, 0, "no dummy texture is invented for an audio-only effect")
+  Assert.isNil(owned:drawable("probe-cry"), "sound dependencies never resolve to a drawable")
+  owned:dispose()
 end
 
 return { tests = T }

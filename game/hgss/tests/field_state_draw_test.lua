@@ -598,96 +598,6 @@ function T.world_parts_refresh_replaced_scene_neighbor_and_actor_draws()
   Assert.equal(refreshed[6][1], nextActorDraws[1])
 end
 
--- A runtime whose every draw-time collaborator is idle; tests override the
--- parts they exercise.
-local function idleDrawRuntime(sceneRuntime, renderEnvironment, menuPresentation)
-  return {
-    pcApplicationHost = idlePcApplicationHost(),
-    runtimeMap = {
-      mapId = 61,
-      mapSymbol = "MAP_NEW_BARK",
-      sceneRuntime = sceneRuntime,
-      renderEnvironment = renderEnvironment,
-    },
-    player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
-    playerVisual = {
-      drawRecord = function()
-        return { visible = false }
-      end,
-    },
-    fieldEntranceIndicator = {
-      status = function()
-        return { visible = false }
-      end,
-    },
-    actors = {
-      drawRecords = function()
-        return {}
-      end,
-    },
-    session = {
-      renderAlpha = function()
-        return 0.5
-      end,
-    },
-    overworld = {
-      isPresent = function()
-        return true
-      end,
-    },
-    destinationWorldPresentable = function()
-      return true
-    end,
-    acknowledgeDestinationPresentation = function() end,
-    viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
-    camera = { zoom = 1 },
-    transition = { fadeAlpha = 0 },
-    fieldPixelScale = {
-      resolvedScale = function()
-        return 3
-      end,
-    },
-    dialogue = {
-      isModal = function()
-        return false
-      end,
-    },
-    scripts = { dialogueHost = {
-      yesNoPresentation = function()
-        return nil
-      end,
-    } },
-    contextChoiceProvider = {
-      status = function()
-        return nil
-      end,
-    },
-    contextChoicePresentation = function()
-      return nil
-    end,
-    signpost = {
-      isModal = function()
-        return false
-      end,
-    },
-    applicationHost = {
-      isActive = function()
-        return false
-      end,
-      status = function()
-        return { phase = "closed", fadeAlpha = 0 }
-      end,
-    },
-    menuHost = {
-      presentation = function()
-        return menuPresentation()
-      end,
-    },
-    yesNoHost = idleChoiceHost(),
-    resizePresentation = function() end,
-  }
-end
-
 -- A live presentation runtime always carries the transition, dialogue, and
 -- menu host; draw consults all three unconditionally, and the renderer
 -- receives the runtime map's render environment.
@@ -707,10 +617,100 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
   local presentations = 0
   local received
   local state = setmetatable({
-    runtime = idleDrawRuntime(sceneRuntime, renderEnvironment, function()
+    battleEnvelope = {
+      ownsInput = function()
+        return false
+      end,
+      cover = function()
+        return { coefficient = 0 }
+      end,
+    },
+    runtime = {
+      pcApplicationHost = idlePcApplicationHost(),
+      runtimeMap = {
+        mapId = 61,
+        mapSymbol = "MAP_NEW_BARK",
+        sceneRuntime = sceneRuntime,
+        renderEnvironment = renderEnvironment,
+      },
+      player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
+      playerVisual = {
+        drawRecord = function()
+          return { visible = false }
+        end,
+      },
+      fieldEntranceIndicator = {
+        status = function()
+          return { visible = false }
+        end,
+      },
+      actors = {
+        drawRecords = function()
+          return {}
+        end,
+      },
+      session = {
+        renderAlpha = function()
+          return 0.5
+        end,
+      },
+      overworld = {
+        isPresent = function()
+          return true
+        end,
+      },
+      destinationWorldPresentable = function()
+        return true
+      end,
+      acknowledgeDestinationPresentation = function() end,
+      viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
+      camera = { zoom = 1 },
+      transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      scripts = { dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      } },
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
+      },
+      contextChoicePresentation = function()
+        return nil
+      end,
+      signpost = {
+        isModal = function()
+          return false
+        end,
+      },
+      applicationHost = {
+        isActive = function()
+          return false
+        end,
+        status = function()
+          return { phase = "closed", fadeAlpha = 0 }
+        end,
+      },
+      menuHost = {
+        presentation = function()
           presentations = presentations + 1
           return nil
-        end),
+        end,
+      },
+      yesNoHost = idleChoiceHost(),
+      resizePresentation = function() end,
+    },
     _pollPresentationTopology = true,
     topologyProvider = function()
       return ScreenTopology.oneDisplay({
@@ -740,55 +740,75 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
   Assert.isTrue(received.worldParts[3] == sceneRuntime.animatedBuildingDraws)
   Assert.deepEqual(received.worldParts[4], {})
   Assert.deepEqual(received.worldParts[5], {})
+  Assert.isNil(received.capture, "ordinary field draw does not create transition planes")
   Assert.equal(presentations, 1, "draw always queries the menu host presentation")
 end
 
--- The Ho-Oh cinematic is its own application with the source projection:
--- it draws at camera zoom 1 whatever the field pixel scale resolves to, and
--- the field camera keeps its own zoom afterwards.
-function T.ho_oh_cinematic_draws_at_source_zoom_and_restores_the_field_zoom()
-  local FieldPixelScale = require("libs.hgss.src.presentation.FieldPixelScale")
-  local function drawAt(width, height)
-    local runtime = idleDrawRuntime({}, { edgeColors = { [0] = 0 } }, function()
-      return nil
-    end)
-    runtime.viewport = FieldViewport.new(width, height, { mode = "strict" })
-    runtime.fieldPixelScale = FieldPixelScale.new()
-    runtime.fieldPixelScale:resize(runtime.viewport.referenceFrame.height)
-    runtime.camera = {
-      zoom = runtime.fieldPixelScale:cameraZoom(),
-      setZoom = function(self, zoom)
-        self.zoom = zoom
-      end,
-    }
-    runtime.hoOhAppearanceScene = {
-      status = function()
-        return { cinematicShot = "first" }
-      end,
-    }
-    local fieldZoom = runtime.camera.zoom
-    local drawn = {}
-    local state = stateWith(runtime)
-    state._hoOhAppearanceRenderer = {
-      cinematicEnvironment = function(_, environment)
-        return environment
-      end,
-      endScene = function() end,
-    }
-    state.presentationResources = presentationResourcesStub({
-      draw = function(_, _, camera)
-        drawn[#drawn + 1] = camera.zoom
-      end,
-    })
-    state:draw()
-    return drawn, fieldZoom, runtime.camera.zoom
-  end
-  for _, size in ipairs({ { 1280, 720 }, { 1920, 1080 } }) do
-    local drawn, fieldZoom, afterZoom = drawAt(size[1], size[2])
-    Assert.deepEqual(drawn, { 1 }, "the cinematic uses the source projection at " .. size[2] .. "p")
-    Assert.isTrue(fieldZoom ~= 1, "the field zoom differs from the source projection")
-    Assert.equal(afterZoom, fieldZoom, "the field zoom is restored after the cinematic draw")
-  end
+function T.transition_capture_reads_fresh_field_planes_without_drawing_the_field()
+  local camera = { frame = 1 }
+  local viewport = { worldViewport = { x = 0, y = 0, width = 256, height = 192 } }
+  local captures = {}
+  local fieldParts = { { kind = "world" } }
+  local renderer = {
+    captureTransitionLayers = function(_, environment, capturedCamera, parts, sprites, capturedViewport, alpha, scale)
+      local capture = { world = {}, dispose = function() end }
+      captures[#captures + 1] = {
+        environment = environment,
+        camera = capturedCamera,
+        parts = parts,
+        sprites = sprites,
+        viewport = capturedViewport,
+        alpha = alpha,
+        scale = scale,
+        result = capture,
+      }
+      return capture
+    end,
+  }
+  local environment = { lighting = { records = {} } }
+  local alpha = 0.25
+  local state = setmetatable({
+    runtime = {
+      runtimeMap = { renderEnvironment = environment },
+      camera = camera,
+      viewport = viewport,
+      session = {
+        renderAlpha = function()
+          return alpha
+        end,
+      },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
+    },
+    presentationResources = { renderer = renderer },
+    worldParts = fieldParts,
+    spriteItems = {},
+    _worldParts = function()
+      return fieldParts
+    end,
+  }, FieldState)
+
+  local first = state:_captureTransitionLayers()
+  alpha = 0.75
+  camera = { frame = 2 }
+  state.runtime.camera = camera
+  local second = state:_captureTransitionLayers()
+
+  Assert.equal(#captures, 2, "each source tick requests a fresh native field render")
+  Assert.equal(captures[1].environment, environment)
+  Assert.equal(captures[1].camera.frame, 1)
+  Assert.equal(captures[1].alpha, 0.25)
+  Assert.equal(captures[2].camera.frame, 2)
+  Assert.equal(captures[2].alpha, 0.75)
+  Assert.equal(captures[1].parts, fieldParts)
+  Assert.equal(captures[1].sprites, state.spriteItems)
+  Assert.equal(captures[1].viewport, viewport)
+  Assert.equal(captures[1].scale, 3)
+  Assert.equal(first, captures[1].result)
+  Assert.equal(second, captures[2].result)
 end
 
 -- A physical-coverage map whose active logical map has no realized scene
@@ -2334,11 +2354,7 @@ function T.first_destination_frame_waits_for_the_complete_actor_set()
     state:update(0.016)
     state:draw()
     Assert.equal(#drawCalls, 0, "a partially admitted destination draws no world frame")
-    Assert.equal(
-      session.mapEntryStage,
-      "await_presentation",
-      "a held destination is never acknowledged"
-    )
+    Assert.equal(session.mapEntryStage, "await_presentation", "a held destination is never acknowledged")
     Assert.equal(#cover.rectangles, 1, "the held destination paints one opaque cover")
     local heldCover = cover.rectangles[1]
     Assert.equal(heldCover.mode, "fill")
@@ -2389,17 +2405,19 @@ function T.first_destination_frame_waits_for_the_complete_actor_set()
       "a failed first draw leaves the destination unacknowledged"
     )
     Assert.equal(#failedCalls, 0, "a failed first draw publishes no world frame")
-    failed.state.presentationResources.renderer = { draw = function(_, environment, _, worldParts, spriteItems)
-      local identities = {}
-      for _, item in ipairs((worldParts or {})[6] or {}) do
-        identities[#identities + 1] = item.actorId
-      end
-      for _, item in ipairs(spriteItems or {}) do
-        identities[#identities + 1] = item.actorId
-      end
-      table.sort(identities)
-      failedCalls[#failedCalls + 1] = { environment = environment, actorIds = identities }
-    end }
+    failed.state.presentationResources.renderer = {
+      draw = function(_, environment, _, worldParts, spriteItems)
+        local identities = {}
+        for _, item in ipairs((worldParts or {})[6] or {}) do
+          identities[#identities + 1] = item.actorId
+        end
+        for _, item in ipairs(spriteItems or {}) do
+          identities[#identities + 1] = item.actorId
+        end
+        table.sort(identities)
+        failedCalls[#failedCalls + 1] = { environment = environment, actorIds = identities }
+      end,
+    }
     failed.state:draw()
     Assert.equal(#failedCalls, 1, "the retry presents the destination exactly once")
     Assert.equal(failed.session.mapEntryStage, "resume", "the retry acknowledges the destination")
@@ -2423,7 +2441,8 @@ function T.seamless_connection_keeps_the_world_drawn_through_its_entry()
       records = { actorRecord("map:61:object:1", 34), actorRecord("map:62:object:7", 77) },
       lifecycles = { on_transition = true, on_resume = true },
     })
-    local state, session, actors, runtime, assets = handles.state, handles.session, handles.actors, handles.runtime, handles.assets
+    local state, session, actors, runtime, assets =
+      handles.state, handles.session, handles.actors, handles.runtime, handles.assets
     local environmentA = { id = "A" }
     runtime.runtimeMap.renderEnvironment = environmentA
     for tick = 1, 5 do
@@ -3175,8 +3194,7 @@ function T.superseded_revision_returns_only_staged_ownership()
   }, {
     pending = { [36] = true },
   })
-  local runtime, actors =
-    stagedPresentationRuntime({ [34] = true }, { actorRecord("map:61:object:1", 34) })
+  local runtime, actors = stagedPresentationRuntime({ [34] = true }, { actorRecord("map:61:object:1", 34) })
   local presentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
     assets = assets --[[@as FieldActorPresentationAssets]],
   })
@@ -3393,8 +3411,7 @@ end
 -- unchanged sprite set reconciles without new acquisition.
 function T.rebound_runtime_map_with_same_id_is_not_covered_by_prior_admission()
   local assets = stagedPresentationAssets({ [99] = presentationEntry(99), [34] = presentationEntry(34) })
-  local runtime, actors =
-    stagedPresentationRuntime({ [34] = true }, { actorRecord("map:61:object:1", 34) })
+  local runtime, actors = stagedPresentationRuntime({ [34] = true }, { actorRecord("map:61:object:1", 34) })
   local presentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
     assets = assets --[[@as FieldActorPresentationAssets]],
   })
@@ -3405,14 +3422,8 @@ function T.rebound_runtime_map_with_same_id_is_not_covered_by_prior_admission()
   Assert.deepEqual(drawIdentities(committedItems), { "field:player", "map:61:object:1" })
 
   runtime.runtimeMap = { mapId = 61 }
-  Assert.isFalse(
-    presentation:sync(),
-    "a rebound map object with the same id earns admission anew"
-  )
-  Assert.isTrue(
-    presentation:sync(),
-    "the unchanged sprite set reconciles without new acquisition"
-  )
+  Assert.isFalse(presentation:sync(), "a rebound map object with the same id earns admission anew")
+  Assert.isTrue(presentation:sync(), "the unchanged sprite set reconciles without new acquisition")
   Assert.isNil(assets.prepares[36], "reconciliation requests no sprite that was never desired")
   actors.records[1].world.x = 9
   local rebound = presentation:drawItems(0.5)
@@ -3441,8 +3452,7 @@ function T.pending_new_map_revision_draws_no_old_map_records_or_emotes()
   }, {
     pending = { [36] = true },
   })
-  local runtime, actors =
-    stagedPresentationRuntime({ [34] = true }, { actorRecord("map:61:object:1", 34) })
+  local runtime, actors = stagedPresentationRuntime({ [34] = true }, { actorRecord("map:61:object:1", 34) })
   local presentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
     assets = assets --[[@as FieldActorPresentationAssets]],
   })
@@ -3462,11 +3472,7 @@ function T.pending_new_map_revision_draws_no_old_map_records_or_emotes()
   actors.spriteIds[36] = true
   actors.records = { actorRecord("map:61:object:2", 36) }
   Assert.isFalse(presentation:sync())
-  Assert.equal(
-    #presentation:drawItems(0.5),
-    0,
-    "a pending new-map revision draws no old-map actors"
-  )
+  Assert.equal(#presentation:drawItems(0.5), 0, "a pending new-map revision draws no old-map actors")
   Assert.deepEqual(presentation:records(), {}, "no old-map emote records leak into the new scene")
   Assert.isNil(assets.acquisitions[36], "no reference is taken before the atlas is ready")
 

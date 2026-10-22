@@ -20,6 +20,7 @@ local VALID_KINDS = {
   ["battle-scene"] = true,
   ["audio-bank"] = true,
   pokedex = true,
+  ["battle-effect"] = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
@@ -146,6 +147,12 @@ local function selectorKey(selector)
     assert(selector.sceneKey == nil, "pokedex request carries no scene selector")
     assert(selector.bankId == nil, "pokedex request carries no bank selector")
     return "pokedex"
+  elseif kind == "battle-effect" then
+    assert(
+      type(selector.effectKey) == "string" and selector.effectKey ~= "" and selector.effectKey:find("/", 1, true) == nil,
+      "battle-effect request requires its flat effectKey"
+    )
+    return "battle-effect:" .. selector.effectKey
   else
     assert(
       type(selector.pageId) == "number" and selector.pageId % 1 == 0 and selector.pageId >= 0,
@@ -256,6 +263,8 @@ function CacheService:request(epoch, selector)
   elseif selector.requestKind == "pokedex" then
     -- The selector-free pokedex demand carries no job, source, page, or
     -- map identity: the dispatched packet names its kind and urgency only.
+  elseif selector.requestKind == "battle-effect" then
+    command.effectKey = selector.effectKey
   else
     command.pageId = selector.pageId
   end

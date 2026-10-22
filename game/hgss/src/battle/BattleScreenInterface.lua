@@ -40,10 +40,10 @@ local MOVE_REGIONS = {
 -- bottom cancel strip. Singles auto-resolve and never show these; they
 -- exist so an explicit multi-target decision has admitted regions.
 local TARGET_REGIONS = {
-  { id = "target:0", x = 28, y = 92, w = 64, h = 48 },
-  { id = "target:1", x = 164, y = 8, w = 64, h = 48 },
-  { id = "target:2", x = 164, y = 92, w = 64, h = 48 },
-  { id = "target:3", x = 28, y = 8, w = 64, h = 48 },
+  { id = "target:0", x = 0, y = 88, w = 121, h = 57 },
+  { id = "target:1", x = 136, y = 8, w = 120, h = 73 },
+  { id = "target:2", x = 136, y = 88, w = 120, h = 57 },
+  { id = "target:3", x = 0, y = 8, w = 121, h = 73 },
   { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
 }
 
@@ -74,6 +74,12 @@ end
 local function childRegions(child)
   if type(child) ~= "table" or child.interactive ~= true then
     return nil
+  end
+  if child.kind == "learn" and type(child.confirmation) == "table" then
+    return {
+      { id = "confirm", x = 0, y = 32, w = 256, h = 64 },
+      { id = "back", x = 0, y = 104, w = 256, h = 64 },
+    }
   end
   local regions = {}
   local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
@@ -242,6 +248,11 @@ local function scopeFor(view)
     return "moves"
   elseif mode == "target" then
     return "target"
+  elseif mode == "child" and type(view.childView) == "table" then
+    local child = view.childView --[[@as table<string, unknown>]]
+    if child.kind == "learn" and type(child.confirmation) == "table" then
+      return "two-option"
+    end
   end
   return "command"
 end
@@ -371,6 +382,10 @@ local function inputKey(mode, requestId, signature, view)
   if type(view) == "table" and type(view.childView) == "table" then
     local child = view.childView --[[@as table<string, unknown>]]
     parts[#parts + 1] = tostring(child.kind or "-") .. ":" .. tostring(child.focusId or "-")
+    local confirmation = child.confirmation
+    if type(confirmation) == "table" then
+      parts[#parts + 1] = tostring(confirmation.kind or "-")
+    end
   end
   return table.concat(parts, ":")
 end

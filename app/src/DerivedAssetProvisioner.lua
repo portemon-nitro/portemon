@@ -172,6 +172,13 @@ function DerivedAssetProvisioner.new(options)
       end
       return nil, failure
     end,
+    requestBattleEffect = function(effectKey, urgency)
+      assert(
+        type(effectKey) == "string" and effectKey ~= "" and effectKey:find("/", 1, true) == nil,
+        "battle effect demand carries its flat effect key"
+      )
+      return ask("battle-effect", urgency, { effectKey = effectKey })
+    end,
     milestoneStatus = function(name)
       assert(type(name) == "string" and name ~= "", "milestone progress requires its name")
       local active = guard()

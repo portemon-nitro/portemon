@@ -120,6 +120,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field areaPreviewRenderer FieldAreaPreviewRenderer? the borrowed area-preview draw leaf
 ---@field _previewImage love.Image? the one retained selected area-preview image
 ---@field _previewImageKey string? the semantic key of the retained area-preview image
+---@field battleTextRenderers table<string, FieldTextRenderer>?
 ---@field fieldEntranceIndicatorPool GpuAssetPool?
 ---@field fieldEntranceIndicatorRenderer FieldStaticEffectRenderer?
 ---@field fieldSurfRenderer FieldStaticEffectRenderer?
@@ -490,6 +491,9 @@ function FieldPresentationResources.new(runtime)
       graphics = assert(love and love.graphics, "the area preview needs its graphics namespace"),
       imageFor = previewImageFor,
     })
+    self.battleTextRenderers = {}
+    self.battleTextRenderers.narration = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, fontId = 1 })
+    self.battleTextRenderers.menu = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, fontId = 4 })
     local playerData = assert(runtime.playerData, "field presentation requires the validated player data")
     local playerOptions = assert(playerData.options, "field presentation requires the player options")
     local textFrame = assert(playerOptions.textFrame, "field presentation requires the player-owned frame index")
@@ -1285,6 +1289,13 @@ function FieldPresentationResources:dispose()
   if self.textRenderer then
     self.textRenderer:release()
     self.textRenderer = nil
+  end
+  if self.battleTextRenderers then
+    for role, renderer in pairs(self.battleTextRenderers) do
+      renderer:release()
+      self.battleTextRenderers[role] = nil
+    end
+    self.battleTextRenderers = nil
   end
   if self.fieldEntranceIndicatorRenderer then
     self.fieldEntranceIndicatorRenderer:dispose()

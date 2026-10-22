@@ -164,6 +164,7 @@ local function fixture(opts)
   -- Row bytes (right, left): left half = value 1 (fg), right half = value 2.
   local tile = string.char(0xBB, 0x55) .. string.rep(string.char(0xAA, 0x55), 7)
   local glyphMember = buildFontMember(1, glyph64(tile), { 6 })
+  local font1Member = buildFontMember(1, glyph64(string.rep(string.char(0x55), 16)), { 8 })
   local font4Member = buildFontMember(1, glyph64(tile), { 7 })
   -- Font palette slots mirroring the ROM font palette
   -- (fgColor=1, shadowColor=2, bgColor=0xF): slot 0 = unused
@@ -210,6 +211,9 @@ local function fixture(opts)
           if memberId == 0 then
             return glyphMember
           end
+          if memberId == 1 then
+            return font1Member
+          end
           if memberId == 4 then
             return opts.font4Member or font4Member
           end
@@ -232,7 +236,10 @@ local function fixture(opts)
   } --[[@as RomFs]]
   local function sha1(bytes)
     if bytes == glyphMember then
-      return "glyph-member-sha"
+      return "font0-member-sha"
+    end
+    if bytes == font1Member then
+      return "font1-member-sha"
     end
     if bytes == font4Member then
       return "font4-member-sha"
@@ -253,20 +260,25 @@ local function fixture(opts)
   end, { focusA = focusA, focusB = focusB }
 end
 
-function T.compiles_font_zero_and_four_as_one_deterministic_class()
+function T.compiles_font_zero_one_and_four_as_one_deterministic_class()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldFontCompiler.compile(romFs, sha1, hashLua)) --[[@as table]]
-  Assert.deepEqual(FieldFontCache.REQUIRED_FONT_IDS, { 0, 4 })
+  Assert.deepEqual(FieldFontCache.REQUIRED_FONT_IDS, { 0, 1, 4 })
   Assert.notNil(bundle.fonts, "the compiler must return the complete field-font class")
   Assert.equal(bundle.fonts[0].font.fontId, 0)
+  Assert.equal(bundle.fonts[1].font.fontId, 1)
   Assert.equal(bundle.fonts[4].font.fontId, 4)
   Assert.equal(bundle.fonts[0].font.atlasPath, FieldFontCache.atlasPath(0))
+  Assert.equal(bundle.fonts[1].font.atlasPath, FieldFontCache.atlasPath(1))
   Assert.equal(bundle.fonts[4].font.atlasPath, FieldFontCache.atlasPath(4))
   Assert.equal(bundle.fonts[0].font.focusIndicators.imagePath, FieldFontCache.focusIndicatorsPath(0))
+  Assert.equal(bundle.fonts[1].font.focusIndicators.imagePath, FieldFontCache.focusIndicatorsPath(1))
   Assert.equal(bundle.fonts[4].font.focusIndicators.imagePath, FieldFontCache.focusIndicatorsPath(4))
   Assert.equal(bundle.dependencies.glyphMembers[1].memberId, 0)
-  Assert.equal(bundle.dependencies.glyphMembers[2].memberId, 4)
-  Assert.equal(bundle.dependencies.glyphMembers[2].sha1, "font4-member-sha")
+  Assert.equal(bundle.dependencies.glyphMembers[2].memberId, 1)
+  Assert.equal(bundle.dependencies.glyphMembers[2].sha1, "font1-member-sha")
+  Assert.equal(bundle.dependencies.glyphMembers[3].memberId, 4)
+  Assert.equal(bundle.dependencies.glyphMembers[3].sha1, "font4-member-sha")
   Assert.equal(bundle.marker, "field-font-cache-v6:rom-sha:dependency-sha")
 end
 
@@ -303,7 +315,7 @@ function T.compiles_font_def_and_atlas()
   Assert.equal(font.glyphs[0].x, 688)
   Assert.equal(font.glyphs[0].y, 96)
   Assert.isNil(font.source, "font source identity lives in the dependency record")
-  Assert.equal(bundle.dependencies.glyphMembers[1].sha1, "glyph-member-sha")
+  Assert.equal(bundle.dependencies.glyphMembers[1].sha1, "font0-member-sha")
   Assert.equal(bundle.dependencies.paletteMemberSha1, "palette-member-sha")
   Assert.equal(bundle.dependencies.glyphMembers[1].memberId, 0)
   Assert.equal(bundle.dependencies.paletteMemberId, 7)
@@ -606,13 +618,13 @@ function T.cache_missing_the_focus_indicator_png_is_not_ready()
   Assert.isFalse(FieldFontCache.isReady(cache, bundle.marker), "a cache without the focus PNG must not be ready")
 end
 
-function T.cache_missing_font_four_is_not_ready()
+function T.cache_missing_font_one_is_not_ready()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldFontCompiler.compile(romFs, sha1, hashLua)) --[[@as table]]
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   FieldFontCacheWriter.write(cache, bundle)
-  cache:remove(FieldFontCache.defPath(4))
-  Assert.isFalse(FieldFontCache.isReady(cache, bundle.marker), "a cache without font 4 must not be ready")
+  cache:remove(FieldFontCache.defPath(1))
+  Assert.isFalse(FieldFontCache.isReady(cache, bundle.marker), "a cache without narration font 1 must not be ready")
 end
 
 -- The compiled definition names the required v4 semantic glyph mask atlas,

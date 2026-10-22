@@ -14,7 +14,6 @@
 -- behavior lands.
 
 local Assert = require("tests.support.Assert")
-local StubLease = require("tests.support.StubLease")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -26,9 +25,26 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 
 local T = {}
-local TICK = 1 / 60
+
+local function fakeImage(key)
+  return {
+    handle = key,
+    getDimensions = function()
+      return 80, 80
+    end,
+    getWidth = function()
+      return 80
+    end,
+    getHeight = function()
+      return 80
+    end,
+    setFilter = function() end,
+  }
+end
+local TICK = 1 / 30
 
 local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
 local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
@@ -116,12 +132,24 @@ local function dualMeasurement()
   }
 end
 
+---@return table caller-owned tall single-surface display facts
+local function tallMeasurement()
+  return singleMeasurement(256, 384, "single-pane-test:tall")
+end
+
+---@return table caller-owned wide single-surface display facts
+local function wideMeasurement()
+  return singleMeasurement(512, 192, "single-pane-test:wide")
+end
+
 ---@param mode string controller mode under test driving
 ---@param overrides table? snapshot fields replacing the command defaults
 ---@return table internal semantic snapshot for resolvers and renderers
 local function snapshot(mode, overrides)
+  local manifest = BattlePresentationManifestFixture.manifest()
   local view = {
     mode = mode,
+    battleKind = "wild",
     selection = "fight",
     armed = nil,
     requestId = 7,
@@ -150,6 +178,10 @@ local function snapshot(mode, overrides)
     foeCount = 1,
     arrowFrame = 0,
     childIntent = nil,
+    slotGeometry = manifest.battlefield.slots,
+    hudSections = { player = manifest.hud.player, enemy = manifest.hud.enemy },
+    hudPatchSpans = manifest.hud.patchSpans,
+    effectInstances = {},
   }
   if mode == "moves" then
     view.selection = "move:0"
@@ -403,7 +435,7 @@ function T.dock_draws_background_text_before_shared_borders()
     windows = windows,
     assets = {
       drawable = function(_, key)
-        return key:sub(1, 4) == "mon:" and StubLease.cell(key) or StubLease.new(key)
+        return fakeImage(key)
       end,
     },
     frameKey = "single-pane-test-frame",
@@ -788,7 +820,7 @@ local function openRig(opts)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = StubLease.new(key)
+      rig.assets.images[key] = fakeImage(key)
     end
     local stored = rig.assets.images[key]
     if key:sub(1, 4) == "mon:" then
@@ -824,12 +856,7 @@ local function openRig(opts)
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = BattlePresentationManifestFixture.manifest(),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -873,7 +900,7 @@ local function driveToMode(rig, mode)
     if status.mode == "failed" then
       error("the battle screen failed while driving to " .. mode .. ": " .. tostring(status.error), 0)
     end
-    if status.mode == mode then
+    if status.mode == mode and (mode ~= "command" and mode ~= "moves" or rig.screen:view().menuInputEnabled) then
       return
     end
   end
@@ -1063,6 +1090,10 @@ local function openLearnRig(layout)
   local measurement = dualMeasurement()
   if layout == "compact" then
     measurement = compactMeasurement()
+  elseif layout == "wide" then
+    measurement = singleMeasurement(512, 192, "single-pane-test:wide-learning")
+  elseif layout == "tall" then
+    measurement = singleMeasurement(256, 384, "single-pane-test:tall-learning")
   end
   local BattleRuntime = require(RUNTIME_MODULE)
   local BattleScreenState = require(STATE_MODULE)
@@ -1099,7 +1130,7 @@ local function openLearnRig(layout)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = StubLease.new(key)
+      rig.assets.images[key] = fakeImage(key)
     end
     local stored = rig.assets.images[key]
     if key:sub(1, 4) == "mon:" then
@@ -1117,12 +1148,7 @@ local function openLearnRig(layout)
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = BattlePresentationManifestFixture.manifest(),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -1190,29 +1216,30 @@ end
 ---@param yLo integer first host row under probing
 ---@param yHi integer last host row under probing
 ---@return boolean sealed true once a tap sealed exactly one reply
-local function tapSealsLearnReply(rig, yLo, yHi)
-  local taps = 0
-  for pass = 1, 2 do
-    local y = yLo
-    while y <= yHi do
-      local x = 8
-      while x <= 248 do
-        if rig.screen:status().mode ~= "child" then
-          return #rig.submits > 0
-        end
-        taps = taps + 1
-        local id = "touch:learn:" .. tostring(pass) .. ":" .. tostring(taps)
-        rig.screen:input({ { type = "pointer_down", pointerId = id, x = x, y = y } })
-        rig.screen:input({ { type = "pointer_up", pointerId = id, x = x, y = y } })
-        rig.pump(1)
-        if #rig.submits > 0 then
-          return true
-        end
-        x = x + 16
-      end
-      y = y + 16
-    end
+local function tapSealsLearnReply(rig, xLo, xHi, yLo, yHi)
+  local function tap(id, x, y)
+    rig.screen:input({ { type = "pointer_down", pointerId = id, x = x, y = y } })
+    rig.screen:input({ { type = "pointer_up", pointerId = id, x = x, y = y } })
+    rig.pump(1)
   end
+  if xHi < xLo or yHi < yLo then
+    return false
+  end
+  local rowOffset
+  if rig.layout == "paired" or rig.layout == "tall" then
+    rowOffset = 74
+  else
+    rowOffset = 82
+  end
+  tap("touch:learn:row", xLo + 8, yLo + rowOffset)
+  if #rig.submits > 0 then
+    return true
+  end
+  local plan = rig.screen:status().presentation
+  if plan == nil or plan.content.layout ~= "two-option" then
+    return false
+  end
+  tap("touch:learn:affirm", xLo + 8, yLo + rowOffset)
   return #rig.submits > 0
 end
 
@@ -1242,13 +1269,22 @@ end
 -- decides through explicit confirmation, and dialogue taps confirm
 -- without reaching the field.
 function T.learning_prompt_lists_choices_and_tap_seals_one_fragment()
-  for _, layout in ipairs({ "paired", "compact" }) do
+  for _, layout in ipairs({ "paired", "wide", "tall", "compact" }) do
     local tag = " (" .. layout .. ")"
-    local yLo, yHi = 8, 184
-    if layout == "paired" then
+    local xLo, xHi, yLo, yHi = 8, 248, 8, 184
+    if layout == "paired" or layout == "tall" then
       yLo, yHi = 200, 376
     end
+    if layout == "wide" then
+      xLo, xHi = 264, 504
+    end
     local rig = openLearnRig(layout)
+    local plan = rig.screen:status().presentation
+    if layout == "compact" then
+      Assert.isTrue(plan.content.compact == true, "compact learning uses the single-pane composition" .. tag)
+    else
+      Assert.equal(#plan.panes, 2, "paired learning uses both native panes" .. tag)
+    end
     local leadId = nil
     for _ = 1, 60 do
       local peeked = nil
@@ -1315,7 +1351,7 @@ function T.learning_prompt_lists_choices_and_tap_seals_one_fragment()
     local firstOptions = optionsFor(rig, firstPrompt)
     Assert.equal(firstOptions.actors[1].kind, "learn_move", "learning options mirror the prompt" .. tag)
     local starterSubmits = #rig.submits
-    Assert.isTrue(tapSealsLearnReply(rig, yLo, yHi), "a tap on the learning list seals one reply" .. tag)
+    Assert.isTrue(tapSealsLearnReply(rig, xLo, xHi, yLo, yHi), "a tap on the learning list seals one reply" .. tag)
     Assert.equal(#rig.submits, starterSubmits + 1, "the tap seals exactly one learning reply" .. tag)
     local sealed = rig.submits[#rig.submits].choices[1]
     local sealedId = nil
@@ -1463,6 +1499,226 @@ function T.paired_and_compact_sequences_seal_the_same_reply()
   paired.battle:dispose()
   compact.screen:dispose()
   compact.battle:dispose()
+end
+
+-- Ordinary Fight-to-move input reaches the same request and reply across
+-- paired tall, paired wide, dual-display, and compact compositions.
+function T.ordinary_choice_order_agrees_across_display_classes()
+  local seed = 0x5EED1122
+  local pairedLayouts = {
+    { id = "tall", measurement = tallMeasurement() },
+    { id = "wide", measurement = wideMeasurement() },
+    { id = "dual", measurement = dualMeasurement() },
+  }
+  local expectedReply = nil
+  for _, layout in ipairs(pairedLayouts) do
+    local rig = openRig({
+      launchId = "launch-choice-order-" .. layout.id,
+      measurement = layout.measurement,
+      seed = seed,
+    })
+    driveToMode(rig, "command")
+    rig.screen:input({ { type = "confirm" } })
+    rig.pump(1)
+    Assert.equal(rig.screen:status().mode, "moves", layout.id .. " keeps Fight before move selection")
+    rig.screen:input({ { type = "confirm" } })
+    rig.pump(1)
+    Assert.equal(#rig.submits, 1, layout.id .. " seals one ordinary move reply")
+    local actual = replyShape(rig.submits[1])
+    if expectedReply == nil then
+      expectedReply = actual
+    else
+      Assert.equal(actual, expectedReply, layout.id .. " seals the same semantic reply")
+    end
+    rig.screen:dispose()
+    rig.battle:dispose()
+  end
+
+  local compact = openRig({
+    launchId = "launch-choice-order-compact",
+    measurement = compactMeasurement(),
+    seed = seed,
+  })
+  driveToMode(compact, "command")
+  tap(compact, 152, 154)
+  compact.pump(1)
+  Assert.equal(compact.screen:status().mode, "moves", "compact keeps Fight before move selection")
+  tap(compact, 52, 142)
+  compact.pump(1)
+  Assert.equal(#compact.submits, 1, "compact seals one ordinary move reply")
+  Assert.equal(replyShape(compact.submits[1]), expectedReply, "compact seals the same semantic reply")
+  compact.screen:dispose()
+  compact.battle:dispose()
+
+  local controller = openRig({
+    launchId = "launch-choice-order-controller",
+    measurement = wideMeasurement(),
+    seed = seed,
+  })
+  driveToMode(controller, "command")
+  press(controller, { type = "navigate", direction = "right" })
+  Assert.equal(controller.screen:view().selection, "fight", "controller navigation keeps the top source edge")
+  press(controller, { type = "confirm" })
+  Assert.equal(controller.screen:status().mode, "moves", "controller confirmation opens the move picker")
+  press(controller, { type = "confirm" })
+  Assert.equal(#controller.submits, 1, "controller input seals one move reply")
+  Assert.equal(replyShape(controller.submits[1]), expectedReply, "controller input matches keyboard and pointer")
+  controller.screen:dispose()
+  controller.battle:dispose()
+end
+
+-- Every display class keeps the same cancel, target, and acknowledgment
+-- semantics. The live screen supplies move facts; the shared presentation
+-- plan maps the admitted target rows and narration acknowledgment without
+-- creating a compact-only selection state.
+function T.ordinary_paths_keep_target_and_ack_information_across_layouts()
+  local layouts = {
+    { id = "tall", measurement = tallMeasurement() },
+    { id = "wide", measurement = wideMeasurement() },
+    { id = "dual", measurement = dualMeasurement() },
+    { id = "compact", measurement = compactMeasurement() },
+  }
+  local expectedReply = nil
+  for _, layout in ipairs(layouts) do
+    local rig = openRig({
+      launchId = "launch-layout-paths-" .. layout.id,
+      measurement = layout.measurement,
+      seed = 0x5EED1122,
+    })
+    driveToMode(rig, "command")
+    press(rig, { type = "confirm" })
+    Assert.equal(rig.screen:status().mode, "moves", layout.id .. " opens the move request")
+    local moveView = rig.screen:view()
+    Assert.notNil(moveView.moves, layout.id .. " exposes move facts")
+    Assert.equal(tostring(moveView.moves[1].name):lower(), "tackle", layout.id .. " keeps the move name")
+    Assert.equal(moveView.moves[1].pp, 35, layout.id .. " keeps current PP")
+    Assert.equal(moveView.moves[1].maxPp, 35, layout.id .. " keeps maximum PP")
+    Assert.isTrue(#moveView.battlers > 0, layout.id .. " keeps battler HP facts available")
+    Assert.isTrue(moveView.battlers[1].maxHp > 0, layout.id .. " keeps maximum HP available")
+    press(rig, { type = "cancel" })
+    Assert.equal(rig.screen:status().mode, "command", layout.id .. " backs out of moves to commands")
+    Assert.equal(rig.screen:view().selection, "fight", layout.id .. " restores the command focus")
+
+    press(rig, { type = "confirm" })
+    press(rig, { type = "confirm" })
+    Assert.equal(#rig.submits, 1, layout.id .. " confirms the same move once")
+    local actualReply = replyShape(rig.submits[1])
+    if expectedReply == nil then
+      expectedReply = actualReply
+    else
+      Assert.equal(actualReply, expectedReply, layout.id .. " seals the same move choice")
+    end
+    rig.screen:dispose()
+    rig.battle:dispose()
+
+    local candidates = {
+      { id = "target:0", position = 1, combatant = 3, enabled = true, name = "FOE", level = 20 },
+      { id = "target:1", position = 2, combatant = 4, enabled = true, name = "ALLY", level = 18 },
+    }
+    local targetView = snapshot("target", { targetCandidates = candidates })
+    local presentation = ApplicationPresentation.new(BattleScreenInterface.defaults(), nil)
+    local targetPlan = presentation:resolve(layout.measurement, targetView)
+    local targetX, targetY = 60, 116
+    if targetPlan.content.compact == true then
+      local firstRow = targetPlan.content.targetRows[1]
+      targetX = firstRow.x + math.floor(firstRow.width / 2)
+      targetY = firstRow.y + math.floor(firstRow.height / 2)
+    end
+    local targetInput = targetPlan.mapInput(
+      { type = "pointer_down", pointerId = "layout-target", x = targetX, y = targetY },
+      targetView,
+      targetPlan
+    )
+    Assert.notNil(targetInput, layout.id .. " admits the first target control")
+    Assert.equal(targetInput.control.id, "target:0", layout.id .. " preserves target identity")
+    Assert.equal(targetView.targetCandidates[1].name, "FOE", layout.id .. " keeps target names available")
+    Assert.equal(targetView.targetCandidates[1].level, 20, layout.id .. " keeps target levels available")
+    Assert.equal(
+      targetPlan.mapInput({ type = "cancel" }, targetView, targetPlan).type,
+      "cancel",
+      layout.id .. " maps target Back through the shared cancel input"
+    )
+    local secondTargetX, secondTargetY = 196, 44
+    if targetPlan.content.compact == true then
+      local secondRow = targetPlan.content.targetRows[2]
+      secondTargetX = secondRow.x + math.floor(secondRow.width / 2)
+      secondTargetY = secondRow.y + math.floor(secondRow.height / 2)
+    end
+    local secondTarget = targetPlan.mapInput(
+      { type = "pointer_down", pointerId = "layout-target-second", x = secondTargetX, y = secondTargetY },
+      targetView,
+      targetPlan
+    )
+    Assert.notNil(secondTarget, layout.id .. " admits the second target row")
+    Assert.equal(secondTarget.control.id, "target:1", layout.id .. " preserves second target identity")
+    if targetPlan.content.compact == true then
+      Assert.equal(targetPlan.content.targetRows[1].name, "FOE", "compact keeps the target name")
+      Assert.equal(targetPlan.content.targetRows[1].level, 20, "compact keeps the target level")
+      Assert.isTrue(#targetPlan.content.hud.enemy.regions > 0, "compact retains enemy HP display regions")
+      Assert.isTrue(#targetPlan.content.hud.player.regions > 0, "compact retains player HP display regions")
+      Assert.isTrue(targetPlan.content.moveInfo.ppWidth > 0, "compact reserves space for PP information")
+      Assert.isTrue(targetPlan.content.moveInfo.typeWidth > 0, "compact reserves space for the type icon")
+    end
+
+    local narrationView = snapshot("narration", { message = "A battle message." })
+    local narrationPlan = presentation:resolve(layout.measurement, narrationView)
+    local acknowledged = narrationPlan.mapInput({ type = "confirm" }, narrationView, narrationPlan)
+    Assert.notNil(acknowledged, layout.id .. " exposes the narration acknowledgment")
+    Assert.equal(acknowledged.type, "confirm", layout.id .. " preserves acknowledgment semantics")
+    local dialogueDown = narrationPlan.mapInput(
+      { type = "pointer_down", pointerId = "layout-ack", x = 128, y = 164 },
+      narrationView,
+      narrationPlan
+    )
+    Assert.notNil(dialogueDown, layout.id .. " maps dialogue tap presses")
+    Assert.equal(dialogueDown.type, "battle_press", layout.id .. " preserves dialogue press ownership")
+    local tapAcknowledged = narrationPlan.mapInput(
+      { type = "pointer_up", pointerId = "layout-ack", x = 128, y = 164 },
+      narrationView,
+      narrationPlan
+    )
+    Assert.notNil(tapAcknowledged, layout.id .. " maps dialogue tap releases to acknowledgment")
+    Assert.isTrue(
+      tapAcknowledged.type == "confirm"
+        or (tapAcknowledged.type == "battle_activate" and tapAcknowledged.control.scope == "narration"),
+      layout.id .. " keeps tap acknowledgment semantics"
+    )
+    if narrationPlan.content.compact == true then
+      Assert.isTrue(
+        narrationPlan.content.narration.content.width >= 216,
+        "compact reserves the native message width for acknowledgment text"
+      )
+      Assert.isTrue(narrationView.message ~= "", "compact receives the message to acknowledge")
+    end
+
+    local childView = snapshot("child", {
+      childView = {
+        kind = "learn",
+        interactive = true,
+        cancellable = true,
+        rows = {
+          { id = "learn:keep", label = "KEEP" },
+          { id = "learn:decline", label = "DECLINE" },
+        },
+      },
+    })
+    local childPlan = presentation:resolve(layout.measurement, childView)
+    local optionDown =
+      childPlan.mapInput({ type = "pointer_down", pointerId = "layout-option", x = 60, y = 42 }, childView, childPlan)
+    Assert.notNil(optionDown, layout.id .. " admits the first option row")
+    Assert.equal(optionDown.type, "child_press", layout.id .. " preserves option press semantics")
+    Assert.equal(optionDown.control.id, "learn:keep", layout.id .. " preserves option identity")
+    local optionUp =
+      childPlan.mapInput({ type = "pointer_up", pointerId = "layout-option", x = 60, y = 42 }, childView, childPlan)
+    Assert.notNil(optionUp, layout.id .. " completes the first option row")
+    Assert.equal(optionUp.type, "child_activate", layout.id .. " preserves option activation semantics")
+    Assert.equal(optionUp.control.id, "learn:keep", layout.id .. " activates the same option")
+    Assert.equal(
+      childPlan.mapInput({ type = "cancel" }, childView, childPlan).type,
+      "cancel",
+      layout.id .. " keeps keyboard Back semantics for child choices"
+    )
+  end
 end
 
 -- Re-resolving across display classes keeps the open decision but drops

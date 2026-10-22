@@ -59,12 +59,37 @@ local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear
 ---@return table<string, unknown> window services
 local function battleDrawServices(state, resources, runtime)
   local textRenderer = assert(resources.textRenderer, "battle text borrows the field text renderer")
+  local battleTextRenderers = assert(resources.battleTextRenderers, "battle text has source-role renderers")
   local windowRenderer = assert(resources.windowRenderer, "battle windows borrow the field window renderer")
   local _ = state
   local text = {}
   text.fontDef = textRenderer.fontDef
   function text.drawText(content, x, y)
     return textRenderer:drawText(content, x, y)
+  end
+  function text.drawTextForRole(role, content, x, y, colors)
+    local renderer = assert(battleTextRenderers[role], "battle text role has a source font renderer")
+    if colors ~= nil then
+      local fontPalette = assert(renderer.fontDef.palette, "colored battle text reads its source font palette")
+      local function colorAt(slot)
+        local source = assert(fontPalette[slot + 1], "battle text source palette contains its selected slot")
+        return {
+          r = assert(tonumber(source.r or source[1]), "source font color has red"),
+          g = assert(tonumber(source.g or source[2]), "source font color has green"),
+          b = assert(tonumber(source.b or source[3]), "source font color has blue"),
+        }
+      end
+      return renderer:drawTextWithPalette(content, x, y, {
+        foreground = colorAt(colors.foreground),
+        shadow = colorAt(colors.shadow),
+        background = colorAt(colors.background),
+      })
+    end
+    return renderer:drawText(content, x, y)
+  end
+  function text.measureForRole(role, content)
+    local renderer = assert(battleTextRenderers[role], "battle text role has a source font renderer")
+    return { width = renderer:textWidth(content), height = renderer.fontDef.lineHeight }
   end
   if type(textRenderer.drawTextWithPalette) == "function" then
     function text.drawTextWithPalette(content, x, y, palette)
@@ -224,6 +249,12 @@ function FieldState.new(game, options)
     local function battleDisplay()
       return runtime.presentationDisplay
     end
+    local function captureFieldLayers()
+      return self:_captureTransitionLayers()
+    end
+    local function currentFieldCamera()
+      return runtime.camera
+    end
     self.battleEnvelope = FieldBattlePresentation.new({
       cacheFs = runtime.cacheFs,
       graphics = love.graphics,
@@ -235,6 +266,9 @@ function FieldState.new(game, options)
       pokedex = self.presentationResources:pokedex(),
       itemCatalog = assert(runtime.itemCatalog, "the presented battle envelope borrows its item catalog"),
       monCatalog = assert(runtime.monCatalog, "the presented battle envelope borrows its mon catalog"),
+      fieldRenderer = assert(self.presentationResources.renderer, "field transition borrows the field compositor"),
+      fieldCamera = currentFieldCamera,
+      captureFieldLayers = captureFieldLayers,
       measureDisplay = battleDisplay,
     })
     if type(runtime.bindBattlePresentation) == "function" then
@@ -732,22 +766,17 @@ function FieldState:_worldParts(alpha)
     self._hoOhBackdropRuntimeMap = nil
     hoOhStatus = assert(hoOhScene):status()
   end
-  local hoOhContent = hoOhStatus ~= nil
-    and hoOhStatus["active"] == true
-    and (
-      hoOhStatus["bellStage"] ~= nil
-      or hoOhStatus["birdFrame"] ~= nil
-      or hoOhStatus["cinematicShot"] == "first"
-      or hoOhStatus["cinematicShot"] == "second"
-      or hoOhStatus["effectsActive"] == true
-    )
-  if hoOhContent then
-    local activeStatus = assert(hoOhStatus, "active legend content carries its scene status")
+  if hoOhStatus and hoOhStatus["backdropRetained"] and self.runtime.screenFade:isOpaque() then
+    assert(hoOhScene):retireBackdrop()
+    self._hoOhBackdropRuntimeMap = nil
+    hoOhStatus = assert(hoOhScene):status()
+  end
+  if hoOhStatus and hoOhStatus["active"] == true then
     if self._hoOhAppearanceRenderer == nil then
       self._hoOhAppearanceRenderer = HoOhAppearanceRenderer.new(self.runtime.cacheFs, self.runtime.imageAssets)
     end
-    local versionId = assert(activeStatus["versionId"], "active legend appearance carries its game version")
-    worldParts[13] = self._hoOhAppearanceRenderer:drawItems(activeStatus)
+    local versionId = assert(hoOhStatus["versionId"], "active legend appearance carries its game version")
+    worldParts[13] = self._hoOhAppearanceRenderer:drawItems(hoOhStatus)
     worldParts[14] = self._hoOhAppearanceRenderer:backdropCopies(worldParts[1], versionId)
   elseif hoOhStatus and hoOhStatus["backdropRetained"] == true then
     local versionId = self.runtime.versionId
@@ -780,6 +809,30 @@ function FieldState:_worldParts(alpha)
     worldParts[15] = NO_DRAWS
   end
   return worldParts
+end
+
+-- Captures the current native field planes after a transition source tick
+-- changed camera or plane state. This path prepares the transition input
+-- without drawing or advancing the ordinary field composition.
+function FieldState:_captureTransitionLayers()
+  local runtime = assert(self.runtime, "field transition capture requires its runtime")
+  local renderer = assert(
+    self.presentationResources and self.presentationResources.renderer,
+    "field transition capture requires its renderer"
+  )
+  local alpha = runtime.session:renderAlpha()
+  return renderer:captureTransitionLayers(
+    assert(
+      runtime.runtimeMap and runtime.runtimeMap.renderEnvironment,
+      "transition capture requires the active field environment"
+    ),
+    assert(runtime.camera, "transition capture requires the active field camera"),
+    self:_worldParts(alpha),
+    self.spriteItems,
+    assert(runtime.viewport, "transition capture requires the active field viewport"),
+    alpha,
+    assert(runtime.fieldPixelScale, "transition capture requires its pixel scale"):resolvedScale()
+  )
 end
 
 -- The structural presentation-geometry signature: the window dimensions plus
@@ -1094,6 +1147,39 @@ function FieldState:_dialoguePresentation(bounds, fieldScale)
   return presentation
 end
 
+-- The presented battle draws through its live screen owner with the
+-- borrowed field services, then the envelope cover blacks the full
+-- surface: dimensions read fresh every frame so a mid-cover layout
+-- change never exposes a stale strip or the hidden field. A fully
+-- opaque cover skips the hidden screen; a disposed port never draws.
+-- The cover fill owns its own color scope so black never leaks into the
+-- next surface.
+---@param width number
+---@param height number
+function FieldState:_drawBattleEnvelopeIfNeeded(width, height)
+  local envelope = self.battleEnvelope
+  if envelope == nil or (not envelope:ownsInput() and envelope:cover().coefficient <= 0) then
+    return
+  end
+  local destination = assert(self.runtime.viewport.worldViewport, "battle transition uses the live world viewport")
+  local transitionDrawn = envelope:drawTransition(destination)
+  if not transitionDrawn and envelope:cover().coefficient < FieldBattlePresentation.COVER_MAX then
+    envelope:drawBattle({
+      graphics = love.graphics,
+      text = assert(self._battleText, "battle draw needs its text services"),
+      windows = assert(self._battleWindows, "battle draw needs its window services"),
+    })
+  end
+  local coefficient = transitionDrawn and 0 or envelope:cover().coefficient
+  if coefficient > 0 then
+    local lg = love.graphics
+    local prevR, prevG, prevB, prevA = lg.getColor()
+    lg.setColor(0, 0, 0, coefficient / FieldBattlePresentation.COVER_MAX)
+    lg.rectangle("fill", 0, 0, width, height)
+    lg.setColor(prevR, prevG, prevB, prevA)
+  end
+end
+
 function FieldState:draw()
   local lg = love.graphics
   local resources = assert(self.presentationResources, "field presentation resources are unavailable")
@@ -1146,6 +1232,10 @@ function FieldState:draw()
       self:_drawFieldAttachedUi(resources, nil, self.runtime.session:renderAlpha())
     end
     self:_drawScriptScreenFadeIfNeeded()
+    -- An active battle or recovery surface is owned by its envelope, not
+    -- by the field world, so a field-only readiness gate never suppresses
+    -- it; the unready field itself stays hidden.
+    self:_drawBattleEnvelopeIfNeeded(width, height)
     return
   end
   -- Runtimes without a lifecycle owner predate the overworld gate and
@@ -1360,26 +1450,7 @@ function FieldState:draw()
     lg.setColor(color, color, color, blackoutStatus.coverAlpha)
     lg.rectangle("fill", 0, 0, width, height)
   end
-  -- The presented battle draws through its live screen owner with the
-  -- borrowed field services, then the envelope cover blacks the full
-  -- surface: dimensions read fresh every frame so a mid-cover layout
-  -- change never exposes a stale strip or the hidden field. A fully
-  -- opaque cover skips the hidden screen; a disposed port never draws.
-  local envelope = self.battleEnvelope
-  if envelope ~= nil and (envelope:ownsInput() or envelope:cover().coefficient > 0) then
-    if envelope:cover().coefficient < FieldBattlePresentation.COVER_MAX then
-      envelope:drawBattle({
-        graphics = lg,
-        text = assert(self._battleText, "battle draw needs its text services"),
-        windows = assert(self._battleWindows, "battle draw needs its window services"),
-      })
-    end
-    local coefficient = envelope:cover().coefficient
-    if coefficient > 0 then
-      lg.setColor(0, 0, 0, coefficient / FieldBattlePresentation.COVER_MAX)
-      lg.rectangle("fill", 0, 0, width, height)
-    end
-  end
+  self:_drawBattleEnvelopeIfNeeded(width, height)
   if self.development and self._developmentOverlayVisible then
     self._fpsFrames = self._fpsFrames + 1
     self:_drawHud()

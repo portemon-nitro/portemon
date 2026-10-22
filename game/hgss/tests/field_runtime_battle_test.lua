@@ -92,9 +92,10 @@ local function fakeRuntime(overrides)
         return { year = 2026, month = 10, day = 9, hour = 12 }
       end,
     },
-    -- Presented launches read the player narration pace; production
-    -- boot always composes it, so the composition fake carries it too.
-    playerData = { options = { textSpeed = "mid", textFrame = 0 } },
+    -- Presented launches read the player narration pace and the profile
+    -- gender; production boot always composes both, so the composition
+    -- fake carries them too.
+    playerData = { options = { textSpeed = "mid", textFrame = 0 }, profile = CatalogFixture.profile() },
   }, FieldRuntime))
   for key, value in pairs(overrides or {}) do
     runtime[key] = value
@@ -625,6 +626,175 @@ function T.committed_steps_resolve_their_map_table_member()
   Assert.equal(seen[1].mapId, 1, "the attempt resolves the map's table member, not its map identity")
 end
 
+-- The arrival tile selects the encounter method from terrain and travel
+-- mode: source encounter land (tall grass and cave floors alike) walks
+-- the grass tables, surfable encounter water surfs them only while
+-- surfing, and standing water, dry ineligible tiles, or an unreadable
+-- arrival never rolls. Cave floors are land: walking them must not be
+-- silently suppressed while walking onto water must never read grass.
+local function arrivalMapWithBehavior(cell)
+  return {
+    coordinateOrigin = { x = 0, z = 0 },
+    collision = {
+      containsLocal = function()
+        return cell.behavior ~= nil
+      end,
+      getLocal = function()
+        return { behavior = cell.behavior }
+      end,
+    },
+  }
+end
+
+local function walkingRuntime()
+  return fakeRuntime({ playerAvatar = nil })
+end
+
+local function surfingRuntime()
+  return fakeRuntime({
+    playerAvatar = {
+      status = function()
+        return { durableState = "surfing" }
+      end,
+    },
+  })
+end
+
+function T.walking_steps_use_grass_on_land_and_never_on_water()
+  local runtime = walkingRuntime()
+  local player = { fieldX = 665, fieldZ = 404 }
+  local land = { 2, 3, 5, 8, 11, 37, 114, 119, 123, 166, 167 }
+  for _, behavior in ipairs(land) do
+    local cell = { behavior = behavior }
+    Assert.equal(
+      runtime:_stepEncounterMethod(arrivalMapWithBehavior(cell), player),
+      "grass",
+      "walking behavior " .. behavior .. " walks the grass tables"
+    )
+  end
+  local water = { 16, 18, 21, 42 }
+  for _, behavior in ipairs(water) do
+    local cell = { behavior = behavior }
+    Assert.isNil(
+      runtime:_stepEncounterMethod(arrivalMapWithBehavior(cell), player),
+      "walking behavior " .. behavior .. " never reads grass"
+    )
+  end
+  for _, behavior in ipairs({ 0, 1, 4, 32, 105, 255 }) do
+    local cell = { behavior = behavior }
+    Assert.isNil(
+      runtime:_stepEncounterMethod(arrivalMapWithBehavior(cell), player),
+      "ineligible behavior " .. behavior .. " attempts nothing on foot"
+    )
+  end
+  Assert.isNil(
+    runtime:_stepEncounterMethod(arrivalMapWithBehavior({ behavior = nil }), player),
+    "an unreadable arrival attempts nothing on foot"
+  )
+end
+
+function T.surfing_steps_use_surf_only_on_encounter_water()
+  local runtime = surfingRuntime()
+  local player = { fieldX = 665, fieldZ = 404 }
+  for _, behavior in ipairs({ 16, 18, 21, 42 }) do
+    local cell = { behavior = behavior }
+    Assert.equal(
+      runtime:_stepEncounterMethod(arrivalMapWithBehavior(cell), player),
+      "surf",
+      "surfing behavior " .. behavior .. " surfs the water tables"
+    )
+  end
+  for _, behavior in ipairs({ 2, 3, 8, 17, 1 }) do
+    local cell = { behavior = behavior }
+    Assert.isNil(
+      runtime:_stepEncounterMethod(arrivalMapWithBehavior(cell), player),
+      "surfing behavior " .. behavior .. " attempts no encounter"
+    )
+  end
+end
+
+-- A committed cave-floor step reaches the encounter service through the
+-- grass method exactly once; stepping onto water on foot never draws an
+-- opportunity, and a held preparation or a modal field consumes the step
+-- without a second draw.
+local function steppingRuntime(overrides)
+  local base = {
+    _encounters = overrides.service,
+    player = { fieldX = 665, fieldZ = 404 },
+    playerData = { profile = {} },
+    session = {
+      setBattleActive = function() end,
+      tick = 7,
+      takeCommittedStep = function()
+        return { serial = 1, fieldX = 665, fieldZ = 404 }
+      end,
+      mapEntryController = {
+        isActive = function()
+          return (overrides.mapEntry or false)
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return (overrides.modal or false)
+        end,
+      },
+      currentMap = {
+        mapId = 16,
+        mapSectionNativeId = 77,
+        coordinateOrigin = { x = 0, z = 0 },
+        collision = {
+          containsLocal = function()
+            return true
+          end,
+          getLocal = function()
+            return { behavior = overrides.behavior }
+          end,
+        },
+        fieldData = { wildEncounterMemberId = 1 },
+      },
+    },
+  }
+  if overrides.pending == true then
+    base.pendingEncounterId = 9
+    base.pendingEncounter = {}
+  end
+  return fakeRuntime(base)
+end
+
+function T.cave_floor_steps_attempt_the_grass_tables_once()
+  local seen = {}
+  local service = {
+    attempt = function(_, context, _)
+      seen[#seen + 1] = context
+      return { kind = "miss", reason = "no_opportunity" }
+    end,
+  }
+  steppingRuntime({ service = service, behavior = 8 }):_consumeCommittedStep()
+  Assert.equal(#seen, 1, "the cave-floor step attempts once")
+  Assert.equal(seen[1].method, "grass", "cave floors walk the grass tables")
+  Assert.equal(seen[1].mapId, 1, "the cave attempt keeps the map table member")
+end
+
+function T.water_modal_and_held_steps_draw_no_opportunity()
+  local draws = 0
+  local service = {
+    attempt = function()
+      draws = draws + 1
+      return { kind = "miss", reason = "no_opportunity" }
+    end,
+  }
+  steppingRuntime({ service = service, behavior = 16 }):_consumeCommittedStep()
+  Assert.equal(draws, 0, "stepping onto water on foot draws nothing")
+  steppingRuntime({ service = service, behavior = 8, modal = true }):_consumeCommittedStep()
+  Assert.equal(draws, 0, "a modal field draws nothing")
+  steppingRuntime({ service = service, behavior = 8, mapEntry = true }):_consumeCommittedStep()
+  Assert.equal(draws, 0, "a map entry draws nothing")
+  steppingRuntime({ service = service, behavior = 8, pending = true }):_consumeCommittedStep()
+  Assert.equal(draws, 0, "a held preparation draws nothing further")
+  steppingRuntime({ service = service, behavior = 2 }):_consumeCommittedStep()
+  Assert.equal(draws, 1, "the next eligible step draws exactly once")
+end
+
 -- A bare species/level foe records the live native section and the host
 -- clock date instead of the numeric map identity and a fixed placeholder.
 function T.descriptor_foes_record_the_live_section_and_clock_date()
@@ -871,7 +1041,7 @@ end
 function T.presented_admission_fails_closed_without_a_port()
   local holds = {}
   local runtime = fakeRuntime({
-    playerData = { options = { textSpeed = "mid", textFrame = 0 } },
+    playerData = { options = { textSpeed = "mid", textFrame = 0 }, profile = CatalogFixture.profile() },
     session = {
       setBattleActive = function(_, active)
         holds[#holds + 1] = active

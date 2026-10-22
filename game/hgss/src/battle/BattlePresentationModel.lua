@@ -479,9 +479,295 @@ function BattlePresentationModel.opening(snapshot, scenario, deps, launch)
   return dynamic
 end
 
+-- Visible scalar branch facts carried per event kind: typed numbers,
+-- strings, and booleans the playback route may branch on. Nested
+-- records (notably move sets) never travel here, so benched reserves
+-- and hidden sets cannot leak through message or parameter facts.
+local MESSAGE_SCALARS = {
+  struck = { "damage", "hitIndex" },
+  ["substitute-broke"] = { "hitIndex" },
+  recoil = { "damage" },
+  drained = { "restored" },
+  healed = { "restored" },
+  tick = { "key", "amount" },
+  leveled = { "health" },
+  sketched = { "copied" },
+  status = { "key" },
+  cured = { "key" },
+  stage = { "stat", "before", "after" },
+  ["status-gate"] = { "key", "outcome" },
+  switch = { "position" },
+  ["switch-intent"] = { "mode" },
+  item = { "item", "restored" },
+  flee = { "escaped", "reason", "attempts" },
+  join = { "position" },
+  strike = { "moveSlot", "roll", "resolved", "before", "after" },
+  exp = { "gained" },
+  learn = { "move" },
+  declined = { "move" },
+  throw = { "ball" },
+  shake = { "index" },
+  caught = { "shakes" },
+  broke_free = { "shakes" },
+}
+
+-- Payload fields holding a combatant identity whose visible name rides
+-- the message facts beside the scalar branch values.
+local NAMED_ROLES = { "user", "target", "combatant", "from", "to", "copiedFrom" }
+
+---@param views table<string, unknown>? detached before/after views under name lookup
+---@param id unknown combatant identity under name lookup
+---@return string? visible name, nil when no view names the battler
+local function visibleNameOf(views, id)
+  if type(views) ~= "table" or type(id) ~= "number" then
+    return nil
+  end
+  for _, viewKey in ipairs({ "after", "before" }) do
+    local view = (views --[[@as table<string, unknown>]])[viewKey]
+    if type(view) == "table" then
+      for _, groupKey in ipairs({ "own", "foes" }) do
+        local group = (view --[[@as table<string, unknown>]])[groupKey]
+        if type(group) == "table" then
+          for _, record in
+            ipairs(group --[[@as table<integer, unknown>]])
+          do
+            if type(record) == "table" then
+              local entry = record --[[@as table<string, unknown>]]
+              if entry.combatant == id and type(entry.name) == "string" then
+                return entry.name --[[@as string]]
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+---@param views table<string, unknown>? detached before/after views under appearance lookup
+---@param id unknown combatant identity under appearance lookup
+---@return string? visible appearance key, nil when no view pictures the battler
+local function visibleAppearanceOf(views, id)
+  if type(views) ~= "table" or type(id) ~= "number" then
+    return nil
+  end
+  for _, viewKey in ipairs({ "after", "before" }) do
+    local view = (views --[[@as table<string, unknown>]])[viewKey]
+    if type(view) == "table" then
+      for _, groupKey in ipairs({ "own", "foes" }) do
+        local group = (view --[[@as table<string, unknown>]])[groupKey]
+        if type(group) == "table" then
+          for _, record in
+            ipairs(group --[[@as table<integer, unknown>]])
+          do
+            if type(record) == "table" then
+              local entry = record --[[@as table<string, unknown>]]
+              if entry.combatant == id and type(entry.portraitSelector) == "string" then
+                return entry.portraitSelector --[[@as string]]
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+---@param entries unknown actor/target records under validation
+---@param views table<string, unknown>? detached before/after views picturing the battlers
+---@return table<integer, table<string, unknown>> detached records with visible names and appearance
+local function checkIdentities(entries, views)
+  if entries == nil then
+    return {}
+  end
+  assert(type(entries) == "table", "playback identities stay ordered records")
+  local out = {} ---@type table<integer, table<string, unknown>>
+  for _, entry in
+    ipairs(entries --[[@as table<integer, unknown>]])
+  do
+    assert(type(entry) == "table", "playback identities name their combatant")
+    local record = entry --[[@as table<string, unknown>]]
+    assert(
+      type(record.combatant) == "number" and record.combatant --[[@as integer]] % 1 == 0,
+      "playback identities name their combatant"
+    )
+    local detached = { combatant = record.combatant } --[[@as table<string, unknown>]]
+    for _, key in ipairs({ "activation", "position", "side" }) do
+      if record[key] ~= nil then
+        assert(type(record[key]) == "number", "playback identity ordinals stay numeric")
+        detached[key] = record[key]
+      end
+    end
+    -- Names and appearance resolve from the sanitized views only, so
+    -- only legitimately visible battlers can picture an identity.
+    local name = visibleNameOf(views, record.combatant)
+    if name ~= nil then
+      detached.name = name
+    end
+    local appearance = visibleAppearanceOf(views, record.combatant)
+    if appearance ~= nil then
+      detached.appearance = appearance
+    end
+    out[#out + 1] = detached
+  end
+  return out
+end
+
+---@param move unknown move facts under validation
+---@return table<string, unknown>? detached move facts, nil when the event carries none
+local function checkMove(move)
+  if move == nil then
+    return nil
+  end
+  -- Reward-owner award facts duplicate their payload beside it under
+  -- the same key; those ride the payload copy while this record stays
+  -- the strictly typed strike identity.
+  if type(move) ~= "table" then
+    return nil
+  end
+  local record = move --[[@as table<string, unknown>]]
+  assert(type(record.selected) == "string" and type(record.executed) == "string", "playback moves name both identities")
+  assert(type(record.phase) == "string", "playback moves name their phase")
+  local detached = {
+    selected = record.selected,
+    executed = record.executed,
+    phase = record.phase,
+  } --[[@as table<string, unknown>]]
+  for _, key in ipairs({ "hitOrdinal", "hitCount" }) do
+    if record[key] ~= nil then
+      assert(type(record[key]) == "number", "playback hit ordinals stay numeric")
+      detached[key] = record[key]
+    end
+  end
+  -- The resolved variable power crosses the projection detached from
+  -- the kernel outbox: present values keep their unsigned range while
+  -- absent values stay absent for effects that never require one.
+  if record.power ~= nil then
+    assert(
+      type(record.power) == "number" and record.power % 1 == 0 and record.power >= 0 and record.power <= 65535,
+      "playback move power stays an unsigned sixteen-bit integer"
+    )
+    detached.power = record.power
+  end
+  return detached
+end
+
+---@param points unknown display checkpoints under validation
+---@return table<integer, table<string, unknown>>? detached checkpoints, nil when the event carries none
+local function checkCheckpoints(points)
+  if points == nil then
+    return nil
+  end
+  assert(type(points) == "table", "playback checkpoints stay ordered records")
+  local out = {} ---@type table<integer, table<string, unknown>>
+  for _, point in
+    ipairs(points --[[@as table<integer, unknown>]])
+  do
+    assert(type(point) == "table", "playback checkpoints record displayed health")
+    local record = point --[[@as table<string, unknown>]]
+    assert(
+      type(record.hp) == "number" and type(record.maxHp) == "number",
+      "playback checkpoints record displayed health"
+    )
+    local detached = {
+      combatant = record.combatant,
+      hp = record.hp,
+      maxHp = record.maxHp,
+    } --[[@as table<string, unknown>]]
+    for _, key in ipairs({ "position", "activation", "side" }) do
+      if record[key] ~= nil then
+        assert(type(record[key]) == "number", "playback checkpoint ordinals stay numeric")
+        detached[key] = record[key]
+      end
+    end
+    if type(record.condition) == "string" then
+      detached.condition = record.condition
+    end
+    out[#out + 1] = detached
+  end
+  return out
+end
+
+---@param event table<string, unknown> native event under fact collection
+---@param views table<string, unknown>? detached before/after views under name lookup
+---@return table<string, unknown> typed visible message arguments: resolved names beside scalar branch values
+local function messageArgsFor(event, views)
+  local args = {} ---@type table<string, unknown>
+  local payload = event.payload --[[@as table<string, unknown>?]]
+  if type(payload) == "table" then
+    for _, role in ipairs(NAMED_ROLES) do
+      local id = (payload --[[@as table<string, unknown>]])[role]
+      if type(id) == "number" then
+        local name = visibleNameOf(views, id)
+        if name ~= nil then
+          args[role .. "Name"] = name
+        end
+      end
+    end
+    local scalars = MESSAGE_SCALARS[
+      event.kind --[[@as string]]
+    ]
+    if type(scalars) == "table" then
+      for _, key in
+        ipairs(scalars --[[@as string[] ]])
+      do
+        local value = (payload --[[@as table<string, unknown>]])[key]
+        if type(value) == "string" or type(value) == "number" or type(value) == "boolean" then
+          args[key] = value
+        end
+      end
+    end
+  end
+  local cause = event.cause --[[@as table<string, unknown>?]]
+  if type(cause) == "table" then
+    if type(cause.key) == "string" then
+      args.reason = cause.key
+    elseif type(cause.kind) == "string" then
+      args.reason = cause.kind
+    end
+  end
+  return args
+end
+
+---@param event table<string, unknown> native event under fact collection
+---@return table<string, unknown> exact typed branch parameters beside the selected route
+local function parametersFor(event)
+  local parameters = {} ---@type table<string, unknown>
+  local payload = event.payload --[[@as table<string, unknown>?]]
+  if type(payload) == "table" then
+    local scalars = MESSAGE_SCALARS[
+      event.kind --[[@as string]]
+    ]
+    if type(scalars) == "table" then
+      for _, key in
+        ipairs(scalars --[[@as string[] ]])
+      do
+        local value = (payload --[[@as table<string, unknown>]])[key]
+        if type(value) == "string" or type(value) == "number" or type(value) == "boolean" then
+          parameters[key] = value
+        end
+      end
+    end
+  end
+  return parameters
+end
+
+---@param sequence unknown event sequence ordinal under visual seeding
+---@return integer deterministic visual seed scoped to the event identity
+local function visualSeedFor(sequence)
+  local ordinal = 0
+  if type(sequence) == "number" and sequence % 1 == 0 and sequence >= 0 then
+    ordinal = sequence --[[@as integer]]
+  end
+  return (ordinal * 1103515245 + 12345) % 2147483648
+end
+
 ---@param event table<string, unknown> native event under sanitizing
----@return table<string, unknown> public event with its event-time checkpoint
-function BattlePresentationModel.sanitizeEvent(event)
+---@param views table<string, unknown>? detached before/after views picturing the event battlers
+---@return table<string, unknown> public event with its explicit playback facts
+function BattlePresentationModel.sanitizeEvent(event, views)
   assert(type(event) == "table", "sanitized packets carry event records")
   local public = {
     sequence = event.sequence,
@@ -502,6 +788,41 @@ function BattlePresentationModel.sanitizeEvent(event)
     public.after = copyValue(event.observation)
   else
     public.after = {}
+  end
+  -- Explicit playback identities pass through untouched when present
+  -- and stay empty for legacy emissions; mistyped facts fail loudly
+  -- instead of publishing a guess. Appearance and names resolve from
+  -- the sanitized views, so hidden battlers can never picture one.
+  public.actors = checkIdentities(event.actors, views)
+  public.targets = checkIdentities(event.targets, views)
+  local move = checkMove(event.move)
+  if move ~= nil then
+    public.move = move
+  end
+  local checkpoints = checkCheckpoints(event.checkpoints)
+  if checkpoints ~= nil then
+    public.checkpoints = checkpoints
+  end
+  if type(event.flowKey) == "string" then
+    public.flowKey = event.flowKey
+  elseif type(event.kind) == "string" then
+    public.flowKey = event.kind
+  end
+  if type(event.effectKey) == "string" then
+    public.effectKey = event.effectKey
+  end
+  if type(event.suppression) == "table" then
+    public.suppression = copyValue(event.suppression)
+  end
+  if type(event.visualSeed) == "number" then
+    public.visualSeed = event.visualSeed
+  else
+    public.visualSeed = visualSeedFor(event.sequence)
+  end
+  public.messageArgs = messageArgsFor(public, views)
+  public.parameters = parametersFor(public)
+  if type(event.options) == "table" then
+    public.options = copyValue(event.options)
   end
   BattleProtocol.validateEvent(public)
   return public
@@ -529,12 +850,13 @@ function BattlePresentationModel.packet(beforeView, frame, afterView, context)
     type(packetId) == "number" and packetId --[[@as integer]] % 1 == 0 and packetId --[[@as integer]] >= 1,
     "delivery packets carry a monotonic per-launch identity"
   )
+  local views = { before = beforeView, after = afterView } --[[@as table<string, unknown>]]
   local events = {} ---@type table<integer, table<string, unknown>>
   if type(frame.events) == "table" then
     for _, event in
       ipairs(frame.events --[[@as table<integer, table<string, unknown>>]])
     do
-      events[#events + 1] = BattlePresentationModel.sanitizeEvent(event)
+      events[#events + 1] = BattlePresentationModel.sanitizeEvent(event, views)
     end
   end
   local packet = {

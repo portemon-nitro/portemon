@@ -272,7 +272,7 @@ DerivedAssetContract.messages = {
 -- each carrying its palette slot and rect, instead of separate slot keys.
 -- v5/v4: focus indicators use four white alpha masks per frame, keyed by
 -- source palette slots, instead of a precolored single image.
--- v4: the font class requires font IDs 0 and 4 in one atomic publication;
+-- v4: the font class requires font IDs 0, 1, and 4 in one atomic publication;
 -- v3: the font class gains a required semantic glyph mask atlas (categorical
 -- foreground/shadow/background classes, distinct from the composited RGB
 -- atlas) so palette-driven presentation can recolor glyphs against an
@@ -407,9 +407,10 @@ DerivedAssetContract.trainerCatalog = {
 -- (portrait pages resolve through the mon class). The global manifest
 -- stages apart from scenes; one scene stages per demanded key.
 DerivedAssetContract.battlePresentation = {
-  cacheFormat = "battle-presentation-cache-v1",
-  schema = "g4-battle-presentation-v1",
-  sceneSchema = "g4-battle-scene-v1",
+  cacheFormat = "battle-presentation-cache-v3",
+  schema = "g4-battle-presentation-v4",
+  sceneSchema = "g4-battle-scene-v2",
+  effectSchema = "g4-battle-effect-v2",
 }
 
 DerivedAssetContract.encounterCatalog = {

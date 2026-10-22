@@ -281,6 +281,22 @@ local function collapseCameraInterpolation(camera)
   end
 end
 
+-- Settles the committed visual pair without moving any logical anchor: the
+-- gait visual rests, the player render pair collapses onto its committed
+-- tile, and the camera pair collapses onto its committed view. Sampling the
+-- fresh camera target stays with the arrival path below; the hold edge must
+-- not resample, so a freeze never records new camera history.
+---@param self FieldSession
+local function settleHeldPairs(self)
+  if self.playerVisual then
+    self.playerVisual:settle()
+  end
+  if type(self.player.collapseRenderInterpolation) == "function" then
+    self.player:collapseRenderInterpolation()
+  end
+  collapseCameraInterpolation(self.camera)
+end
+
 ---@param scheduler table<string, unknown>
 ---@return string?
 local function foregroundEnvironmentId(scheduler)
@@ -565,7 +581,15 @@ end
 -- outside the presented envelope.
 ---@param active boolean
 function FieldSession:setForegroundHold(active)
-  self.foregroundHold = active == true
+  local holding = active == true
+  if holding and not self.foregroundHold then
+    -- Rising edge only: battle admission arrives on the commit tick with a
+    -- settled avatar, so a moving player here is a composition fault, not a
+    -- walk to cancel. Repeats stay idempotent and never resample the camera.
+    assert(self.player.motion == "idle", "a foreground hold settles a committed idle tile")
+    settleHeldPairs(self)
+  end
+  self.foregroundHold = holding
 end
 
 ---@return boolean
@@ -837,15 +861,12 @@ local function cameraTargetInto(self)
 end
 
 -- An event consumed on the arrival tile owns its tick: the tile settles
--- instead of interpolating onward.
+-- instead of interpolating onward. The fresh camera target samples first;
+-- the shared pair settling owns the visual rest.
 ---@param self FieldSession
 local function settleArrivalTile(self)
-  if self.playerVisual then
-    self.playerVisual:settle()
-  end
-  self.player:collapseRenderInterpolation()
   self.camera:updateFixed(cameraTargetInto(self))
-  collapseCameraInterpolation(self.camera)
+  settleHeldPairs(self)
 end
 
 -- The script client resolves the binding; an unbound coordinate event is a

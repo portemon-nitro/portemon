@@ -11,6 +11,7 @@
 local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local Assert = require("tests.support.Assert")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -86,10 +87,21 @@ local function methodAudio()
   local controller = { calls = {} }
   function controller:play(symbol)
     controller.calls[#controller.calls + 1] = { method = "play", receiver = self, symbol = symbol }
+    return true
   end
-  function controller:playCry(species, pattern)
-    controller.calls[#controller.calls + 1] =
-      { method = "playCry", receiver = self, species = species, pattern = pattern }
+  function controller:playCry(species, pattern, form, mode, pan, volume, pitch)
+    controller.calls[#controller.calls + 1] = {
+      method = "playCry",
+      receiver = self,
+      species = species,
+      pattern = pattern,
+      form = form,
+      mode = mode,
+      pan = pan,
+      volume = volume,
+      pitch = pitch,
+    }
+    return true
   end
   function controller:rejects()
     return false
@@ -135,125 +147,91 @@ end
 ---@param sceneImage string cache-relative staged scene image path
 ---@return table schema-valid staged battle manifest
 local function stagedManifest(sceneImage)
-  local images = {
-    [MENU_IMAGE] = { width = 8, height = 8 },
-    [sceneImage] = { width = 64, height = 64 },
-  }
-  local function sprite(image)
-    return {
-      image = image,
-      cells = {
-        {
-          objs = {
-            {
-              x = 0,
-              y = 0,
-              tile = 0,
-              flipH = false,
-              flipV = false,
-              palette = 0,
-              shape = 0,
-              size = 0,
-              width = 8,
-              height = 8,
-              affine = false,
-              disabled = false,
-              objMode = "normal",
-              mosaic = false,
-              colorMode = "16-color",
-              priority = 0,
-            },
-          },
-        },
-      },
-      animation = { playMode = "forward", loopStartFrameIdx = 0, frames = { { cell = 0, duration = 4 } } },
-      palette = { colors = { { r = 1, g = 2, b = 3 } } },
-    }
-  end
-  local function menu(image)
-    return {
-      image = image,
-      screens = { { image = image, width = 8, height = 8 } },
-    }
-  end
-  local command = menu(MENU_IMAGE)
-  return {
-    schema = "g4-battle-presentation-v1",
-    version = { id = "heartgold", language = "en" },
-    verified = true,
-    scenes = { { key = SCENE_KEY, background = "general", terrain = "grass", time = "day" } },
-    images = images,
-    command = command,
-    moves = command,
-    target = command,
-    twoOption = command,
-    lower = {
-      image = MENU_IMAGE,
-      palette = { colors = { { r = 1, g = 2, b = 3 } } },
-      variants = {
-        general = {
-          base = { colors = { { r = 1, g = 2, b = 3 } } },
-          touch = { colors = { { r = 1, g = 2, b = 3 } } },
-        },
-      },
-    },
-    playerHud = sprite(MENU_IMAGE),
-    enemyHud = sprite(MENU_IMAGE),
-    doublesHud = {
-      playerLeft = sprite(MENU_IMAGE),
-      playerRight = sprite(MENU_IMAGE),
-      enemyLeft = sprite(MENU_IMAGE),
-      enemyRight = sprite(MENU_IMAGE),
-    },
-    arrow = sprite(MENU_IMAGE),
-    partyGauges = {
-      sprite(MENU_IMAGE),
-      sprite(MENU_IMAGE),
-    },
-    terrain = {
-      type0 = { cells = sprite(MENU_IMAGE).cells, animation = sprite(MENU_IMAGE).animation },
-      type1 = { cells = sprite(MENU_IMAGE).cells, animation = sprite(MENU_IMAGE).animation },
-    },
-    textRoles = {
-      narration = { font = "font-0", sourceFontId = 1 },
-      menu = { font = "font-0" },
-      hud = { font = "font-0" },
-    },
-    audioRoles = {
-      wild = "SEQ_GS_VS_NORAPOKE",
-      trainer = "SEQ_GS_VS_TRAINER",
-      rival = "SEQ_GS_VS_RIVAL",
-      select = SELECT_SYMBOL,
-      narrationBank = 197,
-      cries = "species",
-    },
-  }
+  local manifest = BattlePresentationManifestFixture.manifest()
+  manifest.menus.images[MENU_IMAGE] = { width = 8, height = 8 }
+  manifest.menus.images[sceneImage] = { width = 512, height = 256 }
+  manifest.audioRoles.select = SELECT_SYMBOL
+  return manifest
 end
 
 -- Stages the battle manifest, one scene record with exactly-sized pixels,
 -- and the lead/foe portrait pages over the presentation fixture cache.
 ---@param cache table versioned derived cache under staging
 local function stageBattlePresentation(cache)
-  cache:writeLua(
-    BattlePresentationCache.manifestPath(),
-    stagedManifest(BattlePresentationCache.sceneImagePath(SCENE_KEY))
-  )
+  local staged = stagedManifest(BattlePresentationCache.sceneImagePath(SCENE_KEY))
+  cache:writeLua(BattlePresentationCache.manifestPath(), staged)
   cache:write(MENU_IMAGE, solidPng(8, 8))
+  -- The field narration renderer behind battle text reads font 1:
+  -- stage it beside the menu font the shared fixture already carries.
+  FieldUiFixture.writeFont(cache, 1)
+  -- The health-box strips the launch validator requires before a battle
+  -- admits: every HUD section image needs staged bytes beside the menu art.
+  local hud = staged.hud --[[@as table<string, unknown>]]
+  local doubles = hud.doubles --[[@as table<string, unknown>]]
+  local strips = { hud.enemy, hud.player }
+  for _, slot in ipairs({ "playerLeft", "playerRight", "enemyLeft", "enemyRight" }) do
+    strips[#strips + 1] = doubles[slot]
+  end
+  for _, section in ipairs(strips) do
+    local image = (section --[[@as table<string, unknown>]]).image --[[@as string]]
+    cache:write(image, solidPng(1648, 8))
+  end
+  -- The Pokepic shadow plate the asset holder requires beside the HUD.
+  local pictures = staged.pictures --[[@as table<string, unknown>]]
+  local shadow = pictures.shadow --[[@as table<string, unknown>]]
+  cache:write(shadow.image --[[@as string]], solidPng(64, 64))
   for _, font in ipairs({ "font-0" }) do
     cache:write(font, "staged-font")
   end
+  local charactersPath = BattlePresentationCache.sceneCharactersPath(SCENE_KEY)
+  local mapPath = BattlePresentationCache.sceneMapPath(SCENE_KEY)
+  local palettePath = BattlePresentationCache.scenePalettePath(SCENE_KEY)
+  local mapEntries = {}
+  for index = 1, 2048 do
+    mapEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
+  end
+  local paletteColors = {}
+  for index = 1, 256 do
+    paletteColors[index] = { r = 0, g = 0, b = 0 }
+  end
   cache:writeLua(BattlePresentationCache.scenePath(SCENE_KEY), {
-    schema = "g4-battle-scene-v1",
+    schema = "g4-battle-scene-v2",
     key = SCENE_KEY,
     background = "general",
     terrain = "grass",
     time = "day",
-    canvasWidth = 64,
-    canvasHeight = 64,
-    viewport = { x = 0, y = 0, width = 64, height = 64 },
+    canvasWidth = 512,
+    canvasHeight = 256,
+    viewport = { x = 0, y = 0, width = 256, height = 192 },
+    layers = {
+      {
+        key = "background",
+        backing = { width = 512, height = 256, mapWidth = 64, mapHeight = 32 },
+        viewport = { x = 0, y = 0, width = 256, height = 192 },
+        scroll = { x = 0, y = 0 },
+        characters = {
+          key = "battle-scene/general-grass-day/background/characters",
+          path = charactersPath,
+          format = "indexed8",
+        },
+        map = {
+          key = "battle-scene/general-grass-day/background/map",
+          path = mapPath,
+          format = "tilemap",
+        },
+        palette = {
+          key = "battle-scene/general-grass-day/background/palette",
+          path = palettePath,
+          format = "rgb888",
+        },
+      },
+    },
     imagePath = BattlePresentationCache.sceneImagePath(SCENE_KEY),
   })
-  cache:write(BattlePresentationCache.sceneImagePath(SCENE_KEY), solidPng(64, 64))
+  cache:write(BattlePresentationCache.sceneImagePath(SCENE_KEY), solidPng(512, 256))
+  cache:write(charactersPath, string.rep("\0", 65536))
+  cache:writeLua(mapPath, { width = 512, height = 256, entries = mapEntries })
+  cache:writeLua(palettePath, { colors = paletteColors })
   local entries = {}
   for _, selector in ipairs({
     LEAD_SPECIES .. "/f0/male/plain/back",
@@ -265,7 +243,17 @@ local function stageBattlePresentation(cache)
     FOE_SPECIES .. "/f0/female/plain",
     FOE_SPECIES .. "/f0/female/shiny",
   }) do
-    entries[selector] = { x = 0, y = 0, width = 8, height = 8, pageId = 0 }
+    entries[selector] = {
+      x = 0,
+      y = 0,
+      width = 8,
+      height = 8,
+      pageId = 0,
+      frames = {
+        { x = 0, y = 0, width = 8, height = 8 },
+        { x = 8, y = 0, width = 8, height = 8 },
+      },
+    }
   end
   cache:writeLua(MonCache.portraitManifestPath(), { entries = entries })
   cache:writeLua(MonCache.indexPath(), { portraitPages = { "portrait-marker-0" } })
@@ -509,6 +497,20 @@ local function pump(rig)
   rig.state.battleEnvelope:updateFixed(TICK)
 end
 
+-- Waits for the source menu input gate to open before answering: the
+-- production command menu drops input during its entry travel, so a
+-- reply sent earlier would never reach the cue sink.
+---@param rig table live rig under test driving
+local function waitMenuInput(rig)
+  for _ = 1, 300 do
+    if rig.screen:view().menuInputEnabled then
+      return
+    end
+    pump(rig)
+  end
+  error("the source menu input gate never opened", 0)
+end
+
 -- Drives the live battle until the screen exposes its command decision,
 -- failing loudly with the screen context when presentation fails first.
 ---@param rig table live rig under test driving
@@ -520,6 +522,7 @@ local function driveToCommand(rig)
       error("the production battle failed before its command: " .. tostring(status.error), 0)
     end
     if status.mode == "command" then
+      waitMenuInput(rig)
       return
     end
   end
@@ -540,9 +543,10 @@ local function countCalls(calls, method)
 end
 
 -- The played battle reaches the bound controller with real method
--- signatures: one numeric send-out cry for the active lead and one
--- selection sound for the accepted Fight choice, each dispatched exactly
--- once with the controller as its receiver and no pseudo-sequence.
+-- signatures: one numeric send-out cry per battler for the wild foe
+-- and the active lead, and one selection sound for the accepted Fight
+-- choice, each dispatched exactly once with the controller as its
+-- receiver and no pseudo-sequence.
 function T.selection_and_cry_reach_the_bound_controller_once()
   local cache = FieldStatePresentationFixture.cache()
   stageBattlePresentation(cache)
@@ -553,6 +557,7 @@ function T.selection_and_cry_reach_the_bound_controller_once()
   local rig = openBattle(state, {})
   driveToCommand(rig)
   local leadNativeId = monCatalog:species(LEAD_SPECIES).nativeId
+  local foeNativeId = monCatalog:species(FOE_SPECIES).nativeId
   local cries, plays = {}, {}
   for _, call in ipairs(audio.calls) do
     Assert.isTrue(call.receiver == audio, "every cue reaches the controller with its receiver")
@@ -566,13 +571,26 @@ function T.selection_and_cry_reach_the_bound_controller_once()
       plays[#plays + 1] = call
     end
   end
-  Assert.equal(#cries, 1, "the send-out cries exactly once")
-  Assert.equal(cries[1].species, leadNativeId, "the cry names the numeric lead identity")
-  Assert.equal(cries[1].pattern, 0, "the cry uses the plain pattern")
+  local leadCries, foeCries = {}, {}
+  for _, cry in ipairs(cries) do
+    if cry.species == leadNativeId then
+      leadCries[#leadCries + 1] = cry
+    elseif cry.species == foeNativeId then
+      foeCries[#foeCries + 1] = cry
+    end
+  end
+  Assert.equal(#leadCries, 1, "the lead send-out cries exactly once")
+  Assert.equal(#foeCries, 1, "the foe send-out cries exactly once")
+  Assert.equal(leadCries[1].species, leadNativeId, "the cry names the numeric lead identity")
+  Assert.equal(leadCries[1].pattern, 0, "the cry uses the plain pattern")
+  Assert.equal(foeCries[1].pattern, 0, "the foe cry uses the plain pattern")
+  Assert.isTrue(leadCries[1].form == 0, "the lead cry names its form")
+  Assert.isTrue(foeCries[1].pan ~= leadCries[1].pan, "foe and lead cries voice from their own sides")
   Assert.equal(#plays, 0, "no selection plays before an accepted reply")
   rig.screen:input({ { type = "confirm" } })
   pump(rig)
   Assert.equal(rig.screen:status().mode, "moves", "confirming Fight opens move selection")
+  waitMenuInput(rig)
   rig.screen:input({ { type = "confirm" } })
   pump(rig)
   Assert.equal(rig.screen:status().mode, "awaiting_resolution", "confirming the known slot submits")
@@ -588,7 +606,7 @@ function T.selection_and_cry_reach_the_bound_controller_once()
   Assert.equal(select.symbol, SELECT_SYMBOL, "the selection plays the staged interface role")
   pump(rig)
   pump(rig)
-  Assert.equal(countCalls(audio.calls, "playCry"), 1, "settling replays no cry")
+  Assert.equal(countCalls(audio.calls, "playCry"), 2, "settling replays no cry")
   Assert.equal(countCalls(audio.calls, "play"), 1, "settling replays no selection")
   rig.battle:dispose()
   state:dispose()
@@ -650,7 +668,7 @@ function T.rejecting_cue_audio_fails_the_launch_with_context()
   local context = tostring(status.error)
   Assert.isTrue(context:find("launch-production-audio", 1, true) ~= nil, "the failure names its launch: " .. context)
   Assert.isTrue(
-    context:find("cry:" .. LEAD_SPECIES, 1, true) ~= nil or context:find("SEQ_", 1, true) ~= nil,
+    context:find("cry:" .. FOE_SPECIES, 1, true) ~= nil or context:find("SEQ_", 1, true) ~= nil,
     "the failure names its cue role: " .. context
   )
   local callsAtFailure = #audio.calls

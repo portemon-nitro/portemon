@@ -96,6 +96,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     fieldEffects = {
       cacheFormat = "field-effect-cache-v16",
+      cacheFormat = "field-effect-cache-v16",
       indexSchema = "g4-field-effect-index-v4",
     },
     followerInteractions = {
@@ -139,9 +140,10 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-trainer-catalog-v2",
     },
     battlePresentation = {
-      cacheFormat = "battle-presentation-cache-v1",
-      schema = "g4-battle-presentation-v1",
-      sceneSchema = "g4-battle-scene-v1",
+      cacheFormat = "battle-presentation-cache-v3",
+      schema = "g4-battle-presentation-v4",
+      sceneSchema = "g4-battle-scene-v2",
+      effectSchema = "g4-battle-effect-v2",
     },
     encounterCatalog = {
       cacheFormat = "encounter-catalog-cache-v1",

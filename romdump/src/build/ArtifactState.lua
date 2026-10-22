@@ -79,6 +79,9 @@ ArtifactState.KINDS = {
   -- demanded persistent scene owns its own composed image and marker.
   ["battle-presentation"] = true,
   ["battle-scene"] = true,
+  -- One staged battle effect artifact per independently requested key: the
+  -- normalized program plus its closed transitive resources.
+  ["battle-effect"] = true,
   -- One staged message bank (or the family summary) per job: each bank owns
   -- its payload and marker, the summary owns only the index and completion.
   ["message-bank"] = true,
@@ -173,6 +176,10 @@ local function checkKey(kind, key)
   if kind == "battle-scene" then
     local Sources = require("romdump.src.config.BattlePresentationSources")
     assert(Sources.validateSceneKey(key), "invalid battle scene key: " .. key)
+    return
+  end
+  if kind == "battle-effect" then
+    assert(key ~= "" and key:find("/", 1, true) == nil, "invalid battle effect key: " .. key)
     return
   end
   if key == "global" or isCanonicalInteger(key) then

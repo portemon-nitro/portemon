@@ -121,7 +121,11 @@ local function sceneRomFs(screenTile, type0overrides, type1overrides)
     ["NARC_a_0_0_7:2"] = screenBlock(screenTile, 512, 256),
     ["NARC_a_0_0_7:3"] = baseChars(),
     ["NARC_a_0_0_7:176"] = paletteWith(31, 256),
+    ["NARC_a_0_0_7:177"] = paletteWith(31 * 32, 256),
+    ["NARC_a_0_0_7:178"] = paletteWith(31 * 1024, 256),
     ["NARC_a_0_0_8:1"] = paletteWith(31 * 32, 16),
+    ["NARC_a_0_0_8:2"] = paletteWith(31 * 32, 16),
+    ["NARC_a_0_0_8:3"] = paletteWith(31 * 32, 16),
     ["NARC_a_0_0_8:127"] = terrainCells(type0overrides or {}),
     ["NARC_a_0_0_8:130"] = terrainCells(type1overrides or {}),
   })
@@ -186,6 +190,23 @@ function T.type0_remainder_groups_address_their_own_blocks()
   assertPixel(first.image, 0, 0, TERRAIN[1], TERRAIN[2], TERRAIN[3], "remainder group zero reads at 0x400")
   local second = assert(compile(sceneRomFs(904, { [0x800] = 0x09 }, {})))
   assertPixel(second.image, 0, 0, TERRAIN[1], TERRAIN[2], TERRAIN[3], "remainder group one reads at 0x800")
+end
+
+function T.time_palette_variants_change_decoded_scene_pixels()
+  local romFs = sceneRomFs(0, {}, {})
+  local day = assert(compile(romFs, "general/grass/day"))
+  local evening = assert(compile(romFs, "general/grass/evening"))
+  local night = assert(compile(romFs, "general/grass/night"))
+  assertPixel(day.image, 0, 0, 255, 0, 0, "day uses the selected source palette")
+  assertPixel(evening.image, 0, 0, 0, 255, 0, "evening uses its selected source palette")
+  assertPixel(night.image, 0, 0, 0, 0, 255, "night uses its selected source palette")
+end
+
+function T.persistent_scene_payload_preserves_8bpp_tile_geometry()
+  local scene = assert(compile(sceneRomFs(0, {}, {})))
+  Assert.equal(scene.layers[1].characters.format, "indexed8", "the persistent plane declares its byte-indexed pixels")
+  Assert.equal(#scene.layerPayloads[1].characters, 65536, "the decoded backing characters preserve their 64-byte tile stride")
+  Assert.equal(#scene.layerPayloads[1].palette.colors, 256, "the native 8bpp plane keeps one 256-color palette")
 end
 
 function T.unknown_scene_keys_and_missing_members_fail_precisely()
