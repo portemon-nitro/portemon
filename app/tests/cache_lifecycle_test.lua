@@ -1866,6 +1866,7 @@ local function withBootGateApp(options, fn)
   local HgssGame = require("game.hgss.src.HgssGame")
   local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local RomImporter = require("romdump.src.source.RomImporter")
+  local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
   local CacheService = require("app.src.CacheService")
   local graphics = love.graphics
   local original = {
@@ -1885,6 +1886,7 @@ local function withBootGateApp(options, fn)
     gameNew = HgssGame.new,
     preparationNew = HgssGame.newFirstPlayCachePreparation,
     menuNew = MainMenuComposition.new,
+    loadingNew = HgssLoadingPresentation.new,
     isReady = RomImporter.isReady,
     getDimensions = graphics.getDimensions,
     getDPIScale = graphics.getDPIScale,
@@ -1934,6 +1936,21 @@ local function withBootGateApp(options, fn)
   App.pixelRatio = 1
   RomImporter.isReady = function(versionId)
     return readySet[versionId] == true
+  end
+  -- The cold boot wait adopts its selected pair through the themed
+  -- presentation, whose GPU acquisition needs generated fixtures this
+  -- channel harness never builds: model an instantly drawable pair so the
+  -- control-stream ordering stays under test instead of stalling on art.
+  HgssLoadingPresentation.new = function(_)
+    local presentation = {}
+    function presentation:update() end
+    function presentation:resize() end
+    function presentation:draw() end
+    function presentation:dispose() end
+    function presentation:adoptGeneratedAssets()
+      return true
+    end
+    return presentation
   end
   HgssGame.newFirstPlayCachePreparation = function(_)
     context.preparations = context.preparations + 1
@@ -1995,6 +2012,7 @@ local function withBootGateApp(options, fn)
   HgssGame.new = original.gameNew
   HgssGame.newFirstPlayCachePreparation = original.preparationNew
   MainMenuComposition.new = original.menuNew
+  HgssLoadingPresentation.new = original.loadingNew
   RomImporter.isReady = original.isReady
   restoreFirstPlayCompletion(completionOriginals)
   graphics.getDimensions = original.getDimensions
@@ -2098,6 +2116,25 @@ local function milestoneRequestId(context, epoch, name)
       and packet.epoch == epoch
       and packet.requestKind == "milestone"
       and packet.name == name
+    then
+      found = packet.requestId
+    end
+  end
+  return found
+end
+
+---@param context table boot-gate harness holding the fake channel host
+---@param epoch integer selected source epoch
+---@return integer? the keyed startup-walker request identity
+local function walkerRequestId(context, epoch)
+  local found = nil
+  local log = context.host.channels[1].log
+  for _, packet in ipairs(log) do
+    if
+      type(packet) == "table"
+      and packet.op == "request"
+      and packet.epoch == epoch
+      and packet.requestKind == "startup-walker"
     then
       found = packet.requestId
     end
@@ -2281,6 +2318,22 @@ function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_on
       Assert.equal(waiting.kind, "boot-source", "a fresh import waits on its source gate before first play")
       Assert.equal(context.preparations, 0, "first-play preparation never starts before the gate answers")
       context.service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
+      pumpBootGate(App, 1)
+      local waiting = assert(App.state, "the fresh import holds its card while the pair is pending")
+      Assert.equal(waiting.kind, "boot-source", "verification and worker readiness stay distinct facts")
+      -- The pair demand is queued during the wait's update, after the
+      -- service already flushed this frame: one more pump carries it onto
+      -- the control stream while the card stays held without a reply.
+      pumpBootGate(App, 1)
+      local held = assert(App.state, "the cold card survives the demand flush")
+      Assert.equal(held.kind, "boot-source", "the pair demand alone never completes the handoff")
+      local walkerId = assert(
+        walkerRequestId(context, epoch),
+        "the cold wait requests exactly the selected walking pair"
+      )
+      context.service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+      -- One pump absorbs the pair answer and transfers to the title, one
+      -- queues its bootstrap demand, and one flushes that demand on stream.
       pumpBootGate(App, 3)
       Assert.equal(App.epoch, epoch, "readiness reuses the selected epoch")
       Assert.equal(context.preparations, 1, "readiness constructs first-play preparation exactly once")
@@ -2473,6 +2526,14 @@ function T.blocked_boot_refuses_a_wrong_version_and_ignores_stale_replies()
       Assert.equal(offer.romSha1, info.sha1, "the matching offer carries the canonical ROM identity")
       context.service:injectReply({ op = "boot-source-result", epoch = third, state = "ready" })
       context.prepScript.ready = true
+      pumpBootGate(App, 2)
+      -- A cold repair holds its card until the selected pair adopts: answer
+      -- the keyed walker demand before expecting the title bootstrap.
+      local walkerId = assert(
+        walkerRequestId(context, third),
+        "the matching source requests exactly the selected walking pair"
+      )
+      context.service:injectReply({ op = "request-result", epoch = third, requestId = walkerId, state = "ready" })
       pumpBootGate(App, 3)
       local bootstrapId = assert(
         milestoneRequestId(context, third, "bootstrap"),
