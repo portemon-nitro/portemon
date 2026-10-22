@@ -104,13 +104,40 @@ end
 
 local TABLE_CHUNK_SIZE = 128
 
+-- Reserved words read as identifiers by the key-shape check but never parse
+-- as bare constructor fields; they always serialize in brackets so the
+-- emitted chunk stays loadable.
+local LUA_KEYWORDS = {
+  ["and"] = true,
+  ["break"] = true,
+  ["do"] = true,
+  ["else"] = true,
+  ["elseif"] = true,
+  ["end"] = true,
+  ["false"] = true,
+  ["for"] = true,
+  ["function"] = true,
+  ["if"] = true,
+  ["in"] = true,
+  ["local"] = true,
+  ["nil"] = true,
+  ["not"] = true,
+  ["or"] = true,
+  ["repeat"] = true,
+  ["return"] = true,
+  ["then"] = true,
+  ["true"] = true,
+  ["until"] = true,
+  ["while"] = true,
+}
+
 ---@param key LuaWriter.Key
 ---@return string
 local function encodeKey(key)
   if type(key) == "number" then
     return "[" .. encodeNumber(key) .. "]"
   end
-  if isIdentifier(key) then
+  if isIdentifier(key) and not LUA_KEYWORDS[key] then
     return key
   end
   return "[" .. encodeString(key) .. "]"

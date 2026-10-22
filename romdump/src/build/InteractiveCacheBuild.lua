@@ -856,6 +856,13 @@ function InteractiveCacheBuild:_payload(kind, key)
       "walking pair index must be an integer 1..32"
     )
     payload.pairIndex = pairIndex
+  elseif kind == "opening-scene" then
+    local sceneNumber = tonumber(key)
+    assert(
+      sceneNumber ~= nil and sceneNumber % 1 == 0 and sceneNumber >= 1 and sceneNumber <= 5,
+      "opening scene number must be an integer 1..5"
+    )
+    payload.sceneNumber = sceneNumber
   end
   return payload
 end
@@ -2199,6 +2206,23 @@ function InteractiveCacheBuild:requestStartupWalker(pairIndex, urgency)
   )
   ArtifactJobs.priorityFor(urgency)
   return self:_answer(self:_requestDirect("startup-loader", tostring(pairIndex), urgency))
+end
+
+-- One independently requestable opening-movie scene: exactly scenes 1..5
+-- route to the keyed opening-scene job with no source-inventory or audio
+-- prerequisite, so each scene compiles, reuses, and fails on its own.
+---@param sceneNumber integer
+---@param urgency string
+---@return boolean
+---@return string|nil
+function InteractiveCacheBuild:requestOpeningScene(sceneNumber, urgency)
+  assert(not self.retired, "generation session is retired")
+  assert(
+    type(sceneNumber) == "number" and sceneNumber % 1 == 0 and sceneNumber >= 1 and sceneNumber <= 5,
+    "opening scene number must be an integer 1..5"
+  )
+  ArtifactJobs.priorityFor(urgency)
+  return self:_answer(self:_requestDirect("opening-scene", tostring(sceneNumber), urgency))
 end
 
 ---@param kind string
