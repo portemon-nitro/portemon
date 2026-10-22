@@ -293,16 +293,12 @@ end
 local function readyVersions()
   local GameVersion = require("romdump.src.source.GameVersion")
   local RomImporter = require("romdump.src.source.RomImporter")
-  local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      versions[#versions + 1] = versionId
+      return { versionId }
     end
   end
-  if #versions == 0 then
-    error("presented battle integration needs a ready versioned cache", 0)
-  end
-  return versions
+  error("presented battle integration needs a ready versioned cache", 0)
 end
 
 function T.presented_launch_captures_semantic_transition_context_before_mutation()

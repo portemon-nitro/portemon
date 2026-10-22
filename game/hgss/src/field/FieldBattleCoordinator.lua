@@ -401,6 +401,7 @@ function FieldBattleCoordinator:updateBattle()
       self._battleLaunch = nil
     else
       launch.phase = "restoring"
+      self._lastBattleResult = { result = decision.result, sourceResult = decision.sourceResult }
       fieldRuntime(self).overworld:requestRestore()
     end
   end
@@ -503,6 +504,7 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
         self:_beginAutomaticRecovery(launch)
       end
     else
+      self._lastBattleResult = { result = result, sourceResult = launch.sourceResult }
       fieldRuntime(self).overworld:requestRestore()
       launch.phase = "restoring"
     end

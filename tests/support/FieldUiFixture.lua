@@ -679,6 +679,7 @@ end
 ---@return CacheFs
 function FieldUiFixture.cacheWithFontAndFrames()
   local cache = FieldDialogueFixture.cacheWithFont()
+  FieldUiFixture.writeFont(cache, 1)
   FieldUiFixture.writeFont(cache, 4)
   cache:writeLua(FieldUiAssetCache.manifestPath(), FieldUiFixture.manifest())
   cache:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())

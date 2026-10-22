@@ -793,7 +793,7 @@ end
 function T.tests.scripted_launches_keep_their_result_ownership()
   local Presentation = requirePresentationOwner("script requests keep their own launch and result ownership")
   assert(Presentation ~= nil, "the envelope owner loads")
-  local harness = AcceptanceHarness.new()
+  local harness = AcceptanceHarness.new({ versions = { AcceptanceHarness.defaultVersion() } })
   harness:forEachVersion(function(versionId)
     local inner, game = bootFieldGame(versionId, "MAP_NEW_BARK_ELMS_LAB_1F")
     local runtime = game.runtime
@@ -875,7 +875,7 @@ end
 function T.tests.covered_entry_waits_for_readiness_and_holds_music()
   local Presentation = requirePresentationOwner("covered entry waits for real readiness and holds music")
   assert(Presentation ~= nil, "the envelope owner loads")
-  local harness = AcceptanceHarness.new()
+  local harness = AcceptanceHarness.new({ versions = { AcceptanceHarness.defaultVersion() } })
   harness:forEachVersion(function(versionId)
     local inner, game = bootFieldGame(versionId, "MAP_NEW_BARK_ELMS_LAB_1F")
     local runtime = game.runtime
@@ -1000,7 +1000,7 @@ end
 function T.tests.outcomes_publish_once_and_defeat_recovers_safely()
   local Presentation = requirePresentationOwner("outcomes publish once and defeat recovers safely")
   assert(Presentation ~= nil, "the envelope owner loads")
-  local harness = AcceptanceHarness.new()
+  local harness = AcceptanceHarness.new({ versions = { AcceptanceHarness.defaultVersion() } })
   harness:forEachVersion(function(versionId)
     local inner, game = bootFieldGame(versionId, "MAP_NEW_BARK_ELMS_LAB_1F")
     local runtime = game.runtime

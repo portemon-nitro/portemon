@@ -711,10 +711,46 @@ function T.a_programming_fault_rethrows_after_cleanup()
   Assert.equal(#env.publishes, 0, "a faulting batch publishes no attestation")
 end
 
--- The log option defaults to print, the plain-Lua output of the CLI.
+-- Progress stays quiet per job: one dot per ten ready jobs, never a
+-- per-change status line.
+function T.progress_reports_one_dot_per_ten_ready_jobs()
+  env = newEnv()
+  local identity = {
+    versionId = "heartgold",
+    generationId = "test-generation",
+    producerId = "d" .. string.rep("1", 64),
+  }
+  local requirements = {}
+  for i = 1, 25 do
+    requirements[#requirements + 1] = "map:" .. i
+  end
+  local report, err = CacheBuilder.prepareVersion("heartgold", {
+    identity = identity,
+    requirements = requirements,
+    log = testLog(),
+  })
+  Assert.isNil(err)
+  Assert.isFalse(report.complete, "a targeted scope never attests completeness")
+  local dots = 0
+  local dotLines = 0
+  for _, line in ipairs(env.logLines) do
+    if line:match("^%.+$") ~= nil then
+      dots = dots + #line
+      dotLines = dotLines + 1
+    end
+    Assert.isFalse(line:find("jobs ready", 1, true) ~= nil, "no per-change status lines: " .. line)
+  end
+  Assert.equal(dots, 2, "one dot per ten ready jobs")
+  Assert.equal(dotLines, 1, "all dots share one line")
+end
+
+-- The log option defaults to print, the plain-Lua output of the CLI: dots
+-- reach print one per ten ready jobs.
 function T.log_defaults_to_print()
   env = newEnv()
-  env.auditAvailable = true
+  for i = 1, 12 do
+    env.readyKeys["map:" .. i] = true
+  end
   local lines = {}
   local realPrint = print
   _G.print = function(line)
@@ -729,7 +765,7 @@ function T.log_defaults_to_print()
   Assert.isTrue(ok, tostring(report))
   Assert.isNil(err)
   Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.isTrue(#lines > 0, "the build reports its progress")
+  Assert.deepEqual(lines, { "." }, "one dot per ten ready jobs through the default log")
 end
 
 -- A strict complete batch runs one proven current-generation cleanup pass

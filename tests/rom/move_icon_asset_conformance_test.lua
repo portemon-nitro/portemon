@@ -117,6 +117,4 @@ function T.marker_dependencies_follow_semantic_id_order(romFs)
   Assert.deepEqual(actual, expected, "dependencies follow shared, type id, then category id order")
 end
 
-local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "rom_source" }
-return suite
+return RomSuite.fromFacts(T)

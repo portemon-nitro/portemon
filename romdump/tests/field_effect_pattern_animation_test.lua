@@ -2,7 +2,6 @@ local Assert = require("tests.support.Assert")
 local FieldEffectPatternAnimation = require("romdump.src.digest.field.FieldEffectPatternAnimation")
 
 local T = { tests = {} }
-local unpack = table.unpack or unpack
 
 local function resource(frames, textures, palettes)
   local bytes = { string.char(#frames, 0, 0, 0) }

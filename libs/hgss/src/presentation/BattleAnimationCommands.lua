@@ -862,6 +862,7 @@ Handlers["play-cry"] = handlePlayCry
 local function spawnRaw(exec, instruction, index, group)
   local record = exec.spawn(instruction.taskKind, group, {
     values = instruction.values,
+    parameters = instruction.parameters,
     taskInputRule = instruction.taskInputRule,
     taskStartRule = instruction.taskStartRule,
     updateKind = instruction.updateKind,

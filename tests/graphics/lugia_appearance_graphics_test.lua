@@ -112,9 +112,9 @@ local function runVersion(scope)
   love.graphics.setCanvas()
 end
 
-local function testAppearanceModelsReachFieldRenderer(scope)
+local function testAppearanceModelsReachFieldRenderer(scope, context)
   if not RomImporter.isReady("soulsilver") then
-    return
+    context:skip("soulsilver dump not owned; Lugia reveal coverage needs its derived assets")
   end
   runVersion(scope)
 end

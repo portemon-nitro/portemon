@@ -157,7 +157,7 @@ end
 ---@param budget number
 function AssetNeedsRegistry:step(budget)
   local started = self._clock()
-  local order = { table.unpack(self._order) }
+  local order = { unpack(self._order) }
   for _, key in ipairs(order) do
     local entry = self._entries[key]
     while entry ~= nil and entry.state ~= "failed" do
@@ -196,7 +196,7 @@ end
 
 -- Cancels every job; the registry stays usable.
 function AssetNeedsRegistry:dispose()
-  local keys = { table.unpack(self._order) }
+  local keys = { unpack(self._order) }
   for _, key in ipairs(keys) do
     cancelEntry(self._entries[key])
     removeEntry(self, key)

@@ -489,7 +489,7 @@ function T.unsupported_printer_controls_are_typed_rejections()
 end
 
 local function size(args)
-  return { kind = "style", control = 0xFF01, name = "SIZE", args = args, raw = { 0xFFFE, 0xFF01, #args, table.unpack(args) } }
+  return { kind = "style", control = 0xFF01, name = "SIZE", args = args, raw = { 0xFFFE, 0xFF01, #args, unpack(args) } }
 end
 
 -- SIZE 200 stretches the glyphs after it until SIZE 100 restores them.

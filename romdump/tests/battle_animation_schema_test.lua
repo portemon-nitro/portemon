@@ -518,6 +518,7 @@ function T.battle_sprite_mosaic_callback_limits_its_context_slot()
       step = -2,
       initialHorizontal = 4,
       initialVertical = 12,
+      durationTicks = 3,
     },
   }
   Assert.isTrue(schema().assertProgram(program(instruction)))
@@ -787,6 +788,7 @@ function T.animation_callback_schema_closes_panel_slide_profiles_and_offsets()
         firstPanelOffsetY = -6,
         secondPanelOffsetX = 12,
         secondPanelOffsetY = 4,
+        durationTicks = 37,
       },
     }
     Assert.isTrue(schema().assertProgram(program(instruction)), "panel slide has a closed semantic callback profile")

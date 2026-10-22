@@ -272,10 +272,16 @@ local function samePixel(left, leftX, leftY, right, rightX, rightY)
   return math.abs(lr - rr) + math.abs(lg - rg) + math.abs(lb - rb) < 0.01
 end
 
-local function testLeafOverlayFollowsTheFieldViewport(scope)
+-- HeartGold-gated coverage skips explicitly through the runner context:
+-- without the imported dump the tests report a skip, never a silent pass.
+local function skipWithoutHeartGold(context)
   if not RomImporter.isReady("heartgold") then
-    return
+    context:skip("heartgold dump not owned; Ho-Oh appearance coverage needs its derived assets")
   end
+end
+
+local function testLeafOverlayFollowsTheFieldViewport(scope, context)
+  skipWithoutHeartGold(context)
   local cache = CacheFs.forVersion("heartgold")
   local images = ImageAssetPool.new(cache)
   scope:own({
@@ -334,10 +340,8 @@ local function testLeafOverlayFollowsTheFieldViewport(scope)
   end
 end
 
-local function testLeafOverlayCoversExpandedViewports(scope)
-  if not RomImporter.isReady("heartgold") then
-    return
-  end
+local function testLeafOverlayCoversExpandedViewports(scope, context)
+  skipWithoutHeartGold(context)
   local cache = CacheFs.forVersion("heartgold")
   local images = ImageAssetPool.new(cache)
   scope:own({

@@ -175,6 +175,72 @@ function T.slowest_suites_are_ranked_by_total_and_slowest_tests_remain()
   Assert.isTrue(contains(lines, "slowest 1:"), "existing slowest test output remains")
 end
 
+function T.slowest_tests_print_above_the_summary_counts()
+  local results = {}
+  for index = 1, 3 do
+    results[index] = {
+      module = "libs.unit.a_test",
+      test = "case " .. index,
+      status = "pass",
+      layer = "unit",
+      duration = index / 100,
+    }
+  end
+  local lines = Report.lines(run(results, {
+    passed = 3,
+    byLayer = { unit = { passed = 3, failed = 0, skipped = 0, duration = 0.06 } },
+  }))
+  local slowestIdx, summaryIdx
+  for i, line in ipairs(lines) do
+    if line:find("slowest 1:", 1, true) ~= nil and slowestIdx == nil then
+      slowestIdx = i
+    end
+    if line:find("3 passed, 0 failed, 0 skipped", 1, true) ~= nil then
+      summaryIdx = i
+    end
+  end
+  Assert.notNil(slowestIdx)
+  Assert.notNil(summaryIdx)
+  Assert.isTrue(slowestIdx < summaryIdx, "slowest tests print above the summary counts")
+end
+
+function T.red_run_repeats_bare_fail_lines_after_the_report()
+  local lines = Report.lines(run({
+    {
+      module = "libs.codec.tests.b_test",
+      test = "slow",
+      status = "fail",
+      message = "boom slow",
+      layer = "unit",
+      duration = 0.5,
+    },
+    {
+      module = "libs.codec.tests.a_test",
+      test = "quick",
+      status = "fail",
+      message = "boom quick",
+      layer = "unit",
+      duration = 0.01,
+    },
+  }, {
+    failed = 2,
+    byLayer = { unit = { passed = 0, failed = 2, skipped = 0, duration = 0.51 } },
+  }))
+
+  Assert.equal(lines[#lines - 1], "FAIL libs.codec.tests.a_test :: quick")
+  Assert.equal(lines[#lines], "FAIL libs.codec.tests.b_test :: slow")
+end
+
+function T.green_run_ends_with_all_passed()
+  local lines = Report.lines(run({
+    { module = "libs.unit.a_test", test = "a", status = "pass", layer = "unit", duration = 0.01 },
+  }, {
+    passed = 1,
+    byLayer = { unit = { passed = 1, failed = 0, skipped = 0, duration = 0.01 } },
+  }))
+  Assert.equal(lines[#lines], "ALL PASSED")
+end
+
 function T.serial_summary_uses_exact_elapsed_wording()
   local lines = Report.lines(run({}, { duration = 1.5 }))
   Assert.isTrue(contains(lines, "0 passed, 0 failed, 0 skipped in 1.50s"), "serial summary keeps exact wording")

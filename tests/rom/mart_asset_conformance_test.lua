@@ -504,6 +504,4 @@ function T.failed_rebuild_and_truncated_manifest_leave_no_usable_partial_family(
   Assert.isTrue(MartCache.isReady(cache, bundle.marker), "the previous family remains ready")
 end
 
-local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "rom_source" }
-return suite
+return RomSuite.fromFacts(T)

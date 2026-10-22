@@ -16,7 +16,7 @@ local CHILD_MODULE = "game.hgss.src.pokedex.PokedexRegistrationState"
 
 local T = {}
 
-local TICK = 1 / 60
+local TICK = 1 / BattleTimeline.TICKS_PER_SECOND
 
 ---@param behavior string missing child behavior under test
 ---@return table the loaded battle-owned registration state

@@ -265,9 +265,9 @@ local T = GraphicsSmoke.suite({
       local initial = {}
       for index, item in ipairs(firstItems) do
         initial[index] = {
-          transform = { table.unpack(item.transform) },
+          transform = { unpack(item.transform) },
           image = item.material and item.material.image,
-          texMatrix = item.material and { table.unpack(item.material.texMatrix) } or nil,
+          texMatrix = item.material and { unpack(item.material.texMatrix) } or nil,
         }
       end
       local repeatedItems = presenter:drawItems(status(0))

@@ -20,7 +20,6 @@
 ---@field primitives string[]
 ---@field rectangles table[]
 ---@field shaders table[]
----@field meshes table[]
 ---@field blendModes table[]
 ---@field scissorIntersections table[]
 ---@field pushDepth fun(): integer
@@ -40,7 +39,6 @@ function FakeGraphics.new(opts)
   local images = {}
   local canvases = {}
   local shaders = {}
-  local meshes = {}
   local blendModes = {}
   local canvasCalls, imageCalls, quadCalls, drawCalls, shaderCalls = 0, 0, 0, 0, 0
   local pushDepth = 0
@@ -71,7 +69,6 @@ function FakeGraphics.new(opts)
     images = images,
     canvases = canvases,
     shaders = shaders,
-    meshes = meshes,
     draws = draws,
     blendModes = blendModes,
     transforms = transforms,
@@ -98,28 +95,6 @@ function FakeGraphics.new(opts)
       end
       shaders[#shaders + 1] = shader
       return shader
-    end,
-    newMesh = function(format, vertices, drawMode, usage)
-      local mesh = {
-        format = format,
-        vertices = vertices,
-        drawMode = drawMode,
-        usage = usage,
-        released = false,
-        releaseCount = 0,
-      }
-      function mesh:setVertices(nextVertices)
-        self.vertices = nextVertices
-      end
-      function mesh:setTexture(texture)
-        self.texture = texture
-      end
-      function mesh:release()
-        self.released = true
-        self.releaseCount = self.releaseCount + 1
-      end
-      meshes[#meshes + 1] = mesh
-      return mesh
     end,
     newImage = function()
       imageCalls = imageCalls + 1
@@ -265,7 +240,7 @@ function FakeGraphics.new(opts)
       if type(quad) == "number" then
         quad, x, y, rotation, sx, sy = nil, quad, x, y, rotation, sx or rotation
       end
-      local record = {
+      draws[#draws + 1] = {
         kind = "draw",
         image = image,
         quad = quad,
@@ -276,11 +251,6 @@ function FakeGraphics.new(opts)
         sy = sy,
         color = state.color,
       }
-      if type(image) == "table" and image.drawMode ~= nil then
-        record.meshTexture = image.texture
-        record.meshVertices = image.vertices
-      end
-      draws[#draws + 1] = record
       if opts.failOnDrawCall == drawCalls then
         error("injected draw failure")
       end

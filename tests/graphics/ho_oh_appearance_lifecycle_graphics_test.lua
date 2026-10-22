@@ -159,10 +159,16 @@ local function withCounts(body)
   assert(ok, err)
 end
 
-local function testBuildsOnceAcrossSequences(scope)
+-- HeartGold-gated coverage skips explicitly through the runner context:
+-- without the imported dump the tests report a skip, never a silent pass.
+local function skipWithoutHeartGold(context)
   if not RomImporter.isReady(VERSION) then
-    return
+    context:skip("heartgold dump not owned; Ho-Oh lifecycle coverage needs its derived assets")
   end
+end
+
+local function testBuildsOnceAcrossSequences(scope, context)
+  skipWithoutHeartGold(context)
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     drawAllPhases(renderer)
@@ -177,10 +183,8 @@ local function testBuildsOnceAcrossSequences(scope)
   end)
 end
 
-local function testPreparationIsIncrementalAndComplete(scope)
-  if not RomImporter.isReady(VERSION) then
-    return
-  end
+local function testPreparationIsIncrementalAndComplete(scope, context)
+  skipWithoutHeartGold(context)
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     local steps = prepareFully(renderer, 1)
@@ -193,10 +197,8 @@ local function testPreparationIsIncrementalAndComplete(scope)
   end)
 end
 
-local function testDrawBeforePreparationMatchesPreparedOutput(scope)
-  if not RomImporter.isReady(VERSION) then
-    return
-  end
+local function testDrawBeforePreparationMatchesPreparedOutput(scope, context)
+  skipWithoutHeartGold(context)
   local prepared = newRenderer(scope)
   prepareFully(prepared, 1)
   local direct = newRenderer(scope)
@@ -210,10 +212,8 @@ local function testDrawBeforePreparationMatchesPreparedOutput(scope)
   end
 end
 
-local function testPreparationSlicesItsHeavyUnits(scope)
-  if not RomImporter.isReady(VERSION) then
-    return
-  end
+local function testPreparationSlicesItsHeavyUnits(scope, context)
+  skipWithoutHeartGold(context)
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     local steps, maxMeshes, maxImages = 0, 0, 0
@@ -232,10 +232,8 @@ local function testPreparationSlicesItsHeavyUnits(scope)
   end)
 end
 
-local function testDrawDrivenVariantChangeReleasesTheStaleVariant(scope)
-  if not RomImporter.isReady(VERSION) then
-    return
-  end
+local function testDrawDrivenVariantChangeReleasesTheStaleVariant(scope, context)
+  skipWithoutHeartGold(context)
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     prepareFully(renderer, 1)
@@ -247,10 +245,8 @@ local function testDrawDrivenVariantChangeReleasesTheStaleVariant(scope)
   end)
 end
 
-local function testCancelMidPreparationReleasesOnce(scope)
-  if not RomImporter.isReady(VERSION) then
-    return
-  end
+local function testCancelMidPreparationReleasesOnce(scope, context)
+  skipWithoutHeartGold(context)
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     for _ = 1, 3 do
@@ -265,10 +261,8 @@ local function testCancelMidPreparationReleasesOnce(scope)
   end)
 end
 
-local function testVariantChangeReleasesTheStaleVariant(scope)
-  if not RomImporter.isReady(VERSION) then
-    return
-  end
+local function testVariantChangeReleasesTheStaleVariant(scope, context)
+  skipWithoutHeartGold(context)
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     prepareFully(renderer, 1)
@@ -283,10 +277,8 @@ local function testVariantChangeReleasesTheStaleVariant(scope)
   end)
 end
 
-local function testSceneStartMidwayDoesNotDoubleBuild(scope)
-  if not RomImporter.isReady(VERSION) then
-    return
-  end
+local function testSceneStartMidwayDoesNotDoubleBuild(scope, context)
+  skipWithoutHeartGold(context)
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     Assert.isFalse(renderer:prepareStep(VERSION, 1))
@@ -299,10 +291,8 @@ local function testSceneStartMidwayDoesNotDoubleBuild(scope)
   end)
 end
 
-local function testDisposeReleasesEveryPoolOnce(scope)
-  if not RomImporter.isReady(VERSION) then
-    return
-  end
+local function testDisposeReleasesEveryPoolOnce(scope, context)
+  skipWithoutHeartGold(context)
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     prepareFully(renderer, 1)

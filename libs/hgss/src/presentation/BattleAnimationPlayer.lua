@@ -733,7 +733,7 @@ end
 ---@param tick table<string, unknown> source tick under advancement
 ---@return boolean live true while the occurrence stays under execution
 function BattleAnimationPlayer:_stepTasks(occurrence, tick)
-  for _, record in ipairs({ (table.unpack or unpack)(occurrence.owned) }) do
+  for _, record in ipairs({ unpack(occurrence.owned) }) do
     if not record.retired then
       local ok, err = pcall(record.task.stepSourceTick, record.task, tick)
       if not ok then

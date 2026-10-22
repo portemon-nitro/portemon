@@ -131,6 +131,4 @@ function T.source_projection_keeps_pc_geometry_and_animation_ticks(romFs, _)
   Assert.equal(totalDuration, 25, "album member 3 has twenty-five source ticks")
 end
 
-local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "rom_source" }
-return suite
+return RomSuite.fromFacts(T)

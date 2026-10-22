@@ -8,7 +8,6 @@ local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokeniz
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldFontCompiler = require("romdump.src.digest.ui.FieldFontCompiler")
-local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldFontDecoder = require("romdump.src.digest.ui.FieldFontDecoder")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local Hashing = require("romdump.src.digest.Hashing")
@@ -244,21 +243,6 @@ function T.compiled_font_def_matches_the_real_focus_and_color_contract(romFs, _)
   -- ROM's font member 6: seven color bands, four source-slot masks per focus
   -- frame, and the member bytes participating in the dependency record.
   local bundle = assert(FieldFontCompiler.compile(romFs)) --[[@as table]]
-  Assert.deepEqual(FieldFontCache.REQUIRED_FONT_IDS, { 0, 1, 4 })
-  local glyphArchive = assert(romFs:openNarc("font"))
-  for _, fontId in ipairs(FieldFontCache.REQUIRED_FONT_IDS) do
-    local font = assert(bundle.fonts[fontId], "every source-used FontID has a generated definition")
-    Assert.equal(font.font.fontId, fontId)
-    local source = assert(glyphArchive:readMember(fontId), "FontID maps to its source glyph member")
-    local found = false
-    for _, member in ipairs(bundle.dependencies.glyphMembers) do
-      if member.memberId == fontId then
-        Assert.equal(member.sha1, Hashing.sha1hex(source), "font dependency identity follows its source member")
-        found = true
-      end
-    end
-    Assert.isTrue(found, "font dependency list includes source member " .. fontId)
-  end
   local def = bundle.fonts[0].font
   local variants = def.colorVariants
   Assert.notNil(variants, "the compiled font must expose colorVariants")

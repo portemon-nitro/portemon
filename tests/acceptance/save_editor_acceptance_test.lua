@@ -94,10 +94,7 @@ end
 
 function T.tests.production_editor_saves_an_edit(context)
   if not RomImporter.isReady("heartgold") then
-    if context ~= nil then
-      context:skip("heartgold dump not owned; the save editor smoke needs its fonts")
-    end
-    return
+    context:skip("heartgold dump not owned; the save editor smoke needs its fonts")
   end
   local fixture = Fixture.new()
   local State = require("app.src.saveeditor.SaveEditorState")

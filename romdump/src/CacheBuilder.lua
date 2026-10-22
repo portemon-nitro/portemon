@@ -171,40 +171,12 @@ end
 
 ---@param pool CompilerPool
 ---@param session InteractiveCacheBuild
----@param versionId string
 ---@param log fun(line: string)
 ---@return CacheBuilder.SessionStatus status
-local function drainSession(pool, session, versionId, log)
+local function drainSession(pool, session, log)
   local rounds = 0
-  local lastReady, lastFailed = -1, -1
-  local function poolSummary()
-    if type(pool.diagnostics) ~= "function" then
-      return "pool=?"
-    end
-    local ok, diagnostics = pcall(pool.diagnostics, pool)
-    if not ok or type(diagnostics) ~= "table" or type(diagnostics.counts) ~= "table" then
-      return "pool=?"
-    end
-    local counts = diagnostics.counts
-    local active = {}
-    if type(diagnostics.activeJobKeys) == "table" then
-      for index, jobKey in ipairs(diagnostics.activeJobKeys) do
-        if index > 3 then
-          break
-        end
-        active[#active + 1] = tostring(jobKey)
-      end
-    end
-    return string.format(
-      "pool q=%d run=%d prep=%d workers=%s heap=%s active=%s",
-      counts.queued or 0,
-      counts.running or 0,
-      counts.prepared or 0,
-      tostring(diagnostics.workerStates),
-      tostring(diagnostics.heapStates),
-      table.concat(active, ",")
-    )
-  end
+  local nextDotAt = 10
+  local dots = 0
   while true do
     rounds = rounds + 1
     assert(rounds <= 100000, "preparation did not settle")
@@ -213,21 +185,17 @@ local function drainSession(pool, session, versionId, log)
     if type(status.settled) ~= "boolean" or type(status.planningPending) ~= "boolean" then
       error("generation session reports no settled/planningPending progress facts", 0)
     end
-    local failed = #(status.failures or {})
-    if (status.ready or 0) ~= lastReady or failed ~= lastFailed then
-      lastReady, lastFailed = status.ready or 0, failed
-      log(
-        string.format(
-          "build-cache: %s %d/%d jobs ready (%d failed) %s",
-          versionId,
-          lastReady,
-          status.enumerated or lastReady,
-          failed,
-          poolSummary()
-        )
-      )
+    -- One dot per ten settled jobs, like the test progress dots: per-job
+    -- status lines stay out of the build output. Dots accumulate and emit
+    -- as one line so multi-dot preparations stay on a single line.
+    while (status.ready or 0) >= nextDotAt do
+      dots = dots + 1
+      nextDotAt = nextDotAt + 10
     end
     if status.settled then
+      if dots > 0 then
+        log(string.rep(".", dots))
+      end
       return status
     end
     -- Runnable local planning repumps at once: an idle pool never blocks
@@ -522,7 +490,7 @@ local function collectVersionFacts(
         session:requestJob(kind, key, "required")
       end
     end
-    return drainSession(pool, session, versionId, log)
+    return drainSession(pool, session, log)
   end)
   if not drainOk then
     local drainErr = drainResult

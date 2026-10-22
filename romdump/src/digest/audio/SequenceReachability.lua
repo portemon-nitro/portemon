@@ -2,8 +2,6 @@
 -- continuation stack. This source-format analysis is shared by lowering and
 -- corpus inspection; it never produces runtime sequence instructions.
 
-local unpack = table.unpack or unpack
-
 local Errors = require("libs.errors.src.Errors")
 local Sseq = require("libs.nds.src.nitro.sound.Sseq")
 

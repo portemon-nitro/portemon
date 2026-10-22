@@ -626,6 +626,16 @@ end
 local SYNCHRONOUS_MARKER_KINDS = {
   ["pokemon-picture-animation"] = true,
   ["pokemon-picture-reset-position-transition"] = true,
+  -- Opcode-34 visual spawns carry selectors, never timing operands: the
+  -- native visual update retires synchronously behind its preset, so the
+  -- typed task owns no interpolation lifetime and retires on its first
+  -- tick instead of failing closed.
+  ["battle-background-blend-transition"] = true,
+  ["battle-palette-fade"] = true,
+  ["battle-presentation-state-reset"] = true,
+  ["battle-background-position-transition"] = true,
+  ["battle-background-resource-load"] = true,
+  ["battle-presentation-resource-cleanup"] = true,
 }
 
 -- Resolves the blend completion boundary from compiled timing operands:
@@ -641,8 +651,19 @@ local function blendDuration(args)
     if isPositiveInt(parameters.durationTicks) then
       return parameters.durationTicks
     end
-    if isPositiveInt(parameters.ticksPerStep) and isPositiveInt(parameters.steps) then
-      return parameters.ticksPerStep * parameters.steps
+    local perStep = parameters.ticksPerStep
+    local count = parameters.steps
+    if type(perStep) == "number" and perStep % 1 == 0 and type(count) == "number" and count % 1 == 0 then
+      -- Source timing operands admit zero-step holds: a zero product
+      -- carries no scroll sweep but still owns a single completion tick
+      -- instead of failing the typed task closed.
+      local product = math.abs(perStep * count)
+      if product < 1 then
+        return 1
+      end
+      -- Integral operands yield an integral product; floor is identity here
+      -- and carries the integer type the annotation requires.
+      return math.floor(product)
     end
   end
   return nil

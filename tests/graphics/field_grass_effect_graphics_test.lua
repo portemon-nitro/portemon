@@ -46,7 +46,6 @@ local function runVersion(scope, versionId)
   end
 
   Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v16")
-  Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v16")
   local imagePool = ImageAssetPool.new(cache)
   scope:own({
     release = function()
@@ -231,7 +230,10 @@ local T = GraphicsSmoke.suite({
           end,
         },
       }
-      Assert.isNil(runtimeMap.projectPhysicalPoint, "the local map must expose no physical projector")
+      Assert.isNil(
+        runtimeMap.projectPhysicalPoint,
+        "the local map must expose no physical projector"
+      )
       controller:emit({ kind = "tall_grass", fieldX = 4, fieldZ = 6, worldY = 3 })
       local items = renderer:drawItems(controller:status(), runtimeMap)
       Assert.isTrue(#items > 0, "a local effect must produce a real draw item")

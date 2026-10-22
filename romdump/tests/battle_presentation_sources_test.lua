@@ -982,19 +982,22 @@ function T.transition_routes_preserve_verified_selector_context_and_resource_rol
     family = "overlay-115",
     key = "trainer/will",
     role = "trainer-intro",
-    trainer = { key = "will", trainerId = 0xf5 },
+    trainer = { key = "will" },
     messageRoute = "transition/trainer-name",
-    context = { playerTrainerGender = true },
+    context = { playerGender = true },
     spriteVariants = {
       male = { palette = 0xcf, character = 0xd0, cell = 0xd1, animation = 0xd2 },
       female = { palette = 0xd3, character = 0xd4, cell = 0xd5, animation = 0xd6 },
     },
-    extraSprite = { character = 0x30, cell = 0x31, animation = 0x32 },
+    opponent = { palette = 131, character = 132, cell = 133, animation = 134 },
+    nameplate = { palette = 0x2f, character = 0x30, cell = 0x31, animation = 0x32 },
     fixedSprite = { palette = 0x3b, character = 0x3c, cell = 0x3d, animation = 0x3e },
+    particles = { intro = 0x97, followup = 0x98 },
     particleMembers = { 0x97, 0x98 },
+    task = { kind = "overlay115-elite-intro", parameters = { shakeTicks = 32 } },
     message = { archive = "NARC_msgdata_msg", member = 189, name = "trainer" },
   }, "late overlay 115 records preserve the source gender and name branches")
-  Assert.deepEqual(routes[33].trainer, { key = "lance", trainerId = 0xf4 })
+  Assert.deepEqual(routes[33].trainer, { key = "lance" })
   for selector = 12, 27 do
     Assert.equal(routes[selector].messageRoute, "transition/trainer-name")
   end

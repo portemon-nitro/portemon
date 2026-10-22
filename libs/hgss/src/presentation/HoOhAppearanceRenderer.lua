@@ -562,7 +562,7 @@ function HoOhAppearanceRenderer:backdropCopies(mapDraws, versionId)
         for field, value in pairs(item) do
           copy[field] = value
         end
-        local transform = { table.unpack(item.transform, 1, 16) }
+        local transform = { unpack(item.transform, 1, 16) }
         transform[13] = transform[13] + side * wall.width
         copy.transform = transform
         copies[#copies + 1] = copy

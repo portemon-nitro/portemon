@@ -93,8 +93,15 @@ local function frameBytes(canvas)
   return canvas:newImageData():getString()
 end
 
+-- Indexed-format support is a host property of the available graphics module,
+-- not a module-availability probe: callers skip explicitly through the runner
+-- context instead of vanishing into a pass.
+local function indexedFormatSupported()
+  return love.graphics.getImageFormats().r8
+end
+
 local function skipWithoutIndexedSupport(context)
-  if not love.graphics.getImageFormats().r8 then
+  if not indexedFormatSupported() then
     context:skip("this host reports no indexed (r8) texture support, so indexed sampling cannot be compared")
   end
 end

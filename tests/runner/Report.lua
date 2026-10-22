@@ -1,7 +1,8 @@
 -- Pure formatting of a run result into report lines. Says what actually ran:
--- pass/fail/skip counts per layer, durations, the slowest tests, and the
--- capabilities the run had available. Never derives an exit status — the caller
--- owns that.
+-- failures with details, skips with reasons, the slowest tests, pass/fail/skip
+-- counts per layer, durations, and the capabilities the run had available. The
+-- report closes with the bare qualified name of every failure, or ALL PASSED
+-- when nothing failed. Never derives an exit status — the caller owns that.
 
 local Selection = require("tests.runner.Selection")
 
@@ -65,6 +66,57 @@ function Report.lines(run)
     add("SKIP " .. Selection.qualify(entry.module, entry.test) .. " (" .. tostring(entry.message) .. ")")
   end
 
+  local slowestLines = {}
+  local function addSlowest(line)
+    slowestLines[#slowestLines + 1] = line
+  end
+
+  if #failures > 0 then
+    local slowestFailure = byDurationDescending(failures)[1]
+    addSlowest(
+      string.format(
+        "  slowest failing: %s (%s)",
+        Selection.qualify(slowestFailure.module, slowestFailure.test),
+        seconds(slowestFailure.duration)
+      )
+    )
+  else
+    local slowest = byDurationDescending(withStatus(run.results, "pass"))
+    for index = 1, math.min(SLOWEST_WHEN_GREEN, #slowest) do
+      local entry = slowest[index]
+      addSlowest(
+        string.format(
+          "  slowest %d: %s (%s)",
+          index,
+          Selection.qualify(entry.module, entry.test),
+          seconds(entry.duration)
+        )
+      )
+    end
+  end
+
+  local timings = run.suiteTimings
+  if timings ~= nil and #timings > 0 then
+    local sorted = {}
+    for _, entry in ipairs(timings) do
+      sorted[#sorted + 1] = entry
+    end
+    table.sort(sorted, function(a, b)
+      if a.total == b.total then
+        return a.module < b.module
+      end
+      return a.total > b.total
+    end)
+    for index = 1, math.min(SLOWEST_WHEN_GREEN, #sorted) do
+      local entry = sorted[index]
+      addSlowest(string.format("  slowest suite %d: %s (%s)", index, entry.module, seconds(entry.total)))
+    end
+  end
+
+  for _, line in ipairs(slowestLines) do
+    add(line)
+  end
+
   if run.workerCriticalPath ~= nil then
     add(
       string.format(
@@ -108,45 +160,16 @@ function Report.lines(run)
   end
 
   if #failures > 0 then
-    local slowestFailure = byDurationDescending(failures)[1]
-    add(
-      string.format(
-        "  slowest failing: %s (%s)",
-        Selection.qualify(slowestFailure.module, slowestFailure.test),
-        seconds(slowestFailure.duration)
-      )
-    )
+    local bare = {}
+    for _, entry in ipairs(failures) do
+      bare[#bare + 1] = Selection.qualify(entry.module, entry.test)
+    end
+    table.sort(bare)
+    for _, name in ipairs(bare) do
+      add("FAIL " .. name)
+    end
   else
-    local slowest = byDurationDescending(withStatus(run.results, "pass"))
-    for index = 1, math.min(SLOWEST_WHEN_GREEN, #slowest) do
-      local entry = slowest[index]
-      add(
-        string.format(
-          "  slowest %d: %s (%s)",
-          index,
-          Selection.qualify(entry.module, entry.test),
-          seconds(entry.duration)
-        )
-      )
-    end
-  end
-
-  local timings = run.suiteTimings
-  if timings ~= nil and #timings > 0 then
-    local sorted = {}
-    for _, entry in ipairs(timings) do
-      sorted[#sorted + 1] = entry
-    end
-    table.sort(sorted, function(a, b)
-      if a.total == b.total then
-        return a.module < b.module
-      end
-      return a.total > b.total
-    end)
-    for index = 1, math.min(SLOWEST_WHEN_GREEN, #sorted) do
-      local entry = sorted[index]
-      add(string.format("  slowest suite %d: %s (%s)", index, entry.module, seconds(entry.total)))
-    end
+    add("ALL PASSED")
   end
 
   return lines

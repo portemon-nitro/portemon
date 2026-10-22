@@ -132,6 +132,11 @@ local TRANSITION_BATTLE = {
   "Overlay115Effect",
   "Overlay116CameraProgram",
   "Overlay116Effect",
+  "Overlay117Effect",
+  "Overlay118Effect",
+  "Overlay119Effect",
+  "Overlay120FallbackEffect",
+  "Overlay120RedEffect",
 }
 
 local EXISTING_SIBLINGS = {

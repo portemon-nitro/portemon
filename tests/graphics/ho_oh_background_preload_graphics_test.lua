@@ -84,10 +84,16 @@ local function withCounts(body)
   assert(ok, err)
 end
 
-local function testBellTowerPreloadsInTheBackground(scope)
+-- HeartGold-gated coverage skips explicitly through the runner context:
+-- without the imported dump the tests report a skip, never a silent pass.
+local function skipWithoutHeartGold(context)
   if not RomImporter.isReady(VERSION) then
-    return
+    context:skip("heartgold dump not owned; Ho-Oh background coverage needs its derived assets")
   end
+end
+
+local function testBellTowerPreloadsInTheBackground(scope, context)
+  skipWithoutHeartGold(context)
   withCounts(function(counts)
     local state = boot(scope, { mapSymbol = "MAP_BELL_TOWER_ROOF", fieldX = 15, fieldZ = 21, facing = "north" })
     local variant = assert(state.runtime.hoOhAppearanceScene):currentVariant()
@@ -114,10 +120,8 @@ local function testBellTowerPreloadsInTheBackground(scope)
   end)
 end
 
-local function testOtherMapsPrepareNothing(scope)
-  if not RomImporter.isReady(VERSION) then
-    return
-  end
+local function testOtherMapsPrepareNothing(scope, context)
+  skipWithoutHeartGold(context)
   withCounts(function(counts)
     local state = boot(scope, { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" })
     for _ = 1, 240 do

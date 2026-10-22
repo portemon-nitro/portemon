@@ -73,6 +73,29 @@ local function sceneImplementation()
   return assert(scene)
 end
 
+-- Image-shaped stand-in for seeded physicals: the scene under test borrows
+-- and releases leases but never draws, so component coverage needs no real
+-- GPU texture (pixel rendering belongs to the graphics layer).
+local function stubImage()
+  local image = { released = false, releaseCount = 0 }
+  function image:setFilter() end
+  function image:setWrap() end
+  function image:getWidth()
+    return 64
+  end
+  function image:getHeight()
+    return 32
+  end
+  function image:getDimensions()
+    return 64, 32
+  end
+  function image:release()
+    self.released = true
+    self.releaseCount = self.releaseCount + 1
+  end
+  return image
+end
+
 function T.cancelled_location_demand_cannot_adopt_a_late_ready_photo()
   local PhotoScene = sceneImplementation()
   local pending = true
@@ -389,8 +412,7 @@ function T.saved_subject_atlas_borrows_the_shared_image_owner()
     local sampler = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
     local visual = assert(cache:loadLua(FieldActorCache.visualPath(AVATAR_SPRITE)))
     local path = assert(visual.render.image)
-    local bytes = assert(cache:read(path))
-    local image = love.graphics.newImage(love.filesystem.newFileData(bytes, path))
+    local image = stubImage()
     pool:seedPhysical(path, sampler, { image = image, width = image:getWidth(), height = image:getHeight() })
   end
   local album = PhotoAlbum.new()
@@ -602,8 +624,7 @@ local function seedSubjectAtlas(pool, cache, spriteId)
   local sampler = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
   local visual = assert(cache:loadLua(FieldActorCache.visualPath(spriteId)))
   local path = assert(visual.render.image)
-  local bytes = assert(cache:read(path))
-  local image = love.graphics.newImage(love.filesystem.newFileData(bytes, path))
+  local image = stubImage()
   pool:seedPhysical(path, sampler, { image = image, width = image:getWidth(), height = image:getHeight() })
   return path
 end
