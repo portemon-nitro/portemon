@@ -62,6 +62,18 @@ local function isVector3(value)
     and isFiniteNumber(value[3])
 end
 
+local function isNonnegativeInteger(value)
+  return type(value) == "number" and value % 1 == 0 and value >= 0 and value ~= math.huge
+end
+
+local function isPositiveInteger(value)
+  return type(value) == "number" and value % 1 == 0 and value > 0 and value ~= math.huge
+end
+
+local function isBoundedChannel(value)
+  return isFiniteNumber(value) and value >= 0 and value <= 255
+end
+
 local function hasAnimationClips(model, clips)
   local descriptor = {}
   for key, value in pairs(model) do
@@ -100,6 +112,11 @@ local function validateTitleSurfaces(cacheFs, surfaces)
   return true
 end
 
+-- The title timing contract is structural and playable: every phase
+-- carries its required fields with finite coordinates, positive
+-- durations and integer frame counts, but no single sample of retail
+-- constants is frozen here. Source timing authority stays with the
+-- producer; the reader only rejects what cannot play.
 local function validateTitleTimeline(timeline)
   if
     type(timeline) ~= "table"
@@ -128,9 +145,12 @@ local function validateTitleTimeline(timeline)
     or #camera.points ~= 4
     or type(camera.movement) ~= "table"
     or not onlyKeys(camera.movement, { unitsPerFrame = true, tolerance = true, waitFramesPerSecond = true })
-    or camera.movement.unitsPerFrame ~= 5
-    or camera.movement.tolerance ~= 1
-    or camera.movement.waitFramesPerSecond ~= 30
+    or not isFiniteNumber(camera.movement.unitsPerFrame)
+    or camera.movement.unitsPerFrame <= 0
+    or not isFiniteNumber(camera.movement.tolerance)
+    or camera.movement.tolerance < 0
+    or not isFiniteNumber(camera.movement.waitFramesPerSecond)
+    or camera.movement.waitFramesPerSecond <= 0
   then
     return false
   end
@@ -152,38 +172,41 @@ local function validateTitleTimeline(timeline)
   local attachments = timeline.attachments
   return type(animation) == "table"
     and onlyKeys(animation, { startFrame = true, framesPerUpdate = true })
-    and animation.startFrame == 0
-    and animation.framesPerUpdate == 1
+    and isNonnegativeInteger(animation.startFrame)
+    and isPositiveInteger(animation.framesPerUpdate)
     and type(reveal) == "table"
     and onlyKeys(reveal, { delayFrames = true, durationFrames = true })
-    and reveal.delayFrames == 3
-    and reveal.durationFrames == 32
+    and isNonnegativeInteger(reveal.delayFrames)
+    and isPositiveInteger(reveal.durationFrames)
     and type(start) == "table"
     and onlyKeys(start, { initialDelayFrames = true, activeDurationFrames = true })
-    and start.initialDelayFrames == 30
-    and start.activeDurationFrames == 2340
+    and isNonnegativeInteger(start.initialDelayFrames)
+    and isPositiveInteger(start.activeDurationFrames)
     and type(glow) == "table"
     and onlyKeys(glow, { fadeInSteps = true, fadeOutSteps = true, pauseFrames = true, color = true })
-    and glow.fadeInSteps == 61
-    and glow.fadeOutSteps == 61
-    and glow.pauseFrames == 21
+    and isPositiveInteger(glow.fadeInSteps)
+    and isPositiveInteger(glow.fadeOutSteps)
+    and isNonnegativeInteger(glow.pauseFrames)
     and type(glow.color) == "table"
     and #glow.color == 3
-    and glow.color[1] == 12
-    and glow.color[2] == 12
-    and glow.color[3] == 12
+    and isBoundedChannel(glow.color[1])
+    and isBoundedChannel(glow.color[2])
+    and isBoundedChannel(glow.color[3])
     and type(attachments) == "table"
     and onlyKeys(attachments, { model = true, sparkle = true })
     and type(attachments.model) == "table"
     and onlyKeys(attachments.model, { framesPerUpdate = true, endFrame = true })
-    and attachments.model.framesPerUpdate == 1
+    and isPositiveInteger(attachments.model.framesPerUpdate)
     and attachments.model.endFrame == "wrap-to-zero"
     and type(attachments.sparkle) == "table"
     and onlyKeys(attachments.sparkle, { framesPerUpdate = true, endFrame = true })
-    and attachments.sparkle.framesPerUpdate == 1
+    and isPositiveInteger(attachments.sparkle.framesPerUpdate)
     and attachments.sparkle.endFrame == "wrap-to-zero"
 end
 
+-- The prompt contract is relational: centered text whose token stream
+-- renders that same text, with a flash cycle split into visible and
+-- hidden phases. No retail flash count is frozen here.
 local function validateTitlePrompt(prompt)
   local parsedOk, parsedText = false, nil
   if type(prompt) == "table" and type(prompt.tokens) == "table" then
@@ -192,11 +215,12 @@ local function validateTitlePrompt(prompt)
   if
     type(prompt) ~= "table"
     or not onlyKeys(prompt, { text = true, alignment = true, tokens = true, color = true, flash = true })
-    or prompt.text ~= "TOUCH TO START"
+    or type(prompt.text) ~= "string"
+    or prompt.text == ""
     or prompt.alignment ~= "center"
     or type(prompt.tokens) ~= "table"
     or not parsedOk
-    or parsedText ~= "{ALN_CENTER}TOUCH TO START"
+    or parsedText ~= "{ALN_CENTER}" .. prompt.text
     or type(prompt.color) ~= "table"
     or type(prompt.flash) ~= "table"
     or not onlyKeys(prompt.flash, {
@@ -206,11 +230,12 @@ local function validateTitlePrompt(prompt)
       visibleFrames = true,
       hiddenFrames = true,
     })
-    or prompt.flash.initialDelayFrames ~= 30
-    or prompt.flash.initialPhaseFrame ~= 30
-    or prompt.flash.cycleFrames ~= 45
-    or prompt.flash.visibleFrames ~= 30
-    or prompt.flash.hiddenFrames ~= 15
+    or not isNonnegativeInteger(prompt.flash.initialDelayFrames)
+    or not isNonnegativeInteger(prompt.flash.initialPhaseFrame)
+    or not isPositiveInteger(prompt.flash.cycleFrames)
+    or not isNonnegativeInteger(prompt.flash.visibleFrames)
+    or not isNonnegativeInteger(prompt.flash.hiddenFrames)
+    or prompt.flash.visibleFrames + prompt.flash.hiddenFrames ~= prompt.flash.cycleFrames
   then
     return false
   end

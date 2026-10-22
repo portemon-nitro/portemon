@@ -2660,7 +2660,9 @@ function T.persisted_startup_milestones_answer_ready_without_worker_work()
   end
 end
 
-function T.unbuilt_startup_milestones_answer_pending_and_request_source_inventory()
+-- Visual startup scopes stay pending without scheduling the source
+-- inventory; only the optional audio closure registers that dependency.
+function T.unbuilt_startup_milestones_answer_pending_and_audio_requests_source_inventory()
   local backend = FakeCache.new()
   local pool = recordingPool()
   local session, _ = isolatedSession("startup-milestone-pending-generation", pool, backend)
@@ -2669,12 +2671,110 @@ function T.unbuilt_startup_milestones_answer_pending_and_request_source_inventor
     Assert.isFalse(ready, name .. " remains pending before its artifacts are ready")
     Assert.isNil(failure, name .. " has no premature failure")
   end
+  Assert.isNil(session.byKey["source-plan:global"], "visual scopes enroll no source inventory")
+  local audioReady, audioFailure = session:requestMilestone("startup-audio", "near")
+  Assert.isFalse(audioReady, "startup-audio remains pending before adoption")
+  Assert.isNil(audioFailure, "startup-audio has no premature failure")
   Assert.isTrue(
     session.byKey["source-plan:global"] ~= nil,
-    "both startup closures register their source inventory dependency"
+    "the optional audio closure registers its source inventory dependency"
   )
   Assert.equal(session:milestoneStatus("startup-loader").state, "pending")
   Assert.equal(session:milestoneStatus("startup-title").state, "pending")
+  Assert.equal(session:milestoneStatus("startup-audio").state, "pending")
+end
+
+-- The title visual scope certifies from its own compiled artifact while the
+-- optional audio closure reports its own bank failure independently.
+function T.title_visual_scope_certifies_while_optional_audio_bank_fails()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("title-audio-separation-generation", pool, backend)
+  session:_adoptPublished({
+    messageBankIds = {},
+    audioBankIds = { 7, 8, 250 },
+    scriptMemberIds = {},
+    mapDataIds = {},
+    mapIds = {},
+    mapCellKeys = {},
+    audioPlan = {
+      index = {
+        version = "heartgold",
+        sequences = { [41] = { bankId = 7 }, [42] = { bankId = 8 } },
+        sequenceBySymbol = { SEQ_GS_POKEMON_THEME = 41, SEQ_SE_DP_SELECT = 42 },
+      },
+    },
+  })
+  session.byKey["source-plan:global"] = {
+    kind = "source-plan",
+    key = "global",
+    jobKey = "source-plan:global",
+    urgency = "required",
+    priority = 0,
+    submitted = false,
+    ready = true,
+    failure = nil,
+    phase = "ready",
+    finalDeps = {},
+    depsFinal = true,
+    depIndex = 1,
+    pendingDeps = {},
+  }
+  session.interest[#session.interest + 1] = session.byKey["source-plan:global"]
+  local ready, failure = session:requestMilestone("startup-title", "required")
+  Assert.isFalse(ready, "the title scope stays pending while cold")
+  Assert.isNil(failure, "the title scope reports no failure while pending")
+  for _ = 1, 6 do
+    session:update()
+  end
+  pool.states["audio-catalog:global"] = "ready"
+  pool.states["audio-bank:7"] = { state = "failed", details = { error = "synthetic audio bank failure" } }
+  pool.states["audio-bank:8"] = "ready"
+  pool.states["audio-bank:250"] = "ready"
+  pool.states["startup-title:global"] = "ready"
+  for _ = 1, 10 do
+    session:update()
+  end
+  local again, againFailure = session:requestMilestone("startup-title", "required")
+  Assert.isTrue(again, "the title visual scope certifies while the optional audio bank fails")
+  Assert.isNil(againFailure, "the title scope carries no audio failure")
+  local audioOk, audioReady, _ = pcall(session.requestMilestone, session, "startup-audio", "near")
+  Assert.isTrue(audioOk, "the optional audio closure is independently requestable")
+  if audioOk then
+    Assert.isFalse(audioReady, "the optional closure is not ready while its bank fails")
+    for _ = 1, 10 do
+      session:update()
+    end
+    local settledReady, settledFailure = session:requestMilestone("startup-audio", "near")
+    Assert.isFalse(settledReady, "the optional closure stays failed while its bank fails")
+    Assert.isTrue(
+      tostring(settledFailure):find("audio-bank:7", 1, true) ~= nil,
+      "the optional closure names its failed bank: " .. tostring(settledFailure)
+    )
+    local stillReady, stillFailure = session:requestMilestone("startup-title", "required")
+    Assert.isTrue(stillReady, "the title visual scope stays ready beside failed optional audio")
+    Assert.isNil(stillFailure, "the title scope still carries no audio failure")
+  end
+end
+
+-- The loader scope compiles from its bounded actor inputs: it enrolls no
+-- source inventory and pulls no field corpus.
+function T.loader_scope_publishes_without_source_inventory_demand()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("loader-bounded-generation", pool, backend)
+  local ready, failure = session:requestMilestone("startup-loader", "required")
+  Assert.isFalse(ready, "the loader scope stays pending while cold")
+  Assert.isNil(failure, "the loader scope reports no failure while pending")
+  Assert.isNil(session.byKey["source-plan:global"], "the bounded loader enrolls no source inventory")
+  pool.states["startup-loader:global"] = "ready"
+  for _ = 1, 10 do
+    session:update()
+  end
+  local again, againFailure = session:requestMilestone("startup-loader", "required")
+  Assert.isTrue(again, "the bounded loader certifies from its own visual job")
+  Assert.isNil(againFailure, "the bounded loader reports no failure on success")
+  Assert.isNil(session.byKey["actors:global"], "the loader pulls no actor corpus")
 end
 
 -- A milestone file from a previous generation never answers ready: trust

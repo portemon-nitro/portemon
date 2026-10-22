@@ -138,6 +138,7 @@ local MILESTONE_FILES = {
   ["field-runtime"] = "data/generated/field-runtime.lua",
   ["startup-loader"] = "data/generated/startup-loader.lua",
   ["startup-title"] = "data/generated/startup-title.lua",
+  ["startup-audio"] = "data/generated/startup-audio.lua",
 }
 
 -- Fixed status observation order. Bootstrap stays observable without an
@@ -150,6 +151,7 @@ local STATUS_MILESTONES = {
   "field-runtime",
   "startup-loader",
   "startup-title",
+  "startup-audio",
 }
 
 -- Restart trust: a persisted milestone record whose schema, generation,
@@ -891,8 +893,18 @@ end
 ---@param entry InteractiveCacheBuild.Interest
 function InteractiveCacheBuild:_noteTerminal(entry)
   -- Every scope holding this member settles it exactly once: only a
-  -- member still recorded pending moves the cached counters.
-  for _, name in ipairs({ "bootstrap", "new-game-intro", "field-planning", "field-runtime" }) do
+  -- member still recorded pending moves the cached counters. The
+  -- startup scopes settle here like every other milestone; without
+  -- this their visual members could never certify from worker proof.
+  for _, name in ipairs({
+    "bootstrap",
+    "new-game-intro",
+    "field-planning",
+    "field-runtime",
+    "startup-loader",
+    "startup-title",
+    "startup-audio",
+  }) do
     local scope = self.scopes[name]
     if scope ~= nil and scope.seen[entry.jobKey] == "pending" then
       scope.seen[entry.jobKey] = "settled"
@@ -1297,7 +1309,7 @@ function InteractiveCacheBuild:_requestDirect(kind, key, urgency)
   return entry
 end
 
----@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, or startup-title
+---@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, startup-title, or startup-audio
 ---@param members { kind: string, key: string }[]
 ---@return boolean ready
 ---@return string|nil failure
@@ -1307,8 +1319,10 @@ function InteractiveCacheBuild:_milestoneAnswer(name, members)
   -- readiness additionally requires complete enrollment and membership.
   -- Broken build work outranks absent membership in the aggregate; the
   -- per-member answer still carries its own exact exclusion.
-  -- A new-game-intro answer requires adopted source inventory for its
-  -- final audio bank membership, but never page membership.
+  -- The new-game-intro and startup-audio answers require adopted source
+  -- inventory for their final audio bank membership, but never page
+  -- membership. The visual startup scopes certify from their own
+  -- compiled artifacts and never wait on the inventory.
   -- Discovery-time readiness never certifies the scope; bootstrap answers
   -- from its own roster without a page-membership gate.
   local failure, exclusion = nil, nil
@@ -1336,7 +1350,7 @@ function InteractiveCacheBuild:_milestoneAnswer(name, members)
   if self:_enrollmentPending(name) then
     return false, nil
   end
-  if (name == "new-game-intro" or name == "startup-title") and not self.sourceLoaded then
+  if (name == "new-game-intro" or name == "startup-audio") and not self.sourceLoaded then
     return false, nil
   end
   -- Readiness is the cached scope accounting: the scope is ready exactly
@@ -1379,7 +1393,8 @@ function InteractiveCacheBuild:_milestoneMembers(name)
       or name == "field-planning"
       or name == "field-runtime"
       or name == "startup-loader"
-      or name == "startup-title",
+      or name == "startup-title"
+      or name == "startup-audio",
     "unknown cache milestone: " .. tostring(name)
   )
   if name == "bootstrap" then
@@ -1391,12 +1406,15 @@ function InteractiveCacheBuild:_milestoneMembers(name)
   if name == "field-runtime" then
     return ArtifactJobs.fieldRuntimeJobs()
   end
-  local audioPlan = self.adopted ~= nil and self.adopted.audioPlan or nil
   if name == "startup-loader" then
     return ArtifactJobs.startupLoaderJobs()
   end
   if name == "startup-title" then
-    local jobs = ArtifactJobs.startupTitleJobs(audioPlan)
+    return ArtifactJobs.startupTitleJobs()
+  end
+  local audioPlan = self.adopted ~= nil and self.adopted.audioPlan or nil
+  if name == "startup-audio" then
+    local jobs = ArtifactJobs.startupAudioJobs(audioPlan)
     return jobs
   end
   local jobs = ArtifactJobs.newGameIntroJobs(audioPlan)
@@ -1626,8 +1644,9 @@ function InteractiveCacheBuild:_needsSourceDemand()
   -- the corpus. Ordinary artifacts initiate their source prerequisite
   -- through the authoritative dependency graph, never through a second
   -- kind table here. Bootstrap answers from the field font alone and
-  -- never pulls the inventory; the intro closure and the two bounded
-  -- field milestones need source knowledge.
+  -- never pulls the inventory; the intro closure, the two bounded
+  -- field milestones and the optional startup audio closure need
+  -- source knowledge. The visual startup scopes never do.
   local completion = assert(self.completion, "completion owner remains live until retirement")
   if completion:completeRequested() then
     return true
@@ -1638,6 +1657,9 @@ function InteractiveCacheBuild:_needsSourceDemand()
   -- Trusted restart attestations prove their scope without the worker
   -- inventory, so they never schedule its discovery.
   if self.milestones["new-game-intro"] ~= nil and not self.trustedMilestones["new-game-intro"] then
+    return true
+  end
+  if self.milestones["startup-audio"] ~= nil and not self.trustedMilestones["startup-audio"] then
     return true
   end
   if self.milestones["field-planning"] ~= nil and not self.trustedMilestones["field-planning"] then
@@ -1801,8 +1823,9 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
       or name == "field-planning"
       or name == "field-runtime"
       or name == "startup-loader"
-      or name == "startup-title",
-    "milestones accept only bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, or startup-title"
+      or name == "startup-title"
+      or name == "startup-audio",
+    "milestones accept only bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, startup-title, or startup-audio"
   )
   ArtifactJobs.priorityFor(urgency)
   local current = self.milestones[name]
@@ -1825,18 +1848,14 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
   -- registers nothing and observes the retained answer.
   if current == nil then
     -- Bootstrap answers from the menu font alone and schedules no
-    -- inventory; the intro closure and the two bounded field milestones
-    -- pull source knowledge. No milestone pulls page membership directly:
-    -- page membership flows through explicit layout demand.
+    -- inventory; the intro closure, the two bounded field milestones
+    -- and the optional startup audio closure pull source knowledge. The
+    -- visual startup scopes decode straight from the dump reader and
+    -- schedule no inventory. No milestone pulls page membership
+    -- directly: page membership flows through explicit layout demand.
     if
       not self.sourceLoaded
-      and (
-        name == "new-game-intro"
-        or name == "field-planning"
-        or name == "field-runtime"
-        or name == "startup-loader"
-        or name == "startup-title"
-      )
+      and (name == "new-game-intro" or name == "field-planning" or name == "field-runtime" or name == "startup-audio")
     then
       self:_request("source-plan", "global", urgency)
     end
@@ -2639,7 +2658,7 @@ end
 -- this transition see final membership, and newly known members enroll
 -- through the bounded cursor instead of a full re-enrollment loop.
 function InteractiveCacheBuild:_refreshAdoptionRosters()
-  for _, name in ipairs({ "bootstrap", "new-game-intro", "startup-title" }) do
+  for _, name in ipairs({ "bootstrap", "new-game-intro", "startup-audio" }) do
     if self.roster[name] ~= nil then
       self:_refreshRoster(name, self.milestones[name] ~= nil)
     end
@@ -2788,6 +2807,7 @@ function InteractiveCacheBuild:update()
   self:_publishMilestone("field-runtime")
   self:_publishMilestone("startup-loader")
   self:_publishMilestone("startup-title")
+  self:_publishMilestone("startup-audio")
   self.planningPending = self:_hasRunnablePlanning()
 end
 
@@ -2926,7 +2946,7 @@ function InteractiveCacheBuild:nextPlanningWakeDelay()
   return completion ~= nil and completion:nextPlanningWakeDelay() or nil
 end
 
----@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, or startup-title
+---@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, startup-title, or startup-audio
 ---@param requested boolean an explicit milestone intent observes this scope
 ---@return string state ready, failed, or pending from retained readiness facts
 ---@return boolean failed the scope settles its requested work with a failure
@@ -3082,7 +3102,7 @@ function InteractiveCacheBuild:status()
   }
 end
 
----@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, or startup-title
+---@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, startup-title, or startup-audio
 ---@return { state: string, ready: integer, total: integer|nil, failure: string|nil } read-only milestone-local progress snapshot
 function InteractiveCacheBuild:milestoneStatus(name)
   -- Read-only milestone-local progress projection. It inspects only the
@@ -3097,8 +3117,9 @@ function InteractiveCacheBuild:milestoneStatus(name)
       or name == "field-planning"
       or name == "field-runtime"
       or name == "startup-loader"
-      or name == "startup-title",
-    "milestones accept only bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, or startup-title"
+      or name == "startup-title"
+      or name == "startup-audio",
+    "milestones accept only bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, startup-title, or startup-audio"
   )
   local members = self.roster[name]
   local rosterFailure = self.rosterFailure[name]
@@ -3129,14 +3150,17 @@ function InteractiveCacheBuild:milestoneStatus(name)
     return { state = "failed", ready = readyCount, total = nil, failure = failure }
   end
   -- The denominator is authoritative only once adopted knowledge fixed
-  -- the roster: bootstrap and the two bounded field milestones answer from
-  -- their own static rosters, while the intro closure needs adopted source
+  -- the roster: bootstrap, the two bounded field milestones and the two
+  -- visual startup scopes answer from their own static rosters, while
+  -- the intro closure and the optional audio closure need adopted source
   -- inventory. Adoption rebuilds retained rosters synchronously, so a
   -- retained roster observed after adoption is final.
   local final = name == "bootstrap"
     or name == "field-planning"
     or name == "field-runtime"
-    or (name == "new-game-intro" and self.sourceLoaded)
+    or name == "startup-loader"
+    or name == "startup-title"
+    or ((name == "new-game-intro" or name == "startup-audio") and self.sourceLoaded)
   if not final then
     return { state = "pending", ready = readyCount, total = nil, failure = nil }
   end
