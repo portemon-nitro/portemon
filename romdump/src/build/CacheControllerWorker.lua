@@ -81,6 +81,7 @@ local VALID_KINDS = {
   ["battle-effect"] = true,
   ["battle-presentation"] = true,
   ["startup-walker"] = true,
+  ["opening-scene"] = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 
@@ -361,9 +362,23 @@ local function validateSelectors(params)
     then
       return "startup-walker request needs an integer pairIndex 1..32"
     end
-    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId", "effectKey" }) do
+    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId", "effectKey", "sceneNumber" }) do
       if params[field] ~= nil then
         return "startup-walker request carries no " .. field .. " selector"
+      end
+    end
+  elseif kind == "opening-scene" then
+    if
+      type(params.sceneNumber) ~= "number"
+      or params.sceneNumber % 1 ~= 0
+      or params.sceneNumber < 1
+      or params.sceneNumber > 5
+    then
+      return "opening-scene request needs an integer sceneNumber 1..5"
+    end
+    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId", "pairIndex" }) do
+      if params[field] ~= nil then
+        return "opening-scene request carries no " .. field .. " selector"
       end
     end
   end
@@ -400,6 +415,8 @@ function Worker:_invoke(params)
     return session:requestJob("battle-presentation", "global", urgency)
   elseif kind == "startup-walker" then
     return session:requestStartupWalker(params.pairIndex, urgency)
+  elseif kind == "opening-scene" then
+    return session:requestOpeningScene(params.sceneNumber, urgency)
   end
   error("unknown cache request kind: " .. tostring(kind), 0)
 end
@@ -603,6 +620,7 @@ function Worker:_applyRequest(command)
     bankId = command.bankId,
     effectKey = command.effectKey,
     pairIndex = command.pairIndex,
+    sceneNumber = command.sceneNumber,
   }
   local selectorError = validateSelectors(params)
   if selectorError ~= nil then

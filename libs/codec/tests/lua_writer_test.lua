@@ -99,6 +99,14 @@ function T.round_trips_tables_larger_than_the_lua_constant_limit()
   Assert.equal(out[1400].tokens[25].text, "glyph-140025")
 end
 
+-- Reserved words are identifier-shaped but never parse as bare constructor
+-- fields; they round-trip in brackets like any other non-identifier key.
+function T.round_trips_reserved_word_keys()
+  local value = { ["until"] = { kind = "duration", ticks = 30 }, ["end"] = 1 }
+  local out = roundTrip(value)
+  Assert.deepEqual(out, value)
+end
+
 function T.rejects_function_values()
   local err = Assert.throws(function()
     LuaWriter.encode({ f = function() end })
