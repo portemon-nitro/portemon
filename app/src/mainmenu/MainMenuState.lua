@@ -153,21 +153,31 @@ local function readySet(versions)
   return result
 end
 
-local function sameValue(left, right)
-  if type(left) ~= "table" or type(right) ~= "table" then
+local function sameFocus(left, right)
+  if left == nil or right == nil then
     return left == right
   end
-  for key, value in pairs(left) do
-    if not sameValue(value, right[key]) then
-      return false
-    end
+  if left.region ~= right.region then
+    return false
   end
-  for key in pairs(right) do
-    if left[key] == nil then
-      return false
-    end
+  if left.region == "global" then
+    return left.actionId == right.actionId
   end
-  return true
+  return left.saveId == right.saveId and left.lane == right.lane
+end
+
+local function sameModal(left, right)
+  if left == nil or right == nil then
+    return left == right
+  end
+  return left.saveId == right.saveId and left.focusedAction == right.focusedAction
+end
+
+local function semanticStateChanged(before, after)
+  assert(type(before) == "table" and type(after) == "table", "menu cue comparison needs controller snapshots")
+  return not sameFocus(before.focus, after.focus)
+    or not sameModal(before.popup, after.popup)
+    or not sameModal(before.confirmation, after.confirmation)
 end
 
 ---@param seconds number
@@ -312,7 +322,7 @@ function MainMenuState:_emit(result)
 end
 
 function MainMenuState:_emitCue()
-  if self.audio == nil or self._cueBatchEmitted then
+  if self._disposed or self.audio == nil or self._cueBatchEmitted then
     return
   end
   self._cueBatchEmitted = true
@@ -320,20 +330,25 @@ function MainMenuState:_emitCue()
 end
 
 function MainMenuState:_withCueBatch(callback)
-  local outer = self._cueBatchDepth == 0
+  local priorDepth = self._cueBatchDepth
+  local outer = priorDepth == 0
   if outer then
     self._cueBatchEmitted = false
   end
-  self._cueBatchDepth = self._cueBatchDepth + 1
-  callback()
-  self._cueBatchDepth = self._cueBatchDepth - 1
+  self._cueBatchDepth = priorDepth + 1
+  local ok, result = pcall(callback)
+  self._cueBatchDepth = priorDepth
   if outer then
     self._cueBatchEmitted = false
   end
+  if not ok then
+    error(result, 0)
+  end
+  return result
 end
 
 function MainMenuState:_emitCueIfChanged(before)
-  if not sameValue(before, self.controller:snapshot()) then
+  if semanticStateChanged(before, self.controller:snapshot()) then
     self:_emitCue()
   end
 end
@@ -385,7 +400,7 @@ end
 function MainMenuState:_activate()
   local before = self.controller:snapshot()
   local intent = self.controller:activate()
-  local changed = not sameValue(before, self.controller:snapshot())
+  local changed = semanticStateChanged(before, self.controller:snapshot())
   if not intent then
     if changed then
       self:_emitCue()
