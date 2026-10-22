@@ -46,24 +46,76 @@ local function libraryPath()
     .. libraryName
 end
 
-function NativeRomPicker.openSingle()
+-- Shared loader for the capability probe and the dialog: resolves the single
+-- OS/architecture library truth, applies the FFI declarations once and
+-- returns the loaded bridge, or nil when no usable bridge exists.
+---@class NativeFilterItem one NFDe v1.3.0 name/spec filter entry
+---@field name string
+---@field spec string
+
+---@class NativeFileBridge loaded NFDe v1.3.0 binding used by the probe and the dialog
+---@field NFD_Init fun(): integer
+---@field NFD_Quit fun()
+---@field NFD_OpenDialogU8 fun(outPath: string[], filterList: NativeFilterItem[], filterCount: integer, defaultPath: string?): integer
+---@field NFD_FreePathU8 fun(path: string)
+---@field NFD_GetError fun(): string
+
+---@return NativeFileBridge|nil bridge loaded native library handle
+---@return string|nil declarationError FFI declaration failure detail
+local function loadBridge()
   local path = libraryPath()
   if path == nil then
-    return { kind = "error", message = UNAVAILABLE }
+    return nil, nil
   end
-
   local ffi = require("ffi")
   if not cdefApplied then
     local declared, declarationError = pcall(ffi.cdef, CDEF)
     if not declared then
-      return { kind = "error", message = UNAVAILABLE .. " " .. tostring(declarationError) }
+      return nil, declarationError
     end
     cdefApplied = true
   end
   local loaded, nfd = pcall(ffi.load, path)
   if not loaded then
+    return nil, nil
+  end
+  return nfd, nil
+end
+
+-- Reports whether a native file dialog can actually open on this host. Loads
+-- the same bridge the dialog uses and balances one init/quit probe without
+-- opening any dialog; never mutates import state.
+---@return boolean usable true only when the bridge loads and initializes
+function NativeRomPicker.available()
+  local ok, usable = pcall(function()
+    local nfd = loadBridge()
+    if nfd == nil then
+      return false
+    end
+    if nfd.NFD_Init == nil or nfd.NFD_Quit == nil or nfd.NFD_OpenDialogU8 == nil then
+      return false
+    end
+    local initialized, initResult = pcall(function()
+      return nfd.NFD_Init()
+    end)
+    pcall(function()
+      nfd.NFD_Quit()
+    end)
+    return initialized and initResult == 1
+  end)
+  return ok and usable == true
+end
+
+function NativeRomPicker.openSingle()
+  local nfd, declarationError = loadBridge()
+  if nfd == nil then
+    if declarationError ~= nil then
+      return { kind = "error", message = UNAVAILABLE .. " " .. tostring(declarationError) }
+    end
     return { kind = "error", message = UNAVAILABLE }
   end
+
+  local ffi = require("ffi")
 
   local initialized, initResult = pcall(function()
     return nfd.NFD_Init()
