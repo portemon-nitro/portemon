@@ -35,6 +35,9 @@ local HgssTitleScene = {}
 HgssTitleScene.__index = HgssTitleScene
 
 local WIDTH, HEIGHT = 256, 192
+local WIDE_STAGE_WIDTH, WIDE_STAGE_HEIGHT = 384, 216
+local WIDE_MODEL_X, WIDE_MODEL_Y = 118, 12
+local WIDE_LOGO_X, WIDE_LOGO_Y, WIDE_LOGO_WIDTH = 12, 50, 144
 local FRAME_SECONDS = 1 / 30
 local EDITION_NAMES = { heartgold = "SOULSILVER", soulsilver = "HEARTGOLD" }
 local EDITION_COLORS = {
@@ -344,6 +347,30 @@ function HgssTitleScene:_drawSingle(
   return { x = x, y = y, scale = scale, width = stageWidth * scale, height = stageHeight * scale }
 end
 
+function HgssTitleScene:_drawWide(bounds)
+  local graphics = self.graphics
+  local scale = math.max(0.25, math.min(bounds.width / WIDE_STAGE_WIDTH, bounds.height / WIDE_STAGE_HEIGHT))
+  if scale >= 1 then
+    scale = math.floor(scale)
+  end
+  local x = math.floor(bounds.x + (bounds.width - WIDE_STAGE_WIDTH * scale) / 2)
+  local y = math.floor(bounds.y + (bounds.height - WIDE_STAGE_HEIGHT * scale) / 2)
+  local color = EDITION_COLORS[self.versionId]
+  LogicalSurface.clip(graphics, bounds, function()
+    graphics.setColor(color[1], color[2], color[3], 1)
+    graphics.rectangle("fill", x, y, WIDE_STAGE_WIDTH * scale, WIDE_STAGE_HEIGHT * scale)
+    if self.surfaces.editionLogo ~= nil then
+      local logo = self.surfaces.editionLogo
+      local logoScale = (WIDE_LOGO_WIDTH / logo:getWidth()) * scale
+      graphics.setColor(1, 1, 1, 1)
+      graphics.draw(logo, x + WIDE_LOGO_X * scale, y + WIDE_LOGO_Y * scale, 0, logoScale, logoScale)
+    end
+    graphics.setColor(1, 1, 1, 1)
+    graphics.draw(self.canvas, x + WIDE_MODEL_X * scale, y + WIDE_MODEL_Y * scale, 0, scale, scale)
+  end)
+  return { x = x, y = y, scale = scale, width = WIDE_STAGE_WIDTH * scale, height = WIDE_STAGE_HEIGHT * scale }
+end
+
 function HgssTitleScene:_drawDual()
   local layout = assert(self.layout)
   local primary, auxiliary = layout.primary, layout.secondary
@@ -424,6 +451,8 @@ function HgssTitleScene:draw(status)
   local composition = self.layout.composition
   if composition.configuration == "dualDisplay" then
     self:_drawDual()
+  elseif composition.configuration == "wide" then
+    self:_drawWide(composition.bounds)
   else
     self:_drawSingle(
       composition.bounds,
@@ -483,11 +512,11 @@ function HgssTitleScene:resize(width, height)
     composition = {
       configuration = configuration,
       bounds = main,
-      stageWidth = WIDTH * 2,
-      stageHeight = HEIGHT,
-      legend = { x = WIDTH, y = 0, width = WIDTH, height = HEIGHT },
-      lower = { x = 0, y = 0, width = WIDTH, height = HEIGHT },
-      lowerPanel = true,
+      stageWidth = WIDE_STAGE_WIDTH,
+      stageHeight = WIDE_STAGE_HEIGHT,
+      legend = { x = WIDE_MODEL_X, y = WIDE_MODEL_Y, width = WIDTH, height = HEIGHT },
+      lower = nil,
+      lowerPanel = false,
     }
   elseif configuration == "tall" then
     composition = {

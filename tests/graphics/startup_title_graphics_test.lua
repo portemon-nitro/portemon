@@ -39,6 +39,33 @@ local function drawBytes(scene, scope, width, height)
   return imageData:getString()
 end
 
+local function countTitleImageDraws(scene, scope, width, height)
+  local counts = { canvas = 0, logo = 0, lower = 0, decor = 0 }
+  local canvas = scene.canvas
+  local surfaces = scene.surfaces or {}
+  local logo, lower, decor = surfaces.editionLogo, surfaces.subscreenLower, surfaces.subscreenDecor
+  local graphics = love.graphics
+  local originalDraw = graphics.draw
+  graphics.draw = function(drawable, ...)
+    if drawable == canvas then
+      counts.canvas = counts.canvas + 1
+    elseif drawable == logo then
+      counts.logo = counts.logo + 1
+    elseif drawable == lower then
+      counts.lower = counts.lower + 1
+    elseif drawable == decor then
+      counts.decor = counts.decor + 1
+    end
+    return originalDraw(drawable, ...)
+  end
+  local ok, failure = pcall(drawBytes, scene, scope, width, height)
+  graphics.draw = originalDraw
+  if not ok then
+    error(failure, 0)
+  end
+  return counts
+end
+
 local function renderEdition(scope, versionId)
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("single") })
@@ -90,9 +117,30 @@ local function renderEdition(scope, versionId)
       "the selected composition controls production drawing"
     )
     if layout.configuration == "wide" then
-      Assert.equal(composition.stageWidth, 512, "wide title uses one panoramic stage, not two stretched screens")
-      Assert.equal(composition.legend.x, 256, "wide legend keeps the source upper role on the right")
-      Assert.equal(composition.lower.x, 0, "wide lower-screen art occupies the left source role")
+      Assert.isFalse(
+        composition.stageWidth == 512 and composition.stageHeight == 192,
+        "wide title uses one panoramic stage, not two peer screens"
+      )
+      Assert.isFalse(composition.lowerPanel == true, "wide title has no peer lower panel")
+      local wideDraws = countTitleImageDraws(scene, scope, layout.width, layout.height)
+      Assert.equal(wideDraws.canvas, 1, "wide title draws the live animated canvas exactly once")
+      Assert.equal(wideDraws.logo, 1, "wide title keeps the source edition mark visible as a subordinate accent")
+      Assert.equal(wideDraws.lower, 0, "wide title does not paint a second full lower screen")
+      Assert.equal(wideDraws.decor, 0, "wide title does not paint a second full decor screen")
+      local beforeWide = drawBytes(scene, scope, layout.width, layout.height)
+      for _ = 1, 30 do
+        scene:updateFixed()
+      end
+      local afterWide = drawBytes(scene, scope, layout.width, layout.height)
+      Assert.isTrue(beforeWide ~= afterWide, "wide title animation advances on the panoramic stage")
+      local boundsCenter = composition.bounds.x + composition.bounds.width / 2
+      local wideButton = scene:editionButtonBounds()
+      local buttonCenter = wideButton.x + wideButton.width / 2
+      if versionId == "heartgold" then
+        Assert.isTrue(buttonCenter > boundsCenter, "HeartGold edition control stays in the bottom-right corner")
+      else
+        Assert.isTrue(buttonCenter < boundsCenter, "SoulSilver edition control stays in the bottom-left corner")
+      end
     elseif layout.configuration == "tall" then
       Assert.equal(composition.stageHeight, 384, "tall title stacks two source roles")
       Assert.equal(composition.legend.y, 0, "tall legend remains in the upper source role")
