@@ -65,6 +65,10 @@ local T = {
       -- The stocked EEVEE leads with TAIL_WHIP in slot zero, and the
       -- drivers always strike with slot zero, so its program stages too.
       "battle-effect:TAIL_WHIP",
+      -- A wild EEVEE can answer with its no-op ally boost, and every
+      -- no-strike execution admits its own visual, so that route
+      -- stages too instead of wedging pending.
+      "battle-effect:HELPING_HAND",
     },
     tags = { "field", "battle" },
   },

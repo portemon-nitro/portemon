@@ -8,6 +8,8 @@
 -- boundary, so the run stays red until the provider lands.
 
 local Assert = require("tests.support.Assert")
+local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
+local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
@@ -521,6 +523,396 @@ function T.trainer_payloads_expose_only_visible_battler_facts()
     end
   end
   battle:dispose()
+end
+
+local BRANCH_TICK = 1 / 30
+
+local function branchView()
+  return {
+    own = {
+      {
+        combatant = 1,
+        side = 1,
+        controller = "alpha",
+        active = true,
+        position = 1,
+        activation = 1,
+        hp = 60,
+        maxHp = 60,
+        species = "EEVEE",
+        form = 0,
+        name = "LEAD",
+        level = 20,
+        moves = {
+          { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 },
+          { move = "THUNDER_WAVE", name = "Thunder Wave", pp = 30, maxPp = 30 },
+        },
+      },
+    },
+    foes = {
+      {
+        combatant = 2,
+        side = 2,
+        controller = "beta",
+        active = true,
+        position = 2,
+        activation = 2,
+        hp = 60,
+        maxHp = 60,
+        species = "EEVEE",
+        form = 0,
+        name = "FOE",
+        level = 20,
+      },
+      {
+        combatant = 4,
+        side = 2,
+        controller = "beta",
+        active = true,
+        position = 4,
+        activation = 4,
+        hp = 60,
+        maxHp = 60,
+        species = "EEVEE",
+        form = 0,
+        name = "FOE2",
+        level = 20,
+      },
+    },
+  }
+end
+
+---@param fields table<string, unknown> branch event shape under construction
+---@return table<string, unknown> production-shaped event carrying the branch facts
+local function branchEvent(fields)
+  local event = {
+    sequence = fields.sequence,
+    kind = fields.kind,
+    cause = { key = fields.cause, kind = "move" },
+    audience = "public",
+    payload = fields.payload,
+    actors = { { combatant = 1 } },
+    targets = fields.targets or { { combatant = 2 } },
+  }
+  if fields.actionId ~= nil then
+    event.actionId = fields.actionId
+  end
+  if fields.effectKey ~= nil then
+    event.effectKey = fields.effectKey
+  end
+  if fields.move ~= nil then
+    event.move = fields.move
+  end
+  if fields.suppression ~= nil then
+    event.suppression = fields.suppression
+  end
+  if fields.hp ~= nil then
+    event.observation = { hp = fields.hp }
+  end
+  if fields.seed ~= nil then
+    event.visualSeed = fields.seed
+  end
+  return event
+end
+
+local function tackleMove()
+  return { selected = "TACKLE", executed = "TACKLE", phase = "direct" }
+end
+
+-- Drives one failure/replay/called-move branch through the real
+-- sanitizer and cue player with a pending native collaborator: the
+-- announcement must read before the first visual starts, the visual
+-- count must stay single-shot, and the narration must name the
+-- branch outcome. Returns the start records and the drained texts.
+---@param name string branch name under diagnosis
+---@param events table[] production-shaped events for the branch action
+---@return table[] start records in start order
+---@return table[] drained narration texts in completion order
+local function runBranch(name, events)
+  local view = branchView()
+  local started = {}
+  local handles = {}
+  local timeline = nil
+  local effects = {
+    start = function(cue)
+      started[#started + 1] = {
+        effectKey = cue.effectKey,
+        actionId = cue.actionId,
+        message = timeline:message(),
+        phase = cue.event ~= nil and cue.event.move ~= nil and cue.event.move.phase or nil,
+      }
+      local handle = { phase = "pending" }
+      handles[#handles + 1] = handle
+      return handle
+    end,
+    status = function(handle)
+      return handle.phase
+    end,
+    cancel = function(handle)
+      handle.phase = "cancelled"
+      return true
+    end,
+  }
+  timeline = BattleTimeline.new({ effects = effects })
+  timeline:reset(view)
+  local packet = BattlePresentationModel.packet(
+    view,
+    { events = events },
+    view,
+    { launchId = "branch-probe", packetId = 1 }
+  )
+  Assert.isTrue(timeline:present(packet), name .. " packet is accepted")
+  local announcementTick = nil
+  local firstStartTick = nil
+  local seen = {}
+  local texts = {}
+  local tick = 0
+  while tick < 6000 and (not timeline:settled() or #started == 0) do
+    tick = tick + 1
+    timeline:update(BRANCH_TICK, function(_)
+      return true
+    end)
+    local id = timeline:messageId()
+    if id ~= 0 and seen[id] == nil and timeline:ack() then
+      seen[id] = true
+      texts[#texts + 1] = timeline:message()
+    end
+    if announcementTick == nil and timeline:message() ~= "" then
+      announcementTick = tick
+    end
+    if #started > 0 then
+      if firstStartTick == nil then
+        firstStartTick = tick
+      end
+      for _, handle in ipairs(handles) do
+        handle.phase = "complete"
+      end
+    end
+  end
+  Assert.notNil(firstStartTick, name .. " admits its documented visual")
+  Assert.notNil(announcementTick, name .. " narrates its branch outcome")
+  Assert.isTrue(announcementTick < firstStartTick, name .. " narrates before its visual starts")
+  for _, record in ipairs(started) do
+    Assert.isTrue(
+      record.message ~= "",
+      name .. " visual starts behind readable narration"
+    )
+  end
+  Assert.isTrue(timeline:settled(), name .. " drains fully once its visual completes")
+  return started, texts
+end
+
+local function countStarts(started, key)
+  local total = 0
+  for _, record in ipairs(started) do
+    if record.effectKey == key then
+      total = total + 1
+    end
+  end
+  return total
+end
+
+local function textsContain(texts, needle)
+  for _, text in ipairs(texts) do
+    if tostring(text):find(needle, 1, true) ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+-- Failure, replay, and called-move branches stay single-shot: missed and
+-- protected attempts keep their own documented program without a
+-- successful-hit visual, charge and strike halves of one action stay
+-- distinct, spread and repeated deliveries play once, and a called move
+-- visualizes its executed identity.
+function T.failure_replay_and_called_move_branches_stay_single_shot()
+  do
+    local started, texts = runBranch("status-use", {
+      branchEvent({
+        sequence = 1,
+        kind = "move-used",
+        cause = "THUNDER_WAVE",
+        actionId = 11,
+        effectKey = "THUNDER_WAVE",
+        move = { selected = "THUNDER_WAVE", executed = "THUNDER_WAVE", phase = "direct" },
+        payload = { user = 1, targets = 1 },
+        seed = 101,
+      }),
+    })
+    Assert.equal(countStarts(started, "THUNDER_WAVE"), 1, "the status use admits one visual")
+    Assert.isTrue(textsContain(texts, "used Thunder Wave"), "the status use announces its attack")
+  end
+  do
+    local started, texts = runBranch("missed", {
+      branchEvent({
+        sequence = 1,
+        kind = "missed",
+        cause = "TACKLE",
+        actionId = 12,
+        effectKey = "TACKLE",
+        move = tackleMove(),
+        payload = { target = 2 },
+        suppression = { missed = true },
+        seed = 102,
+      }),
+    })
+    Assert.equal(countStarts(started, "TACKLE"), 1, "the miss keeps its documented program")
+    Assert.isTrue(textsContain(texts, "missed"), "the miss narrates its outcome")
+  end
+  do
+    local started, texts = runBranch("protected", {
+      branchEvent({
+        sequence = 1,
+        kind = "protected",
+        cause = "TACKLE",
+        actionId = 13,
+        effectKey = "TACKLE",
+        move = tackleMove(),
+        payload = { target = 2 },
+        suppression = { protected = true },
+        seed = 103,
+      }),
+    })
+    Assert.equal(countStarts(started, "TACKLE"), 1, "the block keeps its documented program")
+    Assert.isTrue(textsContain(texts, "protected itself"), "the block narrates its outcome")
+  end
+  do
+    local started, texts = runBranch("charged-strike", {
+      branchEvent({
+        sequence = 1,
+        kind = "charged",
+        cause = "RAZOR_WIND",
+        actionId = 14,
+        effectKey = "RAZOR_WIND",
+        move = { selected = "RAZOR_WIND", executed = "RAZOR_WIND", phase = "charge" },
+        payload = { target = 1 },
+        seed = 104,
+      }),
+      branchEvent({
+        sequence = 2,
+        kind = "struck",
+        cause = "RAZOR_WIND",
+        actionId = 14,
+        effectKey = "RAZOR_WIND",
+        move = { selected = "RAZOR_WIND", executed = "RAZOR_WIND", phase = "direct" },
+        payload = { target = 2, damage = 9, hitIndex = 1 },
+        hp = { [1] = 60, [2] = 51 },
+        seed = 105,
+      }),
+    })
+    Assert.equal(countStarts(started, "RAZOR_WIND"), 2, "charge and strike halves stay distinct")
+    Assert.isTrue(textsContain(texts, "charge"), "the charge half narrates its setup")
+    Assert.isTrue(textsContain(texts, "used RAZOR_WIND"), "the strike half announces its attack")
+  end
+  do
+    local started, texts = runBranch("spread", {
+      branchEvent({
+        sequence = 1,
+        kind = "struck",
+        cause = "TACKLE",
+        actionId = 15,
+        effectKey = "TACKLE",
+        move = tackleMove(),
+        payload = { target = 2, damage = 8, hitIndex = 1 },
+        targets = { { combatant = 2 } },
+        hp = { [1] = 60, [2] = 52, [4] = 60 },
+        seed = 106,
+      }),
+      branchEvent({
+        sequence = 2,
+        kind = "struck",
+        cause = "TACKLE",
+        actionId = 15,
+        effectKey = "TACKLE",
+        move = tackleMove(),
+        payload = { target = 4, damage = 8, hitIndex = 1 },
+        targets = { { combatant = 4 } },
+        hp = { [1] = 60, [2] = 52, [4] = 52 },
+        seed = 107,
+      }),
+    })
+    Assert.equal(countStarts(started, "TACKLE"), 1, "the spread action plays one visual")
+    Assert.isTrue(textsContain(texts, "used Tackle"), "the spread action announces once")
+  end
+  do
+    local view = branchView()
+    local started = {}
+    local handles = {}
+    local timeline = nil
+    local effects = {
+      start = function(cue)
+        started[#started + 1] = { effectKey = cue.effectKey }
+        local handle = { phase = "pending" }
+        handles[#handles + 1] = handle
+        return handle
+      end,
+      status = function(handle)
+        return handle.phase
+      end,
+      cancel = function(handle)
+        handle.phase = "cancelled"
+        return true
+      end,
+    }
+    timeline = BattleTimeline.new({ effects = effects })
+    timeline:reset(view)
+    local events = {
+      branchEvent({
+        sequence = 1,
+        kind = "struck",
+        cause = "TACKLE",
+        actionId = 16,
+        effectKey = "TACKLE",
+        move = tackleMove(),
+        payload = { target = 2, damage = 8, hitIndex = 1 },
+        hp = { [1] = 60, [2] = 52 },
+        seed = 108,
+      }),
+    }
+    local first = BattlePresentationModel.packet(
+      view,
+      { events = events },
+      view,
+      { launchId = "branch-probe", packetId = 1 }
+    )
+    Assert.isTrue(timeline:present(first), "the first delivery is accepted")
+    for _, handle in ipairs(handles) do
+      handle.phase = "complete"
+    end
+    local tick = 0
+    while tick < 3000 and not timeline:settled() do
+      tick = tick + 1
+      timeline:update(BRANCH_TICK, function(_)
+        return true
+      end)
+    end
+    local replay = BattlePresentationModel.packet(
+      view,
+      { events = events },
+      view,
+      { launchId = "branch-probe", packetId = 2 }
+    )
+    Assert.isFalse(timeline:present(replay), "the replayed delivery executes nothing twice")
+    Assert.equal(countStarts(started, "TACKLE"), 1, "the replay starts no second visual")
+  end
+  do
+    local started, texts = runBranch("called-move", {
+      branchEvent({
+        sequence = 1,
+        kind = "move-used",
+        cause = "TACKLE",
+        actionId = 17,
+        effectKey = "TACKLE",
+        move = { selected = "METRONOME", executed = "TACKLE", phase = "direct" },
+        payload = { user = 1, targets = 1 },
+        seed = 109,
+      }),
+    })
+    Assert.equal(countStarts(started, "TACKLE"), 1, "the called move visualizes its executed identity")
+    Assert.equal(countStarts(started, "METRONOME"), 0, "the called move never visualizes its selected identity")
+    Assert.isTrue(textsContain(texts, "used Tackle"), "the called move announces its executed attack")
+  end
 end
 
 return { tests = T }

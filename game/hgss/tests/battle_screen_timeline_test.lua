@@ -1709,12 +1709,17 @@ function T.native_effect_starts_its_selected_program_before_health_without_dupli
     "the effect-keyed strike is accepted"
   )
   Assert.isFalse(timeline:settled(), "the native cue leaves work pending")
-  for _ = 1, 5 do
+  local announced = false
+  for _ = 1, 600 do
     if #fx.starts > 0 then
       break
     end
     advance(timeline, TICK)
+    if timeline:message():find("used Tackle", 1, true) ~= nil then
+      announced = true
+    end
   end
+  Assert.isTrue(announced, "the attack announcement reads before the visual starts")
   Assert.equal(#fx.starts, 1, "the selected native program starts through the real player")
   Assert.equal(fx.starts[1].effectKey, "TACKLE", "the start carries the accepted semantic effect key")
   Assert.equal(fx.starts[1].actionId, 21, "the start carries the accepted action identity")
