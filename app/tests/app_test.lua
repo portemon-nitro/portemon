@@ -1824,4 +1824,124 @@ function T.unsupported_picker_extension_rejects_without_starting_import()
   end)
 end
 
+-- A fresh import hands its verified bytes to the controller ahead of the
+-- boot gate and continues directly into the startup title: no intermediate
+-- preparation wait, no display snapshot on the selection handoff. A wrong
+-- ROM against a blocked boot keeps the expected version waiting with its
+-- mismatch instead of switching the selection.
+function T.fresh_import_reaches_title_through_the_boot_gate_without_an_intermediate_wait()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    result.firstPlayCurrent = false
+    result.firstPlayStored = false
+    local GameVersion = require("romdump.src.source.GameVersion")
+    local StartupTitleState = require("app.src.launcher.StartupTitleState")
+    local controlOps = {}
+    local offeredBytes, offeredSha1 = nil, nil
+    local baseOffer = result.service.offerSource
+    result.service.offerSource = function(self, epoch, bytes, identity)
+      controlOps[#controlOps + 1] = "offer-source"
+      offeredBytes = bytes
+      offeredSha1 = identity and identity.romSha1 or nil
+      return baseOffer(self, epoch, bytes, identity)
+    end
+    local baseGate = result.service.requestBootSource
+    result.service.requestBootSource = function(self, epoch)
+      controlOps[#controlOps + 1] = "check-boot-source"
+      return baseGate(self, epoch)
+    end
+    local originalSelect = App._selectVersion
+    local selections = {}
+    App._selectVersion = function(versionId, options)
+      selections[#selections + 1] = { versionId = versionId, options = options }
+      return originalSelect(versionId, options)
+    end
+    local ok, err = pcall(function()
+      local buffer = love.data.newByteData("synthetic-fresh-import-bytes")
+      local released = 0
+      App.importer = {
+        status = function()
+          return {
+            state = "complete",
+            versionId = "heartgold",
+            displayName = "HeartGold",
+            sourceName = "fresh.nds",
+            progress = 1,
+          }
+        end,
+        takeVerifiedSource = function()
+          return {
+            byteData = function()
+              return buffer
+            end,
+            release = function()
+              released = released + 1
+            end,
+          }
+        end,
+      }
+      App._onImported("heartgold")
+      Assert.isNil(App.importer, "the completed importer is released at the handoff")
+      Assert.equal(released, 1, "the handoff releases the verified-source wrapper exactly once")
+      Assert.deepEqual(
+        controlOps,
+        { "offer-source", "check-boot-source" },
+        "the fresh offer waits behind selection and ahead of the boot gate"
+      )
+      Assert.isTrue(offeredBytes == buffer, "the offer hands the identical buffer by reference")
+      Assert.equal(offeredSha1, GameVersion.info("heartgold").sha1, "the offer carries the canonical ROM identity")
+      local fresh = assert(selections[1])
+      Assert.equal(fresh.versionId, "heartgold")
+      Assert.isTrue(fresh.options.freshImport, "the fresh import marks its selection")
+      Assert.isTrue(fresh.options.sourceOffer == buffer, "the selection carries the offered bytes")
+      Assert.isNil(fresh.options.importContinuation, "the selection handoff carries no display-only snapshot")
+      local waiting = assert(App.state)
+      Assert.equal(getmetatable(waiting).__index, CachePreparationState, "a fresh import waits visibly")
+      Assert.equal(waiting.kind, "boot-source", "a fresh import waits on its source gate, never an intermediate wait")
+      App.update(0.016)
+      Assert.equal(
+        getmetatable(App.state).__index,
+        StartupTitleState,
+        "the authorized boot gate continues directly into the title"
+      )
+      assertStagedStartupMenu(result)
+      result.bootStatus = "source-required"
+      result.bootDetail = { code = "ROM_SOURCE_REQUIRED", message = "synthetic heartgold missing" }
+      App._selectVersion("heartgold")
+      App.update(0.016)
+      Assert.equal(App.state.kind, "boot-source", "the missing source keeps the boot wait alive")
+      App.importer = {
+        status = function()
+          return {
+            state = "complete",
+            versionId = "soulsilver",
+            displayName = "SoulSilver",
+            sourceName = "wrong.nds",
+            progress = 1,
+          }
+        end,
+        takeVerifiedSource = function()
+          return {
+            byteData = function()
+              return love.data.newByteData("synthetic-wrong-version-bytes")
+            end,
+            release = function() end,
+          }
+        end,
+      }
+      App._onImported("soulsilver")
+      Assert.equal(App.selectedVersionId, "heartgold", "a wrong ROM never switches the blocked selection")
+      Assert.equal(App.state.kind, "boot-source", "the wrong ROM keeps the original boot blocked")
+      Assert.notNil(App.state.mismatch, "the blocked boot surfaces its version mismatch")
+      Assert.equal(#result.menus, 1, "the wrong ROM installs no menu")
+      Assert.equal(#result.launches, 0, "the wrong ROM starts no retail")
+    end)
+    App._selectVersion = originalSelect
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
 return { tests = T }
