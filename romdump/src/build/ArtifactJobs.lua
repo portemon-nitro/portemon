@@ -121,8 +121,12 @@ function ArtifactJobs.bootstrapJobs()
   return { { kind = "field-font", key = "global" } }
 end
 
+-- The bounded startup loader visual: one compiled hero/follower bundle
+-- with no source-inventory or audio prerequisite. It decodes directly
+-- from the verified dump reader, so its roster is a singleton.
+---@return { kind: string, key: string }[]
 function ArtifactJobs.startupLoaderJobs()
-  return { { kind = "source-plan", key = "global" }, { kind = "startup-loader", key = "global" } }
+  return { { kind = "startup-loader", key = "global" } }
 end
 
 ---@param entries string[] fixed kind[:key] members, bare kinds read global
@@ -216,27 +220,40 @@ function ArtifactJobs.newGameIntroJobs(audioPlan)
   return sortedJobs(jobs), true
 end
 
+-- The bounded startup title visual: one compiled title scene with no
+-- source-inventory or audio prerequisite. Like the loader it decodes
+-- directly from the verified dump reader, so its roster is a singleton.
+---@return { kind: string, key: string }[]
+function ArtifactJobs.startupTitleJobs()
+  return { { kind = "startup-title", key = "global" } }
+end
+
+-- The optional startup audio closure: the title theme, the menu select
+-- effect and the edition legendary cry bank behind the adopted sound
+-- index. Before adoption the roster names only its owners and reports
+-- incomplete; after adoption it resolves the exact bank closures from
+-- the adopted symbols, deduplicated. Bank ids are never spelled here.
 ---@param audioPlan table<string, unknown>|nil adopted normalized audio membership
 ---@return { kind: string, key: string }[] roster
 ---@return boolean complete true once source audio membership resolved the bank closures
-function ArtifactJobs.startupTitleJobs(audioPlan)
+function ArtifactJobs.startupAudioJobs(audioPlan)
   local jobs = {
     { kind = "source-plan", key = "global" },
     { kind = "audio-catalog", key = "global" },
-    { kind = "startup-title", key = "global" },
   }
   if audioPlan == nil then
     return sortedJobs(jobs), false
   end
-  local index = assert(audioPlan.index, "startup title requires the adopted audio index")
-  local sequenceBySymbol = assert(index.sequenceBySymbol, "startup title requires adopted sequence symbols")
-  local sequences = assert(index.sequences, "startup title requires adopted sequences")
-  local bankIds = {}
+  assert(type(audioPlan) == "table", "startup audio membership requires the adopted audio plan")
+  local index = assert(audioPlan.index, "startup audio membership requires the adopted audio index")
+  assert(type(index.sequences) == "table", "startup audio membership requires the adopted sequences")
+  assert(type(index.sequenceBySymbol) == "table", "startup audio membership requires the adopted sequence symbols")
   local seen = {}
+  local bankIds = {}
   local function addBank(bankId, reference)
     assert(
       type(bankId) == "number" and bankId % 1 == 0 and bankId >= 0,
-      "startup title reference resolves to no bank: " .. tostring(reference)
+      "startup audio reference resolves to no bank: " .. tostring(reference)
     )
     if not seen[bankId] then
       seen[bankId] = true
@@ -244,19 +261,19 @@ function ArtifactJobs.startupTitleJobs(audioPlan)
     end
   end
   for _, symbol in ipairs(STARTUP_TITLE_AUDIO_SEQUENCES) do
-    local sequenceId = sequenceBySymbol[symbol]
+    local sequenceId = index.sequenceBySymbol[symbol]
     if sequenceId == nil then
-      error("startup title has no adopted sequence: " .. symbol, 0)
+      error("startup audio has no adopted sequence: " .. symbol, 0)
     end
-    local sequence = sequences[sequenceId]
+    local sequence = index.sequences[sequenceId]
     if type(sequence) ~= "table" then
-      error("startup title has no adopted sequence: " .. symbol, 0)
+      error("startup audio has no adopted sequence: " .. symbol, 0)
     end
     addBank(sequence.bankId, symbol)
   end
   local versionId = index.version
   local crySpeciesId = versionId == "heartgold" and 250 or versionId == "soulsilver" and 249 or nil
-  assert(crySpeciesId ~= nil, "startup title audio index has an unsupported edition")
+  assert(crySpeciesId ~= nil, "startup audio index has an unsupported edition")
   addBank(crySpeciesId, "legendary cry")
   table.sort(bankIds)
   for _, bankId in ipairs(bankIds) do
@@ -1456,21 +1473,6 @@ local function dependenciesOnSourcePlan()
   return { { kind = "source-plan", key = "global" } }, true
 end
 
----@param key string
----@param plans ArtifactJobs.Plans
----@return { kind: string, key: string }[], boolean
-local function dependenciesStartupTitle(key, plans)
-  assert(key == "global", "startup title family only has the global job")
-  local roster, complete = ArtifactJobs.startupTitleJobs(plans.audioPlan)
-  local dependencies = {}
-  for _, member in ipairs(roster) do
-    if member.kind ~= "startup-title" then
-      dependencies[#dependencies + 1] = member
-    end
-  end
-  return dependencies, complete
-end
-
 ---@param artifact table<string, unknown>
 ---@param context table<string, unknown>
 ---@param job ArtifactJobs.Job
@@ -2037,15 +2039,15 @@ DESCRIPTORS = {
     execute = executeSourcePlan,
     validate = validateSourcePlan,
   },
+  -- Startup visuals decode straight from the verified dump reader:
+  -- neither enrolls the source inventory nor any audio bank.
   ["startup-loader"] = {
     size = "normal",
-    dependencies = dependenciesOnSourcePlan,
     execute = executeStartupLoader,
     validate = validateStartupLoader,
   },
   ["startup-title"] = {
     size = "heavy",
-    dependencies = dependenciesStartupTitle,
     execute = executeStartupTitle,
     validate = validateStartupTitle,
   },
