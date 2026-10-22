@@ -708,8 +708,9 @@ local function stepStockpileRelease(ctx, frame)
   return { kind = "complete", result = "failed" }
 end
 
--- Charge, Follow Me, and Helping Hand record their cooperation markers;
--- redirection and ally boosting resolve through the targeting owner.
+-- Charge and Follow Me record their cooperation markers, and Helping
+-- Hand records its own once its ally check passes; redirection and ally
+-- boosting resolve through the targeting owner.
 ---@param marker string cooperation identity recorded on the user
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler recording the cooperation marker
 local function makeCooperation(marker)
@@ -725,6 +726,27 @@ local function makeCooperation(marker)
     return { kind = "complete", result = "hit" }
   end
   return stepCooperation
+end
+
+-- Helping Hand boosts a live ally: with no partner standing the sampled
+-- recipients collapse onto the user, so the move fails instead of boosting
+-- its own user. Source reference: BtlCmd_TryHelpingHand in
+-- src/battle/battle_command.c.
+local helpingHandCooperation = makeCooperation("HELPING_HAND")
+
+local function stepHelpingHand(ctx, frame)
+  assert(type(ctx) == "table", "sequences step through the battle context")
+  assert(type(frame) == "table", "sequences step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  for _, entry in
+    ipairs(record.targets --[[@as table<integer, unknown>]])
+  do
+    if targetOf(entry) ~= user then
+      return helpingHandCooperation(ctx, frame)
+    end
+  end
+  return { kind = "complete", result = "failed" }
 end
 
 ---@param key string sequence move identity under binding
@@ -775,7 +797,10 @@ local function bodyFor(key)
   if key == "SPIT_UP" or key == "SWALLOW" then
     return bind(stepStockpileRelease)
   end
-  if key == "CHARGE" or key == "FOLLOW_ME" or key == "HELPING_HAND" then
+  if key == "HELPING_HAND" then
+    return bind(stepHelpingHand)
+  end
+  if key == "CHARGE" or key == "FOLLOW_ME" then
     return bind(makeCooperation(key))
   end
   if LOCKED[key] == true then

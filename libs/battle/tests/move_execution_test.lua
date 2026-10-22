@@ -1077,4 +1077,38 @@ function T.delayed_impacts_land_typeless_without_stab_or_relation()
   Assert.isTrue(fromPsychic >= 1, "the typeless landing still deals its minimum damage")
 end
 
+-- Helping Hand boosts a live ally: with only its user sampled the move
+-- takes the failure branch instead of boosting its own user, spending
+-- the attempt's power point without emitting a successful move-used.
+function T.helping_hand_fails_without_a_sampled_ally()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local State =
+    SessionFixture.requirePresent("libs.battle.src.BattleState", "private battle data owns reference invariants")
+  local state = liveState()
+  State.leave(state, 1)
+  State.enter(state, 1, 1)
+  local ctx = liveContext(state)
+  local slots = { { move = "HELPING_HAND", pp = 15, ppUps = 0 } }
+  local frame = Execution.validateFrame(Execution.start({
+    actionId = 1,
+    actor = actorRef(0),
+    requestedMove = "HELPING_HAND",
+    executingMove = "HELPING_HAND",
+    ppOwnerSlot = 0,
+    calledBy = nil,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 1 } },
+    moves = slots,
+    moveFacts = {
+      HELPING_HAND = { power = 0, accuracy = 100, category = "other", moveType = "normal" },
+    },
+    stream = fixedStream(),
+  }))
+  local eventsBefore = #state.outbox
+  local outcome = Execution.step(ctx, frame)
+  Assert.equal(outcome.result, "failed", "helping hand fails with only its user sampled")
+  Assert.equal(#state.outbox, eventsBefore, "the failed boost emits no successful move-used")
+  Assert.equal(slots[1].pp, 14, "the failed attempt still spends its power point")
+end
+
 return { tests = T }

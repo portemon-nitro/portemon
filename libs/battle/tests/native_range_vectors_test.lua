@@ -786,4 +786,77 @@ function T.ally_moves_default_to_the_user_in_singles()
   session:dispose()
 end
 
+---@param capture table interruption capture under inspection
+---@param key string battle-local definition identity under test
+---@param combatant integer combatant identity owning the wanted scope
+---@return boolean true while the combatant carries a live instance of the key
+local function hasUserMarker(capture, key, combatant)
+  for _, record in ipairs(capture.effects or {}) do
+    if record.key == key then
+      local scope = record.scope --[[@as table<string, unknown>?]]
+      if type(scope) == "table" and scope.kind == "active" and scope.combatant == combatant then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- Helping Hand boosts a live ally: the doubles attempt records its
+-- cooperation marker on the user for one power point instead of failing.
+function T.helping_hand_boosts_its_live_ally_in_doubles()
+  local a1 = withMoves(monSeed(1, "CHIKORITA", 5, 0xA191), { moveSlot("HELPING_HAND", 30) })
+  local a2 = withMoves(monSeed(3, "TOTODILE", 5, 0xA292), { moveSlot("SPLASH", 40) })
+  local b1 = withMoves(monSeed(2, "CHIKORITA", 5, 0xB191), { moveSlot("SPLASH", 40) })
+  local b2 = withMoves(monSeed(4, "TOTODILE", 5, 0xB292), { moveSlot("SPLASH", 40) })
+  local seeds = { a1, a2, b1, b2 }
+  local extra = { HELPING_HAND = catalogCopy("HELPING_HAND", 256) }
+  local scenario = doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, extra), scenarioSpeciesFacts(seeds))
+  local session, frame = openWaiting(scenario)
+  local settled = playAnswers(session, projectedSlotZero(session, frame))
+  Assert.equal(settled.status, "waiting", "the helping hand turn leaves the battle waiting")
+  local after = session:capture()
+  Assert.isTrue(hasUserMarker(after, "HELPING_HAND", 1), "the successful boost records its cooperation marker")
+  Assert.equal(after.combatants[1].mon.moves[1].pp, 29, "the successful boost spends one power point")
+  session:dispose()
+end
+
+-- Helping Hand fails with no ally standing: the singles attempt samples
+-- only its user, so the kernel takes the failure branch without marking
+-- and without a successful move-used, spending the attempt.
+function T.helping_hand_fails_with_no_ally_in_singles()
+  local a1 = withMoves(monSeed(1, "CHIKORITA", 5, 0xA1A1), { moveSlot("HELPING_HAND", 30) })
+  local b1 = withMoves(monSeed(2, "TOTODILE", 5, 0xB1A1), { moveSlot("SPLASH", 40) })
+  local seeds = { a1, b1 }
+  local extra = { HELPING_HAND = catalogCopy("HELPING_HAND", 256) }
+  local scenario = singlesScenario(a1, b1, scenarioMoveFacts(seeds, extra), scenarioSpeciesFacts(seeds))
+  local session, frame = openWaiting(scenario)
+  local settled = playAnswers(session, projectedSlotZero(session, frame))
+  Assert.equal(settled.status, "waiting", "the failed boost still leaves the battle waiting")
+  local after = session:capture()
+  Assert.isFalse(hasUserMarker(after, "HELPING_HAND", 1), "the failed boost records no cooperation marker")
+  Assert.equal(after.combatants[1].mon.moves[1].pp, 29, "the failed attempt still spends its power point")
+  session:dispose()
+end
+
+-- Self cooperation keeps succeeding on its own user: Charge marks its
+-- own entry under the same shared body, so the ally guard never widens
+-- onto user-scoped moves.
+function T.charge_still_marks_its_user_in_singles()
+  local a1 = withMoves(monSeed(1, "CHIKORITA", 5, 0xA1C1), { moveSlot("CHARGE", 30) })
+  local b1 = withMoves(monSeed(2, "TOTODILE", 5, 0xB1C1), { moveSlot("SPLASH", 40) })
+  local seeds = { a1, b1 }
+  local extra = {
+    CHARGE = { power = 0, accuracy = 100, category = "other", moveType = "electric", priority = 0, range = 16 },
+  }
+  local scenario = singlesScenario(a1, b1, scenarioMoveFacts(seeds, extra), scenarioSpeciesFacts(seeds))
+  local session, frame = openWaiting(scenario)
+  local settled = playAnswers(session, projectedSlotZero(session, frame))
+  Assert.equal(settled.status, "waiting", "the charge turn leaves the battle waiting")
+  local after = session:capture()
+  Assert.isTrue(hasUserMarker(after, "CHARGE", 1), "the self boost still records its cooperation marker")
+  Assert.equal(after.combatants[1].mon.moves[1].pp, 29, "the self boost spends one power point")
+  session:dispose()
+end
+
 return { tests = T }
