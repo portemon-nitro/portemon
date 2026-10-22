@@ -52,13 +52,23 @@ local function sourceTitleCompilesTheEditionModelAndFourChannels(romFs, versionI
     { position = { 105, 162, 291 }, durationSeconds = 5 },
     { position = { 420, 87, 331 }, durationSeconds = 10 },
   })
-  local kinds = { joint = "trs", srt = "texsrt", color = "color", pattern = "pattern" }
+  local kinds = { joint = "trs", srt = "texsrt", color = "color" }
   for channel, kind in pairs(kinds) do
     local clip = assert(bundle.manifest.clips[channel], channel .. " title channel is compiled")
     Assert.equal(clip.kind, kind)
     Assert.isTrue(clip.frameCount > 0, channel .. " carries frame count")
     Assert.isTrue(#clip.tracks > 0, channel .. " carries tracks")
     Assert.isTrue(#clip.compiled.targets > 0, channel .. " carries compiled targets")
+  end
+  -- Retail soulsilver's title PAT0 carries no texture targets, so that
+  -- edition omits the pattern channel instead of publishing it trackless.
+  local pattern = bundle.manifest.clips.pattern
+  if versionId == "heartgold" then
+    Assert.equal(assert(pattern, "heartgold title pattern channel is compiled").kind, "pattern")
+    Assert.isTrue(#pattern.tracks > 0, "pattern carries tracks")
+    Assert.isTrue(#pattern.compiled.targets > 0, "pattern carries compiled targets")
+  else
+    Assert.isNil(pattern, "soulsilver title has no pattern animation")
   end
   Assert.isTrue(next(bundle.files) ~= nil, "title model resources are staged")
   Assert.equal(bundle.manifest.sparkle.model.kind, "nitro-dynamic")

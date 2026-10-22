@@ -444,7 +444,14 @@ function StartupAssetCache.loadTitle(cacheFs, versionId)
   }
   for name, expected in pairs(expectedClips) do
     local clip = bundle.clips[name]
-    if
+    if clip == nil then
+      -- Only the pattern channel may be absent: an edition whose title
+      -- PAT0 carries no targets omits it instead of publishing a
+      -- trackless clip. Every other channel is required.
+      if name ~= "pattern" then
+        return nil, invalid("title " .. name .. " channel is missing", TITLE_PATH)
+      end
+    elseif
       type(clip) ~= "table"
       or clip.category ~= expected.category
       or clip.kind ~= expected.kind
