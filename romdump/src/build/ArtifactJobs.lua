@@ -121,12 +121,17 @@ function ArtifactJobs.bootstrapJobs()
   return { { kind = "field-font", key = "global" } }
 end
 
--- The bounded startup loader visual: one compiled hero/follower bundle
+-- One selected walking pair: exactly one hero/follower bundle per request
 -- with no source-inventory or audio prerequisite. It decodes directly
--- from the verified dump reader, so its roster is a singleton.
+-- from the verified dump reader, so its roster is one keyed job.
+---@param pairIndex integer
 ---@return { kind: string, key: string }[]
-function ArtifactJobs.startupLoaderJobs()
-  return { { kind = "startup-loader", key = "global" } }
+function ArtifactJobs.startupLoaderJobs(pairIndex)
+  assert(
+    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
+    "walking pair index must be an integer 1..32"
+  )
+  return { { kind = "startup-loader", key = tostring(pairIndex) } }
 end
 
 ---@param entries string[] fixed kind[:key] members, bare kinds read global
@@ -1800,11 +1805,23 @@ end
 local function executeStartupLoader(artifact, context, job)
   local compiler = require("romdump.src.digest.startup.StartupVisualCompiler")
   local writer = require("romdump.src.digest.startup.StartupCacheWriter")
-  local bundle, err = compiler.compile(assert(context.romFs, "startup loader requires a source reader"))
+  local pairIndex = tonumber(job.key)
+  if type(job.payload) == "table" and type(job.payload.pairIndex) == "number" then
+    pairIndex = job.payload.pairIndex
+  end
+  if type(job.pairIndex) == "number" then
+    pairIndex = job.pairIndex
+  end
+  assert(
+    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
+    "startup loader jobs carry their walking pair selection"
+  )
+  ---@cast pairIndex integer
+  local bundle, err = compiler.compile(assert(context.romFs, "startup loader requires a source reader"), pairIndex)
   if bundle == nil then
     error(assert(err), 0)
   end
-  return writer.stageLoader(artifact, bundle, job.generationId)
+  return writer.stageLoader(artifact, bundle, job.generationId, pairIndex)
 end
 
 local function executeStartupTitle(artifact, context, job)
@@ -1821,7 +1838,12 @@ end
 
 local function validateStartupLoader(check)
   local cache = require("libs.assets.src.StartupAssetCache")
-  local bundle = cache.loadLoader(check.cacheFs)
+  local pairIndex = tonumber(check.key)
+  if pairIndex == nil or pairIndex % 1 ~= 0 or pairIndex < 1 or pairIndex > 32 then
+    return false
+  end
+  ---@cast pairIndex integer
+  local bundle = cache.loadWalker(check.cacheFs, pairIndex)
   return type(bundle) == "table" and bundle.generationId == check.generationId
 end
 
@@ -2290,7 +2312,6 @@ local COMPLETE_STATIC_GLOBALS = {
   "mon-catalog",
   "mon-layout",
   "audio-catalog",
-  "startup-loader",
   "startup-title",
 }
 

@@ -33,7 +33,7 @@ local function stageFamily(artifact, family, bundle, generationId)
   assert(type(generationId) == "string" and generationId ~= "", "startup generation identity is required")
   local manifest = copyManifest(bundle.manifest, generationId)
   local assetRoot = "assets/generated/startup/" .. family
-  local manifestPath = family == "loader" and StartupAssetCache.loaderPath() or StartupAssetCache.titlePath()
+  local manifestPath = StartupAssetCache.titlePath()
   local stage = artifact:stageFs()
 
   artifact:addOwnedRoot(manifestPath)
@@ -42,13 +42,7 @@ local function stageFamily(artifact, family, bundle, generationId)
   writeFiles(stage, bundle.files or {}, assetRoot)
   stage:writeLua(manifestPath, manifest)
 
-  local validator = family == "loader" and StartupAssetCache.loadLoader or StartupAssetCache.loadTitle
-  local readback, readError
-  if family == "loader" then
-    readback, readError = validator(stage)
-  else
-    readback, readError = validator(stage, manifest.versionId)
-  end
+  local readback, readError = StartupAssetCache.loadTitle(stage, manifest.versionId)
   if readback == nil or readback.generationId ~= generationId then
     Errors.raise("STARTUP_ASSET_STAGE_INVALID", "staged startup " .. family .. " manifest failed validation", {
       cause = readError and tostring(readError) or "generation mismatch",
@@ -57,32 +51,72 @@ local function stageFamily(artifact, family, bundle, generationId)
   return "startup-" .. family .. ":" .. generationId .. ":" .. Hashing.hashLua(bundle.dependencies or bundle.manifest)
 end
 
+local function hasTransparentTexel(pixels)
+  if type(pixels) ~= "string" or #pixels % 4 ~= 0 then
+    return false
+  end
+  for offset = 4, #pixels, 4 do
+    if pixels:byte(offset) == 0 then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param artifact PreparedArtifact
 ---@param bundle table<string, unknown>
 ---@param generationId string
+---@param pairIndex integer?
 ---@return string
-function StartupCacheWriter.stageLoader(artifact, bundle, generationId)
+function StartupCacheWriter.stageLoader(artifact, bundle, generationId, pairIndex)
+  assert(artifact and type(artifact.stageFs) == "function", "startup staging requires a PreparedArtifact")
+  assert(type(bundle) == "table" and type(bundle.manifest) == "table", "loader bundle requires its manifest")
   assert(type(bundle.atlases) == "table", "loader bundle requires compiled atlases")
+  assert(type(generationId) == "string" and generationId ~= "", "startup generation identity is required")
+  local selected = pairIndex ~= nil and pairIndex or bundle.manifest.pairIndex
+  assert(
+    type(selected) == "number" and selected % 1 == 0 and selected >= 1 and selected <= 32,
+    "walking pair index must be an integer 1..32"
+  )
+  assert(bundle.manifest.pairIndex == selected, "loader bundle names another walking pair")
+  assert(bundle.manifest.schema == "g4-startup-walker-v1", "loader bundle carries the keyed pair schema")
+  local pairRoot = "assets/generated/startup/loader/pairs/" .. tostring(selected)
+  local manifestPath = StartupAssetCache.walkerPath(selected)
+  local manifest = copyManifest(bundle.manifest, generationId)
+  local count = 0
   local files = {}
   for path, atlas in pairs(bundle.atlases) do
     assert(type(atlas) == "table", "loader atlas must contain pixel dimensions")
+    assert(
+      type(path) == "string" and path:sub(1, #pairRoot + 1) == pairRoot .. "/",
+      "loader atlas escapes its walking pair root"
+    )
+    if not hasTransparentTexel(atlas.pixels) then
+      Errors.raise("STARTUP_ASSET_STAGE_INVALID", "staged walking pair atlas has no transparent pixels", {
+        path = path,
+      })
+    end
     files[path] = PngWriter.encode(atlas.width, atlas.height, atlas.pixels)
+    count = count + 1
   end
-  local manifest = copyManifest(bundle.manifest, generationId)
-  assert(type(bundle.backdrop) == "table", "loader bundle requires its backdrop")
-  local backdropPath = "assets/generated/startup/loader/backdrop.png"
-  manifest.backdrop = {
-    kind = bundle.manifest.backdrop.kind,
-    width = bundle.backdrop.width,
-    height = bundle.backdrop.height,
-    image = backdropPath,
-  }
-  files[backdropPath] = PngWriter.encode(bundle.backdrop.width, bundle.backdrop.height, bundle.backdrop.pixels)
-  return stageFamily(artifact, "loader", {
-    manifest = manifest,
-    files = files,
-    dependencies = bundle.dependencies,
-  }, generationId)
+  assert(count == 2, "one walking pair stages exactly two atlases")
+  local stage = artifact:stageFs()
+  artifact:addOwnedRoot(manifestPath)
+  artifact:addOwnedRoot(pairRoot)
+  writeFiles(stage, files, pairRoot)
+  stage:writeLua(manifestPath, manifest)
+  local readback, readError = StartupAssetCache.loadWalker(stage, selected)
+  if readback == nil or readback.generationId ~= generationId then
+    Errors.raise("STARTUP_ASSET_STAGE_INVALID", "staged walking pair manifest failed validation", {
+      cause = readError and tostring(readError) or "generation mismatch",
+    })
+  end
+  return "startup-loader:"
+    .. tostring(selected)
+    .. ":"
+    .. generationId
+    .. ":"
+    .. Hashing.hashLua(bundle.dependencies or bundle.manifest)
 end
 
 ---@param artifact PreparedArtifact

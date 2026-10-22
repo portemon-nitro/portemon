@@ -72,12 +72,13 @@ local SKY_SPARKS = {
 
 ---@class HgssLoadingSprite
 ---@field speciesId integer?
----@field visual { directions: { east: { walk: { frames: { frameIndex: integer, ticks: integer }[] } } }, render: { frameWidth: integer, frameHeight: integer, frameCount: integer } }
+---@field visual { pivot: { x: number, y: number }, directions: { east: { walk: { frames: { frameIndex: integer, ticks: integer }[] } } }, render: { frameWidth: integer, frameHeight: integer, frameCount: integer } }
 ---@field image love.Image
 ---@field quads table<integer, love.Quad>
 
 ---@class HgssLoadingPresentation
 ---@field versionId string?
+---@field pairIndex integer?
 ---@field width number
 ---@field height number
 ---@field graphics love.graphics
@@ -87,18 +88,18 @@ local SKY_SPARKS = {
 ---@field primaryBounds { x: number, y: number, width: number, height: number }?
 ---@field secondaryBounds { x: number, y: number, width: number, height: number }?
 ---@field elapsed number
+---@field captionBase integer
 ---@field captionIndex integer
 ---@field hero HgssLoadingSprite?
 ---@field heroId "ethan"|"lyra"?
 ---@field follower HgssLoadingSprite?
----@field backdrop love.Image?
----@field backdropQuad love.Quad?
 ---@field artFailure unknown?
 ---@field disposed boolean
 ---@class HgssLoadingPresentation.Options
 ---@field width number
 ---@field height number
 ---@field versionId string?
+---@field pairIndex integer?
 ---@field graphics love.graphics?
 ---@field random (fun(): number)?
 ---@field displayContext DisplayContext?
@@ -123,6 +124,14 @@ local function chooseFrame(visual, elapsed)
   error("walk animation ticks do not resolve a frame", 0)
 end
 
+---@param random fun(): number
+---@return integer
+local function chooseCaption(random)
+  local value = random()
+  assert(type(value) == "number" and value >= 0 and value < 1, "loading random source must return [0,1)")
+  return math.floor(value * #CAPTIONS) + 1
+end
+
 ---@param options HgssLoadingPresentation.Options
 ---@return HgssLoadingPresentation
 function HgssLoadingPresentation.new(options)
@@ -130,26 +139,34 @@ function HgssLoadingPresentation.new(options)
   -- A legacy purpose key is accepted and ignored; the selected edition and
   -- generated asset readiness drive the visuals.
   requireDimensions(options.width, options.height)
+  if options.pairIndex ~= nil then
+    assert(
+      type(options.pairIndex) == "number"
+        and options.pairIndex % 1 == 0
+        and options.pairIndex >= 1
+        and options.pairIndex <= 32,
+      "walking pair index must be an integer 1..32"
+    )
+  end
   local random = options.random or love.math.random
   assert(type(random) == "function", "loading presentation requires a random source")
   local graphics = options.graphics or love.graphics
   local displayContext = options.displayContext or DisplayContext.new({ graphics = graphics })
+  local firstCaption = chooseCaption(random)
   local self = setmetatable({
     versionId = options.versionId,
+    pairIndex = options.pairIndex,
     width = options.width,
     height = options.height,
     graphics = graphics,
     displayContext = displayContext,
     random = random,
     elapsed = 0,
-    captionIndex = 1,
+    captionBase = firstCaption,
+    captionIndex = firstCaption,
     hero = nil,
     heroId = nil,
     follower = nil,
-    backdrop = nil,
-    backdropQuad = nil,
-    heroQuad = nil,
-    followerQuad = nil,
     artFailure = nil,
     disposed = false,
   }, HgssLoadingPresentation)
@@ -183,7 +200,12 @@ function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
   if self.hero ~= nil then
     return true
   end
-  local manifest, manifestError = StartupAssetCache.loadLoader(cacheFs)
+  if self.pairIndex == nil then
+    local missing = "walking pair selection is unavailable"
+    self.artFailure = missing
+    return false, missing
+  end
+  local manifest, manifestError = StartupAssetCache.loadWalker(cacheFs, self.pairIndex)
   if manifest == nil then
     self.artFailure = manifestError
     return false, manifestError
@@ -193,31 +215,16 @@ function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
     self.artFailure = mismatch
     return false, mismatch
   end
-  local function choose(count)
-    local value = self.random()
-    assert(type(value) == "number" and value >= 0 and value < 1, "loading random source must return [0,1)")
-    return math.floor(value * count) + 1
-  end
-  local heroId = ({ "ethan", "lyra" })[choose(2)]
-  local followerIndex = choose(#manifest.followers)
-  local hero = assert(manifest.heroes[heroId])
-  local follower = assert(manifest.followers[followerIndex])
+  local hero = manifest.hero
+  local follower = manifest.follower
   local staged = {}
   local ok, result = pcall(function()
-    local backdrop = self:_loadImage(cacheFs, manifest.backdrop.image)
-    staged[#staged + 1] = backdrop
-    backdrop:setFilter("nearest", "nearest")
     local heroImage = self:_loadImage(cacheFs, hero.atlasPath)
     staged[#staged + 1] = heroImage
     heroImage:setFilter("nearest", "nearest")
     local followerImage = self:_loadImage(cacheFs, follower.atlasPath)
     staged[#staged + 1] = followerImage
     followerImage:setFilter("nearest", "nearest")
-    assert(
-      backdrop:getWidth() >= 256 and backdrop:getHeight() >= 192,
-      "loading backdrop is smaller than its source frame"
-    )
-    local backdropQuad = self.graphics.newQuad(0, 0, 256, 192, backdrop:getWidth(), backdrop:getHeight())
     local function frames(image, visual)
       local render = visual.render
       assert(image:getWidth() >= render.frameWidth * render.frameCount, "loading atlas is narrower than its frame list")
@@ -236,8 +243,6 @@ function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
       return quads
     end
     return {
-      backdrop = backdrop,
-      backdropQuad = backdropQuad,
       heroImage = heroImage,
       heroQuads = frames(heroImage, hero.visual),
       followerImage = followerImage,
@@ -251,9 +256,8 @@ function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
     self.artFailure = result
     return false, result
   end
-  self.backdrop = result.backdrop
-  self.backdropQuad = result.backdropQuad
-  self.heroId = heroId
+  local choice = StartupAssetCache.walkerChoice(self.pairIndex)
+  self.heroId = choice.heroId
   self.hero = { visual = hero.visual, image = result.heroImage, quads = result.heroQuads }
   self.follower = {
     speciesId = follower.speciesId,
@@ -271,7 +275,7 @@ function HgssLoadingPresentation:update(dt)
   end
   assert(type(dt) == "number" and dt >= 0, "loading presentation dt must be non-negative")
   self.elapsed = self.elapsed + dt
-  self.captionIndex = (math.floor(self.elapsed / CAPTION_SECONDS) % #CAPTIONS) + 1
+  self.captionIndex = ((self.captionBase - 1 + math.floor(self.elapsed / CAPTION_SECONDS)) % #CAPTIONS) + 1
 end
 
 function HgssLoadingPresentation:_theme()
@@ -387,6 +391,14 @@ function HgssLoadingPresentation:_drawCopy(status)
   -- usable and the diagnostic travels through the adoption return value.
 end
 
+-- Shared ground-plane foot baseline in stage space: both sprites rest on
+-- the same line, with each top-left derived from its source pivot so
+-- differently sized atlases stay aligned. The follower walks behind the
+-- hero at a separate horizontal anchor.
+local GROUND_STAGE_Y = 150
+local FOLLOWER_CENTER_X = 97
+local HERO_CENTER_X = 133
+
 function HgssLoadingPresentation:draw(status)
   local maybeBounds = self.primaryBounds
   if self.disposed or maybeBounds == nil then
@@ -395,29 +407,24 @@ function HgssLoadingPresentation:draw(status)
   self:_drawStage()
   if self.hero ~= nil then
     local graphics = self.graphics
-    local theme = self:_theme()
     local bounds = maybeBounds
     local stageHeight = self.configuration == "tall" and bounds.height * 0.66 or bounds.height
     local scale = math.max(1, math.floor(math.min(bounds.width / STAGE_WIDTH, stageHeight / STAGE_HEIGHT)))
     local originX = math.floor(bounds.x + (bounds.width - STAGE_WIDTH * scale) / 2)
     local originY = math.floor(bounds.y + (stageHeight - STAGE_HEIGHT * scale) / 2)
     LogicalSurface.clip(graphics, bounds, function()
-      graphics.setColor(theme.backdropTint[1], theme.backdropTint[2], theme.backdropTint[3], theme.backdropTint[4])
-      local backgroundScale = self.configuration == "wide"
-          and math.max(bounds.width / STAGE_WIDTH, bounds.height / STAGE_HEIGHT)
-        or scale
-      local backgroundWidth = STAGE_WIDTH * backgroundScale
-      local backgroundX = bounds.x + (bounds.width - backgroundWidth) / 2
-      graphics.draw(self.backdrop, self.backdropQuad, backgroundX, originY, 0, backgroundScale, scale)
       local followerFrame = self:_frameIndex("follower")
       local heroFrame = self:_frameIndex("hero")
       graphics.setColor(1, 1, 1, 1)
-      local function drawSprite(sprite, frameIndex, x, y)
+      local function drawSprite(sprite, frameIndex, centerX)
         local quad = assert(sprite.quads[frameIndex])
-        graphics.draw(sprite.image, quad, originX + x * scale, originY + y * scale, 0, scale, scale)
+        local pivot = sprite.visual.pivot or { x = 0.5, y = 1 }
+        local topLeftX = centerX - sprite.visual.render.frameWidth * pivot.x
+        local topLeftY = GROUND_STAGE_Y - sprite.visual.render.frameHeight * pivot.y
+        graphics.draw(sprite.image, quad, originX + topLeftX * scale, originY + topLeftY * scale, 0, scale, scale)
       end
-      drawSprite(self.follower, followerFrame, 80, 96)
-      drawSprite(self.hero, heroFrame, 112, 80)
+      drawSprite(self.follower, followerFrame, FOLLOWER_CENTER_X)
+      drawSprite(self.hero, heroFrame, HERO_CENTER_X)
     end)
   end
   self:_drawCopy(status)
@@ -438,9 +445,8 @@ function HgssLoadingPresentation:dispose()
     return
   end
   self.disposed = true
-  local images = { self.backdrop, self.hero and self.hero.image, self.follower and self.follower.image }
-  self.backdrop, self.hero, self.follower, self.heroId = nil, nil, nil, nil
-  self.heroQuad, self.followerQuad, self.backdropQuad = nil, nil, nil
+  local images = { self.hero and self.hero.image, self.follower and self.follower.image }
+  self.hero, self.follower, self.heroId = nil, nil, nil
   for _, image in ipairs(images) do
     if image ~= nil then
       image:release()

@@ -7,8 +7,11 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
 local StartupAssetCache = {}
 
-local LOADER_PATH = "data/generated/startup/loader.lua"
 local TITLE_PATH = "data/generated/startup/title.lua"
+
+-- Canonical 32-choice walking pair: indices 1..16 name Ethan with each of
+-- sixteen followers in fixed order, 17..32 name Lyra with the same order.
+local FOLLOWER_SPECIES_IDS = { 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }
 local EDITIONS = { heartgold = true, soulsilver = true }
 local SOURCE_FIELDS = { fileId = true, narcId = true, memberId = true }
 
@@ -254,16 +257,18 @@ local function read(cacheFs, path, schema, versionId)
   if record.schema ~= schema then
     return nil, invalid("manifest schema does not match", path)
   end
-  local allowed = schema == Contract.startupLoader.schema
-      and {
-        schema = true,
-        versionId = true,
-        generationId = true,
-        heroes = true,
-        followers = true,
-        backdrop = true,
-      }
-    or {
+  local allowed
+  if schema == Contract.startupWalker.schema then
+    allowed = {
+      schema = true,
+      versionId = true,
+      generationId = true,
+      pairIndex = true,
+      hero = true,
+      follower = true,
+    }
+  else
+    allowed = {
       schema = true,
       versionId = true,
       generationId = true,
@@ -279,6 +284,7 @@ local function read(cacheFs, path, schema, versionId)
       timeline = true,
       prompt = true,
     }
+  end
   if not onlyKeys(record, allowed) then
     return nil, invalid("manifest contains an unknown field", path)
   end
@@ -337,78 +343,109 @@ local function hasAnimatedEastWalk(visual)
   return count > 1
 end
 
-function StartupAssetCache.loaderPath()
-  return LOADER_PATH
+---@param pairIndex integer
+---@return { heroId: string, followerSpeciesId: integer }
+function StartupAssetCache.walkerChoice(pairIndex)
+  assert(
+    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
+    "walking pair index must be an integer 1..32"
+  )
+  local ordinal = (pairIndex - 1) % 16 + 1
+  local heroId = pairIndex <= 16 and "ethan" or "lyra"
+  return { heroId = heroId, followerSpeciesId = FOLLOWER_SPECIES_IDS[ordinal] }
+end
+
+---@param heroId string
+---@param speciesId integer
+---@return integer
+function StartupAssetCache.walkerIndex(heroId, speciesId)
+  assert(heroId == "ethan" or heroId == "lyra", "walking pair hero must be ethan or lyra")
+  assert(type(speciesId) == "number" and speciesId % 1 == 0, "walking pair species must be an integer")
+  local ordinal = nil
+  for position, candidate in ipairs(FOLLOWER_SPECIES_IDS) do
+    if candidate == speciesId then
+      ordinal = position
+      break
+    end
+  end
+  assert(ordinal ~= nil, "walking pair species is not one of the sixteen followers")
+  if heroId == "ethan" then
+    return ordinal
+  end
+  return 16 + ordinal
+end
+
+---@param pairIndex integer
+---@return string
+function StartupAssetCache.walkerPath(pairIndex)
+  assert(
+    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
+    "walking pair index must be an integer 1..32"
+  )
+  return "data/generated/startup/loader/pairs/" .. tostring(pairIndex) .. ".lua"
 end
 
 function StartupAssetCache.titlePath()
   return TITLE_PATH
 end
 
+local function hasWalkerPivot(visual)
+  local pivot = type(visual) == "table" and visual.pivot
+  return type(pivot) == "table" and pivot.x == 0.5 and pivot.y == 1
+end
+
+local function walkerAtlasPath(path, pairIndex)
+  if not generatedPath(path, "loader") then
+    return false
+  end
+  local prefix = "assets/generated/startup/loader/pairs/" .. tostring(pairIndex) .. "/"
+  return type(path) == "string" and path:sub(1, #prefix) == prefix
+end
+
 ---@param cacheFs CacheFs
+---@param pairIndex integer
 ---@return table<string, unknown>|nil
 ---@return Errors.Error|string|nil
-function StartupAssetCache.loadLoader(cacheFs)
-  local bundle, err = read(cacheFs, LOADER_PATH, Contract.startupLoader.schema)
+function StartupAssetCache.loadWalker(cacheFs, pairIndex)
+  assert(
+    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
+    "walking pair index must be an integer 1..32"
+  )
+  local path = StartupAssetCache.walkerPath(pairIndex)
+  local bundle, err = read(cacheFs, path, Contract.startupWalker.schema)
   if bundle == nil then
     return nil, err
   end
+  if bundle.pairIndex ~= pairIndex then
+    return nil, invalid("walking pair manifest names another pair", path)
+  end
+  local hero = bundle.hero
   if
-    type(bundle.heroes) ~= "table"
-    or not onlyKeys(bundle.heroes, { ethan = true, lyra = true })
-    or type(bundle.followers) ~= "table"
-    or #bundle.followers < 4
-    or #bundle.followers > 8
+    type(hero) ~= "table"
+    or not onlyKeys(hero, { visual = true, atlasPath = true })
+    or not hasAnimatedEastWalk(hero.visual)
+    or not hasWalkerPivot(hero.visual)
+    or not walkerAtlasPath(hero.atlasPath, pairIndex)
   then
-    return nil, invalid("loader requires two heroes and at least four followers", LOADER_PATH)
+    return nil, invalid("walking pair hero needs an animated east walk atlas with source pivot", path)
   end
-  for _, identity in ipairs({ "ethan", "lyra" }) do
-    local hero = bundle.heroes[identity]
-    if
-      type(hero) ~= "table"
-      or not onlyKeys(hero, { visual = true, atlasPath = true })
-      or not hasAnimatedEastWalk(hero.visual)
-      or not generatedPath(hero.atlasPath, "loader")
-    then
-      return nil, invalid("hero " .. identity .. " needs an animated east walk atlas", LOADER_PATH)
-    end
-    if not cacheFs:exists(hero.atlasPath, "file") then
-      return nil, invalid("hero atlas is missing", hero.atlasPath)
-    end
+  if not cacheFs:exists(hero.atlasPath, "file") then
+    return nil, invalid("walking pair hero atlas is missing", hero.atlasPath)
   end
-  for index, follower in ipairs(bundle.followers) do
-    if
-      type(follower) ~= "table"
-      or type(follower.speciesId) ~= "number"
-      or follower.speciesId % 1 ~= 0
-      or not generatedPath(follower.atlasPath, "loader")
-      or not hasAnimatedEastWalk(follower.visual)
-    then
-      return nil, invalid("follower " .. index .. " needs an animated east walk atlas", LOADER_PATH)
-    end
-    if not cacheFs:exists(follower.atlasPath, "file") then
-      return nil, invalid("follower atlas is missing", follower.atlasPath)
-    end
-  end
-  local species = {}
-  for index, follower in ipairs(bundle.followers) do
-    if species[follower.speciesId] then
-      return nil, invalid("follower species are duplicated", index)
-    end
-    species[follower.speciesId] = true
-  end
+  local follower = bundle.follower
   if
-    type(bundle.backdrop) ~= "table"
-    or not onlyKeys(bundle.backdrop, { kind = true, width = true, height = true, image = true })
-    or (bundle.backdrop.kind ~= "authored" and bundle.backdrop.kind ~= "rom-derived")
-    or bundle.backdrop.width ~= 256
-    or bundle.backdrop.height ~= 192
-    or not generatedPath(bundle.backdrop.image, "loader")
+    type(follower) ~= "table"
+    or not onlyKeys(follower, { speciesId = true, visual = true, atlasPath = true })
+    or type(follower.speciesId) ~= "number"
+    or follower.speciesId % 1 ~= 0
+    or not hasAnimatedEastWalk(follower.visual)
+    or not hasWalkerPivot(follower.visual)
+    or not walkerAtlasPath(follower.atlasPath, pairIndex)
   then
-    return nil, invalid("loader backdrop kind is invalid", LOADER_PATH)
+    return nil, invalid("walking pair follower needs an animated east walk atlas with source pivot", path)
   end
-  if not cacheFs:exists(bundle.backdrop.image, "file") then
-    return nil, invalid("loader backdrop is missing", bundle.backdrop.image)
+  if not cacheFs:exists(follower.atlasPath, "file") then
+    return nil, invalid("walking pair follower atlas is missing", follower.atlasPath)
   end
   return bundle
 end

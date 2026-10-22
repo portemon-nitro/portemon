@@ -22,6 +22,7 @@ local VALID_KINDS = {
   pokedex = true,
   ["battle-effect"] = true,
   ["battle-presentation"] = true,
+  ["startup-walker"] = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
@@ -159,6 +160,15 @@ local function selectorKey(selector)
       assert(selector[field] == nil, "battle-presentation request carries no " .. field .. " selector")
     end
     return "battle-presentation"
+  elseif kind == "startup-walker" then
+    assert(
+      type(selector.pairIndex) == "number"
+        and selector.pairIndex % 1 == 0
+        and selector.pairIndex >= 1
+        and selector.pairIndex <= 32,
+      "startup-walker request requires an integer pairIndex 1..32"
+    )
+    return "startup-walker:" .. tostring(selector.pairIndex)
   else
     assert(
       type(selector.pageId) == "number" and selector.pageId % 1 == 0 and selector.pageId >= 0,
@@ -273,6 +283,8 @@ function CacheService:request(epoch, selector)
     command.effectKey = selector.effectKey
   elseif selector.requestKind == "battle-presentation" then
     -- The selector-free shared battle demand names its kind and urgency only.
+  elseif selector.requestKind == "startup-walker" then
+    command.pairIndex = selector.pairIndex
   else
     command.pageId = selector.pageId
   end

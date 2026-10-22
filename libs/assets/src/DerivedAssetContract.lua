@@ -570,6 +570,10 @@ DerivedAssetContract.startupLoader = {
   schema = "g4-startup-loader-v1",
 }
 
+DerivedAssetContract.startupWalker = {
+  schema = "g4-startup-walker-v1",
+}
+
 DerivedAssetContract.startupTitle = {
   schema = "g4-startup-title-v1",
 }
