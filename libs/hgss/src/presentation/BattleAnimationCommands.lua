@@ -44,6 +44,7 @@
 ---@field loopAdvance fun(): string advance the innermost active loop
 ---@field loopStart fun(): integer rewind destination behind the innermost active loop
 ---@field activationFor fun(selector: integer): table<string, unknown>? resolve one battler identity
+---@field contestMode fun(): integer retail-zeroed contest-mode indicator behind opcode-71 branches
 ---@field movePhase fun(): string? admitted occurrence move phase ("charge" or "direct"), when carried
 ---@field topology fun(): table<string, unknown>? event-time semantic slots behind pair selection, when carried
 ---@field eventIdentity fun(): table<string, unknown>? event identity behind pair diagnostics, when carried
@@ -525,9 +526,23 @@ local function failContextField(exec, name)
 end
 
 local function handleBranchOnInterpreterState(exec, instruction, index)
-  local _ = instruction
   local _ = index
-  return failContextField(exec, "interpreter-state branches")
+  -- Opcode 71 compares the contest-mode indicator against one
+  -- (ov07_0221D214 at pret/pokeheartgold asm/overlay_07.s): the indicator
+  -- reads the retail-zeroed construction value with no contest host to set
+  -- it, so the ==1 arm stays dead and the occurrence takes the
+  -- compiler-lowered alternate (fall-through battle) arm. Any other operand
+  -- still fails closed with provenance instead of guessing a taken arm.
+  local values = instruction.values --[[@as table<integer, integer>?]]
+  if type(values) ~= "table" or values[1] ~= 1 then
+    return failContextField(exec, "interpreter-state branches")
+  end
+  if exec.contestMode() == 1 then
+    exec.jump(instruction.branchTarget)
+  else
+    exec.jump(instruction.alternateTarget)
+  end
+  return "continue"
 end
 Handlers["branch-on-interpreter-state"] = handleBranchOnInterpreterState
 

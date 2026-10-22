@@ -111,6 +111,14 @@ local function recordingAudio()
     audio.plays[#audio.plays + 1] = name
     return true
   end
+  -- The recording double carries no playback clock, so effect waits
+  -- complete immediately instead of parking on an unanswerable query
+  -- (mirroring the shared RecordingScriptHosts stub): the play is
+  -- recorded, and completion follows at once because there is no real
+  -- lifecycle to await.
+  function audio:isEffectWaitComplete()
+    return true
+  end
   function audio.count(name)
     local total = 0
     for _, played in ipairs(audio.plays) do

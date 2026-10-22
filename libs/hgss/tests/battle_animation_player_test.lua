@@ -986,11 +986,47 @@ function T.battle_flag_other_operands_and_malformed_phases_fail_loud()
   end
 end
 
+-- The opcode-71 interpreter-state branch (native ov07_0221D214 at
+-- pret/pokeheartgold asm/overlay_07.s, comparing the ov07_0221BFC0
+-- contest-mode indicator against one) reads the indicator retail
+-- zero-initializes at interpreter construction, so the ==1 arm never
+-- matches and the occurrence falls through to the battle half.
+-- Compiler-faithful shape: values {1}, branchTarget at the ==1 arm,
+-- alternateTarget at the fall-through arm.
+function T.interpreter_state_contest_indicator_falls_through_to_the_battle_half()
+  local helpers = collaborators()
+  helpers.audio.done["battle-half"] = true
+  helpers.audio.done["contest-half"] = true
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+  }))
+  local handle = assert(player:start(playbackWithPhase("charge"), programOf({
+    { op = "branch-on-interpreter-state", values = { 1 }, branchTarget = 4, alternateTarget = 2 },
+    { op = "play-sound", sound = "battle-half" },
+    { op = "skip-words", target = 5 },
+    { op = "play-sound", sound = "contest-half" },
+  })))
+  for _ = 1, 3 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" or player:status(handle) == "failed" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the zeroed contest indicator completes through the battle half")
+  Assert.deepEqual(helpers.log.played, { "battle-half" }, "the fall-through plays only the battle half")
+end
+
 function T.carved_out_context_families_stay_loud_on_any_phase()
   -- Compiler-faithful shapes (see BattleAnimationCompiler lowering): the
   -- no-values interpreter-state form never admits through the strict
-  -- program schema, while every admitted context branch fails at its
-  -- handler with provenance even when the move phase is well-formed.
+  -- program schema, while every remaining admitted context branch fails
+  -- at its handler with provenance even when the move phase is
+  -- well-formed. The admitted opcode-71 interpreter-state form is not
+  -- carved out: its contest-mode indicator is retail zero-initialized,
+  -- so it falls through (see the test above).
   local refused = programOf({
     { op = "branch-on-interpreter-state", branchTarget = 2 },
     { op = "reset-blend-alpha" },
@@ -1007,12 +1043,6 @@ function T.carved_out_context_families_stay_loud_on_any_phase()
     "the no-values interpreter-state form never admits"
   )
   local ops = {
-    {
-      op = "branch-on-interpreter-state",
-      values = { 1 },
-      branchTarget = 2,
-      alternateTarget = 1,
-    },
     {
       op = "branch-on-battle-field",
       values = { 3 },
