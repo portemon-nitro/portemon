@@ -8,8 +8,7 @@ local PlayerAvatar = require("romdump.src.catalog.hgss.player_avatar")
 
 local StartupVisualCompiler = {}
 
-local FOLLOWER_SPECIES = { "CHIKORITA", "CYNDAQUIL", "TOTODILE", "MARILL" }
-local AVATARS = { ethan = 0, lyra = 1 }
+local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
 local function assertEastWalk(visual, spriteId)
   local render = visual and visual.render
@@ -35,115 +34,81 @@ local function assertEastWalk(visual, spriteId)
   end
 end
 
-local function addSprite(ordered, seen, spriteId)
-  if not seen[spriteId] then
-    seen[spriteId] = true
-    ordered[#ordered + 1] = spriteId
+local function selectedSpriteIds(pairIndex)
+  local choice = StartupAssetCache.walkerChoice(pairIndex)
+  local gender = choice.heroId == "ethan" and 0 or 1
+  local heroSprite = PlayerAvatar.statesForGender(gender).walking
+  local followerSprite = MonSources.followerSpriteId(choice.followerSpeciesId, 0, false)
+  assert(followerSprite ~= nil, "walking pair follower has no source sprite")
+  local spriteIds = { heroSprite, followerSprite }
+  if heroSprite == followerSprite then
+    spriteIds = { heroSprite }
   end
+  assert(#spriteIds == 2, "one walking pair compiles exactly one hero and one follower sprite")
+  return spriteIds, heroSprite, followerSprite, choice
 end
 
-local function selectedSpriteIds()
-  local spriteIds, seen = {}, {}
-  for _, gender in pairs(AVATARS) do
-    addSprite(spriteIds, seen, PlayerAvatar.statesForGender(gender).walking)
-  end
-  local followers = {}
-  for _, speciesKey in ipairs(FOLLOWER_SPECIES) do
-    local speciesId = assert(MonSources.speciesId(speciesKey), "startup follower species is unknown")
-    local spriteId = MonSources.followerSpriteId(speciesId, 0, false)
-    local paramIndex = MonSources.followerParamIndex(speciesId, 0, false)
-    assert(spriteId ~= nil and paramIndex ~= nil, speciesKey .. " has no follower visual")
-    addSprite(spriteIds, seen, spriteId)
-    followers[#followers + 1] = {
-      speciesId = speciesId,
-      spriteId = spriteId,
-      visualId = MonSources.followerVisualId(paramIndex),
-    }
-  end
-  table.sort(spriteIds)
-  assert(#spriteIds >= 6 and #spriteIds <= 8, "startup sprite closure must remain bounded to 6-8 sources")
-  return spriteIds, followers
-end
-
-local function startupVisual(sourceVisual, spriteId, identity)
+local function startupVisual(sourceVisual, spriteId)
   assertEastWalk(sourceVisual, spriteId)
   return {
-    identity = identity,
     render = {
       kind = "atlas",
       frameWidth = sourceVisual.render.frameWidth,
       frameHeight = sourceVisual.render.frameHeight,
       frameCount = sourceVisual.render.frameCount,
     },
+    pivot = { x = 0.5, y = 1 },
     directions = { east = { walk = sourceVisual.directions.east.walk } },
   }
 end
 
--- Neutral gray luminance ramp. The loading view tints it with the selected
--- edition theme at draw time, so the produced bytes stay edition-independent.
-local function authoredBackdrop()
-  local width, height = 256, 192
-  local pixels = {}
-  for y = 0, height - 1 do
-    local level = 200 + math.floor(y * 32 / height)
-    for _ = 0, width - 1 do
-      pixels[#pixels + 1] = string.char(level, level, level, 255)
-    end
-  end
-  return { width = width, height = height, pixels = table.concat(pixels) }
-end
-
 ---@param romFs table<string, unknown>
+---@param pairIndex integer
 ---@return table<string, unknown>|nil
 ---@return Errors.Error|string|nil
-function StartupVisualCompiler.compile(romFs)
+function StartupVisualCompiler.compile(romFs, pairIndex)
   assert(romFs and type(romFs.metadata) == "function", "startup visuals require a ROM filesystem")
-  local spriteIds, followers = selectedSpriteIds()
+  assert(
+    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
+    "walking pair index must be an integer 1..32"
+  )
+  local spriteIds, heroSprite, followerSprite, choice = selectedSpriteIds(pairIndex)
   local compiled, err = FieldActorCompiler.compileSprites(romFs, spriteIds)
   if compiled == nil then
     return nil, err
   end
   local versionId = assert(romFs:version(), "startup visuals require an edition")
-  local atlases, heroes, normalizedFollowers = {}, {}, {}
-  local heroSprites = {}
-  for identity, gender in pairs(AVATARS) do
-    heroSprites[identity] = PlayerAvatar.statesForGender(gender).walking
-  end
-  for identity, spriteId in pairs(heroSprites) do
-    local path = "assets/generated/startup/loader/hero-" .. identity .. ".png"
-    heroes[identity] = {
-      visual = startupVisual(assert(compiled.visuals[spriteId]), spriteId, identity),
-      atlasPath = path,
-    }
-    atlases[path] = assert(compiled.atlases[spriteId])
-  end
-  for _, follower in ipairs(followers) do
-    local path = "assets/generated/startup/loader/follower-" .. follower.speciesId .. ".png"
-    local sourceVisual = assert(compiled.visuals[follower.spriteId])
-    normalizedFollowers[#normalizedFollowers + 1] = {
-      speciesId = follower.speciesId,
-      visual = startupVisual(sourceVisual, follower.spriteId, "follower:" .. follower.speciesId),
-      atlasPath = path,
-    }
-    atlases[path] = assert(compiled.atlases[follower.spriteId])
-  end
+  local root = "assets/generated/startup/loader/pairs/" .. tostring(pairIndex)
+  local heroPath = root .. "/hero.png"
+  local followerPath = root .. "/follower.png"
+  local heroVisual = startupVisual(assert(compiled.visuals[heroSprite]), heroSprite)
+  local followerVisual = startupVisual(assert(compiled.visuals[followerSprite]), followerSprite)
+  local atlases = {
+    [heroPath] = assert(compiled.atlases[heroSprite]),
+    [followerPath] = assert(compiled.atlases[followerSprite]),
+  }
   local dependencies = {
     versionId = versionId,
     romSha1 = assert(romFs:metadata().sha1),
     actorSources = compiled.dependencies,
     spriteIds = spriteIds,
-    followerSpecies = FOLLOWER_SPECIES,
+    pairIndex = pairIndex,
+    followerSpeciesId = choice.followerSpeciesId,
+    heroId = choice.heroId,
   }
   return {
     manifest = {
-      schema = "g4-startup-loader-v1",
+      schema = "g4-startup-walker-v1",
       versionId = versionId,
-      heroes = heroes,
-      followers = normalizedFollowers,
-      backdrop = { kind = "authored", width = 256, height = 192 },
+      pairIndex = pairIndex,
+      hero = { atlasPath = heroPath, visual = heroVisual },
+      follower = {
+        speciesId = choice.followerSpeciesId,
+        atlasPath = followerPath,
+        visual = followerVisual,
+      },
     },
     atlases = atlases,
-    backdrop = authoredBackdrop(),
     dependencies = dependencies,
     sourceHash = Hashing.hashLua(dependencies),
   }

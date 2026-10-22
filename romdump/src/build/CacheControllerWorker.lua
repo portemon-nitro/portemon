@@ -78,6 +78,7 @@ local VALID_KINDS = {
   ["battle-scene"] = true,
   ["audio-bank"] = true,
   pokedex = true,
+  ["startup-walker"] = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 
@@ -297,7 +298,6 @@ local function validateSelectors(params)
       and params.name ~= "new-game-intro"
       and params.name ~= "field-planning"
       and params.name ~= "field-runtime"
-      and params.name ~= "startup-loader"
       and params.name ~= "startup-title"
       and params.name ~= "startup-audio"
     then
@@ -339,6 +339,20 @@ local function validateSelectors(params)
         return "pokedex request carries no " .. field .. " selector"
       end
     end
+  elseif kind == "startup-walker" then
+    if
+      type(params.pairIndex) ~= "number"
+      or params.pairIndex % 1 ~= 0
+      or params.pairIndex < 1
+      or params.pairIndex > 32
+    then
+      return "startup-walker request needs an integer pairIndex 1..32"
+    end
+    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId" }) do
+      if params[field] ~= nil then
+        return "startup-walker request carries no " .. field .. " selector"
+      end
+    end
   end
   return nil
 end
@@ -367,6 +381,8 @@ function Worker:_invoke(params)
     return session:requestJob("pokedex", "global", urgency)
   elseif kind == "battle-scene" then
     return session:requestJob("battle-scene", params.sceneKey, urgency)
+  elseif kind == "startup-walker" then
+    return session:requestStartupWalker(params.pairIndex, urgency)
   end
   error("unknown cache request kind: " .. tostring(kind), 0)
 end
@@ -568,6 +584,7 @@ function Worker:_applyRequest(command)
     pageId = command.pageId,
     sceneKey = command.sceneKey,
     bankId = command.bankId,
+    pairIndex = command.pairIndex,
   }
   local selectorError = validateSelectors(params)
   if selectorError ~= nil then

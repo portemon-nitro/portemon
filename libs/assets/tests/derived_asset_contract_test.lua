@@ -204,6 +204,9 @@ function T.contract_pins_the_current_asset_identities()
     startupLoader = {
       schema = "g4-startup-loader-v1",
     },
+    startupWalker = {
+      schema = "g4-startup-walker-v1",
+    },
     startupTitle = {
       schema = "g4-startup-title-v1",
     },
