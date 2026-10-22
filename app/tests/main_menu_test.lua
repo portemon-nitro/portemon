@@ -2338,7 +2338,11 @@ function T.continue_edit_delete_and_disabled_menu_gestures_cue_only_when_accepte
   }
   local function newMenu()
     return state({
-      saveStore = { listMetadata = function() return entries end },
+      saveStore = {
+        listMetadata = function()
+          return entries
+        end,
+      },
       audio = audio,
       onResult = function(result)
         results[#results + 1] = result
@@ -2352,11 +2356,8 @@ function T.continue_edit_delete_and_disabled_menu_gestures_cue_only_when_accepte
   Assert.equal(cues, 1, "clicking a Continue card emits one cue")
   local published = menu:view()
   local placement = assert(published.presentation.panes[1].placement)
-  local touchX, touchY = LayoutGeometry.logicalToHost(
-    placement,
-    card.body.x + card.body.width / 2,
-    card.body.y + card.body.height / 2
-  )
+  local touchX, touchY =
+    LayoutGeometry.logicalToHost(placement, card.body.x + card.body.width / 2, card.body.y + card.body.height / 2)
   menu:touchpressed("continue", touchX, touchY)
   menu:touchreleased("continue", touchX, touchY)
   Assert.equal(cues, 2, "touching a Continue card emits one cue without a release duplicate")
@@ -2397,7 +2398,11 @@ function T.continue_edit_delete_and_disabled_menu_gestures_cue_only_when_accepte
 
   cues, results = 0, {}
   menu = state({
-    saveStore = { listMetadata = function() return { catalogEntry("broken", "", 0) } end },
+    saveStore = {
+      listMetadata = function()
+        return { catalogEntry("broken", "", 0) }
+      end,
+    },
     audio = audio,
     onResult = function(result)
       results[#results + 1] = result
@@ -2408,6 +2413,257 @@ function T.continue_edit_delete_and_disabled_menu_gestures_cue_only_when_accepte
   Assert.equal(cues, 0, "a disabled Continue action is silent")
   Assert.deepEqual(results, {}, "a disabled Continue action does not route")
   menu:dispose()
+end
+
+function T.unchanged_and_disabled_menu_gestures_stay_silent_while_accepted_ones_cue_once()
+  local cues = 0
+  local results = {}
+  local menu = state({
+    saveStore = {
+      listMetadata = function()
+        return {
+          catalogEntry("save-00000001", "Goldie", 60),
+          catalogEntry("save-00000002", "Silver", 120),
+        }
+      end,
+    },
+    audio = {
+      playMenuCue = function(kind)
+        Assert.equal(kind, "select", "menu navigation uses the selection effect")
+        cues = cues + 1
+      end,
+    },
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
+  })
+
+  menu:wheelmoved(0, 0)
+  Assert.equal(cues, 0, "zero wheel movement is silent")
+  menu:keypressed("down")
+  Assert.equal(cues, 1, "keyboard focus movement emits one cue")
+  menu:keypressed("down")
+  Assert.equal(cues, 2, "wrapping onto New Game emits one cue")
+  menu:keypressed("left")
+  Assert.equal(cues, 2, "navigation that keeps New Game focused is silent")
+  menu:keypressed("x")
+  Assert.equal(cues, 2, "a no-op key on New Game is silent")
+  menu:keypressed("right")
+  Assert.equal(cues, 3, "returning to the remembered save emits one cue")
+
+  -- The pointer batch both focuses and activates one save card, so the
+  -- whole click still carries a single selection effect.
+  local card = assert(menu:view().layout.saves.cards["save-00000002"])
+  pressAt(menu, card.body.x + card.body.width / 2, card.body.y + card.body.height / 2)
+  Assert.equal(cues, 4, "a focus-then-activate pointer click emits one cue")
+  Assert.deepEqual(results, { { kind = "continue", saveId = "save-00000002" } })
+  menu:mousemoved(1, 1, 0, 0, false)
+  menu:mousereleased(1, 1, 1)
+  Assert.equal(cues, 4, "pointer movement and release alone are silent")
+  menu:dispose()
+
+  local disabledCues = 0
+  local disabledResults = {}
+  local disabled = state({
+    saveStore = {
+      listMetadata = function()
+        return { catalogEntry("broken", "", 0) }
+      end,
+    },
+    audio = {
+      playMenuCue = function()
+        disabledCues = disabledCues + 1
+      end,
+    },
+    onResult = function(result)
+      disabledResults[#disabledResults + 1] = result
+    end,
+  })
+  local broken = assert(disabled:view().layout.saves.cards.broken)
+  pressAt(disabled, broken.body.x + broken.body.width / 2, broken.body.y + broken.body.height / 2)
+  Assert.equal(disabledCues, 0, "a disabled Continue action is silent")
+  Assert.deepEqual(disabledResults, {}, "a disabled Continue action does not route")
+  disabled:dispose()
+end
+
+function T.menu_cue_scope_recovers_after_synchronous_callback_and_audio_failures()
+  -- A result callback that disposes the menu still leaves one cue behind
+  -- and later inputs stay inert on the disposed instance.
+  local disposeCues = 0
+  local disposeResults = {}
+  local disposing = nil
+  disposing = state({
+    saveStore = {
+      listMetadata = function()
+        return {}
+      end,
+    },
+    audio = {
+      playMenuCue = function()
+        disposeCues = disposeCues + 1
+      end,
+    },
+    onResult = function(result)
+      disposeResults[#disposeResults + 1] = result
+      assert(disposing ~= nil, "menu must exist when the result fires")
+      disposing:dispose()
+    end,
+  })
+  disposing:keypressed("return")
+  Assert.equal(disposeCues, 1, "activation cues once before disposal")
+  Assert.deepEqual(disposeResults, { { kind = "new_game" } })
+  Assert.equal(disposing._cueBatchDepth, 0, "disposal keeps the cue scope balanced")
+  Assert.equal(disposing._cueBatchEmitted, false, "disposal clears the cue latch")
+  disposing:keypressed("return")
+  Assert.equal(disposeCues, 1, "a disposed menu never cues again")
+  Assert.equal(#disposeResults, 1, "a disposed menu sends no second result")
+
+  -- A throwing result callback propagates while the cue scope is restored,
+  -- so a still-live menu cues normally on the next input.
+  local resultCues = 0
+  local resultResults = {}
+  local throwing = state({
+    saveStore = {
+      listMetadata = function()
+        return {}
+      end,
+    },
+    audio = {
+      playMenuCue = function()
+        resultCues = resultCues + 1
+      end,
+    },
+    onResult = function()
+      error("result failed")
+    end,
+  })
+  local ok, err = pcall(function()
+    throwing:keypressed("return")
+  end)
+  Assert.isFalse(ok, "a throwing result callback propagates")
+  Assert.isTrue(
+    string.find(tostring(err), "result failed", 1, true) ~= nil,
+    "the original callback failure reaches the caller"
+  )
+  Assert.equal(resultCues, 1, "activation cues once before the callback throws")
+  Assert.equal(throwing._cueBatchDepth, 0, "a throwing callback restores the cue depth")
+  Assert.equal(throwing._cueBatchEmitted, false, "a throwing callback clears the cue latch")
+  throwing.onResult = function(result)
+    resultResults[#resultResults + 1] = result
+  end
+  throwing:keypressed("return")
+  Assert.equal(resultCues, 2, "a recovered menu cues again on new input")
+  Assert.deepEqual(resultResults, { { kind = "new_game" } })
+  throwing:dispose()
+
+  -- A throwing borrowed cue keeps its failure visible without poisoning the
+  -- next input; the accepted focus movement itself is retained.
+  local audioCues = 0
+  local audioMenu = state({
+    saveStore = {
+      listMetadata = function()
+        return {
+          catalogEntry("save-00000001", "Goldie", 60),
+          catalogEntry("save-00000002", "Silver", 120),
+        }
+      end,
+    },
+    audio = {
+      playMenuCue = function()
+        audioCues = audioCues + 1
+        error("speaker failed")
+      end,
+    },
+    onResult = function()
+      error("audio failure must not route a result")
+    end,
+  })
+  local audioOk, audioErr = pcall(function()
+    audioMenu:keypressed("down")
+  end)
+  Assert.isFalse(audioOk, "a throwing cue callback propagates")
+  Assert.isTrue(
+    string.find(tostring(audioErr), "speaker failed", 1, true) ~= nil,
+    "the original cue failure reaches the caller"
+  )
+  Assert.equal(audioCues, 1, "the failed cue attempted exactly once")
+  Assert.equal(audioMenu._cueBatchDepth, 0, "a throwing cue restores the cue depth")
+  Assert.equal(audioMenu._cueBatchEmitted, false, "a throwing cue clears the cue latch")
+  audioMenu.audio = {
+    playMenuCue = function()
+      audioCues = audioCues + 1
+    end,
+  }
+  audioMenu.onResult = function() end
+  audioMenu:keypressed("down")
+  Assert.equal(audioCues, 2, "a recovered menu cues again on new input")
+  audioMenu:dispose()
+
+  -- A nested input from inside a result callback shares the outer cue
+  -- budget, while the following independent input cues normally.
+  local nestedCues = 0
+  local nestedResults = {}
+  local nested = nil
+  nested = state({
+    saveStore = {
+      listMetadata = function()
+        return {
+          catalogEntry("save-00000001", "Goldie", 60),
+          catalogEntry("save-00000002", "Silver", 120),
+        }
+      end,
+    },
+    audio = {
+      playMenuCue = function()
+        nestedCues = nestedCues + 1
+      end,
+    },
+    onResult = function(result)
+      nestedResults[#nestedResults + 1] = result
+      if #nestedResults == 1 then
+        assert(nested ~= nil, "menu must exist when the result fires")
+        nested:keypressed("down")
+      end
+    end,
+  })
+  nested:keypressed("return")
+  Assert.equal(nestedCues, 1, "nested input shares the outer cue budget")
+  Assert.deepEqual(nestedResults, { { kind = "continue", saveId = "save-00000001" } })
+  Assert.equal(nested._cueBatchDepth, 0, "nested input keeps the cue scope balanced")
+  nested:keypressed("down")
+  Assert.equal(nestedCues, 2, "the next independent input cues normally")
+  nested:dispose()
+end
+
+function T.successive_accepted_inputs_cue_again_and_dispose_releases_borrowed_audio()
+  local cues = 0
+  local results = {}
+  local menu = state({
+    saveStore = {
+      listMetadata = function()
+        return {}
+      end,
+    },
+    audio = {
+      playMenuCue = function()
+        cues = cues + 1
+      end,
+    },
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
+  })
+  menu:keypressed("return")
+  Assert.equal(cues, 1, "an accepted activation cues once")
+  Assert.equal(menu._cueBatchDepth, 0, "a successful input leaves a clean cue scope")
+  menu:keypressed("return")
+  Assert.equal(cues, 2, "the next accepted input cues again once the outer scope cleared")
+  Assert.deepEqual(results, { { kind = "new_game" }, { kind = "new_game" } })
+  menu:dispose()
+  Assert.isNil(menu.audio, "disposal releases the borrowed cue callback")
+  menu:keypressed("return")
+  Assert.equal(cues, 2, "a disposed menu never cues again")
+  Assert.equal(#results, 2, "a disposed menu sends no further result")
 end
 
 return { tests = T }
