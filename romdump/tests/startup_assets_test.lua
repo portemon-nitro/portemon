@@ -247,7 +247,7 @@ function T.title_writer_stages_compiler_files()
   }
   local bundle = {
     manifest = {
-      schema = "g4-startup-title-v1",
+      schema = StartupAssetContract.startupTitle.schema,
       versionId = "heartgold",
       kind = "animated-title",
       legendary = "ho-oh",
@@ -332,7 +332,7 @@ end
 function T.title_manifest_requires_all_model_assets_under_its_owned_root()
   local path = "assets/generated/startup/title/geometry/missing.g4mesh"
   local manifest = {
-    schema = "g4-startup-title-v1",
+    schema = StartupAssetContract.startupTitle.schema,
     versionId = "heartgold",
     generationId = "generation-a",
     kind = "animated-title",
@@ -723,7 +723,6 @@ local function validTitleManifest()
     surfaces = {
       editionLogo = titleSurface("assets/generated/startup/title/edition-logo.png"),
       subscreenLower = titleSurface("assets/generated/startup/title/subscreen-lower.png"),
-      subscreenDecor = titleSurface("assets/generated/startup/title/subscreen-decor.png"),
     },
     sparkle = {
       model = titleModel("startup-title:sparkle"),
@@ -758,13 +757,66 @@ local function validTitleManifest()
       text = "TOUCH TO START",
       alignment = "center",
       tokens = titlePromptTokens("TOUCH TO START"),
-      color = { foreground = 1, shadow = 1, background = 0 },
+      color = {
+        foreground = 1,
+        shadow = 1,
+        background = 0,
+        foregroundRgb = { 27 / 31, 8 / 31, 0 },
+        shadowRgb = { 27 / 31, 8 / 31, 0 },
+      },
       flash = {
         initialDelayFrames = 30,
         initialPhaseFrame = 30,
         cycleFrames = 45,
         visibleFrames = 30,
         hiddenFrames = 15,
+      },
+    },
+    projection = {
+      nitroHalfAngleIndex = 0xB60,
+      sourceAspect = { width = 4, height = 3 },
+      sourceNear = 0,
+      sourceFar = 0.5,
+    },
+    lighting = {
+      records = {
+        {
+          endHalfSeconds = 43200,
+          lights = {
+            {
+              enabled = true,
+              colorRgb555 = 31 + 31 * 32 + 31 * 1024,
+              color = { 1, 1, 1 },
+              vectorFx12 = { 0, 4096, 0 },
+              direction = { 0, 1, 0 },
+            },
+            {
+              enabled = true,
+              colorRgb555 = 31 + 31 * 32 + 31 * 1024,
+              color = { 1, 1, 1 },
+              vectorFx12 = { 0, 4096, 0 },
+              direction = { 0, 1, 0 },
+            },
+            {
+              enabled = false,
+              colorRgb555 = 0,
+              color = { 0, 0, 0 },
+              vectorFx12 = { 0, 0, 0 },
+              direction = { 0, 0, 0 },
+            },
+            {
+              enabled = false,
+              colorRgb555 = 0,
+              color = { 0, 0, 0 },
+              vectorFx12 = { 0, 0, 0 },
+              direction = { 0, 0, 0 },
+            },
+          },
+          diffuseRgb555 = 31 + 31 * 32 + 31 * 1024,
+          ambientRgb555 = 10 + 10 * 32 + 10 * 1024,
+          specularRgb555 = 0,
+          emissionRgb555 = 0,
+        },
       },
     },
   }
@@ -824,6 +876,75 @@ function T.title_reader_rejects_malformed_structure()
   Assert.notNil(mismatchedErr, "mismatched prompt tokens report their cause")
 end
 
+-- The title schema versions its shape: a pre-change bundle without the
+-- source projection/lighting records, with the retired third surface, or
+-- with unlit lighting is not a ready title.
+function T.title_reader_rejects_pre_change_and_unlit_manifests()
+  local stale = deepCopy(validTitleManifest())
+  stale.schema = "g4-startup-title-v1"
+  local staleLoaded, staleErr = StartupAssetCache.loadTitle(titleCacheFs(stale, nil), "heartgold")
+  Assert.isNil(staleLoaded, "a pre-change title schema is not a ready title")
+  Assert.notNil(staleErr, "a pre-change title schema reports its cause")
+
+  local decorated = deepCopy(validTitleManifest())
+  decorated.surfaces.subscreenDecor = titleSurface("assets/generated/startup/title/subscreen-decor.png")
+  local decoratedLoaded, decoratedErr = StartupAssetCache.loadTitle(titleCacheFs(decorated, nil), "heartgold")
+  Assert.isNil(decoratedLoaded, "a retired third title surface is not a ready title")
+  Assert.notNil(decoratedErr, "a retired third title surface reports its cause")
+
+  local unlit = deepCopy(validTitleManifest())
+  unlit.lighting = nil
+  local unlitLoaded, unlitErr = StartupAssetCache.loadTitle(titleCacheFs(unlit, nil), "heartgold")
+  Assert.isNil(unlitLoaded, "a title without its lighting record is not a ready title")
+  Assert.notNil(unlitErr, "a title without its lighting record reports its cause")
+
+  local dark = deepCopy(validTitleManifest())
+  for _, light in ipairs(dark.lighting.records[1].lights) do
+    light.enabled = false
+  end
+  local darkLoaded, darkErr = StartupAssetCache.loadTitle(titleCacheFs(dark, nil), "heartgold")
+  Assert.isNil(darkLoaded, "a title with no enabled light is not a ready title")
+  Assert.notNil(darkErr, "a title with no enabled light reports its cause")
+
+  local flat = deepCopy(validTitleManifest())
+  flat.projection = nil
+  local flatLoaded, flatErr = StartupAssetCache.loadTitle(titleCacheFs(flat, nil), "heartgold")
+  Assert.isNil(flatLoaded, "a title without its source projection is not a ready title")
+  Assert.notNil(flatErr, "a title without its source projection reports its cause")
+end
+
+-- The start-prompt ink is the edition retail text palette, not an
+-- interchangeable tint: HeartGold RGB(27, 8, 0) and SoulSilver
+-- RGB(0, 28, 31) as 0..1 floats, with the shadow pass reusing the
+-- foreground ink.
+function T.title_reader_pins_the_edition_prompt_palette()
+  local manifest = validTitleManifest()
+  Assert.near(manifest.prompt.color.foregroundRgb[1], 27 / 31, 1e-9, "heartgold prompt red is the retail ink")
+  Assert.near(manifest.prompt.color.foregroundRgb[2], 8 / 31, 1e-9, "heartgold prompt green is the retail ink")
+  Assert.near(manifest.prompt.color.foregroundRgb[3], 0, 1e-9, "heartgold prompt blue is the retail ink")
+  Assert.deepEqual(
+    manifest.prompt.color.shadowRgb,
+    manifest.prompt.color.foregroundRgb,
+    "the shadow pass reuses the foreground ink"
+  )
+  local baseline, baselineErr = StartupAssetCache.loadTitle(titleCacheFs(deepCopy(manifest), nil), "heartgold")
+  Assert.notNil(baseline, "the edition prompt ink loads: " .. tostring(baselineErr))
+
+  local swapped = deepCopy(manifest)
+  swapped.prompt.color.foregroundRgb = { 0, 28 / 31, 1 }
+  swapped.prompt.color.shadowRgb = { 0, 28 / 31, 1 }
+  local swappedLoaded, swappedErr = StartupAssetCache.loadTitle(titleCacheFs(swapped, nil), "heartgold")
+  Assert.isNil(swappedLoaded, "the other edition prompt ink is not a ready heartgold title")
+  Assert.notNil(swappedErr, "the other edition prompt ink reports its cause")
+
+  local missing = deepCopy(manifest)
+  missing.prompt.color.foregroundRgb = nil
+  missing.prompt.color.shadowRgb = nil
+  local missingLoaded, missingErr = StartupAssetCache.loadTitle(titleCacheFs(missing, nil), "heartgold")
+  Assert.isNil(missingLoaded, "a title without its prompt ink is not a ready title")
+  Assert.notNil(missingErr, "a title without its prompt ink reports its cause")
+end
+
 -- One selected walking pair is a canonical 32-way choice: indices 1..16
 -- name Ethan with each of the sixteen followers in fixed order, 17..32
 -- name Lyra with the same order, and the inverse maps back exactly.
@@ -832,10 +953,7 @@ function T.startup_pair_choice_covers_both_heroes_and_sixteen_followers()
     type(StartupAssetCache.walkerChoice) == "function",
     "the startup cache owns the canonical 32-choice pair map"
   )
-  Assert.isTrue(
-    type(StartupAssetCache.walkerIndex) == "function",
-    "the startup cache inverts the 32-choice pair map"
-  )
+  Assert.isTrue(type(StartupAssetCache.walkerIndex) == "function", "the startup cache inverts the 32-choice pair map")
   local species = { 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }
   for index = 1, 32 do
     local choice = StartupAssetCache.walkerChoice(index)
@@ -906,15 +1024,9 @@ function T.startup_pair_receipts_are_keyed_and_isolated()
   )
   Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "0"), "pair keys start at one")
   Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "33"), "pair keys end at thirty-two")
-  Assert.isTrue(
-    type(StartupAssetCache.walkerPath) == "function",
-    "the startup cache owns the per-pair manifest path"
-  )
+  Assert.isTrue(type(StartupAssetCache.walkerPath) == "function", "the startup cache owns the per-pair manifest path")
   Assert.equal(StartupAssetCache.walkerPath(5), "data/generated/startup/loader/pairs/5.lua")
-  Assert.isTrue(
-    type(StartupAssetCache.loadWalker) == "function",
-    "the startup cache reads one strict pair manifest"
-  )
+  Assert.isTrue(type(StartupAssetCache.loadWalker) == "function", "the startup cache reads one strict pair manifest")
   local manifest = startupPairManifest(5, "heartgold")
   local cacheFs = {
     loadLua = function()
@@ -1064,7 +1176,10 @@ function T.startup_pair_writer_preserves_sibling_pairs()
   Assert.isTrue(rootSet5["assets/generated/startup/loader/pairs/5"], "pair 5 owns its directory")
   Assert.isNil(rootSet5["data/generated/startup/loader/pairs/6.lua"], "pair 5 never owns its sibling manifest")
   Assert.isNil(rootSet5["assets/generated/startup/loader"], "pair 5 never owns the shared loader root")
-  Assert.isTrue(StartupAssetCache.walkerPath(5) ~= StartupAssetCache.walkerPath(6), "sibling pairs address distinct manifests")
+  Assert.isTrue(
+    StartupAssetCache.walkerPath(5) ~= StartupAssetCache.walkerPath(6),
+    "sibling pairs address distinct manifests"
+  )
   Assert.isTrue(
     ArtifactState.path("startup-loader", "5") ~= ArtifactState.path("startup-loader", "6"),
     "sibling pairs address distinct receipts"

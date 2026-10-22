@@ -56,7 +56,6 @@ local RESOURCES = {
     surfaces = {
       editionLogo = { char = 34, screen = 35, palette = 4 },
       subscreenLower = { char = 3, screen = 0, palette = 4 },
-      subscreenDecor = { char = 15, screen = 17, palette = 13 },
     },
     crySpeciesId = 250,
     legendary = "ho-oh",
@@ -68,7 +67,6 @@ local RESOURCES = {
     surfaces = {
       editionLogo = { char = 36, screen = 37, palette = 2 },
       subscreenLower = { char = 1, screen = 0, palette = 2 },
-      subscreenDecor = { char = 15, screen = 17, palette = 14 },
     },
     crySpeciesId = 249,
     legendary = "lugia",
@@ -281,12 +279,30 @@ local function compilePrompt(romFs, versionId, dependencies)
   if parsedText ~= "{ALN_CENTER}TOUCH TO START" then
     sourceError("title prompt message differs from the retail centered start instruction", { text = parsedText })
   end
+  -- The retail prompt ink is an edition-specific text-palette entry
+  -- (src/title_screen.c, TitleScreenAnim_Load2dBgGfx): HeartGold prints
+  -- with foreground index 1 over RGB(27, 8, 0), SoulSilver with
+  -- foreground index 2 over RGB(0, 28, 31). Both are DS RGB555 literals
+  -- compiled here to 0..1 floats; the shadow index matches the
+  -- foreground index per edition, so both passes share one RGB.
+  local promptRgb = versionId == "heartgold" and { 27 / 31, 8 / 31, 0 } or { 0, 28 / 31, 1 }
   return {
     text = "TOUCH TO START",
     alignment = "center",
     tokens = tokens,
-    color = versionId == "heartgold" and { foreground = 1, shadow = 1, background = 0 }
-      or { foreground = 2, shadow = 2, background = 0 },
+    color = versionId == "heartgold" and {
+      foreground = 1,
+      shadow = 1,
+      background = 0,
+      foregroundRgb = { promptRgb[1], promptRgb[2], promptRgb[3] },
+      shadowRgb = { promptRgb[1], promptRgb[2], promptRgb[3] },
+    } or {
+      foreground = 2,
+      shadow = 2,
+      background = 0,
+      foregroundRgb = { promptRgb[1], promptRgb[2], promptRgb[3] },
+      shadowRgb = { promptRgb[1], promptRgb[2], promptRgb[3] },
+    },
     flash = {
       initialDelayFrames = 30,
       initialPhaseFrame = 30,
@@ -317,6 +333,61 @@ local CAMERA = {
     },
   },
 }
+
+-- The retail title camera uses Nitro perspective with half-angle 0xB60 on a
+-- 4:3 source frame and a near/far clip pair of (0, 0.5). The source near
+-- plane is not representable to a host depth projection, so the manifest
+-- keeps the raw source clip facts while the runtime maps them onto a
+-- stable positive GPU range that contains the whole camera script.
+local function titleProjection()
+  return {
+    nitroHalfAngleIndex = 0xB60,
+    sourceAspect = { width = 4, height = 3 },
+    sourceNear = 0,
+    sourceFar = 0.5,
+  }
+end
+
+-- The retail title screen enables exactly two white directional lights whose
+-- source vectors normalize to straight up: (0, 0.635498, 0) and
+-- (0, 0.476807, 0). Slots 2 and 3 stay disabled. Material registers are the
+-- constant title profile: a white diffuse key over a mid ambient floor with
+-- specular and emission off, so upward faces shade while the model can
+-- never render unlit. Each slot carries the packed RGB555 register the GPU
+-- upload reads plus the normalized float aliases the scene lighting record
+-- exposes to the shared field-lighting selection.
+local WHITE_RGB555 = 31 + 31 * 32 + 31 * 1024
+local AMBIENT_RGB555 = 10 + 10 * 32 + 10 * 1024
+local FX12_ONE = 4096
+local function titleLighting()
+  local function slot(enabled, x, y, z)
+    local color = enabled and { 1, 1, 1 } or { 0, 0, 0 }
+    return {
+      enabled = enabled,
+      colorRgb555 = enabled and WHITE_RGB555 or 0,
+      color = color,
+      vectorFx12 = { x, y, z },
+      direction = { x / FX12_ONE, y / FX12_ONE, z / FX12_ONE },
+    }
+  end
+  return {
+    records = {
+      {
+        endHalfSeconds = 43200,
+        lights = {
+          slot(true, 0, FX12_ONE, 0),
+          slot(true, 0, FX12_ONE, 0),
+          slot(false, 0, 0, 0),
+          slot(false, 0, 0, 0),
+        },
+        diffuseRgb555 = WHITE_RGB555,
+        ambientRgb555 = AMBIENT_RGB555,
+        specularRgb555 = 0,
+        emissionRgb555 = 0,
+      },
+    },
+  }
+end
 
 local function cameraTimeline(versionId)
   local source = assert(CAMERA[versionId])
@@ -538,7 +609,7 @@ local function compile(romFs, versionId)
   dependencies.modelMembers = memberIds
   return {
     manifest = {
-      schema = "g4-startup-title-v1",
+      schema = "g4-startup-title-v2",
       versionId = versionId,
       kind = "animated-title",
       legendary = resources.legendary,
@@ -566,6 +637,8 @@ local function compile(romFs, versionId)
         },
       },
       prompt = prompt,
+      projection = titleProjection(),
+      lighting = titleLighting(),
     },
     files = files,
     dependencies = dependencies,

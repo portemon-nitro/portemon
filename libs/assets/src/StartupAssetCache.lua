@@ -90,7 +90,7 @@ local function hasAnimationClips(model, clips)
 end
 
 local function validateTitleSurfaces(cacheFs, surfaces)
-  local expectedRoles = { editionLogo = true, subscreenLower = true, subscreenDecor = true }
+  local expectedRoles = { editionLogo = true, subscreenLower = true }
   if type(surfaces) ~= "table" or not onlyKeys(surfaces, expectedRoles) then
     return false, "title surface roles are incomplete"
   end
@@ -207,6 +207,139 @@ local function validateTitleTimeline(timeline)
     and attachments.sparkle.endFrame == "wrap-to-zero"
 end
 
+local function isRgb555(value)
+  return type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 32767
+end
+
+local function isFx12Vector(value)
+  return type(value) == "table"
+    and #value == 3
+    and type(value[1]) == "number"
+    and value[1] % 1 == 0
+    and value[1] >= -4096
+    and value[1] <= 4096
+    and type(value[2]) == "number"
+    and value[2] % 1 == 0
+    and value[2] >= -4096
+    and value[2] <= 4096
+    and type(value[3]) == "number"
+    and value[3] % 1 == 0
+    and value[3] >= -4096
+    and value[3] <= 4096
+end
+
+local function isFloatTriple(value)
+  return type(value) == "table"
+    and #value == 3
+    and isFiniteNumber(value[1])
+    and isFiniteNumber(value[2])
+    and isFiniteNumber(value[3])
+end
+
+local function isWhiteTriple(value)
+  return isFloatTriple(value) and value[1] == value[2] and value[2] == value[3] and value[1] > 0
+end
+
+local function isNonzeroTriple(value)
+  return isFloatTriple(value) and (value[1] ~= 0 or value[2] ~= 0 or value[3] ~= 0)
+end
+
+-- The projection contract pins the single source constant the runtime
+-- camera executes: Nitro half-angle index 0xB60 on a 4:3 source frame
+-- with the raw (0, 0.5) clip facts. Aspect accepts the packed number or
+-- either table shape the producer may serialize.
+local function validateTitleProjection(projection)
+  if
+    type(projection) ~= "table"
+    or not onlyKeys(projection, {
+      nitroHalfAngleIndex = true,
+      sourceAspect = true,
+      sourceNear = true,
+      sourceFar = true,
+    })
+    or projection.nitroHalfAngleIndex ~= 0xB60
+  then
+    return false
+  end
+  local aspect = projection.sourceAspect
+  local aspectOk = false
+  if type(aspect) == "number" then
+    aspectOk = math.abs(aspect - 4 / 3) < 1e-6
+  elseif type(aspect) == "table" then
+    aspectOk = (aspect.width == 4 and aspect.height == 3) or (aspect[1] == 4 and aspect[2] == 3)
+  end
+  return aspectOk
+    and type(projection.sourceNear) == "number"
+    and type(projection.sourceFar) == "number"
+    and projection.sourceFar > projection.sourceNear
+    and projection.sourceFar > 0
+end
+
+-- The lighting contract pins the constant original title profile: exactly
+-- two enabled neutral-white lights with nonzero directions over four
+-- slots, plus the four packed material registers. Every slot carries the
+-- packed RGB555 register the GPU upload reads and the normalized float
+-- aliases the shared lighting selection exposes; enabled slots must agree
+-- on white in both spellings.
+local function validateTitleLighting(lighting)
+  if
+    type(lighting) ~= "table"
+    or not onlyKeys(lighting, { records = true })
+    or type(lighting.records) ~= "table"
+    or #lighting.records < 1
+  then
+    return false
+  end
+  local record = lighting.records[1]
+  if
+    type(record) ~= "table"
+    or not onlyKeys(record, {
+      endHalfSeconds = true,
+      lights = true,
+      diffuseRgb555 = true,
+      ambientRgb555 = true,
+      specularRgb555 = true,
+      emissionRgb555 = true,
+    })
+    or not isNonnegativeInteger(record.endHalfSeconds)
+    or type(record.lights) ~= "table"
+    or #record.lights ~= 4
+    or not isRgb555(record.diffuseRgb555)
+    or not isRgb555(record.ambientRgb555)
+    or not isRgb555(record.specularRgb555)
+    or not isRgb555(record.emissionRgb555)
+  then
+    return false
+  end
+  local enabledCount = 0
+  for _, light in ipairs(record.lights) do
+    if
+      type(light) ~= "table"
+      or not onlyKeys(light, {
+        enabled = true,
+        colorRgb555 = true,
+        color = true,
+        vectorFx12 = true,
+        direction = true,
+      })
+      or type(light.enabled) ~= "boolean"
+      or not isRgb555(light.colorRgb555)
+      or not isFloatTriple(light.color)
+      or not isFx12Vector(light.vectorFx12)
+      or not isFloatTriple(light.direction)
+    then
+      return false
+    end
+    if light.enabled then
+      enabledCount = enabledCount + 1
+      if not isWhiteTriple(light.color) or light.colorRgb555 == 0 or not isNonzeroTriple(light.direction) then
+        return false
+      end
+    end
+  end
+  return enabledCount == 2
+end
+
 -- The prompt contract is relational: centered text whose token stream
 -- renders that same text, with a flash cycle split into visible and
 -- hidden phases. No retail flash count is frozen here.
@@ -283,6 +416,8 @@ local function read(cacheFs, path, schema, versionId)
       sparkle = true,
       timeline = true,
       prompt = true,
+      projection = true,
+      lighting = true,
     }
   end
   if not onlyKeys(record, allowed) then
@@ -571,16 +706,44 @@ function StartupAssetCache.loadTitle(cacheFs, versionId)
   if not validateTitleTimeline(bundle.timeline) then
     return nil, invalid("title camera or animation timeline is malformed", TITLE_PATH)
   end
+  if type(bundle.projection) ~= "table" or not validateTitleProjection(bundle.projection) then
+    return nil, invalid("title source projection is malformed", TITLE_PATH)
+  end
+  if type(bundle.lighting) ~= "table" or not validateTitleLighting(bundle.lighting) then
+    return nil, invalid("title lighting profile is malformed", TITLE_PATH)
+  end
   if not validateTitlePrompt(bundle.prompt) then
     return nil, invalid("title prompt is malformed", TITLE_PATH)
   end
+  -- The prompt ink pins the edition text-palette entry compiled from
+  -- src/title_screen.c: HeartGold RGB(27, 8, 0), SoulSilver
+  -- RGB(0, 28, 31), each as 0..1 floats with shadow matching foreground.
   local expectedColor = versionId == "heartgold" and { foreground = 1, shadow = 1, background = 0 }
     or { foreground = 2, shadow = 2, background = 0 }
+  local expectedRgb = versionId == "heartgold" and { 27 / 31, 8 / 31, 0 } or { 0, 28 / 31, 1 }
+  local function isExpectedPromptRgb(value)
+    return type(value) == "table"
+      and #value == 3
+      and isFiniteNumber(value[1])
+      and isFiniteNumber(value[2])
+      and isFiniteNumber(value[3])
+      and math.abs(value[1] - expectedRgb[1]) < 1e-6
+      and math.abs(value[2] - expectedRgb[2]) < 1e-6
+      and math.abs(value[3] - expectedRgb[3]) < 1e-6
+  end
   if
-    not onlyKeys(bundle.prompt.color, { foreground = true, shadow = true, background = true })
+    not onlyKeys(bundle.prompt.color, {
+      foreground = true,
+      shadow = true,
+      background = true,
+      foregroundRgb = true,
+      shadowRgb = true,
+    })
     or bundle.prompt.color.foreground ~= expectedColor.foreground
     or bundle.prompt.color.shadow ~= expectedColor.shadow
     or bundle.prompt.color.background ~= expectedColor.background
+    or not isExpectedPromptRgb(bundle.prompt.color.foregroundRgb)
+    or not isExpectedPromptRgb(bundle.prompt.color.shadowRgb)
   then
     return nil, invalid("title prompt palette does not match edition", TITLE_PATH)
   end

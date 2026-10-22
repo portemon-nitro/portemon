@@ -1,4 +1,8 @@
 -- Renders the generated HGSS title through the existing Nitro model renderer.
+-- The scene owns two independent transforms: the sourced camera (a fixed
+-- projection with axis-stepped waypoints advanced on the 30 Hz title tick)
+-- and the host composition (the safe-area stage, accent placement and draw
+-- offsets). Presentation offsets never alter the sourced camera track.
 
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 local DisplayContext = require("libs.ui.src.DisplayContext")
@@ -20,6 +24,12 @@ local Matrix4 = require("libs.math.src.Matrix4")
 ---@field height number
 ---@field tick integer
 ---@field promptFrame integer
+---@field cameraPos number[]? sourced camera position, snap-initialized to the end pose
+---@field cameraPointIndex integer? active waypoint, 1-based
+---@field cameraWait integer? remaining hold ticks before the active waypoint steps
+---@field projectionAspect number? stage aspect the projection covers
+---@field canvasWidth number? live 3D target width
+---@field canvasHeight number? live 3D target height
 ---@field images love.Image[]
 ---@field canvas love.Canvas?
 ---@field pool GpuAssetPool?
@@ -27,6 +37,7 @@ local Matrix4 = require("libs.math.src.Matrix4")
 ---@field legend ModelInstance?
 ---@field sparkle ModelInstance?
 ---@field bundle table<string, unknown>
+---@field sourceEnvironment table<string, unknown>?
 ---@field surfaces table<string, love.Image>?
 ---@field disposed boolean
 ---@field layout table<string, unknown>?
@@ -35,10 +46,23 @@ local HgssTitleScene = {}
 HgssTitleScene.__index = HgssTitleScene
 
 local WIDTH, HEIGHT = 256, 192
-local WIDE_STAGE_WIDTH, WIDE_STAGE_HEIGHT = 384, 216
-local WIDE_MODEL_X, WIDE_MODEL_Y = 118, 12
-local WIDE_LOGO_X, WIDE_LOGO_Y, WIDE_LOGO_WIDTH = 12, 50, 144
-local FRAME_SECONDS = 1 / 30
+-- The source Nitro half-angle index 0xB60 converts to a narrow vertical
+-- field of view of about 32 degrees, not the 42 degrees a generic
+-- presentation default would assume.
+local HALF_ANGLE_INDEX = 0xB60
+-- The source (0, 0.5) clip pair cannot reach a host depth projection: a
+-- zero near plane is not representable. The runtime maps it onto a stable
+-- positive range that contains the whole camera script instead. Every
+-- scripted eye stays hundreds of units from the title target, so the near
+-- plane keeps close geometry while the far plane preserves the
+-- model-visible depth equivalent.
+local GPU_NEAR, GPU_FAR = 1, 5000
+-- Bounded 3D target heights per stage class; widths derive from the stage
+-- aspect and stay under the canvas cap below. The target never tracks the
+-- host window: a full-window canvas would break the field-memory budget.
+local CANVAS_HEIGHT_NATIVE = 192
+local CANVAS_HEIGHT_WIDE = 288
+local CANVAS_MAX_WIDTH, CANVAS_MAX_HEIGHT = 1024, 576
 local EDITION_NAMES = { heartgold = "SOULSILVER", soulsilver = "HEARTGOLD" }
 local EDITION_COLORS = {
   heartgold = { 0.79, 0.40, 0.19 },
@@ -85,6 +109,43 @@ local TITLE_ENVIRONMENT = {
       0,
       0,
       0,
+    },
+  },
+}
+
+-- The constant title lighting profile, matching the compiled title record:
+-- exactly two enabled neutral-white lights pointing straight up (the
+-- normalized retail title vectors) over four slots, with a white diffuse
+-- key, a mid ambient floor and specular/emission off. Production bundles
+-- always carry this record after strict validation; the built-in copy keeps
+-- synthetic scenes without a compiled record rendering lit instead of
+-- falling back to an unlit renderer default.
+local WHITE_RGB555 = 31 + 31 * 32 + 31 * 1024
+local AMBIENT_RGB555 = 10 + 10 * 32 + 10 * 1024
+local FX12_ONE = 4096
+local function titleLightSlot(enabled, x, y, z)
+  return {
+    enabled = enabled,
+    colorRgb555 = enabled and WHITE_RGB555 or 0,
+    color = enabled and { 1, 1, 1 } or { 0, 0, 0 },
+    vectorFx12 = { x, y, z },
+    direction = { x / FX12_ONE, y / FX12_ONE, z / FX12_ONE },
+  }
+end
+local DEFAULT_TITLE_LIGHTING = {
+  records = {
+    {
+      endHalfSeconds = 43200,
+      lights = {
+        titleLightSlot(true, 0, FX12_ONE, 0),
+        titleLightSlot(true, 0, FX12_ONE, 0),
+        titleLightSlot(false, 0, 0, 0),
+        titleLightSlot(false, 0, 0, 0),
+      },
+      diffuseRgb555 = WHITE_RGB555,
+      ambientRgb555 = AMBIENT_RGB555,
+      specularRgb555 = 0,
+      emissionRgb555 = 0,
     },
   },
 }
@@ -169,34 +230,110 @@ local function buildModel(self, descriptor, clips, key)
   return instance
 end
 
-local function interpolate(a, b, amount)
-  return {
-    a[1] + (b[1] - a[1]) * amount,
-    a[2] + (b[2] - a[2]) * amount,
-    a[3] + (b[3] - a[3]) * amount,
-  }
-end
-
-local function cameraPosition(timeline, seconds)
-  local camera = timeline.camera
-  local elapsed = seconds
-  local previous = camera.start.position
-  for _, point in ipairs(camera.points) do
-    if elapsed <= point.durationSeconds then
-      return interpolate(previous, point.position, elapsed / point.durationSeconds)
-    end
-    elapsed = elapsed - point.durationSeconds
-    previous = point.position
-  end
-  return camera.endPosition
-end
-
 local function drawItems(instance)
-  local items = instance:drawItems(assert(instance.renderMeshesById))
+  local items = instance:drawItems(instance.renderMeshesById)
   for _, item in ipairs(items) do
     item.worldSpace = true
   end
   return items
+end
+
+-- First-render state snaps to the sourced end pose with the first waypoint
+-- wait loaded; the camera never interpolates toward its destination.
+local function initCameraState(self)
+  local camera = self.bundle.timeline.camera
+  self.cameraPos = { camera.endPosition[1], camera.endPosition[2], camera.endPosition[3] }
+  self.cameraPointIndex = 1
+  local first = camera.points[1]
+  self.cameraWait = math.max(0, math.floor(first.durationSeconds * camera.movement.waitFramesPerSecond + 0.5))
+end
+
+-- The sourced stepping rule: hold the pose for the waypoint wait, then move
+-- each axis toward the waypoint by the sourced increment per tick, snapping
+-- a component that reaches the point. A component closer than one increment
+-- snaps directly so hostile spacings cannot oscillate around the target.
+local function advanceCamera(self)
+  if self.cameraPos == nil or self.cameraPointIndex == nil or self.cameraWait == nil then
+    initCameraState(self)
+  end
+  local camera = self.bundle.timeline.camera
+  if self.cameraWait > 0 then
+    self.cameraWait = self.cameraWait - 1
+    return
+  end
+  local point = camera.points[self.cameraPointIndex]
+  local step = camera.movement.unitsPerFrame
+  local tolerance = camera.movement.tolerance
+  for axis = 1, 3 do
+    local goal = point.position[axis]
+    local diff = goal - self.cameraPos[axis]
+    if math.abs(diff) <= tolerance or math.abs(diff) <= step then
+      self.cameraPos[axis] = goal
+    else
+      self.cameraPos[axis] = self.cameraPos[axis] + (diff > 0 and step or -step)
+    end
+  end
+  local reached = true
+  for axis = 1, 3 do
+    if math.abs(point.position[axis] - self.cameraPos[axis]) > tolerance then
+      reached = false
+      break
+    end
+  end
+  if reached then
+    self.cameraPointIndex = self.cameraPointIndex % #camera.points + 1
+    local nextPoint = camera.points[self.cameraPointIndex]
+    self.cameraWait = math.max(0, math.floor(nextPoint.durationSeconds * camera.movement.waitFramesPerSecond + 0.5))
+  end
+end
+
+-- The 2D title layer fades in after the sourced delay and completes after
+-- the sourced transition; before the delay the layer draws fully
+-- transparent rather than popping in.
+local function revealAlpha(self)
+  local reveal = self.bundle.timeline.titleReveal
+  if reveal == nil then
+    return 1
+  end
+  if self.tick < reveal.delayFrames then
+    return 0
+  end
+  if self.tick >= reveal.delayFrames + reveal.durationFrames then
+    return 1
+  end
+  return (self.tick - reveal.delayFrames + 1) / reveal.durationFrames
+end
+
+-- The sourced glow breathes rise/hold/fall over its full cycle and rests at
+-- zero through the pause; the 2D overlay tone follows it.
+local function glowLevel(self)
+  local glow = self.bundle.timeline.glow
+  if glow == nil then
+    return 0
+  end
+  local cycle = glow.fadeInSteps + glow.fadeOutSteps + glow.pauseFrames
+  local phase = self.tick % cycle
+  if phase < glow.fadeInSteps then
+    return phase / glow.fadeInSteps
+  end
+  if phase < glow.fadeInSteps + glow.fadeOutSteps then
+    return (glow.fadeInSteps + glow.fadeOutSteps - phase) / glow.fadeOutSteps
+  end
+  return 0
+end
+
+-- The start prompt stays hidden through its opening delay, then flashes
+-- visible/hidden over its cycle. Visibility is a pure function of the title
+-- tick, never of menu readiness.
+local function promptVisible(self)
+  local flash = self.bundle.prompt.flash
+  local elapsed = self.tick - flash.initialDelayFrames
+  return elapsed >= 0 and (elapsed % flash.cycleFrames) < flash.visibleFrames
+end
+
+local function overlayTone(self)
+  local shade = 1 - 0.5 * glowLevel(self)
+  return shade, revealAlpha(self)
 end
 
 ---@param options { versionId: string, cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext }
@@ -216,12 +353,19 @@ function HgssTitleScene.new(options)
     height = options.height,
     tick = 0,
     promptFrame = 0,
+    cameraPos = nil,
+    cameraPointIndex = nil,
+    cameraWait = nil,
+    projectionAspect = nil,
+    canvasWidth = nil,
+    canvasHeight = nil,
     images = {},
     canvas = nil,
     pool = nil,
     renderer = nil,
     legend = nil,
     sparkle = nil,
+    sourceEnvironment = nil,
     disposed = false,
     layout = nil,
     buttonBounds = nil,
@@ -239,8 +383,14 @@ function HgssTitleScene.new(options)
     for role, surface in pairs(bundle.surfaces) do
       self.surfaces[role] = ownedImage(self, surface.image, WIDTH, HEIGHT)
     end
-    self.canvas = graphics.newCanvas(WIDTH, HEIGHT, { format = "rgba8", readable = true, dpiscale = 1 })
+    self.sourceEnvironment = {
+      lighting = bundle.lighting,
+      edgeColors = TITLE_ENVIRONMENT.edgeColors,
+      fog = TITLE_ENVIRONMENT.fog,
+    }
+    initCameraState(self)
     self:resize(options.width, options.height)
+    assert(self.canvas ~= nil, "title canvas allocation failed")
   end)
   if not ok then
     self:dispose()
@@ -253,6 +403,7 @@ function HgssTitleScene:updateFixed()
   assert(not self.disposed, "disposed title cannot advance")
   self.tick = self.tick + 1
   self.promptFrame = math.max(0, self.tick - self.bundle.prompt.flash.initialDelayFrames)
+  advanceCamera(self)
   self.legend:updateFixed()
   self.sparkle:updateFixed()
   self.legend:evaluatePose()
@@ -260,14 +411,14 @@ function HgssTitleScene:updateFixed()
 end
 
 function HgssTitleScene:_camera()
-  local source = self.bundle.timeline.camera
-  local eye = cameraPosition(self.bundle.timeline, self.tick * FRAME_SECONDS)
-  local startTarget = source.start.target
-  local target = source.target
-  local blend = math.min(1, self.tick / (30 * 30))
-  local center = interpolate(startTarget, target, blend)
-  local viewMatrix = Matrix4.lookAt(eye, center, { 0, 1, 0 })
-  local projectionMatrix = Matrix4.perspective(math.rad(42), WIDTH / HEIGHT, 1, 5000)
+  if self.cameraPos == nil then
+    initCameraState(self)
+  end
+  local camera = self.bundle.timeline.camera
+  local aspect = self.projectionAspect or (4 / 3)
+  local halfAngle = (HALF_ANGLE_INDEX / 65536) * (2 * math.pi)
+  local viewMatrix = Matrix4.lookAt(assert(self.cameraPos), camera.target, { 0, 1, 0 })
+  local projectionMatrix = Matrix4.perspective(2 * halfAngle, aspect, GPU_NEAR, GPU_FAR)
   local function cameraView()
     return viewMatrix
   end
@@ -275,7 +426,7 @@ function HgssTitleScene:_camera()
     return projectionMatrix
   end
   return {
-    far = 5000,
+    far = GPU_FAR,
     zoom = 1,
     view = cameraView,
     projection = cameraProjection,
@@ -290,10 +441,20 @@ function HgssTitleScene:_drawModel()
     graphics.setCanvas(self.canvas)
     graphics.setScissor()
     graphics.clear(0, 0, 0, 0)
+    local environment = self.sourceEnvironment
+    if environment == nil then
+      environment = {
+        lighting = self.bundle.lighting or DEFAULT_TITLE_LIGHTING,
+        edgeColors = TITLE_ENVIRONMENT.edgeColors,
+        fog = TITLE_ENVIRONMENT.fog,
+      }
+    end
     local camera = self:_camera()
-    self.renderer:draw(TITLE_ENVIRONMENT, camera, { drawItems(self.legend), drawItems(self.sparkle) }, nil, {
-      worldViewport = { x = 0, y = 0, width = WIDTH, height = HEIGHT },
-      referenceFrame = { x = 0, y = 0, width = WIDTH, height = HEIGHT },
+    local canvasWidth = self.canvasWidth or WIDTH
+    local canvasHeight = self.canvasHeight or HEIGHT
+    self.renderer:draw(environment, camera, { drawItems(self.legend), drawItems(self.sparkle) }, nil, {
+      worldViewport = { x = 0, y = 0, width = canvasWidth, height = canvasHeight },
+      referenceFrame = { x = 0, y = 0, width = canvasWidth, height = canvasHeight },
     }, 1)
   end)
   graphics.pop()
@@ -302,96 +463,158 @@ function HgssTitleScene:_drawModel()
   end
 end
 
-function HgssTitleScene:_stageBounds()
-  local layout = assert(self.layout)
-  if layout.configuration == "dualDisplay" then
-    return layout.primary
+-- Draws the bounded 3D target over the stage with cover composition: the
+-- image keeps the sourced projection aspect and any overflow crops against
+-- the stage clip below the stage top, never over the accent strip. A
+-- sub-pixel cover excess from canvas rounding fits exactly instead, so
+-- neighboring art rects stay strictly disjoint.
+local function drawStageCanvas(self, stage)
+  local graphics = self.graphics
+  local canvasWidth = assert(self.canvasWidth, "title canvas dimensions are missing")
+  local canvasHeight = assert(self.canvasHeight, "title canvas dimensions are missing")
+  local scaleX, scaleY = stage.width / canvasWidth, stage.height / canvasHeight
+  local scale = math.max(scaleX, scaleY)
+  local drawnWidth, drawnHeight = canvasWidth * scale, canvasHeight * scale
+  local x, y, sx, sy = stage.x + (stage.width - drawnWidth) / 2, stage.y, scale, scale
+  if drawnWidth - stage.width < 1 and drawnHeight - stage.height < 1 then
+    x, y, sx, sy = stage.x, stage.y, scaleX, scaleY
+    drawnWidth, drawnHeight = stage.width, stage.height
   end
-  return layout.main
+  LogicalSurface.clip(graphics, stage, function()
+    graphics.setColor(1, 1, 1, 1)
+    graphics.draw(self.canvas, x, y, 0, sx, sy)
+  end)
+  return { x = x, y = y, width = drawnWidth, height = drawnHeight }
 end
 
-function HgssTitleScene:_drawSingle(
-  bounds,
-  stageWidth,
-  stageHeight,
-  modelX,
-  lowerX,
-  lowerY,
-  lowerScale,
-  drawSubscreenLayers
-)
+local function drawOverlaySurface(self, clip, image, x, y, scale)
   local graphics = self.graphics
-  local scale = math.max(0.25, math.min(bounds.width / stageWidth, bounds.height / stageHeight))
-  if scale >= 1 then
-    scale = math.floor(scale)
-  end
-  local x = math.floor(bounds.x + (bounds.width - stageWidth * scale) / 2)
-  local y = math.floor(bounds.y + (bounds.height - stageHeight * scale) / 2)
-  local function drawSurface(surface, sx, sy, surfaceScale)
-    graphics.setColor(1, 1, 1, 1)
-    graphics.draw(surface, x + sx * scale, y + sy * scale, 0, surfaceScale * scale, surfaceScale * scale)
-  end
-  LogicalSurface.clip(graphics, bounds, function()
-    if drawSubscreenLayers and self.surfaces.editionLogo ~= nil then
-      drawSurface(self.surfaces.editionLogo, lowerX, lowerY, lowerScale)
-    end
-    if drawSubscreenLayers and self.surfaces.subscreenDecor ~= nil then
-      drawSurface(self.surfaces.subscreenDecor, lowerX, lowerY, lowerScale)
-    end
-    graphics.setColor(1, 1, 1, 1)
-    graphics.draw(self.canvas, x + modelX * scale, y, 0, scale, scale)
-    if drawSubscreenLayers then
-      drawSurface(self.surfaces.subscreenLower, lowerX, lowerY, lowerScale)
-    end
+  local shade, alpha = overlayTone(self)
+  LogicalSurface.clip(graphics, clip, function()
+    graphics.setColor(shade, shade, shade, alpha)
+    graphics.draw(image, x, y, 0, scale, scale)
   end)
-  return { x = x, y = y, scale = scale, width = stageWidth * scale, height = stageHeight * scale }
 end
 
-function HgssTitleScene:_drawWide(bounds)
-  local graphics = self.graphics
-  local scale = math.max(0.25, math.min(bounds.width / WIDE_STAGE_WIDTH, bounds.height / WIDE_STAGE_HEIGHT))
-  if scale >= 1 then
-    scale = math.floor(scale)
+-- Single-screen stages (native-like and wide) are full-cover 3D with no
+-- edition logo: the sourced lower art sits as a smaller treatment in a top
+-- strip inside the safe area, and the 3D stage fills the remainder.
+local function stageComposition(safe, canvasHeight)
+  local accentScale = 1
+  while accentScale > 0.25 and (WIDTH * accentScale > safe.width or HEIGHT * accentScale > safe.height * 0.35) do
+    accentScale = accentScale / 2
   end
-  local x = math.floor(bounds.x + (bounds.width - WIDE_STAGE_WIDTH * scale) / 2)
-  local y = math.floor(bounds.y + (bounds.height - WIDE_STAGE_HEIGHT * scale) / 2)
-  local color = EDITION_COLORS[self.versionId]
-  LogicalSurface.clip(graphics, bounds, function()
-    graphics.setColor(color[1], color[2], color[3], 1)
-    graphics.rectangle("fill", x, y, WIDE_STAGE_WIDTH * scale, WIDE_STAGE_HEIGHT * scale)
-    if self.surfaces.editionLogo ~= nil then
-      local logo = self.surfaces.editionLogo
-      local logoScale = (WIDE_LOGO_WIDTH / logo:getWidth()) * scale
-      graphics.setColor(1, 1, 1, 1)
-      graphics.draw(logo, x + WIDE_LOGO_X * scale, y + WIDE_LOGO_Y * scale, 0, logoScale, logoScale)
-    end
-    graphics.setColor(1, 1, 1, 1)
-    graphics.draw(self.canvas, x + WIDE_MODEL_X * scale, y + WIDE_MODEL_Y * scale, 0, scale, scale)
+  local stripHeight = HEIGHT * accentScale
+  if safe.height - stripHeight < 1 then
+    stripHeight = math.max(0, safe.height - 1)
+  end
+  local stage = { x = safe.x, y = safe.y + stripHeight, width = safe.width, height = safe.height - stripHeight }
+  local accentWidth = WIDTH * accentScale
+  local accent = {
+    clip = { x = safe.x, y = safe.y, width = safe.width, height = stripHeight },
+    x = safe.x + (safe.width - accentWidth) / 2,
+    y = safe.y + (stripHeight - HEIGHT * accentScale) / 2,
+    scale = accentScale,
+  }
+  local canvasWidth = math.min(CANVAS_MAX_WIDTH, math.max(1, math.floor(canvasHeight * stage.width / stage.height)))
+  return {
+    stage = stage,
+    accent = accent,
+    canvasWidth = canvasWidth,
+    canvasHeight = math.min(canvasHeight, CANVAS_MAX_HEIGHT),
+    projectionAspect = stage.width / stage.height,
+  }
+end
+
+-- Tall host: upper 3D cover over the top half, the edition mark covering
+-- the lower half fractionally without edge bars, and the lower art at the
+-- largest fitting integer scale top-aligned inside its half.
+local function tallComposition(safe)
+  local upper = { x = safe.x, y = safe.y, width = safe.width, height = safe.height / 2 }
+  local lower = { x = safe.x, y = safe.y + safe.height / 2, width = safe.width, height = safe.height / 2 }
+  local canvasWidth =
+    math.min(CANVAS_MAX_WIDTH, math.max(1, math.floor(CANVAS_HEIGHT_NATIVE * upper.width / upper.height)))
+  local integer = math.floor(math.min(lower.width / WIDTH, lower.height / HEIGHT))
+  local artScale, artWidth, artHeight
+  if integer >= 1 then
+    artScale, artWidth, artHeight = integer, WIDTH * integer, HEIGHT * integer
+  else
+    artScale = math.min(lower.width / WIDTH, lower.height / HEIGHT)
+    artWidth, artHeight = WIDTH * artScale, HEIGHT * artScale
+  end
+  return {
+    upper = upper,
+    lower = lower,
+    art = {
+      scale = artScale,
+      x = lower.x + (lower.width - artWidth) / 2,
+      y = lower.y,
+      width = artWidth,
+      height = artHeight,
+    },
+    canvasWidth = canvasWidth,
+    canvasHeight = CANVAS_HEIGHT_NATIVE,
+    projectionAspect = upper.width / upper.height,
+  }
+end
+
+function HgssTitleScene:_drawSingleStage(composition)
+  drawStageCanvas(self, composition.bounds)
+  local accent = composition.accent
+  if accent ~= nil and accent.clip.height > 0 then
+    drawOverlaySurface(self, accent.clip, assert(self.surfaces).subscreenLower, accent.x, accent.y, accent.scale)
+  end
+end
+
+function HgssTitleScene:_drawTall()
+  local composition = self.layout.composition
+  local graphics = self.graphics
+  local surfaces = assert(self.surfaces)
+  drawStageCanvas(self, composition.upper)
+  local lower = composition.lower
+  local logoScale = math.max(lower.width / WIDTH, lower.height / HEIGHT)
+  local logoWidth, logoHeight = WIDTH * logoScale, HEIGHT * logoScale
+  local art = composition.art
+  LogicalSurface.clip(graphics, lower, function()
+    local shade, alpha = overlayTone(self)
+    graphics.setColor(shade, shade, shade, alpha)
+    graphics.draw(
+      surfaces.editionLogo,
+      lower.x + (lower.width - logoWidth) / 2,
+      lower.y + (lower.height - logoHeight) / 2,
+      0,
+      logoScale,
+      logoScale
+    )
+    graphics.setColor(shade, shade, shade, alpha)
+    graphics.draw(surfaces.subscreenLower, art.x, art.y, 0, art.scale, art.scale)
   end)
-  return { x = x, y = y, scale = scale, width = WIDE_STAGE_WIDTH * scale, height = WIDE_STAGE_HEIGHT * scale }
 end
 
 function HgssTitleScene:_drawDual()
-  local layout = assert(self.layout)
-  local primary, auxiliary = layout.primary, layout.secondary
-  if primary ~= nil then
-    self:_drawSingle(primary, WIDTH, HEIGHT, 0, 0, 0, 1, false)
-  end
-  if auxiliary ~= nil then
-    local graphics = self.graphics
-    local scale = math.max(0.25, math.min(auxiliary.width / WIDTH, auxiliary.height / HEIGHT))
-    if scale >= 1 then
-      scale = math.floor(scale)
-    end
-    local x = auxiliary.x + (auxiliary.width - WIDTH * scale) / 2
-    local y = auxiliary.y + (auxiliary.height - HEIGHT * scale) / 2
-    LogicalSurface.clip(graphics, auxiliary, function()
-      graphics.setColor(1, 1, 1, 1)
-      graphics.draw(self.surfaces.editionLogo, x, y, 0, scale, scale)
-      graphics.draw(self.surfaces.subscreenDecor, x, y, 0, scale, scale)
-      graphics.draw(self.surfaces.subscreenLower, x, y, 0, scale, scale)
-    end)
-  end
+  local composition = self.layout.composition
+  local graphics = self.graphics
+  local surfaces = assert(self.surfaces)
+  self:_drawSingleStage(composition.principal)
+  local auxiliary = composition.auxiliary
+  local lower = auxiliary.lower
+  local logoScale = math.max(lower.width / WIDTH, lower.height / HEIGHT)
+  local logoWidth, logoHeight = WIDTH * logoScale, HEIGHT * logoScale
+  local art = auxiliary.art
+  LogicalSurface.clip(graphics, lower, function()
+    local shade, alpha = overlayTone(self)
+    graphics.setColor(shade, shade, shade, alpha)
+    graphics.draw(
+      surfaces.editionLogo,
+      lower.x + (lower.width - logoWidth) / 2,
+      lower.y + (lower.height - logoHeight) / 2,
+      0,
+      logoScale,
+      logoScale
+    )
+    graphics.setColor(shade, shade, shade, alpha)
+    graphics.draw(surfaces.subscreenLower, art.x, art.y, 0, art.scale, art.scale)
+  end)
 end
 
 function HgssTitleScene:_drawUi(status)
@@ -412,12 +635,12 @@ function HgssTitleScene:_drawUi(status)
     bounds.width + 40,
     "center"
   )
-  local flash = self.bundle.prompt.flash
-  local promptVisible = self.tick < flash.initialDelayFrames
-    or self.promptFrame % flash.cycleFrames < flash.visibleFrames
-  if promptVisible then
-    local colorIndex = self.bundle.prompt.color.foreground
-    local promptColor = colorIndex == 1 and { 1, 0.82, 0.42 } or { 0.55, 0.82, 1 }
+  -- The prompt tint is the compiled retail text-palette RGB per edition
+  -- (src/title_screen.c): HeartGold RGB(27, 8, 0), SoulSilver
+  -- RGB(0, 28, 31). The shadow index matches the foreground index, so a
+  -- shadow pass reuses this same RGB.
+  if promptVisible(self) then
+    local promptColor = assert(self.bundle.prompt.color.foregroundRgb, "title prompt ink is missing")
     graphics.setColor(promptColor[1], promptColor[2], promptColor[3], 1)
     local rect = assert(self.layout.prompt)
     graphics.printf(self.bundle.prompt.text, rect.x, rect.y, rect.width, "center")
@@ -451,21 +674,38 @@ function HgssTitleScene:draw(status)
   local composition = self.layout.composition
   if composition.configuration == "dualDisplay" then
     self:_drawDual()
-  elseif composition.configuration == "wide" then
-    self:_drawWide(composition.bounds)
+  elseif composition.configuration == "tall" then
+    self:_drawTall()
   else
-    self:_drawSingle(
-      composition.bounds,
-      composition.stageWidth,
-      composition.stageHeight,
-      composition.legend.x,
-      composition.lower.x,
-      composition.lower.y,
-      1,
-      true
-    )
+    self:_drawSingleStage(composition)
   end
   self:_drawUi(status)
+end
+
+-- Rebuilds the bounded 3D target transactionally: the new canvas swaps in
+-- only after a successful allocation, so a failed resize keeps the last
+-- drawable scene. Source tick, camera and animation state never reset.
+-- A failed rebuild keeps the previous canvas and reports nothing: resize
+-- has no error channel back through the running state, and the cover draw
+-- below keeps the stale target filling the new stage.
+local function rebuildCanvas(self, width, height)
+  if self.canvas ~= nil and self.canvasWidth == width and self.canvasHeight == height then
+    return true
+  end
+  local ok, canvas = pcall(self.graphics.newCanvas, width, height, {
+    format = "rgba8",
+    readable = true,
+    dpiscale = 1,
+  })
+  if not ok then
+    return false
+  end
+  if self.canvas ~= nil then
+    self.canvas:release()
+  end
+  self.canvas = canvas
+  self.canvasWidth, self.canvasHeight = width, height
+  return true
 end
 
 function HgssTitleScene:resize(width, height)
@@ -499,45 +739,53 @@ function HgssTitleScene:resize(width, height)
   }
   local composition
   if configuration == "dualDisplay" then
+    local principal = stageComposition(primary, CANVAS_HEIGHT_NATIVE)
+    local auxiliary = tallComposition(assert(secondary))
     composition = {
       configuration = configuration,
-      bounds = main,
-      stageWidth = WIDTH,
-      stageHeight = HEIGHT,
-      legend = { x = 0, y = 0, width = WIDTH, height = HEIGHT },
-      lower = secondary and { x = 0, y = 0, width = WIDTH, height = HEIGHT } or nil,
+      bounds = principal.stage,
+      stageWidth = principal.stage.width,
+      stageHeight = principal.stage.height,
+      principal = {
+        configuration = configuration,
+        bounds = principal.stage,
+        stageWidth = principal.stage.width,
+        stageHeight = principal.stage.height,
+        accent = principal.accent,
+      },
+      auxiliary = auxiliary,
+      accent = principal.accent,
       lowerPanel = false,
     }
-  elseif configuration == "wide" then
-    composition = {
-      configuration = configuration,
-      bounds = main,
-      stageWidth = WIDE_STAGE_WIDTH,
-      stageHeight = WIDE_STAGE_HEIGHT,
-      legend = { x = WIDE_MODEL_X, y = WIDE_MODEL_Y, width = WIDTH, height = HEIGHT },
-      lower = nil,
-      lowerPanel = false,
-    }
+    self.projectionAspect = principal.projectionAspect
+    rebuildCanvas(self, principal.canvasWidth, principal.canvasHeight)
   elseif configuration == "tall" then
+    local tall = tallComposition(main)
     composition = {
       configuration = configuration,
-      bounds = main,
-      stageWidth = WIDTH,
-      stageHeight = HEIGHT * 2,
-      legend = { x = 0, y = 0, width = WIDTH, height = HEIGHT },
-      lower = { x = 0, y = HEIGHT, width = WIDTH, height = HEIGHT },
+      bounds = { x = main.x, y = main.y, width = main.width, height = main.height },
+      stageWidth = main.width,
+      stageHeight = main.height,
+      upper = tall.upper,
+      lower = tall.lower,
+      art = tall.art,
       lowerPanel = true,
     }
+    self.projectionAspect = tall.projectionAspect
+    rebuildCanvas(self, tall.canvasWidth, tall.canvasHeight)
   else
+    local canvasHeight = configuration == "wide" and CANVAS_HEIGHT_WIDE or CANVAS_HEIGHT_NATIVE
+    local staged = stageComposition(main, canvasHeight)
     composition = {
       configuration = configuration,
-      bounds = main,
-      stageWidth = WIDTH,
-      stageHeight = HEIGHT,
-      legend = { x = 0, y = 0, width = WIDTH, height = HEIGHT },
-      lower = { x = 0, y = 0, width = WIDTH, height = HEIGHT },
+      bounds = staged.stage,
+      stageWidth = staged.stage.width,
+      stageHeight = staged.stage.height,
+      accent = staged.accent,
       lowerPanel = false,
     }
+    self.projectionAspect = staged.projectionAspect
+    rebuildCanvas(self, staged.canvasWidth, staged.canvasHeight)
   end
   self.layout = {
     configuration = configuration,
@@ -563,7 +811,7 @@ function HgssTitleScene:dispose()
   self.disposed = true
   local images, pool, renderer, canvas = self.images, self.pool, self.renderer, self.canvas
   self.images, self.pool, self.renderer, self.canvas = {}, nil, nil, nil
-  self.legend, self.sparkle, self.surfaces, self.bundle = nil, nil, nil, nil
+  self.legend, self.sparkle, self.surfaces, self.bundle, self.sourceEnvironment = nil, nil, nil, nil, nil
   for _, image in ipairs(images) do
     image:release()
   end
