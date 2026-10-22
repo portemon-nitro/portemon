@@ -4,6 +4,7 @@
 
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
+local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
 local HgssGame = require("game.hgss.src.HgssGame")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
@@ -765,6 +766,248 @@ function T.continue_constructs_the_field_without_the_oak_handoff()
     Assert.equal(#fieldStateCalls, 1, "Continue must construct the field immediately without the handoff barrier")
     game:dispose()
   end)
+end
+
+-- The temporary loading cover is decorative for Continue: a throwing optional
+-- art demand must be recorded once while the saved game still enters its
+-- field exactly once with the original record and the cover released once.
+function T.continue_enters_field_when_optional_loading_art_throws()
+  local artRequests = 0
+  local requiredReady = false
+  local transfers = {}
+  local state = FieldPreparationState.new({
+    kind = "continue",
+    saveId = "save-00000002",
+    versionId = "heartgold",
+    derivedAssets = {
+      requestMilestone = function(name, urgency)
+        if name == "startup-loader" then
+          artRequests = artRequests + 1
+          Assert.equal(urgency, "near")
+          error("synthetic loader art failure", 0)
+        end
+        Assert.equal(urgency, "required")
+        return requiredReady
+      end,
+    },
+    saveStore = {
+      load = function(_, saveId)
+        Assert.equal(saveId, "save-00000002")
+        return { mapId = 60, fieldX = 684, fieldZ = 393 }
+      end,
+    },
+    createLoader = function()
+      local loader = {}
+      function loader:globalPosition(_, fieldX, fieldZ)
+        return { x = fieldX, z = fieldZ }
+      end
+      function loader:requestLocation(_, _, _, _)
+        return true
+      end
+      return loader
+    end,
+    enterField = function(record)
+      transfers[#transfers + 1] = record
+    end,
+    onCancel = function() end,
+  })
+  Assert.equal(state.loading.versionId, "heartgold", "the loading cover uses the selected edition")
+  local view = assert(state.loading, "the decorative cover is present while required work is pending")
+  local releaseCount = 0
+  local releaseView = view.dispose
+  function view:dispose()
+    releaseCount = releaseCount + 1
+    return releaseView(self)
+  end
+  state:update(1 / 60)
+  Assert.isTrue(state.loaderArtObserved, "the cosmetic failure latches instead of blocking required work")
+  Assert.isTrue(
+    string.find(tostring(state.loaderArtFailure), "synthetic loader art failure", 1, true) ~= nil,
+    "the cosmetic diagnostic is recorded"
+  )
+  Assert.notNil(state.loading, "the fallback cover stays live while required work is pending")
+  Assert.equal(#transfers, 0, "pending required closures never transfer early")
+  requiredReady = true
+  for _ = 1, 10 do
+    state:update(1 / 60)
+  end
+  Assert.equal(#transfers, 1, "a failed decorative cover never blocks Continue field entry")
+  Assert.equal(transfers[1].mapId, 60, "the transfer carries the original saved record")
+  Assert.equal(transfers[1].fieldX, 684)
+  Assert.equal(transfers[1].fieldZ, 393)
+  Assert.equal(artRequests, 1, "a terminal cosmetic failure is never rerequested")
+  Assert.isNil(state.loading, "the temporary cover is released on transfer")
+  Assert.equal(releaseCount, 1, "the temporary cover is released exactly once")
+  state:dispose()
+end
+
+-- A pending decorative demand stays retryable and never blocks the required
+-- path: the field transfers while art is still pending, and art that only
+-- becomes ready after the transfer is never adopted late.
+function T.continue_pending_loader_art_never_blocks_transfer_and_is_never_adopted_late()
+  local artRequests = 0
+  local loaderReady = false
+  local transfers = {}
+  local state = FieldPreparationState.new({
+    kind = "continue",
+    saveId = "save-00000002",
+    versionId = "heartgold",
+    derivedAssets = {
+      requestMilestone = function(name, urgency)
+        if name == "startup-loader" then
+          artRequests = artRequests + 1
+          Assert.equal(urgency, "near")
+          return loaderReady
+        end
+        Assert.equal(urgency, "required")
+        return false
+      end,
+    },
+    saveStore = {
+      load = function(_, saveId)
+        Assert.equal(saveId, "save-00000002")
+        return { mapId = 60, fieldX = 684, fieldZ = 393 }
+      end,
+    },
+    createLoader = function()
+      local loader = {}
+      function loader:globalPosition(_, fieldX, fieldZ)
+        return { x = fieldX, z = fieldZ }
+      end
+      function loader:requestLocation(_, _, _, _)
+        return true
+      end
+      return loader
+    end,
+    enterField = function(record)
+      transfers[#transfers + 1] = record
+    end,
+    onCancel = function() end,
+  })
+  local view = assert(state.loading, "the decorative cover is present while required work is pending")
+  local releaseCount = 0
+  local releaseView = view.dispose
+  function view:dispose()
+    releaseCount = releaseCount + 1
+    return releaseView(self)
+  end
+  state:update(1 / 60)
+  state:update(1 / 60)
+  Assert.equal(artRequests, 2, "a pending decorative demand is rerequested while required work waits")
+  Assert.isFalse(state.loaderArtObserved, "pending art never latches")
+  Assert.isNil(state.loaderArtFailure, "pending art records no diagnostic")
+  Assert.notNil(state.loading, "the fallback cover stays live while required work is pending")
+  Assert.equal(#transfers, 0, "a pending runtime never transfers early")
+  local adoptCalls = 0
+  function view:adoptGeneratedAssets(_)
+    adoptCalls = adoptCalls + 1
+    return true
+  end
+  state.derivedAssets = {
+    requestMilestone = function(name, urgency)
+      if name == "startup-loader" then
+        artRequests = artRequests + 1
+        Assert.equal(urgency, "near")
+        return true
+      end
+      Assert.equal(urgency, "required")
+      return true
+    end,
+  }
+  for _ = 1, 10 do
+    state:update(1 / 60)
+  end
+  Assert.equal(#transfers, 1, "pending art never blocks Continue field entry")
+  Assert.isNil(state.loading, "the temporary cover is released on transfer")
+  Assert.equal(releaseCount, 1, "the temporary cover is released exactly once")
+  Assert.isTrue(state.loaderArtObserved, "the ready demand is observed exactly once")
+  Assert.equal(adoptCalls, 1, "the ready demand is adopted exactly once")
+  Assert.isNil(state.loaderArtFailure, "a clean adoption records no diagnostic")
+  local frozenRequests = artRequests
+  for _ = 1, 4 do
+    state:update(1 / 60)
+  end
+  Assert.equal(artRequests, frozenRequests, "art that arrives after the transfer is never adopted late")
+  state:dispose()
+end
+
+-- A malformed decorative image latches once without blocking cancellation:
+-- escape still releases the fallback cover exactly once and no late field
+-- entry can follow the cancelled preparation.
+function T.continue_malformed_loader_art_latches_once_and_cancel_releases_cover_once()
+  local artRequests = 0
+  local adoptCalls = 0
+  local requiredReady = false
+  local transfers = {}
+  local cancelled = 0
+  local state = FieldPreparationState.new({
+    kind = "continue",
+    saveId = "save-00000002",
+    versionId = "heartgold",
+    derivedAssets = {
+      requestMilestone = function(name, urgency)
+        if name == "startup-loader" then
+          artRequests = artRequests + 1
+          Assert.equal(urgency, "near")
+          return true
+        end
+        Assert.equal(urgency, "required")
+        return requiredReady
+      end,
+    },
+    saveStore = {
+      load = function(_, saveId)
+        Assert.equal(saveId, "save-00000002")
+        return { mapId = 60, fieldX = 684, fieldZ = 393 }
+      end,
+    },
+    createLoader = function()
+      local loader = {}
+      function loader:globalPosition(_, fieldX, fieldZ)
+        return { x = fieldX, z = fieldZ }
+      end
+      function loader:requestLocation(_, _, _, _)
+        return true
+      end
+      return loader
+    end,
+    enterField = function(record)
+      transfers[#transfers + 1] = record
+    end,
+    onCancel = function()
+      cancelled = cancelled + 1
+    end,
+  })
+  local view = assert(state.loading, "the decorative cover is present while required work is pending")
+  function view:adoptGeneratedAssets(_)
+    adoptCalls = adoptCalls + 1
+    return false, "synthetic malformed art"
+  end
+  local releaseCount = 0
+  local releaseView = view.dispose
+  function view:dispose()
+    releaseCount = releaseCount + 1
+    return releaseView(self)
+  end
+  state:update(1 / 60)
+  Assert.isTrue(state.loaderArtObserved, "the malformed image latches instead of blocking required work")
+  Assert.equal(state.loaderArtFailure, "synthetic malformed art", "the cosmetic diagnostic is recorded")
+  Assert.equal(adoptCalls, 1, "the decorative adoption runs once before latching")
+  state:keypressed("escape")
+  Assert.equal(cancelled, 1, "cancellation still returns to the menu")
+  Assert.equal(releaseCount, 1, "cancellation releases the fallback cover exactly once")
+  Assert.isNil(state.loading, "the cancelled preparation keeps no cover")
+  requiredReady = true
+  for _ = 1, 10 do
+    state:update(1 / 60)
+  end
+  Assert.equal(#transfers, 0, "a cancelled preparation never transfers on late readiness")
+  Assert.equal(artRequests, 1, "a latched cosmetic failure is never rerequested")
+  Assert.equal(adoptCalls, 1, "a latched cosmetic failure is never readopted")
+  state:keypressed("escape")
+  Assert.equal(cancelled, 1, "a second escape never cancels twice")
+  Assert.equal(releaseCount, 1, "a second escape never rereleases the cover")
+  state:dispose()
 end
 
 return { tests = T }
