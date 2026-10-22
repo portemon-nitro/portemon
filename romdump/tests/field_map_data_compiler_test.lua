@@ -702,4 +702,77 @@ function T.field_map_data_session_rejects_unknown_maps_without_poisoning_the_ses
   session:close()
 end
 
+local function objectEvent(overrides)
+  local event = {
+    objectEventId = 5,
+    spriteId = 348,
+    movement = 0,
+    type = 0,
+    eventFlag = 0,
+    scriptId = 0,
+    facingDirection = 0,
+    param0 = 0,
+    param1 = 0,
+    param2 = 0,
+    xRange = 0,
+    yRange = 0,
+    x = 0,
+    z = 0,
+    y = 0,
+  }
+  for key, value in pairs(overrides or {}) do
+    event[key] = value
+  end
+  return event
+end
+
+-- Retail reuses a handful of object-event ids for two unrelated events (six
+-- maps in the shipped data, e.g. Olivine's object 5). The runtime keys
+-- actors, saves, and script addressing by that id, so the generated record
+-- keeps the first declaration and drops the later unscripted duplicate.
+function T.deduplicates_reused_object_event_ids_keeping_the_first_declaration()
+  local member = Builder.build({
+    objectEvents = {
+      objectEvent({ spriteId = 348, x = 273, z = 284 }),
+      objectEvent({ objectEventId = 6, spriteId = 326 }),
+      objectEvent({ spriteId = 328, eventFlag = 94, scriptId = 0xFFFF, x = 252, z = 271 }),
+    },
+  })
+  local romFs = FieldMapDataFixture.build({ zoneEventsMember = member })
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, function()
+    return "hash"
+  end, function()
+    return "dependency"
+  end))
+  local objects = bundle.field.events.objects
+  Assert.equal(#objects, 2)
+  Assert.equal(objects[1].objectEventId, 5)
+  Assert.equal(objects[1].spriteId, 348)
+  Assert.equal(objects[2].objectEventId, 6)
+end
+
+-- A dropped duplicate that carries a script would silently change game
+-- behavior (script addressing resolves by id to the kept declaration), so
+-- it fails the compile instead of being dropped.
+function T.rejects_a_scripted_reuse_of_an_object_event_id()
+  local member = Builder.build({
+    objectEvents = {
+      objectEvent({ spriteId = 348 }),
+      objectEvent({ spriteId = 328, eventFlag = 94, scriptId = 9 }),
+    },
+  })
+  local romFs = FieldMapDataFixture.build({ zoneEventsMember = member })
+  local bundle, err = FieldMapDataCompiler.compile(romFs, 60, function()
+    return "hash"
+  end, function()
+    return "dependency"
+  end)
+  Assert.isNil(bundle)
+  err = assert(err)
+  Assert.equal(err.code, "FIELD_MAP_DUPLICATE_OBJECT_SCRIPT")
+  Assert.equal(err.context.mapId, 60)
+  Assert.equal(err.context.mapSymbol, "MAP_NEW_BARK")
+  Assert.equal(err.context.objectEventId, 5)
+end
+
 return { tests = T }

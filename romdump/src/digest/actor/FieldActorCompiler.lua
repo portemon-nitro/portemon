@@ -31,6 +31,12 @@ local PoseContract = require("libs.assets.src.model.PoseContract")
 local manifest = require("romdump.src.config.FieldActors")
 local ApricornSources = require("romdump.src.config.ApricornSources")
 
+-- The retail no-visual sentinel: sprite 8192 (0x2000) owns a graphics-table
+-- record selecting the static-model descriptor but maps to no static model
+-- member, and no map references it. It is the only table entry without a
+-- visual, so actor selection skips exactly this sprite.
+local NO_VISUAL_SPRITE_ID = 8192
+
 local FieldActorCompiler = {}
 
 local MODEL_MAGIC = "BMD0"
@@ -121,12 +127,20 @@ local function must(value, err)
   return value
 end
 
--- The configured player state visuals plus every object-event sprite used by
--- any map in the catalog. Player sprites resolve through the producer
--- player-avatar reference by gender, so every visual state is an ordinary
--- compiled field actor. Variable sprite IDs are
--- resolved by the runtime to a player graphic and are never compiled directly.
-local function selectedSpriteIds(romFs)
+-- The configured player state visuals plus every graphics-table sprite that
+-- resolves to a visual. Map object events name most of them directly, but
+-- variable sprite IDs (101-117) resolve through the VAR_OBJ_* save variables
+-- at object creation, so a script-assigned value such as Dragon's Den's 1049
+-- never appears in any map's static list. Compiling the whole table closes
+-- that hole: any runtime value naming a real sprite is compiled. Sprite 8192
+-- is the one table record without a visual (it selects the static-model
+-- descriptor but maps to no static member, and no map references it), so it
+-- stays out; anything else that fails to resolve is a producer bug.
+---@param romFs RomFs
+---@param graphics table<string, unknown>
+---@return integer[] ascending compiled sprite list
+---@return integer[] variable sprite IDs used by maps
+local function selectedSpriteIds(romFs, graphics)
   local variable = manifest.variableSpriteRange
   local wanted, order = {}, {}
   local function add(spriteId)
@@ -135,6 +149,18 @@ local function selectedSpriteIds(romFs)
     end
     wanted[spriteId] = true
     order[#order + 1] = spriteId
+  end
+  local bySpriteId = assert(graphics.bySpriteId, "actor selection requires decoded graphics")
+  for spriteId in pairs(bySpriteId) do
+    if spriteId == NO_VISUAL_SPRITE_ID then
+      -- The retail no-visual sentinel: a graphics record with no visual.
+    elseif spriteId >= variable.first and spriteId <= variable.last then
+      -- Variable sprite IDs live in the runtime variable range, never in
+      -- the graphics table; the guard stays for future table drift.
+    else
+      must(FieldActorGraphics.resolve(graphics, spriteId))
+      add(spriteId)
+    end
   end
   for _, avatar in ipairs(manifest.avatars) do
     local states = PlayerAvatar.statesForGender(avatar.gender)
@@ -754,7 +780,7 @@ end
 local function _compile(romFs)
   local inputs = _loadInputs(romFs)
 
-  local spriteIds, variableSprites = selectedSpriteIds(romFs)
+  local spriteIds, variableSprites = selectedSpriteIds(romFs, inputs.graphics)
   local visuals, atlases = {}, {}
   for _, spriteId in ipairs(spriteIds) do
     visuals[spriteId], atlases[spriteId] =

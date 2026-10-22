@@ -129,8 +129,28 @@ end
 ---@return table[]
 local function semanticObjectEvents(objectEvents, map)
   local objects = {}
+  local seenIds = {}
   for index, event in ipairs(objectEvents) do
-    objects[index] = semanticObjectEvent(event, map, index)
+    if seenIds[event.objectEventId] then
+      -- Retail reuses a handful of object-event ids for two unrelated
+      -- events (six maps in the shipped data, e.g. Olivine's object 5).
+      -- The runtime keys actors, saves, and script addressing by that id,
+      -- so the generated record keeps the first declaration and drops the
+      -- later duplicate. A dropped duplicate that carries a script would
+      -- silently change game behavior, so it fails the compile instead.
+      if event.scriptId ~= 0 then
+        Errors.raise("FIELD_MAP_DUPLICATE_OBJECT_SCRIPT", "object event id is reused by a scripted event", {
+          mapId = map.id,
+          mapSymbol = map.symbol,
+          objectEventIndex = index - 1,
+          objectEventId = event.objectEventId,
+          scriptId = event.scriptId,
+        })
+      end
+    else
+      seenIds[event.objectEventId] = true
+      objects[#objects + 1] = semanticObjectEvent(event, map, index)
+    end
   end
   return objects
 end
