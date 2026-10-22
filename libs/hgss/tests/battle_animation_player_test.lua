@@ -952,6 +952,159 @@ function T.battle_flag_strike_phase_jumps_to_the_strike_half()
   Assert.equal(#helpers.log.created, 0, "the branch constructs no child")
 end
 
+-- Serial completed occurrences leave no retained records: five hundred
+-- one-shot visuals run through the real cue player and the real
+-- animation player, each retiring once at its completion observation, so
+-- the live array stays bounded and retired handles answer nothing.
+function T.serial_completed_occurrences_leave_no_retained_records()
+  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
+  local helpers = collaborators()
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+  }))
+  local started = {}
+  local retired = {}
+  local effects = {
+    start = function(cue)
+      local handle = player:start({
+        launchId = cue.launchId,
+        packetId = cue.packetId,
+        event = cue.event,
+        visualSeed = cue.visualSeed,
+      }, {
+        entry = "main",
+        instructions = {
+          { op = "interpreter-wait", values = { 1 } },
+          { op = "reset-blend-alpha" },
+        },
+        subprograms = {},
+        taskKinds = {},
+      })
+      if handle ~= nil then
+        started[#started + 1] = handle
+      end
+      return handle
+    end,
+    status = function(handle)
+      return player:status(handle)
+    end,
+    cancel = function(handle, reason)
+      player:cancel(handle, reason)
+    end,
+    retire = function(handle)
+      retired[#retired + 1] = handle
+      if type(player.retire) == "function" then
+        return player:retire(handle)
+      end
+      return true
+    end,
+  }
+  local timeline = BattleTimeline.new({ effects = effects })
+  local function timelineView(foeHp)
+    return {
+      own = {
+        {
+          combatant = 1,
+          side = 1,
+          controller = "alpha",
+          active = true,
+          position = 1,
+          activation = 1,
+          hp = 52,
+          maxHp = 52,
+          species = "EEVEE",
+          form = 0,
+          name = "LEAD",
+          level = 20,
+          moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+        },
+      },
+      foes = {
+        {
+          combatant = 2,
+          side = 2,
+          controller = "beta",
+          active = true,
+          position = 2,
+          activation = 2,
+          hp = foeHp,
+          maxHp = 57,
+          species = "EEVEE",
+          form = 0,
+          name = "FOE",
+          level = 20,
+        },
+      },
+    }
+  end
+  local function serialStrike(sequence, actionId, foeHp)
+    return {
+      sequence = sequence,
+      kind = "struck",
+      cause = { key = "TACKLE", kind = "move" },
+      audience = "public",
+      actionId = actionId,
+      effectKey = "TACKLE",
+      actors = { { combatant = 1 } },
+      targets = { { combatant = 2 } },
+      move = { selected = "TACKLE", executed = "TACKLE", phase = "direct" },
+      payload = { target = 2, damage = 14, hitIndex = sequence },
+      observation = { hp = { [1] = 52, [2] = foeHp } },
+      after = { hp = { [1] = 52, [2] = foeHp } },
+      visualSeed = sequence * 3 + 1,
+    }
+  end
+  timeline:reset(timelineView(57))
+  local total = 500
+  local maxLive = 0
+  local drainTicks = {}
+  for index = 1, total do
+    local packet = BattlePresentationModel.packet(
+      timelineView(57),
+      { events = { serialStrike(index, 5000 + index, 43) } },
+      timelineView(43),
+      { launchId = "serial-probe", packetId = index }
+    )
+    Assert.isTrue(timeline:present(packet), "serial packet admits: " .. tostring(index))
+    local ticks = 0
+    while not timeline:settled() and ticks < 6000 do
+      ticks = ticks + 1
+      timeline:update(1 / 30, function(_)
+        return true
+      end)
+      player:stepSourceTick({ tick = ticks })
+      local live = #player._occurrences
+      if live > maxLive then
+        maxLive = live
+      end
+    end
+    drainTicks[index] = ticks
+    Assert.isTrue(timeline:settled(), "serial cue drains: " .. tostring(index))
+  end
+  Assert.equal(#started, total, "every serial visual starts exactly once")
+  Assert.equal(#retired, total, "every serial visual retires once at consumption")
+  Assert.equal(#player._occurrences, 0, "no occurrence records rest at the end")
+  local indexed = 0
+  for _ in pairs(player._byId) do
+    indexed = indexed + 1
+  end
+  Assert.equal(indexed, 0, "no handle index entries rest at the end")
+  Assert.isTrue(maxLive <= 2, "per-tick visits stay bounded, saw " .. tostring(maxLive))
+  Assert.isNil(player:status(started[1]), "the first retired handle answers nothing")
+  Assert.isNil(player:status(started[total]), "the last retired handle answers nothing")
+  Assert.equal(started[1].id, 1, "handle identities open at one")
+  Assert.equal(started[total].id, total, "handle identities never reuse across the run")
+  Assert.isTrue(
+    drainTicks[total] <= drainTicks[1],
+    "later cues cost no more ticks than the first"
+  )
+  Assert.deepEqual(timeline:diagnostics(), {}, "no diagnostics across the run")
+end
+
 function T.battle_flag_other_operands_and_malformed_phases_fail_loud()
   local cases = {
     { values = { 2 }, playback = playbackWithPhase("charge"), name = "values {2}" },

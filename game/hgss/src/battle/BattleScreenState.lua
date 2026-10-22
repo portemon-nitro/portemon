@@ -684,7 +684,8 @@ end
 -- Polls every tracked native occurrence once: pending tokens promote
 -- when staged, failed programs fail the screen with provenance, and
 -- the live record clears once its occurrence settles so a later
--- effect admits against its own closure.
+-- effect admits against its own closure. The generic poll never
+-- releases: only the timeline consumption point retires a track.
 ---@param screen BattleScreenState owning screen behind occurrence polling
 local function pollNativeEffects(screen)
   local keys = {}
@@ -706,8 +707,84 @@ local function pollNativeEffects(screen)
   end
 end
 
+-- Releases one consumed native occurrence after its timeline cue
+-- observes completion: the track leaves the map, the player drops the
+-- terminal record, and the live record clears when it names the retired
+-- handle. Only the timeline consumption point calls this; the generic
+-- poll never retires. Unknown or already-released identities refuse
+-- without touching live work, and a release failure fails the launch
+-- with provenance instead of counting a false completion.
+---@param screen BattleScreenState owning screen behind occurrence retirement
+---@param handleOrToken table<string, unknown> player handle or pending token under release
+---@return boolean released true once the track and its terminal record were dropped
+local function nativeEffectRetire(screen, handleOrToken)
+  -- A promoted token keeps its stable track while admission also files
+  -- the admitted handle beside it, so one retired identity can own two
+  -- tracks. The release resolves the occurrence handle behind either
+  -- identity first, then drops every track naming the token or that
+  -- handle, and retires the single player occurrence behind them.
+  local handle = nil
+  local direct = screen._nativeHandles[handleOrToken]
+  if direct ~= nil then
+    handle = direct.handle
+  else
+    for _, track in pairs(screen._nativeHandles) do
+      if track.handle == handleOrToken then
+        handle = handleOrToken
+        break
+      end
+    end
+  end
+  if direct == nil and handle == nil then
+    return false
+  end
+  local keys = {}
+  local effectKey = nil
+  for key, track in pairs(screen._nativeHandles) do
+    if key == handleOrToken or (handle ~= nil and (key == handle or track.handle == handle)) then
+      keys[#keys + 1] = key
+      if effectKey == nil then
+        effectKey = track.effectKey
+      end
+    end
+  end
+  if handle == nil then
+    for _, key in ipairs(keys) do
+      screen._nativeHandles[key] = nil
+    end
+    return true
+  end
+  -- A refused player release leaves every track in place, so the next
+  -- poll still resolves and the launch fails loudly instead of
+  -- aliasing a live occurrence.
+  local ok, retired = pcall(screen._player.retire, screen._player, handle)
+  if not ok then
+    failNative(
+      screen,
+      "battle effect "
+        .. tostring(effectKey)
+        .. " failed for launch "
+        .. screen._launchId
+        .. ": release failure: "
+        .. tostring(retired)
+    )
+    return false
+  end
+  if retired ~= true then
+    return false
+  end
+  for _, key in ipairs(keys) do
+    screen._nativeHandles[key] = nil
+  end
+  if screen._liveEffectHandle == handle then
+    screen._liveEffectHandle = nil
+    screen._liveEffectRecord = nil
+  end
+  return true
+end
+
 ---@param screen BattleScreenState owning screen behind effect admission
----@return table<string, unknown> battle-private native-effect collaborator behind start/status/cancel
+---@return table<string, unknown> battle-private native-effect collaborator behind start/status/cancel/retire
 local function nativeEffectsFor(screen)
   ---@param cue table<string, unknown> native-effect cue carrying accepted event/packet identity and semantic effect key
   ---@return table<string, unknown>? player handle or pending token, nil on terminal refusal
@@ -724,7 +801,12 @@ local function nativeEffectsFor(screen)
   local function cancel(handleOrToken, reason)
     nativeEffectCancel(screen, handleOrToken, reason)
   end
-  return { start = start, status = status, cancel = cancel }
+  ---@param handleOrToken table<string, unknown> player handle or pending token under release
+  ---@return boolean released true once the track and its terminal record were dropped
+  local function retire(handleOrToken)
+    return nativeEffectRetire(screen, handleOrToken)
+  end
+  return { start = start, status = status, cancel = cancel, retire = retire }
 end
 
 ---@param opts BattleScreenState.Options

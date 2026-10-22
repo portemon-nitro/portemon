@@ -16,7 +16,7 @@ local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 ---@class BattleTimeline
----@field _effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel
+---@field _effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire
 ---@field _nativeSeen table<string, boolean> claimed visual occurrences by launch, action, executed effect key, and source phase
 ---@field _announced table<string, boolean> narrated attack occurrences by the same occurrence identity
 ---@field _pendingSounds table<integer, table<string, unknown>> queued one-shot sound cues for the screen drain
@@ -93,7 +93,7 @@ end
 ---@field sound (fun(cue: table<string, unknown>))? sound-cue sink, drained immediately when supplied
 ---@field moveName (fun(move: string): string?)? display-name resolver for move identities the views never name
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
----@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel, absent without a screen owner
+---@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire, absent without a screen owner
 
 ---@param opts BattleTimeline.Options?
 ---@return BattleTimeline
@@ -1785,6 +1785,38 @@ local function pollNativeEffect(self, cue)
     return false
   end
   if phase == "complete" then
+    -- Only this consumption point releases the occurrence, after the
+    -- player advanced it to completion: the collaborator drops its
+    -- track and terminal record before the cue leaves the queue, so a
+    -- later poll never aliases a reused identity. Collaborators without
+    -- a release hook predate it and keep the legacy completion.
+    local retirer = type(self._effects) == "table" and self._effects.retire or nil
+    if type(retirer) == "function" then
+      local okRetire, retired = pcall(retirer, handle)
+      if not okRetire then
+        if cue.retireNoted ~= true then
+          cue.retireNoted = true
+          self._diagnostics[#self._diagnostics + 1] = "native effect "
+            .. tostring(cue.effectKey)
+            .. " for launch "
+            .. tostring(cue.launchId)
+            .. " retirement failed: "
+            .. tostring(retired)
+        end
+        return false
+      end
+      if retired ~= true then
+        if cue.retireNoted ~= true then
+          cue.retireNoted = true
+          self._diagnostics[#self._diagnostics + 1] = "native effect "
+            .. tostring(cue.effectKey)
+            .. " for launch "
+            .. tostring(cue.launchId)
+            .. " refuses retirement; the cue holds"
+        end
+        return false
+      end
+    end
     return true
   end
   if phase == "failed" and cue.failureNoted ~= true then

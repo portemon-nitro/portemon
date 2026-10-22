@@ -927,6 +927,32 @@ function BattleAnimationPlayer:stepSourceTick(tick)
   end
 end
 
+-- Drops one terminal occurrence only after its consumer confirms
+-- receipt: live occurrences refuse, unknown handles refuse, and repeated
+-- calls after a successful drop refuse without touching anything. The
+-- drop keeps status silent afterwards and compacts the admission array
+-- so stepping visits only live or still-awaiting entries.
+---@param self BattleAnimationPlayer
+---@param handle table<string, unknown>? opaque occurrence handle under retirement
+---@return boolean retired true once a terminal record was dropped
+function BattleAnimationPlayer:retire(handle)
+  local occurrence = self:_occurrence(handle)
+  if occurrence == nil then
+    return false
+  end
+  if LIVE_PHASES[occurrence.phase] == true then
+    return false
+  end
+  self._byId[occurrence.id] = nil
+  for index, entry in ipairs(self._occurrences) do
+    if entry == occurrence then
+      table.remove(self._occurrences, index)
+      break
+    end
+  end
+  return true
+end
+
 -- Cancels one occurrence with a reason: children are retired, owned
 -- awaited voices stop where the abort policy requires it, leases
 -- release, and only journaled state still owned is restored. Cancelling
