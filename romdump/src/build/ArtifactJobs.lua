@@ -164,7 +164,7 @@ local NEW_GAME_AUDIO_SEQUENCES = {
 -- Cry playback resolves the species directly as a bank, never through
 -- sequence metadata, so the Marill species bank joins independently.
 local NEW_GAME_DIRECT_AUDIO_BANKS = { 184 }
-local STARTUP_TITLE_AUDIO_SEQUENCES = { "SEQ_GS_POKEMON_THEME", "SEQ_SE_DP_SELECT" }
+local STARTUP_TITLE_AUDIO_SEQUENCES = { "SEQ_GS_TITLE", "SEQ_GS_POKEMON_THEME", "SEQ_SE_DP_SELECT" }
 
 local NEW_GAME_INTRO_STATIC = {
   { kind = "source-plan", key = "global" },

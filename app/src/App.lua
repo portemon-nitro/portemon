@@ -191,7 +191,7 @@ local function startupAudioBorrow(versionId, epoch)
       return
     end
     local session = create and App._ensureStartupAudio(versionId, epoch, titleRecord) or App.startupAudioSession
-    if session == nil then
+    if session == nil or type(session[method]) ~= "function" then
       return
     end
     local ok, failure = pcall(session[method], session, ...)
@@ -201,11 +201,14 @@ local function startupAudioBorrow(versionId, epoch)
     end
   end
   return {
+    openingReady = function()
+      invoke("beginOpening", true)
+    end,
     titleReady = function(titleRecord)
       invoke("beginTitle", true, titleRecord)
     end,
-    prompt = function()
-      invoke("notifySkip", false)
+    prompt = function(titleRecord)
+      invoke("notifySkip", true, titleRecord)
     end,
     skip = function()
       invoke("beginFade", false)

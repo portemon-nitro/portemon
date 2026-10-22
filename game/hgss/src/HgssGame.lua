@@ -8,7 +8,6 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
 local FirstPlayCachePreparation = require("game.hgss.src.newgame.FirstPlayCachePreparation")
-local GameAudio = require("game.hgss.src.audio.GameAudio")
 local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
 local PreparedFieldEntry = require("game.hgss.src.field.PreparedFieldEntry")
 local FieldState = require("game.hgss.src.field.FieldState")
@@ -45,15 +44,6 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 ---@alias HgssGameEntry HgssGameNewGameEntry|HgssGameContinueEntry
 
 local HgssGame = {}
-
----@param options { cacheFs: CacheFs, outputRate: integer, outputHost: table<string, unknown>? }
----@return GameAudioComposition
-function HgssGame.newStartupAudio(options)
-  assert(type(options) == "table", "startup audio requires options")
-  assert(options.cacheFs ~= nil, "startup audio requires a cache filesystem")
-  assert(type(options.outputRate) == "number" and options.outputRate > 0, "startup audio requires an output rate")
-  return GameAudio.compose(options)
-end
 
 local function fieldStateOptions(options, saveStore, extra, shared)
   local fieldOptions = {
