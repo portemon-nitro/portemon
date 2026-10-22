@@ -83,6 +83,35 @@ function T.tests.title_events_use_the_existing_sound_and_bounded_source_clock()
   Assert.equal(sink.releases, 1, "the borrowed composition sink is released exactly once")
 end
 
+function T.tests.opening_theme_plays_once_and_yields_to_the_title_theme()
+  local audio, events, sink = composition()
+  local session = StartupAudioSession.new({
+    versionId = "heartgold",
+    titleRecord = { crySpeciesId = 250 },
+    audioComposition = audio,
+  })
+  Assert.equal(
+    type(session.beginOpening),
+    "function",
+    "the session owns the movie opening cue"
+  )
+  session:beginOpening()
+  session:beginOpening()
+  Assert.deepEqual(events, {
+    { "music", "SEQ_GS_TITLE" },
+  }, "the opening movie track starts exactly once")
+  session:beginTitle()
+  Assert.deepEqual(
+    events[2],
+    { "music", "SEQ_GS_POKEMON_THEME" },
+    "title entry switches from the opening track to the title track"
+  )
+  session:beginOpening()
+  Assert.equal(#events, 2, "the opening cue never replays after the title track started")
+  session:dispose()
+  Assert.equal(sink.releases, 1, "the borrowed composition sink is released exactly once")
+end
+
 function T.tests.failed_host_output_disables_only_the_optional_sink()
   local audio, events, sink = composition(true)
   local session = StartupAudioSession.new({

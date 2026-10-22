@@ -1,7 +1,7 @@
 -- Owns the app's selected-edition title and menu audio lifetime.
 
 local CacheFs = require("libs.storage.src.CacheFs")
-local HgssGame = require("game.hgss.src.HgssGame")
+local GameAudio = require("game.hgss.src.audio.GameAudio")
 
 ---@class StartupAudioComposition
 ---@field sound table<string, function>
@@ -14,6 +14,7 @@ local HgssGame = require("game.hgss.src.HgssGame")
 ---@field sink table<string, function>|nil
 ---@field accumulator number
 ---@field fadeTicks integer|nil
+---@field openingStarted boolean
 ---@field titleStarted boolean
 ---@field skipNotified boolean
 ---@field fadeStarted boolean
@@ -24,6 +25,7 @@ StartupAudioSession.__index = StartupAudioSession
 
 local FRAMES_PER_SECOND = 30
 local MAX_SOURCE_TICKS_PER_UPDATE = 8
+local OPENING_THEME = "SEQ_GS_TITLE"
 local TITLE_THEME = "SEQ_GS_POKEMON_THEME"
 local MENU_SELECT = "SEQ_SE_DP_SELECT"
 local FADE_TICKS = 60
@@ -42,7 +44,7 @@ function StartupAudioSession.new(options)
   )
   if composition == nil then
     cacheFs = cacheFs or CacheFs.forVersion(options.versionId)
-    composition = HgssGame.newStartupAudio({ cacheFs = cacheFs, outputRate = 32768 }) --[[@as StartupAudioComposition]]
+    composition = GameAudio.compose({ cacheFs = cacheFs, outputRate = 32768 }) --[[@as StartupAudioComposition]]
   end
   assert(type(composition) == "table" and type(composition.sound) == "table", "startup audio composition is invalid")
   local sound = composition.sound
@@ -66,12 +68,23 @@ function StartupAudioSession.new(options)
     sink = sink,
     accumulator = 0,
     fadeTicks = nil,
+    openingStarted = false,
     titleStarted = false,
     skipNotified = false,
     fadeStarted = false,
     disposed = false,
     diagnostic = nil,
   }, StartupAudioSession)
+end
+
+-- Starts the opening movie track exactly once. A session created after the
+-- movie already ended never replays it; the title entry replaces it below.
+function StartupAudioSession:beginOpening()
+  if self.disposed or self.openingStarted or self.titleStarted then
+    return
+  end
+  self.openingStarted = true
+  self.sound:playMusic(OPENING_THEME)
 end
 
 function StartupAudioSession:beginTitle()

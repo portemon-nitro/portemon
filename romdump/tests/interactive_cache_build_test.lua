@@ -2701,8 +2701,8 @@ function T.title_visual_scope_certifies_while_optional_audio_bank_fails()
     audioPlan = {
       index = {
         version = "heartgold",
-        sequences = { [41] = { bankId = 7 }, [42] = { bankId = 8 } },
-        sequenceBySymbol = { SEQ_GS_POKEMON_THEME = 41, SEQ_SE_DP_SELECT = 42 },
+        sequences = { [41] = { bankId = 7 }, [42] = { bankId = 8 }, [43] = { bankId = 7 } },
+        sequenceBySymbol = { SEQ_GS_TITLE = 43, SEQ_GS_POKEMON_THEME = 41, SEQ_SE_DP_SELECT = 42 },
       },
     },
   })
