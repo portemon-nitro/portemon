@@ -162,6 +162,7 @@ end
 local function pumpGame(game, ticks)
   for _ = 1, ticks do
     game:update(1 / 60)
+    game:draw()
   end
 end
 
@@ -201,15 +202,17 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
   local requestedMaps = {}
   local requestedMilestones = {}
   local host = {
+    requestStartupWalker = function(pairIndex, urgency)
+      -- Optional loader art never joins Continue's field-entry gates.
+      Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
+      Assert.equal(urgency, "near")
+      return false
+    end,
     requestMilestone = function(name, _)
       requestedMilestones[#requestedMilestones + 1] = name
       if name == "new-game-intro" then
         -- Menu-installed speculative prefetch stays pending here: Continue
         -- must reach field on entry planning and runtime readiness alone.
-        return false
-      end
-      if name == "startup-loader" then
-        -- Optional loader art never joins Continue's field-entry gates.
         return false
       end
       Assert.isTrue(
@@ -252,6 +255,7 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
     local stopCounting, loaderBuilds = countLoaderBuilds()
     local game = HgssGame.new({
       versionId = versionId,
+      startupPairIndex = 1,
       entry = { kind = "continue", saveId = saveId },
       onExit = function() end,
       derivedAssets = host,
@@ -270,6 +274,7 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
       local waited = 0
       while loaderBuilds() == 0 and waited < 60 do
         game:update(1 / 60)
+        game:draw()
         waited = waited + 1
       end
       Assert.equal(loaderBuilds(), 1, "entry planning constructs the production planning loader exactly once")
@@ -278,6 +283,7 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
       waited = 0
       while #requestedMaps == 0 and waited < 60 do
         game:update(1 / 60)
+        game:draw()
         waited = waited + 1
       end
       Assert.isTrue(#requestedMaps >= 1, "the saved location geometry is requested once entry planning is ready")
@@ -305,6 +311,7 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
       waited = 0
       while #fieldCalls == 0 and waited < 60 do
         game:update(1 / 60)
+        game:draw()
         waited = waited + 1
       end
       Assert.equal(#fieldCalls, 1, "field entry commits once geometry and runtime are both ready")
@@ -390,6 +397,11 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
   local requested = { milestones = {}, milestoneDemands = {}, maps = {}, pages = 0 }
   local planningReady, runtimeReady, geometryReady, introReady = false, false, false, false
   local host = {
+    requestStartupWalker = function(pairIndex, urgency)
+      Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
+      Assert.equal(urgency, "near")
+      return false
+    end,
     requestMilestone = function(name, urgency)
       requested.milestones[#requested.milestones + 1] = name
       requested.milestoneDemands[#requested.milestoneDemands + 1] = { name = name, urgency = urgency }
@@ -483,6 +495,7 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
         end
         local game = HgssGame.new({
           versionId = versionId,
+          startupPairIndex = 1,
           entry = { kind = "new_game" },
           onExit = function() end,
           derivedAssets = host,
@@ -500,6 +513,7 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
           local waited = 0
           while oakState == nil and waited < 120 do
             game:update(1 / 60)
+            game:draw()
             waited = waited + 1
             if game.state.view ~= nil then
               oakState = game.state

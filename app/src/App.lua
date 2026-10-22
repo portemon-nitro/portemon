@@ -216,6 +216,19 @@ local function startupAudioBorrow(versionId, epoch)
   }
 end
 
+-- The session's selected walking pair, chosen once per selected epoch by the
+-- import/selection flow. Game and editor loading journeys only forward it;
+-- they never reselect or randomize a pair locally.
+---@return integer selected 1..32 walking pair
+local function selectedPairIndex()
+  local pairIndex = App.pairIndex
+  assert(
+    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
+    "selection has no walking pair"
+  )
+  return pairIndex --[[@as integer]]
+end
+
 ---@param versionId string
 ---@return table<string, unknown> staged MainMenuState
 local function stageMenu(versionId)
@@ -235,6 +248,7 @@ local function stageMenu(versionId)
         local ok, stateOrError = pcall(SaveEditorState.new, {
           versionId = versionId,
           saveId = assert(result.saveId),
+          startupPairIndex = selectedPairIndex(),
           width = App.drawableWidth,
           height = App.drawableHeight,
           derivedAssets = provisioner:gameHost(),
@@ -375,6 +389,7 @@ function App._launchGameWithProvisioner(versionId, entry)
   App._releaseStartupAudio()
   local ok, gameOrError = pcall(HgssGame.new, {
     versionId = versionId,
+    startupPairIndex = selectedPairIndex(),
     entry = entry,
     onExit = function(result)
       if result and result.kind == "main_menu" then

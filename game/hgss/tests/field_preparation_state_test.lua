@@ -26,7 +26,11 @@ local function continueOptions(overrides)
     kind = "continue",
     saveId = "save-00000002",
     versionId = "heartgold",
+    startupPairIndex = 1,
     derivedAssets = {
+      requestStartupWalker = function()
+        return false
+      end,
       requestMilestone = function()
         return true
       end,
@@ -54,8 +58,12 @@ local function continueOptions(overrides)
 end
 
 local function settle(state)
+  -- The production frame loop draws every frame, so the settle helper
+  -- pumps the draw seam as well: readiness can only transfer after one
+  -- genuine loader frame.
   for _ = 1, 10 do
     state:update(1 / 60)
+    state:draw()
   end
 end
 
@@ -64,6 +72,13 @@ end
 -- logged so tests can prove demand ordering and urgency.
 local function gatedHost(gates, log)
   return {
+    requestStartupWalker = function(pairIndex, urgency)
+      log[#log + 1] = { pairIndex = pairIndex, urgency = urgency }
+      if gates.walkerFailure ~= nil then
+        return false, gates.walkerFailure
+      end
+      return gates.walker == true
+    end,
     requestMilestone = function(name, urgency)
       log[#log + 1] = { name = name, urgency = urgency }
       if name == "field-planning" then
@@ -110,6 +125,7 @@ local function newGameOptions(gates, log, calls, behavior, overrides)
       location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
     },
     versionId = "heartgold",
+    startupPairIndex = 1,
     derivedAssets = gatedHost(gates, log),
     createLoader = function()
       return gatedLoader(calls, behavior)

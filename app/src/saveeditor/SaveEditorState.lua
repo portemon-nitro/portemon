@@ -254,9 +254,10 @@ end
 ---@field pendingFocusReturn string?
 ---@field versionId string
 ---@field saveId string
+---@field startupPairIndex integer selected 1..32 walking pair, decorative only
 ---@field width number
 ---@field height number
----@field derivedAssets { requestMilestone: fun(name: string, urgency: string): unknown }
+---@field derivedAssets { requestMilestone: fun(name: string, urgency: string): unknown; requestStartupWalker: fun(pairIndex: integer, urgency: string): unknown }
 ---@field repositoryRoot string
 ---@field onResult fun(result: { kind: string })
 ---@field displayContext DisplayContext
@@ -515,6 +516,13 @@ function State.new(options)
   assert(type(options) == "table", "save editor state options are required")
   assert(type(options.versionId) == "string" and options.versionId ~= "")
   assert(type(options.saveId) == "string" and options.saveId ~= "")
+  assert(
+    type(options.startupPairIndex) == "number"
+      and options.startupPairIndex % 1 == 0
+      and options.startupPairIndex >= 1
+      and options.startupPairIndex <= 32,
+    "save editor state requires the selected walking pair 1..32"
+  )
   assert(type(options.derivedAssets) == "table" and type(options.derivedAssets.requestMilestone) == "function")
   assert(type(options.repositoryRoot) == "string" and options.repositoryRoot ~= "")
   assert(type(options.onResult) == "function")
@@ -568,6 +576,7 @@ function State.new(options)
   local self = setmetatable({
     versionId = options.versionId,
     saveId = options.saveId,
+    startupPairIndex = options.startupPairIndex,
     width = width,
     height = height,
     derivedAssets = options.derivedAssets,
@@ -585,6 +594,7 @@ function State.new(options)
     message = "Preparing save data",
     loading = HgssLoadingPresentation.new({
       versionId = options.versionId,
+      pairIndex = options.startupPairIndex,
       width = width,
       height = height,
       displayContext = displayContext,
@@ -710,8 +720,13 @@ function State:_pollLoadingArt()
   end
   -- The loading cover is decorative: any failure in this whole sequence
   -- latches once as a cosmetic diagnostic and never blocks the required
-  -- editor opening. A pending milestone stays retryable.
-  local ok, ready, failure = pcall(self.derivedAssets.requestMilestone, "startup-loader", "near")
+  -- editor opening. A pending pair demand stays retryable.
+  local pairIndex = self.startupPairIndex
+  assert(
+    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
+    "save editor opening requires the selected walking pair 1..32"
+  )
+  local ok, ready, failure = pcall(self.derivedAssets.requestStartupWalker, pairIndex, "near")
   if not ok then
     self.loaderArtFailure = ready
     self.loaderArtObserved = true
@@ -4019,6 +4034,7 @@ local ACTIVATION_HANDLERS = {
     self.status, self.errorMessage = "opening", nil
     self.loading = HgssLoadingPresentation.new({
       versionId = self.versionId,
+      pairIndex = assert(self.startupPairIndex, "save editor retry keeps the selected walking pair"),
       width = self.width,
       height = self.height,
       displayContext = self.displayContext,

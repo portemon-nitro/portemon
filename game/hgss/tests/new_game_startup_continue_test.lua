@@ -196,6 +196,9 @@ end
 
 local function readyHost()
   return {
+    requestStartupWalker = function()
+      return false
+    end,
     requestMilestone = function()
       return true
     end,
@@ -241,8 +244,12 @@ local function planningLoader()
 end
 
 local function settle(game)
+  -- The production frame loop draws every frame, so the settle helper
+  -- pumps the draw seam as well: readiness can only transfer after one
+  -- genuine loader frame.
   for _ = 1, 10 do
     game:update(1 / 60)
+    game:draw()
   end
 end
 
@@ -260,6 +267,7 @@ local function newGame(context, candidate)
   function context.oakState:dispose() end
   local game = HgssGame.new({
     versionId = "heartgold",
+    startupPairIndex = 1,
     entry = { kind = "new_game" },
     onExit = function() end,
     derivedAssets = readyHost(),
@@ -325,14 +333,12 @@ function T.continue_never_reapplies_fresh_startup_initialization()
     }
     context.store = store
     local derivedAssets = readyHost()
-    derivedAssets.requestMilestone = function(name)
-      if name == "startup-loader" then
-        return false, "optional walking art unavailable"
-      end
-      return true
+    derivedAssets.requestStartupWalker = function()
+      return false, "optional walking art unavailable"
     end
     local game = HgssGame.new({
       versionId = "heartgold",
+      startupPairIndex = 1,
       entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = derivedAssets,
@@ -403,6 +409,7 @@ function T.continue_enters_the_field_without_the_covered_entry()
     context.store = store
     local game = HgssGame.new({
       versionId = "heartgold",
+      startupPairIndex = 1,
       entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = readyHost(),
@@ -682,6 +689,7 @@ function T.presented_oak_black_draw_precedes_field_construction()
     end
     local game = HgssGame.new({
       versionId = "heartgold",
+      startupPairIndex = 1,
       entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = readyHost(),
@@ -755,6 +763,7 @@ function T.continue_constructs_the_field_without_the_oak_handoff()
     end)
     local game = HgssGame.new({
       versionId = "heartgold",
+      startupPairIndex = 1,
       entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = readyHost(),
@@ -779,13 +788,15 @@ function T.continue_enters_field_when_optional_loading_art_throws()
     kind = "continue",
     saveId = "save-00000002",
     versionId = "heartgold",
+    startupPairIndex = 1,
     derivedAssets = {
-      requestMilestone = function(name, urgency)
-        if name == "startup-loader" then
-          artRequests = artRequests + 1
-          Assert.equal(urgency, "near")
-          error("synthetic loader art failure", 0)
-        end
+      requestStartupWalker = function(pairIndex, urgency)
+        artRequests = artRequests + 1
+        Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
+        Assert.equal(urgency, "near")
+        error("synthetic loader art failure", 0)
+      end,
+      requestMilestone = function(_, urgency)
         Assert.equal(urgency, "required")
         return requiredReady
       end,
@@ -812,6 +823,7 @@ function T.continue_enters_field_when_optional_loading_art_throws()
     onCancel = function() end,
   })
   Assert.equal(state.loading.versionId, "heartgold", "the loading cover uses the selected edition")
+  Assert.equal(state.loading.pairIndex, 1, "the loading cover names the selected pair")
   local view = assert(state.loading, "the decorative cover is present while required work is pending")
   local releaseCount = 0
   local releaseView = view.dispose
@@ -828,6 +840,9 @@ function T.continue_enters_field_when_optional_loading_art_throws()
   Assert.notNil(state.loading, "the fallback cover stays live while required work is pending")
   Assert.equal(#transfers, 0, "pending required closures never transfer early")
   requiredReady = true
+  state:update(1 / 60)
+  Assert.equal(#transfers, 0, "an otherwise-ready entry never transfers before its first loader draw")
+  state:draw()
   for _ = 1, 10 do
     state:update(1 / 60)
   end
@@ -852,13 +867,18 @@ function T.continue_pending_loader_art_never_blocks_transfer_and_is_never_adopte
     kind = "continue",
     saveId = "save-00000002",
     versionId = "heartgold",
+    startupPairIndex = 1,
     derivedAssets = {
-      requestMilestone = function(name, urgency)
-        if name == "startup-loader" then
-          artRequests = artRequests + 1
-          Assert.equal(urgency, "near")
-          return loaderReady
+      requestStartupWalker = function(pairIndex, urgency)
+        artRequests = artRequests + 1
+        Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
+        Assert.equal(urgency, "near")
+        if loaderReady then
+          return true
         end
+        return false
+      end,
+      requestMilestone = function(_, urgency)
         Assert.equal(urgency, "required")
         return false
       end,
@@ -903,17 +923,22 @@ function T.continue_pending_loader_art_never_blocks_transfer_and_is_never_adopte
     adoptCalls = adoptCalls + 1
     return true
   end
+  loaderReady = true
   state.derivedAssets = {
-    requestMilestone = function(name, urgency)
-      if name == "startup-loader" then
-        artRequests = artRequests + 1
-        Assert.equal(urgency, "near")
-        return true
-      end
+    requestStartupWalker = function(pairIndex, urgency)
+      artRequests = artRequests + 1
+      Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
+      Assert.equal(urgency, "near")
+      return true
+    end,
+    requestMilestone = function(_, urgency)
       Assert.equal(urgency, "required")
       return true
     end,
   }
+  state:update(1 / 60)
+  Assert.equal(#transfers, 0, "an otherwise-ready entry never transfers before its first loader draw")
+  state:draw()
   for _ = 1, 10 do
     state:update(1 / 60)
   end
@@ -944,13 +969,15 @@ function T.continue_malformed_loader_art_latches_once_and_cancel_releases_cover_
     kind = "continue",
     saveId = "save-00000002",
     versionId = "heartgold",
+    startupPairIndex = 1,
     derivedAssets = {
-      requestMilestone = function(name, urgency)
-        if name == "startup-loader" then
-          artRequests = artRequests + 1
-          Assert.equal(urgency, "near")
-          return true
-        end
+      requestStartupWalker = function(pairIndex, urgency)
+        artRequests = artRequests + 1
+        Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
+        Assert.equal(urgency, "near")
+        return true
+      end,
+      requestMilestone = function(_, urgency)
         Assert.equal(urgency, "required")
         return requiredReady
       end,
