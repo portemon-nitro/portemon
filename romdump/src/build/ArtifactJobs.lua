@@ -1775,6 +1775,43 @@ local function validateStartupTitle(check)
   return type(bundle) == "table" and bundle.generationId == check.generationId
 end
 
+local function executeOpeningScene(artifact, context, job)
+  local compiler = require("romdump.src.digest.startup.OpeningMovieCompiler")
+  local writer = require("romdump.src.digest.startup.OpeningMovieCacheWriter")
+  local sceneNumber = tonumber(job.key)
+  if type(job.payload) == "table" and type(job.payload.sceneNumber) == "number" then
+    sceneNumber = job.payload.sceneNumber
+  end
+  if type(job.sceneNumber) == "number" then
+    sceneNumber = job.sceneNumber
+  end
+  assert(
+    type(sceneNumber) == "number" and sceneNumber % 1 == 0 and sceneNumber >= 1 and sceneNumber <= 5,
+    "opening scene jobs carry their numbered scene selection"
+  )
+  ---@cast sceneNumber integer
+  local bundle, err = compiler.compile(
+    assert(context.romFs, "opening scene requires a source reader"),
+    assert(context.versionId or context.romFs:version(), "opening scene requires an edition"),
+    sceneNumber
+  )
+  if bundle == nil then
+    error(assert(err), 0)
+  end
+  return writer.stageScene(artifact, bundle, job.generationId, sceneNumber)
+end
+
+local function validateOpeningScene(check)
+  local cache = require("libs.assets.src.StartupAssetCache")
+  local sceneNumber = tonumber(check.key)
+  if sceneNumber == nil or sceneNumber % 1 ~= 0 or sceneNumber < 1 or sceneNumber > 5 then
+    return false
+  end
+  ---@cast sceneNumber integer
+  local bundle = cache.loadOpeningScene(check.cacheFs, sceneNumber, check.cacheFs.versionId)
+  return type(bundle) == "table" and bundle.generationId == check.generationId
+end
+
 DESCRIPTORS = {
   -- Planning roots: no prerequisite.
   ["world-catalog"] = {
@@ -2073,6 +2110,14 @@ DESCRIPTORS = {
     execute = executeStartupTitle,
     validate = validateStartupTitle,
   },
+  -- Five independently requestable opening-movie scenes decode straight
+  -- from the verified dump reader: neither enrolls the source inventory
+  -- nor any audio bank.
+  ["opening-scene"] = {
+    size = "heavy",
+    execute = executeOpeningScene,
+    validate = validateOpeningScene,
+  },
 }
 
 -- The closed behavior table and the accepted vocabulary describe the same
@@ -2226,6 +2271,11 @@ local COMPLETE_STATIC_GLOBALS = {
   "mon-layout",
   "audio-catalog",
   "startup-title",
+  "opening-scene:1",
+  "opening-scene:2",
+  "opening-scene:3",
+  "opening-scene:4",
+  "opening-scene:5",
 }
 
 -- Producer-internal generation source-plan memo for compiler-worker
@@ -2312,9 +2362,14 @@ function ArtifactJobs.completeIterator(plans)
         return identify("source-plan", "global")
       elseif phase == 1 then
         if position <= #COMPLETE_STATIC_GLOBALS then
-          local kind = COMPLETE_STATIC_GLOBALS[position]
+          local entry = COMPLETE_STATIC_GLOBALS[position]
           position = position + 1
-          return identify(kind, "global")
+          local kind, key = entry:match("^([^:]+):?(.*)$")
+          assert(kind, "complete inventory entry is malformed: " .. tostring(entry))
+          if key == "" then
+            key = "global"
+          end
+          return identify(kind, key)
         end
         phase, position = 2, 1
       elseif phase == 2 then

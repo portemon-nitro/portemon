@@ -166,6 +166,10 @@ local DOMAINS = {
     "StartupCacheWriter",
     "StartupVisualCompiler",
     "TitleScreenCompiler",
+    "OpeningMovieSceneSources",
+    "OpeningMovieCompiler",
+    "OpeningMovieCacheWriter",
+    "OpeningParticleCompiler",
   },
 }
 

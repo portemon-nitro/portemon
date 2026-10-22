@@ -573,6 +573,16 @@ DerivedAssetContract.startupTitle = {
   schema = "g4-startup-title-v2",
 }
 
+-- The five opening-movie scene bundles share one closed schema but stay
+-- independently staged: each numbered manifest carries only its own scene
+-- key, its source tick rate, its closed movie event grammar, and asset
+-- references under its own scene root. A bundle from another scene or
+-- edition never reads as ready.
+DerivedAssetContract.startupOpeningScene = {
+  schema = "g4-startup-opening-scene-v1",
+  tickRate = 30,
+}
+
 -- The mesh batch format constants (magic, version, stride, header size,
 -- index widths) have their own owner (G4MeshFormat); the vertex-layout
 -- version aliases that owner's version, so nothing mesh-shaped lives here.

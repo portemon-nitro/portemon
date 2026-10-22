@@ -400,6 +400,23 @@ local function read(cacheFs, path, schema, versionId)
       hero = true,
       follower = true,
     }
+  elseif schema == Contract.startupOpeningScene.schema then
+    allowed = {
+      schema = true,
+      versionId = true,
+      generationId = true,
+      sceneNumber = true,
+      sourceTickRate = true,
+      initial = true,
+      layers = true,
+      spriteClips = true,
+      models = true,
+      particles = true,
+      timeline = true,
+      assets = true,
+      camera = true,
+      lighting = true,
+    }
   else
     allowed = {
       schema = true,
@@ -522,6 +539,396 @@ end
 
 function StartupAssetCache.titlePath()
   return TITLE_PATH
+end
+
+-- The five opening-movie scenes form one closed numeric family beside the
+-- walking pair and title scopes: each scene addresses its own versioned
+-- manifest, and no other key shape is routable.
+---@param sceneNumber integer
+---@return string
+function StartupAssetCache.openingScenePath(sceneNumber)
+  assert(
+    type(sceneNumber) == "number" and sceneNumber % 1 == 0 and sceneNumber >= 1 and sceneNumber <= 5,
+    "opening scene number must be an integer 1..5"
+  )
+  return "data/generated/startup/opening/" .. tostring(sceneNumber) .. ".lua"
+end
+
+-- Source starter emitter identities behind scene 4: the retail
+-- sStarterParticleResIds rows group grass, fire, and water in this order.
+-- The group vocabulary is closed; any other emitter id or group is a
+-- malformed particle record, never a silent omission.
+local OPENING_EMITTER_GROUPS = {
+  [0] = "water",
+  [1] = "water",
+  [2] = "water",
+  [3] = "fire",
+  [4] = "fire",
+  [5] = "fire",
+  [6] = "grass",
+  [7] = "grass",
+  [8] = "grass",
+}
+
+local OPENING_OPS = {
+  setLayer = true,
+  setPalette = true,
+  setScroll = true,
+  setBlend = true,
+  window = true,
+  circleWipe = true,
+  setSpriteClip = true,
+  spriteVisible = true,
+  setModelClip = true,
+  setCamera = true,
+  setLighting = true,
+  startEmitters = true,
+  setScreenRoles = true,
+  setFade = true,
+  waitTicks = true,
+  waitEffects = true,
+  enableSkip = true,
+  finish = true,
+}
+
+local function isOpeningSceneRoot(path, sceneNumber)
+  if type(path) ~= "string" then
+    return false
+  end
+  local prefix = "assets/generated/startup/opening/" .. tostring(sceneNumber) .. "/"
+  return path:sub(1, #prefix) == prefix
+end
+
+local function checkOpeningAssetPath(cacheFs, path, sceneNumber, role)
+  if not isOpeningSceneRoot(path, sceneNumber) then
+    return nil, invalid("opening scene " .. role .. " escapes its scene asset root", path)
+  end
+  if not cacheFs:exists(path, "file") then
+    return nil, invalid("opening scene " .. role .. " is missing", path)
+  end
+  return true
+end
+
+local function isHexHash(value)
+  return type(value) == "string" and #value == 40 and value:find("[^0-9a-f]") == nil
+end
+
+local function validateOpeningLayer(cacheFs, layer, sceneNumber, role)
+  if
+    type(layer) ~= "table"
+    or type(layer.image) ~= "string"
+    or not isNonnegativeInteger(layer.width)
+    or layer.width == 0
+    or not isNonnegativeInteger(layer.height)
+    or layer.height == 0
+    or not isHexHash(layer.sourceHash)
+  then
+    return nil,
+      invalid("opening scene " .. role .. " layer is malformed", StartupAssetCache.openingScenePath(sceneNumber))
+  end
+  local ok, err = checkOpeningAssetPath(cacheFs, layer.image, sceneNumber, role .. " layer art")
+  if not ok then
+    return nil, err
+  end
+  return true
+end
+
+local function validateOpeningClip(clip, sceneNumber)
+  if type(clip) ~= "table" or type(clip.id) ~= "string" or not isPositiveInteger(clip.frameCount) then
+    return nil, invalid("opening scene sprite clip is malformed", StartupAssetCache.openingScenePath(sceneNumber))
+  end
+  if not isOpeningSceneRoot(clip.id, sceneNumber) then
+    return nil, invalid("opening scene sprite clip escapes its scene asset root", clip.id)
+  end
+  return true
+end
+
+local function validateOpeningEmitters(emitters, sceneNumber)
+  if type(emitters) ~= "table" then
+    return nil, invalid("opening scene emitter records are malformed", StartupAssetCache.openingScenePath(sceneNumber))
+  end
+  if sceneNumber == 4 then
+    if #emitters ~= 9 then
+      return nil, invalid("opening scene 4 keeps all nine starter emitters", StartupAssetCache.openingScenePath(4))
+    end
+    for _, emitter in ipairs(emitters) do
+      if
+        type(emitter) ~= "table"
+        or type(emitter.id) ~= "number"
+        or emitter.id % 1 ~= 0
+        or emitter.id < 0
+        or emitter.id > 8
+        or emitter.group ~= OPENING_EMITTER_GROUPS[emitter.id]
+      then
+        return nil,
+          invalid("opening scene emitter is outside the nine source emitters", StartupAssetCache.openingScenePath(4))
+      end
+    end
+    return true
+  end
+  if #emitters ~= 0 then
+    return nil,
+      invalid("only opening scene 4 carries starter emitters", StartupAssetCache.openingScenePath(sceneNumber))
+  end
+  return true
+end
+
+local function validateOpeningEventOperands(event, sceneNumber)
+  local op = event.op
+  if op == "waitTicks" then
+    if not isPositiveInteger(event.ticks) then
+      return nil, "opening scene wait carries no source tick count"
+    end
+  elseif op == "setFade" or op == "setBlend" or op == "setScroll" then
+    if not isPositiveInteger(event.ticks) then
+      return nil, "opening scene effect carries no source tick count"
+    end
+    if event.direction ~= nil and type(event.direction) ~= "string" then
+      return nil, "opening scene scroll direction is malformed"
+    end
+  elseif op == "circleWipe" then
+    if event.ticks ~= nil and not isPositiveInteger(event.ticks) then
+      return nil, "opening scene wipe carries a malformed tick count"
+    end
+  elseif op == "setLayer" then
+    if type(event.role) ~= "string" then
+      return nil, "opening scene layer carries no screen role"
+    end
+  elseif op == "window" then
+    if type(event.target) ~= "string" then
+      return nil, "opening scene window carries no target"
+    end
+    if event.ticks ~= nil and not isPositiveInteger(event.ticks) then
+      return nil, "opening scene window carries a malformed tick count"
+    end
+  elseif op == "setSpriteClip" then
+    if type(event.sprite) ~= "string" or type(event.clip) ~= "string" then
+      return nil, "opening scene sprite clip event is malformed"
+    end
+    if not isOpeningSceneRoot(event.clip, sceneNumber) then
+      return nil, "opening scene sprite clip event escapes its scene asset root"
+    end
+  elseif op == "spriteVisible" then
+    if type(event.sprite) ~= "string" or type(event.visible) ~= "boolean" then
+      return nil, "opening scene sprite visibility event is malformed"
+    end
+  elseif op == "setModelClip" then
+    if type(event.model) ~= "string" or type(event.clip) ~= "string" then
+      return nil, "opening scene model clip event is malformed"
+    end
+  elseif op == "setCamera" then
+    if type(event.distance) ~= "number" then
+      return nil, "opening scene camera event carries no source distance"
+    end
+  elseif op == "setLighting" then
+    if type(event.map) ~= "number" then
+      return nil, "opening scene lighting event carries no town"
+    end
+  elseif op == "startEmitters" then
+    if
+      type(event.group) ~= "string"
+      or (event.group ~= "grass" and event.group ~= "fire" and event.group ~= "water")
+      or type(event.emitters) ~= "table"
+      or #event.emitters == 0
+    then
+      return nil, "opening scene emitter start names no source emitter group"
+    end
+  elseif op == "setScreenRoles" then
+    if type(event.upper) ~= "string" or type(event.lower) ~= "string" then
+      return nil, "opening scene screen roles are malformed"
+    end
+  elseif op == "waitEffects" then
+    if type(event.effects) ~= "table" or #event.effects == 0 then
+      return nil, "opening scene effect wait names no started effect"
+    end
+    for _, name in ipairs(event.effects) do
+      if type(name) ~= "string" or name == "" then
+        return nil, "opening scene effect wait names no started effect"
+      end
+    end
+  elseif op == "enableSkip" then
+    if sceneNumber ~= 1 then
+      return nil, "only opening scene 1 opens the movie skip gate"
+    end
+  end
+  return true
+end
+
+local function validateOpeningTimeline(timeline, sceneNumber)
+  local path = StartupAssetCache.openingScenePath(sceneNumber)
+  if type(timeline) ~= "table" or type(timeline.steps) ~= "table" or type(timeline.events) ~= "table" then
+    return nil, invalid("opening scene timeline is malformed", path)
+  end
+  local events = timeline.events
+  if #events == 0 then
+    return nil, invalid("opening scene timeline carries no events", path)
+  end
+  local skipCount = 0
+  for _, event in ipairs(events) do
+    if
+      type(event) ~= "table"
+      or type(event.op) ~= "string"
+      or OPENING_OPS[event.op] ~= true
+      or type(event.atTick) ~= "number"
+      or event.atTick % 1 ~= 0
+      or event.atTick < 0
+      or (event.stepId ~= nil and type(event.stepId) ~= "string")
+    then
+      return nil, invalid("opening scene event is outside the closed movie grammar", path)
+    end
+    if event.op == "enableSkip" then
+      skipCount = skipCount + 1
+      if event.atTick == 0 then
+        return nil, invalid("opening scene skip gate never opens on the first frame", path)
+      end
+    end
+    local ok, reason = validateOpeningEventOperands(event, sceneNumber)
+    if not ok then
+      return nil, invalid(assert(reason, "event rejection names its cause"), path)
+    end
+  end
+  if sceneNumber == 1 and skipCount == 0 then
+    return nil, invalid("opening scene 1 carries the source movie skip gate", path)
+  end
+  local covered = {}
+  for _, step in ipairs(timeline.steps) do
+    if
+      type(step) ~= "table"
+      or type(step.id) ~= "string"
+      or type(step.events) ~= "table"
+      or #step.events == 0
+      or type(step["until"]) ~= "table"
+    then
+      return nil, invalid("opening scene step is malformed", path)
+    end
+    if step["until"].kind == "duration" then
+      if not isPositiveInteger(step["until"].ticks) then
+        return nil, invalid("opening scene step carries no source duration", path)
+      end
+    elseif step["until"].kind == "effect" then
+      if type(step["until"].effect) ~= "string" or step["until"].effect == "" then
+        return nil, invalid("opening scene step waits on no named effect", path)
+      end
+    else
+      return nil, invalid("opening scene step completion is malformed", path)
+    end
+    for _, index in ipairs(step.events) do
+      if
+        type(index) ~= "number"
+        or index % 1 ~= 0
+        or index < 1
+        or index > #events
+        or events[index].stepId ~= step.id
+      then
+        return nil, invalid("opening scene step references no owned event", path)
+      end
+      covered[index] = true
+    end
+  end
+  for index = 1, #events do
+    if not covered[index] then
+      return nil, invalid("opening scene event is unreachable from its steps", path)
+    end
+  end
+  return true
+end
+
+-- One independently staged opening-movie scene: strict source-independent
+-- g4-startup-opening-scene-v1 package with numbered scene, edition, 30Hz
+-- duration, upper/lower 2D layer roles, sprite clips, model descriptors
+-- and animations where used, starter emitter records where used, and the
+-- closed source-timed event program. Every image, mesh, and clip lives
+-- under that scene's asset root; source member identities, executable
+-- payloads, and sibling roots never cross into the runtime manifest.
+---@param cacheFs CacheFs
+---@param sceneNumber integer
+---@param versionId string
+---@return table<string, unknown>|nil
+---@return Errors.Error|string|nil
+function StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, versionId)
+  assert(
+    type(sceneNumber) == "number" and sceneNumber % 1 == 0 and sceneNumber >= 1 and sceneNumber <= 5,
+    "opening scene number must be an integer 1..5"
+  )
+  assert(EDITIONS[versionId], "opening scene edition must be heartgold or soulsilver")
+  local path = StartupAssetCache.openingScenePath(sceneNumber)
+  local record, loadError = read(cacheFs, path, Contract.startupOpeningScene.schema, versionId)
+  if record == nil then
+    return nil, loadError
+  end
+  if record.sceneNumber ~= sceneNumber then
+    return nil, invalid("opening scene manifest names another scene", path)
+  end
+  if record.sourceTickRate ~= Contract.startupOpeningScene.tickRate then
+    return nil, invalid("opening scene manifest runs outside the source frame rate", path)
+  end
+  if type(record.initial) ~= "table" or type(record.initial.screenRoles) ~= "string" then
+    return nil, invalid("opening scene initial screen roles are malformed", path)
+  end
+  if type(record.layers) ~= "table" or type(record.layers.upper) ~= "table" or type(record.layers.lower) ~= "table" then
+    return nil, invalid("opening scene keeps its upper and lower screen roles", path)
+  end
+  for _, role in ipairs({ "upper", "lower" }) do
+    for _, layer in ipairs(record.layers[role]) do
+      local ok, err = validateOpeningLayer(cacheFs, layer, sceneNumber, role)
+      if not ok then
+        return nil, err
+      end
+    end
+  end
+  if type(record.spriteClips) ~= "table" then
+    return nil, invalid("opening scene sprite clips are malformed", path)
+  end
+  for _, clip in ipairs(record.spriteClips) do
+    local ok, err = validateOpeningClip(clip, sceneNumber)
+    if not ok then
+      return nil, err
+    end
+  end
+  if type(record.models) ~= "table" then
+    return nil, invalid("opening scene models are malformed", path)
+  end
+  if #record.models > 0 then
+    if sceneNumber ~= 3 or #record.models ~= 3 then
+      return nil, invalid("only opening scene 3 carries its three town models", path)
+    end
+    for _, model in ipairs(record.models) do
+      if
+        type(model) ~= "table"
+        or type(model.descriptor) ~= "table"
+        or type(model.clips) ~= "table"
+        or #model.clips < 2
+      then
+        return nil, invalid("opening scene town keeps its two animation channels", path)
+      end
+      for _, clip in ipairs(model.clips) do
+        if type(clip) ~= "table" or not isPositiveInteger(clip.frameCount) then
+          return nil, invalid("opening scene town animation channel is malformed", path)
+        end
+      end
+    end
+  end
+  if type(record.particles) ~= "table" or type(record.particles.seed) ~= "number" then
+    return nil, invalid("opening scene particles are malformed", path)
+  end
+  local ok, err = validateOpeningEmitters(record.particles.emitters, sceneNumber)
+  if not ok then
+    return nil, err
+  end
+  ok, err = validateOpeningTimeline(record.timeline, sceneNumber)
+  if not ok then
+    return nil, err
+  end
+  if type(record.assets) ~= "table" then
+    return nil, invalid("opening scene asset index is malformed", path)
+  end
+  for assetPath in pairs(record.assets) do
+    ok, err = checkOpeningAssetPath(cacheFs, assetPath, sceneNumber, "indexed asset")
+    if not ok then
+      return nil, err
+    end
+  end
+  return record
 end
 
 local function hasWalkerPivot(visual)

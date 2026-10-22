@@ -21,6 +21,7 @@ local VALID_KINDS = {
   ["audio-bank"] = true,
   pokedex = true,
   ["startup-walker"] = true,
+  ["opening-scene"] = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
@@ -156,6 +157,15 @@ local function selectorKey(selector)
       "startup-walker request requires an integer pairIndex 1..32"
     )
     return "startup-walker:" .. tostring(selector.pairIndex)
+  elseif kind == "opening-scene" then
+    assert(
+      type(selector.sceneNumber) == "number"
+        and selector.sceneNumber % 1 == 0
+        and selector.sceneNumber >= 1
+        and selector.sceneNumber <= 5,
+      "opening-scene request requires an integer sceneNumber 1..5"
+    )
+    return "opening-scene:" .. tostring(selector.sceneNumber)
   else
     assert(
       type(selector.pageId) == "number" and selector.pageId % 1 == 0 and selector.pageId >= 0,
@@ -268,6 +278,8 @@ function CacheService:request(epoch, selector)
     -- map identity: the dispatched packet names its kind and urgency only.
   elseif selector.requestKind == "startup-walker" then
     command.pairIndex = selector.pairIndex
+  elseif selector.requestKind == "opening-scene" then
+    command.sceneNumber = selector.sceneNumber
   else
     command.pageId = selector.pageId
   end

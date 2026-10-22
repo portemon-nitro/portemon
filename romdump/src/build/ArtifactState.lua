@@ -108,6 +108,10 @@ ArtifactState.KINDS = {
   -- Small, independently generated startup visuals and title scene.
   ["startup-loader"] = true,
   ["startup-title"] = true,
+  -- Five independently requestable opening-movie scenes: each numbered
+  -- scene owns its own receipt, manifest, and asset root, never the movie
+  -- as a whole.
+  ["opening-scene"] = true,
 }
 
 ArtifactState.RECEIPT_SCHEMA = "g4-derived-receipt-v1"
@@ -165,6 +169,12 @@ local function checkKey(kind, key)
   end
   if kind == "startup-title" then
     assert(key == "global", kind .. " artifacts require the global key")
+    return
+  end
+  if kind == "opening-scene" then
+    assert(type(key) == "string" and key:match("^[1-9][0-9]*$") ~= nil, "invalid artifact key: " .. key)
+    local index = tonumber(key)
+    assert(index ~= nil and index % 1 == 0 and index >= 1 and index <= 5, "invalid artifact key: " .. key)
     return
   end
   if kind == "pokegear" then

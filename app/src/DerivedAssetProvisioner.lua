@@ -188,6 +188,22 @@ function DerivedAssetProvisioner.new(options)
       end
       return nil, failure
     end,
+    -- One numbered opening-movie scene for the cinematic journey (dot
+    -- call): the caller owns the 1..5 selection, the worker compiles
+    -- exactly that scene's source members, and readiness observes only the
+    -- matching numbered receipt. A ready worker result reads true;
+    -- anything else reads pending with retained attribution.
+    requestOpeningScene = function(sceneNumber, urgency)
+      assert(
+        type(sceneNumber) == "number" and sceneNumber % 1 == 0 and sceneNumber >= 1 and sceneNumber <= 5,
+        "opening scene number must be an integer 1..5"
+      )
+      local ready, failure = ask("opening-scene", urgency, { sceneNumber = sceneNumber })
+      if ready then
+        return true
+      end
+      return nil, failure
+    end,
     milestoneStatus = function(name)
       assert(type(name) == "string" and name ~= "", "milestone progress requires its name")
       local active = guard()
