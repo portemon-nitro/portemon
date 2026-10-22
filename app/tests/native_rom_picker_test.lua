@@ -6,6 +6,110 @@ local PICKER_MODULE = "app.src.launcher.NativeRomPicker"
 
 local T = {}
 
+-- A capability probe answers whether a native dialog can open without
+-- opening one. It returns a plain boolean, never a dialog result, and it
+-- must not leave native initialization behind.
+local function withAvailabilityProbe(spec, fn)
+  local calls = { cdef = 0, load = 0, init = 0, quit = 0, open = 0 }
+  local library = {}
+  function library.NFD_Init()
+    calls.init = calls.init + 1
+    if spec.initResult ~= nil then
+      return spec.initResult
+    end
+    return 1
+  end
+  function library.NFD_Quit()
+    calls.quit = calls.quit + 1
+  end
+  function library.NFD_OpenDialogU8(_)
+    calls.open = calls.open + 1
+    return 2
+  end
+  function library.NFD_GetError()
+    return "injected dialog error"
+  end
+  function library.NFD_FreePathU8() end
+
+  local ffi = { arch = spec.arch or "x64" }
+  function ffi.cdef(_)
+    calls.cdef = calls.cdef + 1
+  end
+  function ffi.load(_)
+    calls.load = calls.load + 1
+    if spec.loadError ~= nil then
+      error(spec.loadError)
+    end
+    return library
+  end
+  function ffi.new(_)
+    return {}
+  end
+  function ffi.string(value)
+    return value
+  end
+
+  local previousFfi = package.loaded.ffi
+  local previousPicker = package.loaded[PICKER_MODULE]
+  local originalGetOS = love.system.getOS
+  package.loaded.ffi = ffi
+  package.loaded[PICKER_MODULE] = nil
+  love.system.getOS = function()
+    return spec.os or "Linux"
+  end
+  local ok, err = pcall(fn, require(PICKER_MODULE), calls)
+  love.system.getOS = originalGetOS
+  package.loaded.ffi = previousFfi
+  package.loaded[PICKER_MODULE] = previousPicker
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.unsupported_platform_has_no_native_bridge()
+  withAvailabilityProbe({ os = "iOS" }, function(picker, calls)
+    Assert.equal(picker.available(), false)
+    Assert.equal(calls.init, 0)
+    Assert.equal(calls.quit, 0)
+    Assert.equal(calls.open, 0)
+  end)
+end
+
+function T.unsupported_architecture_has_no_native_bridge()
+  withAvailabilityProbe({ os = "Linux", arch = "x86" }, function(picker, calls)
+    Assert.equal(picker.available(), false)
+    Assert.equal(calls.init, 0)
+    Assert.equal(calls.quit, 0)
+    Assert.equal(calls.open, 0)
+  end)
+end
+
+function T.missing_library_has_no_native_bridge_without_initializing()
+  withAvailabilityProbe({ loadError = "injected load error" }, function(picker, calls)
+    Assert.equal(picker.available(), false)
+    Assert.equal(calls.init, 0)
+    Assert.equal(calls.quit, 0)
+    Assert.equal(calls.open, 0)
+  end)
+end
+
+function T.failing_native_init_has_no_bridge_and_balances_init_quit()
+  withAvailabilityProbe({ initResult = 0 }, function(picker, calls)
+    Assert.equal(picker.available(), false)
+    Assert.equal(calls.init, 1)
+    Assert.equal(calls.quit, 1)
+    Assert.equal(calls.open, 0)
+  end)
+end
+
+function T.loadable_bridge_reports_available_without_opening_a_dialog()
+  withAvailabilityProbe({}, function(picker, calls)
+    Assert.equal(picker.available(), true)
+    Assert.equal(calls.open, 0)
+    Assert.equal(calls.init, calls.quit)
+  end)
+end
+
 function T.unsupported_platform_reports_drop_fallback()
   local system = love.system
   local originalGetOS = system.getOS
@@ -121,6 +225,21 @@ function T.invalid_library_load_reports_fallback_without_initializing()
     Assert.equal(calls.init, 0)
     Assert.equal(calls.quit, 0)
     Assert.equal(calls.free, 0)
+  end)
+end
+
+-- The probe and the dialog share one bridge binding: declarations apply once,
+-- the probe never opens a dialog, and init/quit stay balanced across both.
+function T.probe_and_dialog_share_one_bridge_binding()
+  withFakeBridge(1, false, function(picker, calls)
+    Assert.equal(picker.available(), true)
+    Assert.equal(calls.open, 0, "the probe never opens a dialog")
+    local result = picker.openSingle()
+    Assert.equal(result.kind, "path")
+    Assert.equal(result.path, "/tmp/game.nds")
+    Assert.equal(calls.cdef, 1, "probe and dialog share one declaration")
+    Assert.equal(calls.open, 1)
+    Assert.equal(calls.init, calls.quit, "every init is balanced by a quit")
   end)
 end
 

@@ -743,9 +743,13 @@ end
 
 function T.native_picker_path_waits_for_quiescence_before_importing()
   local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
+  local originalAvailable = NativeRomPicker.available
   local originalOpen = NativeRomPicker.openSingle
   local originalNew = RomImporter.new
   local starts = { path = 0, drop = 0 }
+  NativeRomPicker.available = function()
+    return true
+  end
   NativeRomPicker.openSingle = function()
     return { kind = "path", path = "/user/heartgold.nds" }
   end
@@ -789,6 +793,7 @@ function T.native_picker_path_waits_for_quiescence_before_importing()
       Assert.equal(starts.drop, 0, "native selection does not masquerade as a dropped file")
     end)
   end)
+  NativeRomPicker.available = originalAvailable
   NativeRomPicker.openSingle = originalOpen
   RomImporter.new = originalNew
   if not ok then
@@ -798,7 +803,11 @@ end
 
 function T.picker_cancel_does_not_start_a_barrier_or_import()
   local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
+  local originalAvailable = NativeRomPicker.available
   local originalOpen = NativeRomPicker.openSingle
+  NativeRomPicker.available = function()
+    return true
+  end
   NativeRomPicker.openSingle = function()
     return { kind = "cancel" }
   end
@@ -815,6 +824,7 @@ function T.picker_cancel_does_not_start_a_barrier_or_import()
       Assert.equal(App.importer.state, "idle", "cancel leaves the importer idle")
     end)
   end)
+  NativeRomPicker.available = originalAvailable
   NativeRomPicker.openSingle = originalOpen
   if not ok then
     error(failure, 0)
@@ -1661,6 +1671,158 @@ function T.boot_existing_with_a_current_cache_and_no_source_skips_the_import()
   end
   Assert.equal(romOpens, 0, "booting a current cache opens no ROM source")
   Assert.equal(pathOpens, 0, "booting a current cache reads no ROM file")
+end
+
+-- Stubs the native bridge for one import-screen construction: `available`
+-- answers the capability probe and `openSingle` answers the dialog.
+-- Restores both entrypoints on every path so no test leaks stubs.
+---@param available boolean scripted capability answer
+---@param openResult table|fun(): table scripted dialog answer
+---@param fn fun(opens: fun(): integer)
+local function withNativeBridge(available, openResult, fn)
+  local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
+  local originalAvailable = NativeRomPicker.available
+  local originalOpen = NativeRomPicker.openSingle
+  NativeRomPicker.available = function()
+    return available
+  end
+  local opens = 0
+  NativeRomPicker.openSingle = function()
+    opens = opens + 1
+    if type(openResult) == "function" then
+      return openResult()
+    end
+    return openResult
+  end
+  local ok, err = pcall(fn, function()
+    return opens
+  end)
+  NativeRomPicker.available = originalAvailable
+  NativeRomPicker.openSingle = originalOpen
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Boots the pristine first-import card: no ready version, no current
+-- attestation anywhere.
+---@param fn fun(result: table)
+local function withPristineImport(fn)
+  withAppHarness({}, function()
+    return false
+  end, function(result)
+    result.firstPlayCurrent = false
+    result.firstPlayStored = false
+    App._bootExisting()
+    Assert.equal(getmetatable(App.state).__index, ImportState, "an empty shelf boots into the import card")
+    fn(result)
+  end)
+end
+
+-- The first import preselects no edition: the importer session carries no
+-- targeted expectation, so any supported ROM is acceptable.
+function T.pristine_import_accepts_any_supported_edition()
+  local captured = {}
+  local originalNew = RomImporter.new
+  RomImporter.new = function(options)
+    captured = options or {}
+    return originalNew(options)
+  end
+  local ok, err = pcall(function()
+    withPristineImport(function(_) end)
+  end)
+  RomImporter.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
+  Assert.isNil(captured.expectedVersionId, "the first import preselects no edition")
+end
+
+-- A targeted rebind still carries its expected edition into the importer
+-- session, so a wrong ROM cannot satisfy it.
+function T.targeted_rebind_carries_its_expected_edition()
+  local captured = {}
+  local originalNew = RomImporter.new
+  RomImporter.new = function(options)
+    captured = options or {}
+    return originalNew(options)
+  end
+  local ok, err = pcall(function()
+    withAppHarness({}, function()
+      return false
+    end, function(_)
+      App._startImport("soulsilver")
+    end)
+  end)
+  RomImporter.new = originalNew
+  if not ok then
+    error(err, 0)
+  end
+  Assert.equal(captured.expectedVersionId, "soulsilver", "a targeted import keeps its expected edition")
+end
+
+-- Without a usable native bridge the first card offers no edition switch
+-- and no picker banner, and gestures never invoke the bridge.
+function T.pristine_import_without_a_bridge_has_no_switch_or_dead_action()
+  withNativeBridge(false, { kind = "cancel" }, function(opens)
+    withPristineImport(function(_)
+      Assert.isNil(App.state.onSwitchEdition, "the first card offers no edition switch")
+      Assert.isNil(App.importPickerError, "booting the first card sets no picker banner")
+      App.state:mousepressed(400, 300, 1)
+      App.state:touchpressed("touch", 400, 300, 0, 0, 1)
+      App.state:keypressed("return")
+      App.state:keypressed("space")
+      Assert.equal(opens(), 0, "an unavailable bridge is never invoked")
+      Assert.isNil(App.importPickerError, "inert gestures leave no banner behind")
+      Assert.isNil(App.state.pickerError, "inert gestures leave no card banner behind")
+    end)
+  end)
+end
+
+-- With a usable bridge each card gesture opens exactly one dialog, a
+-- corner outside the card opens nothing, and cancel leaves the session
+-- idle without any banner.
+function T.available_picker_opens_once_per_card_gesture_until_cancel()
+  withNativeBridge(true, { kind = "cancel" }, function(opens)
+    withPristineImport(function(_)
+      App.state:mousepressed(400, 300, 1)
+      Assert.equal(opens(), 1, "one pointer gesture opens one dialog")
+      App.state:touchpressed("touch", 400, 300, 0, 0, 1)
+      Assert.equal(opens(), 2, "one touch gesture opens one dialog")
+      App.state:mousepressed(16, 16, 1)
+      Assert.equal(opens(), 2, "a gesture outside the card opens nothing")
+      Assert.isNil(App.importPickerError, "cancel leaves no banner behind")
+      Assert.equal(App.importer:status().state, "idle", "cancel leaves the importer idle")
+    end)
+  end)
+end
+
+-- A dialog failure after an available preflight is recoverable: no
+-- persistent banner is written and the import card stays usable.
+function T.picker_dialog_failure_leaves_no_banner_and_keeps_the_card()
+  withNativeBridge(true, { kind = "error", message = "native bridge exploded" }, function(opens)
+    withPristineImport(function(_)
+      App.state:mousepressed(400, 300, 1)
+      Assert.equal(opens(), 1, "the available bridge is tried once")
+      Assert.isNil(App.importPickerError, "a dialog failure leaves no shell banner")
+      Assert.isNil(App.state.pickerError, "a dialog failure leaves no card banner")
+      Assert.equal(getmetatable(App.state).__index, ImportState, "the import card stays usable")
+      Assert.equal(App.importer:status().state, "idle", "a dialog failure starts no import")
+    end)
+  end)
+end
+
+-- A picker path with an unsupported extension is rejected without
+-- starting an import, and the card stays behind for a retry.
+function T.unsupported_picker_extension_rejects_without_starting_import()
+  withNativeBridge(true, { kind = "path", path = "/tmp/not-a-rom.exe" }, function(opens)
+    withPristineImport(function(_)
+      App.state:mousepressed(400, 300, 1)
+      Assert.equal(opens(), 1, "the available bridge is tried once")
+      Assert.equal(getmetatable(App.state).__index, ImportState, "the import card stays behind for a retry")
+      Assert.isNil(App.selectedVersionId, "an unsupported extension admits no verified source")
+    end)
+  end)
 end
 
 return { tests = T }

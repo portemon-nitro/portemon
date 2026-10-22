@@ -602,25 +602,24 @@ function App._startImport(expectedVersionId)
     App._onImported(versionId)
   end
   App.importer = RomImporter.new({ onComplete = onComplete, expectedVersionId = expectedVersionId })
-  App.setState(ImportState.new(App.importer, App.saveDir, {
+  -- Capability is a fact for this screen construction, not a persisted
+  -- preference: only an actually loadable bridge gets an activation.
+  local pickerAvailable = NativeRomPicker.available()
+  local importOptions = {
     targetVersion = expectedVersionId,
-    pickerError = App.importPickerError,
-    onPick = function()
+    pickerAvailable = pickerAvailable,
+  }
+  if pickerAvailable then
+    importOptions.onPick = function()
       local result = NativeRomPicker.openSingle()
       if result.kind == "path" then
         App._beginImportPath(result.path, expectedVersionId)
       elseif result.kind == "error" then
-        App.importPickerError = result.message
-        if App.state and getmetatable(App.state) == ImportState then
-          App.state.pickerError = result.message
-        end
+        print("Native file picker failed: " .. tostring(result.message))
       end
-    end,
-    onSwitchEdition = function()
-      local target = expectedVersionId == "soulsilver" and "heartgold" or "soulsilver"
-      App._switchEdition(target)
-    end,
-  }))
+    end
+  end
+  App.setState(ImportState.new(App.importer, App.saveDir, importOptions))
 end
 
 function App._switchEdition(versionId)
@@ -671,10 +670,8 @@ end
 
 function App._beginImportPath(path, expectedVersionId)
   if type(path) ~= "string" or (not path:lower():match("%.nds$") and not path:lower():match("%.zip$")) then
-    App.importPickerError = "Choose a file ending in .nds or .zip, or drag and drop a ROM."
-    if App.state and getmetatable(App.state) == ImportState then
-      App.state.pickerError = App.importPickerError
-    end
+    -- Unsupported picker selection is a handled rejection, not a diagnostic:
+    -- the import card stays put with no console noise under normal operation.
     return
   end
   App._beginImportAttempt("path", path, expectedVersionId)
