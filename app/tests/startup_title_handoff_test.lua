@@ -114,6 +114,12 @@ local function withStartup(fn)
     active.requests[#active.requests + 1] = { epoch = epoch, selector = selector }
   end
   function service:observe(epoch, selector)
+    -- The boot wait demands the selected walking pair as a required
+    -- interest before it transfers: model the healthy worker answer so the
+    -- startup journey under test starts from its transferred loader.
+    if selector.requestKind == "startup-walker" then
+      return true, nil
+    end
     -- The cinematic scenes are ready by default behind these title-first
     -- compositions: the instant movie below hands off to the legendary
     -- title within the same selection updates, preserving every title,
