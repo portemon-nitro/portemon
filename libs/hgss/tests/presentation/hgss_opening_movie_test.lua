@@ -30,10 +30,54 @@ local function sceneRoot(sceneNumber)
   return "assets/generated/startup/opening/" .. tostring(sceneNumber) .. "/"
 end
 
----@param image string
----@return table
-local function layer(image)
-  return { image = image, width = 256, height = 192, sourceHash = string.rep("c", 40) }
+---@param bgSlot integer numeric background slot
+---@param image string staged image path under its scene root
+---@param width integer claimed source extent
+---@param height integer claimed source extent
+---@param priority integer|nil source priority, defaults to the slot
+---@return table compiled engine layer record
+local function layer(bgSlot, image, width, height, priority)
+  return {
+    bgSlot = bgSlot,
+    priority = priority == nil and bgSlot or priority,
+    image = image,
+    variants = {},
+    width = width,
+    height = height,
+    sourceHash = string.rep("c", 40),
+  }
+end
+
+---@param x integer
+---@param y integer
+---@param width integer
+---@param height integer
+---@param offsetX integer per-frame draw origin offset
+---@param offsetY integer per-frame draw origin offset
+---@param duration integer source ticks the frame shows
+---@return table compiled sprite clip frame
+local function clipFrame(x, y, width, height, offsetX, offsetY, duration)
+  return {
+    x = x,
+    y = y,
+    width = width,
+    height = height,
+    offsetX = offsetX,
+    offsetY = offsetY,
+    duration = duration,
+  }
+end
+
+---@param id string staged clip identity under its scene root
+---@param frames table[] compiled clip frames
+---@return table compiled sprite clip record
+local function spriteClip(id, frames)
+  return { id = id, frameCount = #frames, frames = frames }
+end
+
+---@return table single-frame still clip frame
+local function stillFrame()
+  return clipFrame(0, 0, 16, 16, 0, 0, 1)
 end
 
 ---@param sceneNumber integer
@@ -42,47 +86,96 @@ local function sceneEvents(sceneNumber)
   local root = sceneRoot(sceneNumber)
   if sceneNumber == 1 then
     return {
-      { op = "setLayer", stepId = "copyright", atTick = 0, role = "upper" },
-      { op = "waitTicks", stepId = "copyright", atTick = 0, ticks = 30 },
-      { op = "setLayer", stepId = "setup", atTick = 30, role = "lower" },
-      { op = "waitTicks", stepId = "setup", atTick = 30, ticks = 20 },
-      { op = "enableSkip", stepId = "setup", atTick = 40 },
-      { op = "waitTicks", stepId = "logo", atTick = 50, ticks = 40 },
-      { op = "finish", stepId = "logo", atTick = 90 },
+      {
+        op = "setLayer",
+        stepId = "copyright",
+        atStepTick = 0,
+        engine = "main",
+        bgSlot = 0,
+        image = root .. "upper-bg.png",
+        visible = true,
+        priority = 0,
+      },
+      { op = "waitTicks", stepId = "copyright", atStepTick = 0, ticks = 30 },
+      {
+        op = "setLayer",
+        stepId = "setup",
+        atStepTick = 0,
+        engine = "sub",
+        bgSlot = 0,
+        image = root .. "lower-bg.png",
+        visible = true,
+        priority = 0,
+      },
+      { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 20 },
+      { op = "enableSkip", stepId = "setup", atStepTick = 10 },
+      { op = "waitTicks", stepId = "logo", atStepTick = 0, ticks = 40 },
+      { op = "finish", stepId = "logo", atStepTick = 0 },
     }
   elseif sceneNumber == 2 then
     return {
-      { op = "setScroll", stepId = "open", atTick = 0, ticks = 25, direction = "left" },
-      { op = "waitTicks", stepId = "open", atTick = 0, ticks = 25 },
-      { op = "circleWipe", stepId = "close", atTick = 25, ticks = 10 },
-      { op = "waitTicks", stepId = "close", atTick = 25, ticks = 15 },
-      { op = "finish", stepId = "close", atTick = 40 },
+      {
+        op = "setScroll",
+        stepId = "open",
+        atStepTick = 0,
+        engine = "main",
+        bgSlot = 0,
+        dx = -256,
+        dy = 0,
+        ticks = 25,
+        direction = "left",
+      },
+      { op = "waitTicks", stepId = "open", atStepTick = 0, ticks = 25 },
+      { op = "circleWipe", stepId = "close", atStepTick = 0, mode = "out", ticks = 10 },
+      { op = "waitTicks", stepId = "close", atStepTick = 0, ticks = 15 },
+      { op = "finish", stepId = "close", atStepTick = 0 },
     }
   elseif sceneNumber == 3 then
     return {
-      { op = "setCamera", stepId = "arrive", atTick = 0, distance = 100 },
-      { op = "setModelClip", stepId = "arrive", atTick = 0, model = "town-0", clip = "arrive-pose" },
-      { op = "setLighting", stepId = "hold", atTick = 20, map = 1 },
-      { op = "waitTicks", stepId = "hold", atTick = 20, ticks = 30 },
-      { op = "finish", stepId = "hold", atTick = 50 },
+      { op = "setCamera", stepId = "arrive", atStepTick = 0, distance = 100 },
+      { op = "setModelClip", stepId = "arrive", atStepTick = 0, model = "town-0", clip = "arrive-pose" },
+      { op = "waitTicks", stepId = "arrive", atStepTick = 0, ticks = 20 },
+      { op = "setLighting", stepId = "hold", atStepTick = 0, map = 1 },
+      { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 30 },
+      { op = "finish", stepId = "hold", atStepTick = 0 },
     }
   elseif sceneNumber == 4 then
     return {
-      { op = "setSpriteClip", stepId = "intro", atTick = 0, sprite = "ethan", clip = root .. "sprites/ethan.g4sprite" },
-      { op = "waitTicks", stepId = "intro", atTick = 0, ticks = 10 },
-      { op = "startEmitters", stepId = "starters", atTick = 10, group = "grass", emitters = { 6, 7, 8 } },
-      { op = "waitEffects", stepId = "starters", atTick = 10, effects = { "emitters-grass" } },
-      { op = "waitTicks", stepId = "outro", atTick = 10, ticks = 10 },
-      { op = "finish", stepId = "outro", atTick = 10 },
+      {
+        op = "setSpriteClip",
+        stepId = "intro",
+        atStepTick = 0,
+        instanceId = "ethan",
+        engine = "main",
+        x = 64,
+        y = 96,
+        drawOrder = 1,
+        clipId = root .. "sprites/ethan.g4sprite",
+      },
+      { op = "waitTicks", stepId = "intro", atStepTick = 0, ticks = 10 },
+      { op = "startEmitters", stepId = "starters", atStepTick = 0, group = "grass", emitters = { 6, 7, 8 } },
+      { op = "waitEffects", stepId = "starters", atStepTick = 0, effects = { "emitters-grass" } },
+      { op = "waitTicks", stepId = "outro", atStepTick = 0, ticks = 10 },
+      { op = "finish", stepId = "outro", atStepTick = 0 },
     }
   end
   return {
-    { op = "circleWipe", stepId = "wipe", atTick = 0, ticks = 18 },
-    { op = "setScreenRoles", stepId = "wipe", atTick = 0, upper = "main", lower = "sub" },
-    { op = "setScroll", stepId = "scroll", atTick = 18, ticks = 20, direction = "left" },
-    { op = "waitTicks", stepId = "scroll", atTick = 18, ticks = 20 },
-    { op = "setFade", stepId = "fade", atTick = 38, ticks = 15 },
-    { op = "finish", stepId = "fade", atTick = 53 },
+    { op = "circleWipe", stepId = "wipe", atStepTick = 0, mode = "in", ticks = 18 },
+    { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "upper" },
+    {
+      op = "setScroll",
+      stepId = "scroll",
+      atStepTick = 0,
+      engine = "main",
+      bgSlot = 0,
+      dx = -512,
+      dy = 0,
+      ticks = 20,
+      direction = "left",
+    },
+    { op = "waitTicks", stepId = "scroll", atStepTick = 0, ticks = 20 },
+    { op = "setFade", stepId = "fade", atStepTick = 0, kind = "white", ticks = 15 },
+    { op = "finish", stepId = "fade", atStepTick = 0 },
   }
 end
 
@@ -102,8 +195,8 @@ local function sceneSteps(sceneNumber)
     }
   elseif sceneNumber == 3 then
     return {
-      { id = "arrive", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 20 } },
-      { id = "hold", events = { 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 30 } },
+      { id = "arrive", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 20 } },
+      { id = "hold", events = { 4, 5, 6 }, ["until"] = { kind = "duration", ticks = 30 } },
     }
   elseif sceneNumber == 4 then
     return {
@@ -150,25 +243,33 @@ end
 ---@return table strict synthetic opening-scene manifest
 local function manifestFor(sceneNumber)
   local root = sceneRoot(sceneNumber)
+  local upperImage = root .. "upper-bg.png"
+  local lowerImage = root .. "lower-bg.png"
+  local clips = {}
+  if sceneNumber == 1 then
+    clips = { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) }
+  elseif sceneNumber == 4 then
+    clips = { spriteClip(root .. "sprites/ethan.g4sprite", { stillFrame() }) }
+  end
   local manifest = {
     schema = Contract.startupOpeningScene.schema,
     versionId = VERSION_ID,
     generationId = "movie-test-generation",
     sceneNumber = sceneNumber,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
-    initial = { screenRoles = "opening" },
     layers = {
-      upper = { layer(root .. "upper-bg.png") },
-      lower = { layer(root .. "lower-bg.png") },
+      main = { layer(0, upperImage, 256, 192) },
+      sub = { layer(0, lowerImage, 256, 192) },
     },
-    spriteClips = {
-      { id = root .. "sprites/clip0.g4sprite", frameCount = 4 },
-    },
+    spriteClips = clips,
     models = {},
     particles = { seed = 0, emitters = {} },
     timeline = { steps = sceneSteps(sceneNumber), events = sceneEvents(sceneNumber) },
-    assets = { [root .. "upper-bg.png"] = true, [root .. "lower-bg.png"] = true },
+    assets = { [upperImage] = true, [lowerImage] = true },
   }
+  for _, clip in ipairs(clips) do
+    manifest.assets[clip.id] = true
+  end
   if sceneNumber == 3 then
     manifest.models = {}
     for town = 0, 2 do
@@ -586,7 +687,6 @@ end
 
 function T.construction_rejects_anything_but_five_ordered_current_bundles()
   local scenes, cacheFs = validPack()
-  local graphics = movieGraphics()
   local Movie = requireMovie()
   local function attempt(candidate, versionId)
     local host = movieGraphics()
@@ -643,16 +743,10 @@ function T.construction_rejects_anything_but_five_ordered_current_bundles()
   staleCopy.generationId = "another-generation"
   stale[5] = staleCopy
   Assert.isFalse(attempt(stale), "a stale-generation bundle never joins the run")
-  local badOp = manifestFor(2)
-  badOp.timeline.events[1].op = "launchFireworks"
-  local badPack = { scenes[1], badOp, scenes[3], scenes[4], scenes[5] }
-  Assert.isFalse(attempt(badPack), "an event outside the closed grammar never plays")
-  local earlySkip = manifestFor(2)
-  earlySkip.timeline.events[1] = { op = "enableSkip", stepId = "open", atTick = 5 }
-  earlySkip.timeline.steps[1].events = { 1, 2 }
-  local earlyPack = { scenes[1], earlySkip, scenes[3], scenes[4], scenes[5] }
-  Assert.isFalse(attempt(earlyPack), "a skip gate outside scene 1 never opens the movie")
-  Assert.equal(liveHandles(graphics), 0, "rejected constructions acquire nothing observable")
+  local retired = { scenes[1], scenes[2], scenes[3], scenes[4], manifestFor(5) }
+  retired[5].schema = "g4-startup-opening-scene-v1"
+  Assert.isFalse(attempt(retired), "a retired schema never plays through the strict player")
+  Assert.equal(liveHandles(movieGraphics()), 0, "rejected constructions acquire nothing observable")
 end
 
 function T.two_instances_keep_independent_cursors_and_particles()
@@ -726,6 +820,576 @@ function T.draws_restore_the_borrowed_graphics_state()
   local blend2, alpha2 = graphics.getBlendMode()
   Assert.equal(blend2, blend, "drawing restores the borrowed blend mode")
   Assert.equal(alpha2, alpha, "drawing restores the borrowed blend mode")
+  movie:dispose()
+end
+
+-- Composite playback keeps every simultaneously live background slot, honors
+-- authored sprite frame offsets, and times effects against the step clock.
+-- Every fixture below passes the strict generated reader, so each test fails
+-- on the playback behavior itself rather than on fixture loading.
+local COMPOSITE_GENERATION = "movie-test-generation"
+
+---@param sceneNumber integer
+---@param upper table[] main-engine layer records in source order
+---@param lower table[] sub-engine layer records in source order
+---@param clips table[] sprite clip records
+---@param steps table[] source step records
+---@param events table[] closed step-clocked timeline events
+---@return table strict synthetic opening-scene manifest
+local function compositeManifest(sceneNumber, upper, lower, clips, steps, events)
+  local assets = {}
+  for _, list in ipairs({ upper, lower }) do
+    for _, entry in ipairs(list) do
+      assets[entry.image] = true
+      for _, alternate in ipairs(entry.variants) do
+        assets[alternate] = true
+      end
+    end
+  end
+  for _, clip in ipairs(clips) do
+    assets[clip.id] = true
+  end
+  return {
+    schema = Contract.startupOpeningScene.schema,
+    versionId = VERSION_ID,
+    generationId = COMPOSITE_GENERATION,
+    sceneNumber = sceneNumber,
+    sourceTickRate = Contract.startupOpeningScene.tickRate,
+    layers = { main = upper, sub = lower },
+    spriteClips = clips,
+    models = {},
+    particles = { seed = 0, emitters = {} },
+    timeline = { steps = steps, events = events },
+    assets = assets,
+  }
+end
+
+---@param custom table custom scene manifest
+---@param customIndex integer position of the custom scene in retail order
+---@return table[] scenes, table cacheFs strict five-scene pack with one custom scene
+local function packWithSceneAt(custom, customIndex)
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    if sceneNumber == customIndex then
+      raw[sceneNumber] = custom
+    else
+      raw[sceneNumber] = manifestFor(sceneNumber)
+    end
+  end
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  return scenes, cacheFs
+end
+
+function T.simultaneous_layers_keep_their_own_scroll_in_source_order()
+  local root = sceneRoot(1)
+  local bottomImage = root .. "layers/sky-bottom.png"
+  local middleImage = root .. "layers/sky-middle.png"
+  local topImage = root .. "layers/sky-top.png"
+  local groundImage = root .. "layers/ground.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      {
+        layer(0, bottomImage, 256, 192, 0),
+        layer(1, middleImage, 128, 96, 1),
+        layer(2, topImage, 64, 48, 2),
+      },
+      { layer(0, groundImage, 32, 32, 0) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "pan", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setScroll",
+          stepId = "pan",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 2,
+          dx = -1024,
+          dy = 0,
+          ticks = 12,
+          direction = "left",
+          effect = "pan-top",
+        },
+        {
+          op = "setScroll",
+          stepId = "pan",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 1,
+          dx = -512,
+          dy = 0,
+          ticks = 12,
+          direction = "left",
+          effect = "pan-middle",
+        },
+        { op = "enableSkip", stepId = "pan", atStepTick = 10 },
+        { op = "waitTicks", stepId = "pan", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "pan", atStepTick = 40 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics({ imageSizes = { { 256, 192 }, { 128, 96 }, { 64, 48 }, { 32, 32 }, { 16, 16 } } })
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 12 do
+    movie:updateFixed()
+  end
+  movie:draw()
+  local byWidth = {}
+  local layerDraws = 0
+  for _, draw in ipairs(graphics.draws) do
+    local width = draw.image:getWidth()
+    if width == 256 or width == 128 or width == 64 or width == 32 then
+      layerDraws = layerDraws + 1
+      byWidth[width] = draw
+    end
+  end
+  Assert.equal(layerDraws, 4, "every simultaneously live layer is drawn, never just the first")
+  Assert.notNil(byWidth[256], "the bottom layer is drawn")
+  Assert.notNil(byWidth[128], "the middle layer is drawn")
+  Assert.notNil(byWidth[64], "the top layer is drawn")
+  Assert.notNil(byWidth[32], "the lower-role layer is drawn")
+  Assert.equal(byWidth[256].x, 0, "the unscrolled bottom layer stays at its source origin")
+  Assert.equal(byWidth[256].y, 0, "the unscrolled bottom layer stays at its source origin")
+  Assert.equal(byWidth[128].x, -24, "the middle layer pans at its own authored velocity")
+  Assert.equal(byWidth[64].x, -48, "the top layer pans at its own authored velocity")
+  Assert.equal(byWidth[32].x, 0, "the sub-engine layer ignores main-engine pans")
+  movie:dispose()
+end
+
+---@param offsetX integer authored horizontal clip frame offset
+---@param offsetY integer authored vertical clip frame offset
+---@return table strict synthetic opening scene with one visible hero sprite
+local function heroScene(offsetX, offsetY)
+  local root = sceneRoot(1)
+  local clipId = root .. "sprites/hero.g4sprite"
+  return compositeManifest(1, { layer(0, root .. "layers/stage.png", 256, 192) }, {
+    layer(0, root .. "layers/lower.png", 256, 192),
+  }, {
+    spriteClip(clipId, {
+      clipFrame(0, 0, 16, 16, 0, 0, 6),
+      clipFrame(0, 0, 16, 16, offsetX, offsetY, 6),
+    }),
+  }, { { id = "show", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 40 } } }, {
+    {
+      op = "setSpriteClip",
+      stepId = "show",
+      atStepTick = 0,
+      instanceId = "hero",
+      engine = "main",
+      x = 32,
+      y = 64,
+      drawOrder = 1,
+      clipId = clipId,
+    },
+    {
+      op = "spriteVisible",
+      stepId = "show",
+      atStepTick = 0,
+      instanceId = "hero",
+      engine = "main",
+      x = 32,
+      y = 64,
+      drawOrder = 1,
+      visible = true,
+    },
+    { op = "enableSkip", stepId = "show", atStepTick = 10 },
+    { op = "waitTicks", stepId = "show", atStepTick = 0, ticks = 40 },
+    { op = "finish", stepId = "show", atStepTick = 40 },
+  })
+end
+
+---@param graphics table fake graphics namespace
+---@return table[] draws that sample a sprite clip quad
+local function spriteDraws(graphics)
+  local found = {}
+  for _, draw in ipairs(graphics.draws) do
+    if draw.quad ~= nil then
+      found[#found + 1] = draw
+    end
+  end
+  return found
+end
+
+function T.authored_sprite_frames_offset_the_draw_origin_and_draw_once()
+  local firstScenes, firstCache = packWithSceneAt(heroScene(40, 30), 1)
+  local firstGraphics = movieGraphics()
+  local first = openMovie(firstScenes, firstCache, firstGraphics)
+  local secondScenes, secondCache = packWithSceneAt(heroScene(52, 30), 1)
+  local secondGraphics = movieGraphics()
+  local second = openMovie(secondScenes, secondCache, secondGraphics)
+  for _ = 1, 8 do
+    first:updateFixed()
+    second:updateFixed()
+  end
+  first:draw()
+  second:draw()
+  local firstSprites = spriteDraws(firstGraphics)
+  local secondSprites = spriteDraws(secondGraphics)
+  Assert.equal(#firstSprites, 1, "one authored instance draws exactly once per frame")
+  Assert.equal(#secondSprites, 1, "one authored instance draws exactly once per frame")
+  Assert.equal(secondSprites[1].x - firstSprites[1].x, 12, "the authored frame offset moves the draw origin")
+  Assert.equal(secondSprites[1].y - firstSprites[1].y, 0, "matching vertical offsets hold the vertical origin")
+  first:dispose()
+  second:dispose()
+end
+
+---@return table strict synthetic opening scene with a step-relative white fade
+local function fadeScene()
+  local root = sceneRoot(1)
+  return compositeManifest(
+    1,
+    { layer(0, root .. "layers/sunrise.png", 256, 192) },
+    { layer(0, root .. "layers/lower.png", 256, 192) },
+    { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+    {
+      { id = "setup", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 30 } },
+      { id = "run", events = { 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 120 } },
+    },
+    {
+      { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 30 },
+      { op = "enableSkip", stepId = "setup", atStepTick = 10 },
+      { op = "setFade", stepId = "run", atStepTick = 90, kind = "white", ticks = 20, effect = "fade-run" },
+      { op = "waitTicks", stepId = "run", atStepTick = 0, ticks = 120 },
+      { op = "finish", stepId = "run", atStepTick = 120 },
+    }
+  )
+end
+
+---@param graphics table fake graphics namespace
+---@return table[] source-sized opaque-white fill rectangles
+local function whiteRects(graphics)
+  local found = {}
+  for _, rect in ipairs(graphics.rectangles) do
+    if
+      rect.mode == "fill"
+      and rect.x == 0
+      and rect.y == 0
+      and rect.w == 256
+      and rect.h == 192
+      and rect.color[1] == 1
+      and rect.color[2] == 1
+      and rect.color[3] == 1
+    then
+      found[#found + 1] = rect
+    end
+  end
+  return found
+end
+
+function T.step_relative_fades_start_on_their_step_tick()
+  local earlyScenes, earlyCache = packWithSceneAt(fadeScene(), 1)
+  local earlyGraphics = movieGraphics()
+  local early = openMovie(earlyScenes, earlyCache, earlyGraphics)
+  for _ = 1, 35 do
+    early:updateFixed()
+  end
+  early:draw()
+  local earlyLit = 0
+  for _, rect in ipairs(whiteRects(earlyGraphics)) do
+    if rect.color[4] > 0 then
+      earlyLit = earlyLit + 1
+    end
+  end
+  Assert.equal(earlyLit, 0, "the run fade stays off before its ninetieth step tick")
+  early:dispose()
+  local lateScenes, lateCache = packWithSceneAt(fadeScene(), 1)
+  local lateGraphics = movieGraphics()
+  local late = openMovie(lateScenes, lateCache, lateGraphics)
+  for _ = 1, 135 do
+    late:updateFixed()
+  end
+  late:draw()
+  local midFade = false
+  for _, rect in ipairs(whiteRects(lateGraphics)) do
+    if rect.color[4] > 0 and rect.color[4] < 1 then
+      midFade = true
+    end
+  end
+  Assert.isTrue(midFade, "the run fade is mid-transition fifteen ticks after its step onset")
+  late:dispose()
+end
+
+function T.unstarted_effect_waits_fail_instead_of_completing()
+  -- The reader would reject an unresolvable wait, so this program reaches
+  -- the player directly: the strict player must raise the same way instead
+  -- of counting the missing effect complete.
+  local root = sceneRoot(2)
+  local hold = compositeManifest(2, { layer(0, root .. "layers/hold-upper.png", 256, 192) }, {
+    layer(0, root .. "layers/hold-lower.png", 256, 192),
+  }, {}, { { id = "hold", events = { 1 }, ["until"] = { kind = "effect", effect = "bloom-sparkle" } } }, {
+    { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 10 },
+  })
+  hold.generationId = COMPOSITE_GENERATION
+  local scenes, cacheFs = validPack()
+  scenes[2] = hold
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 90 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "playback reaches the effect-gated step")
+  local failure = nil
+  for _ = 1, 10 do
+    local ok, err = pcall(function()
+      movie:updateFixed()
+    end)
+    if not ok then
+      failure = err
+      break
+    end
+  end
+  Assert.notNil(failure, "waiting on an effect that never started raises instead of completing")
+  Assert.equal(movie:sceneNumber(), 2, "the failed wait never advances past its step")
+  movie:dispose()
+end
+
+function T.clip_completion_binds_the_compiled_clip_duration()
+  local root = sceneRoot(1)
+  local sparkleClip = root .. "sprites/sparkle.g4sprite"
+  local function sparkleScene(effect)
+    return compositeManifest(
+      1,
+      { layer(0, root .. "layers/stage.png", 256, 192) },
+      { layer(0, root .. "layers/lower.png", 256, 192) },
+      {
+        spriteClip(sparkleClip, {
+          clipFrame(0, 0, 16, 16, 0, 0, 6),
+          clipFrame(0, 0, 16, 16, 0, 0, 6),
+          clipFrame(0, 0, 16, 16, 0, 0, 8),
+        }),
+      },
+      {
+        { id = "setup", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 10 } },
+        { id = "finale", events = { 3, 4 }, ["until"] = { kind = "effect", effect = effect } },
+      },
+      {
+        { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 10 },
+        { op = "enableSkip", stepId = "setup", atStepTick = 5 },
+        {
+          op = "setSpriteClip",
+          stepId = "finale",
+          atStepTick = 0,
+          instanceId = "sparkles",
+          engine = "main",
+          x = 128,
+          y = 96,
+          drawOrder = 1,
+          clipId = sparkleClip,
+        },
+        {
+          op = "spriteVisible",
+          stepId = "finale",
+          atStepTick = 0,
+          instanceId = "sparkles",
+          engine = "main",
+          x = 128,
+          y = 96,
+          drawOrder = 1,
+          visible = true,
+        },
+      }
+    )
+  end
+  -- The clip sums to 6 + 6 + 8 source ticks; the finale step completes
+  -- exactly then, neither on an earlier frame nor a tick late.
+  local scenes, cacheFs = packWithSceneAt(sparkleScene(sparkleClip), 1)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 10 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 1, "the setup step hands over to the clip finale")
+  for _ = 1, 19 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 1, "the finale holds for the nineteen ticks before the summed duration")
+  movie:updateFixed()
+  Assert.equal(movie:sceneNumber(), 2, "the finale completes exactly after the summed frame durations")
+  movie:dispose()
+  -- The same shape with an unstarted non-clip wait raises instead: a wait
+  -- that names no started effect and no compiled clip is never complete.
+  local raw, rawCache = validPack()
+  local dangling = sparkleScene("bloom-sparkle")
+  dangling.generationId = COMPOSITE_GENERATION
+  raw[1] = dangling
+  local rawGraphics = movieGraphics()
+  local rawMovie = openMovie(raw, rawCache, rawGraphics)
+  for _ = 1, 9 do
+    rawMovie:updateFixed()
+  end
+  Assert.equal(rawMovie:sceneNumber(), 1, "playback reaches the setup step before the gated finale")
+  local failure = nil
+  local ok, err = pcall(function()
+    rawMovie:updateFixed()
+  end)
+  if not ok then
+    failure = err
+  end
+  Assert.notNil(failure, "waiting on an unstarted non-clip effect raises instead of completing")
+  Assert.equal(rawMovie:sceneNumber(), 1, "the failed wait never advances past its step")
+  rawMovie:dispose()
+end
+
+function T.step_events_apply_in_listed_order()
+  local root = sceneRoot(1)
+  local baseImage = root .. "layers/base.png"
+  local firstImage = root .. "layers/first.png"
+  local secondImage = root .. "layers/second.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      {
+        {
+          bgSlot = 0,
+          priority = 0,
+          image = baseImage,
+          variants = { firstImage, secondImage },
+          width = 256,
+          height = 192,
+          sourceHash = string.rep("c", 40),
+        },
+      },
+      { layer(0, root .. "layers/lower.png", 32, 32) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "show", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setLayer",
+          stepId = "show",
+          atStepTick = 3,
+          engine = "main",
+          bgSlot = 0,
+          image = firstImage,
+          visible = true,
+          priority = 0,
+        },
+        {
+          op = "setLayer",
+          stepId = "show",
+          atStepTick = 3,
+          engine = "main",
+          bgSlot = 0,
+          image = secondImage,
+          visible = true,
+          priority = 0,
+        },
+        { op = "enableSkip", stepId = "show", atStepTick = 10 },
+        { op = "finish", stepId = "show", atStepTick = 40 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics({ imageSizes = { { 256, 192 }, { 128, 96 }, { 64, 48 }, { 32, 32 }, { 16, 16 } } })
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 2 do
+    movie:updateFixed()
+  end
+  movie:draw()
+  local earlyWidths = {}
+  for _, draw in ipairs(graphics.draws) do
+    earlyWidths[draw.image:getWidth()] = true
+  end
+  Assert.isTrue(earlyWidths[256], "the base image draws before either same-tick swap fires")
+  Assert.isNil(earlyWidths[128], "the first swap stays off before its step tick")
+  movie:updateFixed()
+  movie:draw()
+  local lateWidths = {}
+  for _, draw in ipairs(graphics.draws) do
+    lateWidths[draw.image:getWidth()] = true
+  end
+  Assert.isTrue(lateWidths[64], "same-tick swaps apply in listed order with the later event winning")
+  movie:dispose()
+end
+
+function T.repeated_effect_starts_rebind_the_wait_to_the_latest_start()
+  local root = sceneRoot(2)
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      2,
+      { layer(0, root .. "layers/hold-upper.png", 256, 192) },
+      { layer(0, root .. "layers/hold-lower.png", 256, 192) },
+      {},
+      {
+        { id = "hold", events = { 1, 2 }, ["until"] = { kind = "effect", effect = "pulse" } },
+        { id = "tail", events = { 3, 4 }, ["until"] = { kind = "duration", ticks = 5 } },
+      },
+      {
+        { op = "setBlend", stepId = "hold", atStepTick = 0, effect = "pulse", ticks = 6 },
+        { op = "setBlend", stepId = "hold", atStepTick = 4, effect = "pulse", ticks = 6 },
+        { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 },
+        { op = "finish", stepId = "tail", atStepTick = 0 },
+      }
+    ),
+    2
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 90 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "playback reaches the rebound effect step")
+  for _ = 1, 6 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "the first start alone never completes the rebound wait")
+  for _ = 1, 5 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "the rebound wait ends on the latest start with its tail step")
+  for _ = 1, 5 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 3, "the tail step still costs its authored duration")
+  movie:dispose()
+end
+
+function T.steps_hold_until_a_later_start_fires_and_completes()
+  local root = sceneRoot(2)
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      2,
+      { layer(0, root .. "layers/hold-upper.png", 256, 192) },
+      { layer(0, root .. "layers/hold-lower.png", 256, 192) },
+      {},
+      {
+        { id = "hold", events = { 1 }, ["until"] = { kind = "effect", effect = "late-fade" } },
+        { id = "tail", events = { 2, 3 }, ["until"] = { kind = "duration", ticks = 5 } },
+      },
+      {
+        { op = "setFade", stepId = "hold", atStepTick = 5, kind = "white", ticks = 4, effect = "late-fade" },
+        { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 },
+        { op = "finish", stepId = "tail", atStepTick = 0 },
+      }
+    ),
+    2
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 90 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "playback reaches the late-start step")
+  for _ = 1, 4 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "the step holds without completing before its effect starts")
+  for _ = 1, 4 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "the started effect runs its authored ticks")
+  movie:updateFixed()
+  Assert.equal(movie:sceneNumber(), 2, "the effect completion hands over to the tail step")
+  for _ = 1, 5 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 3, "the tail step still costs its authored duration")
   movie:dispose()
 end
 
