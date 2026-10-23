@@ -668,6 +668,236 @@ local function titleDeliversItsCompiledLightingRecord(scope, context)
   end
 end
 
+local SOURCE_HALF_ANGLE = (0xB60 / 65536) * (2 * math.pi)
+local SOURCE_ASPECT = 4 / 3
+local SOURCE_NEAR, SOURCE_FAR = 1, 5000
+local REFERENCE_WIDTH, REFERENCE_HEIGHT = 256, 192
+
+local function expectedSourceProjection()
+  local Matrix4 = require("libs.math.src.Matrix4")
+  return Matrix4.perspective(2 * SOURCE_HALF_ANGLE, SOURCE_ASPECT, SOURCE_NEAR, SOURCE_FAR)
+end
+
+local function expectedSourceView(bundle)
+  local Matrix4 = require("libs.math.src.Matrix4")
+  local camera = assert(bundle.timeline.camera, "title bundle carries its camera timeline")
+  return Matrix4.lookAt(camera.endPosition, camera.target, { 0, 1, 0 })
+end
+
+local function silhouetteFractions(canvas, label)
+  local width, height = canvas:getDimensions()
+  local bytes = canvas:newImageData():getString()
+  local minX, minY = width, height
+  local maxX, maxY = -1, -1
+  local count, sumX, sumY = 0, 0, 0
+  for y = 0, height - 1 do
+    for x = 0, width - 1 do
+      if string.byte(bytes, (y * width + x) * 4 + 4) > 0 then
+        if x < minX then
+          minX = x
+        end
+        if y < minY then
+          minY = y
+        end
+        if x > maxX then
+          maxX = x
+        end
+        if y > maxY then
+          maxY = y
+        end
+        count, sumX, sumY = count + 1, sumX + x, sumY + y
+      end
+    end
+  end
+  Assert.isTrue(count > 0, label .. " renders legendary pixels instead of an empty target")
+  return {
+    width = (maxX - minX + 1) / width,
+    height = (maxY - minY + 1) / height,
+    centerX = (sumX / count + 0.5) / width,
+    centerY = (sumY / count + 0.5) / height,
+  }
+end
+
+local function sourceReferenceSilhouette(scene, scope)
+  local view = expectedSourceView(scene.bundle)
+  local projection = expectedSourceProjection()
+  local sourceCamera = {
+    far = SOURCE_FAR,
+    zoom = 1,
+    view = function()
+      return view
+    end,
+    projection = function()
+      return projection
+    end,
+    billboardProjection = function()
+      return projection
+    end,
+  }
+  local function worldItems(instance)
+    local items = instance:drawItems(instance.renderMeshesById)
+    for _, item in ipairs(items) do
+      item.worldSpace = true
+    end
+    return items
+  end
+  local canvas = scope:own(love.graphics.newCanvas(REFERENCE_WIDTH, REFERENCE_HEIGHT, {
+    format = "rgba8",
+    readable = true,
+    dpiscale = 1,
+  }))
+  local graphics = love.graphics
+  graphics.push("all")
+  local ok, failure = pcall(function()
+    graphics.setCanvas(canvas)
+    graphics.setScissor()
+    graphics.clear(0, 0, 0, 0)
+    scene.renderer:draw(
+      assert(scene.sourceEnvironment, "title scene carries its source environment"),
+      sourceCamera,
+      { worldItems(scene.legend), worldItems(scene.sparkle) },
+      nil,
+      {
+        worldViewport = { x = 0, y = 0, width = REFERENCE_WIDTH, height = REFERENCE_HEIGHT },
+        referenceFrame = { x = 0, y = 0, width = REFERENCE_WIDTH, height = REFERENCE_HEIGHT },
+      },
+      1
+    )
+  end)
+  graphics.setCanvas()
+  graphics.pop()
+  if not ok then
+    error(failure, 0)
+  end
+  return silhouetteFractions(canvas, "the sourced reference frame")
+end
+
+local function assertSilhouetteNearProduction(actual, expected, label)
+  Assert.isTrue(expected.width > 0 and expected.height > 0, label .. " reference frame carries a measurable legendary")
+  Assert.near(actual.width / expected.width, 1, 0.05, label .. " legendary width stays within its sourced size")
+  Assert.near(actual.height / expected.height, 1, 0.05, label .. " legendary height stays within its sourced size")
+  Assert.near(
+    actual.centerX,
+    expected.centerX,
+    4 / REFERENCE_WIDTH,
+    label .. " legendary stays centered on its sourced offset"
+  )
+  Assert.near(
+    actual.centerY,
+    expected.centerY,
+    4 / REFERENCE_HEIGHT,
+    label .. " legendary stays level with its sourced offset"
+  )
+end
+
+local function legendaryMatchesItsSourcedReferenceFrame(scope, context)
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, REFERENCE_WIDTH, REFERENCE_HEIGHT, "single")
+    local canvasWidth, canvasHeight = scene.canvas:getDimensions()
+    Assert.near(
+      canvasWidth / canvasHeight,
+      SOURCE_ASPECT,
+      1e-6,
+      "the native reference keeps a source-shaped model target instead of a host-shaped one"
+    )
+    Assert.deepEqual(scene:_camera().projection(), expectedSourceProjection())
+    Assert.deepEqual(scene:_camera().view(), expectedSourceView(scene.bundle))
+    withRendererCapture(scene, function(seen)
+      scene:_drawModel()
+      Assert.deepEqual(
+        seen.camera.projection(),
+        expectedSourceProjection(),
+        "the model render path keeps the source lens"
+      )
+    end)
+    scene:_drawModel()
+    assertSilhouetteNearProduction(
+      silhouetteFractions(scene.canvas, "the native title frame"),
+      sourceReferenceSilhouette(scene, scope),
+      "the " .. versionId .. " legendary"
+    )
+    scene:dispose()
+  end
+end
+
+local function legendStageOf(scene)
+  local composition = assert(scene.layout.composition, "title composition has drawable bounds")
+  if composition.configuration == "tall" then
+    return assert(composition.upper, "tall title stages its legendary in the upper half")
+  end
+  if composition.configuration == "dualDisplay" then
+    local principal = assert(composition.principal, "dual title keeps a principal stage")
+    return assert(principal.bounds, "principal stage has drawable bounds")
+  end
+  return assert(composition.bounds, "title composition has drawable bounds")
+end
+
+local function assertSourceLensUnchanged(scene, view, projection, reference, tick, label)
+  Assert.equal(scene.tick, tick, label .. " resizing never advances title timing")
+  Assert.deepEqual(scene:_camera().view(), view)
+  Assert.deepEqual(scene:_camera().projection(), projection)
+  local lens = scene:_camera().projection()
+  Assert.near(lens[6] / lens[1], SOURCE_ASPECT, 1e-9, label .. " host ratio never widens the 3D lens")
+  local canvasWidth, canvasHeight = scene.canvas:getDimensions()
+  Assert.near(canvasWidth / canvasHeight, SOURCE_ASPECT, 1e-6, label .. " host ratio never reshapes the model target")
+  scene:_drawModel()
+  assertSilhouetteNearProduction(silhouetteFractions(scene.canvas, label .. " host frame"), reference, label .. " host")
+end
+
+local function assertCenteredLegendPlacement(scene, scope, width, height, label)
+  local stage = legendStageOf(scene)
+  local draws = captureComposedDraws(scene, scope, width, height)
+  local canvasDraws = drawsOf(draws, scene.canvas)
+  Assert.equal(#canvasDraws, 1, label .. " host draws the legendary exactly once")
+  local canvasWidth, canvasHeight = scene.canvas:getDimensions()
+  local rect = rectOf(canvasDraws[1], canvasWidth, canvasHeight)
+  Assert.near(
+    rect.width / rect.height,
+    canvasWidth / canvasHeight,
+    0.01,
+    label .. " host never stretches the legendary"
+  )
+  Assert.near(rect.x + rect.width / 2, stage.x + stage.width / 2, 1, label .. " host keeps the legendary centered")
+  Assert.isTrue(covers(rect, stage), label .. " host keeps the legendary filling its stage")
+  local scale = math.max(canvasDraws[1].sx, canvasDraws[1].sy)
+  Assert.near(canvasDraws[1].sx, canvasDraws[1].sy, 0.01 * scale, label .. " host scales the legendary uniformly")
+  local button = scene:editionButtonBounds()
+  Assert.isTrue(button.x >= 0 and button.y >= 0, label .. " host keeps the edition control on screen")
+  Assert.isTrue(
+    button.x + button.width <= width and button.y + button.height <= height,
+    label .. " host keeps the edition control reachable"
+  )
+end
+
+local function hostResizingKeepsTheSourcedTitleLens(scope, context)
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, 512, 384, "single")
+    local tick = scene.tick
+    local view = scene:_camera().view()
+    local projection = scene:_camera().projection()
+    Assert.near(projection[6] / projection[1], SOURCE_ASPECT, 1e-9, "the 4:3 host starts on the source lens")
+    scene:_drawModel()
+    local reference = silhouetteFractions(scene.canvas, "the 4:3 host frame")
+    assertSourceLensUnchanged(scene, view, projection, reference, tick, "the 4:3 host")
+    assertCenteredLegendPlacement(scene, scope, 512, 384, "the 4:3 host")
+    scene:resize(1280, 720)
+    Assert.equal(scene.layout.configuration, "wide", "the resized host selects the wide composition")
+    assertSourceLensUnchanged(scene, view, projection, reference, tick, "the wide host")
+    assertCenteredLegendPlacement(scene, scope, 1280, 720, "the wide host")
+    scene.displayContext = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("single") })
+    scene:resize(600, 1000)
+    Assert.equal(scene.layout.configuration, "tall", "the resized host selects the tall composition")
+    assertSourceLensUnchanged(scene, view, projection, reference, tick, "the tall host")
+    assertCenteredLegendPlacement(scene, scope, 600, 1000, "the tall host")
+    scene.displayContext = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("dual") })
+    scene:resize(512, 384)
+    Assert.equal(scene.layout.configuration, "dualDisplay", "the resized host selects the dual composition")
+    assertSourceLensUnchanged(scene, view, projection, reference, tick, "the dual host")
+    assertCenteredLegendPlacement(scene, scope, 512, 384, "the dual host")
+    scene:dispose()
+  end
+end
+
 local T = GraphicsSmoke.suite({
   ["generated HGSS titles render, animate and fit each supported display"] = renderAvailableEditions,
   ["title scene delivers the sourced camera framing and lit legendary"] = titleDeliversSourceCameraAndLighting,
@@ -680,6 +910,8 @@ local T = GraphicsSmoke.suite({
   ["title canvas failure releases staged assets"] = titleCanvasFailureReleasesStagedAssets,
   ["title missing surface fails cleanly"] = titleMissingSurfaceFailsCleanly,
   ["title delivers its compiled lighting record"] = titleDeliversItsCompiledLightingRecord,
+  ["legendary silhouette matches its sourced reference frame at native size"] = legendaryMatchesItsSourcedReferenceFrame,
+  ["host resizing keeps the sourced title lens centered"] = hostResizingKeepsTheSourcedTitleLens,
 })
 T.metadata.capabilities = { "graphics", "rom_dump" }
 T.metadata.derivedAssets = { "startup-title:global" }

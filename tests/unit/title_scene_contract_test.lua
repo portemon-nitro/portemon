@@ -91,10 +91,9 @@ function T.title_projection_converts_the_source_half_angle_with_stable_clipping(
   local projection = camera.projection()
   Assert.near(projection[11], (5000 + 1) / (1 - 5000), 1e-9, "projection normalizes to a positive near plane")
   Assert.near(projection[15], (2 * 5000 * 1) / (1 - 5000), 1e-6, "projection keeps the near/far depth pair")
-  scene.projectionAspect = 16 / 9
   local wide = scene:_camera().projection()
-  Assert.near(fovOf(wide), SOURCE_FULL_FOV, 1e-9, "adapting aspect never changes the vertical field")
-  Assert.near(wide[1], wide[6] / (16 / 9), 1e-9, "the projection covers the stage aspect")
+  Assert.near(fovOf(wide), SOURCE_FULL_FOV, 1e-9, "host shape never changes the vertical field")
+  Assert.near(wide[1], wide[6] / (4 / 3), 1e-9, "the projection keeps the fixed sourced 4:3 frame")
   local target = scene.bundle.timeline.camera.target
   local function distance(eye)
     local dx, dy, dz = eye[1] - target[1], eye[2] - target[2], eye[3] - target[3]
