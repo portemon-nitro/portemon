@@ -56,6 +56,7 @@ local ImportState = require("app.src.launcher.ImportState")
 ---@field bootAdmitted boolean boot-source only: the gate answered ready for this epoch
 ---@field walkerReady boolean boot-source only: the selected pair job answered ready
 ---@field artFailure unknown? cold only: adoption failure held visibly on the card
+---@field artFailureOrigin "worker"|"adoption"|nil selected-pair failure provenance: terminal worker record versus retryable local adoption
 ---@field transferred boolean whether takeLoading detached the owned presentation
 ---@field released boolean whether the owned presentation was already released
 --- Ownership note: `transferred` (no underscore) is the single detach flag.
@@ -197,6 +198,7 @@ function CachePreparationState.new(options)
     bootAdmitted = false,
     walkerReady = false,
     artFailure = nil,
+    artFailureOrigin = nil,
     transferred = false,
     released = false,
     _importView = nil,
@@ -276,13 +278,17 @@ end
 function CachePreparationState:_pollWalker()
   -- An admitted boot transfers only once the selected pair is adopted: the
   -- pair is a required demand on both warm and cold paths, a pending job
-  -- simply holds the transfer, and a worker or adoption failure latches
-  -- visibly with a retry path. A failed cold adoption stays held until an
-  -- explicit retry; re-polling the same failure every frame would only
-  -- churn the queue. A failed warm adoption re-attempts on the next update
-  -- so worker recovery completes the handoff without another key press.
+  -- simply holds the transfer, and each failure kind latches visibly with
+  -- only its truthful remedy. A terminal worker record never heals under
+  -- the same epoch, so the worker latch stops every identical re-request
+  -- until Escape/reselection mints a fresh epoch. A failed local adoption
+  -- stops every automatic re-attempt until one explicit R authorizes one
+  -- new attempt against the already-ready worker record.
+  if self.artFailureOrigin ~= nil then
+    return
+  end
   local cold = self.freshImport
-  if self.pairIndex ~= nil and serviceSupportsWalker(self.service) and not (cold and self.artFailure ~= nil) then
+  if self.pairIndex ~= nil and serviceSupportsWalker(self.service) then
     self.service:request(self.epoch, {
       requestKind = "startup-walker",
       pairIndex = self.pairIndex,
@@ -297,14 +303,17 @@ function CachePreparationState:_pollWalker()
       local adopted, adoptFailure = self:_adoptSelectedPair()
       if adopted then
         self.artFailure = nil
+        self.artFailureOrigin = nil
         self:_fire()
         return
       end
       self.artFailure = adoptFailure
+      self.artFailureOrigin = "adoption"
       return
     end
     if failure ~= nil then
       self.artFailure = failure
+      self.artFailureOrigin = "worker"
       return
     end
     return
@@ -419,7 +428,11 @@ function CachePreparationState:_drawBootSource()
   -- matching-ROM instruction while the source gate stays blocked.
   if self.freshImport then
     assert(self._importView ~= nil, "a cold first import retains its import card")
-    self._importView:draw({ stage = "artwork", failure = self.artFailure })
+    self._importView:draw({
+      stage = "artwork",
+      failure = self.artFailure,
+      retryable = self.artFailureOrigin == "adoption",
+    })
     return
   end
   local loading = assert(self.loading, "boot-source preparation owns its presentation")
@@ -446,8 +459,15 @@ function CachePreparationState:_drawBootSource()
       lg.printf(reason, 24, 48, lg.getWidth() - 48)
     end
     lg.setColor(0.7, 0.78, 0.8, 1)
-    lg.print("Press R to retry the selected pair.", 24, 96)
-    lg.print("Press escape to cancel.", 24, 120)
+    -- Only a latched local adoption failure can run again in this epoch:
+    -- a terminal worker record offers Escape/reselection alone and never
+    -- advertises a retry the service cannot perform.
+    if self.artFailureOrigin == "adoption" then
+      lg.print("Press R to retry the selected pair.", 24, 96)
+      lg.print("Press escape to cancel.", 24, 120)
+    else
+      lg.print("Press escape to reselect.", 24, 96)
+    end
     return
   end
   -- An admitted gate draws only the themed stage while ordinary pair work
@@ -508,13 +528,13 @@ function CachePreparationState:keypressed(key, _, _)
     self.dead = true
     self:_releaseLoading()
     self.onCancel()
-  elseif key == "r" and self.artFailure ~= nil then
-    -- Bounded retry: re-request the selected pair and re-attempt its
-    -- adoption on the next update without re-verifying the source. A cold
-    -- first import needs the key to leave its held card; a warm boot
-    -- re-attempts on every update regardless, so the key only clears the
-    -- visible remedy early.
+  elseif key == "r" and self.artFailureOrigin == "adoption" then
+    -- Bounded retry: one new local adoption attempt against the
+    -- already-ready worker record on the next admitted update, without
+    -- re-verifying the source or reopening the terminal worker record. R
+    -- is a no-op for terminal worker failures and at all other times.
     self.artFailure = nil
+    self.artFailureOrigin = nil
   end
 end
 

@@ -2591,5 +2591,47 @@ function T.blocked_boot_refuses_a_wrong_version_and_ignores_stale_replies()
   )
 end
 
+function T.terminal_walker_record_keeps_its_identity_across_epochs()
+  local CacheService = require("app.src.CacheService")
+  local host = newBootGateChannelHost()
+  local service = CacheService.new({ thread = host })
+  local first = assert(service:select({ versionId = VERSION }), "selection mints an epoch")
+  local firstId = assert(
+    service:request(first, { requestKind = "startup-walker", pairIndex = 5, urgency = "required" }),
+    "the first epoch registers its walker demand"
+  )
+  service:update()
+  service:injectReply({
+    op = "request-result",
+    epoch = first,
+    requestId = firstId,
+    state = "failed",
+    errorMessage = "synthetic walker failure",
+  })
+  service:update()
+  local ready, failure = service:observe(first, { requestKind = "startup-walker", pairIndex = 5 })
+  Assert.equal(ready, false, "the terminal record never reports ready")
+  Assert.notNil(failure, "the terminal record keeps its failure")
+  local sameId = service:request(first, { requestKind = "startup-walker", pairIndex = 5, urgency = "required" })
+  Assert.equal(sameId, firstId, "the same epoch reuses the terminal request identity")
+  service:injectReply({ op = "request-result", epoch = first, requestId = firstId, state = "ready" })
+  service:update()
+  local healed, healedFailure = service:observe(first, { requestKind = "startup-walker", pairIndex = 5 })
+  Assert.equal(healed, false, "a late ready packet never heals the terminal record")
+  Assert.notNil(healedFailure, "the terminal failure survives the ignored packet")
+  local second = assert(service:select({ versionId = VERSION }), "reselection mints a fresh epoch")
+  Assert.isTrue(second ~= first, "the fresh epoch differs from the failed one")
+  local secondId = assert(
+    service:request(second, { requestKind = "startup-walker", pairIndex = 5, urgency = "required" }),
+    "the fresh epoch registers its own walker demand"
+  )
+  Assert.isTrue(secondId ~= firstId, "the fresh epoch owns a distinct request identity")
+  service:injectReply({ op = "request-result", epoch = second, requestId = secondId, state = "ready" })
+  service:update()
+  local freshReady, freshFailure = service:observe(second, { requestKind = "startup-walker", pairIndex = 5 })
+  Assert.equal(freshReady, true, "the fresh epoch answers ready on its independent record")
+  Assert.isNil(freshFailure, "the fresh epoch carries no failure")
+  service:shutdown()
+end
 
 return { tests = T }
