@@ -256,4 +256,367 @@ function T.retired_wait_kinds_are_rejected_at_construction()
   end, "first-play preparation is not a launcher wait")
 end
 
+local function newChannelHost()
+  local channels = {}
+  local function newChannel()
+    local queue = {}
+    local channel = { log = {} }
+    function channel:push(value)
+      queue[#queue + 1] = value
+      channel.log[#channel.log + 1] = value
+      return true
+    end
+    function channel:pop()
+      if #queue == 0 then
+        return nil
+      end
+      return table.remove(queue, 1)
+    end
+    function channel:demand(_)
+      if #queue == 0 then
+        return nil
+      end
+      return table.remove(queue, 1)
+    end
+    function channel:getCount()
+      return #queue
+    end
+    channels[#channels + 1] = channel
+    return channel
+  end
+  local function newThread(_)
+    local thread = { starts = 0 }
+    function thread:start()
+      self.starts = self.starts + 1
+      return true
+    end
+    function thread:wait()
+      return true
+    end
+    function thread:isRunning()
+      return true
+    end
+    function thread:getError()
+      return nil
+    end
+    return thread
+  end
+  return { newChannel = newChannel, newThread = newThread, channels = channels }
+end
+
+local function walkerCommandId(host, epoch)
+  local found = nil
+  for _, packet in ipairs(host.channels[1].log) do
+    if type(packet) == "table" and packet.op == "request" and packet.epoch == epoch then
+      if packet.requestKind == "startup-walker" then
+        found = packet.requestId
+      end
+    end
+  end
+  return found
+end
+
+local LOADING_MODULE = "libs.hgss.src.ui.HgssLoadingPresentation"
+
+local function fakeAdopter()
+  local presentation = { adoptions = 0, disposals = 0, adoptResult = true }
+  function presentation:update() end
+  function presentation:resize() end
+  function presentation:draw() end
+  function presentation:dispose()
+    self.disposals = self.disposals + 1
+  end
+  function presentation:adoptGeneratedAssets()
+    self.adoptions = self.adoptions + 1
+    if self.adoptResult then
+      return true
+    end
+    return false, "synthetic adoption failure"
+  end
+  return presentation
+end
+
+local function captureWarmCopy(draw)
+  local lg = love.graphics
+  local savedDimensions, savedWidth = lg.getDimensions, lg.getWidth
+  local savedColor, savedRect = lg.setColor, lg.rectangle
+  local savedPrint, savedPrintf = lg.print, lg.printf
+  local copy = {}
+  lg.getDimensions = function()
+    return 800, 600
+  end
+  lg.getWidth = function()
+    return 800
+  end
+  lg.setColor = function() end
+  lg.rectangle = function() end
+  lg.print = function(value)
+    copy[#copy + 1] = tostring(value)
+  end
+  lg.printf = function(value)
+    copy[#copy + 1] = tostring(value)
+  end
+  local ok, err = xpcall(draw, debug.traceback)
+  lg.getDimensions, lg.getWidth = savedDimensions, savedWidth
+  lg.setColor, lg.rectangle = savedColor, savedRect
+  lg.print, lg.printf = savedPrint, savedPrintf
+  if not ok then
+    error(err, 0)
+  end
+  return table.concat(copy, "\n")
+end
+
+function T.terminal_worker_failure_is_escape_only_until_a_fresh_selection()
+  local CacheService = require("app.src.CacheService")
+  local Loading = require(LOADING_MODULE)
+  local savedNew = Loading.new
+  local loading = fakeAdopter()
+  Loading.new = function()
+    return loading
+  end
+  local ok, err = xpcall(function()
+    local host = newChannelHost()
+    local service = CacheService.new({ thread = host })
+    local epoch = assert(service:select({ versionId = "heartgold" }))
+    assert(service:requestBootSource(epoch))
+    service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
+    service:update()
+    local script = { fired = 0, cancelled = 0 }
+    local state = CachePreparationState.new({
+      kind = "boot-source",
+      epoch = epoch,
+      service = service,
+      versionId = "heartgold",
+      pairIndex = 5,
+      isCurrent = function()
+        return true
+      end,
+      onReady = function()
+        script.fired = script.fired + 1
+      end,
+      onCancel = function()
+        script.cancelled = script.cancelled + 1
+      end,
+    })
+    state:update(0.016)
+    service:update()
+    local walkerId = assert(walkerCommandId(host, epoch), "the wait demands the selected pair")
+    service:injectReply({
+      op = "request-result",
+      epoch = epoch,
+      requestId = walkerId,
+      state = "failed",
+      errorMessage = "synthetic walker failure",
+    })
+    service:update()
+    state:update(0.016)
+    Assert.equal(script.fired, 0, "a terminal worker failure never transfers")
+    Assert.notNil(state.artFailure, "the worker failure stays visible")
+    local copy = captureWarmCopy(function()
+      state:draw()
+    end)
+    Assert.isTrue(copy:lower():find("escape", 1, true) ~= nil, "the terminal wait names escape")
+    Assert.isTrue(copy:find("Press R", 1, true) == nil, "the terminal wait never promises a retry")
+    local commandsBefore = #host.channels[1].log
+    state:keypressed("r")
+    state:update(0.016)
+    state:update(0.016)
+    service:update()
+    Assert.equal(script.fired, 0, "R never retries a terminal worker request")
+    Assert.notNil(state.artFailure, "R leaves the terminal failure latched")
+    Assert.equal(#host.channels[1].log, commandsBefore, "R issues no identical selector again")
+    Assert.equal(loading.adoptions, 0, "a worker failure never reaches local adoption")
+    service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+    service:update()
+    state:update(0.016)
+    Assert.equal(script.fired, 0, "a late ready packet never heals the terminal record")
+    state:keypressed("escape")
+    Assert.equal(script.cancelled, 1, "escape releases the terminal wait")
+    local second = assert(service:select({ versionId = "heartgold" }))
+    Assert.isTrue(second ~= epoch, "the fresh epoch differs from the failed one")
+    assert(service:requestBootSource(second))
+    service:injectReply({ op = "boot-source-result", epoch = second, state = "ready" })
+    service:update()
+    local freshLoading = fakeAdopter()
+    Loading.new = function()
+      return freshLoading
+    end
+    local freshScript = { fired = 0 }
+    local fresh = CachePreparationState.new({
+      kind = "boot-source",
+      epoch = second,
+      service = service,
+      versionId = "heartgold",
+      pairIndex = 5,
+      isCurrent = function()
+        return true
+      end,
+      onReady = function()
+        freshScript.fired = freshScript.fired + 1
+      end,
+      onCancel = function() end,
+    })
+    fresh:update(0.016)
+    service:update()
+    local freshWalkerId = assert(walkerCommandId(host, second), "the fresh wait demands the pair anew")
+    Assert.isTrue(freshWalkerId ~= walkerId, "the fresh epoch owns a distinct request identity")
+    service:injectReply({ op = "request-result", epoch = second, requestId = freshWalkerId, state = "ready" })
+    service:update()
+    fresh:update(0.016)
+    Assert.equal(freshScript.fired, 1, "the fresh epoch transfers on its independent answer")
+    Assert.isTrue(fresh:takeLoading() == freshLoading, "the fresh wait transfers its own presentation")
+    service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+    service:update()
+    fresh:update(0.016)
+    Assert.equal(freshScript.fired, 1, "a stale packet never publishes a second transfer")
+    fresh:dispose()
+    state:dispose()
+    service:shutdown()
+  end, debug.traceback)
+  Loading.new = savedNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.local_adoption_failure_needs_one_explicit_key_per_attempt()
+  local CacheService = require("app.src.CacheService")
+  local Loading = require(LOADING_MODULE)
+  local savedNew = Loading.new
+  local loading = fakeAdopter()
+  loading.adoptResult = false
+  Loading.new = function()
+    return loading
+  end
+  local ok, err = xpcall(function()
+    local host = newChannelHost()
+    assert(type(host) == "table" and type(host.channels) == "table", "host shape")
+    assert(type(host.newChannel) == "function", "host has newChannel")
+    local service = CacheService.new({ thread = host })
+    assert(#host.channels == 2, "service owns two channels, got " .. tostring(#host.channels))
+    local epoch = assert(service:select({ versionId = "heartgold" }))
+    assert(service:requestBootSource(epoch))
+    service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
+    service:update()
+    local script = { fired = 0 }
+    local state = CachePreparationState.new({
+      kind = "boot-source",
+      epoch = epoch,
+      service = service,
+      versionId = "heartgold",
+      pairIndex = 5,
+      isCurrent = function()
+        return true
+      end,
+      onReady = function()
+        script.fired = script.fired + 1
+      end,
+      onCancel = function() end,
+    })
+    state:update(0.016)
+    service:update()
+    local walkerId = assert(walkerCommandId(host, epoch), "the wait demands the selected pair")
+    service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+    service:update()
+    state:update(0.016)
+    Assert.equal(script.fired, 0, "a failed adoption never transfers")
+    Assert.equal(loading.adoptions, 1, "the first ready answer attempts adoption once")
+    local copy = captureWarmCopy(function()
+      state:draw()
+    end)
+    Assert.isTrue(copy:find("Press R", 1, true) ~= nil, "the adoption failure names its retry key")
+    state:update(0.016)
+    state:update(0.016)
+    Assert.equal(loading.adoptions, 1, "no automatic adoption follows the latch")
+    Assert.equal(script.fired, 0, "the latch never transfers on its own")
+    state:keypressed("r")
+    loading.adoptResult = true
+    state:update(0.016)
+    Assert.equal(loading.adoptions, 2, "one explicit key authorizes exactly one new attempt")
+    Assert.equal(script.fired, 1, "the retried adoption transfers")
+    Assert.isTrue(state:takeLoading() == loading, "the retry transfers the owned presentation")
+    state:update(0.016)
+    Assert.equal(script.fired, 1, "the transfer fires exactly once")
+    state:dispose()
+    service:shutdown()
+  end, debug.traceback)
+  Loading.new = savedNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.cold_terminal_worker_failure_forwards_escape_only_to_the_card()
+  local CacheService = require("app.src.CacheService")
+  local Loading = require(LOADING_MODULE)
+  local savedNew = Loading.new
+  local loading = fakeAdopter()
+  Loading.new = function()
+    return loading
+  end
+  local ok, err = xpcall(function()
+    local host = newChannelHost()
+    local service = CacheService.new({ thread = host })
+    local epoch = assert(service:select({ versionId = "heartgold" }))
+    assert(service:requestBootSource(epoch))
+    service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
+    service:update()
+    local script = { fired = 0 }
+    local state = CachePreparationState.new({
+      kind = "boot-source",
+      epoch = epoch,
+      service = service,
+      versionId = "heartgold",
+      pairIndex = 5,
+      freshImport = true,
+      importStatus = { state = "complete", progress = 1 },
+      isCurrent = function()
+        return true
+      end,
+      onReady = function()
+        script.fired = script.fired + 1
+      end,
+      onCancel = function() end,
+    })
+    state:update(0.016)
+    service:update()
+    local walkerId = assert(walkerCommandId(host, epoch), "the cold card demands the selected pair")
+    service:injectReply({
+      op = "request-result",
+      epoch = epoch,
+      requestId = walkerId,
+      state = "failed",
+      errorMessage = "synthetic walker failure",
+    })
+    service:update()
+    state:update(0.016)
+    Assert.equal(script.fired, 0, "a terminal cold failure never transfers")
+    local seen = {}
+    local view = assert(state._importView, "a cold wait retains its card")
+    local originalDraw = view.draw
+    view.draw = function(self, statusOverride)
+      seen.override = statusOverride
+      return originalDraw(self, statusOverride)
+    end
+    local copy = captureWarmCopy(function()
+      state:draw()
+    end)
+    view.draw = originalDraw
+    Assert.notNil(seen.override, "the cold card receives its artwork status")
+    Assert.equal(seen.override.stage, "artwork", "the cold failure rides the artwork stage")
+    Assert.isFalse(seen.override.retryable == true, "a terminal failure forwards no retry flag")
+    Assert.isTrue(copy:find("Press Esc", 1, true) ~= nil, "the cold terminal card names escape")
+    Assert.isTrue(copy:find("Press R", 1, true) == nil, "the cold terminal card never promises a retry")
+    state:keypressed("r")
+    state:update(0.016)
+    Assert.equal(script.fired, 0, "R never retries the cold terminal failure")
+    state:dispose()
+    service:shutdown()
+  end, debug.traceback)
+  Loading.new = savedNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }

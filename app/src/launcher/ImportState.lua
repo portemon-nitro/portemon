@@ -309,6 +309,10 @@ function ImportState:draw(statusOverride)
     and type(statusOverride) == "table"
     and statusOverride.stage == "artwork"
   local artworkFailure = isArtworkStage and statusOverride.failure ~= nil
+  -- The card knows no worker internals: the waiting owner declares whether
+  -- the shown failure can run again in this epoch. Only an explicit true
+  -- keeps the retry row; anything else is Escape-only.
+  local artworkRetryable = artworkFailure and statusOverride.retryable == true
   local artworkDetail = nil
   if artworkFailure then
     local detail = tostring(rejectionReason(statusOverride.failure))
@@ -351,7 +355,11 @@ function ImportState:draw(statusOverride)
         measureY = measureY + LINE_HEIGHT
         rows[#rows + 1] = { text = artworkDetail, y = measureY }
         measureY = measureY + LINE_HEIGHT
-        rows[#rows + 1] = { text = "Press R to retry, or Esc to reselect.", y = measureY }
+        if artworkRetryable then
+          rows[#rows + 1] = { text = "Press R to retry, or Esc to reselect.", y = measureY }
+        else
+          rows[#rows + 1] = { text = "Press Esc to reselect.", y = measureY }
+        end
       else
         rows[#rows + 1] = { text = "Preparing walking sprites", y = measureY }
       end
@@ -417,7 +425,17 @@ function ImportState:draw(statusOverride)
     lg.printf("Verifying cartridge identity…", textX, y, textWidth, "center")
     self:_drawBar(trackX, trackY, trackWidth, trackHeight, clampProgress(status.progress), false)
   elseif status.state == s.COMPLETE and type(statusOverride) == "table" and statusOverride.stage == "artwork" then
-    self:_drawArtworkWait(textX, y, textWidth, trackX, trackY, trackWidth, trackHeight, statusOverride.failure)
+    self:_drawArtworkWait(
+      textX,
+      y,
+      textWidth,
+      trackX,
+      trackY,
+      trackWidth,
+      trackHeight,
+      statusOverride.failure,
+      statusOverride.retryable
+    )
   elseif status.state == s.COMPLETE then
     lg.setColor(0.8, 0.9, 0.78, 1)
     lg.printf("ROM accepted.", textX, y, textWidth, "center")
@@ -434,8 +452,9 @@ end
 ---@param trackY number progress track origin y
 ---@param trackWidth number progress track width
 ---@param trackHeight number progress track height
----@param failure unknown? adoption failure surfaced with a retry path
-function ImportState:_drawArtworkWait(textX, y, textWidth, trackX, trackY, trackWidth, trackHeight, failure)
+---@param failure unknown? selected-pair failure surfaced with its truthful remedy
+---@param retryable boolean? true only when the failure can run again in this epoch
+function ImportState:_drawArtworkWait(textX, y, textWidth, trackX, trackY, trackWidth, trackHeight, failure, retryable)
   local lg = love.graphics
   if failure ~= nil then
     lg.setColor(1, 0.67, 0.53, 1)
@@ -448,7 +467,11 @@ function ImportState:_drawArtworkWait(textX, y, textWidth, trackX, trackY, track
     end
     lg.printf(detail, textX, y, textWidth, "center")
     y = y + LINE_HEIGHT
-    lg.printf("Press R to retry, or Esc to reselect.", textX, y, textWidth, "center")
+    if retryable == true then
+      lg.printf("Press R to retry, or Esc to reselect.", textX, y, textWidth, "center")
+    else
+      lg.printf("Press Esc to reselect.", textX, y, textWidth, "center")
+    end
     return
   end
   lg.setColor(0.8, 0.9, 0.78, 1)
