@@ -59,7 +59,12 @@ local SCROLL_DIVISOR = 256
 local WORLD_TO_SOURCE_PX = 16
 local STAGE_CENTER_X, STAGE_CENTER_Y = 128, 96
 local GPU_NEAR, GPU_FAR = 1, 5000
-local HALF_ANGLE_INDEX = 0xB60
+-- Retail town field angle behind the scene-3 camera: the compiled town
+-- track carries this fovAngle, and a bundle without one keeps the same
+-- retail town lens instead of borrowing the title lens.
+local TOWN_HALF_ANGLE_INDEX = 0x981
+local TOWN_DEFAULT_DISTANCE = 410.922119140625
+local TOWN_DEFAULT_TARGET = { 0, 0, 96 }
 local NOON_HALF_SECONDS = 43200
 
 local EFFECT_START_OPS = {
@@ -124,7 +129,6 @@ end
 ---@field activeTown string?
 ---@field townClipTicks table<string, integer>
 ---@field cameraDistance number?
----@field cameraDrift integer
 ---@field lightingMap number?
 ---@field fade table<string, unknown>?
 ---@field wipe table<string, unknown>?
@@ -134,7 +138,6 @@ end
 ---@field pool GpuAssetPool?
 ---@field renderer FieldRenderer?
 ---@field towns { name: string?, index: integer?, instance: ModelInstance }[]
----@field stageFallback string?
 ---@field townEnv table<string, unknown>?
 ---@field townEnvKey number?
 
@@ -265,7 +268,9 @@ end
 ---@return love.Image image handle
 local function acquireImage(slot, self, path)
   local bytes = self.cacheFs:read(path)
-  assert(type(bytes) == "string", "opening scene staged art is missing: " .. tostring(path))
+  if type(bytes) ~= "string" then
+    error(invalid("opening scene staged art is missing", { scene = slot.sceneNumber, path = path }), 0)
+  end
   local image = newSceneImage(self.graphics, bytes, path)
   slot.images[#slot.images + 1] = image
   slot.imageByPath[path] = image
@@ -280,33 +285,161 @@ local function withSceneClips(descriptor, clips)
   for key, value in pairs(descriptor) do
     copy[key] = value
   end
+  -- The town animation set is named once per town: the descriptor and the
+  -- staged clip list carry the same clip identities by design, so the merge
+  -- never double-counts one set. One identity can still name two different
+  -- channels (the joint transform set and the material scroll set share the
+  -- town id): those are distinct channels the renderer plays together, so
+  -- the later channel keeps a qualified runtime identity instead of being
+  -- dropped or colliding at assembly.
   copy.animations = {}
   local seen = {}
+  local function sameChannel(first, clip)
+    return first == clip or (first.category == clip.category and first.kind == clip.kind)
+  end
+  local function stage(clip)
+    if type(clip) ~= "table" then
+      return
+    end
+    if clip.id == nil then
+      copy.animations[#copy.animations + 1] = clip
+      return
+    end
+    local first = seen[clip.id]
+    if first == nil then
+      seen[clip.id] = clip
+      copy.animations[#copy.animations + 1] = clip
+      return
+    end
+    if sameChannel(first, clip) then
+      return
+    end
+    local qualifiedId = clip.id .. ":" .. tostring(clip.category)
+    local previous = seen[qualifiedId]
+    if previous ~= nil then
+      if sameChannel(previous, clip) then
+        return
+      end
+      return
+    end
+    local qualified = {}
+    for key, value in pairs(clip) do
+      qualified[key] = value
+    end
+    qualified.id = qualifiedId
+    seen[qualifiedId] = qualified
+    copy.animations[#copy.animations + 1] = qualified
+  end
   if type(descriptor.animations) == "table" then
     for _, clip in ipairs(descriptor.animations) do
-      copy.animations[#copy.animations + 1] = clip
-      if type(clip) == "table" and clip.id ~= nil then
-        seen[clip.id] = true
-      end
+      stage(clip)
     end
   end
-  for _, clip in pairs(clips) do
-    if type(clip) ~= "table" or clip.id == nil or not seen[clip.id] then
-      copy.animations[#copy.animations + 1] = clip
-      if type(clip) == "table" and clip.id ~= nil then
-        seen[clip.id] = true
-      end
+  if type(clips) == "table" then
+    for _, clip in ipairs(clips) do
+      stage(clip)
     end
   end
   return copy
 end
 
--- Builds the three town model instances through the shared model renderer
--- path: normalized descriptors become definitions, geometry resolves
--- through a scene-local GPU pool, and each instance plays the staged
--- animation channels its compiled definition actually binds. Anything the
--- pool or definition owner rejects tears the whole stage down so the slot
--- acquisition rolls back instead of drawing a partial town.
+-- Builds one town model instance through the shared model renderer path:
+-- the normalized descriptor becomes a definition, every staged material
+-- texture is read eagerly in manifest order, geometry resolves through the
+-- scene-local GPU pool, and the instance plays the staged animation
+-- channels its compiled definition actually binds. A town without a
+-- bindable animation clip is malformed town data and fails here.
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot gaining the town stage
+---@param model table<string, unknown> compiled town model record
+---@param position integer 1-based town position in manifest order
+local function buildTownModel(self, slot, model, position)
+  local town = (type(model) == "table" and model.name) or ("town-" .. tostring(position))
+  if type(model) ~= "table" or type(model.descriptor) ~= "table" or type(model.descriptor.dynamic) ~= "table" then
+    error(
+      invalid("opening scene town descriptor carries no stage geometry", {
+        scene = slot.sceneNumber,
+        town = town,
+      }),
+      0
+    )
+  end
+  local merged = withSceneClips(model.descriptor, model.clips)
+  for _, clip in ipairs(merged.animations) do
+    if type(clip) ~= "table" or (clip.id == nil and clip.name == nil) then
+      error(
+        invalid("opening scene town carries no bindable animation clip", {
+          scene = slot.sceneNumber,
+          town = town,
+        }),
+        0
+      )
+    end
+  end
+  local key = "opening-scene:" .. slot.sceneNumber .. ":" .. tostring(town)
+  local definition = ModelDefinition.fromNitroDescriptor(merged, { key = key })
+  -- Every staged material texture is read eagerly in manifest order, so a
+  -- missing town texture fails the acquisition instead of surfacing later
+  -- (or never) through lazy draw-time resolution.
+  for _, material in ipairs(definition.materials) do
+    if material.texture ~= nil and slot.imageByPath[material.texture] == nil then
+      acquireImage(slot, self, material.texture)
+    end
+  end
+  local wraps = SceneDescriptor.wrapByMaterial(definition.materials)
+  local function resolveImage(path, materialId)
+    if path == nil then
+      return nil
+    end
+    local handle = slot.imageByPath[path]
+    if handle == nil then
+      handle = acquireImage(slot, self, path)
+    end
+    local wrap = wraps[materialId]
+    if wrap ~= nil and handle.setWrap ~= nil then
+      handle:setWrap(wrap.x, wrap.y)
+    end
+    return handle
+  end
+  local instance = ModelInstance.new(definition, {
+    resolveImage = resolveImage,
+  })
+  local played = 0
+  for _, clip in ipairs(definition.animations) do
+    local name = type(clip) == "table" and (clip.id or clip.name)
+    if name ~= nil then
+      local clipOk = pcall(instance.play, instance, name, { loopMode = "loop" })
+      if clipOk then
+        played = played + 1
+      end
+    end
+  end
+  if played == 0 then
+    error(
+      invalid("opening scene town carries no bindable animation clip", {
+        scene = slot.sceneNumber,
+        town = town,
+      }),
+      0
+    )
+  end
+  local meshes = {}
+  for _, mesh in ipairs(definition.meshes) do
+    local resource = slot.pool:meshFor(mesh.geometry)
+    mesh.center = resource.center
+    meshes[mesh.id] = resource.mesh
+  end
+  instance.renderMeshesById = meshes
+  instance:evaluatePose()
+  slot.towns[#slot.towns + 1] = { name = model.name, index = model.index, instance = instance }
+end
+
+-- Builds the town model instances through the shared model renderer path:
+-- normalized descriptors become definitions, geometry resolves through a
+-- scene-local GPU pool, and each instance plays the staged animation
+-- channels its compiled definition actually binds. Any failure aborts the
+-- whole stage with a typed scene error so the slot acquisition rolls back
+-- instead of drawing a partial town.
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot gaining the town stage
 local function buildTownStage(self, slot)
@@ -314,63 +447,21 @@ local function buildTownStage(self, slot)
   slot.pool = pool
   local renderer = FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = self.graphics })
   slot.renderer = renderer
-  local ok, failure = pcall(function()
-    for index, model in ipairs(slot.manifest.models) do
-      local key = "opening-scene:" .. slot.manifest.sceneNumber .. ":" .. tostring(model.name or index)
-      local definition =
-        ModelDefinition.fromNitroDescriptor(withSceneClips(model.descriptor, model.clips), { key = key })
-      local meshes = {}
-      for _, mesh in ipairs(definition.meshes) do
-        local resource = pool:meshFor(mesh.geometry)
-        mesh.center = resource.center
-        meshes[mesh.id] = resource.mesh
+  for index, model in ipairs(slot.manifest.models) do
+    local ok, failure = pcall(buildTownModel, self, slot, model, index)
+    if not ok then
+      if type(failure) == "table" and failure.code == "HGSS_OPENING_MOVIE_INVALID" then
+        error(failure, 0)
       end
-      local wraps = SceneDescriptor.wrapByMaterial(definition.materials)
-      local function resolveImage(path, materialId)
-        if path == nil then
-          return nil
-        end
-        local handle = slot.imageByPath[path]
-        if handle == nil then
-          handle = acquireImage(slot, self, path)
-        end
-        local wrap = wraps[materialId]
-        if wrap ~= nil and handle.setWrap ~= nil then
-          handle:setWrap(wrap.x, wrap.y)
-        end
-        return handle
-      end
-      local instance = ModelInstance.new(definition, {
-        resolveImage = resolveImage,
-      })
-      instance.renderMeshesById = meshes
-      local played = 0
-      for _, clip in pairs(withSceneClips(model.descriptor, model.clips).animations) do
-        local name = type(clip) == "table" and (clip.id or clip.name)
-        if name ~= nil then
-          local clipOk = pcall(instance.play, instance, name, { loopMode = "loop" })
-          if clipOk then
-            played = played + 1
-          end
-        end
-      end
-      if played == 0 then
-        for _, clip in pairs(model.clips) do
-          local name = type(clip) == "table" and (clip.id or clip.name)
-          if name ~= nil then
-            local clipOk = pcall(instance.play, instance, name, { loopMode = "loop" })
-            if clipOk then
-              played = played + 1
-            end
-          end
-        end
-      end
-      instance:evaluatePose()
-      slot.towns[#slot.towns + 1] = { name = model.name, index = model.index, instance = instance }
+      error(
+        invalid("opening scene town stage cannot be acquired", {
+          scene = slot.sceneNumber,
+          town = type(model) == "table" and model.name or nil,
+          cause = Errors.format(failure),
+        }),
+        0
+      )
     end
-  end)
-  if not ok then
-    error(failure, 0)
   end
 end
 
@@ -405,7 +496,6 @@ local function acquireSlot(self, manifest)
     activeTown = nil,
     townClipTicks = {},
     cameraDistance = nil,
-    cameraDrift = 0,
     lightingMap = nil,
     fade = nil,
     wipe = nil,
@@ -488,29 +578,24 @@ local function acquireSlot(self, manifest)
       end
     end
     if #manifest.models > 0 then
-      local stageOk, stageFailure = pcall(buildTownStage, self, slot)
-      if not stageOk then
-        -- A synthetic or otherwise non-renderable town descriptor never
-        -- blocks movie playback: the scene keeps its validated 2D program
-        -- and camera drift while the failed stage releases everything it
-        -- staged. Only real GPU builds with renderable descriptors keep
-        -- their 3D stage.
-        if slot.pool ~= nil then
-          slot.pool:release()
-          slot.pool = nil
-        end
-        if slot.renderer ~= nil then
-          slot.renderer:release()
-          slot.renderer = nil
-        end
-        slot.towns = {}
-        slot.stageFallback = tostring(stageFailure)
-      end
+      -- The town stage is strict: any failed town model, clip, texture, or
+      -- mesh acquisition aborts the whole scene with a typed scene error.
+      -- A failed acquisition never becomes a drawable scene.
+      buildTownStage(self, slot)
     end
   end)
   if not ok then
     releaseSlot(slot)
-    error(failure, 0)
+    if type(failure) == "table" and type(failure.code) == "string" then
+      error(failure, 0)
+    end
+    error(
+      invalid("opening scene acquisition failed", {
+        scene = manifest.sceneNumber,
+        cause = Errors.format(failure),
+      }),
+      0
+    )
   end
   return slot
 end
@@ -947,9 +1032,6 @@ local function advanceContinuous(slot)
   end
   for name in pairs(slot.townClipTicks) do
     slot.townClipTicks[name] = slot.townClipTicks[name] + 1
-  end
-  if #slot.manifest.models > 0 and slot.renderer == nil then
-    slot.cameraDrift = slot.cameraDrift + 1
   end
   for name in pairs(slot.effects) do
     local group = name:match("^emitters%-(.+)$")
@@ -1418,7 +1500,7 @@ local function channel31(value)
   return math.max(0, math.min(31, math.floor(value * 31 + 0.5)))
 end
 
----@param value unknown raw 0..1 RGB triple in either array or named shape
+---@param value unknown raw triple in array, color (r/g/b), or vector (x/y/z) shape
 ---@return number[] normalized triple with numeric channels
 local function tripleOrZero(value)
   if type(value) ~= "table" then
@@ -1428,9 +1510,9 @@ local function tripleOrZero(value)
     return (type(valueChannel) == "number") and valueChannel or 0
   end
   return {
-    channel(value[1] or value.r),
-    channel(value[2] or value.g),
-    channel(value[3] or value.b),
+    channel(value[1] or value.r or value.x),
+    channel(value[2] or value.g or value.y),
+    channel(value[3] or value.b or value.z),
   }
 end
 
@@ -1548,16 +1630,26 @@ local function townEnvironment(slot)
 end
 
 ---@param slot OpeningMovieSlot scene slot
----@param rect { x: number, y: number, width: number, height: number } device-space role rectangle
 ---@return table<string, unknown> camera track for the shared field renderer
-local function townCamera(slot, rect)
+local function townCamera(slot)
+  -- The retail town camera orbits its target by the compiled fixed-point
+  -- angle at the staged distance, and the projection carries the compiled
+  -- town field angle on the source 4:3 frame. Host layout never widens
+  -- this lens; the compositor places the projected frame.
   local camera = slot.manifest.camera
-  local target = (camera and camera.target) or { 0, 0, 96 }
-  local distance = slot.cameraDistance or (camera and camera.distance) or 410
-  local eye = { target[1], target[2], target[3] + distance }
+  local target = (camera and camera.target) or TOWN_DEFAULT_TARGET
+  local distance = slot.cameraDistance or (camera and camera.distance) or TOWN_DEFAULT_DISTANCE
+  local angle = (camera and camera.angle) or { 0, 0, 0, 0 }
+  local pitch = ((angle[1] or 0) / 65536) * (2 * math.pi)
+  local yaw = ((angle[2] or 0) / 65536) * (2 * math.pi)
+  local eye = {
+    target[1] + math.sin(yaw) * distance * math.cos(pitch),
+    target[2] - math.sin(pitch) * distance,
+    target[3] + math.cos(yaw) * distance * math.cos(pitch),
+  }
   local viewMatrix = Matrix4.lookAt(eye, target, { 0, 1, 0 })
-  local halfAngle = (HALF_ANGLE_INDEX / 65536) * (2 * math.pi)
-  local projectionMatrix = Matrix4.perspective(2 * halfAngle, rect.width / math.max(rect.height, 1), GPU_NEAR, GPU_FAR)
+  local halfAngle = (((camera and camera.fovAngle) or TOWN_HALF_ANGLE_INDEX) / 65536) * (2 * math.pi)
+  local projectionMatrix = Matrix4.perspective(2 * halfAngle, SOURCE_WIDTH / SOURCE_HEIGHT, GPU_NEAR, GPU_FAR)
   local function cameraView()
     return viewMatrix
   end
@@ -1601,7 +1693,7 @@ local function drawTowns(slot, rect)
     worldViewport = { x = rect.x, y = rect.y, width = rect.width, height = rect.height },
     referenceFrame = { x = rect.x, y = rect.y, width = rect.width, height = rect.height },
   }
-  slot.renderer:draw(townEnvironment(slot), townCamera(slot, rect), { items }, nil, viewport, 1)
+  slot.renderer:draw(townEnvironment(slot), townCamera(slot), { items }, nil, viewport, 1)
 end
 
 ---@param slot OpeningMovieSlot scene slot
@@ -1791,10 +1883,6 @@ local function drawRoleBody(self, slot, role, rect)
   graphics.translate(rect.x + (rect.width - drawnWidth) / 2, rect.y + (rect.height - drawnHeight) / 2)
   graphics.scale(scale, scale)
   local backgrounds = sortedBackgrounds(slot, engine)
-  local drift = 0
-  if #slot.manifest.models > 0 and slot.renderer == nil and role == "upper" then
-    drift = (slot.cameraDrift % 64) * 0.25
-  end
   for index, background in ipairs(backgrounds) do
     local image = slot.imageByPath[background.image]
     if image ~= nil then
@@ -1803,7 +1891,7 @@ local function drawRoleBody(self, slot, role, rect)
       else
         graphics.setColor(1, 1, 1, 1)
       end
-      graphics.draw(image, background.scrollX + drift, background.scrollY)
+      graphics.draw(image, background.scrollX, background.scrollY)
     end
   end
   graphics.setColor(1, 1, 1, 1)
