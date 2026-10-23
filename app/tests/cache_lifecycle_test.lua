@@ -266,6 +266,23 @@ local function withAppStubs(fn)
     storeNew = Store.new,
     dimensions = love.graphics.getDimensions,
   }
+  local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
+  local originalLoadingNew = HgssLoadingPresentation.new
+  -- The boot wait adopts its selected pair through the themed presentation
+  -- before it transfers: model an instantly drawable pair so selections
+  -- exercise the real request/adopt/transfer path instead of stalling on
+  -- generated art this stubbed service harness never builds.
+  HgssLoadingPresentation.new = function(_)
+    local presentation = {}
+    function presentation:update() end
+    function presentation:resize() end
+    function presentation:draw() end
+    function presentation:dispose() end
+    function presentation:adoptGeneratedAssets()
+      return true
+    end
+    return presentation
+  end
   local context = {
     games = {},
     menus = {},
@@ -305,6 +322,12 @@ local function withAppStubs(fn)
     local scripted = context.observations[key]
     if scripted ~= nil then
       return scripted.ready, scripted.failure
+    end
+    -- The boot wait demands the selected walking pair as a required
+    -- interest before it transfers: model the healthy worker answer so
+    -- warm selections keep reaching their menu handoff in this harness.
+    if selector.requestKind == "startup-walker" then
+      return true, nil
     end
     if selector.requestKind == "milestone" and selector.name == "bootstrap" then
       return true, nil
@@ -408,6 +431,7 @@ local function withAppStubs(fn)
   local ok, err = pcall(fn, App, context)
   restoreStartupTitle()
   HgssGame.new = original.gameNew
+  HgssLoadingPresentation.new = originalLoadingNew
   MainMenuComposition.new = original.menuNew
   RomImporter.isReady = original.isReady
   restoreFirstPlayCompletion(completionOriginals)
@@ -2236,6 +2260,15 @@ function T.incomplete_cache_with_a_ready_first_play_closure_stays_in_the_boot_wa
       local second = assert(App.epoch, "reselection must borrow a fresh epoch")
       Assert.isTrue(second > epoch, "reselection mints a fresh epoch")
       context.service:injectReply({ op = "boot-source-result", epoch = second, state = "ready" })
+      -- The admitted warm wait holds its transfer until the required
+      -- selected pair answers: reply to the keyed walker demand before
+      -- expecting the title bootstrap.
+      pumpBootGate(App, 2)
+      local walkerId = assert(
+        walkerRequestId(context, second),
+        "the admitted wait requests exactly the selected walking pair"
+      )
+      context.service:injectReply({ op = "request-result", epoch = second, requestId = walkerId, state = "ready" })
       pumpBootGate(App, 3)
       local bootstrapId = assert(
         milestoneRequestId(context, second, "bootstrap"),
@@ -2382,6 +2415,17 @@ function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_on
       App._selectVersion(VERSION)
       local third = assert(App.epoch, "the attested boot must borrow a fresh epoch")
       context.service:injectReply({ op = "boot-source-result", epoch = third, state = "ready" })
+      -- The admitted warm wait holds its transfer until the required
+      -- selected pair answers: reply to the keyed walker demand before
+      -- expecting the title bootstrap.
+      pumpBootGate(App, 2)
+      local thirdWalkerId = assert(
+        walkerRequestId(context, third),
+        "the attested wait requests exactly the selected walking pair"
+      )
+      context.service:injectReply(
+        { op = "request-result", epoch = third, requestId = thirdWalkerId, state = "ready" }
+      )
       pumpBootGate(App, 3)
       local bootstrapId = assert(
         milestoneRequestId(context, third, "bootstrap"),

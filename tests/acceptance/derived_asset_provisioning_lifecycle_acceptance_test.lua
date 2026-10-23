@@ -92,9 +92,27 @@ local function withApp(fn)
     return { dispose = function() end }
   end
   StartupTitleState.new = FakeStartupTitleState.new
+  -- The boot wait adopts its selected pair through the themed presentation
+  -- before it transfers: model an instantly drawable pair so the warm
+  -- handoff exercises the real request/adopt/transfer path instead of
+  -- stalling on generated art this acceptance fixture never builds.
+  local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
+  local originalLoadingNew = HgssLoadingPresentation.new
+  HgssLoadingPresentation.new = function(_)
+    local presentation = {}
+    function presentation:update() end
+    function presentation:resize() end
+    function presentation:draw() end
+    function presentation:dispose() end
+    function presentation:adoptGeneratedAssets()
+      return true
+    end
+    return presentation
+  end
 
   local ok, err = pcall(fn, result)
 
+  HgssLoadingPresentation.new = originalLoadingNew
   App.state = originalState
   App.importer = originalImporter
   App.provisioner = originalProvisioner

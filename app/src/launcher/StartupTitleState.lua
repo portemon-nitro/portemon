@@ -57,6 +57,7 @@ local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 ---@field audioStarted boolean
 ---@field menuAttempted boolean
 ---@field accumulator number
+---@field loaderVisibleTime number seconds the transferred loader has animated
 ---@field fadeFrame integer
 ---@field pointerCapture string?
 ---@field canceledPointers table<string, boolean>
@@ -70,6 +71,11 @@ StartupTitleState.__index = StartupTitleState
 local FRAME_SECONDS = 1 / 30
 local FADE_OUT_FRAMES = 60
 local FADE_IN_FRAMES = 18
+-- Minimum visible loader time after transfer before the staged opening may
+-- play: the adopted walking pair animates behind the loader while the
+-- fully acquired movie waits at its first frame.
+local LOADER_DWELL_SECONDS = 0.8
+local DWELL_DT_CAP = 0.25
 local EDITIONS = { heartgold = "soulsilver", soulsilver = "heartgold" }
 local OPENING_SCENE_COUNT = 5
 
@@ -167,6 +173,7 @@ function StartupTitleState.new(options)
     audioStarted = false,
     menuAttempted = false,
     accumulator = 0,
+    loaderVisibleTime = 0,
     fadeFrame = 0,
     pointerCapture = nil,
     canceledPointers = {},
@@ -358,9 +365,30 @@ function StartupTitleState:_adoptMovie()
   end
   self.movie = assert(movie)
   self.movieScenes = scenes
+  -- A zero-length movie completes synchronously instead of waiting a tick.
+  if movie:isFinished() then
+    self:_finishMovie()
+    return
+  end
+  -- Otherwise the fully acquired movie stays staged behind the visible
+  -- loader at its first frame: update() enters the movie phase only after
+  -- the loader has animated for its minimum beat. No source tick advances
+  -- and no movie frame draws before that handoff.
+end
+
+-- Enters the staged movie once the transferred loader has animated for its
+-- minimum beat. The staged movie is fully acquired, so the first playable
+-- source frame draws directly at the transition with no interstitial.
+function StartupTitleState:_maybeEnterMovie()
+  if self.phase ~= "loading" or self.movie == nil or not self:_live() then
+    return
+  end
+  if self.loaderVisibleTime < LOADER_DWELL_SECONDS then
+    return
+  end
   self.phase = "movie"
   self:_maybeStartAudio()
-  -- A zero-length movie completes synchronously instead of waiting a tick.
+  local movie = assert(self.movie)
   if movie:isFinished() then
     self:_finishMovie()
   end
@@ -700,6 +728,12 @@ function StartupTitleState:update(dt)
   self:_pollAssets()
   if self.phase == "loading" or self.phase == "error" then
     self.loading:update(dt)
+  end
+  -- The visible beat accumulates only while the loader owns the screen, so
+  -- a hitch never skips it and later phases never extend it.
+  if self.phase == "loading" then
+    self.loaderVisibleTime = self.loaderVisibleTime + math.min(dt, DWELL_DT_CAP)
+    self:_maybeEnterMovie()
   end
   self.accumulator = self.accumulator + dt
   while self.accumulator >= FRAME_SECONDS and not self.disposed do
