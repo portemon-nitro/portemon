@@ -239,16 +239,12 @@ local function manifestFor(sceneNumber)
   for _, clip in ipairs(clips) do
     manifest.assets[clip.id] = true
   end
+  -- Scene 3 carries no town stage here: the player strictly acquires every
+  -- staged town model, so a bundle that names towns must name buildable
+  -- ones. These synthetic timelines exercise the 2D program only; town
+  -- acquisition has its own fixtures with renderable descriptors.
   if sceneNumber == 3 then
     manifest.models = {}
-    for town = 0, 2 do
-      manifest.models[#manifest.models + 1] = {
-        name = "town-" .. town,
-        index = town,
-        descriptor = { key = "synthetic:town-" .. town, materials = {}, meshes = {} },
-        clips = { { frameCount = 2 }, { frameCount = 3 } },
-      }
-    end
   end
   if sceneNumber == 4 then
     local emitters = {}

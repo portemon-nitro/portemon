@@ -770,11 +770,390 @@ local function heartgold_opening_movie_graphics_are_blocked_without_a_dump(scope
   movie:dispose()
 end
 
+-- Strict town acquisition: scene 3 must build all three real town stages with
+-- the sourced retail camera or abort with a typed failure. A town that
+-- cannot build is never allowed to fall back to a drifting 2D backdrop,
+-- and the town lens always honors the sourced angle and field angle,
+-- never the title lens or a straight-down eye.
+
+---@param failure unknown caught error value
+local function assertTypedSceneFailure(failure)
+  Assert.equal(type(failure), "table", "a failed town acquisition raises a structured error, never a bare string")
+  Assert.equal(failure.code, "HGSS_OPENING_MOVIE_INVALID", "a failed town acquisition raises the typed scene failure")
+end
+
+---@param scope table
+---@param scenes table[] validated scene bundles in retail order
+---@param cacheFs table staged art backing the scenes
+---@param versionId string
+---@param width integer
+---@param height integer
+---@param kind string
+---@return table player
+local function openMovieWithCache(scope, scenes, cacheFs, versionId, width, height, kind)
+  local Movie = requireMovie()
+  local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology(kind) })
+  local movie = Movie.new({
+    versionId = versionId,
+    scenes = scenes,
+    cacheFs = cacheFs,
+    width = width,
+    height = height,
+    displayContext = context,
+  })
+  scope:own({
+    release = function()
+      movie:dispose()
+    end,
+  })
+  return movie
+end
+
+---@param scope table
+---@param scenes table[] validated scene bundles in retail order
+---@param cacheFs table staged art backing the scenes
+---@return table? movie, unknown failure
+local function driveMovieCatching(scope, scenes, cacheFs)
+  local constructed, movieOrFailure =
+    pcall(openMovieWithCache, scope, scenes, cacheFs, "soulsilver", 512, 384, "single")
+  if not constructed then
+    return nil, movieOrFailure
+  end
+  local movie = movieOrFailure
+  local failure = nil
+  local ticks = 0
+  while failure == nil and not movie:isFinished() and ticks < 20000 do
+    local ok, err = pcall(function()
+      movie:updateFixed()
+    end)
+    ticks = ticks + 1
+    if not ok then
+      failure = err
+      break
+    end
+    local okDraw, errDraw = pcall(function()
+      movie:draw()
+    end)
+    if not okDraw then
+      failure = errDraw
+      break
+    end
+  end
+  return movie, failure
+end
+
+---@param scope table
+---@param movie table
+---@param width integer
+---@param height integer
+---@param baseline table love.graphics.getStats snapshot before the run
+local function assertGpuCleanAfterTownFailure(scope, movie, width, height, baseline)
+  local _ = scope
+  local _ = width
+  local _ = height
+  if movie ~= nil then
+    movie:dispose()
+  end
+  local afterFailure = love.graphics.getStats()
+  Assert.equal(afterFailure.images, baseline.images, "a failed town acquisition releases its staged images")
+  Assert.equal(afterFailure.canvases, baseline.canvases, "a failed town acquisition leaves no canvas behind")
+end
+
+---@param models table[] compiled town model records in play order
+---@param skipTown integer 1-based town whose textures stay readable
+---@return table<string, boolean> texture paths owned only by the other towns
+local function laterTownTexturePaths(models, skipTown)
+  local firstTownPaths = {}
+  for _, material in ipairs(models[skipTown].descriptor.materials or {}) do
+    if type(material.texture) == "string" then
+      firstTownPaths[material.texture] = true
+    end
+  end
+  local poisoned = {}
+  for index, model in ipairs(models) do
+    if index ~= skipTown then
+      for _, material in ipairs(model.descriptor.materials or {}) do
+        if type(material.texture) == "string" and firstTownPaths[material.texture] == nil then
+          poisoned[material.texture] = true
+        end
+      end
+    end
+  end
+  return poisoned
+end
+
+local function soulsilver_town_texture_failure_aborts_with_a_typed_error(scope, context)
+  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local baseline = love.graphics.getStats()
+  local baseFs = CacheFs.forVersion("soulsilver")
+  local scenes = loadScenes("soulsilver")
+  -- The first town keeps every texture it needs, so its model and textures
+  -- are genuinely acquired before the injected failure; only textures owned
+  -- by the later towns are poisoned.
+  local poisoned = laterTownTexturePaths(scenes[3].models, 1)
+  local poisonedCount = 0
+  for _ in pairs(poisoned) do
+    poisonedCount = poisonedCount + 1
+  end
+  Assert.isTrue(poisonedCount > 0, "the later towns own textures the first town never reads")
+  local state = { poisonedReads = 0 }
+  local cacheFs = {
+    loadLua = function(_, path)
+      return baseFs:loadLua(path)
+    end,
+    exists = function(_, path, kind)
+      return baseFs:exists(path, kind)
+    end,
+    read = function(_, path)
+      if poisoned[path] == true then
+        state.poisonedReads = state.poisonedReads + 1
+        error("injected town texture failure: " .. tostring(path))
+      end
+      return baseFs:read(path)
+    end,
+  }
+  local movie, failure = driveMovieCatching(scope, scenes, cacheFs)
+  if failure == nil then
+    Assert.isTrue(
+      movie ~= nil and movie:isFinished(),
+      "without a failure the movie plays the fallback scene as success"
+    )
+  end
+  Assert.notNil(failure, "the town texture failure surfaces instead of playing past it")
+  Assert.isTrue(state.poisonedReads > 0, "the injection fires on a later town texture, never before the town stage")
+  assertTypedSceneFailure(failure)
+  assertGpuCleanAfterTownFailure(scope, movie, 512, 384, baseline)
+end
+
+local function soulsilver_town_clip_failure_aborts_with_a_typed_error(scope, context)
+  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local baseline = love.graphics.getStats()
+  local scenes = loadScenes("soulsilver")
+  local third = {}
+  for key, value in pairs(scenes[3]) do
+    third[key] = value
+  end
+  local models = {}
+  for index, model in ipairs(scenes[3].models) do
+    local descriptor = {}
+    for key, value in pairs(model.descriptor) do
+      descriptor[key] = value
+    end
+    descriptor.animations = {}
+    models[index] = {
+      name = model.name,
+      index = model.index,
+      descriptor = descriptor,
+      clips = { { frameCount = 2 }, { frameCount = 3 } },
+    }
+  end
+  third.models = models
+  local swapped = { scenes[1], scenes[2], third, scenes[4], scenes[5] }
+  local movie, failure = driveMovieCatching(scope, swapped, CacheFs.forVersion("soulsilver"))
+  if failure == nil then
+    Assert.isTrue(movie ~= nil and movie:isFinished(), "without a failure the movie plays the clipless town as success")
+  end
+  Assert.notNil(failure, "a town with no bindable animation clip surfaces instead of playing mute")
+  assertTypedSceneFailure(failure)
+  assertGpuCleanAfterTownFailure(scope, movie, 512, 384, baseline)
+end
+
+local function soulsilver_town_model_failure_aborts_with_a_typed_error(scope, context)
+  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local baseline = love.graphics.getStats()
+  local scenes = loadScenes("soulsilver")
+  local third = {}
+  for key, value in pairs(scenes[3]) do
+    third[key] = value
+  end
+  local models = {}
+  for index, model in ipairs(scenes[3].models) do
+    if index == 2 then
+      local descriptor = {}
+      for key, value in pairs(model.descriptor) do
+        descriptor[key] = value
+      end
+      descriptor.dynamic = nil
+      models[index] = {
+        name = model.name,
+        index = model.index,
+        descriptor = descriptor,
+        clips = model.clips,
+      }
+    else
+      models[index] = model
+    end
+  end
+  third.models = models
+  local swapped = { scenes[1], scenes[2], third, scenes[4], scenes[5] }
+  local movie, failure = driveMovieCatching(scope, swapped, CacheFs.forVersion("soulsilver"))
+  if failure == nil then
+    Assert.isTrue(
+      movie ~= nil and movie:isFinished(),
+      "without a failure the movie plays the fallback drift as success"
+    )
+  end
+  Assert.notNil(failure, "the unbuildable second town surfaces instead of falling back to drift")
+  assertTypedSceneFailure(failure)
+  assertGpuCleanAfterTownFailure(scope, movie, 512, 384, baseline)
+end
+
+-- The sourced town lens, recovered independently from the captured renderer
+-- camera: the retail scene camera orbits its target by the compiled angle
+-- at the compiled distance, and the projection carries the compiled field
+-- angle on a source 4:3 frame. Every sampled town window must submit real
+-- world items, move pixels, and carry its own authored light.
+local SOURCED_TOWN_DISTANCE = 410.922119140625
+local SOURCED_TOWN_ANGLE_X = 0xD602
+local SOURCED_TOWN_TARGET = { 0, 0, 96 }
+local SOURCED_TOWN_HALF_ANGLE = (0x981 / 65536) * (2 * math.pi)
+local TITLE_HALF_ANGLE = (0xB60 / 65536) * (2 * math.pi)
+
+---@param view number[] column-major lookAt matrix
+---@return number[] eye, number[] forward
+local function recoverEyeForward(view)
+  local forward = { -view[3], -view[7], -view[11] }
+  local length = math.sqrt(forward[1] * forward[1] + forward[2] * forward[2] + forward[3] * forward[3])
+  forward = { forward[1] / length, forward[2] / length, forward[3] / length }
+  local side = { view[1], view[5], view[9] }
+  local up = { view[2], view[6], view[10] }
+  local eye = {
+    side[1] * -view[13] + up[1] * -view[14] + forward[1] * view[15],
+    side[2] * -view[13] + up[2] * -view[14] + forward[2] * view[15],
+    side[3] * -view[13] + up[3] * -view[14] + forward[3] * view[15],
+  }
+  return eye, forward
+end
+
+---@param projection number[] column-major perspective matrix
+---@return number fovY, number aspect
+local function recoverFovAspect(projection)
+  return 2 * math.atan(1 / projection[6]), projection[6] / projection[1]
+end
+
+---@param triple table 0..1 RGB triple in either array or named shape
+---@return integer packed RGB555 register
+local function packRgb555(triple)
+  local function channel(value)
+    return math.max(0, math.min(31, math.floor(value * 31 + 0.5)))
+  end
+  local red = channel(triple.r or triple[1] or 0)
+  local green = channel(triple.g or triple[2] or 0)
+  local blue = channel(triple.b or triple[3] or 0)
+  return red + 32 * green + 1024 * blue
+end
+
+local function soulsilver_town_camera_uses_the_sourced_angle_and_lens(scope, context)
+  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
+  local realDraw = FieldRenderer.draw
+  local captured = {}
+  FieldRenderer.draw = function(self, environment, camera, worldParts, spriteItems, viewport, alpha, scale)
+    captured[#captured + 1] = { environment = environment, camera = camera, worldParts = worldParts }
+    return realDraw(self, environment, camera, worldParts, spriteItems, viewport, alpha, scale)
+  end
+  local scenes = loadScenes("soulsilver")
+  local windows = {}
+  local journeyOk, journeyErr = pcall(function()
+    local movie = openMovie(scope, "soulsilver", 1200, 600, "single")
+    local ticks = 0
+    while movie:sceneNumber() < 3 and ticks < 20000 do
+      movie:updateFixed()
+      ticks = ticks + 1
+    end
+    Assert.equal(movie:sceneNumber(), 3, "playback reaches the town scenes")
+    local entryTicks = ticks
+    for window, offset in ipairs({ 20, 64, 130 }) do
+      while ticks < entryTicks + offset do
+        movie:updateFixed()
+        ticks = ticks + 1
+      end
+      captured = {}
+      movie:draw()
+      local snapshot = {}
+      for _, entry in ipairs(captured) do
+        snapshot[#snapshot + 1] = entry
+      end
+      local before = drawBytes(movie, scope, 1200, 600)
+      for _ = 1, 15 do
+        movie:updateFixed()
+        ticks = ticks + 1
+      end
+      local after = drawBytes(movie, scope, 1200, 600)
+      windows[window] = { captures = snapshot, before = before, after = after }
+    end
+    movie:dispose()
+  end)
+  FieldRenderer.draw = realDraw
+  Assert.isTrue(journeyOk, "the town journey runs cleanly: " .. tostring(journeyErr))
+  Assert.equal(#windows, 3, "every town window is sampled")
+  local sinX = math.sin((SOURCED_TOWN_ANGLE_X / 65536) * (2 * math.pi))
+  local cosX = math.cos((SOURCED_TOWN_ANGLE_X / 65536) * (2 * math.pi))
+  local expectedEye = {
+    SOURCED_TOWN_TARGET[1],
+    SOURCED_TOWN_TARGET[2] - sinX * SOURCED_TOWN_DISTANCE,
+    SOURCED_TOWN_TARGET[3] + cosX * SOURCED_TOWN_DISTANCE,
+  }
+  local expectedForward = {
+    SOURCED_TOWN_TARGET[1] - expectedEye[1],
+    SOURCED_TOWN_TARGET[2] - expectedEye[2],
+    SOURCED_TOWN_TARGET[3] - expectedEye[3],
+  }
+  local forwardLength = math.sqrt(
+    expectedForward[1] * expectedForward[1]
+      + expectedForward[2] * expectedForward[2]
+      + expectedForward[3] * expectedForward[3]
+  )
+  expectedForward = {
+    expectedForward[1] / forwardLength,
+    expectedForward[2] / forwardLength,
+    expectedForward[3] / forwardLength,
+  }
+  local expectedFovY = 2 * SOURCED_TOWN_HALF_ANGLE
+  local titleFovY = 2 * TITLE_HALF_ANGLE
+  for window = 1, 3 do
+    local sampled = windows[window]
+    local submitted, camera, environment = 0, nil, nil
+    for _, entry in ipairs(sampled.captures) do
+      for _, group in ipairs(entry.worldParts or {}) do
+        submitted = submitted + #group
+      end
+      if camera == nil and (entry.worldParts or {})[1] ~= nil and #(entry.worldParts or {})[1] > 0 then
+        camera, environment = entry.camera, entry.environment
+      end
+    end
+    Assert.isTrue(submitted > 0, "town window " .. window .. " submits real world items")
+    Assert.notNil(camera, "town window " .. window .. " draws through the town camera")
+    -- Composited-pixel motion is proven where the role compositor keeps towns visible.
+    local eye, forward = recoverEyeForward(camera.view())
+    for axis = 1, 3 do
+      Assert.near(eye[axis], expectedEye[axis], 2.0, "town window " .. window .. " eyes the sourced orbit")
+      Assert.near(forward[axis], expectedForward[axis], 0.01, "town window " .. window .. " forwards the sourced gaze")
+    end
+    Assert.isTrue(math.abs(forward[2]) > 0.5, "town window " .. window .. " never gazes straight down")
+    local fovY, aspect = recoverFovAspect(camera.projection())
+    Assert.near(fovY, expectedFovY, 0.005, "town window " .. window .. " carries the sourced field angle")
+    Assert.isTrue(math.abs(fovY - titleFovY) > 0.05, "town window " .. window .. " never borrows the title lens")
+    Assert.near(aspect, 4 / 3, 0.01, "town window " .. window .. " keeps the source 4:3 frame on a wide stage")
+    local record = environment.lighting.records[1]
+    Assert.notNil(record, "town window " .. window .. " carries authored lighting")
+    Assert.equal(
+      record.diffuseRgb555,
+      packRgb555(scenes[3].lighting.towns[window].diffuse),
+      "town window " .. window .. " carries its own authored light"
+    )
+  end
+end
+
 local T = GraphicsSmoke.suite({
   ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
   ["soulsilver skip is gated and gpu stays bounded"] = soulsilver_skip_is_source_gated_and_gpu_stays_bounded,
   ["heartgold graphics are blocked without a dump"] = heartgold_opening_movie_graphics_are_blocked_without_a_dump,
+  ["soulsilver town texture failure aborts with a typed error"] = soulsilver_town_texture_failure_aborts_with_a_typed_error,
+  ["soulsilver town clip failure aborts with a typed error"] = soulsilver_town_clip_failure_aborts_with_a_typed_error,
+  ["soulsilver town model failure aborts with a typed error"] = soulsilver_town_model_failure_aborts_with_a_typed_error,
+  ["soulsilver town camera uses the sourced angle and lens"] = soulsilver_town_camera_uses_the_sourced_angle_and_lens,
   ["composite layers pan independently with true blending"] = composite_layers_pan_independently_with_true_blending,
   ["authored sprites stay on their engine with frame offsets"] = authored_sprites_stay_on_their_engine_with_frame_offsets,
   ["step relative fades composite on the gpu"] = step_relative_fades_composite_on_the_gpu,

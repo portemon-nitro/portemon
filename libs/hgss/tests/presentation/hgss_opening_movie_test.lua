@@ -9,6 +9,7 @@ local Assert = require("tests.support.Assert")
 local Contract = require("libs.assets.src.DerivedAssetContract")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FakeGraphics = require("tests.support.FakeGraphics")
+local NitroModelFixture = require("tests.support.NitroModelFixture")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
 local MOVIE_MODULE = "libs.hgss.src.presentation.HgssOpeningMovie"
@@ -270,16 +271,12 @@ local function manifestFor(sceneNumber)
   for _, clip in ipairs(clips) do
     manifest.assets[clip.id] = true
   end
+  -- Scene 3 carries no town stage here: the player strictly acquires every
+  -- staged town model, so a bundle that names towns must name buildable
+  -- ones. These synthetic timelines exercise the 2D program only; town
+  -- acquisition has its own fixtures with renderable descriptors.
   if sceneNumber == 3 then
     manifest.models = {}
-    for town = 0, 2 do
-      manifest.models[#manifest.models + 1] = {
-        name = "town-" .. town,
-        index = town,
-        descriptor = { key = "synthetic:town-" .. town, materials = {}, meshes = {} },
-        clips = { { frameCount = 2 }, { frameCount = 3 } },
-      }
-    end
   end
   if sceneNumber == 4 then
     local emitters = {}
@@ -1348,6 +1345,413 @@ function T.repeated_effect_starts_rebind_the_wait_to_the_latest_start()
   end
   Assert.equal(movie:sceneNumber(), 3, "the tail step still costs its authored duration")
   movie:dispose()
+end
+
+-- Strict town acquisition: scene 3 must build all three real town stages with
+-- bound animation or abort the scene with a typed failure. A town that
+-- cannot build is never allowed to fall back to a drifting 2D backdrop.
+-- Fixtures below reuse the strict synthetic scene shape validated through
+-- the real startup cache reader; the graphics host stays the shared fake
+-- so acquisitions, releases, and draws are counted without a GPU.
+
+---@param models table[] town model records for a synthetic scene three
+---@return table strict synthetic scene-three manifest with caller-supplied towns
+local function townScene(models)
+  local root = sceneRoot(3)
+  local upperImage = root .. "upper-bg.png"
+  local lowerImage = root .. "lower-bg.png"
+  return {
+    schema = Contract.startupOpeningScene.schema,
+    versionId = VERSION_ID,
+    generationId = "movie-test-generation",
+    sceneNumber = 3,
+    sourceTickRate = Contract.startupOpeningScene.tickRate,
+    layers = {
+      main = { layer(0, upperImage, 256, 192) },
+      sub = { layer(0, lowerImage, 256, 192) },
+    },
+    spriteClips = {},
+    models = models,
+    particles = { seed = 0, emitters = {} },
+    timeline = { steps = sceneSteps(3), events = sceneEvents(3) },
+    assets = { [upperImage] = true, [lowerImage] = true },
+  }
+end
+
+---@param models table[] town model records for a synthetic scene three
+---@return table[] scenes, table cacheFs strict five-scene pack with a custom scene three
+local function packWithTownScene(models)
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    if sceneNumber == 3 then
+      raw[sceneNumber] = townScene(models)
+    else
+      raw[sceneNumber] = manifestFor(sceneNumber)
+    end
+  end
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  return scenes, cacheFs
+end
+
+---@param name string town model name
+---@param index integer town model index
+---@return table town record whose descriptor cannot build a definition
+local function unbuildableTown(name, index)
+  return {
+    name = name,
+    index = index,
+    descriptor = { key = "synthetic:" .. name, materials = {}, meshes = {} },
+    clips = { { frameCount = 2 }, { frameCount = 3 } },
+  }
+end
+
+-- A town record with a renderable descriptor shape: one node, one segment
+-- mesh, one textured material, and caller-supplied clips. The descriptor
+-- mirrors the compiled town shape (the staged clip list may repeat the
+-- descriptor's clip identities), so assembly proves the merge never
+-- double-counts one animation set.
+---@param name string town model name
+---@param index integer town model index
+---@param clips table[] staged animation channels for the town
+---@param texture string staged texture path owned by the town material
+---@param descriptorClips table[]|nil animation channels already on the descriptor
+---@return table town record with a renderable descriptor shape
+local function buildableTown(name, index, clips, texture, descriptorClips)
+  local root = sceneRoot(3)
+  return {
+    name = name,
+    index = index,
+    descriptor = {
+      key = "synthetic:" .. name,
+      dynamic = {
+        nodes = {
+          {
+            name = "root",
+            translation = { x = 0, y = 0, z = 0 },
+            rotation = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
+            scale = { x = 1, y = 1, z = 1 },
+          },
+        },
+        transformProgram = NitroModelFixture.doorProgram(),
+        batches = {
+          {
+            id = "seg0",
+            nodeIndex = 0,
+            materialIndex = 0,
+            geometry = root .. "geometry/" .. name .. ".g4mesh",
+            drawIndex = 0,
+            positionSource = "draw",
+            transformMode = "static",
+            cullMode = "back",
+            polygonMode = "modulation",
+            polygonId = 0,
+            translucentDepthWrite = false,
+            depthEqual = false,
+            polygonAlpha = 31,
+            lightMask = 15,
+            fogEnabled = false,
+          },
+        },
+      },
+      materials = {
+        {
+          id = 0,
+          name = "wall",
+          texture = texture,
+          wrap = { x = "clamp", y = "clamp" },
+          baseColor = { r = 255, g = 255, b = 255, a = 255 },
+          alphaMode = "opaque",
+          polygonAlpha = 31,
+        },
+      },
+      animations = descriptorClips or {},
+    },
+    clips = clips,
+  }
+end
+
+-- Two compiled joint clips sharing one town clip identity, mirroring the
+-- staged town shape where both animation members name the same set. The
+-- compilation source stamps stay out: staged bundles carry no source-only
+-- identities through the strict scene reader.
+---@param id string shared town clip identity
+---@return table[] two clips carrying the same identity
+local function sameIdentityClips(id)
+  local first = NitroModelFixture.doorOpenClip()
+  local second = NitroModelFixture.doorCloseClip()
+  first.id, second.id = id, id
+  first.source, second.source = nil, nil
+  return { first, second }
+end
+
+-- Two trailing towns the acquisition never reaches: the strict reader still
+-- requires all three town records with two animation channels each, but the
+-- injected failure aborts on the first town before these ever build.
+---@return table[] two inert trailing town records
+local function unreachedTowns()
+  local towns = {}
+  for town = 1, 2 do
+    towns[#towns + 1] = {
+      name = "town-" .. town,
+      index = town,
+      descriptor = { key = "synthetic:town-" .. town, materials = {}, meshes = {} },
+      clips = { { frameCount = 2 }, { frameCount = 3 } },
+    }
+  end
+  return towns
+end
+
+---@param name string town model name
+---@param index integer town model index
+---@return table town record whose geometry bytes cannot decode
+local function meshFailingTown(name, index)
+  local root = sceneRoot(3)
+  return {
+    name = name,
+    index = index,
+    descriptor = {
+      key = "synthetic:" .. name,
+      dynamic = {
+        nodes = { { name = "root" } },
+        transformProgram = {},
+        batches = {
+          {
+            id = "seg0",
+            nodeIndex = 0,
+            materialIndex = 0,
+            geometry = root .. "geometry/" .. name .. ".g4mesh",
+          },
+        },
+      },
+      materials = { { id = 0, name = "mat" } },
+      animations = {},
+    },
+    clips = { { frameCount = 2 }, { frameCount = 3 } },
+  }
+end
+
+---@param failure unknown caught error value
+local function assertTypedSceneFailure(failure)
+  Assert.equal(
+    type(failure),
+    "table",
+    "a failed town acquisition raises a structured error, never a bare string or silent fallback"
+  )
+  Assert.equal(failure.code, "HGSS_OPENING_MOVIE_INVALID", "a failed town acquisition raises the typed scene failure")
+end
+
+---@param graphics table fake graphics namespace
+---@param expected table set of live handles that must survive
+---@param message string assertion context
+local function assertLiveSetEquals(graphics, expected, message)
+  local live = liveSet(graphics)
+  local liveCount, expectedCount = 0, 0
+  for handle in pairs(live) do
+    liveCount = liveCount + 1
+    Assert.isTrue(expected[handle] ~= nil, message)
+  end
+  for _ in pairs(expected) do
+    expectedCount = expectedCount + 1
+  end
+  Assert.equal(liveCount, expectedCount, message)
+end
+
+---@param graphics table fake graphics namespace
+local function assertReleasedExactlyOnce(graphics)
+  Assert.equal(liveHandles(graphics), 0, "a failed acquisition leaves no unreleased handle behind")
+  for _, group in ipairs({ graphics.images, graphics.canvases, graphics.meshes or {} }) do
+    for _, handle in ipairs(group) do
+      Assert.equal(handle.releaseCount, 1, "every acquired handle is released exactly once")
+    end
+  end
+end
+
+---@param movie table player under test
+---@param graphics table fake graphics namespace
+---@param limit integer tick bound
+---@return unknown first acquisition failure, or nil when the run completes
+local function driveCatching(movie, graphics, limit)
+  local failure = nil
+  local ticks = 0
+  while failure == nil and not movie:isFinished() and ticks < limit do
+    local ok, err = pcall(function()
+      movie:updateFixed()
+    end)
+    ticks = ticks + 1
+    if not ok then
+      failure = err
+      break
+    end
+    movie:draw()
+  end
+  return failure
+end
+
+function T.a_town_model_that_cannot_build_aborts_the_scene_instead_of_substituting_a_drifting_backdrop()
+  local models = {}
+  for town = 0, 2 do
+    models[#models + 1] = unbuildableTown("town-" .. town, town)
+  end
+  local scenes, cacheFs = packWithTownScene(models)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 90 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "playback reaches the scene before the town acquisition")
+  local heldLive = liveSet(graphics)
+  local failure = driveCatching(movie, graphics, 2000)
+  if failure == nil then
+    Assert.isTrue(movie:isFinished(), "without a failure the movie plays the fallback scene as success")
+  end
+  Assert.notNil(failure, "the town stage failure surfaces instead of playing a fallback scene")
+  assertTypedSceneFailure(failure)
+  Assert.equal(movie:sceneNumber(), 2, "the failed town acquisition never drops the current scene")
+  for handle in pairs(heldLive) do
+    Assert.isFalse(handle.released, "the failed town acquisition never tears down the current scene")
+  end
+  assertLiveSetEquals(graphics, heldLive, "the failed town acquisition stages nothing observable")
+  movie:dispose()
+  assertReleasedExactlyOnce(graphics)
+end
+
+function T.a_town_mesh_that_cannot_decode_aborts_the_scene_and_releases_its_staged_slot()
+  local models = {}
+  for town = 0, 2 do
+    models[#models + 1] = meshFailingTown("town-" .. town, town)
+  end
+  local scenes, cacheFs = packWithTownScene(models)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 90 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "playback reaches the scene before the town acquisition")
+  local heldLive = liveSet(graphics)
+  local failure = driveCatching(movie, graphics, 2000)
+  if failure == nil then
+    Assert.isTrue(movie:isFinished(), "without a failure the movie plays the fallback scene as success")
+  end
+  Assert.notNil(failure, "the town mesh failure surfaces instead of playing a fallback scene")
+  assertTypedSceneFailure(failure)
+  Assert.equal(movie:sceneNumber(), 2, "the failed mesh acquisition never drops the current scene")
+  assertLiveSetEquals(graphics, heldLive, "the failed mesh acquisition releases its staged slot")
+  movie:dispose()
+  assertReleasedExactlyOnce(graphics)
+end
+
+function T.a_failed_scene_image_acquisition_keeps_the_current_scene_and_releases_exactly_once()
+  local scenes, cacheFs = validPack()
+  local fakeOpts = {}
+  local graphics = movieGraphics(fakeOpts)
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 90 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "playback reaches the second scene")
+  local heldLive = liveSet(graphics)
+  fakeOpts.failOnImageCall = #graphics.images + 1
+  local ok, err = pcall(function()
+    movie:updateFixed()
+  end)
+  fakeOpts.failOnImageCall = nil
+  Assert.isFalse(ok, "a failed next-scene image acquisition surfaces explicitly")
+  assertTypedSceneFailure(err)
+  Assert.equal(movie:sceneNumber(), 2, "the failed acquisition never drops the current scene")
+  for handle in pairs(heldLive) do
+    Assert.isFalse(handle.released, "the failed acquisition never tears down the current scene")
+  end
+  assertLiveSetEquals(graphics, heldLive, "the failed image acquisition releases its staged images")
+  movie:draw()
+  movie:dispose()
+  assertReleasedExactlyOnce(graphics)
+end
+
+function T.a_town_texture_failure_during_the_town_stage_aborts_and_releases_exactly_once()
+  local texture = sceneRoot(3) .. "textures/town-0.png"
+  local clips = sameIdentityClips("synthetic:town-0:spin")
+  local models = { buildableTown("town-0", 0, clips, texture, clips) }
+  for _, trailing in ipairs(unreachedTowns()) do
+    models[#models + 1] = trailing
+  end
+  local scenes, baseFs = packWithTownScene(models)
+  local state = { textureReads = 0 }
+  local cacheFs = {
+    loadLua = function(_, path)
+      return baseFs:loadLua(path)
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      if path == texture then
+        state.textureReads = state.textureReads + 1
+        error("injected town texture failure")
+      end
+      return baseFs:read(path)
+    end,
+  }
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 90 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "playback reaches the scene before the town acquisition")
+  local heldLive = liveSet(graphics)
+  local failure = driveCatching(movie, graphics, 2000)
+  if failure == nil then
+    Assert.isTrue(movie:isFinished(), "without a failure the movie plays the fallback scene as success")
+  end
+  Assert.notNil(failure, "the town texture failure surfaces instead of playing a fallback scene")
+  Assert.isTrue(state.textureReads > 0, "the town texture is read eagerly during acquisition, never lazily")
+  assertTypedSceneFailure(failure)
+  Assert.equal(movie:sceneNumber(), 2, "the failed texture acquisition never drops the current scene")
+  for handle in pairs(heldLive) do
+    Assert.isFalse(handle.released, "the failed texture acquisition never tears down the current scene")
+  end
+  assertLiveSetEquals(graphics, heldLive, "the failed texture acquisition releases its staged slot")
+  movie:dispose()
+  assertReleasedExactlyOnce(graphics)
+end
+
+function T.a_town_without_a_bindable_clip_aborts_the_scene_and_releases_its_staged_slot()
+  local texture = sceneRoot(3) .. "textures/town-0.png"
+  local models = { buildableTown("town-0", 0, { { frameCount = 2 }, { frameCount = 3 } }, texture) }
+  for _, trailing in ipairs(unreachedTowns()) do
+    models[#models + 1] = trailing
+  end
+  local scenes, cacheFs = packWithTownScene(models)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 90 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "playback reaches the scene before the town acquisition")
+  local heldLive = liveSet(graphics)
+  local failure = driveCatching(movie, graphics, 2000)
+  if failure == nil then
+    Assert.isTrue(movie:isFinished(), "without a failure the movie plays the clipless town as success")
+  end
+  Assert.notNil(failure, "the town clip failure surfaces instead of playing a mute town")
+  assertTypedSceneFailure(failure)
+  Assert.equal(movie:sceneNumber(), 2, "the failed clip acquisition never drops the current scene")
+  for handle in pairs(heldLive) do
+    Assert.isFalse(handle.released, "the failed clip acquisition never tears down the current scene")
+  end
+  assertLiveSetEquals(graphics, heldLive, "the failed clip acquisition releases its staged slot")
+  movie:dispose()
+  assertReleasedExactlyOnce(graphics)
 end
 
 function T.steps_hold_until_a_later_start_fires_and_completes()
