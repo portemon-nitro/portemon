@@ -1,7 +1,8 @@
 -- Five-scene retail opening movie session. Plays the normalized opening
--- scenes in order at the 30 Hz source tick: layered 2D backgrounds with
--- sprite clips, three town model segments, and the nine starter emitter
--- sequences, with the source skip gate and bounded scene GPU ownership.
+-- scenes in order at the 30 Hz source tick: per-engine layered 2D
+-- backgrounds with clip-offset sprite instances, three town model segments,
+-- and the nine starter emitter sequences, with the source skip gate and
+-- bounded scene GPU ownership.
 -- Authority: retail src/intro_movie.c (scene order and skip ownership) and
 -- src/intro_movie_scene_1..5.c (per-scene state programs and effect timing).
 
@@ -41,17 +42,9 @@ HgssOpeningMovie.__index = HgssOpeningMovie
 
 local SOURCE_WIDTH, SOURCE_HEIGHT = 256, 192
 local SCROLL_DIVISOR = 256
-local EMITTER_GROUP_BY_ID = {
-  [0] = "water",
-  [1] = "water",
-  [2] = "water",
-  [3] = "fire",
-  [4] = "fire",
-  [5] = "fire",
-  [6] = "grass",
-  [7] = "grass",
-  [8] = "grass",
-}
+-- Ops whose `effect` field starts a waitable effect when the event fires.
+-- Started names (plus started emitter groups and compiled sprite clips)
+-- are the only identities a later wait may name.
 -- Scene-4 starter particles are a closed consumer of the nine compiled
 -- emitter records (src/intro_movie_scene_4.c starter sets): emission and
 -- particle lifetimes, generation rate, origin, velocity, fields, color,
@@ -69,25 +62,12 @@ local GPU_NEAR, GPU_FAR = 1, 5000
 local HALF_ANGLE_INDEX = 0xB60
 local NOON_HALF_SECONDS = 43200
 
-local CLOSED_OPS = {
-  setLayer = true,
-  setPalette = true,
-  setScroll = true,
+local EFFECT_START_OPS = {
   setBlend = true,
-  window = true,
-  circleWipe = true,
-  setSpriteClip = true,
-  spriteVisible = true,
-  setModelClip = true,
-  setCamera = true,
-  setLighting = true,
-  startEmitters = true,
-  setScreenRoles = true,
+  setScroll = true,
   setFade = true,
-  waitTicks = true,
-  waitEffects = true,
-  enableSkip = true,
-  finish = true,
+  circleWipe = true,
+  window = true,
 }
 
 ---@param reason string
@@ -106,125 +86,6 @@ local function isInteger(value)
   return type(value) == "number" and value % 1 == 0 and value ~= math.huge and value ~= -math.huge
 end
 
----@param value unknown
----@return boolean
-local function isPositiveInteger(value)
-  return isInteger(value) and value --[[@as integer]] > 0
-end
-
----@param value unknown
----@return boolean
-local function isHex40(value)
-  return type(value) == "string" and #value == 40 and value:find("[^0-9a-f]") == nil
-end
-
----@param path unknown
----@param sceneNumber integer
----@return boolean
-local function underSceneRoot(path, sceneNumber)
-  if type(path) ~= "string" then
-    return false
-  end
-  local prefix = "assets/generated/startup/opening/" .. tostring(sceneNumber) .. "/"
-  return path:sub(1, #prefix) == prefix
-end
-
----@param event table<string, unknown>
----@param sceneNumber integer
-local function checkEventOperands(event, sceneNumber)
-  local op = event.op
-  if op == "waitTicks" then
-    if not isPositiveInteger(event.ticks) then
-      error(invalid("opening scene wait carries no source tick count", { op = op }), 0)
-    end
-  elseif op == "setFade" or op == "setBlend" or op == "setScroll" then
-    if not isPositiveInteger(event.ticks) then
-      error(invalid("opening scene effect carries no source tick count", { op = op }), 0)
-    end
-    if event.direction ~= nil and type(event.direction) ~= "string" then
-      error(invalid("opening scene scroll direction is malformed", { op = op }), 0)
-    end
-  elseif op == "circleWipe" then
-    if event.ticks ~= nil and not isPositiveInteger(event.ticks) then
-      error(invalid("opening scene wipe carries a malformed tick count", { op = op }), 0)
-    end
-  elseif op == "setLayer" then
-    if type(event.role) ~= "string" then
-      error(invalid("opening scene layer carries no screen role", { op = op }), 0)
-    end
-  elseif op == "window" then
-    if type(event.target) ~= "string" then
-      error(invalid("opening scene window carries no target", { op = op }), 0)
-    end
-    if event.ticks ~= nil and not isPositiveInteger(event.ticks) then
-      error(invalid("opening scene window carries a malformed tick count", { op = op }), 0)
-    end
-  elseif op == "setSpriteClip" then
-    if type(event.sprite) ~= "string" or type(event.clip) ~= "string" then
-      error(invalid("opening scene sprite clip event is malformed", { op = op }), 0)
-    end
-  elseif op == "spriteVisible" then
-    if type(event.sprite) ~= "string" or type(event.visible) ~= "boolean" then
-      error(invalid("opening scene sprite visibility event is malformed", { op = op }), 0)
-    end
-  elseif op == "setModelClip" then
-    if type(event.model) ~= "string" or type(event.clip) ~= "string" then
-      error(invalid("opening scene model clip event is malformed", { op = op }), 0)
-    end
-  elseif op == "setCamera" then
-    if type(event.distance) ~= "number" then
-      error(invalid("opening scene camera event carries no source distance", { op = op }), 0)
-    end
-  elseif op == "setLighting" then
-    if type(event.map) ~= "number" then
-      error(invalid("opening scene lighting event carries no town", { op = op }), 0)
-    end
-  elseif op == "startEmitters" then
-    if
-      type(event.group) ~= "string"
-      or (event.group ~= "grass" and event.group ~= "fire" and event.group ~= "water")
-      or type(event.emitters) ~= "table"
-      or #event.emitters == 0
-    then
-      error(invalid("opening scene emitter start names no source emitter group", { op = op }), 0)
-    end
-    for _, id in ipairs(event.emitters) do
-      if not isInteger(id) or id < 0 or id > 8 or EMITTER_GROUP_BY_ID[id] ~= event.group then
-        error(invalid("opening scene emitter id is outside its source group", { op = op }), 0)
-      end
-    end
-  elseif op == "setScreenRoles" then
-    if type(event.upper) ~= "string" or type(event.lower) ~= "string" then
-      error(invalid("opening scene screen roles are malformed", { op = op }), 0)
-    end
-  elseif op == "waitEffects" then
-    if type(event.effects) ~= "table" or #event.effects == 0 then
-      error(invalid("opening scene effect wait names no started effect", { op = op }), 0)
-    end
-    for _, name in ipairs(event.effects) do
-      if type(name) ~= "string" or name == "" then
-        error(invalid("opening scene effect wait names no started effect", { op = op }), 0)
-      end
-    end
-  elseif op == "enableSkip" then
-    if sceneNumber ~= 1 then
-      error(invalid("only opening scene 1 opens the movie skip gate", { op = op }), 0)
-    end
-  end
-end
-
----@param value unknown
----@return boolean
-local function isFiniteNumber(value)
-  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
-end
-
----@param value unknown
----@return boolean
-local function isVec3(value)
-  return type(value) == "table" and isFiniteNumber(value.x) and isFiniteNumber(value.y) and isFiniteNumber(value.z)
-end
-
 ---@param color unknown
 ---@return number r, number g, number b
 local function emitterColorChannels(color)
@@ -235,145 +96,6 @@ local function emitterColorChannels(color)
   return r, --[[@as number]]
     g, --[[@as number]]
     b --[[@as number]]
-end
-
----@param emitter table<string, unknown> compiled starter emitter record
----@param sceneNumber integer
-local function validateEmitterRecord(emitter, sceneNumber)
-  local context = { scene = sceneNumber, emitter = emitter.id }
-  if not isPositiveInteger(emitter.emitterLife) then
-    error(invalid("opening scene emitter carries no source emission lifetime", context), 0)
-  end
-  if not isPositiveInteger(emitter.particleLife) then
-    error(invalid("opening scene emitter carries no source particle lifetime", context), 0)
-  end
-  local generation = emitter.generation --[[@as table<string, unknown>]]
-  if
-    type(generation) ~= "table"
-    or not isFiniteNumber(generation.count)
-    or generation.count --[[@as number]]
-      <= 0
-  then
-    error(invalid("opening scene emitter carries no source generation rate", context), 0)
-  end
-  if not isPositiveInteger(generation.interval) then
-    error(invalid("opening scene emitter carries no source generation interval", context), 0)
-  end
-  if
-    not isFiniteNumber(emitter.radius)
-    or emitter.radius --[[@as number]]
-      < 0
-  then
-    error(invalid("opening scene emitter carries no source emission radius", context), 0)
-  end
-  if
-    not isFiniteNumber(emitter.length)
-    or emitter.length --[[@as number]]
-      < 0
-  then
-    error(invalid("opening scene emitter carries no source emission length", context), 0)
-  end
-  if not isVec3(emitter.position) then
-    error(invalid("opening scene emitter carries no source emission position", context), 0)
-  end
-  if not isVec3(emitter.axis) then
-    error(invalid("opening scene emitter carries no source emission axis", context), 0)
-  end
-  local r, g, b = emitterColorChannels(emitter.baseColor)
-  if r < 0 or r > 1 or g < 0 or g > 1 or b < 0 or b > 1 then
-    error(invalid("opening scene emitter carries no source base color", context), 0)
-  end
-  if
-    not isFiniteNumber(emitter.baseAlpha)
-    or emitter.baseAlpha --[[@as number]]
-      < 0
-    or emitter.baseAlpha --[[@as number]]
-      > 31
-  then
-    error(invalid("opening scene emitter carries no source base alpha", context), 0)
-  end
-  if
-    not isFiniteNumber(emitter.baseScale)
-    or emitter.baseScale --[[@as number]]
-      <= 0
-  then
-    error(invalid("opening scene emitter carries no source base scale", context), 0)
-  end
-  local velocity = emitter.velocity --[[@as table<string, unknown>]]
-  if type(velocity) ~= "table" or not isFiniteNumber(velocity.initial) or not isFiniteNumber(velocity.axis) then
-    error(invalid("opening scene emitter carries no source velocity", context), 0)
-  end
-  local rotation = emitter.rotation --[[@as table<string, unknown>]]
-  if type(rotation) ~= "table" or not isFiniteNumber(rotation.min) or not isFiniteNumber(rotation.max) then
-    error(invalid("opening scene emitter carries no source rotation range", context), 0)
-  end
-  if
-    not isInteger(emitter.texture)
-    or emitter.texture --[[@as integer]]
-      < 0
-  then
-    error(invalid("opening scene emitter names no source particle texture", context), 0)
-  end
-  if type(emitter.textureImage) ~= "string" or not underSceneRoot(emitter.textureImage, sceneNumber) then
-    error(invalid("opening scene emitter names particle art outside its scene root", context), 0)
-  end
-  if type(emitter.animations) ~= "table" then
-    error(invalid("opening scene emitter carries no source animation flags", context), 0)
-  end
-  if type(emitter.fields) ~= "table" then
-    error(invalid("opening scene emitter carries no source field program", context), 0)
-  end
-  for _, field in
-    ipairs(emitter.fields --[[@as table<string, unknown>[] ]])
-  do
-    local record = field --[[@as table<string, unknown>]]
-    if record.kind == "gravity" then
-      if not isVec3(record.magnitude) then
-        error(invalid("opening scene emitter gravity field is malformed", context), 0)
-      end
-    elseif record.kind == "magnet" then
-      if not isVec3(record.position) or not isFiniteNumber(record.magnitude) then
-        error(invalid("opening scene emitter magnet field is malformed", context), 0)
-      end
-    elseif record.kind == "spin" then
-      if not isFiniteNumber(record.rotation) or not isFiniteNumber(record.axis) then
-        error(invalid("opening scene emitter spin field is malformed", context), 0)
-      end
-    else
-      error(invalid("opening scene emitter field is outside the observed set", context), 0)
-    end
-  end
-end
-
----@param particles table<string, unknown> compiled particle set
----@param sceneNumber integer
----@return table<string, boolean> staged texture images by path
-local function validateParticleTextures(particles, sceneNumber)
-  local textures = particles.textures --[[@as table<string, unknown>[] ]]
-  if type(textures) ~= "table" then
-    error(invalid("opening scene particle textures are malformed", { scene = sceneNumber }), 0)
-  end
-  local staged = {}
-  for _, texture in ipairs(textures) do
-    local record = texture --[[@as table<string, unknown>]]
-    if
-      not isInteger(record.id)
-      or record.id --[[@as integer]]
-        < 0
-    then
-      error(invalid("opening scene particle texture names no source texture", { scene = sceneNumber }), 0)
-    end
-    if type(record.image) ~= "string" or not underSceneRoot(record.image, sceneNumber) then
-      error(invalid("opening scene particle texture escapes its scene asset root", { scene = sceneNumber }), 0)
-    end
-    if not isPositiveInteger(record.width) or not isPositiveInteger(record.height) then
-      error(invalid("opening scene particle texture carries no source extent", { scene = sceneNumber }), 0)
-    end
-    staged[
-      record.image --[[@as string]]
-    ] = true
-  end
-  return staged
 end
 
 ---@class OpeningMovieSlot
@@ -387,20 +109,23 @@ end
 ---@field stepIndex integer
 ---@field stepElapsed integer
 ---@field rng integer
----@field scrolls table<string, table<string, number>>
----@field panAll table<string, number>
----@field effects table<string, table<string, unknown>>
----@field sprites table<string, table<string, unknown>>
----@field spriteOrder string[]
+---@field scrolls table<string, table<string, unknown>> live per-slot scroll programs by engine and slot
+---@field effects table<string, table<string, unknown>> started timed and emitter effects by name
+---@field programEffects table<string, boolean> effect identities the program starts on some step
+---@field programClips table<string, boolean> clip identities the program assigns on some step
+---@field backgrounds table<string, table<integer, table<string, unknown>>> live layers by source engine and slot
+---@field spriteInstances table<string, table<string, unknown>> live sprites by instance identity
+---@field spriteOrder string[] instance identities in appearance order
+---@field clipIds table<string, table<string, unknown>> compiled sprite clips by staged identity
+---@field clipStarts table<string, integer> latest assignment tick by compiled clip identity
+---@field mainPhysical string physical screen carrying the main engine output
 ---@field emitters table[] live emitter runtimes with their record-driven particles
 ---@field emitterRecords table<integer, table<string, unknown>> compiled emitter records by source id
----@field activeArt table<string, string>
 ---@field activeTown string?
 ---@field townClipTicks table<string, integer>
 ---@field cameraDistance number?
 ---@field cameraDrift integer
 ---@field lightingMap number?
----@field screenRoles { upper: string, lower: string }
 ---@field fade table<string, unknown>?
 ---@field wipe table<string, unknown>?
 ---@field blend table<string, unknown>?
@@ -413,11 +138,16 @@ end
 ---@field townEnv table<string, unknown>?
 ---@field townEnvKey number?
 
----@param manifest table<string, unknown> strict opening scene bundle
+---@param manifest table<string, unknown> staged opening scene bundle
 ---@param sceneNumber integer expected 1..5 position
 ---@param versionId string
 ---@param generationId string
-local function validateManifest(manifest, sceneNumber, versionId, generationId)
+local function checkBundleShape(manifest, sceneNumber, versionId, generationId)
+  -- Bundle records (art extents, hashes, emitter fields, and the step graph)
+  -- are validated once by the generated-asset reader. The player only checks
+  -- the bundle identity, edition, generation, and position plus the program
+  -- shape its scheduler indexes: steps own their events, and every event and
+  -- step carries the clock and completion fields the interpreter reads.
   if type(manifest) ~= "table" then
     error(invalid("opening scene manifest must be a table", { scene = sceneNumber }), 0)
   end
@@ -439,166 +169,50 @@ local function validateManifest(manifest, sceneNumber, versionId, generationId)
   if manifest.sourceTickRate ~= Contract.startupOpeningScene.tickRate then
     error(invalid("opening scene manifest runs outside the source frame rate", { scene = sceneNumber }), 0)
   end
-  if type(manifest.initial) ~= "table" or type(manifest.initial.screenRoles) ~= "string" then
-    error(invalid("opening scene initial screen roles are malformed", { scene = sceneNumber }), 0)
-  end
   if
     type(manifest.layers) ~= "table"
-    or type(manifest.layers.upper) ~= "table"
-    or type(manifest.layers.lower) ~= "table"
+    or type(manifest.layers.main) ~= "table"
+    or type(manifest.layers.sub) ~= "table"
   then
-    error(invalid("opening scene keeps its upper and lower screen roles", { scene = sceneNumber }), 0)
-  end
-  for _, role in ipairs({ "upper", "lower" }) do
-    for _, layer in ipairs(manifest.layers[role]) do
-      if
-        type(layer) ~= "table"
-        or not underSceneRoot(layer.image, sceneNumber)
-        or not isInteger(layer.width)
-        or layer.width <= 0
-        or not isInteger(layer.height)
-        or layer.height <= 0
-        or not isHex40(layer.sourceHash)
-      then
-        error(invalid("opening scene " .. role .. " layer is malformed", { scene = sceneNumber }), 0)
-      end
-    end
+    error(invalid("opening scene keeps its main and sub engine layers", { scene = sceneNumber }), 0)
   end
   if type(manifest.spriteClips) ~= "table" then
     error(invalid("opening scene sprite clips are malformed", { scene = sceneNumber }), 0)
   end
-  for _, clip in ipairs(manifest.spriteClips) do
-    if type(clip) ~= "table" or not underSceneRoot(clip.id, sceneNumber) or not isPositiveInteger(clip.frameCount) then
-      error(invalid("opening scene sprite clip is malformed", { scene = sceneNumber }), 0)
-    end
-  end
-  if type(manifest.models) ~= "table" then
-    error(invalid("opening scene models are malformed", { scene = sceneNumber }), 0)
-  end
-  if #manifest.models > 0 then
-    if sceneNumber ~= 3 or #manifest.models ~= 3 then
-      error(invalid("only opening scene 3 carries its three town models", { scene = sceneNumber }), 0)
-    end
-    for _, model in ipairs(manifest.models) do
-      if
-        type(model) ~= "table"
-        or type(model.descriptor) ~= "table"
-        or type(model.clips) ~= "table"
-        or #model.clips < 2
-      then
-        error(invalid("opening scene town keeps its two animation channels", { scene = sceneNumber }), 0)
-      end
-      for _, clip in ipairs(model.clips) do
-        if type(clip) ~= "table" or not isPositiveInteger(clip.frameCount) then
-          error(invalid("opening scene town animation channel is malformed", { scene = sceneNumber }), 0)
-        end
-      end
-    end
-  end
-  if type(manifest.particles) ~= "table" or type(manifest.particles.seed) ~= "number" then
-    error(invalid("opening scene particles are malformed", { scene = sceneNumber }), 0)
-  end
-  local emitters = manifest.particles.emitters
-  if type(emitters) ~= "table" then
-    error(invalid("opening scene emitter records are malformed", { scene = sceneNumber }), 0)
-  end
-  if sceneNumber == 4 then
-    if #emitters ~= 9 then
-      error(invalid("opening scene 4 keeps all nine starter emitters", { scene = sceneNumber }), 0)
-    end
-    for _, emitter in ipairs(emitters) do
-      if
-        type(emitter) ~= "table"
-        or not isInteger(emitter.id)
-        or emitter.id < 0
-        or emitter.id > 8
-        or emitter.group ~= EMITTER_GROUP_BY_ID[emitter.id]
-      then
-        error(invalid("opening scene emitter is outside the nine source emitters", { scene = sceneNumber }), 0)
-      end
-      validateEmitterRecord(emitter, sceneNumber)
-    end
-    local staged = validateParticleTextures(manifest.particles, sceneNumber)
-    for _, emitter in ipairs(emitters) do
-      if not staged[emitter.textureImage] then
-        error(
-          invalid("opening scene emitter names unstaged particle art", { scene = sceneNumber, emitter = emitter.id }),
-          0
-        )
-      end
-    end
-  elseif #emitters ~= 0 then
-    error(invalid("only opening scene 4 carries starter emitters", { scene = sceneNumber }), 0)
+  if type(manifest.models) ~= "table" or type(manifest.particles) ~= "table" then
+    error(invalid("opening scene stage state is malformed", { scene = sceneNumber }), 0)
   end
   local timeline = manifest.timeline
   if type(timeline) ~= "table" or type(timeline.steps) ~= "table" or type(timeline.events) ~= "table" then
     error(invalid("opening scene timeline is malformed", { scene = sceneNumber }), 0)
   end
-  local events = timeline.events
-  if #events == 0 then
+  if #timeline.events == 0 then
     error(invalid("opening scene timeline carries no events", { scene = sceneNumber }), 0)
   end
-  local skipCount = 0
-  for _, event in ipairs(events) do
+  for _, event in ipairs(timeline.events) do
     if
       type(event) ~= "table"
       or type(event.op) ~= "string"
-      or CLOSED_OPS[event.op] ~= true
-      or not isInteger(event.atTick)
-      or event.atTick < 0
-      or (event.stepId ~= nil and type(event.stepId) ~= "string")
+      or type(event.stepId) ~= "string"
+      or not isInteger(event.atStepTick)
+      or event.atStepTick < 0
     then
-      error(invalid("opening scene event is outside the closed movie grammar", { scene = sceneNumber }), 0)
+      error(invalid("opening scene event carries no source step clock", { scene = sceneNumber }), 0)
     end
-    if event.op == "enableSkip" then
-      skipCount = skipCount + 1
-      if event.atTick == 0 then
-        error(invalid("opening scene skip gate never opens on the first frame", { scene = sceneNumber }), 0)
-      end
-    end
-    checkEventOperands(event, sceneNumber)
   end
-  if sceneNumber == 1 and skipCount == 0 then
-    error(invalid("opening scene 1 carries the source movie skip gate", { scene = sceneNumber }), 0)
-  end
-  local covered = {}
   for _, step in ipairs(timeline.steps) do
     if type(step) ~= "table" or type(step.id) ~= "string" or type(step.events) ~= "table" or #step.events == 0 then
       error(invalid("opening scene step is malformed", { scene = sceneNumber }), 0)
     end
     local finish = step["until"]
-    if type(finish) ~= "table" then
-      error(invalid("opening scene step completion is malformed", { scene = sceneNumber }), 0)
-    end
-    if finish.kind == "duration" then
-      if not isPositiveInteger(finish.ticks) then
-        error(invalid("opening scene step carries no source duration", { scene = sceneNumber }), 0)
-      end
-    elseif finish.kind == "effect" then
-      if type(finish.effect) ~= "string" or finish.effect == "" then
-        error(invalid("opening scene step waits on no named effect", { scene = sceneNumber }), 0)
-      end
-    else
+    if type(finish) ~= "table" or (finish.kind ~= "duration" and finish.kind ~= "effect") then
       error(invalid("opening scene step completion is malformed", { scene = sceneNumber }), 0)
     end
     for _, index in ipairs(step.events) do
-      if not isInteger(index) or index < 1 or index > #events or events[index].stepId ~= step.id then
+      local owned = timeline.events[index]
+      if not isInteger(index) or owned == nil or owned.stepId ~= step.id then
         error(invalid("opening scene step references no owned event", { scene = sceneNumber }), 0)
       end
-      covered[index] = true
-    end
-  end
-  for index = 1, #events do
-    if not covered[index] then
-      error(invalid("opening scene event is unreachable from its steps", { scene = sceneNumber }), 0)
-    end
-  end
-  if type(manifest.assets) ~= "table" then
-    error(invalid("opening scene asset index is malformed", { scene = sceneNumber }), 0)
-  end
-  for path in pairs(manifest.assets) do
-    if not underSceneRoot(path, sceneNumber) then
-      error(invalid("opening scene indexed asset escapes its scene asset root", { scene = sceneNumber }), 0)
     end
   end
 end
@@ -777,19 +391,22 @@ local function acquireSlot(self, manifest)
     stepElapsed = 0,
     rng = (manifest.particles.seed or 0) * 131 + manifest.sceneNumber * 7919 + 17,
     scrolls = {},
-    panAll = { x = 0, y = 0, dx = 0, dy = 0, remaining = 0 },
     effects = {},
-    sprites = {},
+    programEffects = {},
+    programClips = {},
+    backgrounds = { main = {}, sub = {} },
+    spriteInstances = {},
     spriteOrder = {},
+    clipIds = {},
+    clipStarts = {},
+    mainPhysical = "upper",
     emitters = {},
     emitterRecords = {},
-    activeArt = {},
     activeTown = nil,
     townClipTicks = {},
     cameraDistance = nil,
     cameraDrift = 0,
     lightingMap = nil,
-    screenRoles = { upper = "main", lower = "sub" },
     fade = nil,
     wipe = nil,
     blend = nil,
@@ -800,20 +417,48 @@ local function acquireSlot(self, manifest)
     towns = {},
   }
   local ok, failure = pcall(function()
-    for _, role in ipairs({ "upper", "lower" }) do
-      for _, layer in ipairs(manifest.layers[role]) do
+    for _, engine in ipairs({ "main", "sub" }) do
+      for _, layer in ipairs(manifest.layers[engine]) do
         if slot.imageByPath[layer.image] == nil then
           acquireImage(slot, self, layer.image)
         end
-      end
-      local first = manifest.layers[role][1]
-      if first ~= nil then
-        slot.activeArt[role] = first.image
+        if type(layer.variants) == "table" then
+          for _, alternate in ipairs(layer.variants) do
+            if slot.imageByPath[alternate] == nil then
+              acquireImage(slot, self, alternate)
+            end
+          end
+        end
+        -- Every compiled slot starts live with its base image and source
+        -- priority; later setLayer events switch images, visibility, and
+        -- priority per slot. Slots the program never touches stay visible.
+        slot.backgrounds[engine][layer.bgSlot] = {
+          image = layer.image,
+          priority = layer.priority,
+          visible = true,
+          scrollX = 0,
+          scrollY = 0,
+        }
       end
     end
     for _, clip in ipairs(manifest.spriteClips) do
+      slot.clipIds[clip.id] = clip
       if slot.imageByPath[clip.id] == nil then
         acquireImage(slot, self, clip.id)
+      end
+    end
+    -- Waits bind against the whole program, not just the current step:
+    -- an effect or clip the program starts in a later step advances the
+    -- waiting step by zero and orders through the wait, while a name the
+    -- program never starts is invalid. Record every program-bound identity
+    -- so step completion can tell the two apart without guessing.
+    for _, event in ipairs(manifest.timeline.events) do
+      if EFFECT_START_OPS[event.op] == true and type(event.effect) == "string" then
+        slot.programEffects[event.effect] = true
+      elseif event.op == "startEmitters" and type(event.group) == "string" then
+        slot.programEffects["emitters-" .. event.group] = true
+      elseif event.op == "setSpriteClip" and type(event.clipId) == "string" then
+        slot.programClips[event.clipId] = true
       end
     end
     -- Stage each compiled particle texture once per scene acquisition: the
@@ -892,14 +537,33 @@ local function startTimedEffect(slot, name, ticks)
 end
 
 ---@param slot OpeningMovieSlot scene slot
----@param name string timed effect name
----@return boolean true once the named effect has run its course
-local function timedEffectDone(slot, name)
-  local effect = slot.effects[name]
-  if effect == nil then
-    return true
+---@param clipId string staged sprite clip identity
+---@return integer summed frame durations bounding the clip wait
+local function clipTotalTicks(slot, clipId)
+  local clip = slot.clipIds[clipId]
+  assert(clip ~= nil, "opening scene clip wait names a compiled clip")
+  local total = 0
+  for _, frame in ipairs(clip.frames) do
+    total = total + (frame.duration or 1)
   end
-  return effect.done
+  return math.max(total, 1)
+end
+
+---@param slot OpeningMovieSlot scene slot
+---@param name string compiled clip identity ending its wait
+---@return boolean true once the clip has played its summed frame durations
+local function clipWaitDone(slot, name)
+  local start = slot.clipStarts[name]
+  if start == nil then
+    error(
+      invalid("opening scene waits on a clip that never started", {
+        scene = slot.sceneNumber,
+        effect = name,
+      }),
+      0
+    )
+  end
+  return (slot.sceneTick - start) >= clipTotalTicks(slot, name)
 end
 
 ---@param slot OpeningMovieSlot scene slot
@@ -1107,60 +771,84 @@ end
 local function applyEvent(self, slot, event)
   local op = event.op
   if op == "setLayer" then
-    if event.art ~= nil then
-      slot.activeArt[event.role] = event.art
-    elseif slot.activeArt[event.role] == nil then
-      local layers = slot.manifest.layers[event.role]
-      if type(layers) == "table" and layers[1] ~= nil then
-        slot.activeArt[event.role] = layers[1].image
-      end
+    local engineLayers = slot.backgrounds[event.engine]
+    local background = engineLayers ~= nil and engineLayers[event.bgSlot] or nil
+    if background == nil then
+      error(
+        invalid("opening scene layer names no compiled background slot", {
+          scene = slot.sceneNumber,
+          engine = event.engine,
+          bgSlot = event.bgSlot,
+        }),
+        0
+      )
     end
+    background.image = event.image
+    background.visible = event.visible
+    background.priority = event.priority
   elseif op == "setPalette" then
     slot.palette = event
   elseif op == "setScroll" then
-    local key = event.layer or event.target
-    local entry = {
-      dx = (event.dx or 0) / SCROLL_DIVISOR,
-      dy = (event.dy or 0) / SCROLL_DIVISOR,
-      remaining = event.ticks,
-      total = event.ticks,
-      x = 0,
-      y = 0,
-    }
-    if key ~= nil then
-      slot.scrolls[key] = entry
-      startTimedEffect(slot, "scroll-" .. tostring(key), event.ticks)
-    else
-      slot.panAll = entry
+    -- A slot scroll pans one compiled background. A target scroll names a
+    -- sprite group instead of a slot; no current program emits one, so only
+    -- its named effect starts while no displacement is recorded.
+    if event.engine ~= nil then
+      local engineLayers = slot.backgrounds[event.engine]
+      local background = engineLayers ~= nil and engineLayers[event.bgSlot] or nil
+      if background == nil then
+        error(
+          invalid("opening scene scroll names no compiled background slot", {
+            scene = slot.sceneNumber,
+            engine = event.engine,
+            bgSlot = event.bgSlot,
+          }),
+          0
+        )
+      end
+      slot.scrolls[event.engine .. ":" .. event.bgSlot] = {
+        dx = event.dx / SCROLL_DIVISOR,
+        dy = event.dy / SCROLL_DIVISOR,
+        remaining = event.ticks,
+        background = background,
+      }
     end
+    startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "setBlend" then
     slot.blend = { effect = event.effect, from = event.from, to = event.to, ticks = event.ticks, elapsed = 0 }
     startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "window" then
     slot.window = { target = event.target, kind = event.kind, ticks = event.ticks, elapsed = 0 }
-    startTimedEffect(slot, "window-" .. tostring(event.kind or event.target), event.ticks)
+    startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "circleWipe" then
     slot.wipe = { mode = event.mode, ticks = event.ticks or 18, elapsed = 0 }
-    startTimedEffect(slot, "wipe-circle", event.ticks)
+    startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "setSpriteClip" then
-    local sprite = slot.sprites[event.sprite]
-    if sprite == nil then
-      sprite = { tick = 0, visible = false, quads = {} }
-      slot.sprites[event.sprite] = sprite
-      slot.spriteOrder[#slot.spriteOrder + 1] = event.sprite
+    local instance = slot.spriteInstances[event.instanceId]
+    if instance == nil then
+      instance = { tick = 0, visible = false, quads = {} }
+      slot.spriteInstances[event.instanceId] = instance
+      slot.spriteOrder[#slot.spriteOrder + 1] = event.instanceId
     end
-    sprite.clipId = event.clip
-    sprite.tick = 0
-    sprite.quads = {}
+    instance.engine = event.engine
+    instance.x = event.x
+    instance.y = event.y
+    instance.drawOrder = event.drawOrder
+    instance.clipId = event.clipId
+    instance.tick = 0
+    instance.quads = {}
+    slot.clipStarts[event.clipId] = slot.sceneTick
   elseif op == "spriteVisible" then
-    local sprite = slot.sprites[event.sprite]
-    if sprite == nil then
-      sprite = { tick = 0, visible = event.visible, quads = {} }
-      slot.sprites[event.sprite] = sprite
-      slot.spriteOrder[#slot.spriteOrder + 1] = event.sprite
-    else
-      sprite.visible = event.visible
+    local instance = slot.spriteInstances[event.instanceId]
+    if instance == nil then
+      instance = { tick = 0, visible = event.visible, quads = {} }
+      slot.spriteInstances[event.instanceId] = instance
+      slot.spriteOrder[#slot.spriteOrder + 1] = event.instanceId
     end
+    instance.engine = event.engine
+    instance.x = event.x
+    instance.y = event.y
+    instance.drawOrder = event.drawOrder
+    instance.visible = event.visible
   elseif op == "setModelClip" then
     slot.activeTown = event.model
     slot.townClipTicks[event.model] = 0
@@ -1170,21 +858,36 @@ local function applyEvent(self, slot, event)
     slot.lightingMap = event.map
   elseif op == "startEmitters" then
     startEmitters(slot, event.group, event.emitters)
-  elseif op == "setScreenRoles" then
-    slot.screenRoles = { upper = event.upper, lower = event.lower }
+  elseif op == "setScreenMapping" then
+    slot.mainPhysical = event.mainPhysical
   elseif op == "setFade" then
     slot.fade = { kind = event.kind, ticks = event.ticks, elapsed = 0 }
-    startTimedEffect(slot, "fade-" .. tostring(event.kind), event.ticks)
+    startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "waitTicks" then
     -- Duration steps own the wait; the event only marks the authored beat.
   elseif op == "waitEffects" then
+    -- A wait names a started effect, a compiled clip, or an effect the
+    -- program starts on a later step; anything else never started.
     for _, name in ipairs(event.effects) do
       local group = name:match("^emitters%-(.+)$")
-      if group ~= nil and slot.effects[name] == nil then
-        error(invalid("opening scene waits on emitters that never started", { effect = name }), 0)
+      if group ~= nil then
+        if slot.effects[name] == nil and slot.programEffects[name] ~= true then
+          error(invalid("opening scene waits on emitters that never started", { effect = name }), 0)
+        end
+      elseif slot.effects[name] == nil and slot.clipIds[name] == nil and slot.programEffects[name] ~= true then
+        error(
+          invalid("opening scene effect wait names no started effect", {
+            scene = slot.sceneNumber,
+            effect = name,
+          }),
+          0
+        )
       end
     end
   elseif op == "enableSkip" then
+    if slot.sceneNumber ~= 1 then
+      error(invalid("only opening scene 1 opens the movie skip gate", { scene = slot.sceneNumber }), 0)
+    end
     self.skipEligible = true
   elseif op == "finish" then
     self.pendingFinish = true
@@ -1203,7 +906,7 @@ local function applyDueEvents(self, slot)
     return
   end
   for _, index in ipairs(step.events) do
-    if not slot.applied[index] and events[index].atTick <= slot.sceneTick then
+    if not slot.applied[index] and events[index].atStepTick <= slot.stepElapsed then
       slot.applied[index] = true
       applyEvent(self, slot, events[index])
     end
@@ -1214,16 +917,10 @@ end
 local function advanceContinuous(slot)
   for _, scroll in pairs(slot.scrolls) do
     if scroll.remaining > 0 then
-      scroll.x = scroll.x + scroll.dx
-      scroll.y = scroll.y + scroll.dy
+      scroll.background.scrollX = scroll.background.scrollX + scroll.dx
+      scroll.background.scrollY = scroll.background.scrollY + scroll.dy
       scroll.remaining = scroll.remaining - 1
     end
-  end
-  local pan = slot.panAll
-  if pan.remaining > 0 then
-    pan.x = pan.x + pan.dx
-    pan.y = pan.y + pan.dy
-    pan.remaining = pan.remaining - 1
   end
   for _, effect in pairs(slot.effects) do
     if not effect.done and effect.remaining ~= nil then
@@ -1245,7 +942,7 @@ local function advanceContinuous(slot)
   if slot.window ~= nil and slot.window.ticks ~= nil and slot.window.elapsed < slot.window.ticks then
     slot.window.elapsed = slot.window.elapsed + 1
   end
-  for _, sprite in pairs(slot.sprites) do
+  for _, sprite in pairs(slot.spriteInstances) do
     sprite.tick = sprite.tick + 1
   end
   for name in pairs(slot.townClipTicks) do
@@ -1286,6 +983,31 @@ local function stepOwnTicks(slot)
 end
 
 ---@param slot OpeningMovieSlot scene slot
+---@param step table<string, unknown> active step
+---@param name string awaited effect, emitter group, or compiled clip identity
+---@return boolean true when the step still means to start the waitable
+local function stepStartsEffectLater(slot, step, name)
+  local events = slot.manifest.timeline.events
+  for _, index in ipairs(step.events) do
+    if not slot.applied[index] then
+      local event = events[index]
+      if event ~= nil then
+        if EFFECT_START_OPS[event.op] == true and event.effect == name then
+          return true
+        end
+        if event.op == "startEmitters" and "emitters-" .. tostring(event.group) == name then
+          return true
+        end
+        if event.op == "setSpriteClip" and slot.clipIds[name] ~= nil and event.clipId == name then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+---@param slot OpeningMovieSlot scene slot
 ---@return boolean true when the active step has run its source course
 local function stepComplete(slot)
   local steps = slot.manifest.timeline.steps
@@ -1297,11 +1019,67 @@ local function stepComplete(slot)
   if finish.kind == "duration" then
     return slot.stepElapsed >= finish.ticks
   end
-  local group = finish.effect:match("^emitters%-(.+)$")
+  -- A wait bound to a start the current step still means to fire stays
+  -- open; a wait bound to a start living on a later step advances by zero
+  -- so that later step can start it; a name the program never binds is
+  -- invalid and never counts as complete.
+  local name = finish.effect
+  local group = name:match("^emitters%-(.+)$")
   if group ~= nil then
-    return emittersDone(slot, group)
+    if slot.effects[name] ~= nil then
+      return emittersDone(slot, group)
+    end
+    if stepStartsEffectLater(slot, step, name) then
+      return false
+    end
+    if slot.programEffects[name] == true then
+      return true
+    end
+    error(
+      invalid("opening scene waits on emitters that never started", {
+        scene = slot.sceneNumber,
+        step = step.id,
+        group = group,
+      }),
+      0
+    )
   end
-  return slot.stepElapsed >= stepOwnTicks(slot) and timedEffectDone(slot, finish.effect)
+  if slot.effects[name] ~= nil then
+    return slot.stepElapsed >= stepOwnTicks(slot) and slot.effects[name].done
+  end
+  if slot.clipIds[name] ~= nil then
+    if slot.clipStarts[name] == nil then
+      if stepStartsEffectLater(slot, step, name) then
+        return false
+      end
+      if slot.programClips[name] ~= true then
+        error(
+          invalid("opening scene waits on a clip that never started", {
+            scene = slot.sceneNumber,
+            step = step.id,
+            effect = name,
+          }),
+          0
+        )
+      end
+      return true
+    end
+    return slot.stepElapsed >= stepOwnTicks(slot) and clipWaitDone(slot, name)
+  end
+  if stepStartsEffectLater(slot, step, name) then
+    return false
+  end
+  if slot.programEffects[name] == true then
+    return true
+  end
+  error(
+    invalid("opening scene waits on an effect that never started", {
+      scene = slot.sceneNumber,
+      step = step.id,
+      effect = name,
+    }),
+    0
+  )
 end
 
 ---@param self HgssOpeningMovie
@@ -1380,7 +1158,7 @@ function HgssOpeningMovie.new(options)
     error(invalid("opening movie generation is missing", {}), 0)
   end
   for sceneNumber = 1, 5 do
-    validateManifest(scenes[sceneNumber], sceneNumber, options.versionId, first.generationId)
+    checkBundleShape(scenes[sceneNumber], sceneNumber, options.versionId, first.generationId)
   end
   local self = setmetatable({
     versionId = options.versionId,
@@ -1583,29 +1361,23 @@ local function spriteFrameIndex(sprite, clip)
   return (math.floor(sprite.tick / 8) % count) + 1
 end
 
----@param order integer appearance order of the sprite in its scene
----@return number x, number y slot origin in source pixels
-local function spriteSlotPosition(order)
-  return 32 + ((order - 1) * 56) % 192, 64 + ((order - 1) * 37) % 96
-end
-
 ---@param slot OpeningMovieSlot scene slot
----@param role string upper or lower
----@return number x, number y accumulated scroll offset in source pixels
-local function roleScrollOffset(slot, role)
-  local x, y = slot.panAll.x, slot.panAll.y
-  local layers = slot.manifest.layers[role]
-  if type(layers) == "table" then
-    for key, scroll in pairs(slot.scrolls) do
-      for _, layer in ipairs(layers) do
-        if layer.slot == key or layer.image == key then
-          x = x + scroll.x
-          y = y + scroll.y
-        end
+---@param engine string source engine owning the drawn layers
+---@return table<integer, table<string, unknown>> visible backgrounds back-to-front
+local function sortedBackgrounds(slot, engine)
+  local collected = {}
+  local group = slot.backgrounds[engine]
+  if type(group) == "table" then
+    for _, background in pairs(group) do
+      if background.visible then
+        collected[#collected + 1] = background
       end
     end
   end
-  return x, y
+  table.sort(collected, function(a, b)
+    return a.priority < b.priority
+  end)
+  return collected
 end
 
 ---@param slot OpeningMovieSlot scene slot
@@ -1833,46 +1605,74 @@ local function drawTowns(slot, rect)
 end
 
 ---@param slot OpeningMovieSlot scene slot
-local function drawSprites(self, slot)
+---@param role string upper or lower
+---@return string source engine owning the role output
+local function roleEngine(slot, role)
+  if (role == "upper") == (slot.mainPhysical == "upper") then
+    return "main"
+  end
+  return "sub"
+end
+
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot
+---@param engine string source engine owning the drawn instances
+local function drawSprites(self, slot, engine)
   local graphics = self.graphics
-  for order, name in ipairs(slot.spriteOrder) do
-    local sprite = slot.sprites[name]
-    if sprite ~= nil and sprite.visible and sprite.clipId ~= nil then
-      local image = slot.imageByPath[sprite.clipId]
-      if image ~= nil then
-        local clip = clipById(slot, sprite.clipId)
-        local frame = (clip ~= nil) and spriteFrameIndex(sprite, clip) or 1
-        local x, y = spriteSlotPosition(order)
-        x = x + slot.panAll.x
-        y = y + slot.panAll.y
-        local quad = nil
-        if clip ~= nil and type(clip.frames) == "table" and clip.frames[frame] ~= nil then
-          local record = clip.frames[frame]
-          if type(record.x) == "number" and type(record.width) == "number" and record.width > 0 then
-            quad = sprite.quads[frame]
-            if quad == nil then
-              local imageWidth, imageHeight = image:getWidth(), image:getHeight()
-              local clipped = pcall(function()
-                sprite.quads[frame] = graphics.newQuad(
-                  math.max(record.x, 0),
-                  math.max(record.y or 0, 0),
-                  math.min(record.width, imageWidth),
-                  math.min(record.height or imageHeight, imageHeight),
-                  imageWidth,
-                  imageHeight
-                )
-              end)
-              if clipped then
-                quad = sprite.quads[frame]
-              end
+  local staged = {}
+  for order, instanceId in ipairs(slot.spriteOrder) do
+    local instance = slot.spriteInstances[instanceId]
+    if instance ~= nil and instance.engine == engine and instance.visible and instance.clipId ~= nil then
+      staged[#staged + 1] = { order = order, instance = instance }
+    end
+  end
+  table.sort(staged, function(a, b)
+    local anterior = a.instance.drawOrder or 0
+    local posterior = b.instance.drawOrder or 0
+    if anterior ~= posterior then
+      return anterior < posterior
+    end
+    return a.order < b.order
+  end)
+  for _, entry in ipairs(staged) do
+    local sprite = entry.instance
+    local image = slot.imageByPath[sprite.clipId]
+    if image ~= nil then
+      local clip = clipById(slot, sprite.clipId)
+      local frame = (clip ~= nil) and spriteFrameIndex(sprite, clip) or 1
+      local record = clip ~= nil and type(clip.frames) == "table" and clip.frames[frame] or nil
+      local offsetX, offsetY = 0, 0
+      if type(record) == "table" then
+        offsetX = record.offsetX or 0
+        offsetY = record.offsetY or 0
+      end
+      local x, y = sprite.x + offsetX, sprite.y + offsetY
+      local quad = nil
+      if type(record) == "table" then
+        if type(record.x) == "number" and type(record.width) == "number" and record.width > 0 then
+          quad = sprite.quads[frame]
+          if quad == nil then
+            local imageWidth, imageHeight = image:getWidth(), image:getHeight()
+            local clipped = pcall(function()
+              sprite.quads[frame] = graphics.newQuad(
+                math.max(record.x, 0),
+                math.max(record.y or 0, 0),
+                math.min(record.width, imageWidth),
+                math.min(record.height or imageHeight, imageHeight),
+                imageWidth,
+                imageHeight
+              )
+            end)
+            if clipped then
+              quad = sprite.quads[frame]
             end
           end
         end
-        if quad ~= nil then
-          graphics.draw(image, quad, x, y)
-        else
-          graphics.draw(image, x, y)
-        end
+      end
+      if quad ~= nil then
+        graphics.draw(image, quad, x, y)
+      else
+        graphics.draw(image, x, y)
       end
     end
   end
@@ -1985,22 +1785,29 @@ local function drawRoleBody(self, slot, role, rect)
   if role == "upper" and slot.renderer ~= nil and #slot.towns > 0 then
     drawTowns(slot, rect)
   end
+  local engine = roleEngine(slot, role)
   local scale = math.max(rect.width / SOURCE_WIDTH, rect.height / SOURCE_HEIGHT)
   local drawnWidth, drawnHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
   graphics.translate(rect.x + (rect.width - drawnWidth) / 2, rect.y + (rect.height - drawnHeight) / 2)
   graphics.scale(scale, scale)
-  local scrollX, scrollY = roleScrollOffset(slot, role)
+  local backgrounds = sortedBackgrounds(slot, engine)
+  local drift = 0
   if #slot.manifest.models > 0 and slot.renderer == nil and role == "upper" then
-    scrollX = scrollX + (slot.cameraDrift % 64) * 0.25
+    drift = (slot.cameraDrift % 64) * 0.25
   end
-  local active = slot.activeArt[role]
-  local image = active and slot.imageByPath[active] or nil
-  graphics.setColor(1, 1, 1, layerAlpha(slot))
-  if image ~= nil then
-    graphics.draw(image, scrollX, scrollY)
+  for index, background in ipairs(backgrounds) do
+    local image = slot.imageByPath[background.image]
+    if image ~= nil then
+      if index == #backgrounds then
+        graphics.setColor(1, 1, 1, layerAlpha(slot))
+      else
+        graphics.setColor(1, 1, 1, 1)
+      end
+      graphics.draw(image, background.scrollX + drift, background.scrollY)
+    end
   end
   graphics.setColor(1, 1, 1, 1)
-  drawSprites(self, slot)
+  drawSprites(self, slot, engine)
   drawParticles(self, slot)
   drawFade(self, slot)
   drawWipe(self, slot)
