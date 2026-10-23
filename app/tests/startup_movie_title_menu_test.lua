@@ -148,6 +148,8 @@ local function withStartup(fn)
     firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
     startupAudioFactory = HgssGame.newStartupAudio,
     startupAudioNew = StartupAudioSession.new,
+    startupAudioSession = App.startupAudioSession,
+    startupAudioError = App.startupAudioError,
     gameFactory = HgssGame.new,
     recordPlayed = require("app.src.launcher.EditionPreference").recordPlayed,
   }
@@ -230,6 +232,8 @@ local function withStartup(fn)
   App.pairIndex = 1
   App.pendingQuiesce = nil
   App.selectedVersionId = nil
+  App.startupAudioSession = nil
+  App.startupAudioError = nil
   App.opts = { dev = false }
   App.drawableWidth, App.drawableHeight, App.pixelRatio = 800, 600, 1
   movieModule.new = fakeMovie
@@ -243,15 +247,46 @@ local function withStartup(fn)
     end
     return nil, "scene " .. tostring(sceneNumber) .. " is still compiling"
   end
-  StartupAudioSession.new = function()
+  StartupAudioSession.new = function(options)
     local session = { events = {}, disposals = 0 }
+    local provided = type(options) == "table" and options.titleRecord or nil
+    if type(provided) == "table" and type(provided.crySpeciesId) == "number" then
+      session.titleRecord = { crySpeciesId = provided.crySpeciesId }
+    end
+    -- The borrowed audio owns the single cry identity for its selected
+    -- edition: repeating the same species is a no-op while a different
+    -- species for the same selection is a programming error.
+    function session:bindTitleRecord(record)
+      assert(
+        type(record) == "table" and type(record.crySpeciesId) == "number",
+        "title audio needs its normalized cry species"
+      )
+      if self.titleRecord ~= nil then
+        assert(
+          self.titleRecord.crySpeciesId == record.crySpeciesId,
+          "the bound title cry cannot drift within its selected edition"
+        )
+        return
+      end
+      self.titleRecord = { crySpeciesId = record.crySpeciesId }
+    end
     function session:beginOpening()
       self.events[#self.events + 1] = "opening"
     end
-    function session:beginTitle()
+    function session:beginTitle(record)
+      if record ~= nil and self.titleRecord == nil then
+        self:bindTitleRecord(record)
+      end
       self.events[#self.events + 1] = "title"
     end
-    function session:notifySkip()
+    function session:notifySkip(record)
+      if active.strictTitleBinding then
+        local bound = self.titleRecord or record
+        local species = type(bound) == "table" and bound.crySpeciesId or nil
+        assert(type(species) == "number", "title skip needs its normalized audio record")
+        self.events[#self.events + 1] = { "cry", species, 0 }
+        return
+      end
       self.events[#self.events + 1] = "cry"
     end
     function session:beginFade()
@@ -271,7 +306,7 @@ local function withStartup(fn)
     return fakeLoading()
   end
   titleSceneModule.new = function(options)
-    local bundle = { crySpeciesId = 25 }
+    local bundle = { crySpeciesId = active.titleCrySpecies or 25 }
     if active.titleTimeoutFrames ~= nil then
       bundle.timeline = { start = { activeDurationFrames = active.titleTimeoutFrames } }
     end
@@ -378,6 +413,8 @@ local function withStartup(fn)
   HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
   HgssGame.newStartupAudio = saved.startupAudioFactory
   StartupAudioSession.new = saved.startupAudioNew
+  App.startupAudioSession = saved.startupAudioSession
+  App.startupAudioError = saved.startupAudioError
   HgssGame.new = saved.gameFactory
   require("app.src.launcher.EditionPreference").recordPlayed = saved.recordPlayed
   if not ok then
@@ -992,6 +1029,135 @@ function T.tests.failed_opening_scene_is_a_visible_error_and_retirement_disposes
       active.retired ~= nil and #active.retired == 1,
       "retirement retires exactly the selected cache epoch"
     )
+  end)
+end
+
+function T.tests.movie_first_title_entry_keeps_its_edition_cry_through_the_accepted_skip()
+  local cases = {
+    { versionId = "heartgold", species = 250 },
+    { versionId = "soulsilver", species = 249 },
+  }
+  for _, case in ipairs(cases) do
+    withStartup(function()
+      active.strictTitleBinding = true
+      active.titleCrySpecies = case.species
+      local state = startSelection(case.versionId)
+      for sceneNumber = 1, 5 do
+        active.sceneReady[sceneNumber] = true
+      end
+      active.audioReady = true
+      App.update(1 / 30)
+      Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
+      while state.movie ~= nil and not state.movie:isFinished() do
+        state.movie:updateFixed()
+      end
+      App.update(1 / 30)
+      Assert.equal(state.phase, "title", "the finished movie hands off to the legendary title")
+      App.keypressed("return", "return", false)
+      Assert.isTrue(state.skipRequested, "the title press latches skip intent")
+      active.bootstrapReady = true
+      App.update(1 / 30)
+      Assert.equal(#active.menus, 1, "bootstrap stages exactly one menu behind the skipped title")
+      for _ = 1, 120 do
+        if App.state ~= state then
+          break
+        end
+        App.update(1 / 30)
+      end
+      Assert.equal(App.state, active.menus[1], "the staged menu installs after the fade")
+      local openings, titles, cries = 0, 0, {}
+      for _, session in ipairs(active.audioSessions) do
+        for _, event in ipairs(session.events) do
+          if event == "opening" then
+            openings = openings + 1
+          elseif event == "title" then
+            titles = titles + 1
+          elseif type(event) == "table" and event[1] == "cry" then
+            cries[#cries + 1] = event
+          end
+        end
+      end
+      Assert.equal(openings, 1, "the movie-first journey starts its opening track once")
+      Assert.equal(titles, 1, "title entry switches to the title track once")
+      Assert.deepEqual(
+        cries,
+        { { "cry", case.species, 0 } },
+        "the accepted skip plays its edition cry exactly once with the source pattern"
+      )
+      Assert.isNil(App.startupAudioError, "the bound handoff keeps audio available without a disabled diagnostic")
+      Assert.equal(#active.audioSessions, 1, "one session spans the movie-first title handoff")
+    end)
+  end
+end
+
+function T.tests.idle_title_replays_both_music_tracks_before_the_final_cry()
+  withStartup(function()
+    active.titleTimeoutFrames = 30
+    local state = startSelection()
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    active.audioReady = true
+    App.update(1 / 30)
+    Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
+    while state.movie ~= nil and not state.movie:isFinished() do
+      state.movie:updateFixed()
+    end
+    App.update(1 / 30)
+    Assert.equal(state.phase, "title", "the finished movie hands off to the legendary title")
+    active.bootstrapReady = true
+    App.update(1 / 30)
+    local menu = assert(state.stagedMenu, "the menu stages behind the unskipped title")
+    local epoch = App.epoch
+    for _ = 1, 40 do
+      App.update(1 / 30)
+    end
+    Assert.equal(state.phase, "movie", "the idle title loops back into the movie")
+    Assert.equal(#active.movies, 2, "the loop acquires a fresh movie session")
+    Assert.equal(App.epoch, epoch, "the loop selects no new epoch")
+    Assert.equal(state.stagedMenu, menu, "the loop retains the already staged menu")
+    while state.movie ~= nil and not state.movie:isFinished() do
+      state.movie:updateFixed()
+    end
+    App.update(1 / 30)
+    Assert.equal(state.phase, "title", "the looped movie presents the title again")
+    local function orderedAudioEvents()
+      local order = {}
+      for _, session in ipairs(active.audioSessions) do
+        for _, event in ipairs(session.events) do
+          order[#order + 1] = event
+        end
+      end
+      return order
+    end
+    Assert.deepEqual(
+      orderedAudioEvents(),
+      { "opening", "title", "opening", "title" },
+      "each visual entry restarts its own music track in source order"
+    )
+    for _ = 1, 10 do
+      App.update(1 / 30)
+    end
+    Assert.deepEqual(
+      orderedAudioEvents(),
+      { "opening", "title", "opening", "title" },
+      "reentrant updates never duplicate a track"
+    )
+    Assert.equal(state.phase, "title", "the replayed title waits for its own accepted press")
+    App.keypressed("return", "return", false)
+    for _ = 1, 120 do
+      if App.state ~= state then
+        break
+      end
+      App.update(1 / 30)
+    end
+    Assert.equal(App.state, menu, "the same staged menu installs after the final fade")
+    Assert.deepEqual(
+      orderedAudioEvents(),
+      { "opening", "title", "opening", "title", "cry", "fade" },
+      "the loop ends with one cry and one fade behind the replayed tracks"
+    )
+    Assert.equal(#active.audioSessions, 1, "one session spans every replayed entry")
   end)
 end
 

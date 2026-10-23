@@ -169,6 +169,14 @@ local function withStartup(fn)
   App.drawableWidth, App.drawableHeight, App.pixelRatio = 800, 600, 1
   StartupAudioSession.new = function()
     return {
+      bindTitleRecord = function(self, record)
+        assert(type(record) == "table" and type(record.crySpeciesId) == "number")
+        if self.titleRecord ~= nil then
+          assert(self.titleRecord.crySpeciesId == record.crySpeciesId)
+          return
+        end
+        self.titleRecord = { crySpeciesId = record.crySpeciesId }
+      end,
       beginTitle = function() end,
       notifySkip = function() end,
       beginFade = function() end,
@@ -648,6 +656,14 @@ function T.tests.title_audio_events_use_the_bounded_borrowed_callbacks()
     local events = { titleReady = 0, prompt = 0, skip = 0 }
     StartupAudioSession.new = function()
       return {
+        bindTitleRecord = function(self, record)
+          assert(type(record) == "table" and type(record.crySpeciesId) == "number")
+          if self.titleRecord ~= nil then
+            assert(self.titleRecord.crySpeciesId == record.crySpeciesId)
+            return
+          end
+          self.titleRecord = { crySpeciesId = record.crySpeciesId }
+        end,
         beginTitle = function()
           events.titleReady = events.titleReady + 1
         end,
@@ -689,6 +705,14 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
         "the session is bound to the selected edition"
       )
       local session = { versionId = options.versionId, events = {}, updates = 0, disposals = 0 }
+      function session:bindTitleRecord(record)
+        assert(type(record) == "table" and type(record.crySpeciesId) == "number")
+        if self.titleRecord ~= nil then
+          assert(self.titleRecord.crySpeciesId == record.crySpeciesId)
+          return
+        end
+        self.titleRecord = { crySpeciesId = record.crySpeciesId }
+      end
       function session:beginTitle()
         self.events[#self.events + 1] = "title"
       end
@@ -860,6 +884,14 @@ function T.tests.title_and_menu_proceed_while_optional_audio_is_pending()
   local function countingAudio(sessions)
     StartupAudioSession.new = function()
       local session = { cues = {} }
+      function session:bindTitleRecord(record)
+        assert(type(record) == "table" and type(record.crySpeciesId) == "number")
+        if self.titleRecord ~= nil then
+          assert(self.titleRecord.crySpeciesId == record.crySpeciesId)
+          return
+        end
+        self.titleRecord = { crySpeciesId = record.crySpeciesId }
+      end
       function session:beginTitle()
         self.cues[#self.cues + 1] = "title"
       end
@@ -930,6 +962,14 @@ function T.tests.title_and_menu_proceed_while_optional_audio_is_pending()
     local lateCues = {}
     StartupAudioSession.new = function()
       local session = {}
+      function session:bindTitleRecord(record)
+        assert(type(record) == "table" and type(record.crySpeciesId) == "number")
+        if self.titleRecord ~= nil then
+          assert(self.titleRecord.crySpeciesId == record.crySpeciesId)
+          return
+        end
+        self.titleRecord = { crySpeciesId = record.crySpeciesId }
+      end
       function session:beginTitle()
         lateCues[#lateCues + 1] = "title"
       end
