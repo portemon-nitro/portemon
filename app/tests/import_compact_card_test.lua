@@ -633,7 +633,7 @@ function T.failure_copy_stays_legible_inside_the_card()
     failing.snapshot = { state = "complete", progress = 1 }
     local state = ImportState.new(failing, nil)
     local rects, rows = captureTextLayout(800, 600, function()
-      state:draw({ stage = "artwork", failure = "texture adoption failed" })
+      state:draw({ stage = "artwork", failure = "texture adoption failed", retryable = true })
     end)
     local card = assert(cardFill(rects, 800, 600), "the artwork failure still draws its card")
     local copy = ""
@@ -771,6 +771,59 @@ function T.verified_source_waits_on_artwork_without_claiming_completion()
       "artwork wait never claims the handoff, found: " .. premature
     )
   end
+end
+
+function T.artwork_failure_distinguishes_retryable_from_escape_only()
+  local importer = scriptImporter()
+  importer.snapshot = { state = "complete", progress = 1 }
+  local state = ImportState.new(importer, nil)
+  local _, retryableCopy = captureDraw(800, 600, function()
+    state:draw({ stage = "artwork", failure = "synthetic adoption failure", retryable = true })
+  end)
+  Assert.isTrue(
+    retryableCopy:find("Press R to retry, or Esc to reselect.", 1, true) ~= nil,
+    "a retryable artwork failure keeps both remedies, got: " .. retryableCopy
+  )
+  local retryRects, retryRows = captureTextLayout(800, 600, function()
+    state:draw({ stage = "artwork", failure = "synthetic adoption failure", retryable = true })
+  end)
+  local retryCard = assert(cardFill(retryRects, 800, 600), "the retryable card still draws")
+  local retryFirst, retryLast = textBlock(retryRows)
+  Assert.isTrue(
+    retryLast <= retryCard.y + retryCard.height - 4,
+    "retryable failure copy stays inside the card"
+  )
+  local _, terminalCopy = captureDraw(800, 600, function()
+    state:draw({ stage = "artwork", failure = "synthetic worker failure", retryable = false })
+  end)
+  Assert.isTrue(
+    terminalCopy:find("Press Esc to reselect.", 1, true) ~= nil,
+    "a terminal artwork failure names its escape remedy, got: " .. terminalCopy
+  )
+  Assert.isTrue(
+    terminalCopy:find("Press R", 1, true) == nil,
+    "a terminal artwork failure never promises a retry, got: " .. terminalCopy
+  )
+  local _, missingCopy = captureDraw(800, 600, function()
+    state:draw({ stage = "artwork", failure = "synthetic worker failure" })
+  end)
+  Assert.isTrue(
+    missingCopy:find("Press R", 1, true) == nil,
+    "a missing retry flag never defaults to a retry, got: " .. missingCopy
+  )
+  local plainRects, plainRows = captureTextLayout(800, 600, function()
+    state:draw({ stage = "artwork", failure = "synthetic worker failure", retryable = false })
+  end)
+  local plainCard = assert(cardFill(plainRects, 800, 600), "the escape-only card still draws")
+  local plainFirst, plainLast = textBlock(plainRows)
+  Assert.isTrue(
+    plainFirst >= plainCard.y + 16,
+    "escape-only failure copy never starts above the top inset"
+  )
+  Assert.isTrue(
+    plainLast <= plainCard.y + plainCard.height - 4,
+    "escape-only failure copy stays inside the card"
+  )
 end
 
 return { tests = T }

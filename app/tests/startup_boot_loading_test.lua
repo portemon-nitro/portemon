@@ -385,17 +385,36 @@ function T.warm_pair_worker_error_holds_transfer_until_the_pair_recovers()
     end)
     local lowered = copy:lower()
     Assert.isTrue(
-      lowered:find("matching", 1, true) ~= nil or lowered:find("retry", 1, true) ~= nil,
-      "the held wait stays actionable with a remedy, got: " .. copy
+      lowered:find("escape", 1, true) ~= nil,
+      "the terminal worker wait names its escape remedy, got: " .. copy
     )
+    Assert.isTrue(
+      lowered:find("press r", 1, true) == nil,
+      "the terminal worker wait never promises a same-epoch retry, got: " .. copy
+    )
+    state:keypressed("r")
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "R never retries a terminal worker failure")
+    Assert.notNil(state.artFailure, "the terminal worker failure stays latched after R")
+    -- A terminal worker record cannot heal under the same request
+    -- identity: the same wait never transfers even when the scripted
+    -- worker later reports ready. Only a fresh selection epoch may try
+    -- again, modelled here by a new wait on a new epoch.
     script.walkerFailure = nil
     script.walkerReady = true
     loading.adoptResult = true
     state:update(0.016)
-    Assert.equal(script.fired, 1, "the recovered pair completes the warm handoff")
-    Assert.isTrue(state:takeLoading() == loading, "recovery transfers the exact owned presentation")
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "the latched worker failure never heals into a transfer")
+    Assert.notNil(state.artFailure, "the latched worker failure survives a later ready answer")
+    state:keypressed("escape")
+    Assert.equal(script.cancelled, 1, "escape still releases the terminal wait")
+    local freshScript = { bootReady = true, walkerReady = true }
+    local fresh = bootWait(freshScript)
+    fresh:update(0.016)
+    Assert.isTrue(#freshScript.pairRequests >= 1, "a fresh selection demands the pair anew")
+    fresh:dispose()
     state:dispose()
-    Assert.equal(loading.disposals, 0, "disposing after transfer never touches the detached art")
   end)
 end
 
@@ -411,9 +430,23 @@ function T.warm_pair_adoption_failure_holds_transfer_until_a_successful_retry()
     Assert.throws(function()
       state:takeLoading()
     end, "nothing detaches before a successful adoption")
+    Assert.equal(loading.adoptions, 1, "the first ready answer attempts the adoption exactly once")
+    local copy = captureCopy(800, 600, function()
+      state:draw()
+    end)
+    Assert.isTrue(
+      copy:find("Press R", 1, true) ~= nil,
+      "the latched adoption failure names its retry key, got: " .. copy
+    )
+    -- The latch holds without another input: no automatic second attempt.
+    state:update(0.016)
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "the latched adoption never transfers on its own")
+    Assert.equal(loading.adoptions, 1, "no automatic adoption follows the latched failure")
+    state:keypressed("r")
     loading.adoptResult = true
     state:update(0.016)
-    Assert.equal(script.fired, 1, "the retried adoption completes the warm handoff")
+    Assert.equal(script.fired, 1, "the explicit retry completes the warm handoff")
     Assert.isTrue(loading.adopted, "the retry adopts both selected sprites")
     Assert.isTrue(state:takeLoading() == loading, "retry transfers the exact owned presentation")
     state:dispose()
@@ -464,8 +497,8 @@ function T.warm_pair_retry_issues_one_demand_per_update_without_transfer()
       state:update(0.016)
     end
     Assert.equal(script.fired or 0, 0, "a persistently failing adoption never transfers")
-    Assert.equal(#script.pairRequests, 3, "each update re-issues exactly one pair demand")
-    Assert.equal(loading.adoptions, 3, "each update re-attempts the adoption once")
+    Assert.equal(#script.pairRequests, 1, "the latched adoption issues no further pair demands")
+    Assert.equal(loading.adoptions, 1, "the latched adoption attempts no automatic retry")
     for _, pairIndex in ipairs(script.pairRequests) do
       Assert.equal(pairIndex, 5, "every retry keeps the selected pair without a default species")
     end
@@ -475,6 +508,13 @@ function T.warm_pair_retry_issues_one_demand_per_update_without_transfer()
     Assert.throws(function()
       state:takeLoading()
     end, "nothing detaches before a successful adoption")
+    -- One explicit key authorizes exactly one more attempt, which latches
+    -- again while the adopter keeps failing.
+    state:keypressed("r")
+    state:update(0.016)
+    Assert.equal(#script.pairRequests, 2, "one explicit key re-issues the pair demand once")
+    Assert.equal(loading.adoptions, 2, "one explicit key re-attempts the adoption once")
+    Assert.equal(script.fired or 0, 0, "the renewed failure latches again without transfer")
     state:dispose()
     Assert.equal(loading.disposals, 1, "the failed wait releases its stage once")
   end)
