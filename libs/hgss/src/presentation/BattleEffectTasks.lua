@@ -636,6 +636,16 @@ local SYNCHRONOUS_MARKER_KINDS = {
   ["battle-background-position-transition"] = true,
   ["battle-background-resource-load"] = true,
   ["battle-presentation-resource-cleanup"] = true,
+  -- Sprite-effect spawns carry a mode and selector values, never timing
+  -- operands: the managed draw loop stages its sprite behind the
+  -- manager preset, so the typed task owns no interpolation lifetime
+  -- and retires on its first tick instead of failing closed.
+  ["managed-sprite-draw-loop"] = true,
+  -- Sprite scale-settle presets carry their target behind the resolved
+  -- callback without a compiled boundary: the settle owns no
+  -- interpolation lifetime, so it retires on its first tick instead of
+  -- failing closed.
+  ["pokemon-picture-double-sprite-scale-settle"] = true,
 }
 
 -- Resolves the blend completion boundary from compiled timing operands:

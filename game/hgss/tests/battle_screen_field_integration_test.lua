@@ -69,6 +69,11 @@ local T = {
       -- no-strike execution admits its own visual, so that route
       -- stages too instead of wedging pending.
       "battle-effect:HELPING_HAND",
+      -- The opening rival answers with LEER, and every executed route
+      -- needs its staged program, since an unstaged key would pend
+      -- behind a host that never stages instead of failing with
+      -- provenance.
+      "battle-effect:LEER",
     },
     tags = { "field", "battle" },
   },
