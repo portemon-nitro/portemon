@@ -56,6 +56,15 @@ local CAPTION_SECONDS = 4
 local CAPTION_TRANSITION_SECONDS = 0.4
 local FRAME_SECONDS = 1 / 30
 local STAGE_WIDTH, STAGE_HEIGHT = 256, 192
+-- Shared ground-plane foot baseline in stage space: both sprites rest on
+-- the same line, with each top-left derived from its source pivot so
+-- differently sized atlases stay aligned. The follower walks behind the
+-- hero exactly one tile back.
+local GROUND_STAGE_Y = 150
+local FOLLOWER_CENTER_X = 117
+local HERO_CENTER_X = 133
+local CAPTION_GAP_SOURCE_PX = 12
+local CAPTION_FONT_SIZES = { 16, 18, 20, 24 }
 local GROUND_DASHES = {
   { x = 18, y = 159, width = 13 },
   { x = 61, y = 168, width = 9 },
@@ -93,6 +102,7 @@ local SKY_SPARKS = {
 ---@field hero HgssLoadingSprite?
 ---@field heroId "ethan"|"lyra"?
 ---@field follower HgssLoadingSprite?
+---@field captionFont love.Font?
 ---@field artFailure unknown?
 ---@field disposed boolean
 ---@class HgssLoadingPresentation.Options
@@ -122,6 +132,29 @@ local function chooseFrame(visual, elapsed)
     tick = tick - frame.ticks
   end
   error("walk animation ticks do not resolve a frame", 0)
+end
+
+local function sampleFollowerWalkBob(visual, elapsed)
+  local walk = assert(visual.directions.east.walk)
+  local totalTicks = 0
+  for _, frame in ipairs(walk.frames) do
+    totalTicks = totalTicks + frame.ticks
+  end
+  if totalTicks <= 0 then
+    return 0
+  end
+  local tick = math.floor(elapsed / FRAME_SECONDS) % totalTicks
+  local restIndex = walk.frames[1].frameIndex
+  for _, frame in ipairs(walk.frames) do
+    if tick < frame.ticks then
+      if frame.frameIndex == restIndex then
+        return 0
+      end
+      return 1
+    end
+    tick = tick - frame.ticks
+  end
+  return 0
 end
 
 ---@param random fun(): number
@@ -167,6 +200,7 @@ function HgssLoadingPresentation.new(options)
     hero = nil,
     heroId = nil,
     follower = nil,
+    captionFont = nil,
     artFailure = nil,
     disposed = false,
   }, HgssLoadingPresentation)
@@ -193,6 +227,35 @@ function HgssLoadingPresentation:_loadImage(cacheFs, path)
   local bytes = assert(cacheFs:read(path), "generated loading image is missing: " .. path)
   local fileData = love.filesystem.newFileData(bytes, path)
   return self.graphics.newImage(fileData)
+end
+
+function HgssLoadingPresentation:_ensureCaptionFont()
+  if self.captionFont ~= nil then
+    return self.captionFont
+  end
+  local graphics = self.graphics
+  if type(graphics.newFont) ~= "function" then
+    return nil
+  end
+  for _, size in ipairs(CAPTION_FONT_SIZES) do
+    local ok, font = pcall(graphics.newFont, size)
+    if ok and font ~= nil then
+      local heightOk, height = pcall(function()
+        return font:getHeight()
+      end)
+      if heightOk and type(height) == "number" and height >= 16 then
+        if type(font.setFilter) == "function" then
+          pcall(font.setFilter, font, "nearest", "nearest")
+        end
+        self.captionFont = font
+        return font
+      end
+      if type(font.release) == "function" then
+        pcall(font.release, font)
+      end
+    end
+  end
+  return nil
 end
 
 function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
@@ -326,7 +389,7 @@ function HgssLoadingPresentation:_drawStage()
   end
 end
 
-function HgssLoadingPresentation:_drawCopy(status)
+function HgssLoadingPresentation:_drawCopy()
   local graphics = self.graphics
   local theme = self:_theme()
   local bounds = self.secondaryBounds or self.primaryBounds
@@ -334,72 +397,52 @@ function HgssLoadingPresentation:_drawCopy(status)
     return
   end
   local x, y, width, height = bounds.x, bounds.y, bounds.width, bounds.height
+  local stageHeight = self.configuration == "tall" and height * 0.66 or height
+  local scale = math.max(1, math.floor(math.min(width / STAGE_WIDTH, stageHeight / STAGE_HEIGHT)))
+  local originY = math.floor(y + (stageHeight - STAGE_HEIGHT * scale) / 2)
+  local spriteBottom = originY + GROUND_STAGE_Y * scale
+  local font = self:_ensureCaptionFont()
+  local previousFont = nil
+  if font ~= nil and type(graphics.getFont) == "function" and type(graphics.setFont) == "function" then
+    previousFont = graphics.getFont()
+    graphics.setFont(font)
+  end
+  local fontHeight = nil
+  if font ~= nil and type(font.getHeight) == "function" then
+    fontHeight = font:getHeight()
+  elseif type(graphics.getFont) == "function" then
+    local current = graphics.getFont()
+    if current ~= nil and type(current.getHeight) == "function" then
+      fontHeight = current:getHeight()
+    end
+  end
+  local captionTop = spriteBottom + CAPTION_GAP_SOURCE_PX * scale
+  if fontHeight ~= nil then
+    local maxTop = y + height - fontHeight
+    if captionTop > maxTop then
+      captionTop = maxTop
+    end
+  end
   local caption = theme.caption
   local cycle = self.elapsed % CAPTION_SECONDS
   local fade = (cycle - (CAPTION_SECONDS - CAPTION_TRANSITION_SECONDS)) / CAPTION_TRANSITION_SECONDS
   fade = math.max(0, math.min(1, fade))
   local nextCaption = self.captionIndex % #CAPTIONS + 1
   local slide = 5 * fade
-  local captionY = self.configuration == "tall" and 0.78 or 0.75
   graphics.setColor(caption[1], caption[2], caption[3], 1 - fade)
-  graphics.printf(CAPTIONS[self.captionIndex], x + width * 0.08, y + height * captionY - slide, width * 0.84, "center")
+  graphics.printf(CAPTIONS[self.captionIndex], x + width * 0.08, captionTop - slide, width * 0.84, "center")
   if fade > 0 then
     graphics.setColor(caption[1], caption[2], caption[3], fade)
-    graphics.printf(
-      CAPTIONS[nextCaption],
-      x + width * 0.08,
-      y + height * captionY + 5 * (1 - fade),
-      width * 0.84,
-      "center"
-    )
+    graphics.printf(CAPTIONS[nextCaption], x + width * 0.08, captionTop + 5 * (1 - fade), width * 0.84, "center")
   end
-  if status ~= nil then
-    local label = type(status) == "string" and status or status.label or status.message
-    local detail = type(status) == "table" and status.detail or nil
-    local errorText = type(status) == "table" and status.error or nil
-    if type(label) == "string" and label ~= "" then
-      graphics.setColor(0.72, 0.81, 0.83, 1)
-      graphics.printf(
-        label,
-        x + width * 0.08,
-        y + height * (self.configuration == "tall" and 0.87 or 0.84),
-        width * 0.84,
-        "center"
-      )
-    end
-    if type(detail) == "string" and detail ~= "" then
-      graphics.setColor(0.63, 0.74, 0.77, 1)
-      graphics.printf(
-        detail,
-        x + width * 0.08,
-        y + height * (self.configuration == "tall" and 0.91 or 0.89),
-        width * 0.84,
-        "center"
-      )
-    end
-    if type(errorText) == "string" and errorText ~= "" then
-      graphics.setColor(1, 0.67, 0.53, 1)
-      graphics.printf(errorText, x + width * 0.04, y + height * 0.95, width * 0.92, "center")
-    end
-    if type(status) == "table" and type(status.fraction) == "number" then
-      assert(status.fraction >= 0 and status.fraction <= 1, "loading status fraction must be in [0,1]")
-      graphics.setColor(theme.accent[1], theme.accent[2], theme.accent[3], 1)
-      graphics.rectangle("fill", x + width * 0.2, y + height * 0.975, width * 0.6 * status.fraction, 2)
-    end
+  if previousFont ~= nil then
+    graphics.setFont(previousFont)
   end
   -- An optional art failure never becomes stage copy: the fallback scene stays
   -- usable and the diagnostic travels through the adoption return value.
 end
 
--- Shared ground-plane foot baseline in stage space: both sprites rest on
--- the same line, with each top-left derived from its source pivot so
--- differently sized atlases stay aligned. The follower walks behind the
--- hero at a separate horizontal anchor.
-local GROUND_STAGE_Y = 150
-local FOLLOWER_CENTER_X = 97
-local HERO_CENTER_X = 133
-
-function HgssLoadingPresentation:draw(status)
+function HgssLoadingPresentation:draw(_)
   local maybeBounds = self.primaryBounds
   if self.disposed or maybeBounds == nil then
     return
@@ -416,18 +459,19 @@ function HgssLoadingPresentation:draw(status)
       local followerFrame = self:_frameIndex("follower")
       local heroFrame = self:_frameIndex("hero")
       graphics.setColor(1, 1, 1, 1)
-      local function drawSprite(sprite, frameIndex, centerX)
+      local function drawSprite(sprite, frameIndex, centerX, lift)
         local quad = assert(sprite.quads[frameIndex])
         local pivot = sprite.visual.pivot or { x = 0.5, y = 1 }
         local topLeftX = centerX - sprite.visual.render.frameWidth * pivot.x
-        local topLeftY = GROUND_STAGE_Y - sprite.visual.render.frameHeight * pivot.y
+        local topLeftY = GROUND_STAGE_Y - sprite.visual.render.frameHeight * pivot.y - (lift or 0)
         graphics.draw(sprite.image, quad, originX + topLeftX * scale, originY + topLeftY * scale, 0, scale, scale)
       end
-      drawSprite(self.follower, followerFrame, FOLLOWER_CENTER_X)
-      drawSprite(self.hero, heroFrame, HERO_CENTER_X)
+      local followerLift = sampleFollowerWalkBob(self.follower.visual, self.elapsed)
+      drawSprite(self.follower, followerFrame, FOLLOWER_CENTER_X, followerLift)
+      drawSprite(self.hero, heroFrame, HERO_CENTER_X, 0)
     end)
   end
-  self:_drawCopy(status)
+  self:_drawCopy()
 end
 
 function HgssLoadingPresentation:resize(width, height)
@@ -446,11 +490,15 @@ function HgssLoadingPresentation:dispose()
   end
   self.disposed = true
   local images = { self.hero and self.hero.image, self.follower and self.follower.image }
-  self.hero, self.follower, self.heroId = nil, nil, nil
+  local font = self.captionFont
+  self.hero, self.follower, self.heroId, self.captionFont = nil, nil, nil, nil
   for _, image in ipairs(images) do
     if image ~= nil then
       image:release()
     end
+  end
+  if font ~= nil and type(font.release) == "function" then
+    pcall(font.release, font)
   end
 end
 

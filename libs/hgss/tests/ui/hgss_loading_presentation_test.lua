@@ -192,17 +192,21 @@ function T.mismatched_version_manifest_never_acquires_images()
   Assert.equal(#graphics.images, 0, "a stale edition cannot authorize loader images")
   graphics.printfCalls = {}
   local mark = #graphics.rectangles
+  presentation:draw()
+  local plainCopy = drawnCopy(graphics)
+  graphics.printfCalls = {}
   presentation:draw({ label = "Preparing destination" })
   local copy = drawnCopy(graphics)
   Assert.isTrue(
     copy:find("Walking art unavailable", 1, true) == nil,
     "an optional art failure never becomes stage copy"
   )
+  Assert.equal(copy, plainCopy, "a passed status never paints on the decorative stage")
   Assert.isTrue(
-    copy:find("Preparing destination", 1, true) ~= nil,
-    "caller-supplied progress still renders over the fallback stage"
+    copy:find("Preparing destination", 1, true) == nil,
+    "caller-supplied progress never renders over the fallback stage"
   )
-  Assert.isTrue(#copy:gsub("Preparing destination", "") > 0, "the fallback stage keeps its flavor caption")
+  Assert.isTrue(#copy > 0, "the fallback stage keeps its flavor caption")
   Assert.isFalse(hasLineRectangle(graphics, mark), "the fallback stage draws no outlined card")
   presentation:dispose()
 end
@@ -359,20 +363,22 @@ function T.caption_cycle_contains_the_authored_examples_and_randomizes_actor_onc
     end
   end
   Assert.equal(nextValue, 1, "the walking pair never consumes the caption stream")
-  for _ = 1, 3 do
-    presentation:update(1)
-  end
-  presentation:update(0.8)
+  -- The decorative stage never paints caller-supplied progress: a status
+  -- draw paints exactly the same flavor line as a plain draw.
+  graphics.printfCalls = {}
+  presentation:draw()
+  local plainCount = #graphics.printfCalls
+  local plainFirst = graphics.printfCalls[1].text
   graphics.printfCalls = {}
   presentation:draw({ label = "Preparing destination", error = "Source unavailable" })
-  Assert.equal(graphics.printfCalls[1].text, "Calling Professor Elm…")
-  Assert.equal(
-    graphics.printfCalls[2].text,
-    "Enraging the lake…",
-    "caption handoff draws both phrases during its crossfade"
-  )
-  Assert.equal(graphics.printfCalls[3].text, "Preparing destination")
-  Assert.equal(graphics.printfCalls[4].text, "Source unavailable")
+  Assert.equal(#graphics.printfCalls, plainCount, "a status draw adds no extra line to the decorative stage")
+  Assert.equal(graphics.printfCalls[1].text, plainFirst, "a status draw keeps the same flavor line")
+  for _, call in ipairs(graphics.printfCalls) do
+    Assert.isTrue(
+      call.text ~= "Preparing destination" and call.text ~= "Source unavailable",
+      "caller-supplied progress never paints on the decorative stage"
+    )
+  end
   presentation:dispose()
 end
 
@@ -729,11 +735,20 @@ function T.startup_pair_feet_share_one_baseline_with_no_opaque_cover()
   local function footY(draw)
     return draw.y + draw.quad.h * draw.sy
   end
+  local function footX(draw)
+    return draw.x + draw.quad.w * draw.sx / 2
+  end
   Assert.near(
     footY(sprites[1]),
     footY(sprites[2]),
     0.001,
     "both feet land on one common baseline from differently sized source sprites"
+  )
+  Assert.near(
+    footX(sprites[2]) - footX(sprites[1]),
+    16 * sprites[1].sx,
+    0.001,
+    "the follower foot trails exactly one tile behind the hero foot"
   )
   local firstFrame = host.draws[#host.draws].quad.x
   presentation:update(1 / 60)
@@ -748,10 +763,16 @@ function T.startup_pair_feet_share_one_baseline_with_no_opaque_cover()
   local tallSprites = startupSpriteDraws(host, drawsMark)
   Assert.equal(#tallSprites, 2, "the tall layout walks the same chosen pair")
   Assert.near(
-    footY(tallSprites[1]),
-    footY(tallSprites[2]),
+    footX(tallSprites[2]) - footX(tallSprites[1]),
+    16 * tallSprites[1].sx,
     0.001,
-    "the tall layout shares one foot baseline"
+    "the tall layout keeps the one-tile trail behind the hero"
+  )
+  Assert.near(
+    math.abs(footY(tallSprites[1]) - footY(tallSprites[2])),
+    tallSprites[1].sy,
+    0.001,
+    "only the mid-stride lift separates the tall feet on their shared travel line"
   )
   presentation:dispose()
   presentation:dispose()
