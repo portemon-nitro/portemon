@@ -12,7 +12,7 @@
 
 local OpeningMovieSceneSources = {}
 
-OpeningMovieSceneSources.SCHEMA = "g4-startup-opening-scene-v1"
+OpeningMovieSceneSources.SCHEMA = "g4-startup-opening-scene-v2"
 OpeningMovieSceneSources.TICK_RATE = 30
 OpeningMovieSceneSources.ARCHIVE = "NARC_demo_opening_gs_opening"
 OpeningMovieSceneSources.PARTICLE_ARCHIVE = "NARC_a_0_5_9"
@@ -34,13 +34,18 @@ local function checkScene(sceneNumber)
 end
 
 -- Background triples transcribe the retail LoadCharData/LoadScrnData/GXLoadPal
--- calls: which character and screen members render on each engine, and which
--- palette member each engine reads. Screens that share an engine with their
--- group character render through it: copyright screens through the copyright
--- characters, sunrise screens through the sunrise characters, and each
--- scene's panorama screens through that scene's panorama characters.
--- Tilemap-swapped panels (scene 3 rival/beast sections) render through the
--- sub-engine character the source keeps resident for that visual group.
+-- calls: which character and screen members render on each engine and BG
+-- slot, and which palette member each engine reads. Screens that share an
+-- engine with their group character render through it: copyright screens
+-- through the copyright characters, sunrise screens through the sunrise
+-- characters, and each scene's panorama screens through that scene's
+-- panorama characters. Tilemap-swapped panels (scene 3 rival/beast sections)
+-- render through the sub-engine character the source keeps resident for that
+-- visual group, recorded here as alternates on their slot: the base triple
+-- plus every swapped screen the scene shows on the same slot.
+-- bgSlot is the numeric source background plane 0..3; priority mirrors the
+-- authored source plane order, so a lower plane composites above a higher
+-- one, matching the hardware default the scenes rely on.
 ---@param versionId string
 ---@param sceneNumber integer
 ---@return table<string, unknown>[] background declarations
@@ -56,55 +61,92 @@ function OpeningMovieSceneSources.backgrounds(versionId, sceneNumber)
     local screensSub = heartgold and { 15 } or { 19 }
     local screensMain = heartgold and { 16, 17, 18 } or { 20, 21, 22 }
     local layers = {
-      { engine = "sub", slot = "sub1", char = 4, screen = 12, palette = paletteSub },
-      { engine = "sub", slot = "sub0", char = 4, screen = 14, palette = paletteSub },
-      { engine = "main", slot = "main0", char = 5, screen = 13, palette = paletteMain },
+      { engine = "sub", bgSlot = 1, priority = 1, char = 4, screen = 12, palette = paletteSub },
+      { engine = "sub", bgSlot = 0, priority = 0, char = 4, screen = 14, palette = paletteSub },
+      { engine = "main", bgSlot = 0, priority = 0, char = 5, screen = 13, palette = paletteMain },
     }
     for _, screen in ipairs(screensSub) do
-      layers[#layers + 1] = { engine = "sub", slot = "sub3", char = charSub, screen = screen, palette = paletteSub }
+      layers[#layers + 1] =
+        { engine = "sub", bgSlot = 3, priority = 3, char = charSub, screen = screen, palette = paletteSub }
     end
     for index, screen in ipairs(screensMain) do
-      local slots = { "main3", "main2", "main1" }
-      layers[#layers + 1] =
-        { engine = "main", slot = slots[index], char = charMain, screen = screen, palette = paletteMain }
+      local slots = { 3, 2, 1 }
+      layers[#layers + 1] = {
+        engine = "main",
+        bgSlot = slots[index],
+        priority = slots[index],
+        char = charMain,
+        screen = screen,
+        palette = paletteMain,
+      }
     end
     return layers
   elseif sceneNumber == 2 then
     return {
-      { engine = "main", slot = "main2", char = 33, screen = 35, palette = 32 },
-      { engine = "main", slot = "main1", char = 33, screen = 37, palette = 32 },
-      { engine = "main", slot = "main0", char = 33, screen = 38, palette = 32 },
-      { engine = "sub", slot = "sub0", char = 34, screen = 36, palette = 31 },
+      { engine = "main", bgSlot = 2, priority = 2, char = 33, screen = 35, palette = 32 },
+      { engine = "main", bgSlot = 1, priority = 1, char = 33, screen = 37, palette = 32 },
+      { engine = "main", bgSlot = 0, priority = 0, char = 33, screen = 38, palette = 32 },
+      { engine = "sub", bgSlot = 0, priority = 0, char = 34, screen = 36, palette = 31 },
     }
   elseif sceneNumber == 3 then
     return {
-      { engine = "sub", slot = "sub0", char = 40, screen = 42, palette = 39 },
-      { engine = "sub", slot = "sub0", char = 40, screen = 43, palette = 39 },
-      { engine = "sub", slot = "sub0", char = 40, screen = 44, palette = 39 },
-      { engine = "sub", slot = "sub0", char = 40, screen = 45, palette = 39 },
-      { engine = "sub", slot = "sub0", char = 40, screen = 47, palette = 39 },
-      { engine = "sub", slot = "sub3", char = 40, screen = 46, palette = 39 },
-      { engine = "sub", slot = "sub1", char = 40, screen = 48, palette = 39 },
-      { engine = "sub", slot = "sub2", char = 40, screen = 49, palette = 39 },
-      { engine = "sub", slot = "sub1", char = 41, screen = 50, palette = 39 },
-      { engine = "sub", slot = "sub2", char = 41, screen = 51, palette = 39 },
-      { engine = "sub", slot = "sub3", char = 41, screen = 52, palette = 39 },
+      {
+        engine = "sub",
+        bgSlot = 0,
+        priority = 0,
+        char = 40,
+        screen = 42,
+        palette = 39,
+        alternates = {
+          { char = 40, screen = 43 },
+          { char = 40, screen = 44 },
+          { char = 40, screen = 45 },
+          { char = 40, screen = 47 },
+        },
+      },
+      {
+        engine = "sub",
+        bgSlot = 3,
+        priority = 3,
+        char = 40,
+        screen = 46,
+        palette = 39,
+        alternates = { { char = 41, screen = 52 } },
+      },
+      {
+        engine = "sub",
+        bgSlot = 1,
+        priority = 1,
+        char = 40,
+        screen = 48,
+        palette = 39,
+        alternates = { { char = 41, screen = 50 } },
+      },
+      {
+        engine = "sub",
+        bgSlot = 2,
+        priority = 2,
+        char = 40,
+        screen = 49,
+        palette = 39,
+        alternates = { { char = 41, screen = 51 } },
+      },
     }
   elseif sceneNumber == 4 then
     return {
-      { engine = "main", slot = "main1", char = 54, screen = 58, palette = 53 },
-      { engine = "main", slot = "main2", char = 54, screen = 55, palette = 53 },
-      { engine = "main", slot = "main3", char = 54, screen = 56, palette = 53 },
-      { engine = "sub", slot = "sub1", char = 54, screen = 57, palette = 53 },
-      { engine = "sub", slot = "sub2", char = 54, screen = 55, palette = 53 },
-      { engine = "sub", slot = "sub3", char = 54, screen = 56, palette = 53 },
+      { engine = "main", bgSlot = 1, priority = 1, char = 54, screen = 58, palette = 53 },
+      { engine = "main", bgSlot = 2, priority = 2, char = 54, screen = 55, palette = 53 },
+      { engine = "main", bgSlot = 3, priority = 3, char = 54, screen = 56, palette = 53 },
+      { engine = "sub", bgSlot = 1, priority = 1, char = 54, screen = 57, palette = 53 },
+      { engine = "sub", bgSlot = 2, priority = 2, char = 54, screen = 55, palette = 53 },
+      { engine = "sub", bgSlot = 3, priority = 3, char = 54, screen = 56, palette = 53 },
     }
   end
   return {
-    { engine = "sub", slot = "sub1", char = 59, screen = 63, palette = 39 },
-    { engine = "sub", slot = "sub2", char = 59, screen = 61, palette = 39 },
-    { engine = "main", slot = "main1", char = 60, screen = 62, palette = 31 },
-    { engine = "main", slot = "main2", char = 60, screen = 64, palette = 31 },
+    { engine = "sub", bgSlot = 1, priority = 1, char = 59, screen = 63, palette = 39 },
+    { engine = "sub", bgSlot = 2, priority = 2, char = 59, screen = 61, palette = 39 },
+    { engine = "main", bgSlot = 1, priority = 1, char = 60, screen = 62, palette = 31 },
+    { engine = "main", bgSlot = 2, priority = 2, char = 60, screen = 64, palette = 31 },
   }
 end
 
@@ -165,6 +207,94 @@ function OpeningMovieSceneSources.objects(versionId, sceneNumber)
         cell = 96,
         sequences = { 0 },
       },
+    }
+  end
+  return {}
+end
+
+-- Sprite instance stations transcribed from the retail CreateSprites
+-- functions: scene 1 sun and bird share (128, 96) on the main engine
+-- (src/intro_movie_scene_1.c IntroMovie_Scene1_CreateSprites);
+-- scene 2 holds ten flowers at (128, 192), three ethan at (64, -96),
+-- and three lyra at (320, -96), all with sprite animation inactive on
+-- creation (src/intro_movie_scene_2.c IntroMovie_Scene2_CreateSprites);
+-- scene 3 holds silver at (128, 608), eusine at (32, 608), and unowns
+-- at (128, 544/672/608), all offscreen (src/intro_movie_scene_3.c
+-- IntroMovie_Scene3_CreateSprites); scene 4 holds hand1 at (128, 352)
+-- with hand2, sparkles, and all three starters at (128, 96)
+-- (src/intro_movie_scene_4.c IntroMovie_Scene4_CreateSprites); scene 5
+-- creates no sprites. Engine follows the creation VRAM type
+-- (2DMAIN main, 2DSUB sub); flowers carry one instance per engine
+-- because their character data loads as 2DBOTH, the scene enables
+-- sprite pixels on both engines, and the renderer draws every sprite to
+-- every active engine surface, so one single-engine instance cannot
+-- cover both displayed copies. Neither retail Main moves its sprites:
+-- scenes 1, 3, and 4 change only animation and visibility, and only
+-- scene 2 pans its six heroes (flowers stay fixed).
+---@param sceneNumber integer
+---@return table<string, unknown>[] sprite instance declarations
+function OpeningMovieSceneSources.spriteInstances(sceneNumber)
+  checkScene(sceneNumber)
+  if sceneNumber == 1 then
+    return {
+      { id = "sun", sprite = "sun", engine = "main", x = 128, y = 96, drawOrder = 1 },
+      { id = "bird", sprite = "bird", engine = "main", x = 128, y = 96, drawOrder = 2 },
+    }
+  elseif sceneNumber == 2 then
+    local instances = {}
+    for flower = 1, 10 do
+      instances[#instances + 1] = {
+        id = "flower" .. flower .. "-main",
+        sprite = "flower",
+        engine = "main",
+        x = 128,
+        y = 192,
+        drawOrder = flower,
+      }
+      instances[#instances + 1] = {
+        id = "flower" .. flower .. "-sub",
+        sprite = "flower",
+        engine = "sub",
+        x = 128,
+        y = 192,
+        drawOrder = flower,
+      }
+    end
+    for hero = 0, 2 do
+      instances[#instances + 1] = {
+        id = "ethan" .. hero,
+        sprite = "ethan",
+        engine = "main",
+        x = 64,
+        y = -96,
+        drawOrder = 11 + hero,
+      }
+      instances[#instances + 1] = {
+        id = "lyra" .. hero,
+        sprite = "lyra",
+        engine = "main",
+        x = 320,
+        y = -96,
+        drawOrder = 14 + hero,
+      }
+    end
+    return instances
+  elseif sceneNumber == 3 then
+    return {
+      { id = "eusine", sprite = "eusine", engine = "sub", x = 32, y = 608, drawOrder = 1 },
+      { id = "unown0", sprite = "unown0", engine = "sub", x = 128, y = 544, drawOrder = 2 },
+      { id = "unown1", sprite = "unown1", engine = "sub", x = 128, y = 672, drawOrder = 3 },
+      { id = "unown2", sprite = "unown2", engine = "sub", x = 128, y = 608, drawOrder = 4 },
+      { id = "silver-silhouette", sprite = "silver-silhouette", engine = "sub", x = 128, y = 608, drawOrder = 5 },
+    }
+  elseif sceneNumber == 4 then
+    return {
+      { id = "hand1", sprite = "hand1", engine = "sub", x = 128, y = 352, drawOrder = 1 },
+      { id = "hand2", sprite = "hand2", engine = "main", x = 128, y = 96, drawOrder = 1 },
+      { id = "chikorita", sprite = "chikorita", engine = "main", x = 128, y = 96, drawOrder = 2 },
+      { id = "cyndaquil", sprite = "cyndaquil", engine = "main", x = 128, y = 96, drawOrder = 2 },
+      { id = "totodile", sprite = "totodile", engine = "main", x = 128, y = 96, drawOrder = 2 },
+      { id = "sparkles", sprite = "sparkles", engine = "main", x = 128, y = 96, drawOrder = 3 },
     }
   end
   return {}
@@ -314,6 +444,12 @@ function OpeningMovieSceneSources.memberSet(versionId, sceneNumber)
     add(background.char)
     add(background.screen)
     add(background.palette)
+    if type(background.alternates) == "table" then
+      for _, alternate in ipairs(background.alternates) do
+        add(alternate.char)
+        add(alternate.screen)
+      end
+    end
   end
   for _, bank in ipairs(OpeningMovieSceneSources.objects(versionId, sceneNumber)) do
     add(bank.palette)
