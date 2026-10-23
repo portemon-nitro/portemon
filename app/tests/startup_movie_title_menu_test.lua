@@ -179,6 +179,12 @@ local function withStartup(fn)
     active.requests[#active.requests + 1] = { epoch = epoch, selector = selector }
   end
   function service:observe(_, selector)
+    -- The boot wait demands the selected walking pair as a required
+    -- interest before it transfers: model the healthy worker answer so the
+    -- startup journey under test starts from its transferred loader.
+    if selector.requestKind == "startup-walker" then
+      return true, nil
+    end
     if selector.requestKind == "opening-scene" then
       local sceneNumber = selector.sceneNumber
       local failure = active.sceneFailure[sceneNumber]
@@ -441,6 +447,20 @@ local function demandedScenes()
   return scenes
 end
 
+-- The transferred loader animates for its minimum beat behind the staged
+-- movie before the opening plays: pump boundedly until the handoff instead
+-- of assuming one update suffices. The staged movie holds its source clock
+-- at zero throughout, so arrival still proves the loader-first ordering.
+---@param state table the startup state under test
+local function pumpUntilMovie(state)
+  for _ = 1, 60 do
+    if state.phase == "movie" then
+      return
+    end
+    App.update(1 / 30)
+  end
+end
+
 function T.tests.startup_demands_all_five_opening_scenes_and_keeps_one_menu_through_movie_and_title()
   withStartup(function()
     local state = startSelection()
@@ -478,7 +498,7 @@ function T.tests.startup_demands_all_five_opening_scenes_and_keeps_one_menu_thro
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    App.update(1 / 30)
+    pumpUntilMovie(state)
     Assert.equal(state.phase, "movie", "five ready scenes construct the opening movie phase")
     Assert.notNil(state.movie, "the movie session is owned by the startup state, not a parallel owner")
     Assert.equal(active.loaders[1].disposals, 0, "the loader is retained until the first movie frame")
@@ -530,6 +550,38 @@ function T.tests.startup_demands_all_five_opening_scenes_and_keeps_one_menu_thro
   end)
 end
 
+function T.tests.visible_walking_loader_dwells_before_the_opening_movie_starts()
+  withStartup(function()
+    local state = startSelection()
+    Assert.notNil(state, "the selected edition installs its startup state")
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    App.update(1 / 30)
+    for _ = 1, 15 do
+      App.update(1 / 30)
+      App.draw()
+    end
+    Assert.equal(
+      state.phase,
+      "loading",
+      "the walking loader stays visible for its dwell even when every scene is instantly ready"
+    )
+    Assert.equal(#active.movies, 1, "the movie is staged behind the loader while it dwells")
+    Assert.equal(active.movies[1].ticks, 0, "the staged movie holds its source clock at zero during the dwell")
+    Assert.equal(active.movies[1].draws, 0, "no movie frame draws before the handoff")
+    local paints = active.paints
+    App.draw()
+    Assert.isTrue(active.paints > paints, "the dwelling loader keeps painting")
+    for _ = 1, 20 do
+      App.update(1 / 30)
+      App.draw()
+    end
+    Assert.equal(state.phase, "movie", "the dwell hands off to the opening movie")
+    Assert.isTrue(active.movies[1].draws >= 1, "the first playable source frame draws at the transition")
+  end)
+end
+
 function T.tests.accepted_title_input_proceeds_once_and_latches_until_the_staged_menu_fades()
   withStartup(function()
     local state = startSelection()
@@ -537,7 +589,7 @@ function T.tests.accepted_title_input_proceeds_once_and_latches_until_the_staged
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    App.update(1 / 30)
+    pumpUntilMovie(state)
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
@@ -591,7 +643,7 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    App.update(1 / 30)
+    pumpUntilMovie(state)
     Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
     local openings = 0
     for _, session in ipairs(active.audioSessions) do
@@ -692,7 +744,7 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    App.update(1 / 30)
+    pumpUntilMovie(state)
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
@@ -773,7 +825,7 @@ function T.tests.movie_skip_never_becomes_title_skip_and_releases_are_swallowed(
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    App.update(1 / 30)
+    pumpUntilMovie(state)
     Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
 
     -- The source skip gate stays shut before eligibility: input does nothing.
@@ -836,7 +888,7 @@ function T.tests.late_audio_checkpoints_play_only_the_current_stage_cue()
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    App.update(1 / 30)
+    pumpUntilMovie(state)
     Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
     Assert.equal(#active.audioSessions, 0, "the movie starts silent while audio is still pending")
 
@@ -901,7 +953,7 @@ function T.tests.idle_title_loops_the_movie_without_losing_epoch_or_menu()
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    App.update(1 / 30)
+    pumpUntilMovie(state)
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
@@ -936,7 +988,7 @@ function T.tests.idle_title_loops_the_movie_without_losing_epoch_or_menu()
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    App.update(1 / 30)
+    pumpUntilMovie(state)
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
@@ -957,7 +1009,7 @@ function T.tests.resize_during_fade_keeps_clocks_and_overlay()
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    App.update(1 / 30)
+    pumpUntilMovie(state)
     App.resize(1024, 768)
     Assert.equal(state.phase, "movie", "resize keeps the movie clock")
     Assert.equal(state.width, 1024, "resize reaches the startup dimensions")
@@ -1019,6 +1071,7 @@ function T.tests.failed_opening_scene_is_a_visible_error_and_retirement_disposes
       active.sceneReady[sceneNumber] = true
     end
     local state = startSelection()
+    pumpUntilMovie(state)
     Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
     local movie = assert(state.movie, "the movie session is owned before retirement")
 
@@ -1046,7 +1099,7 @@ function T.tests.movie_first_title_entry_keeps_its_edition_cry_through_the_accep
         active.sceneReady[sceneNumber] = true
       end
       active.audioReady = true
-      App.update(1 / 30)
+      pumpUntilMovie(state)
       Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
       while state.movie ~= nil and not state.movie:isFinished() do
         state.movie:updateFixed()
@@ -1098,7 +1151,7 @@ function T.tests.idle_title_replays_both_music_tracks_before_the_final_cry()
       active.sceneReady[sceneNumber] = true
     end
     active.audioReady = true
-    App.update(1 / 30)
+    pumpUntilMovie(state)
     Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()

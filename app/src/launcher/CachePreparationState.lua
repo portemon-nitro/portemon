@@ -258,9 +258,10 @@ function CachePreparationState:_releaseLoading()
   end
 end
 
--- Best-effort adoption of the selected pair once its keyed worker job is
--- ready. Only a cold first import treats adoption as a handoff precondition;
--- a warm boot keeps its animated static stage on any failure.
+-- Adoption of the selected pair once its keyed worker job is ready. Both
+-- warm and cold boots treat the adopted pair as a handoff precondition:
+-- a pending job holds the transfer, and a failure latches visibly with a
+-- retry path instead of abandoning the sprites.
 ---@return boolean adopted
 ---@return unknown? failure
 function CachePreparationState:_adoptSelectedPair()
@@ -273,19 +274,19 @@ function CachePreparationState:_adoptSelectedPair()
 end
 
 function CachePreparationState:_pollWalker()
-  -- An admitted warm boot always transfers: the selected pair is
-  -- requested as near interest and adopted best-effort when ready, but
-  -- pending or failed artwork never blocks the handoff. Only a cold
-  -- first import holds its card until the selected pair is adopted.
-  -- A failed cold adoption stays held until an explicit retry;
-  -- re-polling the same failure every frame would only churn the queue.
+  -- An admitted boot transfers only once the selected pair is adopted: the
+  -- pair is a required demand on both warm and cold paths, a pending job
+  -- simply holds the transfer, and a worker or adoption failure latches
+  -- visibly with a retry path. A failed cold adoption stays held until an
+  -- explicit retry; re-polling the same failure every frame would only
+  -- churn the queue. A failed warm adoption re-attempts on the next update
+  -- so worker recovery completes the handoff without another key press.
   local cold = self.freshImport
   if self.pairIndex ~= nil and serviceSupportsWalker(self.service) and not (cold and self.artFailure ~= nil) then
-    local urgency = cold and "required" or "near"
     self.service:request(self.epoch, {
       requestKind = "startup-walker",
       pairIndex = self.pairIndex,
-      urgency = urgency,
+      urgency = "required",
     })
     local ready, failure = self.service:observe(self.epoch, {
       requestKind = "startup-walker",
@@ -299,14 +300,14 @@ function CachePreparationState:_pollWalker()
         self:_fire()
         return
       end
-      if cold then
-        self.artFailure = adoptFailure
-        return
-      end
-    elseif failure ~= nil and cold then
+      self.artFailure = adoptFailure
+      return
+    end
+    if failure ~= nil then
       self.artFailure = failure
       return
     end
+    return
   end
   if not cold then
     self:_fire()
@@ -432,12 +433,34 @@ function CachePreparationState:_drawBootSource()
     lg.print("Press escape to return.", 24, 96)
     return
   end
-  -- The matching-ROM remedy is drawn by the wait itself from the first
-  -- frame, before the gate answers, so it stays visible while the stage
-  -- animates underneath it; the typed reason joins once the gate replies.
+  -- A failed selected pair holds the transfer with its own actionable
+  -- remedy: the failure and its retry key read beside the animating stage
+  -- instead of replacing it, so recovery stays visible while nothing
+  -- half-adopted ever leaves the wait.
+  if self.artFailure ~= nil then
+    local lg = love.graphics
+    lg.setColor(1, 0.65, 0.5, 1)
+    lg.print("Selected pair unavailable.", 24, 24)
+    local reason = bootReasonText(self.artFailure)
+    if reason ~= nil then
+      lg.printf(reason, 24, 48, lg.getWidth() - 48)
+    end
+    lg.setColor(0.7, 0.78, 0.8, 1)
+    lg.print("Press R to retry the selected pair.", 24, 96)
+    lg.print("Press escape to cancel.", 24, 120)
+    return
+  end
+  -- An admitted gate draws only the themed stage while ordinary pair work
+  -- is still pending: transitional frames carry no internal copy. The
+  -- matching-ROM remedy below is reserved for a genuinely blocked boot,
+  -- which keeps it visible from the first frame while the stage animates
+  -- underneath it; the typed reason joins once the gate replies.
+  if self.bootAdmitted then
+    return
+  end
   local lg = love.graphics
   lg.setColor(0.94, 0.94, 0.9, 1)
-  lg.print("Waiting for the matching " .. bootVersionLabel(self.versionId) .. " ROM", 24, 24)
+  lg.print("Provide the matching " .. bootVersionLabel(self.versionId) .. " ROM", 24, 24)
   lg.setColor(0.7, 0.78, 0.8, 1)
   local line = 48
   if self.mismatch ~= nil then
@@ -485,9 +508,12 @@ function CachePreparationState:keypressed(key, _, _)
     self.dead = true
     self:_releaseLoading()
     self.onCancel()
-  elseif key == "r" and self.freshImport and self.artFailure ~= nil then
-    -- Bounded cold retry: re-request the selected pair and re-attempt its
-    -- adoption on the next update without re-verifying the source.
+  elseif key == "r" and self.artFailure ~= nil then
+    -- Bounded retry: re-request the selected pair and re-attempt its
+    -- adoption on the next update without re-verifying the source. A cold
+    -- first import needs the key to leave its held card; a warm boot
+    -- re-attempts on every update regardless, so the key only clears the
+    -- visible remedy early.
     self.artFailure = nil
   end
 end

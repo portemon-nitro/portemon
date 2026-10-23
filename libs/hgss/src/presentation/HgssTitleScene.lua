@@ -661,11 +661,8 @@ function HgssTitleScene:_drawUi(status)
     local rect = assert(self.layout.prompt)
     graphics.printf(self.bundle.prompt.text, rect.x, rect.y, rect.width, "center")
   end
-  if status and status.preparingMenu then
-    local rect = assert(self.layout.prompt)
-    graphics.setColor(0.87, 0.9, 0.92, 0.9)
-    graphics.printf("Preparing menu…", rect.x, rect.y + 24, rect.width, "center")
-  end
+  -- While the menu stages the title holds its art and prompt with no
+  -- staging copy: only a genuine failure earns a line below.
   if status and status.titleError ~= nil then
     graphics.setColor(1, 0.65, 0.5, 1)
     graphics.printf("Title unavailable — Esc to return", 24, self.height - 30, math.max(1, self.width - 48), "center")

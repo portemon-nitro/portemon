@@ -18,6 +18,7 @@ local T = {}
 local function bootService(script)
   script.calls = 0
   script.pairRequests = {}
+  script.pairUrgencies = {}
   local service = {}
   function service:bootSourceStatus(_)
     script.calls = script.calls + 1
@@ -32,6 +33,7 @@ local function bootService(script)
   function service:request(_, selector)
     if type(selector) == "table" and selector.requestKind == "startup-walker" then
       script.pairRequests[#script.pairRequests + 1] = selector.pairIndex
+      script.pairUrgencies[#script.pairUrgencies + 1] = selector.urgency
       return "walker-request"
     end
     return "other-request"
@@ -324,6 +326,157 @@ function T.cold_retry_requests_the_pair_again_after_an_adoption_error()
     Assert.isTrue(#script.pairRequests >= 2, "retry re-requests the selected pair")
     Assert.isTrue(state:takeLoading() == loading, "retry transfers the exact owned presentation")
     state:dispose()
+  end)
+end
+
+function T.warm_boot_holds_transfer_until_the_selected_pair_is_adopted()
+  local loading = fakeLoading()
+  local record = {}
+  withPatchedLoading(loading, record, function()
+    local script = { bootReady = true, walkerReady = false }
+    local state = bootWait(script)
+    captureCopy(800, 600, function()
+      state:draw()
+    end)
+    Assert.equal(record.constructions, 1, "warm boot installs its loading presentation at selection")
+    Assert.equal(script.calls or 0, 0, "the first draw never waits on the boot-source gate")
+    Assert.isTrue(loading.draws >= 1, "the first draw paints the animated stage")
+    state:update(0.016)
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "the warm wait never transfers while the selected pair is still pending")
+    Assert.isTrue(#script.pairRequests >= 1, "the warm wait demands the selected pair while it waits")
+    for _, pairIndex in ipairs(script.pairRequests) do
+      Assert.equal(pairIndex, 5, "the warm wait demands exactly the selected pair")
+    end
+    for _, urgency in ipairs(script.pairUrgencies) do
+      Assert.equal(urgency, "required", "the selected pair is a required demand, never best-effort interest")
+    end
+    Assert.isFalse(loading.adopted, "nothing is adopted before the pair job answers")
+    script.walkerReady = true
+    loading.adoptResult = true
+    state:update(0.016)
+    Assert.equal(script.fired, 1, "the adopted pair completes the warm handoff")
+    Assert.isTrue(loading.adopted, "both selected sprites are adopted before transfer")
+    Assert.isTrue(loading.adoptions >= 1, "adoption runs against the generated pair art")
+    local transferred = state:takeLoading()
+    Assert.isTrue(transferred == loading, "the transfer hands over the exact owned presentation")
+    Assert.throws(function()
+      state:takeLoading()
+    end, "the presentation detaches exactly once")
+    state:dispose()
+    Assert.equal(loading.disposals, 0, "disposing after transfer never touches the detached art")
+  end)
+end
+
+function T.warm_pair_worker_error_holds_transfer_until_the_pair_recovers()
+  local loading = fakeLoading()
+  local record = {}
+  withPatchedLoading(loading, record, function()
+    local script = { bootReady = true, walkerFailure = "synthetic walker failure" }
+    local state = bootWait(script)
+    state:update(0.016)
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "a failed pair job never transfers to gameplay")
+    Assert.throws(function()
+      state:takeLoading()
+    end, "nothing detaches after a failed pair job")
+    local copy = captureCopy(800, 600, function()
+      state:draw()
+    end)
+    local lowered = copy:lower()
+    Assert.isTrue(
+      lowered:find("matching", 1, true) ~= nil or lowered:find("retry", 1, true) ~= nil,
+      "the held wait stays actionable with a remedy, got: " .. copy
+    )
+    script.walkerFailure = nil
+    script.walkerReady = true
+    loading.adoptResult = true
+    state:update(0.016)
+    Assert.equal(script.fired, 1, "the recovered pair completes the warm handoff")
+    Assert.isTrue(state:takeLoading() == loading, "recovery transfers the exact owned presentation")
+    state:dispose()
+    Assert.equal(loading.disposals, 0, "disposing after transfer never touches the detached art")
+  end)
+end
+
+function T.warm_pair_adoption_failure_holds_transfer_until_a_successful_retry()
+  local loading = fakeLoading()
+  loading.adoptResult = false
+  local record = {}
+  withPatchedLoading(loading, record, function()
+    local script = { bootReady = true, walkerReady = true }
+    local state = bootWait(script)
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "a failed warm adoption never transfers to gameplay")
+    Assert.throws(function()
+      state:takeLoading()
+    end, "nothing detaches before a successful adoption")
+    loading.adoptResult = true
+    state:update(0.016)
+    Assert.equal(script.fired, 1, "the retried adoption completes the warm handoff")
+    Assert.isTrue(loading.adopted, "the retry adopts both selected sprites")
+    Assert.isTrue(state:takeLoading() == loading, "retry transfers the exact owned presentation")
+    state:dispose()
+    Assert.equal(loading.disposals, 0, "disposing after transfer never touches the detached art")
+  end)
+end
+
+function T.warm_epoch_switch_after_admission_never_fires_the_retired_wait()
+  local loading = fakeLoading()
+  local record = {}
+  withPatchedLoading(loading, record, function()
+    local script = { bootReady = true, walkerReady = false }
+    local live = true
+    local state = bootWait(script, {
+      isCurrent = function()
+        return live
+      end,
+    })
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "the admitted wait holds while the selected pair is pending")
+    Assert.isTrue(#script.pairRequests >= 1, "the live wait demands the selected pair")
+    live = false
+    script.walkerReady = true
+    loading.adoptResult = true
+    local demands = #script.pairRequests
+    state:update(0.016)
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "a retired epoch never transfers when the pair answers late")
+    Assert.equal(#script.pairRequests, demands, "a retired epoch issues no further pair demands")
+    Assert.throws(function()
+      state:takeLoading()
+    end, "a retired wait detaches nothing")
+    state:dispose()
+    Assert.equal(loading.disposals, 1, "retiring the switched wait releases its stage once")
+    state:dispose()
+    Assert.equal(loading.disposals, 1, "disposal never releases twice")
+  end)
+end
+
+function T.warm_pair_retry_issues_one_demand_per_update_without_transfer()
+  local loading = fakeLoading()
+  loading.adoptResult = false
+  local record = {}
+  withPatchedLoading(loading, record, function()
+    local script = { bootReady = true, walkerReady = true }
+    local state = bootWait(script)
+    for _ = 1, 3 do
+      state:update(0.016)
+    end
+    Assert.equal(script.fired or 0, 0, "a persistently failing adoption never transfers")
+    Assert.equal(#script.pairRequests, 3, "each update re-issues exactly one pair demand")
+    Assert.equal(loading.adoptions, 3, "each update re-attempts the adoption once")
+    for _, pairIndex in ipairs(script.pairRequests) do
+      Assert.equal(pairIndex, 5, "every retry keeps the selected pair without a default species")
+    end
+    for _, urgency in ipairs(script.pairUrgencies) do
+      Assert.equal(urgency, "required", "every retry keeps the required demand")
+    end
+    Assert.throws(function()
+      state:takeLoading()
+    end, "nothing detaches before a successful adoption")
+    state:dispose()
+    Assert.equal(loading.disposals, 1, "the failed wait releases its stage once")
   end)
 end
 

@@ -653,6 +653,55 @@ local function titleMissingSurfaceFailsCleanly(scope, context)
   end
 end
 
+local function titleHoldsPromptWithoutStagingCopy(scope, context)
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, 512, 384, "single")
+    for _ = 1, 45 do
+      scene:updateFixed()
+    end
+    local prompt = assert(scene.bundle.prompt.text, "title bundle carries its start prompt")
+    local graphics = love.graphics
+    local originalPrint, originalPrintf = graphics.print, graphics.printf
+    local function captureDraw(status)
+      local printed = {}
+      graphics.print = function(text, ...)
+        printed[#printed + 1] = tostring(text)
+        return originalPrint(text, ...)
+      end
+      graphics.printf = function(text, ...)
+        printed[#printed + 1] = tostring(text)
+        return originalPrintf(text, ...)
+      end
+      local ok, failure = pcall(function()
+        scene:draw(status)
+      end)
+      graphics.print, graphics.printf = originalPrint, originalPrintf
+      if not ok then
+        error(failure, 0)
+      end
+      return table.concat(printed, "\n")
+    end
+    local ok, failure = pcall(function()
+      local staging = captureDraw({ preparingMenu = true })
+      Assert.isTrue(staging:find(prompt, 1, true) ~= nil, "the title holds its prompt while the menu stages")
+      Assert.isTrue(
+        staging:find("Preparing", 1, true) == nil,
+        "no staging label leaks onto the title, got: " .. staging
+      )
+      local failed = captureDraw({ menuError = "synthetic menu failure" })
+      Assert.isTrue(
+        failed:lower():find("retry", 1, true) ~= nil,
+        "a genuine menu failure stays actionable, got: " .. failed
+      )
+    end)
+    graphics.print, graphics.printf = originalPrint, originalPrintf
+    scene:dispose()
+    if not ok then
+      error(failure, 0)
+    end
+  end
+end
+
 local function titleDeliversItsCompiledLightingRecord(scope, context)
   for _, versionId in ipairs(readyVersionsOrSkip(context)) do
     local scene = openTitleScene(scope, versionId, 512, 384, "single")
@@ -910,6 +959,7 @@ local T = GraphicsSmoke.suite({
   ["title canvas failure releases staged assets"] = titleCanvasFailureReleasesStagedAssets,
   ["title missing surface fails cleanly"] = titleMissingSurfaceFailsCleanly,
   ["title delivers its compiled lighting record"] = titleDeliversItsCompiledLightingRecord,
+  ["title holds its prompt without staging copy"] = titleHoldsPromptWithoutStagingCopy,
   ["legendary silhouette matches its sourced reference frame at native size"] = legendaryMatchesItsSourcedReferenceFrame,
   ["host resizing keeps the sourced title lens centered"] = hostResizingKeepsTheSourcedTitleLens,
 })
