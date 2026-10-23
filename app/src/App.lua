@@ -161,6 +161,14 @@ function App._ensureStartupAudio(versionId, epoch, titleRecord)
     return nil
   end
   if App.startupAudioSession ~= nil then
+    if titleRecord ~= nil then
+      local ok, failure = pcall(App.startupAudioSession.bindTitleRecord, App.startupAudioSession, titleRecord)
+      if not ok then
+        App._recordStartupAudioError(failure)
+        App._releaseStartupAudio()
+        return nil
+      end
+    end
     return App.startupAudioSession
   end
   if not startupAudioReady() then
@@ -194,7 +202,12 @@ local function startupAudioBorrow(versionId, epoch)
     if session == nil or type(session[method]) ~= "function" then
       return
     end
-    local ok, failure = pcall(session[method], session, ...)
+    local ok, failure
+    if titleRecord ~= nil then
+      ok, failure = pcall(session[method], session, titleRecord, ...)
+    else
+      ok, failure = pcall(session[method], session, ...)
+    end
     if not ok then
       App._recordStartupAudioError(failure)
       App._releaseStartupAudio()
@@ -212,6 +225,9 @@ local function startupAudioBorrow(versionId, epoch)
     end,
     skip = function()
       invoke("beginFade", false)
+    end,
+    beginMovieCycle = function()
+      invoke("beginMovieCycle", false)
     end,
     playMenuCue = function(kind)
       invoke("playMenuCue", true, nil, kind)

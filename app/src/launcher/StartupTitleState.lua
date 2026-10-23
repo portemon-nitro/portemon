@@ -620,6 +620,14 @@ function StartupTitleState:_reenterMovie()
   end
   self.movie = movie
   self.phase = "movie"
+  -- A fresh movie entry re-enables its own opening track and the next
+  -- title entry re-enables its own title track on the same session.
+  self.openingStarted = false
+  self.audioStarted = false
+  if self.audio ~= nil and type(self.audio.beginMovieCycle) == "function" then
+    self.audio.beginMovieCycle()
+  end
+  self:_maybeStartAudio()
 end
 
 -- Ownership order only: detach before callback, never restore once the
