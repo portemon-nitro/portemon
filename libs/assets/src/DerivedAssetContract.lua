@@ -575,11 +575,12 @@ DerivedAssetContract.startupTitle = {
 
 -- The five opening-movie scene bundles share one closed schema but stay
 -- independently staged: each numbered manifest carries only its own scene
--- key, its source tick rate, its closed movie event grammar, and asset
--- references under its own scene root. A bundle from another scene or
--- edition never reads as ready.
+-- key, its source tick rate, its closed step-clocked movie event grammar,
+-- and asset references under its own scene root. A bundle from another
+-- scene or edition never reads as ready. The v1 record could not represent
+-- engine planes or simultaneous slots, so it rebuilds instead of aliasing.
 DerivedAssetContract.startupOpeningScene = {
-  schema = "g4-startup-opening-scene-v1",
+  schema = "g4-startup-opening-scene-v2",
   tickRate = 30,
 }
 

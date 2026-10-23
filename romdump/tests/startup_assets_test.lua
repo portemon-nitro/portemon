@@ -1258,7 +1258,10 @@ end
 -- walking pair and title scopes: each scene addresses its own receipt and
 -- manifest, and no other key shape is routable.
 function T.opening_scene_family_is_a_closed_numeric_kind()
-  Assert.isTrue(type(StartupAssetCache.openingScenePath) == "function", "the startup cache addresses one opening scene manifest per scene")
+  Assert.isTrue(
+    type(StartupAssetCache.openingScenePath) == "function",
+    "the startup cache addresses one opening scene manifest per scene"
+  )
   for sceneNumber = 1, 5 do
     Assert.equal(
       StartupAssetCache.openingScenePath(sceneNumber),
@@ -1274,56 +1277,141 @@ function T.opening_scene_family_is_a_closed_numeric_kind()
   end
 end
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v1"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v2"
 
-local function openingLayer(image)
-  return { image = image, width = 256, height = 192, sourceHash = string.rep("a", 40) }
+local function openingLayer(engine, bgSlot, image)
+  return {
+    bgSlot = bgSlot,
+    priority = bgSlot,
+    image = image,
+    variants = {},
+    width = 256,
+    height = 192,
+    sourceHash = string.rep("a", 40),
+  }
 end
 
-local function openingEvents(sceneNumber)
+local function openingClip(root, name)
+  return {
+    id = root .. "/sprites/" .. name .. ".png",
+    bank = "synthetic",
+    sequence = 0,
+    frameCount = 2,
+    frames = {
+      { x = 0, y = 0, width = 8, height = 8, offsetX = 0, offsetY = 0, duration = 4 },
+      { x = 8, y = 0, width = 8, height = 8, offsetX = 1, offsetY = 0, duration = 4 },
+    },
+  }
+end
+
+local function openingEvents(sceneNumber, root)
+  local clip = root .. "/sprites/clip0.png"
   if sceneNumber == 1 then
     return {
-      { op = "setLayer", stepId = "copyright", atTick = 0, role = "upper" },
-      { op = "waitTicks", stepId = "copyright", atTick = 0, ticks = 30 },
-      { op = "setFade", stepId = "fades", atTick = 30, ticks = 60 },
-      { op = "setLayer", stepId = "setup", atTick = 90, role = "upper" },
-      { op = "waitTicks", stepId = "setup", atTick = 90, ticks = 20 },
-      { op = "enableSkip", stepId = "setup", atTick = 110 },
-      { op = "waitTicks", stepId = "logo", atTick = 110, ticks = 110 },
-      { op = "finish", stepId = "logo", atTick = 220 },
+      { op = "setScreenMapping", stepId = "copyright", atStepTick = 0, mainPhysical = "lower" },
+      {
+        op = "setLayer",
+        stepId = "copyright",
+        atStepTick = 0,
+        engine = "main",
+        bgSlot = 0,
+        image = root .. "/main-bg.png",
+        visible = true,
+        priority = 0,
+      },
+      {
+        op = "setLayer",
+        stepId = "copyright",
+        atStepTick = 0,
+        engine = "sub",
+        bgSlot = 0,
+        image = root .. "/sub-bg.png",
+        visible = true,
+        priority = 0,
+      },
+      { op = "setBlend", stepId = "fades", atStepTick = 0, effect = "blend-copyright", ticks = 60, from = 32, to = 31 },
+      { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 20 },
+      { op = "enableSkip", stepId = "setup", atStepTick = 20 },
+      { op = "waitTicks", stepId = "logo", atStepTick = 0, ticks = 110 },
+      {
+        op = "setSpriteClip",
+        stepId = "logo",
+        atStepTick = 0,
+        instanceId = "hero",
+        engine = "main",
+        x = 128,
+        y = 96,
+        drawOrder = 1,
+        clipId = clip,
+      },
+      {
+        op = "spriteVisible",
+        stepId = "logo",
+        atStepTick = 0,
+        instanceId = "hero",
+        engine = "main",
+        x = 128,
+        y = 96,
+        drawOrder = 1,
+        visible = true,
+      },
+      { op = "finish", stepId = "logo", atStepTick = 110 },
     }
   elseif sceneNumber == 5 then
     return {
-      { op = "circleWipe", stepId = "wipe", atTick = 0, ticks = 18 },
-      { op = "setScroll", stepId = "scroll", atTick = 18, ticks = 73, direction = "left" },
-      { op = "waitTicks", stepId = "wait", atTick = 91, ticks = 20 },
-      { op = "setFade", stepId = "fade", atTick = 111, ticks = 50 },
-      { op = "finish", stepId = "fade", atTick = 161 },
+      { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "lower" },
+      { op = "circleWipe", stepId = "wipe", atStepTick = 0, mode = "in", ticks = 18, effect = "wipe-in" },
+      { op = "waitEffects", stepId = "scroll", atStepTick = 0, effects = { "wipe-in" } },
+      {
+        op = "setScroll",
+        stepId = "scroll",
+        atStepTick = 0,
+        engine = "main",
+        bgSlot = 1,
+        dx = 0,
+        dy = -64,
+        ticks = 73,
+        direction = "up",
+      },
+      { op = "waitTicks", stepId = "wait", atStepTick = 0, ticks = 20 },
+      { op = "setFade", stepId = "fade", atStepTick = 0, kind = "white", ticks = 50, effect = "fade-white" },
+      { op = "waitEffects", stepId = "fade", atStepTick = 0, effects = { "fade-white" } },
+      { op = "finish", stepId = "fade", atStepTick = 0 },
     }
   end
   return {
-    { op = "setLayer", stepId = "open", atTick = 0, role = "upper" },
-    { op = "finish", stepId = "open", atTick = 10 },
+    { op = "setScreenMapping", stepId = "open", atStepTick = 0, mainPhysical = "upper" },
+    {
+      op = "setLayer",
+      stepId = "open",
+      atStepTick = 0,
+      engine = "main",
+      bgSlot = 0,
+      image = root .. "/main-bg.png",
+      visible = true,
+      priority = 0,
+    },
+    { op = "finish", stepId = "open", atStepTick = 10 },
   }
 end
 
 local function openingSteps(sceneNumber)
   if sceneNumber == 1 then
     return {
-      { id = "copyright", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 30 } },
-      { id = "fades", events = { 3 }, ["until"] = { kind = "duration", ticks = 60 } },
-      { id = "setup", events = { 4, 5, 6 }, ["until"] = { kind = "duration", ticks = 20 } },
-      { id = "logo", events = { 7, 8 }, ["until"] = { kind = "duration", ticks = 110 } },
+      { id = "copyright", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 30 } },
+      { id = "fades", events = { 4 }, ["until"] = { kind = "effect", effect = "blend-copyright" } },
+      { id = "setup", events = { 5, 6 }, ["until"] = { kind = "duration", ticks = 20 } },
+      { id = "logo", events = { 7, 8, 9, 10 }, ["until"] = { kind = "duration", ticks = 110 } },
     }
   elseif sceneNumber == 5 then
     return {
-      { id = "wipe", events = { 1 }, ["until"] = { kind = "duration", ticks = 18 } },
-      { id = "scroll", events = { 2 }, ["until"] = { kind = "duration", ticks = 73 } },
-      { id = "wait", events = { 3 }, ["until"] = { kind = "duration", ticks = 20 } },
-      { id = "fade", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 50 } },
+      { id = "wipe", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 18 } },
+      { id = "scroll", events = { 3, 4 }, ["until"] = { kind = "duration", ticks = 73 } },
+      { id = "wait", events = { 5 }, ["until"] = { kind = "duration", ticks = 20 } },
+      { id = "fade", events = { 6, 7, 8 }, ["until"] = { kind = "effect", effect = "fade-white" } },
     }
   end
-  return { { id = "open", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 10 } } }
+  return { { id = "open", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 10 } } }
 end
 
 local function validOpeningManifest(sceneNumber, versionId)
@@ -1334,18 +1422,19 @@ local function validOpeningManifest(sceneNumber, versionId)
     generationId = "test-generation",
     sceneNumber = sceneNumber,
     sourceTickRate = 30,
-    initial = { screenRoles = "opening" },
     layers = {
-      upper = { openingLayer(root .. "/upper-bg.png") },
-      lower = { openingLayer(root .. "/lower-bg.png") },
+      main = { openingLayer("main", 0, root .. "/main-bg.png") },
+      sub = { openingLayer("sub", 0, root .. "/sub-bg.png") },
     },
-    spriteClips = {
-      { id = root .. "/sprites/clip0.g4sprite", frameCount = 4 },
-    },
+    spriteClips = { openingClip(root, "clip0") },
     models = {},
     particles = { seed = 0, emitters = {} },
-    timeline = { steps = openingSteps(sceneNumber), events = openingEvents(sceneNumber) },
-    assets = { [root .. "/upper-bg.png"] = true, [root .. "/lower-bg.png"] = true },
+    timeline = { steps = openingSteps(sceneNumber), events = openingEvents(sceneNumber, root) },
+    assets = {
+      [root .. "/main-bg.png"] = true,
+      [root .. "/sub-bg.png"] = true,
+      [root .. "/sprites/clip0.png"] = true,
+    },
   }
   if sceneNumber == 4 then
     manifest.particles = {
@@ -1381,7 +1470,10 @@ end
 -- scene key, frame rate, closed event grammar, and referenced files all
 -- validate under the current reader.
 function T.opening_scene_reader_loads_a_complete_synthetic_bundle()
-  Assert.isTrue(type(StartupAssetCache.loadOpeningScene) == "function", "the startup cache reads one strict opening scene bundle")
+  Assert.isTrue(
+    type(StartupAssetCache.loadOpeningScene) == "function",
+    "the startup cache reads one strict opening scene bundle"
+  )
   for sceneNumber = 1, 5 do
     local manifest = validOpeningManifest(sceneNumber, "heartgold")
     local loaded, err = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), sceneNumber, "heartgold")
@@ -1394,7 +1486,10 @@ end
 -- grammar, source identity leakage, and unsupported particle records
 -- without touching the cache.
 function T.opening_scene_reader_rejects_mismatched_and_malformed_bundles()
-  Assert.isTrue(type(StartupAssetCache.loadOpeningScene) == "function", "the startup cache reads one strict opening scene bundle")
+  Assert.isTrue(
+    type(StartupAssetCache.loadOpeningScene) == "function",
+    "the startup cache reads one strict opening scene bundle"
+  )
   local manifest = validOpeningManifest(4, "heartgold")
   for _, badScene in ipairs({ 0, 6, 1.5, "4" }) do
     Assert.isFalse(
@@ -1402,17 +1497,15 @@ function T.opening_scene_reader_rejects_mismatched_and_malformed_bundles()
       "scene " .. tostring(badScene) .. " is rejected"
     )
   end
-  local wrongScene, wrongSceneErr =
-    StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 2, "heartgold")
+  local wrongScene, wrongSceneErr = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 2, "heartgold")
   Assert.isNil(wrongScene, "a manifest for another scene never authorizes this scene")
   Assert.notNil(wrongSceneErr, "the wrong-scene manifest reports its cause")
   local staleEdition, staleEditionErr =
     StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 4, "soulsilver")
   Assert.isNil(staleEdition, "one edition manifest never reads as the other edition")
   Assert.notNil(staleEditionErr, "the stale edition reports its cause")
-  local missingImage = manifest.layers.upper[1].image
-  local missing, missingErr =
-    StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, missingImage), 4, "heartgold")
+  local missingImage = manifest.layers.main[1].image
+  local missing, missingErr = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, missingImage), 4, "heartgold")
   Assert.isNil(missing, "a scene with missing layer art is not ready")
   Assert.notNil(missingErr, "the missing art reports its cause")
   local badOp = deepCopy(manifest)
@@ -1421,7 +1514,7 @@ function T.opening_scene_reader_rejects_mismatched_and_malformed_bundles()
   Assert.isNil(rejectedOp, "an event outside the closed movie grammar is rejected")
   Assert.notNil(rejectedOpErr, "the unknown op reports its cause")
   local badOperand = deepCopy(manifest)
-  badOperand.timeline.events[1].atTick = -1
+  badOperand.timeline.events[1].atStepTick = -1
   local rejectedOperand, rejectedOperandErr =
     StartupAssetCache.loadOpeningScene(openingCacheFs(badOperand, nil), 4, "heartgold")
   Assert.isNil(rejectedOperand, "a negative source tick is rejected")
@@ -1438,17 +1531,71 @@ function T.opening_scene_reader_rejects_mismatched_and_malformed_bundles()
   Assert.isNil(rejectedEmitter, "an emitter outside the nine source emitters is rejected")
   Assert.notNil(rejectedEmitterErr, "the unsupported emitter reports its cause")
   local escapedRoot = deepCopy(manifest)
-  escapedRoot.layers.upper[1].image = "assets/generated/startup/opening/2/upper-bg.png"
+  escapedRoot.layers.main[1].image = "assets/generated/startup/opening/2/main-bg.png"
   local escaped, escapedErr = StartupAssetCache.loadOpeningScene(openingCacheFs(escapedRoot, nil), 4, "heartgold")
   Assert.isNil(escaped, "a scene never references a sibling scene asset root")
   Assert.notNil(escapedErr, "the escaped asset root reports its cause")
+end
+
+-- The strict reader breaks the legacy record instead of aliasing it, and it
+-- binds every effect wait, clip reference, screen mapping, and clock to the
+-- closed step-clocked grammar.
+function T.opening_scene_reader_enforces_the_strict_versioned_contract()
+  Assert.isTrue(
+    type(StartupAssetCache.loadOpeningScene) == "function",
+    "the startup cache reads one strict opening scene bundle"
+  )
+  local manifest = validOpeningManifest(1, "heartgold")
+  local stale = deepCopy(manifest)
+  stale.schema = "g4-startup-opening-scene-v1"
+  local staleRead, staleErr = StartupAssetCache.loadOpeningScene(openingCacheFs(stale, nil), 1, "heartgold")
+  Assert.isNil(staleRead, "a legacy scene record never validates")
+  Assert.notNil(staleErr, "the stale schema reports its cause")
+  local unstarted = deepCopy(manifest)
+  unstarted.timeline.events[1] = {
+    op = "waitEffects",
+    stepId = "copyright",
+    atStepTick = 0,
+    effects = { "no-such-effect" },
+  }
+  local badWait, badWaitErr = StartupAssetCache.loadOpeningScene(openingCacheFs(unstarted, nil), 1, "heartgold")
+  Assert.isNil(badWait, "an effect wait on nothing started never validates")
+  Assert.notNil(badWaitErr, "the unstarted wait reports its cause")
+  local unknownClip = deepCopy(manifest)
+  for _, event in ipairs(unknownClip.timeline.events) do
+    if event.op == "setSpriteClip" then
+      event.clipId = "assets/generated/startup/opening/1/sprites/ghost.png"
+    end
+  end
+  local badClip, badClipErr = StartupAssetCache.loadOpeningScene(openingCacheFs(unknownClip, nil), 1, "heartgold")
+  Assert.isNil(badClip, "a sprite event pointing outside the compiled clips never validates")
+  Assert.notNil(badClipErr, "the unknown clip reports its cause")
+  local parallelClock = deepCopy(manifest)
+  parallelClock.timeline.events[1].atTick = 0
+  local badClock, badClockErr = StartupAssetCache.loadOpeningScene(openingCacheFs(parallelClock, nil), 1, "heartgold")
+  Assert.isNil(badClock, "a parallel global clock never validates")
+  Assert.notNil(badClockErr, "the parallel clock reports its cause")
+  local retiredRoles = deepCopy(manifest)
+  retiredRoles.timeline.events[1] =
+    { op = "setScreenRoles", stepId = "copyright", atStepTick = 0, upper = "main", lower = "sub" }
+  local badRoles, badRolesErr = StartupAssetCache.loadOpeningScene(openingCacheFs(retiredRoles, nil), 1, "heartgold")
+  Assert.isNil(badRoles, "the retired engine-role event never validates")
+  Assert.notNil(badRolesErr, "the retired screen roles report their cause")
+  local badMapping = deepCopy(manifest)
+  badMapping.timeline.events[1].mainPhysical = "sideways"
+  local badRole, badRoleErr = StartupAssetCache.loadOpeningScene(openingCacheFs(badMapping, nil), 1, "heartgold")
+  Assert.isNil(badRole, "a scene with a bad physical role never validates")
+  Assert.notNil(badRoleErr, "the bad physical role reports its cause")
 end
 
 -- Staging one opening scene owns only its manifest and scene directory,
 -- stages the manifest last, and never touches a sibling scene.
 function T.opening_scene_writer_preserves_sibling_scenes()
   local ok, OpeningMovieCacheWriter = pcall(require, "romdump.src.digest.startup.OpeningMovieCacheWriter")
-  Assert.isTrue(ok and type(OpeningMovieCacheWriter.stageScene) == "function", "the opening scene writer stages one numbered scene")
+  Assert.isTrue(
+    ok and type(OpeningMovieCacheWriter.stageScene) == "function",
+    "the opening scene writer stages one numbered scene"
+  )
   local function stageSceneWrites(sceneNumber)
     local writes, roots = {}, {}
     local stage = {
@@ -1487,8 +1634,9 @@ function T.opening_scene_writer_preserves_sibling_scenes()
     local bundle = {
       manifest = manifest,
       files = {
-        [root .. "/upper-bg.png"] = "upper",
-        [root .. "/lower-bg.png"] = "lower",
+        [root .. "/main-bg.png"] = "main",
+        [root .. "/sub-bg.png"] = "sub",
+        [root .. "/sprites/clip0.png"] = "clip",
       },
       dependencies = { versionId = "heartgold" },
     }
@@ -1518,13 +1666,18 @@ end
 -- manifest, receipt, and sibling scenes stay intact.
 function T.opening_scene_staged_failure_keeps_the_previous_live_output()
   local ok, OpeningMovieCacheWriter = pcall(require, "romdump.src.digest.startup.OpeningMovieCacheWriter")
-  Assert.isTrue(ok and type(OpeningMovieCacheWriter.stageScene) == "function", "the opening scene writer stages one numbered scene")
+  Assert.isTrue(
+    ok and type(OpeningMovieCacheWriter.stageScene) == "function",
+    "the opening scene writer stages one numbered scene"
+  )
   local backend = FakeCache.new()
   local cacheFs = CacheFs.forVersion("heartgold", backend)
   local goodGeneration = "previous-generation"
   local function seedScene(sceneNumber)
     local root = "assets/generated/startup/opening/" .. tostring(sceneNumber)
-    cacheFs:write(root .. "/upper-bg.png", "previous art")
+    cacheFs:write(root .. "/main-bg.png", "previous art")
+    cacheFs:write(root .. "/sub-bg.png", "previous art")
+    cacheFs:write(root .. "/sprites/clip0.png", "previous clip")
     cacheFs:writeLua(StartupAssetCache.openingScenePath(sceneNumber), {
       schema = OPENING_SCHEMA,
       generationId = goodGeneration,
@@ -1552,8 +1705,9 @@ function T.opening_scene_staged_failure_keeps_the_previous_live_output()
   local bundle = {
     manifest = validOpeningManifest(4, "heartgold"),
     files = {
-      [root .. "/upper-bg.png"] = "first",
-      [root .. "/lower-bg.png"] = "second",
+      [root .. "/main-bg.png"] = "first",
+      [root .. "/sub-bg.png"] = "second",
+      [root .. "/sprites/clip0.png"] = "third",
     },
   }
   local artifact = PreparedArtifact.new({
@@ -1568,23 +1722,16 @@ function T.opening_scene_staged_failure_keeps_the_previous_live_output()
   local stageOk, failure = pcall(OpeningMovieCacheWriter.stageScene, artifact, bundle, "current-generation", 4)
   backend.write = originalWrite
   Assert.isFalse(stageOk, "the injected staged failure fails the scene 4 restage: " .. tostring(failure))
-  Assert.isFalse(
-    artifact:stageFs():exists(manifestPath, "file"),
-    "a failed scene stage publishes no manifest"
-  )
+  Assert.isFalse(artifact:stageFs():exists(manifestPath, "file"), "a failed scene stage publishes no manifest")
   Assert.isFalse(artifact:stageFs():exists(receiptPath, "file"), "a failed scene stage publishes no receipt")
   Assert.equal(
     cacheFs:loadLua(manifestPath).generationId,
     goodGeneration,
     "the previous good scene 4 manifest remains intact"
   )
+  Assert.equal(cacheFs:loadLua(receiptPath).marker, "previous", "the previous good scene 4 receipt remains intact")
   Assert.equal(
-    cacheFs:loadLua(receiptPath).marker,
-    "previous",
-    "the previous good scene 4 receipt remains intact"
-  )
-  Assert.equal(
-    cacheFs:read("assets/generated/startup/opening/4/upper-bg.png"),
+    cacheFs:read("assets/generated/startup/opening/4/main-bg.png"),
     "previous art",
     "the previous good scene 4 art remains intact"
   )
@@ -1620,7 +1767,10 @@ function T.opening_scene_jobs_are_bounded_to_five_keys()
     end
   end
   for sceneNumber = 1, 5 do
-    Assert.isTrue(found[tostring(sceneNumber)] == true, "the corpus sweep enumerates scene " .. sceneNumber .. " as a bounded key")
+    Assert.isTrue(
+      found[tostring(sceneNumber)] == true,
+      "the corpus sweep enumerates scene " .. sceneNumber .. " as a bounded key"
+    )
   end
   Assert.deepEqual(found, { ["1"] = true, ["2"] = true, ["3"] = true, ["4"] = true, ["5"] = true })
 end
@@ -1629,8 +1779,7 @@ end
 -- source inventory or audio bank is a prerequisite of any scene job.
 function T.opening_scene_dependencies_are_empty_and_final()
   for sceneNumber = 1, 5 do
-    local dependencies, complete =
-      ArtifactJobs.dependencies("opening-scene", tostring(sceneNumber), {})
+    local dependencies, complete = ArtifactJobs.dependencies("opening-scene", tostring(sceneNumber), {})
     Assert.isTrue(complete, "scene " .. sceneNumber .. " resolves without adopted plans")
     Assert.deepEqual(dependencies, {}, "scene " .. sceneNumber .. " carries no prerequisite jobs")
   end

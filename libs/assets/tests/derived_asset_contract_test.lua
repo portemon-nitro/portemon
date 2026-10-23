@@ -215,7 +215,7 @@ function T.contract_pins_the_current_asset_identities()
     -- scene key, its source tick rate, its closed movie event grammar, and
     -- asset references under its own scene root.
     startupOpeningScene = {
-      schema = "g4-startup-opening-scene-v1",
+      schema = "g4-startup-opening-scene-v2",
       tickRate = 30,
     },
   })

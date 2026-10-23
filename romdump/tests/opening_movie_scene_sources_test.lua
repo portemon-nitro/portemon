@@ -31,6 +31,10 @@ function T.scene_sources_reject_bad_scenes_and_editions()
       pcall(SceneSources.memberSet, "soulsilver", badScene),
       "scene " .. tostring(badScene) .. " is rejected"
     )
+    Assert.isFalse(
+      pcall(SceneSources.spriteInstances, badScene),
+      "scene " .. tostring(badScene) .. " declares no sprite instances"
+    )
   end
   for _, badEdition in ipairs({ "platinum", "", 1 }) do
     Assert.isFalse(pcall(SceneSources.backgrounds, badEdition, 1), "edition " .. tostring(badEdition) .. " is rejected")
@@ -39,10 +43,127 @@ function T.scene_sources_reject_bad_scenes_and_editions()
 end
 
 function T.scene_sources_keep_five_bounded_scenes_at_the_source_tick_rate()
-  Assert.equal(SceneSources.SCHEMA, "g4-startup-opening-scene-v1", "the scene schema is pinned")
+  Assert.equal(SceneSources.SCHEMA, "g4-startup-opening-scene-v2", "the scene schema is pinned")
   Assert.equal(SceneSources.TICK_RATE, 30, "the scenes run at the source frame rate")
   Assert.equal(SceneSources.PARTICLE_ARCHIVE, "NARC_a_0_5_9", "the particle archive is pinned")
   Assert.equal(SceneSources.PARTICLE_MEMBER, 4, "the starter particle member is pinned")
+end
+
+function T.scene_sources_group_background_slots_by_engine_with_numeric_planes()
+  local first = SceneSources.backgrounds("soulsilver", 1)
+  local slots = {}
+  for _, background in ipairs(first) do
+    Assert.isTrue(background.engine == "main" or background.engine == "sub", "scene 1 layers name a source engine")
+    Assert.isTrue(
+      type(background.bgSlot) == "number" and background.bgSlot % 1 == 0 and background.bgSlot <= 3,
+      "scene 1 layers name a numeric plane"
+    )
+    Assert.equal(background.priority, background.bgSlot, "scene 1 priority mirrors its source plane order")
+    slots[background.engine .. ":" .. background.bgSlot] = true
+  end
+  Assert.isTrue(slots["main:1"] and slots["main:2"] and slots["main:3"], "scene 1 keeps its sunrise planes")
+  local third = SceneSources.backgrounds("soulsilver", 3)
+  local alternates = 0
+  for _, background in ipairs(third) do
+    Assert.equal(background.engine, "sub", "scene 3 panels stay on the sub engine")
+    for _, alternate in ipairs(background.alternates or {}) do
+      Assert.isTrue(type(alternate.char) == "number", "scene 3 panel swaps name a character member")
+      Assert.isTrue(type(alternate.screen) == "number", "scene 3 panel swaps name a screen member")
+      alternates = alternates + 1
+    end
+  end
+  Assert.isTrue(alternates >= 6, "scene 3 declares its rival, beast, and rocket panel swaps")
+end
+
+-- Retail sprite stations transcribed from the pinned decomp CreateSprites
+-- functions: scene 1 sun and bird share (128, 96) on the main engine
+-- (src/intro_movie_scene_1.c IntroMovie_Scene1_CreateSprites);
+-- scene 2 holds ten flowers at (128, 192) with both-engines character
+-- data plus three ethan at (64, -96) and three lyra at (320, -96) on the
+-- main engine (src/intro_movie_scene_2.c IntroMovie_Scene2_CreateSprites);
+-- scene 3 holds silver at (128, 608), eusine at (32, 608), and unowns at
+-- (128, 544/672/608) on the sub engine, all starting offscreen
+-- (src/intro_movie_scene_3.c IntroMovie_Scene3_CreateSprites);
+-- scene 4 holds hand1 at (128, 352) on the sub engine with hand2,
+-- sparkles, and all three starters at (128, 96) on the main engine
+-- (src/intro_movie_scene_4.c IntroMovie_Scene4_CreateSprites);
+-- scene 5 creates no sprites (src/intro_movie_scene_5.c
+-- IntroMovie_Scene5_CreateSprites is empty). Flowers carry one instance
+-- per displaying engine because the decomp enables sprite pixels on both
+-- engines for their both-engines character data and draws every sprite to
+-- every active engine surface, so a single-engine instance cannot cover
+-- both copies (see the scene 2 LoadSpriteGfx engine toggles and the
+-- NNS-G2D all-surfaces draw in the vendored renderer).
+local function expectedSceneInstances()
+  local scenes = {
+    [1] = {
+      { id = "sun", engine = "main", x = 128, y = 96, drawOrder = 1 },
+      { id = "bird", engine = "main", x = 128, y = 96, drawOrder = 2 },
+    },
+    [3] = {
+      { id = "eusine", engine = "sub", x = 32, y = 608, drawOrder = 1 },
+      { id = "unown0", engine = "sub", x = 128, y = 544, drawOrder = 2 },
+      { id = "unown1", engine = "sub", x = 128, y = 672, drawOrder = 3 },
+      { id = "unown2", engine = "sub", x = 128, y = 608, drawOrder = 4 },
+      { id = "silver-silhouette", engine = "sub", x = 128, y = 608, drawOrder = 5 },
+    },
+    [4] = {
+      { id = "hand1", engine = "sub", x = 128, y = 352, drawOrder = 1 },
+      { id = "hand2", engine = "main", x = 128, y = 96, drawOrder = 1 },
+      { id = "chikorita", engine = "main", x = 128, y = 96, drawOrder = 2 },
+      { id = "cyndaquil", engine = "main", x = 128, y = 96, drawOrder = 2 },
+      { id = "totodile", engine = "main", x = 128, y = 96, drawOrder = 2 },
+      { id = "sparkles", engine = "main", x = 128, y = 96, drawOrder = 3 },
+    },
+    [5] = {},
+  }
+  local second = {}
+  for flower = 1, 10 do
+    second[#second + 1] = { id = "flower" .. flower .. "-main", engine = "main", x = 128, y = 192, drawOrder = flower }
+    second[#second + 1] = { id = "flower" .. flower .. "-sub", engine = "sub", x = 128, y = 192, drawOrder = flower }
+  end
+  for hero = 0, 2 do
+    second[#second + 1] = { id = "ethan" .. hero, engine = "main", x = 64, y = -96, drawOrder = 11 + hero }
+    second[#second + 1] = { id = "lyra" .. hero, engine = "main", x = 320, y = -96, drawOrder = 14 + hero }
+  end
+  scenes[2] = second
+  return scenes
+end
+
+function T.scene_sources_declare_stable_sprite_instances_per_scene()
+  local expected = expectedSceneInstances()
+  local counts = { 2, 26, 5, 6, 0 }
+  for sceneNumber = 1, 5 do
+    local instances = SceneSources.spriteInstances(sceneNumber)
+    Assert.equal(#instances, counts[sceneNumber], "scene " .. sceneNumber .. " declares its sprite instances")
+    local seen = {}
+    for _, instance in ipairs(instances) do
+      Assert.isTrue(type(instance.id) == "string" and instance.id ~= "", "scene instances carry stable ids")
+      Assert.isNil(seen[instance.id], "scene " .. sceneNumber .. " keeps each instance id once")
+      seen[instance.id] = true
+      Assert.isTrue(instance.engine == "main" or instance.engine == "sub", "scene instances name a source engine")
+      Assert.isTrue(
+        type(instance.x) == "number" and type(instance.y) == "number",
+        "scene instances carry stage stations"
+      )
+      Assert.isTrue(
+        type(instance.drawOrder) == "number" and instance.drawOrder % 1 == 0,
+        "scene instances carry a draw order"
+      )
+    end
+    for _, wanted in ipairs(expected[sceneNumber]) do
+      local found = seen[wanted.id]
+      Assert.isTrue(found ~= nil, "scene " .. sceneNumber .. " keeps its retail instance " .. wanted.id)
+      for _, instance in ipairs(instances) do
+        if instance.id == wanted.id then
+          Assert.equal(instance.engine, wanted.engine, wanted.id .. " names its retail engine")
+          Assert.equal(instance.x, wanted.x, wanted.id .. " keeps its retail x")
+          Assert.equal(instance.y, wanted.y, wanted.id .. " keeps its retail y")
+          Assert.equal(instance.drawOrder, wanted.drawOrder, wanted.id .. " keeps its draw order")
+        end
+      end
+    end
+  end
 end
 
 function T.scene_sources_condition_scene_one_members_by_edition()
