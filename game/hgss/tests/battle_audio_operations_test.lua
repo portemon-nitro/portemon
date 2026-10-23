@@ -451,17 +451,6 @@ local function countCries(log, species)
   return total
 end
 
----@param log table recorded cue operations under inspection
----@return integer non-menu effect operations behind the battle
-local function countEffectOps(log, selectSymbol)
-  local total = 0
-  for _, entry in ipairs(log) do
-    if entry.method == "play" and entry.symbol ~= selectSymbol then
-      total = total + 1
-    end
-  end
-  return total
-end
 
 -- Wraps the live field audio service with counting recorders so music
 -- selection, starts, and policy transfers stay observable without
@@ -937,6 +926,24 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
   for _, versionId in ipairs(readyVersions()) do
     local roles = stagedRoleSymbols(versionId)
     local selectSymbol = roles.select
+    -- Native program voices arrive behind staged closure keys: only symbols
+    -- no staged index resolves (bare or closure-prefixed) still count as
+    -- unknown, exactly like the quiet journey below.
+    local stagedProvider = AudioAssetProvider.new(CacheFs.forVersion(versionId))
+    local function stagedSymbol(symbol)
+      local ok = pcall(function()
+        return stagedProvider:sequence(symbol)
+      end)
+      if not ok and type(symbol) == "string" then
+        local bare = symbol:match("^audio/sequence/(.+)$")
+        if bare ~= nil then
+          ok = pcall(function()
+            return stagedProvider:sequence(bare)
+          end)
+        end
+      end
+      return ok
+    end
     do
       local sound, player = composeCaseEngine(selectSymbol)
       sound:play("synthetic-battle-silent-control")
@@ -1002,13 +1009,28 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
         )
         check(
           problems,
-          countCries(log, foeCry) == 1,
-          "the wild foe send-out cries exactly once on " .. versionId
+          countCries(log, foeCry) == 2,
+          "the wild foe cries at send-out and at faint on " .. versionId
+        )
+        local programVoices, unstagedVoices = 0, {}
+        for _, entry in ipairs(log) do
+          if entry.method == "play" and entry.symbol ~= selectSymbol then
+            if stagedSymbol(entry.symbol) then
+              programVoices = programVoices + 1
+            else
+              unstagedVoices[#unstagedVoices + 1] = tostring(entry.symbol)
+            end
+          end
+        end
+        check(
+          problems,
+          programVoices >= 1,
+          "damaging turns voice their staged native program on " .. versionId
         )
         check(
           problems,
-          countEffectOps(log, selectSymbol) >= 2,
-          "damaging turns record move and impact effect operations on " .. versionId
+          #unstagedVoices == 0,
+          "damaging turns invent no unstaged operation on " .. versionId .. ": " .. table.concat(unstagedVoices, ", ")
         )
         check(problems, #trace.fanfares == 0, "victory voices no fanfare on " .. versionId)
         local lastStart = trace.starts[#trace.starts]
@@ -1467,7 +1489,11 @@ function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engi
           lastWinStart ~= nil and lastWinStart.symbol == "SEQ_GS_WIN2",
           "victory swaps to the wild-win BGM on " .. versionId
         )
-        check(problems, trace.resumes == 0, "the win performs no field-policy resume without a fanfare pause")
+        check(
+          problems,
+          trace.resumes == 1,
+          "the covered win return restores the field policy once on " .. versionId
+        )
         check(
           problems,
           runtime.audio:currentMusic() == runtime.audio:effectiveMusic(),
@@ -1575,6 +1601,14 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
       local ok = pcall(function()
         return stagedProvider:sequence(symbol)
       end)
+      if not ok and type(symbol) == "string" then
+        local bare = symbol:match("^audio/sequence/(.+)$")
+        if bare ~= nil then
+          ok = pcall(function()
+            return stagedProvider:sequence(bare)
+          end)
+        end
+      end
       return ok
     end
     for _, journey in ipairs(journeys) do
@@ -1620,7 +1654,11 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
           end
         end
         check(problems, observed.lead == 1, "the " .. journey.name .. " keeps its lead cry on " .. versionId)
-        check(problems, observed.foe == 1, "the " .. journey.name .. " keeps its foe cry on " .. versionId)
+        check(
+          problems,
+          observed.foe == 2,
+          "the " .. journey.name .. " keeps its send-out and faint foe cries on " .. versionId
+        )
         check(
           problems,
           observed.selects >= 1,

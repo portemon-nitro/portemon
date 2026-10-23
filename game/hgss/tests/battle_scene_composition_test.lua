@@ -22,6 +22,9 @@ local function stagedDrawable(key)
   function image:getHeight()
     return self.height
   end
+  function image:getDimensions()
+    return self.width, self.height
+  end
   function image:setFilter() end
   return image
 end
@@ -721,7 +724,7 @@ function T.authored_picture_frame_selects_its_matching_portrait_pixels()
       maxHp = 12,
       portraitSelector = "FOE/0/male/plain/front",
     }),
-  } }), { pictureFrames = { { handle = "lead-frame-0" }, { handle = "lead-frame-1" } } })
+  } }), { pictureFrames = { stagedDrawable("lead-frame-0"), stagedDrawable("lead-frame-1") } })
   local selectedFrame
   for _, picture in ipairs(graphics.pictureItems) do
     if picture.kind ~= "shadow" and picture.image.handle == "lead-frame-1" then

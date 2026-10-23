@@ -1418,8 +1418,12 @@ end
 ---@param marker string required new visible marker under comparison
 ---@param what string child description under comparison
 local function assertPaintsOwnRows(before, after, marker, what)
+  -- The compact composition truncates shared wordings to fit ("What
+  -- will", "EEVEE do?"), so distinct contingent strings can collide
+  -- there; three net-new distinct contents still prove the child paints
+  -- its own rows instead of the command fallback.
   Assert.isTrue(
-    censusSize(after) >= censusSize(before) + 4,
+    censusSize(after) >= censusSize(before) + 3,
     "the open " .. what .. " paints its own rows instead of the command fallback"
   )
   local seen = false

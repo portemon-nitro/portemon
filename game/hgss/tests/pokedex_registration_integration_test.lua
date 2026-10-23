@@ -750,6 +750,27 @@ function T.stale_dex_revision_between_eligibility_and_preparation_fails_without_
       end
     end
     Assert.equal(fullParty:partyCount(), 6, "the party starts full")
+    -- Overflow now routes to PC storage, so a truly unretainable catch
+    -- needs every box full too: one filler stages into each box slot,
+    -- leaving no free party or box slot for the capture.
+    do
+      local catalog = CatalogFixture.makeCatalog()
+      local factory = CatalogFixture.makeFactory(0xAAAA0011, catalog)
+      local filler = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
+      local filling = {}
+      for box = 0, fullParty:boxCount() - 1 do
+        for slot = 0, 29 do
+          filling[#filling + 1] = { box = box, slot = slot, mon = filler }
+        end
+      end
+      local staged, stageErr = fullParty:preparePcChanges({
+        partyRevision = fullParty:partyRevision(),
+        boxRevision = fullParty:boxRevision(),
+      }, { boxUpdates = filling })
+      Assert.notNil(staged, "the setup fills every box: " .. tostring(stageErr))
+      assert(staged ~= nil, "the box fill stages")
+      staged.publish()
+    end
     local fullBag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
     Assert.isTrue(fullBag:add("POKE_BALL", 5))
     local fullDex = newDexOwner({ "CHIKORITA", "TOTODILE", "EEVEE" })

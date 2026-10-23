@@ -820,6 +820,11 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
     function recording.push(_) end
     function recording.pop() end
     function recording.origin() end
+    function recording.getDepthMode() end
+    function recording.setDepthMode(_, _) end
+    function recording.setShader() end
+    function recording.setBlendMode(_, _) end
+    function recording.setScissor() end
     function recording.intersectScissor(_, _, _, _) end
     function recording.translate(_, _) end
     function recording.scale(_, _) end

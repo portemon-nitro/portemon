@@ -1129,111 +1129,97 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
     local pixel = string.char(seed % 256, (seed + 40) % 256, (seed + 90) % 256, 255)
     return PngWriter.encode(8, 8, string.rep(pixel, 8 * 8))
   end
-  local function stagedObj()
-    return {
-      x = 0,
-      y = 0,
-      tile = 0,
-      flipH = false,
-      flipV = false,
-      palette = 0,
-      shape = 0,
-      size = 0,
-      width = 8,
-      height = 8,
-      affine = false,
-      disabled = false,
-      mosaic = false,
-      objMode = "normal",
-      colorMode = "color16",
-      priority = 0,
-    }
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local battleManifest = ManifestFixture.manifest()
+  -- The convergence probe stages its own classified art: redirect every
+  -- manifest image and font the preparation gate reads at the fixture
+  -- paths so uploads resolve through the shared owner behind staged
+  -- bytes instead of the canned fixture identities.
+  battleManifest.menus.command.image = artPaths.command
+  battleManifest.menus.command.screens[1].image = artPaths.command
+  battleManifest.menus.moves.image = artPaths.moves
+  battleManifest.menus.moves.screens[1].image = artPaths.moves
+  battleManifest.menus.target.image = artPaths.target
+  battleManifest.menus.target.screens[1].image = artPaths.target
+  battleManifest.menus.twoOption.image = artPaths.twoOption
+  battleManifest.menus.twoOption.screens[1].image = artPaths.twoOption
+  battleManifest.hud.player.image = artPaths.playerHud
+  battleManifest.hud.enemy.image = artPaths.enemyHud
+  battleManifest.hud.doubles.playerLeft.image = artPaths.playerLeft
+  battleManifest.hud.doubles.playerRight.image = artPaths.playerRight
+  battleManifest.hud.doubles.enemyLeft.image = artPaths.enemyLeft
+  battleManifest.hud.doubles.enemyRight.image = artPaths.enemyRight
+  battleManifest.messages.roles.narration.font = fontPaths.narration
+  battleManifest.messages.roles.menu.font = fontPaths.menu
+  battleManifest.messages.roles.hud.font = fontPaths.hud
+  -- Every redirected path joins the staged image inventory the schema
+  -- checks references against; the probe stages 8x8 classified art at
+  -- each of these paths below.
+  for _, path in ipairs({
+    artPaths.command,
+    artPaths.moves,
+    artPaths.target,
+    artPaths.twoOption,
+    artPaths.playerHud,
+    artPaths.enemyHud,
+    artPaths.playerLeft,
+    artPaths.playerRight,
+    artPaths.enemyLeft,
+    artPaths.enemyRight,
+  }) do
+    battleManifest.menus.images[path] = { width = 8, height = 8 }
   end
-  local function stagedAnimation()
-    return {
-      playMode = "forward",
-      loopStartFrameIdx = 0,
-      frames = { { cell = 0, duration = 1 } },
-    }
-  end
-  local function stagedPalette()
-    return { colors = { { r = 10, g = 20, b = 30 } } }
-  end
-  local function menuSection(path)
-    return {
-      image = path,
-      screens = { { image = path, width = 8, height = 8 } },
-    }
-  end
-  local function spriteSection(path)
-    return {
-      image = path,
-      cells = { { objs = { stagedObj() } } },
-      animation = stagedAnimation(),
-      palette = stagedPalette(),
-    }
-  end
-  local images = {}
-  for _, path in pairs(artPaths) do
-    images[path] = { width = 8, height = 8 }
-  end
-  local battleManifest = {
-    schema = "g4-battle-presentation-v1",
-    version = { id = "battle-staging-convergence-probe", language = "en" },
-    verified = true,
-    scenes = { { key = sceneKey, background = "general", terrain = "grass", time = "day" } },
-    images = images,
-    command = menuSection(artPaths.command),
-    moves = menuSection(artPaths.moves),
-    target = menuSection(artPaths.target),
-    twoOption = menuSection(artPaths.twoOption),
-    lower = {
-      image = artPaths.lower,
-      palette = stagedPalette(),
-      variants = { general = { base = stagedPalette(), touch = stagedPalette() } },
-    },
-    playerHud = spriteSection(artPaths.playerHud),
-    enemyHud = spriteSection(artPaths.enemyHud),
-    doublesHud = {
-      playerLeft = spriteSection(artPaths.playerLeft),
-      playerRight = spriteSection(artPaths.playerRight),
-      enemyLeft = spriteSection(artPaths.enemyLeft),
-      enemyRight = spriteSection(artPaths.enemyRight),
-    },
-    arrow = spriteSection(artPaths.arrow),
-    partyGauges = { spriteSection(artPaths.gauge0), spriteSection(artPaths.gauge1) },
-    terrain = {
-      type0 = { cells = { { objs = { stagedObj() } } }, animation = stagedAnimation() },
-      type1 = { cells = { { objs = { stagedObj() } } }, animation = stagedAnimation() },
-    },
-    textRoles = {
-      narration = { font = fontPaths.narration },
-      menu = { font = fontPaths.menu },
-      hud = { font = fontPaths.hud },
-    },
-    audioRoles = {
-      wild = "wild-symbol",
-      trainer = "trainer-symbol",
-      rival = "rival-symbol",
-      select = "select-symbol",
-      narrationBank = 0,
-      cries = "cries-symbol",
-    },
-  }
   local cache = CacheFs.forVersion("battle-staging-convergence-probe")
   cache:writeLua(BattlePresentationCache.manifestPath(), battleManifest)
   cache:writeLua(BattlePresentationCache.scenePath(sceneKey), {
-    schema = "g4-battle-scene-v1",
+    schema = "g4-battle-scene-v2",
     key = sceneKey,
     background = "general",
     terrain = "grass",
     time = "day",
-    canvasWidth = 256,
-    canvasHeight = 192,
+    canvasWidth = 512,
+    canvasHeight = 256,
     viewport = { x = 0, y = 0, width = 256, height = 192 },
+    layers = {
+      {
+        key = "background",
+        backing = { width = 512, height = 256, mapWidth = 64, mapHeight = 32 },
+        viewport = { x = 0, y = 0, width = 256, height = 192 },
+        scroll = { x = 0, y = 0 },
+        characters = {
+          key = "battle-scene/general-grass-day/background/characters",
+          path = BattlePresentationCache.sceneCharactersPath(sceneKey),
+          format = "indexed8",
+        },
+        map = {
+          key = "battle-scene/general-grass-day/background/map",
+          path = BattlePresentationCache.sceneMapPath(sceneKey),
+          format = "tilemap",
+        },
+        palette = {
+          key = "battle-scene/general-grass-day/background/palette",
+          path = BattlePresentationCache.scenePalettePath(sceneKey),
+          format = "rgb888",
+        },
+      },
+    },
     imagePath = sceneImagePath,
   })
-  cache:write(sceneImagePath, PngWriter.encode(256, 192, string.rep(string.char(12, 34, 56, 255), 256 * 192)))
+  cache:write(BattlePresentationCache.sceneCharactersPath(sceneKey), string.rep("\0", 65536))
+  local sceneEntries = {}
+  for index = 1, 2048 do
+    sceneEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
+  end
+  cache:writeLua(
+    BattlePresentationCache.sceneMapPath(sceneKey),
+    { width = 64, height = 32, entries = sceneEntries }
+  )
+  local sceneColors = {}
+  for index = 1, 256 do
+    sceneColors[index] = { r = 0, g = 0, b = 0 }
+  end
+  cache:writeLua(BattlePresentationCache.scenePalettePath(sceneKey), { colors = sceneColors })
+  cache:write(sceneImagePath, PngWriter.encode(512, 256, string.rep(string.char(12, 34, 56, 255), 512 * 256)))
   local seed = 7
   for _, path in pairs(artPaths) do
     seed = seed + 11
@@ -1313,7 +1299,8 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
         audio = { roles = {}, banks = {}, cries = {} },
       }
     end
-    Assert.isTrue(services.prepare(demand()), "the staged synthetic demand enters")
+    local prepared, prepareErr = services.prepare(demand())
+    Assert.isTrue(prepared, "the staged synthetic demand enters: " .. tostring(prepareErr))
     local stagedKeys = { "scene:" .. sceneKey, "menu:command", "hud:enemy", "hud:player" }
     for _, key in ipairs(stagedKeys) do
       Assert.notNil(services.drawable(key), "the staged demand resolves " .. key)

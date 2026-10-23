@@ -350,7 +350,9 @@ function T.effect_execution_runs_through_the_animation_player()
     timeline:present(packet(1, { optionStrikeEvent(1, "TACKLE", 14, 43) })),
     "the effect-keyed strike is accepted"
   )
-  for _ = 1, 5 do
+  -- The attack announcement plays before the visual admits, so the
+  -- start waits behind the narrated use instead of firing at once.
+  for _ = 1, 300 do
     if #fx.starts > 0 then
       break
     end
@@ -389,7 +391,7 @@ function T.no_damage_strike_still_runs_its_selected_program()
     timeline:present(packet(1, { optionStrikeEvent(2, "TACKLE", 0, 57) })),
     "the no-damage strike is accepted"
   )
-  for _ = 1, 5 do
+  for _ = 1, 300 do
     if #fx.starts > 0 then
       break
     end
@@ -436,7 +438,7 @@ function T.transformed_appearance_applies_through_the_native_effect()
     })),
     "the transform packet is accepted"
   )
-  for _ = 1, 5 do
+  for _ = 1, 300 do
     if #fx.starts > 0 then
       break
     end

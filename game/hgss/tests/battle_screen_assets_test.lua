@@ -913,9 +913,10 @@ end
 ---@param failure string? terminal classification cause behind every request, nil answers ready
 ---@return table scripted pool behind the envelope under test
 local function scriptedPool(failure)
-  local pool = { requests = 0 }
-  function pool:request(_, _, _)
+  local pool = { requests = 0, paths = {} }
+  function pool:request(path, _, _)
     self.requests = self.requests + 1
+    self.paths[#self.paths + 1] = path
     return self.requests
   end
   function pool:poll(_)
@@ -1187,7 +1188,8 @@ function T.grown_selector_set_reopens_pending_without_losing_leased_handles()
   host.answers[3] = { ready = true }
   host.answers[7] = { ready = true }
   local graphics = FakeGraphics.new()
-  local envelope = demandEnvelope(cache, host, graphics)
+  local pool = scriptedPool()
+  local envelope = demandEnvelope(cache, host, graphics, pool)
   local services = envelope:_preparationServices()
   local prepareCalls, lastPages = 0, {}
   local basePrepare = services.prepare
@@ -1212,7 +1214,7 @@ function T.grown_selector_set_reopens_pending_without_losing_leased_handles()
   Assert.notNil(menuHandle, "the opening leases its menu handle")
   Assert.notNil(owned:drawable("shadow"), "the production asset route resolves the staged native shadow PNG")
   local shadowPathRead = false
-  for _, path in ipairs(cache.readPaths) do
+  for _, path in ipairs(pool.paths) do
     shadowPathRead = shadowPathRead or path == BattlePresentationManifestFixture.manifest().pictures.shadow.image
   end
   Assert.isTrue(
@@ -1483,6 +1485,12 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   stagedHost.answers[17] = { ready = true }
   local pool = scriptedPool("probe-decode-boom")
   local throwing = FakeGraphics.new({ failOnImageCall = 1 })
+  local driverAttempts = 0
+  local driverNewImage = throwing.newImage
+  throwing.newImage = function(...)
+    driverAttempts = driverAttempts + 1
+    return driverNewImage(...)
+  end
   local stagedEnvelope = demandEnvelope(staged, stagedHost, throwing, pool)
   local stagedServices = stagedEnvelope:_preparationServices()
   Assert.isTrue(
@@ -1504,7 +1512,7 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   local brokenAgain, brokenErrAgain = stagedServices.drawable("mon:" .. leadBack)
   Assert.isNil(brokenAgain, "the undecodable portrait stays failed without a substitute")
   Assert.equal(brokenErrAgain, brokenReason, "the undecodable failure replays identically")
-  Assert.equal(pool.requests, 1, "the undecodable upload is attempted once, never retried per tick")
+  Assert.equal(driverAttempts, 1, "the undecodable upload is attempted once, never retried per tick")
   Assert.equal(#throwing.images, 0, "the undecodable page leaves no staged handle behind")
   stagedEnvelope:dispose()
 end

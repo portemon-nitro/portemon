@@ -128,21 +128,19 @@ local function fixedRandom(draws)
 end
 
 function T.blend_transition_completes_and_releases_everything_once()
-  -- Blend completion comes only from compiled timing operands: a spawn
-  -- without any fails closed with its kind identity instead of retiring
-  -- silently, and a timed blend sweeps the background viewport. Neither
-  -- stages leases nor publishes drawable pictures.
+  -- Opcode-34 visual spawns carry selectors, never timing operands: the
+  -- parameter-less blend retires synchronously as a verified marker, and
+  -- a timed blend sweeps the background viewport. Neither stages leases
+  -- nor publishes drawable pictures.
   local scene = sceneWithPair()
   local services, journal = journalServices(scene)
-  local ok, failure = pcall(BattleEffectTasks.create, BattleEffectTasks.BLEND_TRANSITION_KIND, {}, {}, services)
-  Assert.isFalse(ok, "a blend without compiled timing never yields a runnable task")
-  Assert.isTrue(
-    string.find(tostring(failure), BattleEffectTasks.BLEND_TRANSITION_KIND, 1, true) ~= nil
-      and string.find(tostring(failure), "BATTLE_EFFECT_TASK_MALFORMED", 1, true) ~= nil,
-    "the timing-less blend fails closed naming itself: " .. tostring(failure)
-  )
-  Assert.equal(#scene:effectViews(), 0, "the rejected construction publishes nothing")
-  Assert.equal(#journal.released, #journal.acquired, "the rejected construction stages no leases")
+  local marker = assert(BattleEffectTasks.create(BattleEffectTasks.BLEND_TRANSITION_KIND, {}, {}, services))
+  Assert.equal(marker:status(), "pending", "markers open pending")
+  marker:stepSourceTick({ tick = 1 })
+  Assert.equal(marker:status(), "complete", "the timing-less marker retires on its first tick")
+  Assert.equal(#scene:effectViews(), 0, "the marker publishes no drawable picture")
+  marker:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "the marker stages no leases")
   local task = assert(BattleEffectTasks.create(BattleEffectTasks.BLEND_TRANSITION_KIND, {
     callback = "battle-background-position-transition",
     taskContext = "battle-display",

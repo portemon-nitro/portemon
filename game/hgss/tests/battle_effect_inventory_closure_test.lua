@@ -246,17 +246,11 @@ function T.reachable_task_kinds_construct_through_the_production_factory()
       end
     end
     if program.key == "closure-contact-shape" then
-      -- The contact shape schedules its blend without compiled timing
-      -- operands, so the run fails closed with instruction provenance
-      -- instead of retiring the spawn silently.
-      Assert.equal(player:status(handle), "failed", program.key .. " fails closed on its timing-less spawn")
-      local fault = player:failure(handle)
-      Assert.isTrue(type(fault) == "table", program.key .. " carries its failure detail")
-      assert(type(fault) == "table", "the contact failure stays available")
-      Assert.isTrue(
-        string.find(tostring(fault.reason), "BATTLE_EFFECT_TASK_MALFORMED", 1, true) ~= nil,
-        program.key .. " fails on the malformed timing-less spawn: " .. tostring(fault.reason)
-      )
+      -- Opcode-34 visual spawns carry selectors, never timing operands:
+      -- the contact blend retires synchronously as a verified marker, so
+      -- the run reaches its completion boundary instead of failing the
+      -- spawn closed.
+      Assert.equal(player:status(handle), "complete", program.key .. " retires its marker spawn")
     else
       Assert.equal(player:status(handle), "complete", program.key .. " runs to its completion boundary")
     end

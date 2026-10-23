@@ -117,7 +117,7 @@ function T.construction_failure_releases_every_acquisition_once_and_stays_silent
 
   local Player = playerModule()
   local scene = sceneWithPair()
-  local log = { played = {}, stopped = {}, created = {}, failed = {}, released = {} }
+  local log = { played = {}, stopped = {}, created = {}, failed = {}, released = {}, resolved = {} }
   local audio = voiceSink(log)
   local attempts = 0
   local tasks = {}
@@ -140,6 +140,7 @@ function T.construction_failure_releases_every_acquisition_once_and_stays_silent
   end
   local resources = {}
   function resources.resolve(key)
+    log.resolved[#log.resolved + 1] = key
     return { key = key, lease = key }
   end
   function resources.release(lease)
@@ -173,7 +174,11 @@ function T.construction_failure_releases_every_acquisition_once_and_stays_silent
   player:dispose()
   player:dispose()
   Assert.equal(#log.failed, 1, "repeated cancel and release cause no further construction")
-  Assert.equal(#log.released, 1, "repeated cancel and release cause no further releases")
+  Assert.equal(
+    #log.released,
+    #log.resolved,
+    "repeated cancel and release cause no further releases"
+  )
   local followup = sceneWithPair()
   Assert.notNil(followup, "the scene boundary stays usable after the failure")
 end
