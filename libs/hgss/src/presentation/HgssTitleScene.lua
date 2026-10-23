@@ -27,7 +27,6 @@ local Matrix4 = require("libs.math.src.Matrix4")
 ---@field cameraPos number[]? sourced camera position, snap-initialized to the end pose
 ---@field cameraPointIndex integer? active waypoint, 1-based
 ---@field cameraWait integer? remaining hold ticks before the active waypoint steps
----@field projectionAspect number? stage aspect the projection covers
 ---@field canvasWidth number? live 3D target width
 ---@field canvasHeight number? live 3D target height
 ---@field images love.Image[]
@@ -364,7 +363,6 @@ function HgssTitleScene.new(options)
     cameraPos = nil,
     cameraPointIndex = nil,
     cameraWait = nil,
-    projectionAspect = nil,
     canvasWidth = nil,
     canvasHeight = nil,
     images = {},
@@ -431,7 +429,9 @@ function HgssTitleScene:_camera()
     initCameraState(self)
   end
   local camera = self.bundle.timeline.camera
-  local aspect = self.projectionAspect or (4 / 3)
+  -- The sourced title lens is always the fixed source 4:3 projection:
+  -- host shape only repositions the bounded source target, never the lens.
+  local aspect = 4 / 3
   local halfAngle = (HALF_ANGLE_INDEX / 65536) * (2 * math.pi)
   local viewMatrix = Matrix4.lookAt(assert(self.cameraPos), camera.target, { 0, 1, 0 })
   local projectionMatrix = Matrix4.perspective(2 * halfAngle, aspect, GPU_NEAR, GPU_FAR)
@@ -512,9 +512,9 @@ local function drawOverlaySurface(self, clip, image, x, y, scale)
   end)
 end
 
--- Single-screen stages (native-like and wide) are full-cover 3D with no
--- edition logo: the sourced lower art sits as a smaller treatment in a top
--- strip inside the safe area, and the 3D stage fills the remainder.
+-- Single-screen stages (native-like and wide) keep the sourced 4:3 model
+-- target regardless of host shape: the host only cover-composes the fixed
+-- target into the 3D stage below the accent strip.
 local function stageComposition(safe, canvasHeight)
   local accentScale = 1
   while accentScale > 0.25 and (WIDTH * accentScale > safe.width or HEIGHT * accentScale > safe.height * 0.35) do
@@ -532,24 +532,25 @@ local function stageComposition(safe, canvasHeight)
     y = safe.y + (stripHeight - HEIGHT * accentScale) / 2,
     scale = accentScale,
   }
-  local canvasWidth = math.min(CANVAS_MAX_WIDTH, math.max(1, math.floor(canvasHeight * stage.width / stage.height)))
+  local boundedHeight = math.min(canvasHeight, CANVAS_MAX_HEIGHT)
+  local canvasWidth = math.min(CANVAS_MAX_WIDTH, math.max(1, math.floor(boundedHeight * 4 / 3)))
   return {
     stage = stage,
     accent = accent,
     canvasWidth = canvasWidth,
-    canvasHeight = math.min(canvasHeight, CANVAS_MAX_HEIGHT),
-    projectionAspect = stage.width / stage.height,
+    canvasHeight = boundedHeight,
   }
 end
 
 -- Tall host: upper 3D cover over the top half, the edition mark covering
 -- the lower half fractionally without edge bars, and the lower art at the
--- largest fitting integer scale top-aligned inside its half.
+-- largest fitting integer scale top-aligned inside its half. The model
+-- target stays the fixed sourced 4:3 shape; only the upper stage rect
+-- adapts to the host.
 local function tallComposition(safe)
   local upper = { x = safe.x, y = safe.y, width = safe.width, height = safe.height / 2 }
   local lower = { x = safe.x, y = safe.y + safe.height / 2, width = safe.width, height = safe.height / 2 }
-  local canvasWidth =
-    math.min(CANVAS_MAX_WIDTH, math.max(1, math.floor(CANVAS_HEIGHT_NATIVE * upper.width / upper.height)))
+  local canvasWidth = math.min(CANVAS_MAX_WIDTH, math.max(1, math.floor(CANVAS_HEIGHT_NATIVE * 4 / 3)))
   local integer = math.floor(math.min(lower.width / WIDTH, lower.height / HEIGHT))
   local artScale, artWidth, artHeight
   if integer >= 1 then
@@ -570,7 +571,6 @@ local function tallComposition(safe)
     },
     canvasWidth = canvasWidth,
     canvasHeight = CANVAS_HEIGHT_NATIVE,
-    projectionAspect = upper.width / upper.height,
   }
 end
 
@@ -773,7 +773,6 @@ function HgssTitleScene:resize(width, height)
       accent = principal.accent,
       lowerPanel = false,
     }
-    self.projectionAspect = principal.projectionAspect
     rebuildCanvas(self, principal.canvasWidth, principal.canvasHeight)
   elseif configuration == "tall" then
     local tall = tallComposition(main)
@@ -787,7 +786,6 @@ function HgssTitleScene:resize(width, height)
       art = tall.art,
       lowerPanel = true,
     }
-    self.projectionAspect = tall.projectionAspect
     rebuildCanvas(self, tall.canvasWidth, tall.canvasHeight)
   else
     local canvasHeight = configuration == "wide" and CANVAS_HEIGHT_WIDE or CANVAS_HEIGHT_NATIVE
@@ -800,7 +798,6 @@ function HgssTitleScene:resize(width, height)
       accent = staged.accent,
       lowerPanel = false,
     }
-    self.projectionAspect = staged.projectionAspect
     rebuildCanvas(self, staged.canvasWidth, staged.canvasHeight)
   end
   self.layout = {
