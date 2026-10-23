@@ -146,4 +146,185 @@ function T.tests.returned_menu_can_play_cues_without_a_title_record()
   Assert.equal(sink.releases, 1)
 end
 
+function T.tests.movie_first_borrowed_session_plays_one_edition_cry_without_invented_effects()
+  local GameAudio = require("game.hgss.src.audio.GameAudio")
+  local App = require("app.src.App")
+  local savedCompose = GameAudio.compose
+  local savedEpoch = App.epoch
+  local savedVersionId = App.selectedVersionId
+  local savedProvisioner = App.provisioner
+  local savedSession = App.startupAudioSession
+  local savedError = App.startupAudioError
+  local cases = {
+    { versionId = "heartgold", species = 250 },
+    { versionId = "soulsilver", species = 249 },
+  }
+  local ok, failure = xpcall(function()
+    for _, case in ipairs(cases) do
+      local events = {}
+      local sound = {}
+      function sound:playMusic(sequence)
+        events[#events + 1] = { "music", sequence }
+      end
+      function sound:playCry(species, pattern)
+        events[#events + 1] = { "cry", species, pattern }
+      end
+      function sound:fadeMusicOut(spec)
+        events[#events + 1] = { "fade", spec.target, spec.durationTicks }
+      end
+      function sound:stopMusic()
+        events[#events + 1] = { "stop" }
+      end
+      function sound:play(sequence)
+        events[#events + 1] = { "effect", sequence }
+      end
+      function sound:updateSoundFrame()
+        events[#events + 1] = { "tick" }
+      end
+      GameAudio.compose = function(_)
+        return { sound = sound, sink = nil }
+      end
+      App.epoch = 41
+      App.selectedVersionId = case.versionId
+      App.provisioner = {
+        gameHost = function()
+          return {
+            requestMilestone = function()
+              return true, nil
+            end,
+          }
+        end,
+      }
+      App.startupAudioSession = nil
+      App.startupAudioError = nil
+      local session = App._ensureStartupAudio(case.versionId, App.epoch, nil)
+      Assert.notNil(session, "movie-first audio starts without its title record")
+      session:beginOpening()
+      local same = App._ensureStartupAudio(case.versionId, App.epoch, { crySpeciesId = case.species })
+      Assert.equal(same, session, "the title handoff reuses its movie-first session")
+      session:beginTitle()
+      local cried, cryFailure = pcall(function()
+        session:notifySkip()
+      end)
+      Assert.isTrue(cried, "the accepted title tap still delivers its bound legendary cry")
+      Assert.isNil(cryFailure, "the accepted tap raises no audio failure")
+      session:beginFade()
+      session:playMenuCue("select")
+      Assert.deepEqual(events, {
+        { "music", "SEQ_GS_TITLE" },
+        { "music", "SEQ_GS_POKEMON_THEME" },
+        { "cry", case.species, 0 },
+        { "fade", 0, 60 },
+        { "effect", "SEQ_SE_DP_SELECT" },
+      }, "acceptance plays only its sourced cry and fade while menu navigation keeps the select cue")
+      session:dispose()
+      App.startupAudioSession = nil
+      App.startupAudioError = nil
+    end
+  end, debug.traceback)
+  GameAudio.compose = savedCompose
+  App.epoch = savedEpoch
+  App.selectedVersionId = savedVersionId
+  App.provisioner = savedProvisioner
+  App.startupAudioSession = savedSession
+  App.startupAudioError = savedError
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.tests.same_species_binding_is_a_noop_while_drift_is_rejected()
+  local audio, events, sink = composition()
+  local session = StartupAudioSession.new({
+    versionId = "heartgold",
+    audioComposition = audio,
+  })
+  session:bindTitleRecord({ crySpeciesId = 250 })
+  session:bindTitleRecord({ crySpeciesId = 250 })
+  local ok, failure = pcall(session.bindTitleRecord, session, { crySpeciesId = 249 })
+  Assert.isFalse(ok, "a different cry for the same selection is rejected")
+  Assert.notNil(failure, "the drift rejection carries a diagnostic")
+  session:beginTitle()
+  session:notifySkip()
+  Assert.deepEqual(events, {
+    { "music", "SEQ_GS_POKEMON_THEME" },
+    { "cry", 250, 0 },
+  }, "the original cry survives the rejected drift")
+  session:dispose()
+  Assert.equal(sink.releases, 1)
+end
+
+function T.tests.repeated_entries_restart_each_track_while_keeping_the_cry()
+  local audio, events, sink = composition()
+  local session = StartupAudioSession.new({
+    versionId = "soulsilver",
+    audioComposition = audio,
+  })
+  session:beginOpening()
+  session:beginOpening()
+  session:bindTitleRecord({ crySpeciesId = 249 })
+  session:beginTitle()
+  session:beginTitle()
+  session:notifySkip()
+  session:notifySkip()
+  Assert.deepEqual(events, {
+    { "music", "SEQ_GS_TITLE" },
+    { "music", "SEQ_GS_POKEMON_THEME" },
+    { "cry", 249, 0 },
+  }, "reentrant updates never duplicate a track or the cry")
+  session:beginMovieCycle()
+  session:beginOpening()
+  session:beginTitle()
+  Assert.deepEqual(events, {
+    { "music", "SEQ_GS_TITLE" },
+    { "music", "SEQ_GS_POKEMON_THEME" },
+    { "cry", 249, 0 },
+    { "music", "SEQ_GS_TITLE" },
+    { "music", "SEQ_GS_POKEMON_THEME" },
+  }, "a fresh entry restarts both tracks in order without clearing the cry")
+  session:dispose()
+  Assert.equal(sink.releases, 1)
+end
+
+function T.tests.title_only_session_never_replays_a_movie_track()
+  local audio, events, sink = composition()
+  local session = StartupAudioSession.new({
+    versionId = "heartgold",
+    titleRecord = { crySpeciesId = 250 },
+    audioComposition = audio,
+  })
+  session:beginTitle()
+  session:beginOpening()
+  session:notifySkip()
+  session:beginFade()
+  Assert.deepEqual(events, {
+    { "music", "SEQ_GS_POKEMON_THEME" },
+    { "cry", 250, 0 },
+    { "fade", 0, 60 },
+  }, "a session born at the title never plays a belated movie track")
+  session:dispose()
+  Assert.equal(sink.releases, 1)
+end
+
+function T.tests.disposal_during_fading_releases_once_and_stays_silent()
+  local audio, events, sink = composition()
+  local session = StartupAudioSession.new({
+    versionId = "heartgold",
+    titleRecord = { crySpeciesId = 250 },
+    audioComposition = audio,
+  })
+  session:beginTitle()
+  session:notifySkip()
+  session:beginFade()
+  session:dispose()
+  local fades = #events
+  session:update(1)
+  session:beginTitle()
+  session:notifySkip()
+  session:beginFade()
+  session:dispose()
+  Assert.equal(#events, fades, "updates and cues after disposal stay silent")
+  Assert.equal(sink.releases, 1, "the sink is released exactly once")
+end
+
 return { tests = T.tests }

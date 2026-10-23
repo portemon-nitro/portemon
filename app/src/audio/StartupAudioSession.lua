@@ -77,6 +77,37 @@ function StartupAudioSession.new(options)
   }, StartupAudioSession)
 end
 
+-- Binds the selected edition cry once. Repeating the same species is a
+-- no-op; a different species for the same selection is a programming error.
+function StartupAudioSession:bindTitleRecord(record)
+  assert(
+    type(record) == "table" and type(record.crySpeciesId) == "number",
+    "startup title audio needs its normalized cry species"
+  )
+  if self.titleRecord ~= nil then
+    assert(
+      self.titleRecord.crySpeciesId == record.crySpeciesId,
+      "the bound title cry cannot drift within its selected edition"
+    )
+    return
+  end
+  self.titleRecord = { crySpeciesId = record.crySpeciesId }
+end
+
+-- Restarts the per-entry music/skip/fade latches for another movie/title
+-- pass without clearing the bound cry. Cancels a pending fade so its
+-- delayed stop cannot fire after the next entry starts.
+function StartupAudioSession:beginMovieCycle()
+  if self.disposed then
+    return
+  end
+  self.openingStarted = false
+  self.titleStarted = false
+  self.skipNotified = false
+  self.fadeStarted = false
+  self.fadeTicks = nil
+end
+
 -- Starts the opening movie track exactly once. A session created after the
 -- movie already ended never replays it; the title entry replaces it below.
 function StartupAudioSession:beginOpening()
@@ -87,16 +118,28 @@ function StartupAudioSession:beginOpening()
   self.sound:playMusic(OPENING_THEME)
 end
 
-function StartupAudioSession:beginTitle()
-  if self.disposed or self.titleStarted then
+function StartupAudioSession:beginTitle(record)
+  if self.disposed then
+    return
+  end
+  if record ~= nil then
+    self:bindTitleRecord(record)
+  end
+  if self.titleStarted then
     return
   end
   self.titleStarted = true
   self.sound:playMusic(TITLE_THEME)
 end
 
-function StartupAudioSession:notifySkip()
-  if self.disposed or self.skipNotified then
+function StartupAudioSession:notifySkip(record)
+  if self.disposed then
+    return
+  end
+  if record ~= nil then
+    self:bindTitleRecord(record)
+  end
+  if self.skipNotified then
     return
   end
   self.skipNotified = true
