@@ -14,7 +14,7 @@ local ArtifactState = require("romdump.src.build.ArtifactState")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v1"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v2"
 local SOURCE_TICK_RATE = 30
 local JOURNEY_GENERATION = "startup-journey"
 
@@ -31,7 +31,7 @@ local CLOSED_OPS = {
   setCamera = true,
   setLighting = true,
   startEmitters = true,
-  setScreenRoles = true,
+  setScreenMapping = true,
   setFade = true,
   waitTicks = true,
   waitEffects = true,
@@ -51,11 +51,7 @@ local function checkScene(bundle, versionId, sceneNumber)
   Assert.equal(manifest.schema, OPENING_SCHEMA, "scene " .. sceneNumber .. " carries the opening scene schema")
   Assert.equal(manifest.versionId, versionId, "scene " .. sceneNumber .. " carries its edition")
   Assert.equal(manifest.sceneNumber, sceneNumber, "scene " .. sceneNumber .. " carries its scene key")
-  Assert.equal(
-    manifest.sourceTickRate,
-    SOURCE_TICK_RATE,
-    "scene " .. sceneNumber .. " runs at the source frame rate"
-  )
+  Assert.equal(manifest.sourceTickRate, SOURCE_TICK_RATE, "scene " .. sceneNumber .. " runs at the source frame rate")
   local timeline = assert(manifest.timeline, "scene " .. sceneNumber .. " carries its normalized timeline")
   local events = assert(timeline.events, "scene " .. sceneNumber .. " carries its normalized event stream")
   Assert.isTrue(#events > 0, "scene " .. sceneNumber .. " carries a nonempty event stream")
@@ -65,15 +61,14 @@ local function checkScene(bundle, versionId, sceneNumber)
       "scene " .. sceneNumber .. " uses only the closed movie event grammar"
     )
     Assert.isTrue(
-      type(event.atTick) == "number" and event.atTick % 1 == 0 and event.atTick >= 0,
-      "scene " .. sceneNumber .. " keys every event by a source tick"
+      type(event.atStepTick) == "number" and event.atStepTick % 1 == 0 and event.atStepTick >= 0,
+      "scene " .. sceneNumber .. " fires every event on its source step clock"
     )
+    Assert.isTrue(event.atTick == nil, "scene " .. sceneNumber .. " carries no parallel global clock")
   end
   Assert.isTrue(
-    type(manifest.layers) == "table"
-      and type(manifest.layers.upper) == "table"
-      and type(manifest.layers.lower) == "table",
-    "scene " .. sceneNumber .. " keeps its upper and lower screen roles"
+    type(manifest.layers) == "table" and type(manifest.layers.main) == "table" and type(manifest.layers.sub) == "table",
+    "scene " .. sceneNumber .. " keys its layers by source engine"
   )
   return manifest
 end
@@ -145,13 +140,13 @@ local function journey(versionId)
     for sceneNumber = 1, 5 do
       for _, event in ipairs(scenes[sceneNumber].timeline.events) do
         if event.op == "enableSkip" then
-          skipTicks[#skipTicks + 1] = event.atTick
+          skipTicks[#skipTicks + 1] = event.atStepTick
         end
       end
     end
     Assert.isTrue(#skipTicks > 0, "the journey carries the source skip gate")
-    for _, atTick in ipairs(skipTicks) do
-      Assert.isTrue(atTick > 0, "the source skip gate never opens on the first frame")
+    for _, atStepTick in ipairs(skipTicks) do
+      Assert.isTrue(atStepTick > 0, "the source skip gate never opens on the first step tick")
     end
 
     local compiler = require("romdump.src.digest.startup.TitleScreenCompiler")
@@ -159,11 +154,7 @@ local function journey(versionId)
     Assert.notNil(titleBundle, "the title compiles from the exact ROM: " .. tostring(titleErr))
     local titleManifest = assert(titleBundle.manifest, "the title publishes its manifest")
     Assert.equal(titleManifest.versionId, versionId, "the title carries its edition")
-    Assert.equal(
-      titleManifest.sequence,
-      "SEQ_GS_POKEMON_THEME",
-      "the title carries its original title track symbol"
-    )
+    Assert.equal(titleManifest.sequence, "SEQ_GS_POKEMON_THEME", "the title carries its original title track symbol")
     Assert.equal(
       titleManifest.menuSelectSequence,
       "SEQ_SE_DP_SELECT",

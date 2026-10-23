@@ -27,7 +27,7 @@ function OpeningMovieCacheWriter.stageScene(artifact, bundle, generationId, scen
   assert(type(generationId) == "string" and generationId ~= "", "opening scene generation identity is required")
   assert(bundle.manifest.sceneNumber == sceneNumber, "opening scene bundle names another scene")
   assert(
-    bundle.manifest.schema == "g4-startup-opening-scene-v1",
+    bundle.manifest.schema == "g4-startup-opening-scene-v2",
     "opening scene bundle carries the closed scene schema"
   )
   local sceneRoot = "assets/generated/startup/opening/" .. tostring(sceneNumber)
