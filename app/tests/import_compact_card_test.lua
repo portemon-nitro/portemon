@@ -318,6 +318,441 @@ function T.receipt_names_basenames_without_leaking_paths()
   Assert.isNil(App._receiptName("drop", nil), "an unnamed drop acknowledges nothing")
 end
 
+-- The copy block (title, instructions and transient status rows) is measured
+-- through the same draw calls production emits: every text row's y plus its
+-- wrapped height from the live font, the drawn card rectangle, and the
+-- reserved progress band above the card's bottom edge. A rigid vertical
+-- shift keeps the block's own height fixed, so a centered block leaves the
+-- same space above it as below it.
+
+---@class TextRow
+---@field value string
+---@field y number
+---@field limit number?
+
+---@param width number
+---@param height number
+---@param draw fun()
+---@return table[] fill and line rectangles drawn
+---@return TextRow[] text rows in draw order with their y positions
+local function captureTextLayout(width, height, draw)
+  local lg = love.graphics
+  local saved = {
+    getDimensions = lg.getDimensions,
+    setColor = lg.setColor,
+    rectangle = lg.rectangle,
+    print = lg.print,
+    printf = lg.printf,
+  }
+  local rects = {}
+  local rows = {}
+  lg.getDimensions = function()
+    return width, height
+  end
+  lg.setColor = function() end
+  lg.rectangle = function(mode, x, y, rectWidth, rectHeight)
+    rects[#rects + 1] = { mode = mode, x = x, y = y, width = rectWidth, height = rectHeight }
+  end
+  lg.print = function(value, x, y)
+    rows[#rows + 1] = { value = tostring(value), y = y }
+  end
+  lg.printf = function(value, x, y, limit)
+    rows[#rows + 1] = { value = tostring(value), y = y, limit = limit }
+  end
+  local ok, err = xpcall(draw, debug.traceback)
+  lg.getDimensions = saved.getDimensions
+  lg.setColor = saved.setColor
+  lg.rectangle = saved.rectangle
+  lg.print = saved.print
+  lg.printf = saved.printf
+  if not ok then
+    error(err, 0)
+  end
+  return rects, rows
+end
+
+---@return number live font line height, or the card row step when no font answers
+local function liveLineHeight()
+  local lg = love.graphics
+  if lg ~= nil and lg.getFont ~= nil then
+    local okFont, font = pcall(lg.getFont)
+    if okFont and font ~= nil and font.getHeight ~= nil then
+      local okHeight, height = pcall(font.getHeight, font)
+      if okHeight and type(height) == "number" then
+        return height
+      end
+    end
+  end
+  return 20
+end
+
+---@param value string
+---@param limit number?
+---@return number wrapped line count for this row at its drawn width
+local function wrappedLines(value, limit)
+  if limit == nil then
+    return 1
+  end
+  local lg = love.graphics
+  if lg == nil or lg.getFont == nil then
+    return 1
+  end
+  local okFont, font = pcall(lg.getFont)
+  if not okFont or font == nil or font.getWrap == nil then
+    return 1
+  end
+  local okWrap, _, wrapped = pcall(font.getWrap, font, value, limit)
+  if not okWrap or type(wrapped) ~= "table" then
+    return 1
+  end
+  return math.max(1, #wrapped)
+end
+
+---@param rows TextRow[]
+---@return number firstY top of the first text row
+---@return number lastBottom bottom of the lowest wrapped text row
+local function textBlock(rows)
+  local lineHeight = liveLineHeight()
+  local firstY = nil
+  local lastBottom = nil
+  for _, row in ipairs(rows) do
+    if firstY == nil or row.y < firstY then
+      firstY = row.y
+    end
+    local bottom = row.y + wrappedLines(row.value, row.limit) * lineHeight
+    if lastBottom == nil or bottom > lastBottom then
+      lastBottom = bottom
+    end
+  end
+  assert(firstY ~= nil and lastBottom ~= nil, "the card draws at least one text row")
+  return firstY, lastBottom
+end
+
+---@param rects table[]
+---@param card table drawn card fill
+---@return table? the widest 8px-tall fill inside the card: the progress track bed
+local function trackBackground(rects, card)
+  local best = nil
+  for _, rect in ipairs(rects) do
+    if rect.mode == "fill" and rect.height == 8 and rect.width > 8 then
+      if rect.x >= card.x and rect.x + rect.width <= card.x + card.width then
+        if rect.y >= card.y and rect.y + rect.height <= card.y + card.height then
+          if best == nil or rect.y > best.y or (rect.y == best.y and rect.width > best.width) then
+            best = rect
+          end
+        end
+      end
+    end
+  end
+  return best
+end
+
+---@param width number
+---@param height number
+---@param body fun()
+local function withStubbedDimensions(width, height, body)
+  local lg = love.graphics
+  local original = lg.getDimensions
+  lg.getDimensions = function()
+    return width, height
+  end
+  local ok, err = xpcall(body, debug.traceback)
+  lg.getDimensions = original
+  if not ok then
+    error(err, 0)
+  end
+end
+
+---@param where string matrix position for diagnostics
+---@param card table drawn card fill
+---@param firstY number
+---@param lastBottom number
+---@param reservedTop number top of the reserved progress band
+local function assertBalancedCopy(where, card, firstY, lastBottom, reservedTop)
+  local contentTop = card.y + 16
+  local topPad = firstY - contentTop
+  local bottomPad = reservedTop - lastBottom
+  Assert.isTrue(
+    lastBottom <= reservedTop + 1,
+    where .. ": copy overlaps the reserved progress band"
+  )
+  Assert.isTrue(
+    topPad >= 8,
+    where .. ": copy still starts at the top inset instead of moving toward the center, top pad " .. tostring(topPad)
+  )
+  Assert.isTrue(
+    math.abs(topPad - bottomPad) <= 12,
+    where .. ": copy leaves unbalanced space, top pad " .. tostring(topPad) .. " bottom pad " .. tostring(bottomPad)
+  )
+end
+
+local CENTER_SIZES = { { 800, 600 }, { 960, 540 }, { 360, 640 } }
+
+---@param picker boolean
+---@return table? construction options
+local function pickerOptions(picker)
+  if picker then
+    return { pickerAvailable = true, onPick = function() end }
+  end
+  return nil
+end
+
+function T.copy_block_is_vertically_centered_above_the_progress_track()
+  local cases = {
+    { name = "idle", snapshot = { state = "idle" }, bar = false },
+    { name = "received", snapshot = { state = "idle" }, received = "soulsilver.nds", bar = false },
+    { name = "reading", snapshot = { state = "reading", progress = 0.3 }, bar = true },
+    { name = "verifying", snapshot = { state = "verifying", progress = 0.5 }, bar = true },
+    {
+      name = "artwork",
+      snapshot = { state = "complete", progress = 1 },
+      override = { stage = "artwork" },
+      bar = true,
+    },
+  }
+  for _, dimensions in ipairs(CENTER_SIZES) do
+    local width, height = dimensions[1], dimensions[2]
+    for _, picker in ipairs({ false, true }) do
+      for _, case in ipairs(cases) do
+        local where = width .. "x" .. height .. " picker=" .. tostring(picker) .. " " .. case.name
+        local importer = scriptImporter()
+        importer.snapshot = case.snapshot
+        local state = ImportState.new(importer, nil, pickerOptions(picker))
+        if case.received ~= nil then
+          state:markReceived(case.received)
+        end
+        local rects, rows = captureTextLayout(width, height, function()
+          state:draw(case.override)
+        end)
+        local card = cardFill(rects, width, height)
+        Assert.notNil(card, where .. ": the import view draws one card above its background")
+        local copy = ""
+        for _, row in ipairs(rows) do
+          copy = copy .. "\n" .. row.value
+        end
+        if case.name == "received" then
+          Assert.isTrue(copy:find("File received", 1, true) ~= nil, where .. ": the receipt stays visible")
+          Assert.isTrue(copy:find("soulsilver.nds", 1, true) ~= nil, where .. ": the receipt names the file")
+        elseif case.name == "reading" then
+          Assert.isTrue(copy:find("Checking ROM", 1, true) ~= nil, where .. ": the reading stage stays visible")
+        elseif case.name == "verifying" then
+          Assert.isTrue(copy:find("Verifying ROM", 1, true) ~= nil, where .. ": the verifying stage stays visible")
+          Assert.isTrue(
+            copy:find("Verifying cartridge identity", 1, true) ~= nil,
+            where .. ": the verification detail stays visible"
+          )
+        elseif case.name == "artwork" then
+          Assert.isTrue(
+            copy:find("Preparing walking sprites", 1, true) ~= nil,
+            where .. ": the artwork wait stays visible"
+          )
+        else
+          Assert.isTrue(
+            copy:find("File received", 1, true) == nil
+              and copy:find("Verifying ROM", 1, true) == nil
+              and copy:find("Checking ROM", 1, true) == nil,
+            where .. ": an idle card shows no transient status, got:" .. copy
+          )
+        end
+        local reservedTop
+        if case.bar then
+          local track = trackBackground(rects, card)
+          Assert.notNil(track, where .. ": the progress track stays drawn at the card bottom")
+          Assert.near(track.y, card.y + card.height - 30, 1, where .. ": the progress track keeps its bottom edge")
+          reservedTop = track.y
+        else
+          Assert.isTrue(
+            trackBackground(rects, card) == nil,
+            where .. ": an idle card paints no progress bar in its reserved band"
+          )
+          reservedTop = card.y + card.height - 30
+        end
+        local firstY, lastBottom = textBlock(rows)
+        assertBalancedCopy(where, card, firstY, lastBottom, reservedTop)
+      end
+    end
+  end
+  withStubbedDimensions(800, 600, function()
+    local pickerCalls = 0
+    local state = ImportState.new(scriptImporter(), nil, {
+      pickerAvailable = true,
+      onPick = function()
+        pickerCalls = pickerCalls + 1
+      end,
+    })
+    state:mousepressed(400, 300, 1)
+    Assert.equal(pickerCalls, 1, "the card center still activates the picker")
+    state:mousepressed(16, 16, 1)
+    Assert.equal(pickerCalls, 1, "a press outside the card still opens nothing")
+  end)
+end
+
+function T.failure_copy_stays_legible_inside_the_card()
+  local importer = scriptImporter()
+  importer.snapshot =
+    { state = "error", errorCode = "IMPORT_NOT_NDS", error = "not a Nintendo DS ROM" }
+  do
+    local state = ImportState.new(importer, nil)
+    local rects, rows = captureTextLayout(800, 600, function()
+      state:draw()
+    end)
+    local card = assert(cardFill(rects, 800, 600), "the failing card still draws above its background")
+    local copy = ""
+    for _, row in ipairs(rows) do
+      copy = copy .. "\n" .. row.value
+    end
+    Assert.isTrue(copy:find("IMPORT_NOT_NDS", 1, true) ~= nil, "the verifier code stays visible")
+    Assert.isTrue(copy:find("not a Nintendo DS ROM", 1, true) ~= nil, "the verifier detail stays visible")
+    local firstY, lastBottom = textBlock(rows)
+    Assert.isTrue(
+      firstY - (card.y + 16) >= 8,
+      "failure copy still starts at the top inset instead of moving toward the center"
+    )
+    Assert.isTrue(lastBottom <= card.y + card.height - 8, "failure copy stays inside the card")
+  end
+  do
+    local narrow = scriptImporter()
+    narrow.snapshot =
+      { state = "error", errorCode = "IMPORT_NOT_NDS", error = "not a Nintendo DS ROM cartridge image" }
+    local state = ImportState.new(narrow, nil, pickerOptions(true))
+    local rects, rows = captureTextLayout(240, 480, function()
+      state:draw()
+    end)
+    local card = assert(cardFill(rects, 240, 480), "the narrow failing card still draws")
+    local copy = ""
+    for _, row in ipairs(rows) do
+      copy = copy .. "\n" .. row.value
+    end
+    Assert.isTrue(copy:find("IMPORT_NOT_NDS", 1, true) ~= nil, "the narrow failure keeps its code")
+    local firstY, lastBottom = textBlock(rows)
+    Assert.isTrue(firstY >= card.y + 16, "narrow failure copy never starts above the top inset")
+    Assert.isTrue(lastBottom <= card.y + card.height - 4, "narrow failure copy stays inside the card")
+  end
+  do
+    local failing = scriptImporter()
+    failing.snapshot = { state = "complete", progress = 1 }
+    local state = ImportState.new(failing, nil)
+    local rects, rows = captureTextLayout(800, 600, function()
+      state:draw({ stage = "artwork", failure = "texture adoption failed" })
+    end)
+    local card = assert(cardFill(rects, 800, 600), "the artwork failure still draws its card")
+    local copy = ""
+    for _, row in ipairs(rows) do
+      copy = copy .. "\n" .. row.value
+    end
+    Assert.isTrue(
+      copy:find("Walking sprites hit an error", 1, true) ~= nil,
+      "the artwork failure names its pending step"
+    )
+    Assert.isTrue(copy:find("Press R", 1, true) ~= nil, "the artwork failure keeps its retry path")
+    local firstY, lastBottom = textBlock(rows)
+    Assert.isTrue(firstY >= card.y + 16, "artwork failure copy never starts above the top inset")
+    Assert.isTrue(lastBottom <= card.y + card.height - 4, "artwork failure copy stays inside the card")
+  end
+  do
+    local busy = scriptImporter()
+    busy.busy = true
+    busy.snapshot = { state = "verifying", progress = 0.6 }
+    local state = ImportState.new(busy, nil)
+    state:filedropped({
+      getFilename = function()
+        return "second.nds"
+      end,
+    })
+    local rects, rows = captureTextLayout(800, 600, function()
+      state:draw()
+    end)
+    local card = assert(cardFill(rects, 800, 600), "the busy card still draws")
+    local copy = ""
+    for _, row in ipairs(rows) do
+      copy = copy .. "\n" .. row.value
+    end
+    Assert.isTrue(copy:lower():find("reject", 1, true) ~= nil, "the busy rejection stays visible")
+    Assert.isTrue(copy:find("Verifying ROM", 1, true) ~= nil, "the running verification keeps its stage")
+    local track = trackBackground(rects, card)
+    Assert.notNil(track, "the running verification keeps its progress track")
+    local _, lastBottom = textBlock(rows)
+    Assert.isTrue(lastBottom <= track.y + 1, "busy copy never covers the progress track")
+  end
+  do
+    local narrow = ImportState.new(scriptImporter(), nil)
+    narrow:markReceived("evil\nname.nds")
+    local shown = assert(narrow:receivedName(), "a hostile name still latches visibly")
+    Assert.isTrue(shown:find("\n", 1, true) == nil, "control characters never reach the card")
+    local _, rows = captureTextLayout(240, 480, function()
+      narrow:draw()
+    end)
+    local copy = ""
+    for _, row in ipairs(rows) do
+      copy = copy .. "\n" .. row.value
+    end
+    Assert.isTrue(copy:find(shown, 1, true) ~= nil, "the narrow card draws the sanitized receipt")
+  end
+end
+
+function T.pointer_activation_matches_the_drawn_card()
+  for _, dimensions in ipairs({ { 800, 600 }, { 360, 640 }, { 240, 480 } }) do
+    local width, height = dimensions[1], dimensions[2]
+    local where = width .. "x" .. height
+    withStubbedDimensions(width, height, function()
+      local pickerCalls = 0
+      local state = ImportState.new(scriptImporter(), nil, {
+        pickerAvailable = true,
+        onPick = function()
+          pickerCalls = pickerCalls + 1
+        end,
+      })
+      local centerX, centerY = width / 2, height / 2
+      state:mousepressed(centerX, centerY, 1)
+      state:mousepressed(centerX - 60, centerY - 50, 1)
+      state:mousepressed(centerX + 60, centerY + 50, 1)
+      Assert.equal(pickerCalls, 3, where .. ": interior points of the single card each activate once")
+      state:mousepressed(8, 8, 1)
+      state:mousepressed(width - 8, height - 8, 1)
+      Assert.equal(pickerCalls, 3, where .. ": presses outside the card open nothing")
+      state:keypressed("return")
+      Assert.equal(pickerCalls, 4, where .. ": keyboard activation matches pointer activation")
+    end)
+  end
+  withStubbedDimensions(800, 600, function()
+    local pickerCalls = 0
+    local inert = ImportState.new(scriptImporter(), nil, {
+      pickerAvailable = false,
+      onPick = function()
+        pickerCalls = pickerCalls + 1
+      end,
+    })
+    inert:mousepressed(400, 300, 1)
+    Assert.equal(pickerCalls, 0, "without a usable bridge no gesture opens a picker")
+    local busyImporter = scriptImporter()
+    busyImporter.busy = true
+    local busyCalls = 0
+    local busy = ImportState.new(busyImporter, nil, {
+      pickerAvailable = true,
+      onPick = function()
+        busyCalls = busyCalls + 1
+      end,
+    })
+    busy:mousepressed(400, 300, 1)
+    Assert.equal(busyCalls, 0, "a busy importer opens no duplicate picker")
+  end)
+  withStubbedDimensions(800, 600, function()
+    local pickerCalls = 0
+    local state = ImportState.new(scriptImporter(), nil, {
+      pickerAvailable = true,
+      onPick = function()
+        pickerCalls = pickerCalls + 1
+      end,
+    })
+    state:mousepressed(400, 300, 1)
+    withStubbedDimensions(360, 640, function()
+      state:resize(360, 640)
+      state:mousepressed(180, 320, 1)
+    end)
+    Assert.equal(pickerCalls, 2, "the same card activates after a resize")
+  end)
+end
+
 function T.verified_source_waits_on_artwork_without_claiming_completion()
   local importer = scriptImporter()
   importer.snapshot = { state = "complete", progress = 1 }

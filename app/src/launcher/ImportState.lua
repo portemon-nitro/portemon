@@ -223,6 +223,47 @@ local function pulseNow()
   return 0
 end
 
+---@return love.Font? live font when one answers, else nil
+local function liveFont()
+  if love == nil or love.graphics == nil or type(love.graphics.getFont) ~= "function" then
+    return nil
+  end
+  local ok, font = pcall(love.graphics.getFont)
+  if ok and font ~= nil then
+    return font
+  end
+  return nil
+end
+
+---@param rows {text:string, y:number}[] rows with y relative to the block top
+---@param textWidth number wrap width used by the drawn printf calls
+---@return number measured block height from the block top to the lowest wrapped row bottom
+local function measuredBlockHeight(rows, textWidth)
+  local lineHeight = LINE_HEIGHT
+  local font = liveFont()
+  if font ~= nil and type(font.getHeight) == "function" then
+    local ok, height = pcall(font.getHeight, font)
+    if ok and type(height) == "number" and height > 0 then
+      lineHeight = height
+    end
+  end
+  local height = 0
+  for _, row in ipairs(rows) do
+    local lines = 1
+    if font ~= nil and type(font.getWrap) == "function" then
+      local ok, _, wrapped = pcall(font.getWrap, font, row.text, textWidth)
+      if ok and type(wrapped) == "table" then
+        lines = math.max(1, #wrapped)
+      end
+    end
+    local bottom = row.y + lines * lineHeight
+    if bottom > height then
+      height = bottom
+    end
+  end
+  return height
+end
+
 function ImportState:draw(statusOverride)
   local lg = love.graphics
   local width, height = lg.getDimensions()
@@ -236,45 +277,125 @@ function ImportState:draw(statusOverride)
   lg.rectangle("line", left, top, cardWidth, cardHeight, 12, 12)
 
   local textX, textWidth = left + 16, cardWidth - 32
-  local y = top + CARD_MARGIN
+  local status = self.importer:status()
+  local s = RomImporter.STATES
+  local busy = importerBusy(self.importer)
+
+  local titleText = "Import a Pokémon ROM"
+  local instructionTexts = {}
+  if self.pickerAvailable then
+    instructionTexts[1] = "Drop a supported .nds or .zip file anywhere on this card."
+    instructionTexts[2] = "Click the card or press Return to browse for a file."
+  else
+    instructionTexts[1] = "Drop a supported .nds or .zip file onto this window to import it."
+  end
+
+  local errorText = nil
+  if status.state == s.ERROR then
+    errorText = "Import failed [" .. tostring(status.errorCode or "ERROR") .. "]: " .. Errors.format(status.error)
+  end
+
+  local rejectionText = nil
+  local receiptText = nil
+  if errorText == nil then
+    if self._rejected ~= nil and busy then
+      rejectionText = "Drop rejected (" .. self._rejected .. ")."
+    elseif self._received ~= nil then
+      receiptText = "File received " .. self._received
+    end
+  end
+
+  local isArtworkStage = status.state == s.COMPLETE
+    and type(statusOverride) == "table"
+    and statusOverride.stage == "artwork"
+  local artworkFailure = isArtworkStage and statusOverride.failure ~= nil
+  local artworkDetail = nil
+  if artworkFailure then
+    local detail = tostring(rejectionReason(statusOverride.failure))
+    if #detail > 80 then
+      detail = detail:sub(1, 79) .. "…"
+    end
+    artworkDetail = detail
+  end
+
+  -- Measure the visible rows with the live font wrap metrics, then start
+  -- the group in the middle of the usable area above the reserved band.
+  local rows = {}
+  local measureY = 0
+  rows[#rows + 1] = { text = titleText, y = measureY }
+  measureY = measureY + 24
+  for _, instructionText in ipairs(instructionTexts) do
+    rows[#rows + 1] = { text = instructionText, y = measureY }
+    measureY = measureY + LINE_HEIGHT
+  end
+  measureY = measureY + 8
+  if errorText ~= nil then
+    rows[#rows + 1] = { text = errorText, y = measureY }
+  else
+    if rejectionText ~= nil then
+      rows[#rows + 1] = { text = rejectionText, y = measureY }
+      measureY = measureY + LINE_HEIGHT
+    elseif receiptText ~= nil then
+      rows[#rows + 1] = { text = receiptText, y = measureY }
+      measureY = measureY + LINE_HEIGHT
+    end
+    if status.state == s.READING then
+      rows[#rows + 1] = { text = "Checking ROM", y = measureY }
+    elseif status.state == s.VERIFYING or status.state == s.REGISTERING then
+      rows[#rows + 1] = { text = "Verifying ROM", y = measureY }
+      measureY = measureY + LINE_HEIGHT
+      rows[#rows + 1] = { text = "Verifying cartridge identity…", y = measureY }
+    elseif isArtworkStage then
+      if artworkFailure then
+        rows[#rows + 1] = { text = "Walking sprites hit an error.", y = measureY }
+        measureY = measureY + LINE_HEIGHT
+        rows[#rows + 1] = { text = artworkDetail, y = measureY }
+        measureY = measureY + LINE_HEIGHT
+        rows[#rows + 1] = { text = "Press R to retry, or Esc to reselect.", y = measureY }
+      else
+        rows[#rows + 1] = { text = "Preparing walking sprites", y = measureY }
+      end
+    elseif status.state == s.COMPLETE then
+      rows[#rows + 1] = { text = "ROM accepted.", y = measureY }
+    end
+  end
+
+  local contentTop = top + CARD_MARGIN
+  local usableBottom = top + cardHeight - 30
+  if errorText ~= nil or artworkFailure then
+    usableBottom = top + cardHeight - CARD_MARGIN
+  end
+  local blockHeight = measuredBlockHeight(rows, textWidth)
+  local shift = 0
+  if usableBottom - contentTop > blockHeight then
+    shift = (usableBottom - contentTop - blockHeight) / 2
+  end
+  local y = contentTop + shift
   lg.setColor(0.94, 0.94, 0.9, 1)
-  lg.printf("Import a Pokémon ROM", textX, y, textWidth, "center")
+  lg.printf(titleText, textX, y, textWidth, "center")
   y = y + 24
   lg.setColor(0.7, 0.78, 0.8, 1)
-  if self.pickerAvailable then
-    lg.printf("Drop a supported .nds or .zip file anywhere on this card.", textX, y, textWidth, "center")
-    y = y + LINE_HEIGHT
-    lg.printf("Click the card or press Return to browse for a file.", textX, y, textWidth, "center")
-    y = y + LINE_HEIGHT
-  else
-    lg.printf("Drop a supported .nds or .zip file onto this window to import it.", textX, y, textWidth, "center")
+  for _, instructionText in ipairs(instructionTexts) do
+    lg.printf(instructionText, textX, y, textWidth, "center")
     y = y + LINE_HEIGHT
   end
   y = y + 8
 
-  local status = self.importer:status()
-  local s = RomImporter.STATES
-  if status.state == s.ERROR then
+  if errorText ~= nil then
     lg.setColor(1, 0.58, 0.53, 1)
-    lg.printf(
-      "Import failed [" .. tostring(status.errorCode or "ERROR") .. "]: " .. Errors.format(status.error),
-      textX,
-      y,
-      textWidth,
-      "center"
-    )
+    lg.printf(errorText, textX, y, textWidth, "center")
     return
   end
 
   -- A busy-drop rejection stays visible only while the running import still
   -- owns the session; its progress bar below is untouched.
-  if self._rejected ~= nil and importerBusy(self.importer) then
+  if rejectionText ~= nil then
     lg.setColor(1, 0.58, 0.53, 1)
-    lg.printf("Drop rejected (" .. self._rejected .. ").", textX, y, textWidth, "center")
+    lg.printf(rejectionText, textX, y, textWidth, "center")
     y = y + LINE_HEIGHT
-  elseif self._received ~= nil then
+  elseif receiptText ~= nil then
     lg.setColor(0.94, 0.94, 0.9, 1)
-    lg.printf("File received " .. self._received, textX, y, textWidth, "center")
+    lg.printf(receiptText, textX, y, textWidth, "center")
     y = y + LINE_HEIGHT
   end
 
