@@ -483,6 +483,9 @@ function T.extra_host_draws_never_advance_source_time_and_repeated_ticks_stay_de
   local first = openMovie(scenes, cacheFs, firstGraphics)
   local secondGraphics = movieGraphics()
   local second = openMovie(scenes, cacheFs, secondGraphics)
+  -- Construction preflights every scene through the same frame path, so
+  -- only draws issued after the opener count toward the cadence proof.
+  local firstBaseline, secondBaseline = #firstGraphics.draws, #secondGraphics.draws
   for _ = 1, 200 do
     first:updateFixed()
     first:draw()
@@ -498,18 +501,23 @@ function T.extra_host_draws_never_advance_source_time_and_repeated_ticks_stay_de
   )
   Assert.equal(first:isFinished(), second:isFinished(), "draw cadence never changes completion")
   Assert.equal(
-    #firstGraphics.draws,
-    #secondGraphics.draws / 3,
+    #firstGraphics.draws - firstBaseline,
+    (#secondGraphics.draws - secondBaseline) / 3,
     "only fixed ticks drive frames; host draws only repeat the current frame"
   )
   local thirdGraphics = movieGraphics()
   local third = openMovie(scenes, cacheFs, thirdGraphics)
+  local thirdBaseline = #thirdGraphics.draws
   for _ = 1, 200 do
     third:updateFixed()
     third:draw()
   end
   Assert.equal(first:sceneNumber(), third:sceneNumber(), "identical fixed ticks reach identical scenes")
-  Assert.equal(#firstGraphics.draws, #thirdGraphics.draws, "identical fixed ticks issue identical frame counts")
+  Assert.equal(
+    #firstGraphics.draws - firstBaseline,
+    #thirdGraphics.draws - thirdBaseline,
+    "identical fixed ticks issue identical frame counts"
+  )
   first:dispose()
   second:dispose()
   third:dispose()
@@ -934,17 +942,29 @@ function T.simultaneous_layers_keep_their_own_scroll_in_source_order()
   )
   local graphics = movieGraphics({ imageSizes = { { 256, 192 }, { 128, 96 }, { 64, 48 }, { 32, 32 }, { 16, 16 } } })
   local movie = openMovie(scenes, cacheFs, graphics)
+  local frameDrawsStart = #graphics.draws + 1
   for _ = 1, 12 do
     movie:updateFixed()
   end
   movie:draw()
   local byWidth = {}
   local layerDraws = 0
-  for _, draw in ipairs(graphics.draws) do
-    local width = draw.image:getWidth()
-    if width == 256 or width == 128 or width == 64 or width == 32 then
-      layerDraws = layerDraws + 1
-      byWidth[width] = draw
+  -- The composed host frame carries the fixed role targets as canvas
+  -- blits alongside the source-space layer draws, and construction
+  -- preflights every scene through the same frame path: only staged
+  -- layer images drawn by this frame prove the per-engine compositor.
+  local stagedImages = {}
+  for _, image in ipairs(graphics.images) do
+    stagedImages[image] = true
+  end
+  for index = frameDrawsStart, #graphics.draws do
+    local draw = graphics.draws[index]
+    if stagedImages[draw.image] == true then
+      local width = draw.image:getWidth()
+      if width == 256 or width == 128 or width == 64 or width == 32 then
+        layerDraws = layerDraws + 1
+        byWidth[width] = draw
+      end
     end
   end
   Assert.equal(layerDraws, 4, "every simultaneously live layer is drawn, never just the first")
@@ -1572,27 +1592,6 @@ local function assertReleasedExactlyOnce(graphics)
   end
 end
 
----@param movie table player under test
----@param graphics table fake graphics namespace
----@param limit integer tick bound
----@return unknown first acquisition failure, or nil when the run completes
-local function driveCatching(movie, graphics, limit)
-  local failure = nil
-  local ticks = 0
-  while failure == nil and not movie:isFinished() and ticks < limit do
-    local ok, err = pcall(function()
-      movie:updateFixed()
-    end)
-    ticks = ticks + 1
-    if not ok then
-      failure = err
-      break
-    end
-    movie:draw()
-  end
-  return failure
-end
-
 function T.a_town_model_that_cannot_build_aborts_the_scene_instead_of_substituting_a_drifting_backdrop()
   local models = {}
   for town = 0, 2 do
@@ -1600,25 +1599,18 @@ function T.a_town_model_that_cannot_build_aborts_the_scene_instead_of_substituti
   end
   local scenes, cacheFs = packWithTownScene(models)
   local graphics = movieGraphics()
-  local movie = openMovie(scenes, cacheFs, graphics)
-  for _ = 1, 90 do
-    movie:updateFixed()
-    movie:draw()
+  -- The five-scene preflight acquires the town stage before the first
+  -- frame, so an unbuildable town fails construction instead of failing
+  -- mid-run: no partial movie ever becomes visible.
+  local movie = nil
+  local ok, failure = pcall(function()
+    movie = openMovie(scenes, cacheFs, graphics)
+  end)
+  if ok then
+    movie:dispose()
   end
-  Assert.equal(movie:sceneNumber(), 2, "playback reaches the scene before the town acquisition")
-  local heldLive = liveSet(graphics)
-  local failure = driveCatching(movie, graphics, 2000)
-  if failure == nil then
-    Assert.isTrue(movie:isFinished(), "without a failure the movie plays the fallback scene as success")
-  end
-  Assert.notNil(failure, "the town stage failure surfaces instead of playing a fallback scene")
+  Assert.isFalse(ok, "the town stage failure surfaces before the first frame instead of playing a fallback scene")
   assertTypedSceneFailure(failure)
-  Assert.equal(movie:sceneNumber(), 2, "the failed town acquisition never drops the current scene")
-  for handle in pairs(heldLive) do
-    Assert.isFalse(handle.released, "the failed town acquisition never tears down the current scene")
-  end
-  assertLiveSetEquals(graphics, heldLive, "the failed town acquisition stages nothing observable")
-  movie:dispose()
   assertReleasedExactlyOnce(graphics)
 end
 
@@ -1629,22 +1621,18 @@ function T.a_town_mesh_that_cannot_decode_aborts_the_scene_and_releases_its_stag
   end
   local scenes, cacheFs = packWithTownScene(models)
   local graphics = movieGraphics()
-  local movie = openMovie(scenes, cacheFs, graphics)
-  for _ = 1, 90 do
-    movie:updateFixed()
-    movie:draw()
+  -- The five-scene preflight decodes the town stage before the first
+  -- frame, so an undecodable town mesh fails construction with every
+  -- staged handle released exactly once.
+  local movie = nil
+  local ok, failure = pcall(function()
+    movie = openMovie(scenes, cacheFs, graphics)
+  end)
+  if ok then
+    movie:dispose()
   end
-  Assert.equal(movie:sceneNumber(), 2, "playback reaches the scene before the town acquisition")
-  local heldLive = liveSet(graphics)
-  local failure = driveCatching(movie, graphics, 2000)
-  if failure == nil then
-    Assert.isTrue(movie:isFinished(), "without a failure the movie plays the fallback scene as success")
-  end
-  Assert.notNil(failure, "the town mesh failure surfaces instead of playing a fallback scene")
+  Assert.isFalse(ok, "the town mesh failure surfaces before the first frame instead of playing a fallback scene")
   assertTypedSceneFailure(failure)
-  Assert.equal(movie:sceneNumber(), 2, "the failed mesh acquisition never drops the current scene")
-  assertLiveSetEquals(graphics, heldLive, "the failed mesh acquisition releases its staged slot")
-  movie:dispose()
   assertReleasedExactlyOnce(graphics)
 end
 
@@ -1701,26 +1689,19 @@ function T.a_town_texture_failure_during_the_town_stage_aborts_and_releases_exac
     end,
   }
   local graphics = movieGraphics()
-  local movie = openMovie(scenes, cacheFs, graphics)
-  for _ = 1, 90 do
-    movie:updateFixed()
-    movie:draw()
+  -- The five-scene preflight reads the town textures before the first
+  -- frame, so the injected texture failure aborts construction with every
+  -- staged handle released exactly once.
+  local movie = nil
+  local ok, failure = pcall(function()
+    movie = openMovie(scenes, cacheFs, graphics)
+  end)
+  if ok then
+    movie:dispose()
   end
-  Assert.equal(movie:sceneNumber(), 2, "playback reaches the scene before the town acquisition")
-  local heldLive = liveSet(graphics)
-  local failure = driveCatching(movie, graphics, 2000)
-  if failure == nil then
-    Assert.isTrue(movie:isFinished(), "without a failure the movie plays the fallback scene as success")
-  end
-  Assert.notNil(failure, "the town texture failure surfaces instead of playing a fallback scene")
+  Assert.isFalse(ok, "the town texture failure surfaces before the first frame instead of playing a fallback scene")
   Assert.isTrue(state.textureReads > 0, "the town texture is read eagerly during acquisition, never lazily")
   assertTypedSceneFailure(failure)
-  Assert.equal(movie:sceneNumber(), 2, "the failed texture acquisition never drops the current scene")
-  for handle in pairs(heldLive) do
-    Assert.isFalse(handle.released, "the failed texture acquisition never tears down the current scene")
-  end
-  assertLiveSetEquals(graphics, heldLive, "the failed texture acquisition releases its staged slot")
-  movie:dispose()
   assertReleasedExactlyOnce(graphics)
 end
 
@@ -1732,26 +1713,156 @@ function T.a_town_without_a_bindable_clip_aborts_the_scene_and_releases_its_stag
   end
   local scenes, cacheFs = packWithTownScene(models)
   local graphics = movieGraphics()
-  local movie = openMovie(scenes, cacheFs, graphics)
-  for _ = 1, 90 do
-    movie:updateFixed()
-    movie:draw()
+  -- The five-scene preflight binds the town clips before the first frame,
+  -- so a town with no bindable clip fails construction with every staged
+  -- handle released exactly once.
+  local movie = nil
+  local ok, failure = pcall(function()
+    movie = openMovie(scenes, cacheFs, graphics)
+  end)
+  if ok then
+    movie:dispose()
   end
-  Assert.equal(movie:sceneNumber(), 2, "playback reaches the scene before the town acquisition")
-  local heldLive = liveSet(graphics)
-  local failure = driveCatching(movie, graphics, 2000)
-  if failure == nil then
-    Assert.isTrue(movie:isFinished(), "without a failure the movie plays the clipless town as success")
-  end
-  Assert.notNil(failure, "the town clip failure surfaces instead of playing a mute town")
+  Assert.isFalse(ok, "the town clip failure surfaces before the first frame instead of playing a mute town")
   assertTypedSceneFailure(failure)
-  Assert.equal(movie:sceneNumber(), 2, "the failed clip acquisition never drops the current scene")
-  for handle in pairs(heldLive) do
-    Assert.isFalse(handle.released, "the failed clip acquisition never tears down the current scene")
-  end
-  assertLiveSetEquals(graphics, heldLive, "the failed clip acquisition releases its staged slot")
-  movie:dispose()
   assertReleasedExactlyOnce(graphics)
+end
+
+-- Opens the movie at an explicit stage size through an injected graphics
+-- namespace, so bounded-target and resize tests control both halves of the
+-- construction seam the shared opener fixes.
+---@param scenes table[] validated scene bundles in retail order
+---@param cacheFs table staged art backing the scenes
+---@param graphics table fake graphics namespace
+---@param width integer host stage width
+---@param height integer host stage height
+---@return table player
+local function openMovieSized(scenes, cacheFs, graphics, width, height)
+  local Movie = requireMovie()
+  local context = DisplayContext.new({
+    graphics = graphics,
+    topologyProvider = function(stageWidth, stageHeight)
+      return {
+        surfaces = {
+          {
+            id = "main",
+            rect = { x = 0, y = 0, width = stageWidth, height = stageHeight },
+            touch = false,
+            role = "world",
+          },
+        },
+      }
+    end,
+  })
+  return Movie.new({
+    versionId = VERSION_ID,
+    scenes = scenes,
+    cacheFs = cacheFs,
+    width = width,
+    height = height,
+    graphics = graphics,
+    displayContext = context,
+  })
+end
+
+function T.construction_preflights_all_five_scenes_before_the_first_frame()
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    raw[sceneNumber] = manifestFor(sceneNumber)
+  end
+  local poisoned = sceneRoot(5) .. "lower-bg.png"
+  local state = { poisonedReads = 0 }
+  local baseFs = stubCache(raw)
+  local cacheFs = {
+    loadLua = function(_, path)
+      return baseFs:loadLua(path)
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      if path == poisoned then
+        state.poisonedReads = state.poisonedReads + 1
+        error("injected scene five art failure")
+      end
+      return baseFs:read(path)
+    end,
+  }
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(baseFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local graphics = movieGraphics()
+  local movie = nil
+  local ok, failure = pcall(function()
+    movie = openMovieSized(scenes, cacheFs, graphics, WIDTH, HEIGHT)
+  end)
+  if ok then
+    movie:dispose()
+  end
+  Assert.isFalse(ok, "construction preflights all five scenes instead of publishing after the first")
+  Assert.isTrue(state.poisonedReads > 0, "the fifth scene acquisition is attempted before the movie becomes visible")
+  assertTypedSceneFailure(failure)
+  Assert.equal(liveHandles(graphics), 0, "a failed preflight releases every staged handle")
+end
+
+function T.construction_keeps_two_bounded_role_targets_for_the_current_and_next_scenes()
+  local scenes, cacheFs = validPack()
+  local graphics = movieGraphics()
+  local movie = openMovieSized(scenes, cacheFs, graphics, WIDTH, HEIGHT)
+  Assert.equal(movie:sceneNumber(), 1, "a preflighted movie still starts at the first scene")
+  Assert.isFalse(movie:skipAllowed(), "a preflighted movie still opens with the skip gate closed")
+  Assert.equal(#graphics.canvases, 2, "construction keeps exactly two bounded role targets")
+  for _, canvas in ipairs(graphics.canvases) do
+    Assert.equal(canvas.width, 256, "every role target keeps the source engine width")
+    Assert.equal(canvas.height, 192, "every role target keeps the source engine height")
+  end
+  -- The first scene owns its two staged images plus one clip image and the
+  -- prefetched second scene owns its two staged images: nothing else may
+  -- stay resident after the sequential preflight releases its transients.
+  Assert.equal(liveHandles(graphics), 7, "construction retains only the current and next scene graphs")
+  movie:draw()
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "disposing the preflighted movie releases every handle")
+end
+
+function T.every_canvas_allocation_uses_the_bounded_numeric_module_signature_across_resizes()
+  local scenes, cacheFs = validPack()
+  local graphics = movieGraphics()
+  local calls = {}
+  local realNewCanvas = graphics.newCanvas
+  graphics.newCanvas = function(width, height, opts)
+    calls[#calls + 1] = { width = width, height = height }
+    return realNewCanvas(width, height, opts)
+  end
+  local movie = openMovieSized(scenes, cacheFs, graphics, 256, 192)
+  movie:resize(3840, 2160)
+  movie:resize(7680, 4320)
+  movie:resize(600, 1000)
+  movie:resize(512, 384)
+  Assert.equal(movie:sceneNumber(), 1, "resizing across size classes never rewinds the movie clock")
+  for index, call in ipairs(calls) do
+    Assert.equal(
+      type(call.width),
+      "number",
+      "canvas call " .. index .. " passes numeric dimensions, never the graphics namespace"
+    )
+    Assert.equal(
+      type(call.height),
+      "number",
+      "canvas call " .. index .. " passes numeric dimensions, never the graphics namespace"
+    )
+    Assert.isTrue(
+      call.width <= 256 and call.height <= 192,
+      "canvas call " .. index .. " stays within the 256x192 source frame"
+    )
+  end
+  Assert.isTrue(#graphics.canvases <= 2, "resizing allocates no host-sized targets")
+  movie:draw()
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the resized movie releases every handle")
 end
 
 function T.steps_hold_until_a_later_start_fires_and_completes()

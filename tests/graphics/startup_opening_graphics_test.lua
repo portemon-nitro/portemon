@@ -317,17 +317,24 @@ local function fillerScene(sceneNumber)
       }
     end
   end
+  local events = {
+    { op = "waitTicks", stepId = "fill", atStepTick = 0, ticks = 10 },
+    { op = "finish", stepId = "fill", atStepTick = 0 },
+  }
+  local eventIndexes = { 1, 2 }
+  if sceneNumber == 1 then
+    events[2] = { op = "enableSkip", stepId = "fill", atStepTick = 5 }
+    events[3] = { op = "finish", stepId = "fill", atStepTick = 0 }
+    eventIndexes = { 1, 2, 3 }
+  end
   return compositeScene(
     sceneNumber,
     { compositeLayer(0, root .. "layers/fill-upper.png", 256, 192) },
     { compositeLayer(0, root .. "layers/fill-lower.png", 256, 192) },
     {},
     { seed = 0, emitters = emitters, textures = textures },
-    { { id = "fill", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 10 } } },
-    {
-      { op = "waitTicks", stepId = "fill", atStepTick = 0, ticks = 10 },
-      { op = "finish", stepId = "fill", atStepTick = 0 },
-    }
+    { { id = "fill", events = eventIndexes, ["until"] = { kind = "duration", ticks = 10 } } },
+    events
   )
 end
 
@@ -1145,6 +1152,657 @@ local function soulsilver_town_camera_uses_the_sourced_angle_and_lens(scope, con
   end
 end
 
+-- Samples one device pixel out of a captured RGBA frame.
+---@param bytes string raw RGBA frame bytes
+---@param width integer device frame width
+---@param x integer device pixel column
+---@param y integer device pixel row
+---@return number r, number g, number b in 0..1
+local function pixelOf(bytes, width, x, y)
+  local base = (y * width + x) * 4 + 1
+  local r, g, b = string.byte(bytes, base, base + 2)
+  return r / 255, g / 255, b / 255
+end
+
+-- Asserts two device pixels carry the same color: one composed role paints
+-- both spots, never two overlapping role passes.
+---@param bytes string raw RGBA frame bytes
+---@param width integer device frame width
+---@param x1 integer first device pixel column
+---@param y1 integer first device pixel row
+---@param x2 integer second device pixel column
+---@param y2 integer second device pixel row
+---@param tolerance number per-channel tolerance in 0..1
+---@param message string assertion context
+local function assertSamePixel(bytes, width, x1, y1, x2, y2, tolerance, message)
+  local r1, g1, b1 = pixelOf(bytes, width, x1, y1)
+  local r2, g2, b2 = pixelOf(bytes, width, x2, y2)
+  Assert.near(r1, r2, tolerance, message .. " (red channel)")
+  Assert.near(g1, g2, tolerance, message .. " (green channel)")
+  Assert.near(b1, b2, tolerance, message .. " (blue channel)")
+end
+
+-- Majority color of a horizontal device band on a coarse grid: solid role
+-- art resolves exactly, so a band owned by one role reports that role.
+---@param bytes string raw RGBA frame bytes
+---@param width integer device frame width
+---@param y0 integer first device row in the band
+---@param y1 integer last device row in the band
+---@return number r, number g, number b band majority color in 0..1
+local function majorityColor(bytes, width, y0, y1)
+  local buckets = {}
+  local order = {}
+  for y = y0, y1, 8 do
+    for x = 0, width - 1, 8 do
+      local r, g, b = pixelOf(bytes, width, x, y)
+      local key = string.format("%d:%d:%d", math.floor(r * 4 + 0.5), math.floor(g * 4 + 0.5), math.floor(b * 4 + 0.5))
+      local entry = buckets[key]
+      if entry == nil then
+        entry = { count = 0, r = r, g = g, b = b }
+        buckets[key] = entry
+        order[#order + 1] = key
+      end
+      entry.count = entry.count + 1
+    end
+  end
+  local best = nil
+  for _, key in ipairs(order) do
+    if best == nil or buckets[key].count > buckets[best].count then
+      best = key
+    end
+  end
+  return buckets[best].r, buckets[best].g, buckets[best].b
+end
+
+-- Majority color of a vertical device band on a coarse grid: solid role
+-- art resolves exactly, so a band owned by one role reports that role.
+---@param bytes string raw RGBA frame bytes
+---@param width integer device frame width
+---@param height integer device frame height
+---@param x0 integer first device column in the band
+---@param x1 integer last device column in the band
+---@return number r, number g, number b band majority color in 0..1
+local function majorityColorColumns(bytes, width, height, x0, x1)
+  local buckets = {}
+  local order = {}
+  for y = 0, height - 1, 8 do
+    for x = x0, x1, 8 do
+      local r, g, b = pixelOf(bytes, width, x, y)
+      local key = string.format("%d:%d:%d", math.floor(r * 4 + 0.5), math.floor(g * 4 + 0.5), math.floor(b * 4 + 0.5))
+      local entry = buckets[key]
+      if entry == nil then
+        entry = { count = 0, r = r, g = g, b = b }
+        buckets[key] = entry
+        order[#order + 1] = key
+      end
+      entry.count = entry.count + 1
+    end
+  end
+  local best = nil
+  for _, key in ipairs(order) do
+    if best == nil or buckets[key].count > buckets[best].count then
+      best = key
+    end
+  end
+  return buckets[best].r, buckets[best].g, buckets[best].b
+end
+
+---@param r1 number
+---@param g1 number
+---@param b1 number
+---@param r2 number
+---@param g2 number
+---@param b2 number
+---@param tolerance number per-channel tolerance in 0..1
+---@param message string assertion context
+local function assertSameColor(r1, g1, b1, r2, g2, b2, tolerance, message)
+  Assert.near(r1, r2, tolerance, message .. " (red channel)")
+  Assert.near(g1, g2, tolerance, message .. " (green channel)")
+  Assert.near(b1, b2, tolerance, message .. " (blue channel)")
+end
+
+-- Counts near-yellow device pixels (the hero sprite tint) on a coarse
+-- grid, scaled back to full-frame Equivalent pixels.
+---@param bytes string raw RGBA frame bytes
+---@param width integer device frame width
+---@param height integer device frame height
+---@return integer full-frame equivalent yellow pixel count
+local function countYellow(bytes, width, height)
+  local count = 0
+  for y = 0, height - 1, 2 do
+    for x = 0, width - 1, 2 do
+      local r, g, b = pixelOf(bytes, width, x, y)
+      if r > 0.9 and g > 0.9 and b < 0.1 then
+        count = count + 1
+      end
+    end
+  end
+  return count * 4
+end
+
+---@param custom table scene manifest under test
+---@param customIndex integer retail position of the custom scene
+---@param art table<string, string> staged png bytes by generated path
+---@param defaultPng string fallback png bytes for art the test never samples
+---@return table[] scenes, table cacheFs strict five-scene pack with one custom scene
+local function customPack(custom, customIndex, art, defaultPng)
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    if sceneNumber == customIndex then
+      raw[sceneNumber] = custom
+    else
+      raw[sceneNumber] = fillerScene(sceneNumber)
+    end
+  end
+  local byPath = {}
+  for sceneNumber, manifest in ipairs(raw) do
+    byPath[StartupAssetCache.openingScenePath(sceneNumber)] = manifest
+  end
+  local cacheFs = {
+    loadLua = function(_, path)
+      return byPath[path]
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      return art[path] or defaultPng
+    end,
+  }
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, "soulsilver")
+    Assert.notNil(loaded, "custom scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  return scenes, cacheFs
+end
+
+-- One single-beat scene: solid red on the main engine, solid blue on the
+-- sub engine, no mapping flips. Whatever the composition policy selects
+-- for this beat, the single-screen stage must show it without an
+-- overlapping band of the other role.
+---@return table scene manifest, table<string, string> staged art
+local function singleBeatScene()
+  local root = sceneArtRoot(1)
+  local upperImage = root .. "layers/solid-upper.png"
+  local lowerImage = root .. "layers/solid-lower.png"
+  local scene = compositeScene(
+    1,
+    { compositeLayer(0, upperImage, 256, 192) },
+    { compositeLayer(0, lowerImage, 256, 192) },
+    {},
+    { seed = 0, emitters = {} },
+    { { id = "hold", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 40 } } },
+    {
+      { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+      { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+      { op = "finish", stepId = "hold", atStepTick = 40 },
+    }
+  )
+  local art = {
+    [upperImage] = solidPng(256, 192, 255, 0, 0),
+    [lowerImage] = solidPng(256, 192, 0, 0, 255),
+  }
+  return scene, art
+end
+
+-- One paired scene with a mid-scene physical mapping flip and one hero
+-- sprite on the main engine: both roles must stay visible on every
+-- layout, the flip must move each engine output between physical roles,
+-- and the sprite must paint exactly once.
+---@return table scene manifest, table<string, string> staged art
+local function pairedFlipScene()
+  local root = sceneArtRoot(4)
+  local upperImage = root .. "layers/pair-upper.png"
+  local lowerImage = root .. "layers/pair-lower.png"
+  local clipId = root .. "sprites/hero.g4sprite"
+  local emitters = {}
+  local textures = {}
+  for id = 0, 8 do
+    local group = id < 3 and "water" or (id < 6 and "fire" or "grass")
+    emitters[#emitters + 1] = fillerEmitter(id, group, root)
+    textures[#textures + 1] = {
+      id = id,
+      format = 1,
+      width = 16,
+      height = 16,
+      image = root .. "particles/texture" .. id .. ".png",
+      sourceHash = string.rep("d", 40),
+    }
+  end
+  local scene = compositeScene(
+    4,
+    { compositeLayer(0, upperImage, 256, 192) },
+    { compositeLayer(0, lowerImage, 256, 192) },
+    { compositeClip(clipId, { compositeFrame(0, 0, 16, 16, 0, 0, 1) }) },
+    { seed = 0, emitters = emitters, textures = textures },
+    {
+      { id = "intro", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 20 } },
+      { id = "flip", events = { 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 20 } },
+    },
+    {
+      {
+        op = "setSpriteClip",
+        stepId = "intro",
+        atStepTick = 0,
+        instanceId = "hero",
+        engine = "main",
+        x = 32,
+        y = 64,
+        drawOrder = 1,
+        clipId = clipId,
+      },
+      {
+        op = "spriteVisible",
+        stepId = "intro",
+        atStepTick = 0,
+        instanceId = "hero",
+        engine = "main",
+        x = 32,
+        y = 64,
+        drawOrder = 1,
+        visible = true,
+      },
+      { op = "setScreenMapping", stepId = "intro", atStepTick = 0, mainPhysical = "upper" },
+      { op = "waitTicks", stepId = "intro", atStepTick = 0, ticks = 20 },
+      { op = "setScreenMapping", stepId = "flip", atStepTick = 0, mainPhysical = "lower" },
+      { op = "waitTicks", stepId = "flip", atStepTick = 0, ticks = 20 },
+      { op = "finish", stepId = "flip", atStepTick = 20 },
+    }
+  )
+  local art = {
+    [upperImage] = solidPng(256, 192, 255, 0, 0),
+    [lowerImage] = solidPng(256, 192, 0, 0, 255),
+    [clipId] = solidPng(16, 16, 255, 255, 0),
+  }
+  return scene, art
+end
+
+local function a_single_active_source_screen_fills_the_whole_single_screen_stage(scope)
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  for _, layout in ipairs({
+    { width = 512, height = 384, kind = "single" },
+    { width = 1200, height = 600, kind = "single" },
+  }) do
+    local scene, art = singleBeatScene()
+    local scenes, cacheFs = compositePack(scene, art, gray16)
+    local movie = openCompositeMovie(scope, scenes, cacheFs, layout.width, layout.height, layout.kind)
+    advance(movie, 5)
+    local bytes = drawBytes(movie, scope, layout.width, layout.height)
+    local where = layout.width .. "x" .. layout.height
+    if layout.width == 512 then
+      assertSamePixel(
+        bytes,
+        512,
+        256,
+        20,
+        256,
+        134,
+        0.05,
+        where .. ": the compact stage shows no band over the active screen"
+      )
+      assertSamePixel(
+        bytes,
+        512,
+        256,
+        250,
+        256,
+        364,
+        0.05,
+        where .. ": the compact stage keeps one composed role below the fold"
+      )
+    else
+      assertSamePixel(bytes, 1200, 300, 20, 300, 580, 0.05, where .. ": the wide stage shows no overlay band")
+      assertSamePixel(
+        bytes,
+        1200,
+        300,
+        210,
+        300,
+        390,
+        0.05,
+        where .. ": the wide stage keeps one composed role across its middle band"
+      )
+    end
+    movie:dispose()
+  end
+end
+
+local function paired_beats_and_flips_keep_both_source_screens_across_every_layout(scope)
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local layouts = {
+    { width = 512, height = 384, kind = "single" },
+    { width = 1200, height = 600, kind = "single" },
+    { width = 600, height = 1000, kind = "single" },
+    { width = 512, height = 384, kind = "dual" },
+  }
+  for _, layout in ipairs(layouts) do
+    local scene, art = pairedFlipScene()
+    local scenes, cacheFs = customPack(scene, 4, art, gray16)
+    local movie = openCompositeMovie(scope, scenes, cacheFs, layout.width, layout.height, layout.kind)
+    local where = layout.width .. "x" .. layout.height .. layout.kind
+    local guard = 0
+    while movie:sceneNumber() < 4 and guard < 5000 do
+      movie:updateFixed()
+      guard = guard + 1
+    end
+    Assert.equal(movie:sceneNumber(), 4, where .. ": playback reaches the paired scene")
+    advance(movie, 2)
+    local before = drawBytes(movie, scope, layout.width, layout.height)
+    advance(movie, 20)
+    local after = drawBytes(movie, scope, layout.width, layout.height)
+    local width, height = layout.width, layout.height
+    -- The wide stage arranges the pair side by side, so its halves split
+    -- left/right; compact, tall, and dual stages stack them top/bottom.
+    -- Each half is sampled along the stacking axis it owns.
+    local sideBySide = layout.kind == "single" and width == 1200
+    if sideBySide then
+      local row = math.floor(height / 2)
+      local midLeft = math.floor(width * 0.3)
+      local midRight = math.floor(width * 0.7)
+      assertSamePixel(
+        before,
+        width,
+        20,
+        row,
+        midLeft,
+        row,
+        0.05,
+        where .. ": the paired beat shows no overlay band before the flip"
+      )
+      assertSamePixel(
+        after,
+        width,
+        20,
+        row,
+        midLeft,
+        row,
+        0.05,
+        where .. ": the paired beat shows no overlay band after the flip"
+      )
+      assertSamePixel(
+        before,
+        width,
+        midRight,
+        row,
+        width - 20,
+        row,
+        0.05,
+        where .. ": the paired beat shows no overlay band before the flip"
+      )
+      assertSamePixel(
+        after,
+        width,
+        midRight,
+        row,
+        width - 20,
+        row,
+        0.05,
+        where .. ": the paired beat shows no overlay band after the flip"
+      )
+    else
+      local midTop = math.floor(height * 0.2)
+      local botTop = math.floor(height * 0.7)
+      assertSamePixel(
+        before,
+        width,
+        math.floor(width / 2),
+        20,
+        math.floor(width / 2),
+        midTop,
+        0.05,
+        where .. ": the upper physical screen keeps its own role"
+      )
+      assertSamePixel(
+        before,
+        width,
+        math.floor(width / 2),
+        botTop,
+        math.floor(width / 2),
+        height - 20,
+        0.05,
+        where .. ": the lower physical screen keeps its own role"
+      )
+    end
+    local firstBeforeR, firstBeforeG, firstBeforeB
+    local secondBeforeR, secondBeforeG, secondBeforeB
+    local firstAfterR, firstAfterG, firstAfterB
+    local secondAfterR, secondAfterG, secondAfterB
+    if sideBySide then
+      firstBeforeR, firstBeforeG, firstBeforeB =
+        majorityColorColumns(before, width, height, 0, math.floor(width / 2) - 1)
+      secondBeforeR, secondBeforeG, secondBeforeB =
+        majorityColorColumns(before, width, height, math.floor(width / 2), width - 1)
+      firstAfterR, firstAfterG, firstAfterB = majorityColorColumns(after, width, height, 0, math.floor(width / 2) - 1)
+      secondAfterR, secondAfterG, secondAfterB =
+        majorityColorColumns(after, width, height, math.floor(width / 2), width - 1)
+    else
+      firstBeforeR, firstBeforeG, firstBeforeB = majorityColor(before, width, 0, math.floor(height / 2) - 1)
+      secondBeforeR, secondBeforeG, secondBeforeB = majorityColor(before, width, math.floor(height / 2), height - 1)
+      firstAfterR, firstAfterG, firstAfterB = majorityColor(after, width, 0, math.floor(height / 2) - 1)
+      secondAfterR, secondAfterG, secondAfterB = majorityColor(after, width, math.floor(height / 2), height - 1)
+    end
+    assertSameColor(
+      firstBeforeR,
+      firstBeforeG,
+      firstBeforeB,
+      secondAfterR,
+      secondAfterG,
+      secondAfterB,
+      0.05,
+      where .. ": the flip moves the upper visuals into the lower physical role"
+    )
+    assertSameColor(
+      secondBeforeR,
+      secondBeforeG,
+      secondBeforeB,
+      firstAfterR,
+      firstAfterG,
+      firstAfterB,
+      0.05,
+      where .. ": the flip moves the lower visuals into the upper physical role"
+    )
+    local yellow = countYellow(before, width, height)
+    Assert.isTrue(yellow > 200, where .. ": the hero sprite paints its owning engine output")
+    Assert.isTrue(yellow < 20000, where .. ": the hero sprite never smears across both roles")
+    movie:dispose()
+  end
+end
+
+local function movie_targets_stay_bounded_across_resizes_to_very_large_stages(scope)
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local baseline = love.graphics.getStats()
+  local realNewCanvas = love.graphics.newCanvas
+  local calls = {}
+  love.graphics.newCanvas = function(width, height, opts)
+    calls[#calls + 1] = { width = width, height = height }
+    return realNewCanvas(width, height, opts)
+  end
+  local scene, art = singleBeatScene()
+  local constructed, movieOrFailure = pcall(function()
+    local scenes, cacheFs = compositePack(scene, art, gray16)
+    return openCompositeMovie(scope, scenes, cacheFs, 512, 384, "single")
+  end)
+  love.graphics.newCanvas = realNewCanvas
+  Assert.isTrue(constructed, "construction allocates its role targets and returns")
+  local movie = movieOrFailure
+  for _, call in ipairs(calls) do
+    Assert.equal(
+      type(call.width),
+      "number",
+      "every canvas allocation passes numeric dimensions, never the graphics namespace"
+    )
+    Assert.equal(
+      type(call.height),
+      "number",
+      "every canvas allocation passes numeric dimensions, never the graphics namespace"
+    )
+    Assert.isTrue(
+      call.width <= 256 and call.height <= 192,
+      "every canvas allocation stays within the 256x192 source frame"
+    )
+  end
+  Assert.equal(#calls, 2, "construction allocates exactly two bounded role targets")
+  local afterConstruction = love.graphics.getStats()
+  Assert.equal(afterConstruction.canvases, baseline.canvases + 2, "construction retains two canvases")
+  Assert.equal(movie:sceneNumber(), 1, "a preflighted movie still starts at the first scene")
+  local resizeCalls = {}
+  love.graphics.newCanvas = function(width, height, opts)
+    resizeCalls[#resizeCalls + 1] = { width = width, height = height }
+    return realNewCanvas(width, height, opts)
+  end
+  local resizeOk, resizeFailure = pcall(function()
+    movie:resize(3840, 2160)
+    movie:resize(7680, 4320)
+    movie:resize(600, 1000)
+    movie:resize(512, 384)
+  end)
+  love.graphics.newCanvas = realNewCanvas
+  Assert.isTrue(resizeOk, "resizing across size classes never fails: " .. tostring(resizeFailure))
+  Assert.equal(#resizeCalls, 0, "resizing allocates no host-sized targets")
+  Assert.equal(movie:sceneNumber(), 1, "resizing across size classes never rewinds the movie clock")
+  Assert.isFalse(movie:skipAllowed(), "resizing never advances the source timeline")
+  movie:draw()
+  local final = drawBytes(movie, scope, 512, 384)
+  local blank = blankBytes(scope, 512, 384)
+  Assert.isTrue(final ~= blank, "the resized movie still paints its composed stage")
+  movie:dispose()
+  local afterDispose = love.graphics.getStats()
+  -- The two frame captures above stay owned by the test scope (released
+  -- at teardown), so the movie is proven clean when only those two
+  -- remain: any retained role target would read back as a third.
+  Assert.equal(afterDispose.canvases, baseline.canvases + 2, "disposing the movie releases its role targets")
+end
+
+local function construction_fails_before_the_first_frame_unless_all_five_scenes_acquire(scope)
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local poisoned = sceneArtRoot(5) .. "layers/fill-lower.png"
+  local state = { poisonedReads = 0 }
+  local healthyScenes, healthyFs = customPack(fillerScene(5), 5, {}, gray16)
+  local _ = healthyScenes
+  local cacheFs = {
+    loadLua = function(_, path)
+      return healthyFs:loadLua(path)
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      if path == poisoned then
+        state.poisonedReads = state.poisonedReads + 1
+        error("injected scene five art failure")
+      end
+      return healthyFs:read(path)
+    end,
+  }
+  local baseline = love.graphics.getStats()
+  local movie = nil
+  local ok, failure = pcall(function()
+    movie = openCompositeMovie(scope, healthyScenes, cacheFs, 512, 384, "single")
+  end)
+  if ok then
+    movie:dispose()
+  end
+  Assert.isFalse(ok, "construction fails before the first frame unless all five scenes acquire")
+  Assert.isTrue(state.poisonedReads > 0, "the fifth scene acquisition is attempted before return")
+  Assert.equal(type(failure), "table", "a failed preflight raises a structured error, never a bare string")
+  Assert.equal(failure.code, "HGSS_OPENING_MOVIE_INVALID", "a failed preflight raises the typed scene failure")
+  local afterFailure = love.graphics.getStats()
+  Assert.equal(afterFailure.images, baseline.images, "a failed preflight releases its staged images")
+  Assert.equal(afterFailure.canvases, baseline.canvases, "a failed preflight leaves no canvas behind")
+  local retryScenes, retryFs = customPack(fillerScene(5), 5, {}, gray16)
+  local retry = openCompositeMovie(scope, retryScenes, retryFs, 512, 384, "single")
+  Assert.equal(retry:sceneNumber(), 1, "a repaired retry still starts at the first scene with its clock at zero")
+  Assert.isFalse(retry:skipAllowed(), "a repaired retry still opens with the skip gate closed")
+  local afterRetry = love.graphics.getStats()
+  Assert.equal(afterRetry.canvases, baseline.canvases + 2, "a repaired retry retains exactly two role targets")
+  Assert.equal(
+    afterRetry.images,
+    baseline.images + 4,
+    "a repaired retry retains only the current and next scene graphs"
+  )
+  local twinScenes, twinFs = customPack(fillerScene(5), 5, {}, gray16)
+  local twin = openCompositeMovie(scope, twinScenes, twinFs, 512, 384, "single")
+  Assert.equal(
+    drawBytes(retry, scope, 512, 384),
+    drawBytes(twin, scope, 512, 384),
+    "two preflighted movies render the identical first frame"
+  )
+  twin:dispose()
+  retry:dispose()
+end
+
+-- The relocated composited-town proof: scene-three town pixels must render
+-- visibly in the final composed output and animate across hold ticks that
+-- no wipe covers. The window matches the earlier town-camera sampling, so
+-- the motion cannot come from a circle-wipe reveal.
+local function composited_town_pixels_stay_visible_and_animate_across_hold_ticks(scope, context)
+  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local realNewCanvas = love.graphics.newCanvas
+  local calls = {}
+  love.graphics.newCanvas = function(width, height, opts)
+    calls[#calls + 1] = { width = width, height = height, at = debug.traceback("", 2):sub(1, 500) }
+    return realNewCanvas(width, height, opts)
+  end
+  local constructed, movieOrFailure = pcall(openMovie, scope, "soulsilver", 512, 384, "single")
+  love.graphics.newCanvas = realNewCanvas
+  Assert.isTrue(constructed, "a town-staging movie constructs on bounded targets")
+  local movie = movieOrFailure
+  local movieCalls = 0
+  for index, call in ipairs(calls) do
+    Assert.isTrue(
+      call.width <= 256 and call.height <= 192,
+      "canvas call " .. index .. " stays within the 256x192 source frame"
+    )
+    -- Only the movie's own targets count toward its standing budget: the
+    -- shared field renderer lazily owns its reused scene targets outside
+    -- it, at the same bounded source size.
+    if call.at:find("HgssOpeningMovie", 1, true) ~= nil then
+      movieCalls = movieCalls + 1
+      Assert.equal(call.width, 256, "movie canvas call " .. movieCalls .. " keeps the source engine width")
+      Assert.equal(call.height, 192, "movie canvas call " .. movieCalls .. " keeps the source engine height")
+    end
+  end
+  Assert.equal(movieCalls, 3, "a town-staging movie keeps two role targets plus one fixed town scratch")
+  local ticks = 0
+  while movie:sceneNumber() < 3 and ticks < 20000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 3, "playback reaches the town scenes")
+  local entryTicks = ticks
+  while ticks < entryTicks + 20 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  movie:draw()
+  local before = drawBytes(movie, scope, 512, 384)
+  for _ = 1, 15 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  local after = drawBytes(movie, scope, 512, 384)
+  Assert.isTrue(before ~= after, "town pixels animate across non-wipe hold ticks")
+  local lit, changed, total = 0, 0, 0
+  for y = 0, 383, 2 do
+    for x = 0, 511, 2 do
+      total = total + 1
+      local r1, g1, b1 = pixelOf(before, 512, x, y)
+      local r2, g2, b2 = pixelOf(after, 512, x, y)
+      if r1 + g1 + b1 > 0.09 then
+        lit = lit + 1
+      end
+      if math.abs(r1 - r2) + math.abs(g1 - g2) + math.abs(b1 - b2) > 0.09 then
+        changed = changed + 1
+      end
+    end
+  end
+  Assert.isTrue(lit > total * 0.45, "the composed town frame stays lit well beyond a strip-only fallback")
+  Assert.isTrue(changed > 125, "town animation moves real composed pixels across the hold")
+  movie:dispose()
+end
+
 local T = GraphicsSmoke.suite({
   ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
@@ -1157,6 +1815,11 @@ local T = GraphicsSmoke.suite({
   ["composite layers pan independently with true blending"] = composite_layers_pan_independently_with_true_blending,
   ["authored sprites stay on their engine with frame offsets"] = authored_sprites_stay_on_their_engine_with_frame_offsets,
   ["step relative fades composite on the gpu"] = step_relative_fades_composite_on_the_gpu,
+  ["a single active source screen fills the whole single-screen stage"] = a_single_active_source_screen_fills_the_whole_single_screen_stage,
+  ["paired beats and flips keep both source screens across every layout"] = paired_beats_and_flips_keep_both_source_screens_across_every_layout,
+  ["movie targets stay bounded across resizes to very large stages"] = movie_targets_stay_bounded_across_resizes_to_very_large_stages,
+  ["construction fails before the first frame unless all five scenes acquire"] = construction_fails_before_the_first_frame_unless_all_five_scenes_acquire,
+  ["composited town pixels stay visible and animate across hold ticks"] = composited_town_pixels_stay_visible_and_animate_across_hold_ticks,
 })
 T.metadata.capabilities = { "graphics", "rom_dump" }
 T.metadata.derivedAssets = {

@@ -418,13 +418,28 @@ function T.dispose_after_a_failed_prefetch_releases_everything_once()
   local fakeOpts = {}
   local graphics = movieGraphics(fakeOpts)
   local movie = openMovie(scenes, cacheFs, graphics)
+  -- Construction preflights the first prefetch, so the next lazy
+  -- acquisition fires when the opening scene hands over: drive tick by
+  -- tick until it surfaces.
   fakeOpts.failOnImageCall = #graphics.images + 1
-  local ok, failure = pcall(function()
-    movie:updateFixed()
-  end)
-  Assert.isFalse(ok, "a failed next-scene acquisition surfaces explicitly: " .. tostring(failure))
-  Assert.equal(movie:sceneNumber(), 1, "the failed acquisition keeps the current scene")
+  local failure = nil
+  local heldScene = movie:sceneNumber()
+  local ticks = 0
+  while failure == nil and ticks < 500 do
+    heldScene = movie:sceneNumber()
+    local callOk, err = pcall(function()
+      movie:updateFixed()
+    end)
+    ticks = ticks + 1
+    if not callOk then
+      failure = err
+      break
+    end
+    movie:draw()
+  end
   fakeOpts.failOnImageCall = nil
+  Assert.notNil(failure, "a failed next-scene acquisition surfaces explicitly")
+  Assert.equal(movie:sceneNumber(), heldScene, "the failed acquisition keeps the current scene")
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "disposing after the failure releases everything")
   for _, group in ipairs({ graphics.images, graphics.canvases, graphics.meshes or {} }) do

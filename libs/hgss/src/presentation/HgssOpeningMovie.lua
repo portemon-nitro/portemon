@@ -34,9 +34,9 @@ local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 ---@field disposed boolean
 ---@field current OpeningMovieSlot|nil active scene slot
 ---@field nextSlot OpeningMovieSlot|nil prefetched scene slot
----@field canvas love.Canvas? shared composition target
----@field canvasWidth number|nil live composition target width
----@field canvasHeight number|nil live composition target height
+---@field mainCanvas love.Canvas? fixed main-engine source target (256x192)
+---@field subCanvas love.Canvas? fixed sub-engine source target (256x192)
+---@field townScratch love.Canvas? fixed town composite scratch (256x192), allocated only when a scene stages towns
 local HgssOpeningMovie = {}
 HgssOpeningMovie.__index = HgssOpeningMovie
 
@@ -218,6 +218,31 @@ local function checkBundleShape(manifest, sceneNumber, versionId, generationId)
       end
     end
   end
+end
+
+---@param self HgssOpeningMovie
+---@param target love.Canvas? owned target receiving the settle fill
+local function settleReleasedHandles(self, target)
+  -- The host batches textured draws, so a just-released handle can still
+  -- read back as live (holding real memory) until later graphics work
+  -- runs. One untextured fill into an owned target settles the queue
+  -- without staging another texture; it never hides a genuine leak since
+  -- only released handles are affected.
+  if target == nil then
+    return
+  end
+  local graphics = self.graphics
+  local previous = graphics.getCanvas()
+  graphics.push("all")
+  -- Settle-only work must never fail construction or teardown: the
+  -- pcall exists solely to guarantee the pushed scope is restored.
+  pcall(function()
+    graphics.setCanvas(target)
+    graphics.setColor(0, 0, 0, 0)
+    graphics.rectangle("fill", 0, 0, 1, 1)
+    graphics.setCanvas(previous)
+  end)
+  graphics.pop()
 end
 
 ---@param slot OpeningMovieSlot scene slot to tear down
@@ -1192,6 +1217,57 @@ local function finishCurrentScene(self)
   releaseSlot(old)
 end
 
+-- Source activity for the single-screen shot policy: an engine is active
+-- while it owns a visible background slot, a visible sprite instance, or
+-- (sub engine only) the town stage that composites with the sub panels.
+-- Position on the stage is irrelevant here; placement only selects which
+-- authored output fills the host, it never invents or hides source output.
+---@param slot OpeningMovieSlot scene slot
+---@param engine string source engine owning the candidate output
+---@return boolean true when the engine carries authored output this frame
+local function engineActive(slot, engine)
+  local backgrounds = slot.backgrounds[engine]
+  if type(backgrounds) == "table" then
+    for _, background in pairs(backgrounds) do
+      if background.visible then
+        return true
+      end
+    end
+  end
+  for _, instance in pairs(slot.spriteInstances) do
+    if instance.engine == engine and instance.visible then
+      return true
+    end
+  end
+  if engine == "sub" and slot.renderer ~= nil and #slot.towns > 0 then
+    return true
+  end
+  return false
+end
+
+-- Beats that keep both physical outputs on a single host screen: the
+-- scene-4 hero compositions and the scene-5 panorama are coequal by
+-- source authorship, so no single-screen stage may discard either side.
+---@param slot OpeningMovieSlot scene slot
+---@return boolean true when the beat must present both physical roles
+local function shotIsPaired(slot)
+  return slot.sceneNumber == 4 or slot.sceneNumber == 5
+end
+
+-- Selects the engine whose output fills a single-screen stage on a
+-- single-role beat. Exactly one active engine wins; a tie (or no active
+-- engine yet) deterministically keeps the main engine, which the source
+-- entry mapping then places on its authored physical screen.
+---@param slot OpeningMovieSlot scene slot
+---@return string source engine owning the active single-role output
+local function activeEngine(slot)
+  local mainActive, subActive = engineActive(slot, "main"), engineActive(slot, "sub")
+  if subActive and not mainActive then
+    return "sub"
+  end
+  return "main"
+end
+
 -- Loads the five strictly validated scene manifests for the selected edition
 -- in retail order. This is the movie-owner scene-loading seam through which
 -- the app startup owner reaches generated opening scenes: callers keep the owned
@@ -1258,24 +1334,78 @@ function HgssOpeningMovie.new(options)
     disposed = false,
     current = nil,
     nextSlot = nil,
-    canvas = nil,
-    canvasWidth = nil,
-    canvasHeight = nil,
+    mainCanvas = nil,
+    subCanvas = nil,
+    townScratch = nil,
   }, HgssOpeningMovie)
+  -- Bounded readiness: the two fixed source-engine targets are the only
+  -- movie canvases, and every scene is strictly acquired plus
+  -- offscreen-rendered before the movie becomes visible. Only the first
+  -- two slots stay resident; transients release before return and the
+  -- source clock never advances during preparation.
+  local preflighted = {}
   local ok, failure = pcall(function()
-    local canvas = graphics.newCanvas(options.width, options.height, {
+    self.mainCanvas = graphics.newCanvas(SOURCE_WIDTH, SOURCE_HEIGHT, {
       format = "rgba8",
       readable = true,
       dpiscale = 1,
     })
-    self.canvas = canvas
-    self.canvasWidth, self.canvasHeight = options.width, options.height
-    self.current = acquireSlot(self, scenes[1])
+    self.subCanvas = graphics.newCanvas(SOURCE_WIDTH, SOURCE_HEIGHT, {
+      format = "rgba8",
+      readable = true,
+      dpiscale = 1,
+    })
+    for _, canvas in ipairs({ self.mainCanvas, self.subCanvas }) do
+      if canvas.setFilter ~= nil then
+        canvas:setFilter("nearest", "nearest")
+      end
+    end
+    -- The 3D town stage resolves through the shared field renderer,
+    -- which presents with a replacing blit: compositing the town over
+    -- the sub-engine panels needs a fixed intermediate target rather
+    -- than wiping the panels or hiding the town beneath them. Standing
+    -- canvas budget is two 256x192 role targets plus this one fixed
+    -- 256x192 town scratch, 3*256*192*4 bytes peak, far under the
+    -- 1 GiB startup target; no canvas scales with host pixels.
+    local stagesTowns = false
+    for sceneNumber = 1, 5 do
+      if type(scenes[sceneNumber].models) == "table" and #scenes[sceneNumber].models > 0 then
+        stagesTowns = true
+        break
+      end
+    end
+    if stagesTowns then
+      self.townScratch = graphics.newCanvas(SOURCE_WIDTH, SOURCE_HEIGHT, {
+        format = "rgba8",
+        readable = true,
+        dpiscale = 1,
+      })
+      if self.townScratch.setFilter ~= nil then
+        self.townScratch:setFilter("nearest", "nearest")
+      end
+    end
+    for sceneNumber = 1, 5 do
+      local slot = acquireSlot(self, scenes[sceneNumber])
+      preflighted[#preflighted + 1] = slot
+      self:_renderRoles(slot)
+    end
   end)
   if not ok then
+    for _, slot in ipairs(preflighted) do
+      releaseSlot(slot)
+    end
     self:dispose()
     error(failure, 0)
   end
+  self.current = preflighted[1]
+  self.nextSlot = preflighted[2]
+  for sceneNumber = 3, 5 do
+    releaseSlot(preflighted[sceneNumber])
+  end
+  -- Reclaim the transient preflight handles promptly instead of leaving
+  -- them queued behind the next frame: the retained targets keep only
+  -- current and next scene graphs resident from here on.
+  settleReleasedHandles(self, self.mainCanvas)
   return self
 end
 
@@ -1340,68 +1470,19 @@ end
 ---@param width number
 ---@param height number
 function HgssOpeningMovie:resize(width, height)
+  -- Host placement only: the fixed source targets never resize, so a
+  -- resize cannot fail, cannot stretch a stale target, and never touches
+  -- the source tick or scene identity.
   assert(width > 0 and height > 0, "movie dimensions must be positive")
   self.width, self.height = width, height
-  if self.disposed or self.canvas == nil then
-    return
-  end
-  if self.canvasWidth == width and self.canvasHeight == height then
-    return
-  end
-  local ok, canvas = pcall(self.graphics.newCanvas, self.graphics, width, height, {
-    format = "rgba8",
-    readable = true,
-    dpiscale = 1,
-  })
-  if not ok then
-    return
-  end
-  local old = assert(self.canvas)
-  self.canvas, self.canvasWidth, self.canvasHeight = canvas, width, height
-  old:release()
 end
 
--- Maps the semantic upper/lower source roles onto the measured host
--- surfaces: physical dual honors both surfaces, tall stacks them, and
--- single-screen stages fill with the upper role while the lower role
--- rides as a subordinate strip. Reflow never touches source time.
+-- Copies a measured host rectangle so composition planning never mutates
+-- the layout-owned bounds it was given.
 ---@param rect { x: number, y: number, width: number, height: number }
 ---@return { x: number, y: number, width: number, height: number }
 local function copyRect(rect)
   return { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
-end
-
----@param self HgssOpeningMovie
----@return { configuration: string, upper: { x: number, y: number, width: number, height: number }, lower: { x: number, y: number, width: number, height: number } }
-local function roleRects(self)
-  local measurement = self.displayContext:measure(self.width, self.height)
-  local configuration = ApplicationLayout.classify(measurement, nil)
-  local selection = ApplicationLayout.selectSurfaces(measurement)
-  local primary = selection.primary.usableBounds
-  if primary == nil then
-    primary = { x = 0, y = 0, width = self.width, height = self.height }
-  end
-  if configuration == "dualDisplay" and selection.secondary ~= nil and selection.secondary.usableBounds ~= nil then
-    return {
-      configuration = configuration,
-      upper = copyRect(primary),
-      lower = copyRect(selection.secondary.usableBounds),
-    }
-  end
-  if configuration == "tall" then
-    local half = primary.height / 2
-    return {
-      configuration = configuration,
-      upper = { x = primary.x, y = primary.y, width = primary.width, height = half },
-      lower = { x = primary.x, y = primary.y + half, width = primary.width, height = primary.height - half },
-    }
-  end
-  local stripHeight = math.min(primary.height * 0.3, 128)
-  return {
-    configuration = configuration,
-    upper = copyRect(primary),
-    lower = { x = primary.x, y = primary.y, width = primary.width, height = stripHeight },
-  }
 end
 
 ---@param slot OpeningMovieSlot scene slot
@@ -1867,21 +1948,40 @@ local function drawWipe(self, slot)
 end
 
 ---@param self HgssOpeningMovie
+---@param canvas love.Canvas fixed role target to project
+---@param rect { x: number, y: number, width: number, height: number } host pane receiving the role
+---@param cover boolean true fills (crops) the pane, false fits (letterboxes) it
+function HgssOpeningMovie:_blitRole(canvas, rect, cover)
+  local graphics = self.graphics
+  local scale
+  if cover then
+    scale = math.max(rect.width / SOURCE_WIDTH, rect.height / SOURCE_HEIGHT)
+  else
+    scale = math.min(rect.width / SOURCE_WIDTH, rect.height / SOURCE_HEIGHT)
+  end
+  local drawnWidth, drawnHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
+  local x = rect.x + (rect.width - drawnWidth) / 2
+  local y = rect.y + (rect.height - drawnHeight) / 2
+  graphics.push("all")
+  local ok, failure = pcall(function()
+    graphics.intersectScissor(rect.x, rect.y, rect.width, rect.height)
+    graphics.draw(canvas, x, y, 0, scale, scale)
+  end)
+  graphics.pop()
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
----@param role string upper or lower
----@param rect { x: number, y: number, width: number, height: number } device-space role rectangle
-local function drawRoleBody(self, slot, role, rect)
+---@param canvas love.Canvas fixed role target receiving the engine output
+---@param engine string source engine rendered into its fixed role target
+---@param role string physical role the engine currently feeds
+function HgssOpeningMovie:_renderEngine(slot, canvas, engine, role)
   local graphics = self.graphics
   local inset = windowInset(slot, role)
-  graphics.intersectScissor(rect.x + inset, rect.y + inset, rect.width - inset * 2, rect.height - inset * 2)
-  if role == "upper" and slot.renderer ~= nil and #slot.towns > 0 then
-    drawTowns(slot, rect)
-  end
-  local engine = roleEngine(slot, role)
-  local scale = math.max(rect.width / SOURCE_WIDTH, rect.height / SOURCE_HEIGHT)
-  local drawnWidth, drawnHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
-  graphics.translate(rect.x + (rect.width - drawnWidth) / 2, rect.y + (rect.height - drawnHeight) / 2)
-  graphics.scale(scale, scale)
+  graphics.intersectScissor(inset, inset, SOURCE_WIDTH - inset * 2, SOURCE_HEIGHT - inset * 2)
   local backgrounds = sortedBackgrounds(slot, engine)
   for index, background in ipairs(backgrounds) do
     local image = slot.imageByPath[background.image]
@@ -1895,6 +1995,20 @@ local function drawRoleBody(self, slot, role, rect)
     end
   end
   graphics.setColor(1, 1, 1, 1)
+  -- The town stage composites with the sub-engine panels on the
+  -- sub-mapped role: the 3D town resolves into the fixed scratch target
+  -- (its presentation blit replaces) and is then alpha-composited over
+  -- the 2D panels, instead of the panels or a later role pass covering it.
+  if engine == "sub" and slot.renderer ~= nil and #slot.towns > 0 then
+    local scratch = assert(self.townScratch, "town stage requires its composite scratch")
+    graphics.setCanvas(scratch)
+    graphics.clear(0, 0, 0, 0)
+    drawTowns(slot, { x = 0, y = 0, width = SOURCE_WIDTH, height = SOURCE_HEIGHT })
+    graphics.setCanvas(canvas)
+    graphics.setBlendMode("alpha", "premultiplied")
+    graphics.draw(scratch, 0, 0)
+    graphics.setBlendMode("alpha", "alphamultiply")
+  end
   drawSprites(self, slot, engine)
   drawParticles(self, slot)
   drawFade(self, slot)
@@ -1903,12 +2017,20 @@ end
 
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
----@param role string upper or lower
----@param rect { x: number, y: number, width: number, height: number } device-space role rectangle
-local function drawRole(self, slot, role, rect)
+function HgssOpeningMovie:_renderRoles(slot)
   local graphics = self.graphics
+  local previous = graphics.getCanvas()
   graphics.push("all")
-  local ok, failure = pcall(drawRoleBody, self, slot, role, rect)
+  local ok, failure = pcall(function()
+    assert(self.mainCanvas ~= nil and self.subCanvas ~= nil, "movie role targets are missing")
+    graphics.setCanvas(self.mainCanvas)
+    graphics.clear(0, 0, 0, 1)
+    self:_renderEngine(slot, self.mainCanvas, "main", (slot.mainPhysical == "upper") and "upper" or "lower")
+    graphics.setCanvas(self.subCanvas)
+    graphics.clear(0, 0, 0, 1)
+    self:_renderEngine(slot, self.subCanvas, "sub", (slot.mainPhysical == "upper") and "lower" or "upper")
+    graphics.setCanvas(previous)
+  end)
   graphics.pop()
   if not ok then
     error(failure, 0)
@@ -1917,28 +2039,75 @@ end
 
 function HgssOpeningMovie:_render()
   local slot = self.current
-  if slot == nil or self.canvas == nil then
+  if slot == nil or self.mainCanvas == nil or self.subCanvas == nil then
     return
   end
   local graphics = self.graphics
-  local rects = roleRects(self)
-  local previous = graphics.getCanvas()
-  graphics.setCanvas(self.canvas)
+  -- Both source engines render exactly once into their fixed targets;
+  -- host layout below only selects which authored outputs fill the stage.
+  self:_renderRoles(slot)
+  local measurement = self.displayContext:measure(self.width, self.height)
+  local configuration = ApplicationLayout.classify(measurement, nil)
+  local selection = ApplicationLayout.selectSurfaces(measurement)
+  local primary = selection.primary.usableBounds
+  if primary == nil then
+    primary = { x = 0, y = 0, width = self.width, height = self.height }
+  end
+  local upperCanvas = (roleEngine(slot, "upper") == "main") and self.mainCanvas or self.subCanvas
+  local lowerCanvas = (roleEngine(slot, "upper") == "main") and self.subCanvas or self.mainCanvas
+  assert(upperCanvas ~= nil, "movie role targets are missing")
+  assert(lowerCanvas ~= nil, "movie role targets are missing")
   graphics.clear(0, 0, 0, 1)
-  drawRole(self, slot, "upper", rects.upper)
-  drawRole(self, slot, "lower", rects.lower)
-  graphics.setCanvas(previous)
-  graphics.setColor(1, 1, 1, 1)
-  local canvasWidth = self.canvasWidth or self.width
-  local canvasHeight = self.canvasHeight or self.height
-  graphics.draw(self.canvas, 0, 0, 0, self.width / canvasWidth, self.height / canvasHeight)
+  if configuration == "dualDisplay" and selection.secondary ~= nil and selection.secondary.usableBounds ~= nil then
+    -- Each physical surface is its own source screen: fill it like the
+    -- tall panes below, preserving the 4:3 projection without squeezing.
+    self:_blitRole(upperCanvas, copyRect(primary), true)
+    self:_blitRole(lowerCanvas, copyRect(selection.secondary.usableBounds), true)
+    return
+  end
+  if configuration == "tall" then
+    local half = primary.height / 2
+    self:_blitRole(upperCanvas, { x = primary.x, y = primary.y, width = primary.width, height = half }, true)
+    self:_blitRole(lowerCanvas, {
+      x = primary.x,
+      y = primary.y + half,
+      width = primary.width,
+      height = primary.height - half,
+    }, true)
+    return
+  end
+  if shotIsPaired(slot) then
+    -- Coequal beats keep both outputs on one stage with no overlay strip:
+    -- stacked as one 256x384 frame on compact/native stages, side by side
+    -- as one 512x192 pair on wide stages, each fit inside the safe bounds.
+    -- Tall and dual stages always stack (or surface) both roles above.
+    if configuration == "wide" then
+      local scale = math.min(primary.width / (SOURCE_WIDTH * 2), primary.height / SOURCE_HEIGHT)
+      local paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
+      local x = primary.x + (primary.width - paneWidth * 2) / 2
+      local y = primary.y + (primary.height - paneHeight) / 2
+      self:_blitRole(upperCanvas, { x = x, y = y, width = paneWidth, height = paneHeight }, false)
+      self:_blitRole(lowerCanvas, { x = x + paneWidth, y = y, width = paneWidth, height = paneHeight }, false)
+      return
+    end
+    local scale = math.min(primary.width / SOURCE_WIDTH, primary.height / (SOURCE_HEIGHT * 2))
+    local paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
+    local x = primary.x + (primary.width - paneWidth) / 2
+    local y = primary.y + (primary.height - paneHeight * 2) / 2
+    self:_blitRole(upperCanvas, { x = x, y = y, width = paneWidth, height = paneHeight }, false)
+    self:_blitRole(lowerCanvas, { x = x, y = y + paneHeight, width = paneWidth, height = paneHeight }, false)
+    return
+  end
+  local activeCanvas = (activeEngine(slot) == "main") and self.mainCanvas or self.subCanvas
+  assert(activeCanvas ~= nil, "movie role targets are missing")
+  self:_blitRole(activeCanvas, copyRect(primary), false)
 end
 
 function HgssOpeningMovie:draw()
   if self.disposed then
     return
   end
-  if self.canvas == nil then
+  if self.mainCanvas == nil or self.subCanvas == nil then
     return
   end
   local graphics = self.graphics
@@ -1957,17 +2126,27 @@ function HgssOpeningMovie:dispose()
     return
   end
   self.disposed = true
-  local current, nextSlot, canvas = self.current, self.nextSlot, self.canvas
-  self.current, self.nextSlot, self.canvas = nil, nil, nil
-  self.canvasWidth, self.canvasHeight = nil, nil
+  local current, nextSlot, mainCanvas, subCanvas, townScratch =
+    self.current, self.nextSlot, self.mainCanvas, self.subCanvas, self.townScratch
+  self.current, self.nextSlot, self.mainCanvas, self.subCanvas, self.townScratch = nil, nil, nil, nil, nil
   if current ~= nil then
     releaseSlot(current)
   end
   if nextSlot ~= nil then
     releaseSlot(nextSlot)
   end
-  if canvas ~= nil then
-    canvas:release()
+  -- Settle retired scene handles before releasing the targets that drew
+  -- them, so teardown leaves no queued (but logically released) handles
+  -- behind.
+  settleReleasedHandles(self, mainCanvas)
+  if mainCanvas ~= nil then
+    mainCanvas:release()
+  end
+  if subCanvas ~= nil then
+    subCanvas:release()
+  end
+  if townScratch ~= nil then
+    townScratch:release()
   end
 end
 
