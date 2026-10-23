@@ -3632,6 +3632,10 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       schema = BattlePresentationSchema.MANIFEST_SCHEMA,
       version = { id = versionId, language = assert(MonSources.versionLanguages[versionId]) },
       catalogIdentity = versionId .. ":" .. romFs:metadata().sha1,
+      -- Only a fully compiled bundle proves its dump-backed roles: the
+      -- incomplete-job gate below never stages a partial manifest, so a
+      -- staged manifest always carries its verification.
+      verified = true,
       scenes = BattlePresentationCache.sceneInventory(),
       battlefield = { slots = {} },
       layouts = {

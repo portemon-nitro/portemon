@@ -2623,6 +2623,7 @@ function BattlePresentationSchema.assertManifest(manifest)
     schema = true,
     version = true,
     catalogIdentity = true,
+    verified = true,
     scenes = true,
     layouts = true,
     battlefield = true,
