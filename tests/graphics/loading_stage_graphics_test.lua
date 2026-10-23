@@ -235,6 +235,287 @@ function T.startup_stage_opens_on_a_random_line_and_stays_animated(scope)
   )
 end
 
+function T.walking_pair_keeps_single_tile_gap_with_source_cadence_lift(scope)
+  local presentation = Presentation.new({
+    versionId = "heartgold",
+    width = WIDTH,
+    height = HEIGHT,
+    pairIndex = 5,
+    random = function()
+      return 0.25
+    end,
+  })
+  scope:own({
+    release = function()
+      presentation:dispose()
+    end,
+  })
+  Assert.isTrue(
+    presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+    "the chosen pair adopts its two transparent atlases"
+  )
+  local heroFrameWidth, followerFrameWidth, pivotX = 16, 12, 0.5
+  local totalTicks = 4
+  local tickSeconds = 1 / 30
+  local originalDraw = love.graphics.draw
+  local samples = {}
+  local ok, err = xpcall(function()
+    for tickIndex = 0, totalTicks do
+      presentation.elapsed = (tickIndex + 0.5) * tickSeconds
+      local draws = {}
+      love.graphics.draw = function(drawable, quad, x, y, rotation, scaleX, scaleY, ...)
+        if quad ~= nil and type(x) == "number" and type(drawable.getWidth) == "function" then
+          local atlasWidth = drawable:getWidth()
+          if atlasWidth == heroFrameWidth * 2 or atlasWidth == followerFrameWidth * 2 then
+            draws[#draws + 1] = { atlasWidth = atlasWidth, quad = quad, x = x, y = y, scale = scaleX or 1 }
+          end
+        end
+        return originalDraw(drawable, quad, x, y, rotation, scaleX, scaleY, ...)
+      end
+      local canvas = scope:own(love.graphics.newCanvas(WIDTH, HEIGHT))
+      love.graphics.push("all")
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      presentation:draw()
+      love.graphics.setCanvas()
+      love.graphics.pop()
+      love.graphics.draw = originalDraw
+      local heroDraw, followerDraw
+      for _, draw in ipairs(draws) do
+        if draw.atlasWidth == heroFrameWidth * 2 then
+          heroDraw = draw
+        else
+          followerDraw = draw
+        end
+      end
+      Assert.notNil(heroDraw, "the hero sprite draws on tick " .. tickIndex)
+      Assert.notNil(followerDraw, "the follower sprite draws on tick " .. tickIndex)
+      samples[tickIndex] = { hero = heroDraw, follower = followerDraw }
+    end
+  end, debug.traceback)
+  love.graphics.draw = originalDraw
+  if not ok then
+    error(err, 0)
+  end
+  for tickIndex = 0, totalTicks - 1 do
+    local heroDraw = samples[tickIndex].hero
+    local followerDraw = samples[tickIndex].follower
+    Assert.equal(heroDraw.scale, followerDraw.scale, "the pair shares one stage scale")
+    local scale = heroDraw.scale
+    local gap = (heroDraw.x - followerDraw.x) / scale + (heroFrameWidth - followerFrameWidth) * pivotX
+    Assert.near(gap, 16, 0.001, "the follower foot stays one tile behind the hero foot on tick " .. tickIndex)
+  end
+  local step = samples[0].follower.scale
+  local restY = samples[0].follower.y
+  local liftY = samples[1].follower.y
+  Assert.isTrue(liftY ~= restY, "the follower lifts off the baseline between source walk frames")
+  Assert.near(math.abs(liftY - restY), step, 0.001, "the gait lift is one source pixel")
+  Assert.near(samples[totalTicks].follower.y, restY, 0.001, "the follower lands back on the baseline at gait rest")
+  Assert.isTrue(samples[0].hero.quad ~= samples[1].hero.quad, "the hero walk clip advances on source tick cadence")
+  Assert.isTrue(
+    samples[0].follower.quad ~= samples[1].follower.quad,
+    "the follower walk clip advances on source tick cadence"
+  )
+end
+
+function T.tall_flavor_caption_sits_beside_pair_with_readable_type(scope)
+  local presentations = {}
+  scope:own({
+    release = function()
+      for _, presentation in ipairs(presentations) do
+        presentation:dispose()
+      end
+    end,
+  })
+  local function paintedGeometry(presentation, width, height)
+    local spriteBottom, captionTop, fontHeight
+    local lines = {}
+    local originalDraw, originalPrint, originalPrintf = love.graphics.draw, love.graphics.print, love.graphics.printf
+    local ok, err = xpcall(function()
+      love.graphics.draw = function(drawable, quad, x, y, rotation, scaleX, scaleY, ...)
+        if quad ~= nil and type(x) == "number" and type(y) == "number" then
+          local _, _, quadWidth, quadHeight = quad:getViewport()
+          local bottom = y + quadHeight * (scaleY or scaleX or 1)
+          if spriteBottom == nil or bottom > spriteBottom then
+            spriteBottom = bottom
+          end
+        end
+        return originalDraw(drawable, quad, x, y, rotation, scaleX, scaleY, ...)
+      end
+      local function record(value, textY)
+        lines[#lines + 1] = tostring(value)
+        if captionTop == nil or textY < captionTop then
+          captionTop = textY
+        end
+        local textHeight = love.graphics.getFont():getHeight()
+        if fontHeight == nil or textHeight > fontHeight then
+          fontHeight = textHeight
+        end
+      end
+      love.graphics.print = function(value, x, y, ...)
+        if type(x) == "number" and type(y) == "number" then
+          record(value, y)
+        else
+          lines[#lines + 1] = tostring(value)
+        end
+        return originalPrint(value, x, y, ...)
+      end
+      love.graphics.printf = function(value, x, y, ...)
+        record(value, y)
+        return originalPrintf(value, x, y, ...)
+      end
+      local canvas = scope:own(love.graphics.newCanvas(width, height))
+      love.graphics.push("all")
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      presentation:draw()
+      love.graphics.setCanvas()
+      love.graphics.pop()
+    end, debug.traceback)
+    love.graphics.draw, love.graphics.print, love.graphics.printf = originalDraw, originalPrint, originalPrintf
+    if not ok then
+      error(err, 0)
+    end
+    return { spriteBottom = spriteBottom, captionTop = captionTop, fontHeight = fontHeight, lines = lines }
+  end
+  local function checkCaption(presentation, width, height, label)
+    presentation.elapsed = 0
+    local geometry = paintedGeometry(presentation, width, height)
+    Assert.notNil(geometry.spriteBottom, label .. " paints its sprite pair")
+    Assert.notNil(geometry.captionTop, label .. " paints its flavor line")
+    Assert.notNil(geometry.fontHeight, label .. " measures its flavor type")
+    Assert.equal(#geometry.lines, 1, label .. " paints only the single flavor line")
+    Assert.isTrue(geometry.fontHeight >= 16, label .. " keeps flavor type readable, got " .. geometry.fontHeight)
+    local gap = geometry.captionTop - geometry.spriteBottom
+    Assert.isTrue(gap >= 0, label .. " never overlaps the pair, got gap " .. gap)
+    Assert.isTrue(gap <= 40, label .. " keeps flavor beside the pair without a gulf, got gap " .. gap)
+    local bounds = presentation.secondaryBounds or presentation.primaryBounds
+    Assert.notNil(bounds, label .. " exposes its active pane")
+    Assert.isTrue(
+      geometry.captionTop + geometry.fontHeight <= bounds.y + bounds.height,
+      label .. " never clips its flavor line"
+    )
+  end
+  local shapes = {
+    { width = 360, height = 640 },
+    { width = 800, height = 450 },
+    { width = 480, height = 360 },
+  }
+  for _, shape in ipairs(shapes) do
+    for _, firstRandom in ipairs({ 0.5, 0.65 }) do
+      local presentation = Presentation.new({
+        versionId = "heartgold",
+        width = shape.width,
+        height = shape.height,
+        pairIndex = 5,
+        random = function()
+          return firstRandom
+        end,
+      })
+      presentations[#presentations + 1] = presentation
+      Assert.isTrue(
+        presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+        "the chosen pair adopts its two transparent atlases"
+      )
+      checkCaption(
+        presentation,
+        shape.width,
+        shape.height,
+        shape.width .. "x" .. shape.height .. " flavor " .. firstRandom
+      )
+    end
+  end
+  local resized = Presentation.new({
+    versionId = "heartgold",
+    width = 480,
+    height = 360,
+    pairIndex = 5,
+    random = function()
+      return 0.5
+    end,
+  })
+  presentations[#presentations + 1] = resized
+  Assert.isTrue(
+    resized:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+    "the chosen pair adopts its two transparent atlases"
+  )
+  resized:resize(360, 640)
+  Assert.equal(resized.configuration, "tall", "the portrait window keeps the tall arrangement")
+  checkCaption(resized, 360, 640, "resized tall flavor")
+end
+
+function T.decorative_stage_prints_only_flavor_without_progress_copy(scope)
+  local presentation = Presentation.new({
+    versionId = "heartgold",
+    width = WIDTH,
+    height = HEIGHT,
+    pairIndex = 5,
+    random = function()
+      return 0.25
+    end,
+  })
+  scope:own({
+    release = function()
+      presentation:dispose()
+    end,
+  })
+  Assert.isTrue(
+    presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+    "the chosen pair adopts its two transparent atlases"
+  )
+  local function renderedLinesAndPixels(status)
+    local lines = {}
+    local originalPrint, originalPrintf = love.graphics.print, love.graphics.printf
+    local pixels
+    local ok, err = xpcall(function()
+      love.graphics.print = function(value, ...)
+        lines[#lines + 1] = tostring(value)
+        return originalPrint(value, ...)
+      end
+      love.graphics.printf = function(value, ...)
+        lines[#lines + 1] = tostring(value)
+        return originalPrintf(value, ...)
+      end
+      presentation.elapsed = 0
+      local canvas = scope:own(love.graphics.newCanvas(WIDTH, HEIGHT))
+      love.graphics.push("all")
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      presentation:draw(status)
+      love.graphics.setCanvas()
+      love.graphics.pop()
+      pixels = scope:own(canvas:newImageData()):getString()
+    end, debug.traceback)
+    love.graphics.print, love.graphics.printf = originalPrint, originalPrintf
+    if not ok then
+      error(err, 0)
+    end
+    return lines, pixels
+  end
+  local plainLines, plainPixels = renderedLinesAndPixels(nil)
+  Assert.equal(#plainLines, 1, "the quiet stage paints its single flavor line")
+  local flavor = plainLines[1]
+  local statusLines, statusPixels = renderedLinesAndPixels({
+    label = "Preparing",
+    detail = "Waiting",
+    fraction = 0.4,
+    error = "Something failed",
+  })
+  Assert.equal(#statusLines, 1, "a passed status adds no extra line to the decorative stage")
+  Assert.equal(statusLines[1], flavor, "a passed status never replaces the flavor line")
+  for _, leak in ipairs({ "Preparing", "Waiting", "Loading", "Something failed" }) do
+    Assert.isTrue(
+      statusLines[1]:find(leak, 1, true) == nil,
+      "the decorative stage never prints status copy, found: " .. leak
+    )
+  end
+  Assert.isTrue(statusPixels == plainPixels, "a passed status never paints progress pixels")
+  local stringLines, stringPixels = renderedLinesAndPixels("Loading your game")
+  Assert.equal(#stringLines, 1, "a passed string status adds no extra line")
+  Assert.equal(stringLines[1], flavor, "a passed string status never replaces the flavor line")
+  Assert.isTrue(stringPixels == plainPixels, "a passed string status never paints progress pixels")
+end
+
 -- The boot wait paints its animated themed stage from the very first frame,
 -- before the boot-source gate answers: two draws around one update already
 -- differ, and no plaintext preparing headline is ever the first frame.
@@ -302,6 +583,124 @@ function T.boot_wait_paints_the_animated_stage_before_the_gate_answers(scope)
     copy:find("Preparing", 1, true) == nil,
     "no plaintext preparing headline is the first frame, got: " .. copy
   )
+end
+
+function T.failed_pair_adoption_releases_staged_art_without_half_published_sprites(scope)
+  local good = startupPairCacheFs(5, "heartgold")
+  local followerPath = "assets/generated/startup/loader/pairs/5/follower.png"
+  local bad = {
+    loadLua = good.loadLua,
+    exists = good.exists,
+    read = function(_, path)
+      if path == followerPath then
+        return nil
+      end
+      return good.read(_, path)
+    end,
+  }
+  local presentation = Presentation.new({
+    versionId = "heartgold",
+    width = WIDTH,
+    height = HEIGHT,
+    pairIndex = 5,
+    random = function()
+      return 0.25
+    end,
+  })
+  scope:own({
+    release = function()
+      presentation:dispose()
+    end,
+  })
+  local originalNewImage = love.graphics.newImage
+  local staged = {}
+  local ok, err = xpcall(function()
+    love.graphics.newImage = function(...)
+      local image = originalNewImage(...)
+      staged[#staged + 1] = image
+      return image
+    end
+    local adopted, failure = presentation:adoptGeneratedAssets(bad)
+    Assert.isFalse(adopted, "a missing follower atlas fails adoption")
+    Assert.notNil(failure, "a missing follower atlas carries a diagnosis")
+    Assert.isNil(presentation.hero, "no half-published hero survives a failed adoption")
+    Assert.isNil(presentation.follower, "no half-published follower survives a failed adoption")
+  end, debug.traceback)
+  love.graphics.newImage = originalNewImage
+  if not ok then
+    error(err, 0)
+  end
+  Assert.equal(#staged, 1, "only the hero atlas stages before the follower read fails")
+  Assert.throws(function()
+    staged[1]:getWidth()
+  end, "the staged hero image is released on failure")
+  local pixels = renderStage(scope, presentation)
+  Assert.isTrue(cornerAlpha(pixels) > 0, "the stage stays drawable after a failed adoption")
+  Assert.isTrue(presentation:adoptGeneratedAssets(good), "a later read of both atlases still adopts")
+  Assert.notNil(presentation.hero, "the retried adoption publishes the hero")
+  Assert.notNil(presentation.follower, "the retried adoption publishes the follower")
+end
+
+function T.walker_phase_survives_adoption_and_resize_across_all_choices(scope)
+  local presentation = Presentation.new({
+    versionId = "heartgold",
+    width = WIDTH,
+    height = HEIGHT,
+    pairIndex = 5,
+    random = function()
+      return 0.25
+    end,
+  })
+  scope:own({
+    release = function()
+      presentation:dispose()
+    end,
+  })
+  presentation.elapsed = 0.05
+  Assert.isTrue(
+    presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+    "the chosen pair adopts its two transparent atlases"
+  )
+  local heroBefore = presentation:_frameIndex("hero")
+  local followerBefore = presentation:_frameIndex("follower")
+  Assert.notNil(heroBefore, "adoption preserves the hero walk position")
+  Assert.notNil(followerBefore, "adoption preserves the follower walk position")
+  presentation:resize(360, 640)
+  Assert.equal(presentation.elapsed, 0.05, "resize never touches the walk clock")
+  Assert.equal(presentation:_frameIndex("hero"), heroBefore, "resize never resets the hero walk position")
+  Assert.equal(presentation:_frameIndex("follower"), followerBefore, "resize never resets the follower walk position")
+  presentation:update(1 / 30)
+  Assert.near(presentation.elapsed, 0.05 + 1 / 30, 1e-9, "the walk clock keeps advancing after resize")
+  local resized = scope:own(love.graphics.newCanvas(360, 640))
+  love.graphics.push("all")
+  love.graphics.setCanvas(resized)
+  love.graphics.clear(0, 0, 0, 0)
+  presentation:draw()
+  love.graphics.setCanvas()
+  love.graphics.pop()
+  local shared = scope:own(love.graphics.newCanvas(WIDTH, HEIGHT))
+  for pairIndex = 1, 32 do
+    local choice = Presentation.new({
+      versionId = "heartgold",
+      width = WIDTH,
+      height = HEIGHT,
+      pairIndex = pairIndex,
+      random = function()
+        return 0.1
+      end,
+    })
+    Assert.isTrue(
+      choice:adoptGeneratedAssets(startupPairCacheFs(pairIndex, "heartgold")),
+      "walker choice " .. pairIndex .. " adopts its two transparent atlases"
+    )
+    love.graphics.push("all")
+    love.graphics.setCanvas(shared)
+    love.graphics.clear(0, 0, 0, 0)
+    choice:draw()
+    love.graphics.setCanvas()
+    love.graphics.pop()
+    choice:dispose()
+  end
 end
 
 return GraphicsSmoke.suite(T, { tags = { "startup" } })
