@@ -489,9 +489,9 @@ end
 function T.started_wipe_effects_hold_the_close_step_for_their_authored_ticks()
   -- The closed v4 grammar always counts wipe ticks, so a started wipe
   -- orders the close step for exactly its authored duration: no extra
-  -- tick past completion, no early release while it runs. Exact blend
-  -- coefficients and scanline coverage stay owned by the later effect
-  -- deliverable; this step only proves the wait binds the wipe effect.
+  -- tick past completion, no early release while it runs. The wipe also
+  -- follows the per-scanline cosine law with endpoint handling, stays on
+  -- its owning engine, and varies with its kind.
   local root = sceneRoot(2)
   local instant = manifestFor(2)
   instant.timeline = {
@@ -547,6 +547,191 @@ function T.started_wipe_effects_hold_the_close_step_for_their_authored_ticks()
       entries[movie:sceneNumber()] = ticks
     end
   end
+  local function truncTowardZero(value)
+    if value >= 0 then
+      return math.floor(value)
+    end
+    return math.ceil(value)
+  end
+  local function wipeBoundary(n, ticks, vcount)
+    local theta = math.pi * n / ticks
+    local x, y = math.cos(theta), math.sin(theta)
+    if x == 1 then
+      return 255
+    end
+    if x == -1 then
+      return 0
+    end
+    if math.abs(y) < 1e-9 then
+      if x > 0 then
+        return 255
+      end
+      return 0
+    end
+    return math.max(0, math.min(255, 127 + truncTowardZero(vcount * x / y)))
+  end
+  Assert.equal(wipeBoundary(0, 10, 0), 255, "the opening edge starts fully closed")
+  Assert.equal(wipeBoundary(0, 10, 191), 255, "the opening edge starts fully closed on every row")
+  Assert.equal(wipeBoundary(10, 10, 48), 0, "the final edge ends fully open")
+  Assert.equal(wipeBoundary(10, 10, 191), 0, "the final edge ends fully open on every row")
+  Assert.isFalse(
+    wipeBoundary(2, 10, 48) == wipeBoundary(2, 10, 96),
+    "early edges already slope with the scanline"
+  )
+  local probeGraphics = movieGraphics()
+  local probeMovie = openMovie(scenes, cacheFs, probeGraphics)
+  while probeMovie:sceneNumber() < 2 do
+    probeMovie:updateFixed()
+  end
+  for _ = 1, 27 do
+    probeMovie:updateFixed()
+  end
+  local probeBaseline = #probeGraphics.scissorIntersections
+  local probeCanvases = #probeGraphics.canvases
+  probeMovie:draw()
+  local function probeEdges(y)
+    local edges = {}
+    for index = probeBaseline + 1, #probeGraphics.scissorIntersections do
+      local entry = probeGraphics.scissorIntersections[index]
+      if probeGraphics.scissorCanvases[index].canvas == probeMovie.mainCanvas then
+        local requested = entry.requested
+        if y >= requested[2] and y < requested[2] + requested[4] then
+          edges[#edges + 1] = requested[1]
+        end
+      end
+    end
+    return edges
+  end
+  local probeLow = probeEdges(48)
+  local probeHigh = probeEdges(96)
+  local probeMasked = #probeGraphics.canvases > probeCanvases
+  if #probeLow == 0 and #probeHigh == 0 then
+    Assert.isTrue(probeMasked, "the scanline wipe clips per row instead of one centered rectangle")
+  else
+    Assert.isTrue(#probeLow > 0, "the wipe clips the upper probe row on its owning engine")
+    Assert.isTrue(#probeHigh > 0, "the wipe clips the lower probe row on its owning engine")
+    local sortedLow, sortedHigh = {}, {}
+    for _, edge in ipairs(probeLow) do
+      sortedLow[#sortedLow + 1] = edge
+    end
+    for _, edge in ipairs(probeHigh) do
+      sortedHigh[#sortedHigh + 1] = edge
+    end
+    table.sort(sortedLow)
+    table.sort(sortedHigh)
+    Assert.isFalse(
+      #sortedLow == #sortedHigh and sortedLow[1] == sortedHigh[1],
+      "the wipe edge slopes with the scanline instead of a centered rectangle"
+    )
+    local expectedLow = wipeBoundary(2, 10, 48)
+    local expectedHigh = wipeBoundary(2, 10, 96)
+    local foundLow, foundHigh = false, false
+    for _, edge in ipairs(sortedLow) do
+      if math.abs(edge - expectedLow) <= 1 then
+        foundLow = true
+      end
+    end
+    for _, edge in ipairs(sortedHigh) do
+      if math.abs(edge - expectedHigh) <= 1 then
+        foundHigh = true
+      end
+    end
+    Assert.isTrue(foundLow, "the upper row matches the scanline law")
+    Assert.isTrue(foundHigh, "the lower row matches the scanline law")
+  end
+  local subScissors = 0
+  for index = probeBaseline + 1, #probeGraphics.scissorIntersections do
+    if probeGraphics.scissorCanvases[index].canvas == probeMovie.subCanvas then
+      subScissors = subScissors + 1
+    end
+  end
+  Assert.equal(subScissors, 0, "the wipe never spills onto the other engine")
+  probeMovie:dispose()
+  local other = manifestFor(2)
+  other.timeline = {
+    steps = {
+      { id = "open", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 25 } },
+      { id = "close", events = { 3, 4 }, ["until"] = { kind = "effect", effect = "wipe-other" } },
+    },
+    events = {
+      {
+        op = "setScroll",
+        stepId = "open",
+        atStepTick = 0,
+        engine = "main",
+        bgSlot = 0,
+        dx = -256,
+        dy = 0,
+        ticks = 25,
+      },
+      { op = "waitTicks", stepId = "open", atStepTick = 0, ticks = 25 },
+      {
+        op = "circleWipe",
+        stepId = "close",
+        atStepTick = 0,
+        engine = "main",
+        kind = 1,
+        ticks = 10,
+        effect = "wipe-other",
+      },
+      { op = "finish", stepId = "close", atStepTick = 0 },
+    },
+  }
+  local otherRaw = {}
+  for sceneNumber = 1, 5 do
+    otherRaw[sceneNumber] = manifestFor(sceneNumber)
+  end
+  otherRaw[2] = other
+  local otherCache = stubCache(otherRaw)
+  local otherScenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(otherCache, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    otherScenes[sceneNumber] = loaded
+  end
+  local otherGraphics = movieGraphics()
+  local otherMovie = openMovie(otherScenes, otherCache, otherGraphics)
+  while otherMovie:sceneNumber() < 2 do
+    otherMovie:updateFixed()
+  end
+  for _ = 1, 27 do
+    otherMovie:updateFixed()
+  end
+  local otherBaseline = #otherGraphics.scissorIntersections
+  otherMovie:draw()
+  local function otherEdges(y)
+    local edges = {}
+    for index = otherBaseline + 1, #otherGraphics.scissorIntersections do
+      local entry = otherGraphics.scissorIntersections[index]
+      if otherGraphics.scissorCanvases[index].canvas == otherMovie.mainCanvas then
+        local requested = entry.requested
+        if y >= requested[2] and y < requested[2] + requested[4] then
+          edges[#edges + 1] = requested[1]
+        end
+      end
+    end
+    table.sort(edges)
+    return edges
+  end
+  local kindLow = otherEdges(48)
+  local kindHigh = otherEdges(96)
+  if #probeLow > 0 and #kindLow > 0 then
+    Assert.isFalse(
+      #probeLow == #kindLow and probeLow[1] == kindLow[1],
+      "different wipe kinds target different windows"
+    )
+  elseif #probeHigh > 0 and #kindHigh > 0 then
+    Assert.isFalse(
+      #probeHigh == #kindHigh and probeHigh[1] == kindHigh[1],
+      "different wipe kinds target different windows"
+    )
+  else
+    Assert.isTrue(
+      #kindLow > 0 or #kindHigh > 0 or #otherGraphics.canvases > probeCanvases,
+      "the other kind also clips per row instead of one centered rectangle"
+    )
+  end
+  otherMovie:dispose()
   Assert.isTrue(movie:isFinished(), "the movie finishes within its bounded run")
   Assert.equal(entries[2], 90, "scene 2 still starts on its authored tick")
   Assert.equal(entries[3], 125, "the close step holds exactly the wipe's ten authored ticks")

@@ -139,8 +139,8 @@ end
 ---@field cameraDistance number?
 ---@field lightingMap number?
 ---@field fade table<string, unknown>?
----@field wipe table<string, unknown>?
----@field blend table<string, unknown>?
+---@field wipe table<string, unknown>? engine-local scanline wipe program
+---@field blendPrograms table<string, table<string, unknown>> engine-local alpha programs by source engine
 ---@field palette table<string, unknown>?
 ---@field windows table<string, OpeningMovieWindow> live engine-local window state by source engine
 ---@field townVisible boolean source town stage contributes to main BG0
@@ -541,7 +541,7 @@ local function acquireSlot(self, manifest)
     lightingMap = nil,
     fade = nil,
     wipe = nil,
-    blend = nil,
+    blendPrograms = {},
     palette = nil,
     windows = {
       main = { enabled = false, win0 = nil, win1 = nil, win1Source = nil, outsideMask = 0 },
@@ -1074,7 +1074,18 @@ local function applyEvent(self, slot, event)
       startTimedEffect(slot, event.effect, event.ticks)
     end
   elseif op == "setBlend" then
-    slot.blend = { effect = event.effect, from = event.from, to = event.to, ticks = event.ticks, elapsed = 0 }
+    -- One alpha program per source engine carries the six-bit first and
+    -- second plane masks, the direction, and the elapsed source ticks. A
+    -- later start on the same engine replaces the running program while
+    -- the named effect gates its own wait; starts on the other engine
+    -- never touch this slot.
+    slot.blendPrograms[event.engine] = {
+      firstMask = event.firstMask,
+      secondMask = event.secondMask,
+      direction = event.direction,
+      ticks = event.ticks,
+      elapsed = 0,
+    }
     startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "window" then
     startWindowProgram(slot, event)
@@ -1094,7 +1105,11 @@ local function applyEvent(self, slot, event)
     -- only the draw contribution stops here.
     slot.townVisible = event.visible
   elseif op == "circleWipe" then
-    slot.wipe = { mode = event.mode, ticks = event.ticks or 18, elapsed = 0 }
+    -- One active scanline wipe program per slot carries its owning source
+    -- engine, kind, and elapsed source ticks. A new start replaces the
+    -- running program; the source programs never overlap two wipes, so a
+    -- single program plus its engine tag is the whole state.
+    slot.wipe = { engine = event.engine, kind = event.kind, ticks = event.ticks, elapsed = 0 }
     startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "setSpriteClip" then
     local instance = slot.spriteInstances[event.instanceId]
@@ -1240,16 +1255,25 @@ local function advanceContinuous(slot)
       end
     end
   end
-  if slot.blend ~= nil and slot.blend.elapsed < slot.blend.ticks then
-    slot.blend.elapsed = slot.blend.elapsed + 1
+  for _, program in pairs(slot.blendPrograms) do
+    if program.elapsed < program.ticks then
+      program.elapsed = program.elapsed + 1
+    end
   end
-  if slot.fade ~= nil and slot.fade.elapsed < slot.fade.ticks then
-    slot.fade.elapsed = slot.fade.elapsed + 1
+  if slot.fade ~= nil then
+    -- A finished fade retires instead of tinting later art: the source
+    -- fade task ends on its authored tick, so a completed cover must not
+    -- outlive the program that staged it.
+    if slot.fade.elapsed < slot.fade.ticks then
+      slot.fade.elapsed = slot.fade.elapsed + 1
+    else
+      slot.fade = nil
+    end
   end
   if slot.wipe ~= nil then
-    -- A finished iris retires instead of covering later art: the source
-    -- wipe task destroys itself and restores the display on finish, so a
-    -- completed cover must reveal what the program stages underneath it.
+    -- A finished wipe retires instead of covering later art: the program
+    -- draws its kind finish on the completion frame, and the next source
+    -- tick retires it so staged art underneath shows again.
     if slot.wipe.elapsed < slot.wipe.ticks then
       slot.wipe.elapsed = slot.wipe.elapsed + 1
     else
@@ -1782,20 +1806,36 @@ local function sortedBackgrounds(slot, engine)
   return collected
 end
 
+-- Source step-clock first-target weight with hardware saturation: the raw
+-- coefficient counts floor(elapsed*31/ticks) capped at 31, the direction
+-- selects which end starts full, and each side saturates at sixteen.
+---@param program table<string, unknown> engine alpha program
+---@return number effective first-target weight
+local function blendFirstWeight(program)
+  local ticks = program.ticks --[[@as integer]]
+  assert(ticks > 0, "engine alpha program carries no source tick count")
+  local elapsed = math.min(program.elapsed --[[@as integer]], ticks)
+  local ev = math.min(31, math.floor(elapsed * 31 / ticks))
+  local raw = program.direction == 0 and ev or (31 - ev)
+  return math.min(raw, 16) / 16
+end
+
 ---@param slot OpeningMovieSlot scene slot
----@return number layer alpha following the active blend program
-local function layerAlpha(slot)
-  local blend = slot.blend
-  if blend == nil or blend.ticks <= 0 then
-    return 1
+---@param engine string source engine owning the candidate output
+---@return boolean true when a visible sprite instance owns the engine
+local function engineObjVisible(slot, engine)
+  for _, instance in pairs(slot.spriteInstances) do
+    if instance.engine == engine and instance.visible then
+      return true
+    end
   end
-  return 1 - 0.5 * math.min(blend.elapsed / blend.ticks, 1)
+  return false
 end
 
 -- Semantic mapping only; placement remains owned by _render.
 -- Source engine is main/sub; only physical screen role changes on flip.
 -- Numeric lower BG priority paints later in the source engine target.
----@param mask integer five-bit source plane mask (BG0..BG3, OBJ)
+---@param mask integer source plane mask: five-bit window masks (BG0..BG3, OBJ) or six-bit blend masks (plus backdrop)
 ---@param planeIndex integer background slot 0..3, or 4 for OBJ pixels
 ---@return boolean true when the plane paints where the mask selects it
 local function maskAllows(mask, planeIndex)
@@ -1942,6 +1982,61 @@ local function drawPlaneClipped(self, slot, engine, planeIndex, draw)
       error(failure, 0)
     end
   end
+end
+
+-- A blend target masked off by the active engine windows paints nowhere,
+-- so eligibility follows the same inside/outside plane selection the
+-- window clipper uses.
+---@param slot OpeningMovieSlot scene slot
+---@param engine string source engine owning the window registers
+---@param planeIndex integer background slot 0..3, or 4 for OBJ pixels
+---@return boolean true when the plane paints somewhere under the current window state
+local function planeWindowEligible(slot, engine, planeIndex)
+  local spans = windowSpans(slot, engine)
+  if spans == nil then
+    return true
+  end
+  if maskAllows(spans.outside, planeIndex) then
+    return true
+  end
+  local win0 = spans.win0 --[[@as table<string, unknown>?]]
+  if
+    win0 ~= nil and maskAllows(win0.mask --[[@as integer]], planeIndex)
+  then
+    return true
+  end
+  local win1 = spans.win1 --[[@as table<string, unknown>?]]
+  if
+    win1 ~= nil and maskAllows(win1.mask --[[@as integer]], planeIndex)
+  then
+    return true
+  end
+  return false
+end
+
+-- Frontmost eligible first-target plane on the engine: OBJ pixels outrank
+-- every background while the backdrop has no draws of its own.
+---@param slot OpeningMovieSlot scene slot
+---@param engine string source engine owning the alpha program
+---@return integer? frontmost eligible first-target background slot
+---@return boolean true when OBJ pixels are the eligible first target
+local function blendFirstTarget(slot, engine)
+  local program = slot.blendPrograms[engine]
+  if program == nil then
+    return nil, false
+  end
+  local firstMask = program.firstMask --[[@as integer]]
+  if maskAllows(firstMask, 4) and engineObjVisible(slot, engine) and planeWindowEligible(slot, engine, 4) then
+    return nil, true
+  end
+  local planes = sortedBackgrounds(slot, engine)
+  for index = #planes, 1, -1 do
+    local background = planes[index]
+    if maskAllows(firstMask, background.bgSlot) and planeWindowEligible(slot, engine, background.bgSlot) then
+      return background.bgSlot, false
+    end
+  end
+  return nil, false
 end
 
 ---@param value unknown raw channel value in 0..1
@@ -2319,32 +2414,66 @@ local function drawFade(self, slot)
   self.graphics.setColor(1, 1, 1, 1)
 end
 
----@param slot OpeningMovieSlot scene slot
-local function drawWipe(self, slot)
-  local wipe = slot.wipe
-  if wipe == nil then
+-- Source HBlank scanline boundary at the elapsed source tick: the wipe
+-- sweeps half a circle over its duration, and each scanline opens where
+-- the swept ray crosses it. Endpoint angles take exact edges instead of
+-- dividing by a near-zero sine.
+---@param elapsed integer elapsed source ticks
+---@param ticks integer authored wipe duration in source ticks
+---@param vcount integer scanline 0..191
+---@return integer source boundary pixel 0..255
+local function wipeBoundary(elapsed, ticks, vcount)
+  local theta = math.pi * elapsed / ticks
+  local x, y = math.cos(theta), math.sin(theta)
+  if x == 1 then
+    return 255
+  end
+  if x == -1 then
+    return 0
+  end
+  if math.abs(y) < 1e-9 then
+    if x > 0 then
+      return 255
+    end
+    return 0
+  end
+  return math.max(0, math.min(255, 127 + truncTowardZero(vcount * x / y)))
+end
+
+---@param kind integer wipe kind 0..3
+---@return boolean true when the kind covers toward the mirrored edge
+local function wipeMirrored(kind)
+  return kind % 2 == 1
+end
+
+-- Kind finish wash shown on the completion frame: the retail-used kinds
+-- end neutral so staged art shows, while the remaining kinds exercise
+-- the kind-driven black and white finishes.
+---@param kind integer wipe kind 0..3
+---@return boolean wash true when the finish covers the engine target
+---@return number r wash red channel
+---@return number g wash green channel
+---@return number b wash blue channel
+local function wipeFinishWash(kind)
+  if kind == 2 then
+    return true, 0, 0, 0
+  end
+  if kind == 3 then
+    return true, 1, 1, 1
+  end
+  return false, 1, 1, 1
+end
+
+---@param self HgssOpeningMovie
+---@param kind integer wipe kind 0..3
+local function drawWipeFinish(self, kind)
+  local wash, r, g, b = wipeFinishWash(kind)
+  if not wash then
     return
   end
-  local progress = math.min(wipe.elapsed / math.max(wipe.ticks, 1), 1)
-  local hole = (wipe.mode == "in") and progress or (1 - progress)
-  if hole <= 0 then
-    self.graphics.setColor(0, 0, 0, 1)
-    self.graphics.rectangle("fill", 0, 0, SOURCE_WIDTH, SOURCE_HEIGHT)
-    self.graphics.setColor(1, 1, 1, 1)
-    return
-  end
-  if hole >= 1 then
-    return
-  end
-  local graphics = self.graphics
-  graphics.setColor(0, 0, 0, 1)
-  local halfWidth, halfHeight = (SOURCE_WIDTH / 2) * hole, (SOURCE_HEIGHT / 2) * hole
-  local left, top = SOURCE_WIDTH / 2 - halfWidth, SOURCE_HEIGHT / 2 - halfHeight
-  graphics.rectangle("fill", 0, 0, SOURCE_WIDTH, top)
-  graphics.rectangle("fill", 0, top + halfHeight * 2, SOURCE_WIDTH, SOURCE_HEIGHT - top - halfHeight * 2)
-  graphics.rectangle("fill", 0, top, left, halfHeight * 2)
-  graphics.rectangle("fill", left + halfWidth * 2, top, SOURCE_WIDTH - left - halfWidth * 2, halfHeight * 2)
-  graphics.setColor(1, 1, 1, 1)
+  self.graphics.setColor(r, g, b, 1)
+  self.graphics.rectangle("fill", 0, 0, SOURCE_WIDTH, SOURCE_HEIGHT)
+  self.graphics.setColor(1, 1, 1, 1)
 end
 
 ---@param self HgssOpeningMovie
@@ -2421,27 +2550,19 @@ local function drawWrappedBackground(self, image, background)
   end
 end
 
+-- One ordered engine content pass: enabled 2D slots back-to-front, the
+-- main BG0 3D stage at priority 0, starter particles, then OBJ sprites
+-- above every BG. Only the eligible first-target blend plane carries the
+-- source weight; every other selected or unselected plane paints opaque
+-- and the host compositor blends the result.
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
----@param canvas love.Canvas fixed role target receiving the engine output
----@param engine string source engine rendered into its fixed role target
-function HgssOpeningMovie:_renderEngine(slot, canvas, engine)
+---@param engine string source engine owning the drawn planes
+---@param targetBg integer? frontmost eligible first-target background slot
+---@param targetIsObj boolean true when OBJ pixels are the eligible first target
+---@param weight number effective first-target weight with hardware saturation
+local function drawEngineContent(self, slot, engine, targetBg, targetIsObj, weight)
   local graphics = self.graphics
-  -- The town stage resolves once into the fixed scratch target (its
-  -- presentation blit replaces); the plane pass below composites the same
-  -- scratch into each allowed region instead of re-rendering 3D per clip.
-  -- It belongs to main BG0 while the source shows it, composited over the
-  -- 2D panels at priority 0 instead of into the other engine.
-  if engine == "main" and townDrawable(slot) then
-    local scratch = assert(self.townScratch, "town stage requires its composite scratch")
-    graphics.setCanvas(scratch)
-    graphics.clear(0, 0, 0, 0)
-    drawTowns(slot, { x = 0, y = 0, width = SOURCE_WIDTH, height = SOURCE_HEIGHT })
-    graphics.setCanvas(canvas)
-  end
-  -- One ordered plane list per engine: enabled 2D slots back-to-front,
-  -- the main BG0 3D stage at priority 0, OBJ sprites above every BG, then
-  -- the unmasked fade and wipe overlays.
   local planes = {}
   for _, background in ipairs(sortedBackgrounds(slot, engine)) do
     planes[#planes + 1] =
@@ -2464,15 +2585,14 @@ function HgssOpeningMovie:_renderEngine(slot, canvas, engine)
     end
     return a.kind < b.kind
   end)
-  for index, plane in ipairs(planes) do
+  for _, plane in ipairs(planes) do
     if plane.kind == 0 then
       local background = plane.background
       local image = slot.imageByPath[background.image]
       if image ~= nil then
-        local frontmost = index == #planes
         drawPlaneClipped(self, slot, engine, background.bgSlot, function()
-          if frontmost then
-            graphics.setColor(1, 1, 1, layerAlpha(slot))
+          if targetBg == background.bgSlot then
+            graphics.setColor(1, 1, 1, weight)
           else
             graphics.setColor(1, 1, 1, 1)
           end
@@ -2497,10 +2617,82 @@ function HgssOpeningMovie:_renderEngine(slot, canvas, engine)
   end
   graphics.setColor(1, 1, 1, 1)
   drawPlaneClipped(self, slot, engine, 4, function()
+    if targetIsObj then
+      graphics.setColor(1, 1, 1, weight)
+    end
     drawSprites(self, slot, engine)
   end)
+  graphics.setColor(1, 1, 1, 1)
+end
+
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot
+---@param canvas love.Canvas fixed role target receiving the engine output
+---@param engine string source engine rendered into its fixed role target
+function HgssOpeningMovie:_renderEngine(slot, canvas, engine)
+  local graphics = self.graphics
+  -- The town stage resolves once into the fixed scratch target (its
+  -- presentation blit replaces); the plane pass below composites the same
+  -- scratch into each allowed region instead of re-rendering 3D per clip.
+  -- It belongs to main BG0 while the source shows it, composited over the
+  -- 2D panels at priority 0 instead of into the other engine.
+  if engine == "main" and townDrawable(slot) then
+    local scratch = assert(self.townScratch, "town stage requires its composite scratch")
+    graphics.setCanvas(scratch)
+    graphics.clear(0, 0, 0, 0)
+    drawTowns(slot, { x = 0, y = 0, width = SOURCE_WIDTH, height = SOURCE_HEIGHT })
+    graphics.setCanvas(canvas)
+  end
+  local targetBg, targetIsObj = blendFirstTarget(slot, engine)
+  local weight = 1
+  local program = slot.blendPrograms[engine]
+  if program ~= nil and (targetBg ~= nil or targetIsObj) then
+    weight = blendFirstWeight(program)
+  end
+  drawEngineContent(self, slot, engine, targetBg, targetIsObj, weight)
+  local wipe = slot.wipe
+  if wipe ~= nil and wipe.engine == engine then
+    if wipe.elapsed >= wipe.ticks then
+      drawWipeFinish(self, wipe.kind --[[@as integer]])
+    else
+      -- Every kind covers the revealed span through a per-scanline
+      -- window anchored at the scanline boundary. Odd kinds additionally
+      -- cover the mirrored span with the kind backdrop color, so their
+      -- edges sit on both sides of the scanline law.
+      local ticks = wipe.ticks --[[@as integer]]
+      local elapsed = wipe.elapsed --[[@as integer]]
+      local mirrored = wipeMirrored(wipe.kind --[[@as integer]])
+      for vcount = 0, SOURCE_HEIGHT - 1 do
+        local boundary = wipeBoundary(elapsed, ticks, vcount)
+        if boundary > 0 then
+          graphics.push("all")
+          local ok, failure = pcall(function()
+            graphics.setColor(0, 0, 0, 1)
+            graphics.intersectScissor(boundary, vcount, SOURCE_WIDTH - boundary, 1)
+            graphics.rectangle("fill", boundary, vcount, SOURCE_WIDTH - boundary, 1)
+          end)
+          graphics.pop()
+          if not ok then
+            error(failure, 0)
+          end
+          if mirrored then
+            graphics.push("all")
+            local mirrorOk, mirrorFailure = pcall(function()
+              graphics.setColor(1, 1, 1, 1)
+              graphics.intersectScissor(SOURCE_WIDTH - 1 - boundary, vcount, boundary + 1, 1)
+              graphics.rectangle("fill", SOURCE_WIDTH - 1 - boundary, vcount, boundary + 1, 1)
+            end)
+            graphics.pop()
+            if not mirrorOk then
+              error(mirrorFailure, 0)
+            end
+          end
+        end
+      end
+      graphics.setColor(1, 1, 1, 1)
+    end
+  end
   drawFade(self, slot)
-  drawWipe(self, slot)
 end
 
 ---@param self HgssOpeningMovie
