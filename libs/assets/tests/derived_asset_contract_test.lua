@@ -216,7 +216,7 @@ function T.contract_pins_the_current_asset_identities()
     -- scene key, its source tick rate, its closed movie event grammar, and
     -- asset references under its own scene root.
     startupOpeningScene = {
-      schema = "g4-startup-opening-scene-v3",
+      schema = "g4-startup-opening-scene-v4",
       tickRate = 30,
     },
   }
@@ -528,6 +528,15 @@ function T.battle_readiness_rejects_malformed_nested_records()
     markers.battleData,
     "failed readiness preserves the staged marker"
   )
+end
+
+function T.opening_scene_contract_carries_the_current_schema_identity()
+  Assert.equal(
+    DerivedAssetContract.startupOpeningScene.schema,
+    "g4-startup-opening-scene-v4",
+    "the opening scene contract carries the current native schema"
+  )
+  Assert.equal(DerivedAssetContract.startupOpeningScene.tickRate, 30, "the opening scenes run at the source frame rate")
 end
 
 return { tests = T }

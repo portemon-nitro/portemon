@@ -7,6 +7,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
+local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
 local OpeningMovieCacheWriter = {}
@@ -27,7 +28,7 @@ function OpeningMovieCacheWriter.stageScene(artifact, bundle, generationId, scen
   assert(type(generationId) == "string" and generationId ~= "", "opening scene generation identity is required")
   assert(bundle.manifest.sceneNumber == sceneNumber, "opening scene bundle names another scene")
   assert(
-    bundle.manifest.schema == "g4-startup-opening-scene-v3",
+    bundle.manifest.schema == DerivedAssetContract.startupOpeningScene.schema,
     "opening scene bundle carries the closed scene schema"
   )
   local sceneRoot = "assets/generated/startup/opening/" .. tostring(sceneNumber)

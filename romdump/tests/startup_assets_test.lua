@@ -1277,7 +1277,12 @@ function T.opening_scene_family_is_a_closed_numeric_kind()
   end
 end
 
+-- The previous generation-three record stays frozen as the legacy fixture
+-- below: the strict reader never validates it as current. New and migrated
+-- fixtures build on the current contract instead.
 local OPENING_SCHEMA = "g4-startup-opening-scene-v3"
+
+local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v4"
 
 local function openingLayer(engine, bgSlot, image)
   return {
@@ -1456,6 +1461,39 @@ local function validOpeningManifest(sceneNumber, versionId)
   return manifest
 end
 
+-- A complete synthetic opening scene in the current shape: the legacy
+-- record above only covers the retired grammar, so current-contract checks
+-- build from it and repair the blend and wipe operands that changed.
+local function validCurrentOpeningManifest(sceneNumber, versionId)
+  local manifest = validOpeningManifest(sceneNumber, versionId)
+  manifest.schema = CURRENT_OPENING_SCHEMA
+  if sceneNumber == 1 then
+    manifest.timeline.events[4] = {
+      op = "setBlend",
+      stepId = "fades",
+      atStepTick = 0,
+      engine = "main",
+      firstMask = 1,
+      secondMask = 32,
+      direction = 1,
+      ticks = 60,
+      effect = "blend-copyright",
+    }
+  elseif sceneNumber == 5 then
+    manifest.timeline.events[2] = {
+      op = "circleWipe",
+      stepId = "wipe",
+      atStepTick = 0,
+      engine = "main",
+      kind = 0,
+      ticks = 18,
+      effect = "wipe-in",
+    }
+    manifest.timeline.events[4].direction = nil
+  end
+  return manifest
+end
+
 local function openingCacheFs(manifest, missingPath)
   return {
     loadLua = function()
@@ -1476,7 +1514,7 @@ function T.opening_scene_reader_loads_a_complete_synthetic_bundle()
     "the startup cache reads one strict opening scene bundle"
   )
   for sceneNumber = 1, 5 do
-    local manifest = validOpeningManifest(sceneNumber, "heartgold")
+    local manifest = validCurrentOpeningManifest(sceneNumber, "heartgold")
     local loaded, err = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), sceneNumber, "heartgold")
     Assert.notNil(loaded, "scene " .. sceneNumber .. " reads ready: " .. tostring(err))
     Assert.equal(loaded.sceneNumber, sceneNumber, "scene " .. sceneNumber .. " reads back under its own key")
@@ -1491,7 +1529,7 @@ function T.opening_scene_reader_rejects_mismatched_and_malformed_bundles()
     type(StartupAssetCache.loadOpeningScene) == "function",
     "the startup cache reads one strict opening scene bundle"
   )
-  local manifest = validOpeningManifest(4, "heartgold")
+  local manifest = validCurrentOpeningManifest(4, "heartgold")
   for _, badScene in ipairs({ 0, 6, 1.5, "4" }) do
     Assert.isFalse(
       pcall(StartupAssetCache.loadOpeningScene, openingCacheFs(manifest, nil), badScene, "heartgold"),
@@ -1546,7 +1584,7 @@ function T.opening_scene_reader_enforces_the_strict_versioned_contract()
     type(StartupAssetCache.loadOpeningScene) == "function",
     "the startup cache reads one strict opening scene bundle"
   )
-  local manifest = validOpeningManifest(1, "heartgold")
+  local manifest = validCurrentOpeningManifest(1, "heartgold")
   local stale = deepCopy(manifest)
   stale.schema = "g4-startup-opening-scene-v1"
   local staleRead, staleErr = StartupAssetCache.loadOpeningScene(openingCacheFs(stale, nil), 1, "heartgold")
@@ -1631,7 +1669,7 @@ function T.opening_scene_writer_preserves_sibling_scenes()
       end,
     }
     local root = "assets/generated/startup/opening/" .. tostring(sceneNumber)
-    local manifest = validOpeningManifest(sceneNumber, "heartgold")
+    local manifest = validCurrentOpeningManifest(sceneNumber, "heartgold")
     local bundle = {
       manifest = manifest,
       files = {
@@ -1704,7 +1742,7 @@ function T.opening_scene_staged_failure_keeps_the_previous_live_output()
   end
   local root = "assets/generated/startup/opening/4"
   local bundle = {
-    manifest = validOpeningManifest(4, "heartgold"),
+    manifest = validCurrentOpeningManifest(4, "heartgold"),
     files = {
       [root .. "/main-bg.png"] = "first",
       [root .. "/sub-bg.png"] = "second",
@@ -1790,7 +1828,7 @@ end
 -- engine-local window records with plane masks, a town-stage stop limited to
 -- the town scene, and manual window overrides. These synthetic fixtures pin
 -- the strict reader contract without touching a ROM.
-local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v3"
+local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v4"
 
 local function openingLayerV3(engine, bgSlot, image, visible)
   return {
@@ -2021,6 +2059,230 @@ function T.opening_scene_session_request_validates_its_scene_number()
       "the rejection names the valid scene range: " .. tostring(callErr)
     )
   end
+end
+
+-- The generated opening scene identity the producer and the strict reader
+-- agree on: full native surfaces with per-image extents, instant and
+-- continuous scroll modes, and per-engine blend and wipe operands.
+local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v4"
+
+local function typedOpeningManifest()
+  local manifest = validOpeningManifest(1, "heartgold")
+  manifest.schema = NATIVE_OPENING_SCHEMA
+  local root = "assets/generated/startup/opening/1"
+  manifest.layers.main[1].variants = {
+    { image = root .. "/main-bg-alt.png", width = 512, height = 512 },
+  }
+  manifest.assets[root .. "/main-bg-alt.png"] = true
+  manifest.timeline.events[4] = {
+    op = "setBlend",
+    stepId = "fades",
+    atStepTick = 0,
+    engine = "main",
+    firstMask = 1,
+    secondMask = 32,
+    direction = 1,
+    ticks = 60,
+    effect = "blend-copyright",
+  }
+  local function appendLogoEvent(event)
+    manifest.timeline.events[#manifest.timeline.events + 1] = event
+    local steps = manifest.timeline.steps
+    steps[#steps].events[#steps[#steps].events + 1] = #manifest.timeline.events
+  end
+  appendLogoEvent({
+    op = "setScroll",
+    stepId = "logo",
+    atStepTick = 0,
+    engine = "main",
+    bgSlot = 0,
+    dx = 0,
+    dy = 320,
+    ticks = 0,
+  })
+  appendLogoEvent({
+    op = "setScroll",
+    stepId = "logo",
+    atStepTick = 0,
+    engine = "main",
+    bgSlot = 2,
+    dx = 0,
+    dy = 64,
+    ticks = -1,
+  })
+  appendLogoEvent({
+    op = "circleWipe",
+    stepId = "logo",
+    atStepTick = 0,
+    engine = "main",
+    kind = 0,
+    ticks = 18,
+    effect = "wipe-typed",
+  })
+  return manifest
+end
+
+local function typedOpeningFiles(root)
+  return {
+    [root .. "/main-bg.png"] = "main art",
+    [root .. "/sub-bg.png"] = "sub art",
+    [root .. "/main-bg-alt.png"] = "alternate art",
+    [root .. "/sprites/clip0.png"] = "clip",
+  }
+end
+
+-- A complete bundle in the native shape reads ready: typed alternates,
+-- instant and continuous scrolls, per-engine blends, and engine wipes.
+function T.opening_scene_reader_loads_the_native_typed_bundle()
+  local manifest = typedOpeningManifest()
+  local loaded, err = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 1, "heartgold")
+  Assert.notNil(loaded, "the native typed scene reads ready: " .. tostring(err))
+  Assert.equal(loaded.schema, NATIVE_OPENING_SCHEMA, "the loaded scene carries the native schema")
+  local variant = loaded.layers.main[1].variants[1]
+  Assert.equal(variant.width, 512, "the alternate keeps its own native width")
+  Assert.equal(variant.height, 512, "the alternate keeps its own native height")
+end
+
+-- The previous record shape never reads as current, and malformed typed
+-- records fail with a cause: bare-path alternates, missing alternate extents,
+-- out-of-range durations, fractional deltas, oversized plane masks,
+-- unknown wipe kinds, and cross-scene images.
+function T.opening_scene_reader_rejects_legacy_and_malformed_typed_records()
+  local root = "assets/generated/startup/opening/1"
+  local legacy, legacyErr =
+    StartupAssetCache.loadOpeningScene(openingCacheFs(validOpeningManifest(1, "heartgold"), nil), 1, "heartgold")
+  Assert.isNil(legacy, "the previous record shape never validates as current")
+  Assert.notNil(legacyErr, "the legacy shape reports its cause")
+  local cases = {}
+  local bareVariant = deepCopy(typedOpeningManifest())
+  bareVariant.layers.main[1].variants = { root .. "/main-bg-alt.png" }
+  cases[#cases + 1] = { manifest = bareVariant, label = "a bare-path alternate" }
+  local missingExtent = deepCopy(typedOpeningManifest())
+  missingExtent.layers.main[1].variants = { { image = root .. "/main-bg-alt.png", width = 512 } }
+  cases[#cases + 1] = { manifest = missingExtent, label = "an alternate without its own height" }
+  local negativeDuration = deepCopy(typedOpeningManifest())
+  negativeDuration.timeline.events[#negativeDuration.timeline.events - 2].ticks = -2
+  cases[#cases + 1] = { manifest = negativeDuration, label = "a scroll below the continuous mode" }
+  local fractionalDelta = deepCopy(typedOpeningManifest())
+  fractionalDelta.timeline.events[#fractionalDelta.timeline.events - 2].dx = 1.5
+  cases[#cases + 1] = { manifest = fractionalDelta, label = "a fractional scroll delta" }
+  local oversizedMask = deepCopy(typedOpeningManifest())
+  oversizedMask.timeline.events[4].firstMask = 64
+  cases[#cases + 1] = { manifest = oversizedMask, label = "a plane mask outside six bits" }
+  local unknownKind = deepCopy(typedOpeningManifest())
+  unknownKind.timeline.events[#unknownKind.timeline.events].kind = 7
+  cases[#cases + 1] = { manifest = unknownKind, label = "a wipe kind outside its set" }
+  local escapedImage = deepCopy(typedOpeningManifest())
+  escapedImage.timeline.events[2].image = "assets/generated/startup/opening/2/main-bg.png"
+  cases[#cases + 1] = { manifest = escapedImage, label = "a layer pointing outside its scene root" }
+  for _, case in ipairs(cases) do
+    local rejected, reason = StartupAssetCache.loadOpeningScene(openingCacheFs(case.manifest, nil), 1, "heartgold")
+    Assert.isNil(rejected, case.label .. " never validates")
+    Assert.notNil(reason, case.label .. " reports its cause")
+  end
+end
+
+-- Staging a typed bundle publishes its effect operands atomically: the
+-- staged package reads back with its masks, direction, and wipe kind,
+-- and a failed replacement preserves the previous good publication.
+function T.opening_scene_writer_publishes_typed_bundles_atomically()
+  local ok, OpeningMovieCacheWriter = pcall(require, "romdump.src.digest.startup.OpeningMovieCacheWriter")
+  Assert.isTrue(
+    ok and type(OpeningMovieCacheWriter.stageScene) == "function",
+    "the opening scene writer stages one numbered scene"
+  )
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local root = "assets/generated/startup/opening/1"
+  local manifest = typedOpeningManifest()
+  manifest.generationId = "typed-generation"
+  local artifact = PreparedArtifact.new({
+    cacheFs = cacheFs,
+    generationId = "typed-generation",
+    epoch = 1,
+    kind = "opening-scene",
+    key = "1",
+    jobKey = "opening-scene:1",
+    stageName = "opening-scene-1-typed",
+  })
+  local marker, stageErr =
+    OpeningMovieCacheWriter.stageScene(artifact, { manifest = manifest, files = typedOpeningFiles(root) }, "typed-generation", 1)
+  Assert.notNil(marker, "the typed scene stages its numbered package: " .. tostring(stageErr))
+  artifact:finishSuccess({ marker = marker })
+  Assert.isTrue(
+    artifact:publish({
+      generationId = "typed-generation",
+      epoch = 1,
+      kind = "opening-scene",
+      key = "1",
+      jobKey = "opening-scene:1",
+      stageName = "opening-scene-1-typed",
+    }),
+    "the typed scene publishes its numbered package"
+  )
+  local loaded, loadErr = StartupAssetCache.loadOpeningScene(cacheFs, 1, "heartgold")
+  Assert.notNil(loaded, "the staged typed scene reads back ready: " .. tostring(loadErr))
+  local blend = nil
+  for _, event in ipairs(loaded.timeline.events) do
+    if event.op == "setBlend" then
+      blend = event
+    end
+  end
+  Assert.notNil(blend, "the staged scene keeps its engine blend")
+  Assert.equal(blend.firstMask, 1, "the staged blend keeps its first plane mask")
+  Assert.equal(blend.secondMask, 32, "the staged blend keeps its second plane mask")
+  Assert.equal(blend.direction, 1, "the staged blend keeps its source direction")
+  local liveManifest = cacheFs:loadLua(StartupAssetCache.openingScenePath(1))
+  local liveReceipt = cacheFs:loadLua(ArtifactState.path("opening-scene", "1"))
+  local broken = deepCopy(manifest)
+  broken.assets[root .. "/main-bg-alt.png"] = nil
+  local brokenArtifact = PreparedArtifact.new({
+    cacheFs = cacheFs,
+    generationId = "broken-generation",
+    epoch = 1,
+    kind = "opening-scene",
+    key = "1",
+    jobKey = "opening-scene:1",
+    stageName = "opening-scene-1-broken",
+  })
+  local brokenOk, brokenErr = pcall(
+    OpeningMovieCacheWriter.stageScene,
+    brokenArtifact,
+    { manifest = broken, files = typedOpeningFiles(root) },
+    "broken-generation",
+    1
+  )
+  Assert.isFalse(brokenOk, "the corrupt replacement fails the scene restage: " .. tostring(brokenErr))
+  Assert.deepEqual(
+    cacheFs:loadLua(StartupAssetCache.openingScenePath(1)),
+    liveManifest,
+    "a failed restage preserves its previous good manifest"
+  )
+  Assert.deepEqual(
+    cacheFs:loadLua(ArtifactState.path("opening-scene", "1")),
+    liveReceipt,
+    "a failed restage preserves its previous good receipt"
+  )
+end
+
+-- A layer change may point at any image its own slot owns: the staged base
+-- image or one of its typed alternates both resolve, while an alternate
+-- that duplicates the base image leaves the slot ambiguous and never
+-- validates.
+function T.opening_scene_reader_resolves_owned_variant_images_through_layer_changes()
+  local root = "assets/generated/startup/opening/1"
+  local manifest = typedOpeningManifest()
+  manifest.timeline.events[2].image = root .. "/main-bg-alt.png"
+  local loaded, err = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 1, "heartgold")
+  Assert.notNil(loaded, "a layer change pointing at an owned alternate reads ready: " .. tostring(err))
+  local shadowed = deepCopy(manifest)
+  shadowed.layers.main[1].variants = {
+    { image = root .. "/main-bg.png", width = 512, height = 512 },
+  }
+  local rejected, reason =
+    StartupAssetCache.loadOpeningScene(openingCacheFs(shadowed, nil), 1, "heartgold")
+  Assert.isNil(rejected, "an alternate shadowing its own base image never validates")
+  Assert.notNil(reason, "the ambiguous slot image reports its cause")
 end
 
 return { tests = T }

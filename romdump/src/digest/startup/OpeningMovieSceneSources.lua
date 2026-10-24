@@ -10,9 +10,11 @@
 -- compose through waitEffects, and atTick composes state durations with
 -- named effect lengths.
 
+local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
+
 local OpeningMovieSceneSources = {}
 
-OpeningMovieSceneSources.SCHEMA = "g4-startup-opening-scene-v3"
+OpeningMovieSceneSources.SCHEMA = DerivedAssetContract.startupOpeningScene.schema
 OpeningMovieSceneSources.TICK_RATE = 30
 OpeningMovieSceneSources.ARCHIVE = "NARC_demo_opening_gs_opening"
 OpeningMovieSceneSources.PARTICLE_ARCHIVE = "NARC_a_0_5_9"

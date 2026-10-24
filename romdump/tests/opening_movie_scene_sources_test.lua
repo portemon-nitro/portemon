@@ -43,7 +43,7 @@ function T.scene_sources_reject_bad_scenes_and_editions()
 end
 
 function T.scene_sources_keep_five_bounded_scenes_at_the_source_tick_rate()
-  Assert.equal(SceneSources.SCHEMA, "g4-startup-opening-scene-v3", "the scene schema is pinned")
+  Assert.equal(SceneSources.SCHEMA, "g4-startup-opening-scene-v4", "the scene schema is pinned")
   Assert.equal(SceneSources.TICK_RATE, 30, "the scenes run at the source frame rate")
   Assert.equal(SceneSources.PARTICLE_ARCHIVE, "NARC_a_0_5_9", "the particle archive is pinned")
   Assert.equal(SceneSources.PARTICLE_MEMBER, 4, "the starter particle member is pinned")
@@ -368,6 +368,21 @@ function T.scene_sources_scroll_scene_five_by_edition()
   Assert.equal(SceneSources.scene5ScrollDirection("heartgold"), "left", "heartgold scrolls its panorama left")
   Assert.equal(SceneSources.scene5ScrollDirection("soulsilver"), "right", "soulsilver scrolls its panorama right")
   Assert.isFalse(pcall(SceneSources.scene5ScrollDirection, "platinum"), "an unknown edition scrolls nowhere")
+end
+
+function T.scene_sources_alias_the_current_opening_scene_contract()
+  local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
+  Assert.equal(
+    SceneSources.SCHEMA,
+    DerivedAssetContract.startupOpeningScene.schema,
+    "the scene sources publish under the current opening scene contract"
+  )
+  Assert.equal(
+    SceneSources.SCHEMA,
+    "g4-startup-opening-scene-v4",
+    "the scene sources carry the current native scene shape"
+  )
+  Assert.equal(SceneSources.TICK_RATE, 30, "the scenes run at the source frame rate")
 end
 
 return { tests = T }

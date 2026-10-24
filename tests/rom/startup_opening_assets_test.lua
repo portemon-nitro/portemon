@@ -3,9 +3,10 @@
 -- assets, and per-scene failure isolation.
 
 local Assert = require("tests.support.Assert")
+local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v3"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v4"
 local SOURCE_TICK_RATE = 30
 
 local CLOSED_OPS = {
@@ -482,7 +483,7 @@ end
 -- below reads the exact compiled bundles and fails until the producer
 -- emits that contract and the central reader enforces it.
 
-local STRICT_SCHEMA = "g4-startup-opening-scene-v3"
+local STRICT_SCHEMA = "g4-startup-opening-scene-v4"
 
 local function strictManifest(bundle, versionId, sceneNumber)
   local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
@@ -1372,6 +1373,271 @@ local function engineWindowRecordsReplaceTheSyntheticKindShapes(romFs, versionId
   Assert.equal(mainDisables, 1, "scene 3 disables the never-shown main window once")
 end
 
+-- Compiled backgrounds keep every authored source tile: each layer records
+-- its complete native extent, alternates resolve to staged images with
+-- their own extents, and at least one layer exceeds the retail display
+-- where the source map is larger than one screen.
+local function pngDimensions(bundle, path, sceneNumber)
+  local bytes = assert(bundle.files[path], "scene " .. sceneNumber .. " stages its art: " .. tostring(path))
+  local width, height = PngReader.rgba(bytes)
+  return width, height
+end
+
+local function backgroundLayersKeepTheirFullSourceMapExtents(romFs, versionId)
+  local sawNativeExtent, sawAlternateRecord = false, false
+  for sceneNumber = 1, 5 do
+    local bundle = compileScene(romFs, versionId, sceneNumber)
+    local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
+    local layers = assert(manifest.layers, "scene " .. sceneNumber .. " carries its engine layers")
+    for _, engine in ipairs({ "main", "sub" }) do
+      for _, layer in
+        ipairs(assert(layers[engine], "scene " .. sceneNumber .. " keys its " .. engine .. " layers"))
+      do
+        local slot = "scene " .. sceneNumber .. " " .. engine .. " slot " .. tostring(layer.bgSlot)
+        Assert.isTrue(
+          type(layer.width) == "number" and layer.width % 1 == 0 and layer.width >= 256,
+          slot .. " covers at least the retail display width"
+        )
+        Assert.isTrue(
+          type(layer.height) == "number" and layer.height % 1 == 0 and layer.height >= 192,
+          slot .. " covers at least the retail display height"
+        )
+        local decodedWidth, decodedHeight = pngDimensions(bundle, layer.image, sceneNumber)
+        Assert.equal(decodedWidth, layer.width, slot .. " base art decodes to its recorded extent")
+        Assert.equal(decodedHeight, layer.height, slot .. " base art decodes to its recorded extent")
+        if layer.width > 256 or layer.height > 192 then
+          sawNativeExtent = true
+        end
+        Assert.isTrue(type(layer.variants) == "table", slot .. " keeps its alternates as a record list")
+        for _, variant in ipairs(layer.variants) do
+          Assert.isTrue(
+            type(variant) == "table",
+            slot .. " keeps each alternate as an image record with its own extent, not a bare path"
+          )
+          Assert.isTrue(
+            type(variant.image) == "string" and variant.image ~= "",
+            slot .. " points its alternate at a compiled image"
+          )
+          Assert.isTrue(
+            type(variant.width) == "number" and variant.width % 1 == 0 and variant.width >= 256,
+            slot .. " records its alternate width"
+          )
+          Assert.isTrue(
+            type(variant.height) == "number" and variant.height % 1 == 0 and variant.height >= 192,
+            slot .. " records its alternate height"
+          )
+          local alternateWidth, alternateHeight = pngDimensions(bundle, variant.image, sceneNumber)
+          Assert.equal(alternateWidth, variant.width, slot .. " alternate art decodes to its recorded extent")
+          Assert.equal(alternateHeight, variant.height, slot .. " alternate art decodes to its recorded extent")
+          sawAlternateRecord = true
+        end
+      end
+    end
+  end
+  Assert.isTrue(
+    sawNativeExtent,
+    "at least one compiled layer keeps a native extent beyond the retail display"
+  )
+  Assert.isTrue(sawAlternateRecord, "at least one compiled layer carries an alternate image record")
+end
+
+local function initScrolls(manifest, engine, bgSlot)
+  local found = {}
+  for _, event in ipairs(manifest.timeline.events) do
+    if
+      event.op == "setScroll"
+      and event.engine == engine
+      and event.bgSlot == bgSlot
+      and type(event.ticks) == "number"
+      and event.ticks <= 0
+    then
+      found[#found + 1] = event
+    end
+  end
+  return found
+end
+
+local function requireInitScroll(manifest, sceneNumber, engine, bgSlot, ticks, dx, dy)
+  local slot = "scene " .. sceneNumber .. " " .. engine .. " slot " .. bgSlot
+  local match = nil
+  for _, event in ipairs(initScrolls(manifest, engine, bgSlot)) do
+    if event.ticks == ticks and event.dx == dx and event.dy == dy then
+      match = event
+    end
+  end
+  Assert.notNil(match, slot .. " starts from its source origin")
+  Assert.equal(match.atStepTick, 0, slot .. " applies its starting offset on the first source tick")
+  Assert.equal(
+    stepPosition(manifest, match.stepId),
+    1,
+    slot .. " applies its starting offset before the first painted frame"
+  )
+  Assert.isNil(match.effect, slot .. " starting offsets schedule no effect wait")
+end
+
+-- The source starting offsets reach the timeline as instant and continuous
+-- scrolls: every displacement is whole source pixels, instant and
+-- continuous modes schedule no effect wait, and timed panoramas survive
+-- beside them.
+local function openingProgramsStartFromTheirSourceOrigins(romFs, versionId)
+  local compiled = {}
+  for sceneNumber = 1, 5 do
+    local bundle = compileScene(romFs, versionId, sceneNumber)
+    local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
+    compiled[sceneNumber] = manifest
+    for _, event in ipairs(manifest.timeline.events) do
+      if event.op == "setScroll" then
+        local where = "scene " .. sceneNumber .. " scroll"
+        Assert.isTrue(
+          type(event.dx) == "number" and event.dx % 1 == 0,
+          where .. " displaces by whole source pixels"
+        )
+        Assert.isTrue(
+          type(event.dy) == "number" and event.dy % 1 == 0,
+          where .. " displaces by whole source pixels"
+        )
+        Assert.isTrue(
+          type(event.ticks) == "number" and event.ticks % 1 == 0 and event.ticks >= -1,
+          where .. " uses an instant, continuous, or timed mode"
+        )
+        if event.ticks <= 0 then
+          Assert.isNil(event.effect, where .. " immediate and continuous scrolls schedule no effect wait")
+        end
+      end
+    end
+  end
+  requireInitScroll(compiled[2], 2, "main", 1, 0, 0, 320)
+  requireInitScroll(compiled[2], 2, "main", 0, 0, 0, 192)
+  requireInitScroll(compiled[2], 2, "main", 2, -1, 0, 64)
+  requireInitScroll(compiled[2], 2, "sub", 0, -1, 0, 64)
+  requireInitScroll(compiled[4], 4, "sub", 1, 0, -192, 0)
+  requireInitScroll(compiled[4], 4, "main", 1, 0, 192, 0)
+  local copyright = initScrolls(compiled[1], "main", 0)
+  Assert.isTrue(#copyright >= 2, "scene 1 resets its copyright offset after showing it")
+  Assert.equal(copyright[1].dx, 0, "scene 1 shows its copyright from its source offset")
+  Assert.equal(copyright[1].dy, 128, "scene 1 shows its copyright from its source offset")
+  local total = 0
+  for _, event in ipairs(copyright) do
+    Assert.equal(event.ticks, 0, "scene 1 copyright offsets apply immediately")
+    total = total + event.dy
+  end
+  Assert.equal(total, 0, "scene 1 returns to its origin after the copyright")
+  requireInitScroll(compiled[5], 5, "main", 2, 0, 0, 160)
+  requireInitScroll(compiled[5], 5, "sub", 2, 0, 0, 160)
+  local sawPanorama = false
+  for _, event in ipairs(compiled[5].timeline.events) do
+    if event.op == "setScroll" and event.ticks == 73 and math.abs(event.dy) == 64 then
+      sawPanorama = true
+    end
+  end
+  Assert.isTrue(sawPanorama, "scene 5 keeps its timed panorama beside its starting offsets")
+end
+
+-- Blends and wipes travel with per-engine source operands: six-bit plane
+-- masks, a source direction, and positive durations for blends; an engine,
+-- a source kind, and a positive duration for wipes. Independent engine
+-- tasks complete under independent identities.
+local function engineBlendsAndWipesCarrySourceOperands(romFs, versionId)
+  local compiled = {}
+  for sceneNumber = 1, 5 do
+    local bundle = compileScene(romFs, versionId, sceneNumber)
+    compiled[sceneNumber] = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
+  end
+  local sawBlend, sawWipe = false, false
+  local wipesByScene = {}
+  for sceneNumber = 1, 5 do
+    local blendOwners = {}
+    for _, event in ipairs(compiled[sceneNumber].timeline.events) do
+      if event.op == "setBlend" then
+        sawBlend = true
+        local where = "scene " .. sceneNumber .. " blend"
+        Assert.isTrue(
+          event.engine == "main" or event.engine == "sub",
+          where .. " targets one stage engine"
+        )
+        for _, mask in ipairs({ event.firstMask, event.secondMask }) do
+          Assert.isTrue(
+            type(mask) == "number" and mask % 1 == 0 and mask >= 0 and mask <= 63,
+            where .. " selects source planes with a six-bit mask"
+          )
+        end
+        Assert.isTrue(
+          event.direction == 0 or event.direction == 1,
+          where .. " animates in one source direction"
+        )
+        Assert.isTrue(
+          type(event.ticks) == "number" and event.ticks % 1 == 0 and event.ticks > 0,
+          where .. " runs a positive source duration"
+        )
+        if type(event.effect) == "string" then
+          local owner = blendOwners[event.stepId .. "\0" .. event.effect]
+          if owner == nil then
+            blendOwners[event.stepId .. "\0" .. event.effect] = event.engine
+          else
+            Assert.equal(owner, event.engine, where .. " keeps one engine per blend completion identity")
+          end
+        end
+      elseif event.op == "circleWipe" then
+        sawWipe = true
+        wipesByScene[sceneNumber] = true
+        local where = "scene " .. sceneNumber .. " wipe"
+        Assert.isTrue(
+          event.engine == "main" or event.engine == "sub",
+          where .. " targets one stage engine"
+        )
+        Assert.isTrue(
+          type(event.kind) == "number" and event.kind % 1 == 0 and event.kind >= 0 and event.kind <= 3,
+          where .. " carries a source wipe kind"
+        )
+        Assert.isTrue(
+          type(event.ticks) == "number" and event.ticks % 1 == 0 and event.ticks > 0,
+          where .. " runs a positive source duration"
+        )
+      end
+    end
+  end
+  Assert.isTrue(sawBlend, "at least one compiled scene carries an engine blend")
+  Assert.isTrue(sawWipe, "at least one compiled scene carries an engine wipe")
+  for _, sceneNumber in ipairs({ 2, 3, 5 }) do
+    Assert.isTrue(wipesByScene[sceneNumber] == true, "scene " .. sceneNumber .. " keeps its source wipe")
+  end
+  local fades = {}
+  for _, event in ipairs(compiled[1].timeline.events) do
+    if event.op == "setBlend" and event.stepId == "fades" then
+      fades[#fades + 1] = event
+    end
+  end
+  Assert.equal(#fades, 2, "scene 1 fades its two stage engines")
+  local engines = {}
+  for _, blend in ipairs(fades) do
+    engines[blend.engine] = true
+    Assert.equal(blend.ticks, 60, "scene 1 copyright blends run their source duration")
+    Assert.equal(blend.direction, 1, "scene 1 copyright blends animate in their source direction")
+    Assert.isTrue(
+      type(blend.effect) == "string" and blend.effect ~= "",
+      "scene 1 copyright blends complete under a named identity"
+    )
+  end
+  Assert.isTrue(engines.main and engines.sub, "scene 1 copyright blends cover both stage engines")
+  local mainBlend = nil
+  for _, blend in ipairs(fades) do
+    if blend.engine == "main" then
+      mainBlend = blend
+    end
+  end
+  Assert.notNil(mainBlend, "scene 1 fades its main engine")
+  Assert.equal(mainBlend.firstMask, 1, "scene 1 main copyright blend selects its source planes")
+  Assert.equal(mainBlend.secondMask, 32, "scene 1 main copyright blend selects its backdrop plane")
+  Assert.isTrue(fades[1].effect ~= fades[2].effect, "scene 1 copyright blends complete independently per engine")
+  local sawWipe18 = false
+  for _, event in ipairs(compiled[5].timeline.events) do
+    if event.op == "circleWipe" and event.ticks == 18 then
+      sawWipe18 = true
+    end
+  end
+  Assert.isTrue(sawWipe18, "scene 5 keeps its source wipe duration")
+end
+
 return RomSuite.fromFacts({
   ["source opening scenes compile to five independent versioned bundles"] = sourceOpeningScenesCompileToFiveIndependentVersionedBundles,
   ["source opening timeline keeps its five-scene transitions and skip gate"] = sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate,
@@ -1386,4 +1652,7 @@ return RomSuite.fromFacts({
   ["effect waits resolve to started effects with exact step thresholds"] = effectWaitsResolveToStartedEffects,
   ["physical engine swaps are explicit screen mapping events"] = physicalSwapsAreExplicitMappingEvents,
   ["strict versioned validation accepts only complete scene contracts"] = strictValidationAcceptsOnlyCompleteContracts,
+  ["background layers keep their full source map extents with typed variant extents"] = backgroundLayersKeepTheirFullSourceMapExtents,
+  ["opening programs start from their source origins with immediate and continuous scrolls"] = openingProgramsStartFromTheirSourceOrigins,
+  ["engine blends and wipes carry their source operands per stage engine"] = engineBlendsAndWipesCarrySourceOperands,
 })
