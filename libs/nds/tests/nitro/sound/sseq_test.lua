@@ -200,7 +200,7 @@ end
 -- The data offset must point inside the file.
 function T.rejects_data_offset_out_of_bounds()
   local bytes = SseqFixture.build({ { op = "fin" } })
-  local corrupted = bytes:sub(1, 0x18) .. "\x00\x00\x00\x00" .. bytes:sub(0x1D)
+  local corrupted = bytes:sub(1, 0x18) .. "\000\000\000\000" .. bytes:sub(0x1D)
   local seq, err = Sseq.open(corrupted, "fixture")
   Assert.isNil(seq)
   Assert.isTrue(Errors.is(err))

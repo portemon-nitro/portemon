@@ -2082,49 +2082,47 @@ function FieldActorManager:drawRecords(alpha)
   for _, mapId in ipairs(mapOrder) do
     for _, actor in ipairs(self.maps[mapId].store:orderedActorsView()) do
       local state = actor:numericState()
-      if state.resident == 0 then
-        goto continue
+      if state.resident ~= 0 then
+        count = count + 1
+        local record = self._drawRecordByActorId[actor.actorId]
+        if not record then
+          record = {
+            actorId = actor.actorId,
+            spriteId = actor.spriteId,
+            world = { x = state.worldX, y = state.worldY, z = state.worldZ },
+            facing = actor.facing,
+            pose = actor.pose,
+            poseTick = state.poseTick,
+            presentationScale = 1,
+            visible = state.visible == 1,
+          }
+          self._drawRecordByActorId[actor.actorId] = record
+        end
+        -- Render-only presentation offset (e.g. walk-in-place bob) is applied
+        -- here, at the final draw-position boundary, onto the sampled
+        -- previous/current base point; the actor's logical
+        -- worldX/worldY/worldZ (read by terrain, collision, and save) never
+        -- carry it.
+        local presentation = actor:presentationStateInto(self._presentationSample)
+        local gestureOffsetY = presentation.gestureOffsetY
+        local base = actor:renderPositionInto(self._renderSample, alpha)
+        record.actorId = actor.actorId
+        record.spriteId = actor.spriteId
+        record.world.x = base.x + state.presentationOffsetX
+        record.world.y = base.y + state.presentationOffsetY + gestureOffsetY
+        record.world.z = base.z + state.presentationOffsetZ
+        record.facing = actor.facing
+        record.heldOffsetFacing = actor:heldOffsetFacing()
+        record.pose = actor.pose
+        record.poseTick = state.poseTick
+        record.gesturePose = presentation.gesturePose
+        record.gestureTick = presentation.gestureTick
+        record.activeEmoteKind = actor.activeEmoteKind
+        record.activeEmoteTick = actor.activeEmoteKind and assert(actor:scriptedMotionState()).progressTicks or nil
+        record.presentationScale = actor:getPresentationScale()
+        record.visible = state.visible == 1
+        records[count] = record
       end
-      count = count + 1
-      local record = self._drawRecordByActorId[actor.actorId]
-      if not record then
-        record = {
-          actorId = actor.actorId,
-          spriteId = actor.spriteId,
-          world = { x = state.worldX, y = state.worldY, z = state.worldZ },
-          facing = actor.facing,
-          pose = actor.pose,
-          poseTick = state.poseTick,
-          presentationScale = 1,
-          visible = state.visible == 1,
-        }
-        self._drawRecordByActorId[actor.actorId] = record
-      end
-      -- Render-only presentation offset (e.g. walk-in-place bob) is applied
-      -- here, at the final draw-position boundary, onto the sampled
-      -- previous/current base point; the actor's logical
-      -- worldX/worldY/worldZ (read by terrain, collision, and save) never
-      -- carry it.
-      local presentation = actor:presentationStateInto(self._presentationSample)
-      local gestureOffsetY = presentation.gestureOffsetY
-      local base = actor:renderPositionInto(self._renderSample, alpha)
-      record.actorId = actor.actorId
-      record.spriteId = actor.spriteId
-      record.world.x = base.x + state.presentationOffsetX
-      record.world.y = base.y + state.presentationOffsetY + gestureOffsetY
-      record.world.z = base.z + state.presentationOffsetZ
-      record.facing = actor.facing
-      record.heldOffsetFacing = actor:heldOffsetFacing()
-      record.pose = actor.pose
-      record.poseTick = state.poseTick
-      record.gesturePose = presentation.gesturePose
-      record.gestureTick = presentation.gestureTick
-      record.activeEmoteKind = actor.activeEmoteKind
-      record.activeEmoteTick = actor.activeEmoteKind and assert(actor:scriptedMotionState()).progressTicks or nil
-      record.presentationScale = actor:getPresentationScale()
-      record.visible = state.visible == 1
-      records[count] = record
-      ::continue::
     end
   end
   for index = #records, count + 1, -1 do

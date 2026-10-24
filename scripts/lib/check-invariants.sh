@@ -9,6 +9,7 @@
 # planted violation is demonstrable without touching tracked files).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+repository_root="$(pwd)"
 
 fail=0
 violation() {
@@ -155,6 +156,17 @@ check_production_annotation_policy_file() {
 
 # .luarc.json owns the single global diagnostic allowance. Any additional
 # diagnostic-off switch is a violation.
+check_stylua_policy() {
+  local config=".stylua.toml"
+  if [ ! -r "$config" ]; then
+    violation ".stylua.toml is missing or unreadable"
+    return 0
+  fi
+  if ! grep -Eq '^[[:space:]]*syntax[[:space:]]*=[[:space:]]*"Lua51"[[:space:]]*(#.*)?$' "$config"; then
+    violation ".stylua.toml must pin syntax = \"Lua51\""
+  fi
+}
+
 check_luarc_policy() {
   local luarc=".luarc.json"
   if [ ! -r "$luarc" ]; then
@@ -188,15 +200,26 @@ check_luarc_policy() {
   return 0
 }
 
+check_lua51_compatibility() {
+  [ "$#" -gt 0 ] || return 0
+  if ! python3 "$repository_root/scripts/ci/lua51_source_check.py" "$@"; then
+    fail=1
+  fi
+}
+
 check_tracked_scope() {
   local tracked
   tracked="$(git ls-files 2>/dev/null)" || return 0
   [ -n "$tracked" ] || return 0
   local line
   local scope
+  local -a lua51_files=()
   while IFS= read -r line; do
     if [[ "$line" =~ \.lua$ ]]; then
       scope="$(policy_scope_for_path "$line")"
+      if [ "$scope" != "other" ] && [ -r "$line" ]; then
+        lua51_files+=("$line")
+      fi
       case "$scope" in
         test)
           [ -r "$line" ] || continue
@@ -225,6 +248,7 @@ check_tracked_scope() {
       fi
     fi
   done <<< "$tracked"
+  check_lua51_compatibility "${lua51_files[@]}"
 }
 
 # Cached/index mode: validate stage-0 index blobs, never worktree content.
@@ -242,7 +266,7 @@ run_cached_mode() {
     violation "cannot enumerate staged index paths"
     exit "$fail"
   fi
-  for required in ".luarc.json" \
+  for required in ".luarc.json" ".stylua.toml" \
     "libs/nds/src/nitro/g3d/Nsbmd.lua" \
     "romdump/src/digest/model/MaterialCompiler.lua" \
     "romdump/src/digest/model/MeshCompiler.lua" \
@@ -278,8 +302,10 @@ run_cached_mode() {
   rm -f "$staged_list"
   cd "$snapshot_root"
   check_luarc_policy
+  check_stylua_policy
   check_target_specific
   if [ "${#staged_lua[@]}" -gt 0 ]; then
+    check_lua51_compatibility "${staged_lua[@]}"
     for staged_path in "${staged_lua[@]}"; do
       scope="$(policy_scope_for_path "$staged_path")"
       case "$scope" in
@@ -320,6 +346,7 @@ done
 check_target_specific
 
 if [ "$#" -gt 0 ]; then
+  local_lua51_files=()
   for path in "$@"; do
     [ -r "$path" ] || { violation "cannot read: $path"; continue; }
     check_forbidden_phrases "$path"
@@ -328,6 +355,7 @@ if [ "$#" -gt 0 ]; then
       violation "$path uses an assigned or directly returned anonymous function form; name the function"
     fi
     if [[ "$path" =~ \.lua$ ]]; then
+      local_lua51_files+=("$path")
       scope="$(policy_scope_for_path "$path")"
       case "$scope" in
         test)
@@ -343,8 +371,10 @@ if [ "$#" -gt 0 ]; then
       esac
     fi
   done
+  check_lua51_compatibility "${local_lua51_files[@]}"
 else
   check_luarc_policy
+  check_stylua_policy
   check_tracked_scope
 fi
 

@@ -85,7 +85,7 @@ function T.saturated_call_keeps_fallthrough_without_decoding_its_target()
     { op = "u8", command = 0xD4, amount = 1 },
     { op = "call", target = { cmd = 6 } },
     { op = "fin" },
-    { op = "raw", bytes = "\x60\x80" },
+    { op = "raw", bytes = "\096\128" },
   })
   local program, err = SequenceLowering.lower(bytes, IDENTITY)
   Assert.notNil(program, "saturated call target stays undecoded: " .. tostring(err))
@@ -105,7 +105,7 @@ function T.malformed_unreachable_bytes_are_never_decoded()
   local bytes = SseqFixture.build({
     { op = "fin" },
   })
-  local program, err = SequenceLowering.lower(bytes .. "\x60\x80", IDENTITY)
+  local program, err = SequenceLowering.lower(bytes .. "\096\128", IDENTITY)
   Assert.notNil(program, "unreachable bytes stay undecoded: " .. tostring(err))
   program = assert(program)
   Assert.equal(#program.instructions, 1)

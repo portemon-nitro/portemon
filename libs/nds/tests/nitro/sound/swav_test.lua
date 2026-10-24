@@ -70,7 +70,7 @@ end
 -- A member table extending past the end of the file is truncated data.
 function T.swar_rejects_table_past_end()
   local bytes = SwarFixture.build({ SwarFixture.pcm8({ 1, 2, 3, 4 }) })
-  local corrupted = bytes:sub(1, 0x38) .. "\xff\x00\x00\x00" .. bytes:sub(0x3D)
+  local corrupted = bytes:sub(1, 0x38) .. "\255\000\000\000" .. bytes:sub(0x3D)
   local swar, err = Swar.decode(corrupted, "fixture")
   Assert.isNil(swar)
   Assert.isTrue(Errors.is(err))

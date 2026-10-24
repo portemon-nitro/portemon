@@ -486,36 +486,30 @@ local function translatePointerEvents(capture, layout, events, translated)
   for _, event in ipairs(events) do
     assert(type(event) == "table" and type(event.type) == "string", "choice UI event is invalid")
     if event.type == "pointer_down" then
-      if capture.pointerId ~= nil then
-        goto continue
-      end
-      capture.pointerId = event.pointerId or "default"
-      local row = rowAt(layout, event.x, event.y)
-      capture.pressRow = row
-      if row ~= nil then
-        translated[#translated + 1] = { type = "focus", row = row }
+      if capture.pointerId == nil then
+        capture.pointerId = event.pointerId or "default"
+        local row = rowAt(layout, event.x, event.y)
+        capture.pressRow = row
+        if row ~= nil then
+          translated[#translated + 1] = { type = "focus", row = row }
+        end
       end
     elseif event.type == "pointer_move" then
-      local pointerId = event.pointerId or "default"
-      if capture.pointerId ~= pointerId then
-        goto continue
-      end
-      -- Hover never moves selection; only the press row can confirm.
+      -- Hover never moves selection; only the press row can confirm, so
+      -- motion from any pointer is consumed here with no output.
     elseif event.type == "pointer_up" then
       local pointerId = event.pointerId or "default"
-      if capture.pointerId ~= pointerId then
-        goto continue
-      end
-      local pressRow = capture.pressRow
-      capture.pointerId = nil
-      capture.pressRow = nil
-      if event.dragged then
-        goto continue
-      end
-      local row = rowAt(layout, event.x, event.y)
-      if row ~= nil and pressRow ~= nil and row == pressRow then
-        translated[#translated + 1] = { type = "focus", row = row }
-        translated[#translated + 1] = { type = "confirm" }
+      if capture.pointerId == pointerId then
+        local pressRow = capture.pressRow
+        capture.pointerId = nil
+        capture.pressRow = nil
+        if not event.dragged then
+          local row = rowAt(layout, event.x, event.y)
+          if row ~= nil and pressRow ~= nil and row == pressRow then
+            translated[#translated + 1] = { type = "focus", row = row }
+            translated[#translated + 1] = { type = "confirm" }
+          end
+        end
       end
     elseif event.type == "pointer_scroll" then
       -- Two rows need no wheel traversal; the gesture is consumed here so
@@ -525,7 +519,6 @@ local function translatePointerEvents(capture, layout, events, translated)
     else
       assert(false, "unknown choice UI event " .. event.type)
     end
-    ::continue::
   end
 end
 

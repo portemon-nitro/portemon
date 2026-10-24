@@ -435,14 +435,12 @@ local function addDraws(output, instance, position, role)
   for _, item in ipairs(instance:drawItems(assert(instance.renderMeshesById))) do
     -- The source animations hide unrevealed particles at polygon alpha zero,
     -- which the GX renderer would otherwise outline as wireframes.
-    if item.polygonAlpha == 0 then
-      goto continue
+    if item.polygonAlpha ~= 0 then
+      item.worldSpace = true
+      item.fieldEffect = "ho_oh_appearance"
+      item.fieldEffectRole = role
+      output[#output + 1] = item
     end
-    item.worldSpace = true
-    item.fieldEffect = "ho_oh_appearance"
-    item.fieldEffectRole = role
-    output[#output + 1] = item
-    ::continue::
   end
 end
 

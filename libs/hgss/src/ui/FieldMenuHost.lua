@@ -201,65 +201,62 @@ function FieldMenuHost:inputEvents(events)
   for _, event in ipairs(events) do
     if event.type == "pointer_move" then
       local pointerId = event.pointerId or "default"
-      if active.pointerId ~= nil and active.pointerId ~= pointerId then
-        goto continue
-      end
-      local drag = active.pointerDrag
-      if drag then
-        local rowHeight = assert(layout.itemRects[0], "menu layout needs an item row").height
-        local _, pointerY = toLogical(layout, event.x, event.y)
-        drag.remainder = drag.remainder + drag.y - pointerY
-        drag.y = pointerY
-        while math.abs(drag.remainder) >= rowHeight / 2 do
-          local direction = drag.remainder > 0 and "down" or "up"
-          local itemIndex = MenuLayout.adjacentItem(layout, selectedIndex, direction)
-          if itemIndex == nil then
-            drag.remainder = 0
-            break
+      if active.pointerId == nil or active.pointerId == pointerId then
+        local drag = active.pointerDrag
+        if drag then
+          local rowHeight = assert(layout.itemRects[0], "menu layout needs an item row").height
+          local _, pointerY = toLogical(layout, event.x, event.y)
+          drag.remainder = drag.remainder + drag.y - pointerY
+          drag.y = pointerY
+          while math.abs(drag.remainder) >= rowHeight / 2 do
+            local direction = drag.remainder > 0 and "down" or "up"
+            local itemIndex = MenuLayout.adjacentItem(layout, selectedIndex, direction)
+            if itemIndex == nil then
+              drag.remainder = 0
+              break
+            end
+            translated[#translated + 1] = { type = "focus", itemIndex = itemIndex }
+            selectedIndex = itemIndex
+            drag.remainder = drag.remainder - (drag.remainder > 0 and rowHeight / 2 or -rowHeight / 2)
           end
-          translated[#translated + 1] = { type = "focus", itemIndex = itemIndex }
-          selectedIndex = itemIndex
-          drag.remainder = drag.remainder - (drag.remainder > 0 and rowHeight / 2 or -rowHeight / 2)
+        else
+          local itemIndex = itemAt(layout, event.x, event.y)
+          translated[#translated + 1] = { type = "pointer_move", itemIndex = itemIndex }
+          selectedIndex = itemIndex or selectedIndex
         end
-      else
-        local itemIndex = itemAt(layout, event.x, event.y)
-        translated[#translated + 1] = { type = "pointer_move", itemIndex = itemIndex }
-        selectedIndex = itemIndex or selectedIndex
       end
     elseif event.type == "pointer_down" then
-      if active.pointerId ~= nil then
-        goto continue
-      end
-      active.pointerId = event.pointerId or "default"
-      local logicalX, logicalY = toLogical(layout, event.x, event.y)
-      if layout.cancelRect and contains(layout.cancelRect, logicalX, logicalY) then
-        active.pointerCancels = true
-        translated[#translated + 1] = { type = "pointer_down", itemIndex = nil }
-      else
-        active.pointerDrag = { y = logicalY, remainder = 0 }
-        translated[#translated + 1] = { type = "pointer_down", itemIndex = itemAt(layout, event.x, event.y) }
+      if active.pointerId == nil then
+        active.pointerId = event.pointerId or "default"
+        local logicalX, logicalY = toLogical(layout, event.x, event.y)
+        if layout.cancelRect and contains(layout.cancelRect, logicalX, logicalY) then
+          active.pointerCancels = true
+          translated[#translated + 1] = { type = "pointer_down", itemIndex = nil }
+        else
+          active.pointerDrag = { y = logicalY, remainder = 0 }
+          translated[#translated + 1] = { type = "pointer_down", itemIndex = itemAt(layout, event.x, event.y) }
+        end
       end
     elseif event.type == "pointer_up" then
       local pointerId = event.pointerId or "default"
-      if active.pointerId ~= pointerId then
-        goto continue
-      end
-      active.pointerId = nil
-      active.pointerDrag = nil
-      if active.pointerCancels then
-        active.pointerCancels = false
-        local logicalX, logicalY = toLogical(layout, event.x, event.y)
-        if not event.dragged and layout.cancelRect and contains(layout.cancelRect, logicalX, logicalY) then
-          translated[#translated + 1] = { type = "cancel" }
+      if active.pointerId == pointerId then
+        active.pointerId = nil
+        active.pointerDrag = nil
+        if active.pointerCancels then
+          active.pointerCancels = false
+          local logicalX, logicalY = toLogical(layout, event.x, event.y)
+          if not event.dragged and layout.cancelRect and contains(layout.cancelRect, logicalX, logicalY) then
+            translated[#translated + 1] = { type = "cancel" }
+          else
+            translated[#translated + 1] = { type = "pointer_up", itemIndex = nil, dragged = true }
+          end
         else
-          translated[#translated + 1] = { type = "pointer_up", itemIndex = nil, dragged = true }
+          translated[#translated + 1] = {
+            type = "pointer_up",
+            itemIndex = itemAt(layout, event.x, event.y),
+            dragged = event.dragged == true,
+          }
         end
-      else
-        translated[#translated + 1] = {
-          type = "pointer_up",
-          itemIndex = itemAt(layout, event.x, event.y),
-          dragged = event.dragged == true,
-        }
       end
     elseif event.type == "pointer_scroll" then
       local direction = event.dy > 0 and "up" or event.dy < 0 and "down" or nil
@@ -277,7 +274,6 @@ function FieldMenuHost:inputEvents(events)
     else
       translated[#translated + 1] = event
     end
-    ::continue::
   end
   return translated
 end

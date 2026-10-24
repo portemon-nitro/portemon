@@ -231,7 +231,7 @@ end
 function T.rejects_table_past_end()
   local bytes = SbnkFixture.build({ { type = 1, param = PCM } })
   -- Bump the instrument count far past the real table.
-  local corrupted = bytes:sub(1, 0x38) .. "\xff\x00\x00\x00" .. bytes:sub(0x3D)
+  local corrupted = bytes:sub(1, 0x38) .. "\255\000\000\000" .. bytes:sub(0x3D)
   decodeRejects(corrupted, "SBNK_TRUNCATED")
 end
 

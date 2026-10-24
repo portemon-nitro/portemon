@@ -92,7 +92,7 @@ function T.rejects_trailing_bytes_after_the_record_block()
   -- malformation, not tolerated padding.
   local err = decodeErr(Builder.payload({
     records = { { soundId = 1, volumeIndex = 0, x = 0, z = 0, xBounds = 2, zBounds = 2 } },
-    trailing = "\x01\x02\x03\x04\x05",
+    trailing = "\001\002\003\004\005",
   }))
   Assert.equal(err.code, "SOUNDPLATE_TRAILING_BYTES")
   Assert.equal(err.context.recordBytes, 8)
@@ -101,7 +101,7 @@ end
 
 function T.drops_the_signature_and_unknown_record_bytes()
   local records = assert(HgssSoundplate.decode(Builder.payload({
-    headerUnknown = "\xAB\xCD",
+    headerUnknown = "\171\205",
     records = {
       { soundId = 5, volumeIndex = 2, x = 9, z = 2, xBounds = 16, zBounds = 10, unknown2 = 0xEE, unknown3 = 0xFD },
     },

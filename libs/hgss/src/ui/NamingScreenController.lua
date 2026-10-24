@@ -236,20 +236,19 @@ function NamingScreenController:updateFixed(ticks)
         self._settleTicks = self._settleTicks + 1
         self._pressTicks.ok = self._pressTicks.ok + 1
       end
-      goto continue
+    else
+      self._subjectTick = self._subjectTick + 1
+      self._cursorTick = self._cursorTick + 1
+      self._entrySlotTick = self._entrySlotTick + 1
+      for control, tick in pairs(self._pressTicks) do
+        self._pressTicks[control] = tick + 1
+      end
+      local angle = self._glowAngle + 10
+      if angle > 360 then
+        angle = 0
+      end
+      self._glowAngle = angle
     end
-    self._subjectTick = self._subjectTick + 1
-    self._cursorTick = self._cursorTick + 1
-    self._entrySlotTick = self._entrySlotTick + 1
-    for control, tick in pairs(self._pressTicks) do
-      self._pressTicks[control] = tick + 1
-    end
-    local angle = self._glowAngle + 10
-    if angle > 360 then
-      angle = 0
-    end
-    self._glowAngle = angle
-    ::continue::
   end
 end
 

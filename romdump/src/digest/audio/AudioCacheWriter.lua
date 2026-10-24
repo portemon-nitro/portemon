@@ -387,18 +387,17 @@ local function persistSummary(stage, liveFs, plan)
       or type(completion.sequenceIds) ~= "table"
     then
       missing[#missing + 1] = bankPlan.bankId
-      goto continue
-    end
-    local sequenceIds = completion.sequenceIds ---@type integer[]
-    if AudioCacheValidator.validateBankClosure(liveFs, bankPlan.bankId, sequenceIds) ~= nil then
-      missing[#missing + 1] = bankPlan.bankId
     else
-      bankMarkers[bankPlan.bankId] = completion.marker
-      if provenanceDependencies == nil and type(completion.dependencies) == "table" then
-        provenanceDependencies = completion.dependencies
+      local sequenceIds = completion.sequenceIds ---@type integer[]
+      if AudioCacheValidator.validateBankClosure(liveFs, bankPlan.bankId, sequenceIds) ~= nil then
+        missing[#missing + 1] = bankPlan.bankId
+      else
+        bankMarkers[bankPlan.bankId] = completion.marker
+        if provenanceDependencies == nil and type(completion.dependencies) == "table" then
+          provenanceDependencies = completion.dependencies
+        end
       end
     end
-    ::continue::
   end
   if #missing > 0 then
     Errors.raise("AUDIO_SUMMARY_INCOMPLETE", "family summary refuses incomplete bank coverage", {

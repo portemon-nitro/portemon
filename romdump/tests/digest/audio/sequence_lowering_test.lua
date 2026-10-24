@@ -335,7 +335,7 @@ end
 function T.random_duration_keeps_its_exact_signed_pair()
   -- A0 prefix + 0x80 wait + lo = 0xC0DD (49373) + hi = 0x0000 (0).
   local bytes = SseqFixture.build({
-    { op = "raw", bytes = "\xA0\x80\xDD\xC0\x00\x00" },
+    { op = "raw", bytes = "\160\128\221\192\000\000" },
     { op = "fin" },
   })
   local program = lowerOrFail(bytes)
@@ -471,7 +471,7 @@ function T.self_open_does_not_decode_its_malformed_target()
     { op = "fe", mask = 1 },
     { op = "open_track", track = 0, target = { cmd = 4 } },
     { op = "fin" },
-    { op = "raw", bytes = "\x60\x80" },
+    { op = "raw", bytes = "\096\128" },
   })
   local program = lowerOrFail(bytes)
   Assert.equal(#program.instructions, 2)
@@ -503,7 +503,7 @@ function T.called_return_reaches_the_saved_continuation_only()
     { op = "note", key = 60, velocity = 96, duration = 24 },
     { op = "fin" },
     { op = "ret" },
-    { op = "raw", bytes = "\x60\x80" },
+    { op = "raw", bytes = "\096\128" },
   })
   local program = lowerOrFail(bytes)
   local names = {}
@@ -545,11 +545,11 @@ function T.saturated_call_target_is_not_reachable()
   local bytes = SseqFixture.build({
     { op = "call", target = { cmd = 4 } },
     { op = "fin" },
-    { op = "raw", bytes = "\x60\x80" },
+    { op = "raw", bytes = "\096\128" },
     { op = "u8", command = 0xD4, amount = 1 },
     { op = "call", target = { cmd = 8 } },
     { op = "fin" },
-    { op = "raw", bytes = "\x60\x80" },
+    { op = "raw", bytes = "\096\128" },
     { op = "call", target = { cmd = 10 } },
     { op = "ret" },
     { op = "note", key = 72, velocity = 80, duration = 8 },
@@ -606,7 +606,7 @@ function T.ignores_malformed_bytes_after_true_transfers()
     {
       commands = {
         { op = "jump", target = { cmd = 3 } },
-        { op = "raw", bytes = "\x60\x80" },
+        { op = "raw", bytes = "\096\128" },
         { op = "fin" },
       },
       expected = { "jump", "end" },
@@ -615,7 +615,7 @@ function T.ignores_malformed_bytes_after_true_transfers()
       commands = {
         { op = "call", target = { cmd = 4 } },
         { op = "fin" },
-        { op = "raw", bytes = "\x60\x80" },
+        { op = "raw", bytes = "\096\128" },
         { op = "ret" },
       },
       expected = { "call", "end", "return" },
@@ -623,7 +623,7 @@ function T.ignores_malformed_bytes_after_true_transfers()
   }
   for _, case in ipairs(cases) do
     local bytes = SseqFixture.build(case.commands)
-    local program = lowerOrFail(bytes .. "\x60\x80")
+    local program = lowerOrFail(bytes .. "\096\128")
     local names = {}
     for index, instruction in ipairs(program.instructions) do
       names[index] = instruction.op

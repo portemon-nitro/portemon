@@ -325,96 +325,94 @@ function MeshCompiler.compileDynamic(model, context)
     for segmentIndex, segment in ipairs(geom.segments) do
       -- A segment whose run was split at a matrix boundary can hold a lone
       -- straddling vertex with no indices: nothing to draw.
-      if segment.indexCount == 0 then
-        goto continue
-      end
-      -- A billboard draw's post-BB matrix (POSSCALE folds, nothing else can
-      -- touch the matrix without ending the billboard) is pose-independent,
-      -- so it bakes into the vertices exactly like the static path; only the
-      -- captured baseTransform remains runtime-resolved.
-      local bake = draw.transformMode == PoseContract.BILLBOARD and draw.matrix or nil
-      local bakeBuffer = bake and Matrix4.newBuffer() or nil
-      local bakeLinear = bake and Matrix4.newBuffer() or nil
-      if bake and bakeBuffer and bakeLinear then
-        copyArrayInto(bakeBuffer, bake)
-        Matrix4.linearInto(bakeLinear, bakeBuffer)
-      end
-      -- The linear part of the bake is a per-segment loop invariant: it feeds
-      -- the normal transform of every vertex in the segment, so compute it
-      -- once per segment, not once per vertex.
-      local numeric = arena.numeric
-      local slice = segment
-      local bakeMatrix = bakeBuffer and bakeBuffer.m or nil
-      local bakeLinearMatrix = bakeLinear and bakeLinear.m or nil
-      for offset = 0, slice.vertexCount - 1 do
-        local v = numeric[slice.vertexOffset + offset]
-        local x, y, z = v.x, v.y, v.z
-        local nx, ny, nz = v.nx, v.ny, v.nz
-        if bakeMatrix and bakeLinearMatrix then
-          local ox, oy, oz = x, y, z
-          x = bakeMatrix[0] * ox + bakeMatrix[4] * oy + bakeMatrix[8] * oz + bakeMatrix[12]
-          y = bakeMatrix[1] * ox + bakeMatrix[5] * oy + bakeMatrix[9] * oz + bakeMatrix[13]
-          z = bakeMatrix[2] * ox + bakeMatrix[6] * oy + bakeMatrix[10] * oz + bakeMatrix[14]
-          local onx, ony, onz = nx, ny, nz
-          nx = bakeLinearMatrix[0] * onx + bakeLinearMatrix[4] * ony + bakeLinearMatrix[8] * onz
-          ny = bakeLinearMatrix[1] * onx + bakeLinearMatrix[5] * ony + bakeLinearMatrix[9] * onz
-          nz = bakeLinearMatrix[2] * onx + bakeLinearMatrix[6] * ony + bakeLinearMatrix[10] * onz
+      if segment.indexCount ~= 0 then
+        -- A billboard draw's post-BB matrix (POSSCALE folds, nothing else can
+        -- touch the matrix without ending the billboard) is pose-independent,
+        -- so it bakes into the vertices exactly like the static path; only the
+        -- captured baseTransform remains runtime-resolved.
+        local bake = draw.transformMode == PoseContract.BILLBOARD and draw.matrix or nil
+        local bakeBuffer = bake and Matrix4.newBuffer() or nil
+        local bakeLinear = bake and Matrix4.newBuffer() or nil
+        if bake and bakeBuffer and bakeLinear then
+          copyArrayInto(bakeBuffer, bake)
+          Matrix4.linearInto(bakeLinear, bakeBuffer)
         end
-        x, y, z = MapUnits.toTiles(x, y, z)
-        v.x, v.y, v.z = x, y, z
-        v.nx, v.ny, v.nz = nx, ny, nz
-      end
+        -- The linear part of the bake is a per-segment loop invariant: it feeds
+        -- the normal transform of every vertex in the segment, so compute it
+        -- once per segment, not once per vertex.
+        local numeric = arena.numeric
+        local slice = segment
+        local bakeMatrix = bakeBuffer and bakeBuffer.m or nil
+        local bakeLinearMatrix = bakeLinear and bakeLinear.m or nil
+        for offset = 0, slice.vertexCount - 1 do
+          local v = numeric[slice.vertexOffset + offset]
+          local x, y, z = v.x, v.y, v.z
+          local nx, ny, nz = v.nx, v.ny, v.nz
+          if bakeMatrix and bakeLinearMatrix then
+            local ox, oy, oz = x, y, z
+            x = bakeMatrix[0] * ox + bakeMatrix[4] * oy + bakeMatrix[8] * oz + bakeMatrix[12]
+            y = bakeMatrix[1] * ox + bakeMatrix[5] * oy + bakeMatrix[9] * oz + bakeMatrix[13]
+            z = bakeMatrix[2] * ox + bakeMatrix[6] * oy + bakeMatrix[10] * oz + bakeMatrix[14]
+            local onx, ony, onz = nx, ny, nz
+            nx = bakeLinearMatrix[0] * onx + bakeLinearMatrix[4] * ony + bakeLinearMatrix[8] * onz
+            ny = bakeLinearMatrix[1] * onx + bakeLinearMatrix[5] * ony + bakeLinearMatrix[9] * onz
+            nz = bakeLinearMatrix[2] * onx + bakeLinearMatrix[6] * ony + bakeLinearMatrix[10] * onz
+          end
+          x, y, z = MapUnits.toTiles(x, y, z)
+          v.x, v.y, v.z = x, y, z
+          v.nx, v.ny, v.nz = nx, ny, nz
+        end
 
-      -- Billboard segments are fully baked; other segments defer their
-      -- transform to their position source.
-      local positionSource
-      if draw.transformMode == PoseContract.BILLBOARD then
+        -- Billboard segments are fully baked; other segments defer their
+        -- transform to their position source.
+        local positionSource
+        if draw.transformMode == PoseContract.BILLBOARD then
+          if segment.straddle then
+            Errors.raise(
+              "MESH_BILLBOARD_STRADDLE",
+              "a billboard draw's display list changes matrix mid-primitive",
+              { drawIndex = drawIndex - 1, shape = shp.name }
+            )
+          end
+          positionSource = nil
+        else
+          positionSource = segment.positionSource
+        end
+        local mesh = {
+          id = string.format("draw%d.seg%d", drawIndex - 1, segmentIndex - 1),
+          drawIndex = drawIndex - 1,
+          segmentIndex = segmentIndex - 1,
+          nodeIndex = draw.nodeIndex,
+          materialIndex = draw.materialIndex,
+          transformMode = draw.transformMode,
+          positionSource = positionSource,
+          polygonAttrRaw = matState.polygonAttrRaw,
+          batch = {
+            arena = arena,
+            vertexOffset = slice.vertexOffset,
+            vertexCount = slice.vertexCount,
+            indexOffset = slice.indexOffset,
+            indexCount = slice.indexCount,
+          },
+        }
+        -- A run split at a mid-run matrix boundary: the first #sources
+        -- vertices of this segment were submitted under their own
+        -- PRE-boundary sources, so the record carries the split for the runtime to bend
+        -- per-vertex exactly like the geometry engine (the DS transforms each
+        -- vertex under the then-current matrix). The straddle report counts
+        -- these compiled records, so every reported straddle is represented
+        -- by exactly one provenance record on its mesh.
         if segment.straddle then
-          Errors.raise(
-            "MESH_BILLBOARD_STRADDLE",
-            "a billboard draw's display list changes matrix mid-primitive",
-            { drawIndex = drawIndex - 1, shape = shp.name }
-          )
+          mesh.straddle = segment.straddle
+          local rec = straddlingByShape[shp.name]
+          if not rec then
+            rec = { shape = shp.name, straddling = 0 }
+            straddlingByShape[shp.name] = rec
+          end
+          rec.straddling = rec.straddling + 1
         end
-        positionSource = nil
-      else
-        positionSource = segment.positionSource
+        meshes[#meshes + 1] = mesh
       end
-      local mesh = {
-        id = string.format("draw%d.seg%d", drawIndex - 1, segmentIndex - 1),
-        drawIndex = drawIndex - 1,
-        segmentIndex = segmentIndex - 1,
-        nodeIndex = draw.nodeIndex,
-        materialIndex = draw.materialIndex,
-        transformMode = draw.transformMode,
-        positionSource = positionSource,
-        polygonAttrRaw = matState.polygonAttrRaw,
-        batch = {
-          arena = arena,
-          vertexOffset = slice.vertexOffset,
-          vertexCount = slice.vertexCount,
-          indexOffset = slice.indexOffset,
-          indexCount = slice.indexCount,
-        },
-      }
-      -- A run split at a mid-run matrix boundary: the first #sources
-      -- vertices of this segment were submitted under their own
-      -- PRE-boundary sources, so the record carries the split for the runtime to bend
-      -- per-vertex exactly like the geometry engine (the DS transforms each
-      -- vertex under the then-current matrix). The straddle report counts
-      -- these compiled records, so every reported straddle is represented
-      -- by exactly one provenance record on its mesh.
-      if segment.straddle then
-        mesh.straddle = segment.straddle
-        local rec = straddlingByShape[shp.name]
-        if not rec then
-          rec = { shape = shp.name, straddling = 0 }
-          straddlingByShape[shp.name] = rec
-        end
-        rec.straddling = rec.straddling + 1
-      end
-      meshes[#meshes + 1] = mesh
-      ::continue::
     end
   end
   if next(straddlingByShape) == nil then

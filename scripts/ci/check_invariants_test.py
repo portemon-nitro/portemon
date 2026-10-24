@@ -23,6 +23,8 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "lib" / "check-invari
 REPO_ROOT = SCRIPT.parents[2]
 HOOK_SOURCE = REPO_ROOT / "scripts" / "hooks" / "pre-commit"
 LUARC_SOURCE = REPO_ROOT / ".luarc.json"
+STYLUA_SOURCE = REPO_ROOT / ".stylua.toml"
+LUA51_CHECK_SOURCE = REPO_ROOT / "scripts" / "ci" / "lua51_source_check.py"
 LINT_SOURCE = REPO_ROOT / "scripts" / "lint.sh"
 SCOPE_SOURCE = REPO_ROOT / "scripts" / "lib" / "scope.sh"
 REPO_CHECK_SOURCE = REPO_ROOT / "scripts" / "lib" / "check-repository.sh"
@@ -374,6 +376,10 @@ def _init_repo(
         )
         lint_stub.chmod(0o755)
     (root / ".luarc.json").write_bytes(LUARC_SOURCE.read_bytes())
+    (root / ".stylua.toml").write_bytes(STYLUA_SOURCE.read_bytes())
+    compat_target = root / "scripts" / "ci" / "lua51_source_check.py"
+    compat_target.parent.mkdir(parents=True, exist_ok=True)
+    compat_target.write_bytes(LUA51_CHECK_SOURCE.read_bytes())
     for relative in REQUIRED_CORE_FILES:
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -396,6 +402,45 @@ def _stage(repo: Path, relative: str, body: str) -> None:
     target.write_text(body, encoding="utf-8")
     _run_git(repo, "add", "--", relative)
 
+
+class Lua51PolicyTest(unittest.TestCase):
+    def test_native_goto_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_production(Path(directory), "goto.lua",
+                "for _ = 1, 2 do\n  goto continue\n  ::continue::\nend\n")
+            result = run_gate(path)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("native goto", result.stderr)
+
+    def test_script_opcode_data_does_not_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_production(Path(directory), "opcode.lua",
+                "-- goto continue\nreturn { op = \"goto\", name = \"::continue::\" }\n")
+            result = run_gate(path)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unguarded_newer_table_api_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_production(Path(directory), "unpack.lua",
+                "local t = { 1, 2 }\nreturn table.unpack(t)\n")
+            result = run_gate(path)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("table.unpack", result.stderr)
+
+    def test_compatibility_probe_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_production(Path(directory), "compat.lua",
+                "local unpack = table.unpack or unpack\nreturn unpack({ 1, 2 })\n")
+            result = run_gate(path)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_hex_escape_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_test(Path(directory), "escape.lua",
+                r'local value = "\xFA"' + "\n")
+            result = run_gate(path)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("hexadecimal escape", result.stderr)
 
 class HookDelegationTest(unittest.TestCase):
     """The pre-commit hook defers to the lint gate."""
@@ -578,6 +623,16 @@ class LintStagedGateTest(unittest.TestCase):
             combined = result.stderr + result.stdout
             self.assertNotEqual(result.returncode, 0, combined)
             self.assertIn(".luarc.json", combined)
+
+    def test_lint_rejects_changed_stylua_dialect(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, bin_dir = _init_lint_repo(Path(directory), {"app/src/sample.lua": CLEAN_PRODUCTION_BODY})
+            config = (repo / ".stylua.toml").read_text(encoding="utf-8")
+            _stage(repo, ".stylua.toml", config.replace("Lua51", "LuaJIT"))
+            (repo / ".stylua.toml").write_text(config, encoding="utf-8")
+            result = _run_lint(repo, bin_dir)
+            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn(".stylua.toml", result.stderr + result.stdout)
 
     def test_lint_rejects_missing_luarc(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

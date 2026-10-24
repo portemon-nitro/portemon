@@ -154,23 +154,20 @@ function T.source_backing_window_fill_font4_and_selected_focus_are_visible(scope
       local w, h = image:getWidth(), image:getHeight()
       for y = math.floor(rect.y), math.ceil(rect.y + rect.height) - 1 do
         for x = math.floor(rect.x), math.ceil(rect.x + rect.width) - 1 do
-          if x < 0 or x >= w or y < 0 or y >= h then
-            goto continue
+          if x >= 0 and x < w and y >= 0 and y < h then
+            local r, g, b = image:getPixel(x, y)
+            if r ~= nil then
+              local qr, qg, qb = math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5)
+              if qr == 255 and qg == 255 and qb == 255 then
+                hasWhite = true
+              elseif qr == 255 and qg == 0 and qb == 0 then
+                hasRed = true
+              end
+              if hasWhite and hasRed then
+                return true, true
+              end
+            end
           end
-          local r, g, b = image:getPixel(x, y)
-          if r == nil then
-            goto continue
-          end
-          local qr, qg, qb = math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5)
-          if qr == 255 and qg == 255 and qb == 255 then
-            hasWhite = true
-          elseif qr == 255 and qg == 0 and qb == 0 then
-            hasRed = true
-          end
-          if hasWhite and hasRed then
-            return true, true
-          end
-          ::continue::
         end
       end
       return hasWhite, hasRed
