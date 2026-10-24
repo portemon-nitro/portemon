@@ -5,7 +5,9 @@
 -- a detailed `rectangles` record for callers that need the exact mode/rect/
 -- color), created shaders (with every `send` call recorded), tracks the
 -- transform-stack depth, and holds a full settable state the renderers must
--- restore exactly. failOnQuadCall/failOnDrawCall/failOnImageCall/
+-- restore exactly. Per-draw and per-intersect canvas attribution lives in
+-- the parallel `drawCanvases`/`scissorCanvases` logs so the shared records
+-- keep their exact shape. failOnQuadCall/failOnDrawCall/failOnImageCall/
 -- failOnShaderCall make the Nth construction/draw/image/shader call raise;
 -- imageSizes supplies the created image dimensions in creation order. The
 -- suites assert exactly the record shapes this helper produces; the real
@@ -16,6 +18,8 @@
 ---@field images table[]
 ---@field canvases table[]
 ---@field draws table[]
+---@field drawCanvases table[] one boxed `{ canvas = ... }` entry per draw, parallel to draws; boxing keeps alignment when the bound canvas is nil
+---@field scissorCanvases table[] one boxed `{ canvas = ... }` entry per intersect call, parallel to scissorIntersections
 ---@field transforms table[]
 ---@field primitives string[]
 ---@field rectangles table[]
@@ -43,6 +47,8 @@ function FakeGraphics.new(opts)
   local canvasCalls, imageCalls, quadCalls, drawCalls, shaderCalls = 0, 0, 0, 0, 0
   local pushDepth = 0
   local draws = {}
+  local drawCanvases = {}
+  local scissorCanvases = {}
   local transforms = {}
   local primitives = {}
   local rectangles = {}
@@ -70,6 +76,8 @@ function FakeGraphics.new(opts)
     canvases = canvases,
     shaders = shaders,
     draws = draws,
+    drawCanvases = drawCanvases,
+    scissorCanvases = scissorCanvases,
     blendModes = blendModes,
     transforms = transforms,
     primitives = primitives,
@@ -251,6 +259,11 @@ function FakeGraphics.new(opts)
         sy = sy,
         color = state.color,
       }
+      -- Attribution goes to the parallel boxed log, never into the shared
+      -- record: the box (never nil itself) keeps the log aligned with
+      -- draws even when the bound canvas is nil, which a bare `nil`
+      -- append could not do.
+      drawCanvases[#drawCanvases + 1] = { canvas = state.canvas }
       if opts.failOnDrawCall == drawCalls then
         error("injected draw failure")
       end
@@ -351,6 +364,7 @@ function FakeGraphics.new(opts)
         requested = { x, y, w, h },
         effective = effective,
       }
+      scissorCanvases[#scissorCanvases + 1] = { canvas = state.canvas }
       state.scissor = effective
     end,
   }
