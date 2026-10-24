@@ -41,7 +41,6 @@ local HgssOpeningMovie = {}
 HgssOpeningMovie.__index = HgssOpeningMovie
 
 local SOURCE_WIDTH, SOURCE_HEIGHT = 256, 192
-local SCROLL_DIVISOR = 256
 -- Ops whose `effect` field starts a waitable effect when the event fires.
 -- Started names (plus started emitter groups and compiled sprite clips)
 -- are the only identities a later wait may name.
@@ -91,6 +90,14 @@ local function isInteger(value)
   return type(value) == "number" and value % 1 == 0 and value ~= math.huge and value ~= -math.huge
 end
 
+-- C-style truncation toward zero: negative fractional shares round up,
+-- never down to the next whole pixel the way a floor would.
+---@param n number
+---@return integer
+local function truncTowardZero(n)
+  return n >= 0 and math.floor(n) or math.ceil(n)
+end
+
 ---@param color unknown
 ---@return number r, number g, number b
 local function emitterColorChannels(color)
@@ -115,6 +122,7 @@ end
 ---@field stepElapsed integer
 ---@field rng integer
 ---@field scrolls table<string, table<string, unknown>> live per-slot scroll programs by engine and slot
+---@field imageExtents table<string, { width: integer, height: integer }> native extents by staged image path
 ---@field effects table<string, table<string, unknown>> started timed and emitter effects by name
 ---@field programEffects table<string, boolean> effect identities the program starts on some step
 ---@field programClips table<string, boolean> clip identities the program assigns on some step
@@ -519,6 +527,7 @@ local function acquireSlot(self, manifest)
     programEffects = {},
     programClips = {},
     backgrounds = { main = {}, sub = {} },
+    imageExtents = {},
     spriteInstances = {},
     spriteOrder = {},
     clipIds = {},
@@ -549,22 +558,27 @@ local function acquireSlot(self, manifest)
         if slot.imageByPath[layer.image] == nil then
           acquireImage(slot, self, layer.image)
         end
+        slot.imageExtents[layer.image] = { width = layer.width, height = layer.height }
         if type(layer.variants) == "table" then
           for _, alternate in ipairs(layer.variants) do
-            if slot.imageByPath[alternate] == nil then
-              acquireImage(slot, self, alternate)
+            if slot.imageByPath[alternate.image] == nil then
+              acquireImage(slot, self, alternate.image)
             end
+            slot.imageExtents[alternate.image] = { width = alternate.width, height = alternate.height }
           end
         end
-        -- Every compiled slot starts with its authored enable state and
-        -- source priority; later setLayer events replace the copied image,
-        -- visibility, and priority per slot. Slots the program never touches
-        -- keep their staged visibility, hidden or shown.
+        -- Every compiled slot starts with its authored enable state,
+        -- source priority, and native image extents; later setLayer events
+        -- replace the copied image, visibility, priority, and extents per
+        -- slot. Slots the program never touches keep their staged
+        -- visibility, hidden or shown.
         slot.backgrounds[engine][layer.bgSlot] = {
           bgSlot = layer.bgSlot,
           image = layer.image,
           priority = layer.priority,
           visible = layer.initialVisible,
+          width = layer.width,
+          height = layer.height,
           scrollX = 0,
           scrollY = 0,
         }
@@ -992,10 +1006,27 @@ local function applyEvent(self, slot, event)
     background.image = event.image
     background.visible = event.visible
     background.priority = event.priority
+    -- The sampled image and its native dimensions change atomically:
+    -- later viewport math follows the newly selected art, never extents
+    -- inherited from the previous image.
+    local extents = slot.imageExtents ~= nil and slot.imageExtents[event.image] or nil
+    if extents == nil then
+      error(
+        invalid("opening scene layer points outside its compiled slot images", {
+          scene = slot.sceneNumber,
+          engine = event.engine,
+          bgSlot = event.bgSlot,
+        }),
+        0
+      )
+    end
+    background.width = extents.width
+    background.height = extents.height
   elseif op == "setPalette" then
     slot.palette = event
   elseif op == "setScroll" then
-    -- A slot scroll pans one compiled background. A target scroll names a
+    -- A slot scroll pans one compiled background by an absolute source
+    -- displacement, never a per-tick speed. A target scroll names a
     -- sprite group instead of a slot; no current program emits one, so only
     -- its named effect starts while no displacement is recorded.
     if event.engine ~= nil then
@@ -1011,14 +1042,37 @@ local function applyEvent(self, slot, event)
           0
         )
       end
-      slot.scrolls[event.engine .. ":" .. event.bgSlot] = {
-        dx = event.dx / SCROLL_DIVISOR,
-        dy = event.dy / SCROLL_DIVISOR,
-        remaining = event.ticks,
-        background = background,
-      }
+      -- Zero-duration displacements land at once, negative durations drift
+      -- every source tick, and positive durations interpolate from the
+      -- staged origin. A later start on the same engine slot replaces the
+      -- running program; immediate starts schedule no effect wait.
+      local key = event.engine .. ":" .. event.bgSlot
+      if event.ticks == 0 then
+        background.scrollX = background.scrollX + event.dx
+        background.scrollY = background.scrollY + event.dy
+        slot.scrolls[key] = nil
+      elseif event.ticks == -1 then
+        slot.scrolls[key] = {
+          ticks = -1,
+          dx = event.dx,
+          dy = event.dy,
+          background = background,
+        }
+      else
+        slot.scrolls[key] = {
+          ticks = event.ticks,
+          elapsed = 0,
+          originX = background.scrollX,
+          originY = background.scrollY,
+          dx = event.dx,
+          dy = event.dy,
+          background = background,
+        }
+        startTimedEffect(slot, event.effect, event.ticks)
+      end
+    else
+      startTimedEffect(slot, event.effect, event.ticks)
     end
-    startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "setBlend" then
     slot.blend = { effect = event.effect, from = event.from, to = event.to, ticks = event.ticks, elapsed = 0 }
     startTimedEffect(slot, event.effect, event.ticks)
@@ -1165,11 +1219,17 @@ end
 
 ---@param slot OpeningMovieSlot scene slot
 local function advanceContinuous(slot)
+  -- Absolute resampling from the staged origin: no incremental drift,
+  -- and the final tick lands exactly on the full displacement while
+  -- later ticks retain it. Only fixed source ticks mutate offsets.
   for _, scroll in pairs(slot.scrolls) do
-    if scroll.remaining > 0 then
+    if scroll.ticks == -1 then
       scroll.background.scrollX = scroll.background.scrollX + scroll.dx
       scroll.background.scrollY = scroll.background.scrollY + scroll.dy
-      scroll.remaining = scroll.remaining - 1
+    elseif scroll.ticks > 0 and scroll.elapsed < scroll.ticks then
+      scroll.elapsed = scroll.elapsed + 1
+      scroll.background.scrollX = scroll.originX + truncTowardZero(scroll.dx * scroll.elapsed / scroll.ticks)
+      scroll.background.scrollY = scroll.originY + truncTowardZero(scroll.dy * scroll.elapsed / scroll.ticks)
     end
   end
   for _, effect in pairs(slot.effects) do
@@ -1362,6 +1422,12 @@ local function finishCurrentScene(self)
   self.currentIndex = self.currentIndex + 1
   self.current = replacement
   self.pendingFinish = false
+  -- The incoming scene's first source step is already due: immediate
+  -- placements land before its first render and its scroll programs
+  -- start from the staged origins. Prefetched and transient slots never
+  -- apply early, so their tick-zero programs cannot leak movie-level
+  -- effects into the still-playing scene.
+  applyDueEvents(self, self.current)
   releaseSlot(old)
 end
 
@@ -1548,6 +1614,10 @@ function HgssOpeningMovie.new(options)
     -- acquisition succeeds, so the existing dispose path owns them on any
     -- later error; the transient is one local that never aliases them.
     self.current = acquireSlot(self, scenes[1])
+    -- The opening frame is already authored: tick-zero programs land
+    -- before the first render, so the preflight frame shows first-frame
+    -- pixels without advancing the source clock.
+    applyDueEvents(self, self.current)
     self:_renderRoles(self.current)
     self.nextSlot = acquireSlot(self, scenes[2])
     self:_renderRoles(self.nextSlot)
@@ -2320,6 +2390,37 @@ local function particlesLive(slot)
   return false
 end
 
+-- Samples the 256x192 engine viewport out of the full native BG texture
+-- at the signed source offsets with Euclidean wrap. Positive offsets
+-- sample farther into the source map (content moves left), so the viewport
+-- splits at the wrap seams into as many as four partial quads drawn at
+-- exact source positions; no shifted single blit and no uncovered strips.
+---@param self HgssOpeningMovie
+---@param image love.Image staged native BG texture
+---@param background table<string, unknown> live BG slot with width, height, scrollX, scrollY
+local function drawWrappedBackground(self, image, background)
+  local graphics = self.graphics
+  local width = background.width --[[@as integer]]
+  local height = background.height --[[@as integer]]
+  local offsetX = ((background.scrollX % width) + width) % width
+  local offsetY = ((background.scrollY % height) + height) % height
+  local firstW = math.min(width - offsetX, SOURCE_WIDTH)
+  local firstH = math.min(height - offsetY, SOURCE_HEIGHT)
+  local columns = { { sx = offsetX, dx = 0, w = firstW } }
+  if firstW < SOURCE_WIDTH then
+    columns[#columns + 1] = { sx = 0, dx = firstW, w = SOURCE_WIDTH - firstW }
+  end
+  local rows = { { sy = offsetY, dy = 0, h = firstH } }
+  if firstH < SOURCE_HEIGHT then
+    rows[#rows + 1] = { sy = 0, dy = firstH, h = SOURCE_HEIGHT - firstH }
+  end
+  for _, column in ipairs(columns) do
+    for _, row in ipairs(rows) do
+      graphics.draw(image, graphics.newQuad(column.sx, row.sy, column.w, row.h, width, height), column.dx, row.dy)
+    end
+  end
+end
+
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
 ---@param canvas love.Canvas fixed role target receiving the engine output
@@ -2375,7 +2476,7 @@ function HgssOpeningMovie:_renderEngine(slot, canvas, engine)
           else
             graphics.setColor(1, 1, 1, 1)
           end
-          graphics.draw(image, background.scrollX, background.scrollY)
+          drawWrappedBackground(self, image, background)
         end)
       end
     elseif plane.kind == 1 then
