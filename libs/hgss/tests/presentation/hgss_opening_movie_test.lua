@@ -3122,4 +3122,712 @@ function T.hidden_planes_stay_hidden_without_leaking_across_scenes()
   movie:dispose()
 end
 
+function T.opposing_engine_blends_keep_separate_weights_across_a_flip()
+  local root = sceneRoot(1)
+  local function rawCoefficient(n, ticks)
+    return math.min(31, math.floor(n * 31 / ticks))
+  end
+  local function cappedWeight(raw)
+    return math.min(raw, 16) / 16
+  end
+  Assert.equal(rawCoefficient(1, 20), 1, "the first tick holds the opening raw step")
+  Assert.equal(rawCoefficient(10, 20), 15, "the middle tick holds the middle raw step")
+  Assert.equal(rawCoefficient(20, 20), 31, "the final tick holds the full raw step")
+  Assert.near(cappedWeight(1), 0.0625, 0.0001, "the opening weight follows the capped channel")
+  Assert.near(cappedWeight(30), 1, 0.0001, "weights above the hardware cap saturate")
+  local mainBack = root .. "layers/blend-main-back.png"
+  local mainMid = root .. "layers/blend-main-mid.png"
+  local mainFront = root .. "layers/blend-main-front.png"
+  local subBack = root .. "layers/blend-sub-back.png"
+  local subMid = root .. "layers/blend-sub-mid.png"
+  local subFront = root .. "layers/blend-sub-front.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      {
+        layer(2, mainBack, 256, 192, 2),
+        layer(1, mainMid, 256, 192, 1),
+        layer(0, mainFront, 256, 192, 0),
+      },
+      {
+        layer(2, subBack, 256, 192, 2),
+        layer(1, subMid, 256, 192, 1),
+        layer(0, subFront, 256, 192, 0),
+      },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "hold", events = { 1, 2, 3, 4, 5, 6 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 4,
+          secondMask = 32,
+          direction = 0,
+          effect = "main-cross",
+          ticks = 20,
+        },
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "sub",
+          firstMask = 4,
+          secondMask = 32,
+          direction = 1,
+          effect = "sub-cross",
+          ticks = 20,
+        },
+        { op = "setScreenMapping", stepId = "hold", atStepTick = 15, mainPhysical = "lower" },
+        { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "hold", atStepTick = 40 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local current = assert(movie.current, "the running movie owns its current slot")
+  local mainFrontHandle = assert(current.imageByPath[mainFront], "the main front plane is staged")
+  local mainBackHandle = assert(current.imageByPath[mainBack], "the main selected plane is staged")
+  local subFrontHandle = assert(current.imageByPath[subFront], "the sub front plane is staged")
+  local subBackHandle = assert(current.imageByPath[subBack], "the sub selected plane is staged")
+  local function frameColors(engine, image, baseline)
+    local found = {}
+    for _, draw in ipairs(engineDrawsOf(graphics, movie, engine, image, baseline)) do
+      found[#found + 1] = { draw.color[1], draw.color[2], draw.color[3], draw.color[4] }
+    end
+    return found
+  end
+  local function isPlainWhiteOpaque(color)
+    return color[1] == 1 and color[2] == 1 and color[3] == 1 and color[4] == 1
+  end
+  movie:updateFixed()
+  local firstBaseline = #graphics.draws
+  movie:draw()
+  local mainFrontFirst = frameColors("main", mainFrontHandle, firstBaseline)
+  Assert.equal(#mainFrontFirst, 1, "the excluded main front plane paints once")
+  Assert.isTrue(
+    isPlainWhiteOpaque(mainFrontFirst[1]),
+    "the excluded front plane stays opaque while the back planes blend"
+  )
+  local mainBackFirst = frameColors("main", mainBackHandle, firstBaseline)
+  Assert.equal(#mainBackFirst, 1, "the selected main plane paints once")
+  Assert.isFalse(
+    isPlainWhiteOpaque(mainBackFirst[1]),
+    "the selected main plane carries the opening blend weight"
+  )
+  local subBackFirst = frameColors("sub", subBackHandle, firstBaseline)
+  Assert.equal(#subBackFirst, 1, "the selected sub plane paints once")
+  Assert.isTrue(
+    isPlainWhiteOpaque(subBackFirst[1]),
+    "the reversed sub blend opens fully saturated: ev=floor(31/20)=1, raw=31-1=30, min(30,16)/16=1.0"
+  )
+  Assert.isFalse(
+    mainBackFirst[1][1] == subBackFirst[1][1]
+      and mainBackFirst[1][2] == subBackFirst[1][2]
+      and mainBackFirst[1][3] == subBackFirst[1][3]
+      and mainBackFirst[1][4] == subBackFirst[1][4],
+    "opposite directions paint opposite weights on the two engines"
+  )
+  for _ = 1, 9 do
+    movie:updateFixed()
+  end
+  local midBaseline = #graphics.draws
+  movie:draw()
+  local mainBackMid = frameColors("main", mainBackHandle, midBaseline)
+  local subBackMid = frameColors("sub", subBackHandle, midBaseline)
+  Assert.equal(#mainBackMid, 1, "the selected main plane still paints mid-transition")
+  Assert.isFalse(
+    isPlainWhiteOpaque(mainBackMid[1]),
+    "the selected main plane still carries its mid blend weight"
+  )
+  Assert.isFalse(
+    mainBackMid[1][4] == subBackMid[1][4] and mainBackMid[1][1] == subBackMid[1][1],
+    "opposite directions stay opposite mid-transition"
+  )
+  local midEffects = assert(movie.current, "the running movie owns its current slot").effects
+  Assert.isFalse(midEffects["main-cross"].done, "the main blend still runs at its tenth tick")
+  Assert.isFalse(midEffects["sub-cross"].done, "the sub blend still runs at its tenth tick")
+  for _ = 1, 6 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie.current.mainPhysical, "lower", "the authored flip moves the main engine")
+  local flipBaseline = #graphics.draws
+  movie:draw()
+  local mainBackFlip = frameColors("main", mainBackHandle, flipBaseline)
+  local subBackFlip = frameColors("sub", subBackHandle, flipBaseline)
+  Assert.isFalse(
+    mainBackFlip[1][4] == subBackFlip[1][4] and mainBackFlip[1][1] == subBackFlip[1][1],
+    "the flip carries each engine result instead of merging them"
+  )
+  for _ = 1, 4 do
+    movie:updateFixed()
+  end
+  local doneEffects = assert(movie.current, "the running movie owns its current slot").effects
+  Assert.isTrue(doneEffects["main-cross"].done, "the main blend retires on its own twentieth tick")
+  Assert.isTrue(doneEffects["sub-cross"].done, "the sub blend retires on its own twentieth tick")
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the blend movie releases every handle")
+end
+
+function T.selected_planes_blend_with_capped_coefficients_under_window_masks()
+  local root = sceneRoot(1)
+  local function rawCoefficient(n, ticks)
+    return math.min(31, math.floor(n * 31 / ticks))
+  end
+  local function cappedWeight(raw)
+    return math.min(raw, 16) / 16
+  end
+  Assert.equal(rawCoefficient(15, 31), 15, "the middle tick holds its raw step")
+  Assert.equal(rawCoefficient(31, 31), 31, "the final tick holds the full raw step")
+  Assert.near(cappedWeight(15), 0.9375, 0.0001, "the middle weight follows the capped channel")
+  Assert.equal(cappedWeight(16), cappedWeight(31), "weights above the hardware cap plateau")
+  local backImage = root .. "layers/mask-back.png"
+  local midImage = root .. "layers/mask-mid.png"
+  local frontImage = root .. "layers/mask-front.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      {
+        layer(0, backImage, 256, 192, 2),
+        layer(1, midImage, 256, 192, 1),
+        layer(2, frontImage, 256, 192, 0),
+      },
+      { layer(0, root .. "layers/mask-lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "hold", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 2,
+          secondMask = 32,
+          direction = 0,
+          effect = "mid-cross",
+          ticks = 31,
+        },
+        windowEvent(
+          "hold",
+          0,
+          "main",
+          windowRect(0, 0, 127, 191),
+          windowRect(0, 0, 127, 191),
+          0,
+          3,
+          31
+        ),
+        { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "hold", atStepTick = 40 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local current = assert(movie.current, "the running movie owns its current slot")
+  local midHandle = assert(current.imageByPath[midImage], "the selected middle plane is staged")
+  local frontHandle = assert(current.imageByPath[frontImage], "the excluded front plane is staged")
+  local function drawColors(image, baseline)
+    local found = {}
+    for _, draw in ipairs(engineDrawsOf(graphics, movie, "main", image, baseline)) do
+      found[#found + 1] = { draw.color[1], draw.color[2], draw.color[3], draw.color[4] }
+    end
+    return found
+  end
+  for _ = 1, 15 do
+    movie:updateFixed()
+  end
+  local midBaseline = #graphics.draws
+  movie:draw()
+  local midColors = drawColors(midHandle, midBaseline)
+  Assert.isTrue(#midColors > 0, "the selected middle plane paints under its window")
+  local midInfluenced = false
+  for _, color in ipairs(midColors) do
+    if not (color[1] == 1 and color[2] == 1 and color[3] == 1 and color[4] == 1) then
+      midInfluenced = true
+    end
+  end
+  Assert.isTrue(midInfluenced, "the non-frontmost selected plane carries the blend instead of the frontmost")
+  local frontColors = drawColors(frontHandle, midBaseline)
+  Assert.isTrue(#frontColors > 0, "the excluded front plane still paints where its window allows")
+  for _, color in ipairs(frontColors) do
+    Assert.isTrue(
+      color[1] == 1 and color[2] == 1 and color[3] == 1 and color[4] == 1,
+      "the masked-out front plane stays opaque instead of taking the global weight"
+    )
+  end
+  for _ = 1, 1 do
+    movie:updateFixed()
+  end
+  local capBaseline = #graphics.draws
+  movie:draw()
+  local atSixteen = drawColors(midHandle, capBaseline)
+  for _ = 1, 15 do
+    movie:updateFixed()
+  end
+  local fullBaseline = #graphics.draws
+  movie:draw()
+  local atFull = drawColors(midHandle, fullBaseline)
+  Assert.equal(#atSixteen, #atFull, "the capped plateau keeps the same draw count")
+  Assert.equal(#atSixteen > 0, true, "the plateau comparison samples the selected plane")
+  for index, color in ipairs(atSixteen) do
+    local other = atFull[index]
+    Assert.notNil(other, "the plateau keeps every selected draw")
+    Assert.equal(color[1], other[1], "the capped channel plateaus instead of dividing by the tick count")
+    Assert.equal(color[2], other[2], "the capped channel plateaus instead of dividing by the tick count")
+    Assert.equal(color[3], other[3], "the capped channel plateaus instead of dividing by the tick count")
+    Assert.equal(color[4], other[4], "the capped channel plateaus instead of dividing by the tick count")
+  end
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the mask movie releases every handle")
+end
+
+function T.row_wipe_boundaries_follow_the_scanline_cosine_law()
+  local root = sceneRoot(2)
+  local function truncTowardZero(value)
+    if value >= 0 then
+      return math.floor(value)
+    end
+    return math.ceil(value)
+  end
+  local function wipeBoundary(n, ticks, vcount)
+    local theta = math.pi * n / ticks
+    local x, y = math.cos(theta), math.sin(theta)
+    if x == 1 then
+      return 255
+    end
+    if x == -1 then
+      return 0
+    end
+    if math.abs(y) < 1e-9 then
+      if x > 0 then
+        return 255
+      end
+      return 0
+    end
+    return math.max(0, math.min(255, 127 + truncTowardZero(vcount * x / y)))
+  end
+  Assert.equal(wipeBoundary(0, 20, 0), 255, "the opening edge starts fully closed")
+  Assert.equal(wipeBoundary(0, 20, 191), 255, "the opening edge starts fully closed on every row")
+  Assert.equal(wipeBoundary(20, 20, 0), 0, "the final edge ends fully open")
+  Assert.equal(wipeBoundary(20, 20, 191), 0, "the final edge ends fully open on every row")
+  Assert.equal(wipeBoundary(10, 20, 96), 127, "the halfway edge centers on every row")
+  Assert.isFalse(
+    wipeBoundary(5, 20, 48) == wipeBoundary(5, 20, 96),
+    "quarter-transition edges slope with the scanline"
+  )
+  local upperImage = root .. "layers/wipe-upper.png"
+  local lowerImage = root .. "layers/wipe-lower.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      2,
+      { layer(0, upperImage, 256, 192) },
+      { layer(0, lowerImage, 256, 192) },
+      {},
+      { { id = "hold", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "circleWipe",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          kind = 1,
+          ticks = 20,
+          effect = "wipe-cover",
+        },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "hold", atStepTick = 40 },
+      }
+    ),
+    2
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  while movie:sceneNumber() < 2 do
+    movie:updateFixed()
+  end
+  for _ = 1, 5 do
+    movie:updateFixed()
+  end
+  local scissorBaseline = #graphics.scissorIntersections
+  local canvasCount = #graphics.canvases
+  movie:draw()
+  local function edgesForRow(y)
+    local edges = {}
+    for index = scissorBaseline + 1, #graphics.scissorIntersections do
+      local entry = graphics.scissorIntersections[index]
+      if graphics.scissorCanvases[index].canvas == movie.mainCanvas then
+        local requested = entry.requested
+        if y >= requested[2] and y < requested[2] + requested[4] then
+          edges[#edges + 1] = requested[1]
+        end
+      end
+    end
+    return edges
+  end
+  local lowEdges = edgesForRow(48)
+  local highEdges = edgesForRow(96)
+  local usesMaskCanvas = #graphics.canvases > canvasCount
+  if #lowEdges == 0 and #highEdges == 0 then
+    Assert.isTrue(usesMaskCanvas, "the scanline wipe clips per row instead of one centered rectangle")
+  else
+    Assert.isTrue(#lowEdges > 0, "the wipe clips the upper probe row")
+    Assert.isTrue(#highEdges > 0, "the wipe clips the lower probe row")
+    local lowSorted, highSorted = {}, {}
+    for _, edge in ipairs(lowEdges) do
+      lowSorted[#lowSorted + 1] = edge
+    end
+    for _, edge in ipairs(highEdges) do
+      highSorted[#highSorted + 1] = edge
+    end
+    table.sort(lowSorted)
+    table.sort(highSorted)
+    Assert.isFalse(
+      #lowSorted == #highSorted and lowSorted[1] == highSorted[1],
+      "the wipe edge slopes with the scanline instead of a centered rectangle"
+    )
+    local expectedLow = wipeBoundary(5, 20, 48)
+    local expectedHigh = wipeBoundary(5, 20, 96)
+    local foundLow, foundHigh = false, false
+    for _, edge in ipairs(lowSorted) do
+      if math.abs(edge - expectedLow) <= 1 then
+        foundLow = true
+      end
+    end
+    for _, edge in ipairs(highSorted) do
+      if math.abs(edge - expectedHigh) <= 1 then
+        foundHigh = true
+      end
+    end
+    Assert.isTrue(foundLow, "the upper row matches the scanline law")
+    Assert.isTrue(foundHigh, "the lower row matches the scanline law")
+  end
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the wipe movie releases every handle")
+end
+
+-- Source step-clock coefficients land on exact sixteenths: the opening
+-- tick carries raw 0, the first tick raw 1, and saturation holds opaque
+-- past raw 16 instead of dividing by the tick count. The fixture selects
+-- the back plane on BG0 so the assertions observe the selected plane.
+function T.blend_coefficients_follow_exact_sixteenth_steps()
+  local root = sceneRoot(1)
+  local backImage = root .. "layers/coeff-back.png"
+  local midImage = root .. "layers/coeff-mid.png"
+  local frontImage = root .. "layers/coeff-front.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      {
+        layer(0, backImage, 256, 192, 2),
+        layer(1, midImage, 256, 192, 1),
+        layer(2, frontImage, 256, 192, 0),
+      },
+      { layer(0, root .. "layers/coeff-lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "hold", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 1,
+          secondMask = 32,
+          direction = 0,
+          effect = "coeff-cross",
+          ticks = 31,
+        },
+        { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "hold", atStepTick = 40 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local current = assert(movie.current, "the running movie owns its current slot")
+  local backHandle = assert(current.imageByPath[backImage], "the selected back plane is staged")
+  local frontHandle = assert(current.imageByPath[frontImage], "the excluded front plane is staged")
+  local function alphas(image, baseline)
+    local found = {}
+    for _, draw in ipairs(engineDrawsOf(graphics, movie, "main", image, baseline)) do
+      found[#found + 1] = draw.color[4]
+    end
+    return found
+  end
+  local preflight = alphas(backHandle, 0)
+  Assert.equal(#preflight, 1, "the opening frame paints the selected plane once")
+  Assert.equal(preflight[1], 0, "the opening tick carries raw step zero")
+  movie:updateFixed()
+  local firstBaseline = #graphics.draws
+  movie:draw()
+  local first = alphas(backHandle, firstBaseline)
+  Assert.equal(#first, 1, "the first tick paints the selected plane once")
+  Assert.equal(first[1], 1 / 16, "the first tick carries one capped sixteenth")
+  for _ = 1, 14 do
+    movie:updateFixed()
+  end
+  local midBaseline = #graphics.draws
+  movie:draw()
+  local mid = alphas(backHandle, midBaseline)
+  Assert.equal(#mid, 1, "the middle tick paints the selected plane once")
+  Assert.equal(mid[1], 15 / 16, "the middle tick carries fifteen capped sixteenths")
+  movie:updateFixed()
+  local capBaseline = #graphics.draws
+  movie:draw()
+  local capped = alphas(backHandle, capBaseline)
+  Assert.equal(#capped, 1, "the saturation tick paints the selected plane once")
+  Assert.equal(capped[1], 1, "raw steps past sixteen saturate opaque")
+  for _ = 1, 15 do
+    movie:updateFixed()
+  end
+  local fullBaseline = #graphics.draws
+  movie:draw()
+  local full = alphas(backHandle, fullBaseline)
+  Assert.equal(#full, 1, "the final tick paints the selected plane once")
+  Assert.equal(full[1], 1, "the final raw step stays saturated opaque")
+  Assert.equal(full[1], capped[1], "saturation plateaus instead of tracking the tick count")
+  for _, alpha in ipairs(alphas(frontHandle, 0)) do
+    Assert.equal(alpha, 1, "the excluded front plane stays opaque on every draw")
+  end
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the coefficient movie releases every handle")
+end
+
+-- Independent engine clocks retire their own named waits: the shorter main
+-- program completes while the longer sub program still runs, so a wait on
+-- the sub program holds past the main completion.
+function T.blend_effect_waits_complete_on_their_own_engine_clock()
+  local root = sceneRoot(1)
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      { layer(0, root .. "layers/wait-main.png", 256, 192) },
+      { layer(0, root .. "layers/wait-sub.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      {
+        { id = "hold", events = { 1, 2, 3 }, ["until"] = { kind = "effect", effect = "sub-twenty" } },
+        { id = "tail", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 5 } },
+      },
+      {
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 1,
+          secondMask = 32,
+          direction = 0,
+          effect = "main-ten",
+          ticks = 10,
+        },
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "sub",
+          firstMask = 1,
+          secondMask = 32,
+          direction = 1,
+          effect = "sub-twenty",
+          ticks = 20,
+        },
+        { op = "enableSkip", stepId = "hold", atStepTick = 5 },
+        { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 },
+        { op = "finish", stepId = "tail", atStepTick = 5 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 10 do
+    movie:updateFixed()
+  end
+  local effects = assert(movie.current, "the running movie owns its current slot").effects
+  Assert.isTrue(effects["main-ten"].done, "the shorter main program retires on its own tenth tick")
+  Assert.isFalse(effects["sub-twenty"].done, "the longer sub program still runs past the main completion")
+  Assert.equal(movie:sceneNumber(), 1, "the sub wait holds the step past the main completion")
+  for _ = 1, 10 do
+    movie:updateFixed()
+  end
+  local done = assert(movie.current, "the running movie owns its current slot").effects
+  Assert.isTrue(done["sub-twenty"].done, "the sub program retires on its own twentieth tick")
+  for _ = 1, 5 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "the tail step runs after both engine programs retire")
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the wait movie releases every handle")
+end
+
+-- Wipe endpoints stay arithmetic-safe and retire exactly: the opening
+-- frame covers every row without division faults, and the program stops
+-- clipping rows once its authored ticks elapse so later art shows. The
+-- preflight draw already runs the opening frame, so the zero-tick
+-- endpoint is observed before the first source tick advances.
+function T.wipe_endpoints_retire_cleanly_without_arithmetic_faults()
+  local root = sceneRoot(1)
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      { layer(0, root .. "layers/edge-upper.png", 256, 192) },
+      { layer(0, root .. "layers/edge-lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "open", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 10 } } },
+      {
+        {
+          op = "circleWipe",
+          stepId = "open",
+          atStepTick = 0,
+          engine = "main",
+          kind = 1,
+          ticks = 6,
+          effect = "edge-wipe",
+        },
+        { op = "enableSkip", stepId = "open", atStepTick = 5 },
+        { op = "waitTicks", stepId = "open", atStepTick = 0, ticks = 10 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local covered = 0
+  local widest = 0
+  for index = 1, #graphics.scissorIntersections do
+    local requested = graphics.scissorIntersections[index].requested
+    Assert.isTrue(requested[1] == requested[1], "the opening edge stays finite")
+    Assert.isTrue(requested[3] == requested[3], "the opening span stays finite")
+    if graphics.scissorCanvases[index].canvas == movie.mainCanvas then
+      covered = covered + 1
+      if requested[3] == 256 then
+        widest = widest + 1
+        Assert.equal(requested[1], 0, "the opening frame covers each row from its left edge")
+      end
+    end
+  end
+  Assert.equal(covered, 384, "the opening frame clips every row on its owning engine")
+  Assert.equal(widest, 192, "every row carries its full-width cover span")
+  local function mainScissors()
+    local count = 0
+    for index = 1, #graphics.scissorIntersections do
+      if graphics.scissorCanvases[index].canvas == movie.mainCanvas then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  for _ = 1, 6 do
+    movie:updateFixed()
+  end
+  local doneBaseline = mainScissors()
+  movie:draw()
+  Assert.equal(
+    mainScissors(),
+    doneBaseline,
+    "the completed wipe draws no further row spans"
+  )
+  for _ = 1, 4 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 2, "the step still holds its authored duration past the wipe")
+  local tailBaseline = mainScissors()
+  movie:draw()
+  Assert.equal(
+    mainScissors(),
+    tailBaseline,
+    "the retired wipe stops clipping rows once its ticks elapse"
+  )
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the endpoint movie releases every handle")
+end
+
+-- Engine-local effects survive a physical screen flip without spilling:
+-- the main blend keeps its own weights on the main canvas while the idle
+-- sub engine paints every plane opaque.
+function T.engine_effects_stay_local_across_a_physical_flip()
+  local root = sceneRoot(1)
+  local mainBack = root .. "layers/flip-main-back.png"
+  local mainFront = root .. "layers/flip-main-front.png"
+  local subBack = root .. "layers/flip-sub-back.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      {
+        layer(0, mainBack, 256, 192, 2),
+        layer(2, mainFront, 256, 192, 0),
+      },
+      { layer(0, subBack, 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "hold", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 1,
+          secondMask = 32,
+          direction = 0,
+          effect = "flip-cross",
+          ticks = 20,
+        },
+        { op = "setScreenMapping", stepId = "hold", atStepTick = 5, mainPhysical = "lower" },
+        { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "hold", atStepTick = 40 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local current = assert(movie.current, "the running movie owns its current slot")
+  local mainBackHandle = assert(current.imageByPath[mainBack], "the selected main plane is staged")
+  local mainFrontHandle = assert(current.imageByPath[mainFront], "the excluded main plane is staged")
+  local subBackHandle = assert(current.imageByPath[subBack], "the idle sub plane is staged")
+  local function alphas(engine, image, baseline)
+    local found = {}
+    for _, draw in ipairs(engineDrawsOf(graphics, movie, engine, image, baseline)) do
+      found[#found + 1] = draw.color[4]
+    end
+    return found
+  end
+  movie:updateFixed()
+  local firstBaseline = #graphics.draws
+  movie:draw()
+  local backFirst = alphas("main", mainBackHandle, firstBaseline)
+  Assert.equal(#backFirst, 1, "the selected main plane paints once")
+  Assert.equal(backFirst[1], 1 / 16, "the opening weight selects the masked back plane")
+  for _, alpha in ipairs(alphas("main", mainFrontHandle, firstBaseline)) do
+    Assert.equal(alpha, 1, "the unmasked main plane stays opaque")
+  end
+  for _, alpha in ipairs(alphas("sub", subBackHandle, firstBaseline)) do
+    Assert.equal(alpha, 1, "the blend never spills onto the idle engine")
+  end
+  for _ = 1, 4 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie.current.mainPhysical, "lower", "the authored flip moves the main engine")
+  local flipBaseline = #graphics.draws
+  movie:draw()
+  local backFlip = alphas("main", mainBackHandle, flipBaseline)
+  Assert.equal(#backFlip, 1, "the flipped engine still paints its selected plane once")
+  Assert.equal(backFlip[1], 7 / 16, "the flip carries the running weight instead of restarting it")
+  for _, alpha in ipairs(alphas("sub", subBackHandle, flipBaseline)) do
+    Assert.equal(alpha, 1, "the idle engine stays opaque across the flip")
+  end
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the flip movie releases every handle")
+end
+
 return { tests = T }

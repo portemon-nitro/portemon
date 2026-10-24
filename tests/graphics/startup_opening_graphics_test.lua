@@ -740,9 +740,11 @@ local function composite_layers_pan_independently_with_true_blending(scope)
   local blend = openCompositeMovie(scope, blendScenes, blendCache, 512, 384, "dual")
   advance(blend, 10)
   local xr, xg, xb = samplePixel(scope, blend, 512, 384, 8, 96)
+  -- Ten of twenty source ticks count raw fifteen, capped below sixteen:
+  -- the first weight holds fifteen sixteenths over the second plane.
   Assert.near(xr, 0, 0.05, "the blend keeps no bottom red under the settling top layer")
-  Assert.near(xg, 0.25, 0.05, "the blend mixes the live middle layer beneath")
-  Assert.near(xb, 0.75, 0.05, "the blend keeps the settling top layer dominant")
+  Assert.near(xg, 1 / 16, 0.05, "the capped weight leaves a measured middle-layer share")
+  Assert.near(xb, 15 / 16, 0.05, "the capped first weight keeps the top layer dominant")
 end
 
 -- Four-quadrant chart: wrap sampling must rearrange the quadrants
@@ -3107,6 +3109,238 @@ local function heartgold_panorama_wrap_is_blocked_without_a_dump(scope, context)
   sourced_panorama_pixels_match_wrapped_source_art(scope, "heartgold")
 end
 
+local function wipe_kinds_finish_with_their_own_brightness_and_release_their_engine(scope, context)
+  local function truncTowardZero(value)
+    if value >= 0 then
+      return math.floor(value)
+    end
+    return math.ceil(value)
+  end
+  local function wipeBoundary(n, ticks, vcount)
+    local theta = math.pi * n / ticks
+    local x, y = math.cos(theta), math.sin(theta)
+    if x == 1 then
+      return 255
+    end
+    if x == -1 then
+      return 0
+    end
+    if math.abs(y) < 1e-9 then
+      if x > 0 then
+        return 255
+      end
+      return 0
+    end
+    return math.max(0, math.min(255, 127 + truncTowardZero(vcount * x / y)))
+  end
+  Assert.equal(wipeBoundary(0, 12, 96), 255, "the opening edge starts fully closed")
+  Assert.equal(wipeBoundary(12, 12, 96), 0, "the final edge ends fully open")
+  Assert.isFalse(
+    wipeBoundary(3, 12, 48) == wipeBoundary(3, 12, 96),
+    "quarter edges already slope with the scanline"
+  )
+  local root = sceneArtRoot(1)
+  local mainImage = root .. "layers/wipe-main.png"
+  local subImage = root .. "layers/wipe-sub.png"
+  local art = {
+    [mainImage] = solidPng(256, 192, 255, 0, 0),
+    [subImage] = solidPng(256, 192, 0, 255, 0),
+  }
+  local steps = {}
+  local events = {}
+  for kind = 0, 3 do
+    if kind == 0 then
+      steps[#steps + 1] = {
+        id = "wipe" .. kind,
+        events = { #events + 1, #events + 2 },
+        ["until"] = { kind = "effect", effect = "wipe-" .. kind },
+      }
+      events[#events + 1] = {
+        op = "circleWipe",
+        stepId = "wipe" .. kind,
+        atStepTick = 0,
+        engine = "main",
+        kind = kind,
+        ticks = 12,
+        effect = "wipe-" .. kind,
+      }
+      events[#events + 1] = { op = "enableSkip", stepId = "wipe" .. kind, atStepTick = 10 }
+    else
+      steps[#steps + 1] = { id = "wipe" .. kind, events = { #events + 1 }, ["until"] = { kind = "effect", effect = "wipe-" .. kind } }
+      events[#events + 1] = {
+        op = "circleWipe",
+        stepId = "wipe" .. kind,
+        atStepTick = 0,
+        engine = "main",
+        kind = kind,
+        ticks = 12,
+        effect = "wipe-" .. kind,
+      }
+    end
+  end
+  steps[#steps + 1] = { id = "tail", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 10 } }
+  events[#events + 1] = { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 10 }
+  events[#events + 1] = { op = "finish", stepId = "tail", atStepTick = 0 }
+  local custom = compositeScene(
+    1,
+    { compositeLayer(0, mainImage, 256, 192) },
+    { compositeLayer(0, subImage, 256, 192) },
+    {},
+    { seed = 0, emitters = {} },
+    steps,
+    events
+  )
+  local scenes, cacheFs = compositePack(custom, art, solidPng(16, 16, 128, 128, 128))
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  local function enginePixel(engine, x, y)
+    local canvas = (engine == "main") and movie.mainCanvas or movie.subCanvas
+    local bytes = sourceBytes(scope, canvas)
+    return pixelOf(bytes, 256, x, y)
+  end
+  local function firstDifferingX(y)
+    local br, bg, bb = enginePixel("main", 0, y)
+    local baseR, baseG, baseB = 1, 0, 0
+    if math.abs(br - baseR) > 0.1 or math.abs(bg - baseG) > 0.1 or math.abs(bb - baseB) > 0.1 then
+      return 0
+    end
+    for x = 4, 255, 4 do
+      local r, g, b = enginePixel("main", x, y)
+      if math.abs(r - baseR) > 0.1 or math.abs(g - baseG) > 0.1 or math.abs(b - baseB) > 0.1 then
+        return x
+      end
+    end
+    return 255
+  end
+  movie:draw()
+  local subBefore = sourceBytes(scope, movie.subCanvas)
+  local finals = {}
+  for kind = 0, 3 do
+    advance(movie, 3)
+    movie:draw()
+    local lowEdge = firstDifferingX(48)
+    local highEdge = firstDifferingX(96)
+    Assert.isFalse(
+      lowEdge == highEdge,
+      "kind " .. kind .. " slopes with the scanline instead of a centered rectangle"
+    )
+    local expectedLow = wipeBoundary(3, 12, 48)
+    local expectedHigh = wipeBoundary(3, 12, 96)
+    local function nearEither(found, expected)
+      return math.abs(found - expected) <= 16 or math.abs(found - (255 - expected)) <= 16
+    end
+    Assert.isTrue(
+      nearEither(lowEdge, expectedLow),
+      "kind " .. kind .. " upper row follows the scanline law"
+    )
+    Assert.isTrue(
+      nearEither(highEdge, expectedHigh),
+      "kind " .. kind .. " lower row follows the scanline law"
+    )
+    local subMid = sourceBytes(scope, movie.subCanvas)
+    Assert.equal(subMid, subBefore, "kind " .. kind .. " never spills onto the other engine")
+    advance(movie, 9)
+    movie:draw()
+    local r, g, b = enginePixel("main", 128, 96)
+    finals[#finals + 1] = string.format("%.2f,%.2f,%.2f", r, g, b)
+    local subAfter = sourceBytes(scope, movie.subCanvas)
+    Assert.equal(subAfter, subBefore, "kind " .. kind .. " retires without touching the other engine")
+  end
+  local allSame = true
+  for index = 2, #finals do
+    if finals[index] ~= finals[1] then
+      allSame = false
+    end
+  end
+  Assert.isFalse(allSame, "different wipe kinds finish with different brightness")
+  advance(movie, 9)
+  movie:draw()
+  local tailR, tailG, tailB = enginePixel("main", 128, 96)
+  Assert.isTrue(
+    math.abs(tailR - 1) < 0.1 and tailG < 0.1 and tailB < 0.1,
+    "subsequent artwork is revealed after the wipes retire"
+  )
+  movie:resize(600, 1000)
+  movie:draw()
+  movie:resize(512, 384)
+  movie:draw()
+  if not RomImporter.isReady("soulsilver") then
+    return
+  end
+  local versionId = "soulsilver"
+  local romScenes = loadScenes(versionId)
+  local wipeTicks, wipeStepId = nil, nil
+  for _, event in ipairs(romScenes[2].timeline.events) do
+    if event.op == "circleWipe" and event.engine == "main" then
+      wipeTicks, wipeStepId = event.ticks, event.stepId
+      break
+    end
+  end
+  Assert.notNil(wipeTicks, "the sourced second scene carries its main wipe")
+  local romMovie = openMovie(scope, versionId, 512, 384, "dual")
+  advanceToSceneStep(romMovie, 2, wipeStepId, 20000)
+  romMovie:draw()
+  local romSubBefore = sourceBytes(scope, romMovie.subCanvas)
+  advance(romMovie, math.max(1, math.floor(wipeTicks / 4)))
+  romMovie:draw()
+  local function romDifferingX(y)
+    local r0, g0, b0 = pixelOf(sourceBytes(scope, romMovie.mainCanvas), 256, 0, y)
+    for x = 4, 255, 4 do
+      local r, g, b = pixelOf(sourceBytes(scope, romMovie.mainCanvas), 256, x, y)
+      if math.abs(r - r0) > 0.08 or math.abs(g - g0) > 0.08 or math.abs(b - b0) > 0.08 then
+        return x
+      end
+    end
+    return 255
+  end
+  local romLow = romDifferingX(48)
+  local romHigh = romDifferingX(96)
+  Assert.isFalse(romLow == romHigh, "the sourced wipe slopes with the scanline")
+  local romSubMid = sourceBytes(scope, romMovie.subCanvas)
+  -- The sourced wipe owns the main engine while the sub engine keeps
+  -- scrolling its own art, so byte equality cannot tell spill from scroll.
+  -- The sub art carries no black at either scroll position while the wipe
+  -- cover paints opaque black on every kind, so counting black stays
+  -- scroll-immune and still catches any spill onto the other engine.
+  local function blackPixels(bytes)
+    local found = 0
+    for y = 0, 191, 2 do
+      for x = 0, 255, 4 do
+        local r, g, b = pixelOf(bytes, 256, x, y)
+        if r < 0.01 and g < 0.01 and b < 0.01 then
+          found = found + 1
+        end
+      end
+    end
+    return found
+  end
+  Assert.equal(
+    blackPixels(romSubBefore),
+    0,
+    "the other engine art carries no black before the sourced wipe"
+  )
+  Assert.equal(blackPixels(romSubMid), 0, "the sourced wipe never spills onto the other engine")
+  romMovie:dispose()
+  movie:dispose()
+end
+
+local function heartgold_wipe_kinds_are_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold wipe kinds need a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the kind-specific brightness and "
+        .. "scanline legs cannot run for HeartGold and are never faked"
+    )
+  end
+  local romScenes = loadScenes("heartgold")
+  local found = false
+  for _, event in ipairs(romScenes[2].timeline.events) do
+    if event.op == "circleWipe" then
+      found = true
+    end
+  end
+  Assert.isTrue(found, "the HeartGold second scene carries its wipe")
+end
+
 local T = GraphicsSmoke.suite({
   ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
@@ -3138,6 +3372,8 @@ local T = GraphicsSmoke.suite({
   ["slide-in windows reveal opposite halves on each engine"] = slide_in_windows_reveal_opposite_halves_on_each_engine,
   ["every scene paints its authored beat on both engines"] = every_scene_paints_its_authored_beat_on_both_engines,
   ["single-screen stages show the authored active engine"] = single_screen_stages_show_the_authored_active_engine,
+  ["wipe kinds finish with their own brightness and release their engine"] = wipe_kinds_finish_with_their_own_brightness_and_release_their_engine,
+  ["heartgold wipe kinds are blocked without a dump"] = heartgold_wipe_kinds_are_blocked_without_a_dump,
 })
 T.metadata.capabilities = { "graphics", "rom_dump" }
 T.metadata.derivedAssets = {
