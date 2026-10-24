@@ -1835,6 +1835,34 @@ function T.construction_keeps_two_bounded_role_targets_for_the_current_and_next_
   Assert.equal(liveHandles(graphics), 0, "disposing the preflighted movie releases every handle")
 end
 
+function T.preflight_offscreen_renders_every_scene_once_without_consuming_source_time()
+  local scenes, cacheFs = validPack()
+  local graphics = movieGraphics()
+  local Movie = requireMovie()
+  local rendered = {}
+  local realRender = Movie._renderRoles
+  Movie._renderRoles = function(self, slot)
+    rendered[#rendered + 1] = slot.sceneNumber
+    return realRender(self, slot)
+  end
+  local movie = nil
+  local ok, failure = pcall(function()
+    movie = openMovie(scenes, cacheFs, graphics)
+  end)
+  Movie._renderRoles = realRender
+  Assert.isTrue(ok, "preflight still readies a drawable movie: " .. tostring(failure))
+  Assert.equal(#rendered, 5, "preflight proves every scene with a real offscreen render, never a manifest-only check")
+  for sceneNumber = 1, 5 do
+    Assert.equal(rendered[sceneNumber], sceneNumber, "preflight renders scenes in retail order")
+  end
+  Assert.equal(movie:sceneNumber(), 1, "preflight consumes no source time")
+  Assert.isFalse(movie:skipAllowed(), "preflight leaves the skip gate closed")
+  Assert.equal(liveHandles(graphics), 7, "preflight retains only the current and next scene graphs")
+  movie:draw()
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "disposing the preflighted movie releases every handle")
+end
+
 function T.every_canvas_allocation_uses_the_bounded_numeric_module_signature_across_resizes()
   local scenes, cacheFs = validPack()
   local graphics = movieGraphics()

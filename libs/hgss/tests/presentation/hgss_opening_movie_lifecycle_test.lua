@@ -586,4 +586,208 @@ function T.a_failed_draw_restores_graphics_state_and_keeps_playing()
   Assert.equal(liveHandles(graphics), 0, "disposing after the failed draw releases everything")
 end
 
+-- Bounded-preflight evidence: the constructor must prove every scene with a
+-- real offscreen render while never holding more than two retained graphs
+-- plus one transient. Images attribute to scenes through the staged-art
+-- read that stages them (acquisition always reads art immediately before
+-- creating its image), so the peak counts live scene graphs rather than
+-- raw handles or a post-construction snapshot.
+---@param graphics table fake graphics namespace with creation order intact
+---@param cacheFs table staged art backing the scenes
+---@return table tracker peak/live scene-graph record with a pendingScene probe
+---@return table watchedCacheFs art access attributing each read to its scene
+local function watchSceneGraphs(graphics, cacheFs)
+  local tracker = { peak = 0, liveByScene = {}, unattributed = 0, pendingScene = nil }
+  local function sample()
+    local live = 0
+    for _, count in pairs(tracker.liveByScene) do
+      if count > 0 then
+        live = live + 1
+      end
+    end
+    if live > tracker.peak then
+      tracker.peak = live
+    end
+  end
+  local watchedCacheFs = {
+    loadLua = function(_, path)
+      return cacheFs:loadLua(path)
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      local scene = string.match(tostring(path), "opening/(%d+)/")
+      tracker.pendingScene = scene ~= nil and tonumber(scene) or nil
+      return cacheFs:read(path)
+    end,
+  }
+  local realNewImage = graphics.newImage
+  graphics.newImage = function(data)
+    local image = realNewImage(data)
+    local scene = tracker.pendingScene
+    tracker.pendingScene = nil
+    if scene == nil then
+      tracker.unattributed = tracker.unattributed + 1
+    else
+      tracker.liveByScene[scene] = (tracker.liveByScene[scene] or 0) + 1
+    end
+    sample()
+    local realRelease = image.release
+    image.release = function()
+      realRelease()
+      if scene ~= nil then
+        tracker.liveByScene[scene] = tracker.liveByScene[scene] - 1
+      end
+      sample()
+    end
+    return image
+  end
+  return tracker, watchedCacheFs
+end
+
+---@param Movie table movie module owning the compositor under test
+---@return table rendered scene numbers in render order
+---@return fun() restore releasing the watch without touching the module otherwise
+local function watchRenders(Movie)
+  local rendered = {}
+  local realRender = Movie._renderRoles
+  Movie._renderRoles = function(self, slot)
+    rendered[#rendered + 1] = slot.sceneNumber
+    return realRender(self, slot)
+  end
+  return rendered, function()
+    Movie._renderRoles = realRender
+  end
+end
+
+function T.preflight_holds_at_most_three_scene_graphs_while_readying_all_five()
+  local scenes, cacheFs = validPack()
+  local graphics = movieGraphics()
+  local tracker, watchedCacheFs = watchSceneGraphs(graphics, cacheFs)
+  local Movie = requireMovie()
+  local rendered, stopWatching = watchRenders(Movie)
+  local movie = nil
+  local ok, failure = pcall(function()
+    movie = openMovie(scenes, watchedCacheFs, graphics)
+  end)
+  stopWatching()
+  Assert.isTrue(ok, "bounded preflight still readies a drawable movie: " .. tostring(failure))
+  Assert.equal(#rendered, 5, "every scene proves its first frame before handoff, never a manifest-only check")
+  for sceneNumber = 1, 5 do
+    Assert.equal(rendered[sceneNumber], sceneNumber, "preflight renders scenes in retail order without overlap")
+  end
+  Assert.isTrue(tracker.peak <= 3, "at most two retained graphs plus one transient coexist, peak " .. tracker.peak)
+  Assert.equal(tracker.unattributed, 0, "every staged image attributes to exactly one scene graph")
+  Assert.isTrue((tracker.liveByScene[1] or 0) > 0, "the current scene graph stays resident")
+  Assert.isTrue((tracker.liveByScene[2] or 0) > 0, "the next scene graph stays resident")
+  for sceneNumber = 3, 5 do
+    Assert.equal(tracker.liveByScene[sceneNumber] or 0, 0, "transient scene " .. sceneNumber .. " releases before return")
+  end
+  Assert.equal(#graphics.canvases, 2, "preflight keeps exactly two bounded role targets")
+  for _, canvas in ipairs(graphics.canvases) do
+    Assert.equal(canvas.width, 256, "every role target keeps the source engine width")
+    Assert.equal(canvas.height, 192, "every role target keeps the source engine height")
+  end
+  Assert.equal(movie:sceneNumber(), 1, "preflight consumes no source time")
+  Assert.equal(movie.current.sceneTick, 0, "the retained current scene starts on its first tick")
+  Assert.equal(movie.nextSlot.sceneTick, 0, "the retained next scene starts on its first tick")
+  Assert.isFalse(movie:skipAllowed(), "preflight leaves the skip gate closed")
+  Assert.isFalse(movie:isFinished(), "preflight never finishes the movie")
+  movie:draw()
+  movie:resize(640, 480)
+  Assert.equal(movie:sceneNumber(), 1, "host draws and resizes before the first tick never advance source time")
+  local ticks = 0
+  while movie:sceneNumber() < 3 and ticks < 5000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+    movie:draw()
+  end
+  Assert.equal(movie:sceneNumber(), 3, "the retained graphs hand off to a lazily acquired third scene")
+  Assert.isTrue(tracker.peak <= 3, "playback prefetch never exceeds the preflight bound, peak " .. tracker.peak)
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "disposing the preflighted movie releases every handle")
+  for _, group in ipairs({ graphics.images, graphics.canvases, graphics.meshes or {} }) do
+    for _, handle in ipairs(group) do
+      Assert.equal(handle.releaseCount, 1, "every acquired handle is released exactly once")
+    end
+  end
+end
+
+function T.later_scene_preflight_failure_releases_every_owner_and_stays_reusable()
+  local scenes, cacheFs = validPack()
+  local Movie = requireMovie()
+  -- A scene-four acquisition failure must release the two retained graphs
+  -- and the fixed targets without ever publishing a partial movie.
+  do
+    local graphics = movieGraphics()
+    local tracker, watchedCacheFs = watchSceneGraphs(graphics, cacheFs)
+    local innerNewImage = graphics.newImage
+    graphics.newImage = function(data)
+      if tracker.pendingScene == 4 then
+        error("injected scene-four acquisition failure")
+      end
+      return innerNewImage(data)
+    end
+    local movie = nil
+    local ok, failure = pcall(function()
+      movie = openMovie(scenes, watchedCacheFs, graphics)
+    end)
+    Assert.isNil(movie, "a failed preflight never publishes a partial movie")
+    Assert.isFalse(ok, "a scene-four acquisition failure surfaces explicitly")
+    Assert.equal(type(failure), "table", "a failed acquisition raises a structured error")
+    Assert.equal(failure.code, "HGSS_OPENING_MOVIE_INVALID", "a failed acquisition raises the typed scene failure")
+    Assert.equal(liveHandles(graphics), 0, "a scene-four failure releases every staged handle")
+    for _, group in ipairs({ graphics.images, graphics.canvases, graphics.meshes or {} }) do
+      for _, handle in ipairs(group) do
+        Assert.equal(handle.releaseCount, 1, "every acquired handle is released exactly once")
+      end
+    end
+    Assert.isTrue(tracker.peak <= 3, "a scene-four failure never exceeds the bound, peak " .. tracker.peak)
+  end
+  -- A scene-five render failure after full acquisition must release the
+  -- transient alongside the retained graphs and propagate the original
+  -- failure value unchanged.
+  do
+    local graphics = movieGraphics()
+    local tracker, watchedCacheFs = watchSceneGraphs(graphics, cacheFs)
+    local rendered = {}
+    local realRender = Movie._renderRoles
+    local sentinel = "injected scene-five render failure"
+    Movie._renderRoles = function(self, slot)
+      rendered[#rendered + 1] = slot.sceneNumber
+      if slot.sceneNumber == 5 then
+        error(sentinel, 0)
+      end
+      return realRender(self, slot)
+    end
+    local movie = nil
+    local ok, failure = pcall(function()
+      movie = openMovie(scenes, watchedCacheFs, graphics)
+    end)
+    Movie._renderRoles = realRender
+    Assert.isNil(movie, "a failed preflight never publishes a partial movie")
+    Assert.isFalse(ok, "a scene-five render failure surfaces explicitly")
+    Assert.equal(failure, sentinel, "a transient render failure propagates the original error value")
+    Assert.equal(#rendered, 5, "the fifth scene renders after the earlier scenes preflighted")
+    Assert.equal(liveHandles(graphics), 0, "a scene-five failure releases every staged handle and canvas")
+    for _, group in ipairs({ graphics.images, graphics.canvases, graphics.meshes or {} }) do
+      for _, handle in ipairs(group) do
+        Assert.equal(handle.releaseCount, 1, "every acquired handle is released exactly once")
+      end
+    end
+    Assert.isTrue(tracker.peak <= 3, "a scene-five failure never exceeds the bound, peak " .. tracker.peak)
+  end
+  -- A healthy construction after both failures proves no shared state was
+  -- contaminated by the rolled-back attempts.
+  do
+    local graphics = movieGraphics()
+    local movie = openMovie(scenes, cacheFs, graphics)
+    Assert.equal(movie:sceneNumber(), 1, "a healthy constructor restarts from the first scene")
+    movie:draw()
+    movie:dispose()
+    Assert.equal(liveHandles(graphics), 0, "the healthy rerun releases every handle")
+  end
+end
+
 return { tests = T }
