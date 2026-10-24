@@ -189,16 +189,19 @@ end
 ---@param path string staged image path under its scene root
 ---@param width integer claimed source extent
 ---@param height integer claimed source extent
+---@param initialVisible boolean|nil source plane enable state, defaults to visible
+---@param priority integer|nil source priority, defaults to the slot
 ---@return table generated engine layer record
-local function compositeLayer(bgSlot, path, width, height)
+local function compositeLayer(bgSlot, path, width, height, initialVisible, priority)
   return {
     bgSlot = bgSlot,
-    priority = bgSlot,
+    priority = priority == nil and bgSlot or priority,
     image = path,
     variants = {},
     width = width,
     height = height,
     sourceHash = string.rep("c", 40),
+    initialVisible = initialVisible ~= false,
   }
 end
 
@@ -421,10 +424,13 @@ local function composite_layers_pan_independently_with_true_blending(scope)
   local topImage = root .. "layers/sky-top.png"
   local groundImage = root .. "layers/ground.png"
   local gray16 = solidPng(16, 16, 128, 128, 128)
+  -- Back-to-front band order is authored priority, not slot order: the
+  -- fullscreen bottom paints first (priority 2) so the panned middle and
+  -- top uncover it past their shifted extents.
   local layers = {
-    compositeLayer(0, bottomImage, 256, 192),
-    compositeLayer(1, middleImage, 128, 192),
-    compositeLayer(2, topImage, 64, 192),
+    compositeLayer(0, bottomImage, 256, 192, true, 2),
+    compositeLayer(1, middleImage, 128, 192, true, 1),
+    compositeLayer(2, topImage, 64, 192, true, 0),
   }
   local lower = { compositeLayer(0, groundImage, 256, 192) }
   local art = {
@@ -1010,6 +1016,9 @@ end
 -- at the compiled distance, and the projection carries the compiled field
 -- angle on a source 4:3 frame. Every sampled town window must submit real
 -- world items, move pixels, and carry its own authored light.
+-- Staged camera facts arrive in model units; the runtime consumes tiles at
+-- sixteen model units per tile, so sourced expectations convert the same way.
+local MODEL_UNITS_PER_TILE = 16
 local SOURCED_TOWN_DISTANCE = 410.922119140625
 local SOURCED_TOWN_ANGLE_X = 0xD602
 local SOURCED_TOWN_TARGET = { 0, 0, 96 }
@@ -1097,14 +1106,14 @@ local function soulsilver_town_camera_uses_the_sourced_angle_and_lens(scope, con
   local sinX = math.sin((SOURCED_TOWN_ANGLE_X / 65536) * (2 * math.pi))
   local cosX = math.cos((SOURCED_TOWN_ANGLE_X / 65536) * (2 * math.pi))
   local expectedEye = {
-    SOURCED_TOWN_TARGET[1],
-    SOURCED_TOWN_TARGET[2] - sinX * SOURCED_TOWN_DISTANCE,
-    SOURCED_TOWN_TARGET[3] + cosX * SOURCED_TOWN_DISTANCE,
+    SOURCED_TOWN_TARGET[1] / MODEL_UNITS_PER_TILE,
+    (SOURCED_TOWN_TARGET[2] - sinX * SOURCED_TOWN_DISTANCE) / MODEL_UNITS_PER_TILE,
+    (SOURCED_TOWN_TARGET[3] + cosX * SOURCED_TOWN_DISTANCE) / MODEL_UNITS_PER_TILE,
   }
   local expectedForward = {
-    SOURCED_TOWN_TARGET[1] - expectedEye[1],
-    SOURCED_TOWN_TARGET[2] - expectedEye[2],
-    SOURCED_TOWN_TARGET[3] - expectedEye[3],
+    SOURCED_TOWN_TARGET[1] / MODEL_UNITS_PER_TILE - expectedEye[1],
+    SOURCED_TOWN_TARGET[2] / MODEL_UNITS_PER_TILE - expectedEye[2],
+    SOURCED_TOWN_TARGET[3] / MODEL_UNITS_PER_TILE - expectedEye[3],
   }
   local forwardLength = math.sqrt(
     expectedForward[1] * expectedForward[1]
@@ -1134,7 +1143,7 @@ local function soulsilver_town_camera_uses_the_sourced_angle_and_lens(scope, con
     -- Composited-pixel motion is proven where the role compositor keeps towns visible.
     local eye, forward = recoverEyeForward(camera.view())
     for axis = 1, 3 do
-      Assert.near(eye[axis], expectedEye[axis], 2.0, "town window " .. window .. " eyes the sourced orbit")
+      Assert.near(eye[axis], expectedEye[axis], 0.5, "town window " .. window .. " eyes the sourced orbit")
       Assert.near(forward[axis], expectedForward[axis], 0.01, "town window " .. window .. " forwards the sourced gaze")
     end
     Assert.isTrue(math.abs(forward[2]) > 0.5, "town window " .. window .. " never gazes straight down")
@@ -1745,7 +1754,7 @@ local function composited_town_pixels_stay_visible_and_animate_across_hold_ticks
     calls[#calls + 1] = { width = width, height = height, at = debug.traceback("", 2):sub(1, 500) }
     return realNewCanvas(width, height, opts)
   end
-  local constructed, movieOrFailure = pcall(openMovie, scope, "soulsilver", 512, 384, "single")
+  local constructed, movieOrFailure = pcall(openMovie, scope, "soulsilver", 512, 384, "dual")
   love.graphics.newCanvas = realNewCanvas
   Assert.isTrue(constructed, "a town-staging movie constructs on bounded targets")
   local movie = movieOrFailure
@@ -1776,31 +1785,241 @@ local function composited_town_pixels_stay_visible_and_animate_across_hold_ticks
     movie:updateFixed()
     ticks = ticks + 1
   end
+  -- The town composites on the main-mapped upper pane while the sub panels
+  -- hold the lower pane; both panes are asserted on the same composed frame.
+  local function paneLitCells(bytes, y0)
+    local lit = 0
+    for y = y0, y0 + 191, 4 do
+      for x = 0, 511, 4 do
+        local r, g, b = pixelOf(bytes, 512, x, y)
+        if r + g + b > 0.05 then
+          lit = lit + 1
+        end
+      end
+    end
+    return lit
+  end
+  local function lowerLitCells(bytes)
+    local lit = 0
+    for y = 192, 383, 4 do
+      for x = 0, 511, 4 do
+        local r, g, b = pixelOf(bytes, 512, x, y)
+        if r + g + b > 0.05 then
+          lit = lit + 1
+        end
+      end
+    end
+    return lit
+  end
+  Assert.equal(movie.current.mainPhysical, "upper", "the town beat maps main to physical upper")
   movie:draw()
   local before = drawBytes(movie, scope, 512, 384)
+  Assert.isTrue(paneLitCells(before, 0) > 3000, "the composed town lights the main-mapped upper pane")
+  Assert.isTrue(lowerLitCells(before) > 500, "the town beat keeps the sub panels lit")
   for _ = 1, 15 do
     movie:updateFixed()
-    ticks = ticks + 1
   end
   local after = drawBytes(movie, scope, 512, 384)
   Assert.isTrue(before ~= after, "town pixels animate across non-wipe hold ticks")
-  local lit, changed, total = 0, 0, 0
-  for y = 0, 383, 2 do
-    for x = 0, 511, 2 do
-      total = total + 1
-      local r1, g1, b1 = pixelOf(before, 512, x, y)
-      local r2, g2, b2 = pixelOf(after, 512, x, y)
-      if r1 + g1 + b1 > 0.09 then
-        lit = lit + 1
-      end
-      if math.abs(r1 - r2) + math.abs(g1 - g2) + math.abs(b1 - b2) > 0.09 then
-        changed = changed + 1
+  -- The authored stop lands 167 ticks later and a wipe covers the
+  -- transition, so the test waits for the panels to return instead of
+  -- asserting a fixed post-stop tick.
+  advance(movie, 167)
+  local waited, panelsBack = 0, false
+  local stopped = before
+  while waited < 200 do
+    movie:updateFixed()
+    waited = waited + 1
+    if waited % 5 == 0 then
+      stopped = drawBytes(movie, scope, 512, 384)
+      if lowerLitCells(stopped) > 500 then
+        panelsBack = true
+        break
       end
     end
   end
-  Assert.isTrue(lit > total * 0.45, "the composed town frame stays lit well beyond a strip-only fallback")
-  Assert.isTrue(changed > 125, "town animation moves real composed pixels across the hold")
+  Assert.isTrue(panelsBack, "the sub panels persist past the town stop")
+  Assert.isTrue(paneLitCells(stopped, 0) < 50, "the authored stop clears the main-mapped upper pane")
   movie:dispose()
+end
+
+local function synthetic_color_overlap_proves_bg_ordering(scope)
+  local root = sceneArtRoot(1)
+  local frontImage = root .. "layers/front.png"
+  local middleImage = root .. "layers/middle.png"
+  local backImage = root .. "layers/back.png"
+  local hiddenImage = root .. "layers/hidden.png"
+  local groundImage = root .. "layers/ground.png"
+  local art = {
+    [frontImage] = solidPng(256, 192, 255, 0, 0),
+    [middleImage] = solidPng(256, 192, 0, 255, 0),
+    [backImage] = solidPng(256, 192, 0, 0, 255),
+    [hiddenImage] = solidPng(256, 192, 255, 255, 0),
+    [groundImage] = solidPng(256, 192, 128, 128, 128),
+  }
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      {
+        compositeLayer(2, backImage, 256, 192),
+        compositeLayer(0, frontImage, 256, 192),
+        compositeLayer(1, middleImage, 256, 192),
+        compositeLayer(3, hiddenImage, 256, 192, false),
+      },
+      { compositeLayer(0, groundImage, 256, 192) },
+      {},
+      { seed = 0, emitters = {} },
+      { { id = "show", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        { op = "enableSkip", stepId = "show", atStepTick = 10 },
+        { op = "waitTicks", stepId = "show", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "show", atStepTick = 40 },
+      }
+    ),
+    art,
+    solidPng(16, 16, 128, 128, 128)
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "single")
+  movie:updateFixed()
+  movie:updateFixed()
+  local r, g, b = samplePixel(scope, movie, 512, 384, 256, 192)
+  Assert.isTrue(r > 0.9 and g < 0.1 and b < 0.1, "numeric priority 0 covers every lower plane")
+end
+
+local function synthetic_window_masks_isolate_engine_planes(scope)
+  local root = sceneArtRoot(1)
+  local mainBg1 = root .. "layers/main-bg1.png"
+  local mainBg2 = root .. "layers/main-bg2.png"
+  local subBg1 = root .. "layers/sub-bg1.png"
+  local subBg2 = root .. "layers/sub-bg2.png"
+  local art = {
+    [mainBg1] = solidPng(256, 192, 255, 0, 0),
+    [mainBg2] = solidPng(256, 192, 0, 0, 255),
+    [subBg1] = solidPng(256, 192, 0, 255, 0),
+    [subBg2] = solidPng(256, 192, 255, 255, 0),
+  }
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      { compositeLayer(1, mainBg1, 256, 192), compositeLayer(2, mainBg2, 256, 192) },
+      { compositeLayer(1, subBg1, 256, 192), compositeLayer(2, subBg2, 256, 192) },
+      {},
+      { seed = 0, emitters = {} },
+      { { id = "reveal", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 20 } } },
+      {
+        {
+          op = "window",
+          stepId = "reveal",
+          atStepTick = 0,
+          engine = "main",
+          from = { x1 = 255, y1 = 0, x2 = 255, y2 = 192 },
+          to = { x1 = 0, y1 = 0, x2 = 255, y2 = 192 },
+          ticks = 10,
+          insideMask = 22,
+          outsideMask = 20,
+        },
+        {
+          op = "window",
+          stepId = "reveal",
+          atStepTick = 0,
+          engine = "sub",
+          from = { x1 = 0, y1 = 0, x2 = 0, y2 = 192 },
+          to = { x1 = 0, y1 = 0, x2 = 255, y2 = 192 },
+          ticks = 10,
+          insideMask = 22,
+          outsideMask = 20,
+        },
+        { op = "enableSkip", stepId = "reveal", atStepTick = 10 },
+        { op = "waitTicks", stepId = "reveal", atStepTick = 0, ticks = 20 },
+        { op = "finish", stepId = "reveal", atStepTick = 20 },
+      }
+    ),
+    art,
+    solidPng(16, 16, 128, 128, 128)
+  )
+  -- The dual stage carries both engines at once: the upper pane is the
+  -- main target, the lower pane the sub target, each cover-cropped so the
+  -- sampled columns land on opposite sides of the fifth-tick split.
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  advance(movie, 5)
+  local r1, g1, b1 = samplePixel(scope, movie, 512, 384, 128, 96)
+  Assert.isTrue(b1 > 0.9 and r1 < 0.1, "main BG1 stays masked outside its window")
+  local r2, g2, b2 = samplePixel(scope, movie, 512, 384, 384, 96)
+  Assert.isTrue(r2 > 0.9 and b2 < 0.1, "main BG1 reveals inside its window")
+  local r3, g3, b3 = samplePixel(scope, movie, 512, 384, 128, 288)
+  Assert.isTrue(g3 > 0.9 and r3 < 0.1, "sub BG1 reveals inside its window")
+  local r4, g4, b4 = samplePixel(scope, movie, 512, 384, 384, 288)
+  Assert.isTrue(r4 > 0.9 and g4 > 0.9 and b4 < 0.1, "sub BG1 stays masked outside its window")
+end
+
+local function soulsilver_town_stays_on_main_and_stops_at_the_rival_beat(scope, context)
+  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local movie = openMovie(scope, "soulsilver", 512, 384, "dual")
+  local ticks = 0
+  while movie:sceneNumber() < 3 and ticks < 20000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 3, "playback reaches the town scene")
+  local entry = ticks
+  advance(movie, 20)
+  ticks = ticks + 20
+  Assert.equal(movie.current.mainPhysical, "upper", "the town beat maps main to physical upper")
+  local function paneLitCells(bytes, y0)
+    local lit = 0
+    for y = y0, y0 + 191, 4 do
+      for x = 0, 511, 4 do
+        local r, g, b = pixelOf(bytes, 512, x, y)
+        if r + g + b > 0.05 then
+          lit = lit + 1
+        end
+      end
+    end
+    return lit
+  end
+  local function lowerLitCells(bytes)
+    local lit = 0
+    for y = 192, 383, 4 do
+      for x = 0, 511, 4 do
+        local r, g, b = pixelOf(bytes, 512, x, y)
+        if r + g + b > 0.05 then
+          lit = lit + 1
+        end
+      end
+    end
+    return lit
+  end
+  local beatBytes = drawBytes(movie, scope, 512, 384)
+  Assert.isTrue(paneLitCells(beatBytes, 0) > 3000, "the town beat lights the main-mapped upper pane")
+  Assert.isTrue(lowerLitCells(beatBytes) > 500, "the town beat keeps the sub-mapped lower panels lit")
+  Assert.equal(movie.current.activeTown, "new-bark-town", "the town beat selects its stage")
+  advance(movie, 5)
+  local laterBytes = drawBytes(movie, scope, 512, 384)
+  Assert.isTrue(beatBytes ~= laterBytes, "town pixels animate across non-wipe hold ticks")
+  -- The authored stop lands at the 187th scene tick; playing past it must
+  -- neither raise nor hang the step graph. A wipe covers the transition,
+  -- so the test waits for the panels to return instead of asserting a
+  -- fixed post-stop tick.
+  advance(movie, 187 + 8 - 25)
+  local waited, panelsBack = 0, false
+  local stopBytes = beatBytes
+  while waited < 200 do
+    movie:updateFixed()
+    waited = waited + 1
+    if waited % 5 == 0 then
+      stopBytes = drawBytes(movie, scope, 512, 384)
+      if lowerLitCells(stopBytes) > 500 then
+        panelsBack = true
+        break
+      end
+    end
+  end
+  Assert.isTrue(panelsBack, "the sub panels return after the stop transition")
+  Assert.isTrue(paneLitCells(stopBytes, 0) < 50, "the authored stop clears the main-mapped upper pane")
+  local townPool = movie.current.pool
+  Assert.isTrue(townPool.triangles > 0, "the live town stage keeps its geometry")
+  movie:dispose()
+  Assert.equal(townPool.triangles, 0, "slot disposal releases the town geometry")
 end
 
 local T = GraphicsSmoke.suite({
@@ -1813,6 +2032,9 @@ local T = GraphicsSmoke.suite({
   ["soulsilver town model failure aborts with a typed error"] = soulsilver_town_model_failure_aborts_with_a_typed_error,
   ["soulsilver town camera uses the sourced angle and lens"] = soulsilver_town_camera_uses_the_sourced_angle_and_lens,
   ["composite layers pan independently with true blending"] = composite_layers_pan_independently_with_true_blending,
+  ["synthetic color overlap proves bg ordering"] = synthetic_color_overlap_proves_bg_ordering,
+  ["synthetic window masks isolate engine planes"] = synthetic_window_masks_isolate_engine_planes,
+  ["soulsilver town stays on main and stops at the rival beat"] = soulsilver_town_stays_on_main_and_stops_at_the_rival_beat,
   ["authored sprites stay on their engine with frame offsets"] = authored_sprites_stay_on_their_engine_with_frame_offsets,
   ["step relative fades composite on the gpu"] = step_relative_fades_composite_on_the_gpu,
   ["a single active source screen fills the whole single-screen stage"] = a_single_active_source_screen_fills_the_whole_single_screen_stage,

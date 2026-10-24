@@ -134,12 +134,20 @@ end
 ---@field wipe table<string, unknown>?
 ---@field blend table<string, unknown>?
 ---@field palette table<string, unknown>?
----@field window table<string, unknown>?
+---@field windows table<string, OpeningMovieWindow> live engine-local window state by source engine
+---@field townVisible boolean source town stage contributes to main BG0
 ---@field pool GpuAssetPool?
 ---@field renderer FieldRenderer?
 ---@field towns { name: string?, index: integer?, instance: ModelInstance }[]
 ---@field townEnv table<string, unknown>?
 ---@field townEnvKey number?
+
+---@class OpeningMovieWindow
+---@field enabled boolean whether window clipping constrains the owning engine
+---@field win0 table<string, unknown>? running WIN0 pan program with sampled rect
+---@field win1 table<string, unknown>? WIN1 rectangle override with its inside mask
+---@field win1Source string? "manual" once a direct override supersedes the helper span
+---@field outsideMask integer plane mask where neither window covers
 
 ---@param manifest table<string, unknown> staged opening scene bundle
 ---@param sceneNumber integer expected 1..5 position
@@ -526,7 +534,11 @@ local function acquireSlot(self, manifest)
     wipe = nil,
     blend = nil,
     palette = nil,
-    window = nil,
+    windows = {
+      main = { enabled = false, win0 = nil, win1 = nil, win1Source = nil, outsideMask = 0 },
+      sub = { enabled = false, win0 = nil, win1 = nil, win1Source = nil, outsideMask = 0 },
+    },
+    townVisible = false,
     pool = nil,
     renderer = nil,
     towns = {},
@@ -544,13 +556,15 @@ local function acquireSlot(self, manifest)
             end
           end
         end
-        -- Every compiled slot starts live with its base image and source
-        -- priority; later setLayer events switch images, visibility, and
-        -- priority per slot. Slots the program never touches stay visible.
+        -- Every compiled slot starts with its authored enable state and
+        -- source priority; later setLayer events replace the copied image,
+        -- visibility, and priority per slot. Slots the program never touches
+        -- keep their staged visibility, hidden or shown.
         slot.backgrounds[engine][layer.bgSlot] = {
+          bgSlot = layer.bgSlot,
           image = layer.image,
           priority = layer.priority,
-          visible = true,
+          visible = layer.initialVisible,
           scrollX = 0,
           scrollY = 0,
         }
@@ -875,6 +889,88 @@ local function advanceEmitters(slot, group)
   end
 end
 
+---@param slot OpeningMovieSlot scene slot
+---@param engine unknown source engine naming the window owner
+---@return OpeningMovieWindow target engine window state
+local function windowState(slot, engine)
+  local state = slot.windows[engine]
+  if state == nil then
+    error(
+      invalid("opening scene window names no source engine", {
+        scene = slot.sceneNumber,
+        engine = engine,
+      }),
+      0
+    )
+  end
+  return state
+end
+
+---@param rect table<string, integer> source pixel rectangle
+---@return table<string, integer> private copy the program may sample into
+local function copyWindowRect(rect)
+  return { x1 = rect.x1, y1 = rect.y1, x2 = rect.x2, y2 = rect.y2 }
+end
+
+-- Samples one rectangle edge the way the source pan task does: C integer
+-- division truncates toward zero, so a negative edge must round up, never
+-- down to the next whole pixel the way a floor would.
+---@param origin integer pan start edge
+---@param target integer pan end edge
+---@param elapsed integer source frames since the pan started
+---@param duration integer authored pan length in source frames
+---@return integer sampled edge
+local function sampleWindowEdge(origin, target, elapsed, duration)
+  local drift = target - origin
+  if drift == 0 then
+    return origin
+  end
+  local quotient = drift * elapsed / duration
+  if quotient >= 0 then
+    return origin + math.floor(quotient)
+  end
+  return origin + math.ceil(quotient)
+end
+
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored window program event
+local function startWindowProgram(slot, event)
+  local state = windowState(slot, event.engine)
+  -- A new assignment supersedes the running pan on the same engine: the
+  -- superseded wait completes at once instead of hanging the step graph
+  -- after the new rectangles take over.
+  local running = state.win0
+  if running ~= nil and running.effect ~= nil then
+    local effect = slot.effects[running.effect]
+    if effect ~= nil then
+      effect.done = true
+    end
+  end
+  local program = {
+    from = copyWindowRect(event.from),
+    to = copyWindowRect(event.to),
+    ticks = event.ticks,
+    elapsed = 0,
+    rect = copyWindowRect(event.from),
+    insideMask = event.insideMask,
+    effect = event.effect,
+  }
+  if event.ticks == 0 then
+    program.rect = copyWindowRect(event.to)
+    if event.effect ~= nil then
+      slot.effects[event.effect] = { started = true, done = true }
+    end
+  elseif event.effect ~= nil then
+    -- Completion is driven by the owning engine program in the continuous
+    -- step below, never by toggling display visibility, so only the engine
+    -- that runs the pan can retire its wait.
+    slot.effects[event.effect] = { started = true, done = false }
+  end
+  state.win0 = program
+  state.outsideMask = event.outsideMask
+  state.enabled = true
+end
+
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
 ---@param event table<string, unknown> authored timeline event
@@ -927,8 +1023,22 @@ local function applyEvent(self, slot, event)
     slot.blend = { effect = event.effect, from = event.from, to = event.to, ticks = event.ticks, elapsed = 0 }
     startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "window" then
-    slot.window = { target = event.target, kind = event.kind, ticks = event.ticks, elapsed = 0 }
-    startTimedEffect(slot, event.effect, event.ticks)
+    startWindowProgram(slot, event)
+  elseif op == "setWindowSecondary" then
+    -- A direct second-register override replaces only the second rectangle
+    -- and its mask on the same engine; the running WIN0 program and the
+    -- outside mask stay exactly as the source left them.
+    local state = windowState(slot, event.engine)
+    state.win1 = { rect = copyWindowRect(event.rect), insideMask = event.insideMask }
+    state.win1Source = "manual"
+  elseif op == "setWindowVisible" then
+    -- Display visibility only gates clipping; stored rectangles, masks, and
+    -- running waits survive the toggle either way.
+    windowState(slot, event.engine).enabled = event.visible
+  elseif op == "setModelVisible" then
+    -- The town meshes and renderer stay staged until the slot retires;
+    -- only the draw contribution stops here.
+    slot.townVisible = event.visible
   elseif op == "circleWipe" then
     slot.wipe = { mode = event.mode, ticks = event.ticks or 18, elapsed = 0 }
     startTimedEffect(slot, event.effect, event.ticks)
@@ -962,6 +1072,7 @@ local function applyEvent(self, slot, event)
   elseif op == "setModelClip" then
     slot.activeTown = event.model
     slot.townClipTicks[event.model] = 0
+    slot.townVisible = true
   elseif op == "setCamera" then
     slot.cameraDistance = event.distance
   elseif op == "setLighting" then
@@ -1024,6 +1135,35 @@ local function applyDueEvents(self, slot)
 end
 
 ---@param slot OpeningMovieSlot scene slot
+---@param engine string source engine owning the sampled program
+local function advanceWindowProgram(slot, engine)
+  local state = slot.windows[engine]
+  local program = state.win0
+  if program == nil or program.ticks == 0 or program.elapsed >= program.ticks then
+    return
+  end
+  -- Absolute resampling from the staged endpoints: no incremental drift,
+  -- and the final tick lands exactly on the authored target rectangle.
+  program.elapsed = program.elapsed + 1
+  if program.elapsed >= program.ticks then
+    program.rect = copyWindowRect(program.to)
+    if program.effect ~= nil then
+      local effect = slot.effects[program.effect]
+      if effect ~= nil then
+        effect.done = true
+      end
+    end
+    return
+  end
+  program.rect = {
+    x1 = sampleWindowEdge(program.from.x1, program.to.x1, program.elapsed, program.ticks),
+    y1 = sampleWindowEdge(program.from.y1, program.to.y1, program.elapsed, program.ticks),
+    x2 = sampleWindowEdge(program.from.x2, program.to.x2, program.elapsed, program.ticks),
+    y2 = sampleWindowEdge(program.from.y2, program.to.y2, program.elapsed, program.ticks),
+  }
+end
+
+---@param slot OpeningMovieSlot scene slot
 local function advanceContinuous(slot)
   for _, scroll in pairs(slot.scrolls) do
     if scroll.remaining > 0 then
@@ -1046,12 +1186,20 @@ local function advanceContinuous(slot)
   if slot.fade ~= nil and slot.fade.elapsed < slot.fade.ticks then
     slot.fade.elapsed = slot.fade.elapsed + 1
   end
-  if slot.wipe ~= nil and slot.wipe.elapsed < slot.wipe.ticks then
-    slot.wipe.elapsed = slot.wipe.elapsed + 1
+  if slot.wipe ~= nil then
+    -- A finished iris retires instead of covering later art: the source
+    -- wipe task destroys itself and restores the display on finish, so a
+    -- completed cover must reveal what the program stages underneath it.
+    if slot.wipe.elapsed < slot.wipe.ticks then
+      slot.wipe.elapsed = slot.wipe.elapsed + 1
+    else
+      slot.wipe = nil
+    end
   end
-  if slot.window ~= nil and slot.window.ticks ~= nil and slot.window.elapsed < slot.window.ticks then
-    slot.window.elapsed = slot.window.elapsed + 1
-  end
+  -- Each engine program advances on the source tick alone; host draws,
+  -- resizes, and physical screen flips never resample it.
+  advanceWindowProgram(slot, "main")
+  advanceWindowProgram(slot, "sub")
   for _, sprite in pairs(slot.spriteInstances) do
     sprite.tick = sprite.tick + 1
   end
@@ -1218,8 +1366,8 @@ local function finishCurrentScene(self)
 end
 
 -- Source activity for the single-screen shot policy: an engine is active
--- while it owns a visible background slot, a visible sprite instance, or
--- (sub engine only) the town stage that composites with the sub panels.
+-- while it owns a visible background slot, a visible sprite instance, the
+-- live town stage on main BG0, or live starter particles on main.
 -- Position on the stage is irrelevant here; placement only selects which
 -- authored output fills the host, it never invents or hides source output.
 ---@param slot OpeningMovieSlot scene slot
@@ -1239,8 +1387,18 @@ local function engineActive(slot, engine)
       return true
     end
   end
-  if engine == "sub" and slot.renderer ~= nil and #slot.towns > 0 then
-    return true
+  -- Retained town resources alone never count: only a town the source
+  -- still shows keeps the main target live, so the rival-only beat after
+  -- the authored stop falls through to the sub panels.
+  if engine == "main" then
+    if slot.townVisible and slot.activeTown ~= nil and slot.renderer ~= nil and #slot.towns > 0 then
+      return true
+    end
+    for _, runtime in ipairs(slot.emitters) do
+      if #runtime.particles > 0 then
+        return true
+      end
+    end
   end
   return false
 end
@@ -1537,8 +1695,13 @@ local function sortedBackgrounds(slot, engine)
       end
     end
   end
+  -- Lower numeric priority is frontmost, so it paints later: collect
+  -- back-to-front with a deterministic slot tie-break.
   table.sort(collected, function(a, b)
-    return a.priority < b.priority
+    if a.priority ~= b.priority then
+      return a.priority > b.priority
+    end
+    return a.bgSlot < b.bgSlot
   end)
   return collected
 end
@@ -1553,23 +1716,156 @@ local function layerAlpha(slot)
   return 1 - 0.5 * math.min(blend.elapsed / blend.ticks, 1)
 end
 
+-- Semantic mapping only; placement remains owned by _render.
+-- Source engine is main/sub; only physical screen role changes on flip.
+-- Numeric lower BG priority paints later in the source engine target.
+---@param mask integer five-bit source plane mask (BG0..BG3, OBJ)
+---@param planeIndex integer background slot 0..3, or 4 for OBJ pixels
+---@return boolean true when the plane paints where the mask selects it
+local function maskAllows(mask, planeIndex)
+  return math.floor(mask / (2 ^ planeIndex)) % 2 == 1
+end
+
+---@param rect table<string, integer> source rectangle with inclusive edges
+---@return integer x1, integer y1, integer x2, integer y2 half-open span clipped to the source canvas
+local function canvasSpan(rect)
+  return math.max(rect.x1, 0),
+    math.max(rect.y1, 0),
+    math.min(rect.x2 + 1, SOURCE_WIDTH),
+    math.min(rect.y2 + 1, SOURCE_HEIGHT)
+end
+
+-- Resolves the two hardware spans for one engine: the running WIN0 pan and
+-- the WIN1 override, each with its inside mask, plus the outside mask.
+-- Returns nil while clipping is disabled or no span covers anything, so a
+-- plane paints its whole target in one draw exactly as before.
 ---@param slot OpeningMovieSlot scene slot
----@param role string upper or lower
----@return number inset shrinking the role clip in source pixels
-local function windowInset(slot, role)
-  local window = slot.window
-  if window == nil then
-    return 0
+---@param engine string source engine owning the window registers
+---@return table<string, unknown>? spans with win0, win1, and outside mask
+local function windowSpans(slot, engine)
+  local state = slot.windows[engine]
+  if state == nil or not state.enabled then
+    return nil
   end
-  if window.target == "upper" or window.target == "lower" then
-    if window.target ~= role then
-      return 0
+  local win0, win1 = nil, nil
+  local program = state.win0
+  if program ~= nil and program.rect ~= nil then
+    local outer = program.rect
+    local y1 = math.max(outer.y1, 0)
+    local y2 = math.min(outer.y2 + 1, SOURCE_HEIGHT)
+    if y1 < y2 then
+      if outer.x1 == 0 and outer.x2 == 255 then
+        -- Full-width helper: the source spans the display with two
+        -- touching rectangles carrying the same inside mask, so a later
+        -- direct override replaces exactly the second one.
+        win0 = { x1 = 0, y1 = y1, x2 = SOURCE_WIDTH / 2, y2 = y2, mask = program.insideMask }
+        if state.win1Source ~= "manual" then
+          win1 = { x1 = SOURCE_WIDTH / 2, y1 = y1, x2 = SOURCE_WIDTH, y2 = y2, mask = program.insideMask }
+        end
+      else
+        local x1 = math.max(outer.x1, 0)
+        local x2 = math.min(outer.x2 + 1, SOURCE_WIDTH)
+        if x1 < x2 then
+          win0 = { x1 = x1, y1 = y1, x2 = x2, y2 = y2, mask = program.insideMask }
+        end
+      end
     end
   end
-  if window.ticks == nil or window.ticks <= 0 then
-    return 0
+  if state.win1Source == "manual" and state.win1 ~= nil then
+    local x1, y1, x2, y2 = canvasSpan(state.win1.rect)
+    if x1 < x2 and y1 < y2 then
+      win1 = { x1 = x1, y1 = y1, x2 = x2, y2 = y2, mask = state.win1.insideMask }
+    else
+      win1 = nil
+    end
   end
-  return 24 * math.min(window.elapsed / window.ticks, 1)
+  if win0 == nil and win1 == nil then
+    return nil
+  end
+  return { win0 = win0, win1 = win1, outside = state.outsideMask }
+end
+
+-- Partitions the source canvas along the active span edges and merges each
+-- row into the disjoint rectangles where one plane may paint. WIN0 wins
+-- over WIN1 on overlap; anything else follows the outside mask.
+---@param spans table<string, unknown>? resolved engine spans
+---@param planeIndex integer background slot 0..3, or 4 for OBJ pixels
+---@return table<integer, integer[]>? allowed rectangles, or nil for one full draw
+local function maskRegions(spans, planeIndex)
+  if spans == nil then
+    return nil
+  end
+  local win0, win1 = spans.win0, spans.win1
+  local outside = spans.outside
+  local xs, ys = { 0, SOURCE_WIDTH }, { 0, SOURCE_HEIGHT }
+  for _, span in ipairs({ win0, win1 }) do
+    if span ~= nil then
+      xs[#xs + 1] = span.x1
+      xs[#xs + 1] = span.x2
+      ys[#ys + 1] = span.y1
+      ys[#ys + 1] = span.y2
+    end
+  end
+  table.sort(xs)
+  table.sort(ys)
+  local regions = {}
+  for y = 1, #ys - 1 do
+    local y1, y2 = ys[y], ys[y + 1]
+    if y1 < y2 then
+      local runX1 = nil
+      for x = 1, #xs - 1 do
+        local x1, x2 = xs[x], xs[x + 1]
+        if x1 < x2 then
+          local mask = outside
+          if win1 ~= nil and x1 >= win1.x1 and x2 <= win1.x2 and y1 >= win1.y1 and y2 <= win1.y2 then
+            mask = win1.mask
+          end
+          if win0 ~= nil and x1 >= win0.x1 and x2 <= win0.x2 and y1 >= win0.y1 and y2 <= win0.y2 then
+            mask = win0.mask
+          end
+          if maskAllows(mask, planeIndex) then
+            if runX1 == nil then
+              runX1 = x1
+            end
+          elseif runX1 ~= nil then
+            regions[#regions + 1] = { runX1, y1, x1 - runX1, y2 - y1 }
+            runX1 = nil
+          end
+        end
+      end
+      if runX1 ~= nil then
+        regions[#regions + 1] = { runX1, y1, SOURCE_WIDTH - runX1, y2 - y1 }
+      end
+    end
+  end
+  return regions
+end
+
+-- Draws one plane only where its own mask bit allows it, restoring the
+-- borrowed graphics scope per region even when the plane draw throws.
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot
+---@param engine string source engine owning the plane
+---@param planeIndex integer background slot 0..3, or 4 for OBJ pixels
+---@param draw fun() plane draw callback
+local function drawPlaneClipped(self, slot, engine, planeIndex, draw)
+  local regions = maskRegions(windowSpans(slot, engine), planeIndex)
+  if regions == nil then
+    draw()
+    return
+  end
+  local graphics = self.graphics
+  for _, region in ipairs(regions) do
+    graphics.push("all")
+    local ok, failure = pcall(function()
+      graphics.intersectScissor(region[1], region[2], region[3], region[4])
+      draw()
+    end)
+    graphics.pop()
+    if not ok then
+      error(failure, 0)
+    end
+  end
 end
 
 ---@param value unknown raw channel value in 0..1
@@ -1619,6 +1915,37 @@ local function activeTownIndex(slot)
     end
   end
   return 0
+end
+
+---@param slot OpeningMovieSlot scene slot
+---@return { name: string?, index: integer?, instance: ModelInstance }? staged town record owning the drawn stage, bind fallback included
+local function stagedTown(slot)
+  local active = slot.towns[1]
+  for _, town in ipairs(slot.towns) do
+    if town.name == slot.activeTown then
+      active = town
+      break
+    end
+  end
+  return active
+end
+
+-- Model-units-to-tiles factor carried by the staged town program: staged
+-- camera facts (target, distance) arrive in model units while the renderer
+-- consumes tiles, so the camera converts through this factor. The field is
+-- required on every staged town program; a program without one is malformed
+-- staged data and fails loudly instead of framing empty ground.
+---@param slot OpeningMovieSlot scene slot
+---@return number model-units-to-tiles factor
+local function townCameraUnit(slot)
+  local town = stagedTown(slot)
+  local instance = town ~= nil and town.instance or nil
+  local definition = instance ~= nil and instance.definition or nil
+  local backend = definition ~= nil and definition.backend or nil
+  local program = backend ~= nil and backend.program or nil
+  local unit = program ~= nil and program.tileScale or nil
+  assert(type(unit) == "number" and unit > 0, "town stage carries no tile scale")
+  return unit
 end
 
 ---@param slot OpeningMovieSlot scene slot
@@ -1717,9 +2044,12 @@ local function townCamera(slot)
   -- angle at the staged distance, and the projection carries the compiled
   -- town field angle on the source 4:3 frame. Host layout never widens
   -- this lens; the compositor places the projected frame.
+  local unit = townCameraUnit(slot)
   local camera = slot.manifest.camera
-  local target = (camera and camera.target) or TOWN_DEFAULT_TARGET
-  local distance = slot.cameraDistance or (camera and camera.distance) or TOWN_DEFAULT_DISTANCE
+  local stagedTarget = (camera and camera.target) or TOWN_DEFAULT_TARGET
+  local target = { stagedTarget[1] * unit, stagedTarget[2] * unit, stagedTarget[3] * unit }
+  local stagedDistance = slot.cameraDistance or (camera and camera.distance) or TOWN_DEFAULT_DISTANCE
+  local distance = stagedDistance * unit
   local angle = (camera and camera.angle) or { 0, 0, 0, 0 }
   local pitch = ((angle[1] or 0) / 65536) * (2 * math.pi)
   local yaw = ((angle[2] or 0) / 65536) * (2 * math.pi)
@@ -1757,13 +2087,7 @@ end
 ---@param slot OpeningMovieSlot scene slot
 ---@param rect { x: number, y: number, width: number, height: number } device-space role rectangle
 local function drawTowns(slot, rect)
-  local active = slot.towns[1]
-  for _, town in ipairs(slot.towns) do
-    if town.name == slot.activeTown then
-      active = town
-      break
-    end
-  end
+  local active = stagedTown(slot)
   if active == nil or active.instance == nil then
     return
   end
@@ -1973,44 +2297,101 @@ function HgssOpeningMovie:_blitRole(canvas, rect, cover)
   end
 end
 
+---@param slot OpeningMovieSlot scene slot
+---@return boolean true when the town stage contributes main BG0 pixels now
+local function townDrawable(slot)
+  return slot.townVisible and slot.activeTown ~= nil and slot.renderer ~= nil and #slot.towns > 0
+end
+
+---@param slot OpeningMovieSlot scene slot
+---@return boolean true while starter particles remain alive
+local function particlesLive(slot)
+  for _, runtime in ipairs(slot.emitters) do
+    if #runtime.particles > 0 then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
 ---@param canvas love.Canvas fixed role target receiving the engine output
 ---@param engine string source engine rendered into its fixed role target
----@param role string physical role the engine currently feeds
-function HgssOpeningMovie:_renderEngine(slot, canvas, engine, role)
+function HgssOpeningMovie:_renderEngine(slot, canvas, engine)
   local graphics = self.graphics
-  local inset = windowInset(slot, role)
-  graphics.intersectScissor(inset, inset, SOURCE_WIDTH - inset * 2, SOURCE_HEIGHT - inset * 2)
-  local backgrounds = sortedBackgrounds(slot, engine)
-  for index, background in ipairs(backgrounds) do
-    local image = slot.imageByPath[background.image]
-    if image ~= nil then
-      if index == #backgrounds then
-        graphics.setColor(1, 1, 1, layerAlpha(slot))
-      else
-        graphics.setColor(1, 1, 1, 1)
-      end
-      graphics.draw(image, background.scrollX, background.scrollY)
-    end
-  end
-  graphics.setColor(1, 1, 1, 1)
-  -- The town stage composites with the sub-engine panels on the
-  -- sub-mapped role: the 3D town resolves into the fixed scratch target
-  -- (its presentation blit replaces) and is then alpha-composited over
-  -- the 2D panels, instead of the panels or a later role pass covering it.
-  if engine == "sub" and slot.renderer ~= nil and #slot.towns > 0 then
+  -- The town stage resolves once into the fixed scratch target (its
+  -- presentation blit replaces); the plane pass below composites the same
+  -- scratch into each allowed region instead of re-rendering 3D per clip.
+  -- It belongs to main BG0 while the source shows it, composited over the
+  -- 2D panels at priority 0 instead of into the other engine.
+  if engine == "main" and townDrawable(slot) then
     local scratch = assert(self.townScratch, "town stage requires its composite scratch")
     graphics.setCanvas(scratch)
     graphics.clear(0, 0, 0, 0)
     drawTowns(slot, { x = 0, y = 0, width = SOURCE_WIDTH, height = SOURCE_HEIGHT })
     graphics.setCanvas(canvas)
-    graphics.setBlendMode("alpha", "premultiplied")
-    graphics.draw(scratch, 0, 0)
-    graphics.setBlendMode("alpha", "alphamultiply")
   end
-  drawSprites(self, slot, engine)
-  drawParticles(self, slot)
+  -- One ordered plane list per engine: enabled 2D slots back-to-front,
+  -- the main BG0 3D stage at priority 0, OBJ sprites above every BG, then
+  -- the unmasked fade and wipe overlays.
+  local planes = {}
+  for _, background in ipairs(sortedBackgrounds(slot, engine)) do
+    planes[#planes + 1] =
+      { priority = background.priority, bgSlot = background.bgSlot, kind = 0, background = background }
+  end
+  if engine == "main" then
+    if townDrawable(slot) then
+      planes[#planes + 1] = { priority = 0, bgSlot = 0, kind = 1 }
+    end
+    if particlesLive(slot) then
+      planes[#planes + 1] = { priority = 0, bgSlot = 0, kind = 2 }
+    end
+  end
+  table.sort(planes, function(a, b)
+    if a.priority ~= b.priority then
+      return a.priority > b.priority
+    end
+    if a.bgSlot ~= b.bgSlot then
+      return a.bgSlot < b.bgSlot
+    end
+    return a.kind < b.kind
+  end)
+  for index, plane in ipairs(planes) do
+    if plane.kind == 0 then
+      local background = plane.background
+      local image = slot.imageByPath[background.image]
+      if image ~= nil then
+        local frontmost = index == #planes
+        drawPlaneClipped(self, slot, engine, background.bgSlot, function()
+          if frontmost then
+            graphics.setColor(1, 1, 1, layerAlpha(slot))
+          else
+            graphics.setColor(1, 1, 1, 1)
+          end
+          graphics.draw(image, background.scrollX, background.scrollY)
+        end)
+      end
+    elseif plane.kind == 1 then
+      drawPlaneClipped(self, slot, engine, 0, function()
+        local scratch = assert(self.townScratch, "town stage requires its composite scratch")
+        graphics.setColor(1, 1, 1, 1)
+        graphics.setBlendMode("alpha", "premultiplied")
+        graphics.draw(scratch, 0, 0)
+        graphics.setBlendMode("alpha", "alphamultiply")
+      end)
+    else
+      -- Starter particles emit on the main 3D output alone; the physical
+      -- mapping below moves that whole target, never a second copy.
+      drawPlaneClipped(self, slot, engine, 0, function()
+        drawParticles(self, slot)
+      end)
+    end
+  end
+  graphics.setColor(1, 1, 1, 1)
+  drawPlaneClipped(self, slot, engine, 4, function()
+    drawSprites(self, slot, engine)
+  end)
   drawFade(self, slot)
   drawWipe(self, slot)
 end
@@ -2025,10 +2406,10 @@ function HgssOpeningMovie:_renderRoles(slot)
     assert(self.mainCanvas ~= nil and self.subCanvas ~= nil, "movie role targets are missing")
     graphics.setCanvas(self.mainCanvas)
     graphics.clear(0, 0, 0, 1)
-    self:_renderEngine(slot, self.mainCanvas, "main", (slot.mainPhysical == "upper") and "upper" or "lower")
+    self:_renderEngine(slot, self.mainCanvas, "main")
     graphics.setCanvas(self.subCanvas)
     graphics.clear(0, 0, 0, 1)
-    self:_renderEngine(slot, self.subCanvas, "sub", (slot.mainPhysical == "upper") and "lower" or "upper")
+    self:_renderEngine(slot, self.subCanvas, "sub")
     graphics.setCanvas(previous)
   end)
   graphics.pop()

@@ -41,6 +41,7 @@ local function layer(bgSlot, image)
     width = 256,
     height = 192,
     sourceHash = string.rep("c", 40),
+    initialVisible = true,
   }
 end
 
