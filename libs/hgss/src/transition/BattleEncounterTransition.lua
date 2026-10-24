@@ -4,7 +4,7 @@ local BattleEncounterSelector = require("libs.hgss.src.transition.BattleEncounte
 local Errors = require("libs.errors.src.Errors")
 
 ---@class BattleEncounterTransition
----@field _manifest table<string, unknown>
+---@field _loadManifest fun(): table<string, unknown>
 ---@field _cacheFs BattleEncounterTransition.CacheFs
 ---@field _battleAssets BattleEncounterTransition.BattleAssets
 ---@field _sceneKey string
@@ -36,7 +36,7 @@ BattleEncounterTransition.__index = BattleEncounterTransition
 ---@field acceptFieldLayers fun(self: BattleEncounterTransition.Effect, layers: table<string, unknown>)?
 
 ---@class BattleEncounterTransition.Options
----@field manifest table<string, unknown> validated presentation manifest
+---@field loadManifest fun(): table<string, unknown> reads the staged presentation manifest the ready scene published
 ---@field cacheFs BattleEncounterTransition.CacheFs staged CacheFs reader
 ---@field battleAssets BattleEncounterTransition.BattleAssets typed scene demand host
 ---@field sceneKey string selected battle scene key whose receipt owns global transition payloads
@@ -46,7 +46,7 @@ BattleEncounterTransition.__index = BattleEncounterTransition
 ---@param options BattleEncounterTransition.Options
 ---@return BattleEncounterTransition
 function BattleEncounterTransition.new(options)
-  assert(options and type(options.manifest) == "table", "battle transition requires its staged manifest")
+  assert(options and type(options.loadManifest) == "function", "battle transition requires its staged manifest reader")
   assert(options.cacheFs and options.cacheFs.loadLua, "battle transition requires staged resource access")
   assert(
     options.battleAssets and type(options.battleAssets.requestBattleScene) == "function",
@@ -59,7 +59,7 @@ function BattleEncounterTransition.new(options)
   assert(options.audioOperations and options.audioOperations.emit, "battle transition requires the typed audio sink")
   assert(type(options.effectFactory) == "function", "battle transition requires native effect families")
   return setmetatable({
-    _manifest = options.manifest,
+    _loadManifest = options.loadManifest,
     _cacheFs = options.cacheFs,
     _battleAssets = options.battleAssets,
     _sceneKey = options.sceneKey,
@@ -80,15 +80,14 @@ function BattleEncounterTransition:prepare(context)
   assert(self._phase == "new" or self._phase == "pending", "battle transition prepares once and resumes while pending")
   self._phase = "preparing"
   local ok, result = pcall(function()
-    local selection = self._selection or BattleEncounterSelector.resolve(self._manifest.transitions, context)
-    self._selection = selection
+    -- The scene receipt publishes the global manifest: selection reads it
+    -- only after the demand reports ready.
     local ready, demandError = self._battleAssets.requestBattleScene(self._sceneKey, "required")
     if demandError ~= nil then
       Errors.raise(
         "BATTLE_TRANSITION_RESOURCE_UNAVAILABLE",
         "selected transition resources are not globally published",
         {
-          route = selection.routeKey,
           scene = self._sceneKey,
           cause = demandError,
         }
@@ -98,8 +97,10 @@ function BattleEncounterTransition:prepare(context)
       self._phase = "pending"
       return "pending"
     end
+    local manifest = self._loadManifest()
+    local selection = BattleEncounterSelector.resolve(manifest.transitions, context)
     local resources = {}
-    local resourceDescriptors = assert(self._manifest.resources, "manifest carries staged resource descriptors")
+    local resourceDescriptors = assert(manifest.resources, "manifest carries staged resource descriptors")
     for _, resourceKey in ipairs(selection.route.resources) do
       local descriptor = resourceDescriptors[resourceKey]
       if type(descriptor) ~= "table" or type(descriptor.path) ~= "string" then

@@ -387,129 +387,76 @@ function T.complete_battle_without_committed_receipt_fails_in_both_field_modes()
   Assert.isFalse(pcall(direct.updateBattle, direct), "a direct headless battle also requires commitment")
   Assert.equal(directDisposals(), 1, "direct failure disposes the battle once")
 
-  local presented, presentedDisposals = runtimeFor(true)
-  presented:updateBattle()
-  Assert.equal(presentedDisposals(), 1, "presented failure disposes the battle once")
-  Assert.isNil(presented.battleCoordinator:activeBattle(), "presented failure releases the battle owner")
-  Assert.notNil(presented.battleCoordinator._battleReceipt, "presented failure remains visible to its caller")
-  Assert.isNil(presented.battleCoordinator._battleLaunch, "presented failure releases the launch")
-  Assert.notNil(presented.errorText, "presented failure reaches the error surface")
+  local presented = runtimeFor(true)
+  local presentedOk, presentedErr = pcall(presented.updateBattle, presented)
+  Assert.isFalse(presentedOk, "presented completion without a receipt raises")
+  Assert.isTrue(
+    tostring(presentedErr):find("without a committed outcome receipt", 1, true) ~= nil,
+    "the presented failure names its cause: " .. tostring(presentedErr)
+  )
 end
 
--- Presented failures release the same acquired resources exactly once:
--- a reported battle failure and an unaccepted completion both dispose
--- the owned port once, clear both holds, restore the field music policy
--- once, and retain the failed launch for the launching task without
--- publishing any result. A construction failure under cover instead keeps
--- its failed launch with no disposal and no receipt, since nothing was
--- acquired yet.
-function T.presented_failures_release_the_same_acquired_resources_once()
-  local function failureRuntime(double)
-    return fakeRuntime({
+-- Presented launch failures fault the runtime with their original cause:
+-- a reported battle failure, an unaccepted completion, and a construction
+-- failure under cover each raise instead of parking a failed launch.
+function T.presented_failures_fault_with_their_original_cause()
+  local function presentedRuntime(launch, battle)
+    local runtime = fakeRuntime({
       session = {
-        setBattleActive = function(_, active)
-          double.session[#double.session + 1] = active
-        end,
-        setForegroundHold = function(_, active)
-          double.session[#double.session + 1] = active
-        end,
+        setBattleActive = function() end,
+        setForegroundHold = function() end,
       },
-      audio = {
-        resumeFieldPolicy = function(_, token, restore)
-          double.audio[#double.audio + 1] = { token = token, restore = restore }
+      overworld = {
+        phase = function()
+          return "absent"
         end,
       },
     })
+    runtime.battleCoordinator._battleLaunch = launch
+    runtime.battleCoordinator.battleRuntime = battle
+    return runtime
+  end
+  local function assertRaises(runtime, cause, label)
+    local ok, err = pcall(runtime.updateBattle, runtime)
+    Assert.isFalse(ok, label .. " faults the runtime")
+    Assert.isTrue(tostring(err):find(cause, 1, true) ~= nil, label .. " keeps its cause: " .. tostring(err))
   end
 
-  local function presentedLaunch(id)
-    return { launchId = id, phase = "active", presented = true, request = { id = id } }
-  end
-
-  local function checkReleased(double, runtime, id)
-    Assert.equal(double.disposed, 1, "a presented failure disposes the owned port once")
-    Assert.isNil(runtime.battleCoordinator:activeBattle(), "a presented failure releases the battle owner")
-    Assert.deepEqual(double.session, { false, false }, "a presented failure clears both holds")
-    Assert.equal(#double.audio, 1, "a presented failure restores the field policy once")
-    Assert.equal(double.audio[1].token, id, "the restore names the failed launch")
-    Assert.isTrue(double.audio[1].restore, "a pre-commit failure restores the field music")
-    Assert.isNil(runtime.battleCoordinator._battleLaunch, "a presented failure releases the launch")
-    local receipt = runtime.battleCoordinator._battleReceipt
-    Assert.notNil(receipt, "a presented failure remains visible to the launching task")
-    Assert.equal(receipt.phase, "failed", "the receipt names the failed phase")
-    Assert.isFalse(receipt.committed == true, "a failure never commits a result")
-    Assert.notNil(receipt.error, "the receipt keeps the failure")
-    Assert.equal(runtime.errorText, receipt.error, "the failure reaches the error surface")
-    Assert.isNil(runtime:lastBattleResult(), "a presented failure publishes no result")
-    local status = runtime:battleStatus(id)
-    Assert.notNil(status, "the failed launch stays readable by its identity")
-    Assert.equal(status.phase, "failed", "the readable status names the failed phase")
-    Assert.isFalse(status.committed, "the readable status commits nothing")
-    Assert.equal(status.error, receipt.error, "the readable status keeps the failure")
-  end
-
-  local reported = { session = {}, audio = {}, disposed = 0 }
-  local reportedRuntime = failureRuntime(reported)
-  reportedRuntime.battleCoordinator._battleLaunch = presentedLaunch("presented-status-failure#1")
-  reportedRuntime.battleCoordinator.battleRuntime = {
-    update = function() end,
-    dispose = function()
-      reported.disposed = reported.disposed + 1
-    end,
-    status = function()
-      return { phase = "failed", error = "the wild battle collapsed" }
-    end,
-  }
-  reportedRuntime:updateBattle()
-  checkReleased(reported, reportedRuntime, "presented-status-failure#1")
-  Assert.equal(
-    reportedRuntime.battleCoordinator._battleReceipt.error,
+  assertRaises(
+    presentedRuntime({ launchId = "reported#1", phase = "active", presented = true, request = { id = "reported#1" } }, {
+      update = function() end,
+      dispose = function() end,
+      status = function()
+        return { phase = "failed", error = "the wild battle collapsed" }
+      end,
+    }),
     "the wild battle collapsed",
-    "the receipt keeps the reported error"
+    "a reported battle failure"
   )
-
-  local unaccepted = { session = {}, audio = {}, disposed = 0 }
-  local unacceptedRuntime = failureRuntime(unaccepted)
-  unacceptedRuntime.battleCoordinator._battleLaunch = presentedLaunch("presented-unaccepted#1")
-  unacceptedRuntime.battleCoordinator.battleRuntime = {
-    update = function() end,
-    dispose = function()
-      unaccepted.disposed = unaccepted.disposed + 1
-    end,
-    status = function()
-      return { phase = "complete", result = "win", sourceResult = 1 }
-    end,
-  }
-  unacceptedRuntime:updateBattle()
-  checkReleased(unaccepted, unacceptedRuntime, "presented-unaccepted#1")
-
-  local constructing = { session = {}, audio = {}, disposed = 0 }
-  local constructingRuntime = failureRuntime(constructing)
-  constructingRuntime.overworld = {
-    phase = function()
-      return "absent"
-    end,
-  }
-  constructingRuntime.buildBattleScenario = function()
-    error("probe-construction-boom", 0)
-  end
-  constructingRuntime.battleCoordinator._battleLaunch = {
-    launchId = "presented-construction#1",
+  assertRaises(
+    presentedRuntime(
+      { launchId = "unaccepted#1", phase = "active", presented = true, request = { id = "unaccepted#1" } },
+      {
+        update = function() end,
+        dispose = function() end,
+        status = function()
+          return { phase = "complete", result = "win", sourceResult = 1 }
+        end,
+      }
+    ),
+    "without a committed outcome receipt",
+    "an unaccepted completion"
+  )
+  local constructing = presentedRuntime({
+    launchId = "construction#1",
     phase = "leaving",
     presented = true,
-    request = { id = "presented-construction#1", kind = "wild", payload = {} },
-  }
-  constructingRuntime:updateBattle()
-  local stuck = constructingRuntime.battleCoordinator._battleLaunch
-  Assert.notNil(stuck, "a construction failure keeps the failed launch visible")
-  Assert.equal(stuck.phase, "failed", "the kept launch names the failed phase")
-  Assert.equal(stuck.error, "probe-construction-boom", "the kept launch keeps the failure")
-  Assert.equal(constructingRuntime.errorText, "probe-construction-boom", "the failure reaches the error surface")
-  Assert.equal(constructing.disposed, 0, "a construction failure disposes nothing")
-  Assert.equal(#constructing.audio, 0, "a construction failure restores no music")
-  Assert.equal(#constructing.session, 0, "a construction failure moves no hold")
-  Assert.isNil(constructingRuntime.battleCoordinator._battleReceipt, "a pre-commit failure publishes no receipt")
-  Assert.isNil(constructingRuntime:lastBattleResult(), "a pre-commit failure publishes no result")
+    request = { id = "construction#1", kind = "wild", payload = {} },
+  }, nil)
+  constructing.buildBattleScenario = function()
+    error("probe-construction-boom", 0)
+  end
+  assertRaises(constructing, "probe-construction-boom", "a construction failure")
 end
 
 function T.prepared_encounters_are_consumed_exactly_once()
@@ -1067,7 +1014,6 @@ function T.presented_admission_fails_closed_without_a_port()
   })
   Assert.isFalse(ok, "admission without a port fails loudly")
   Assert.isTrue(tostring(err):find("admission failed", 1) ~= nil, "the failure names the admission")
-  Assert.notNil(runtime.errorText, "the failure enters the visible failed state")
   Assert.isNil(runtime.battleCoordinator._battleLaunch, "no launch record impersonates a battle")
   Assert.isNil(runtime.battleCoordinator:activeBattle(), "no battle constructs without a port")
   Assert.deepEqual(holds, {}, "no input hold precedes a constructed port")
@@ -1254,72 +1200,30 @@ function T.committed_money_adopts_into_the_live_wallet_once()
   Assert.equal(untouched.playerData.profile.money, 3000, "a receipt without a candidate changes nothing")
 end
 
--- A failed screen fails its launch before commitment without publishing:
--- the launch is retained through the abort while the field restores and
--- reveals, and only then does a failed receipt carrying the original
--- error reach the launching task with no battle outcome. Past commitment
--- the failure is ignored instead of rolling mechanics back.
-function T.screen_failures_before_commitment_publish_nothing()
-  local released = {}
-  local resumed = {}
-  local runtime = fakeRuntime({
-    battleRuntime = {
-      dispose = function()
-        released[#released + 1] = true
-      end,
-      status = function()
-        return { outcomeReceipt = { committed = false } }
-      end,
-    },
-    session = {
-      setBattleActive = function(_, active)
-        released[#released + 1] = active
-      end,
-      setForegroundHold = function(_, active)
-        released[#released + 1] = active
-      end,
-      destinationWorldPresentable = function()
-        return true
-      end,
-      acknowledgeDestinationPresentation = function() end,
-    },
-    audio = {
-      resumeFieldPolicy = function(_, token, restore)
-        resumed[#resumed + 1] = { token = token, restore = restore }
-      end,
-    },
-  })
-  runtime.battleCoordinator._battleLaunch =
-    { launchId = "screen-fail#1", phase = "active", presented = true, request = { id = "screen-fail#1" } }
-  runtime.battleCoordinator:_presentedNotify("screen-fail#1", "screen-failed", "probe screen failure")
-  Assert.notNil(runtime.battleCoordinator._battleLaunch, "the abort retains the launch until the field is safe")
-  Assert.equal(runtime.battleCoordinator._battleLaunch.phase, "aborting", "the uncommitted failure parks in abort")
-  Assert.isNil(runtime.battleCoordinator.battleRuntime, "the uncommitted battle releases at the fault")
-  Assert.notNil(runtime.errorText, "the failure is retained loudly")
-  Assert.isNil(runtime.battleCoordinator._battleReceipt, "no receipt publishes before the restored reveal")
-  runtime:updateBattle()
-  Assert.equal(
-    runtime.battleCoordinator._battleLaunch.phase,
-    "abort-revealing",
-    "the present field starts the abort reveal"
-  )
-  runtime.battleCoordinator:_presentedNotify("screen-fail#1", "revealed")
-  runtime:updateBattle()
-  Assert.equal(runtime.battleCoordinator._battleLaunch, nil, "no launch impersonates a battle after its screen fails")
-  Assert.notNil(runtime.errorText, "the failure stays retained loudly")
-  local receipt = assert(runtime.battleCoordinator._battleReceipt, "the launching task observes the failure")
-  Assert.equal(receipt.phase, "failed", "the abort publishes its failed phase")
-  Assert.equal(receipt.committed, false, "the abort publishes no commitment")
-  Assert.equal(receipt.error, "probe screen failure", "the abort carries the original screen error")
-  Assert.isNil(receipt.result, "the abort invents no battle outcome")
-  Assert.equal(#released, 3, "the battle and both holds release exactly once")
-  Assert.equal(resumed[1].restore, true, "failure restores the field policy")
-  Assert.isNil(runtime.battleCoordinator._lastBattleResult, "the abort publishes no battle result")
-  Assert.equal(runtime.overworld:phase(), "present", "the abort ends on the restored field")
-  local committed = { launchId = "screen-fail#2", phase = "terminal", presented = true }
-  runtime.battleCoordinator._battleLaunch = committed
-  runtime.battleCoordinator:_presentedNotify("screen-fail#2", "screen-failed")
-  Assert.isTrue(runtime.battleCoordinator._battleLaunch == committed, "post-commit visuals never roll mechanics back")
+-- A failed screen faults the runtime with its original error on the next
+-- launch pump, before or after commitment; repeats keep the first cause
+-- and stale identities are ignored.
+function T.screen_failures_fault_the_runtime_with_the_first_cause()
+  for _, phase in ipairs({ "active", "terminal" }) do
+    local runtime = fakeRuntime({
+      battleRuntime = {
+        update = function() end,
+        dispose = function() end,
+        status = function()
+          return { phase = "running" }
+        end,
+      },
+    })
+    local launchId = "screen-fail-" .. phase
+    runtime.battleCoordinator._battleLaunch =
+      { launchId = launchId, phase = phase, presented = true, request = { id = launchId } }
+    runtime.battleCoordinator:_presentedNotify("stale#0", "screen-failed", "stale probe failure")
+    runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "probe screen failure")
+    runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "second probe failure")
+    local ok, err = pcall(runtime.updateBattle, runtime)
+    Assert.isFalse(ok, "a failed screen faults the runtime at " .. phase)
+    Assert.equal(err, "probe screen failure", "the fault carries the first screen error at " .. phase)
+  end
 end
 
 local function readyVersions()

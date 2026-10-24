@@ -569,10 +569,6 @@ local function settleBattle(game, envelope, choose, budget)
     and runtime.battleCoordinator._battleLaunch ~= nil
     and waited < budget
   do
-    local pending = runtime.battleCoordinator._battleLaunch
-    if pending ~= nil and pending.phase == "failed" then
-      error("the presented launch failed before construction: " .. tostring(pending.error or runtime.errorText), 0)
-    end
     game:step()
     envelope:updateFixed(TICK)
     waited = waited + 1

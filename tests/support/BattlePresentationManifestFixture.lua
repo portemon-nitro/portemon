@@ -463,6 +463,7 @@ local function manifest()
     schema = old.schema,
     version = old.version,
     catalogIdentity = "synthetic-catalog",
+    verified = true,
     scenes = old.scenes,
     battlefield = {
       slots = {

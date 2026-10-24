@@ -20,6 +20,8 @@ local NATIVE_VIEWPORT = {
 ---@field motionBlur FieldRenderer.MotionBlur?
 ---@field requiresCurrentFieldLayers boolean? true when the source task consumes fresh world/object planes per tick
 ---@field whiteFadeAlpha number? source white palette fade within 0..1
+---@field screenBrightness number? source engine master-brightness value, -16..16
+---@field brightness number|table<string, unknown>? source engine master-brightness value or an opaque native task record
 
 ---@class FieldRenderer.MotionBlur
 ---@field previous GxRenderer.Canvas
@@ -316,7 +318,23 @@ function FieldRenderer:drawTransition(capture, transitionFrame, destination)
     if wipe ~= nil then
       graphics.setStencilTest()
     end
-    if transitionFrame.whiteFadeAlpha ~= nil then
+    local screenBrightness = transitionFrame.screenBrightness
+    local brightness = transitionFrame.brightness
+    if type(screenBrightness) ~= "number" and type(brightness) == "number" then
+      screenBrightness = brightness --[[@as number]]
+    end
+    if type(screenBrightness) == "number" then
+      -- GX master brightness uses positive values for white and negative
+      -- values for black (src/field/encounter_effect.c).
+      assert(screenBrightness >= -16 and screenBrightness <= 16, "source master brightness stays within -16..16")
+      local alpha = math.abs(screenBrightness) / 16
+      if screenBrightness < 0 then
+        graphics.setColor(0, 0, 0, alpha)
+      else
+        graphics.setColor(1, 1, 1, alpha)
+      end
+      graphics.rectangle("fill", destination.x, destination.y, destination.width, destination.height)
+    elseif transitionFrame.whiteFadeAlpha ~= nil then
       local alpha = transitionFrame.whiteFadeAlpha
       assert(alpha >= 0 and alpha <= 1, "source white palette fade stays within 0..1")
       graphics.setColor(1, 1, 1, alpha)

@@ -559,7 +559,6 @@ end
 ---@field screenTopology ScreenTopology?
 ---@field fieldPixelScale FieldPixelScale
 ---@field saveStatus string?
----@field errorText string? most recent field battle admission or lifecycle failure
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
 ---@field savePublished boolean whether the reserved record has been published
 ---@field saveCoordinator FieldSaveCoordinator required save capture/publication owner

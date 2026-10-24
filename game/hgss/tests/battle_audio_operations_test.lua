@@ -1266,35 +1266,26 @@ function T.missing_or_rejected_sounds_fail_the_launch_with_their_identity()
       local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("unknown-cue"), failing)
       local ok, legErr = xpcall(function()
         local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-        local failureText, reachedCommand = nil, false
-        for _ = 1, 900 do
-          local screen = envelope:liveScreen()
-          if screen ~= nil then
-            local shown = screen:status()
-            if shown.mode == "failed" and failureText == nil then
-              failureText = tostring(shown.error)
+        local reachedCommand = false
+        local survived, raised = pcall(function()
+          for _ = 1, 900 do
+            local screen = envelope:liveScreen()
+            if screen ~= nil then
+              local shown = screen:status()
+              if shown.mode == "command" then
+                reachedCommand = true
+                return
+              end
+              if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+                envelope:input({ { type = "confirm" } })
+              end
             end
-            if shown.mode == "command" then
-              reachedCommand = true
-              break
-            end
-            if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
-              envelope:input({ { type = "confirm" } })
-            end
+            runtime:update(1 / 30)
+            envelope:updateFixed(TICK)
           end
-          runtime:update(1 / 30)
-          envelope:updateFixed(TICK)
-        end
-        local record = runtime:battleStatus(launchId)
-        if type(record) == "table" and type(record.error) == "string" and failureText == nil then
-          failureText = record.error
-        end
-        local terminated = runtime.battleCoordinator:activeBattle() == nil and not reachedCommand
-        check(
-          problems,
-          failureText ~= nil or terminated,
-          "a genuinely unknown cue fails its launch on " .. versionId
-        )
+        end)
+        local failureText = not survived and tostring(raised) or nil
+        check(problems, failureText ~= nil, "a genuinely unknown cue faults the runtime on " .. versionId)
         check(problems, not reachedCommand, "a genuinely unknown cue never reaches command on " .. versionId)
         if failureText ~= nil then
           check(
@@ -1383,29 +1374,32 @@ function T.missing_or_rejected_sounds_fail_the_launch_with_their_identity()
       local ok, legErr = xpcall(function()
         runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
         local reachedCommand = false
-        for _ = 1, 900 do
-          local screen = envelope:liveScreen()
-          if screen == nil then
-            break
+        local survived, raised = pcall(function()
+          for _ = 1, 900 do
+            local screen = envelope:liveScreen()
+            if screen ~= nil then
+              local shown = screen:status()
+              if shown.mode == "command" then
+                reachedCommand = true
+                return
+              end
+              if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+                envelope:input({ { type = "confirm" } })
+              end
+            end
+            runtime:update(1 / 30)
+            envelope:updateFixed(TICK)
           end
-          local shown = screen:status()
-          if shown.mode == "failed" then
-            break
-          end
-          if shown.mode == "command" then
-            reachedCommand = true
-            break
-          end
-          if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
-            envelope:input({ { type = "confirm" } })
-          end
-          runtime:update(1 / 30)
-          envelope:updateFixed(TICK)
-        end
+        end)
         check(
           problems,
           not reachedCommand,
           "a missing music bank never becomes a successful silent battle on " .. versionId
+        )
+        check(
+          problems,
+          not survived and tostring(raised):find("SEQ_", 1, true) ~= nil,
+          "a missing music bank faults the runtime naming its sequence on " .. versionId .. ": " .. tostring(raised)
         )
       end, debug.traceback)
       runtime.audio.playMusic = innerPlayMusic

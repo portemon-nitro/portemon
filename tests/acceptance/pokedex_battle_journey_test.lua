@@ -361,7 +361,6 @@ local function captureWild(game)
       target = { kind = "combatant", combatant = foeOf() },
     } }
   end)
-  Assert.isNil(runtime.errorText, "the capture settles without faulting the field")
   Assert.equal(battle:status().phase, "complete", "the capture battle owner settles")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
   Assert.isTrue(receipt.committed, "the capture owner receipt proves publication")
@@ -484,7 +483,6 @@ local function runCaptureJourney(versionId)
       end
     end
     Assert.isTrue(kept, "continue retains the captured party mon")
-    Assert.isNil(game.runtime.errorText, "reloading the captured game does not fault the field")
   end)
 end
 
@@ -575,7 +573,6 @@ function T.repeat_capture_skips_the_card_but_extends_observed_history(context)
           target = { kind = "combatant", combatant = foeOf() },
         } }
       end)
-      Assert.isNil(runtime.errorText, "the repeat capture settles without faulting the field")
       Assert.equal(#registrationTerminals(record.packets), 0, "a repeat catch presents no second card")
       Assert.isTrue(dex:isCaught(species), "the repeat catch keeps the species caught")
       Assert.isNil(

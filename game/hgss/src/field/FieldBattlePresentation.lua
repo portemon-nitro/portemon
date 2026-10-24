@@ -1545,8 +1545,8 @@ end
 -- terminal report: pending build failures and battle-music failures
 -- share it, so the first report wins with its launch context and any
 -- later failure for the same launch collapses without a second host
--- report. The descriptor, cover, and launch identity stay with the host
--- until the field drains the abort; a disposed launch reports nothing late.
+-- report. The host faults the runtime with it on its next launch pump;
+-- a disposed launch reports nothing late.
 ---@param reason string terminal failure context behind the report
 function FieldBattlePresentation:_failPendingLaunch(reason)
   if self._pendingFailed then
@@ -1920,8 +1920,13 @@ function FieldBattlePresentation:_startTransition(descriptor)
     )
   end
   assert(type(descriptor.environment) == "table", "presented field launches carry their selected scene key")
+  local function loadStagedManifest()
+    local manifest = loadManifest(self._cacheFs)
+    assert(manifest.verified == true, "a ready battle scene publishes its verified presentation manifest")
+    return manifest
+  end
   local transition = BattleEncounterTransition.new({
-    manifest = self._manifest,
+    loadManifest = loadStagedManifest,
     cacheFs = self._cacheFs,
     battleAssets = assert(
       self._derivedAssets,
@@ -2182,19 +2187,6 @@ function FieldBattlePresentation:_stepCover()
     self:_stepCoverUp()
     return
   end
-  if phase == "aborting" then
-    -- The field is still gone or on its way back: hold full cover until
-    -- the host confirms the restored field and starts the abort reveal.
-    self:_stepCoverUp()
-    return
-  end
-  if phase == "abort-revealing" then
-    self:_stepCoverDown()
-    if self._cover <= 0 then
-      host.notify("revealed")
-    end
-    return
-  end
   -- Leaving and active hold full cover until the constructed battle
   -- proves exact-asset readiness; the reveal then runs beside the intro.
   if self._revealingBattle then
@@ -2272,9 +2264,8 @@ end
 -- latch with its launch and track identity: whichever terminal failure
 -- comes first for the launch wins, whether it names the music role or
 -- the scene worker, and any later failure collapses without a second
--- host report. The coordinator collapses the report into its classified
--- failure path: uncommitted launches abort with the original cause,
--- committed launches keep their words.
+-- host report. The coordinator faults the runtime with the original
+-- cause.
 ---@param reason string failure context behind the report
 function FieldBattlePresentation:_failMusic(reason)
   self:_failPendingLaunch(reason)

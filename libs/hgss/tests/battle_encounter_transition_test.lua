@@ -49,7 +49,9 @@ local function fixture()
     },
   }
   local transition = BattleEncounterTransition.new({
-    manifest = manifest,
+    loadManifest = function()
+      return manifest
+    end,
     cacheFs = cacheFs,
     battleAssets = {
       requestBattleScene = function()
@@ -155,7 +157,9 @@ function T.selected_resource_failure_does_not_start_music_or_effect()
     resources = {},
   }
   local transition = BattleEncounterTransition.new({
-    manifest = manifest,
+    loadManifest = function()
+      return manifest
+    end,
     cacheFs = {
       loadLua = function()
         error("must not load an undeclared resource")
@@ -195,34 +199,36 @@ function T.partial_native_start_failure_disposes_the_effect_once()
   local disposed = 0
   local emitted = 0
   local transition = BattleEncounterTransition.new({
-    manifest = {
-      transitions = {
-        routes = { ["trainer/red"] = { role = "red-trainer-transition", resources = {} } },
-        selection = {
-          trainerClassRoutes = { RIVAL = "trainer/red" },
-          trainerClassMusicRoles = { RIVAL = "rival" },
-          trainerRules = {
-            specialBattle = {
-              preserveRoute = "trainer/red",
-              defaultRoute = "trainer/red",
-              defaultMusicRole = "trainer",
+    loadManifest = function()
+      return {
+        transitions = {
+          routes = { ["trainer/red"] = { role = "red-trainer-transition", resources = {} } },
+          selection = {
+            trainerClassRoutes = { RIVAL = "trainer/red" },
+            trainerClassMusicRoles = { RIVAL = "rival" },
+            trainerRules = {
+              specialBattle = {
+                preserveRoute = "trainer/red",
+                defaultRoute = "trainer/red",
+                defaultMusicRole = "trainer",
+                doublesRoute = "trainer/red",
+                doublesMusicRole = "trainer",
+              },
+              preserveRoutes = { "trainer/red" },
+              unknownRoute = "trainer/red",
+              unknownMusicRole = "trainer",
               doublesRoute = "trainer/red",
               doublesMusicRole = "trainer",
+              alternateTransitionRoute = "trainer/red",
+              alternateMusicRole = "trainer",
             },
-            preserveRoutes = { "trainer/red" },
-            unknownRoute = "trainer/red",
-            unknownMusicRole = "trainer",
-            doublesRoute = "trainer/red",
-            doublesMusicRole = "trainer",
-            alternateTransitionRoute = "trainer/red",
-            alternateMusicRole = "trainer",
+            wildRules = {},
+            fallbackRoutes = {},
           },
-          wildRules = {},
-          fallbackRoutes = {},
         },
-      },
-      resources = {},
-    },
+        resources = {},
+      }
+    end,
     cacheFs = {
       loadLua = function()
         error("route has no resources")
@@ -301,39 +307,41 @@ function T.generic_trainer_source_task_renders_then_completes_after_owned_sprite
     },
   }
   local transition = BattleEncounterTransition.new({
-    manifest = {
-      transitions = {
-        routes = { ["trainer/generic"] = route },
-        selection = {
-          trainerClassRoutes = { GENERIC = "trainer/generic" },
-          trainerClassMusicRoles = { GENERIC = "trainer" },
-          trainerRules = {
-            specialBattle = {
-              preserveRoute = "trainer/generic",
-              defaultRoute = "trainer/generic",
-              defaultMusicRole = "trainer",
+    loadManifest = function()
+      return {
+        transitions = {
+          routes = { ["trainer/generic"] = route },
+          selection = {
+            trainerClassRoutes = { GENERIC = "trainer/generic" },
+            trainerClassMusicRoles = { GENERIC = "trainer" },
+            trainerRules = {
+              specialBattle = {
+                preserveRoute = "trainer/generic",
+                defaultRoute = "trainer/generic",
+                defaultMusicRole = "trainer",
+                doublesRoute = "trainer/generic",
+                doublesMusicRole = "trainer",
+              },
+              preserveRoutes = { "trainer/generic" },
+              unknownRoute = "trainer/generic",
+              unknownMusicRole = "trainer",
               doublesRoute = "trainer/generic",
               doublesMusicRole = "trainer",
+              alternateTransitionRoute = "trainer/generic",
+              alternateMusicRole = "trainer",
             },
-            preserveRoutes = { "trainer/generic" },
-            unknownRoute = "trainer/generic",
-            unknownMusicRole = "trainer",
-            doublesRoute = "trainer/generic",
-            doublesMusicRole = "trainer",
-            alternateTransitionRoute = "trainer/generic",
-            alternateMusicRole = "trainer",
+            wildRules = {},
+            fallbackRoutes = {},
           },
-          wildRules = {},
-          fallbackRoutes = {},
         },
-      },
-      resources = {
-        paletteKey = { path = "palette.lua" },
-        characterKey = { path = "characters.lua" },
-        cellKey = { path = "cells.lua" },
-        animationKey = { path = "animation.lua" },
-      },
-    },
+        resources = {
+          paletteKey = { path = "palette.lua" },
+          characterKey = { path = "characters.lua" },
+          cellKey = { path = "cells.lua" },
+          animationKey = { path = "animation.lua" },
+        },
+      }
+    end,
     cacheFs = {
       loadLua = function(_, path)
         local key = ({
@@ -418,6 +426,7 @@ function T.scene_receipt_stays_pending_without_loading_and_resumes_only_when_rea
   local requested = {}
   local shouldBeReady = false
   local loads = 0
+  local manifestLoads = 0
   local started = 0
   local manifest = {
     transitions = {
@@ -453,7 +462,10 @@ function T.scene_receipt_stays_pending_without_loading_and_resumes_only_when_rea
     resources = { sprite = { path = "sprite.lua" } },
   }
   local transition = BattleEncounterTransition.new({
-    manifest = manifest,
+    loadManifest = function()
+      manifestLoads = manifestLoads + 1
+      return manifest
+    end,
     cacheFs = {
       loadLua = function()
         loads = loads + 1
@@ -493,11 +505,13 @@ function T.scene_receipt_stays_pending_without_loading_and_resumes_only_when_rea
   Assert.equal(transition:prepare(context), "pending", "unready scene receipt keeps preparation pending")
   Assert.equal(transition:status().phase, "pending", "pending scene receipt is observable")
   Assert.equal(loads, 0, "transition payload bytes are not opened before global readiness")
+  Assert.equal(manifestLoads, 0, "the staged manifest is not read before the scene publishes it")
   Assert.equal(started, 0, "pending scene does not construct or start its family")
   shouldBeReady = true
   Assert.equal(transition:prepare(context), "ready", "the selected scene resumes after global publication")
   Assert.equal(transition:start(), "running", "ready scene starts once")
   Assert.equal(loads, 1, "selected payload bytes load only after the ready receipt")
+  Assert.equal(manifestLoads, 1, "the staged manifest is read once after the ready receipt")
   Assert.equal(started, 1, "native task starts only after complete publication")
   Assert.deepEqual(requested, {
     { sceneKey = "general/plain/day", urgency = "required" },
@@ -538,7 +552,9 @@ function T.scene_receipt_failure_is_terminal_without_loading_or_starting()
     resources = { sprite = { path = "sprite.lua" } },
   }
   local transition = BattleEncounterTransition.new({
-    manifest = manifest,
+    loadManifest = function()
+      return manifest
+    end,
     cacheFs = {
       loadLua = function()
         loads = loads + 1
@@ -619,7 +635,9 @@ function T.effect_init_emits_music_before_ticks_done_and_unload_exactly_once()
     resources = { sprite = { path = "sprite.lua" } },
   }
   local transition = BattleEncounterTransition.new({
-    manifest = manifest,
+    loadManifest = function()
+      return manifest
+    end,
     cacheFs = {
       loadLua = function(_, path)
         events[#events + 1] = "resource:" .. tostring(path)

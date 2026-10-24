@@ -1218,19 +1218,18 @@ local function driveLaunchToPhase(runtime, envelope, wanted, budget)
   error("the launch never reached " .. wanted .. " within its tick budget", 0)
 end
 
--- A lost renderer before mechanics commit restores the live field before
--- publishing anything: the launch survives the fault, the world restores
--- exactly once from absence, the cover reveals, and only then does a
--- failed receipt carrying the original error reach scripts and saves. No
--- battle outcome is invented and the prior result stands.
-function T.failed_screen_before_commit_restores_the_field_without_a_result()
+-- A lost renderer is a bug, never a recoverable battle outcome: wherever
+-- it lands, before or after mechanics commit, the next pump faults the
+-- runtime with the original screen error instead of quietly restoring
+-- the field.
+function T.failed_screen_faults_the_runtime()
   for _, versionId in ipairs(readyVersions()) do
-    for _, point in ipairs({ "covering", "leaving", "active" }) do
+    for _, point in ipairs({ "covering", "leaving", "active", "terminal" }) do
       local runtime = bootRuntime(versionId)
       local envelope, binding, _ =
         bindEnvelope(runtime, versionId, dualMeasurement("lost-renderer-precommit:" .. point))
       local ok, failure = xpcall(function()
-        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+        runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
         -- Host-only updates never advance a presented launch: presence
         -- holds, nothing constructs, and cover stays down.
         for _ = 1, 10 do
@@ -1260,427 +1259,23 @@ function T.failed_screen_before_commit_restores_the_field_without_a_result()
             phaseBefore,
             "host updates never advance the owned battle clock"
           )
+        elseif point == "terminal" then
+          driveLaunchToPhase(runtime, envelope, "terminal", 2400)
         else
           Assert.equal(runtime.overworld:phase(), "present", "the covering fault lands before the world leaves")
         end
-        local restorePhases = {}
-        local overworld = runtime.overworld
-        local realRestore = overworld.requestRestore
-        overworld.requestRestore = function(self)
-          restorePhases[#restorePhases + 1] = overworld:phase()
-          return realRestore(self)
-        end
         failLiveScreen(envelope, "probe render failure at " .. point)
-        runtime:update(SourceTick.DT)
-        envelope:updateFixed(TICK)
-        Assert.notNil(
-          runtime.battleCoordinator._battleLaunch,
-          "the launch survives a precommit renderer fault at " .. point
-        )
-        local _, busyReason = runtime.saveCoordinator:capture(false)
-        Assert.notNil(busyReason, "the save gate stays closed before the field returns at " .. point)
-        local ticks = 0
-        while runtime.battleCoordinator._battleLaunch ~= nil and ticks < 900 do
-          runtime:update(SourceTick.DT)
-          envelope:updateFixed(TICK)
-          ticks = ticks + 1
-        end
-        Assert.isNil(runtime.battleCoordinator._battleLaunch, "the abort settles at " .. point)
-        local status = assert(runtime:battleStatus(launchId), "the failed launch leaves a receipt at " .. point)
-        Assert.equal(status.phase, "failed", "the abort publishes a failed receipt at " .. point)
-        Assert.isFalse(status.committed, "the abort commits nothing at " .. point)
-        Assert.isNil(status.result, "the abort invents no outcome at " .. point)
-        Assert.isTrue(
-          type(status.error) == "string" and status.error:find("probe render failure at " .. point, 1, true) ~= nil,
-          "the abort keeps the original error at " .. point
-        )
-        Assert.isNil(runtime:lastBattleResult(), "the abort publishes no battle result at " .. point)
-        Assert.equal(runtime.overworld:phase(), "present", "the abort restores presence at " .. point)
-        Assert.equal(envelope:cover().coefficient, 0, "the abort reveals before publishing at " .. point)
-        -- The launch-side gate opens at publication; the capture itself
-        -- additionally waits on ordinary session stability (map entry),
-        -- so settle the session before demanding a snapshot.
-        local settled = 0
-        while settled < 300 do
-          local _, reason = runtime.saveCoordinator:capture(false)
-          if reason == nil then
-            break
+        local survived, raised = pcall(function()
+          for _ = 1, 10 do
+            runtime:update(SourceTick.DT)
+            envelope:updateFixed(TICK)
           end
-          runtime:update(SourceTick.DT)
-          envelope:updateFixed(TICK)
-          settled = settled + 1
-        end
-        local _, openReason = runtime.saveCoordinator:capture(false)
-        Assert.isNil(openReason, "the save gate opens at the restored field at " .. point)
-        Assert.isNil(runtime.battleCoordinator.battleRuntime, "the abort releases the uncommitted battle at " .. point)
-        Assert.isNil(envelope:liveScreen(), "the abort releases the failed screen at " .. point)
-        if point == "covering" then
-          Assert.equal(#restorePhases, 0, "a fault before departure restores nothing")
-        else
-          Assert.equal(#restorePhases, 1, "the abort restores exactly once at " .. point)
-          Assert.equal(restorePhases[1], "absent", "restoration starts from absence at " .. point)
-        end
-        runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "second probe failure")
-        runtime.battleCoordinator:_presentedNotify("stale-launch#0", "screen-failed", "stale probe failure")
-        local settled = assert(runtime:battleStatus(launchId), "the receipt survives duplicate faults at " .. point)
-        Assert.equal(settled.phase, "failed", "duplicates keep the single failed receipt at " .. point)
-        Assert.isTrue(
-          type(settled.error) == "string" and settled.error:find("probe render failure at " .. point, 1, true) ~= nil,
-          "duplicates keep the original error at " .. point
-        )
-        overworld.requestRestore = realRestore
-      end, debug.traceback)
-      local unbound = pcall(function()
-        runtime:unbindBattlePresentation(binding)
-      end)
-      local closed = pcall(function()
-        runtime:dispose()
-      end)
-      if not ok then
-        error(failure, 0)
-      end
-      Assert.isTrue(unbound, "the lifetime releases its factory binding")
-      Assert.isTrue(closed, "teardown releases the presented lifetime")
-    end
-  end
-end
-
--- A lost renderer after mechanics commit keeps the committed win: the
--- original words and experience publish exactly once through the normal
--- covered return, whether the fault lands under terminal cover, during
--- restoration, or mid-reveal. The return never waits on the lost screen
--- and never runs mechanics twice.
-function T.committed_win_survives_a_lost_renderer_through_cover_and_reveal()
-  for _, versionId in ipairs(readyVersions()) do
-    for _, landmark in ipairs({ "terminal", "restoring", "revealing" }) do
-      local runtime = bootRuntime(versionId)
-      local envelope, binding, _ =
-        bindEnvelope(runtime, versionId, dualMeasurement("lost-renderer-committed:" .. landmark))
-      local ok, failure = xpcall(function()
-        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-        waitConstructed(runtime, envelope)
-        local restores = 0
-        local overworld = runtime.overworld
-        local realRestore = overworld.requestRestore
-        overworld.requestRestore = function(self)
-          restores = restores + 1
-          return realRestore(self)
-        end
-        local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
-        driveLaunchToPhase(runtime, envelope, landmark, 8000)
-        local battleUpdates = 0
-        local battle = runtime.battleCoordinator.battleRuntime
-        if battle ~= nil then
-          local realUpdate = battle.update
-          battle.update = function(self)
-            battleUpdates = battleUpdates + 1
-            return realUpdate(self)
-          end
-        end
-        local notifications = 0
-        local realNotify = runtime.battleCoordinator._presentedNotify
-        runtime.battleCoordinator._presentedNotify = function(self, id, event, detail)
-          if event == "screen-failed" then
-            notifications = notifications + 1
-          end
-          return realNotify(self, id, event, detail)
-        end
-        Assert.notNil(envelope._descriptor, "the envelope holds its descriptor before the fault at " .. landmark)
-        -- Under terminal cover the screen is still live; past it the
-        -- terminal teardown already released the screen, so later faults
-        -- arrive through the same handoff as cover-side failures.
-        if landmark == "terminal" then
-          failLiveScreen(envelope, "probe render failure at " .. landmark)
-        else
-          Assert.isNil(envelope:liveScreen(), "the terminal teardown released the screen before " .. landmark)
-          runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "probe render failure at " .. landmark)
-        end
-        local ticks = 0
-        while runtime.battleCoordinator._battleLaunch ~= nil and ticks < 900 do
-          runtime:update(SourceTick.DT)
-          envelope:updateFixed(TICK)
-          ticks = ticks + 1
-        end
-        Assert.isNil(runtime.battleCoordinator._battleLaunch, "the committed return settles at " .. landmark)
-        Assert.isNil(
-          runtime.battleCoordinator.battleRuntime,
-          "the committed return releases the battle at " .. landmark
-        )
-        local status = assert(runtime:battleStatus(launchId), "the committed launch leaves a receipt at " .. landmark)
-        Assert.isTrue(status.committed, "the committed receipt stays committed at " .. landmark)
-        Assert.equal(status.result, "win", "the committed win keeps its word at " .. landmark)
-        Assert.equal(runtime:lastBattleResult().result, "win", "the win reports its word at " .. landmark)
-        Assert.isTrue(
-          runtime.monService:partyMon(0).experience > experienceBefore,
-          "the win publishes experience at " .. landmark
-        )
-        local settledExperience = runtime.monService:partyMon(0).experience
-        local settledMoney = runtime.playerData.profile.money
-        pump(runtime, envelope, 30)
-        Assert.equal(
-          runtime.monService:partyMon(0).experience,
-          settledExperience,
-          "experience publishes once at " .. landmark
-        )
-        Assert.equal(runtime.playerData.profile.money, settledMoney, "settling publishes no second effect")
-        Assert.equal(restores, 1, "the committed return restores exactly once at " .. landmark)
-        Assert.equal(notifications, 1, "the lost renderer notifies exactly once at " .. landmark)
-        Assert.equal(battleUpdates, 0, "the committed battle never reruns at " .. landmark)
-        Assert.equal(runtime.overworld:phase(), "present", "the return restores presence at " .. landmark)
-        Assert.equal(envelope:cover().coefficient, 0, "the return reveals at " .. landmark)
-        local _, openReason = runtime.saveCoordinator:capture(false)
-        Assert.isNil(openReason, "the save gate opens at the safe field at " .. landmark)
-        runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "second probe failure")
-        local again = assert(runtime:battleStatus(launchId), "the receipt survives a duplicate fault at " .. landmark)
-        Assert.equal(again.result, "win", "a duplicate fault keeps the win at " .. landmark)
-        Assert.isTrue(again.committed, "a duplicate fault keeps the commit at " .. landmark)
-        overworld.requestRestore = realRestore
-        runtime.battleCoordinator._presentedNotify = realNotify
-      end, debug.traceback)
-      local unbound = pcall(function()
-        runtime:unbindBattlePresentation(binding)
-      end)
-      local closed = pcall(function()
-        runtime:dispose()
-      end)
-      if not ok then
-        error(failure, 0)
-      end
-      Assert.isTrue(unbound, "the lifetime releases its factory binding")
-      Assert.isTrue(closed, "teardown releases the presented lifetime")
-    end
-  end
-end
-
--- A lost renderer never rewrites defeat: automatic losses still run the
--- existing recovery exactly once, scripted losses still transfer while
--- absent, and an unrecoverable world stays explicitly terminal instead of
--- turning saveable.
-function T.defeat_and_unrecoverable_field_keep_their_return_when_the_renderer_is_lost()
-  for _, versionId in ipairs(readyVersions()) do
-    do
-      local runtime = bootRuntime(versionId)
-      local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("lost-renderer-auto-loss:dual"))
-      local ok, failure = xpcall(function()
-        local blackout = assert(runtime.blackoutFlow, "the runtime composes its recovery flow")
-        local recoveries = 0
-        local realStart = blackout.start
-        blackout.start = function(self, spawnKey)
-          recoveries = recoveries + 1
-          return realStart(self, spawnKey)
-        end
-        local moneyAtLoss = runtime.playerData.profile.money
-        runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 30 } })
-        waitConstructed(runtime, envelope)
-        driveLaunchToPhase(runtime, envelope, "terminal", 15000)
-        Assert.equal(runtime.battleCoordinator._battleLaunch.result, "loss", "the defeat reaches terminal as a loss")
-        failLiveScreen(envelope, "probe render failure before terminal cover")
-        local ticks = 0
-        while runtime.overworld:phase() ~= "present" and ticks < 1500 do
-          runtime:update(SourceTick.DT)
-          envelope:updateFixed(TICK)
-          local launch = runtime.battleCoordinator._battleLaunch
-          if launch ~= nil and launch.phase == "recovering" then
-            envelope:input({ { type = "confirm" } })
-          end
-          ticks = ticks + 1
-        end
-        blackout.start = realStart
-        Assert.equal(recoveries, 1, "automatic defeat runs the existing recovery exactly once")
-        Assert.equal(runtime.overworld:phase(), "present", "the recovery returns to the live field")
-        Assert.equal(runtime:lastBattleResult().result, "loss", "the automatic loss keeps its word")
-        Assert.isTrue(runtime.playerData.profile.money < moneyAtLoss, "the defeat debits once")
-        local settledMoney = runtime.playerData.profile.money
-        pump(runtime, envelope, 30)
-        Assert.equal(runtime.playerData.profile.money, settledMoney, "settling debits nothing twice")
-        local _, openReason = runtime.saveCoordinator:capture(false)
-        Assert.isNil(openReason, "the save gate opens at the safe field")
-      end, debug.traceback)
-      local unbound = pcall(function()
-        runtime:unbindBattlePresentation(binding)
-      end)
-      local closed = pcall(function()
-        runtime:dispose()
-      end)
-      if not ok then
-        error(failure, 0)
-      end
-      Assert.isTrue(unbound, "the lifetime releases its factory binding")
-      Assert.isTrue(closed, "teardown releases the presented lifetime")
-    end
-    do
-      local runtime = bootRuntime(versionId)
-      local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("lost-renderer-scripted-loss:dual"))
-      local ok, failure = xpcall(function()
-        local blackout = assert(runtime.blackoutFlow, "the runtime composes its recovery flow")
-        local recoveries = 0
-        local realStart = blackout.start
-        blackout.start = function(self, spawnKey)
-          recoveries = recoveries + 1
-          return realStart(self, spawnKey)
-        end
-        local launchId
-        local done, launchErr = pcall(function()
-          launchId = runtime._battleHost:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 30 } })
         end)
-        Assert.isTrue(done, "the script host launches: " .. tostring(launchErr))
-        waitConstructed(runtime, envelope)
-        driveLaunchToPhase(runtime, envelope, "terminal", 15000)
-        failLiveScreen(envelope, "probe render failure before scripted cover")
-        pump(runtime, envelope, 90)
-        blackout.start = realStart
-        Assert.equal(recoveries, 0, "scripted defeat starts no automatic recovery")
-        local launch = runtime.battleCoordinator._battleLaunch
-        Assert.notNil(launch, "scripted defeat keeps its launch for the authored continuation")
-        Assert.equal(launch.phase, "transfer", "scripted defeat transfers while absent")
-        Assert.equal(runtime.overworld:phase(), "absent", "scripted defeat holds cover while absent")
-        local status = runtime:battleStatus(launchId)
-        Assert.isTrue(status ~= nil and status.committed, "the receipt reaches the launching task while absent")
-        Assert.equal(status.result, "loss", "the scripted loss keeps its word")
-      end, debug.traceback)
-      local unbound = pcall(function()
-        runtime:unbindBattlePresentation(binding)
-      end)
-      local closed = pcall(function()
-        runtime:dispose()
-      end)
-      if not ok then
-        error(failure, 0)
-      end
-      Assert.isTrue(unbound, "the lifetime releases its factory binding")
-      Assert.isTrue(closed, "teardown releases the presented lifetime")
-    end
-    do
-      local runtime = bootRuntime(versionId)
-      local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("lost-renderer-world-loss:dual"))
-      local ok, failure = xpcall(function()
-        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-        waitConstructed(runtime, envelope)
-        failLiveScreen(envelope, "probe render failure before world collapse")
-        pump(runtime, envelope, 5)
-        Assert.notNil(runtime.battleCoordinator._battleLaunch, "the abort keeps its launch while restoring")
-        runtime.overworld:fail("probe world collapse")
-        pump(runtime, envelope, 30)
-        local status = assert(runtime:battleStatus(launchId), "the failed world leaves a receipt")
-        Assert.equal(status.phase, "failed", "the unrecoverable world stays explicitly terminal")
-        Assert.notNil(runtime.battleCoordinator._battleLaunch, "the unrecoverable world keeps the launch held")
-        Assert.equal(runtime.overworld:phase(), "failed", "the world reports its failure")
-        local _, busyReason = runtime.saveCoordinator:capture(false)
-        Assert.notNil(busyReason, "the unrecoverable world stays unsaveable")
-      end, debug.traceback)
-      local unbound = pcall(function()
-        runtime:unbindBattlePresentation(binding)
-      end)
-      local closed = pcall(function()
-        runtime:dispose()
-      end)
-      if not ok then
-        error(failure, 0)
-      end
-      Assert.isTrue(unbound, "the lifetime releases its factory binding")
-      Assert.isTrue(closed, "teardown releases the presented lifetime")
-    end
-  end
-end
-
--- The renderer-fault notification is the single handoff for a lost
--- screen: it classifies the committed receipt, keeps the launch and its
--- cover until the safe field, and collapses repeats and stale identities.
-function T.lost_renderer_handoff_keeps_the_launch_until_the_safe_field()
-  for _, versionId in ipairs(readyVersions()) do
-    do
-      local runtime = bootRuntime(versionId)
-      local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("lost-renderer-handoff:dual"))
-      local ok, failure = xpcall(function()
-        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-        waitConstructed(runtime, envelope)
-        runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "probe direct precommit fault")
-        Assert.notNil(runtime.battleCoordinator._battleLaunch, "the handoff keeps the launch")
-        Assert.equal(
-          runtime.battleCoordinator._battleLaunch.phase,
-          "aborting",
-          "the handoff parks the launch in its abort"
-        )
-        runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "second probe fault")
-        runtime.battleCoordinator:_presentedNotify("stale-launch#0", "screen-failed", "stale probe fault")
-        -- Disposing the uncommitted battle already released the screen
-        -- through its port; the envelope keeps the descriptor and cover.
-        Assert.isNil(envelope:liveScreen(), "the parked abort released the screen once")
-        Assert.notNil(envelope._descriptor, "the envelope keeps its descriptor through the abort")
-        local ticks = 0
-        while runtime.battleCoordinator._battleLaunch ~= nil and ticks < 900 do
-          runtime:update(SourceTick.DT)
-          envelope:updateFixed(TICK)
-          ticks = ticks + 1
-        end
-        Assert.isNil(runtime.battleCoordinator._battleLaunch, "the parked abort settles")
-        local status = assert(runtime:battleStatus(launchId), "the parked abort leaves a receipt")
-        Assert.equal(status.phase, "failed", "the parked abort publishes a failed receipt")
-        Assert.isFalse(status.committed, "the parked abort commits nothing")
+        Assert.isFalse(survived, "a lost renderer faults the runtime at " .. point)
         Assert.isTrue(
-          type(status.error) == "string" and status.error:find("probe direct precommit fault", 1, true) ~= nil,
-          "the first fault wins the receipt"
+          tostring(raised):find("probe render failure at " .. point, 1, true) ~= nil,
+          "the fault carries the original screen error at " .. point .. ": " .. tostring(raised)
         )
-        Assert.equal(runtime.overworld:phase(), "present", "the parked abort restores presence")
-        Assert.equal(envelope:cover().coefficient, 0, "the parked abort reveals")
-        local _, openReason = runtime.saveCoordinator:capture(false)
-        Assert.isNil(openReason, "the save gate opens at the restored field")
-      end, debug.traceback)
-      local unbound = pcall(function()
-        runtime:unbindBattlePresentation(binding)
-      end)
-      local closed = pcall(function()
-        runtime:dispose()
-      end)
-      if not ok then
-        error(failure, 0)
-      end
-      Assert.isTrue(unbound, "the lifetime releases its factory binding")
-      Assert.isTrue(closed, "teardown releases the presented lifetime")
-    end
-    do
-      local runtime = bootRuntime(versionId)
-      local envelope, binding, _ =
-        bindEnvelope(runtime, versionId, dualMeasurement("lost-renderer-handoff-committed:dual"))
-      local ok, failure = xpcall(function()
-        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-        waitConstructed(runtime, envelope)
-        local battle = assert(runtime.battleCoordinator.battleRuntime, "the handoff classifies a live battle")
-        local liveMoney = runtime.playerData.profile.money
-        local realStatus = battle.status
-        battle.status = function(self)
-          local current = realStatus(self)
-          current.phase = "returning"
-          current.result = "win"
-          current.sourceResult = 1
-          current.outcomeReceipt = { committed = true, player = { profile = { money = liveMoney + 500 } } }
-          return current
-        end
-        runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "probe direct committed fault")
-        battle.status = nil
-        Assert.equal(
-          runtime.battleCoordinator._battleLaunch.phase,
-          "terminal",
-          "the handoff continues a committed battle"
-        )
-        Assert.equal(runtime.battleCoordinator._battleLaunch.result, "win", "the handoff keeps the committed words")
-        failLiveScreen(envelope, "probe render failure on the committed return")
-        local ticks = 0
-        while runtime.battleCoordinator._battleLaunch ~= nil and ticks < 900 do
-          runtime:update(SourceTick.DT)
-          envelope:updateFixed(TICK)
-          ticks = ticks + 1
-        end
-        Assert.isNil(runtime.battleCoordinator._battleLaunch, "the committed handoff settles")
-        local status = assert(runtime:battleStatus(launchId), "the committed handoff leaves a receipt")
-        Assert.isTrue(status.committed, "the committed handoff stays committed")
-        Assert.equal(status.result, "win", "the committed handoff keeps the win")
-        Assert.equal(runtime.playerData.profile.money, liveMoney + 500, "the committed handoff adopts the receipt once")
-        pump(runtime, envelope, 30)
-        Assert.equal(runtime.playerData.profile.money, liveMoney + 500, "settling adopts no second prize")
-        Assert.equal(runtime.overworld:phase(), "present", "the committed handoff restores presence")
-        local _, openReason = runtime.saveCoordinator:capture(false)
-        Assert.isNil(openReason, "the save gate opens at the safe field")
       end, debug.traceback)
       local unbound = pcall(function()
         runtime:unbindBattlePresentation(binding)
@@ -2803,12 +2398,11 @@ function T.presented_win_carries_every_phase_assertion()
   end
 end
 
--- Explicit draws stay stable and genuine render failures reach the host:
--- repeated draws paint the same frame with no cues or semantic advance,
--- updates between draws add no paint, and a throwing window renderer
--- marks the screen so the next tick releases it while later updates
--- stay mute.
-function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host()
+-- Explicit draws stay stable and genuine render failures fault the
+-- runtime: repeated draws paint the same frame with no cues or semantic
+-- advance, updates between draws add no paint, and a throwing window
+-- renderer marks the screen so the next tick raises its original error.
+function T.explicit_draws_stay_stable_and_render_failures_fault_the_runtime()
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
     local envelope, binding, doubles =
@@ -2859,15 +2453,16 @@ function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host
       Assert.isTrue(envelope:drawBattle({ graphics = spy }), "the failing draw still reaches the live screen")
       local failed = assert(envelope:liveScreen(), "the failed screen stays observable for its handoff")
       Assert.equal(failed:status().mode, "failed", "a genuine render failure marks the screen")
-      envelope:updateFixed(SourceTick.DT)
-      Assert.isNil(envelope:liveScreen(), "the next tick releases the failed screen to its host")
-      Assert.notNil(runtime.battleCoordinator._battleLaunch, "the launch survives for the safe return")
-      local texts, frames = #doubles.text.draws, #doubles.windows.calls
-      for _ = 1, 3 do
-        envelope:updateFixed(SourceTick.DT)
-      end
-      Assert.equal(#doubles.text.draws, texts, "updates after the failure paint nothing further")
-      Assert.equal(#doubles.windows.calls, frames, "updates after the failure frame nothing further")
+      local survived, raised = pcall(function()
+        for _ = 1, 3 do
+          envelope:updateFixed(SourceTick.DT)
+        end
+      end)
+      Assert.isFalse(survived, "the render failure faults the runtime")
+      Assert.isTrue(
+        tostring(raised):find("probe window failure", 1, true) ~= nil,
+        "the fault carries the original render error: " .. tostring(raised)
+      )
     end, debug.traceback)
     local unbound = pcall(function()
       runtime:unbindBattlePresentation(binding)
@@ -3276,14 +2871,11 @@ function T.scheduled_escape_and_capture_complete_with_fresh_identities()
   end
 end
 
--- Deferred pre-commit faults abort safely with their original cause: a
--- construction failure, an asset-upload failure, a port-present
--- exception, and a draw failure each settle exactly one safe abort
--- restoration and publish one uncommitted failed receipt carrying the
--- original failure, never an invented outcome. The abort is observed
--- through the restored present field and its receipt, never through a
--- bare flag while the world stays absent.
-function T.scheduled_precommit_faults_abort_with_their_original_cause()
+-- Deferred pre-commit faults fault the runtime with their original cause:
+-- a construction failure, an asset-upload failure, a port-present
+-- exception, and a draw failure each raise through the field update
+-- instead of quietly restoring the field.
+function T.scheduled_precommit_faults_raise_their_original_cause()
   local points = { "construction", "upload", "present", "draw" }
   for _, versionId in ipairs(readyVersions()) do
     for _, point in ipairs(points) do
@@ -3292,7 +2884,7 @@ function T.scheduled_precommit_faults_abort_with_their_original_cause()
       if point == "upload" then
         graphics = {}
         function graphics.newImage(_)
-          error("probe upload failure at active", 0)
+          error("probe upload failure", 0)
         end
       end
       local envelope, binding, _ =
@@ -3300,237 +2892,33 @@ function T.scheduled_precommit_faults_abort_with_their_original_cause()
       local ScreenState = require("game.hgss.src.battle.BattleScreenState")
       local realNew = ScreenState.new
       if point == "construction" then
-        local failed = false
-        ScreenState.new = function(opts)
-          if not failed then
-            failed = true
-            error("probe construction failure at covering", 0)
-          end
-          return realNew(opts)
+        ScreenState.new = function(_)
+          error("probe construction failure", 0)
         end
       end
       local ok, failure = xpcall(function()
-        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-        local overworld = runtime.overworld
-        local realRestore = overworld.requestRestore
-        local restores = 0
-        overworld.requestRestore = function(self)
-          restores = restores + 1
-          return realRestore(self)
-        end
-        if point == "construction" then
-          pump(runtime, envelope, 5)
-          Assert.isNil(envelope:liveScreen(), "the failed build owns no screen")
-          Assert.equal(runtime.overworld:phase(), "present", "the build fault lands before the world leaves")
-        elseif point == "upload" then
-          -- The genuine upload failure latches on the first screen tick,
-          -- deterministically before cover completes, so the abort runs
-          -- while the world never left.
-          pump(runtime, envelope, 5)
-          Assert.equal(runtime.overworld:phase(), "present", "the upload fault lands before the world leaves")
-        else
+        runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+        if point == "present" or point == "draw" then
           waitConstructed(runtime, envelope)
-          Assert.equal(runtime.overworld:phase(), "absent", "the fault lands while the world is absent")
           if point == "present" then
             local inner = assert(envelope._innerPort, "the live launch owns its inner port before the fault")
-            local realPresent = assert(inner.present, "the inner port presents")
-            local sent = 0
-            inner.present = function(packet)
-              sent = sent + 1
-              if sent == 1 then
-                error("probe present failure at active", 0)
-              end
-              return realPresent(packet)
+            inner.present = function(_)
+              error("probe present failure", 0)
             end
-            -- The exception must enter recovery instead of playing on:
-            -- drive turns until the abort shows, naming a swallowed
-            -- delivery by the phase it strands in instead.
-            local abortedAt = nil
-            for _ = 1, 400 do
-              local live = runtime.battleCoordinator._battleLaunch
-              if live == nil then
-                abortedAt = "failed"
-                break
-              end
-              if live.phase == "aborting" or live.phase == "abort-revealing" or live.phase == "failed" then
-                abortedAt = live.phase
-                break
-              end
-              local battle = runtime.battleCoordinator.battleRuntime
-              if battle ~= nil then
-                local current = battle:status()
-                if current.phase == "running" and current.request ~= nil then
-                  local answer = sparringChoose(runtime, current.request)
-                  local choices = answer
-                  if type(answer) == "table" and answer.kind ~= nil then
-                    choices = { answer }
-                  end
-                  battle:submit(SessionFixture.replyFor(current.request, choices))
-                end
-              end
-              local screen = envelope:liveScreen()
-              if screen ~= nil then
-                local shown = screen:status()
-                if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
-                  envelope:input({ { type = "confirm" } })
-                end
-              end
-              runtime:update(1 / 30)
-              envelope:updateFixed(TICK)
-            end
-            local stuck = runtime.battleCoordinator._battleLaunch
-            Assert.isTrue(
-              abortedAt ~= nil,
-              "the port-present exception enters recovery instead of playing on to "
-                .. (stuck ~= nil and tostring(stuck.phase) or "settlement")
-            )
-          elseif point == "draw" then
-            failLiveScreen(envelope, "probe draw failure at active")
+          else
+            failLiveScreen(envelope, "probe draw failure")
           end
         end
-        driveToSettled(runtime, envelope, function(request)
+        local survived, raised = pcall(driveToSettled, runtime, envelope, function(request)
           return sparringChoose(runtime, request)
         end, 1200)
-        Assert.isNil(runtime.battleCoordinator._battleLaunch, "the abort settles at " .. point)
-        local status = assert(runtime:battleStatus(launchId), "the failed launch leaves a receipt at " .. point)
-        Assert.equal(status.phase, "failed", "the abort publishes a failed receipt at " .. point)
-        Assert.isFalse(status.committed, "the abort commits nothing at " .. point)
-        Assert.isNil(status.result, "the abort invents no outcome at " .. point)
+        Assert.isFalse(survived, "the " .. point .. " fault faults the runtime")
         Assert.isTrue(
-          type(status.error) == "string" and status.error:find("probe", 1, true) ~= nil,
-          "the abort keeps the original error at " .. point .. ": " .. tostring(status.error)
+          tostring(raised):find("probe " .. point .. " failure", 1, true) ~= nil,
+          "the fault carries its original cause at " .. point .. ": " .. tostring(raised)
         )
-        Assert.isNil(runtime:lastBattleResult(), "the abort publishes no battle result at " .. point)
-        Assert.equal(runtime.overworld:phase(), "present", "the abort restores presence at " .. point)
-        Assert.equal(envelope:cover().coefficient, 0, "the abort reveals before publishing at " .. point)
-        Assert.isNil(runtime.battleCoordinator.battleRuntime, "the abort releases the battle at " .. point)
-        Assert.isNil(envelope:liveScreen(), "the abort releases the screen at " .. point)
-        if point == "construction" or point == "upload" then
-          Assert.equal(restores, 0, "a fault before departure restores nothing")
-        else
-          Assert.equal(restores, 1, "the abort restores exactly once at " .. point)
-        end
-        local settled = 0
-        while settled < 300 do
-          local _, reason = runtime.saveCoordinator:capture(false)
-          if reason == nil then
-            break
-          end
-          runtime:update(1 / 30)
-          envelope:updateFixed(TICK)
-          settled = settled + 1
-        end
-        local _, openReason = runtime.saveCoordinator:capture(false)
-        Assert.isNil(openReason, "the save gate opens at the restored field at " .. point)
-        runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "second probe failure")
-        local again = assert(runtime:battleStatus(launchId), "the receipt survives a duplicate fault")
-        Assert.equal(again.phase, "failed", "a duplicate fault keeps the single failed receipt")
-        Assert.isTrue(
-          type(again.error) == "string" and again.error:find("probe", 1, true) ~= nil,
-          "a duplicate fault keeps the original error"
-        )
-        overworld.requestRestore = realRestore
       end, debug.traceback)
       ScreenState.new = realNew
-      local unbound = pcall(function()
-        runtime:unbindBattlePresentation(binding)
-      end)
-      local closed = pcall(function()
-        runtime:dispose()
-      end)
-      if not ok then
-        error(failure, 0)
-      end
-      Assert.isTrue(unbound, "the lifetime releases its factory binding")
-      Assert.isTrue(closed, "teardown releases the presented lifetime")
-    end
-  end
-end
-
--- Deferred committed faults keep the committed return: a lost renderer
--- after mechanics commit but before terminal cover, and one after
--- terminal cover while the inner screen is disposed, both preserve the
--- same committed words with exactly-once wallet and party effects
--- through the normal covered return. The return never waits on the
--- lost screen and never reruns mechanics.
-function T.scheduled_committed_faults_keep_the_committed_return()
-  for _, versionId in ipairs(readyVersions()) do
-    for _, timing in ipairs({ "terminal", "restoring" }) do
-      local runtime = bootRuntime(versionId)
-      local envelope, binding, _ =
-        bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-committed:" .. timing))
-      local ok, failure = xpcall(function()
-        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-        waitConstructed(runtime, envelope)
-        local overworld = runtime.overworld
-        local realRestore = overworld.requestRestore
-        local restores = 0
-        overworld.requestRestore = function(self)
-          restores = restores + 1
-          return realRestore(self)
-        end
-        local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
-        driveLaunchToPhase(runtime, envelope, timing, 8000)
-        local battleUpdates = 0
-        local battle = runtime.battleCoordinator.battleRuntime
-        if battle ~= nil then
-          local realUpdate = battle.update
-          battle.update = function(self)
-            battleUpdates = battleUpdates + 1
-            return realUpdate(self)
-          end
-        end
-        local notifications = 0
-        local coordinator = runtime.battleCoordinator
-        local realNotify = coordinator._presentedNotify
-        coordinator._presentedNotify = function(self, id, event, detail)
-          if event == "screen-failed" then
-            notifications = notifications + 1
-          end
-          return realNotify(self, id, event, detail)
-        end
-        if timing == "terminal" then
-          failLiveScreen(envelope, "probe render failure at terminal")
-        else
-          Assert.isNil(envelope:liveScreen(), "the terminal teardown released the screen before restoring")
-          coordinator:_presentedNotify(launchId, "screen-failed", "probe render failure at restoring")
-        end
-        driveToSettled(runtime, envelope, function(request)
-          return sparringChoose(runtime, request)
-        end, 1200)
-        Assert.isNil(runtime.battleCoordinator._battleLaunch, "the committed return settles at " .. timing)
-        Assert.isNil(runtime.battleCoordinator.battleRuntime, "the committed return releases the battle at " .. timing)
-        local status = assert(runtime:battleStatus(launchId), "the committed launch leaves a receipt")
-        Assert.isTrue(status.committed, "the committed receipt stays committed at " .. timing)
-        Assert.equal(status.result, "win", "the committed win keeps its word at " .. timing)
-        Assert.equal(runtime:lastBattleResult().result, "win", "the win reports its word at " .. timing)
-        Assert.isTrue(
-          runtime.monService:partyMon(0).experience > experienceBefore,
-          "the win publishes experience at " .. timing
-        )
-        local settledExperience = runtime.monService:partyMon(0).experience
-        local settledMoney = runtime.playerData.profile.money
-        pump(runtime, envelope, 30)
-        Assert.equal(
-          runtime.monService:partyMon(0).experience,
-          settledExperience,
-          "experience publishes once at " .. timing
-        )
-        Assert.equal(runtime.playerData.profile.money, settledMoney, "settling publishes no second effect")
-        Assert.equal(restores, 1, "the committed return restores exactly once at " .. timing)
-        Assert.equal(notifications, 1, "the lost renderer notifies exactly once at " .. timing)
-        Assert.equal(battleUpdates, 0, "the committed battle never reruns at " .. timing)
-        Assert.equal(runtime.overworld:phase(), "present", "the return restores presence at " .. timing)
-        Assert.equal(envelope:cover().coefficient, 0, "the return reveals at " .. timing)
-        local _, openReason = runtime.saveCoordinator:capture(false)
-        Assert.isNil(openReason, "the save gate opens at the safe field at " .. timing)
-        coordinator:_presentedNotify(launchId, "screen-failed", "second probe failure")
-        local again = assert(runtime:battleStatus(launchId), "the receipt survives a duplicate fault")
-        Assert.equal(again.result, "win", "a duplicate fault keeps the win at " .. timing)
-        Assert.isTrue(again.committed, "a duplicate fault keeps the commit at " .. timing)
-        overworld.requestRestore = realRestore
-        coordinator._presentedNotify = realNotify
-      end, debug.traceback)
       local unbound = pcall(function()
         runtime:unbindBattlePresentation(binding)
       end)
@@ -3670,13 +3058,10 @@ function T.scheduled_losses_keep_their_authored_and_automatic_returns()
   end
 end
 
--- A deferred unrecoverable restore stays explicitly terminal and a quit
--- during a pending build publishes nothing late: forcing the world to
--- fail under an abort keeps the failed receipt, the held launch, and a
--- closed save gate with no invented outcome; quitting before the scene
--- stages builds no screen afterwards and disposes the pending port
--- safely.
-function T.scheduled_unrecoverable_restore_and_pending_quit_fail_explicitly()
+-- A quit during a pending build publishes nothing late: quitting before
+-- the scene stages builds no screen afterwards and disposes the pending
+-- port safely.
+function T.scheduled_pending_quit_builds_nothing_late()
   for _, versionId in ipairs(readyVersions()) do
     do
       local runtime = bootRuntime(versionId)
@@ -3715,42 +3100,6 @@ function T.scheduled_unrecoverable_restore_and_pending_quit_fail_explicitly()
         error(failure, 0)
       end
       Assert.isTrue(unbound, "the lifetime releases its factory binding")
-    end
-    do
-      local runtime = bootRuntime(versionId)
-      local envelope, binding, _ =
-        bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-world-loss:dual"))
-      local ok, failure = xpcall(function()
-        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-        waitConstructed(runtime, envelope)
-        failLiveScreen(envelope, "probe render failure before world collapse")
-        pump(runtime, envelope, 5)
-        Assert.notNil(runtime.battleCoordinator._battleLaunch, "the abort keeps its launch while restoring")
-        runtime.overworld:fail("probe world collapse")
-        pump(runtime, envelope, 30)
-        local status = assert(runtime:battleStatus(launchId), "the failed world leaves a receipt")
-        Assert.equal(status.phase, "failed", "the unrecoverable world stays explicitly terminal")
-        Assert.notNil(runtime.battleCoordinator._battleLaunch, "the unrecoverable world keeps the launch held")
-        Assert.equal(runtime.overworld:phase(), "failed", "the world reports its failure")
-        local _, busyReason = runtime.saveCoordinator:capture(false)
-        Assert.notNil(busyReason, "the unrecoverable world stays unsaveable")
-        Assert.isNil(runtime:lastBattleResult(), "the collapse invents no battle result")
-        pump(runtime, envelope, 30)
-        local again = assert(runtime:battleStatus(launchId), "the terminal receipt stays readable")
-        Assert.equal(again.phase, "failed", "later ticks publish nothing further")
-        Assert.isNil(runtime:lastBattleResult(), "later ticks invent no battle result")
-      end, debug.traceback)
-      local unbound = pcall(function()
-        runtime:unbindBattlePresentation(binding)
-      end)
-      local closed = pcall(function()
-        runtime:dispose()
-      end)
-      if not ok then
-        error(failure, 0)
-      end
-      Assert.isTrue(unbound, "the lifetime releases its factory binding")
-      Assert.isTrue(closed, "teardown releases the presented lifetime")
     end
   end
 end
@@ -3951,71 +3300,6 @@ function T.scheduled_live_port_dispose_releases_the_screen_once_and_keeps_the_en
       error(failure, 0)
     end
     Assert.isTrue(released, "teardown releases the envelope")
-  end
-end
-
--- A deferred pre-commit abort publishes no live effect: party experience,
--- wallet, and stocked balls read back unchanged, the receipt stays
--- uncommitted with its original cause and no battle result appears, and a
--- duplicate fault keeps the first cause.
-function T.scheduled_precommit_abort_publishes_no_live_effect()
-  for _, versionId in ipairs(readyVersions()) do
-    local runtime = bootRuntime(versionId)
-    local envelope, binding, _ = bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-clean-abort:dual"))
-    Assert.isTrue(runtime.bagService:add("MASTER_BALL", 1), "the abort leg stocks its ball")
-    local ok, failure = xpcall(function()
-      local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
-      local moneyBefore = runtime.playerData.profile.money
-      local ballsBefore = runtime.bagService:quantity("MASTER_BALL")
-      local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-      waitConstructed(runtime, envelope)
-      Assert.equal(runtime.overworld:phase(), "absent", "the fault lands while the world is absent")
-      failLiveScreen(envelope, "probe clean abort failure at active")
-      driveToSettled(runtime, envelope, function(request)
-        return sparringChoose(runtime, request)
-      end, 1200)
-      Assert.isNil(runtime.battleCoordinator._battleLaunch, "the abort settles its launch")
-      local status = assert(runtime:battleStatus(launchId), "the aborted launch leaves a receipt")
-      Assert.equal(status.phase, "failed", "the abort publishes a failed receipt")
-      Assert.isFalse(status.committed, "the abort commits nothing")
-      Assert.isNil(status.result, "the abort invents no outcome")
-      Assert.isTrue(
-        type(status.error) == "string" and status.error:find("probe clean abort failure", 1, true) ~= nil,
-        "the abort keeps the original error: " .. tostring(status.error)
-      )
-      Assert.isNil(runtime:lastBattleResult(), "the abort publishes no battle result")
-      Assert.equal(
-        assert(runtime.monService:partyMon(0), "the settled lead is readable").experience,
-        experienceBefore,
-        "the abort publishes no party effect"
-      )
-      Assert.equal(runtime.playerData.profile.money, moneyBefore, "the abort publishes no wallet effect")
-      Assert.equal(runtime.bagService:quantity("MASTER_BALL"), ballsBefore, "the abort spends no ball")
-      Assert.equal(runtime.overworld:phase(), "present", "the abort restores presence")
-      runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "second probe failure")
-      local again = assert(runtime:battleStatus(launchId), "the receipt survives a duplicate fault")
-      Assert.equal(again.phase, "failed", "a duplicate fault keeps the single failed receipt")
-      Assert.isTrue(
-        type(again.error) == "string" and again.error:find("probe clean abort failure", 1, true) ~= nil,
-        "a duplicate fault keeps the original error"
-      )
-      Assert.equal(
-        assert(runtime.monService:partyMon(0), "the settled lead stays readable").experience,
-        experienceBefore,
-        "a duplicate fault publishes no later party effect"
-      )
-    end, debug.traceback)
-    local unbound = pcall(function()
-      runtime:unbindBattlePresentation(binding)
-    end)
-    local closed = pcall(function()
-      runtime:dispose()
-    end)
-    if not ok then
-      error(failure, 0)
-    end
-    Assert.isTrue(unbound, "the lifetime releases its factory binding")
-    Assert.isTrue(closed, "teardown releases the presented lifetime")
   end
 end
 
