@@ -2111,4 +2111,244 @@ function T.fresh_import_reaches_title_through_the_boot_gate_without_an_intermedi
   end)
 end
 
+function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
+  local RomSource = require("romdump.src.source.RomSource")
+  local NdsRom = require("romdump.src.source.NdsRom")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local originalFromPath = RomSource.fromPath
+  local originalFromDroppedFile = RomSource.fromDroppedFile
+  local originalOpen = NdsRom.open
+  local originalRecord = RomBinding.record
+  local calls = {}
+  RomSource.fromPath = function(...)
+    calls[#calls + 1] = "path"
+    return originalFromPath(...)
+  end
+  RomSource.fromDroppedFile = function(...)
+    calls[#calls + 1] = "drop"
+    return originalFromDroppedFile(...)
+  end
+  NdsRom.open = function(...)
+    calls[#calls + 1] = "verify"
+    return originalOpen(...)
+  end
+  RomBinding.record = function(...)
+    calls[#calls + 1] = "record"
+    return originalRecord(...)
+  end
+  local function restoreSources()
+    RomSource.fromPath = originalFromPath
+    RomSource.fromDroppedFile = originalFromDroppedFile
+    NdsRom.open = originalOpen
+    RomBinding.record = originalRecord
+  end
+  local function captureCopy(draw)
+    local lg = love.graphics
+    local saved = {
+      getDimensions = lg.getDimensions,
+      setColor = lg.setColor,
+      rectangle = lg.rectangle,
+      print = lg.print,
+      printf = lg.printf,
+    }
+    local copy = {}
+    lg.getDimensions = function()
+      return 800, 600
+    end
+    lg.setColor = function() end
+    lg.rectangle = function() end
+    lg.print = function(value)
+      copy[#copy + 1] = tostring(value)
+    end
+    lg.printf = function(value)
+      copy[#copy + 1] = tostring(value)
+    end
+    local ok, err = xpcall(draw, debug.traceback)
+    lg.getDimensions = saved.getDimensions
+    lg.setColor = saved.setColor
+    lg.rectangle = saved.rectangle
+    lg.print = saved.print
+    lg.printf = saved.printf
+    if not ok then
+      error(err, 0)
+    end
+    return table.concat(copy, "\n")
+  end
+  local ok, err = xpcall(function()
+    do
+      fresh()
+      App.service = nil
+      App.pendingQuiesce = nil
+      App._importReceipt = nil
+      local shellRoot = assert(io.popen("mktemp -d"))
+      local tmpDir = ((shellRoot:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+      assert(shellRoot:close(), "mktemp -d did not exit successfully")
+      assert(tmpDir ~= "", "mktemp -d produced no path")
+      local tmpPath = tmpDir .. "/picked.nds"
+      local writer = assert(io.open(tmpPath, "wb"))
+      writer:write("not a real rom")
+      assert(writer:close())
+      local runOk, runErr = xpcall(function()
+        calls = {}
+        App._beginImportPath(tmpPath)
+        Assert.equal(#calls, 0, "a picked path opens no source before its receipt is drawn")
+        local busy = App.importer ~= nil and App.importer:isBusy()
+        Assert.isFalse(busy, "no import work runs before the receipt is painted")
+        local copy = captureCopy(function()
+          App.draw()
+        end)
+        Assert.isTrue(
+          copy:find("File received", 1, true) ~= nil,
+          "the first painted frame names the receipt, got: " .. copy
+        )
+        Assert.isTrue(
+          copy:find(".nds", 1, true) ~= nil,
+          "the painted receipt keeps the file kind, got: " .. copy
+        )
+        for _, premature in ipairs({ "verified", "complete" }) do
+          Assert.isTrue(
+            copy:lower():find(premature, 1, true) == nil,
+            "an unvalidated receipt never claims success, found: " .. premature
+          )
+        end
+        App.update(0.016)
+        Assert.equal(#calls, 0, "the render thread never reads the picked ROM")
+        Assert.isTrue(
+          App.importer ~= nil and App.importer.state ~= RomImporter.STATES.IDLE,
+          "the painted pick starts its import only after the first draw"
+        )
+      end, debug.traceback)
+      os.remove(tmpPath)
+      os.execute("rm -rf -- '" .. tmpDir:gsub("'", "'\\''") .. "'")
+      if not runOk then
+        error(runErr, 0)
+      end
+    end
+    do
+      fresh()
+      App.service = nil
+      App.pendingQuiesce = nil
+      App._importReceipt = nil
+      calls = {}
+      App.filedropped({
+        getFilename = function()
+          return "soulsilver.nds"
+        end,
+        open = function()
+          return true
+        end,
+        read = function()
+          return "not a real rom"
+        end,
+        close = function() end,
+      })
+      Assert.equal(#calls, 0, "a dropped file opens no source before its receipt is drawn")
+      local busy = App.importer ~= nil and App.importer:isBusy()
+      Assert.isFalse(busy, "no drop work runs before the receipt is painted")
+      local copy = captureCopy(function()
+        App.draw()
+      end)
+      Assert.isTrue(
+        copy:find("File received", 1, true) ~= nil,
+        "the first painted frame names the drop, got: " .. copy
+      )
+      Assert.isTrue(
+        copy:find("soulsilver.nds", 1, true) ~= nil,
+        "the painted receipt names the dropped file, got: " .. copy
+      )
+      App.update(0.016)
+      Assert.equal(#calls, 0, "the render thread never reads the dropped file")
+      Assert.isTrue(
+        App.importer ~= nil and App.importer.state ~= RomImporter.STATES.IDLE,
+        "the painted drop starts its import only after the first draw"
+      )
+    end
+  end, debug.traceback)
+  restoreSources()
+  fresh()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.superseded_import_completion_never_replaces_the_current_selection()
+  fresh()
+  local originalSelect = App._selectVersion
+  local selections = {}
+  App._selectVersion = function(versionId, options)
+    selections[#selections + 1] = { versionId = versionId, options = options }
+  end
+  local function captureCopy(draw)
+    local lg = love.graphics
+    local saved = {
+      getDimensions = lg.getDimensions,
+      setColor = lg.setColor,
+      rectangle = lg.rectangle,
+      print = lg.print,
+      printf = lg.printf,
+    }
+    local copy = {}
+    lg.getDimensions = function()
+      return 800, 600
+    end
+    lg.setColor = function() end
+    lg.rectangle = function() end
+    lg.print = function(value)
+      copy[#copy + 1] = tostring(value)
+    end
+    lg.printf = function(value)
+      copy[#copy + 1] = tostring(value)
+    end
+    local ok, err = xpcall(draw, debug.traceback)
+    lg.getDimensions = saved.getDimensions
+    lg.setColor = saved.setColor
+    lg.rectangle = saved.rectangle
+    lg.print = saved.print
+    lg.printf = saved.printf
+    if not ok then
+      error(err, 0)
+    end
+    return table.concat(copy, "\n")
+  end
+  local ok, err = xpcall(function()
+    App._importReceipt = nil
+    App._startImport("soulsilver")
+    local currentImporter = assert(App.importer, "the current session owns its importer")
+    Assert.equal(App.state.targetVersion, "soulsilver", "the current card targets its edition")
+    App._onImported("heartgold")
+    Assert.equal(#selections, 0, "a superseded completion never selects its stale version")
+    Assert.isTrue(
+      App.importer == currentImporter,
+      "a superseded completion never releases the current importer"
+    )
+    currentImporter:filedropped({
+      getFilename = function()
+        return "photo.png"
+      end,
+    })
+    Assert.equal(
+      currentImporter.state,
+      RomImporter.STATES.ERROR,
+      "the bad file fails the current session"
+    )
+    Assert.equal(#selections, 0, "a failed current import still selects nothing")
+    local shown = captureCopy(function()
+      App.draw()
+    end)
+    Assert.isTrue(
+      shown:find("photo.png", 1, true) ~= nil,
+      "the current failure names its file, got: " .. shown
+    )
+    Assert.isTrue(
+      shown:find("File received", 1, true) == nil,
+      "a rejected file is never acknowledged as received"
+    )
+  end, debug.traceback)
+  App._selectVersion = originalSelect
+  fresh()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }

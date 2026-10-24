@@ -28,6 +28,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 ---@field pendingQuiesce table<string, integer>|nil unacknowledged source-close barrier for import
 ---@field pairIndex integer? selected-epoch walking pair 1..32, chosen once per selection
 ---@field _importReceipt string? received filename latched synchronously on drop/picker input
+---@field _pendingImport table<string, unknown>? deferred import descriptor awaiting its receipt paint
 ---@field selectedVersionId string? currently selected game version
 ---@field _rebindVersionId string? version a pending raw drop is expected to supply back
 ---@field _bootBlockedVersionId string? version a blocked boot refuses to switch away from
@@ -92,12 +93,25 @@ function App._ensureService()
   App.service = CacheService.new()
 end
 
+-- Retire the interactive import session without blocking: a queued worker is
+-- told to abandon its registration gate, late results are invalidated, and
+-- the pending first-paint descriptor is dropped so no worker starts later.
+function App._cancelImport()
+  local importer = App.importer
+  App.importer = nil
+  App._pendingImport = nil
+  if importer ~= nil and type(importer.cancelQueued) == "function" then
+    importer:cancelQueued()
+  end
+end
+
 -- Retires the selected source interest without joining controller work.
 -- The process service is reused; stale results cannot publish afterwards.
 function App._retireSelection()
   App._swallowedPointers = {}
   App.pairIndex = nil
   App._importReceipt = nil
+  App._cancelImport()
   App._releaseStartupAudio()
   local warmup = App._startupWarmup
   App._startupWarmup = nil
@@ -677,6 +691,7 @@ function App.load(opts)
   App.pendingQuiesce = nil
   App.pairIndex = nil
   App._importReceipt = nil
+  App._pendingImport = nil
   App.selectedVersionId = nil
   App._swallowedPointers = {}
   App._rebindVersionId = nil
@@ -784,6 +799,50 @@ function App._beginImportPath(path, expectedVersionId)
   App._beginImportAttempt("path", path, expectedVersionId)
 end
 
+-- Open the import card for one picked or dropped file without touching the
+-- source: the receipt is latched for its first paint, and validation starts
+-- only after that paint (see App.update). Importers offering the queued
+-- handoff start in the background then; direct-only importers keep their
+-- immediate start contract on this same tick.
+---@param kind "drop"|"path"
+---@param value unknown dropped File or picked path
+---@param expectedVersionId string?
+---@param receipt string? sanitized basename latched for the first paint
+function App._openImportCard(kind, value, expectedVersionId, receipt)
+  local previous = App.importer
+  App.importer = nil
+  if previous ~= nil and type(previous.cancelQueued) == "function" then
+    previous:cancelQueued()
+  end
+  App._startImport(expectedVersionId)
+  -- Acknowledge the file on the same input tick: the first draw already
+  -- names the received file, while no source read has run yet.
+  App._importReceipt = receipt
+  local importer = App.importer
+  if importer ~= nil and type(importer.queuePath) == "function" and type(importer.queueDroppedFile) == "function" then
+    App._pendingImport = {
+      kind = kind,
+      value = value,
+      receipt = receipt,
+      painted = receipt == nil,
+      started = false,
+    }
+  else
+    App._pendingImport = nil
+    if importer then
+      if kind == "path" then
+        importer:startPath(value)
+      else
+        importer:filedropped(value)
+      end
+    end
+  end
+  local fresh = App.state
+  if receipt ~= nil and fresh ~= nil and type(fresh.markReceived) == "function" then
+    fresh:markReceived(receipt)
+  end
+end
+
 function App._beginImportAttempt(kind, value, expectedVersionId)
   local currentState = App.state
   if kind == "drop" and currentState ~= nil and type(currentState.onImportAttempt) == "function" then
@@ -798,23 +857,7 @@ function App._beginImportAttempt(kind, value, expectedVersionId)
     return
   end
   expectedVersionId = expectedVersionId or (currentState and currentState.targetVersion)
-  local begin = function()
-    App._startImport(expectedVersionId)
-    -- Acknowledge the file on the same input tick, before the importer
-    -- coroutine advances: the first draw already names the received file.
-    App._importReceipt = App._receiptName(kind, value)
-    local fresh = App.state
-    if App._importReceipt ~= nil and fresh ~= nil and type(fresh.markReceived) == "function" then
-      fresh:markReceived(App._importReceipt)
-    end
-    if App.importer then
-      if kind == "path" then
-        App.importer:startPath(value)
-      else
-        App.importer:filedropped(value)
-      end
-    end
-  end
+  local receipt = App._receiptName(kind, value)
   if App.service ~= nil then
     local wasBootBlocked = currentState ~= nil
       and getmetatable(currentState) == CachePreparationState
@@ -825,19 +868,32 @@ function App._beginImportAttempt(kind, value, expectedVersionId)
     local epoch = App.epoch or 0
     local barrier = App.service:quiesce(epoch)
     if barrier ~= nil then
+      -- The barrier wait carries the same receipt: its card names the file
+      -- while readers drain, and the import card created on admission
+      -- paints it again before any worker starts.
+      App._importReceipt = receipt
+      App._pendingImport = {
+        kind = kind,
+        value = value,
+        expectedVersionId = expectedVersionId,
+        receipt = receipt,
+        painted = receipt == nil,
+        started = false,
+      }
       App.pendingQuiesce = { epoch = epoch, barrier = barrier }
       App.setState(CachePreparationState.new({
         kind = "quiescence",
         epoch = epoch,
         service = App.service,
         barrier = barrier,
+        pendingImportName = receipt,
         isCurrent = function(_)
           return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == barrier
         end,
         onReady = function()
           App.pendingQuiesce = nil
           if App.service:importSource(epoch, barrier) then
-            begin()
+            App._openImportCard(kind, value, expectedVersionId, receipt)
           end
         end,
         onCancel = function()
@@ -848,7 +904,52 @@ function App._beginImportAttempt(kind, value, expectedVersionId)
       return
     end
   end
-  begin()
+  App._openImportCard(kind, value, expectedVersionId, receipt)
+end
+
+-- Record one actually painted receipt for the deferred import start. Only a
+-- draw that rendered the pending receipt for the current attempt counts;
+-- latching the name is not painting.
+function App._noteReceiptPaint()
+  local pending = App._pendingImport
+  if pending == nil or pending.painted or pending.started or pending.receipt == nil then
+    return
+  end
+  local state = App.state
+  if state == nil or type(state.paintedReceipt) ~= "function" then
+    return
+  end
+  local ok, name = pcall(state.paintedReceipt, state)
+  if ok and name == pending.receipt then
+    pending.painted = true
+  end
+end
+
+-- Start the deferred import once its receipt was painted and no source-reader
+-- barrier holds the selection. The queued handoff validates in the
+-- background; the render thread performs no source read here.
+function App._startPendingImport()
+  local pending = App._pendingImport
+  if pending == nil or pending.started or not pending.painted or App.pendingQuiesce ~= nil then
+    return
+  end
+  local importer = App.importer
+  if importer == nil then
+    App._pendingImport = nil
+    return
+  end
+  local ok = pcall(function()
+    if pending.kind == "path" then
+      importer:queuePath(pending.value)
+    else
+      importer:queueDroppedFile(pending.value)
+    end
+  end)
+  if ok then
+    pending.started = true
+  else
+    App._pendingImport = nil
+  end
 end
 
 -- Sanitized basename for the synchronous file-received receipt: the card
@@ -891,6 +992,16 @@ end
 
 function App._onImported(versionId)
   local importer = App.importer
+  -- A completion counts only for the live session: an import that never
+  -- completed never selects, releases, or offers. Attempts the shell never
+  -- owned keep their historical handoff.
+  if importer ~= nil then
+    local statusOk, snapshot = pcall(importer.status, importer)
+    if not statusOk or type(snapshot) ~= "table" or snapshot.state ~= RomImporter.STATES.COMPLETE then
+      return
+    end
+  end
+  App._pendingImport = nil
   -- Take the one verified source handoff before the importer is released.
   -- A dropped or freshly imported ROM carries no reopenable path yet, so
   -- this buffer is what lets the controller admit the selection; the
@@ -1022,6 +1133,7 @@ function App.update(dt)
   end
   if App.importer and not App.importer:isBusy() and App.importer.state == RomImporter.STATES.ERROR then
     App.importer = nil
+    App._pendingImport = nil
   end
   if App.service then
     App.service:update()
@@ -1030,6 +1142,7 @@ function App.update(dt)
   if App.state and App.state.update then
     App.state:update(dt)
   end
+  App._startPendingImport()
   local audio = App.startupAudioSession
   if audio ~= nil then
     local ok, failure = pcall(audio.update, audio, dt)
@@ -1072,12 +1185,11 @@ function App.draw()
   love.graphics.setColor(1, 1, 1, 1)
   if App.state and App.state.draw then
     App.state:draw()
-    return
-  end
-  if App.opts.dev then
+  elseif App.opts.dev then
     love.graphics.setColor(1, 1, 1)
     love.graphics.print("portemon", 24, 24)
   end
+  App._noteReceiptPaint()
 end
 
 function App.filedropped(file)

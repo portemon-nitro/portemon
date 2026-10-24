@@ -619,4 +619,217 @@ function T.cold_terminal_worker_failure_forwards_escape_only_to_the_card()
   end
 end
 
+function T.quiescence_card_names_the_pending_file_before_the_barrier_admits()
+  local App = require("app.src.App")
+  local RomSource = require("romdump.src.source.RomSource")
+  local NdsRom = require("romdump.src.source.NdsRom")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local originalFromPath = RomSource.fromPath
+  local originalFromDroppedFile = RomSource.fromDroppedFile
+  local originalOpen = NdsRom.open
+  local originalRecord = RomBinding.record
+  local calls = {}
+  RomSource.fromPath = function(...)
+    calls[#calls + 1] = "path"
+    return originalFromPath(...)
+  end
+  RomSource.fromDroppedFile = function(...)
+    calls[#calls + 1] = "drop"
+    return originalFromDroppedFile(...)
+  end
+  NdsRom.open = function(...)
+    calls[#calls + 1] = "verify"
+    return originalOpen(...)
+  end
+  RomBinding.record = function(...)
+    calls[#calls + 1] = "record"
+    return originalRecord(...)
+  end
+  local savedApp = {
+    state = App.state,
+    service = App.service,
+    epoch = App.epoch,
+    pendingQuiesce = App.pendingQuiesce,
+    importer = App.importer,
+    selectedVersionId = App.selectedVersionId,
+    receipt = App._importReceipt,
+    rebind = App._rebindVersionId,
+    bootBlocked = App._bootBlockedVersionId,
+    pairIndex = App.pairIndex,
+  }
+  local function restoreAll()
+    RomSource.fromPath = originalFromPath
+    RomSource.fromDroppedFile = originalFromDroppedFile
+    NdsRom.open = originalOpen
+    RomBinding.record = originalRecord
+    App.state = savedApp.state
+    App.service = savedApp.service
+    App.epoch = savedApp.epoch
+    App.pendingQuiesce = savedApp.pendingQuiesce
+    App.importer = savedApp.importer
+    App.selectedVersionId = savedApp.selectedVersionId
+    App._importReceipt = savedApp.receipt
+    App._rebindVersionId = savedApp.rebind
+    App._bootBlockedVersionId = savedApp.bootBlocked
+    App.pairIndex = savedApp.pairIndex
+  end
+  local function captureCopy(draw)
+    local lg = love.graphics
+    local saved = {
+      getDimensions = lg.getDimensions,
+      getWidth = lg.getWidth,
+      setColor = lg.setColor,
+      rectangle = lg.rectangle,
+      print = lg.print,
+      printf = lg.printf,
+    }
+    local copy = {}
+    lg.getDimensions = function()
+      return 800, 600
+    end
+    lg.getWidth = function()
+      return 800
+    end
+    lg.setColor = function() end
+    lg.rectangle = function() end
+    lg.print = function(value)
+      copy[#copy + 1] = tostring(value)
+    end
+    lg.printf = function(value)
+      copy[#copy + 1] = tostring(value)
+    end
+    local ok, err = xpcall(draw, debug.traceback)
+    lg.getDimensions = saved.getDimensions
+    lg.getWidth = saved.getWidth
+    lg.setColor = saved.setColor
+    lg.rectangle = saved.rectangle
+    lg.print = saved.print
+    lg.printf = saved.printf
+    if not ok then
+      error(err, 0)
+    end
+    return table.concat(copy, "\n")
+  end
+  local function dropStub()
+    return {
+      getFilename = function()
+        return "soulsilver.nds"
+      end,
+      open = function()
+        return true
+      end,
+      read = function()
+        return "not a real rom"
+      end,
+      close = function() end,
+    }
+  end
+  local ok, err = xpcall(function()
+    for _, kind in ipairs({ "path", "drop" }) do
+      local script = { status = "pending", barrier = 7, imports = 0 }
+      local service = {}
+      function service:quiesce(_)
+        return script.barrier
+      end
+      function service:barrierStatus(_, _)
+        return script.status
+      end
+      function service:importSource(_, _)
+        script.imports = script.imports + 1
+        return true
+      end
+      function service:update() end
+      App.state = nil
+      App.service = service
+      App.epoch = 3
+      App.pendingQuiesce = nil
+      App.importer = nil
+      App.selectedVersionId = nil
+      App._importReceipt = nil
+      App._rebindVersionId = nil
+      App._bootBlockedVersionId = nil
+      App.pairIndex = nil
+      calls = {}
+      if kind == "path" then
+        App._beginImportPath("/user/soulsilver.nds")
+      else
+        App.filedropped(dropStub())
+      end
+      Assert.equal(
+        getmetatable(App.state),
+        CachePreparationState,
+        "the pending barrier holds a visible wait for a " .. kind
+      )
+      Assert.equal(App.state.kind, "quiescence", "the wait guards source closure")
+      local waiting = captureCopy(function()
+        App.state:draw()
+      end)
+      Assert.isTrue(
+        waiting:find("soulsilver.nds", 1, true) ~= nil,
+        "the waiting card names the pending file before admission, got: " .. waiting
+      )
+      Assert.equal(#calls, 0, "no source read runs while the barrier is pending")
+      App.update(0.016)
+      Assert.equal(
+        getmetatable(App.state),
+        CachePreparationState,
+        "the unacknowledged barrier keeps the wait for a " .. kind
+      )
+      Assert.equal(#calls, 0, "the held wait still reads nothing")
+      script.status = "ready"
+      App.update(0.016)
+      Assert.equal(#calls, 0, "admission alone never reads before the receipt is painted")
+      local admitted = captureCopy(function()
+        App.draw()
+      end)
+      Assert.isTrue(
+        admitted:find("soulsilver.nds", 1, true) ~= nil,
+        "the admitted receipt still names the file, got: " .. admitted
+      )
+      App.update(0.016)
+      Assert.equal(#calls, 0, "the render thread never reads the " .. kind .. " source")
+    end
+    do
+      local script = { status = "pending", barrier = 11, imports = 0 }
+      local service = {}
+      function service:quiesce(_)
+        return script.barrier
+      end
+      function service:barrierStatus(_, _)
+        return script.status
+      end
+      function service:importSource(_, _)
+        script.imports = script.imports + 1
+        return true
+      end
+      function service:update() end
+      App.state = nil
+      App.service = service
+      App.epoch = 5
+      App.pendingQuiesce = nil
+      App.importer = nil
+      App.selectedVersionId = nil
+      App._importReceipt = nil
+      App._rebindVersionId = nil
+      App._bootBlockedVersionId = nil
+      App.pairIndex = nil
+      calls = {}
+      App.filedropped(dropStub())
+      Assert.equal(
+        getmetatable(App.state),
+        CachePreparationState,
+        "the cancelled attempt starts behind its barrier"
+      )
+      App.state:keypressed("escape")
+      App.update(0.016)
+      Assert.isNil(App.pendingQuiesce, "escape releases the pending barrier")
+      Assert.equal(#calls, 0, "a cancelled wait never starts its worker")
+    end
+  end, debug.traceback)
+  restoreAll()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }

@@ -806,4 +806,497 @@ function T.dropped_candidate_holding_another_rom_stays_ephemeral_but_usable()
   end)
 end
 
+function T.queued_validation_hands_exactly_one_verified_source_without_main_thread_reads()
+  local NdsRom = require("romdump.src.source.NdsRom")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local ZipBuilder = require("tests.support.ZipBuilder")
+  local prototype = RomImporter.new({
+    now = function()
+      return 0
+    end,
+  })
+  Assert.isTrue(
+    type(prototype.queuePath) == "function",
+    "a queued path import stays off the render thread"
+  )
+  Assert.isTrue(
+    type(prototype.queueDroppedFile) == "function",
+    "a queued drop import stays off the render thread"
+  )
+  local originalOpen = NdsRom.open
+  local originalFromPath = RomSource.fromPath
+  local originalRecord = RomBinding.record
+  local mainCalls = {}
+  NdsRom.open = function(...)
+    mainCalls[#mainCalls + 1] = "verify"
+    return originalOpen(...)
+  end
+  RomSource.fromPath = function(...)
+    mainCalls[#mainCalls + 1] = "path"
+    return originalFromPath(...)
+  end
+  RomBinding.record = function(...)
+    mainCalls[#mainCalls + 1] = "record"
+    return originalRecord(...)
+  end
+  local function restoreSources()
+    NdsRom.open = originalOpen
+    RomSource.fromPath = originalFromPath
+    RomBinding.record = originalRecord
+  end
+  local function pumpToTerminal(importer)
+    for _ = 1, 100000 do
+      importer:update()
+      if importer.state == "complete" or importer.state == "error" then
+        return
+      end
+    end
+    error("the queued import never reached a terminal state")
+  end
+  local ok, err = xpcall(function()
+    withOwnedRoot(function(root)
+      local h = harness()
+      local romPath = root .. "/queued.nds"
+      local writer = assert(io.open(romPath, "wb"))
+      writer:write(h.data)
+      assert(writer:close())
+      mainCalls = {}
+      local events = {}
+      local importer = RomImporter.new({
+        versions = h.versions,
+        now = function()
+          return 0
+        end,
+        cacheFactory = function(id)
+          return CacheFs.forVersion(id, h.backend)
+        end,
+        onComplete = function(id)
+          events[#events + 1] = id
+        end,
+      })
+      importer:queuePath(romPath)
+      Assert.isNil(importer:takeVerifiedSource(), "a queued import offers nothing before it completes")
+      Assert.equal(#events, 0, "a queued import fires no completion before it completes")
+      pumpToTerminal(importer)
+      Assert.equal(importer.state, "complete")
+      Assert.deepEqual(events, { "heartgold" }, "the queued import completes exactly once")
+      local binding = CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua")
+      Assert.notNil(binding, "the queued import records its source binding")
+      assert(binding, "the queued import records its source binding")
+      Assert.equal(binding.romSha1, h.info.sha1, "the queued binding keeps its verified identity")
+      Assert.equal(binding.path, romPath, "the queued binding keeps the verified user path")
+      local handed = importer:takeVerifiedSource()
+      Assert.notNil(handed, "the queued completion hands its verified source once")
+      assert(handed, "the queued completion hands its verified source once")
+      Assert.equal(handed:sha1(), h.info.sha1, "the handed source keeps its verified identity")
+      Assert.isNil(importer:takeVerifiedSource(), "the queued handoff is one-shot")
+      importer:update()
+      importer:update()
+      Assert.deepEqual(events, { "heartgold" }, "a queued completion never fires twice")
+      Assert.equal(#mainCalls, 0, "the render thread never reads for a queued path import")
+    end)
+    withOwnedRoot(function(root)
+      local z = harness()
+      local zipBytes = ZipBuilder.build({ { name = "game.nds", data = z.data } })
+      local zipPath = root .. "/queued.zip"
+      local writer = assert(io.open(zipPath, "wb"))
+      writer:write(zipBytes)
+      assert(writer:close())
+      mainCalls = {}
+      local events = {}
+      local importer = RomImporter.new({
+        versions = z.versions,
+        now = function()
+          return 0
+        end,
+        cacheFactory = function(id)
+          return CacheFs.forVersion(id, z.backend)
+        end,
+        onComplete = function(id)
+          events[#events + 1] = id
+        end,
+      })
+      importer:queuePath(zipPath)
+      pumpToTerminal(importer)
+      Assert.equal(importer.state, "complete")
+      Assert.deepEqual(events, { "heartgold" }, "the queued archive completes exactly once")
+      local binding = CacheFs.forVersion("heartgold", z.backend):loadLua("rom-source.lua")
+      Assert.notNil(binding, "the queued archive records its member binding")
+      assert(binding, "the queued archive records its member binding")
+      Assert.equal(binding.kind, "zip")
+      Assert.equal(binding.romSha1, z.info.sha1, "the queued archive keeps its verified identity")
+      local handed = importer:takeVerifiedSource()
+      Assert.notNil(handed, "the queued archive hands its verified source once")
+      assert(handed, "the queued archive hands its verified source once")
+      Assert.equal(handed:sha1(), z.info.sha1)
+      Assert.isNil(importer:takeVerifiedSource(), "the queued archive handoff is one-shot")
+      Assert.equal(#mainCalls, 0, "the render thread never traverses the archive")
+    end)
+    do
+      local h = harness()
+      mainCalls = {}
+      local events = {}
+      local importer = RomImporter.new({
+        versions = h.versions,
+        now = function()
+          return 0
+        end,
+        cacheFactory = function(id)
+          return CacheFs.forVersion(id, h.backend)
+        end,
+        onComplete = function(id)
+          events[#events + 1] = id
+        end,
+      })
+      importer:queueDroppedFile({
+        getFilename = function()
+          return "photo.png"
+        end,
+      })
+      Assert.equal(importer.state, "error", "a bad queued drop fails without a worker")
+      Assert.equal(importer:status().errorCode, "IMPORT_NOT_NDS")
+      Assert.equal(#events, 0, "a rejected drop fires no completion")
+      Assert.isNil(CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua"))
+      Assert.equal(#mainCalls, 0, "a rejected drop reads nothing")
+    end
+  end, debug.traceback)
+  restoreSources()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Drive a queued session to a terminal state without sleeping: the worker
+-- thread validates concurrently while update() drains its packets.
+local function pumpQueued(importer, frames)
+  for _ = 1, frames or 100000 do
+    importer:update()
+    if importer.state == "complete" or importer.state == "error" then
+      return
+    end
+  end
+  error("the queued import never reached a terminal state")
+end
+
+-- Wait until the background worker announces its source read. Bounded: a
+-- worker that never gets there fails the test instead of proving nothing.
+local function waitForWorkerRead(importer)
+  for _ = 1, 500 do
+    importer:update()
+    if importer:status().stage == "opening" then
+      return
+    end
+    love.timer.sleep(0.01)
+  end
+  error("the background worker never reached its source read")
+end
+
+local function wrapMainThreadReads(calls)
+  local NdsRom = require("romdump.src.source.NdsRom")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local originalOpen = NdsRom.open
+  local originalFromPath = RomSource.fromPath
+  local originalRecord = RomBinding.record
+  NdsRom.open = function(...)
+    calls[#calls + 1] = "verify"
+    return originalOpen(...)
+  end
+  RomSource.fromPath = function(...)
+    calls[#calls + 1] = "path"
+    return originalFromPath(...)
+  end
+  RomBinding.record = function(...)
+    calls[#calls + 1] = "record"
+    return originalRecord(...)
+  end
+  return function()
+    NdsRom.open = originalOpen
+    RomSource.fromPath = originalFromPath
+    RomBinding.record = originalRecord
+  end
+end
+
+local function queuedImporter(h, options)
+  options = options or {}
+  local events = {}
+  local importer = RomImporter.new({
+    versions = h.versions,
+    now = function()
+      return 0
+    end,
+    cacheFactory = function(id)
+      return CacheFs.forVersion(id, h.backend)
+    end,
+    expectedVersionId = options.expectedVersionId,
+    onComplete = function(id)
+      events[#events + 1] = id
+    end,
+  })
+  return importer, events
+end
+
+-- A real love File object crosses into the worker, which runs the dropped
+-- file through the same open/verify/register sequence without any
+-- render-thread source call.
+function T.queued_drop_with_a_real_file_hands_one_verified_source()
+  local h = harness()
+  local mainCalls = {}
+  local restoreSources = wrapMainThreadReads(mainCalls)
+  local dropName = "zz-queued-drop.nds"
+  assert(love.filesystem.write(dropName, h.data))
+  local file = assert(love.filesystem.newFile(dropName))
+  local ok, err = xpcall(function()
+    mainCalls = {}
+    local importer, events = queuedImporter(h)
+    importer:queueDroppedFile(file)
+    pumpQueued(importer)
+    Assert.equal(importer.state, "complete")
+    Assert.deepEqual(events, { "heartgold" }, "the queued drop completes exactly once")
+    local binding = CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua")
+    Assert.notNil(binding, "the queued drop records its source binding")
+    assert(binding, "the queued drop records its source binding")
+    Assert.equal(binding.kind, "nds")
+    Assert.equal(binding.romSha1, h.info.sha1, "the queued drop keeps its verified identity")
+    local handed = importer:takeVerifiedSource()
+    Assert.notNil(handed, "the queued drop hands its verified source once")
+    assert(handed, "the queued drop hands its verified source once")
+    Assert.equal(handed:sha1(), h.info.sha1, "the handed drop keeps its verified identity")
+    Assert.isNil(importer:takeVerifiedSource(), "the drop handoff is one-shot")
+    Assert.equal(#mainCalls, 0, "the render thread never reads the dropped file")
+  end, debug.traceback)
+  pcall(function()
+    file:close()
+  end)
+  love.filesystem.remove(dropName)
+  restoreSources()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Queued validation maps targeted-edition and missing-source failures to
+-- the same typed errors as the direct path, without recording or firing.
+function T.queued_import_maps_target_mismatch_and_missing_sources()
+  withOwnedRoot(function(root)
+    local h = harness()
+    local romPath = root .. "/candidate.nds"
+    local writer = assert(io.open(romPath, "wb"))
+    writer:write(h.data)
+    assert(writer:close())
+    local importer, events = queuedImporter(h, { expectedVersionId = "soulsilver" })
+    importer:queuePath(romPath)
+    pumpQueued(importer)
+    Assert.equal(importer.state, "error")
+    Assert.equal(importer:status().errorCode, "ROM_VERSION_MISMATCH")
+    Assert.equal(#events, 0, "a mismatched import fires no completion")
+    Assert.isNil(CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua"))
+    Assert.isNil(importer:takeVerifiedSource(), "a mismatched import hands nothing")
+  end)
+  withOwnedRoot(function(root)
+    local h = harness()
+    local importer, events = queuedImporter(h)
+    importer:queuePath(root .. "/absent.nds")
+    pumpQueued(importer)
+    Assert.equal(importer.state, "error")
+    Assert.equal(importer:status().errorCode, "ROM_OPEN_FAILED")
+    Assert.equal(#events, 0, "a missing source fires no completion")
+    Assert.isNil(CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua"))
+    Assert.isNil(importer:takeVerifiedSource(), "a missing source hands nothing")
+  end)
+end
+
+-- A terminal session accepts a fresh queued start: each repeated import of
+-- the same ROM validates, records, and hands its source exactly once.
+function T.queued_repeat_import_of_the_same_rom_completes_each_session()
+  withOwnedRoot(function(root)
+    local h = harness()
+    local romPath = root .. "/repeat.nds"
+    local writer = assert(io.open(romPath, "wb"))
+    writer:write(h.data)
+    assert(writer:close())
+    local importer, events = queuedImporter(h)
+    for round = 1, 2 do
+      importer:queuePath(romPath)
+      pumpQueued(importer)
+      Assert.equal(importer.state, "complete", "round " .. round .. " completes")
+      local handed = importer:takeVerifiedSource()
+      Assert.notNil(handed, "round " .. round .. " hands its verified source once")
+      assert(handed, "round " .. round .. " hands its verified source once")
+      Assert.equal(handed:sha1(), h.info.sha1, "round " .. round .. " keeps its verified identity")
+      Assert.isNil(importer:takeVerifiedSource(), "round " .. round .. " handoff is one-shot")
+    end
+    Assert.deepEqual(events, { "heartgold", "heartgold" }, "each session completes exactly once")
+    local binding = CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua")
+    Assert.notNil(binding, "the repeated import keeps its source binding")
+    assert(binding, "the repeated import keeps its source binding")
+    Assert.equal(binding.romSha1, h.info.sha1)
+    Assert.equal(binding.path, romPath)
+  end)
+end
+
+-- A session canceled while its worker is stalled records nothing when that
+-- worker lands late: no completion, no handoff, no binding. A later session
+-- on the same importer still validates normally.
+function T.canceled_queued_import_records_nothing_when_its_worker_lands_late()
+  withOwnedRoot(function(root)
+    local h = harness()
+    local fifoPath = root .. "/stall.nds"
+    local fifoStatus = os.execute("mkfifo -- '" .. fifoPath:gsub("'", "'\\''") .. "'")
+    assert(commandSucceeded(fifoStatus), "mkfifo did not exit successfully")
+    local importer, events = queuedImporter(h)
+    importer:queuePath(fifoPath)
+    waitForWorkerRead(importer)
+    local busyErr = Assert.throws(function()
+      importer:queuePath(fifoPath)
+    end)
+    Assert.equal(busyErr.code, "IMPORT_BUSY", "a stalled session still owns its worker")
+    importer:cancelQueued()
+    Assert.equal(importer.state, "idle", "cancel retires the session without failing it")
+    local writer = assert(io.open(fifoPath, "wb"))
+    writer:write("not a real rom")
+    assert(writer:close())
+    for _ = 1, 200 do
+      importer:update()
+      love.timer.sleep(0.01)
+    end
+    Assert.equal(importer.state, "idle", "the late worker result never revives the session")
+    Assert.equal(#events, 0, "the late worker result fires no completion")
+    Assert.isNil(importer:takeVerifiedSource(), "the late worker result hands nothing")
+    Assert.isNil(
+      CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua"),
+      "the canceled session records no binding"
+    )
+    local romPath = root .. "/valid.nds"
+    local romWriter = assert(io.open(romPath, "wb"))
+    romWriter:write(h.data)
+    assert(romWriter:close())
+    importer:queuePath(romPath)
+    pumpQueued(importer)
+    Assert.equal(importer.state, "complete", "a later session still validates")
+    Assert.deepEqual(events, { "heartgold" })
+    local handed = importer:takeVerifiedSource()
+    Assert.notNil(handed, "the later session hands its verified source")
+    assert(handed, "the later session hands its verified source")
+    Assert.equal(handed:sha1(), h.info.sha1)
+  end)
+end
+
+-- A worker lost before registration restarts the session once: the retired
+-- worker is canceled at its gate while the fresh session validates,
+-- records, and completes exactly once.
+function T.worker_loss_before_registration_restarts_the_session_once()
+  withOwnedRoot(function(root)
+    local h = harness()
+    local romPath = root .. "/relauch.nds"
+    local writer = assert(io.open(romPath, "wb"))
+    writer:write(h.data)
+    assert(writer:close())
+    local importer, events = queuedImporter(h)
+    importer:queuePath(romPath)
+    importer:_failOrRetryWorker({
+      errorCode = "IMPORT_WORKER_LOST",
+      message = "background import ended without a result",
+      context = {},
+    })
+    Assert.equal(importer.state, "reading", "the lost session restarts instead of failing")
+    Assert.equal(importer._queueAttempts, 2, "the restart is bounded")
+    pumpQueued(importer)
+    Assert.equal(importer.state, "complete")
+    Assert.deepEqual(events, { "heartgold" }, "the restarted session completes exactly once")
+    local binding = CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua")
+    Assert.notNil(binding, "the restarted session records its source binding")
+    assert(binding, "the restarted session records its source binding")
+    Assert.equal(binding.romSha1, h.info.sha1)
+    local handed = importer:takeVerifiedSource()
+    Assert.notNil(handed, "the restarted session hands its verified source once")
+    assert(handed, "the restarted session hands its verified source once")
+    Assert.equal(handed:sha1(), h.info.sha1)
+    Assert.isNil(importer:takeVerifiedSource(), "the restarted handoff is one-shot")
+  end)
+end
+
+-- A deliberately stalled worker read keeps the UI drawable: two independent
+-- receipt draws complete while the source read is stuck, and the session
+-- still fails closed once the read answers with garbage.
+function T.stalled_background_read_keeps_the_receipt_painted_across_draws()
+  withOwnedRoot(function(root)
+    local h = harness()
+    local fifoPath = root .. "/stall.nds"
+    local fifoStatus = os.execute("mkfifo -- '" .. fifoPath:gsub("'", "'\\''") .. "'")
+    assert(commandSucceeded(fifoStatus), "mkfifo did not exit successfully")
+    local importer, events = queuedImporter(h)
+    importer:queuePath(fifoPath)
+    waitForWorkerRead(importer)
+    local ImportState = require("app.src.launcher.ImportState")
+    local card = ImportState.new(importer, nil)
+    card:markReceived("stall.nds")
+    local function drawnCopy()
+      local lg = love.graphics
+      local saved = {
+        getDimensions = lg.getDimensions,
+        setColor = lg.setColor,
+        rectangle = lg.rectangle,
+        print = lg.print,
+        printf = lg.printf,
+      }
+      local copy = {}
+      lg.getDimensions = function()
+        return 800, 600
+      end
+      lg.setColor = function() end
+      lg.rectangle = function() end
+      lg.print = function(value)
+        copy[#copy + 1] = tostring(value)
+      end
+      lg.printf = function(value)
+        copy[#copy + 1] = tostring(value)
+      end
+      local ok, err = xpcall(function()
+        card:draw()
+      end, debug.traceback)
+      lg.getDimensions = saved.getDimensions
+      lg.setColor = saved.setColor
+      lg.rectangle = saved.rectangle
+      lg.print = saved.print
+      lg.printf = saved.printf
+      if not ok then
+        error(err, 0)
+      end
+      return table.concat(copy, "\n")
+    end
+    for draw = 1, 2 do
+      local copy = drawnCopy()
+      Assert.isTrue(
+        copy:find("File received", 1, true) ~= nil,
+        "draw " .. draw .. " still acknowledges the receipt while the read is stalled, got: " .. copy
+      )
+      Assert.isTrue(
+        copy:find("stall.nds", 1, true) ~= nil,
+        "draw " .. draw .. " still names the stalled file, got: " .. copy
+      )
+      Assert.isTrue(
+        copy:find("Checking ROM", 1, true) ~= nil,
+        "draw " .. draw .. " still shows the pending check, got: " .. copy
+      )
+      Assert.isTrue(
+        copy:lower():find("verified", 1, true) == nil,
+        "a stalled receipt never claims success on draw " .. draw
+      )
+    end
+    Assert.equal(importer.state, "reading", "the stalled session is still waiting on its worker")
+    Assert.equal(#events, 0, "the stalled worker fires no completion")
+    local writer = assert(io.open(fifoPath, "wb"))
+    writer:write("not a real rom")
+    assert(writer:close())
+    pumpQueued(importer)
+    Assert.equal(importer.state, "error", "the answered read fails the session")
+    Assert.equal(#events, 0, "the failed session fires no completion")
+    Assert.isNil(importer:takeVerifiedSource(), "the failed session hands nothing")
+    Assert.isNil(
+      CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua"),
+      "the failed session records no binding"
+    )
+  end)
+end
+
 return { tests = T }

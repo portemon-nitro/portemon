@@ -23,6 +23,7 @@ local ImportState = require("app.src.launcher.ImportState")
 ---@field epoch integer selected source epoch guarded against stale completion
 ---@field service table<string, function> the process cache service, required
 ---@field barrier integer? quiescence only: the exact source-close barrier token
+---@field pendingImportName string? quiescence only: sanitized received filename shown while draining
 ---@field versionId string? boot-source only: the selected game version shown in the blocked instruction
 ---@field mismatch string? boot-source only: wrong-version diagnostic shown while staying blocked
 ---@field pairIndex integer? boot-source only: the selected-epoch walking pair 1..32
@@ -38,6 +39,7 @@ local ImportState = require("app.src.launcher.ImportState")
 ---@field epoch integer
 ---@field service table<string, function>
 ---@field barrier integer?
+---@field pendingImportName string?
 ---@field versionId string?
 ---@field mismatch string?
 ---@field pairIndex integer?
@@ -59,6 +61,7 @@ local ImportState = require("app.src.launcher.ImportState")
 ---@field artFailureOrigin "worker"|"adoption"|nil selected-pair failure provenance: terminal worker record versus retryable local adoption
 ---@field transferred boolean whether takeLoading detached the owned presentation
 ---@field released boolean whether the owned presentation was already released
+---@field _receiptPainted string? quiescence only: pending filename actually drawn
 --- Ownership note: `transferred` (no underscore) is the single detach flag.
 ---@field _importView ImportState? cold only: the retained compact import card
 local CachePreparationState = {}
@@ -140,6 +143,12 @@ function CachePreparationState.new(options)
       type(options.barrier) == "number" and options.barrier % 1 == 0 and options.barrier >= 1,
       "quiescence preparation requires its exact barrier token"
     )
+    assert(
+      options.pendingImportName == nil or type(options.pendingImportName) == "string",
+      "quiescence pending filename must be a string"
+    )
+  else
+    assert(options.pendingImportName == nil, "only the quiescence wait names a pending import")
   end
   if options.kind == "boot-source" then
     assert(
@@ -201,6 +210,8 @@ function CachePreparationState.new(options)
     artFailureOrigin = nil,
     transferred = false,
     released = false,
+    pendingImportName = options.pendingImportName,
+    _receiptPainted = nil,
     _importView = nil,
   }, CachePreparationState)
   if options.kind == "boot-source" and self.freshImport then
@@ -417,8 +428,23 @@ function CachePreparationState:draw()
   end
   lg.setColor(1, 1, 1)
   lg.print("Waiting for source readers to drain...", 24, 24)
+  -- A file received while the barrier is pending is acknowledged on this
+  -- same wait: the name below is a receipt, never a readiness claim, and
+  -- its paint is the fact the shell's import ordering waits for.
+  self._receiptPainted = nil
+  if type(self.pendingImportName) == "string" and self.pendingImportName ~= "" then
+    lg.print("File received " .. self.pendingImportName, 24, 48)
+    self._receiptPainted = self.pendingImportName
+  end
   lg.setColor(0.7, 0.7, 0.75)
   lg.print("Press escape to cancel.", 24, 72)
+end
+
+-- Fact for the shell's import ordering: the pending filename counts as
+-- painted only once this wait actually rendered it.
+---@return string? the pending filename painted by the latest draw, or nil
+function CachePreparationState:paintedReceipt()
+  return self._receiptPainted
 end
 
 function CachePreparationState:_drawBootSource()
@@ -545,6 +571,7 @@ end
 
 function CachePreparationState:dispose()
   self.dead = true
+  self._receiptPainted = nil
   self:_releaseLoading()
 end
 
