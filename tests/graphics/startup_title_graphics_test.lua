@@ -268,6 +268,8 @@ local function assertTwoWhiteSceneLights(lighting, message)
   end
 end
 
+local SOURCE_UNITS_PER_WORLD_UNIT = 16
+
 local function titleDeliversSourceCameraAndLighting(scope, context)
   local Matrix4 = require("libs.math.src.Matrix4")
   for _, versionId in ipairs(readyVersionsOrSkip(context)) do
@@ -276,9 +278,23 @@ local function titleDeliversSourceCameraAndLighting(scope, context)
     local halfAngle = (0xB60 / 65536) * (2 * math.pi)
     Assert.near(sourceVerticalFov(camera.projection()), 2 * halfAngle, 0.02, "title uses the source half-angle")
     local timeline = assert(scene.bundle.timeline, "title bundle carries its camera timeline")
+    local rawEye = timeline.camera.endPosition
+    local rawTarget = timeline.camera.target
     Assert.deepEqual(
       camera.view(),
-      Matrix4.lookAt(timeline.camera.endPosition, timeline.camera.target, { 0, 1, 0 }),
+      Matrix4.lookAt(
+        {
+          rawEye[1] / SOURCE_UNITS_PER_WORLD_UNIT,
+          rawEye[2] / SOURCE_UNITS_PER_WORLD_UNIT,
+          rawEye[3] / SOURCE_UNITS_PER_WORLD_UNIT,
+        },
+        {
+          rawTarget[1] / SOURCE_UNITS_PER_WORLD_UNIT,
+          rawTarget[2] / SOURCE_UNITS_PER_WORLD_UNIT,
+          rawTarget[3] / SOURCE_UNITS_PER_WORLD_UNIT,
+        },
+        { 0, 1, 0 }
+      ),
       "title opens on its sourced end pose"
     )
     withRendererCapture(scene, function(seen)
@@ -727,12 +743,6 @@ local function expectedSourceProjection()
   return Matrix4.perspective(2 * SOURCE_HALF_ANGLE, SOURCE_ASPECT, SOURCE_NEAR, SOURCE_FAR)
 end
 
-local function expectedSourceView(bundle)
-  local Matrix4 = require("libs.math.src.Matrix4")
-  local camera = assert(bundle.timeline.camera, "title bundle carries its camera timeline")
-  return Matrix4.lookAt(camera.endPosition, camera.target, { 0, 1, 0 })
-end
-
 local function silhouetteFractions(canvas, label)
   local width, height = canvas:getDimensions()
   local bytes = canvas:newImageData():getString()
@@ -767,10 +777,41 @@ local function silhouetteFractions(canvas, label)
   }
 end
 
-local function sourceReferenceSilhouette(scene, scope)
-  local view = expectedSourceView(scene.bundle)
+local function assertSilhouetteNearProduction(actual, expected, label)
+  Assert.isTrue(expected.width > 0 and expected.height > 0, label .. " reference frame carries a measurable legendary")
+  Assert.near(actual.width / expected.width, 1, 0.05, label .. " legendary width stays within its sourced size")
+  Assert.near(actual.height / expected.height, 1, 0.05, label .. " legendary height stays within its sourced size")
+  Assert.near(
+    actual.centerX,
+    expected.centerX,
+    4 / REFERENCE_WIDTH,
+    label .. " legendary stays centered on its sourced offset"
+  )
+  Assert.near(
+    actual.centerY,
+    expected.centerY,
+    4 / REFERENCE_HEIGHT,
+    label .. " legendary stays level with its sourced offset"
+  )
+end
+
+local function scaledWorldCoords(raw)
+  return {
+    raw[1] / SOURCE_UNITS_PER_WORLD_UNIT,
+    raw[2] / SOURCE_UNITS_PER_WORLD_UNIT,
+    raw[3] / SOURCE_UNITS_PER_WORLD_UNIT,
+  }
+end
+
+local function expectedWorldView(rawEye, rawTarget)
+  local Matrix4 = require("libs.math.src.Matrix4")
+  return Matrix4.lookAt(scaledWorldCoords(rawEye), scaledWorldCoords(rawTarget), { 0, 1, 0 })
+end
+
+local function renderWorldReferenceSilhouette(scene, scope, rawEye, rawTarget, label)
   local projection = expectedSourceProjection()
-  local sourceCamera = {
+  local view = expectedWorldView(rawEye, rawTarget)
+  local worldCamera = {
     far = SOURCE_FAR,
     zoom = 1,
     view = function()
@@ -803,7 +844,7 @@ local function sourceReferenceSilhouette(scene, scope)
     graphics.clear(0, 0, 0, 0)
     scene.renderer:draw(
       assert(scene.sourceEnvironment, "title scene carries its source environment"),
-      sourceCamera,
+      worldCamera,
       { worldItems(scene.legend), worldItems(scene.sparkle) },
       nil,
       {
@@ -818,25 +859,7 @@ local function sourceReferenceSilhouette(scene, scope)
   if not ok then
     error(failure, 0)
   end
-  return silhouetteFractions(canvas, "the sourced reference frame")
-end
-
-local function assertSilhouetteNearProduction(actual, expected, label)
-  Assert.isTrue(expected.width > 0 and expected.height > 0, label .. " reference frame carries a measurable legendary")
-  Assert.near(actual.width / expected.width, 1, 0.05, label .. " legendary width stays within its sourced size")
-  Assert.near(actual.height / expected.height, 1, 0.05, label .. " legendary height stays within its sourced size")
-  Assert.near(
-    actual.centerX,
-    expected.centerX,
-    4 / REFERENCE_WIDTH,
-    label .. " legendary stays centered on its sourced offset"
-  )
-  Assert.near(
-    actual.centerY,
-    expected.centerY,
-    4 / REFERENCE_HEIGHT,
-    label .. " legendary stays level with its sourced offset"
-  )
+  return silhouetteFractions(canvas, label)
 end
 
 local function legendaryMatchesItsSourcedReferenceFrame(scope, context)
@@ -850,7 +873,9 @@ local function legendaryMatchesItsSourcedReferenceFrame(scope, context)
       "the native reference keeps a source-shaped model target instead of a host-shaped one"
     )
     Assert.deepEqual(scene:_camera().projection(), expectedSourceProjection())
-    Assert.deepEqual(scene:_camera().view(), expectedSourceView(scene.bundle))
+    local timeline = assert(scene.bundle.timeline, "title bundle carries its camera timeline")
+    local rawTarget = assert(timeline.camera.target, "title bundle carries its camera target")
+    Assert.deepEqual(scene:_camera().view(), expectedWorldView(scene.cameraPos, rawTarget))
     withRendererCapture(scene, function(seen)
       scene:_drawModel()
       Assert.deepEqual(
@@ -862,8 +887,148 @@ local function legendaryMatchesItsSourcedReferenceFrame(scope, context)
     scene:_drawModel()
     assertSilhouetteNearProduction(
       silhouetteFractions(scene.canvas, "the native title frame"),
-      sourceReferenceSilhouette(scene, scope),
+      renderWorldReferenceSilhouette(
+        scene,
+        scope,
+        scene.cameraPos,
+        rawTarget,
+        "the world-unit reference frame"
+      ),
       "the " .. versionId .. " legendary"
+    )
+    scene:dispose()
+  end
+end
+
+local function legendaryFramingSharesModelWorldUnitsAtNativeSize(scope, context)
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, REFERENCE_WIDTH, REFERENCE_HEIGHT, "single")
+    local timeline = assert(scene.bundle.timeline, "title bundle carries its camera timeline")
+    local rawTarget = assert(timeline.camera.target, "title bundle carries its camera target")
+    Assert.deepEqual(
+      { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] },
+      timeline.camera.endPosition,
+      "the " .. versionId .. " opening pose keeps its authored coordinates"
+    )
+    local authoredPose = { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] }
+    Assert.deepEqual(
+      scene:_camera().view(),
+      expectedWorldView(scene.cameraPos, rawTarget),
+      "the " .. versionId .. " title view composes eye and target in model world units"
+    )
+    Assert.deepEqual(
+      { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] },
+      authoredPose,
+      "the " .. versionId .. " view composition leaves authored coordinates untouched"
+    )
+    Assert.deepEqual(
+      scene:_camera().projection(),
+      expectedSourceProjection(),
+      "the " .. versionId .. " title keeps its fixed lens"
+    )
+    scene:_drawModel()
+    assertSilhouetteNearProduction(
+      silhouetteFractions(scene.canvas, "the native " .. versionId .. " title frame"),
+      renderWorldReferenceSilhouette(
+        scene,
+        scope,
+        scene.cameraPos,
+        rawTarget,
+        "the " .. versionId .. " world-unit reference frame"
+      ),
+      "the " .. versionId .. " legendary"
+    )
+    scene:dispose()
+  end
+end
+
+local function titleWaypointsKeepAuthoredTimingAcrossHostSizes(scope, context)
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, REFERENCE_WIDTH, REFERENCE_HEIGHT, "single")
+    local timeline = assert(scene.bundle.timeline, "title bundle carries its camera timeline")
+    local rawTarget = assert(timeline.camera.target, "title bundle carries its camera target")
+    local points = assert(timeline.camera.points, "title bundle carries its camera waypoints")
+    Assert.deepEqual(
+      scene:_camera().view(),
+      expectedWorldView(scene.cameraPos, rawTarget),
+      "the " .. versionId .. " opening view composes eye and target in model world units"
+    )
+    local ticks = 0
+    local function advance()
+      scene:updateFixed()
+      ticks = ticks + 1
+      if ticks % 10 == 0 then
+        scene:_drawModel()
+      end
+    end
+    for index, point in ipairs(points) do
+      local budget = 0
+      while scene.cameraPointIndex == index do
+        advance()
+        budget = budget + 1
+        Assert.isTrue(budget < 5000, "the " .. versionId .. " camera reaches its next authored pose")
+      end
+      Assert.deepEqual(
+        { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] },
+        point.position,
+        "the " .. versionId .. " camera lands exactly on its authored pose"
+      )
+      Assert.deepEqual(
+        scene:_camera().view(),
+        expectedWorldView(scene.cameraPos, rawTarget),
+        "the " .. versionId .. " waypoint view composes eye and target in model world units"
+      )
+      if index == 1 then
+        scene:_drawModel()
+        assertSilhouetteNearProduction(
+          silhouetteFractions(scene.canvas, "the " .. versionId .. " waypoint frame"),
+          renderWorldReferenceSilhouette(
+            scene,
+            scope,
+            scene.cameraPos,
+            rawTarget,
+            "the " .. versionId .. " waypoint reference frame"
+          ),
+          "the " .. versionId .. " traveling legendary"
+        )
+      end
+    end
+    local plain = openTitleScene(scope, versionId, REFERENCE_WIDTH, REFERENCE_HEIGHT, "single")
+    for _ = 1, ticks do
+      plain:updateFixed()
+    end
+    Assert.deepEqual(
+      { plain.cameraPos[1], plain.cameraPos[2], plain.cameraPos[3] },
+      { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] },
+      "the " .. versionId .. " intermediate draws never alter the camera trajectory"
+    )
+    plain:dispose()
+    local tick = scene.tick
+    local pose = { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] }
+    scene:resize(1280, 720)
+    Assert.equal(scene.layout.configuration, "wide", "the resized host selects the wide composition")
+    Assert.equal(scene.tick, tick, "the " .. versionId .. " resizing never restarts title timing")
+    Assert.deepEqual(
+      { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] },
+      pose,
+      "the " .. versionId .. " resizing never moves the authored camera"
+    )
+    Assert.deepEqual(
+      scene:_camera().view(),
+      expectedWorldView(scene.cameraPos, rawTarget),
+      "the " .. versionId .. " wide view composes eye and target in model world units"
+    )
+    scene:_drawModel()
+    assertSilhouetteNearProduction(
+      silhouetteFractions(scene.canvas, "the wide " .. versionId .. " title frame"),
+      renderWorldReferenceSilhouette(
+        scene,
+        scope,
+        scene.cameraPos,
+        rawTarget,
+        "the wide " .. versionId .. " reference frame"
+      ),
+      "the wide " .. versionId .. " legendary"
     )
     scene:dispose()
   end
@@ -962,6 +1127,8 @@ local T = GraphicsSmoke.suite({
   ["title holds its prompt without staging copy"] = titleHoldsPromptWithoutStagingCopy,
   ["legendary silhouette matches its sourced reference frame at native size"] = legendaryMatchesItsSourcedReferenceFrame,
   ["host resizing keeps the sourced title lens centered"] = hostResizingKeepsTheSourcedTitleLens,
+  ["legendary framing shares model world units at native size"] = legendaryFramingSharesModelWorldUnitsAtNativeSize,
+  ["title waypoints keep authored timing across host sizes"] = titleWaypointsKeepAuthoredTimingAcrossHostSizes,
 })
 T.metadata.capabilities = { "graphics", "rom_dump" }
 T.metadata.derivedAssets = { "startup-title:global" }
