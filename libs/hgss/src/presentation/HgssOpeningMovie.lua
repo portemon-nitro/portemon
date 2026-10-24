@@ -1499,9 +1499,11 @@ function HgssOpeningMovie.new(options)
   -- Bounded readiness: the two fixed source-engine targets are the only
   -- movie canvases, and every scene is strictly acquired plus
   -- offscreen-rendered before the movie becomes visible. Only the first
-  -- two slots stay resident; transients release before return and the
-  -- source clock never advances during preparation.
-  local preflighted = {}
+  -- two slots stay resident; each later scene is a transient that
+  -- releases before the next acquires, so at most two retained graphs
+  -- plus one transient coexist, and the source clock never advances
+  -- during preparation.
+  local transient = nil
   local ok, failure = pcall(function()
     self.mainCanvas = graphics.newCanvas(SOURCE_WIDTH, SOURCE_HEIGHT, {
       format = "rgba8",
@@ -1542,28 +1544,32 @@ function HgssOpeningMovie.new(options)
         self.townScratch:setFilter("nearest", "nearest")
       end
     end
-    for sceneNumber = 1, 5 do
-      local slot = acquireSlot(self, scenes[sceneNumber])
-      preflighted[#preflighted + 1] = slot
-      self:_renderRoles(slot)
+    -- The retained slots transfer ownership to the movie as soon as each
+    -- acquisition succeeds, so the existing dispose path owns them on any
+    -- later error; the transient is one local that never aliases them.
+    self.current = acquireSlot(self, scenes[1])
+    self:_renderRoles(self.current)
+    self.nextSlot = acquireSlot(self, scenes[2])
+    self:_renderRoles(self.nextSlot)
+    for sceneNumber = 3, 5 do
+      transient = acquireSlot(self, scenes[sceneNumber])
+      self:_renderRoles(transient)
+      releaseSlot(transient)
+      transient = nil
+      -- Reclaim the transient preflight handles promptly instead of leaving
+      -- them queued behind the next acquisition: the retained targets keep
+      -- only current and next scene graphs resident from here on.
+      settleReleasedHandles(self, self.mainCanvas)
     end
   end)
   if not ok then
-    for _, slot in ipairs(preflighted) do
-      releaseSlot(slot)
+    if transient ~= nil then
+      releaseSlot(transient)
     end
+    transient = nil
     self:dispose()
     error(failure, 0)
   end
-  self.current = preflighted[1]
-  self.nextSlot = preflighted[2]
-  for sceneNumber = 3, 5 do
-    releaseSlot(preflighted[sceneNumber])
-  end
-  -- Reclaim the transient preflight handles promptly instead of leaving
-  -- them queued behind the next frame: the retained targets keep only
-  -- current and next scene graphs resident from here on.
-  settleReleasedHandles(self, self.mainCanvas)
   return self
 end
 
