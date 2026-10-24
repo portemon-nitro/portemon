@@ -62,6 +62,17 @@ local function liveContext(state)
   return Context.wrap(state)
 end
 
+---@param context table live battle context under the resumed charge
+---@param move string charge move armed for its strike phase
+local function armCharge(context, move)
+  local SequenceState = require("libs.battle.src.gen4.SequenceMoveState")
+  local function setCharge(state)
+    state.chargeMove = move
+    return state
+  end
+  SequenceState.update(context, 1, { kind = "charge_test", combatant = 1 }, setCharge)
+end
+
 ---@return table<string, table<string, unknown>> immutable move facts for the transition fixtures
 local function tacticFacts()
   return {
@@ -199,6 +210,50 @@ function T.pp_is_consumed_from_the_owning_slot_at_the_native_checkpoint()
     35,
     "a called move never spends the drawn move entry"
   )
+end
+
+function T.imprisoned_selected_moves_fail_before_spending_pp()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local moves = twoMoveSet()
+  local frame = Execution.start({
+    actionId = 3,
+    actor = actorRef(0),
+    requestedMove = "TACKLE",
+    executingMove = "TACKLE",
+    ppOwnerSlot = 0,
+    calledBy = nil,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 2 } },
+    moves = moves,
+    moveFacts = tacticFacts(),
+    stream = fixedStream(),
+    imprisonedMoves = { TACKLE = true },
+  })
+  local outcome = Execution.step(liveContext(liveState()), frame)
+  Assert.equal(outcome.result, "failed", "Imprison fails the selected shared move")
+  Assert.equal((moves[1] --[[@as table<string, unknown>]]).pp, 35, "a blocked move spends no PP")
+end
+
+function T.damage_ledger_keeps_last_hit_for_metal_burst()
+  local state = liveState()
+  local ctx = liveContext(state)
+  local definition = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers").definitionFor("bide")
+  local entry = ctx:entryOf(1)
+  ctx:addBattleEffect(
+    definition,
+    { kind = "active", combatant = 1, activation = entry.activation },
+    { kind = "move", combatant = 1 },
+    { version = 1, turns = 1, damage = 0, attacker = 0 }
+  )
+  ctx:noteDamageTaken(1, 2, "physical", 8)
+  ctx:noteDamageTaken(1, 2, "special", 5)
+  local record = (state.turnStrikes --[[@as table<integer, table<string, unknown>>]])[1]
+  Assert.equal(record.lastAny, 2, "the latest hit keeps its attacker")
+  Assert.equal(record.lastAnyAmount, 5, "the latest hit replaces rather than sums its amount")
+  local effects = state.effectBag:capture()
+  local bideState = effects[1].state --[[@as table<string, unknown>]]
+  Assert.equal(bideState.damage, 13, "Bide accumulates actual received damage across hits")
+  Assert.equal(bideState.attacker, 2, "Bide remembers the latest damaging combatant")
 end
 
 -- Prevention gates reject at their source points: an empty slot, a
@@ -649,6 +704,7 @@ function T.sequence_strikes_read_power_from_compiled_move_facts()
   local function strike(power)
     local state = liveState()
     local ctx = liveContext(state)
+    armCharge(ctx, "FLY")
     local moveFacts = { accuracy = 100, category = "physical", moveType = "flying" }
     if power ~= nil then
       moveFacts.power = power
@@ -707,15 +763,14 @@ function T.sequence_strikes_read_power_from_compiled_move_facts()
   Assert.equal(missing.code, "BATTLE_MISSING_BEHAVIOR", "the missing power names its behavior")
 end
 
--- Delayed strikes read power from the compiled move facts at impact:
--- scheduling succeeds without it, but the landing fails explicitly
--- instead of dealing curated-table damage.
+-- Delayed strikes calculate and save their damage at launch from the
+-- compiled move facts; the residual slot consumes the saved amount later.
 function T.delayed_strikes_read_power_from_compiled_move_facts()
   local Execution = executionOwner("the shared move continuation owns hit progression")
 
   ---@param power integer|nil compiled strike power under the landing
-  ---@return integer damage dealt by the delayed landing over fixed random state
-  local function land(power)
+  ---@return integer damage saved by the delayed strike over fixed random state
+  local function schedule(power)
     local state = liveState()
     local ctx = liveContext(state)
     local moveFacts = { accuracy = 100, category = "special", moveType = "psychic" }
@@ -746,6 +801,7 @@ function T.delayed_strikes_read_power_from_compiled_move_facts()
       guts = false,
       weather = "none",
       weatherSuppressed = false,
+      duel = { userTurn = 0 },
       abilities = { user = "NONE", foe = "NONE" },
       attackerTypes = typeFacts().attackerTypes,
       defenderTypes = typeFacts().defenderTypes,
@@ -753,17 +809,17 @@ function T.delayed_strikes_read_power_from_compiled_move_facts()
       stream = fixedStream(),
     }))
     local scheduled = Execution.step(ctx, frame)
-    Assert.isTrue(scheduled.kind ~= nil, "the delayed scheduling answers through the frame protocol")
-    local landed = Execution.step(ctx, scheduled.frame or scheduled)
-    Assert.equal(landed.kind, "complete", "the delayed landing runs to completion")
+    Assert.equal(scheduled.result, "hit", "the delayed move completes after scheduling")
     local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
-    local record = defender[2] --[[@as table<string, unknown>]]
-    return record.entryHp --[[@as integer]] - record.hp --[[@as integer]]
+    Assert.equal(defender[2].hp, defender[2].entryHp, "scheduling does not damage the target")
+    local effects = state.effectBag:capture()
+    Assert.equal(#effects, 1, "scheduling stores one delayed strike")
+    return effects[1].state.damage --[[@as integer]]
   end
 
-  local hard = land(140)
-  local soft = land(20)
-  Assert.isTrue(hard > soft, "different compiled powers deal different delayed damage")
+  local hard = schedule(140)
+  local soft = schedule(20)
+  Assert.isTrue(hard > soft, "different compiled powers store different delayed damage")
   local state = liveState()
   local ctx = liveContext(state)
   local frame = Execution.validateFrame(Execution.start({
@@ -790,16 +846,16 @@ function T.delayed_strikes_read_power_from_compiled_move_facts()
     guts = false,
     weather = "none",
     weatherSuppressed = false,
+    duel = { userTurn = 0 },
     abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = typeFacts().attackerTypes,
     defenderTypes = typeFacts().defenderTypes,
     typeChart = typeFacts().typeChart,
     stream = fixedStream(),
   }))
-  local scheduled = Execution.step(ctx, frame)
   local missing = Assert.throws(function()
-    Execution.step(ctx, scheduled.frame or scheduled)
-  end, "a delayed landing without compiled power fails instead of curating damage")
+    Execution.step(ctx, frame)
+  end, "a delayed schedule without compiled power fails instead of curating damage")
   Assert.equal(missing.code, "BATTLE_MISSING_BEHAVIOR", "the missing delayed power names its behavior")
 end
 
@@ -819,6 +875,7 @@ function T.sequence_strikes_resolve_exact_stab_and_effectiveness()
   local function strike(move, moveType, attacker, defender)
     local state = liveState()
     local ctx = liveContext(state)
+    armCharge(ctx, move)
     local frame = Execution.validateFrame(Execution.start({
       actionId = 1,
       actor = actorRef(0),
@@ -924,6 +981,117 @@ function T.stockpile_releases_fail_instead_of_dealing_neutral_damage()
   )
 end
 
+function T.stockpile_counts_raise_and_release_the_stored_defenses()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local state = liveState()
+  local ctx = liveContext(state)
+  local facts = typeFacts()
+  local function execute(move)
+    local frame = Execution.validateFrame(Execution.start({
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = move,
+      executingMove = move,
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = move, pp = 10, ppUps = 0 } },
+      moveFacts = { [move] = { power = 100, accuracy = 100, category = "special", moveType = "normal" } },
+      combat = {
+        level = 50,
+        attack = 120,
+        defense = 90,
+        rawAttack = 120,
+        rawDefense = 90,
+        attackStage = 0,
+        defenseStage = 0,
+      },
+      burned = false,
+      guts = false,
+      weather = "none",
+      weatherSuppressed = false,
+      abilities = { user = "NONE", foe = "NONE" },
+      attackerTypes = facts.attackerTypes,
+      defenderTypes = facts.defenderTypes,
+      typeChart = facts.typeChart,
+      stream = fixedStream(),
+    }))
+    return Execution.step(ctx, frame)
+  end
+  Assert.equal(execute("STOCKPILE").result, "hit", "Stockpile succeeds once")
+  Assert.equal(execute("STOCKPILE").result, "hit", "Stockpile succeeds a second time")
+  Assert.equal(ctx:entryOf(1).stages.defense, 2, "Stockpile raises Defense for each use")
+  Assert.equal(ctx:entryOf(1).stages.specialDefense, 2, "Stockpile raises Special Defense for each use")
+  local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
+  local before = defender[2].hp --[[@as integer]]
+  Assert.equal(execute("SPIT_UP").result, "hit", "Spit Up consumes the stored uses")
+  Assert.isTrue(defender[2].hp --[[@as integer]] < before, "Spit Up deals its stacked strike")
+  Assert.equal(ctx:entryOf(1).stages.defense, 0, "Spit Up removes the stored Defense raises")
+  Assert.equal(ctx:entryOf(1).stages.specialDefense, 0, "Spit Up removes the stored Special Defense raises")
+  Assert.isTrue(not ctx:hasBattleEffect(1, "stockpile"), "Spit Up removes the stored count")
+end
+
+function T.fake_out_and_sucker_punch_read_native_turn_facts()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local state = liveState()
+  local ctx = liveContext(state)
+  local facts = typeFacts()
+  local function execute(move, duel)
+    local frame = Execution.validateFrame(Execution.start({
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = move,
+      executingMove = move,
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = move, pp = 10, ppUps = 0 } },
+      moveFacts = { [move] = { power = 40, accuracy = 100, category = "physical", moveType = "normal" } },
+      combat = {
+        level = 50,
+        attack = 120,
+        defense = 90,
+        rawAttack = 120,
+        rawDefense = 90,
+        attackStage = 0,
+        defenseStage = 0,
+      },
+      duel = duel,
+      burned = false,
+      guts = false,
+      weather = "none",
+      weatherSuppressed = false,
+      abilities = { user = "NONE", foe = "NONE" },
+      attackerTypes = facts.attackerTypes,
+      defenderTypes = facts.defenderTypes,
+      typeChart = facts.typeChart,
+      stream = fixedStream(),
+    }))
+    return Execution.step(ctx, frame)
+  end
+
+  local target = (state.combatants --[[@as table<integer, table<string, unknown>>]])[2]
+  local before = target.hp --[[@as integer]]
+  Assert.equal(execute("FAKE_OUT", { userFresh = false }).result, "failed", "Fake Out fails after the entry turn")
+  Assert.equal(target.hp, before, "a stale Fake Out deals no damage")
+  Assert.equal(execute("FAKE_OUT", { userFresh = true }).result, "hit", "Fake Out works on the fresh entry")
+  Assert.isTrue(ctx:hasBattleEffect(2, "flinch"), "a fresh Fake Out flinches its target")
+  Assert.equal(
+    execute("SUCKER_PUNCH", { foeSelectedDamage = false }).result,
+    "failed",
+    "Sucker Punch fails against a selected status move"
+  )
+  local beforeSucker = target.hp --[[@as integer]]
+  Assert.equal(
+    execute("SUCKER_PUNCH", { foeSelectedDamage = true }).result,
+    "hit",
+    "Sucker Punch connects against a selected damaging move"
+  )
+  Assert.isTrue(target.hp --[[@as integer]] < beforeSucker, "the allowed Sucker Punch deals damage")
+end
+
 -- Sequence strikes never assume neutral type facts: a strike without
 -- attacker types, without a session chart, or a delayed landing without
 -- defender types fails with its missing behavior instead of succeeding.
@@ -935,6 +1103,7 @@ function T.sequence_strikes_fail_without_type_facts()
   local function attemptImmediate(overrides, move)
     local state = liveState()
     local ctx = liveContext(state)
+    armCharge(ctx, move)
     local inputs = {
       actionId = 1,
       actor = actorRef(0),
@@ -1012,24 +1181,21 @@ function T.sequence_strikes_fail_without_type_facts()
     typeChart = typeFacts().typeChart,
     stream = fixedStream(),
   }))
-  local scheduled = Execution.step(ctx, frame)
   local failure = Assert.throws(function()
-    Execution.step(ctx, scheduled.frame or scheduled)
-  end, "the delayed landing fails without its defender types")
-  Assert.equal(failure.code, "BATTLE_MISSING_BEHAVIOR", "the missing landing facts name their behavior")
+    Execution.step(ctx, frame)
+  end, "the delayed schedule fails without its defender types")
+  Assert.equal(failure.code, "BATTLE_MISSING_BEHAVIOR", "the missing launch facts name their behavior")
 end
 
--- Delayed impacts land as typeless Generation-IV damage: attacker STAB
--- and chart relations never scale the landing, so identical landings
--- from different types deal identical damage through the explicit
--- typeless contract.
+-- Delayed impacts calculate typeless Generation-IV damage at launch:
+-- attacker STAB and chart relations do not scale the saved damage.
 function T.delayed_impacts_land_typeless_without_stab_or_relation()
   local Execution = executionOwner("the shared move continuation owns hit progression")
   local CombatFixture = require("libs.battle.tests.combat_fixture")
 
   ---@param attacker string attacker semantic type under the landing
   ---@param defender string[] defender semantic types under the landing
-  ---@return integer damage dealt by the delayed landing over fixed random state
+  ---@return integer damage saved by the delayed strike over fixed random state
   local function land(attacker, defender)
     local state = liveState()
     local ctx = liveContext(state)
@@ -1057,6 +1223,7 @@ function T.delayed_impacts_land_typeless_without_stab_or_relation()
       guts = false,
       weather = "none",
       weatherSuppressed = false,
+      duel = { userTurn = 0 },
       abilities = { user = "NONE", foe = "NONE" },
       attackerTypes = { attacker },
       defenderTypes = { [2] = defender },
@@ -1064,17 +1231,15 @@ function T.delayed_impacts_land_typeless_without_stab_or_relation()
       stream = fixedStream(),
     }))
     local scheduled = Execution.step(ctx, frame)
-    local landed = Execution.step(ctx, scheduled.frame or scheduled)
-    Assert.equal(landed.kind, "complete", "the delayed landing runs to completion")
-    local defenders = state.combatants --[[@as table<integer, table<string, unknown>>]]
-    local record = defenders[2] --[[@as table<string, unknown>]]
-    return record.entryHp --[[@as integer]] - record.hp --[[@as integer]]
+    Assert.equal(scheduled.result, "hit", "the delayed move completes after scheduling")
+    local effects = state.effectBag:capture()
+    return effects[1].state.damage --[[@as integer]]
   end
 
   local fromPsychic = land("psychic", { "fire" })
   local fromNormal = land("normal", { "water" })
   Assert.equal(fromPsychic, fromNormal, "typeless landings ignore STAB and chart relations")
-  Assert.isTrue(fromPsychic >= 1, "the typeless landing still deals its minimum damage")
+  Assert.isTrue(fromPsychic >= 1, "the typeless delayed strike stores minimum damage")
 end
 
 -- Helping Hand boosts a live ally: with only its user sampled the move

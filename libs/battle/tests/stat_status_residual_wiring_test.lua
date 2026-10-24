@@ -53,6 +53,36 @@ local function scenarioMoveFacts(seeds)
     GROWL = catalog:move("GROWL"),
     AGILITY = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = 0 },
     FAKE_OUT = { power = 40, accuracy = 100, category = "physical", moveType = "normal", priority = 1 },
+    SUCKER_PUNCH = { power = 70, accuracy = 100, category = "physical", moveType = "dark", priority = 1 },
+    PURSUIT = { power = 40, accuracy = 100, effectChance = 0, category = "physical", moveType = "dark", priority = 0 },
+    U_TURN = { power = 70, accuracy = 100, category = "physical", moveType = "bug", priority = 0 },
+    BATON_PASS = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 0 },
+    ROAR = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = -6 },
+    WHIRLWIND = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = -6 },
+    SUBSTITUTE = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = 0 },
+    PROTECT = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 4, range = 16 },
+    DETECT = { power = 0, accuracy = 0, category = "other", moveType = "fighting", priority = 4, range = 16 },
+    ENDURE = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 3, range = 16 },
+    DESTINY_BOND = { power = 0, accuracy = 0, category = "other", moveType = "ghost", priority = 1, range = 16 },
+    GRUDGE = { power = 0, accuracy = 0, category = "other", moveType = "ghost", priority = 1, range = 16 },
+    FLY = { power = 90, accuracy = 95, category = "physical", moveType = "flying", priority = 0 },
+    DIG = { power = 80, accuracy = 100, category = "physical", moveType = "ground", priority = 0 },
+    DIVE = { power = 80, accuracy = 100, category = "physical", moveType = "water", priority = 0 },
+    BOUNCE = { power = 85, accuracy = 85, category = "physical", moveType = "flying", priority = 0 },
+    SHADOW_FORCE = { power = 120, accuracy = 100, category = "physical", moveType = "ghost", priority = 0 },
+    SKY_UPPERCUT = { power = 85, accuracy = 90, category = "physical", moveType = "fighting", priority = 0 },
+    SOLAR_BEAM = { power = 120, accuracy = 100, category = "special", moveType = "grass", priority = 0 },
+    CHARGE = { power = 0, accuracy = 0, category = "other", moveType = "electric", priority = 0 },
+    THUNDERBOLT = { power = 30, accuracy = 100, effectChance = 10, category = "special", moveType = "electric", priority = 0 },
+    ROLLOUT = { power = 30, accuracy = 90, effectChance = 0, category = "physical", moveType = "rock", priority = 0 },
+    ICE_BALL = { power = 30, accuracy = 90, effectChance = 0, category = "physical", moveType = "ice", priority = 0 },
+    FURY_CUTTER = { power = 10, accuracy = 95, effectChance = 0, category = "physical", moveType = "bug", priority = 0 },
+    OUTRAGE = { power = 30, accuracy = 100, effectChance = 0, category = "physical", moveType = "dragon", priority = 0 },
+    FUTURE_SIGHT = { power = 80, accuracy = 100, effectChance = 0, category = "special", moveType = "psychic", priority = 0 },
+    DOOM_DESIRE = { power = 120, accuracy = 100, effectChance = 0, category = "special", moveType = "steel", priority = 0 },
+    RAGE = { power = 20, accuracy = 100, effectChance = 0, category = "physical", moveType = "normal", priority = 0 },
+    HYPER_BEAM = { power = 40, accuracy = 90, effectChance = 0, category = "special", moveType = "normal", priority = 0 },
+    UPROAR = { power = 30, accuracy = 100, effectChance = 0, category = "special", moveType = "normal", priority = 1 },
     REFLECT = { power = 0, accuracy = 100, category = "other", moveType = "psychic", priority = 0 },
     SPORE = { power = 0, accuracy = 100, category = "other", moveType = "grass", priority = 0 },
     POISON_POWDER = { power = 0, accuracy = 100, category = "other", moveType = "poison", priority = 0 },
@@ -211,6 +241,25 @@ local function effectRecord(key, id, scope, source, state)
   }
 end
 
+---@param key string inline identity marker being seeded
+---@param id integer stable effect identity
+---@param combatant integer active owner receiving the marker
+---@param activation integer entry token owning the marker
+---@return table effect record matching the inert identity marker contract
+local function inertBatonPassMarker(key, id, combatant, activation)
+  return {
+    id = id,
+    key = key,
+    version = 1,
+    scope = { kind = "active", combatant = combatant, activation = activation },
+    source = { kind = "move", key = key, combatant = combatant, activation = activation },
+    state = { version = 1 },
+    createdOrdinal = id,
+    timings = { { timing = "leave", handler = key, orderClass = "affliction" } },
+    lifecycle = { stacking = "replace", transfer = "clear", persistent = false },
+  }
+end
+
 ---@param session table live headless session under seeding
 ---@param content table frozen battle content for the restored session
 ---@param records table[] effect records to install through the capture
@@ -293,6 +342,19 @@ local function strikeKeys(events)
     end
   end
   return keys
+end
+
+---@param events table[] emitted events under inspection
+---@param move string source move identity under inspection
+---@return integer? observed damage from the named strike
+local function strikeDamage(events, move)
+  for _, event in ipairs(events) do
+    if event.kind == "struck" and event.cause.key == move then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      return payload.damage --[[@as integer]]
+    end
+  end
+  return nil
 end
 
 ---@param events table[] emitted events under inspection
@@ -923,6 +985,912 @@ function T.fake_out_flinch_blocks_the_later_strike_through_dispatch()
   do
     Assert.isTrue(record.key ~= "flinch", "the flinch is consumed by its block")
   end
+  local nextFrame, nextEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(nextFrame.status, "waiting", "the second turn still settles")
+  Assert.deepEqual(strikeKeys(nextEvents), { "TACKLE" }, "Fake Out fails after the user's entry turn")
+  session:dispose()
+end
+
+function T.sucker_punch_checks_the_targets_selected_move()
+  local contracts = SessionFixture.sessionContracts()
+  local alpha = movesetCombatant(1, 11, { moveSlot("SUCKER_PUNCH", 5) })
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40), moveSlot("TACKLE", 35) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), nativeContent())
+
+  local frame, events = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(frame.status, "waiting", "the status-target turn settles")
+  Assert.deepEqual(strikeKeys(events), {}, "Sucker Punch fails against Splash")
+
+  local nextFrame, nextEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 1, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(nextFrame.status, "waiting", "the damaging-target turn settles")
+  Assert.deepEqual(strikeKeys(nextEvents), { "SUCKER_PUNCH", "TACKLE" }, "Sucker Punch hits before the selected Tackle")
+  session:dispose()
+end
+
+function T.protect_blocks_hits_for_one_turn_and_endure_keeps_one_hp()
+  local contracts = SessionFixture.sessionContracts()
+  local alpha = movesetCombatant(1, 11, { moveSlot("PROTECT", 10), moveSlot("TACKLE", 35) })
+  local beta = movesetCombatant(2, 31, { moveSlot("TACKLE", 35) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), nativeContent())
+  local protectedTurn, protectedEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(protectedTurn.status, "waiting", "the protected turn settles")
+  Assert.deepEqual(strikeKeys(protectedEvents), {}, "Protect prevents the incoming strike")
+  Assert.isTrue(combatantOf(session:capture(), 1).hp > 0, "Protect leaves its user unharmed")
+  local exposedTurn, exposedEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(exposedTurn.status, "waiting", "the next turn settles after protection expires")
+  Assert.deepEqual(strikeKeys(exposedEvents), { "TACKLE", "TACKLE" }, "Protect expires at turn end")
+  session:dispose()
+
+  local detector = movesetCombatant(5, 61, { moveSlot("DETECT", 10) })
+  local otherAttacker = movesetCombatant(6, 71, { moveSlot("TACKLE", 35) })
+  local detectSession = contracts.Battle.newSession(
+    duelScenario({ detector, otherAttacker }, {}, {}),
+    nativeContent()
+  )
+  local detectedTurn, detectedEvents = playTurn(
+    detectSession,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(detectedTurn.status, "waiting", "the Detect turn settles")
+  Assert.deepEqual(strikeKeys(detectedEvents), {}, "Detect prevents the incoming strike")
+  detectSession:dispose()
+
+  local guarded = movesetCombatant(7, 81, { moveSlot("PROTECT", 10) })
+  local spored = movesetCombatant(8, 91, { moveSlot("SPORE", 15) })
+  local statusSession = contracts.Battle.newSession(
+    duelScenario({ guarded, spored }, {}, {}),
+    nativeContent()
+  )
+  local statusTurn, statusEvents = playTurn(
+    statusSession,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(statusTurn.status, "waiting", "the protected status turn settles")
+  Assert.equal(#combatantOf(statusSession:capture(), 7).mon.condition.effects, 0, "Protect blocks targeted status moves")
+  Assert.isTrue(hasEventKind(statusEvents, "protected"), "the status gate reports protection")
+  statusSession:dispose()
+
+  local enduring = movesetCombatant(3, 41, { moveSlot("ENDURE", 10) })
+  enduring.mon.condition.currentHp = 1
+  local attacker = movesetCombatant(4, 51, { moveSlot("TACKLE", 35) })
+  local endureSession = contracts.Battle.newSession(duelScenario({ enduring, attacker }, {}, {}), nativeContent())
+  local enduredTurn, enduredEvents = playTurn(
+    endureSession,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  local usedEndure = false
+  for _, event in ipairs(enduredEvents) do
+    if event.kind == "move-used" and event.cause.key == "ENDURE" then
+      usedEndure = true
+    end
+  end
+  Assert.isTrue(usedEndure, "Endure succeeds before the incoming attack")
+  Assert.equal(combatantOf(endureSession:capture(), 3).hp, 1, "Endure survives a lethal strike at one HP")
+  Assert.equal(enduredTurn.status, "waiting", "the Endure turn settles")
+  endureSession:dispose()
+end
+
+function T.destiny_bond_faints_its_attacker_and_grudge_empties_the_knocking_move()
+  local contracts = SessionFixture.sessionContracts()
+  local bonded = movesetCombatant(9, 101, { moveSlot("DESTINY_BOND", 5) })
+  bonded.mon.condition.currentHp = 1
+  local attacker = movesetCombatant(10, 111, { moveSlot("TACKLE", 35) })
+  local bondSession = contracts.Battle.newSession(duelScenario({ bonded, attacker }, {}, {}), nativeContent())
+  local bondTurn = playTurn(
+    bondSession,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(bondTurn.status, "ended", "Destiny Bond ends the one-on-one battle")
+  Assert.equal(combatantOf(bondSession:capture(), 9).hp, 0, "Destiny Bond's user faints")
+  Assert.equal(combatantOf(bondSession:capture(), 10).hp, 0, "Destiny Bond also faints its attacker")
+  bondSession:dispose()
+
+  local cursed = movesetCombatant(11, 121, { moveSlot("GRUDGE", 5) })
+  cursed.mon.condition.currentHp = 1
+  local user = movesetCombatant(12, 131, { moveSlot("TACKLE", 35) })
+  local grudgeSession = contracts.Battle.newSession(duelScenario({ cursed, user }, {}, {}), nativeContent())
+  local grudgeTurn = playTurn(
+    grudgeSession,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(grudgeTurn.status, "ended", "Grudge resolves the knockout in the one-on-one battle")
+  Assert.equal(combatantOf(grudgeSession:capture(), 12).mon.moves[1].pp, 0, "Grudge drains Tackle's power points")
+  grudgeSession:dispose()
+end
+
+function T.fly_spends_pp_while_charging_and_strikes_on_its_next_action()
+  local contracts = SessionFixture.sessionContracts()
+  local flyer = movesetCombatant(13, 141, { moveSlot("FLY", 10), moveSlot("TACKLE", 35) })
+  local opponent = movesetCombatant(14, 151, { moveSlot("TACKLE", 35) })
+  local session = contracts.Battle.newSession(duelScenario({ flyer, opponent }, {}, {}), nativeContent())
+  local firstTurn, firstEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(firstTurn.status, "waiting", "the charge turn settles")
+  local firstStrikes = strikeKeys(firstEvents)
+  Assert.equal(#firstStrikes, 0, "Fly's charge turn avoids ordinary incoming attacks")
+  Assert.equal(combatantOf(session:capture(), 13).hp, flyer.mon.condition.currentHp, "the charging user takes no ordinary hit")
+  Assert.equal(combatantOf(session:capture(), 13).mon.moves[1].pp, 9, "Fly spends PP when charging")
+
+  local secondTurn, secondEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(secondTurn.status, "waiting", "the strike turn settles")
+  local secondStrikes = strikeKeys(secondEvents)
+  Assert.equal(#secondStrikes, 2, "Fly and its opponent each strike on the next turn")
+  Assert.isTrue((secondStrikes[1] == "FLY" or secondStrikes[2] == "FLY"), "the charged Fly strikes")
+  Assert.isTrue((secondStrikes[1] == "TACKLE" or secondStrikes[2] == "TACKLE"), "the opponent also strikes")
+  Assert.equal(combatantOf(session:capture(), 13).mon.moves[1].pp, 9, "Fly does not spend PP again when landing")
+  session:dispose()
+end
+
+function T.semi_invulnerable_charge_moves_avoid_ordinary_hits_and_sky_uppercut_hits_fly()
+  local contracts = SessionFixture.sessionContracts()
+  for _, move in ipairs({ "FLY", "DIG", "DIVE", "BOUNCE", "SHADOW_FORCE" }) do
+    local userId = 13
+    local foeId = 14
+    local user = movesetCombatant(userId, 141, { moveSlot(move, 10), moveSlot("SPLASH", 40) })
+    local foe = movesetCombatant(foeId, 151, { moveSlot("TACKLE", 35) })
+    local session = contracts.Battle.newSession(duelScenario({ user, foe }, {}, {}), nativeContent())
+    playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
+    Assert.equal(
+      combatantOf(session:capture(), userId).hp,
+      user.mon.condition.currentHp,
+      move .. " avoids an ordinary attack after its charge starts"
+    )
+    session:dispose()
+  end
+
+  local flyer = movesetCombatant(13, 141, { moveSlot("FLY", 10), moveSlot("SPLASH", 40) })
+  local attacker = movesetCombatant(14, 151, { moveSlot("SKY_UPPERCUT", 15) })
+  local session = contracts.Battle.newSession(duelScenario({ flyer, attacker }, {}, {}), nativeContent())
+  playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.isTrue(
+    combatantOf(session:capture(), 13).hp < flyer.mon.condition.currentHp,
+    "Sky Uppercut reaches a user charging Fly"
+  )
+  session:dispose()
+
+  local solarUser = movesetCombatant(13, 141, { moveSlot("SOLAR_BEAM", 10), moveSlot("SPLASH", 40) })
+  local ordinaryAttacker = movesetCombatant(14, 151, { moveSlot("TACKLE", 35) })
+  local solarSession = contracts.Battle.newSession(
+    duelScenario({ solarUser, ordinaryAttacker }, {}, {}),
+    nativeContent()
+  )
+  playTurn(
+    solarSession,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.isTrue(
+    combatantOf(solarSession:capture(), 13).hp < solarUser.mon.condition.currentHp,
+    "Solar Beam's charge turn remains hittable"
+  )
+  solarSession:dispose()
+end
+
+function T.charge_boosts_the_next_electric_strike_and_raises_special_defense()
+  local contracts = SessionFixture.sessionContracts()
+  local function run(charged)
+    local user = movesetCombatant(15, 161, {
+      moveSlot("CHARGE", 20),
+      moveSlot("THUNDERBOLT", 15),
+      moveSlot("SPLASH", 40),
+    })
+    local target = movesetCombatant(16, 171, { moveSlot("SPLASH", 40) })
+    local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
+    local _, firstEvents = playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = charged and 0 or 2, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
+    if charged then
+      local first = combatantOf(session:capture(), 15)
+      Assert.equal(first.stages.specialDefense, 1, "Charge raises Special Defense")
+      Assert.isTrue(hasEventKind(firstEvents, "move-used"), "Charge resolves its setup action")
+    end
+    local _, secondEvents = playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
+    local damage = strikeDamage(secondEvents, "THUNDERBOLT")
+    Assert.notNil(damage, "Thunderbolt reaches its strike with or without Charge")
+    if charged then
+      Assert.equal(#recordsWithKey(session:capture(), "sequencemove"), 0, "Charge is consumed by the Electric strike")
+    end
+    session:dispose()
+    return damage --[[@as integer]]
+  end
+  local boosted = run(true)
+  local ordinary = run(false)
+  Assert.isTrue(boosted > ordinary, "Charge doubles the next Electric move's power")
+end
+
+function T.recharge_moves_block_the_users_following_action()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(17, 181, { moveSlot("HYPER_BEAM", 5), moveSlot("TACKLE", 35) })
+  local target = movesetCombatant(18, 191, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
+  local _, firstEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.notNil(strikeDamage(firstEvents, "HYPER_BEAM"), "Hyper Beam lands before recharge")
+  Assert.equal(#recordsWithKey(session:capture(), "recharge"), 1, "the attack records a native recharge gate")
+  local _, secondEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(#strikeKeys(secondEvents), 0, "the recharge gate blocks the selected Tackle")
+  Assert.equal(combatantOf(session:capture(), 17).mon.moves[2].pp, 35, "a blocked action spends no Tackle PP")
+  session:dispose()
+end
+
+function T.rollout_forces_its_move_and_doubles_damage_on_the_next_turn()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(19, 201, { moveSlot("ROLLOUT", 20), moveSlot("TACKLE", 35) })
+  local target = movesetCombatant(20, 211, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
+  local _, firstEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  local firstDamage = strikeDamage(firstEvents, "ROLLOUT")
+  Assert.notNil(firstDamage, "Rollout lands its first rung")
+  local _, secondEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  local secondDamage = strikeDamage(secondEvents, "ROLLOUT")
+  Assert.notNil(secondDamage, "Rollout forces the same move despite Tackle selection")
+  Assert.isTrue(secondDamage > firstDamage, "Rollout doubles its second rung")
+  Assert.equal(combatantOf(session:capture(), 19).mon.moves[1].pp, 19, "forced Rollout actions do not spend another PP")
+  session:dispose()
+end
+
+function T.fury_cutter_keeps_its_ramp_across_consecutive_turns()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(21, 221, { moveSlot("FURY_CUTTER", 20), moveSlot("SPLASH", 40) })
+  local target = movesetCombatant(22, 231, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
+  local _, firstEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  local firstDamage = strikeDamage(firstEvents, "FURY_CUTTER")
+  Assert.notNil(firstDamage, "Fury Cutter lands its first rung")
+  local _, secondEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  local secondDamage = strikeDamage(secondEvents, "FURY_CUTTER")
+  Assert.notNil(secondDamage, "Fury Cutter lands its consecutive rung")
+  Assert.isTrue(secondDamage > firstDamage, "Fury Cutter doubles on consecutive uses")
+  session:dispose()
+end
+
+function T.rampage_forces_its_selected_move_on_the_following_turn()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(23, 241, { moveSlot("OUTRAGE", 10), moveSlot("TACKLE", 35) })
+  local target = movesetCombatant(24, 251, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
+  local _, firstEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.notNil(strikeDamage(firstEvents, "OUTRAGE"), "Outrage lands its first forced action")
+  local _, secondEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.notNil(strikeDamage(secondEvents, "OUTRAGE"), "Outrage overrides the next selected Tackle")
+  Assert.equal(combatantOf(session:capture(), 23).mon.moves[1].pp, 9, "a forced Outrage action spends no extra PP")
+  local snapshot = session:capture()
+  if #recordsWithKey(snapshot, "sequencemove") > 0 then
+    local _, thirdEvents = playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
+    Assert.notNil(strikeDamage(thirdEvents, "OUTRAGE"), "the three-turn Outrage roll forces one more action")
+    snapshot = session:capture()
+  end
+  Assert.equal(#recordsWithKey(snapshot, "sequencemove"), 0, "Outrage releases its lock at the rolled duration")
+  Assert.equal(#recordsWithKey(snapshot, "confusion"), 1, "rampage fatigue applies confusion after the final strike")
+  session:dispose()
+end
+
+function T.uproar_forces_three_strikes_and_blocks_sleep_until_it_ends()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(25, 261, { moveSlot("UPROAR", 10), moveSlot("TACKLE", 35) })
+  local target = movesetCombatant(26, 271, { moveSlot("SPORE", 15), moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
+  for turn = 1, 3 do
+    local _, events = playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = turn == 1 and 0 or 1, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
+    Assert.notNil(strikeDamage(events, "UPROAR"), "Uproar forces the selected move through its fixed duration")
+    Assert.equal(#conditionOf(session:capture(), 25).effects, 0, "Uproar prevents sleep while its turns remain")
+  end
+  Assert.equal(#recordsWithKey(session:capture(), "uproar"), 0, "Uproar expires after three turns")
+  local fourthTurn = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(fourthTurn.status, "waiting", "the battle settles after Uproar ends")
+  local slept = conditionOf(session:capture(), 25).effects
+  Assert.equal(#slept, 1, "Spore can apply sleep after Uproar ends")
+  Assert.equal(slept[1].key, "sleep", "Uproar's expiration restores sleep eligibility")
+  Assert.equal(#recordsWithKey(session:capture(), "uproar"), 0, "the finished Uproar leaves no field marker")
+  session:dispose()
+end
+
+function T.pursuit_strikes_the_departing_target_before_its_switch()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(27, 281, { moveSlot("PURSUIT", 20), moveSlot("SPLASH", 40) })
+  local target = movesetCombatant(28, 291, { moveSlot("SPLASH", 40) })
+  local reserve = movesetCombatant(29, 301, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, { reserve }), nativeContent())
+  local oldHp = combatantOf(session:capture(), 28).hp --[[@as integer]]
+  local frame, events = playTurn(session, function(request)
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if actor.combatant == 27 then
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      else
+        choices[#choices + 1] = SessionFixture.switchChoice(actor, 29)
+      end
+    end
+    return choices
+  end)
+  Assert.equal(frame.status, "waiting", "the Pursuit switch turn completes")
+  local damage = strikeDamage(events, "PURSUIT")
+  Assert.notNil(damage, "Pursuit hits the selected switcher before departure")
+  Assert.isTrue((damage --[[@as integer]]) > 0, "the switch interception deals damage")
+  local strikeIndex, switchIndex = nil, nil
+  for index, event in ipairs(events) do
+    if event.kind == "struck" and event.cause.key == "PURSUIT" then
+      strikeIndex = index
+    elseif event.kind == "switch" and event.payload.from == 28 then
+      switchIndex = index
+    end
+  end
+  Assert.isTrue(strikeIndex ~= nil and switchIndex ~= nil and strikeIndex < switchIndex, "the departing target is struck before switch settlement")
+  Assert.equal(combatantOf(session:capture(), 28).hp, oldHp - (damage --[[@as integer]]), "Pursuit damage remains on the departing target")
+  Assert.equal(combatantOf(session:capture(), 29).active.position, 2, "the selected reserve enters after the interception")
+  session:dispose()
+
+  local ordinaryUser = movesetCombatant(27, 281, { moveSlot("PURSUIT", 20), moveSlot("SPLASH", 40) })
+  local ordinaryTarget = movesetCombatant(28, 291, { moveSlot("SPLASH", 40) })
+  local ordinary = contracts.Battle.newSession(duelScenario({ ordinaryUser, ordinaryTarget }, {}, {}), nativeContent())
+  local _, ordinaryEvents = playTurn(
+    ordinary,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  local ordinaryDamage = strikeDamage(ordinaryEvents, "PURSUIT")
+  Assert.notNil(ordinaryDamage, "Pursuit also lands on a target that stays")
+  Assert.isTrue((damage --[[@as integer]]) > (ordinaryDamage --[[@as integer]]), "Pursuit doubles its power against the departing target")
+  ordinary:dispose()
+end
+
+function T.u_turn_prompts_for_a_replacement_after_the_strike()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(40, 411, { moveSlot("U_TURN", 20), moveSlot("SPLASH", 40) })
+  local reserve = movesetCombatant(41, 421, { moveSlot("SPLASH", 40) })
+  local target = movesetCombatant(42, 431, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, { reserve }, {}), nativeContent())
+  local frame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(frame.status, "waiting", "the opening turn requests actor choices")
+  for _, request in ipairs(frame.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if actor.combatant == 40 then
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      else
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+      end
+    end
+    local ok, err = session:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "the opening choices are accepted")
+    Assert.isNil(err, "accepted choices have no input error")
+  end
+  frame = session:advance()
+  Assert.equal(frame.status, "waiting", "the pivot pauses the action queue for its switch choice")
+  local intent = nil
+  for _, event in ipairs(frame.events) do
+    if event.kind == "switch-intent" then
+      intent = event
+    end
+  end
+  Assert.notNil(intent, "the successful pivot announces its switch intent before the prompt")
+  Assert.equal(intent.payload.mode, "strike-and-leave", "the pivot carries the executor mode")
+  Assert.equal(#frame.request.requests, 1, "only the pivoting actor receives the replacement prompt")
+  Assert.equal(frame.request.requests[1].actors[1].combatant, 40, "the pivot prompt addresses its still-active user")
+  local request = frame.request.requests[1]
+  local ok, err = session:submit(SessionFixture.replyFor(request, { SessionFixture.switchChoice(request.actors[1], 41) }))
+  Assert.isTrue(ok, "the pivot replacement is accepted")
+  Assert.isNil(err, "the accepted pivot replacement has no input error")
+  frame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(frame.status, "waiting", "the remaining action queue and turn settle after the pivot")
+  Assert.equal(combatantOf(session:capture(), 41).active.position, 1, "the chosen reserve enters the pivoting position")
+  Assert.equal(combatantOf(session:capture(), 40).active, nil, "the pivoting user leaves the field")
+  session:dispose()
+end
+
+function T.baton_pass_transfers_stages_to_the_chosen_reserve()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(43, 441, {
+    moveSlot("SWORDS_DANCE", 20),
+    moveSlot("SUBSTITUTE", 10),
+    moveSlot("BATON_PASS", 20),
+  })
+  local reserve = movesetCombatant(44, 451, { moveSlot("SPLASH", 40) })
+  local target = movesetCombatant(45, 461, { moveSlot("SPLASH", 40) })
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, { reserve }, {}), content)
+  playTurn(session, strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  }))
+  playTurn(session, strikeAnswer({
+    alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  }))
+  local frame = SessionFixture.driveUntilSettled(session)
+  local active = combatantOf(session:capture(), 43).active --[[@as table<string, unknown>]]
+  local scope = { kind = "active", combatant = 43, activation = active.activation }
+  local source = { kind = "move", key = "BATON_PASS", combatant = 43, activation = active.activation }
+  session = restoreWithEffects(session, content, {
+    effectRecord("aquaring", 400, scope, source, { version = 1 }),
+    inertBatonPassMarker("confusion", 401, 43, active.activation),
+    effectRecord("curse", 402, scope, source, { version = 1 }),
+    inertBatonPassMarker("embargo", 403, 43, active.activation),
+    effectRecord("focusenergy", 404, scope, source, { version = 1 }),
+    inertBatonPassMarker("GASTRO_ACID", 405, 43, active.activation),
+    inertBatonPassMarker("healblock", 406, 43, active.activation),
+    effectRecord("ingrain", 407, scope, source, { version = 1 }),
+    effectRecord("leechseed", 408, scope, source, { version = 1 }),
+    effectRecord("lockon", 409, scope, source, { version = 1, attacker = 45 }),
+    inertBatonPassMarker("magnetrise", 410, 43, active.activation),
+    effectRecord("mudsport", 411, scope, source, { version = 1 }),
+    effectRecord("perishsong", 412, scope, source, { version = 1, turns = 5 }),
+    inertBatonPassMarker("POWER_TRICK", 413, 43, active.activation),
+    effectRecord("trapped", 414, scope, source, { version = 1 }),
+    effectRecord("watersport", 415, scope, source, { version = 1 }),
+    effectRecord(
+      "luckychant",
+      416,
+      { kind = "side", side = 1 },
+      source,
+      { version = 1, turns = 5 }
+    ),
+  })
+  for _, request in ipairs(frame.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if actor.combatant == 43 then
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 2, SessionFixture.positionTarget(2))
+      else
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+      end
+    end
+    local ok, err = session:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "the Baton Pass turn choices are accepted")
+    Assert.isNil(err, "accepted Baton Pass choices have no input error")
+  end
+  frame = session:advance()
+  Assert.equal(frame.status, "waiting", "Baton Pass pauses for its replacement choice")
+  Assert.equal(#frame.request.requests, 1, "Baton Pass prompts only its user")
+  local request = frame.request.requests[1]
+  local ok, err = session:submit(SessionFixture.replyFor(request, {
+    SessionFixture.switchChoice(request.actors[1], 44),
+  }))
+  Assert.isTrue(ok, "the Baton Pass replacement is accepted")
+  Assert.isNil(err, "the accepted Baton Pass replacement has no input error")
+  frame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(frame.status, "waiting", "the turn settles after the Baton Pass replacement")
+  local snapshot = session:capture()
+  Assert.equal(combatantOf(snapshot, 44).stages.attack, 2, "the incoming reserve receives the user's attack stages")
+  local substitute = nil
+  local transferred = {} ---@type table<string, boolean>
+  for _, effect in ipairs(snapshot.effects) do
+    if effect.scope.kind == "active" and effect.scope.combatant == 44 then
+      transferred[effect.key] = true
+      Assert.equal(effect.scope.activation, combatantOf(snapshot, 44).active.activation, "passable markers use the new activation")
+    end
+    if effect.key == "substitute" and effect.scope.kind == "active" and effect.scope.combatant == 44 then
+      substitute = effect
+    end
+  end
+  Assert.notNil(substitute, "Baton Pass carries the substitute marker")
+  Assert.equal(substitute.scope.combatant, 44, "the substitute marker binds to the incoming reserve")
+  for _, key in ipairs({
+    "aquaring",
+    "confusion",
+    "curse",
+    "embargo",
+    "focusenergy",
+    "GASTRO_ACID",
+    "healblock",
+    "ingrain",
+    "leechseed",
+    "lockon",
+    "magnetrise",
+    "mudsport",
+    "perishsong",
+    "POWER_TRICK",
+    "substitute",
+    "trapped",
+    "watersport",
+  }) do
+    Assert.isTrue(transferred[key] == true, "Baton Pass carries modeled effect " .. key)
+  end
+  Assert.equal(#recordsWithKey(snapshot, "luckychant"), 1, "Lucky Chant remains a side-owned timer")
+  Assert.equal(recordsWithKey(snapshot, "luckychant")[1].scope.kind, "side", "Lucky Chant never rebinds to the entrant")
+  session:dispose()
+end
+
+function T.roar_ends_a_wild_encounter_after_forcing_the_target_out()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(46, 471, { moveSlot("ROAR", 20) })
+  local target = movesetCombatant(47, 481, { moveSlot("SPLASH", 40) })
+  local scenario = duelScenario({ user, target }, {}, {})
+  scenario.kind = "wild"
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local frame = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(frame.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if actor.combatant == 46 then
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      else
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+      end
+    end
+    local ok, err = session:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "the wild Roar turn choices are accepted")
+    Assert.isNil(err, "accepted wild choices have no input error")
+  end
+  frame = session:advance()
+  Assert.equal(frame.status, "ended", "Roar makes the wild target flee")
+  Assert.equal(frame.outcome.kind, "escaped", "the forced wild departure uses encounter flight outcome")
+  session:dispose()
+end
+
+function T.whirlwind_replaces_a_trainer_target_after_its_selected_action()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(48, 491, { moveSlot("WHIRLWIND", 20) })
+  local target = movesetCombatant(49, 501, { moveSlot("TACKLE", 35) })
+  local reserve = movesetCombatant(50, 511, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, { reserve }), nativeContent())
+  local frame = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(frame.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if actor.combatant == 48 then
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      else
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+      end
+    end
+    local ok, err = session:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "the trainer Whirlwind turn choices are accepted")
+    Assert.isNil(err, "accepted trainer choices have no input error")
+  end
+  frame = session:advance()
+  Assert.equal(frame.status, "waiting", "the trainer turn settles after forced replacement")
+  local snapshot = session:capture()
+  local incoming = combatantOf(snapshot, 50).active --[[@as table<string, unknown>?]]
+  Assert.notNil(incoming, "Whirlwind sends an eligible reserve into the target's position")
+  Assert.equal(incoming.position, 2, "the random reserve occupies the forced target's position")
+  local tackleIndex, switchIndex = nil, nil
+  for index, event in ipairs(frame.events) do
+    if event.kind == "struck" and event.cause.key == "TACKLE" then
+      tackleIndex = index
+    elseif event.kind == "switch" and event.payload.from == 49 then
+      switchIndex = index
+    end
+  end
+  Assert.isTrue(
+    tackleIndex ~= nil and switchIndex ~= nil and tackleIndex < switchIndex,
+    "Whirlwind's negative priority lets the chosen action land before forced departure"
+  )
+  session:dispose()
+end
+
+function T.rage_builds_attack_when_hit_and_does_not_lock_the_next_move()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local user = movesetCombatant(30, 311, { moveSlot("RAGE", 20), moveSlot("TACKLE", 35) })
+  local target = movesetCombatant(31, 321, { moveSlot("TACKLE", 35) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), content)
+  local rageDefinition = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers").definitionFor("rage")
+  local restored = restoreWithEffects(session, content, {
+    {
+      id = 812,
+      key = "rage",
+      version = rageDefinition.stateVersion,
+      scope = { kind = "active", combatant = 30, activation = combatantOf(session:capture(), 30).active.activation },
+      source = { kind = "move", combatant = 30 },
+      state = rageDefinition.validateState({ version = 1 }),
+      createdOrdinal = 812,
+      timings = rageDefinition.timings,
+      lifecycle = rageDefinition.lifecycle,
+    },
+  })
+  playTurn(
+    restored,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(combatantOf(restored:capture(), 30).stages.attack, 1, "a damaging hit builds the Rage holder's Attack")
+  local _, secondEvents = playTurn(
+    restored,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.notNil(strikeDamage(secondEvents, "TACKLE"), "Rage does not force another Rage action")
+  Assert.equal(#recordsWithKey(restored:capture(), "rage"), 0, "selecting a different move clears Rage before action")
+  restored:dispose()
+end
+
+function T.rage_move_sets_its_hit_reaction_without_forcing_a_repeated_attack()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(32, 331, { moveSlot("RAGE", 20), moveSlot("TACKLE", 35) })
+  local target = movesetCombatant(33, 341, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
+  local _, firstEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.notNil(strikeDamage(firstEvents, "RAGE"), "Rage resolves its damaging strike")
+  Assert.equal(#recordsWithKey(session:capture(), "rage"), 1, "Rage arms its hit reaction")
+  local _, secondEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.notNil(strikeDamage(secondEvents, "TACKLE"), "the next selected Tackle is not locked into Rage")
+  Assert.equal(#recordsWithKey(session:capture(), "rage"), 0, "a different selected move ends the Rage reaction")
+  session:dispose()
+end
+
+function T.future_sight_and_doom_desire_land_after_the_native_delay()
+  local contracts = SessionFixture.sessionContracts()
+  for index, delayedMove in ipairs({ "FUTURE_SIGHT", "DOOM_DESIRE" }) do
+    local userId = 40 + index
+    local targetId = 50 + index
+    local reserveId = 60 + index
+    local user = movesetCombatant(userId, 401 + index, { moveSlot(delayedMove, 10), moveSlot("SPLASH", 40) })
+    local target = movesetCombatant(targetId, 501 + index, { moveSlot("SPLASH", 40) })
+    local reserve = movesetCombatant(reserveId, 601 + index, { moveSlot("SPLASH", 40) })
+    local session = contracts.Battle.newSession(duelScenario({ user, target }, { reserve }, {}), nativeContent())
+    local initialHp = combatantOf(session:capture(), targetId).hp --[[@as integer]]
+
+    local _, launchEvents = playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
+    Assert.isNil(strikeDamage(launchEvents, delayedMove), "the delayed move schedules without striking immediately")
+    local scheduled = recordsWithKey(session:capture(), "futuresight")
+    Assert.equal(#scheduled, 1, "one delayed attack occupies the target position")
+    Assert.equal(scheduled[1].state.turns, 2, "the launch turn consumes the first native countdown tick")
+    Assert.equal(combatantOf(session:capture(), targetId).hp, initialHp, "launch leaves target health unchanged")
+    Assert.equal(combatantOf(session:capture(), userId).mon.moves[1].pp, 9, "the move spends PP when scheduled")
+
+    local _, middleEvents = playTurn(session, function(request)
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        if actor.combatant == userId then
+          choices[#choices + 1] = SessionFixture.switchChoice(actor, reserveId)
+        else
+          choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+        end
+      end
+      return choices
+    end)
+    Assert.isNil(strikeDamage(middleEvents, delayedMove), "the move does not strike before its countdown expires")
+    Assert.equal(recordsWithKey(session:capture(), "futuresight")[1].state.turns, 1, "the second native tick leaves one turn")
+    Assert.equal(combatantOf(session:capture(), targetId).hp, initialHp, "the intermediate turn leaves target health unchanged")
+
+    local _, impactEvents = playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
+    local impact = strikeDamage(impactEvents, delayedMove)
+    Assert.notNil(impact, "the field-extra phase resolves the delayed strike")
+    Assert.isTrue((impact --[[@as integer]]) > 0, "the delayed hit reduces target health")
+    Assert.equal(combatantOf(session:capture(), targetId).hp, initialHp - (impact --[[@as integer]]), "the delayed strike commits its damage")
+    local impactEvent = nil
+    for _, event in ipairs(impactEvents) do
+      if event.kind == "struck" and event.cause.key == delayedMove then
+        impactEvent = event
+      end
+    end
+    Assert.notNil(impactEvent, "the delayed hit carries its move identity into presentation")
+    Assert.equal(impactEvent.actors[1].combatant, userId, "the delayed animation names its departed source")
+    Assert.equal(impactEvent.targets[1].combatant, targetId, "the delayed animation names the position's target")
+    Assert.equal(#recordsWithKey(session:capture(), "futuresight"), 0, "the resolved slot is cleared")
+    session:dispose()
+  end
+end
+
+function T.future_sight_does_not_count_the_target_switch_in_turn()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(70, 701, { moveSlot("FUTURE_SIGHT", 10), moveSlot("SPLASH", 40) })
+  local target = movesetCombatant(71, 711, { moveSlot("SPLASH", 40) })
+  local reserve = movesetCombatant(72, 721, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, { reserve }), nativeContent())
+  local _, launchEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.isNil(strikeDamage(launchEvents, "FUTURE_SIGHT"), "the launch schedules Future Sight")
+  Assert.equal(recordsWithKey(session:capture(), "futuresight")[1].state.turns, 2, "the launch turn advances the delay")
+
+  playTurn(session, function(request)
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if actor.combatant == 71 then
+        choices[#choices + 1] = SessionFixture.switchChoice(actor, 72)
+      else
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 1, SessionFixture.positionTarget(2))
+      end
+    end
+    return choices
+  end)
+  Assert.equal(
+    recordsWithKey(session:capture(), "futuresight")[1].state.turns,
+    2,
+    "the target's switch-in turn does not consume a Future Sight tick"
+  )
+  Assert.equal(combatantOf(session:capture(), 72).active.position, 2, "the reserve entered the delayed target position")
+
+  playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(recordsWithKey(session:capture(), "futuresight")[1].state.turns, 1, "the first post-entry turn resumes the countdown")
+  local _, impactEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  local impact = strikeDamage(impactEvents, "FUTURE_SIGHT")
+  Assert.notNil(impact, "Future Sight lands after the delayed target has completed its entry turn")
+  Assert.isTrue(combatantOf(session:capture(), 72).hp < combatantOf(session:capture(), 72).maxHp, "the current occupant receives the stored strike")
+  Assert.equal(combatantOf(session:capture(), 71).hp, combatantOf(session:capture(), 71).maxHp, "the departed occupant is not hit")
   session:dispose()
 end
 

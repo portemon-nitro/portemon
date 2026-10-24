@@ -120,6 +120,7 @@ local function frameInputs(move, slot)
     guts = false,
     weather = "none",
     weatherSuppressed = false,
+    duel = { userTurn = 0 },
     abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = typeFacts().attackerTypes,
     defenderTypes = typeFacts().defenderTypes,
@@ -233,10 +234,128 @@ function T.sketch_writes_through_the_persistent_owner()
   Assert.isTrue(relearned, "the sketched move survives the switch")
 end
 
--- Delayed damage keeps its attacker snapshot: scheduling future sight,
--- then leaving the attacker, still resolves the delayed hit against the
--- defender slot with the original attacker facts.
-function T.delayed_damage_survives_attacker_exit()
+function T.sketch_replaces_the_sketch_slot_with_target_move_and_base_pp()
+  local Execution = executionOwner("the shared move continuation owns Sketch execution")
+  local state = liveState()
+  local ctx = liveContext(state)
+  local inputs = frameInputs("SKETCH", 1)
+  inputs.moves = {
+    { move = "TACKLE", pp = 12, ppUps = 0 },
+    { move = "SKETCH", pp = 1, ppUps = 2 },
+    { move = "GROWL", pp = 20, ppUps = 0 },
+  }
+  inputs.copiedMove = "ICE_BEAM"
+  inputs.moveFacts.ICE_BEAM = { power = 95, basePp = 10, accuracy = 100, category = "special", moveType = "ice" }
+  local frame = Execution.validateFrame(Execution.start(inputs))
+  local settled = Execution.step(ctx, frame)
+  local moves = inputs.moves
+  Assert.equal(moves[2].move, "ICE_BEAM", "Sketch replaces its own move slot")
+  Assert.equal(moves[2].pp, 10, "Sketch restores the copied move's base PP")
+  Assert.equal(moves[1].move, "TACKLE", "Sketch leaves earlier move slots in place")
+  Assert.equal(moves[3].move, "GROWL", "Sketch leaves later move slots in place")
+  Assert.equal(settled.kind, "complete", "Sketch completes after replacing its slot")
+end
+
+function T.mimic_replaces_its_slot_for_the_entry_and_restores_it_on_leave()
+  local Execution = executionOwner("the shared move continuation owns Mimic execution")
+  local State = SessionFixture.requirePresent("libs.battle.src.BattleState", "private battle data owns move restoration")
+  local state = liveState()
+  local user = combatantOf(state, 1)
+  local mon = user.mon --[[@as table<string, unknown>]]
+  State.leave(state, 1)
+  local moves = mon.moves --[[@as table<integer, table<string, unknown>>]]
+  moves[1] = { move = "MIMIC", pp = 10, ppUps = 0 }
+  moves[2] = { move = "TACKLE", pp = 20, ppUps = 0 }
+  moves[3] = { move = "GROWL", pp = 40, ppUps = 0 }
+  moves[4] = { move = "PROTECT", pp = 10, ppUps = 0 }
+  State.enter(state, 1, 1)
+
+  local inputs = frameInputs("MIMIC", 0)
+  inputs.moves = moves
+  inputs.copiedMove = "RECOVER"
+  inputs.moveFacts = {
+    MIMIC = { power = 0, accuracy = 0, category = "other", moveType = "normal" },
+    RECOVER = { power = 0, accuracy = 0, category = "other", moveType = "normal", basePp = 10 },
+  }
+  local frame = Execution.validateFrame(Execution.start(inputs))
+  local result = Execution.step(liveContext(state), frame)
+  Assert.equal(result.kind, "complete", "Mimic resolves without executing the copied move")
+  Assert.equal(moves[1].move, "RECOVER", "the move fills Mimic's original slot")
+  Assert.equal(moves[1].pp, 5, "the replacement receives at most five base PP")
+  Assert.equal(moves[1].ppUps, 0, "the move slot keeps its PP-up record")
+  local Snapshot = require("libs.battle.src.BattleSnapshot")
+  local captured = Snapshot.capture(state)
+  Assert.isTrue(Snapshot.validate(captured), "an interruption snapshot retains a live Mimic override")
+  Assert.equal(captured.combatants[1].active.mimickedMoves[0], true, "the snapshot marks the copied slot")
+
+  State.leave(state, 1)
+  Assert.equal(moves[1].move, "MIMIC", "leaving restores the temporary move identity")
+  Assert.equal(moves[1].pp, 10, "the copied move's PP never persists into the Mimic slot")
+end
+
+function T.mimic_rejects_banned_duplicate_transformed_and_substituted_targets()
+  local Identity = identityOwner("Mimic enforces its native restrictions")
+  local NativeEffects = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+  local owned = {}
+  Identity.register(owned)
+
+  local function attempt(copied, blocker)
+    local State = require("libs.battle.src.BattleState")
+    local state = liveState()
+    local user = combatantOf(state, 1)
+    State.leave(state, 1)
+    local moves = (user.mon --[[@as table<string, unknown>]]).moves --[[@as table<integer, table<string, unknown>>]]
+    moves[1] = { move = "MIMIC", pp = 10, ppUps = 0 }
+    moves[2] = { move = blocker == "duplicate" and copied or "TACKLE", pp = 20, ppUps = 0 }
+    moves[3] = { move = "GROWL", pp = 40, ppUps = 0 }
+    moves[4] = { move = "PROTECT", pp = 10, ppUps = 0 }
+    State.enter(state, 1, 1)
+    local ctx = liveContext(state)
+    if blocker == "transform" then
+      owned.TRANSFORM(ctx, {
+        actor = { combatant = 1 },
+        executingMove = "TRANSFORM",
+        targets = { { combatant = 2 } },
+      })
+    elseif blocker == "substitute" then
+      local entry = ctx:entryOf(2)
+      ctx:addBattleEffect(
+        NativeEffects.definitionFor("substitute"),
+        { kind = "active", combatant = 2, activation = entry.activation },
+        { kind = "move", combatant = 2 },
+        { version = 1, hp = 10 }
+      )
+    end
+    local frame = {
+      actor = { combatant = 1 },
+      executingMove = "MIMIC",
+      requestedMove = "MIMIC",
+      ppOwnerSlot = 0,
+      moves = moves,
+      targets = { { combatant = 2 } },
+      locals = {
+        copiedMove = copied,
+        moveFacts = { [copied] = { basePp = 15 } },
+      },
+    }
+    return owned.MIMIC(ctx, frame), moves
+  end
+
+  for _, case in ipairs({
+    { copied = "MIMIC", blocker = "banned" },
+    { copied = "RECOVER", blocker = "duplicate" },
+    { copied = "RECOVER", blocker = "transform" },
+    { copied = "RECOVER", blocker = "substitute" },
+  }) do
+    local result, moves = attempt(case.copied, case.blocker)
+    Assert.equal(result.result, "failed", "Mimic refuses " .. case.blocker)
+    Assert.equal(moves[1].move, "MIMIC", "a refused Mimic leaves its source slot intact")
+  end
+end
+
+-- Delayed damage is held by the target position, not the attacker's
+-- activation, so the source can leave while the slot remains queued.
+function T.delayed_schedule_survives_attacker_exit()
   local Execution = executionOwner("the shared move continuation owns hit progression")
   local Sequence = sequenceOwner("charging and delayed sequences own the multi-turn path")
   local State =
@@ -247,15 +366,13 @@ function T.delayed_damage_survives_attacker_exit()
   local ctx = liveContext(state)
   local frame = Execution.validateFrame(Execution.start(frameInputs("FUTURE_SIGHT", 0)))
   local scheduled = Execution.step(ctx, frame)
-  Assert.isTrue(scheduled.kind ~= nil, "the delayed scheduling answers through the frame protocol")
+  Assert.equal(scheduled.result, "hit", "the delayed move completes after scheduling")
+  Assert.equal(combatantOf(state, 2).hp, combatantOf(state, 2).entryHp, "scheduling leaves target health unchanged")
   State.leave(state, 1)
   Assert.isNil(combatantOf(state, 1).active, "the attacker has left before the delayed hit lands")
-  local landed = Execution.step(ctx, scheduled.frame or scheduled)
-  Assert.isTrue(landed.kind ~= nil, "the delayed hit still resolves after the attacker leaves")
-  Assert.isTrue(
-    combatantOf(state, 2).hp --[[@as integer]] < combatantOf(state, 2).entryHp --[[@as integer]],
-    "the delayed hit lands on the bound defender slot"
-  )
+  Assert.isTrue(ctx:hasPositionEffect(2, "futuresight"), "the target position retains the delayed strike")
+  local effect = state.effectBag:capture()[1]
+  Assert.equal(effect.state.attacker, 1, "the delayed strike retains its departed source identity")
 end
 
 -- Multi-hit sequences gate on one accuracy check and one critical

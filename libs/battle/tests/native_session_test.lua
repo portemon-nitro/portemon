@@ -68,14 +68,47 @@ local function scenarioMoveFacts(seeds)
       ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]])
     do
       if type(entry) == "table" and type(entry.move) == "string" and facts[entry.move] == nil then
-        facts[entry.move] = catalog:move(entry.move)
+        local move = catalog:move(entry.move)
+        local detached = {}
+        for key, value in pairs(move) do
+          detached[key] = value
+        end
+        local nativeFlags = move.flags --[[@as integer]]
+        detached.flags = {
+          reflectable = nativeFlags % 8 >= 4,
+          snatchable = nativeFlags % 16 >= 8,
+          mirrorable = nativeFlags % 32 >= 16,
+        }
+        facts[entry.move] = detached
       end
     end
     local form = catalog:form(learned.species --[[@as string]], learned.form --[[@as integer]])
     for _, chance in ipairs(form.levelUpMoves) do
       if facts[chance.move] == nil then
-        facts[chance.move] = catalog:move(chance.move)
+        local move = catalog:move(chance.move)
+        local detached = {}
+        for key, value in pairs(move) do
+          detached[key] = value
+        end
+        local nativeFlags = move.flags --[[@as integer]]
+        detached.flags = {
+          reflectable = nativeFlags % 8 >= 4,
+          snatchable = nativeFlags % 16 >= 8,
+          mirrorable = nativeFlags % 32 >= 16,
+        }
+        facts[chance.move] = detached
       end
+    end
+  end
+  for key, move in pairs(facts) do
+    if type(move.flags) == "number" then
+      local nativeFlags = move.flags --[[@as integer]]
+      local detached = {}
+      for key, value in pairs(move) do
+        detached[key] = value
+      end
+      detached.flags = { reflectable = nativeFlags % 8 >= 4, snatchable = nativeFlags % 16 >= 8 }
+      facts[key] = detached
     end
   end
   return facts
@@ -354,6 +387,18 @@ local function countSessionEvents(events, kind)
   return seen
 end
 
+---@param effects table[] native effect projection under inspection
+---@param key string effect identity under inspection
+---@return table<string, unknown>? stored effect matching the key
+local function capturedEffect(effects, key)
+  for _, effect in ipairs(effects) do
+    if effect.key == key then
+      return effect
+    end
+  end
+  return nil
+end
+
 ---@param session table live headless session under test
 ---@param budget integer operations per advance call
 ---@return table boundary frame at the next atomic boundary
@@ -423,6 +468,508 @@ function T.native_ruleset_strikes_run_move_mechanics_deterministically()
   Assert.deepEqual(first:capture(), second:capture(), "one seed replays one terminal state")
   first:dispose()
   second:dispose()
+end
+
+function T.assist_calls_a_zero_pp_move_from_a_benched_party_member()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local assist = SessionFixture.combatant(1, 11)
+  assist.mon.moves = { { move = "ASSIST", pp = 10, ppUps = 0 } }
+  local exhaustedMate = SessionFixture.combatant(3, 31)
+  exhaustedMate.mon.moves = { { move = "TACKLE", pp = 0, ppUps = 0 } }
+  local foe = tackleCombatant(2, 23)
+  foe.mon.heldItem = "LAGGING_TAIL"
+  local seeds = { assist, exhaustedMate, foe }
+  local moveFacts = scenarioMoveFacts({ exhaustedMate, foe })
+  moveFacts.ASSIST = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 0 }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { assist, exhaustedMate }),
+      SessionFixture.participant(2, 2, "beta", { foe }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = moveFacts,
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.attackChoice(
+        actor,
+        0,
+        SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)
+      )
+    end
+    Assert.isTrue(session:submit(SessionFixture.replyFor(request, choices)), "the Assist action is accepted")
+  end
+  local turn = session:advance(64)
+  local assistCopiedTackle = false
+  local eventTrace = {}
+  for _, event in ipairs(turn.events) do
+    local cause = event.cause --[[@as table<string, unknown>]]
+    local payload = event.payload --[[@as table<string, unknown>]]
+    eventTrace[#eventTrace + 1] = table.concat({ event.kind, tostring(cause.key), tostring(payload.user) }, ":")
+    if event.kind == "struck" then
+      local actors = event.actors --[[@as table<integer, table<string, unknown>>]]
+      local move = event.move --[[@as table<string, string>]]
+      if actors[1].combatant == 1 and move.selected == "ASSIST" and move.executed == "TACKLE" then
+        assistCopiedTackle = true
+      end
+    end
+  end
+  Assert.isTrue(
+    assistCopiedTackle,
+    "Assist calls its teammate's move even when that slot has no PP: " .. table.concat(eventTrace, ",")
+  )
+  local snapshot = session:capture()
+  Assert.equal(snapshot.combatants[1].mon.moves[1].pp, 9, "Assist spends one PP from its own slot")
+  Assert.equal(snapshot.combatants[3].mon.moves[1].pp, 0, "Assist never spends the teammate's empty slot")
+  session:dispose()
+end
+
+function T.magic_coat_reflects_a_flagged_move_and_snatch_uses_the_snatcher_as_actor()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local function buildScenario(alphaMove, betaMove, doubles, reflectable, alphaMateMove, betaMateMove, betaMateAbility)
+    doubles = doubles ~= false
+    alphaMateMove = alphaMateMove or "TACKLE"
+    betaMateMove = betaMateMove or "TACKLE"
+    local function slotsOf(moves)
+      if type(moves) ~= "table" then
+        moves = { moves }
+      end
+      local slots = {}
+      for _, move in ipairs(moves) do
+        slots[#slots + 1] = { move = move, pp = 35, ppUps = 0 }
+      end
+      return slots
+    end
+    local alpha = SessionFixture.combatant(1, 0x11111111)
+    alpha.mon = SessionFixture.makeMon(0x11111111, { species = "CHIKORITA", level = 50 })
+    alpha.mon.moves = { { move = alphaMove, pp = 20, ppUps = 0 } }
+    local alphaMate = SessionFixture.combatant(3, 0x33333333)
+    alphaMate.mon = SessionFixture.makeMon(0x33333333, { species = "CHIKORITA", level = 50 })
+    alphaMate.mon.moves = slotsOf(alphaMateMove)
+    local beta = SessionFixture.combatant(2, 0x22222222)
+    beta.mon = SessionFixture.makeMon(0x22222222, { species = "TOTODILE", level = 50 })
+    beta.mon.moves = { { move = betaMove, pp = 20, ppUps = 0 } }
+    local betaMate = SessionFixture.combatant(4, 0x44444444)
+    betaMate.mon = SessionFixture.makeMon(0x44444444, { species = "TOTODILE", level = 50 })
+    betaMate.mon.moves = slotsOf(betaMateMove)
+    betaMate.mon.ability = betaMateAbility
+    local seeds = { alpha, alphaMate, beta, betaMate }
+    local moveFacts = scenarioMoveFacts()
+    local function addStatusMove(key, moveType, range, priority, reflectable, snatchable)
+      moveFacts[key] = {
+        power = 0,
+        accuracy = 100,
+        category = "other",
+        moveType = moveType,
+        range = range,
+        priority = priority,
+        effectChance = 100,
+        flags = { dealsDamage = false, checksAccuracy = true, reflectable = reflectable, snatchable = snatchable },
+      }
+    end
+    addStatusMove("MAGIC_COAT", "psychic", 16, 4, false, false)
+    addStatusMove("GROWL", "normal", 0, 0, reflectable ~= false, false)
+    addStatusMove("SNATCH", "dark", 16, 4, false, false)
+    addStatusMove("CALM_MIND", "psychic", 16, 0, false, true)
+    addStatusMove("FOLLOW_ME", "normal", 16, 3, false, false)
+    addStatusMove("THUNDER_WAVE", "electric", 0, 0, true, false)
+    addStatusMove("IMPRISON", "psychic", 16, 1, false, false)
+    addStatusMove("WEATHER_BALL", "normal", 0, 0, true, false)
+    moveFacts.WEATHER_BALL.power = 50
+    moveFacts.WEATHER_BALL.category = "special"
+    addStatusMove("RAIN_DANCE", "water", 16, 1, false, false)
+    local scenario = {
+      ruleset = Executor.RULESET,
+      format = NATIVE_FORMAT,
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { alpha, alphaMate }),
+        SessionFixture.participant(2, 2, "beta", { beta, betaMate }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+        doubles and SessionFixture.position(3, 1, { 1 }, 3) or nil,
+        doubles and SessionFixture.position(4, 2, { 2 }, 4) or nil,
+      },
+      inventories = {},
+      environment = { weather = "none" },
+      random = { seed = NATIVE_SEED },
+      formatState = {},
+      moveFacts = moveFacts,
+      speciesFacts = scenarioSpeciesFacts(seeds),
+    }
+    return scenario
+  end
+  local function finishFirstTurn(session)
+    local opening = SessionFixture.driveUntilSettled(session)
+    Assert.equal(opening.status, "waiting", "the double battle requests both sides")
+    for _, request in ipairs(opening.request.requests) do
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        local id = actor.combatant --[[@as integer]]
+        local target = id == 1 and 1 or id == 3 and 2 or id == 2 and 1 or 1
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+      end
+      Assert.isTrue(session:submit(SessionFixture.replyFor(request, choices)), "the move choices are accepted")
+    end
+    local result = session:advance(96)
+    Assert.equal(result.status, "waiting", "the first turn settles to the next request")
+    return session:capture(), result.events or {}
+  end
+
+  local function moveUse(events, selected)
+    for _, event in ipairs(events) do
+      if event.kind == "move-used" and event.move.selected == selected then
+        return event
+      end
+    end
+    error("the selected move emits a move-use event: " .. selected)
+  end
+  local function abilityUse(events, key)
+    for _, event in ipairs(events) do
+      if event.kind == "ability" and event.cause.key == key then
+        return event
+      end
+    end
+    error("the redirected move emits its ability response: " .. key)
+  end
+
+  local reflected = contracts.Battle.newSession(buildScenario("MAGIC_COAT", "GROWL"), nativeContent())
+  local reflectedSnapshot, reflectedEvents = finishFirstTurn(reflected)
+  local reflectedMons = reflectedSnapshot.combatants --[[@as table<integer, table<string, unknown>>]]
+  local alphaStages = reflectedMons[1].stages --[[@as table<string, integer>]]
+  local betaStages = reflectedMons[2].stages --[[@as table<string, integer>]]
+  Assert.equal(alphaStages.attack, 0, "the reflectable Growl does not affect the Magic Coat user")
+  Assert.equal(betaStages.attack, -1, "Magic Coat makes the opposing move target its original user")
+  local growlUse = moveUse(reflectedEvents, "GROWL")
+  Assert.equal(growlUse.actors[1].combatant, 1, "the reflected move presentation names the Coat user")
+  Assert.equal(growlUse.targets[1].combatant, 2, "the reflected move presentation targets its original user")
+  Assert.equal(growlUse.move.executed, "GROWL", "reflection preserves the incoming move animation route")
+  reflected:dispose()
+
+  local unflagged = contracts.Battle.newSession(buildScenario("MAGIC_COAT", "GROWL", true, false), nativeContent())
+  local unflaggedSnapshot = finishFirstTurn(unflagged)
+  local unflaggedMons = unflaggedSnapshot.combatants --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(
+    (unflaggedMons[1].stages --[[@as table<string, integer>]]).attack,
+    -1,
+    "Magic Coat does not redirect a move without the native reflectable flag"
+  )
+  Assert.equal(
+    (unflaggedMons[2].stages --[[@as table<string, integer>]]).attack,
+    0,
+    "the unflagged move still targets the selected battler"
+  )
+  unflagged:dispose()
+
+  local followed = contracts.Battle.newSession(
+    buildScenario("MAGIC_COAT", "GROWL", true, true, "FOLLOW_ME"),
+    nativeContent()
+  )
+  local _, followedEvents = finishFirstTurn(followed)
+  Assert.equal(
+    moveUse(followedEvents, "GROWL").targets[1].combatant,
+    3,
+    "Magic Coat retargets the reflected move through Follow Me on the Coat user's side"
+  )
+  followed:dispose()
+
+  local redirected = contracts.Battle.newSession(
+    buildScenario("MAGIC_COAT", "THUNDER_WAVE", true, true, "TACKLE", "TACKLE", "LIGHTNINGROD"),
+    nativeContent()
+  )
+  local redirectedSnapshot, redirectedEvents = finishFirstTurn(redirected)
+  local lightningRod = abilityUse(redirectedEvents, "LIGHTNINGROD")
+  Assert.equal(lightningRod.payload.combatant, 4, "Lightning Rod identifies its redirected holder")
+  Assert.isNil(redirectedSnapshot.combatants[4].mon.condition.majorStatus, "Lightning Rod absorbs reflected Thunder Wave")
+  for _, event in ipairs(redirectedEvents) do
+    Assert.isFalse(
+      event.kind == "move-used" and event.move.selected == "THUNDER_WAVE",
+      "Lightning Rod prevents the reflected move's execution animation"
+    )
+  end
+  redirected:dispose()
+
+  local weatherRedirect = contracts.Battle.newSession(
+    buildScenario("MAGIC_COAT", "WEATHER_BALL", true, true, "RAIN_DANCE", "TACKLE", "STORM_DRAIN"),
+    nativeContent()
+  )
+  local weatherSnapshot, weatherEvents = finishFirstTurn(weatherRedirect)
+  moveUse(weatherEvents, "RAIN_DANCE")
+  local stormDrain = abilityUse(weatherEvents, "STORM_DRAIN")
+  Assert.equal(stormDrain.payload.combatant, 4, "Weather Ball resolves its rain type before Storm Drain")
+  Assert.equal(weatherSnapshot.combatants[4].hp, weatherSnapshot.combatants[4].maxHp, "Storm Drain absorbs reflected Weather Ball")
+  for _, event in ipairs(weatherEvents) do
+    Assert.isFalse(
+      event.kind == "move-used" and event.move.selected == "WEATHER_BALL",
+      "Storm Drain prevents the reflected Weather Ball execution animation"
+    )
+  end
+  weatherRedirect:dispose()
+
+  local failedMove = contracts.Battle.newSession(
+    buildScenario("MAGIC_COAT", "GROWL", true, true, { "IMPRISON", "GROWL" }, "THUNDER_WAVE"),
+    nativeContent()
+  )
+  local _, failedEvents = finishFirstTurn(failedMove)
+  local reflectedAfterFailure = moveUse(failedEvents, "THUNDER_WAVE")
+  Assert.equal(
+    reflectedAfterFailure.targets[1].combatant,
+    4,
+    "the first reflected move that fails Imprison leaves the Coat marker for a later action"
+  )
+  for _, event in ipairs(failedEvents) do
+    Assert.isFalse(
+      event.kind == "move-used" and event.move.selected == "GROWL",
+      "an Imprison-refused move does not reach the move-use animation"
+    )
+  end
+  failedMove:dispose()
+
+  local single = contracts.Battle.newSession(buildScenario("MAGIC_COAT", "GROWL", false), nativeContent())
+  local singleSnapshot = finishFirstTurn(single)
+  local singleMons = singleSnapshot.combatants --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(
+    (singleMons[1].stages --[[@as table<string, integer>]]).attack,
+    -1,
+    "Magic Coat does not arm in a one-on-one battle"
+  )
+  Assert.equal(
+    (singleMons[2].stages --[[@as table<string, integer>]]).attack,
+    0,
+    "a one-on-one single-target move keeps its ordinary recipient"
+  )
+  single:dispose()
+
+  local snatched = contracts.Battle.newSession(buildScenario("SNATCH", "CALM_MIND"), nativeContent())
+  local snatchedSnapshot, snatchedEvents = finishFirstTurn(snatched)
+  local snatchedMons = snatchedSnapshot.combatants --[[@as table<integer, table<string, unknown>>]]
+  local snatcherStages = snatchedMons[1].stages --[[@as table<string, integer>]]
+  local originalStages = snatchedMons[2].stages --[[@as table<string, integer>]]
+  Assert.equal(snatcherStages.specialAttack, 1, "Snatch executes Calm Mind as the snatcher")
+  Assert.equal(originalStages.specialAttack, 0, "the original Calm Mind user receives no boost")
+  local calmMindUse = moveUse(snatchedEvents, "CALM_MIND")
+  Assert.equal(calmMindUse.actors[1].combatant, 1, "the snatched move presentation names its new user")
+  Assert.equal(calmMindUse.targets[1].combatant, 1, "the snatched self-target animation follows its new user")
+  Assert.equal(calmMindUse.move.executed, "CALM_MIND", "Snatch preserves the incoming move animation route")
+  Assert.equal(snatchedSnapshot.combatants[2].mon.moves[1].pp, 19, "Snatch spends the selected user's Calm Mind PP")
+  snatched:dispose()
+end
+
+function T.imprison_blocks_a_later_shared_move_from_the_opponent()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local alpha = SessionFixture.combatant(1, 0x11111111)
+  alpha.mon = SessionFixture.makeMon(0x11111111, { species = "CHIKORITA", level = 100 })
+  alpha.mon.moves = {
+    { move = "IMPRISON", pp = 10, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+  }
+  local beta = SessionFixture.combatant(2, 0x22222222)
+  beta.mon = SessionFixture.makeMon(0x22222222, { species = "TOTODILE", level = 5 })
+  beta.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
+  local alphaMoves = alpha.mon.moves
+  alpha.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
+  local moveFacts = scenarioMoveFacts({ alpha, beta })
+  alpha.mon.moves = alphaMoves
+  moveFacts.IMPRISON = { power = 0, accuracy = 100, category = "other", moveType = "psychic", priority = 0 }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { alpha }),
+      SessionFixture.participant(2, 2, "beta", { beta }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = moveFacts,
+    speciesFacts = scenarioSpeciesFacts({ alpha, beta }),
+  }
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the first turn asks for both moves")
+  for _, request in ipairs(opening.request.requests) do
+    local slot = 0
+    local target = request.controller == "alpha" and 2 or 1
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, slot, SessionFixture.positionTarget(target))
+    end
+    local stored = session:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(stored, "the opening move choices are accepted")
+  end
+  local firstTurn = session:advance(64)
+  Assert.equal(firstTurn.status, "waiting", "the following turn opens after Imprison")
+  local sealed = false
+  local foeGrowls = 0
+  for _, event in ipairs(firstTurn.events) do
+    local cause = event.cause --[[@as table<string, unknown>]]
+    if event.kind == "move-used" and cause.key == "IMPRISON" then
+      sealed = true
+    elseif event.kind == "move-used" and cause.key == "GROWL" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if payload.user == 2 then
+        foeGrowls = foeGrowls + 1
+      end
+    end
+  end
+  Assert.isTrue(sealed, "the faster user seals the shared move before the foe acts")
+  Assert.equal(foeGrowls, 0, "the later opposing GROWL is blocked before it is used")
+
+  for _, request in ipairs(firstTurn.request.requests) do
+    local slot = request.controller == "alpha" and 1 or 0
+    local target = request.controller == "alpha" and 2 or 1
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, slot, SessionFixture.positionTarget(target))
+    end
+    local stored = session:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(stored, "the second-turn move choices are accepted")
+  end
+  local secondTurn = session:advance(64)
+  Assert.equal(secondTurn.status, "waiting", "the battle reaches another turn")
+  local growlUsers = {}
+  for _, event in ipairs(secondTurn.events) do
+    local cause = event.cause --[[@as table<string, unknown>]]
+    if event.kind == "move-used" and cause.key == "GROWL" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      growlUsers[#growlUsers + 1] = payload.user --[[@as integer]]
+    end
+  end
+  Assert.deepEqual(growlUsers, { 1 }, "only the user's Growl proceeds while the foe's shared Growl is imprisoned")
+  local snapshot = session:capture()
+  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
+  local betaMoveset = (combatants[2].mon --[[@as table<string, unknown>]]).moves --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(betaMoveset[1].pp, 40, "an imprisoned move fails before spending PP")
+  session:dispose()
+end
+
+function T.sacrifice_wishes_restore_the_surviving_replacement()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  for _, case in ipairs({
+    { move = "HEALING_WISH", mode = "healing" },
+    { move = "LUNAR_DANCE", mode = "lunar" },
+  }) do
+    local selected = case --[[@as table<string, string>]]
+    local lead = SessionFixture.combatant(1, 0x11111111)
+    lead.mon = SessionFixture.makeMon(0x11111111, { species = "CHIKORITA", level = 50 })
+    lead.mon.moves = { { move = selected.move, pp = 10, ppUps = 0 } }
+    local reserve = SessionFixture.combatant(3, 0x33333333)
+    reserve.mon = SessionFixture.makeMon(0x33333333, { species = "TOTODILE", level = 30 })
+    reserve.mon.condition.currentHp = 1
+    reserve.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+    reserve.mon.moves = {
+      { move = "TACKLE", pp = 1, ppUps = 1 },
+      { move = "GROWL", pp = 0, ppUps = 0 },
+    }
+    local foe = SessionFixture.combatant(2, 0x22222222)
+    foe.mon = SessionFixture.makeMon(0x22222222, { species = "TOTODILE", level = 5 })
+    foe.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
+
+    local leadMoves = lead.mon.moves
+    lead.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
+    local moveFacts = scenarioMoveFacts({ lead, reserve, foe })
+    lead.mon.moves = leadMoves
+    moveFacts[selected.move] = {
+      power = 0,
+      accuracy = 0,
+      category = "other",
+      moveType = "psychic",
+      priority = 0,
+      basePp = 10,
+    }
+    local seeds = { lead, reserve, foe }
+    local scenario = {
+      ruleset = Executor.RULESET,
+      format = NATIVE_FORMAT,
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { lead, reserve }),
+        SessionFixture.participant(2, 2, "beta", { foe }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+      },
+      inventories = {},
+      environment = { weather = "none" },
+      random = { seed = NATIVE_SEED },
+      formatState = {},
+      moveFacts = moveFacts,
+      speciesFacts = scenarioSpeciesFacts(seeds),
+    }
+    local session = contracts.Battle.newSession(scenario, nativeContent())
+    local opening = SessionFixture.driveUntilSettled(session)
+    Assert.equal(opening.status, "waiting", selected.move .. " receives the first decision")
+    for _, request in ipairs(opening.request.requests) do
+      local target = request.controller == "alpha" and 2 or 1
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+      end
+      local stored = session:submit(SessionFixture.replyFor(request, choices))
+      Assert.isTrue(stored, selected.move .. " and foe responses are accepted")
+    end
+    session:advance(64)
+    local replacement = SessionFixture.driveUntilSettled(session)
+    local alphaRequest = nil
+    for _, request in ipairs(replacement.request.requests) do
+      if request.controller == "alpha" then
+        alphaRequest = request
+      end
+    end
+    Assert.notNil(alphaRequest, selected.move .. " asks for the living reserve after fainting its user")
+    assert(alphaRequest ~= nil, "the sacrifice move replacement request exists")
+    local switchChoices = {}
+    for _, actor in ipairs(alphaRequest.actors) do
+      switchChoices[#switchChoices + 1] = SessionFixture.switchChoice(actor, 3)
+    end
+    local switched = session:submit(SessionFixture.replyFor(alphaRequest, switchChoices))
+    Assert.isTrue(switched, selected.move .. " accepts its replacement")
+    session:advance(64)
+
+    local snapshot = session:capture()
+    local entrant = snapshot.combatants[3] --[[@as table<string, unknown>]]
+    Assert.equal(entrant.hp, entrant.maxHp, selected.move .. " heals its surviving replacement fully")
+    local condition = entrant.mon.condition --[[@as table<string, unknown>]]
+    local effects = condition.effects --[[@as table<integer, table<string, unknown>>]]
+    for _, effect in ipairs(effects) do
+      Assert.isTrue(effect.key ~= "poison", selected.move .. " cures its replacement's major status")
+    end
+    local moves = entrant.mon.moves --[[@as table<integer, table<string, unknown>>]]
+    if selected.mode == "lunar" then
+      Assert.equal(moves[1].pp, 42, "Lunar Dance restores PP Ups on the replacement's Tackle")
+      Assert.equal(moves[2].pp, 40, "Lunar Dance restores every move slot")
+    else
+      Assert.equal(moves[1].pp, 1, "Healing Wish leaves the replacement's PP alone")
+    end
+    session:dispose()
+  end
 end
 
 function T.operation_budgets_change_responsiveness_only()
@@ -2089,6 +2636,317 @@ local function countKind(events, kind)
   return found
 end
 
+-- Bide stores a hit taken after its first action, forces the continuation,
+-- and releases exactly twice that HP damage without spending another PP.
+function T.bide_forces_its_release_against_the_live_attacker_once()
+  local contracts = SessionFixture.sessionContracts()
+  local alpha = leveledCombatant(1, 11, "CHIKORITA", 30)
+  alpha.mon.moves = {
+    { move = "BIDE", pp = 10, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  }
+  local beta = leveledCombatant(2, 23, "EEVEE", 5)
+  local scenario = actionScenario(NATIVE_FORMAT, { alpha }, { beta }, nil)
+  local bideFacts = {} ---@type table<string, unknown>
+  for key, value in pairs(scenario.moveFacts.TACKLE --[[@as table<string, unknown>]]) do
+    bideFacts[key] = value
+  end
+  bideFacts.nativeId = 117
+  bideFacts.effect = 26
+  bideFacts.power = 0
+  bideFacts.accuracy = 100
+  scenario.moveFacts.BIDE = bideFacts
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening asks for both actions")
+  for _, request in ipairs(opening.request.requests) do
+    local actor = assert(request.actors[1], "each side's request addresses its lead")
+    local target = request.controller == "alpha" and 2 or 1
+    local stored, replyErr = session:submit(SessionFixture.replyFor(request, {
+      SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target)),
+    }))
+    Assert.isTrue(stored, "the opening action is accepted")
+    Assert.isNil(replyErr, "accepted opening actions carry no error")
+  end
+  local firstTurn, firstEvents = advanceCollecting(session, 64)
+  Assert.equal(firstTurn.status, "waiting", "the first Bide turn stores damage and advances")
+  local incomingDamage = nil
+  for _, event in ipairs(firstEvents) do
+    local cause = event.cause --[[@as table<string, unknown>]]
+    local payload = event.payload --[[@as table<string, unknown>]]
+    if event.kind == "struck" and cause.key == "TACKLE" and payload.target == 1 then
+      incomingDamage = payload.damage --[[@as integer]]
+    end
+  end
+  Assert.isTrue(type(incomingDamage) == "number" and incomingDamage > 0, "the foe damages the charging user")
+  Assert.equal(session:capture().combatants[1].mon.moves[1].pp, 9, "the first Bide action spends one PP")
+
+  for _, request in ipairs(firstTurn.request.requests) do
+    local actor = assert(request.actors[1], "each continuation request addresses its lead")
+    local target = request.controller == "alpha" and 2 or 1
+    local slot = request.controller == "alpha" and 1 or 0
+    local stored, replyErr = session:submit(SessionFixture.replyFor(request, {
+      SessionFixture.attackChoice(actor, slot, SessionFixture.positionTarget(target)),
+    }))
+    Assert.isTrue(stored, "the continuation action is accepted")
+    Assert.isNil(replyErr, "accepted continuation actions carry no error")
+  end
+  local secondTurn, secondEvents = advanceCollecting(session, 64)
+  local bideDamage = nil
+  for _, event in ipairs(secondEvents) do
+    local cause = event.cause --[[@as table<string, unknown>]]
+    local payload = event.payload --[[@as table<string, unknown>]]
+    if event.kind == "struck" and cause.key == "BIDE" and payload.target == 2 then
+      bideDamage = payload.damage --[[@as integer]]
+    end
+  end
+  Assert.equal(bideDamage, incomingDamage * 2, "Bide releases twice the stored damage on its live attacker")
+  Assert.equal(session:capture().combatants[1].mon.moves[1].pp, 9, "the forced release spends no extra Bide PP")
+  Assert.isTrue(secondTurn.status == "waiting" or secondTurn.status == "ended", "the release settles the next turn")
+  session:dispose()
+end
+
+-- Heal Block and Magnet Rise decrement during the source's end-of-turn
+-- condition update and announce expiry after their fifth counted turn.
+function T.heal_block_and_magnet_rise_expire_after_five_session_turns()
+  local contracts = SessionFixture.sessionContracts()
+  for _, case in ipairs({
+    { move = "HEAL_BLOCK", effect = "healblock", target = 2 },
+    { move = "MAGNET_RISE", effect = "magnetrise", target = 1 },
+  }) do
+    local alpha = leveledCombatant(1, 11, "CHIKORITA", 30)
+    alpha.mon.moves = {
+      { move = case.move, pp = 10, ppUps = 0 },
+      { move = "GROWL", pp = 40, ppUps = 0 },
+    }
+    local beta = leveledCombatant(2, 23, "EEVEE", 30)
+    beta.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
+    local scenario = actionScenario(NATIVE_FORMAT, { alpha }, { beta }, nil)
+    local moveFacts = scenario.moveFacts --[[@as table<string, table<string, unknown>>]]
+    local tackleFacts = moveFacts.TACKLE --[[@as table<string, unknown>]]
+    local growlFacts = {}
+    for key, value in pairs(tackleFacts) do
+      growlFacts[key] = value
+    end
+    growlFacts.power = 0
+    growlFacts.category = "status"
+    growlFacts.accuracy = 100
+    growlFacts.priority = 0
+    growlFacts.effectChance = 0
+    moveFacts.GROWL = growlFacts
+    local effectFacts = {}
+    for key, value in pairs(tackleFacts) do
+      effectFacts[key] = value
+    end
+    effectFacts.power = 0
+    effectFacts.category = "status"
+    effectFacts.accuracy = 100
+    effectFacts.priority = 0
+    effectFacts.effectChance = 0
+    moveFacts[case.move] = effectFacts
+    local session = contracts.Battle.newSession(scenario, nativeContent())
+    local frame = SessionFixture.driveUntilSettled(session)
+    Assert.equal(frame.status, "waiting", "the opening exposes the first turn")
+
+    for turn = 1, 5 do
+      for _, request in ipairs(frame.request.requests) do
+        local actor = assert(request.actors[1], "each turn request addresses its lead")
+        local slot = request.controller == "alpha" and (turn == 1 and 0 or 1) or 0
+        local target = request.controller == "alpha" and 2 or 1
+        local stored, replyErr = session:submit(SessionFixture.replyFor(request, {
+          SessionFixture.attackChoice(actor, slot, SessionFixture.positionTarget(target)),
+        }))
+        Assert.isTrue(stored, "the turn action is accepted")
+        Assert.isNil(replyErr, "accepted turn actions carry no input error")
+      end
+      frame = advanceCollecting(session, 64)
+      Assert.equal(frame.status, "waiting", "both combatants survive the duration probe")
+      local effect = capturedEffect(session:capture().effects, case.effect)
+      if turn < 5 then
+        Assert.notNil(effect, "the timed effect remains through its counted turns")
+        Assert.equal(effect.state.turns, 5 - turn, "the end-of-turn pass decrements exactly once")
+      else
+        Assert.isNil(effect, "the effect is removed after the fifth counted turn")
+      end
+    end
+    session:dispose()
+  end
+end
+
+-- Uproar wakes active sleepers except Soundproof, and a wake pass pauses
+-- its three-turn countdown until the next end-of-turn update.
+function T.uproar_wakes_sleepers_and_pauses_its_duration_for_the_wake_pass()
+  local contracts = SessionFixture.sessionContracts()
+  for _, case in ipairs({
+    { ability = "STATIC", expectedTurns = 3, expectedSleep = false },
+    { ability = "SOUNDPROOF", expectedTurns = 2, expectedSleep = true },
+  }) do
+    local alpha = leveledCombatant(1, 11, "CHIKORITA", 30)
+    alpha.mon.moves = {
+      { move = "UPROAR", pp = 10, ppUps = 0 },
+      { move = "TACKLE", pp = 35, ppUps = 0 },
+    }
+    local beta = leveledCombatant(2, 23, "EEVEE", 30)
+    beta.mon.ability = case.ability
+    beta.mon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
+    beta.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+    local scenario = actionScenario(NATIVE_FORMAT, { alpha }, { beta }, nil)
+    local moveFacts = scenario.moveFacts --[[@as table<string, table<string, unknown>>]]
+    local tackleFacts = moveFacts.TACKLE --[[@as table<string, unknown>]]
+    local uproarFacts = {}
+    for key, value in pairs(tackleFacts) do
+      uproarFacts[key] = value
+    end
+    uproarFacts.power = 30
+    uproarFacts.category = "special"
+    uproarFacts.accuracy = 100
+    uproarFacts.priority = 1
+    uproarFacts.effectChance = 0
+    moveFacts.UPROAR = uproarFacts
+    local session = contracts.Battle.newSession(scenario, nativeContent())
+    local frame = SessionFixture.driveUntilSettled(session)
+    for _, request in ipairs(frame.request.requests) do
+      local actor = assert(request.actors[1], "the opening request addresses its lead")
+      local target = request.controller == "alpha" and 2 or 1
+      local stored, replyErr = session:submit(SessionFixture.replyFor(request, {
+        SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target)),
+      }))
+      Assert.isTrue(stored, "the opening move is accepted")
+      Assert.isNil(replyErr, "accepted opening moves carry no input error")
+    end
+    frame = advanceCollecting(session, 64)
+    Assert.equal(frame.status, "waiting", "the opening Uproar round settles")
+    local capture = session:capture()
+    local sleepEffect = capture.combatants[2].mon.condition.effects[1]
+    Assert.equal(sleepEffect == nil, not case.expectedSleep, "Uproar applies its Soundproof sleep rule")
+    local uproar = capturedEffect(capture.effects, "uproar")
+    Assert.notNil(uproar, "Uproar remains active after the opening turn")
+    Assert.equal(uproar.state.turns, case.expectedTurns, "a wake pass pauses countdown but Soundproof does not")
+
+    if not case.expectedSleep then
+      for turn = 1, 3 do
+        for _, request in ipairs(frame.request.requests) do
+          local actor = assert(request.actors[1], "the continuation request addresses its lead")
+          local target = request.controller == "alpha" and 2 or 1
+          local slot = request.controller == "alpha" and (turn < 3 and 0 or 1) or 0
+          local stored, replyErr = session:submit(SessionFixture.replyFor(request, {
+            SessionFixture.attackChoice(actor, slot, SessionFixture.positionTarget(target)),
+          }))
+          Assert.isTrue(stored, "the continuation move is accepted")
+          Assert.isNil(replyErr, "accepted continuation moves carry no input error")
+        end
+        frame = advanceCollecting(session, 64)
+        Assert.equal(frame.status, "waiting", "the Uproar duration round settles")
+        local live = capturedEffect(session:capture().effects, "uproar")
+        if turn < 3 then
+          Assert.notNil(live, "Uproar lasts through its three counted turns")
+          Assert.equal(live.state.turns, 3 - turn, "Uproar decrements once after the wake pass")
+        else
+          Assert.isNil(live, "Uproar ends after three countdown passes")
+        end
+      end
+    end
+    session:dispose()
+  end
+end
+
+-- Embargo ticks in the source's end-of-turn phase. Held-item recovery
+-- resumes on the next residual pass after the fifth turn expires it.
+function T.embargo_expires_after_five_turns_and_restores_leftovers()
+  local contracts = SessionFixture.sessionContracts()
+  local alpha = leveledCombatant(1, 11, "CHIKORITA", 30)
+  alpha.mon.moves = {
+    { move = "EMBARGO", pp = 15, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+  }
+  local beta = leveledCombatant(2, 23, "EEVEE", 30)
+  beta.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
+  beta.mon.heldItem = "LEFTOVERS"
+  beta.mon.condition.currentHp = 1
+  local scenario = actionScenario(NATIVE_FORMAT, { alpha }, { beta }, nil)
+  local moveFacts = scenario.moveFacts --[[@as table<string, table<string, unknown>>]]
+  local tackleFacts = moveFacts.TACKLE --[[@as table<string, unknown>]]
+  local growlFacts = {}
+  for key, value in pairs(tackleFacts) do
+    growlFacts[key] = value
+  end
+  growlFacts.power = 0
+  growlFacts.category = "status"
+  growlFacts.accuracy = 100
+  growlFacts.priority = 0
+  growlFacts.effectChance = 0
+  moveFacts.GROWL = growlFacts
+  local embargoFacts = {}
+  for key, value in pairs(growlFacts) do
+    embargoFacts[key] = value
+  end
+  moveFacts.EMBARGO = embargoFacts
+  scenario.itemFacts = {
+    LEFTOVERS = {
+      pocket = "items",
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 0, power = 10 },
+    },
+  }
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local frame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(frame.status, "waiting", "the opening asks for both actions")
+  local hpBeforeRecovery = nil
+  for turn = 1, 6 do
+    for _, request in ipairs(frame.request.requests) do
+      local actor = assert(request.actors[1], "each turn request addresses its lead")
+      local slot = request.controller == "alpha" and (turn == 1 and 0 or 1) or 0
+      local target = request.controller == "alpha" and 2 or 1
+      local stored, replyErr = session:submit(SessionFixture.replyFor(request, {
+        SessionFixture.attackChoice(actor, slot, SessionFixture.positionTarget(target)),
+      }))
+      Assert.isTrue(stored, "the turn action is accepted")
+      Assert.isNil(replyErr, "accepted turn actions carry no input error")
+    end
+    local events
+    frame, events = advanceCollecting(session, 64)
+    Assert.equal(frame.status, "waiting", "both combatants survive the duration probe")
+    local capture = session:capture()
+    local embargo = capturedEffect(capture.effects, "embargo")
+    if turn < 5 then
+      Assert.notNil(embargo, "Embargo remains until its fifth residual update")
+      Assert.equal(embargo.state.turns, 5 - turn, "Embargo decrements once per end-of-turn phase")
+    else
+      Assert.isNil(embargo, "Embargo expires on its fifth residual update")
+      if turn == 5 then
+        hpBeforeRecovery = capture.combatants[2].hp
+      end
+    end
+    if turn < 6 then
+      Assert.equal(
+        capture.combatants[2].hp,
+        1,
+        "Embargo suppresses Leftovers before its expiration pass"
+      )
+    else
+      Assert.isTrue(
+        capture.combatants[2].hp > (hpBeforeRecovery --[[@as integer]]),
+        "Leftovers recovers the holder after Embargo has expired (before="
+          .. tostring(hpBeforeRecovery)
+          .. ", after="
+          .. tostring(capture.combatants[2].hp)
+          .. ", item="
+          .. tostring(capture.combatants[2].mon.heldItem)
+      )
+      local recovered = false
+      for _, event in ipairs(events) do
+        if event.kind == "healed" then
+          local payload = event.payload --[[@as table<string, unknown>]]
+          recovered = recovered or payload.target == 2
+        end
+      end
+      Assert.isTrue(recovered, "the resumed item effect emits its recovery event")
+    end
+  end
+  session:dispose()
+end
+
 -- Exchanges into reserves that cannot fight are refused before anything
 -- moves: the reply is rejected as invalid input, the outgoing lead keeps
 -- its position and entry token, both reserves stay benched, no exchange
@@ -3583,6 +4441,47 @@ local function withMoveFacts(scenario, extra)
   return scenario
 end
 
+---@param scenario table detached native scenario under copied-move setup
+---@param extra table<string, table<string, unknown>> hand-written facts required by that setup
+---@param copiedMove string copied candidate whose effect must remain ordinary
+---@return table scenario carrying every source effect reference needed for Mirror Move checks
+local function withMirrorMoveFacts(scenario, extra, copiedMove)
+  local excludedEffects = {
+    TRANSFORM = 57,
+    MIMIC = 82,
+    SKETCH = 95,
+    MIRROR_MOVE = 103,
+    ENCORE = 90,
+    STRUGGLE = 254,
+  }
+  for key, effect in pairs(excludedEffects) do
+    scenario.moveFacts[key] = { effect = effect }
+  end
+  withMoveFacts(scenario, extra)
+  local mirrorFacts = scenario.moveFacts.MIRROR_MOVE --[[@as table<string, unknown>]]
+  mirrorFacts.effect = excludedEffects.MIRROR_MOVE
+  local copiedFacts = scenario.moveFacts[copiedMove] --[[@as table<string, unknown>]]
+  local flags = copiedFacts.flags
+  if type(flags) ~= "table" then
+    flags = {}
+    copiedFacts.flags = flags
+  end
+  local copiedFlags = flags --[[@as table<string, unknown>]]
+  copiedFlags.mirrorable = true
+  local facts = copiedFacts
+  facts.effect = 0
+  return scenario
+end
+
+---@param scenario table native battle scenario requiring Me First effect references
+---@return table scenario carrying the move facts checked by CheckLegalMeFirstMove
+local function withMeFirstFacts(scenario)
+  for index, key in ipairs({ "COUNTER", "MIRROR_COAT", "THIEF", "COVET", "FOCUS_PUNCH", "CHATTER" }) do
+    scenario.moveFacts[key] = { effect = 65000 + index }
+  end
+  return scenario
+end
+
 ---@param power integer compiled strike power under the hand facts
 ---@param accuracy integer compiled strike accuracy under the hand facts
 ---@param category string compiled strike category under the hand facts
@@ -3820,10 +4719,10 @@ function T.mirror_move_copies_the_recorded_incoming_strike()
   -- identically on every battle-stream position.
   local betaLead = leveledCombatant(2, 23, "EEVEE", 10)
   betaLead.mon.moves = { { move = "SCRATCH", pp = 35, ppUps = 0 } }
-  local scenario = withMoveFacts(actionScenario(WILD_FORMAT, { alphaLead }, { betaLead }, nil), {
+  local scenario = withMirrorMoveFacts(actionScenario(WILD_FORMAT, { alphaLead }, { betaLead }, nil), {
     MIRROR_MOVE = handFacts(0, 0, "other", "flying", 0),
     SCRATCH = strikeFacts(0, "normal", 35),
-  })
+  }, "SCRATCH")
   local session = contracts.Battle.newSession(scenario, content)
   local opening = SessionFixture.driveUntilSettled(session)
   Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
@@ -3861,6 +4760,907 @@ function T.mirror_move_copies_the_recorded_incoming_strike()
   Assert.isNil(secondErr, "accepted strikes carry no input error")
   session:advance(64)
   Assert.isTrue(session:capture().combatants[2].hp < before, "mirror move strikes with the recorded move")
+  session:dispose()
+end
+
+function T.copycat_uses_the_previous_executed_move_globally()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local copier = leveledCombatant(1, 11, "CHIKORITA", 20)
+  copier.mon.moves = { { move = "COPYCAT", pp = 20, ppUps = 0 } }
+  local striker = leveledCombatant(2, 23, "EEVEE", 20)
+  striker.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local scenario = actionScenario(WILD_FORMAT, { copier }, { striker }, nil)
+  withMoveFacts(scenario, {
+    COPYCAT = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 0 },
+  })
+  -- The source move executes first, establishing moveNoPrev before Copycat.
+  scenario.moveFacts.TACKLE.priority = 1
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local acceptedAlpha, alphaErr = session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  Assert.isTrue(acceptedAlpha, "Copycat is accepted")
+  Assert.isNil(alphaErr, "Copycat carries no selection error")
+  local acceptedBeta, betaErr = session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+  Assert.isTrue(acceptedBeta, "the prior move is accepted")
+  Assert.isNil(betaErr, "the prior move carries no selection error")
+  local _, events = advanceCollecting(session, 64)
+  local copiedStrike = false
+  for _, event in ipairs(events) do
+    local cause = event.cause --[[@as table<string, unknown>]]
+    local payload = event.payload --[[@as table<string, unknown>]]
+    if event.kind == "struck" and cause.key == "TACKLE" and payload.target == 2 then
+      copiedStrike = true
+    end
+  end
+  Assert.isTrue(copiedStrike, "Copycat calls the globally previous executed move")
+  Assert.equal(session:capture().combatants[1].mon.moves[1].pp, 19, "Copycat spends only its own slot PP")
+  session:dispose()
+end
+
+function T.trick_swaps_the_live_held_items()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = { { move = "TRICK", pp = 10, ppUps = 0 } }
+  user.mon.heldItem = "LEFTOVERS"
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.mon.heldItem = "CHOICE_BAND"
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  scenario.itemFacts = {
+    LEFTOVERS = {
+      pocket = "items",
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 0, power = 10 },
+    },
+    CHOICE_BAND = {
+      pocket = "items",
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 0, power = 10 },
+    },
+  }
+  local trickFacts = handFacts(0, 0, "other", "normal", 0)
+  trickFacts.effect = 0
+  withMoveFacts(scenario, { TRICK = trickFacts })
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+  advanceCollecting(session, 64)
+  local snapshot = session:capture()
+  Assert.equal(snapshot.combatants[1].mon.heldItem, "CHOICE_BAND", "Trick gives the target's item to its user")
+  Assert.equal(snapshot.combatants[2].mon.heldItem, "LEFTOVERS", "Trick gives the user's item to its target")
+  session:dispose()
+end
+
+function T.thief_steals_the_target_item_into_the_attacker_slot()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = { { move = "THIEF", pp = 25, ppUps = 0 } }
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.mon.heldItem = "LEFTOVERS"
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  scenario.itemFacts = {
+    LEFTOVERS = {
+      pocket = "items",
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 0, power = 10 },
+    },
+  }
+  local thiefFacts = handFacts(40, 100, "physical", "dark", 0)
+  thiefFacts.effect = 0
+  withMoveFacts(scenario, { THIEF = thiefFacts })
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+
+  advanceCollecting(session, 64)
+
+  local snapshot = session:capture()
+  Assert.equal(snapshot.combatants[1].mon.heldItem, "LEFTOVERS", "Thief gives the target's held item to its user")
+  Assert.equal(snapshot.combatants[2].mon.heldItem, "NONE", "Thief empties the target item slot")
+  session:dispose()
+end
+
+function T.thief_does_not_steal_a_griseous_orb()
+  local contracts = SessionFixture.sessionContracts()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = { { move = "THIEF", pp = 25, ppUps = 0 } }
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.mon.heldItem = "GRISEOUS_ORB"
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  scenario.itemFacts = {
+    GRISEOUS_ORB = {
+      pocket = "items",
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 0, power = 10 },
+    },
+  }
+  local thiefFacts = handFacts(40, 100, "physical", "dark", 0)
+  thiefFacts.effect = 0
+  withMoveFacts(scenario, { THIEF = thiefFacts })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+  advanceCollecting(session, 64)
+
+  local snapshot = session:capture()
+  Assert.equal(snapshot.combatants[1].mon.heldItem, "NONE", "Thief cannot take Giratina's Griseous Orb")
+  Assert.equal(snapshot.combatants[2].mon.heldItem, "GRISEOUS_ORB", "the protected item stays with its holder")
+  session:dispose()
+end
+
+function T.thief_does_not_steal_from_a_multitype_target()
+  local contracts = SessionFixture.sessionContracts()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = { { move = "THIEF", pp = 25, ppUps = 0 } }
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.mon.ability = "MULTITYPE"
+  target.mon.heldItem = "LEFTOVERS"
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  scenario.itemFacts = {
+    LEFTOVERS = {
+      pocket = "items",
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 0, power = 10 },
+    },
+  }
+  local thiefFacts = handFacts(40, 100, "physical", "dark", 0)
+  thiefFacts.effect = 0
+  withMoveFacts(scenario, { THIEF = thiefFacts })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+  advanceCollecting(session, 64)
+
+  local snapshot = session:capture()
+  Assert.equal(snapshot.combatants[1].mon.heldItem, "NONE", "Thief cannot take from Multitype")
+  Assert.equal(snapshot.combatants[2].mon.heldItem, "LEFTOVERS", "the item stays with the Multitype holder")
+  session:dispose()
+end
+
+function T.opponent_field_side_cannot_use_thief_or_trick_in_non_link_sessions()
+  local contracts = SessionFixture.sessionContracts()
+  local player = leveledCombatant(1, 11, "CHIKORITA", 20)
+  player.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  player.mon.heldItem = "CHOICE_BAND"
+  local opponent = leveledCombatant(2, 23, "EEVEE", 20)
+  opponent.mon.moves = {
+    { move = "THIEF", pp = 25, ppUps = 0 },
+    { move = "TRICK", pp = 10, ppUps = 0 },
+  }
+  opponent.mon.heldItem = "LEFTOVERS"
+  local scenario = actionScenario(WILD_FORMAT, { player }, { opponent }, nil)
+  scenario.itemFacts = {
+    CHOICE_BAND = {
+      pocket = "items",
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 0, power = 10 },
+    },
+    LEFTOVERS = {
+      pocket = "items",
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 0, power = 10 },
+    },
+  }
+  local thiefFacts = handFacts(40, 100, "physical", "dark", 0)
+  thiefFacts.effect = 0
+  local trickFacts = handFacts(0, 0, "other", "psychic", 0)
+  trickFacts.effect = 0
+  withMoveFacts(scenario, { THIEF = thiefFacts, TRICK = trickFacts })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for turn = 1, 2 do
+    local alpha = requestFor(opening, "alpha")
+    local beta = requestFor(opening, "beta")
+    session:submit(SessionFixture.replyFor(alpha, {
+      SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+    }))
+    session:submit(SessionFixture.replyFor(beta, {
+      SessionFixture.attackChoice(assert(beta.actors[1]), turn - 1, SessionFixture.positionTarget(1)),
+    }))
+    opening = advanceCollecting(session, 64)
+  end
+  local snapshot = session:capture()
+  Assert.equal(snapshot.combatants[1].mon.heldItem, "CHOICE_BAND", "opponent Thief and Trick preserve the player's item")
+  Assert.equal(snapshot.combatants[2].mon.heldItem, "LEFTOVERS", "opponent Thief and Trick keep their original item")
+  session:dispose()
+end
+
+function T.thief_cannot_take_quick_claw_after_its_turn_order_activation()
+  local contracts = SessionFixture.sessionContracts()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = { { move = "THIEF", pp = 25, ppUps = 0 } }
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.mon.heldItem = "QUICK_CLAW"
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  scenario.random.seed = 1
+  scenario.itemFacts = {
+    QUICK_CLAW = {
+      pocket = "items",
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 0, power = 10 },
+    },
+  }
+  local thiefFacts = handFacts(40, 100, "physical", "dark", 0)
+  thiefFacts.effect = 0
+  withMoveFacts(scenario, { THIEF = thiefFacts })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+  advanceCollecting(session, 64)
+
+  local snapshot = session:capture()
+  Assert.isTrue(snapshot.turnItemActivations[2], "the Quick Claw activation is recorded for this turn")
+  Assert.equal(snapshot.combatants[1].mon.heldItem, "NONE", "Quick Claw cannot be stolen after activating")
+  Assert.equal(snapshot.combatants[2].mon.heldItem, "QUICK_CLAW", "the activated Quick Claw stays held")
+  session:dispose()
+end
+
+function T.knock_off_records_that_the_roster_item_cannot_be_stolen_later()
+  local contracts = SessionFixture.sessionContracts()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = {
+    { move = "KNOCK_OFF", pp = 20, ppUps = 0 },
+    { move = "TRICK", pp = 10, ppUps = 0 },
+  }
+  user.mon.heldItem = "CHOICE_BAND"
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.mon.heldItem = "LEFTOVERS"
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  scenario.itemFacts = {
+    LEFTOVERS = {
+      pocket = "items",
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 0, power = 10 },
+    },
+    CHOICE_BAND = {
+      pocket = "items",
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 0, power = 10 },
+    },
+  }
+  local knockOffFacts = handFacts(65, 100, "physical", "dark", 0)
+  knockOffFacts.effect = 0
+  local trickFacts = handFacts(0, 0, "other", "psychic", 0)
+  trickFacts.effect = 0
+  withMoveFacts(scenario, { KNOCK_OFF = knockOffFacts, TRICK = trickFacts })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for turn = 1, 2 do
+    local alpha = requestFor(opening, "alpha")
+    local beta = requestFor(opening, "beta")
+    session:submit(SessionFixture.replyFor(alpha, {
+      SessionFixture.attackChoice(assert(alpha.actors[1]), turn - 1, SessionFixture.positionTarget(2)),
+    }))
+    session:submit(SessionFixture.replyFor(beta, {
+      SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+    }))
+    opening = advanceCollecting(session, 64)
+  end
+
+  local snapshot = session:capture()
+  Assert.equal(snapshot.combatants[1].mon.heldItem, "CHOICE_BAND", "Trick cannot transfer an item after Knock Off")
+  Assert.equal(snapshot.combatants[2].mon.heldItem, "NONE", "Knock Off history prevents reacquisition")
+  Assert.isTrue(snapshot.knockedOffItems[2], "the roster member keeps its Knock Off history")
+  session:dispose()
+end
+
+function T.bug_bite_consumes_the_target_berry_and_applies_its_healing()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = { { move = "BUG_BITE", pp = 20, ppUps = 0 } }
+  user.mon.condition.currentHp = 20
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.mon.heldItem = "SITRUS_BERRY"
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  scenario.itemFacts = {
+    SITRUS_BERRY = {
+      pocket = "berries",
+      partyUse = {
+        kind = "medicine",
+        cures = { sleep = false, poison = false, burn = false, freeze = false, paralysis = false },
+        restore = { kind = "quarter" },
+      },
+      naturalGift = { power = 0, typeId = 0 },
+      fling = { effect = 10, power = 10 },
+    },
+  }
+  local bugBiteFacts = handFacts(60, 100, "physical", "bug", 0)
+  bugBiteFacts.effect = 0
+  withMoveFacts(scenario, { BUG_BITE = bugBiteFacts })
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+
+  advanceCollecting(session, 64)
+
+  local snapshot = session:capture()
+  Assert.isTrue(snapshot.combatants[1].hp > 20, "Bug Bite applies the eaten Sitrus Berry recovery")
+  Assert.equal(snapshot.combatants[2].mon.heldItem, "NONE", "Bug Bite consumes the target berry")
+  session:dispose()
+end
+
+function T.fling_applies_a_sitrus_berry_effect_after_its_hit()
+  local contracts = SessionFixture.sessionContracts()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = { { move = "FLING", pp = 10, ppUps = 0 } }
+  user.mon.heldItem = "SITRUS_BERRY"
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.mon.condition.currentHp = 10
+  target.mon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  scenario.itemFacts = {
+    SITRUS_BERRY = {
+      pocket = "berries",
+      partyUse = { kind = "medicine", restore = { kind = "quarter" }, cures = {} },
+      naturalGift = { power = 60, typeId = 10, type = "fire" },
+      fling = { effect = 10, power = 10 },
+    },
+  }
+  local flingFacts = handFacts(10, 100, "physical", "dark", 0)
+  flingFacts.effect = 0
+  withMoveFacts(scenario, { FLING = flingFacts })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+  advanceCollecting(session, 64)
+
+  local snapshot = session:capture()
+  Assert.isTrue(snapshot.combatants[2].hp > 10, "Fling applies the target-directed Sitrus restoration")
+  Assert.equal(snapshot.combatants[1].mon.heldItem, "NONE", "Fling consumes its berry")
+  session:dispose()
+end
+
+function T.fling_flavor_berries_restore_one_eighth_of_the_target_maximum_hp()
+  local contracts = SessionFixture.sessionContracts()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = { { move = "FLING", pp = 10, ppUps = 0 } }
+  user.mon.heldItem = "FIGY_BERRY"
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.mon.condition.currentHp = 15
+  target.mon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  scenario.itemFacts = {
+    FIGY_BERRY = {
+      pocket = "berries",
+      partyUse = { kind = "deferred", reason = "battle_only" },
+      naturalGift = { power = 60, typeId = 10, type = "fire" },
+      fling = { effect = 11, power = 10 },
+    },
+  }
+  local flingFacts = handFacts(10, 100, "physical", "dark", 0)
+  flingFacts.effect = 0
+  withMoveFacts(scenario, { FLING = flingFacts })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+  advanceCollecting(session, 64)
+
+  local snapshot = session:capture()
+  Assert.isTrue(snapshot.combatants[2].hp > 15, "Figy Berry heals after the Fling strike")
+  Assert.equal(snapshot.combatants[1].mon.heldItem, "NONE", "Fling consumes its flavor berry")
+  session:dispose()
+end
+
+function T.fling_leppa_apicot_and_starf_effects_reach_the_target()
+  local function run(item, effect, partyUse)
+    local contracts = SessionFixture.sessionContracts()
+    local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+    user.mon.moves = { { move = "FLING", pp = 10, ppUps = 0 } }
+    user.mon.heldItem = item
+    local target = leveledCombatant(2, 23, "EEVEE", 20)
+    target.mon.moves = { { move = "TACKLE", pp = 1, ppUps = 0 } }
+    target.mon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
+    local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+    scenario.itemFacts = {
+      [item] = {
+        pocket = "berries",
+        partyUse = partyUse,
+        naturalGift = { power = 60, typeId = 10, type = "fire" },
+        fling = { effect = effect, power = 10 },
+      },
+    }
+    local flingFacts = handFacts(10, 100, "physical", "dark", 0)
+    flingFacts.effect = 0
+    withMoveFacts(scenario, { FLING = flingFacts })
+    local session = contracts.Battle.newSession(scenario, actionContent())
+    local opening = SessionFixture.driveUntilSettled(session)
+    local alpha = requestFor(opening, "alpha")
+    local beta = requestFor(opening, "beta")
+    session:submit(SessionFixture.replyFor(alpha, {
+      SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+    }))
+    session:submit(SessionFixture.replyFor(beta, {
+      SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+    }))
+    advanceCollecting(session, 64)
+    local snapshot = session:capture()
+    session:dispose()
+    return snapshot
+  end
+
+  local leppa = run("LEPPA_BERRY", 6, { kind = "pp", target = "one", restore = 10 })
+  Assert.isTrue(leppa.combatants[2].mon.moves[1].pp > 1, "Leppa restores the target's most depleted move")
+  local apicot = run("APICOT_BERRY", 21, { kind = "deferred", reason = "battle_only" })
+  local focus = false
+  for _, effect in ipairs(apicot.effects) do
+    if effect.key == "focusenergy" then
+      focus = true
+    end
+  end
+  Assert.isTrue(focus, "Flinging Apicot Berry gives the target a critical-hit boost")
+  local starf = run("STARF_BERRY", 22, { kind = "deferred", reason = "battle_only" })
+  local raised = false
+  for _, stage in pairs(starf.combatants[2].stages) do
+    if stage > 0 then
+      raised = true
+    end
+  end
+  Assert.isTrue(raised, "Flinging Starf Berry raises one eligible target stat")
+end
+
+function T.bug_bite_uses_a_leppa_berry_to_restore_its_users_most_depleted_move()
+  local contracts = SessionFixture.sessionContracts()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = {
+    { move = "BUG_BITE", pp = 20, ppUps = 0 },
+    { move = "TACKLE", pp = 1, ppUps = 0 },
+  }
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.mon.heldItem = "LEPPA_BERRY"
+  target.mon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  scenario.itemFacts = {
+    LEPPA_BERRY = {
+      pocket = "berries",
+      partyUse = { kind = "pp", target = "one", restore = 10 },
+      naturalGift = { power = 60, typeId = 10, type = "fire" },
+      fling = { effect = 6, power = 10 },
+    },
+  }
+  local bugBiteFacts = handFacts(60, 100, "physical", "bug", 0)
+  bugBiteFacts.effect = 0
+  bugBiteFacts.basePp = 20
+  withMoveFacts(scenario, { BUG_BITE = bugBiteFacts })
+  scenario.moveFacts.TACKLE.basePp = 35
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+  advanceCollecting(session, 64)
+
+  local snapshot = session:capture()
+  Assert.isTrue(snapshot.combatants[1].mon.moves[2].pp > 1, "Bug Bite applies the stolen Leppa effect to its user")
+  Assert.equal(snapshot.combatants[2].mon.heldItem, "NONE", "Bug Bite consumes the target's berry")
+  session:dispose()
+end
+
+function T.psycho_shift_moves_the_users_major_condition_to_a_healthy_target()
+  local contracts = SessionFixture.sessionContracts()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = { { move = "PSYCHO_SHIFT", pp = 15, ppUps = 0 } }
+  user.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  local psychoFacts = handFacts(0, 90, "other", "psychic", 0)
+  psychoFacts.effect = 0
+  withMoveFacts(scenario, { PSYCHO_SHIFT = psychoFacts })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+
+  advanceCollecting(session, 64)
+
+  local snapshot = session:capture()
+  Assert.equal(snapshot.combatants[1].mon.condition.effects[1], nil, "Psycho Shift cures its source on success")
+  Assert.equal(snapshot.combatants[2].mon.condition.effects[1].key, "poison", "Psycho Shift transfers the condition")
+  session:dispose()
+end
+
+function T.psycho_shift_transfers_each_major_status_and_respects_its_immunity()
+  local cases = {
+    { status = "sleep", state = { turns = 2 }, cannotAct = true },
+    { status = "poison", state = {}, ability = "IMMUNITY", type = "poison" },
+    { status = "toxic", state = { counter = 0 }, ability = "IMMUNITY", type = "steel" },
+    { status = "burn", state = {}, ability = "WATER_VEIL", type = "fire" },
+    { status = "freeze", state = {}, cannotAct = true, ability = "MAGMA_ARMOR", type = "ice" },
+    { status = "paralysis", state = {}, ability = "LIMBER" },
+  }
+  local function settle(status, state, targetAbility, targetType)
+    local contracts = SessionFixture.sessionContracts()
+    local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+    user.mon.moves = { { move = "PSYCHO_SHIFT", pp = 15, ppUps = 0 } }
+    user.mon.condition.effects = { { key = status, version = 1, state = state } }
+    local target = leveledCombatant(2, 23, "EEVEE", 20)
+    target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+    if targetAbility ~= nil then
+      target.mon.ability = targetAbility
+    end
+    local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+    if targetType ~= nil then
+      scenario.speciesFacts.EEVEE[0].types = { targetType }
+    end
+    local psychoFacts = handFacts(0, 90, "other", "psychic", 0)
+    psychoFacts.effect = 0
+    withMoveFacts(scenario, { PSYCHO_SHIFT = psychoFacts })
+    local session = contracts.Battle.newSession(scenario, actionContent())
+    local opening = SessionFixture.driveUntilSettled(session)
+    local alpha = requestFor(opening, "alpha")
+    local beta = requestFor(opening, "beta")
+    session:submit(SessionFixture.replyFor(alpha, {
+      SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+    }))
+    session:submit(SessionFixture.replyFor(beta, {
+      SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+    }))
+    advanceCollecting(session, 64)
+    local snapshot = session:capture()
+    session:dispose()
+    return snapshot
+  end
+
+  for _, case in ipairs(cases) do
+    if case.cannotAct then
+      local asleep = settle(case.status, case.state, nil, nil)
+      Assert.equal(asleep.combatants[1].mon.condition.effects[1].key, case.status, "sleep prevents the user from acting")
+      Assert.isNil(asleep.combatants[2].mon.condition.effects[1], "Psycho Shift does not run while its user sleeps")
+    else
+      local transferred = settle(case.status, case.state, nil, nil)
+      Assert.isNil(transferred.combatants[1].mon.condition.effects[1], case.status .. " is cured from its source")
+      Assert.equal(transferred.combatants[2].mon.condition.effects[1].key, case.status, case.status .. " transfers")
+      local blocked = settle(case.status, case.state, case.ability, case.type)
+      Assert.equal(blocked.combatants[1].mon.condition.effects[1].key, case.status, case.status .. " remains on an immune source")
+      Assert.isNil(blocked.combatants[2].mon.condition.effects[1], case.status .. " does not affect an immune target")
+    end
+  end
+end
+
+function T.recycle_restores_the_last_consumed_held_item()
+  local contracts = SessionFixture.sessionContracts()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = {
+    { move = "NATURAL_GIFT", pp = 15, ppUps = 0 },
+    { move = "RECYCLE", pp = 10, ppUps = 0 },
+  }
+  user.mon.heldItem = "SITRUS_BERRY"
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  scenario.itemFacts = {
+    SITRUS_BERRY = {
+      pocket = "berries",
+      partyUse = { kind = "medicine", cures = {} },
+      naturalGift = { power = 60, typeId = 10, type = "fire" },
+      fling = { effect = 0, power = 10 },
+    },
+  }
+  local giftFacts = handFacts(80, 100, "physical", "normal", 0)
+  giftFacts.effect = 0
+  local recycleFacts = handFacts(0, 0, "other", "normal", 0)
+  recycleFacts.effect = 0
+  withMoveFacts(scenario, { NATURAL_GIFT = giftFacts, RECYCLE = recycleFacts })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for turn = 1, 2 do
+    local alpha = requestFor(opening, "alpha")
+    local beta = requestFor(opening, "beta")
+    local userSlot = turn == 1 and 0 or 1
+    session:submit(SessionFixture.replyFor(alpha, {
+      SessionFixture.attackChoice(assert(alpha.actors[1]), userSlot, SessionFixture.positionTarget(2)),
+    }))
+    session:submit(SessionFixture.replyFor(beta, {
+      SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+    }))
+    opening = advanceCollecting(session, 64)
+  end
+  local snapshot = session:capture()
+  Assert.equal(snapshot.combatants[1].mon.heldItem, "SITRUS_BERRY", "Recycle restores the consumed berry")
+  Assert.isNil(snapshot.recycleItems[1], "a restored item leaves no stale Recycle memory")
+  session:dispose()
+end
+
+function T.power_trick_swaps_the_effective_physical_attack_and_defense()
+  local function damageAfterToggle(enabled)
+    local contracts = SessionFixture.sessionContracts()
+    local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+    user.mon.moves = enabled and {
+      { move = "POWER_TRICK", pp = 10, ppUps = 0 },
+      { move = "TACKLE", pp = 35, ppUps = 0 },
+    } or { { move = "TACKLE", pp = 35, ppUps = 0 } }
+    local target = leveledCombatant(2, 23, "EEVEE", 20)
+    target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+    target.mon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
+    local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+    local physicalStats = scenario.speciesFacts.CHIKORITA[0].baseStats
+    physicalStats.attack = 10
+    physicalStats.defense = 100
+    local facts = { TACKLE = handFacts(40, 95, "physical", "normal", 0) }
+    if enabled then
+      local trick = handFacts(0, 0, "other", "psychic", 0)
+      trick.effect = 0
+      facts.POWER_TRICK = trick
+    end
+    withMoveFacts(scenario, facts)
+    local session = contracts.Battle.newSession(scenario, actionContent())
+    local opening = SessionFixture.driveUntilSettled(session)
+    local turns = enabled and 2 or 1
+    local hpBefore = session:capture().combatants[2].hp
+    for turn = 1, turns do
+      local alpha = requestFor(opening, "alpha")
+      local beta = requestFor(opening, "beta")
+      session:submit(SessionFixture.replyFor(alpha, {
+        SessionFixture.attackChoice(assert(alpha.actors[1]), enabled and turn == 1 and 0 or (enabled and 1 or 0), SessionFixture.positionTarget(2)),
+      }))
+      session:submit(SessionFixture.replyFor(beta, {
+        SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+      }))
+      opening = advanceCollecting(session, 64)
+      if enabled and turn == 1 then
+        Assert.notNil(capturedEffect(session:capture().effects, "POWER_TRICK"), "Power Trick persists its active-entry marker")
+      end
+    end
+    local damage = hpBefore - session:capture().combatants[2].hp
+    session:dispose()
+    return damage
+  end
+
+  local toggledDamage = damageAfterToggle(true)
+  local ordinaryDamage = damageAfterToggle(false)
+  Assert.isTrue(
+    toggledDamage > ordinaryDamage,
+    "Power Trick makes Defense the physical Attack stat: " .. tostring(toggledDamage) .. " <= " .. tostring(ordinaryDamage)
+  )
+end
+
+function T.gastro_acid_suppresses_soundproof_for_uproar_wake()
+  local contracts = SessionFixture.sessionContracts()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = {
+    { move = "GASTRO_ACID", pp = 10, ppUps = 0 },
+    { move = "UPROAR", pp = 10, ppUps = 0 },
+  }
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.mon.ability = "SOUNDPROOF"
+  target.mon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  local gasFacts = handFacts(0, 100, "other", "poison", 0)
+  gasFacts.effect = 0
+  local uproarFacts = handFacts(50, 100, "special", "normal", 0)
+  uproarFacts.effect = 0
+  withMoveFacts(scenario, { GASTRO_ACID = gasFacts, UPROAR = uproarFacts })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for turn = 1, 2 do
+    local alpha = requestFor(opening, "alpha")
+    local beta = requestFor(opening, "beta")
+    session:submit(SessionFixture.replyFor(alpha, {
+      SessionFixture.attackChoice(assert(alpha.actors[1]), turn - 1, SessionFixture.positionTarget(2)),
+    }))
+    session:submit(SessionFixture.replyFor(beta, {
+      SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+    }))
+    opening = advanceCollecting(session, 64)
+  end
+
+  Assert.equal(session:capture().combatants[2].mon.condition.effects[1], nil, "suppressed Soundproof no longer blocks Uproar's wake")
+  session:dispose()
+end
+
+function T.me_first_uses_the_targets_committed_move()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 100)
+  user.mon.moves = { { move = "ME_FIRST", pp = 5, ppUps = 0 } }
+  local target = leveledCombatant(2, 23, "EEVEE", 50)
+  target.mon.moves = { { move = "EMBER", pp = 25, ppUps = 0 } }
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  local emberFacts = handFacts(40, 100, "special", "fire", 0)
+  emberFacts.effect = 0
+  withMoveFacts(scenario, {
+    ME_FIRST = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 1 },
+    EMBER = emberFacts,
+  })
+  withMeFirstFacts(scenario)
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local acceptedAlpha, alphaErr = session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  Assert.isTrue(acceptedAlpha, "Me First is accepted")
+  Assert.isNil(alphaErr, "Me First carries no selection error")
+  local acceptedBeta, betaErr = session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+  Assert.isTrue(acceptedBeta, "the target move is accepted")
+  Assert.isNil(betaErr, "the target move carries no selection error")
+  local _, events = advanceCollecting(session, 64)
+  local copiedStrike = false
+  local copiedDamage = nil
+  for _, event in ipairs(events) do
+    local cause = event.cause --[[@as table<string, unknown>]]
+    local payload = event.payload --[[@as table<string, unknown>]]
+    if event.kind == "struck" and cause.key == "EMBER" and payload.target == 2 then
+      copiedStrike = true
+      copiedDamage = payload.damage
+    end
+  end
+  Assert.isTrue(copiedStrike, "Me First calls the target's currently committed special move")
+  Assert.isTrue(type(copiedDamage) == "number" and copiedDamage > 0, "the copied strike deals damage")
+  Assert.equal(session:capture().combatants[1].mon.moves[1].pp, 4, "Me First spends only its own slot PP")
+  session:dispose()
+
+  local baselineUser = leveledCombatant(1, 11, "CHIKORITA", 100)
+  baselineUser.mon.moves = { { move = "EMBER", pp = 25, ppUps = 0 } }
+  local baselineTarget = leveledCombatant(2, 23, "EEVEE", 50)
+  baselineTarget.mon.moves = { { move = "EMBER", pp = 25, ppUps = 0 } }
+  local baselineScenario = actionScenario(WILD_FORMAT, { baselineUser }, { baselineTarget }, nil)
+  local baselineEmberFacts = handFacts(40, 100, "special", "fire", 0)
+  baselineEmberFacts.effect = 0
+  withMoveFacts(baselineScenario, { EMBER = baselineEmberFacts })
+  local baselineSession = contracts.Battle.newSession(baselineScenario, content)
+  local baselineOpening = SessionFixture.driveUntilSettled(baselineSession)
+  local baselineAlpha = requestFor(baselineOpening, "alpha")
+  local baselineBeta = requestFor(baselineOpening, "beta")
+  baselineSession:submit(SessionFixture.replyFor(baselineAlpha, {
+    SessionFixture.attackChoice(assert(baselineAlpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+  }))
+  baselineSession:submit(SessionFixture.replyFor(baselineBeta, {
+    SessionFixture.attackChoice(assert(baselineBeta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+  local _, baselineEvents = advanceCollecting(baselineSession, 64)
+  local baselineDamage = nil
+  for _, event in ipairs(baselineEvents) do
+    local cause = event.cause --[[@as table<string, unknown>]]
+    local payload = event.payload --[[@as table<string, unknown>]]
+    if event.kind == "struck" and cause.key == "EMBER" and payload.target == 2 then
+      baselineDamage = payload.damage
+    end
+  end
+  Assert.isTrue(
+    type(baselineDamage) == "number"
+      and copiedDamage --[[@as integer]] >= math.floor(baselineDamage * 15 / 10),
+    "Me First copied-special damage "
+      .. tostring(copiedDamage)
+      .. " is at least 1.5 times ordinary Ember damage "
+      .. tostring(baselineDamage)
+  )
+  baselineSession:dispose()
+end
+
+function T.sketch_replaces_its_slot_from_the_targets_last_executed_move()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local user = leveledCombatant(1, 11, "CHIKORITA", 20)
+  user.mon.moves = {
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "SKETCH", pp = 1, ppUps = 0 },
+  }
+  local target = leveledCombatant(2, 23, "EEVEE", 20)
+  target.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local scenario = actionScenario(WILD_FORMAT, { user }, { target }, nil)
+  withMoveFacts(scenario, {
+    GROWL = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = 0 },
+    SKETCH = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 0 },
+  })
+  -- The target's move history is established before Sketch resolves.
+  scenario.moveFacts.TACKLE.priority = 1
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local acceptedAlpha, alphaErr = session:submit(SessionFixture.replyFor(alpha, {
+    SessionFixture.attackChoice(assert(alpha.actors[1]), 1, SessionFixture.positionTarget(2)),
+  }))
+  Assert.isTrue(acceptedAlpha, "Sketch is accepted")
+  Assert.isNil(alphaErr, "Sketch carries no selection error")
+  local acceptedBeta, betaErr = session:submit(SessionFixture.replyFor(beta, {
+    SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+  }))
+  Assert.isTrue(acceptedBeta, "the target move is accepted")
+  Assert.isNil(betaErr, "the target move carries no selection error")
+  local _, events = advanceCollecting(session, 64)
+  local sketched = false
+  for _, event in ipairs(events) do
+    if event.kind == "sketched" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      sketched = payload.copied == "TACKLE"
+    end
+  end
+  local learnedSlot = session:capture().combatants[1].mon.moves[2]
+  Assert.isTrue(sketched, "Sketch presents the copied target move")
+  Assert.equal(learnedSlot.move, "TACKLE", "Sketch replaces the selected Sketch slot")
+  Assert.equal(learnedSlot.pp, 35, "Sketch resets the replaced slot to base PP")
   session:dispose()
 end
 
@@ -3929,7 +5729,7 @@ function T.mirror_move_copies_a_spread_strike_onto_both_foes()
   bystander.mon.moves = { { move = "SPLASH", pp = 30, ppUps = 0 } }
   local mirrorFacts = handFacts(0, 0, "other", "flying", 0)
   mirrorFacts.range = 0
-  local scenario = withMoveFacts(doubleActionScenario({ copier, mate }, { spreader, bystander }), {
+  local scenario = withMirrorMoveFacts(doubleActionScenario({ copier, mate }, { spreader, bystander }), {
     MIRROR_MOVE = mirrorFacts,
     TACKLE = {
       power = 35,
@@ -3941,7 +5741,7 @@ function T.mirror_move_copies_a_spread_strike_onto_both_foes()
       range = 4,
     },
     SPLASH = handFacts(0, 100, "other", "normal", 0),
-  })
+  }, "TACKLE")
   local session = contracts.Battle.newSession(scenario, content)
   local opening = SessionFixture.driveUntilSettled(session)
   Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
@@ -4223,21 +6023,71 @@ function T.pinch_priority_berries_answer_from_health_without_spending_order_roll
     { species = "EEVEE", types = { "normal" } },
   })
 
-  ---@param health integer holder health entering the turn
+  ---@param threshold string source pinch threshold under test
   ---@param ability string? holder ability gating the pinch threshold
   ---@return integer combatant identity acting first with the berry
   ---@return integer battle draws spent with the berry
   ---@return integer battle draws spent without the berry
-  local function pinchOrder(health, ability)
+  local function pinchOrder(threshold, ability)
     local holder = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
     holder.mon.heldItem = "CUSTAP_BERRY"
+    local maxHp = holder.mon.condition.currentHp --[[@as integer]]
+    local health = math.floor(maxHp / (threshold == "half" and 2 or 4))
     holder.mon.condition.currentHp = health
     if ability ~= nil then
       holder.mon.ability = ability
     end
     local berried = projectionDuel(holder, singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), facts, species, 7)
-    local berriedFirst = firstActor(playOpeningTurn(berried))
-    local berriedCalls = berried:capture().rng.calls
+    local expectsActivation = threshold == "quarter" and ability ~= "KLUTZ" or ability == "GLUTTONY"
+    local berriedFirst, berriedCalls
+    if expectsActivation then
+      local opening = SessionFixture.driveUntilSettled(berried)
+      Assert.equal(opening.status, "waiting", "the opening decisions precede order activation")
+      local alpha = requestFor(opening, "alpha")
+      local beta = requestFor(opening, "beta")
+      berried:submit(SessionFixture.replyFor(alpha, {
+        SessionFixture.attackChoice(assert(alpha.actors[1]), 0, SessionFixture.positionTarget(2)),
+      }))
+      berried:submit(SessionFixture.replyFor(beta, {
+        SessionFixture.attackChoice(assert(beta.actors[1]), 0, SessionFixture.positionTarget(1)),
+      }))
+      local firstAdvance = berried:advance(1)
+      firstAdvance.events = firstAdvance.events or {}
+      local berriedSnapshot = berried:capture()
+      berriedCalls = berriedSnapshot.rng.calls
+      Assert.equal(
+        berriedSnapshot.combatants[1].maxHp,
+        maxHp,
+        "the level-nine fixture derives the same battle maximum used for the pinch threshold"
+      )
+      Assert.equal(
+        berriedSnapshot.turnItemActivations[1],
+        "CUSTAP_BERRY",
+        "the turn ledger records Custap activation at " .. threshold .. " health"
+      )
+      Assert.equal(
+        berriedSnapshot.combatants[1].mon.heldItem,
+        "NONE",
+        "the order checkpoint spends the activated Custap Berry"
+      )
+      local secondAdvance = berried:advance(1)
+      Assert.equal(
+        berried:capture().turnItemActivations[1],
+        "CUSTAP_BERRY",
+        "the turn ledger survives the first action batch"
+      )
+      for _, event in ipairs(secondAdvance.events or {}) do
+        firstAdvance.events[#firstAdvance.events + 1] = event
+      end
+      local _, berriedEvents = advanceCollecting(berried, 64)
+      for _, event in ipairs(berriedEvents) do
+        firstAdvance.events[#firstAdvance.events + 1] = event
+      end
+      berriedFirst = firstActor(firstAdvance.events)
+    else
+      berriedFirst = firstActor(playOpeningTurn(berried))
+      berriedCalls = berried:capture().rng.calls
+    end
     berried:dispose()
     local plain = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
     plain.mon.condition.currentHp = health
@@ -4250,10 +6100,10 @@ function T.pinch_priority_berries_answer_from_health_without_spending_order_roll
     return berriedFirst --[[@as integer]]
   end
 
-  Assert.equal(pinchOrder(7, nil), 1, "a quarter-health holder moves first")
-  Assert.equal(pinchOrder(14, "GLUTTONY"), 1, "a half-health holder moves first under Gluttony")
-  Assert.equal(pinchOrder(14, nil), 2, "half health stays last without Gluttony")
-  Assert.equal(pinchOrder(7, "KLUTZ"), 2, "a suppressed holder stays last")
+  Assert.equal(pinchOrder("quarter", nil), 1, "a quarter-health holder moves first")
+  Assert.equal(pinchOrder("half", "GLUTTONY"), 1, "a half-health holder moves first under Gluttony")
+  Assert.equal(pinchOrder("half", nil), 2, "half health stays last without Gluttony")
+  Assert.equal(pinchOrder("quarter", "KLUTZ"), 2, "a suppressed holder stays last")
 end
 
 -- Suppressed holdings lose their ordinary effects while raw speed halving

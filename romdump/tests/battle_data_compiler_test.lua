@@ -26,8 +26,8 @@ local function s8(v)
 end
 
 -- One 16-byte MoveTbl entry: effect u16, category u8, power u8, type u8,
--- accuracy u8, pp u8, effectChance u8, range u16, priority s8, then four
--- source-only bytes the semantic projection must not leak.
+-- accuracy u8, pp u8, effectChance u8, range u16, priority s8, move flags
+-- u8, then three source-only bytes.
 local function moveEntry(fields)
   local tail = string.rep("\0", 4)
   return u16(fields.effect)
@@ -39,7 +39,7 @@ local function moveEntry(fields)
     .. u8(fields.effectChance or 0)
     .. u16(fields.range or 0)
     .. s8(fields.priority or 0)
-    .. u8(0)
+    .. u8(fields.flags or 0)
     .. tail
 end
 
@@ -129,6 +129,9 @@ function T.move_facts_keep_identity_numbers_and_carry_typed_execution_metadata()
   Assert.isTrue(type(tackle.behavior.params) == "table", "TACKLE needs behavior parameters")
   Assert.isTrue(type(tackle.target) == "string" and tackle.target ~= "", "TACKLE needs a named target")
   assertNamedFlags(tackle.flags, "TACKLE")
+  Assert.isFalse(tackle.flags.reflectable, "TACKLE is not a Magic Coat target")
+  Assert.isFalse(tackle.flags.snatchable, "TACKLE is not a Snatch target")
+  Assert.isFalse(tackle.flags.mirrorable, "TACKLE's source flag does not authorize Mirror Move")
   local dance = assert(compiled.moves["SWORDS_DANCE"], "move 14 must resolve to SWORDS_DANCE")
   Assert.equal(dance.power, 0, "a stat-stage move keeps its zero power instead of gaining a default")
   Assert.equal(dance.accuracy, 0, "a bypass move keeps its zero accuracy instead of gaining a default")
@@ -142,6 +145,25 @@ function T.move_facts_keep_identity_numbers_and_carry_typed_execution_metadata()
     BattleDataCompiler.validateCoverage(BattleSources) ~= false,
     "the complete native inventory passes coverage"
   )
+end
+
+function T.reflect_snatch_and_mirror_flags_come_from_the_native_move_flags_byte()
+  local BattleDataCompiler = require("romdump.src.digest.battle.BattleDataCompiler")
+  local BattleSources = require("romdump.src.config.BattleSources")
+  local entry = moveEntry({
+    effect = 0,
+    category = 0,
+    power = 35,
+    moveType = 0,
+    accuracy = 95,
+    pp = 35,
+    flags = 0x1C,
+  })
+  local compiled = assert(BattleDataCompiler.compile(nativeInput({ [33] = entry }), { inventory = BattleSources }))
+  local tackle = assert(compiled.moves.TACKLE, "the fixture resolves to TACKLE")
+  Assert.isTrue(tackle.flags.reflectable, "native bit 2 marks Magic Coat eligibility")
+  Assert.isTrue(tackle.flags.snatchable, "native bit 3 marks Snatch eligibility")
+  Assert.isTrue(tackle.flags.mirrorable, "native bit 4 marks Mirror Move eligibility")
 end
 
 function T.truncated_entries_and_unknown_references_fail_before_publication()

@@ -126,7 +126,7 @@ end
 -- handling).
 ---@param moveType string executing move type under the strike
 ---@param defenderTypes string[] semantic defender types under filtering
----@param immunities table<string, unknown>|nil airborne, foresight, and gravity facts for the strike
+---@param immunities table<string, unknown>|nil airborne, foresight, Miracle Eye, and gravity facts for the strike
 ---@return string[] defender types with identification applied
 ---@return table<string, unknown> immunity context for the resolution
 local function immunityFor(moveType, defenderTypes, immunities)
@@ -143,6 +143,9 @@ local function immunityFor(moveType, defenderTypes, immunities)
       end
     end
     filtered = identified
+  end
+  if facts.miracleEye == true and moveType == "psychic" then
+    return filtered, { psychicDarkImmunityBypassed = true }
   end
   if facts.gravity == true and moveType == "ground" then
     local grounded = {}
@@ -161,7 +164,7 @@ end
 
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the strike
----@param immunities table<string, unknown>|nil airborne, foresight, and gravity facts for the strike
+---@param immunities table<string, unknown>|nil airborne, foresight, Miracle Eye, and gravity facts for the strike
 ---@param moveTypeOverride string|nil source-computed move type replacing the compiled one
 ---@return table<string, integer> exact STAB rational for the staged arithmetic
 ---@return table<string, unknown> exact effectiveness rational with ordered per-type factors

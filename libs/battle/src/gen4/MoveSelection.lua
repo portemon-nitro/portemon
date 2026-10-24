@@ -252,6 +252,7 @@ function MoveSelection.resolveExecution(inputs)
       executingMove = plan.executingMove,
       stream = plan.stream,
       usable = plan.usable,
+      moveFacts = record.moveFacts,
       userAsleep = plan.userAsleep,
     })
     if decision ~= nil and decision.failed == nil then

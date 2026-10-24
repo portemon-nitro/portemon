@@ -492,6 +492,7 @@ local MESSAGE_SCALARS = {
   tick = { "key", "amount" },
   leveled = { "health" },
   sketched = { "copied" },
+  mimicked = { "copied", "slot" },
   status = { "key" },
   cured = { "key" },
   stage = { "stat", "before", "after" },

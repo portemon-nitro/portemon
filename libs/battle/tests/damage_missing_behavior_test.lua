@@ -9,7 +9,7 @@ local SessionFixture = require("libs.battle.tests.session_fixture")
 local T = {}
 
 local NATIVE_SEED = 0x1BADB002
-local GATED_PROBE_MOVE = "PSYCHO_BOOST"
+local GATED_PROBE_MOVE = "CHATTER"
 
 ---@return table frozen battle content carrying the native ruleset over the real chart
 local function nativeContent()

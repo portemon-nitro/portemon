@@ -182,6 +182,50 @@ function T.flinch_blocks_and_spends_its_mark()
   Assert.equal(bag:get(mark.id).state.turns, 0, "the block spends the one-turn mark for the sweep")
 end
 
+function T.recharge_blocks_exactly_the_next_action()
+  local Handlers = handlersOwner("before-action handlers gate recharge")
+  local bag = liveBag()
+  local marker = addInstance(
+    bag,
+    "recharge",
+    { kind = "active", combatant = 2, activation = 1 },
+    { version = 1, turns = 1 }
+  )
+  local context = { health = { [2] = 96 }, stream = BattleRng.new(FIXED_SEED), move = "TACKLE", power = 35 }
+  local outcome = invoke(bag, Handlers.handlersFor(beforeFacts(), "beforeAction"), "beforeAction", context)
+  Assert.equal(#outcome.events, 1, "recharge emits one action block")
+  Assert.equal(outcome.events[1].kind, "blocked", "recharge blocks the next action")
+  Assert.equal(outcome.events[1].key, "recharge", "the block identifies recharge")
+  Assert.equal(context.blockedBy, "recharge", "recharge denies the action")
+  local spent = bag:get(marker.id --[[@as integer]]) --[[@as table<string, unknown>]]
+  local state = spent.state --[[@as table<string, unknown>]]
+  Assert.equal(state.turns, 0, "the one-turn marker is spent by the blocked action")
+end
+
+function T.bide_waits_for_persistent_status_gates_before_release()
+  local Handlers = handlersOwner("before-action handlers preserve Bide for its controller checkpoint")
+  local bag = liveBag()
+  addInstance(
+    bag,
+    "bide",
+    { kind = "active", combatant = 2, activation = 1 },
+    { version = 1, turns = 1, damage = 12, attacker = 3 }
+  )
+  local facts = beforeFacts()
+  local context = {
+    health = { [2] = 96, [3] = 96 },
+    stream = BattleRng.new(FIXED_SEED),
+    move = "BIDE",
+    power = 0,
+  }
+  local outcome = invoke(bag, Handlers.handlersFor(facts, "beforeAction"), "beforeAction", context)
+  Assert.equal(context.health[2], 96, "Bide waits until persistent status resolves")
+  Assert.isNil(context.blockedBy, "Bide does not preempt earlier status gates")
+  Assert.equal(#outcome.events, 0, "the lock remains silent at the timing pass")
+  local marker = bag:capture()[1]
+  Assert.equal(marker.state.turns, 1, "Bide remains pending for its controller checkpoint")
+end
+
 -- Infatuated entries immobilize on a fair draw and act through
 -- otherwise, carrying no countdown either way.
 function T.infatuation_immobilizes_on_a_fair_draw()

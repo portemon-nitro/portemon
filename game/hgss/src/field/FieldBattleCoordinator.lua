@@ -239,6 +239,22 @@ function FieldBattleCoordinator:startBattle(args)
   local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
   local request = assert(args.request, "battle launches require their request")
   local scenario = args.scenario or fieldRuntime(self):buildBattleScenario(request)
+  local launch = self._battleLaunch
+  if launch ~= nil and launch.request.id == request.id and type(launch.environment) == "table" then
+    local detachedScenario = {}
+    for key, value in pairs(scenario) do
+      detachedScenario[key] = value
+    end
+    local environment = {}
+    if type(scenario.environment) == "table" then
+      for key, value in pairs(scenario.environment) do
+        environment[key] = value
+      end
+    end
+    environment.terrain = launch.environment.terrain
+    detachedScenario.environment = environment
+    scenario = detachedScenario
+  end
   -- Live consequence owners ride along so resolution stages through
   -- them: the bag and dex owners plus the player money facts. Prize
   -- inputs, captures, planned consumption, and roamer deltas arrive from
@@ -273,9 +289,14 @@ function FieldBattleCoordinator:startBattle(args)
   -- factory never implicitly succeeds headless at this boundary.
   local presentation = args.presentation
   if presentation == nil then
-    local launch = self._battleLaunch
-    if launch ~= nil and launch.presented == true and launch.request.id == request.id and launch.port ~= nil then
-      presentation = launch.port
+    local activeLaunch = self._battleLaunch
+    if
+      activeLaunch ~= nil
+      and activeLaunch.presented == true
+      and activeLaunch.request.id == request.id
+      and activeLaunch.port ~= nil
+    then
+      presentation = activeLaunch.port
     else
       presentation = self.battlePresentation
     end

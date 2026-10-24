@@ -50,11 +50,15 @@ local NativeEffectHandlers = {}
 ---@field types table<integer, string[]> semantic types per combatant
 ---@field occupants table<integer, integer> active combatant per position
 ---@field stats table<integer, table<string, integer>>? live level and battle stats per combatant
+---@field entryTurns table<integer, integer>? turn each active combatant entered its current position
+---@field nativeTurn integer? battle turn represented by this pass
 ---@field sides table<integer, integer>? owning side per combatant
 ---@field entrant integer? combatant entering the field under an entry pass
 ---@field grounded boolean? true when spikes-family layers price the entrant
 ---@field chart table<string, unknown>? session chart view resolving effectiveness
 ---@field slept table<integer, boolean>? sleeping combatants under nightmare watch
+---@field sleeping table<integer, boolean>? active sleeping combatants under Uproar
+---@field soundproof table<integer, boolean>? active Soundproof answers under Uproar
 
 ---@type table<string, table<string, unknown>>? native definitions by key, captured once
 local cachedDefinitions = nil
@@ -556,17 +560,127 @@ local function buildResidualHandlers(facts)
     "mist",
     "gravity",
     "trickroom",
-    "magnetrise",
     "tailwind",
     "luckychant",
+    "followme",
+    "magiccoat",
+    "snatch",
+    "protect",
+    "detect",
+    "endure",
+    "destinybond",
+    "grudge",
+    "rage",
+    "embargo",
+    "healblock",
+    "magnetrise",
   }) do
     handlers[key] = makeExpiry()
   end
 
-  -- Future sight has no reachable native setter yet, so
-  -- the countdown expires without its delayed strike; the expiry keeps
-  -- the instance from lingering silently if one ever arrives.
-  handlers.futuresight = makeExpiry()
+  -- Uproar wakes each active sleeper that lacks Soundproof before it
+  -- spends a turn. A wake pass pauses the countdown; a clear pass ticks
+  -- and expires through the normal post-pass sweep. Source:
+  -- UMC_STATE_UPROAR in src/battle/battle_controller_player.c.
+  local sleeping = facts.sleeping --[[@as table<integer, boolean>?]] or {}
+  local soundproof = facts.soundproof --[[@as table<integer, boolean>?]] or {}
+  ---@param instance table<string, unknown> live Uproar instance under residual timing
+  ---@param context table<string, unknown> residual pass context carrying wake
+  ---@return unknown nil when sleepers wake; otherwise the normal expiry result
+  local function uproar(instance, context)
+    local health = context.health --[[@as table<integer, integer>]]
+    local candidates = {}
+    for combatant, asleep in pairs(sleeping) do
+      if asleep == true and health[combatant] ~= nil and healthOf(health, combatant) > 0 then
+        candidates[#candidates + 1] = combatant
+      end
+    end
+    table.sort(candidates)
+    local wake = context.wake --[[@as fun(combatant: integer, source: integer): boolean?]]
+    local source = scopeCombatant(instance)
+    local woke = false
+    for _, combatant in ipairs(candidates) do
+      if soundproof[combatant] ~= true then
+        if type(wake) ~= "function" then
+          error(BattleErrors.invalidState("Uproar residuals wake sleepers through the status owner", {}))
+        end
+        if wake(combatant, source) == true then
+          sleeping[combatant] = false
+          woke = true
+        end
+      end
+    end
+    if woke then
+      return nil
+    end
+    if countDown(instance) > 0 then
+      return nil
+    end
+    return expireEvent(instance)
+  end
+  handlers.uproar = uproar
+
+  ---@param _ table<string, unknown> inactive Rage residual marker
+  ---@return nil Rage has no residual effect
+  local function rage(_)
+    return nil
+  end
+  handlers.rage = rage
+
+  ---@param instance table<string, unknown> queued delayed strike at its residual slot
+  ---@param context table<string, unknown> residual pass context under mutation
+  ---@return unknown impact event, expiry event, or nil while the countdown continues
+  local function futuresight(instance, context)
+    local scope = instance.scope --[[@as table<string, unknown>]]
+    local position = scope.position
+    if type(position) ~= "number" then
+      error(BattleErrors.invalidState("delayed strikes bind a target position", {}))
+    end
+    local occupant = facts.occupants[
+      position --[[@as integer]]
+    ]
+    local state = instance.state --[[@as table<string, unknown>]]
+    local nativeTurn = facts.nativeTurn
+    local entryTurns = facts.entryTurns
+    if type(nativeTurn) ~= "number" or type(entryTurns) ~= "table" then
+      error(BattleErrors.invalidState("delayed strikes read the current entry turn", {}))
+    end
+    if
+      type(occupant) == "number"
+      and nativeTurn > state.turn --[[@as integer]]
+      and entryTurns[occupant] == nativeTurn
+    then
+      return nil
+    end
+    if countDown(instance) > 0 then
+      return nil
+    end
+    if type(occupant) ~= "number" then
+      return expireEvent(instance)
+    end
+    local health = context.health --[[@as table<integer, integer>]]
+    local before = health[occupant]
+    if type(before) ~= "number" or before < 1 then
+      return expireEvent(instance)
+    end
+    local amount = state.damage --[[@as integer]]
+    local dealt = math.min(before, amount)
+    health[occupant] = before - dealt
+    return {
+      kind = "struck",
+      cause = {
+        kind = "move",
+        key = state.move --[[@as string]],
+        combatant = state.attacker --[[@as integer]],
+        activation = state.activation --[[@as integer]],
+      },
+      user = state.attacker,
+      target = occupant,
+      hitIndex = 1,
+      damage = dealt,
+    }
+  end
+  handlers.futuresight = futuresight
 
   return handlers
 end
@@ -739,7 +853,9 @@ local function buildEntryHandlers(facts)
     "sandstorm",
     "hail",
     "gravity",
+    "fog",
     "trickroom",
+    "sacrificewish",
   }) do
     handlers[key] = affirmEntry()
   end
@@ -773,6 +889,30 @@ local function buildBeforeActionHandlers(facts)
     return { kind = "blocked", key = instance.key, combatant = combatant }
   end
   handlers.flinch = flinch
+
+  ---@param instance table<string, unknown> live recharge marker under the gate
+  ---@param context table<string, unknown> before-action pass context under mutation
+  ---@return unknown block event consuming the marker
+  local function recharge(instance, context)
+    if context.blockedBy ~= nil then
+      return nil
+    end
+    local combatant = scopeCombatant(instance)
+    local health = context.health --[[@as table<integer, integer>]]
+    if not anchored(health, combatant) then
+      return nil
+    end
+    countDown(instance)
+    context.blockedBy = instance.key
+    return { kind = "blocked", key = instance.key, combatant = combatant }
+  end
+  handlers.recharge = recharge
+
+  ---@return nil the executor resolves Bide after persistent status gates
+  local function bide(_, _)
+    return nil
+  end
+  handlers.bide = bide
 
   ---@param instance table<string, unknown> live confusion instance under the gate
   ---@param context table<string, unknown> before-action pass context under mutation

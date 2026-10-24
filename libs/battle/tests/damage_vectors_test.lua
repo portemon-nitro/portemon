@@ -129,6 +129,46 @@ function T.staged_multipliers_truncate_in_order()
   Assert.equal(doubled.amount, 120, "effectiveness applies after STAB at its own stage")
 end
 
+function T.me_first_multiplies_damage_after_critical_and_before_random_roll()
+  local owners = arithmeticOwners(
+    SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage"),
+    SessionFixture.requirePresent("libs.battle.src.gen4.StatStages", "source stage clamps own stat ratios"),
+    SessionFixture.requirePresent("libs.battle.src.gen4.Critical", "native critical checks own their roll")
+  )
+  local Damage = owners.Damage
+  local BattleRng = streamOwner(owners)
+  local result = Damage.trace({
+    level = 50,
+    power = 80,
+    attack = 120,
+    defense = 90,
+    rawAttack = 120,
+    rawDefense = 90,
+    attackStage = 0,
+    defenseStage = 0,
+    criticalMultiplier = 2,
+    category = "physical",
+    burned = false,
+    guts = false,
+    stab = { numerator = 1, denominator = 1 },
+    effectiveness = { numerator = 1, denominator = 1 },
+    effectivenessFactors = { { numerator = 1, denominator = 1 } },
+    targetCount = 1,
+    weather = "none",
+    weatherSuppressed = false,
+    moveType = "normal",
+    solarBeam = false,
+    meFirst = true,
+    randomPercent = 100,
+  }, BattleRng.new(3))
+  Assert.equal(result.amount, 144, "Me First scales the critical damage by 15/10 before the random roll")
+  Assert.deepEqual(
+    result.stages[4],
+    { name = "mefirst", input = 96, output = 144, source = "floor(damage*15/10) for Me First" },
+    "the trace places Me First after critical and before random range"
+  )
+end
+
 -- Level 5, power 35, attack 55, defense 45:
 -- floor(2*5/5+2) = 4; 4*35*55 = 7700; floor(7700/45) = 171;
 -- floor(171/50) = 3. Spread 3/4 before the bonus: floor(3*3072/4096)

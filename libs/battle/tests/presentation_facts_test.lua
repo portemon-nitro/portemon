@@ -71,6 +71,7 @@ function T.every_emitted_kind_selects_its_playback_route()
     "leveled",
     "transformed",
     "sketched",
+    "mimicked",
     "status",
     "cured",
     "stage",
@@ -104,6 +105,7 @@ function T.every_emitted_kind_selects_its_playback_route()
     "a substitute break never shares its route"
   )
   Assert.equal(PresentationFacts.flowKeyFor("transformed"), "transform", "a transform never shares its route")
+  Assert.equal(PresentationFacts.flowKeyFor("mimicked"), "mimic", "a Mimic move uses its own playback route")
   Assert.equal(PresentationFacts.flowKeyFor("mystery-kind"), "mystery-kind", "unknown kinds keep their identity")
 end
 

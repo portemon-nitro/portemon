@@ -148,7 +148,12 @@ local function runStrike(moveKey, facts, seed, extra)
     stream = BattleRng.new(seed),
   }
   for key, value in pairs(extra or {}) do
-    inputs[key] = value
+    if key ~= "setup" then
+      inputs[key] = value
+    end
+  end
+  if extra ~= nil and type(extra.setup) == "function" then
+    extra.setup(ctx)
   end
   local node = Execution.start(inputs)
   for _ = 1, 8 do
@@ -177,6 +182,245 @@ function T.ordinary_strikes_deal_staged_damage()
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the ordinary strike connects")
   Assert.isTrue(probe.dealt --[[@as integer]] > 0, "the ordinary strike deals staged damage")
+end
+
+function T.hyper_voice_deals_ordinary_staged_damage()
+  damageOwner("ordinary strikes own their shared striker")
+  local probe = runStrike("HYPER_VOICE", moveFacts("HYPER_VOICE", { power = 90 }), FIXED_SEED)
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "hit", "Hyper Voice connects")
+  Assert.isTrue(probe.dealt --[[@as integer]] > 0, "Hyper Voice deals staged damage")
+end
+
+function T.crush_grip_uses_the_targets_current_health_ratio()
+  damageOwner("Crush Grip scales power from current defender health")
+  local probe = runStrike("CRUSH_GRIP", moveFacts("CRUSH_GRIP", { power = 1 }), FIXED_SEED)
+  Assert.equal((probe.outcome --[[@as table<string, unknown>]]).result, "hit", "Crush Grip connects")
+  Assert.isTrue(probe.dealt --[[@as integer]] > 0, "Crush Grip deals scaled damage")
+end
+
+function T.psycho_boost_lowers_its_users_special_attack_after_a_hit()
+  damageOwner("Psycho Boost owns its guaranteed self stage effect")
+  local probe = runStrike("PSYCHO_BOOST", moveFacts("PSYCHO_BOOST", { power = 1 }), FIXED_SEED, {
+    combat = probeCombat(5, 16, 16),
+  })
+  Assert.equal((probe.outcome --[[@as table<string, unknown>]]).result, "hit", "Psycho Boost connects")
+  Assert.equal(
+    probe.ctx:entryOf(1).stages.specialAttack,
+    -2,
+    "Psycho Boost drops Special Attack two stages (actual " .. tostring(probe.ctx:entryOf(1).stages.specialAttack) .. ")"
+  )
+end
+
+function T.smelling_salt_doubles_against_paralysis_and_cures_on_hit()
+  damageOwner("Smelling Salt owns its paralysis power and cure rule")
+  local normal = runStrike("SMELLING_SALT", moveFacts("SMELLING_SALT", { power = 20 }), FIXED_SEED)
+  local paralyzed = runStrike("SMELLING_SALT", moveFacts("SMELLING_SALT", { power = 20 }), FIXED_SEED, {
+    setup = function(ctx)
+      ctx:applyStatus(2, "paralysis", {}, { kind = "test" })
+    end,
+  })
+  Assert.isTrue(paralyzed.dealt --[[@as integer]] > normal.dealt --[[@as integer]], "paralysis doubles the strike")
+  Assert.equal(paralyzed.ctx:statusOf(2), nil, "a successful hit cures paralysis")
+end
+
+function T.secret_power_uses_the_native_terrain_secondary_table()
+  damageOwner("Secret Power selects its secondary from HGSS battle terrain")
+  local grass = runStrike(
+    "SECRET_POWER",
+    moveFacts("SECRET_POWER", { power = 1, effectChance = 100 }),
+    FIXED_SEED,
+    { terrain = "grass", combat = probeCombat(5, 16, 16) }
+  )
+  Assert.equal((grass.outcome --[[@as table<string, unknown>]]).result, "hit", "Secret Power connects")
+  Assert.isTrue(grass.dealt --[[@as integer]] > 0, "Secret Power damages the target")
+  Assert.equal(
+    grass.ctx:statusOf(2),
+    "sleep",
+    "grass terrain puts the target to sleep (actual " .. tostring(grass.ctx:statusOf(2)) .. ")"
+  )
+
+  local water = runStrike(
+    "SECRET_POWER",
+    moveFacts("SECRET_POWER", { power = 1, effectChance = 100 }),
+    FIXED_SEED,
+    { terrain = "water", combat = probeCombat(5, 16, 16) }
+  )
+  Assert.equal(water.ctx:entryOf(2).stages.attack, -1, "water terrain lowers the target's Attack")
+end
+
+function T.trump_card_uses_remaining_pp_power_table()
+  damageOwner("Trump Card selects its power from remaining PP")
+  local spent = runStrike("TRUMP_CARD", moveFacts("TRUMP_CARD", { power = 1 }), FIXED_SEED, {
+    moves = { { move = "TRUMP_CARD", pp = 5, ppUps = 0 } },
+    combat = probeCombat(5, 16, 16),
+  })
+  local lowPp = runStrike("TRUMP_CARD", moveFacts("TRUMP_CARD", { power = 1 }), FIXED_SEED, {
+    moves = { { move = "TRUMP_CARD", pp = 1, ppUps = 0 } },
+    combat = probeCombat(5, 16, 16),
+  })
+  Assert.isTrue(lowPp.dealt --[[@as integer]] > spent.dealt --[[@as integer]], "lower remaining PP increases Trump Card power")
+end
+
+function T.psywave_uses_the_source_random_level_damage_range()
+  damageOwner("Psywave owns its random level-scaled damage range")
+  local probe = runStrike("PSYWAVE", moveFacts("PSYWAVE", { power = 1 }), FIXED_SEED, {
+    combat = probeCombat(50, 16, 16),
+  })
+  Assert.equal((probe.outcome --[[@as table<string, unknown>]]).result, "hit", "Psywave connects")
+  Assert.isTrue(probe.dealt --[[@as integer]] >= 25, "Psywave deals at least half the user level")
+  Assert.isTrue(probe.dealt --[[@as integer]] <= 75, "Psywave deals at most one-and-a-half times the user level")
+end
+
+function T.judgment_takes_its_element_from_the_held_plate()
+  damageOwner("Judgment resolves a semantic plate type")
+  local normal = runStrike("JUDGMENT", moveFacts("JUDGMENT", { power = 40 }), FIXED_SEED, {
+    combat = probeCombat(5, 16, 16),
+    defenderTypes = { [2] = { "grass" } },
+  })
+  local plated = runStrike("JUDGMENT", moveFacts("JUDGMENT", { power = 40 }), FIXED_SEED, {
+    combat = probeCombat(5, 16, 16),
+    heldItem = "FLAME_PLATE",
+    defenderTypes = { [2] = { "grass" } },
+  })
+  Assert.isTrue(plated.dealt --[[@as integer]] > normal.dealt --[[@as integer]], "the Flame Plate makes Judgment fire type")
+end
+
+function T.punishment_scales_with_all_positive_defender_stages()
+  damageOwner("Punishment scales from the native seven non-HP stat stages")
+  local plain = runStrike("PUNISHMENT", moveFacts("PUNISHMENT", { power = 1, accuracy = 0 }), FIXED_SEED, {
+    combat = probeCombat(5, 16, 16),
+  })
+  local boosted = runStrike("PUNISHMENT", moveFacts("PUNISHMENT", { power = 1, accuracy = 0 }), FIXED_SEED, {
+    combat = probeCombat(5, 16, 16),
+    setup = function(ctx)
+      for _, stat in ipairs({ "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }) do
+        ctx:changeStage(2, stat, 6, { kind = "test" })
+      end
+    end,
+  })
+  Assert.isTrue(
+    boosted.dealt --[[@as integer]] > plain.dealt --[[@as integer]],
+    "boosts raise Punishment power (plain " .. tostring(plain.dealt) .. ", boosted " .. tostring(boosted.dealt) .. ")"
+  )
+end
+
+function T.metal_burst_returns_one_and_a_half_times_last_any_damage()
+  damageOwner("Metal Burst reads the last damage and attacker")
+  local probe = runStrike("METAL_BURST", moveFacts("METAL_BURST", { power = 1 }), FIXED_SEED, {
+    duel = {
+      foeActed = false,
+      foeHurt = false,
+      userHurt = true,
+      revengeAny = { attacker = 2, amount = 8 },
+      followMeTarget = false,
+    },
+  })
+  Assert.equal((probe.outcome --[[@as table<string, unknown>]]).result, "hit", "Metal Burst connects")
+  Assert.equal(probe.dealt, 12, "Metal Burst deals 150 percent of the last hit")
+  local empty = runStrike("METAL_BURST", moveFacts("METAL_BURST", { power = 1 }), FIXED_SEED, {
+    duel = {
+      foeActed = false,
+      foeHurt = false,
+      userHurt = false,
+      revengeAny = false,
+      followMeTarget = false,
+    },
+  })
+  Assert.equal((empty.outcome --[[@as table<string, unknown>]]).result, "failed", "Metal Burst fails without prior damage")
+end
+
+function T.sky_uppercut_bypasses_fly_and_bounce_inaccuracy_state()
+  damageOwner("Sky Uppercut reads Fly/Bounce semi-invulnerability")
+  local targetFacts = { [2] = { semiInvulnerable = "fly" } }
+  local ordinary = runStrike("TACKLE", moveFacts("TACKLE", { power = 40 }), FIXED_SEED, {
+    targetFacts = targetFacts,
+  })
+  local probe = runStrike("SKY_UPPERCUT", moveFacts("SKY_UPPERCUT", { power = 40 }), FIXED_SEED, {
+    targetFacts = targetFacts,
+  })
+  Assert.equal((ordinary.outcome --[[@as table<string, unknown>]]).result, "missed", "ordinary strikes miss a flying target")
+  Assert.equal((probe.outcome --[[@as table<string, unknown>]]).result, "hit", "Sky Uppercut hits a flying target")
+end
+
+function T.rock_wrecker_recharges_only_after_connecting()
+  damageOwner("Rock Wrecker owns its post-hit recharge marker")
+  local hit = runStrike("ROCK_WRECKER", moveFacts("ROCK_WRECKER", { power = 40 }), FIXED_SEED)
+  Assert.equal((hit.outcome --[[@as table<string, unknown>]]).result, "hit", "Rock Wrecker connects")
+  Assert.isTrue(hit.ctx:hasBattleEffect(1, "recharge"), "a connecting Rock Wrecker requires recharge")
+
+  local missed = runStrike("ROCK_WRECKER", moveFacts("ROCK_WRECKER", { power = 40 }), FIXED_SEED, {
+    targetFacts = { [2] = { semiInvulnerable = "dig" } },
+  })
+  Assert.equal((missed.outcome --[[@as table<string, unknown>]]).result, "missed", "Rock Wrecker misses Dig")
+  Assert.isFalse(missed.ctx:hasBattleEffect(1, "recharge"), "a miss does not require recharge")
+end
+
+function T.bide_starts_its_damage_storage_turn()
+  damageOwner("Bide starts a one-turn active storage effect")
+  local probe = runStrike("BIDE", moveFacts("BIDE", { power = 1 }), FIXED_SEED)
+  Assert.equal((probe.outcome --[[@as table<string, unknown>]]).result, "hit", "Bide starts")
+  Assert.isTrue(probe.ctx:hasBattleEffect(1, "bide"), "Bide records its active storage state")
+  local uses = 0
+  for _, event in ipairs(probe.state.outbox --[[@as table<integer, unknown>]]) do
+    local record = event --[[@as table<string, unknown>]]
+    local cause = record.cause --[[@as table<string, unknown>]]
+    if record.kind == "move-used" and cause.key == "BIDE" then
+      uses = uses + 1
+    end
+  end
+  Assert.equal(uses, 1, "Bide emits one successful move-used event")
+end
+
+function T.new_flinch_strikes_apply_their_compiled_secondary()
+  damageOwner("flinch secondaries own their volatile mark")
+  for _, key in ipairs({ "IRON_HEAD", "NEEDLE_ARM", "ROLLING_KICK" }) do
+    local probe = runStrike(key, moveFacts(key, { power = 40, effectChance = 100 }), FIXED_SEED, {
+      combat = probeCombat(5, 16, 16),
+    })
+    local outcome = probe.outcome --[[@as table<string, unknown>]]
+    Assert.equal(outcome.result, "hit", key .. " connects")
+    Assert.isTrue(probe.ctx:hasBattleEffect(2, "flinch"), key .. " applies flinch")
+  end
+end
+
+function T.new_status_and_stage_secondaries_match_their_native_effects()
+  local cases = {
+    { key = "POISON_TAIL", status = "poison" },
+    { key = "POWDER_SNOW", status = "freeze" },
+    { key = "SACRED_FIRE", status = "burn" },
+    { key = "LUSTER_PURGE", stat = "specialDefense", delta = -1 },
+    { key = "MIST_BALL", stat = "specialAttack", delta = -1 },
+    { key = "ROCK_SMASH", stat = "defense", delta = -1 },
+    { key = "SEED_FLARE", stat = "specialDefense", delta = -2 },
+  }
+  for _, case in ipairs(cases) do
+    local probe = runStrike(case.key, moveFacts(case.key, { power = 40, effectChance = 100 }), FIXED_SEED, {
+      combat = probeCombat(5, 16, 16),
+    })
+    local outcome = probe.outcome --[[@as table<string, unknown>]]
+    Assert.equal(outcome.result, "hit", case.key .. " connects")
+    if case.status ~= nil then
+      Assert.equal(probe.ctx:statusOf(2), case.status, case.key .. " applies its status")
+    else
+      Assert.equal(
+        probe.ctx:entryOf(2).stages[case.stat --[[@as string]]],
+        case.delta,
+        case.key .. " applies its native stage change"
+      )
+    end
+  end
+end
+
+function T.new_volatile_strikes_apply_confusion_and_binding()
+  for _, case in ipairs({ { key = "ROCK_CLIMB", volatile = "confusion" }, { key = "MAGMA_STORM", volatile = "bind" } }) do
+    local probe = runStrike(case.key, moveFacts(case.key, { power = 40, effectChance = 100 }), FIXED_SEED, {
+      combat = probeCombat(5, 16, 16),
+    })
+    local outcome = probe.outcome --[[@as table<string, unknown>]]
+    Assert.equal(outcome.result, "hit", case.key .. " connects")
+    Assert.isTrue(probe.ctx:hasBattleEffect(2, case.volatile), case.key .. " applies its volatile")
+  end
 end
 
 -- High-critical strikes roll the raised native stage: with a stream draw
@@ -513,6 +757,7 @@ function T.item_taking_strikes_record_their_intent()
     { move = "KNOCK_OFF", mode = "remove" },
     { move = "COVET", mode = "steal" },
     { move = "PLUCK", mode = "eat" },
+    { move = "THIEF", mode = "steal" },
   }) do
     local entry = case --[[@as table<string, string>]]
     local Execution = SessionFixture.requirePresent(
@@ -521,6 +766,8 @@ function T.item_taking_strikes_record_their_intent()
     )
     local state = liveState()
     local ctx = liveContext(state)
+    local heldItem = entry.mode == "eat" and "SITRUS_BERRY" or "LEFTOVERS"
+    ctx:setHeldItem(2, heldItem)
     local facts = moveFacts(entry.move, { power = 40, accuracy = 100 })
     local node = Execution.start({
       actionId = 905,
@@ -532,6 +779,11 @@ function T.item_taking_strikes_record_their_intent()
       targets = { { combatant = 2 } },
       moves = { { move = entry.move, pp = 10, ppUps = 0 } },
       moveFacts = facts,
+      itemFacts = {
+        LEFTOVERS = { pocket = "items", fling = { effect = 0, power = 10 } },
+        SITRUS_BERRY = { pocket = "berries", fling = { effect = 0, power = 10 } },
+      },
+      itemTransferAllowed = true,
       combat = probeCombat(5, 16, 16),
       burned = false,
       guts = false,
@@ -1075,15 +1327,13 @@ function T.feint_needs_protection_to_break()
   )
   local state = liveState()
   local ctx = liveContext(state)
-  ctx:addBattleEffect({
-    key = "PROTECT",
-    stateVersion = 1,
-    validateState = function(s)
-      return s
-    end,
-    timings = { { timing = "leave", handler = "PROTECT", orderClass = "affliction" } },
-    lifecycle = { stacking = "replace", transfer = "clear" },
-  }, { kind = "active", combatant = 2, activation = 1 }, { kind = "move", combatant = 2 }, { version = 1 })
+  local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("protect"),
+    { kind = "active", combatant = 2, activation = 1 },
+    { kind = "move", combatant = 2 },
+    { version = 1, turns = 1 }
+  )
   local facts = moveFacts("FEINT", { power = 50, accuracy = 100 })
   local node = Execution.start({
     actionId = 906,
@@ -1484,6 +1734,10 @@ end
 -- under sun and clear skies on the identical charge stream.
 function T.suppressed_skies_spare_the_live_charging_grass_strike()
   damageOwner("the sky guard owns the live grass penalty")
+  local SequenceMoveState = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.SequenceMoveState",
+    "Solar Beam damage probes carry its completed charge state"
+  )
   local beamFacts = function()
     return moveFacts("SOLAR_BEAM", { power = 120, accuracy = 100, category = "special", moveType = "grass" })
   end
@@ -1495,7 +1749,12 @@ function T.suppressed_skies_spare_the_live_charging_grass_strike()
       combat = smallCombat(),
       weather = weather,
       weatherSuppressed = weatherSuppressed,
-    }, nil)
+    }, function(_, ctx)
+      SequenceMoveState.update(ctx, 1, { kind = "move", key = "SOLAR_BEAM" }, function(state)
+        state.chargeMove = "SOLAR_BEAM"
+        return state
+      end)
+    end)
     Assert.equal(probe.outcome.result, "hit", "the charging grass strike connects under " .. weather)
     return probe.dealt --[[@as integer]]
   end

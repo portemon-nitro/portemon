@@ -397,8 +397,8 @@ DerivedAssetContract.mons = {
 -- its own cache format, so one family rebuilds without disturbing the
 -- others or any unrelated cache job.
 DerivedAssetContract.battleData = {
-  cacheFormat = "battle-data-cache-v1",
-  schema = "g4-battle-data-v1",
+  cacheFormat = "battle-data-cache-v2",
+  schema = "g4-battle-data-v2",
 }
 
 DerivedAssetContract.trainerCatalog = {

@@ -101,7 +101,6 @@ local CALLING = {
   COPYCAT = true,
   ME_FIRST = true,
   NATURE_POWER = true,
-  MIMIC = true,
 }
 
 -- Moves assist refuses to call. The native assist filter conjoins
@@ -112,9 +111,116 @@ local CALLING = {
 
 -- Sleep talk never calls its own slot and never falls back to struggle.
 local SLEEP_TALK_BANNED = {
+  NONE = true,
+  METRONOME = true,
   SLEEP_TALK = true,
+  COPYCAT = true,
+  ASSIST = true,
+  ME_FIRST = true,
+  MIRROR_MOVE = true,
+  FOCUS_PUNCH = true,
+  UPROAR = true,
+  CHATTER = true,
+  BIDE = true,
+  RAZOR_WIND = true,
+  SKY_ATTACK = true,
+  SOLAR_BEAM = true,
+  SKULL_BASH = true,
+  FLY = true,
+  DIVE = true,
+  DIG = true,
+  BOUNCE = true,
+  SHADOW_FORCE = true,
   STRUGGLE = true,
 }
+
+-- Effect identities rejected by BattleCtx_IsIdenticalToCurrentMove during
+-- BtlCmd_TrySleepTalk (battle_util.c / battle_command.c).
+local SLEEP_TALK_BANNED_EFFECTS = {
+  "BIDE",
+  "RAZOR_WIND",
+  "SKY_ATTACK",
+  "SKULL_BASH",
+  "SOLAR_BEAM",
+  "FLY",
+  "DIVE",
+  "DIG",
+  "BOUNCE",
+  "SHADOW_FORCE",
+}
+
+local NATURE_POWER_TERRAIN_MOVES = {
+  plain = "EARTHQUAKE",
+  sand = "EARTHQUAKE",
+  grass = "SEED_BOMB",
+  puddle = "SEED_BOMB",
+  mountain = "ROCK_SLIDE",
+  cave = "ROCK_SLIDE",
+  snow = "BLIZZARD",
+  water = "HYDRO_PUMP",
+  ice = "ICE_BEAM",
+  building = "TRI_ATTACK",
+  great_marsh = "MUD_BOMB",
+  unknown = "AIR_SLASH",
+  will = "TRI_ATTACK",
+  koga = "TRI_ATTACK",
+  bruno = "TRI_ATTACK",
+  karen = "TRI_ATTACK",
+  lance = "TRI_ATTACK",
+  distortion_world = "TRI_ATTACK",
+  giratina = "TRI_ATTACK",
+  battle_tower = "TRI_ATTACK",
+  battle_factory = "TRI_ATTACK",
+  battle_arcade = "TRI_ATTACK",
+  battle_castle = "TRI_ATTACK",
+  battle_hall = "TRI_ATTACK",
+}
+
+local MIRROR_MOVE_BANNED_EFFECTS = { "TRANSFORM", "MIMIC", "SKETCH", "MIRROR_MOVE", "ENCORE", "STRUGGLE" }
+local ME_FIRST_BANNED_EFFECTS = { "COUNTER", "MIRROR_COAT", "THIEF", "COVET", "FOCUS_PUNCH", "CHATTER" }
+
+---@param moveFacts unknown move facts indexed by semantic move key
+---@param candidate string copied move identity under legality checking
+---@param bannedMoves string[] move keys whose effects cannot be copied
+---@return boolean true when the candidate effect differs from each source-banned effect
+local function effectIsAllowed(moveFacts, candidate, bannedMoves)
+  if type(moveFacts) ~= "table" then
+    error(BattleErrors.missingBehavior("copied-move checks read the immutable move facts", { key = candidate }))
+  end
+  local facts = moveFacts --[[@as table<string, unknown>]]
+  local candidateFacts = facts[candidate]
+  if type(candidateFacts) ~= "table" then
+    error(BattleErrors.missingBehavior("copied-move checks resolve the copied move", { key = candidate }))
+  end
+  local effect = (candidateFacts --[[@as table<string, unknown>]]).effect
+  if type(effect) ~= "number" then
+    error(BattleErrors.missingBehavior("copied-move checks resolve the copied move effect", { key = candidate }))
+  end
+  for _, key in ipairs(bannedMoves) do
+    local bannedFacts = facts[key]
+    if type(bannedFacts) ~= "table" then
+      error(BattleErrors.missingBehavior("copied-move checks resolve a banned reference move", { key = key }))
+    end
+    local bannedEffect = (bannedFacts --[[@as table<string, unknown>]]).effect
+    if type(bannedEffect) ~= "number" then
+      error(BattleErrors.missingBehavior("copied-move checks resolve a banned reference effect", { key = key }))
+    end
+    if bannedEffect == effect then
+      return false
+    end
+  end
+  return true
+end
+
+---@param select table<string, unknown> unresolved calling-move selection
+---@param candidate string copied move identity under legality checking
+---@return boolean true when the source Copycat checks admit the candidate
+local function copycatAllows(select, candidate)
+  return candidate ~= "NONE"
+    and CalledMoves.METRONOME_BANNED[candidate] ~= true
+    and not (select.gravity == true and CalledMoves.GRAVITY_ILLEGAL[candidate] == true)
+    and not (select.healBlock == true and CalledMoves.HEALBLOCK_ILLEGAL[candidate] == true)
+end
 
 ---@param stream unknown candidate source stream under test
 ---@return BattleRng the stream once it proves its draw contract
@@ -180,6 +286,15 @@ local function eligible(pool, banned)
     end
   end
   return kept
+end
+
+---@param move string candidate move under dynamic eligibility
+---@param gravity boolean whether Gravity makes the candidate unusable
+---@param healBlock boolean whether Heal Block makes the candidate unusable
+---@return boolean true when the source dynamic checks admit the candidate
+local function dynamicallyLegal(move, gravity, healBlock)
+  return not (gravity and CalledMoves.GRAVITY_ILLEGAL[move] == true)
+    and not (healBlock and CalledMoves.HEALBLOCK_ILLEGAL[move] == true)
 end
 
 ---@param select table<string, unknown> unresolved calling-move selection under test
@@ -259,6 +374,13 @@ function CalledMoves.choose(select)
   end
   if calling == "ASSIST" then
     local pool = eligible(checkRoster(select.party, "assist"), CalledMoves.METRONOME_BANNED)
+    local legal = {}
+    for _, key in ipairs(pool) do
+      if key ~= "NONE" and dynamicallyLegal(key, select.gravity == true, select.healBlock == true) then
+        legal[#legal + 1] = key
+      end
+    end
+    pool = legal
     if #pool == 0 then
       return { failed = "no-eligible-moves" }
     end
@@ -272,21 +394,84 @@ function CalledMoves.choose(select)
       return { failed = "wide-awake" }
     end
     local pool = eligible(checkRoster(select.usable, "sleep talk"), SLEEP_TALK_BANNED)
+    local legal = {}
+    for _, key in ipairs(pool) do
+      if effectIsAllowed(select.moveFacts, key, SLEEP_TALK_BANNED_EFFECTS) then
+        legal[#legal + 1] = key
+      end
+    end
+    pool = legal
     if #pool == 0 then
       return { failed = "no-eligible-moves" }
     end
     return { executingMove = drawFrom(select, pool, "sleep-talk") }
   end
-  if calling == "MIRROR_MOVE" or calling == "COPYCAT" or calling == "MIMIC" or calling == "ME_FIRST" then
-    -- The native me-first legality check compares move effects
-    -- (CheckLegalMeFirstMove); with no effect data at this seam the copied
-    -- identity is accepted unfiltered once a caller supplies it.
-    if type(select.copiedMove) == "string" and select.copiedMove ~= "" then
-      return { executingMove = select.copiedMove }
+  if calling == "NATURE_POWER" then
+    local terrain = select.terrain
+    if type(terrain) ~= "string" or terrain == "" then
+      return { failed = "no-terrain-facts" }
     end
-    return { failed = "nothing-to-copy" }
+    local move = NATURE_POWER_TERRAIN_MOVES[terrain]
+    if move == nil then
+      error(BattleErrors.invalidState("Nature Power receives a native terrain identity", { terrain = terrain }))
+    end
+    return { executingMove = move }
+  end
+  if calling == "MIRROR_MOVE" or calling == "COPYCAT" or calling == "ME_FIRST" then
+    local copiedMove = select.copiedMove
+    if calling == "MIRROR_MOVE" and (type(copiedMove) ~= "string" or copiedMove == "" or copiedMove == "NONE") then
+      local candidates = select.mirrorMoveCandidates
+      if type(candidates) == "table" then
+        local candidateMoves = candidates --[[@as table<integer, string?>]]
+        local hasCandidate = false
+        for index = 1, 4 do
+          local candidate = candidateMoves[index]
+          if type(candidate) == "string" and candidate ~= "" and candidate ~= "NONE" then
+            hasCandidate = true
+            break
+          end
+        end
+        if hasCandidate then
+          local stream = checkStream(select.stream)
+          repeat
+            local index = stream:nextU16("mirror_move", { kind = "called-move", move = calling }) % 4 + 1
+            copiedMove = candidateMoves[index]
+          until type(copiedMove) == "string" and copiedMove ~= "" and copiedMove ~= "NONE"
+        end
+      end
+    end
+    if type(copiedMove) ~= "string" or copiedMove == "" or copiedMove == "NONE" then
+      return { failed = "nothing-to-copy" }
+    end
+    if calling == "COPYCAT" and not copycatAllows(select, copiedMove) then
+      return { failed = "nothing-to-copy" }
+    end
+    if calling == "MIRROR_MOVE" and not effectIsAllowed(select.moveFacts, copiedMove, MIRROR_MOVE_BANNED_EFFECTS) then
+      return { failed = "nothing-to-copy" }
+    end
+    if calling == "ME_FIRST" then
+      local facts = select.moveFacts
+      local candidateFacts = type(facts) == "table" and (facts --[[@as table<string, unknown>]])[copiedMove] or nil
+      if type(candidateFacts) ~= "table" then
+        error(BattleErrors.missingBehavior("Me First resolves the selected move facts", { key = copiedMove }))
+      end
+      local power = (candidateFacts --[[@as table<string, unknown>]]).power
+      if type(power) ~= "number" then
+        error(BattleErrors.missingBehavior("Me First resolves the selected move power", { key = copiedMove }))
+      end
+      if power <= 0 or not effectIsAllowed(select.moveFacts, copiedMove, ME_FIRST_BANNED_EFFECTS) then
+        return { failed = "nothing-to-copy" }
+      end
+    end
+    return { executingMove = copiedMove }
   end
   return { failed = "no-terrain-facts" }
+end
+
+---@param move unknown move identity copied by Mimic
+---@return boolean true when the source static Mimic check admits the copied move
+function CalledMoves.isMimicMoveLegal(move)
+  return type(move) == "string" and move ~= "" and move ~= "NONE" and CalledMoves.METRONOME_BANNED[move] ~= true
 end
 
 ---@param frame table<string, unknown> move frame under settlement
@@ -301,10 +486,13 @@ local function selectFromFrame(frame)
     party = locals.party,
     usable = locals.usable,
     copiedMove = locals.copiedMove,
+    mirrorMoveCandidates = locals.mirrorMoveCandidates,
+    moveFacts = locals.moveFacts,
     userMoves = locals.userMoves,
     gravity = locals.gravity,
     healBlock = locals.healBlock,
     userAsleep = locals.userAsleep,
+    terrain = locals.terrain,
   }
 end
 

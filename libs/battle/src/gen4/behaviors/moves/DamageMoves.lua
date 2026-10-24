@@ -18,6 +18,8 @@ local Critical = require("libs.battle.src.gen4.Critical")
 local Damage = require("libs.battle.src.gen4.Damage")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
 local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
+local Moves = require("libs.mons.src.gen4.Moves")
+local Personality = require("libs.mons.src.gen4.Personality")
 local StatStages = require("libs.battle.src.gen4.StatStages")
 local StagedTypeModifiers = require("libs.battle.src.gen4.behaviors.moves.StagedTypeModifiers")
 local TypeEffectiveness = require("libs.battle.src.gen4.TypeEffectiveness")
@@ -48,7 +50,7 @@ local STRIKERS = {
   JUMP_KICK = { crash = true },
   HI_JUMP_KICK = { crash = true },
   TAKE_DOWN = { recoil = "quarter" },
-  DOUBLE_EDGE = { recoil = "quarter" },
+  DOUBLE_EDGE = { recoil = "third" },
   SUBMISSION = { recoil = "quarter" },
   BRAVE_BIRD = { recoil = "third" },
   FLARE_BLITZ = { recoil = "third" },
@@ -100,6 +102,7 @@ local STRIKERS = {
   X_SCISSOR = {},
   DRAGON_PULSE = {},
   HYDRO_PUMP = {},
+  HYPER_VOICE = {},
   POWER_GEM = {},
   WATER_GUN = {},
   -- Semi-invulnerable doubling has no state to key on: charge strikes
@@ -114,6 +117,7 @@ local STRIKERS = {
   DRAIN_PUNCH = { drain = true },
   LEECH_LIFE = { drain = true },
   -- Raised critical strikes roll one native stage above the base.
+  AEROBLAST = { critStage = 1 },
   ATTACK_ORDER = { critStage = 1 },
   CRABHAMMER = { critStage = 1 },
   CROSS_CHOP = { critStage = 1 },
@@ -125,6 +129,7 @@ local STRIKERS = {
   SHADOW_CLAW = { critStage = 1 },
   SLASH = { critStage = 1 },
   STONE_EDGE = { critStage = 1 },
+  SPACIAL_REND = { critStage = 1 },
   AIR_CUTTER = { critStage = 1 },
   BLAZE_KICK = { critStage = 1, secondaries = { { status = "burn" } } },
   CROSS_POISON = { critStage = 1, secondaries = { { status = "poison" } } },
@@ -139,6 +144,7 @@ local STRIKERS = {
   -- Freeze secondaries.
   ICE_BEAM = { secondaries = { { status = "freeze" } } },
   ICE_PUNCH = { secondaries = { { status = "freeze" } } },
+  POWDER_SNOW = { secondaries = { { status = "freeze" } } },
   -- Paralysis secondaries.
   BODY_SLAM = { secondaries = { { status = "paralysis" } } },
   FORCE_PALM = { secondaries = { { status = "paralysis" } } },
@@ -158,6 +164,8 @@ local STRIKERS = {
   SLUDGE_BOMB = { secondaries = { { status = "poison" } } },
   SMOG = { secondaries = { { status = "poison" } } },
   POISON_FANG = { secondaries = { { status = "toxic" } } },
+  POISON_TAIL = { critStage = 1, secondaries = { { status = "poison" } } },
+  SACRED_FIRE = { secondaries = { { status = "burn" } } },
   -- Flinch secondaries mark before-action presence.
   ASTONISH = { secondaries = { { volatile = "flinch" } } },
   BITE = { secondaries = { { volatile = "flinch" } } },
@@ -172,6 +180,9 @@ local STRIKERS = {
   AIR_SLASH = { secondaries = { { volatile = "flinch" } } },
   DARK_PULSE = { secondaries = { { volatile = "flinch" } } },
   TWISTER = { secondaries = { { volatile = "flinch" } } },
+  IRON_HEAD = { secondaries = { { volatile = "flinch" } } },
+  NEEDLE_ARM = { secondaries = { { volatile = "flinch" } } },
+  ROLLING_KICK = { secondaries = { { volatile = "flinch" } } },
   -- Confusion secondaries root a two-to-five-turn volatile.
   CONFUSION = { secondaries = { { volatile = "confusion" } } },
   PSYBEAM = { secondaries = { { volatile = "confusion" } } },
@@ -217,6 +228,12 @@ local STRIKERS = {
   ICY_WIND = { secondaries = { { foeStages = { { "speed", -1 } } } } },
   MUD_SHOT = { secondaries = { { foeStages = { { "speed", -1 } } } } },
   ROCK_TOMB = { secondaries = { { foeStages = { { "speed", -1 } } } } },
+  ROCK_CLIMB = { secondaries = { { volatile = "confusion" } } },
+  MAGMA_STORM = { secondaries = { { volatile = "trap", chance = 100 } } },
+  LUSTER_PURGE = { secondaries = { { foeStages = { { "specialDefense", -1 } } } } },
+  MIST_BALL = { secondaries = { { foeStages = { { "specialAttack", -1 } } } } },
+  ROCK_SMASH = { secondaries = { { foeStages = { { "defense", -1 } } } } },
+  SEED_FLARE = { secondaries = { { foeStages = { { "specialDefense", -2 } } } } },
   -- Self-raising stage secondaries.
   CHARGE_BEAM = { secondaries = { { selfStages = { { "specialAttack", 1 } } } } },
   ANCIENT_POWER = {
@@ -276,12 +293,11 @@ local STRIKERS = {
   -- a connecting strike.
   DRACO_METEOR = { secondaries = { { selfStages = { { "specialAttack", -2 } }, chance = 100 } } },
   LEAF_STORM = { secondaries = { { selfStages = { { "specialAttack", -2 } }, chance = 100 } } },
+  -- Psycho Boost uses the same attacker-side stage subscript.
+  PSYCHO_BOOST = { secondaries = { { selfStages = { { "specialAttack", -2 } }, chance = 100 } } },
   OVERHEAT = { secondaries = { { selfStages = { { "specialAttack", -2 } }, chance = 100 } } },
   -- Tri Attack draws one of burn, freeze, or paralysis on its chance.
   TRI_ATTACK = { secondaries = { { randomStatus = { "burn", "freeze", "paralysis" } } } },
-  -- Secret Power has no terrain facts in this engine, so its secondary
-  -- settles as the standard-battle paralysis outcome.
-  SECRET_POWER = { secondaries = { { status = "paralysis" } } },
 }
 
 -- Members dealing a fixed amount without staged arithmetic.
@@ -314,19 +330,10 @@ local WEIGHT = {
   GRASS_KNOT = true,
 }
 
--- Members with no modeled native semantics yet: the gated handler raises
--- structured missing behavior naming the move instead of dealing guessed
--- damage, so coverage can never mistake presence for semantics.
+-- Chatter requires the recorded Chatot voice activation facts, which the
+-- session does not carry yet. It fails explicitly instead of guessing.
 local GATED = {
-  METAL_BURST = true,
-  BIDE = true,
-  CRUSH_GRIP = true,
-  PSYWAVE = true,
-  TRUMP_CARD = true,
-  JUDGMENT = true,
-  PUNISHMENT = true,
-  SMELLING_SALT = true,
-  PSYCHO_BOOST = true,
+  CHATTER = true,
 }
 
 -- Two-to-five-hit members sample a genuine hit count, then land every
@@ -653,6 +660,17 @@ local function combatOf(frame, defender)
     local perTarget = targetFactsFor(frame, defender)
     if perTarget ~= nil and type(perTarget.combat) == "table" then
       facts = perTarget.combat
+      local combatByCategory = perTarget.combatByCategory
+      local move = locals.move
+      if type(combatByCategory) == "table" and type(move) == "table" then
+        local category = (move --[[@as table<string, unknown>]]).category
+        local categoryFacts = (combatByCategory --[[@as table<string, unknown>]])[
+          category --[[@as string]]
+        ]
+        if type(categoryFacts) == "table" then
+          facts = categoryFacts
+        end
+      end
     end
   end
   if type(facts) ~= "table" then
@@ -756,6 +774,10 @@ local function strikeFactsOf(frame)
   if type(accuracy) ~= "number" or accuracy % 1 ~= 0 or accuracy < 0 then
     error(BattleErrors.missingBehavior("damage reads its immutable move facts", { key = key, fact = "accuracy" }))
   end
+  local moveType = move.moveType
+  if locals.chargeBoost == true and moveType == "electric" then
+    power = power * 2
+  end
   return {
     power = power --[[@as integer]],
     accuracy = accuracy --[[@as integer]],
@@ -801,8 +823,19 @@ end
 ---@param amount integer staged damage amount under application
 ---@return integer damage actually dealt after application
 local function applyHit(ctx, frame, defender, amount)
+  local health = ctx:damage(defender, 0, causeFor(frame))
+  if ctx:hasBattleEffect(defender, "endure") and health.before > 0 and amount >= health.before then
+    amount = math.max(0, health.before - 1)
+  end
   local outcome = ctx:damage(defender, amount, causeFor(frame))
   return outcome.before - outcome.after
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param defender integer combatant under the protection query
+---@return boolean true when Protect or Detect guards the combatant
+local function isProtected(ctx, defender)
+  return ctx:hasBattleEffect(defender, "protect") or ctx:hasBattleEffect(defender, "detect")
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -872,7 +905,7 @@ local function secondariesAllowed(ctx, frame, defender)
     locals.typeChart --[[@as table<string, unknown>]],
     moveType --[[@as string]],
     defenderTypes,
-    {}
+    { psychicDarkImmunityBypassed = ctx:hasBattleEffect(defender, "miracleeye") }
   )
   if resolved.immune then
     return false
@@ -1257,6 +1290,22 @@ local function noteStrikeDamage(ctx, frame, defender, dealt)
     return
   end
   ctx:noteDamageTaken(defender, userOf(frame), category --[[@as string]], dealt)
+  local target = ctx:entryOf(defender)
+  assert(target.stages ~= nil, "Rage reads the defender's live stages")
+  local targetHp = target.hp
+  if type(targetHp) ~= "number" or targetHp % 1 ~= 0 or targetHp < 0 then
+    error(BattleErrors.missingBehavior("Rage reads the defender's remaining health", {
+      key = frame.executingMove --[[@as string]],
+    }))
+  end
+  if
+    targetHp > 0
+    and defender ~= userOf(frame)
+    and ctx:hasBattleEffect(defender, "rage")
+    and target.stages.attack < 6
+  then
+    ctx:changeStage(defender, "attack", target.stages.attack + 1, causeFor(frame))
+  end
 end
 
 -- Safeguard and mist gates for secondaries: safeguard absorbs
@@ -1306,7 +1355,10 @@ local function applySecondaryStatus(ctx, frame, defender, status)
     end
   end
   local state = {}
-  if status == "toxic" then
+  if status == "sleep" then
+    local stream = checkSecondaryStream(record.stream)
+    state = { turns = 2 + (stream:nextU16("sleep_turns", causeFor(record)) % 4) }
+  elseif status == "toxic" then
     state = { counter = 0 }
   end
   if not ctx:applyStatus(defender, status, state, causeFor(record)) then
@@ -1763,6 +1815,7 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   local stab, effectiveness = StagedTypeModifiers.forStrike(frame, defender, {
     airborne = ctx:hasBattleEffect(defender, "magnetrise"),
     foresight = ctx:hasBattleEffect(defender, "foresight"),
+    miracleEye = ctx:hasBattleEffect(defender, "miracleeye"),
     gravity = locals.gravity == true,
   }, controls.moveType)
   -- Wards stop the hit before any roll; a resisted hit pierces
@@ -1816,6 +1869,7 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
     weatherSuppressed = weatherSuppressed,
     moveType = moveType,
     solarBeam = solarBeam,
+    meFirst = record.calledBy == "ME_FIRST",
     screenApplies = screenApplies,
     screenReduction = screenReduction,
     removesScreens = removesScreens,
@@ -1849,6 +1903,7 @@ end
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the strike
 ---@param accuracy integer native accuracy percentage, 0 skips the roll
+---@param hitFly boolean? true lets Sky Uppercut hit Fly and Bounce
 ---@return boolean true when the strike connects
 -- Strike accuracy through the native checkpoints: a locked-on target
 -- is always struck, identified targets ignore negative evasion, and
@@ -1856,12 +1911,24 @@ end
 -- BattleSystem_CheckMoveHit in
 -- src/battle/battle_controller_player.c (lock-on bypass, foresight
 -- evasion clamp, gravity scaling).
-local function accuracyGate(ctx, frame, defender, accuracy)
+local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
   local stream = checkStream(frame.stream)
+  local protected = isProtected(ctx, defender)
+  local targetFacts = targetFactsFor(frame, defender)
+  local semiInvulnerable = targetFacts and targetFacts.semiInvulnerable
+  if
+    semiInvulnerable ~= nil
+    and semiInvulnerable ~= false
+    and not (hitFly == true and (semiInvulnerable == "fly" or semiInvulnerable == "bounce"))
+  then
+    return false
+  end
   local userStages = ctx:entryOf(userOf(frame)).stages --[[@as table<string, integer>]]
   local targetStages = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
   local evasionStage = targetStages.evasion
-  if evasionStage < 0 and ctx:hasBattleEffect(defender, "foresight") then
+  if
+    evasionStage < 0 and (ctx:hasBattleEffect(defender, "foresight") or ctx:hasBattleEffect(defender, "miracleeye"))
+  then
     evasionStage = 0
   end
   local stages = {
@@ -1881,7 +1948,7 @@ local function accuracyGate(ctx, frame, defender, accuracy)
     resolution = Accuracy.resolve({
       target = { kind = "combatant" },
       cause = causeFor(frame),
-      protected = false,
+      protected = protected,
       skipCheck = true,
     }, stream)
   else
@@ -1889,7 +1956,7 @@ local function accuracyGate(ctx, frame, defender, accuracy)
       accuracy = accuracy,
       target = { kind = "combatant" },
       cause = causeFor(frame),
-      protected = false,
+      protected = protected,
       accuracyStage = stages.accuracyStage,
       evasionStage = stages.evasionStage,
     }, stream)
@@ -2028,7 +2095,7 @@ local function runStriker(ctx, frame, params)
   local connected, dealtTotal = false, 0
   for hitIndex = 1, #targets do
     local defender = targetOf(targets[hitIndex])
-    if accuracyGate(ctx, frame, defender, accuracy) then
+    if accuracyGate(ctx, frame, defender, accuracy, owned.hitFly == true) then
       for _ = 1, hits --[[@as integer]] do
         dealtTotal = dealtTotal + stagedHit(ctx, frame, defender, power, hitIndex, #targets, owned)
         applySecondaries(ctx, frame, defender, owned.secondaries --[[@as table<integer, table<string, unknown>>?]])
@@ -2401,6 +2468,74 @@ local function stepPayday(ctx, frame)
   return outcome
 end
 
+-- Psywave rolls an integer from five through fifteen, scales the user
+-- level by that tenths factor, and bypasses type effectiveness. Source
+-- reference: effect_script_0088.s and BtlCmd_Random in
+-- src/battle/battle_command.c.
+local function stepPsywave(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local combat = combatOf(record)
+  local roll = checkStream(record.stream):nextU16("psywave_damage", causeFor(record)) % 11 + 5
+  local amount = math.floor((combat.level * roll) / 10)
+  if amount < 1 then
+    amount = 1
+  end
+  return runFixed(ctx, record, amount)
+end
+
+-- Secret Power's secondary follows the native terrain pointer table.
+-- Source references: BtlCmd_GetTerrainSecondaryEffect in
+-- src/battle/battle_command.c and sSecretPowerEffectTable in
+-- asm/overlay_12_battle_command.s.
+local SECRET_POWER_SECONDARIES = {
+  plain = { foeStages = { { "accuracy", -1 } } },
+  sand = { foeStages = { { "accuracy", -1 } } },
+  grass = { status = "sleep" },
+  puddle = { status = "sleep" },
+  mountain = { volatile = "flinch" },
+  cave = { volatile = "flinch" },
+  snow = { status = "freeze" },
+  water = { foeStages = { { "attack", -1 } } },
+  ice = { status = "freeze" },
+  building = { status = "paralysis" },
+  great_marsh = { foeStages = { { "speed", -1 } } },
+  unknown = { foeStages = { { "evasion", -1 } } },
+}
+
+local function stepSecretPower(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local terrain = locals.terrain
+  if type(terrain) ~= "string" or terrain == "" then
+    error(BattleErrors.missingBehavior("Secret Power reads its battle terrain", { key = record.executingMove }))
+  end
+  if terrain == "will" or terrain == "koga" or terrain == "bruno" or terrain == "karen" or terrain == "lance" then
+    terrain = "building"
+  elseif
+    terrain == "distortion_world"
+    or terrain == "battle_tower"
+    or terrain == "battle_factory"
+    or terrain == "battle_arcade"
+    or terrain == "battle_castle"
+    or terrain == "battle_hall"
+    or terrain == "giratina"
+  then
+    terrain = "will"
+  end
+  local secondary = SECRET_POWER_SECONDARIES[terrain]
+  if secondary == nil and terrain == "will" then
+    secondary = { status = "paralysis" }
+  end
+  if secondary == nil then
+    error(BattleErrors.invalidState("Secret Power receives a native terrain identity", { terrain = terrain }))
+  end
+  return runStriker(ctx, record, { secondaries = { secondary } })
+end
+
 -- Brick Break lands its strike, then drops the defender side screens
 -- whether or not they softened this blow.
 local function stepBrickBreak(ctx, frame)
@@ -2416,10 +2551,13 @@ local function stepBrickBreak(ctx, frame)
   return outcome
 end
 
--- Item-taking strikes deal their damage, then record the ordered item
--- intent for the inventory owners: stealing, knocking off, and
--- berry-eating settle downstream, never in the live Bag. This follows
--- the identity item-intent contract beside the shared striker.
+-- Item-taking strikes update held slots after damage, matching the native
+-- steal/remove/eat subscripts; held items are battle state, not Bag
+-- inventory. Source references: BtlCmd_TryStealItem, BtlCmd_TryKnockOff,
+-- BtlCmd_TryEatOpponentBerry in src/battle/battle_command.c.
+local FLING_EFFECTS = {}
+local applyFlingEffect
+
 ---@param mode string item operation under the intent
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler striking then recording
 local function makeStealIntent(mode)
@@ -2428,11 +2566,71 @@ local function makeStealIntent(mode)
     assert(type(frame) == "table", "damage steps from its move frame")
     local record = frame --[[@as table<string, unknown>]]
     local outcome = runStriker(ctx, record, {})
-    if outcome.result == "hit" then
-      ctx:emit("item-intent", causeFor(record), {
-        target = targetOf((record.targets --[[@as table<integer, unknown>]])[1]),
-        mode = mode,
-      })
+    if
+      outcome.result == "hit"
+      and not ctx:hasBattleEffect(targetOf((record.targets --[[@as table<integer, unknown>]])[1]), "substitute")
+    then
+      local user = userOf(record)
+      local target = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+      local targetItem = ctx:heldItemOf(target)
+      if targetItem ~= nil then
+        local locals = record.locals --[[@as table<string, unknown>]]
+        local itemFacts = locals.itemFacts --[[@as table<string, unknown>]]
+        local item = itemFacts[targetItem]
+        if type(item) ~= "table" then
+          error(BattleErrors.missingBehavior("held-item strikes resolve their target item", { item = targetItem }))
+        end
+        local pocket = (item --[[@as table<string, unknown>]]).pocket
+        local abilities = locals.abilities --[[@as table<string, unknown>]]
+        local stickyHold = abilities.foe == "STICKY_HOLD" and abilities.user ~= "MOLD_BREAKER"
+        local hasMultitype = abilities.user == "MULTITYPE" or abilities.foe == "MULTITYPE"
+        local itemTransferAllowed = locals.itemTransferAllowed == true
+        local userItem = ctx:heldItemOf(user)
+        local changed = false
+        if mode == "remove" and not stickyHold then
+          changed = ctx:knockOffHeldItem(target) ~= nil
+        elseif
+          mode == "steal"
+          and itemTransferAllowed
+          and userItem == nil
+          and pocket ~= "mail"
+          and targetItem ~= "GRISEOUS_ORB"
+          and not hasMultitype
+          and not ctx:heldItemWasKnockedOff(target)
+          and not ctx:priorityItemActivatedThisTurn(target)
+          and not stickyHold
+        then
+          ctx:setHeldItem(target, nil)
+          ctx:setHeldItem(user, targetItem)
+          changed = true
+        elseif mode == "eat" and pocket == "berries" then
+          ctx:setHeldItem(target, nil)
+          local fling = (item --[[@as table<string, unknown>]]).fling
+          if type(fling) ~= "table" then
+            error(BattleErrors.missingBehavior("berry-eating strikes read the berry effect", { item = targetItem }))
+          end
+          local effectId = (fling --[[@as table<string, unknown>]]).effect
+          local effect = type(effectId) == "number" and FLING_EFFECTS[effectId] or nil
+          if
+            effect ~= nil
+            and effectId --[[@as number]]
+              <= 23
+          then
+            applyFlingEffect(
+              ctx,
+              record,
+              user,
+              effect,
+              effectId --[[@as integer]],
+              item --[[@as table<string, unknown>]]
+            )
+          end
+          changed = true
+        end
+        if changed then
+          ctx:emit("item-intent", causeFor(record), { target = target, mode = mode, item = targetItem })
+        end
+      end
     end
     return outcome
   end
@@ -2447,11 +2645,11 @@ local function stepFeint(ctx, frame)
   assert(type(frame) == "table", "damage steps from its move frame")
   local record = frame --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not ctx:hasBattleEffect(defender, "PROTECT") and not ctx:hasBattleEffect(defender, "DETECT") then
+  if not isProtected(ctx, defender) then
     return { kind = "complete", result = "failed" }
   end
-  ctx:removeBattleEffect(defender, "PROTECT")
-  ctx:removeBattleEffect(defender, "DETECT")
+  ctx:removeBattleEffect(defender, "protect")
+  ctx:removeBattleEffect(defender, "detect")
   return runStriker(ctx, record, {})
 end
 
@@ -2620,6 +2818,10 @@ local function stepOhko(ctx, frame)
   assert(type(frame) == "table", "damage steps from its move frame")
   local record = frame --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if isProtected(ctx, defender) then
+    emitProtected(ctx, record, defender)
+    return { kind = "complete", result = "missed" }
+  end
   local combat = combatOf(record)
   local foeLevel = foeLevelOf(record)
   local abilities = abilitiesOf(record)
@@ -2719,6 +2921,218 @@ local function stepWringOut(ctx, frame)
   local ceiling = ctx:entryOf(defender).maxHp --[[@as integer]]
   local power = 1 + math.floor((120 * probe.before) / ceiling)
   return runStriker(ctx, record, { power = power })
+end
+
+-- Trump Card indexes the source table by current PP after move selection
+-- spends one point. Source references: effect_script_0235.s and
+-- BtlCmd_CalcTrumpCardPower in src/battle/battle_command.c.
+local function stepTrumpCard(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local slot = record.ppOwnerSlot
+  local moves = record.moves
+  if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or type(moves) ~= "table" then
+    error(BattleErrors.missingBehavior("Trump Card reads its remaining move PP", {
+      key = record.executingMove --[[@as string]],
+    }))
+  end
+  local move = moves[slot + 1]
+  if type(move) ~= "table" or type(move.pp) ~= "number" or move.pp % 1 ~= 0 or move.pp < 0 then
+    error(BattleErrors.missingBehavior("Trump Card reads its remaining move PP", {
+      key = record.executingMove --[[@as string]],
+    }))
+  end
+  local powerByPp = { 200, 80, 60, 50, 40 }
+  local power = powerByPp[
+    math.min(move.pp --[[@as number]], 4) + 1
+  ]
+  return runStriker(ctx, record, { power = power })
+end
+
+-- Smelling Salt doubles and cures paralysis only when the defender has
+-- no substitute. Source reference: effect_script_0171.s.
+local function stepSmellingSalt(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local strike = strikeFactsOf(record)
+  local paralyzed = ctx:statusOf(defender) == "paralysis"
+  local substitute = ctx:hasBattleEffect(defender, "substitute")
+  local power = strike.power
+  if paralyzed and not substitute then
+    power = power * 2
+  end
+  local outcome = runStriker(ctx, record, { power = power })
+  if outcome.result == "hit" and paralyzed and not substitute then
+    ctx:cureStatus(defender, "paralysis", causeFor(record))
+  end
+  return outcome
+end
+
+local JUDGMENT_PLATE_TYPES = {
+  FIST_PLATE = "fighting",
+  SKY_PLATE = "flying",
+  TOXIC_PLATE = "poison",
+  EARTH_PLATE = "ground",
+  STONE_PLATE = "rock",
+  INSECT_PLATE = "bug",
+  SPOOKY_PLATE = "ghost",
+  IRON_PLATE = "steel",
+  FLAME_PLATE = "fire",
+  SPLASH_PLATE = "water",
+  MEADOW_PLATE = "grass",
+  ZAP_PLATE = "electric",
+  MIND_PLATE = "psychic",
+  ICICLE_PLATE = "ice",
+  DRACO_PLATE = "dragon",
+  DREAD_PLATE = "dark",
+}
+
+-- Judgment changes to the type selected by its held plate. Source
+-- reference: effect_script_0268.s and HOLD_EFFECT_ARCEUS_* in
+-- include/constants/items.h.
+local function stepJudgment(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local held = heldItemOf(record)
+  local moveType = held and JUDGMENT_PLATE_TYPES[held] or nil
+  return runStriker(ctx, record, { moveType = moveType })
+end
+
+-- Punishment counts the target's positive non-HP stat stages, then caps
+-- its power at two hundred. The source loop includes an always-neutral
+-- HP slot before these seven semantic stages.
+local function stepPunishment(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local stages = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
+  local boosts = 0
+  for _, stat in ipairs({ "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }) do
+    local stage = stages[stat]
+    assert(type(stage) == "number" and stage % 1 == 0, "Punishment reads integer target stages")
+    if stage > 0 then
+      boosts = boosts + stage
+    end
+  end
+  return runStriker(ctx, record, { power = math.min(200, 60 + 20 * boosts) })
+end
+
+-- Rock Wrecker creates one recharge turn only after its strike connects.
+-- Source reference: effect_script_0080.s and the recharge-turn subscript.
+local function stepRockWrecker(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local outcome = runStriker(ctx, record, {})
+  if outcome.result == "hit" then
+    local user = userOf(record)
+    ctx:addBattleEffect(
+      NativeEffectHandlers.definitionFor("recharge"),
+      secondaryScope(ctx, user),
+      causeFor(record),
+      { version = 1, turns = 1 }
+    )
+  end
+  return outcome
+end
+
+-- Bide begins its active storage turn; the before-action effect owns
+-- damage recording and the eventual release. Source references:
+-- effect_script_0026.s and subscript_0035_BideStart.s.
+local function stepBideStart(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("bide"),
+    secondaryScope(ctx, user),
+    causeFor(record),
+    { version = 1, turns = 1, damage = 0, attacker = 0 }
+  )
+  ctx:emit("move-used", causeFor(record), { user = user, targets = #record.targets })
+  return { kind = "complete", result = "hit" }
+end
+
+-- Metal Burst returns one and a half times the last damage received to
+-- that opposing attacker. Source reference: TryMetalBurst in
+-- src/battle/battle_command.c.
+local function stepMetalBurst(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local duel = duelOf(record)
+  local answer = duel.revengeAny
+  if answer == false then
+    return { kind = "complete", result = "failed" }
+  end
+  if type(answer) ~= "table" then
+    error(BattleErrors.missingBehavior("Metal Burst reads its last-damage fact", {
+      key = record.executingMove --[[@as string]],
+    }))
+  end
+  local noted = answer --[[@as table<string, unknown>]]
+  local attacker, amount = noted.attacker, noted.amount
+  if type(attacker) ~= "number" or attacker % 1 ~= 0 or type(amount) ~= "number" or amount % 1 ~= 0 or amount < 1 then
+    error(BattleErrors.missingBehavior("Metal Burst reads its last-damage fact", {
+      key = record.executingMove --[[@as string]],
+    }))
+  end
+  local user = userOf(record)
+  local userSide = ctx:entryOf(user).side
+  local attackerEntry = ctx:entryOf(attacker --[[@as integer]])
+  if attackerEntry.side == userSide then
+    return { kind = "complete", result = "failed" }
+  end
+  local defender = attacker --[[@as integer]]
+  local followMe = duel.followMeTarget
+  if followMe == nil or followMe == false then
+    followMe = nil
+  elseif type(followMe) ~= "number" or followMe % 1 ~= 0 then
+    error(BattleErrors.missingBehavior("Metal Burst reads its Follow Me redirect", {
+      key = record.executingMove --[[@as string]],
+    }))
+  end
+  if followMe ~= nil then
+    local redirect = ctx:entryOf(followMe --[[@as integer]])
+    if redirect.side ~= attackerEntry.side then
+      error(BattleErrors.invalidState("Metal Burst Follow Me redirects on the saved attacker's side", {
+        target = followMe,
+      }))
+    end
+    if
+      ctx:damage(followMe --[[@as integer]], 0, causeFor(record)).before > 0
+    then
+      defender = followMe --[[@as integer]]
+    end
+  end
+  local hp = ctx:damage(defender, 0, causeFor(record)).before
+  if hp <= 0 then
+    local living = {}
+    for _, combatant in ipairs(ctx:activeCombatants()) do
+      local entry = ctx:entryOf(combatant)
+      if entry.side ~= userSide and ctx:damage(combatant, 0, causeFor(record)).before > 0 then
+        living[#living + 1] = combatant
+      end
+    end
+    if #living == 0 then
+      return { kind = "complete", result = "failed" }
+    end
+    defender = living[checkStream(record.stream):nextU16("metal_burst_target", causeFor(record)) % #living + 1]
+  end
+  local backlash = math.floor((amount * 15) / 10)
+  if substituteTakesHit(ctx, record, defender, backlash, 1) then
+    return { kind = "complete", result = "hit" }
+  end
+  local dealt = applyHit(ctx, record, defender, backlash)
+  emitStruck(ctx, record, defender, 1, dealt)
+  noteStrikeDamage(ctx, record, defender, dealt)
+  return { kind = "complete", result = "hit" }
 end
 
 -- Gyro Ball scales with the speed ratio: one plus twenty-five times
@@ -2860,6 +3274,16 @@ local function stepStomp(ctx, frame)
   return runStriker(ctx, record, { power = power, secondaries = { { volatile = "flinch" } } })
 end
 
+-- Sky Uppercut bypasses only Fly/Bounce semi-invulnerability, while its
+-- ordinary accuracy check still applies. Source reference:
+-- effect_script_0207.s and BATTLE_STATUS_HIT_FLY in
+-- src/battle/battle_controller_player.c.
+local function stepSkyUppercut(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  return runStriker(ctx, frame --[[@as table<string, unknown>]], { hitFly = true })
+end
+
 -- Wake-up slap doubles against sleeping targets and wakes them on a
 -- connecting strike; a live doll absorbs the doubled strike as an HP
 -- pool without waking. Source reference:
@@ -2985,16 +3409,189 @@ local function stepNaturalGift(ctx, frame)
 end
 
 -- Fling throws the held item for its generated fling power and spends
--- the holder even on a miss; powerless holders fail. Badly-poisoning
--- throw effects apply on a connecting hit through the usual substitute,
--- safeguard, and type gates; unmapped throw effects fail loudly.
+-- the holder even on a miss. Effect IDs follow STEAL_EFFECT_* in
+-- include/constants/items.h and the TryFling switch in battle_util.c.
 -- Source references: TryFling in
 -- src/battle/overlay_12_0224E4FC.c and files/battledata/script/
 -- effect_script/effect_script_0233.s with
 -- files/battledata/script/subscript/subscript_0220_Fling.s.
-local FLING_EFFECTS = {
+FLING_EFFECTS = {
+  [1] = "cure-paralysis",
+  [2] = "cure-sleep",
+  [3] = "cure-poison",
+  [4] = "cure-burn",
+  [5] = "cure-freeze",
+  [6] = "restore-pp",
+  [7] = "restore-hp",
+  [8] = "cure-confusion",
+  [9] = "cure-all",
+  [10] = "restore-hp",
+  [11] = "restore-hp",
+  [12] = "restore-hp",
+  [13] = "restore-hp",
+  [14] = "restore-hp",
+  [15] = "restore-hp",
+  [16] = "attack-up",
+  [17] = "defense-up",
+  [18] = "speed-up",
+  [19] = "special-attack-up",
+  [20] = "special-defense-up",
+  [21] = "critical-up",
+  [22] = "random-up",
+  [23] = "accuracy-up",
+  [24] = "reset-stats",
+  [25] = "cure-infatuation",
+  [26] = "flinch",
+  [27] = "paralysis",
+  [28] = "poison",
   [29] = "toxic",
+  [30] = "burn",
 }
+
+local FLING_STAT_EFFECTS = {
+  ["attack-up"] = "attack",
+  ["defense-up"] = "defense",
+  ["speed-up"] = "speed",
+  ["special-attack-up"] = "specialAttack",
+  ["special-defense-up"] = "specialDefense",
+  ["accuracy-up"] = "accuracy",
+}
+
+local FLING_STATUS_EFFECTS = { paralysis = "paralysis", poison = "poison", toxic = "toxic", burn = "burn" }
+local FLING_CURE_EFFECTS = {
+  ["cure-paralysis"] = "paralysis",
+  ["cure-sleep"] = "sleep",
+  ["cure-poison"] = "poison",
+  ["cure-burn"] = "burn",
+  ["cure-freeze"] = "freeze",
+}
+
+local FLING_FLAVOR_DISLIKES = {
+  [11] = { [5] = true, [10] = true, [15] = true, [20] = true },
+  [12] = { [3] = true, [8] = true, [13] = true, [23] = true },
+  [13] = { [2] = true, [7] = true, [17] = true, [22] = true },
+  [14] = { [4] = true, [9] = true, [14] = true, [19] = true },
+  [15] = { [1] = true, [11] = true, [16] = true, [21] = true },
+}
+
+local function applyFlingEffectImpl(ctx, frame, target, effect, effectId, item)
+  local record = frame --[[@as table<string, unknown>]]
+  local cause = causeFor(record)
+  local status = FLING_STATUS_EFFECTS[effect]
+  if status ~= nil then
+    if secondariesAllowed(ctx, record, target) and not safeguarded(ctx, target) then
+      local defenders = (record.locals --[[@as table<string, unknown>]]).defenderTypes --[[@as table<integer, string[]>]]
+      if not statusTypeImmune(defenders[target], status) then
+        applySecondaryStatus(ctx, record, target, status)
+      end
+    end
+  elseif FLING_CURE_EFFECTS[effect] ~= nil then
+    ctx:cureStatus(target, FLING_CURE_EFFECTS[effect], cause)
+  elseif effect == "cure-confusion" or effect == "cure-all" then
+    ctx:removeBattleEffect(target, "confusion")
+    if effect == "cure-all" then
+      for _, key in ipairs({ "sleep", "poison", "toxic", "burn", "freeze", "paralysis" }) do
+        ctx:cureStatus(target, key, cause)
+      end
+    end
+  elseif effect == "restore-hp" then
+    local partyUse = item.partyUse --[[@as table<string, unknown>?]]
+    local restore = type(partyUse) == "table" and partyUse.restore or nil
+    local kind = type(restore) == "table" and (restore --[[@as table<string, unknown>]]).kind or nil
+    local amount = nil
+    local dislikes = FLING_FLAVOR_DISLIKES[effectId]
+    local dislikedFlavor = dislikes ~= nil and dislikes[Personality.nature(ctx:personalityOf(target))] == true
+    if effectId >= 11 and effectId <= 15 then
+      -- TryFling routes the five flavor berries through the 1/8-HP
+      -- script only when the target likes that flavor; otherwise it uses
+      -- the dislike script, which confuses without restoring HP.
+      if not dislikedFlavor then
+        amount = math.floor(ctx:entryOf(target).maxHp --[[@as integer]] / 8)
+      end
+    elseif kind == "quarter" then
+      amount = math.floor(ctx:entryOf(target).maxHp --[[@as integer]] / 4)
+    elseif kind == "fixed" then
+      amount = (restore --[[@as table<string, unknown>]]).amount
+    end
+    if type(amount) == "number" and amount > 0 then
+      local healed = ctx:heal(target, amount, cause)
+      if healed.after > healed.before then
+        ctx:emit("healed", cause, { target = target, restored = healed.after - healed.before })
+      end
+    end
+    if dislikedFlavor then
+      markSecondaryConfusion(ctx, record, target)
+    end
+  elseif effect == "restore-pp" then
+    local partyUse = item.partyUse --[[@as table<string, unknown>?]]
+    local restore = type(partyUse) == "table" and (partyUse --[[@as table<string, unknown>]]).restore or nil
+    if
+      type(partyUse) == "table" and (partyUse --[[@as table<string, unknown>]]).kind == "pp"
+    then
+      local moves = ctx:movesOf(target)
+      local moveFacts = (record.locals --[[@as table<string, unknown>]]).moveFacts --[[@as table<string, table<string, unknown>>]]
+      local maxMissing, selectedSlot, selectedMax = 0, nil, nil
+      for slot, move in ipairs(moves) do
+        local key = move.move --[[@as string]]
+        local facts = moveFacts[key]
+        if type(facts) == "table" then
+          local maxPp = Moves.maxPp(facts.basePp --[[@as integer]], move.ppUps --[[@as integer]])
+          local missing = maxPp - move.pp --[[@as integer]]
+          if missing > maxMissing then
+            maxMissing, selectedSlot, selectedMax = missing, slot - 1, maxPp
+          end
+        end
+      end
+      if selectedSlot ~= nil then
+        local requested = restore == "full" and maxMissing or restore
+        if type(requested) == "number" then
+          ctx:restorePp(target, selectedSlot, requested, selectedMax --[[@as integer]])
+        end
+      end
+    end
+  elseif FLING_STAT_EFFECTS[effect] ~= nil then
+    local stat = FLING_STAT_EFFECTS[effect]
+    local stages = ctx:entryOf(target).stages --[[@as table<string, integer>]]
+    if stages[stat] < 6 then
+      ctx:changeStage(target, stat, stages[stat] + 1, cause)
+    end
+  elseif effect == "random-up" then
+    local stages = ctx:entryOf(target).stages --[[@as table<string, integer>]]
+    local eligible = {}
+    for _, stat in ipairs({ "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
+      if stages[stat] < 6 then
+        eligible[#eligible + 1] = stat
+      end
+    end
+    if #eligible > 0 then
+      local stream = checkSecondaryStream(record.stream)
+      local stat = eligible[stream:nextU16("fling_random_stat", cause) % #eligible + 1]
+      ctx:changeStage(target, stat, stages[stat] + 1, cause)
+    end
+  elseif effect == "reset-stats" then
+    local stages = ctx:entryOf(target).stages --[[@as table<string, integer>]]
+    for _, stat in ipairs({ "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }) do
+      if stages[stat] < 0 then
+        ctx:changeStage(target, stat, 0, cause)
+      end
+    end
+  elseif effect == "critical-up" then
+    if not ctx:hasBattleEffect(target, "focusenergy") then
+      ctx:addBattleEffect(
+        NativeEffectHandlers.definitionFor("focusenergy"),
+        secondaryScope(ctx, target),
+        cause,
+        { version = 1 }
+      )
+    end
+  elseif effect == "cure-infatuation" then
+    ctx:removeBattleEffect(target, "infatuation")
+  elseif effect == "flinch" and secondariesAllowed(ctx, record, target) then
+    markSecondaryFlinch(ctx, target)
+  end
+end
+
+applyFlingEffect = applyFlingEffectImpl
 
 local function stepFling(ctx, frame)
   assert(type(ctx) == "table", "damage steps through the battle context")
@@ -3037,21 +3634,16 @@ local function stepFling(ctx, frame)
     power = flung.power --[[@as integer]],
   })
   ctx:consumeHeldItem(userOf(record))
-  if outcome.result == "hit" and effect == "toxic" then
+  if outcome.result == "hit" then
     local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-    if not secondariesAllowed(ctx, record, defender) then
-      return outcome
-    end
-    if safeguarded(ctx, defender) then
-      return outcome
-    end
-    local locals = record.locals --[[@as table<string, unknown>]]
-    local defenders = locals.defenderTypes --[[@as table<integer, unknown>]]
-    if
-      not statusTypeImmune(defenders[defender] --[[@as string[] ]], "toxic")
-    then
-      applySecondaryStatus(ctx, record, defender, "toxic")
-    end
+    applyFlingEffect(
+      ctx,
+      record,
+      defender,
+      effect,
+      flung.effect --[[@as integer]],
+      entry --[[@as table<string, unknown>]]
+    )
   end
   return outcome
 end
@@ -3229,6 +3821,7 @@ define("BRICK_BREAK", { step = stepBrickBreak })
 define("KNOCK_OFF", stealBinding("remove"))
 define("COVET", stealBinding("steal"))
 define("PLUCK", stealBinding("eat"))
+define("THIEF", stealBinding("steal"))
 define("BUG_BITE", stealBinding("eat"))
 define("FALSE_SWIPE", strikerBinding({ leaveOne = true }))
 define("FEINT", { step = stepFeint })
@@ -3260,6 +3853,18 @@ end
 define("TRIPLE_KICK", { step = stepTripleKick })
 define("DOUBLE_HIT", strikerBinding({ hits = 2, shareCritical = true }))
 define("TWINEEDLE", strikerBinding({ hits = 2, shareCritical = true, secondaries = { { status = "poison" } } }))
+-- Crush Grip and Wring Out share the native target-HP power command.
+define("CRUSH_GRIP", { step = stepWringOut })
+define("SMELLING_SALT", { step = stepSmellingSalt })
+define("TRUMP_CARD", { step = stepTrumpCard })
+define("PSYWAVE", { step = stepPsywave })
+define("JUDGMENT", { step = stepJudgment })
+define("METAL_BURST", { step = stepMetalBurst })
+define("PUNISHMENT", { step = stepPunishment })
+define("SKY_UPPERCUT", { step = stepSkyUppercut })
+define("ROCK_WRECKER", { step = stepRockWrecker })
+define("BIDE", { step = stepBideStart })
+define("SECRET_POWER", { step = stepSecretPower })
 
 for key in pairs(SAMPLED_25) do
   define(key, sampledBinding())

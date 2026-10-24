@@ -135,7 +135,7 @@ function BattleContext:noteDamageTaken(takerId, attackerId, category, amount)
   local ledger = state.turnStrikes --[[@as table<integer, table<string, unknown>>]]
   local record = ledger[takerId]
   if type(record) ~= "table" then
-    record = { lastPhysical = nil, lastSpecial = nil, amounts = {} }
+    record = { lastPhysical = nil, lastSpecial = nil, lastAny = nil, lastAnyAmount = 0, amounts = {} }
     ledger[takerId] = record
   end
   local taken = record --[[@as table<string, unknown>]]
@@ -151,6 +151,35 @@ function BattleContext:noteDamageTaken(takerId, attackerId, category, amount)
     taken.lastPhysical = attackerId
   else
     taken.lastSpecial = attackerId
+  end
+  taken.lastAny = attackerId
+  taken.lastAnyAmount = amount
+  local owner = state.effectBag
+  if type(owner) == "table" and type(owner.capture) == "function" then
+    local capture = owner.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+    local get = owner.get --[[@as fun(self: table<string, unknown>, id: integer): table<string, unknown>?]]
+    local commitState = owner.commitState --[[@as fun(self: table<string, unknown>, id: integer, state: table<string, unknown>): boolean]]
+    local active = BattleState.combatant(state, takerId).active --[[@as table<string, unknown>?]]
+    for _, effect in ipairs(capture(owner)) do
+      local scope = effect.scope --[[@as table<string, unknown>]]
+      if
+        effect.key == "bide"
+        and active ~= nil
+        and scope.kind == "active"
+        and scope.combatant == takerId
+        and scope.activation == active.activation
+      then
+        local instance = get(owner, effect.id --[[@as integer]])
+        assert(instance ~= nil, "Bide damage updates a live marker")
+        local bideState = instance.state --[[@as table<string, unknown>]]
+        commitState(owner, effect.id --[[@as integer]], {
+          version = 1,
+          turns = bideState.turns,
+          damage = bideState.damage --[[@as integer]] + amount,
+          attacker = attackerId,
+        })
+      end
+    end
   end
   return true
 end
@@ -475,6 +504,23 @@ function BattleContext:hasBattleEffect(combatantId, key)
   return false
 end
 
+---@param positionId integer position identity owning the effect scope
+---@param key string definition identity under the query
+---@return boolean true when a live instance names the position and key
+function BattleContext:hasPositionEffect(positionId, key)
+  assert(type(positionId) == "number", "position effect queries require their position")
+  assert(type(key) == "string" and key ~= "", "position effect queries require their key")
+  local bag = liveBag(self._state)
+  local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+  for _, record in ipairs(capture(bag)) do
+    local scope = record.scope --[[@as table<string, unknown>]]
+    if record.key == key and scope.kind == "position" and scope.position == positionId then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param side integer side identity owning the instance scope
 ---@param key string definition identity under the query
 ---@return table<string, unknown>? detached first matching side instance, nil when absent
@@ -549,6 +595,38 @@ function BattleContext:statusOf(combatantId)
   return current.key --[[@as string]]
 end
 
+---@param combatantId integer combatant whose major condition state is read
+---@return table<string, unknown>? detached condition record, nil when healthy
+function BattleContext:statusRecordOf(combatantId)
+  assert(type(combatantId) == "number", "condition reads require their combatant")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local condition = mon.condition --[[@as table<string, unknown>]]
+  local effect = (condition.effects --[[@as table<integer, unknown>]])[1]
+  if type(effect) ~= "table" then
+    return nil
+  end
+  return copyValue(effect --[[@as table<string, unknown>]]) --[[@as table<string, unknown>]]
+end
+
+---@param combatantId integer combatant whose personality is read
+---@return integer mon personality value
+function BattleContext:personalityOf(combatantId)
+  assert(type(combatantId) == "number", "personality reads name their combatant")
+  local mon = BattleState.combatant(self._state, combatantId).mon --[[@as table<string, unknown>]]
+  local personality = mon.personality
+  assert(type(personality) == "number" and personality % 1 == 0, "battle mons carry their personality")
+  return personality --[[@as integer]]
+end
+
+---@param combatantId integer combatant whose move slots are read
+---@return table<integer, table<string, unknown>> detached move slots
+function BattleContext:movesOf(combatantId)
+  assert(type(combatantId) == "number", "move reads name their combatant")
+  local mon = BattleState.combatant(self._state, combatantId).mon --[[@as table<string, unknown>]]
+  return copyValue(mon.moves --[[@as table<integer, table<string, unknown>>]]) --[[@as table<integer, table<string, unknown>>]]
+end
+
 ---@param combatantId integer combatant spending its held item
 ---@return string? item key spent, nil when the holder carried nothing
 function BattleContext:consumeHeldItem(combatantId)
@@ -561,7 +639,73 @@ function BattleContext:consumeHeldItem(combatantId)
     return nil
   end
   mon.heldItem = "NONE"
+  local recycleItems = self._state.recycleItems --[[@as table<integer, string>]]
+  recycleItems[combatantId] = held
   return held --[[@as string]]
+end
+
+---@param combatantId integer combatant attempting to restore its last consumed held item
+---@return string? restored item key, nil when no item is remembered or the slot is occupied
+function BattleContext:recycleHeldItem(combatantId)
+  assert(type(combatantId) == "number", "Recycle names its combatant")
+  local item = (self._state.recycleItems --[[@as table<integer, string>]])[combatantId]
+  if item == nil or self:heldItemOf(combatantId) ~= nil then
+    return nil
+  end
+  self:setHeldItem(combatantId, item)
+  self._state.recycleItems[combatantId] = nil
+  return item
+end
+
+---@param combatantId integer combatant whose held item is read
+---@return string? current item key, nil for an empty holder
+function BattleContext:heldItemOf(combatantId)
+  assert(type(combatantId) == "number", "held-item reads name their combatant")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local item = mon.heldItem
+  if type(item) ~= "string" or item == "" or item == "NONE" then
+    return nil
+  end
+  return item
+end
+
+---@param combatantId integer combatant receiving the held item
+---@param item string? item key to hold, nil to empty the slot
+function BattleContext:setHeldItem(combatantId, item)
+  assert(type(combatantId) == "number", "held-item writes name their combatant")
+  assert(item == nil or (type(item) == "string" and item ~= "" and item ~= "NONE"), "held-item writes carry a key")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  mon.heldItem = item or "NONE"
+end
+
+---@param combatantId integer roster member whose item was knocked off
+---@return boolean true when this roster member has lost an item to Knock Off
+function BattleContext:heldItemWasKnockedOff(combatantId)
+  assert(type(combatantId) == "number", "Knock Off history reads name their combatant")
+  return (self._state.knockedOffItems --[[@as table<integer, boolean>]])[combatantId] == true
+end
+
+---@param combatantId integer combatant whose priority item was checked this turn
+---@return boolean true when Quick Claw or Custap Berry activated at order time
+function BattleContext:priorityItemActivatedThisTurn(combatantId)
+  assert(type(combatantId) == "number", "priority item reads name their combatant")
+  return (self._state.turnItemActivations --[[@as table<integer, string>]])[combatantId] ~= nil
+end
+
+---@param combatantId integer roster member losing its item to Knock Off
+---@return string? item key removed, nil when no item was held
+function BattleContext:knockOffHeldItem(combatantId)
+  assert(type(combatantId) == "number", "Knock Off names its target")
+  local item = self:heldItemOf(combatantId)
+  if item == nil then
+    return nil
+  end
+  self:setHeldItem(combatantId, nil)
+  local knockedOffItems = self._state.knockedOffItems --[[@as table<integer, boolean>]]
+  knockedOffItems[combatantId] = true
+  return item
 end
 
 ---@param combatantId integer combatant identity owning the power-point store
@@ -591,6 +735,53 @@ function BattleContext:cutPp(combatantId, moveKey, amount)
     end
   end
   return 0
+end
+
+---@param combatantId integer combatant restoring a move's power points
+---@param slot integer zero-based move slot receiving PP
+---@param amount integer PP amount to restore
+---@param maximum integer maximum PP for this stored move
+---@return integer PP actually restored
+function BattleContext:restorePp(combatantId, slot, amount, maximum)
+  assert(type(combatantId) == "number", "PP restoration names its combatant")
+  assert(type(slot) == "number" and slot % 1 == 0 and slot >= 0, "PP restoration names a move slot")
+  assert(type(amount) == "number" and amount % 1 == 0 and amount >= 0, "PP restoration amount stays integral")
+  assert(type(maximum) == "number" and maximum % 1 == 0 and maximum >= 0, "maximum PP stays integral")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local moves = mon.moves --[[@as table<integer, table<string, unknown>>]]
+  local record = moves[slot + 1]
+  assert(type(record) == "table", "PP restoration reads an occupied move slot")
+  local before = record.pp --[[@as integer]]
+  local after = math.min(maximum, before + amount)
+  record.pp = after
+  return after - before
+end
+
+---@param combatantId integer active user replacing Mimic
+---@param slot integer zero-based move slot owned by Mimic
+---@param moveKey string copied move identity
+---@param pp integer current PP for the temporary copied move
+function BattleContext:mimicMove(combatantId, slot, moveKey, pp)
+  assert(type(combatantId) == "number", "Mimic names its active combatant")
+  BattleState.mimicMove(self._state, combatantId, slot, moveKey, pp)
+end
+
+---@param combatantId integer active combatant resetting its Last Resort count
+function BattleContext:resetUsedMoves(combatantId)
+  assert(type(combatantId) == "number", "Last Resort reset names its combatant")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  local active = combatant.active --[[@as table<string, unknown>?]]
+  assert(active ~= nil, "Last Resort resets only an active move history")
+  local ledger = self._state.usedMoves
+  if type(ledger) ~= "table" then
+    ledger = {}
+    self._state.usedMoves = ledger
+  end
+  local histories = ledger --[[@as table<integer, table<integer, string>>]]
+  histories[
+    active.activation --[[@as integer]]
+  ] = {}
 end
 
 ---@param combatantId integer

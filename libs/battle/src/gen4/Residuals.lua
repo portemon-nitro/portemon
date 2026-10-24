@@ -24,6 +24,9 @@ local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 ---@field trickRoom boolean? speed-dimension sense for derived battler order
 ---@field nativeTurn integer? current battle turn beside the pass, informational
 ---@field live ResidualLiveHooks? live battler answers behind the ability, holding, and condition phases
+---@field sleeping table<integer, boolean>? active sleeping answers used by Uproar
+---@field soundproof table<integer, boolean>? active Soundproof answers used by Uproar
+---@field wake fun(combatant: integer, source: integer): boolean? status-owner wake operation used by Uproar
 
 -- Field-condition phase order: the field controller walks reflect, light
 -- screen, mist, safeguard, tail wind, lucky chant, wish, rain, sandstorm,
@@ -63,7 +66,10 @@ local MON_STATE_ORDER = {
   nightmare = 7,
   curse = 8,
   bind = 9,
-  magnetrise = 10,
+  uproar = 10,
+  magnetrise = 11,
+  healblock = 12,
+  embargo = 13,
 }
 
 -- Execution order for one battler's mon conditions. Ability, consumable
@@ -84,7 +90,10 @@ local MON_PHASES = {
   "nightmare",
   "curse",
   "bind",
+  "uproar",
   "magnetrise",
+  "healblock",
+  "embargo",
 }
 
 -- Finite keys answering inside a battler phase. Keys without a slot here
@@ -99,7 +108,10 @@ local FINITE_MON_PHASE = {
   nightmare = "nightmare",
   curse = "curse",
   bind = "bind",
+  uproar = "uproar",
   magnetrise = "magnetrise",
+  healblock = "healblock",
+  embargo = "embargo",
 }
 
 -- Canonical affliction key behind each status phase.
@@ -737,6 +749,9 @@ local function stepGroup(pass, dispatch, context, group)
         speeds = context.speeds,
         health = context.health,
         stream = context.stream,
+        sleeping = context.sleeping,
+        soundproof = context.soundproof,
+        wake = context.wake,
         suppressedIds = suppressed,
         resume = pass.checkpoint,
         orderOrdinal = pass.ordinals,

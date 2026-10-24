@@ -19,14 +19,15 @@ local BattleState = {}
 
 -- Interruption captures carrying an older version reject as incompatible:
 -- pre-release battle snapshots never migrate, they fail before publication.
--- Version 7 carries the activation entry turn (the battle turn an entry
+-- Version 8 carries Mimic's entry move set and copied-slot flags beside
+-- the activation entry turn (the battle turn an entry
 -- was seated on, read against the round mapping below) alongside the
 -- version-6 knockout-reward continuation (reward children, per-opponent
 -- participation records, and evolution eligibility), the version-2
 -- replacement lifecycle, the session-owned action ledger (escape
 -- attempts, capture identities, capture records, and item consumption),
 -- and the live battle-local effect records owned by the effect bag.
-BattleState.VERSION = 7
+BattleState.VERSION = 12
 
 ---@param value unknown
 ---@return unknown
@@ -102,6 +103,14 @@ function BattleState.create(validated)
     captureSeq = 0,
     captures = {},
     ledger = {},
+    lastHitSlots = {},
+    lastMoves = {},
+    lastPreviousMove = "NONE",
+    mirrorMoves = {},
+    mirrorMoveHits = {},
+    recycleItems = {},
+    knockedOffItems = {},
+    turnItemActivations = {},
     environment = copyValue(validated.environment),
     formatState = copyValue(validated.formatState),
     frames = {},
@@ -297,7 +306,21 @@ function BattleState.enter(state, combatantId, positionId)
   -- activation-local entry token, entry turn, and stages reset here: the
   -- entry turn is immutable for this activation, so turn-since-entry
   -- mechanics read a stable value until the next replacement.
-  combatant.active = { position = positionId, activation = counter, entryTurn = BattleState.nativeTurn(state) }
+  local active = { position = positionId, activation = counter, entryTurn = BattleState.nativeTurn(state) }
+  local monMoves = (combatant.mon --[[@as table<string, unknown>]]).moves
+  if type(monMoves) == "table" then
+    for _, entry in
+      ipairs(monMoves --[[@as table<integer, unknown>]])
+    do
+      if
+        type(entry) == "table" and (entry --[[@as table<string, unknown>]]).move == "MIMIC"
+      then
+        active.originalMoves = copyValue(monMoves)
+        break
+      end
+    end
+  end
+  combatant.active = active
   combatant.stages = zeroStages()
   position.occupant = combatantId
   position.activation = counter
@@ -314,10 +337,106 @@ function BattleState.leave(state, positionId)
   end
   local combatantId = position.occupant --[[@as integer]]
   local combatant = BattleState.combatant(state, combatantId)
+  BattleState.restoreMimickedMoves(combatant)
+  local lastMoves = state.lastMoves
+  if type(lastMoves) == "table" then
+    lastMoves[combatantId] = nil
+  end
+  local lastHitSlots = state.lastHitSlots
+  if type(lastHitSlots) == "table" then
+    lastHitSlots[combatantId] = nil
+  end
+  local mirrorMoves = state.mirrorMoves
+  if type(mirrorMoves) == "table" then
+    mirrorMoves[combatantId] = nil
+    for target, record in pairs(mirrorMoves) do
+      if type(record) == "table" and record.user == combatantId then
+        mirrorMoves[target] = nil
+      end
+    end
+  end
+  local mirrorMoveHits = state.mirrorMoveHits
+  if type(mirrorMoveHits) == "table" then
+    mirrorMoveHits[combatantId] = nil
+    for _, sources in pairs(mirrorMoveHits) do
+      if type(sources) == "table" then
+        sources[combatantId] = nil
+      end
+    end
+  end
   combatant.active = nil
   position.occupant = nil
   position.activation = nil
   return combatantId
+end
+
+---@param combatant table<string, unknown> active roster entry carrying a move override
+function BattleState.restoreMimickedMoves(combatant)
+  local active = combatant.active
+  if type(active) ~= "table" then
+    return
+  end
+  local entry = active --[[@as table<string, unknown>]]
+  local mimicked = entry.mimickedMoves
+  if type(mimicked) ~= "table" then
+    entry.originalMoves = nil
+    return
+  end
+  local originals = entry.originalMoves
+  assert(type(originals) == "table", "Mimic restore reads the move set captured on entry")
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local moves = mon.moves --[[@as table<integer, unknown>]]
+  for slot in
+    pairs(mimicked --[[@as table<integer, boolean>]])
+  do
+    local original = (originals --[[@as table<integer, unknown>]])[slot + 1]
+    assert(type(original) == "table", "Mimic restores a known entry move slot")
+    moves[slot + 1] = copyValue(original)
+  end
+  entry.mimickedMoves = nil
+  entry.originalMoves = nil
+end
+
+---@param state table<string, unknown> live battle state whose temporary moves are ending
+function BattleState.restoreAllMimickedMoves(state)
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    BattleState.restoreMimickedMoves(BattleState.combatant(state, combatantId))
+  end
+end
+
+---@param state table<string, unknown> live battle state owning the combatant
+---@param combatantId integer active combatant receiving the temporary move
+---@param slot integer zero-based Mimic move slot
+---@param move string move identity to copy
+---@param pp integer current PP assigned to the copied move
+function BattleState.mimicMove(state, combatantId, slot, move, pp)
+  assert(type(slot) == "number" and slot % 1 == 0 and slot >= 0, "Mimic slots stay zero-based")
+  assert(type(move) == "string" and move ~= "", "Mimic names the copied move")
+  assert(type(pp) == "number" and pp % 1 == 0 and pp > 0, "Mimic assigns positive current PP")
+  local combatant = BattleState.combatant(state, combatantId)
+  local active = combatant.active
+  assert(type(active) == "table", "Mimic changes an active combatant")
+  local entry = active --[[@as table<string, unknown>]]
+  local originals = entry.originalMoves
+  assert(type(originals) == "table", "Mimic has an entry move snapshot")
+  local original = (originals --[[@as table<integer, unknown>]])[slot + 1]
+  assert(type(original) == "table", "Mimic addresses a known move slot")
+  assert((original --[[@as table<string, unknown>]]).move == "MIMIC", "Mimic replaces only its own move slot")
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local moves = mon.moves --[[@as table<integer, table<string, unknown>>]]
+  local current = moves[slot + 1]
+  assert(type(current) == "table" and current.move == "MIMIC", "Mimic slot has not already been replaced")
+  local mimicked = entry.mimickedMoves
+  if type(mimicked) ~= "table" then
+    mimicked = {}
+    entry.mimickedMoves = mimicked
+  end
+  local mimickedSlots = mimicked --[[@as table<integer, boolean>]]
+  mimickedSlots[slot] = true
+  current.move = move
+  current.pp = pp
 end
 
 ---@param data unknown
@@ -535,6 +654,43 @@ function BattleState.validateSnapshot(snapshot)
       if type(entryTurn) ~= "number" or entryTurn % 1 ~= 0 or entryTurn < 0 then
         error(BattleErrors.incompatibleSnapshot("snapshot entries must carry their native entry turn", {}))
       end
+      if active.originalMoves ~= nil then
+        local originals = checkSnapshotSequence(active.originalMoves, "entry move snapshots")
+        if #originals ~= 4 then
+          error(BattleErrors.incompatibleSnapshot("Mimic entry snapshots carry four move slots", {}))
+        end
+        for _, move in ipairs(originals) do
+          if
+            type(move) ~= "table"
+            or type((move --[[@as table<string, unknown>]]).move) ~= "string"
+            or type((move --[[@as table<string, unknown>]]).pp) ~= "number"
+            or type((move --[[@as table<string, unknown>]]).ppUps) ~= "number"
+          then
+            error(BattleErrors.incompatibleSnapshot("Mimic entry snapshots carry complete move slots", {}))
+          end
+        end
+      end
+      if active.mimickedMoves ~= nil then
+        if type(active.mimickedMoves) ~= "table" or type(active.originalMoves) ~= "table" then
+          error(BattleErrors.incompatibleSnapshot("Mimic slot overrides retain their entry move set", {}))
+        end
+        local currentMoves = (combatant.mon --[[@as table<string, unknown>]]).moves
+        if type(currentMoves) ~= "table" then
+          error(BattleErrors.incompatibleSnapshot("Mimic overrides carry current move slots", {}))
+        end
+        for slot, mimicked in
+          pairs(active.mimickedMoves --[[@as table<integer, unknown>]])
+        do
+          if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot > 3 or mimicked ~= true then
+            error(BattleErrors.incompatibleSnapshot("Mimic overrides name valid move slots", {}))
+          end
+          local original = (active.originalMoves --[[@as table<integer, table<string, unknown>>]])[slot + 1]
+          local current = (currentMoves --[[@as table<integer, unknown>]])[slot + 1]
+          if original.move ~= "MIMIC" or type(current) ~= "table" or current.move == "MIMIC" then
+            error(BattleErrors.incompatibleSnapshot("Mimic overrides replace their original move slots", {}))
+          end
+        end
+      end
     end
     if type(combatant.materialized) ~= "table" then
       error(BattleErrors.incompatibleSnapshot("snapshot combatants must carry materialized state", {}))
@@ -643,9 +799,111 @@ function BattleState.validateSnapshot(snapshot)
   -- Turn interaction ledgers travel with the capture: revenge damage and
   -- acted marks reset every turn while distinct-move history accumulates
   -- per entry, so replayed and restored sessions keep the same strike law.
-  for _, field in ipairs({ "turnStrikes", "turnActed", "usedMoves", "lastHits" }) do
+  for _, field in ipairs({
+    "turnStrikes",
+    "turnActed",
+    "usedMoves",
+    "lastHits",
+    "lastHitSlots",
+    "lastMoves",
+    "mirrorMoves",
+    "mirrorMoveHits",
+    "recycleItems",
+    "knockedOffItems",
+    "turnItemActivations",
+  }) do
     if type(snapshot[field]) ~= "table" then
       error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their turn ledgers", { field = field }))
+    end
+  end
+  if type(snapshot.lastPreviousMove) ~= "string" or snapshot.lastPreviousMove == "" then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots must carry the global previous move", {}))
+  end
+  for combatantId, move in
+    pairs(snapshot.lastMoves --[[@as table<unknown, unknown>]])
+  do
+    if type(combatantId) ~= "number" or combatantId % 1 ~= 0 or combatantId < 1 or type(move) ~= "string" then
+      error(BattleErrors.incompatibleSnapshot("snapshot move history names combatants and moves", {}))
+    end
+  end
+  for combatantId, slot in
+    pairs(snapshot.lastHitSlots --[[@as table<unknown, unknown>]])
+  do
+    if
+      type(combatantId) ~= "number"
+      or combatantId % 1 ~= 0
+      or combatants[combatantId] == nil
+      or type(slot) ~= "number"
+      or slot % 1 ~= 0
+      or slot < 0
+    then
+      error(BattleErrors.incompatibleSnapshot("snapshot received-hit slots name selected move owners", {}))
+    end
+  end
+  for targetId, copied in
+    pairs(snapshot.mirrorMoves --[[@as table<unknown, unknown>]])
+  do
+    if
+      type(targetId) ~= "number"
+      or targetId % 1 ~= 0
+      or targetId < 1
+      or type(copied) ~= "table"
+      or type((copied --[[@as table<string, unknown>]]).move) ~= "string"
+      or type((copied --[[@as table<string, unknown>]]).user) ~= "number"
+    then
+      error(BattleErrors.incompatibleSnapshot("snapshot Mirror Move history carries copied identities", {}))
+    end
+  end
+  for targetId, sources in
+    pairs(snapshot.mirrorMoveHits --[[@as table<unknown, unknown>]])
+  do
+    if type(targetId) ~= "number" or targetId % 1 ~= 0 or targetId < 1 or type(sources) ~= "table" then
+      error(BattleErrors.incompatibleSnapshot("snapshot Mirror Move sources name targets", {}))
+    end
+    for sourceId, move in
+      pairs(sources --[[@as table<unknown, unknown>]])
+    do
+      if type(sourceId) ~= "number" or sourceId % 1 ~= 0 or sourceId < 1 or type(move) ~= "string" then
+        error(BattleErrors.incompatibleSnapshot("snapshot Mirror Move sources name moves", {}))
+      end
+    end
+  end
+  for combatantId, item in
+    pairs(snapshot.recycleItems --[[@as table<unknown, unknown>]])
+  do
+    if
+      type(combatantId) ~= "number"
+      or combatantId % 1 ~= 0
+      or combatants[combatantId] == nil
+      or type(item) ~= "string"
+      or item == ""
+      or item == "NONE"
+    then
+      error(BattleErrors.incompatibleSnapshot("snapshot Recycle memory names held items and combatants", {}))
+    end
+  end
+  for combatantId, knockedOff in
+    pairs(snapshot.knockedOffItems --[[@as table<unknown, unknown>]])
+  do
+    if
+      type(combatantId) ~= "number"
+      or combatantId % 1 ~= 0
+      or combatants[combatantId] == nil
+      or knockedOff ~= true
+    then
+      error(BattleErrors.incompatibleSnapshot("snapshot Knock Off history names combatants", {}))
+    end
+  end
+  for combatantId, item in
+    pairs(snapshot.turnItemActivations --[[@as table<unknown, unknown>]])
+  do
+    if
+      type(combatantId) ~= "number"
+      or combatantId % 1 ~= 0
+      or combatants[combatantId] == nil
+      or (item ~= "QUICK_CLAW" and item ~= "CUSTAP_BERRY")
+    then
+      error(BattleErrors.incompatibleSnapshot("snapshot turn item activations name priority items and combatants", {}))
     end
   end
   if type(snapshot.effects) ~= "table" then

@@ -62,6 +62,61 @@ local function turnsState(version, minimum, maximum)
   return validateTurns
 end
 
+---@param version integer accepted state schema version
+---@return fun(state: unknown): table<string, unknown> validator for a queued Future Sight or Doom Desire strike
+local function futureSightState(version)
+  local function validateFutureSight(state)
+    local checked = checkVersioned(version, state)
+    local turns = checked.turns
+    local damage = checked.damage
+    local move = checked.move
+    local attacker = checked.attacker
+    local activation = checked.activation
+    local turn = checked.turn
+    if type(turns) ~= "number" or turns % 1 ~= 0 or turns < 0 or turns > 3 then
+      error("delayed strikes carry their three-turn countdown")
+    end
+    if type(damage) ~= "number" or damage % 1 ~= 0 or damage < 1 then
+      error("delayed strikes carry positive launch-time damage")
+    end
+    if move ~= "FUTURE_SIGHT" and move ~= "DOOM_DESIRE" then
+      error("delayed strikes name Future Sight or Doom Desire")
+    end
+    if type(attacker) ~= "number" or attacker % 1 ~= 0 or attacker < 1 then
+      error("delayed strikes preserve their source combatant")
+    end
+    if type(activation) ~= "number" or activation % 1 ~= 0 or activation < 1 then
+      error("delayed strikes preserve their source activation")
+    end
+    if type(turn) ~= "number" or turn % 1 ~= 0 or turn < 0 then
+      error("delayed strikes preserve their launch turn")
+    end
+    for key in pairs(checked) do
+      if
+        key ~= "version"
+        and key ~= "turns"
+        and key ~= "damage"
+        and key ~= "move"
+        and key ~= "attacker"
+        and key ~= "activation"
+        and key ~= "turn"
+      then
+        error("delayed strikes carry only their launch facts")
+      end
+    end
+    return {
+      version = version,
+      turns = turns,
+      damage = damage,
+      move = move,
+      attacker = attacker,
+      activation = activation,
+      turn = turn,
+    }
+  end
+  return validateFutureSight
+end
+
 ---@param version integer
 ---@param minimum integer
 ---@param maximum integer
@@ -81,6 +136,24 @@ local function layersState(version, minimum, maximum)
     return { version = version, layers = layers }
   end
   return validateLayers
+end
+
+---@param version integer accepted state schema version
+---@return fun(state: unknown): table<string, unknown> validator for a deferred replacement recovery
+local function sacrificeWishState(version)
+  local function validateWish(state)
+    local checked = checkVersioned(version, state)
+    if checked.mode ~= "healing" and checked.mode ~= "lunar" then
+      error("a sacrifice wish names its recovery mode")
+    end
+    for name in pairs(checked) do
+      if name ~= "version" and name ~= "mode" then
+        error("a sacrifice wish carries no further state")
+      end
+    end
+    return { version = version, mode = checked.mode }
+  end
+  return validateWish
 end
 
 ---@param timing string
@@ -216,6 +289,13 @@ local DEFINITIONS = {
     lifecycle = lifecycle("replace", "clear"),
   },
   {
+    key = "fog",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("entry", "fog", "weather") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
     key = "trickroom",
     stateVersion = 1,
     validateState = turnsState(1, 0, 8),
@@ -228,7 +308,7 @@ local DEFINITIONS = {
   {
     key = "futuresight",
     stateVersion = 1,
-    validateState = turnsState(1, 0, 8),
+    validateState = futureSightState(1),
     timings = { binding("residual", "futuresight", "expiration") },
     lifecycle = lifecycle("replace", "position"),
   },
@@ -238,6 +318,13 @@ local DEFINITIONS = {
     validateState = turnsState(1, 0, 8),
     timings = { binding("residual", "wish", "recovery") },
     lifecycle = lifecycle("replace", "position"),
+  },
+  {
+    key = "sacrificewish",
+    stateVersion = 1,
+    validateState = sacrificeWishState(1),
+    timings = { binding("entry", "sacrificewish", "recovery") },
+    lifecycle = lifecycle("replace", "clear"),
   },
   -- Tailwind doubles its side speed for three turns.
   {

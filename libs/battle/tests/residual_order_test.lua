@@ -433,7 +433,15 @@ function T.end_of_turn_phases_follow_controller_state_order()
   -- Deliberately reversed creation order: extras first, field last.
   addNative(bag, "trickroom", EffectFixture.fieldScope(), { version = 1, turns = 5 })
   addNative(bag, "perishsong", EffectFixture.activeScope(1, 1), { version = 1, turns = 5 })
-  addNative(bag, "futuresight", EffectFixture.positionScope(1), { version = 1, turns = 5 })
+  addNative(bag, "futuresight", EffectFixture.positionScope(1), {
+    version = 1,
+    turns = 3,
+    damage = 10,
+    move = "FUTURE_SIGHT",
+    attacker = 2,
+    activation = 1,
+    turn = 0,
+  })
   bag:add(
     testDefinition("burn", "affliction", "clear"),
     EffectFixture.activeScope(1, 1),

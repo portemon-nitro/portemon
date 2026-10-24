@@ -40,6 +40,7 @@
 ---@field weatherSuppressed boolean? whether a live ability suppresses weather damage
 ---@field moveType string striking move type under weather law
 ---@field solarBeam boolean? whether the strike is the charging grass special case
+---@field meFirst boolean? whether the source Me First flag scales this damage instance
 ---@field randomPercent integer?
 
 ---@class DamageFixedSpec
@@ -227,6 +228,14 @@ local function runStages(spec, stream, stages)
       "critical hits multiply post-bonus damage by " .. tostring(spec.criticalMultiplier)
     )
     current = multiplied
+  end
+
+  -- DamageCalcDefault applies Me First after CalcMoveDamage and the
+  -- critical multiplier, immediately before ApplyDamageRange.
+  if spec.meFirst == true then
+    local boosted = math.floor((current * 15) / 10)
+    recordStage(boosted, stages, "mefirst", current, "floor(damage*15/10) for Me First")
+    current = boosted
   end
 
   local percent = spec.randomPercent

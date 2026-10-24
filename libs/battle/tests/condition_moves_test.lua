@@ -434,8 +434,10 @@ function T.dawn_healing_scales_with_the_field_sky()
     "the shared move continuation owns native hit progression"
   )
   ---@param weather string? field definition identity settled before the heal
+  ---@param moveKey string move identity under the heal
   ---@return integer health restored by moonlight under the sky
-  local function healUnder(weather)
+  local function healUnder(weather, moveKey)
+    moveKey = moveKey or "MOONLIGHT"
     local state = liveState()
     local ctx = liveContext(state)
     local entry = ctx:entryOf(1)
@@ -452,13 +454,13 @@ function T.dawn_healing_scales_with_the_field_sky()
     local node = Execution.start({
       actionId = 1005,
       actor = { combatant = 1 },
-      requestedMove = "MOONLIGHT",
-      executingMove = "MOONLIGHT",
+      requestedMove = moveKey,
+      executingMove = moveKey,
       ppOwnerSlot = 0,
       selectedTarget = SessionFixture.positionTarget(2),
       targets = { { combatant = 1 } },
-      moves = { { move = "MOONLIGHT", pp = 10, ppUps = 0 } },
-      moveFacts = moveFacts("MOONLIGHT", { accuracy = 0, moveType = "normal" }),
+      moves = { { move = moveKey, pp = 10, ppUps = 0 } },
+      moveFacts = moveFacts(moveKey, { accuracy = 0, moveType = "normal" }),
       attackerTypes = { "normal" },
       defenderTypes = { [2] = { "normal" } },
       typeChart = chart(),
@@ -480,10 +482,170 @@ function T.dawn_healing_scales_with_the_field_sky()
   local entry = liveContext(liveState()):entryOf(1)
   local ceiling = entry.maxHp --[[@as integer]]
   Assert.equal(clear, math.floor(ceiling / 2), "a clear sky restores half")
+  Assert.equal(
+    healUnder(nil, "MORNING_SUN"),
+    math.floor(ceiling / 2),
+    "Morning Sun restores half under a clear sky"
+  )
   local sun = healUnder("sunnyday")
   Assert.equal(sun, math.floor(ceiling * 20 / 30), "harsh sun restores two thirds")
+  Assert.equal(
+    healUnder("sunnyday", "MORNING_SUN"),
+    math.floor(ceiling * 20 / 30),
+    "Morning Sun restores two thirds in sun"
+  )
   local rain = healUnder("raindance")
   Assert.equal(rain, math.floor(ceiling / 4), "rain restores one quarter")
+  Assert.equal(
+    healUnder("raindance", "MORNING_SUN"),
+    math.floor(ceiling / 4),
+    "Morning Sun restores one quarter in rain"
+  )
+end
+
+function T.block_roots_the_existing_trapping_condition()
+  conditionOwner("Block owns its trapping condition")
+  local probe = runCondition("BLOCK", moveFacts("BLOCK"), FIXED_SEED)
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "hit", "Block connects")
+  Assert.isTrue(probe.ctx:hasBattleEffect(2, "trapped"), "Block traps the defender until it leaves")
+end
+
+function T.heal_block_roots_five_turns_of_healing_prevention()
+  conditionOwner("Heal Block owns its counted prevention")
+  local probe = runCondition("HEAL_BLOCK", moveFacts("HEAL_BLOCK"), FIXED_SEED)
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "hit", "Heal Block connects")
+  local effect = findInstance(probe.state, "healblock")
+  Assert.notNil(effect, "Heal Block roots on the defender")
+  Assert.equal(effect.state.turns, 5, "Heal Block starts at the native five-turn duration")
+end
+
+function T.imprison_marks_the_user_only_when_an_opponent_shares_a_move()
+  conditionOwner("Imprison compares active opponent move lists")
+  local shared = runCondition(
+    "IMPRISON",
+    moveFacts("IMPRISON"),
+    FIXED_SEED,
+    { userMoves = { "IMPRISON", "TACKLE" }, targetMoves = { [2] = { "TACKLE" } } }
+  )
+  local outcome = shared.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "hit", "Imprison succeeds when a move is shared")
+  Assert.isTrue(shared.ctx:hasBattleEffect(1, "imprison"), "the user seals its shared move")
+  local imprisoned = findInstance(shared.state, "imprison")
+  Assert.notNil(imprisoned, "the successful user owns the sealed move list")
+  local sealedMoves = imprisoned.state.moves --[[@as string[] ]]
+  Assert.equal(#sealedMoves, 2, "Imprison records the user's known move set")
+  Assert.equal(sealedMoves[1], "IMPRISON", "Imprison records its own move")
+  Assert.equal(sealedMoves[2], "TACKLE", "Imprison records every move the foe may share")
+
+  local noMatch = runCondition(
+    "IMPRISON",
+    moveFacts("IMPRISON"),
+    FIXED_SEED,
+    { userMoves = { "IMPRISON" }, targetMoves = { [2] = { "TACKLE" } } }
+  )
+  local failed = noMatch.outcome --[[@as table<string, unknown>]]
+  Assert.equal(failed.result, "failed", "Imprison fails when no active opponent shares a move")
+  Assert.isFalse(noMatch.ctx:hasBattleEffect(1, "imprison"), "a failed Imprison leaves no marker")
+end
+
+function T.healing_wish_and_lunar_dance_faint_the_user_with_a_side_marker()
+  conditionOwner("sacrifice healing moves own their pending replacement mode")
+  for _, case in ipairs({
+    { move = "HEALING_WISH", mode = "healing" },
+    { move = "LUNAR_DANCE", mode = "lunar" },
+  }) do
+    local move = case --[[@as table<string, string>]]
+    local probe = runCondition(
+      move.move,
+      moveFacts(move.move),
+      FIXED_SEED,
+      { hasLivingReserve = true }
+    )
+    local outcome = probe.outcome --[[@as table<string, unknown>]]
+    Assert.equal(outcome.result, "hit", move.move .. " succeeds with a living reserve")
+    Assert.equal(probe.ctx:entryOf(1).hp, 0, move.move .. " faints its user")
+    local wish = probe.ctx:sideEffect(1, "sacrificewish")
+    Assert.notNil(wish, move.move .. " leaves a side-scoped replacement marker")
+    Assert.equal(wish.state.mode, move.mode, move.move .. " stores its recovery mode")
+  end
+end
+
+function T.healing_wish_and_lunar_dance_fail_without_a_living_reserve()
+  conditionOwner("sacrifice healing moves require a living reserve")
+  for _, move in ipairs({ "HEALING_WISH", "LUNAR_DANCE" }) do
+    local probe = runCondition(move, moveFacts(move), FIXED_SEED, { hasLivingReserve = false })
+    local outcome = probe.outcome --[[@as table<string, unknown>]]
+    Assert.equal(outcome.result, "failed", move .. " fails without a living reserve")
+    Assert.isNil(probe.ctx:sideEffect(1, "sacrificewish"), move .. " leaves no pending recovery")
+    Assert.isTrue(probe.ctx:entryOf(1).hp > 0, move .. " keeps the user alive")
+  end
+end
+
+function T.defog_lowers_target_evasion_and_clears_its_supported_side_conditions()
+  conditionOwner("Defog owns its side-condition removal")
+  local NativeEffectHandlers = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "native definitions resolve for typed battle-local writes"
+  )
+  local Execution = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.MoveExecution",
+    "the shared move continuation owns native hit progression"
+  )
+  local state = liveState()
+  local ctx = liveContext(state)
+  local source = { kind = "move", combatant = 1 }
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("fog"),
+    { kind = "field" },
+    source,
+    { version = 1 }
+  )
+  for _, key in ipairs({ "reflect", "lightscreen", "mist", "safeguard", "spikes", "toxicspikes", "stealthrock" }) do
+    local stateData = { version = 1 }
+    if key == "spikes" or key == "toxicspikes" then
+      stateData.layers = 1
+    elseif key == "reflect" or key == "lightscreen" or key == "mist" or key == "safeguard" then
+      stateData.turns = 5
+    end
+    ctx:addBattleEffect(
+      NativeEffectHandlers.definitionFor(key),
+      { kind = "side", side = 2 },
+      source,
+      stateData
+    )
+  end
+  local node = Execution.start({
+    actionId = 1008,
+    actor = { combatant = 1 },
+    requestedMove = "DEFOG",
+    executingMove = "DEFOG",
+    ppOwnerSlot = 0,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 2 } },
+    moves = { { move = "DEFOG", pp = 10, ppUps = 0 } },
+    moveFacts = moveFacts("DEFOG"),
+    attackerTypes = { "normal" },
+    defenderTypes = { [2] = { "normal" } },
+    typeChart = chart(),
+    friendship = 255,
+    stream = BattleRng.new(FIXED_SEED),
+  })
+  for _ = 1, 8 do
+    node = Execution.step(ctx, node)
+    local record = node --[[@as table<string, unknown>]]
+    if record.kind == "complete" and record.frame == nil then
+      break
+    end
+  end
+  local finished = node --[[@as table<string, unknown>]]
+  Assert.equal(finished.result, "hit", "Defog connects")
+  Assert.equal(ctx:entryOf(2).stages.evasion, -1, "Defog lowers the target's evasion")
+  for _, key in ipairs({ "reflect", "lightscreen", "mist", "safeguard", "spikes", "toxicspikes", "stealthrock" }) do
+    Assert.isNil(ctx:sideEffect(2, key), "Defog removes the foe side's " .. key)
+  end
+  Assert.isNil(ctx:fieldEffect("fog"), "Defog clears global fog")
 end
 
 -- Belly Drum maximizes attack for half its maximum health and refuses
@@ -590,6 +752,12 @@ function T.lock_on_and_foresight_shape_later_strikes()
   local identifiedOutcome = identified.outcome --[[@as table<string, unknown>]]
   Assert.equal(identifiedOutcome.result, "hit", "foresight connects")
   Assert.isTrue(identified.ctx:hasBattleEffect(2, "foresight"), "foresight identifies the defender")
+  local miracleEye =
+    runCondition("MIRACLE_EYE", moveFacts("MIRACLE_EYE", { accuracy = 0, moveType = "psychic" }), FIXED_SEED)
+  local miracleOutcome = miracleEye.outcome --[[@as table<string, unknown>]]
+  Assert.equal(miracleOutcome.result, "hit", "Miracle Eye connects")
+  Assert.isTrue(miracleEye.ctx:hasBattleEffect(2, "miracleeye"), "Miracle Eye marks its target distinctly")
+  Assert.isFalse(miracleEye.ctx:hasBattleEffect(2, "foresight"), "Miracle Eye does not reuse Foresight's narrower marker")
 end
 
 -- Magnet Rise levitates for five turns and refuses the grounded-already

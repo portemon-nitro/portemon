@@ -62,6 +62,57 @@ local function turnsState(version, minimum, maximum)
   return validateTurns
 end
 
+---@param version integer
+---@return fun(state: unknown): table<string, unknown> validator for a non-empty move-key list
+local function movesState(version)
+  local function validateMoves(state)
+    local checked = checkVersioned(version, state)
+    local moves = checked.moves
+    if type(moves) ~= "table" or #moves == 0 then
+      error("Imprison carries the user's non-empty move list")
+    end
+    local copied = {} ---@type string[]
+    for index, move in ipairs(moves) do
+      if type(move) ~= "string" or move == "" then
+        error("Imprison move entries are non-empty keys")
+      end
+      copied[index] = move
+    end
+    for name in pairs(checked) do
+      if name ~= "version" and name ~= "moves" then
+        error("the condition carries no further state")
+      end
+    end
+    return { version = version, moves = copied }
+  end
+  return validateMoves
+end
+
+---@param version integer accepted state schema version
+---@return fun(state: unknown): table<string, unknown> validator for stored Bide damage
+local function bideState(version)
+  local function validateBide(state)
+    local checked = checkVersioned(version, state)
+    local turns, damage, attacker = checked.turns, checked.damage, checked.attacker
+    if type(turns) ~= "number" or turns % 1 ~= 0 or turns < 0 or turns > 1 then
+      error("Bide carries its one-action lock")
+    end
+    if type(damage) ~= "number" or damage % 1 ~= 0 or damage < 0 then
+      error("Bide stores non-negative integer damage")
+    end
+    if type(attacker) ~= "number" or attacker % 1 ~= 0 or attacker < 0 then
+      error("Bide stores a combatant identity or zero")
+    end
+    for name in pairs(checked) do
+      if name ~= "version" and name ~= "turns" and name ~= "damage" and name ~= "attacker" then
+        error("Bide carries no further state")
+      end
+    end
+    return { version = version, turns = turns, damage = damage, attacker = attacker }
+  end
+  return validateBide
+end
+
 ---@param timing string
 ---@param handler string
 ---@param orderClass string
@@ -114,6 +165,90 @@ local DEFINITIONS = {
       binding("beforeAction", "flinch", "affliction"),
       binding("residual", "flinch", "expiration"),
     },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "recharge",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 1),
+    timings = { binding("beforeAction", "recharge", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "followme",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 1),
+    timings = { binding("residual", "followme", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "magiccoat",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 1),
+    timings = { binding("residual", "magiccoat", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "snatch",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 1),
+    timings = { binding("residual", "snatch", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "protect",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 1),
+    timings = { binding("residual", "protect", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "detect",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 1),
+    timings = { binding("residual", "detect", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "endure",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 1),
+    timings = { binding("residual", "endure", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "destinybond",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 1),
+    timings = { binding("residual", "destinybond", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "grudge",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 1),
+    timings = { binding("residual", "grudge", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "uproar",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 3),
+    timings = { binding("residual", "uproar", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "rage",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("residual", "rage", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "bide",
+    stateVersion = 1,
+    validateState = bideState(1),
+    timings = { binding("beforeAction", "bide", "affliction") },
     lifecycle = lifecycle("replace", "clear"),
   },
   {
@@ -237,20 +372,20 @@ local DEFINITIONS = {
     key = "embargo",
     stateVersion = 1,
     validateState = turnsState(1, 0, 8),
-    timings = { binding("beforeAction", "embargo", "affliction") },
+    timings = { binding("residual", "embargo", "expiration") },
     lifecycle = lifecycle("replace", "clear"),
   },
   {
     key = "healblock",
     stateVersion = 1,
     validateState = turnsState(1, 0, 8),
-    timings = { binding("beforeAction", "healblock", "affliction") },
+    timings = { binding("residual", "healblock", "expiration") },
     lifecycle = lifecycle("replace", "clear"),
   },
   {
     key = "imprison",
     stateVersion = 1,
-    validateState = emptyState(1),
+    validateState = movesState(1),
     timings = { binding("entry", "imprison", "affliction") },
     lifecycle = lifecycle("replace", "clear"),
   },
@@ -322,6 +457,13 @@ local DEFINITIONS = {
     stateVersion = 1,
     validateState = emptyState(1),
     timings = { binding("leave", "foresight", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "miracleeye",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("leave", "miracleeye", "affliction") },
     lifecycle = lifecycle("replace", "clear"),
   },
   -- Magnetic levitation grounds nothing for five turns.

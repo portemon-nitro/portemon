@@ -958,7 +958,10 @@ function BattleRuntime:_sessionItemFacts(record)
             if type(key) == "string" and key ~= "" and facts[key] == nil and not CaptureContext.isBall(key) then
               local ok, definition = pcall(itemByKey, source, key)
               if ok and type(definition) == "table" and type(definition.partyUse) == "table" then
-                local projected = { partyUse = copyValue(definition.partyUse) } --[[@as table<string, unknown>]]
+                local projected = {
+                  partyUse = copyValue(definition.partyUse),
+                  pocket = definition.pocket,
+                } --[[@as table<string, unknown>]]
                 if type(definition.battleUse) == "table" then
                   projected.battleUse = copyValue(definition.battleUse)
                 end
@@ -1001,25 +1004,28 @@ function BattleRuntime:_sessionItemFacts(record)
                     -- their fling and natural-gift facts. Canonical held
                     -- behavior projects beside them through the same
                     -- record for trainer checks.
-                    if
-                      type(resolved.naturalGift) == "table"
-                      or type(resolved.fling) == "table"
-                      or type(resolved.heldBehavior) == "table"
-                    then
-                      local projected = facts[held]
-                      if projected == nil then
-                        projected = {}
-                        facts[held] = projected
-                      end
-                      if type(resolved.naturalGift) == "table" and projected.naturalGift == nil then
-                        projected.naturalGift = copyValue(resolved.naturalGift)
-                      end
-                      if type(resolved.fling) == "table" and projected.fling == nil then
-                        projected.fling = copyValue(resolved.fling)
-                      end
-                      if type(resolved.heldBehavior) == "table" and projected.heldBehavior == nil then
-                        projected.heldBehavior = copyValue(resolved.heldBehavior)
-                      end
+                    local projected = facts[held]
+                    if projected == nil then
+                      projected = {}
+                      facts[held] = projected
+                    end
+                    if projected.pocket == nil then
+                      projected.pocket = resolved.pocket
+                    end
+                    if type(resolved.partyUse) == "table" and projected.partyUse == nil then
+                      projected.partyUse = copyValue(resolved.partyUse)
+                    end
+                    if type(resolved.battleUse) == "table" and projected.battleUse == nil then
+                      projected.battleUse = copyValue(resolved.battleUse)
+                    end
+                    if type(resolved.naturalGift) == "table" and projected.naturalGift == nil then
+                      projected.naturalGift = copyValue(resolved.naturalGift)
+                    end
+                    if type(resolved.fling) == "table" and projected.fling == nil then
+                      projected.fling = copyValue(resolved.fling)
+                    end
+                    if type(resolved.heldBehavior) == "table" and projected.heldBehavior == nil then
+                      projected.heldBehavior = copyValue(resolved.heldBehavior)
                     end
                   end
                 end

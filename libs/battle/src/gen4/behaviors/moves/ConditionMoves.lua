@@ -226,18 +226,23 @@ local function foeAccuracy(ctx, frame, defender)
   local stream = checkStream(record.stream)
   local userStages = ctx:entryOf(userOf(record)).stages --[[@as table<string, integer>]]
   local targetStages = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
+  local protected = ctx:hasBattleEffect(defender, "protect") or ctx:hasBattleEffect(defender, "detect")
   local resolution = Accuracy.resolve({
     accuracy = accuracy --[[@as integer]],
     target = { kind = "combatant" },
     cause = causeFor(record),
-    protected = false,
+    protected = protected,
     accuracyStage = userStages.accuracy,
     evasionStage = targetStages.evasion,
   }, stream)
   if resolution.kind == "hit" then
     return true
   end
-  ctx:emit("missed", causeFor(record), { target = defender })
+  if resolution.kind == "protected" then
+    ctx:emit("protected", causeFor(record), { target = defender })
+  else
+    ctx:emit("missed", causeFor(record), { target = defender })
+  end
   return false
 end
 
@@ -249,8 +254,7 @@ end
 -- Common native stage families: self-raised boosts skip the accuracy
 -- roll while foe-targeted drops roll compiled accuracy through staged
 -- checkpoints. Deltas stay source-defined per move; clamping stays with
--- the stage owner. Moves needing sun, gender, charge, or hit-history
--- facts stay explicitly unmodeled.
+-- the stage owner.
 local STAGE_MOVES = {
   SWORDS_DANCE = { target = "user", changes = { { "attack", 2 } } },
   HOWL = { target = "user", changes = { { "attack", 1 } } },
@@ -422,6 +426,17 @@ local function statusImmune(frame, defender)
   return false
 end
 
+---@param ctx BattleContext battle context under sleep prevention
+---@return boolean true when at least one active combatant is making an Uproar
+local function uproarActive(ctx)
+  for _, combatant in ipairs(ctx:activeCombatants()) do
+    if ctx:hasBattleEffect(combatant, "uproar") then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param status string native major condition under the move
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler applying the condition
 local function makeStatus(status)
@@ -438,6 +453,9 @@ local function makeStatus(status)
       local defender = targetOf(entry)
       if statusImmune(record, defender) then
         -- Absorbed targets contribute a failure, never a miss draw.
+      elseif status == "sleep" and uproarActive(ctx) then
+        -- Uproar prevents sleep across the field while its source turn
+        -- counter remains active.
       elseif ctx:hasBattleEffect(defender, "substitute") then
         -- A marked substitute absorbs the condition outright.
       elseif not foeAccuracy(ctx, record, defender) then
@@ -678,6 +696,45 @@ local function stepWish(ctx, frame)
   return { kind = "complete", result = "hit" }
 end
 
+-- Healing Wish and Lunar Dance trade the user's life for recovery on the
+-- next allied arrival. Source: subscript_0159_HealingWish.s and
+-- subscript_0261_LunarDance.s.
+local function stepSacrificeWish(ctx, frame, mode)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local hasLivingReserve = locals.hasLivingReserve
+  if type(hasLivingReserve) ~= "boolean" then
+    error(BattleErrors.missingBehavior("sacrifice wishes read whether a living reserve can replace the user", {
+      key = record.executingMove --[[@as string]],
+      fact = "hasLivingReserve",
+    }))
+  end
+  if not hasLivingReserve then
+    return { kind = "complete", result = "failed" }
+  end
+  local user = userOf(record)
+  local side = ctx:entryOf(user).side
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("sacrificewish"),
+    { kind = "side", side = side },
+    moveSource(user),
+    { version = 1, mode = mode }
+  )
+  ctx:damage(user, 999999, causeFor(record))
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+local function stepHealingWish(ctx, frame)
+  return stepSacrificeWish(ctx, frame, "healing")
+end
+
+local function stepLunarDance(ctx, frame)
+  return stepSacrificeWish(ctx, frame, "lunar")
+end
+
 -- Side screens and mist settle one five-turn instance on the user side;
 -- replacement stacking keeps a single live instance per key.
 ---@param key string battle-local definition identity under the screen
@@ -740,8 +797,7 @@ local function stepAquaRing(ctx, frame)
   return { kind = "complete", result = "hit" }
 end
 
--- Flat half-maximum recovery. Full health refuses without effect; the
--- weather-scaled dawn trio stays explicitly unmodeled.
+-- Flat half-maximum recovery. Full health refuses without effect.
 local function stepRecover(ctx, frame)
   assert(type(ctx) == "table", "conditions step through the battle context")
   assert(type(frame) == "table", "conditions step from their move frame")
@@ -1041,6 +1097,30 @@ local function stepTaunt(ctx, frame)
   return { kind = "complete", result = "hit" }
 end
 
+-- Heal Block suppresses recovery on the defender for five turns. It
+-- refuses a doll and an already blocked target. Source references:
+-- effect_script_0236.s and subscript_0173_HealBlockStart.s.
+local function stepHealBlock(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  if ctx:hasBattleEffect(defender, "substitute") or ctx:hasBattleEffect(defender, "healblock") then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("healblock"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1, turns = 5 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
 -- Torment marks until the entry leaves and refuses the already
 -- tormented. Source reference: the torment subscript in
 -- files/battledata/script/subscript/subscript_0127_TormentStart.s.
@@ -1294,6 +1374,23 @@ local function stepForesight(ctx, frame)
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   ctx:addBattleEffect(
     NativeEffectHandlers.definitionFor("foresight"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Miracle Eye uses a distinct target flag: unlike Foresight it also
+-- removes Psychic's immunity against Dark. Source: subscript_0158_MiracleEye.s.
+local function stepMiracleEye(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("miracleeye"),
     activeScope(ctx, defender),
     moveSource(userOf(record)),
     { version = 1 }
@@ -1713,6 +1810,97 @@ local function stepStealthRock(ctx, frame)
   return { kind = "complete", result = "hit" }
 end
 
+-- Defog lowers the defender's evasion and clears conditions from that
+-- combatant's side. Source: subscript_0171_Defog.s.
+local DEFOG_SIDE_EFFECTS = {
+  "reflect",
+  "lightscreen",
+  "mist",
+  "safeguard",
+  "spikes",
+  "toxicspikes",
+  "stealthrock",
+}
+
+local function stepDefog(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not foeAccuracy(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  local entry = ctx:entryOf(defender)
+  local evasion = entry.stages.evasion --[[@as integer]]
+  local nextEvasion = StatStages.change(evasion, -1)
+  local changed = nextEvasion ~= evasion
+  if changed then
+    ctx:changeStage(defender, "evasion", nextEvasion, causeFor(record))
+  end
+  for _, key in ipairs(DEFOG_SIDE_EFFECTS) do
+    if ctx:sideEffect(entry.side, key) ~= nil then
+      ctx:removeBattleEffect(defender, key)
+      changed = true
+    end
+  end
+  if ctx:fieldEffect("fog") ~= nil then
+    ctx:removeFieldEffect("fog")
+    changed = true
+  end
+  if not changed then
+    return { kind = "complete", result = "failed" }
+  end
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- TryImprison succeeds only when an active opposing battler shares a move
+-- with the user, then marks the user for the opposing move gate.
+-- Source: BtlCmd_TryImprison in src/battle/battle_command.c.
+local function stepImprison(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  if ctx:hasBattleEffect(user, "imprison") then
+    return { kind = "complete", result = "failed" }
+  end
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local userMoves = locals.userMoves --[[@as string[] ]]
+  local targetMoves = locals.targetMoves --[[@as table<integer, string[]> ]]
+  local userMoveSet = {}
+  for _, move in ipairs(userMoves) do
+    userMoveSet[move] = true
+  end
+  local shared = false
+  for _, moves in pairs(targetMoves) do
+    for _, move in ipairs(moves) do
+      if userMoveSet[move] then
+        shared = true
+        break
+      end
+    end
+    if shared then
+      break
+    end
+  end
+  if not shared then
+    return { kind = "complete", result = "failed" }
+  end
+  local sealedMoves = {} ---@type string[]
+  for _, move in ipairs(userMoves) do
+    sealedMoves[#sealedMoves + 1] = move
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("imprison"),
+    activeScope(ctx, user),
+    moveSource(user),
+    { version = 1, moves = sealedMoves }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
 -- Trapping moves hold the defender while refusing ghosts through the
 -- chart, dolls, and the already trapped. Source reference: the mean
 -- look subscript in
@@ -1855,6 +2043,8 @@ define("SPLASH", { step = stepSplash })
 define("PAIN_SPLIT", { step = stepPainSplit })
 define("MEMENTO", { step = stepMemento })
 define("WISH", { step = stepWish })
+define("HEALING_WISH", { step = stepHealingWish })
+define("LUNAR_DANCE", { step = stepLunarDance })
 define("ROOST", { step = stepRoost })
 define("PERISH_SONG", { step = stepPerishSong })
 define("LEECH_SEED", { step = stepLeechSeed })
@@ -1904,6 +2094,7 @@ define("SUPERSONIC", { step = stepConfuse })
 define("SWEET_KISS", { step = stepConfuse })
 define("ATTRACT", { step = stepAttract })
 define("TAUNT", { step = stepTaunt })
+define("HEAL_BLOCK", { step = stepHealBlock })
 define("TORMENT", { step = stepTorment })
 define("ENCORE", { step = stepEncore })
 define("DISABLE", { step = stepDisable })
@@ -1912,16 +2103,21 @@ define("NIGHTMARE", { step = stepNightmare })
 define("SPIKES", { step = stepSpikes })
 define("TOXIC_SPIKES", { step = stepToxicSpikes })
 define("STEALTH_ROCK", { step = stepStealthRock })
+define("DEFOG", { step = stepDefog })
+define("IMPRISON", { step = stepImprison })
 define("MEAN_LOOK", { step = stepTrapHold })
+define("BLOCK", { step = stepTrapHold })
 define("SPIDER_WEB", { step = stepTrapHold })
 define("REST", { step = stepRest })
 define("MOONLIGHT", { step = stepDawnHeal })
+define("MORNING_SUN", { step = stepDawnHeal })
 define("SYNTHESIS", { step = stepDawnHeal })
 define("BELLY_DRUM", { step = stepBellyDrum })
 define("ACUPRESSURE", { step = stepAcupressure })
 define("LOCK_ON", { step = stepLockOn })
 define("MIND_READER", { step = stepLockOn })
 define("FORESIGHT", { step = stepForesight })
+define("MIRACLE_EYE", { step = stepMiracleEye })
 define("ODOR_SLEUTH", { step = stepForesight })
 define("MAGNET_RISE", { step = stepMagnetRise })
 define("TAILWIND", { step = stepTailwind })

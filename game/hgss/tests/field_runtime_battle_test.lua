@@ -140,9 +140,9 @@ local function foeRecord(species, level, seed)
 end
 
 ---@return table party owner holding one fixed lead
-local function newPartyOwner()
+local function newPartyOwner(lead, catalog)
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
-  local catalog = CatalogFixture.makeCatalog()
+  catalog = catalog or CatalogFixture.makeCatalog()
   local owner = HgssMonService.new({
     catalog = catalog,
     bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture()),
@@ -157,16 +157,33 @@ local function newPartyOwner()
     mapSection = 7,
     date = CatalogFixture.metDate(),
   })
-  Assert.isTrue(owner:addMon(foeRecord("CHIKORITA", 5, 0x33333333)), "the owned lifetime needs its live party lead")
+  Assert.isTrue(
+    owner:addMon(lead or foeRecord("CHIKORITA", 5, 0x33333333)),
+    "the owned lifetime needs its live party lead"
+  )
   return owner
+end
+
+local function catalogWithTrick()
+  local Catalog = require("libs.mons.src.MonCatalog")
+  local root = CatalogFixture.buildAssetRoot()
+  local trick = {}
+  for key, value in pairs(root.moves.TACKLE) do
+    trick[key] = value
+  end
+  trick.nativeId = 271
+  trick.name = "Trick"
+  root.moves.TRICK = trick
+  return Catalog.new(root, CatalogFixture.makeItemCatalog())
 end
 
 local function wildRequest(id)
   return { id = id or "launch-field-1", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
 end
 
-local function driveToSettled(runtime, battle)
+local function driveToSettled(runtime, battle, firstMoveSlot, laterMoveSlot)
   local ticks = 0
+  local submittedAction = false
   while battle:status().phase ~= "complete" and battle:status().phase ~= "failed" and ticks < 200 do
     runtime:updateBattle()
     battle = runtime.battleCoordinator:activeBattle() or battle
@@ -174,14 +191,50 @@ local function driveToSettled(runtime, battle)
     if current.phase == "running" and current.request ~= nil then
       local choices = {}
       for _, actor in ipairs(current.request.actors) do
-        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+        local moveSlot = submittedAction and laterMoveSlot or firstMoveSlot
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, moveSlot or 0, SessionFixture.positionTarget(2))
       end
       local accepted, err = battle:submit(SessionFixture.replyFor(current.request, choices))
       Assert.isTrue(accepted, "field-driven decisions answer: " .. tostring(err))
+      submittedAction = true
     end
     ticks = ticks + 1
   end
   return battle:status()
+end
+
+function T.startBattle_commits_trick_held_item_exchange_to_the_party()
+  local catalog = catalogWithTrick()
+  local playerFactory = CatalogFixture.makeFactory(0x33333333, catalog)
+  local player = playerFactory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", level = 5 }))
+  player.moves = {
+    { move = "TRICK", pp = 10, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  }
+  player.heldItem = "SITRUS_BERRY"
+  local party = newPartyOwner(player, catalog)
+  local runtime = fakeRuntime({ monService = party })
+  local foe = foeRecord("TOTODILE", 4, 0x5EED0004)
+  foe.heldItem = "CHERI_BERRY"
+  local request = { id = "launch-trick-items", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(
+    request.payload,
+    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+  )
+  local portRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local battle = runtime:startBattle({ request = request, scenario = scenario, presentation = headlessPort(portRecord) })
+
+  local finished = driveToSettled(runtime, battle, 0, 1)
+
+  Assert.equal(finished.phase, "complete")
+  local swapped = false
+  for _, event in ipairs(portRecord.frames) do
+    if event.kind == "item-intent" and event.cause.key == "TRICK" then
+      swapped = true
+    end
+  end
+  Assert.isTrue(swapped, "the production move path executes Trick")
+  Assert.equal(party:partyMon(0).heldItem, "CHERI_BERRY", "BattleRuntime commits the received held item")
 end
 
 function T.startBattle_runs_the_owned_lifetime_to_commit_and_return()
@@ -211,6 +264,23 @@ function T.startBattle_runs_the_owned_lifetime_to_commit_and_return()
   Assert.isFalse(battleFlags[#battleFlags], "return releases player input")
   Assert.notNil(runtime:lastBattleResult(), "completion records its outcome words")
   Assert.equal(portRecord.disposed, 1)
+end
+
+function T.presented_battle_scenario_receives_the_captured_map_terrain()
+  local runtime = fakeRuntime()
+  local request = wildRequest("launch-terrain")
+  local scenario = wildScenario()
+  scenario.environment.weather = "rain"
+  runtime.battleCoordinator._battleLaunch = {
+    request = request,
+    environment = { terrain = "grass" },
+  }
+
+  local battle = runtime:startBattle({ request = request, scenario = scenario })
+
+  Assert.equal(battle._scenario.environment.terrain, "grass", "battle rules use the launch's map terrain")
+  Assert.equal(battle._scenario.environment.weather, "rain", "encounter weather remains in the scenario")
+  Assert.isNil(scenario.environment.terrain, "launch terrain does not mutate the caller's scenario")
 end
 
 function T.startBattle_rejects_a_second_launch_and_failed_battles_fault()

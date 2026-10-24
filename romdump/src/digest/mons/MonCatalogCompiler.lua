@@ -981,6 +981,7 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
           effectChance = record.effectChance,
           range = record.range,
           priority = record.priority,
+          flags = record.flags,
         }, binding)
         battleBlock = {
           behavior = battleFacts.behavior,

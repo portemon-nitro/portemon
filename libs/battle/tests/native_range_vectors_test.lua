@@ -486,6 +486,42 @@ function T.doubles_projection_names_each_move_scope()
   session:dispose()
 end
 
+-- Follow Me redirects a selected single-target foe strike onto its user
+-- for the rest of the turn, while other attacks can still select either
+-- foe slot on a later turn.
+function T.follow_me_redirects_selected_foe_strikes()
+  local a1 = withMoves(monSeed(1, "CHIKORITA", 5, 0xA301), { moveSlot("FOLLOW_ME", 20) })
+  local a2 = withMoves(monSeed(3, "TOTODILE", 5, 0xA302), { moveSlot("SPLASH", 40) })
+  local b1 = withMoves(monSeed(2, "CHIKORITA", 5, 0xB301), { moveSlot("TACKLE", 35) })
+  local b2 = withMoves(monSeed(4, "TOTODILE", 5, 0xB302), { moveSlot("SPLASH", 40) })
+  local seeds = { a1, a2, b1, b2 }
+  local followMe = tackleBase()
+  followMe.nativeId = 266
+  followMe.effect = 172
+  followMe.power = 0
+  followMe.priority = 2
+  followMe.category = "other"
+  followMe.range = 0
+  local scenario = doublesScenario(
+    { a1, a2 },
+    { b1, b2 },
+    scenarioMoveFacts(seeds, { FOLLOW_ME = followMe }),
+    scenarioSpeciesFacts(seeds)
+  )
+  local session, frame = openWaiting(scenario)
+  local answers = projectedSlotZero(session, frame)
+  local betaChoices = answers.beta
+  Assert.notNil(betaChoices, "the beta controller has both projected strikes")
+  betaChoices[1].payload.target = { kind = "position", position = 3 }
+  local before = session:capture()
+  local settled = playAnswers(session, answers)
+  local after = session:capture()
+  Assert.isTrue(settled.status == "waiting" or settled.status == "ended", "the redirected turn settles")
+  Assert.equal(after.combatants[1].hp, before.combatants[1].hp - 3, "Follow Me's user takes the selected foe strike")
+  Assert.equal(after.combatants[3].hp, before.combatants[3].hp, "the selected ally remains unharmed")
+  session:dispose()
+end
+
 -- Forged choices are refused before any mutation: a strike retargeted
 -- onto the partner, a side or field fragment for a foe-scoped move, a
 -- spent-slot strike while another slot stays usable, and a stale actor
@@ -854,7 +890,7 @@ function T.charge_still_marks_its_user_in_singles()
   local settled = playAnswers(session, projectedSlotZero(session, frame))
   Assert.equal(settled.status, "waiting", "the charge turn leaves the battle waiting")
   local after = session:capture()
-  Assert.isTrue(hasUserMarker(after, "CHARGE", 1), "the self boost still records its cooperation marker")
+  Assert.equal(after.combatants[1].stages.specialDefense, 1, "Charge raises its user's Special Defense in singles")
   Assert.equal(after.combatants[1].mon.moves[1].pp, 29, "the self boost spends one power point")
   session:dispose()
 end

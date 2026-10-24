@@ -152,6 +152,51 @@ function NativePassiveBridge:embargoed(combatantId)
   return false
 end
 
+---@param combatantId integer holder whose effective ability is read
+---@return string? battle ability key, absent when Gastro Acid suppresses it
+function NativePassiveBridge:abilityOf(combatantId)
+  local combatant = BattleState.combatant(self._state, combatantId)
+  if self:hasVolatile(combatantId, "GASTRO_ACID") then
+    return nil
+  end
+  return readAbility(combatant)
+end
+
+---@param combatantId integer holder whose active marker is checked
+---@param key string volatile key being queried
+---@return boolean true when the holder's current entry owns the marker
+function NativePassiveBridge:hasVolatile(combatantId, key)
+  local owner = self._state.effectBag
+  if
+    type(owner) ~= "table" or type((owner --[[@as table<string, unknown>]]).capture) ~= "function"
+  then
+    return false
+  end
+  local active = BattleState.combatant(self._state, combatantId).active
+  local token = type(active) == "table" and (active --[[@as table<string, unknown>]]).activation or nil
+  local capture = (owner --[[@as table<string, unknown>]]).capture
+  for _, record in
+    ipairs((capture --[[@as fun(self: unknown): table<integer, table<string, unknown>>]])(owner))
+  do
+    local scope = record.scope --[[@as table<string, unknown>?]]
+    if
+      record.key == key
+      and type(scope) == "table"
+      and scope.combatant == combatantId
+      and (scope.activation == nil or scope.activation == token)
+    then
+      return true
+    end
+  end
+  return false
+end
+
+---@param combatantId integer holder whose power-trick marker is checked
+---@return boolean true while the current entry has swapped physical stats
+function NativePassiveBridge:powerTrick(combatantId)
+  return self:hasVolatile(combatantId, "POWER_TRICK")
+end
+
 -- Ordinary held effects read the effective holding: the possessed item
 -- unless the holder's own ability or an active Embargo suppresses it.
 -- Suppression never rewrites possession; the raw read stays authoritative
@@ -164,7 +209,7 @@ function NativePassiveBridge:effectiveHeldItem(combatantId)
   if raw == nil then
     return nil
   end
-  if readAbility(combatant) == "KLUTZ" or self:embargoed(combatantId) then
+  if self:abilityOf(combatantId) == "KLUTZ" or self:embargoed(combatantId) then
     return nil
   end
   return raw
@@ -296,7 +341,7 @@ function NativePassiveBridge:invoke(timing, combatantId, context)
   return NativePassiveBridge.invokeFacts({
     combatant = combatantId,
     activation = checkActivation(combatant),
-    ability = readAbility(combatant),
+    ability = self:abilityOf(combatantId),
     heldItem = self:effectiveHeldItem(combatantId),
     species = species --[[@as string?]],
   }, timing, merged)
@@ -313,7 +358,7 @@ end
 ---@return table<string, integer>? exact boost ratio, when the owned passive applies
 function NativePassiveBridge:statRatio(combatantId, stat, statused, split)
   local combatant = BattleState.combatant(self._state, combatantId)
-  local ability = readAbility(combatant)
+  local ability = self:abilityOf(combatantId)
   if ability == nil then
     return nil
   end
@@ -365,7 +410,7 @@ end
 function NativePassiveBridge:orderFacts(combatantId, context)
   local combatant = BattleState.combatant(self._state, combatantId)
   local activation = checkActivation(combatant)
-  local ability = readAbility(combatant)
+  local ability = self:abilityOf(combatantId)
   local heldItem = self:effectiveHeldItem(combatantId)
   local mon = checkMon(combatant)
   local record = mon --[[@as table<string, unknown>]]

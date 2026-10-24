@@ -12,6 +12,7 @@
 ---@field abilityImmunity boolean?
 ---@field airborne boolean?
 ---@field typeless boolean?
+---@field psychicDarkImmunityBypassed boolean?
 
 ---@class EffectivenessResult
 ---@field numerator integer
@@ -86,7 +87,11 @@ function TypeEffectiveness.resolve(chart, attack, defendList, context)
       resolved[defend] = true
       -- Composed charts carry validated exact rationals; chart immunity
       -- still resolves to zero through the chart owner.
-      local pair = chart:effectiveness(attack, defend)
+      local pair = attack == "psychic"
+          and defend == "dark"
+          and seen.psychicDarkImmunityBypassed == true
+          and { numerator = 1, denominator = 1 }
+        or chart:effectiveness(attack, defend)
       if pair.numerator == 0 then
         return {
           numerator = 0,

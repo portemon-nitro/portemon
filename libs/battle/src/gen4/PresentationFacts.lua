@@ -36,6 +36,7 @@ local FLOW_KEYS = {
   leveled = "level",
   transformed = "transform",
   sketched = "sketch",
+  mimicked = "mimic",
   status = "status",
   cured = "cure",
   stage = "stage",
@@ -67,6 +68,7 @@ local MOVE_ROUTES = {
   protected = true,
   charged = true,
   delayed = true,
+  mimicked = true,
 }
 
 ---@param kind unknown event kind under route selection

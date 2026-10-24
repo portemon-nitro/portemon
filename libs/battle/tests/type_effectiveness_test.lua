@@ -191,4 +191,37 @@ function T.stab_follows_attacker_types_only()
   Assert.isFalse(Effectiveness.stab("typeless", { "typeless" }), "typeless attacks grant no STAB")
 end
 
+function T.miracle_eye_bypasses_only_the_psychic_dark_immunity()
+  local Effectiveness = effectivenessOwner()
+  local ContentBuilder = require("libs.content.src.ContentBuilder")
+  local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
+  local BattleContent = require("libs.battle.src.BattleContent")
+  local NativeTypeChart = require("libs.battle.src.gen4.NativeTypeChart")
+  local Executor = require("libs.battle.src.gen4.HgssSessionExecutor")
+  local builder = ContentBuilder.new()
+  NativeTypeChart.install(builder, "miracle-eye-tests")
+  local behaviors = BattleBehaviorBuilder.new()
+  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "miracle-eye-tests")
+  local content = BattleContent.new(builder:freeze(), behaviors:freeze())
+  local vanilla = assert(content:typeChart(Executor.RULESET), "the native chart owns Psychic relations")
+
+  local unseen = Effectiveness.resolve(vanilla, "psychic", { "dark", "poison" }, {})
+  Assert.isTrue(unseen.immune, "Dark still blocks Psychic without Miracle Eye")
+
+  local identified = Effectiveness.resolve(vanilla, "psychic", { "dark", "poison" }, {
+    psychicDarkImmunityBypassed = true,
+  })
+  Assert.isFalse(identified.immune, "Miracle Eye bypasses the Dark immunity")
+  Assert.deepEqual(
+    { numerator = identified.numerator, denominator = identified.denominator },
+    { numerator = 2, denominator = 1 },
+    "the remaining Poison weakness still applies"
+  )
+
+  local unrelated = Effectiveness.resolve(vanilla, "ground", { "flying" }, {
+    psychicDarkImmunityBypassed = true,
+  })
+  Assert.isTrue(unrelated.immune, "Miracle Eye does not bypass unrelated chart immunities")
+end
+
 return { tests = T }

@@ -569,7 +569,7 @@ function T.entry_bindings_without_handlers_fail_naming_their_key()
     Handlers.definitionFor("imprison"),
     EffectFixture.activeScope(1, 1),
     EffectFixture.cause(2, 1),
-    { version = 1 }
+    { version = 1, moves = { "TACKLE" } }
   )
   local facts = baseFacts()
   facts.sides = { [1] = 1, [2] = 2 }

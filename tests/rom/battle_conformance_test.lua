@@ -223,4 +223,13 @@ function T.ready_dumps_bind_every_native_move_exactly_once(romFs, versionId)
   Assert.isNil(inventoryMismatch, versionId .. " binds every native move exactly once")
 end
 
+function T.recoil_moves_select_their_decomp_effect_scripts(romFs, versionId)
+  local BattleDataCompiler = require("romdump.src.digest.battle.BattleDataCompiler")
+  local compiled = assert(BattleDataCompiler.compileFromDump(romFs, { versionId = versionId }))
+  -- MOVE_EFFECT_RECOIL_QUARTER_DAMAGE_DELT and MOVE_EFFECT_RECOIL_THIRD
+  -- in tmp/pokeheartgold/include/constants/move_effects.h.
+  Assert.equal(compiled.moves.TAKE_DOWN.effect, 48, "Take Down selects quarter recoil")
+  Assert.equal(compiled.moves.DOUBLE_EDGE.effect, 198, "Double-Edge selects third recoil")
+end
+
 return RomSuite.fromFacts(T)

@@ -67,7 +67,7 @@ end
 local function syntheticFacts()
   return setmetatable({}, {
     __index = function(entries, key)
-      local facts = { power = 50, accuracy = 100, category = "physical", moveType = "normal" }
+      local facts = { power = 50, accuracy = 100, category = "physical", moveType = "normal", effect = 0 }
       entries[key] = facts
       return facts
     end,
@@ -88,6 +88,21 @@ end
 ---@param seed integer fixed generator state for the candidate roll
 ---@return table frame inputs for a called-move attempt
 local function calledInputs(caller, seed)
+  local facts = syntheticFacts()
+  for index, key in ipairs({
+    "BIDE",
+    "RAZOR_WIND",
+    "SKY_ATTACK",
+    "SKULL_BASH",
+    "SOLAR_BEAM",
+    "FLY",
+    "DIVE",
+    "DIG",
+    "BOUNCE",
+    "SHADOW_FORCE",
+  }) do
+    facts[key].effect = 1000 + index
+  end
   return {
     actionId = 1,
     actor = { combatant = 1 },
@@ -100,7 +115,7 @@ local function calledInputs(caller, seed)
     moves = {
       { move = caller, pp = 10, ppUps = 0 },
     },
-    moveFacts = syntheticFacts(),
+    moveFacts = facts,
     burned = false,
     guts = false,
     weather = "none",
@@ -304,6 +319,33 @@ function T.sleep_talk_calls_only_usable_moves_through_the_calling_slot()
   end
 end
 
+function T.sleep_talk_rejects_moves_by_charge_effect_identity()
+  local Called = calledOwner("metronome-class selection owns the called-move path")
+  local moveFacts = syntheticFacts()
+  moveFacts.SLEEP_TALK.effect = 1
+  moveFacts.BIDE.effect = 2
+  moveFacts.RAZOR_WIND.effect = 3
+  moveFacts.SKY_ATTACK.effect = 4
+  moveFacts.SKULL_BASH.effect = 5
+  moveFacts.SOLAR_BEAM.effect = 6
+  moveFacts.FLY.effect = 7
+  moveFacts.DIVE.effect = 8
+  moveFacts.DIG.effect = 9
+  moveFacts.BOUNCE.effect = 10
+  moveFacts.SHADOW_FORCE.effect = 11
+  moveFacts.TACKLE.effect = 12
+  moveFacts.CHARGE_ALIAS = { effect = 5, power = 50 }
+  local decision = Called.choose({
+    requestedMove = "SLEEP_TALK",
+    executingMove = "SLEEP_TALK",
+    usable = { "CHARGE_ALIAS" },
+    moveFacts = moveFacts,
+    userAsleep = true,
+    stream = BattleRng.new(FIXED_SEED),
+  })
+  Assert.equal(decision.failed, "no-eligible-moves", "Sleep Talk excludes aliases of banned charge effects")
+end
+
 -- Mirror move copies the last move targeting the caller: with a recorded
 -- incoming strike it executes that identity from its own slot, and with
 -- no copied move it fails instead of striking.
@@ -315,6 +357,10 @@ function T.mirror_move_copies_the_last_move_targeting_the_caller()
   local ctx = liveContext(state)
   local inputs = calledInputs("MIRROR_MOVE", FIXED_SEED)
   inputs.copiedMove = "TACKLE"
+  inputs.moveFacts.TACKLE.effect = 1
+  for _, key in ipairs({ "TRANSFORM", "MIMIC", "SKETCH", "MIRROR_MOVE", "ENCORE", "STRUGGLE" }) do
+    inputs.moveFacts[key].effect = 2
+  end
   inputs.combat = {
     level = 10,
     attack = 50,
@@ -336,6 +382,172 @@ function T.mirror_move_copies_the_last_move_targeting_the_caller()
   local settled = Execution.step(ctx, failed)
   Assert.equal(settled.kind, "complete", "mirror move with nothing to copy settles")
   Assert.equal(settled.result, "failed", "mirror move with nothing to copy fails instead of striking")
+end
+
+function T.mirror_move_draws_from_remaining_live_attacker_histories()
+  local Called = calledOwner("metronome-class selection owns the called-move path")
+  local stream = BattleRng.new(FIXED_SEED)
+  local selection = {
+    requestedMove = "MIRROR_MOVE",
+    executingMove = "MIRROR_MOVE",
+    mirrorMoveCandidates = { [3] = "TACKLE" },
+    moveFacts = syntheticFacts(),
+    stream = stream,
+  }
+  selection.moveFacts.TACKLE.effect = 1
+  for _, key in ipairs({ "TRANSFORM", "MIMIC", "SKETCH", "MIRROR_MOVE", "ENCORE", "STRUGGLE" }) do
+    selection.moveFacts[key].effect = 10
+  end
+  local decision = Called.choose(selection)
+  Assert.equal(decision.executingMove, "TACKLE", "Mirror Move selects the nonempty active-source history")
+  Assert.isTrue(stream:capture().calls > 0, "the fallback source slot consumes native Mirror Move draws")
+end
+
+function T.copy_move_callers_apply_source_legality()
+  local Called = calledOwner("metronome-class selection owns the called-move path")
+  local effects = {
+    COUNTER = 1,
+    MIRROR_COAT = 2,
+    THIEF = 3,
+    COVET = 4,
+    FOCUS_PUNCH = 5,
+    CHATTER = 6,
+    TRANSFORM = 7,
+    MIMIC = 8,
+    SKETCH = 9,
+    MIRROR_MOVE = 10,
+    ENCORE = 11,
+    STRUGGLE = 12,
+    TACKLE = 13,
+    RECOVER = 14,
+    FLY = 15,
+    MIMIC_ALIAS = 8,
+    COUNTER_ALIAS = 1,
+  }
+  local facts = {}
+  for key, effect in pairs(effects) do
+    facts[key] = { effect = effect, power = key == "TACKLE" and 40 or 0 }
+  end
+  local function select(caller, copied, gravity, healBlock)
+    return Called.choose({
+      requestedMove = caller,
+      executingMove = caller,
+      copiedMove = copied,
+      moveFacts = facts,
+      gravity = gravity,
+      healBlock = healBlock,
+    })
+  end
+
+  Assert.equal(select("MIRROR_MOVE", "TACKLE").executingMove, "TACKLE", "Mirror Move accepts ordinary effects")
+  Assert.equal(select("MIRROR_MOVE", "MIMIC").failed, "nothing-to-copy", "Mirror Move rejects Encore-banned effects")
+  Assert.equal(select("MIRROR_MOVE", "MIMIC_ALIAS").failed, "nothing-to-copy", "Mirror Move rejects matching effects by identity")
+  Assert.equal(select("MIRROR_MOVE", "TRANSFORM").failed, "nothing-to-copy", "Mirror Move rejects Transform's effect")
+  Assert.equal(select("COPYCAT", "TACKLE").executingMove, "TACKLE", "Copycat accepts an ordinary prior move")
+  Assert.equal(select("COPYCAT", "METRONOME").failed, "nothing-to-copy", "Copycat rejects calling moves")
+  Assert.equal(select("COPYCAT", "NONE").failed, "nothing-to-copy", "Copycat rejects the empty move identity")
+  Assert.equal(select("COPYCAT", "RECOVER", false, true).failed, "nothing-to-copy", "Copycat applies Heal Block legality")
+  Assert.equal(select("COPYCAT", "FLY", true, false).failed, "nothing-to-copy", "Copycat applies Gravity legality")
+  Assert.equal(select("ME_FIRST", "TACKLE").executingMove, "TACKLE", "Me First accepts a powered move")
+  Assert.equal(select("ME_FIRST", "COUNTER").failed, "nothing-to-copy", "Me First rejects Counter's effect")
+  Assert.equal(select("ME_FIRST", "COUNTER_ALIAS").failed, "nothing-to-copy", "Me First compares effects rather than identities")
+  Assert.equal(select("ME_FIRST", "RECOVER").failed, "nothing-to-copy", "Me First rejects zero-power moves")
+end
+
+function T.assist_applies_the_source_dynamic_legality_tables()
+  local Called = calledOwner("metronome-class selection owns the called-move path")
+  local onlyDynamicBans = {
+    requestedMove = "ASSIST",
+    executingMove = "ASSIST",
+    party = { "FLY", "RECOVER" },
+    gravity = true,
+    healBlock = true,
+    stream = BattleRng.new(FIXED_SEED),
+  }
+  local refused = Called.choose(onlyDynamicBans)
+  Assert.equal(refused.failed, "no-eligible-moves", "Assist fails when Gravity and Heal Block ban its party pool")
+  Assert.equal(onlyDynamicBans.stream:capture().calls, 0, "an empty Assist pool consumes no draw")
+
+  local mixed = {
+    requestedMove = "ASSIST",
+    executingMove = "ASSIST",
+    party = { "FLY", "RECOVER", "TACKLE" },
+    gravity = true,
+    healBlock = true,
+    stream = BattleRng.new(FIXED_SEED),
+  }
+  for _ = 1, 12 do
+    Assert.equal(Called.choose(mixed).executingMove, "TACKLE", "Assist draws only after both dynamic filters")
+  end
+end
+
+function T.assist_rejects_empty_move_slots_and_keeps_zero_pp_roster_moves()
+  local Called = calledOwner("metronome-class selection owns the called-move path")
+  local empty = {
+    requestedMove = "ASSIST",
+    executingMove = "ASSIST",
+    party = { "NONE" },
+    stream = BattleRng.new(FIXED_SEED),
+  }
+  Assert.equal(Called.choose(empty).failed, "no-eligible-moves", "Assist treats move zero as an empty party slot")
+  Assert.equal(empty.stream:capture().calls, 0, "an empty Assist roster consumes no draw")
+
+  local exhausted = {
+    requestedMove = "ASSIST",
+    executingMove = "ASSIST",
+    party = { "TACKLE" },
+    stream = BattleRng.new(FIXED_SEED),
+  }
+  Assert.equal(
+    Called.choose(exhausted).executingMove,
+    "TACKLE",
+    "Assist can call a party move regardless of its current PP"
+  )
+end
+
+function T.sleep_talk_rejects_nonselectable_and_charge_moves()
+  local Called = calledOwner("metronome-class selection owns the called-move path")
+  local selection = {
+    requestedMove = "SLEEP_TALK",
+    executingMove = "SLEEP_TALK",
+    userAsleep = true,
+    moveFacts = calledInputs("SLEEP_TALK", FIXED_SEED).moveFacts,
+    usable = { "SLEEP_TALK", "FOCUS_PUNCH", "UPROAR", "CHATTER", "BIDE", "FLY", "TACKLE" },
+    stream = BattleRng.new(FIXED_SEED),
+  }
+  for _ = 1, 12 do
+    Assert.equal(Called.choose(selection).executingMove, "TACKLE", "Sleep Talk draws no source-ineligible move")
+  end
+  selection.usable = { "SLEEP_TALK", "FOCUS_PUNCH", "UPROAR", "CHATTER", "BIDE", "FLY" }
+  local refused = Called.choose(selection)
+  Assert.equal(refused.failed, "no-eligible-moves", "Sleep Talk fails when every usable slot is source-ineligible")
+end
+
+function T.nature_power_uses_the_hgss_terrain_move_table()
+  local Called = calledOwner("terrain move selection owns Nature Power")
+  local tableByTerrain = {
+    plain = "EARTHQUAKE",
+    sand = "EARTHQUAKE",
+    grass = "SEED_BOMB",
+    puddle = "SEED_BOMB",
+    mountain = "ROCK_SLIDE",
+    cave = "ROCK_SLIDE",
+    snow = "BLIZZARD",
+    water = "HYDRO_PUMP",
+    ice = "ICE_BEAM",
+    building = "TRI_ATTACK",
+    great_marsh = "MUD_BOMB",
+    unknown = "AIR_SLASH",
+    will = "TRI_ATTACK",
+  }
+  for terrain, expected in pairs(tableByTerrain) do
+    local decision = Called.choose({
+      requestedMove = "NATURE_POWER",
+      executingMove = "NATURE_POWER",
+      terrain = terrain,
+    })
+    Assert.equal(decision.executingMove, expected, "Nature Power follows the source terrain table at " .. terrain)
+  end
 end
 
 -- Sleep Talk only speaks while its user sleeps: the waking call fails

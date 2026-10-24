@@ -132,8 +132,8 @@ function T.contract_pins_the_current_asset_identities()
       portraitManifestSchema = "g4-mon-portrait-manifest-v2",
     },
     battleData = {
-      cacheFormat = "battle-data-cache-v1",
-      schema = "g4-battle-data-v1",
+      cacheFormat = "battle-data-cache-v2",
+      schema = "g4-battle-data-v2",
     },
     trainerCatalog = {
       cacheFormat = "trainer-catalog-cache-v2",

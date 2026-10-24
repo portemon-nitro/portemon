@@ -2,7 +2,8 @@
 -- facts. Move entries follow the retail ROM's move table widths:
 -- effect u16,
 -- category/power/type/accuracy/pp/effectChance u8, range u16, priority s8,
--- then source-only bytes the semantic projection never leaks. Semantic keys
+-- native flags u8, then source-only bytes the semantic projection never
+-- leaks. Semantic keys
 -- reuse MonSources; behavior bindings come from the BattleSources inventory,
 -- so a move without a binding is an attributed import failure, never a
 -- generic fallback. No LOVE objects or filesystem writes; callers publish
@@ -118,6 +119,11 @@ function BattleDataCompiler.projectFacts(moveId, moveKey, decoded, binding)
     flags = {
       dealsDamage = power > 0,
       checksAccuracy = accuracy > 0,
+      reflectable = decoded.flags % 8 >= 4,
+      snatchable = decoded.flags % 16 >= 8,
+      -- Native move flag 0x10 gates moveNoCopied in
+      -- BattleControllerPlayer_UpdateTargetMoveHistory.
+      mirrorable = decoded.flags % 32 >= 16,
     },
   }
 end
@@ -168,6 +174,7 @@ function BattleDataCompiler.decodeEntry(moveId, entry)
     effectChance = reader:u8(7),
     range = reader:u16le(8),
     priority = priority,
+    flags = reader:u8(11),
   }
 end
 
@@ -224,6 +231,7 @@ function BattleDataCompiler.compile(nativeInput, opts)
         effectChance = decoded.effectChance,
         range = decoded.range,
         priority = decoded.priority,
+        flags = decoded.flags,
       }, binding)
     end
     local compiled = {
@@ -338,6 +346,7 @@ function BattleDataCompiler.compileFromDump(romFs, opts)
           effectChance = record.effectChance,
           range = record.range,
           priority = record.priority,
+          flags = record.flags,
         }
         local facts = BattleDataCompiler.projectFacts(moveId, moveKey, decoded, binding)
         facts.name = record.name

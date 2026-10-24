@@ -117,6 +117,12 @@ local function checkTransitionInputs(inputs)
       error(BattleErrors.invalidState("move frames name a non-negative power-point owner", {}))
     end
   end
+  if inputs.chargeBoost ~= nil and type(inputs.chargeBoost) ~= "boolean" then
+    error(BattleErrors.invalidState("Charge power arrives as an explicit boolean fact", {}))
+  end
+  if inputs.itemTransferAllowed ~= nil and type(inputs.itemTransferAllowed) ~= "boolean" then
+    error(BattleErrors.invalidState("held-item transfer carries its battle-side policy", {}))
+  end
 end
 
 ---@param entries table<integer, unknown> sampled targets under copying
@@ -227,6 +233,8 @@ function MoveExecution.start(inputs)
     party = plan.party,
     usable = plan.usable,
     copiedMove = plan.copiedMove,
+    mirrorMoveCandidates = plan.mirrorMoveCandidates,
+    moveFacts = facts,
     userMoves = plan.userMoves,
     gravity = plan.gravity,
     healBlock = plan.healBlock,
@@ -239,6 +247,14 @@ function MoveExecution.start(inputs)
       failed = decision.failed
     else
       executing = decision.executingMove
+    end
+  end
+  if failed == nil then
+    local imprisonedMoves = inputs.imprisonedMoves
+    if
+      type(imprisonedMoves) == "table" and (imprisonedMoves --[[@as table<string, boolean>]])[executing] == true
+    then
+      failed = "imprison"
     end
   end
   if failed == nil then
@@ -283,15 +299,20 @@ function MoveExecution.start(inputs)
   for _, key in ipairs({
     "friendship",
     "party",
+    "hasLivingReserve",
     "usable",
     "status",
     "copiedMove",
+    "mirrorMoveCandidates",
+    "moveFacts",
     "combat",
     "targetFacts",
+    "targetMoves",
     "burned",
     "guts",
     "weather",
     "weatherSuppressed",
+    "terrain",
     "attackerTypes",
     "defenderTypes",
     "typeChart",
@@ -312,6 +333,8 @@ function MoveExecution.start(inputs)
     "usedMoves",
     "foeWeightHg",
     "beatup",
+    "chargeBoost",
+    "itemTransferAllowed",
   }) do
     if plan[key] ~= nil then
       locals[key] = plan[key]

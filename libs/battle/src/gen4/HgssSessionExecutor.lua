@@ -51,6 +51,7 @@ local MoveExecution = require("libs.battle.src.gen4.MoveExecution")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
 local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
 local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
+local NativeSequenceAction = require("libs.battle.src.gen4.NativeSequenceAction")
 local OutcomePolicy = require("libs.battle.src.gen4.OutcomePolicy")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Progression = require("libs.battle.src.gen4.Progression")
@@ -79,6 +80,8 @@ local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 ---@field private _moneyUpItems table<string, boolean>
 ---@field private _ruleset table<string, unknown>?
 ---@field private _commitLearningHandler fun(state: table<string, unknown>)?
+---@field private _resumeTurnHandler fun(state: table<string, unknown>, budget: integer)
+---@field private _commitSwitchIntentHandler fun(state: table<string, unknown>)
 ---@field private _decisionLease boolean?
 ---@field private _trainerProvisional table<integer, table<string, integer>>
 ---@field private _finalized boolean
@@ -248,6 +251,21 @@ local function checkRestoredShape(state)
     -- the recipient answers: replacement work resumes after the reply.
     if pending.learning ~= nil then
       checkReplacementShape(pending.learning --[[@as table<string, unknown>]])
+    end
+    if pending.switchIntent ~= nil then
+      local intent = pending.switchIntent --[[@as table<string, unknown>]]
+      local actor = intent.actor
+      if
+        type(actor) ~= "table"
+        or not isPositiveInt((actor --[[@as table<string, unknown>]]).combatant)
+        or not isPositiveInt((actor --[[@as table<string, unknown>]]).activation)
+        or not isPositiveInt(intent.position)
+        or not isPositiveInt(intent.actionId)
+        or type(intent.mode) ~= "string"
+        or type(intent.cause) ~= "table"
+      then
+        error(BattleErrors.incompatibleSnapshot("switch continuations preserve their active move owner", {}))
+      end
     end
   elseif state.status == "running" then
     if state.pending ~= nil then
@@ -1152,21 +1170,6 @@ local function checkAttackBinding(state, choice, moveFacts, speciesFacts)
 end
 
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
----@param moveName string executing move identity under ordering
----@return integer compiled move priority for the strike
-local function movePriority(moveFacts, moveName)
-  local record = moveFacts[moveName]
-  if type(record) ~= "table" then
-    error(BattleErrors.missingBehavior("ordering reads its compiled move priority", { key = moveName }))
-  end
-  local priority = (record --[[@as table<string, unknown>]]).priority
-  if type(priority) ~= "number" or priority % 1 ~= 0 then
-    error(BattleErrors.missingBehavior("ordering reads its compiled move priority", { key = moveName }))
-  end
-  return priority --[[@as integer]]
-end
-
----@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
 ---@param moveName string pending move identity under gating
 ---@return integer compiled move power for the gate, zero for status moves
 local function movePower(moveFacts, moveName)
@@ -1230,13 +1233,73 @@ end
 -- Source references: BtlCmd_CalcPaybackPower,
 -- BtlCmd_CalcRevengeDamageMul, BtlCmd_Counter, BtlCmd_MirrorCoat, and
 -- BtlCmd_BeatUp in src/battle/battle_command.c.
+---@param state table<string, unknown> live battle state under redirection
+---@param side integer defending side under redirection
+---@return integer? active Follow Me combatant on the defending side
+local function followMeForSide(state, side)
+  local bag = state.effectBag --[[@as table<string, unknown>]]
+  local latest = nil
+  for _, effect in ipairs(bag:capture()) do
+    local scope = effect.scope --[[@as table<string, unknown>]]
+    if effect.key == "followme" and scope.kind == "active" and type(scope.combatant) == "number" then
+      local combatantId = scope.combatant --[[@as integer]]
+      local combatant = BattleState.combatant(state, combatantId)
+      local active = combatant.active
+      if
+        active ~= nil
+        and active.activation == scope.activation
+        and combatant.hp --[[@as integer]]
+          > 0
+        and BattleState.participant(state, combatant.participant --[[@as integer]]).side == side
+      then
+        latest = combatantId
+      end
+    end
+  end
+  return latest
+end
+
 local StrikeFacts = {}
 
 ---@param state table<string, unknown> live battle state under inspection
 ---@param userId integer striking combatant under the facts
 ---@param foeId integer targeted combatant under the facts
+---@param moveFacts table<string, table<string, unknown>> immutable native move facts
 ---@return table<string, unknown> duel facts for the strike frame
-function StrikeFacts.duel(state, userId, foeId)
+function StrikeFacts.duel(state, userId, foeId, moveFacts)
+  local user = BattleState.combatant(state, userId)
+  local foe = BattleState.combatant(state, foeId)
+  local userActive = user.active --[[@as table<string, unknown>?]]
+  local currentTurn = BattleState.nativeTurn(state)
+  local userFresh = userActive ~= nil and userActive.entryTurn == currentTurn
+  local foeSelectedDamage = false
+  local foeSwitching = false
+  local queue = state.queue --[[@as table<integer, table<string, unknown>>?]]
+  for _, action in ipairs(queue or {}) do
+    local actor = action.actor --[[@as table<string, unknown>]]
+    if actor.combatant == foeId and action.kind == "switch" then
+      foeSwitching = true
+    end
+    if actor.combatant == foeId and action.kind == "attack" then
+      local payload = action.payload --[[@as table<string, unknown>]]
+      local selectedMove = resolveMove(foe.mon, payload.moveSlot)
+      local facts = moveFacts[selectedMove]
+      if type(facts) ~= "table" then
+        error(BattleErrors.missingBehavior("Sucker Punch reads the target's selected move facts", {
+          key = selectedMove,
+        }))
+      end
+      local power = (facts --[[@as table<string, unknown>]]).power
+      if type(power) ~= "number" or power % 1 ~= 0 or power < 0 then
+        error(BattleErrors.missingBehavior("Sucker Punch reads the target's selected move power", {
+          key = selectedMove,
+          fact = "power",
+        }))
+      end
+      foeSelectedDamage = power > 0
+      break
+    end
+  end
   local acted = state.turnActed
   if type(acted) ~= "table" then
     acted = {}
@@ -1307,12 +1370,50 @@ function StrikeFacts.duel(state, userId, foeId)
     end
     return { attacker = attackerId, amount = amount }
   end
+  local function revengeAny()
+    local record = ledger[userId]
+    if type(record) ~= "table" then
+      return false
+    end
+    local taken = record --[[@as table<string, unknown>]]
+    local attackerId = taken.lastAny
+    local amount = taken.lastAnyAmount
+    if type(attackerId) ~= "number" or type(amount) ~= "number" or amount < 1 then
+      return false
+    end
+    local attacker = BattleState.combatant(state, attackerId --[[@as integer]])
+    if
+      attacker.active == nil
+      or attacker.hp --[[@as integer]]
+        <= 0
+    then
+      return false
+    end
+    local side = BattleState.participant(state, attacker.participant --[[@as integer]]).side
+    if side == userSide then
+      return false
+    end
+    return { attacker = attackerId, amount = amount }
+  end
+  local lastAny = revengeAny()
+  local followMeTarget = false --[[@type boolean|integer]]
+  if type(lastAny) == "table" then
+    local attacker = BattleState.combatant(state, lastAny.attacker --[[@as integer]])
+    local attackerSide = BattleState.participant(state, attacker.participant --[[@as integer]]).side
+    followMeTarget = followMeForSide(state, attackerSide) or false
+  end
   return {
+    userFresh = userFresh,
+    userTurn = currentTurn,
+    foeSelectedDamage = foeSelectedDamage,
+    foeSwitching = foeSwitching,
     foeActed = marked[foeId] == true,
     foeHurt = hurt(foeId),
     userHurt = hurt(userId),
     revengePhysical = revenge("lastPhysical", "physical"),
     revengeSpecial = revenge("lastSpecial", "special"),
+    revengeAny = lastAny,
+    followMeTarget = followMeTarget,
   }
 end
 
@@ -1516,6 +1617,96 @@ local function liveEffectBag(state)
   return bag --[[@as table<string, unknown>]]
 end
 
+---@param state table<string, unknown> live battle state under called-move selection
+---@param caller string called move identity under resolution
+---@param actorId integer acting combatant
+---@param targets table<integer, table<string, unknown>> sampled target records
+---@return string? copied move identity and optional four-slot Mirror Move fallback pool
+---@return table<integer, string?>? mirror candidates indexed by battler position
+-- The source histories and selected-action reads mirror BtlCmd_TryMirrorMove,
+-- BtlCmd_TryCopycat, BtlCmd_TryMeFirst, and BtlCmd_TrySketch in
+-- src/battle/battle_command.c and the controller move-history updates.
+function StrikeFacts.calledMove(state, caller, actorId, targets)
+  if caller == "COPYCAT" then
+    local previous = state.lastPreviousMove
+    return type(previous) == "string" and previous or nil
+  end
+  local targetId = type(targets[1]) == "table" and (targets[1] --[[@as table<string, unknown>]]).combatant or nil
+  if type(targetId) ~= "number" then
+    return nil
+  end
+  if caller == "SKETCH" then
+    local recent = state.lastMoves
+    local move = type(recent) == "table" and (recent --[[@as table<integer, string>]])[targetId] or nil
+    return type(move) == "string" and move or nil
+  end
+  if caller == "MIRROR_MOVE" then
+    local copied = state.mirrorMoves
+    local record = type(copied) == "table" and (copied --[[@as table<integer, unknown>]])[actorId] or nil
+    if
+      type(record) == "table" and type((record --[[@as table<string, unknown>]]).move) == "string"
+    then
+      return (record --[[@as table<string, string>]]).move
+    end
+    local hits = state.mirrorMoveHits
+    local sources = type(hits) == "table" and (hits --[[@as table<integer, unknown>]])[actorId] or nil
+    if type(sources) ~= "table" then
+      return nil
+    end
+    local bySource = sources --[[@as table<integer, string>]]
+    local candidates = {} ---@type table<integer, string?>
+    for index, positionId in
+      ipairs(state.positionOrder --[[@as integer[] ]])
+    do
+      local occupant = BattleState.position(state, positionId).occupant
+      if occupant ~= nil then
+        candidates[index] = bySource[
+          occupant --[[@as integer]]
+        ]
+      end
+    end
+    return nil, candidates
+  end
+  if caller == "ME_FIRST" then
+    local target = BattleState.combatant(state, targetId)
+    local queue = state.queue --[[@as table<integer, table<string, unknown>>?]]
+    local selectedMove = nil
+    for _, action in ipairs(queue or {}) do
+      local actor = action.actor --[[@as table<string, unknown>]]
+      if actor.combatant == targetId and action.kind == "attack" then
+        local payload = action.payload --[[@as table<string, unknown>]]
+        selectedMove = resolveMove(target.mon, payload.moveSlot)
+        break
+      end
+    end
+    if selectedMove == nil or selectedMove == "STRUGGLE" then
+      return nil
+    end
+    local bag = liveEffectBag(state)
+    for _, effect in ipairs(bag:capture()) do
+      local scope = effect.scope --[[@as table<string, unknown>]]
+      if effect.key == "encore" and scope.kind == "active" and scope.combatant == targetId then
+        local effectState = effect.state --[[@as table<string, unknown>]]
+        local move = effectState.move
+        local moves = (target.mon --[[@as table<string, unknown>]]).moves
+        if type(move) == "string" and type(moves) == "table" then
+          for _, entry in
+            ipairs(moves --[[@as table<integer, unknown>]])
+          do
+            if
+              type(entry) == "table" and (entry --[[@as table<string, unknown>]]).move == move
+            then
+              return move
+            end
+          end
+        end
+      end
+    end
+    return selectedMove
+  end
+  return nil
+end
+
 ---@param combatant table<string, unknown> live combatant under fact sampling
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
 ---@return table<string, integer> live level and raw battle stats before stages
@@ -1574,6 +1765,11 @@ local function projectCombatant(combatant, speciesFacts, bridge)
   stats.maxHp = ceiling --[[@as integer]]
   for _, key in ipairs(STAGED_STATS) do
     stats[key] = StatStages.effective(stats[key] --[[@as integer]], stages[key] --[[@as integer]], key)
+  end
+  if
+    bridge:powerTrick(combatant.id --[[@as integer]])
+  then
+    stats.attack, stats.defense = stats.defense, stats.attack
   end
   -- Persistent conditions reshape effective Speed at this checkpoint:
   -- paralysis quarters unless the holder's passive answers instead.
@@ -1647,7 +1843,10 @@ end
 ---@field typeMap table<integer, string[]> semantic types per active combatant
 ---@field occupants table<integer, integer> active combatant per position
 ---@field stats table<integer, table<string, integer>> live level and battle stats per active combatant
+---@field entryTurns table<integer, integer> turn each active combatant entered its current position
 ---@field sides table<integer, integer> owning side per active combatant
+---@field sleeping table<integer, boolean> active sleeping answer per combatant
+---@field soundproof table<integer, boolean> active Soundproof answer per combatant
 
 -- Samples the per-entry facts every finite timing pass consumes over the
 -- same projections strikes use: stage-effective stats, semantic types,
@@ -1663,8 +1862,12 @@ local function sampleTimingState(state, speciesFacts)
   local ceilings = {} ---@type table<integer, integer>
   local typeMap = {} ---@type table<integer, string[]>
   local occupants = {} ---@type table<integer, integer>
+  local entryTurns = {} ---@type table<integer, integer>
   local stats = {} ---@type table<integer, table<string, integer>>
   local sides = {} ---@type table<integer, integer>
+  local sleeping = {} ---@type table<integer, boolean>
+  local soundproof = {} ---@type table<integer, boolean>
+  local view = BattleContext.wrap(state)
   local bridge = NativePassiveBridge.wrap(state)
   for _, combatantId in
     ipairs(state.combatantOrder --[[@as integer[] ]])
@@ -1682,8 +1885,24 @@ local function sampleTimingState(state, speciesFacts)
       typeMap[combatantId] = combatantTypes(combatant, speciesFacts)
       stats[combatantId] = { level = projected.level, attack = projected.attack, defense = projected.defense }
       sides[combatantId] = BattleState.participant(state, combatant.participant --[[@as integer]]).side
+      local mon = combatant.mon --[[@as table<string, unknown>]]
+      local condition = mon.condition --[[@as table<string, unknown>]]
+      for _, effect in
+        ipairs(condition.effects --[[@as table<integer, table<string, unknown>>]])
+      do
+        if effect.key == "sleep" then
+          sleeping[combatantId] = true
+          break
+        end
+      end
+      soundproof[combatantId] = mon.ability == "SOUNDPROOF" and not view:hasBattleEffect(combatantId, "GASTRO_ACID")
       --[[@as integer]]
       local active = combatant.active --[[@as table<string, unknown>]]
+      local entryTurn = active.entryTurn
+      if type(entryTurn) ~= "number" or entryTurn % 1 ~= 0 or entryTurn < 0 then
+        error(BattleErrors.invalidState("timing samples read each active entry turn", { combatant = combatantId }))
+      end
+      entryTurns[combatantId] = entryTurn
       occupants[
         active.position --[[@as integer]]
       ] = combatantId
@@ -1695,8 +1914,11 @@ local function sampleTimingState(state, speciesFacts)
     ceilings = ceilings,
     typeMap = typeMap,
     occupants = occupants,
+    entryTurns = entryTurns,
     stats = stats,
     sides = sides,
+    sleeping = sleeping,
+    soundproof = soundproof,
   }
 end
 
@@ -1757,7 +1979,7 @@ local function moveKeysOf(mon)
     ipairs(moves --[[@as table<integer, unknown>]])
   do
     local record = entry --[[@as table<string, unknown>]]
-    if type(record) == "table" and type(record.move) == "string" and record.move ~= "" then
+    if type(record) == "table" and type(record.move) == "string" and record.move ~= "" and record.move ~= "NONE" then
       keys[#keys + 1] = record.move --[[@as string]]
     end
   end
@@ -1786,6 +2008,8 @@ end
 ---@param state table<string, unknown> live battle state under the party read
 ---@param combatant table<string, unknown> acting combatant under the party read
 ---@return string[] benched roster-mate move keys for assist draws
+-- BtlCmd_TryAssist scans every move slot of party members except the selected
+-- user, including zero-PP moves, while skipping empty and egg entries.
 local function benchKeysOf(state, combatant)
   local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
   local keys = {} ---@type string[]
@@ -1795,7 +2019,7 @@ local function benchKeysOf(state, combatant)
     if combatantId ~= combatant.id then
       local mate = BattleState.combatant(state, combatantId --[[@as integer]])
       local mon = mate.mon
-      if type(mon) == "table" then
+      if type(mon) == "table" and mon.species ~= "NONE" and mon.species ~= "EGG" then
         for _, key in
           ipairs(moveKeysOf(mon --[[@as table<string, unknown>]]))
         do
@@ -1890,8 +2114,7 @@ local function weatherSuppressed(state)
       and combatant.hp --[[@as integer]]
         > 0
     then
-      local mon = combatant.mon --[[@as table<string, unknown>]]
-      local ability = mon.ability
+      local ability = NativePassiveBridge.wrap(state):abilityOf(combatantId)
       if ability == "CLOUD_NINE" or ability == "AIR_LOCK" then
         return true
       end
@@ -1916,11 +2139,48 @@ local function strikeCombatFacts(state, combatant, defender, speciesFacts, categ
   local bridge = NativePassiveBridge.wrap(state)
   local attackerStats = projectCombatant(combatant, speciesFacts, bridge)
   local attackerRaw, attackerStages = unstagedCombatant(combatant, speciesFacts)
-  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, category, bridge)
+  if
+    bridge:powerTrick(combatant.id --[[@as integer]])
+  then
+    attackerRaw.attack, attackerRaw.defense = attackerRaw.defense, attackerRaw.attack
+  end
+  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "physical", bridge)
+  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "special", bridge)
   local defenderStats = projectCombatant(defender, speciesFacts, bridge)
   local defenderRaw, defenderStages = unstagedCombatant(defender, speciesFacts)
-  statusAdjustedDefense(defenderStats, defender.id --[[@as integer]], defender.mon, category, bridge)
-  local attackerAbility, attackerCondition = statusFacts(combatant.mon)
+  if
+    bridge:powerTrick(defender.id --[[@as integer]])
+  then
+    defenderRaw.attack, defenderRaw.defense = defenderRaw.defense, defenderRaw.attack
+  end
+  statusAdjustedDefense(defenderStats, defender.id --[[@as integer]], defender.mon, "physical", bridge)
+  statusAdjustedDefense(defenderStats, defender.id --[[@as integer]], defender.mon, "special", bridge)
+  local _, attackerCondition = statusFacts(combatant.mon)
+  local attackerAbility = bridge:abilityOf(combatant.id --[[@as integer]])
+  -- Called moves resolve after this projection, while HGSS CalcMoveDamage
+  -- selects the stat pair from the executed move's category.
+  local factsByCategory = {
+    physical = combatPair(
+      attackerStats,
+      attackerRaw,
+      attackerStages,
+      defenderStats,
+      defenderRaw,
+      defenderStages,
+      "physical",
+      moveName
+    ),
+    special = combatPair(
+      attackerStats,
+      attackerRaw,
+      attackerStages,
+      defenderStats,
+      defenderRaw,
+      defenderStages,
+      "special",
+      moveName
+    ),
+  }
   return {
     facts = combatPair(
       attackerStats,
@@ -1932,12 +2192,14 @@ local function strikeCombatFacts(state, combatant, defender, speciesFacts, categ
       category,
       moveName
     ),
+    factsByCategory = factsByCategory,
     attackerStats = attackerStats,
     defenderStats = defenderStats,
     attackerAbility = attackerAbility,
     attackerCondition = attackerCondition,
     weather = activeWeather(state),
     weatherSuppressed = weatherSuppressed(state),
+    terrain = (state.environment --[[@as table<string, unknown>]]).terrain or "plain",
   }
 end
 
@@ -1951,10 +2213,20 @@ end
 ---@param stream table<string, unknown> battle stream drawing random targets
 ---@return integer[] ordered recipient combatants under the action
 local function resolveStrikeRecipients(state, actorId, policy, selected, stream)
-  if policy == "legacy" then
+  if policy == "legacy" or policy == "selected_foe" then
     local defenderId = resolveTarget(state, actorId, selected)
     if defenderId == nil then
       return {}
+    end
+    local defender = BattleState.combatant(state, defenderId)
+    local defenderSide = BattleState.participant(state, defender.participant --[[@as integer]]).side
+    local user = BattleState.combatant(state, actorId)
+    local userSide = BattleState.participant(state, user.participant --[[@as integer]]).side
+    if defenderSide ~= userSide then
+      local redirect = followMeForSide(state, defenderSide)
+      if redirect ~= nil then
+        return { redirect }
+      end
     end
     return { defenderId }
   end
@@ -1980,8 +2252,9 @@ end
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
 ---@param category unknown executing move category selecting the stat pair
 ---@param moveName string executing move identity under the error context
+---@param moveFacts table<string, table<string, unknown>> immutable native move facts
 ---@return table<string, unknown> ordered targets plus per-recipient and first-recipient facts
-local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, category, moveName)
+local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, category, moveName, moveFacts)
   local userMon = combatant.mon --[[@as table<string, unknown>]]
   local recentMoves = state.lastMoves
   if type(recentMoves) ~= "table" then
@@ -2010,17 +2283,23 @@ local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, c
     local attackerStats = strike.attackerStats --[[@as table<string, integer>]]
     local foeMon = defender.mon --[[@as table<string, unknown>]]
     local foeGender = genderOf(foeMon, speciesFacts)
+    local semiInvulnerable = require("libs.battle.src.gen4.SequenceMoveState").semiInvulnerable(state, defenderId)
     if foeGender ~= nil then
       genders[defenderId] = foeGender
     end
     targetFacts[defenderId] = {
       combat = strike.facts,
+      combatByCategory = strike.factsByCategory,
       speeds = { user = attackerStats.speed, foe = defenderStats.speed },
-      duel = StrikeFacts.duel(state, combatant.id --[[@as integer]], defenderId),
+      duel = StrikeFacts.duel(state, combatant.id --[[@as integer]], defenderId, moveFacts),
       foeLevel = defenderStats.level,
-      abilities = { user = userMon.ability, foe = foeMon.ability },
+      abilities = {
+        user = NativePassiveBridge.wrap(state):abilityOf(combatant.id --[[@as integer]]),
+        foe = NativePassiveBridge.wrap(state):abilityOf(defenderId),
+      },
       foeWeightHg = defenderStats.weightHg,
       beatup = StrikeFacts.beatup(state, combatant, defender, speciesFacts),
+      semiInvulnerable = semiInvulnerable,
     }
     defenderTypes[defenderId] = combatantTypes(defender, speciesFacts)
     targets[#targets + 1] = { combatant = defenderId }
@@ -2154,7 +2433,7 @@ local function innateFactsFor(state, context, health, ceilings, combatantId)
       maxHealth = { [combatantId] = ceilings[combatantId] },
       status = typed:statusOf(combatantId),
       weather = activeWeather(state),
-      ability = mon.ability,
+      ability = NativePassiveBridge.wrap(state):abilityOf(combatantId),
     },
   }
 end
@@ -2192,8 +2471,7 @@ local function answerAbilityPhase(state, context, health, ceilings, answeredPois
   if combatant.active == nil then
     return nil
   end
-  local mon = combatant.mon --[[@as table<string, unknown>]]
-  local ability = mon.ability
+  local ability = NativePassiveBridge.wrap(state):abilityOf(combatantId)
   if type(ability) ~= "string" or ability == "" or ability == NativePassiveBridge.SENTINEL_ABILITY then
     return nil
   end
@@ -2521,7 +2799,8 @@ end
 ---@param outgoing integer departing combatant identity
 ---@param incoming integer arriving combatant identity
 ---@param activation integer entry token of the incoming occupant
-local function settleEntry(state, outgoing, incoming, activation)
+---@param preserve table<string, boolean>? effect keys reserved for Baton Pass transfer
+local function settleEntry(state, outgoing, incoming, activation, preserve)
   -- Replacement clears outgoing activation-local instances per
   -- definition lifecycle while carry-policy state follows its combatant
   -- dormant, restarts the outgoing toxic counter, and re-anchors the
@@ -2537,9 +2816,11 @@ local function settleEntry(state, outgoing, incoming, activation)
       incoming --[[@as integer]]
     ] = nil
   end
+  local hitSlots = state.lastHitSlots --[[@as table<integer, integer>]]
+  hitSlots[incoming] = nil
   local bag = liveEffectBag(state)
   local departed = BattleState.combatant(state, outgoing).mon --[[@as table<string, unknown>]]
-  Status.switchReset(departed, bag, outgoing, activation)
+  Status.switchReset(departed, bag, outgoing, activation, preserve)
   local arriving = BattleState.combatant(state, incoming).mon --[[@as table<string, unknown>]]
   Status.switchReset(arriving, bag, incoming, activation)
 end
@@ -3080,6 +3361,9 @@ end
 ---@field applyResiduals fun()
 ---@field closeTurn fun()
 ---@field commitLearning fun(state: table<string, unknown>)
+---@field resumeTurn fun(state: table<string, unknown>, budget: integer)
+---@field commitSwitchIntent fun(state: table<string, unknown>)
+---@field bindRuleset fun(ruleset: HgssRuleset)
 ---@field settleEntryTiming fun(state: table<string, unknown>, entrant: integer)
 ---@field settlePostReplacement fun(state: table<string, unknown>)
 
@@ -3155,7 +3439,8 @@ function StrikeFacts.redrawCalledTargets(state, combatant, actor, payload, strea
     frame.failed = "no-targets"
     return nil
   end
-  local rebuilt = recipientStrikeFacts(state, combatant, redrawn, started.speciesFacts, drawnCategory, drawn)
+  local rebuilt =
+    recipientStrikeFacts(state, combatant, redrawn, started.speciesFacts, drawnCategory, drawn, started.moveFacts)
   node.targets = rebuilt.targets
   frame.combat = rebuilt.facts
   frame.targetFacts = rebuilt.targetFacts
@@ -3171,11 +3456,11 @@ function StrikeFacts.redrawCalledTargets(state, combatant, actor, payload, strea
   return rebuilt.targets
 end
 
--- Records an executed strike's move in the last-move, received-hit, and
--- distinct-move ledgers exactly once per strike, mirroring the native
--- moveNoHit pair. The distinct-move ledger keys on the entry token in
--- first-use order, so withdrawing resets the count like the native
--- lastResortMoves; struggle records harmlessly beside real moves.
+-- Records the executed move identity in global and per-combatant histories,
+-- then updates received-hit, Mirror Move, and distinct-move ledgers. The
+-- caller-owned Last Resort ledger still uses the requested slot move.
+-- Source history updates are in BattleControllerPlayer_UpdateMoveHistory
+-- and BattleControllerPlayer_UpdateTargetMoveHistory in battle_controller_player.c.
 ---@param state table<string, unknown>
 ---@param actor table<string, unknown>
 ---@param node unknown
@@ -3185,8 +3470,9 @@ function StrikeFacts.recordHistory(state, actor, node, settledTargets)
     return
   end
   local started = node.locals --[[@as table<string, unknown>]]
-  local move = node.requestedMove
-  if started.failed ~= nil or type(move) ~= "string" then
+  local requestedMove = node.requestedMove
+  local move = node.executingMove
+  if started.failed ~= nil or type(requestedMove) ~= "string" or type(move) ~= "string" then
     return
   end
   if type(state.lastMoves) ~= "table" then
@@ -3196,10 +3482,29 @@ function StrikeFacts.recordHistory(state, actor, node, settledTargets)
   lastMoves[
     actor.combatant --[[@as integer]]
   ] = move
+  state.lastPreviousMove = move
   if type(state.lastHits) ~= "table" then
     state.lastHits = {}
   end
   local lastHits = state.lastHits --[[@as table<integer, table<string, unknown>>]]
+  local lastHitSlots = state.lastHitSlots --[[@as table<integer, integer>]]
+  local moveFacts = started.moveFacts --[[@as table<string, table<string, unknown>>]]
+  local facts = moveFacts[move]
+  if type(facts) ~= "table" then
+    error(BattleErrors.missingBehavior("move history resolves its executing move facts", { key = move }))
+  end
+  local flags = (facts --[[@as table<string, unknown>]]).flags
+  local mirrorable = type(flags) == "table" and (flags --[[@as table<string, unknown>]]).mirrorable == true
+  local mirrorMoves = state.mirrorMoves
+  if type(mirrorMoves) ~= "table" then
+    mirrorMoves = {}
+    state.mirrorMoves = mirrorMoves
+  end
+  local mirrorMoveHits = state.mirrorMoveHits
+  if type(mirrorMoveHits) ~= "table" then
+    mirrorMoveHits = {}
+    state.mirrorMoveHits = mirrorMoveHits
+  end
   for _, settled in ipairs(settledTargets) do
     lastHits[
       settled.combatant --[[@as integer]]
@@ -3207,6 +3512,35 @@ function StrikeFacts.recordHistory(state, actor, node, settledTargets)
       move = move,
       user = actor.combatant --[[@as integer]],
     }
+    if type(node.ppOwnerSlot) == "number" then
+      lastHitSlots[
+        settled.combatant --[[@as integer]]
+      ] = node.ppOwnerSlot --[[@as integer]]
+    else
+      lastHitSlots[
+        settled.combatant --[[@as integer]]
+      ] = nil
+    end
+    if mirrorable then
+      mirrorMoves[
+        settled.combatant --[[@as integer]]
+      ] = {
+        move = move,
+        user = actor.combatant --[[@as integer]],
+      }
+      local hitSources = mirrorMoveHits[
+        settled.combatant --[[@as integer]]
+      ]
+      if type(hitSources) ~= "table" then
+        hitSources = {}
+        mirrorMoveHits[
+          settled.combatant --[[@as integer]]
+        ] = hitSources
+      end
+      hitSources[
+        actor.combatant --[[@as integer]]
+      ] = move
+    end
   end
   if type(state.usedMoves) ~= "table" then
     state.usedMoves = {}
@@ -3222,11 +3556,11 @@ function StrikeFacts.recordHistory(state, actor, node, settledTargets)
     ] = entry
   end
   for _, key in ipairs(entry) do
-    if key == move then
+    if key == requestedMove then
       return
     end
   end
-  entry[#entry + 1] = move
+  entry[#entry + 1] = requestedMove
 end
 
 ---@param executor HgssSessionExecutor live native session owning the turn
@@ -3238,6 +3572,12 @@ end
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
 ---@return NativeTurnHandlers lifecycle handlers bound to the session
 local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, chart, moneySet, battleKind)
+  local turnRuleset = nil --[[@type HgssRuleset?]]
+  ---@param ruleset HgssRuleset native scheduler under this turn owner
+  local function bindRuleset(ruleset)
+    assert(turnRuleset == nil, "the turn owner binds one ruleset")
+    turnRuleset = ruleset
+  end
   -- The resumable reward owner resolves its levels, stats, learnsets,
   -- and yields through the immutable session facts on every faint,
   -- rebuilt here from the same tables the snapshots carry.
@@ -3257,6 +3597,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- history behind Last Resort accumulates until entries turn over.
     state.turnStrikes = {}
     state.turnActed = {}
+    state.turnItemActivations = {}
     -- The turn strike tally behind hit occurrence identities restarts
     -- with the turn beside the revenge ledger: presentation only, so a
     -- missing tally on older states simply starts at zero.
@@ -3275,10 +3616,20 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       local kind = choice.kind --[[@as string]]
       local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
       local priority = bracketFor(kind)
+      local forcedMove = nil
       if kind == "attack" then
         local payload = choice.payload --[[@as table<string, unknown>]]
-        local moveName = resolveMove(combatant.mon, payload.moveSlot)
-        priority = movePriority(moveFacts, moveName)
+        local stagedMove = NativeSequenceAction.stage(
+          state,
+          choices,
+          actor.combatant --[[@as integer]],
+          combatant.mon,
+          payload,
+          moveFacts,
+          bracketFor("switch") + 1
+        )
+        forcedMove = stagedMove.forcedMove
+        priority = stagedMove.priority --[[@as integer]]
       end
       local speed = projectCombatant(combatant, speciesFacts, bridge).speed
       -- Tailwind doubles its side sampled speed at order time.
@@ -3318,16 +3669,27 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       if kind == "attack" then
         orderContext.moveUse = { user = actor.combatant }
       end
+      local heldItemAtOrder = (combatant.mon --[[@as table<string, unknown>]]).heldItem
       local order = bridge:orderFacts(actor.combatant --[[@as integer]], orderContext)
+      if (heldItemAtOrder == "QUICK_CLAW" and order.first) or (heldItemAtOrder == "CUSTAP_BERRY" and order.consume) then
+        local activations = state.turnItemActivations --[[@as table<integer, string>]]
+        activations[
+          actor.combatant --[[@as integer]]
+        ] = heldItemAtOrder
+      end
       if order.consume == true then
         BattleContext.wrap(state):consumeHeldItem(actor.combatant --[[@as integer]])
       end
       local boosted, lowered, stalled = order.first, order.last, order.stall
+      local actionPayload = copyValue(choice.payload)
+      if forcedMove ~= nil then
+        (actionPayload --[[@as table<string, unknown>]]).forcedMove = forcedMove
+      end
       candidates[#candidates + 1] = {
         id = ordinal,
         actor = { combatant = actor.combatant, activation = actor.activation },
         kind = kind,
-        payload = copyValue(choice.payload),
+        payload = actionPayload,
         selectedOrdinal = ordinal,
         priority = priority,
         speed = speed,
@@ -3388,6 +3750,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   --- obligation for turn-end replacement work.
   ---@param state table<string, unknown> live battle state under faint settlement
   local function sweepFaints(state)
+    require("libs.battle.src.gen4.NativeFaintReactions").resolve(state)
     local detected = false
     for _, combatantId in
       ipairs(state.combatantOrder --[[@as integer[] ]])
@@ -3571,6 +3934,43 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     commitTimingHealth(state, sample.health, sample.ceilings)
     sweepExpiredEffects(state)
     sweepFaints(state)
+    if timing == "entry" then
+      local entrant = view:entryOf(target)
+      local wish = view:sideEffect(sample.sides[target], "sacrificewish")
+      if
+        wish ~= nil
+        and entrant.hp --[[@as integer]]
+          > 0
+      then
+        local effect = wish --[[@as table<string, unknown>]]
+        local wishState = effect.state --[[@as table<string, unknown>]]
+        local mode = wishState.mode
+        assert(mode == "healing" or mode == "lunar", "sacrifice wishes carry a known recovery mode")
+        local cause = { kind = "sacrificewish", combatant = target }
+        local status = view:statusOf(target)
+        if status ~= nil then
+          view:cureStatus(target, status, cause)
+        end
+        local healed = view:heal(target, entrant.maxHp --[[@as integer]], cause)
+        view:emit("healed", cause, { target = target, restored = healed.after - healed.before })
+        if mode == "lunar" then
+          local mon = BattleState.combatant(state, target).mon --[[@as table<string, unknown>]]
+          local slots = mon.moves --[[@as table<integer, table<string, unknown>>]]
+          for _, slot in ipairs(slots) do
+            local facts = moveFacts[
+              slot.move --[[@as string]]
+            ]
+            assert(type(facts) == "table", "Lunar Dance restores only known move PP")
+            local basePp = facts.basePp
+            local ppUps = slot.ppUps
+            assert(type(basePp) == "number" and type(ppUps) == "number", "Lunar Dance reads complete move PP")
+            slot.pp = basePp + math.floor(basePp * ppUps / 5)
+          end
+          view:emit("pp-restored", cause, { target = target, moves = #slots })
+        end
+        view:removeBattleEffect(target, "sacrificewish")
+      end
+    end
     return context.blockedBy --[[@as string?]]
   end
 
@@ -3600,6 +4000,16 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- selection constraints gate the same strike the path would execute.
     local payload = action.payload --[[@as table<string, unknown>]]
     local moveName, ownerSlot = resolveMove(combatant.mon, payload.moveSlot)
+    if type(payload.forcedMove) == "string" then
+      moveName = payload.forcedMove
+      ownerSlot = nil
+    end
+    if
+      context:hasBattleEffect(actor.combatant --[[@as integer]], "bide")
+    then
+      moveName = "BIDE"
+      ownerSlot = nil
+    end
     local pendingPower = movePower(moveFacts, moveName)
     if
       invokeTiming(state, "beforeAction", actor.combatant --[[@as integer]], { move = moveName, power = pendingPower })
@@ -3623,6 +4033,83 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       })
     end
     if not gate.acts then
+      return
+    end
+    if
+      context:hasBattleEffect(actor.combatant --[[@as integer]], "bide")
+    then
+      local bag = state.effectBag --[[@as table<string, unknown>]]
+      local captured = bag:capture() --[[@as table<integer, table<string, unknown>>]]
+      local storedState = nil
+      for _, effect in ipairs(captured) do
+        local scope = effect.scope --[[@as table<string, unknown>]]
+        if
+          effect.key == "bide"
+          and scope.kind == "active"
+          and scope.combatant == actor.combatant
+          and scope.activation == actor.activation
+        then
+          local instance = bag:get(effect.id --[[@as integer]])
+          assert(instance ~= nil, "Bide releases from a live effect record")
+          storedState = (instance --[[@as table<string, unknown>]]).state
+          break
+        end
+      end
+      assert(type(storedState) == "table", "Bide releases from its active storage state")
+      local bideState = storedState --[[@as table<string, unknown>]]
+      local storedDamage = bideState.damage --[[@as integer]]
+      local target = nil
+      if storedDamage > 0 then
+        local attacker = bideState.attacker --[[@as integer]]
+        if attacker > 0 then
+          local candidate = BattleState.combatant(state, attacker)
+          if
+            candidate.active ~= nil
+            and candidate.hp --[[@as integer]]
+              > 0
+            and BattleState.participant(state, candidate.participant --[[@as integer]]).side
+              ~= BattleState.participant(state, combatant.participant --[[@as integer]]).side
+          then
+            target = attacker
+          end
+        end
+        if target == nil then
+          local opposing = {} ---@type integer[]
+          local userSide = BattleState.participant(state, combatant.participant --[[@as integer]]).side
+          for _, candidateId in
+            ipairs(state.combatantOrder --[[@as integer[] ]])
+          do
+            local candidate = BattleState.combatant(state, candidateId)
+            if
+              candidate.active ~= nil
+              and candidate.hp --[[@as integer]]
+                > 0
+              and BattleState.participant(state, candidate.participant --[[@as integer]]).side ~= userSide
+            then
+              opposing[#opposing + 1] = candidateId
+            end
+          end
+          if #opposing > 0 then
+            target =
+              opposing[stream:nextU16("bide_target", { kind = "bide", combatant = actor.combatant }) % #opposing + 1]
+          end
+        end
+      end
+      local cause = { key = "BIDE" }
+      executor:_observeTrainerMove(state, actor.combatant --[[@as integer]], "BIDE")
+      StrikeFacts.recordHistory(state, actor, {
+        requestedMove = "BIDE",
+        executingMove = "BIDE",
+        locals = { moveFacts = moveFacts },
+      }, { { combatant = target or actor.combatant } })
+      context:emit("move-used", cause, { user = actor.combatant, targets = 1 })
+      if target ~= nil then
+        local outcome = context:damage(target --[[@as integer]], storedDamage * 2, cause)
+        local dealt = outcome.before - outcome.after
+        context:noteDamageTaken(target --[[@as integer]], actor.combatant --[[@as integer]], "physical", dealt)
+        context:emit("struck", cause, { target = target, hitIndex = 1, damage = dealt })
+      end
+      context:removeBattleEffect(actor.combatant --[[@as integer]], "bide")
       return
     end
     -- Executed strikes reveal their move to every opposing trainer
@@ -3653,26 +4140,85 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     if #targetIds == 0 then
       return
     end
+    local executionActorId = actor.combatant --[[@as integer]]
+    local selectedTarget = payload.target --[[@as table<string, unknown>]]
+    local MoveInterference = require("libs.battle.src.gen4.NativeMoveInterference")
+    local moveFlags = moveRecord.flags
+    local interception = nil --[[@type table<string, unknown>?]]
+    if type(moveFlags) == "table" then
+      interception = MoveInterference.resolve(
+        state,
+        moveName,
+        executionActorId,
+        targetIds,
+        moveFlags --[[@as table<string, unknown>]]
+      )
+    end
+    if interception ~= nil then
+      executionActorId = interception.actor --[[@as integer]]
+      selectedTarget = { kind = "combatant", combatant = interception.target }
+      if interception.kind == "magiccoat" then
+        local redirected = MoveInterference.magicCoatRecipient(
+          state,
+          executionActorId,
+          interception.target --[[@as integer]],
+          moveName,
+          moveRecord --[[@as table<string, unknown>]],
+          itemFacts
+        )
+        local recipient = redirected.combatant --[[@as integer]]
+        targetIds = { recipient }
+        interception.redirectAbility = redirected.ability
+        interception.redirectTarget = redirected.ability ~= nil and recipient or nil
+        interception.redirectMoveType = redirected.moveType
+        selectedTarget = { kind = "combatant", combatant = targetIds[1] }
+      else
+        local targetPolicy = effectivePolicy(state, executionActorId, policy)
+        targetIds = resolveStrikeRecipients(state, executionActorId, targetPolicy, selectedTarget, stream)
+        if #targetIds == 0 then
+          return
+        end
+      end
+      executor:_observeTrainerMove(state, executionActorId, moveName)
+    end
+    local executionActor = actor
+    local effectiveCombatant = combatant
+    if executionActorId ~= actor.combatant then
+      effectiveCombatant = BattleState.combatant(state, executionActorId)
+      executionActor = { combatant = executionActorId }
+      executionActor.activation = assert(effectiveCombatant.active, "intercepting actors remain active").activation
+    end
+    local sequenceState = require("libs.battle.src.gen4.SequenceMoveState").readLive(state, executionActorId)
+    local chargeBoost = sequenceState ~= nil and sequenceState.electricBoost == true
     local category = type(moveRecord) == "table" and (moveRecord --[[@as table<string, unknown>]]).category or nil
     -- One strike-facts projection keeps the turn closure inside its
     -- upvalue budget: every recipient's staged pair, types, speeds,
     -- duel context, level, abilities, and weight sample from its own
     -- record, with the first recipient's scalars behind the legacy
     -- single-target readers.
-    local strike = recipientStrikeFacts(state, combatant, targetIds, speciesFacts, category, moveName)
+    local strike =
+      recipientStrikeFacts(state, effectiveCombatant, targetIds, speciesFacts, category, moveName, moveFacts)
     local facts = strike.facts
     local attackerAbility = strike.attackerAbility
     local attackerCondition = strike.attackerCondition
     local defenderTypes = strike.defenderTypes
-    local moves = (combatant.mon --[[@as table<string, unknown>]]).moves
+    local ppOwnerMoves = (combatant.mon --[[@as table<string, unknown>]]).moves
+    local moves = (effectiveCombatant.mon --[[@as table<string, unknown>]]).moves
     assert(type(moves) == "table", "strike frames carry their admitted move list")
-    local userMon = combatant.mon --[[@as table<string, unknown>]]
+    assert(type(ppOwnerMoves) == "table", "move PP remains owned by the selected slot")
+    local userMon = effectiveCombatant.mon --[[@as table<string, unknown>]]
     -- The recent-move record stays legitimately absent on fresh
     -- battles, so a missing ledger still reads as never-struck.
     local recentMoves = state.lastMoves
     if type(recentMoves) ~= "table" then
       recentMoves = {}
     end
+    local copiedMove, mirrorMoveCandidates = StrikeFacts.calledMove(
+      state,
+      moveName,
+      executionActorId,
+      strike.targets --[[@as table<integer, table<string, unknown>>]]
+    )
     -- Source-law facts the strike frame carries beside the staged pair:
     -- turn interaction for revenge-law handlers, stage-effective speeds
     -- for weightless power, defender level and weight for knockout and
@@ -3680,33 +4226,88 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- item with its immutable throw facts, user individual values for
     -- hidden power, the distinct-move history for last resort, and the
     -- beat-up party. Absent facts fail in their handler, never default.
-    local user = StrikeFacts.user(state, actor, userMon)
+    local user = StrikeFacts.user(state, executionActor, userMon)
+    -- Magic Coat and Snatch run after the selected actor's native move
+    -- failure checks. Interception changes who executes the move, but it
+    -- does not move those earlier legality checks to the interceptor.
+    local userSide = BattleState.participant(state, combatant.participant --[[@as integer]]).side
+    local targetMoves = {} ---@type table<integer, string[]>
+    local imprisonedMoves = {} ---@type table<string, boolean>
+    local effectBag = liveEffectBag(state)
+    local effectRecords = effectBag:capture()
+    for _, effect in ipairs(effectRecords) do
+      if effect.key == "imprison" then
+        local scope = effect.scope --[[@as table<string, unknown>]]
+        local ownerId = scope.combatant
+        if
+          scope.kind == "active"
+          and type(ownerId) == "number"
+          and context:hasBattleEffect(ownerId --[[@as integer]], "imprison")
+        then
+          local owner = BattleState.combatant(state, ownerId --[[@as integer]])
+          local ownerSide = BattleState.participant(state, owner.participant --[[@as integer]]).side
+          if ownerSide ~= userSide then
+            local effectState = effectBag:get(effect.id --[[@as integer]])
+            assert(type(effectState) == "table", "Imprison instances carry their move list")
+            local effectRecord = effectState --[[@as table<string, unknown>]]
+            local storedState = effectRecord.state
+            assert(type(storedState) == "table", "Imprison instances carry validated state")
+            local storedMoves = (storedState --[[@as table<string, unknown>]]).moves
+            assert(type(storedMoves) == "table", "Imprison state carries its user's moves")
+            for _, move in
+              ipairs(storedMoves --[[@as string[] ]])
+            do
+              imprisonedMoves[move] = true
+            end
+          end
+        end
+      end
+    end
+    for _, positionId in
+      ipairs(state.positionOrder --[[@as integer[] ]])
+    do
+      local occupant = BattleState.position(state, positionId).occupant
+      if occupant ~= nil then
+        local opponent = BattleState.combatant(state, occupant --[[@as integer]])
+        local opponentSide = BattleState.participant(state, opponent.participant --[[@as integer]]).side
+        if opponentSide ~= userSide then
+          targetMoves[
+            occupant --[[@as integer]]
+          ] =
+            moveKeysOf(opponent.mon --[[@as table<string, unknown>]])
+        end
+      end
+    end
     local inputs = {
       actionId = action.id,
-      actor = { combatant = actor.combatant, activation = actor.activation },
+      actor = executionActor,
       requestedMove = moveName,
       executingMove = moveName,
       ppOwnerSlot = ownerSlot,
-      calledBy = nil,
-      selectedTarget = copyValue(payload.target),
+      calledBy = moveName == "ME_FIRST" and "ME_FIRST" or nil,
+      selectedTarget = copyValue(selectedTarget),
       targets = strike.targets,
       targetFacts = strike.targetFacts,
-      moves = moves,
+      targetMoves = targetMoves,
+      imprisonedMoves = imprisonedMoves,
+      moves = ppOwnerMoves,
       moveFacts = moveFacts,
       combat = facts,
       burned = attackerCondition == "burn",
       guts = attackerAbility == "GUTS",
       weather = strike.weather,
       weatherSuppressed = strike.weatherSuppressed,
-      attackerTypes = combatantTypes(combatant, speciesFacts),
+      attackerTypes = combatantTypes(effectiveCombatant, speciesFacts),
       defenderTypes = defenderTypes,
       typeChart = chart,
       stream = stream,
       friendship = userMon.friendship,
       usable = usableKeysOf(userMon),
-      party = benchKeysOf(state, combatant),
+      party = benchKeysOf(state, effectiveCombatant),
+      hasLivingReserve = #eligibleReserves(state, effectiveCombatant.participant --[[@as integer]], {}) > 0,
       userMoves = moveKeysOf(userMon),
-      copiedMove = strike.copiedMove,
+      copiedMove = copiedMove,
+      mirrorMoveCandidates = mirrorMoveCandidates,
       recentMoves = copyValue(recentMoves),
       genders = strike.genders,
       userAsleep = asleepOf(userMon),
@@ -3715,14 +4316,58 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       foeLevel = strike.foeLevel,
       abilities = strike.abilities,
       heldItem = user.heldItem,
+      -- HGSS rejects field-side Thief/Trick outside link/frontier. The
+      -- player's side leads non-link session side order; link and
+      -- facility formats carry the source battle-type exceptions.
+      itemTransferAllowed = userSide == (state.sideOrder --[[@as integer[] ]])[1] or state.format == "link" or state.format == "facility",
       userSpecies = user.species,
       userIvs = user.ivs,
       itemFacts = itemFacts,
       usedMoves = user.usedMoves,
       foeWeightHg = strike.foeWeightHg,
       beatup = strike.beatup,
+      chargeBoost = chargeBoost,
     }
     local node = MoveExecution.start(inputs)
+    local executedFacts = type(node.executingMove) == "string" and moveFacts[node.executingMove] or nil
+    local nodeLocals = node.locals --[[@as table<string, unknown>]]
+    if
+      chargeBoost
+      and nodeLocals.failed == nil
+      and type(executedFacts) == "table"
+      and (executedFacts --[[@as table<string, unknown>]]).moveType == "electric"
+    then
+      local function consumeElectricBoost(current)
+        current.electricBoost = nil
+        return current
+      end
+      require("libs.battle.src.gen4.SequenceMoveState").update(
+        context,
+        executionActorId,
+        { kind = "charge", combatant = executionActorId },
+        consumeElectricBoost
+      )
+    end
+    if interception ~= nil and nodeLocals.failed == nil then
+      local redirectAbility = interception.redirectAbility
+      if type(redirectAbility) == "string" then
+        local redirectTarget = interception.redirectTarget --[[@as integer]]
+        if
+          MoveInterference.applyAbilityResponse(
+            state,
+            context,
+            redirectTarget,
+            redirectAbility,
+            moveName,
+            interception.redirectMoveType --[[@as string]],
+            (effectiveCombatant.mon --[[@as table<string, unknown>]]).ability
+          )
+        then
+          nodeLocals.failed = "ability-redirected"
+        end
+      end
+      MoveInterference.consume(context, interception)
+    end
     local settledTargets = strike.targets
     local startedFrame = type(node) == "table" and node.locals or nil
     if
@@ -3734,14 +4379,14 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       -- A called move drew a different execution: the execution-time
       -- target class follows the drawn move, while selection and
       -- power-point ownership stay on the requested slot.
-      settledTargets = StrikeFacts.redrawCalledTargets(state, combatant, actor, payload, stream, {
+      settledTargets = StrikeFacts.redrawCalledTargets(state, effectiveCombatant, executionActor, payload, stream, {
         moveFacts = moveFacts,
         speciesFacts = speciesFacts,
         node = node,
         policy = policy,
       }) or settledTargets
     end
-    StrikeFacts.recordHistory(state, actor, node, settledTargets)
+    StrikeFacts.recordHistory(state, executionActor, node, settledTargets)
     local emittedThrough = #state.outbox --[[@as table<integer, table<string, unknown>>]]
     while true do
       node = MoveExecution.step(context, node)
@@ -3774,12 +4419,53 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   ---@param action table<string, unknown> queued native action under execution
   ---@param ordinal integer commit order of this action
   ---@param cause table<string, unknown> semantic reason carried by the emitted event
-  local function executeSwitch(state, context, action, ordinal, cause)
+  ---@param reason string? optional switch reason overriding voluntary departure
+  local function executeSwitch(state, context, action, ordinal, cause, reason)
     local actor = action.actor --[[@as table<string, unknown>]]
     local payload = action.payload --[[@as table<string, unknown>]]
     local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
     local active = combatant.active --[[@as table<string, unknown>]]
     local slot = active.position --[[@as integer]]
+    local passedStages = nil
+    local passedEffectIds = {} ---@type integer[]
+    local passedEffects = {} ---@type table<string, boolean>
+    if cause.kind == "move" and cause.key == "BATON_PASS" then
+      -- Source Baton Pass flags with an active-state counterpart here.
+      local passable = {
+        aquaring = true,
+        confusion = true,
+        curse = true,
+        embargo = true,
+        focusenergy = true,
+        GASTRO_ACID = true,
+        healblock = true,
+        ingrain = true,
+        leechseed = true,
+        lockon = true,
+        magnetrise = true,
+        mudsport = true,
+        perishsong = true,
+        POWER_TRICK = true,
+        substitute = true,
+        trapped = true,
+        watersport = true,
+      }
+      passedStages = copyValue(combatant.stages)
+      local bag = liveEffectBag(state)
+      for _, effect in ipairs(bag:capture()) do
+        local scope = effect.scope
+        if
+          type(scope) == "table"
+          and scope.kind == "active"
+          and scope.combatant == actor.combatant
+          and passable[effect.key] == true
+        then
+          passedEffects[effect.key] = true
+          passedEffectIds[#passedEffectIds + 1] = effect.id
+        end
+      end
+    end
+    local exchangeReason = reason or "voluntary"
     local reserves = eligibleReserves(state, combatant.participant --[[@as integer]], {})
     local reserved = siblingReserves(state, payload.replacement --[[@as integer]])
     local fainted = faintedIds(state)
@@ -3795,7 +4481,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local verdict = Switching.eligible({
       position = slot,
       incoming = payload.replacement,
-      reason = "voluntary",
+      reason = exchangeReason,
       reserves = reserves,
       reserved = reserved,
       fainted = fainted,
@@ -3809,7 +4495,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       position = slot,
       outgoing = { combatant = actor.combatant, activation = actor.activation },
       incoming = payload.replacement,
-      reason = "voluntary",
+      reason = exchangeReason,
       reserves = reserves,
       reserved = reserved,
       fainted = fainted,
@@ -3820,9 +4506,22 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     assert(stepped.done == true, "voluntary exchanges settle without interception")
     BattleState.leave(state, slot)
     local activation = BattleState.enter(state, payload.replacement --[[@as integer]], slot)
-    -- Voluntary replacement clears outgoing activation-local instances
-    -- per definition lifecycle and resets the outgoing toxic counter.
-    settleEntry(state, actor.combatant --[[@as integer]], payload.replacement --[[@as integer]], activation)
+    -- Entry cleanup resets both records; Baton Pass re-anchors its
+    -- source-declared effect subset and stages after that reset.
+    settleEntry(
+      state,
+      actor.combatant --[[@as integer]],
+      payload.replacement --[[@as integer]],
+      activation,
+      passedEffects
+    )
+    if passedStages ~= nil then
+      BattleState.combatant(state, payload.replacement --[[@as integer]]).stages = passedStages
+      local incomingScope = { kind = "active", combatant = payload.replacement, activation = activation }
+      for _, effectId in ipairs(passedEffectIds) do
+        liveEffectBag(state):transfer(effectId, incomingScope)
+      end
+    end
     -- Replacements send out under the money-up scan: the latch only
     -- ever moves 1 -> 2 and never resets when the holder leaves.
     noteEntry(state, moneySet, payload.replacement --[[@as integer]])
@@ -4055,6 +4754,55 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     end
   end
 
+  --- Suspends after a successful pivot move so the controller chooses its
+  --- arrival before the remaining actions resolve against that position.
+  ---@param state table<string, unknown> live turn under the pivot move
+  ---@param action table<string, unknown> completed move action
+  ---@param intent table<string, unknown> emitted switch intent
+  local function requestPivotReplacement(state, action, intent)
+    local actor = action.actor --[[@as table<string, unknown>]]
+    local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+    if
+      combatant.hp --[[@as integer]]
+        <= 0
+      or combatant.active == nil
+    then
+      return
+    end
+    local reserves = eligibleReserves(state, combatant.participant --[[@as integer]], {})
+    if #reserves == 0 then
+      return
+    end
+    local active = combatant.active --[[@as table<string, unknown>]]
+    local pending = state.pending --[[@as table<string, unknown>?]]
+    assert(pending ~= nil, "pivot prompts replace the completed turn batch")
+    local counter = state.batchCounter --[[@as integer]] + 1
+    state.batchCounter = counter
+    local intentCause = intent.cause
+    local payload = intent.payload --[[@as table<string, unknown>]]
+    assert(type(intentCause) == "table", "pivot intents retain the move cause")
+    state.pending = {
+      batch = { id = counter, epoch = counter, requests = {} },
+      submitted = {},
+      reserved = { replacements = {}, items = {} },
+      switchIntent = {
+        actor = { combatant = actor.combatant, activation = actor.activation },
+        position = active.position,
+        mode = payload.mode,
+        actionId = intent.actionId,
+        cause = copyValue(intentCause),
+      },
+    }
+    local controller = BattleState.participant(state, combatant.participant --[[@as integer]]).controller
+    BattleContext.wrap(state):requestDecision({
+      controller = controller,
+      kind = HgssSessionExecutor.DECISION_KIND,
+      actors = { { combatant = actor.combatant, activation = actor.activation } },
+      legalChoices = { kinds = { "switch" } },
+    })
+    state.status = "waiting"
+  end
+
   ---@param action table<string, unknown> queued native action under execution
   local function executeAction(action)
     local state = executor:_live()
@@ -4070,6 +4818,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       end
       return
     end
+    local firstEvent = #state.outbox --[[@as table<integer, table<string, unknown>>]] + 1
     executeChoice(state, action, action.selectedOrdinal --[[@as integer]])
     -- Consumed actions mark their actor: later strikes in the same turn
     -- read payback order from this ledger, matching the native
@@ -4090,9 +4839,45 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         staged.combatant --[[@as integer]]
       ] = nil
     end
+    local receivedSlots = state.lastHitSlots --[[@as table<integer, integer>]]
+    receivedSlots[
+      staged.combatant --[[@as integer]]
+    ] = nil
     if action.progress ~= "complete" then
       local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
       ActionQueue.complete(queue, action.id --[[@as integer]])
+    end
+    local outbox = state.outbox --[[@as table<integer, table<string, unknown>>]]
+    for index = firstEvent, #outbox do
+      local event = outbox[index]
+      local payload = event.payload --[[@as table<string, unknown>?]]
+      if
+        event.kind == "switch-intent"
+        and type(payload) == "table"
+        and (payload.mode == "strike-and-leave" or payload.mode == "pass-markers")
+      then
+        requestPivotReplacement(state, action, event)
+        return
+      elseif event.kind == "switch-intent" and type(payload) == "table" and payload.mode == "force-foe-out" then
+        local plan = require("libs.battle.src.gen4.NativeSwitchIntent").forcedDeparture(state, {
+          target = payload.target,
+          user = staged.combatant,
+          cause = event.cause,
+          battleKind = battleKind,
+        }, speciesFacts)
+        if type(plan) == "table" and plan.kind == "flee" then
+          endBattleEarly(state, { kind = "escaped", rounds = state.round })
+          return
+        elseif type(plan) == "table" and plan.kind == "replace" then
+          local outgoing = plan.target --[[@as integer]]
+          local departing = BattleState.combatant(state, outgoing)
+          local outgoingEntry = departing.active --[[@as table<string, unknown>]]
+          executeSwitch(state, BattleContext.wrap(state), {
+            actor = { combatant = outgoing, activation = outgoingEntry.activation },
+            payload = { replacement = plan.incoming },
+          }, event.actionId --[[@as integer]], event.cause, "forced")
+        end
+      end
     end
   end
 
@@ -4140,10 +4925,16 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- the session adapts method calls to plain view functions.
     local dispatchOwner = EffectDispatch.new(
       bag,
-      NativeEffectHandlers.handlersFor(
-        { maxHp = ceilings, types = typeMap, occupants = occupants, slept = slept },
-        "residual"
-      )
+      NativeEffectHandlers.handlersFor({
+        maxHp = ceilings,
+        types = typeMap,
+        occupants = occupants,
+        slept = slept,
+        sleeping = sample.sleeping,
+        soundproof = sample.soundproof,
+        entryTurns = sample.entryTurns,
+        nativeTurn = BattleState.nativeTurn(state),
+      }, "residual")
     )
     local function collectResiduals(_, timing, passContext)
       return dispatchOwner:collect(timing --[[@as string]], passContext --[[@as table<string, unknown>]])
@@ -4178,6 +4969,16 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       leftovers = liveLeftovers,
       condition = liveCondition,
     }
+    local function wake(combatantId, source)
+      if sample.sleeping[combatantId] ~= true then
+        return false
+      end
+      local cured = context:cureStatus(combatantId, "sleep", { kind = "uproar", combatant = source })
+      if cured then
+        sample.sleeping[combatantId] = false
+      end
+      return cured
+    end
     -- One unified residual frame drives the pass a phase at a time:
     -- each committed phase settles through the existing faint owner
     -- before any later phase runs, and holders that left the field
@@ -4194,6 +4995,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         trickRoom = fieldActive(state, "trickroom"),
         nativeTurn = BattleState.nativeTurn(state),
         live = live,
+        sleeping = sample.sleeping,
+        soundproof = sample.soundproof,
+        wake = wake,
         resume = resume,
       }, 1)
       for _, event in ipairs(outcome.events) do
@@ -4214,7 +5018,27 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
             amount = record.amount,
           })
         else
-          context:emit(record.kind --[[@as string]], { kind = record.kind }, copyValue(record))
+          local cause = { kind = record.kind }
+          if record.cause ~= nil then
+            local delayedCause = record.cause
+            if
+              record.kind ~= "struck"
+              or type(delayedCause) ~= "table"
+              or delayedCause.kind ~= "move"
+              or type(delayedCause.key) ~= "string"
+              or delayedCause.key == ""
+              or type(delayedCause.combatant) ~= "number"
+              or delayedCause.combatant % 1 ~= 0
+              or type(delayedCause.activation) ~= "number"
+              or delayedCause.activation % 1 ~= 0
+            then
+              error(BattleErrors.invalidState("delayed residual strikes carry their move source", {}))
+            end
+            cause = delayedCause --[[@as table<string, unknown>]]
+          end
+          local payload = copyValue(record) --[[@as table<string, unknown>]]
+          payload.cause = nil
+          context:emit(record.kind --[[@as string]], cause, payload)
         end
       end
       commitTimingHealth(state, health, ceilings)
@@ -4510,6 +5334,62 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     finishTurn(state, obligations)
   end
 
+  --- Resumes the scheduled action queue after an in-turn move-choice prompt.
+  ---@param state table<string, unknown> live turn whose queue remains open
+  ---@param budget integer operation budget for the resumed queue
+  local function resumeTurn(state, budget)
+    local ruleset = assert(turnRuleset, "resumed turns use the bound ruleset")
+    local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
+    local schedule = state.schedule --[[@as table<string, unknown>]]
+    local stream = state.rng --[[@as table<string, unknown>]]
+    while state.status == "running" do
+      local due = ruleset:advanceFrame(queue, schedule, stream, budget)
+      if due == nil then
+        break
+      end
+      ruleset:handler("executeAction")(due)
+    end
+    if state.status == "waiting" then
+      return
+    end
+    if state.status == "ended" then
+      local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
+      local roundFrame = frames[#frames]
+      assert(roundFrame ~= nil and roundFrame.kind == "round", "early terminals close their round frame")
+      frames[#frames] = nil
+      state.pending = nil
+      state.queue = {}
+      return
+    end
+    applyResiduals()
+    closeTurn()
+  end
+
+  --- Commits the pivot choice, then resumes the same ordered turn.
+  ---@param state table<string, unknown> live turn with a submitted pivot choice
+  local function commitSwitchIntent(state)
+    local pending = state.pending --[[@as table<string, unknown>]]
+    local intent = pending.switchIntent --[[@as table<string, unknown>]]
+    assert(type(intent) == "table", "pivot commits carry their move intent")
+    local requests = DecisionBatch.requests(state)
+    assert(#requests == 1, "a pivot asks one owner for one replacement")
+    local reply = (pending.submitted --[[@as table<integer, table<string, unknown>>]])[
+      requests[1].requestId --[[@as integer]]
+    ]
+    assert(type(reply) == "table", "pivots commit only after the choice is stored")
+    local choice = (reply.choices --[[@as table<integer, table<string, unknown>>]])[1]
+    local actor = intent.actor --[[@as table<string, unknown>]]
+    local payload = choice.payload --[[@as table<string, unknown>]]
+    local action = { actor = actor, payload = { replacement = payload.replacement } }
+    local cause = intent.cause --[[@as table<string, unknown>]]
+    local ordinal = intent.actionId --[[@as integer]]
+    local reason = cause.key == "BATON_PASS" and "baton_pass" or "u_turn"
+    state.pending = nil
+    state.status = "running"
+    executeSwitch(state, BattleContext.wrap(state), action, ordinal, cause, reason)
+    resumeTurn(state, 1024)
+  end
+
   --- Consumes one stored learning reply, then drains forward: another
   --- prompt suspends again while completion resumes the deferred
   --- replacement and outcome work.
@@ -4573,8 +5453,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   end
 
   return {
+    bindRuleset = bindRuleset,
     openTurn = openTurn,
     executeAction = executeAction,
+    resumeTurn = resumeTurn,
+    commitSwitchIntent = commitSwitchIntent,
     applyResiduals = applyResiduals,
     closeTurn = closeTurn,
     commitLearning = commitLearning,
@@ -4607,15 +5490,14 @@ local function checkItemEntries(facts, raise)
     local record = entry --[[@as table<string, unknown>]]
     -- Served items plan from their party use; held-only entries carry
     -- throw facts without one and never plan. Held items without throw
-    -- facts still project their canonical held behavior for trainer
-    -- checks, so a held-behavior record alone is a complete generated
-    -- fact family. Either shape carries at least one generated fact
-    -- family, and held behavior is never interpreted by planning.
+    -- facts still carry their pocket for mail restrictions, and may also
+    -- project canonical held behavior for trainer checks.
     if
       type(record.partyUse) ~= "table"
       and type(record.naturalGift) ~= "table"
       and type(record.fling) ~= "table"
       and type(record.heldBehavior) ~= "table"
+      and type(record.pocket) ~= "string"
     then
       error(raise("session item facts carry their generated facts", { item = tostring(key) }))
     end
@@ -4627,9 +5509,13 @@ local function checkItemEntries(facts, raise)
         and field ~= "fling"
         and field ~= "heldBehavior"
         and field ~= "lowHpOnly"
+        and field ~= "pocket"
       then
         error(raise("session item facts carry only their generated facts", { item = tostring(key) }))
       end
+    end
+    if record.pocket ~= nil and type(record.pocket) ~= "string" then
+      error(raise("session item facts carry their item pocket", { item = tostring(key) }))
     end
   end
 end
@@ -5025,9 +5911,12 @@ function HgssSessionExecutor:_bindLifecycle()
     self._battleKind
   )
   local ruleset = HgssRuleset.new(turnHandlers)
+  turnHandlers.bindRuleset(ruleset)
   -- The learning continuation closes over the same turn seam but is not
   -- a scheduled lifecycle phase, so the executor holds it directly.
   self._commitLearningHandler = turnHandlers.commitLearning
+  self._resumeTurnHandler = turnHandlers.resumeTurn
+  self._commitSwitchIntentHandler = turnHandlers.commitSwitchIntent
   -- Entry timing and post-replacement settlement close over the same
   -- seam for commit-time replacement work outside the turn handlers.
   self._settleEntryTiming = turnHandlers.settleEntryTiming
@@ -5047,6 +5936,10 @@ end
 function HgssSessionExecutor:_finalizeOnce()
   if not self._finalized then
     self._finalized = true
+    local state = self._state
+    if state ~= nil then
+      BattleState.restoreAllMimickedMoves(state)
+    end
     local ruleset = self._ruleset --[[@as table<string, unknown>]]
     if ruleset ~= nil then
       local finalize = ruleset.finalize --[[@as fun(self: table<string, unknown>): boolean]]
@@ -5096,35 +5989,14 @@ function HgssSessionExecutor:_commitBatch(state, allowance)
   table.sort(ordered, byCommitOrder)
   local ruleset = self._ruleset --[[@as HgssRuleset]]
   ruleset:handler("openTurn")(ordered)
+  state.status = "running"
   local stepBudget = allowance
   if stepBudget == nil then
     stepBudget = 1024
   end
-  local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
-  local schedule = state.schedule --[[@as table<string, unknown>]]
-  local stream = state.rng --[[@as table<string, unknown>]]
-  assert(type(stream.nextU16) == "function", "native turns draw from the battle stream")
-  while state.status ~= "ended" do
-    local due = ruleset:advanceFrame(queue, schedule, stream, stepBudget)
-    if due == nil then
-      break
-    end
-    ruleset:handler("executeAction")(due)
-  end
-  if state.status == "ended" then
-    -- Flight and capture close the battle mid-turn: the round frame
-    -- closes here so no residual pass or outcome resettlement can
-    -- resurrect the decided result, and queued strikes never land.
-    local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
-    local roundFrame = frames[#frames]
-    assert(roundFrame ~= nil and roundFrame.kind == "round", "early terminals close their round frame")
-    frames[#frames] = nil
-    state.pending = nil
-    state.queue = {}
-    return
-  end
-  ruleset:handler("applyResiduals")()
-  ruleset:handler("closeTurn")()
+  local resume = self._resumeTurnHandler
+  assert(type(resume) == "function", "native batches resume through their bound turn seam")
+  resume(state, stepBudget)
 end
 
 ---@param state table<string, unknown> live battle state under learning commit
@@ -5358,6 +6230,9 @@ local function checkChoiceBinding(state, choice, admitted, battleKind, staged, m
     -- actions still fail here when they name no open obligation.
     return checkReplacementBinding(state, openBatch.replacement --[[@as table<string, unknown>]], choice, staged)
   end
+  if openBatch ~= nil and openBatch.switchIntent ~= nil and choice.kind ~= "switch" then
+    return BattleErrors.input("pivot replies choose a replacement", {})
+  end
   local commonError = DecisionBatch.checkActionBinding(state, choice, staged)
   if commonError ~= nil then
     return commonError
@@ -5380,10 +6255,16 @@ local function checkChoiceBinding(state, choice, admitted, battleKind, staged, m
     if heldChoice == nil then
       heldChoice = volatileTrapOf(state, combatant.id --[[@as integer]])
     end
+    local switchReason = "voluntary"
+    if openBatch ~= nil and openBatch.switchIntent ~= nil then
+      local intent = openBatch.switchIntent --[[@as table<string, unknown>]]
+      local cause = intent.cause --[[@as table<string, unknown>]]
+      switchReason = cause.key == "BATON_PASS" and "baton_pass" or "u_turn"
+    end
     local verdict = Switching.eligible({
       position = active.position,
       incoming = payload.replacement,
-      reason = "voluntary",
+      reason = switchReason,
       reserves = reserves,
       reserved = stagedSiblingReserves(staged, payload.replacement --[[@as integer]]),
       fainted = faintedIds(state),
@@ -5950,6 +6831,49 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts,
   return entry
 end
 
+---@param state table<string, unknown> live battle state under pivot decision projection
+---@param actor table<string, unknown> requested active pivot user
+---@param admitted string[] admitted action kinds
+---@param battleKind string encounter policy used by option probing
+---@return table<string, unknown> choices restricted to eligible replacement reserves
+local function switchIntentActorOptions(state, actor, admitted, battleKind)
+  local intent = (state.pending --[[@as table<string, unknown>]]).switchIntent --[[@as table<string, unknown>]]
+  local owner = intent.actor --[[@as table<string, unknown>]]
+  assert(
+    actor.combatant == owner.combatant and actor.activation == owner.activation,
+    "pivot choices address the active move user"
+  )
+  local combatant = BattleState.combatant(state, owner.combatant --[[@as integer]])
+  local entry = {
+    combatant = owner.combatant,
+    activation = owner.activation,
+    kind = "switch",
+    choices = {},
+  } --[[@as table<string, unknown>]]
+  local choices = entry.choices --[[@as table<integer, table<string, unknown>>]]
+  for _, reserve in
+    ipairs(eligibleReserves(state, combatant.participant --[[@as integer]], {}))
+  do
+    local choice = {
+      actor = fragmentActor(owner),
+      kind = "switch",
+      payload = { replacement = reserve },
+    } --[[@as table<string, unknown>]]
+    choices[#choices + 1] = probedOption(
+      state,
+      choice,
+      "switch:" .. reserve,
+      "switch",
+      reserveDisplay(state, reserve),
+      admitted,
+      battleKind,
+      nil,
+      nil
+    )
+  end
+  return entry
+end
+
 ---@param state table<string, unknown> live battle state under read-only inspection
 ---@param actor table<string, unknown> requested fainted entry under projection
 ---@param admitted string[] admitted action kinds resolved at construction
@@ -6115,6 +7039,12 @@ function HgssSessionExecutor:decisionOptions(requestId)
     do
       actors[#actors + 1] = replacementActorOptions(state, actor, self._admitted, self._battleKind)
     end
+  elseif pending.switchIntent ~= nil then
+    for _, actor in
+      ipairs(wanted.actors --[[@as table<integer, table<string, unknown>>]])
+    do
+      actors[#actors + 1] = switchIntentActorOptions(state, actor, self._admitted, self._battleKind)
+    end
   else
     for _, actor in
       ipairs(wanted.actors --[[@as table<integer, table<string, unknown>>]])
@@ -6166,6 +7096,10 @@ function HgssSessionExecutor:advance(operationBudget)
         self:_commitReplacement(state)
       elseif completed.learning ~= nil then
         self:_commitLearning(state)
+      elseif completed.switchIntent ~= nil then
+        local commit = self._commitSwitchIntentHandler
+        assert(type(commit) == "function", "pivot choices commit through the bound turn seam")
+        commit(state)
       else
         self:_commitBatch(state, remaining)
       end

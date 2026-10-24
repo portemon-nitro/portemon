@@ -85,6 +85,7 @@ local function probeMoveFacts()
     DREAM_EATER = strikeFacts("DREAM_EATER", 100, "psychic", "special", 100, 0),
     STRUGGLE = strikeFacts("STRUGGLE", 50, "normal", "physical", 100, 0),
     TAKE_DOWN = strikeFacts("TAKE_DOWN", 90, "normal", "physical", 100, 0),
+    DOUBLE_EDGE = strikeFacts("DOUBLE_EDGE", 120, "normal", "physical", 100, 0),
     CLOSE_COMBAT = strikeFacts("CLOSE_COMBAT", 120, "fighting", "physical", 100, 0),
     SUPERPOWER = strikeFacts("SUPERPOWER", 120, "fighting", "physical", 100, 0),
     DRACO_METEOR = strikeFacts("DRACO_METEOR", 140, "dragon", "special", 90, 100),
@@ -644,6 +645,30 @@ function T.unguarded_recoil_keeps_quarter_dealt_minimum_one()
     200 - probe.ctx:damage(1, 0, { kind = "probe" }).before,
     expected,
     "unguarded recoil bills quarter dealt"
+  )
+end
+
+-- Double-Edge selects the native one-third recoil subscript (effect
+-- script 0198), unlike Take Down's quarter-recoil subscript (effect script
+-- 0048).
+function T.double_edge_recoil_uses_one_third_of_damage_dealt()
+  local probe = runStrike(
+    "DOUBLE_EDGE",
+    { abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" } },
+    function(live, _)
+      seedHealth(live, 1, 200, 200)
+    end
+  )
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "hit", "Double-Edge connects")
+  local expected = math.floor(probe.dealt / 3)
+  if expected < 1 then
+    expected = 1
+  end
+  Assert.equal(
+    200 - probe.ctx:damage(1, 0, { kind = "probe" }).before,
+    expected,
+    "Double-Edge bills one-third of damage dealt"
   )
 end
 

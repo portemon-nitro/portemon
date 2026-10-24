@@ -219,8 +219,9 @@ end
 ---@param bag StatusBagView scoped instance owner carrying the battle state
 ---@param combatant integer combatant identity being replaced
 ---@param newActivation integer entry token of the incoming occupant
+---@param preserve table<string, boolean>? effect keys waiting for Baton Pass transfer
 ---@return boolean true when the reset completed
-function Status.switchReset(mon, bag, combatant, newActivation)
+function Status.switchReset(mon, bag, combatant, newActivation, preserve)
   local checked = checkMon(mon)
   assert(type(bag) == "table", "replacement resets clear battle state through the bag")
   assert(type(combatant) == "number", "replacement resets name their combatant")
@@ -232,7 +233,10 @@ function Status.switchReset(mon, bag, combatant, newActivation)
       if type(record.lifecycle) == "table" then
         transfer = record.lifecycle.transfer
       end
-      if transfer == "carry" then
+      if type(preserve) == "table" and preserve[record.key] == true then
+        -- The exchange owner re-anchors this source-declared subset after
+        -- outgoing and incoming activation cleanup has settled.
+      elseif transfer == "carry" then
         bag:transfer(record.id, { kind = "active", combatant = combatant, activation = newActivation })
       else
         bag:remove(record.id)

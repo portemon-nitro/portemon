@@ -408,15 +408,11 @@ function T.representative_damage_bindings_keep_their_outcomes()
   Assert.equal(double.strikes, 2, "double hit strikes twice")
 end
 
-function T.unmodeled_members_still_fail_naming_the_move()
-  local blockErr = Assert.throws(function()
-    runCondition("BLOCK", conditionFacts("BLOCK", { accuracy = 0 }), FIXED_SEED)
-  end, "unmodeled condition members fail")
-  assertFailureNames(blockErr, "BLOCK")
-  local aeroblastErr = Assert.throws(function()
-    runStrike("AEROBLAST")
-  end, "unmodeled damage members fail")
-  assertFailureNames(aeroblastErr, "AEROBLAST")
+function T.chatter_still_fails_without_voice_facts()
+  local chatterErr = Assert.throws(function()
+    runStrike("CHATTER")
+  end, "Chatter stays gated without recorded voice facts")
+  assertFailureNames(chatterErr, "CHATTER")
 end
 
 function T.duplicate_member_registration_fails()
