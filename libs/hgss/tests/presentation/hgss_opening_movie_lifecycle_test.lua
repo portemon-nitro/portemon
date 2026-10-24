@@ -1,6 +1,6 @@
 -- Opening movie lifecycle edges: disposal in the middle of a run and after
 -- a failed acquisition, malformed event operands rejected at load, a
--- started-but-tickless effect step that costs no extra tick, and graphics
+-- wipe-effect step that holds exactly its authored ticks, and graphics
 -- state restoration when a draw fails. Fixtures reuse the strict synthetic
 -- scene shape validated through the real startup cache reader.
 
@@ -93,10 +93,9 @@ local function sceneEvents(sceneNumber)
         dx = -256,
         dy = 0,
         ticks = 25,
-        direction = "left",
       },
       { op = "waitTicks", stepId = "open", atStepTick = 0, ticks = 25 },
-      { op = "circleWipe", stepId = "close", atStepTick = 0, mode = "out", ticks = 10 },
+      { op = "circleWipe", stepId = "close", atStepTick = 0, engine = "main", kind = 0, ticks = 10 },
       { op = "waitTicks", stepId = "close", atStepTick = 0, ticks = 15 },
       { op = "finish", stepId = "close", atStepTick = 0 },
     }
@@ -130,7 +129,7 @@ local function sceneEvents(sceneNumber)
     }
   end
   return {
-    { op = "circleWipe", stepId = "wipe", atStepTick = 0, mode = "in", ticks = 18 },
+    { op = "circleWipe", stepId = "wipe", atStepTick = 0, engine = "main", kind = 1, ticks = 18 },
     { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "upper" },
     {
       op = "setScroll",
@@ -141,7 +140,6 @@ local function sceneEvents(sceneNumber)
       dx = -512,
       dy = 0,
       ticks = 20,
-      direction = "left",
     },
     { op = "waitTicks", stepId = "scroll", atStepTick = 0, ticks = 20 },
     { op = "setFade", stepId = "fade", atStepTick = 0, kind = "white", ticks = 15 },
@@ -463,9 +461,9 @@ function T.rejects_malformed_event_operands_at_construction()
   local zeroWait = sceneEvents(2)
   zeroWait[2].ticks = 0
   strictLoadSceneTwo(withSceneTwo(zeroWait))
-  local badDirection = sceneEvents(2)
-  badDirection[1].direction = 5
-  strictLoadSceneTwo(withSceneTwo(badDirection))
+  local badScroll = sceneEvents(2)
+  badScroll[1].ticks = -2
+  strictLoadSceneTwo(withSceneTwo(badScroll))
   local foreignSkip = {
     {
       op = "enableSkip",
@@ -488,9 +486,12 @@ function T.rejects_malformed_event_operands_at_construction()
   strictLoadSceneTwo(withSceneTwo(danglingEvents, danglingSteps))
 end
 
-function T.started_tickless_effects_cost_no_extra_ticks()
-  -- A named effect started without a tick count is already complete: the
-  -- wipe orders the composition without holding it.
+function T.started_wipe_effects_hold_the_close_step_for_their_authored_ticks()
+  -- The closed v4 grammar always counts wipe ticks, so a started wipe
+  -- orders the close step for exactly its authored duration: no extra
+  -- tick past completion, no early release while it runs. Exact blend
+  -- coefficients and scanline coverage stay owned by the later effect
+  -- deliverable; this step only proves the wait binds the wipe effect.
   local root = sceneRoot(2)
   local instant = manifestFor(2)
   instant.timeline = {
@@ -508,10 +509,17 @@ function T.started_tickless_effects_cost_no_extra_ticks()
         dx = -256,
         dy = 0,
         ticks = 25,
-        direction = "left",
       },
       { op = "waitTicks", stepId = "open", atStepTick = 0, ticks = 25 },
-      { op = "circleWipe", stepId = "close", atStepTick = 0, mode = "out", effect = "wipe-circle" },
+      {
+        op = "circleWipe",
+        stepId = "close",
+        atStepTick = 0,
+        engine = "main",
+        kind = 0,
+        ticks = 10,
+        effect = "wipe-circle",
+      },
       { op = "finish", stepId = "close", atStepTick = 0 },
     },
   }
@@ -541,9 +549,9 @@ function T.started_tickless_effects_cost_no_extra_ticks()
   end
   Assert.isTrue(movie:isFinished(), "the movie finishes within its bounded run")
   Assert.equal(entries[2], 90, "scene 2 still starts on its authored tick")
-  Assert.equal(entries[3], 115, "a started tickless effect step costs no extra tick")
+  Assert.equal(entries[3], 125, "the close step holds exactly the wipe's ten authored ticks")
   movie:dispose()
-  Assert.equal(liveHandles(graphics), 0, "the instant step leaves no handle behind")
+  Assert.equal(liveHandles(graphics), 0, "the wipe step leaves no handle behind")
 end
 
 function T.a_failed_draw_restores_graphics_state_and_keeps_playing()

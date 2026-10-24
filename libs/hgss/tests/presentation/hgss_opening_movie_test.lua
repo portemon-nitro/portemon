@@ -127,10 +127,9 @@ local function sceneEvents(sceneNumber)
         dx = -256,
         dy = 0,
         ticks = 25,
-        direction = "left",
       },
       { op = "waitTicks", stepId = "open", atStepTick = 0, ticks = 25 },
-      { op = "circleWipe", stepId = "close", atStepTick = 0, mode = "out", ticks = 10 },
+      { op = "circleWipe", stepId = "close", atStepTick = 0, engine = "main", kind = 0, ticks = 10 },
       { op = "waitTicks", stepId = "close", atStepTick = 0, ticks = 15 },
       { op = "finish", stepId = "close", atStepTick = 0 },
     }
@@ -164,7 +163,7 @@ local function sceneEvents(sceneNumber)
     }
   end
   return {
-    { op = "circleWipe", stepId = "wipe", atStepTick = 0, mode = "in", ticks = 18 },
+    { op = "circleWipe", stepId = "wipe", atStepTick = 0, engine = "main", kind = 1, ticks = 18 },
     { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "upper" },
     {
       op = "setScroll",
@@ -175,7 +174,6 @@ local function sceneEvents(sceneNumber)
       dx = -512,
       dy = 0,
       ticks = 20,
-      direction = "left",
     },
     { op = "waitTicks", stepId = "scroll", atStepTick = 0, ticks = 20 },
     { op = "setFade", stepId = "fade", atStepTick = 0, kind = "white", ticks = 15 },
@@ -850,7 +848,7 @@ local function compositeManifest(sceneNumber, upper, lower, clips, steps, events
     for _, entry in ipairs(list) do
       assets[entry.image] = true
       for _, alternate in ipairs(entry.variants) do
-        assets[alternate] = true
+        assets[alternate.image or alternate] = true
       end
     end
   end
@@ -905,10 +903,10 @@ function T.simultaneous_layers_keep_their_own_scroll_in_source_order()
       1,
       {
         layer(0, bottomImage, 256, 192, 0),
-        layer(1, middleImage, 128, 96, 1),
-        layer(2, topImage, 64, 48, 2),
+        layer(1, middleImage, 256, 192, 1),
+        layer(2, topImage, 256, 192, 2),
       },
-      { layer(0, groundImage, 32, 32, 0) },
+      { layer(0, groundImage, 256, 192, 0) },
       { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
       { { id = "pan", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
@@ -921,7 +919,6 @@ function T.simultaneous_layers_keep_their_own_scroll_in_source_order()
           dx = -1024,
           dy = 0,
           ticks = 12,
-          direction = "left",
           effect = "pan-top",
         },
         {
@@ -933,7 +930,6 @@ function T.simultaneous_layers_keep_their_own_scroll_in_source_order()
           dx = -512,
           dy = 0,
           ticks = 12,
-          direction = "left",
           effect = "pan-middle",
         },
         { op = "enableSkip", stepId = "pan", atStepTick = 10 },
@@ -943,19 +939,34 @@ function T.simultaneous_layers_keep_their_own_scroll_in_source_order()
     ),
     1
   )
-  local graphics = movieGraphics({ imageSizes = { { 256, 192 }, { 128, 96 }, { 64, 48 }, { 32, 32 }, { 16, 16 } } })
+  local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  local frameDrawsStart = #graphics.draws + 1
+  local slotImages = {
+    bottom = assert(movie.current.imageByPath[bottomImage], "the bottom layer image is staged"),
+    middle = assert(movie.current.imageByPath[middleImage], "the middle layer image is staged"),
+    top = assert(movie.current.imageByPath[topImage], "the top layer image is staged"),
+    ground = assert(movie.current.imageByPath[groundImage], "the lower-role layer image is staged"),
+  }
   for _ = 1, 12 do
     movie:updateFixed()
   end
+  -- Timed pans hold absolute source displacements: each layer lands
+  -- exactly on its full signed displacement, never on a divided speed.
+  local current = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(current.backgrounds.main[2].scrollX, -1024, "the top layer lands exactly on its full displacement")
+  Assert.equal(current.backgrounds.main[1].scrollX, -512, "the middle layer pans at its own authored displacement")
+  Assert.equal(current.backgrounds.main[0].scrollX, 0, "the unscrolled bottom layer stays at its source origin")
+  Assert.equal(current.backgrounds.sub[0].scrollX, 0, "the sub-engine layer ignores main-engine pans")
+  local frameDrawsStart = #graphics.draws + 1
   movie:draw()
-  local byWidth = {}
+  local drawOf = {}
   local layerDraws = 0
   -- The composed host frame carries the fixed role targets as canvas
   -- blits alongside the source-space layer draws, and construction
   -- preflights every scene through the same frame path: only staged
   -- layer images drawn by this frame prove the per-engine compositor.
+  -- Every viewport sample draws through wrapped quads at exact source
+  -- positions, never as a shifted whole texture.
   local stagedImages = {}
   for _, image in ipairs(graphics.images) do
     stagedImages[image] = true
@@ -963,24 +974,346 @@ function T.simultaneous_layers_keep_their_own_scroll_in_source_order()
   for index = frameDrawsStart, #graphics.draws do
     local draw = graphics.draws[index]
     if stagedImages[draw.image] == true then
-      local width = draw.image:getWidth()
-      if width == 256 or width == 128 or width == 64 or width == 32 then
-        layerDraws = layerDraws + 1
-        byWidth[width] = draw
-      end
+      layerDraws = layerDraws + 1
+      drawOf[draw.image] = draw
     end
   end
   Assert.equal(layerDraws, 4, "every simultaneously live layer is drawn, never just the first")
-  Assert.notNil(byWidth[256], "the bottom layer is drawn")
-  Assert.notNil(byWidth[128], "the middle layer is drawn")
-  Assert.notNil(byWidth[64], "the top layer is drawn")
-  Assert.notNil(byWidth[32], "the lower-role layer is drawn")
-  Assert.equal(byWidth[256].x, 0, "the unscrolled bottom layer stays at its source origin")
-  Assert.equal(byWidth[256].y, 0, "the unscrolled bottom layer stays at its source origin")
-  Assert.equal(byWidth[128].x, -24, "the middle layer pans at its own authored velocity")
-  Assert.equal(byWidth[64].x, -48, "the top layer pans at its own authored velocity")
-  Assert.equal(byWidth[32].x, 0, "the sub-engine layer ignores main-engine pans")
+  Assert.notNil(drawOf[slotImages.bottom], "the bottom layer is drawn")
+  Assert.notNil(drawOf[slotImages.middle], "the middle layer is drawn")
+  Assert.notNil(drawOf[slotImages.top], "the top layer is drawn")
+  Assert.notNil(drawOf[slotImages.ground], "the lower-role layer is drawn")
+  for name, image in pairs(slotImages) do
+    Assert.notNil(drawOf[image].quad, "the " .. name .. " layer samples through a wrapped viewport quad")
+  end
   movie:dispose()
+end
+
+-- Timed pans land on exact signed endpoints: every fixed tick holds the
+-- truncated absolute share of the full displacement, the final tick lands
+-- exactly on it, and later ticks retain it. Host draws never advance the
+-- sampled positions.
+function T.timed_pans_land_on_exact_signed_endpoints_with_truncating_steps()
+  local root = sceneRoot(2)
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      2,
+      {
+        layer(0, root .. "layers/wide-a.png", 512, 512),
+        layer(1, root .. "layers/wide-b.png", 512, 512),
+      },
+      { layer(0, root .. "layers/wide-c.png", 512, 512) },
+      {},
+      { { id = "pan", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 100 } } },
+      {
+        {
+          op = "setScroll",
+          stepId = "pan",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 0,
+          dx = 192,
+          dy = 0,
+          ticks = 10,
+        },
+        {
+          op = "setScroll",
+          stepId = "pan",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 1,
+          dx = -192,
+          dy = 0,
+          ticks = 5,
+        },
+        {
+          op = "setScroll",
+          stepId = "pan",
+          atStepTick = 0,
+          engine = "sub",
+          bgSlot = 0,
+          dx = 32,
+          dy = 0,
+          ticks = 90,
+        },
+        { op = "waitTicks", stepId = "pan", atStepTick = 0, ticks = 100 },
+      }
+    ),
+    2
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  while movie:sceneNumber() < 2 do
+    movie:updateFixed()
+  end
+  local function offsets()
+    local current = assert(movie.current, "the running movie owns its current slot")
+    return {
+      mainA = current.backgrounds.main[0].scrollX,
+      mainB = current.backgrounds.main[1].scrollX,
+      sub = current.backgrounds.sub[0].scrollX,
+    }
+  end
+  local entry = offsets()
+  Assert.equal(entry.mainA, 0, "a timed pan starts at its origin")
+  Assert.equal(entry.mainB, 0, "a timed pan starts at its origin")
+  Assert.equal(entry.sub, 0, "a timed pan starts at its origin")
+  movie:updateFixed()
+  local first = offsets()
+  Assert.equal(first.mainA, 19, "the first tick holds the truncated share of +192 over 10")
+  Assert.equal(first.mainB, -38, "negative shares truncate toward zero, never down")
+  Assert.equal(first.sub, 0, "a sub-pixel share stays at the origin")
+  movie:draw()
+  movie:draw()
+  local redrawn = offsets()
+  Assert.equal(redrawn.mainA, first.mainA, "repeated host draws never advance sampled positions")
+  for _ = 1, 4 do
+    movie:updateFixed()
+  end
+  local mid = offsets()
+  Assert.equal(mid.mainA, 96, "the middle tick holds the truncated absolute interpolation")
+  Assert.equal(mid.mainB, -192, "the shorter pan lands exactly on its endpoint")
+  Assert.equal(mid.sub, 1, "the long pan accumulates its fractional shares")
+  for _ = 1, 5 do
+    movie:updateFixed()
+  end
+  local settled = offsets()
+  Assert.equal(settled.mainA, 192, "the final tick lands exactly on the full displacement")
+  Assert.equal(settled.mainB, -192, "a finished pan retains its endpoint")
+  for _ = 1, 80 do
+    movie:updateFixed()
+  end
+  local tail = offsets()
+  Assert.equal(tail.mainA, 192, "later ticks retain the full displacement")
+  Assert.equal(tail.mainB, -192, "later ticks retain the full displacement")
+  Assert.equal(tail.sub, 32, "the long pan lands exactly on +32 at its ninetieth tick")
+  for _ = 1, 5 do
+    movie:updateFixed()
+  end
+  local held = offsets()
+  Assert.equal(held.sub, 32, "ticks past the duration retain the endpoint")
+  movie:dispose()
+end
+
+-- Immediate offsets land on the first frame and continuous pans advance
+-- one authored step per fixed tick on independent engine clocks. Host
+-- draws and resizes never resample them.
+function T.immediate_offsets_land_first_and_continuous_pans_advance_per_tick()
+  local root = sceneRoot(2)
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      2,
+      {
+        layer(0, root .. "layers/snap-a.png", 512, 512),
+        layer(1, root .. "layers/drift-a.png", 512, 512),
+      },
+      { layer(0, root .. "layers/drift-b.png", 512, 512) },
+      {},
+      { { id = "drift", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 100 } } },
+      {
+        {
+          op = "setScroll",
+          stepId = "drift",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 0,
+          dx = 128,
+          dy = 64,
+          ticks = 0,
+        },
+        {
+          op = "setScroll",
+          stepId = "drift",
+          atStepTick = 0,
+          engine = "sub",
+          bgSlot = 0,
+          dx = 64,
+          dy = 0,
+          ticks = -1,
+        },
+        {
+          op = "setScroll",
+          stepId = "drift",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 1,
+          dx = 0,
+          dy = -32,
+          ticks = -1,
+        },
+        { op = "waitTicks", stepId = "drift", atStepTick = 0, ticks = 100 },
+      }
+    ),
+    2
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  while movie:sceneNumber() < 2 do
+    movie:updateFixed()
+  end
+  local function offsets()
+    local current = assert(movie.current, "the running movie owns its current slot")
+    return {
+      snapX = current.backgrounds.main[0].scrollX,
+      snapY = current.backgrounds.main[0].scrollY,
+      subX = current.backgrounds.sub[0].scrollX,
+      driftY = current.backgrounds.main[1].scrollY,
+    }
+  end
+  local entry = offsets()
+  Assert.equal(entry.snapX, 128, "an immediate pan is already displaced on the first frame")
+  Assert.equal(entry.snapY, 64, "an immediate pan is already displaced on the first frame")
+  movie:draw()
+  local drawn = offsets()
+  Assert.equal(drawn.snapX, 128, "the first draw keeps the immediate displacement")
+  for _ = 1, 10 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  local tenth = offsets()
+  Assert.equal(tenth.snapX, 128, "fixed ticks never move an immediate-only pan")
+  Assert.equal(tenth.snapY, 64, "fixed ticks never move an immediate-only pan")
+  Assert.equal(tenth.subX, 640, "a continuous pan advances its authored step every fixed tick")
+  Assert.equal(tenth.driftY, -320, "independent slots keep independent continuous clocks")
+  movie:resize(600, 1000)
+  movie:draw()
+  local resized = offsets()
+  Assert.equal(resized.subX, 640, "resizes never resample the continuous clock")
+  for _ = 1, 40 do
+    movie:updateFixed()
+  end
+  local late = offsets()
+  Assert.equal(late.subX, 3200, "a continuous pan keeps its step across many ticks")
+  Assert.equal(late.driftY, -1600, "a continuous pan keeps its step across many ticks")
+  Assert.equal(late.snapX, 128, "the immediate pan still holds after many ticks")
+  movie:dispose()
+end
+
+-- Full native extents keep the bounded preflight while the source clock
+-- advances without draws: a 512-wide base swaps to a 256-wide alternate
+-- mid-pan, offsets progress on fixed ticks alone, and the retained graph
+-- never grows past the current and next scenes.
+function T.full_native_extents_swap_atomically_and_tick_without_draws()
+  local root = sceneRoot(2)
+  local baseImage = root .. "layers/native-base.png"
+  local altImage = root .. "layers/native-alt.png"
+  local groundImage = root .. "layers/native-ground.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      2,
+      {
+        {
+          bgSlot = 0,
+          priority = 0,
+          image = baseImage,
+          variants = { { image = altImage, width = 256, height = 192 } },
+          width = 512,
+          height = 512,
+          sourceHash = string.rep("c", 40),
+          initialVisible = true,
+        },
+      },
+      { layer(0, groundImage, 512, 256) },
+      {},
+      { { id = "pan", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setScroll",
+          stepId = "pan",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 0,
+          dx = 256,
+          dy = 128,
+          ticks = 8,
+        },
+        {
+          op = "setScroll",
+          stepId = "pan",
+          atStepTick = 0,
+          engine = "sub",
+          bgSlot = 0,
+          dx = 0,
+          dy = -96,
+          ticks = -1,
+        },
+        {
+          op = "setLayer",
+          stepId = "pan",
+          atStepTick = 4,
+          engine = "main",
+          bgSlot = 0,
+          image = altImage,
+          visible = true,
+          priority = 0,
+        },
+        { op = "waitTicks", stepId = "pan", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "pan", atStepTick = 40 },
+      }
+    ),
+    2
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  -- The custom scene stages its base, alternate, and sub art plus one
+  -- scene-two filler clip image; the prefetched next scene stages its
+  -- two panels: nothing else may stay resident after the preflight.
+  Assert.equal(liveHandles(graphics), 8, "full native art still retains only the current and next scene graphs")
+  Assert.equal(#graphics.canvases, 2, "preflight keeps exactly two bounded role targets")
+  while movie:sceneNumber() < 2 do
+    movie:updateFixed()
+  end
+  local function state()
+    local current = assert(movie.current, "the running movie owns its current slot")
+    local main = current.backgrounds.main[0]
+    return {
+      scrollX = main.scrollX,
+      scrollY = main.scrollY,
+      width = main.width,
+      height = main.height,
+      image = main.image,
+      subY = current.backgrounds.sub[0].scrollY,
+    }
+  end
+  local entry = state()
+  Assert.equal(entry.width, 512, "the base image stages with its native extent")
+  Assert.equal(entry.height, 512, "the base image stages with its native extent")
+  Assert.equal(entry.image, baseImage, "the base image samples before its swap tick")
+  -- No draws between fixed ticks: the source clock alone resamples.
+  for _ = 1, 3 do
+    movie:updateFixed()
+  end
+  local third = state()
+  Assert.equal(third.scrollX, 96, "zero-draw ticks hold the truncated absolute share")
+  Assert.equal(third.scrollY, 48, "zero-draw ticks hold the truncated absolute share")
+  Assert.equal(third.subY, -288, "the sub-engine drift advances without draws")
+  Assert.equal(third.image, baseImage, "the swap stays off before its step tick")
+  movie:updateFixed()
+  local swapped = state()
+  Assert.equal(swapped.image, altImage, "the swap lands on its authored tick")
+  Assert.equal(swapped.width, 256, "the sampled extent follows the newly selected image")
+  Assert.equal(swapped.height, 192, "the sampled extent follows the newly selected image")
+  Assert.equal(swapped.scrollX, 128, "the pan keeps its absolute course across the swap")
+  local drawsBefore = #graphics.draws
+  movie:draw()
+  movie:draw()
+  movie:draw()
+  Assert.equal(state().scrollX, 128, "repeated host draws never resample the clock")
+  movie:resize(600, 1000)
+  movie:draw()
+  Assert.equal(state().scrollX, 128, "resizes never resample the clock")
+  local altHandle = assert(movie.current.imageByPath[altImage], "the alternate image is staged")
+  local sampled = false
+  for index = drawsBefore + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if draw.image == altHandle then
+      sampled = true
+      Assert.notNil(draw.quad, "the swapped viewport still samples through quads")
+    end
+  end
+  Assert.isTrue(sampled, "the swapped alternate image draws after its tick")
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "disposing the native movie releases every handle")
 end
 
 ---@param offsetX integer authored horizontal clip frame offset
@@ -1026,12 +1359,17 @@ local function heroScene(offsetX, offsetY)
 end
 
 ---@param graphics table fake graphics namespace
----@return table[] draws that sample a sprite clip quad
-local function spriteDraws(graphics)
+---@param clipImage table staged sprite clip image handle
+---@param baseline integer only draws after this draw index
+---@return table[] draws of the sprite clip image
+local function spriteDraws(graphics, clipImage, baseline)
   local found = {}
-  for _, draw in ipairs(graphics.draws) do
-    if draw.quad ~= nil then
-      found[#found + 1] = draw
+  for index = (baseline or 0) + 1, #graphics.draws do
+    -- Background viewports sample through wrapped quads too, so sprite
+    -- draws are told apart by their staged clip image, never by the
+    -- presence of a quad.
+    if graphics.draws[index].image == clipImage then
+      found[#found + 1] = graphics.draws[index]
     end
   end
   return found
@@ -1044,14 +1382,26 @@ function T.authored_sprite_frames_offset_the_draw_origin_and_draw_once()
   local secondScenes, secondCache = packWithSceneAt(heroScene(52, 30), 1)
   local secondGraphics = movieGraphics()
   local second = openMovie(secondScenes, secondCache, secondGraphics)
+  local firstClip = assert(
+    first.current.imageByPath[sceneRoot(1) .. "sprites/hero.g4sprite"],
+    "the hero clip image is staged"
+  )
+  local secondClip = assert(
+    second.current.imageByPath[sceneRoot(1) .. "sprites/hero.g4sprite"],
+    "the hero clip image is staged"
+  )
   for _ = 1, 8 do
     first:updateFixed()
     second:updateFixed()
   end
+  -- Construction preflights every scene through the same frame path,
+  -- so only draws issued after the opener count toward the per-frame
+  -- proof.
+  local firstBaseline, secondBaseline = #firstGraphics.draws, #secondGraphics.draws
   first:draw()
   second:draw()
-  local firstSprites = spriteDraws(firstGraphics)
-  local secondSprites = spriteDraws(secondGraphics)
+  local firstSprites = spriteDraws(firstGraphics, firstClip, firstBaseline)
+  local secondSprites = spriteDraws(secondGraphics, secondClip, secondBaseline)
   Assert.equal(#firstSprites, 1, "one authored instance draws exactly once per frame")
   Assert.equal(#secondSprites, 1, "one authored instance draws exactly once per frame")
   Assert.equal(secondSprites[1].x - firstSprites[1].x, 12, "the authored frame offset moves the draw origin")
@@ -1270,14 +1620,17 @@ function T.step_events_apply_in_listed_order()
           bgSlot = 0,
           priority = 0,
           image = baseImage,
-          variants = { firstImage, secondImage },
+          variants = {
+            { image = firstImage, width = 256, height = 192 },
+            { image = secondImage, width = 256, height = 192 },
+          },
           width = 256,
           height = 192,
           sourceHash = string.rep("c", 40),
           initialVisible = true,
         },
       },
-      { layer(0, root .. "layers/lower.png", 32, 32) },
+      { layer(0, root .. "layers/lower.png", 256, 192) },
       { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
       { { id = "show", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
@@ -1307,25 +1660,28 @@ function T.step_events_apply_in_listed_order()
     ),
     1
   )
-  local graphics = movieGraphics({ imageSizes = { { 256, 192 }, { 128, 96 }, { 64, 48 }, { 32, 32 }, { 16, 16 } } })
+  local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
+  local baseHandle = assert(movie.current.imageByPath[baseImage], "the base image is staged")
+  local firstHandle = assert(movie.current.imageByPath[firstImage], "the first swap image is staged")
+  local secondHandle = assert(movie.current.imageByPath[secondImage], "the second swap image is staged")
   for _ = 1, 2 do
     movie:updateFixed()
   end
   movie:draw()
-  local earlyWidths = {}
+  local earlySeen = {}
   for _, draw in ipairs(graphics.draws) do
-    earlyWidths[draw.image:getWidth()] = true
+    earlySeen[draw.image] = true
   end
-  Assert.isTrue(earlyWidths[256], "the base image draws before either same-tick swap fires")
-  Assert.isNil(earlyWidths[128], "the first swap stays off before its step tick")
+  Assert.isTrue(earlySeen[baseHandle], "the base image draws before either same-tick swap fires")
+  Assert.isNil(earlySeen[firstHandle], "the first swap stays off before its step tick")
   movie:updateFixed()
   movie:draw()
-  local lateWidths = {}
+  local lateSeen = {}
   for _, draw in ipairs(graphics.draws) do
-    lateWidths[draw.image:getWidth()] = true
+    lateSeen[draw.image] = true
   end
-  Assert.isTrue(lateWidths[64], "same-tick swaps apply in listed order with the later event winning")
+  Assert.isTrue(lateSeen[secondHandle], "same-tick swaps apply in listed order with the later event winning")
   movie:dispose()
 end
 
@@ -1342,8 +1698,28 @@ function T.repeated_effect_starts_rebind_the_wait_to_the_latest_start()
         { id = "tail", events = { 3, 4 }, ["until"] = { kind = "duration", ticks = 5 } },
       },
       {
-        { op = "setBlend", stepId = "hold", atStepTick = 0, effect = "pulse", ticks = 6 },
-        { op = "setBlend", stepId = "hold", atStepTick = 4, effect = "pulse", ticks = 6 },
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 1,
+          secondMask = 2,
+          direction = 0,
+          effect = "pulse",
+          ticks = 6,
+        },
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 4,
+          engine = "main",
+          firstMask = 1,
+          secondMask = 2,
+          direction = 0,
+          effect = "pulse",
+          ticks = 6,
+        },
         { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 },
         { op = "finish", stepId = "tail", atStepTick = 0 },
       }
@@ -2115,9 +2491,9 @@ function T.bg_priority_zero_paints_last_and_hidden_planes_stay_dark()
       1,
       {
         layer(2, backImage, 256, 192, 2),
-        layer(0, frontImage, 64, 192, 0),
-        layer(1, middleImage, 128, 192, 1),
-        layer(3, hiddenImage, 48, 192, 3, false),
+        layer(0, frontImage, 256, 192, 0),
+        layer(1, middleImage, 256, 192, 1),
+        layer(3, hiddenImage, 256, 192, 3, false),
       },
       { layer(0, root .. "layers/lower.png", 256, 192) },
       { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
@@ -2140,13 +2516,16 @@ function T.bg_priority_zero_paints_last_and_hidden_planes_stay_dark()
     ),
     1
   )
-  -- Acquisition order fixes the fake image sizes: the three visible main
-  -- planes tag their priority by width, then the hidden plane, the sub
-  -- plane, and the sprite clip.
-  local graphics = movieGraphics({
-    imageSizes = { { 256, 192 }, { 64, 192 }, { 128, 192 }, { 48, 192 }, { 256, 192 }, { 16, 16 } },
-  })
+  -- Planes are told apart by their staged image handles: every fixture
+  -- image claims the same valid source extent, so widths cannot tag them.
+  local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
+  local handles = {
+    back = assert(movie.current.imageByPath[backImage], "the back plane image is staged"),
+    front = assert(movie.current.imageByPath[frontImage], "the front plane image is staged"),
+    middle = assert(movie.current.imageByPath[middleImage], "the middle plane image is staged"),
+    hidden = assert(movie.current.imageByPath[hiddenImage], "the hidden plane image is staged"),
+  }
   local baseline = #graphics.draws
   for _ = 1, 2 do
     movie:updateFixed()
@@ -2157,18 +2536,17 @@ function T.bg_priority_zero_paints_last_and_hidden_planes_stay_dark()
   for index = baseline + 1, #graphics.draws do
     local draw = graphics.draws[index]
     if graphics.drawCanvases[index].canvas == movie.mainCanvas then
-      local width = draw.image:getWidth()
-      if width == 256 or width == 128 or width == 64 then
-        order[#order + 1] = width
-      elseif width == 48 then
+      if draw.image == handles.back or draw.image == handles.middle or draw.image == handles.front then
+        order[#order + 1] = draw.image
+      elseif draw.image == handles.hidden then
         hiddenDrawn = true
       end
     end
   end
   Assert.equal(#order, 3, "every visible main plane paints exactly once")
-  Assert.equal(order[1], 256, "numeric priority 2 paints first (backmost)")
-  Assert.equal(order[2], 128, "numeric priority 1 paints next")
-  Assert.equal(order[3], 64, "numeric priority 0 paints last (frontmost)")
+  Assert.equal(order[1], handles.back, "numeric priority 2 paints first (backmost)")
+  Assert.equal(order[2], handles.middle, "numeric priority 1 paints next")
+  Assert.equal(order[3], handles.front, "numeric priority 0 paints last (frontmost)")
   Assert.isFalse(hiddenDrawn, "the disabled slot contributes no pixels despite its staged image")
   for _ = 1, 4 do
     movie:updateFixed()
@@ -2178,7 +2556,7 @@ function T.bg_priority_zero_paints_last_and_hidden_planes_stay_dark()
   local revealed = false
   for index = revealBaseline + 1, #graphics.draws do
     local draw = graphics.draws[index]
-    if graphics.drawCanvases[index].canvas == movie.mainCanvas and draw.image:getWidth() == 48 then
+    if graphics.drawCanvases[index].canvas == movie.mainCanvas and draw.image == handles.hidden then
       revealed = true
     end
   end
@@ -2199,7 +2577,11 @@ function T.town_stage_draws_on_main_and_stops_without_releasing()
       { id = "hold", events = { 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 30 } },
     }, {
       { op = "setCamera", stepId = "arrive", atStepTick = 0, distance = 100 },
-      { op = "setModelClip", stepId = "arrive", atStepTick = 0, model = "town-0", clip = "arrive-pose" },
+      -- The clip fires mid-step: handoff stages every tick-zero program
+      -- before the first frame, and the fake host cannot feed the real
+      -- town renderer, so the town stays off until its authored tick
+      -- exactly like the stop below stays off after its.
+      { op = "setModelClip", stepId = "arrive", atStepTick = 10, model = "town-0", clip = "arrive-pose" },
       { op = "waitTicks", stepId = "arrive", atStepTick = 0, ticks = 20 },
       { op = "setLighting", stepId = "hold", atStepTick = 0, map = 1 },
       { op = "setModelVisible", stepId = "hold", atStepTick = 10, visible = false },
@@ -2299,8 +2681,8 @@ function T.independent_engine_windows_mask_planes_through_flips()
   local function opposingScene(mapping)
     return compositeManifest(
       1,
-      { layer(1, mainBg1, 64, 192, 1), layer(2, mainBg2, 128, 192, 2) },
-      { layer(1, subBg1, 96, 192, 1), layer(2, subBg2, 112, 192, 2) },
+      { layer(1, mainBg1, 256, 192, 1), layer(2, mainBg2, 256, 192, 2) },
+      { layer(1, subBg1, 256, 192, 1), layer(2, subBg2, 256, 192, 2) },
       {
         spriteClip(heroMain, { stillFrame() }),
         spriteClip(heroSub, { stillFrame() }),
@@ -2368,14 +2750,20 @@ function T.independent_engine_windows_mask_planes_through_flips()
       }
     )
   end
-  -- Acquisition order fixes the fake image sizes behind each engine slot.
-  local sizes = { { 64, 192 }, { 128, 192 }, { 96, 192 }, { 112, 192 }, { 16, 16 }, { 16, 16 } }
+  -- Staged image handles tell the engine slots apart; every fixture
+  -- image claims the same valid source extent, so widths cannot tag them.
   local flipScenes, flipCache = packWithSceneAt(opposingScene("lower"), 1)
-  local flipGraphics = movieGraphics({ imageSizes = sizes })
+  local flipGraphics = movieGraphics()
   local flipped = openMovie(flipScenes, flipCache, flipGraphics)
   local plainScenes, plainCache = packWithSceneAt(opposingScene("upper"), 1)
-  local plainGraphics = movieGraphics({ imageSizes = sizes })
+  local plainGraphics = movieGraphics()
   local plain = openMovie(plainScenes, plainCache, plainGraphics)
+  local flipHandles = {
+    mainBg1 = assert(flipped.current.imageByPath[mainBg1], "the main BG1 image is staged"),
+    mainBg2 = assert(flipped.current.imageByPath[mainBg2], "the main BG2 image is staged"),
+    subBg1 = assert(flipped.current.imageByPath[subBg1], "the sub BG1 image is staged"),
+    subBg2 = assert(flipped.current.imageByPath[subBg2], "the sub BG2 image is staged"),
+  }
   for _ = 1, 5 do
     flipped:updateFixed()
     plain:updateFixed()
@@ -2408,8 +2796,8 @@ function T.independent_engine_windows_mask_planes_through_flips()
   end
   local mainDraws, mainScissors = engineFrame(flipGraphics, flipped, "main", flipBaseline, flipScissorBaseline)
   Assert.equal(#mainDraws, 3, "main BG2, BG1, and its sprite each paint once")
-  Assert.equal(mainDraws[1].image, flipGraphics.images[2], "main BG2 paints first (backmost)")
-  Assert.equal(mainDraws[2].image, flipGraphics.images[1], "main BG1 paints next")
+  Assert.equal(mainDraws[1].image, flipHandles.mainBg2, "main BG2 paints first (backmost)")
+  Assert.equal(mainDraws[2].image, flipHandles.mainBg1, "main BG1 paints next")
   Assert.notNil(mainDraws[3].quad, "the main sprite paints through its authored clip")
   Assert.equal(#mainScissors, 3, "every main plane draws under its own clip")
   Assert.isTrue(hasScissor({ mainScissors[1] }, 0, 0, 256, 192), "main BG2 paints the whole target")
@@ -2420,8 +2808,8 @@ function T.independent_engine_windows_mask_planes_through_flips()
   Assert.isTrue(hasScissor({ mainScissors[3] }, 0, 0, 256, 192), "main OBJ paints wherever the mask allows")
   local subDraws, subScissors = engineFrame(flipGraphics, flipped, "sub", flipBaseline, flipScissorBaseline)
   Assert.equal(#subDraws, 3, "sub BG2, BG1, and its sprite each paint once")
-  Assert.equal(subDraws[1].image, flipGraphics.images[4], "sub BG2 paints first (backmost)")
-  Assert.equal(subDraws[2].image, flipGraphics.images[3], "sub BG1 paints next")
+  Assert.equal(subDraws[1].image, flipHandles.subBg2, "sub BG2 paints first (backmost)")
+  Assert.equal(subDraws[2].image, flipHandles.subBg1, "sub BG1 paints next")
   Assert.notNil(subDraws[3].quad, "the sub sprite paints through its authored clip")
   Assert.equal(#subScissors, 3, "every sub plane draws under its own clip")
   Assert.isTrue(hasScissor({ subScissors[1] }, 0, 0, 256, 192), "sub BG2 paints the whole target")

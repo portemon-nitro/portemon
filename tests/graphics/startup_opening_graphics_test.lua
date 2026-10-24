@@ -435,7 +435,7 @@ local function compositeScene(sceneNumber, main, sub, clips, particles, steps, e
     for _, entry in ipairs(list) do
       assets[entry.image] = true
       for _, alternate in ipairs(entry.variants) do
-        assets[alternate] = true
+        assets[alternate.image or alternate] = true
       end
     end
   end
@@ -643,16 +643,18 @@ local function composite_layers_pan_independently_with_true_blending(scope)
   -- Back-to-front band order is authored priority, not slot order: the
   -- fullscreen bottom paints first (priority 2) so the panned middle and
   -- top uncover it past their shifted extents.
+  -- Every layer claims a valid source extent; the pans below reproduce
+  -- the authored offsets on full-size art.
   local layers = {
     compositeLayer(0, bottomImage, 256, 192, true, 2),
-    compositeLayer(1, middleImage, 128, 192, true, 1),
-    compositeLayer(2, topImage, 64, 192, true, 0),
+    compositeLayer(1, middleImage, 256, 192, true, 1),
+    compositeLayer(2, topImage, 256, 192, true, 0),
   }
   local lower = { compositeLayer(0, groundImage, 256, 192) }
   local art = {
     [bottomImage] = solidPng(256, 192, 255, 0, 0),
-    [middleImage] = solidPng(128, 192, 0, 255, 0),
-    [topImage] = solidPng(64, 192, 0, 0, 255),
+    [middleImage] = solidPng(256, 192, 0, 255, 0),
+    [topImage] = solidPng(256, 192, 0, 0, 255),
     [groundImage] = solidPng(256, 192, 255, 0, 255),
   }
   local panScenes, panCache = compositePack(
@@ -673,7 +675,6 @@ local function composite_layers_pan_independently_with_true_blending(scope)
           dx = -1024,
           dy = 0,
           ticks = 12,
-          direction = "left",
         },
         {
           op = "setScroll",
@@ -684,7 +685,6 @@ local function composite_layers_pan_independently_with_true_blending(scope)
           dx = -512,
           dy = 0,
           ticks = 12,
-          direction = "left",
         },
         { op = "enableSkip", stepId = "pan", atStepTick = 10 },
         { op = "waitTicks", stepId = "pan", atStepTick = 0, ticks = 40 },
@@ -696,18 +696,19 @@ local function composite_layers_pan_independently_with_true_blending(scope)
   )
   local pan = openCompositeMovie(scope, panScenes, panCache, 512, 384, "dual")
   advance(pan, 12)
-  -- Device x maps to source x/2: the narrower panned layers uncover the
-  -- layers beneath past their shifted extents (middle ends at source 104,
-  -- top ends at source 16).
-  local r, g = samplePixel(scope, pan, 512, 384, 400, 96)
-  Assert.near(r, 1, 0.03, "the uncovered bottom band stays red")
-  Assert.near(g, 0, 0.03, "the uncovered bottom band stays red")
-  local mr, mg = samplePixel(scope, pan, 512, 384, 100, 96)
-  Assert.near(mg, 1, 0.03, "the middle band shows through past the shifted top layer")
-  Assert.near(mr, 0, 0.03, "the middle band shows through past the shifted top layer")
-  local br, _, bb = samplePixel(scope, pan, 512, 384, 8, 96)
-  Assert.near(bb, 1, 0.03, "the settled top band stays blue")
-  Assert.near(br, 0, 0.03, "the settled top band stays blue")
+  -- Both pans are exact multiples of the 256-wide native extent, so the
+  -- wrapped viewports resample the origin: the frontmost solid still
+  -- covers every pixel with no gaps and no uncovered strips, while the
+  -- slot offsets below prove each layer panned its own full displacement.
+  local slot = assert(pan.current, "the running movie owns its current slot")
+  Assert.equal(slot.backgrounds.main[2].scrollX, -1024, "the top layer lands exactly on its full displacement")
+  Assert.equal(slot.backgrounds.main[1].scrollX, -512, "the middle layer pans at its own authored displacement")
+  for _, x in ipairs({ 480, 440, 8 }) do
+    local br, bg, bb = samplePixel(scope, pan, 512, 384, x, 96)
+    Assert.near(bb, 1, 0.03, "the settled top band stays blue at column " .. x)
+    Assert.near(br, 0, 0.03, "no bottom red leaks through at column " .. x)
+    Assert.near(bg, 0, 0.03, "no middle green leaks through at column " .. x)
+  end
   local blendScenes, blendCache = compositePack(
     compositeScene(
       1,
@@ -717,7 +718,17 @@ local function composite_layers_pan_independently_with_true_blending(scope)
       { seed = 0, emitters = {} },
       { { id = "hold", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 30 } } },
       {
-        { op = "setBlend", stepId = "hold", atStepTick = 0, effect = "crossfade", ticks = 20 },
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 4,
+          secondMask = 2,
+          direction = 0,
+          effect = "crossfade",
+          ticks = 20,
+        },
         { op = "enableSkip", stepId = "hold", atStepTick = 10 },
         { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 30 },
         { op = "finish", stepId = "hold", atStepTick = 30 },
@@ -732,6 +743,322 @@ local function composite_layers_pan_independently_with_true_blending(scope)
   Assert.near(xr, 0, 0.05, "the blend keeps no bottom red under the settling top layer")
   Assert.near(xg, 0.25, 0.05, "the blend mixes the live middle layer beneath")
   Assert.near(xb, 0.75, 0.05, "the blend keeps the settling top layer dominant")
+end
+
+-- Four-quadrant chart: wrap sampling must rearrange the quadrants
+-- instead of shifting one copy and uncovering cleared strips.
+---@param size integer chart edge in pixels
+---@param topLeft integer[] RGB corner colors
+---@param topRight integer[] RGB corner colors
+---@param bottomLeft integer[] RGB corner colors
+---@param bottomRight integer[] RGB corner colors
+---@return string png bytes of the opaque quadrant chart
+local function quadrantPng(size, topLeft, topRight, bottomLeft, bottomRight)
+  local half = math.floor(size / 2)
+  local rows = {}
+  for y = 0, size - 1 do
+    local cells = {}
+    for x = 0, size - 1 do
+      local corner
+      if y < half then
+        corner = (x < half) and topLeft or topRight
+      else
+        corner = (x < half) and bottomLeft or bottomRight
+      end
+      cells[#cells + 1] = string.char(corner[1], corner[2], corner[3], 255)
+    end
+    rows[#rows + 1] = table.concat(cells)
+  end
+  return PngWriter.encode(size, size, table.concat(rows))
+end
+
+---@param width integer chart width in pixels
+---@param height integer chart height in pixels
+---@param left integer[] RGB left-half color
+---@param right integer[] RGB right-half color
+---@return string png bytes of the opaque two-band chart
+local function halvesPng(width, height, left, right)
+  local half = math.floor(width / 2)
+  local rows = {}
+  for _ = 1, height do
+    local cells = {}
+    for x = 0, width - 1 do
+      local band = (x < half) and left or right
+      cells[#cells + 1] = string.char(band[1], band[2], band[3], 255)
+    end
+    rows[#rows + 1] = table.concat(cells)
+  end
+  return PngWriter.encode(width, height, table.concat(rows))
+end
+
+local function native_viewports_wrap_across_source_extents(scope)
+  local root = sceneArtRoot(1)
+  local baseImage = root .. "layers/chart-base.png"
+  local groundImage = root .. "layers/chart-ground.png"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local art = {
+    [baseImage] = quadrantPng(512, { 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 }, { 255, 255, 0 }),
+    [groundImage] = solidPng(256, 192, 40, 40, 40),
+  }
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      {
+        {
+          bgSlot = 0,
+          priority = 0,
+          image = baseImage,
+          variants = {},
+          width = 512,
+          height = 512,
+          sourceHash = string.rep("c", 40),
+          initialVisible = true,
+        },
+      },
+      { compositeLayer(0, groundImage, 256, 192) },
+      {},
+      { seed = 0, emitters = {} },
+      { { id = "show", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setScroll",
+          stepId = "show",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 0,
+          dx = 384,
+          dy = 400,
+          ticks = 0,
+        },
+        { op = "enableSkip", stepId = "show", atStepTick = 10 },
+        { op = "waitTicks", stepId = "show", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "show", atStepTick = 40 },
+      }
+    ),
+    art,
+    gray16
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  advance(movie, 5)
+  movie:draw()
+  -- An offset of (384, 400) on the 512 chart samples each engine pixel
+  -- from ((x + 384) % 512, (y + 400) % 512): the viewport straddles both
+  -- wrap seams, so every quadrant shows exactly once.
+  local base = sourceBytes(scope, movie.mainCanvas)
+  local yr, yg, yb = pixelOf(base, 256, 8, 8)
+  Assert.near(yr, 1, 0.06, "the wrapped top-left viewport pixel is bottom-right yellow")
+  Assert.near(yg, 1, 0.06, "the wrapped top-left viewport pixel is bottom-right yellow")
+  Assert.near(yb, 0, 0.06, "the wrapped top-left viewport pixel is bottom-right yellow")
+  local br, bg, bb = pixelOf(base, 256, 200, 8)
+  Assert.near(br, 0, 0.06, "the wrapped top-right viewport pixel is bottom-left blue")
+  Assert.near(bg, 0, 0.06, "the wrapped top-right viewport pixel is bottom-left blue")
+  Assert.near(bb, 1, 0.06, "the wrapped top-right viewport pixel is bottom-left blue")
+  local gr, gg, gb = pixelOf(base, 256, 8, 180)
+  Assert.near(gr, 0, 0.06, "the wrapped bottom-left viewport pixel is top-right green")
+  Assert.near(gg, 1, 0.06, "the wrapped bottom-left viewport pixel is top-right green")
+  Assert.near(gb, 0, 0.06, "the wrapped bottom-left viewport pixel is top-right green")
+  local rr, rg, rb = pixelOf(base, 256, 200, 180)
+  Assert.near(rr, 1, 0.06, "the wrapped bottom-right viewport pixel is top-left red")
+  Assert.near(rg, 0, 0.06, "the wrapped bottom-right viewport pixel is top-left red")
+  Assert.near(rb, 0, 0.06, "the wrapped bottom-right viewport pixel is top-left red")
+  movie:dispose()
+end
+
+local function swapped_viewports_follow_the_active_image_extents(scope)
+  local root = sceneArtRoot(1)
+  local baseImage = root .. "layers/swap-base.png"
+  local altImage = root .. "layers/swap-alt.png"
+  local groundImage = root .. "layers/swap-ground.png"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local art = {
+    [baseImage] = solidPng(512, 512, 255, 0, 0),
+    [altImage] = halvesPng(256, 192, { 255, 0, 255 }, { 0, 255, 255 }),
+    [groundImage] = solidPng(256, 192, 40, 40, 40),
+  }
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      {
+        {
+          bgSlot = 0,
+          priority = 0,
+          image = baseImage,
+          variants = { { image = altImage, width = 256, height = 192 } },
+          width = 512,
+          height = 512,
+          sourceHash = string.rep("c", 40),
+          initialVisible = true,
+        },
+      },
+      { compositeLayer(0, groundImage, 256, 192) },
+      {},
+      { seed = 0, emitters = {} },
+      { { id = "show", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setScroll",
+          stepId = "show",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 0,
+          dx = 384,
+          dy = 400,
+          ticks = 0,
+        },
+        { op = "enableSkip", stepId = "show", atStepTick = 10 },
+        {
+          op = "setLayer",
+          stepId = "show",
+          atStepTick = 20,
+          engine = "main",
+          bgSlot = 0,
+          image = altImage,
+          visible = true,
+          priority = 0,
+        },
+        { op = "waitTicks", stepId = "show", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "show", atStepTick = 40 },
+      }
+    ),
+    art,
+    gray16
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  for _ = 1, 25 do
+    movie:updateFixed()
+  end
+  movie:draw()
+  -- Past the swap the same offsets sample the smaller alternate extents:
+  -- ((x + 384) % 256, (y + 400) % 192) lands on the alternate bands.
+  local swapped = sourceBytes(scope, movie.mainCanvas)
+  local cr, cg, cb = pixelOf(swapped, 256, 0, 0)
+  Assert.near(cr, 0, 0.06, "the swapped viewport origin samples the alternate right band")
+  Assert.near(cg, 1, 0.06, "the swapped viewport origin samples the alternate right band")
+  Assert.near(cb, 1, 0.06, "the swapped viewport origin samples the alternate right band")
+  local pr, pg, pb = pixelOf(swapped, 256, 200, 100)
+  Assert.near(pr, 1, 0.06, "the swapped viewport samples the alternate left band past its seam")
+  Assert.near(pg, 0, 0.06, "the swapped viewport samples the alternate left band past its seam")
+  Assert.near(pb, 1, 0.06, "the swapped viewport samples the alternate left band past its seam")
+  movie:dispose()
+end
+
+-- A strict town-free filler scene that acquires no models or particles,
+-- so sourced scroll legs can play through its position without depending
+-- on town acquisition.
+---@param versionId string selected edition identity
+---@param generationId string project generation shared by the pack
+---@param sceneNumber integer retail scene position of the filler
+---@param art table<string, string> staged png bytes by generated path
+---@return table strict synthetic opening-scene manifest
+local function fillerRomScene(versionId, generationId, sceneNumber, art)
+  local root = sceneArtRoot(sceneNumber)
+  local upperImage = root .. "layers/fill-upper.png"
+  local lowerImage = root .. "layers/fill-lower.png"
+  art[upperImage] = solidPng(256, 192, 64, 64, 64)
+  art[lowerImage] = solidPng(256, 192, 64, 64, 64)
+  -- The fourth scene always carries its nine staged starter emitters, so
+  -- the filler keeps them staged (but never starts them) exactly like the
+  -- sourced scene it stands in for.
+  local emitters, textures = {}, {}
+  if sceneNumber == 4 then
+    for id = 0, 8 do
+      local group = id < 3 and "water" or (id < 6 and "fire" or "grass")
+      local textureImage = root .. "particles/texture" .. id .. ".png"
+      emitters[#emitters + 1] = fillerEmitter(id, group, root)
+      textures[#textures + 1] = {
+        id = id,
+        format = 1,
+        width = 16,
+        height = 16,
+        image = textureImage,
+        sourceHash = string.rep("d", 40),
+      }
+      art[textureImage] = solidPng(16, 16, 128, 128, 128)
+    end
+  end
+  local assets = { [upperImage] = true, [lowerImage] = true }
+  for _, texture in ipairs(textures) do
+    assets[texture.image] = true
+  end
+  return {
+    schema = Contract.startupOpeningScene.schema,
+    versionId = versionId,
+    generationId = generationId,
+    sceneNumber = sceneNumber,
+    sourceTickRate = Contract.startupOpeningScene.tickRate,
+    layers = {
+      main = { compositeLayer(0, upperImage, 256, 192) },
+      sub = { compositeLayer(0, lowerImage, 256, 192) },
+    },
+    spriteClips = {},
+    models = {},
+    particles = { seed = 0, emitters = emitters, textures = textures },
+    timeline = {
+      steps = { { id = "fill", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 10 } } },
+      events = {
+        { op = "waitTicks", stepId = "fill", atStepTick = 0, ticks = 10 },
+        { op = "finish", stepId = "fill", atStepTick = 0 },
+      },
+    },
+    assets = assets,
+  }
+end
+
+-- Loads the sourced scenes for one edition, substituting town-free
+-- fillers for the listed positions. Filler manifests pass the same strict
+-- reader; every real scene still reads its own staged bytes.
+---@param versionId string selected edition identity
+---@param fillerIndexes integer[] retail scene positions to substitute
+---@return table[] scenes, table cacheFs strict five-scene pack with staged art
+local function loadRomPackWithFillers(versionId, fillerIndexes)
+  local baseFs = CacheFs.forVersion(versionId)
+  local probe = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(baseFs, sceneNumber, versionId)
+    Assert.notNil(loaded, "scene " .. sceneNumber .. " reads back as a ready bundle: " .. tostring(err))
+    probe[sceneNumber] = loaded
+  end
+  local fillerSet = {}
+  for _, sceneNumber in ipairs(fillerIndexes) do
+    fillerSet[sceneNumber] = true
+  end
+  local fillerArt = {}
+  local fillerManifests = {}
+  for _, sceneNumber in ipairs(fillerIndexes) do
+    fillerManifests[sceneNumber] =
+      fillerRomScene(versionId, probe[1].generationId, sceneNumber, fillerArt)
+  end
+  local cacheFs = {
+    loadLua = function(_, path)
+      for sceneNumber, manifest in pairs(fillerManifests) do
+        if path == StartupAssetCache.openingScenePath(sceneNumber) then
+          return manifest
+        end
+      end
+      return baseFs:loadLua(path)
+    end,
+    exists = function(_, path, kind)
+      if fillerArt[path] ~= nil then
+        return true
+      end
+      return baseFs:exists(path, kind)
+    end,
+    read = function(_, path)
+      if fillerArt[path] ~= nil then
+        return fillerArt[path]
+      end
+      return baseFs:read(path)
+    end,
+  }
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, versionId)
+    Assert.notNil(loaded, "scene " .. sceneNumber .. " reads back as a ready bundle: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  Assert.isFalse(fillerSet[1], "the opening scene is never substituted")
+  Assert.isFalse(fillerSet[2], "the scene under test is never substituted")
+  return scenes, cacheFs
 end
 
 local function authored_sprites_stay_on_their_engine_with_frame_offsets(scope)
@@ -2436,17 +2763,21 @@ local function slide_in_windows_reveal_opposite_halves_on_each_engine(scope, con
   local subSettled = changeFraction(subDone, subHold, 256, 192)
   Assert.isTrue(mainSettled < 0.02, ("the completed main reveal holds still (%.3f)"):format(mainSettled))
   Assert.isTrue(subSettled < 0.02, ("the completed sub reveal holds still (%.3f)"):format(subSettled))
+  -- The sourced slide opens the main window from the right edge toward
+  -- full width and mirrors the sub window from the left edge, so the late
+  -- (mid-to-done) change concentrates on the left for main and on the
+  -- right for sub: the two engines reveal opposite halves.
   local mainLeft = halfChangeFraction(mainMid, mainDone, 256, 192, true)
   local mainRight = halfChangeFraction(mainMid, mainDone, 256, 192, false)
   Assert.isTrue(
-    mainRight > mainLeft,
-    ("the main reveal finishes on the right (right %.3f vs left %.3f)"):format(mainRight, mainLeft)
+    mainLeft > mainRight,
+    ("the main reveal finishes on the left (left %.3f vs right %.3f)"):format(mainLeft, mainRight)
   )
   local subLeft = halfChangeFraction(subMid, subDone, 256, 192, true)
   local subRight = halfChangeFraction(subMid, subDone, 256, 192, false)
   Assert.isTrue(
-    subLeft > subRight,
-    ("the sub reveal finishes on the left (left %.3f vs right %.3f)"):format(subLeft, subRight)
+    subRight > subLeft,
+    ("the sub reveal finishes on the right (right %.3f vs left %.3f)"):format(subRight, subLeft)
   )
   movie:dispose()
 end
@@ -2588,6 +2919,194 @@ local function single_screen_stages_show_the_authored_active_engine(scope, conte
   dual:dispose()
 end
 
+-- Reads the current background offsets of the running slot by engine.
+---@param movie table running opening movie
+---@return table<string, integer> vertical offsets by engine and slot name
+local function currentScrollOffsets(movie)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  return {
+    main0 = slot.backgrounds.main[0].scrollY,
+    main1 = slot.backgrounds.main[1].scrollY,
+    main2 = slot.backgrounds.main[2].scrollY,
+    sub0 = slot.backgrounds.sub[0].scrollY,
+  }
+end
+
+---@param scope table
+---@param versionId string selected edition identity
+local function sourced_scroll_offsets_follow_absolute_source_ticks(scope, versionId)
+  local scenes, cacheFs = loadRomPackWithFillers(versionId, { 3, 4, 5 })
+  local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
+  advanceToSceneStep(movie, 2, "flyin", 20000)
+  -- The sourced flyin opens with two immediate placements plus two
+  -- open-ended drifts: main BG0 sits 192 down, main BG1 320 down, and
+  -- both drifts add 64 every fixed tick.
+  local entry = currentScrollOffsets(movie)
+  Assert.equal(entry.main0, 192, "the immediate main BG0 placement lands on the first frame")
+  Assert.equal(entry.main1, 320, "the immediate main BG1 placement lands on the first frame")
+  Assert.equal(entry.main2, 0, "the open-ended drift starts at its origin")
+  movie:draw()
+  local drawn = currentScrollOffsets(movie)
+  Assert.equal(drawn.main0, 192, "a host draw never resamples the immediate placement")
+  for _ = 1, 10 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  local tenth = currentScrollOffsets(movie)
+  Assert.equal(tenth.main0, 192, "the timed replacement has not fired yet")
+  Assert.equal(tenth.main2, 640, "the main open-ended drift adds its step every fixed tick")
+  Assert.equal(tenth.sub0, 640, "the sub open-ended drift advances on its own engine clock")
+  -- At the fifty-sixth flyin tick both voiced panels start a five-tick
+  -- -192 replacement: the middle sample truncates toward zero and the
+  -- final tick lands exactly on the combined displacement.
+  for _ = 1, 45 do
+    movie:updateFixed()
+  end
+  movie:updateFixed()
+  local first = currentScrollOffsets(movie)
+  Assert.equal(first.main0, 154, "the first replacement tick holds 192 plus trunc(-192/5)")
+  for _ = 1, 4 do
+    movie:updateFixed()
+  end
+  local settled = currentScrollOffsets(movie)
+  Assert.equal(settled.main0, 0, "the replacement lands exactly on its combined displacement")
+  Assert.equal(settled.main1, 128, "the main BG1 replacement lands exactly on 320 minus 192")
+  movie:dispose()
+end
+
+local function sourced_scroll_offsets_for_edition(scope, context)
+  local versionId = selectedVersionId(context)
+  sourced_scroll_offsets_follow_absolute_source_ticks(scope, versionId)
+end
+
+local function heartgold_scroll_offsets_are_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold scroll offsets need a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the sourced immediate, continuous, "
+        .. "and timed offset legs cannot run for HeartGold and are never faked"
+    )
+  end
+  sourced_scroll_offsets_follow_absolute_source_ticks(scope, "heartgold")
+end
+
+---@param scope table
+---@param pngBytes string staged png bytes from the version cache
+---@param name string staged path carried for diagnostics
+---@return love.ImageData decoded art pixels owned by the scope
+local function decodedArt(scope, pngBytes, name)
+  local fileData = love.filesystem.newFileData(pngBytes, name)
+  return scope:own(love.image.newImageData(fileData))
+end
+
+---@param scope table
+---@param versionId string selected edition identity
+local function sourced_panorama_pixels_match_wrapped_source_art(scope, versionId)
+  local scenes, cacheFs = loadRomPackWithFillers(versionId, { 3, 4 })
+  local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
+  advanceToSceneStep(movie, 5, "scroll", 20000)
+  -- The wipe-step cover retires a few ticks into the scroll beat, so the
+  -- lit baseline is sampled once the engine targets show the panorama.
+  for _ = 1, 10 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  movie:draw()
+  local startMain = sourceBytes(scope, movie.mainCanvas)
+  Assert.isTrue(
+    regionLit(startMain, 256, 0, 255, 0, 191) > 0.2,
+    "the scroll beat lights the main source target"
+  )
+  -- The sourced panorama pans every voiced panel across 73 fixed ticks.
+  for _ = 1, 60 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  movie:draw()
+  local endMain = sourceBytes(scope, movie.mainCanvas)
+  Assert.isTrue(endMain ~= startMain, "the panorama moves main source pixels across its duration")
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  -- Every voiced main-engine panel is decoded from its own staged bytes
+  -- and the engine canvas is checked against the wrapped source formula,
+  -- composited back-to-front exactly like the plane pass: numeric
+  -- priority paints first, the lower slot breaks ties. Only decisive
+  -- (opaque or fully clear) art pixels count, so soft art edges can never
+  -- decide the comparison either way.
+  local panels = {}
+  for _, bgSlot in ipairs({ 1, 2 }) do
+    local background = assert(slot.backgrounds.main[bgSlot], "the voiced panel is staged")
+    Assert.isTrue(background.visible, "the voiced panel stays visible through the pan")
+    local bytes = assert(cacheFs:read(background.image), "the staged panel art reads back")
+    local data = decodedArt(scope, bytes, background.image)
+    panels[#panels + 1] = {
+      data = data,
+      width = data:getWidth(),
+      height = data:getHeight(),
+      offsetX = math.floor(background.scrollX),
+      offsetY = math.floor(background.scrollY),
+      priority = background.priority,
+      bgSlot = bgSlot,
+    }
+  end
+  table.sort(panels, function(a, b)
+    if a.priority ~= b.priority then
+      return a.priority > b.priority
+    end
+    return a.bgSlot < b.bgSlot
+  end)
+  local matched, decisive = 0, 0
+  for y = 0, 191, 16 do
+    for x = 0, 255, 16 do
+      local er, eg, eb = 0, 0, 0
+      local settled = true
+      for _, panel in ipairs(panels) do
+        local sx = (x + panel.offsetX) % panel.width
+        local sy = (y + panel.offsetY) % panel.height
+        local r, g, b, a = panel.data:getPixel(sx, sy)
+        if a > 0.98 then
+          er, eg, eb = r, g, b
+          break
+        elseif a > 0.02 then
+          settled = false
+          break
+        end
+      end
+      if settled then
+        decisive = decisive + 1
+        local ar, ag, ab = pixelOf(endMain, 256, x, y)
+        if math.abs(ar - er) + math.abs(ag - eg) + math.abs(ab - eb) < 0.06 then
+          matched = matched + 1
+        end
+      end
+    end
+  end
+  Assert.isTrue(decisive > 96, "most sampled viewport pixels rest on decisive art")
+  Assert.isTrue(matched / decisive > 0.9, "viewport pixels match the wrapped source art")
+  movie:draw()
+  Assert.equal(
+    sourceBytes(scope, movie.mainCanvas),
+    endMain,
+    "a repeated draw paints the identical source frame"
+  )
+  movie:dispose()
+end
+
+local function sourced_panorama_for_edition(scope, context)
+  local versionId = selectedVersionId(context)
+  sourced_panorama_pixels_match_wrapped_source_art(scope, versionId)
+end
+
+local function heartgold_panorama_wrap_is_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold panorama edges need a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the sourced wrap and strip legs "
+        .. "cannot run for HeartGold and are never faked"
+    )
+  end
+  sourced_panorama_pixels_match_wrapped_source_art(scope, "heartgold")
+end
+
 local T = GraphicsSmoke.suite({
   ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
@@ -2598,6 +3117,12 @@ local T = GraphicsSmoke.suite({
   ["soulsilver town model failure aborts with a typed error"] = soulsilver_town_model_failure_aborts_with_a_typed_error,
   ["soulsilver town camera uses the sourced angle and lens"] = soulsilver_town_camera_uses_the_sourced_angle_and_lens,
   ["composite layers pan independently with true blending"] = composite_layers_pan_independently_with_true_blending,
+  ["native viewports wrap across source extents"] = native_viewports_wrap_across_source_extents,
+  ["swapped viewports follow the active image extents"] = swapped_viewports_follow_the_active_image_extents,
+  ["sourced scroll offsets follow absolute source ticks"] = sourced_scroll_offsets_for_edition,
+  ["heartgold scroll offsets are blocked without a dump"] = heartgold_scroll_offsets_are_blocked_without_a_dump,
+  ["sourced panorama pixels match wrapped source art"] = sourced_panorama_for_edition,
+  ["heartgold panorama wrap is blocked without a dump"] = heartgold_panorama_wrap_is_blocked_without_a_dump,
   ["synthetic color overlap proves bg ordering"] = synthetic_color_overlap_proves_bg_ordering,
   ["synthetic window masks isolate engine planes"] = synthetic_window_masks_isolate_engine_planes,
   ["soulsilver town stays on main and stops at the rival beat"] = soulsilver_town_stays_on_main_and_stops_at_the_rival_beat,
