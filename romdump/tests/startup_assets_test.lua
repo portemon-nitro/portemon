@@ -1277,7 +1277,7 @@ function T.opening_scene_family_is_a_closed_numeric_kind()
   end
 end
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v2"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v3"
 
 local function openingLayer(engine, bgSlot, image)
   return {
@@ -1288,6 +1288,7 @@ local function openingLayer(engine, bgSlot, image)
     width = 256,
     height = 192,
     sourceHash = string.rep("a", 40),
+    initialVisible = true,
   }
 end
 
@@ -1783,6 +1784,224 @@ function T.opening_scene_dependencies_are_empty_and_final()
     Assert.isTrue(complete, "scene " .. sceneNumber .. " resolves without adopted plans")
     Assert.deepEqual(dependencies, {}, "scene " .. sceneNumber .. " carries no prerequisite jobs")
   end
+end
+
+-- The generation-three opening bundle carries explicit per-slot plane state,
+-- engine-local window records with plane masks, a town-stage stop limited to
+-- the town scene, and manual window overrides. These synthetic fixtures pin
+-- the strict reader contract without touching a ROM.
+local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v3"
+
+local function openingLayerV3(engine, bgSlot, image, visible)
+  return {
+    bgSlot = bgSlot,
+    priority = bgSlot,
+    image = image,
+    variants = {},
+    width = 256,
+    height = 192,
+    sourceHash = string.rep("b", 40),
+    initialVisible = visible,
+  }
+end
+
+local function openingWindowEvent(stepId, atStepTick, overrides)
+  local record = {
+    op = "window",
+    stepId = stepId,
+    atStepTick = atStepTick,
+    engine = "sub",
+    from = { x1 = 255, y1 = 0, x2 = 255, y2 = 192 },
+    to = { x1 = 0, y1 = 0, x2 = 255, y2 = 192 },
+    ticks = 10,
+    insideMask = 30,
+    outsideMask = 28,
+  }
+  for key, value in pairs(overrides or {}) do
+    if value == false and (key == "effect") then
+      record[key] = nil
+    else
+      record[key] = value
+    end
+  end
+  return record
+end
+
+local function validOpeningManifestV3(sceneNumber, versionId)
+  local root = "assets/generated/startup/opening/" .. tostring(sceneNumber)
+  local manifest = {
+    schema = OPENING_SCHEMA_V3,
+    versionId = versionId,
+    generationId = "test-generation",
+    sceneNumber = sceneNumber,
+    sourceTickRate = 30,
+    layers = {
+      main = { openingLayerV3("main", 0, root .. "/main-bg.png", true) },
+      sub = { openingLayerV3("sub", 0, root .. "/sub-bg.png", false) },
+    },
+    spriteClips = { openingClip(root, "clip0") },
+    models = {},
+    particles = { seed = 0, emitters = {} },
+    timeline = { steps = openingSteps(3), events = openingEvents(3, root) },
+    assets = {
+      [root .. "/main-bg.png"] = true,
+      [root .. "/sub-bg.png"] = true,
+      [root .. "/sprites/clip0.png"] = true,
+    },
+  }
+  -- The generic scene-3-shaped program owns every event below; scenes that
+  -- carry no model stop reference it from a step the timeline covers.
+  manifest.timeline = { steps = openingSteps(3), events = openingEvents(3, root) }
+  if sceneNumber == 3 then
+    manifest.models = {
+      {
+        descriptor = {},
+        clips = { { frameCount = 4 }, { frameCount = 6 } },
+      },
+      {
+        descriptor = {},
+        clips = { { frameCount = 4 }, { frameCount = 6 } },
+      },
+      {
+        descriptor = {},
+        clips = { { frameCount = 4 }, { frameCount = 6 } },
+      },
+    }
+  end
+  return manifest
+end
+
+local function appendStepEventV3(manifest, stepId, event)
+  event.stepId = stepId
+  manifest.timeline.events[#manifest.timeline.events + 1] = event
+  for _, step in ipairs(manifest.timeline.steps) do
+    if step.id == stepId then
+      step.events[#step.events + 1] = #manifest.timeline.events
+      return #manifest.timeline.events
+    end
+  end
+  error("synthetic v3 step is missing: " .. tostring(stepId), 0)
+end
+
+function T.opening_scene_reader_requires_initial_plane_state()
+  local manifest = validOpeningManifestV3(3, "heartgold")
+  local loaded, err = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 3, "heartgold")
+  Assert.notNil(loaded, "a bundle with explicit plane state reads ready: " .. tostring(err))
+  local missing = deepCopy(manifest)
+  missing.layers.sub[1].initialVisible = nil
+  local rejected, missingErr = StartupAssetCache.loadOpeningScene(openingCacheFs(missing, nil), 3, "heartgold")
+  Assert.isNil(rejected, "a layer without plane state is not ready")
+  Assert.notNil(missingErr, "the missing plane state reports its cause")
+  local vague = deepCopy(manifest)
+  vague.layers.main[1].initialVisible = "yes"
+  local badVisible, badVisibleErr =
+    StartupAssetCache.loadOpeningScene(openingCacheFs(vague, nil), 3, "heartgold")
+  Assert.isNil(badVisible, "a non-boolean plane state is not ready")
+  Assert.notNil(badVisibleErr, "the malformed plane state reports its cause")
+  local stale = deepCopy(manifest)
+  stale.schema = "g4-startup-opening-scene-v2"
+  local staleRead, staleErr = StartupAssetCache.loadOpeningScene(openingCacheFs(stale, nil), 3, "heartgold")
+  Assert.isNil(staleRead, "the previous generation-two record never validates")
+  Assert.notNil(staleErr, "the stale schema reports its cause")
+end
+
+function T.opening_scene_reader_accepts_engine_window_records()
+  local manifest = validOpeningManifestV3(4, "heartgold")
+  manifest.particles = {
+    seed = 0,
+    emitters = {
+      { id = 0, group = "water" },
+      { id = 1, group = "water" },
+      { id = 2, group = "water" },
+      { id = 3, group = "fire" },
+      { id = 4, group = "fire" },
+      { id = 5, group = "fire" },
+      { id = 6, group = "grass" },
+      { id = 7, group = "grass" },
+      { id = 8, group = "grass" },
+    },
+  }
+  appendStepEventV3(manifest, "open", openingWindowEvent("open", 0))
+  local loaded, err = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 4, "heartgold")
+  Assert.notNil(loaded, "an engine window record reads ready: " .. tostring(err))
+  local legacy = deepCopy(manifest)
+  legacy.timeline.events[#legacy.timeline.events] = {
+    op = "window",
+    stepId = "open",
+    atStepTick = 0,
+    target = "lower",
+    kind = "narrow-y",
+  }
+  local legacyRead, legacyErr = StartupAssetCache.loadOpeningScene(openingCacheFs(legacy, nil), 4, "heartgold")
+  Assert.isNil(legacyRead, "the retired target/kind window shape never validates")
+  Assert.notNil(legacyErr, "the retired window shape reports its cause")
+  local badMask = deepCopy(manifest)
+  badMask.timeline.events[#badMask.timeline.events].insideMask = 32
+  local badMaskRead, badMaskErr = StartupAssetCache.loadOpeningScene(openingCacheFs(badMask, nil), 4, "heartgold")
+  Assert.isNil(badMaskRead, "a window mask outside the five plane bits never validates")
+  Assert.notNil(badMaskErr, "the bad mask reports its cause")
+  local badRect = deepCopy(manifest)
+  badRect.timeline.events[#badRect.timeline.events].from = { x1 = 0, y1 = 0, x2 = 256, y2 = 192 }
+  local badRectRead, badRectErr = StartupAssetCache.loadOpeningScene(openingCacheFs(badRect, nil), 4, "heartgold")
+  Assert.isNil(badRectRead, "a window endpoint outside the source display never validates")
+  Assert.notNil(badRectErr, "the bad endpoint reports its cause")
+  local permanent = deepCopy(manifest)
+  permanent.timeline.events[#permanent.timeline.events].ticks = 0
+  permanent.timeline.events[#permanent.timeline.events].effect = "window-stuck"
+  local permanentRead, permanentErr =
+    StartupAssetCache.loadOpeningScene(openingCacheFs(permanent, nil), 4, "heartgold")
+  Assert.isNil(permanentRead, "an immediate window assignment schedules no permanent wait")
+  Assert.notNil(permanentErr, "the zero-duration effect reports its cause")
+  local immediate = deepCopy(manifest)
+  immediate.timeline.events[#immediate.timeline.events].ticks = 0
+  immediate.timeline.events[#immediate.timeline.events].from =
+    { x1 = 70, y1 = 64, x2 = 185, y2 = 192 }
+  immediate.timeline.events[#immediate.timeline.events].to = { x1 = 70, y1 = 64, x2 = 185, y2 = 192 }
+  local immediateRead, immediateErr =
+    StartupAssetCache.loadOpeningScene(openingCacheFs(immediate, nil), 4, "heartgold")
+  Assert.notNil(immediateRead, "an immediate window assignment reads ready: " .. tostring(immediateErr))
+end
+
+function T.opening_scene_reader_restricts_the_town_stop_to_the_town_scene()
+  local manifest = validOpeningManifestV3(3, "heartgold")
+  appendStepEventV3(manifest, "open", { op = "setModelVisible", atStepTick = 0, visible = false })
+  local loaded, err = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 3, "heartgold")
+  Assert.notNil(loaded, "the town scene ends its town drawing: " .. tostring(err))
+  local elsewhere = validOpeningManifestV3(4, "heartgold")
+  elsewhere.particles = manifest.particles
+  appendStepEventV3(elsewhere, "open", { op = "setModelVisible", atStepTick = 0, visible = false })
+  local badScene, badSceneErr = StartupAssetCache.loadOpeningScene(openingCacheFs(elsewhere, nil), 4, "heartgold")
+  Assert.isNil(badScene, "only the town scene stops its town drawing")
+  Assert.notNil(badSceneErr, "the misplaced town stop reports its cause")
+  local vague = deepCopy(manifest)
+  vague.timeline.events[#vague.timeline.events].visible = "no"
+  local badVisible, badVisibleErr = StartupAssetCache.loadOpeningScene(openingCacheFs(vague, nil), 3, "heartgold")
+  Assert.isNil(badVisible, "a non-boolean town stop is not ready")
+  Assert.notNil(badVisibleErr, "the malformed town stop reports its cause")
+end
+
+function T.opening_scene_reader_accepts_manual_window_overrides_and_visibility()
+  local manifest = validOpeningManifestV3(3, "heartgold")
+  appendStepEventV3(manifest, "open", {
+    op = "setWindowSecondary",
+    atStepTick = 0,
+    engine = "sub",
+    rect = { x1 = 70, y1 = 64, x2 = 185, y2 = 192 },
+    insideMask = 29,
+  })
+  appendStepEventV3(manifest, "open", { op = "setWindowVisible", atStepTick = 0, engine = "sub", visible = true })
+  local loaded, err = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 3, "heartgold")
+  Assert.notNil(loaded, "manual window records read ready: " .. tostring(err))
+  local badOverride = deepCopy(manifest)
+  badOverride.timeline.events[#badOverride.timeline.events - 1].insideMask = 64
+  local badRead, badErr = StartupAssetCache.loadOpeningScene(openingCacheFs(badOverride, nil), 3, "heartgold")
+  Assert.isNil(badRead, "a manual override outside the five plane bits never validates")
+  Assert.notNil(badErr, "the bad override mask reports its cause")
+  local vague = deepCopy(manifest)
+  vague.timeline.events[#vague.timeline.events].visible = 1
+  local vagueRead, vagueErr = StartupAssetCache.loadOpeningScene(openingCacheFs(vague, nil), 3, "heartgold")
+  Assert.isNil(vagueRead, "a non-boolean window visibility is not ready")
+  Assert.notNil(vagueErr, "the malformed visibility reports its cause")
 end
 
 -- The generation session exposes one numeric opening scene demand that

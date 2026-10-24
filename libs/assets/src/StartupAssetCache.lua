@@ -575,10 +575,13 @@ local OPENING_OPS = {
   setScroll = true,
   setBlend = true,
   window = true,
+  setWindowSecondary = true,
+  setWindowVisible = true,
   circleWipe = true,
   setSpriteClip = true,
   spriteVisible = true,
   setModelClip = true,
+  setModelVisible = true,
   setCamera = true,
   setLighting = true,
   startEmitters = true,
@@ -591,6 +594,36 @@ local OPENING_OPS = {
 }
 
 local OPENING_ENGINES = { main = true, sub = true }
+
+-- Source window rectangles are 256x192 engine-local pixel endpoints: x in
+-- 0..255 (255 denotes the full-width source helper case), y in 0..192.
+---@param rect unknown candidate rectangle
+---@return boolean whether the rectangle is a finite integer source rect
+local function isWindowRect(rect)
+  if type(rect) ~= "table" then
+    return false
+  end
+  for _, key in ipairs({ "x1", "y1", "x2", "y2" }) do
+    if type(rect[key]) ~= "number" or rect[key] % 1 ~= 0 then
+      return false
+    end
+  end
+  if rect.x1 < 0 or rect.x1 > 255 or rect.x2 < 0 or rect.x2 > 255 then
+    return false
+  end
+  if rect.y1 < 0 or rect.y1 > 192 or rect.y2 < 0 or rect.y2 > 192 then
+    return false
+  end
+  return true
+end
+
+-- Window plane masks are 5-bit source masks: bits 0..3 select BG0..BG3
+-- and bit 4 selects OBJ.
+---@param mask unknown candidate mask
+---@return boolean whether the mask is an integer in 0..31
+local function isPlaneMask(mask)
+  return isNonnegativeInteger(mask) and mask <= 31
+end
 
 -- Effect-starting ops: an `effect` identity on one of these starts the waitable
 -- effect the step graph binds waits against.
@@ -630,7 +663,9 @@ local function validateOpeningLayer(layer, sceneNumber, role)
       width = true,
       height = true,
       sourceHash = true,
+      initialVisible = true,
     })
+    or type(layer.initialVisible) ~= "boolean"
     or not isNonnegativeInteger(layer.bgSlot)
     or layer.bgSlot > 3
     or not isNonnegativeInteger(layer.priority)
@@ -800,14 +835,57 @@ local function validateOpeningEventOperands(event, sceneNumber)
       return nil, "opening scene layer carries no source priority"
     end
   elseif op == "window" then
-    if type(event.target) ~= "string" or event.target == "" then
-      return nil, "opening scene window carries no target"
+    -- Engine-local source window: the engine whose registers the source
+    -- wrote, source pixel endpoints, positive-or-zero duration, inside
+    -- and outside plane masks, and an optional started effect that
+    -- requires a positive duration.
+    if OPENING_ENGINES[event.engine] ~= true then
+      return nil, "opening scene window names no source engine"
     end
-    if type(event.kind) ~= "string" or event.kind == "" then
-      return nil, "opening scene window carries no kind"
+    if not isWindowRect(event.from) then
+      return nil, "opening scene window carries no source start rectangle"
     end
-    if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
-      return nil, "opening scene window start names no effect"
+    if not isWindowRect(event.to) then
+      return nil, "opening scene window carries no source end rectangle"
+    end
+    if not isNonnegativeInteger(event.ticks) then
+      return nil, "opening scene window carries no source frame count"
+    end
+    if not isPlaneMask(event.insideMask) then
+      return nil, "opening scene window carries no inside plane mask"
+    end
+    if not isPlaneMask(event.outsideMask) then
+      return nil, "opening scene window carries no outside plane mask"
+    end
+    if event.effect ~= nil then
+      if type(event.effect) ~= "string" or event.effect == "" then
+        return nil, "opening scene window start names no effect"
+      end
+      if event.ticks == 0 then
+        return nil, "opening scene immediate window assignment schedules no permanent wait"
+      end
+    end
+  elseif op == "setWindowSecondary" then
+    -- Direct WIN1 register override: immediate rect and inside mask only.
+    if OPENING_ENGINES[event.engine] ~= true then
+      return nil, "opening scene window override names no source engine"
+    end
+    if not isWindowRect(event.rect) then
+      return nil, "opening scene window override carries no source rectangle"
+    end
+    if not isPlaneMask(event.insideMask) then
+      return nil, "opening scene window override carries no inside plane mask"
+    end
+  elseif op == "setWindowVisible" then
+    if OPENING_ENGINES[event.engine] ~= true then
+      return nil, "opening scene window visibility names no source engine"
+    end
+    if type(event.visible) ~= "boolean" then
+      return nil, "opening scene window visibility is malformed"
+    end
+  elseif op == "setModelVisible" then
+    if type(event.visible) ~= "boolean" then
+      return nil, "opening scene town visibility is malformed"
     end
   elseif op == "setSpriteClip" then
     if type(event.instanceId) ~= "string" or event.instanceId == "" then
@@ -908,7 +986,18 @@ local OPENING_EVENT_KEYS = {
   },
   circleWipe = { mode = true, ticks = true, effect = true },
   setLayer = { engine = true, bgSlot = true, image = true, visible = true, priority = true },
-  window = { target = true, kind = true, effect = true },
+  window = {
+    engine = true,
+    from = true,
+    to = true,
+    ticks = true,
+    insideMask = true,
+    outsideMask = true,
+    effect = true,
+  },
+  setWindowSecondary = { engine = true, rect = true, insideMask = true },
+  setWindowVisible = { engine = true, visible = true },
+  setModelVisible = { visible = true },
   setSpriteClip = { instanceId = true, engine = true, x = true, y = true, drawOrder = true, clipId = true },
   spriteVisible = { instanceId = true, engine = true, x = true, y = true, drawOrder = true, visible = true },
   setModelClip = { model = true, clip = true },
@@ -951,6 +1040,9 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
       if key ~= "op" and key ~= "stepId" and key ~= "atStepTick" and not allowed[key] then
         return nil, invalid("opening scene event carries an unknown field", path)
       end
+    end
+    if event.op == "setModelVisible" and sceneNumber ~= 3 then
+      return nil, invalid("only opening scene 3 stops its town drawing", path)
     end
     if event.op == "enableSkip" then
       skipCount = skipCount + 1
@@ -1075,7 +1167,7 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
 end
 
 -- One independently staged opening-movie scene: strict source-independent
--- g4-startup-opening-scene-v2 package with numbered scene, edition, 30Hz
+-- g4-startup-opening-scene-v3 package with numbered scene, edition, 30Hz
 -- duration, per-engine BG slots with priority and alternate tilemaps, sprite
 -- clips with frame offsets, model descriptors and animations where used,
 -- starter emitter records where used, and the closed step-clocked event
