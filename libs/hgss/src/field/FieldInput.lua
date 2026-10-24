@@ -62,7 +62,7 @@ local UI_TO_FIELD_DIRECTION = { up = "north", down = "south", left = "west", rig
 -- The finite extra-button vocabulary a modal child may request: only the
 -- requesting profile receives these edges, and only shoulder buttons
 -- repeat after their admitted fresh press.
-local UI_EXTRA_BUTTONS = { y = true, l = true, r = true, start = true, select = true, inspect = true }
+local UI_EXTRA_BUTTONS = { y = true, x = true, l = true, r = true, start = true, select = true, inspect = true }
 local UI_EXTRA_REPEATERS = { l = true, r = true }
 
 ---@param direction string

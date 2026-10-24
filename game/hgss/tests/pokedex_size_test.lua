@@ -104,9 +104,11 @@ end
 
 ---@param controller table browser under test
 local function openSize(controller)
-  tick(controller, { { type = "confirm" } })
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
   idle(controller, 40)
-  Assert.equal(controller:view().page, "grid", "cover confirm opens the grid before the entry")
+  Assert.equal(controller:view().page, "grid", "the cover drag reaches the grid before the entry")
   tick(controller, { { type = "confirm" } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "area", "the entry opens on its area page")
@@ -362,20 +364,24 @@ function T.restart_finishes_its_old_motion_before_a_fresh_drop()
     end
   end
   Assert.isTrue(underway, "the drop is underway before the restart")
-  local before = controller:view().size.figures[1].y
   tick(controller, { { type = "activate", action = "size-restart" } })
-  local after = controller:view().size.figures[1].y
-  Assert.isTrue(after ~= -16, "restart never jumps the figures straight back to their start")
-  Assert.isTrue(after >= before, "the old motion step runs before the restart takes effect")
-  local reset = false
+  -- The restart rebuilds the check like the source re-entry: the fresh
+  -- setup starts the figures back at their start with a level beam.
+  Assert.equal(
+    controller:view().size.figures[1].y,
+    -16,
+    "the restart rebuilds the figures back at their start"
+  )
+  Assert.equal(weightOf(controller).beamAngle, 0, "the restart rebuilds a level beam")
+  local replayed = false
   for _ = 1, 240 do
     tick(controller)
-    if controller:view().size.figures[1].y == -16 and weightOf(controller).beamAngle == 0 then
-      reset = true
+    if controller:view().size.figures[1].y ~= -16 then
+      replayed = true
       break
     end
   end
-  Assert.isTrue(reset, "the restart rebuilds into a fresh drop")
+  Assert.isTrue(replayed, "the rebuilt check drops afresh")
   Assert.equal(weightOf(controller).class, 3, "the fresh drop keeps its difference class")
   controller:dispose()
 end
@@ -393,7 +399,11 @@ function T.height_uses_trainer_gender_records_and_the_giratina_profile()
   openSize(male)
   Assert.equal(male:view().size.height.mon.yOffset, 2, "the male mon height uses its gender record")
   Assert.equal(male:view().size.height.trainer.yOffset, 4, "the male trainer height uses its gender record")
-  Assert.keySet(male:view().size.height, "mon,trainer", "the height projection carries no portrait gender slots")
+  Assert.keySet(
+    male:view().size.height,
+    "mon,scale,trainer",
+    "the height projection carries its sourced magnification pair"
+  )
   male:dispose()
   local female = newBrowser(PokedexController, owner, monCatalog, catalog, "female")
   openSize(female)
@@ -472,6 +482,34 @@ function T.height_uses_trainer_gender_records_and_the_giratina_profile()
   base:dispose()
 end
 
+function T.weight_drop_start_plays_the_fall_tone_once()
+  local PokedexController = requirePresent("weight drop fall tone")
+  local monCatalog, catalog = catalogs()
+  pinEeveeWeight(catalog, 400 + 40)
+  local owner = enabledOwner(monCatalog, catalog)
+  catch(owner, monCatalog, "EEVEE", 31)
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog, "male")
+  openSize(controller)
+  local falls, landed = 0, false
+  for _ = 1, 400 do
+    tick(controller)
+    for _, effect in ipairs(controller:drainEffects()) do
+      if effect.kind == "sound" and effect.role == "SEQ_SE_GS_RAKKA01" then
+        falls = falls + 1
+      end
+      if effect.kind == "sound" and effect.role == "SEQ_SE_GS_ZUKAN02" then
+        landed = true
+      end
+    end
+    if landed then
+      break
+    end
+  end
+  Assert.equal(falls, 1, "the drop start plays its fall tone exactly once")
+  Assert.isTrue(landed, "the settled drop still plays its authored bucket sound")
+  controller:dispose()
+end
+
 function T.missing_measurement_rows_fail_and_size_stays_caught_only()
   local PokedexController = requirePresent("numeric size traces and authored height presentation")
   local monCatalog, catalog = catalogs()
@@ -499,6 +537,39 @@ function T.missing_measurement_rows_fail_and_size_stays_caught_only()
   idle(seenOnly, 40)
   Assert.equal(seenOnly:view().page, "area", "the size tab stays inert for a seen-only species")
   seenOnly:dispose()
+end
+
+-- The height projection carries the sourced affine magnification pair
+-- beside the offsets: 256 native units per 1x from the mon_scale and
+-- player_scale members, so the renderer scales the trainer-vs-mon
+-- height portraits from catalog geometry instead of fixed rects.
+function T.height_projects_sourced_affine_magnification_factors()
+  local PokedexController = requirePresent("sourced height magnification")
+  local monCatalog, catalog = catalogs()
+  catalog.measurementProfiles.base.measurements["EEVEE"].scale = {
+    male = { trainer = 128, mon = 512 },
+    female = { trainer = 256, mon = 256 },
+  }
+  local owner = enabledOwner(monCatalog, catalog)
+  catch(owner, monCatalog, "EEVEE", 31)
+  local male = newBrowser(PokedexController, owner, monCatalog, catalog, "male")
+  openSize(male)
+  Assert.equal(
+    male:view().size.height.scale.trainer,
+    2,
+    "the trainer factor magnifies by 256 native units per player scale unit"
+  )
+  Assert.equal(
+    male:view().size.height.scale.mon,
+    0.5,
+    "the mon factor magnifies by 256 native units per mon scale unit"
+  )
+  male:dispose()
+  local female = newBrowser(PokedexController, owner, monCatalog, catalog, "female")
+  openSize(female)
+  Assert.equal(female:view().size.height.scale.trainer, 1, "the female trainer factor uses its gender record")
+  Assert.equal(female:view().size.height.scale.mon, 1, "the female mon factor uses its gender record")
+  female:dispose()
 end
 
 return { tests = T }

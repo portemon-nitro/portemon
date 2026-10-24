@@ -114,13 +114,43 @@ local function idle(controller, count)
 end
 
 ---@param controller table browser under test
+---@return string[] drained sound roles and music actions in drain order
+local function drainSoundRoles(controller)
+  local roles = {}
+  for _, effect in ipairs(controller:drainEffects()) do
+    if effect.kind == "sound" then
+      roles[#roles + 1] = effect.role
+    elseif effect.kind == "music" then
+      roles[#roles + 1] = "music:" .. tostring(effect.action)
+    end
+  end
+  return roles
+end
+
+---@param roles string[] drained sound roles and music actions
+---@param role string sound role or music action under test
+---@return boolean whether the role was drained
+local function hasSoundRole(roles, role)
+  for _, name in ipairs(roles) do
+    if name == role then
+      return true
+    end
+  end
+  return false
+end
+
+---@param controller table browser under test
 ---@param events table semantic batch applied with matching readiness
 local function press(controller, events)
   tick(controller, events)
 end
 
 local function openGrid(controller)
-  press(controller, { { type = "confirm" } })
+  -- The cover drag still opens the sparse list; cover confirm and START
+  -- now slide straight into the cursor entry like the retail cover path.
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
   idle(controller, 40)
 end
 
@@ -135,7 +165,7 @@ local function isAuthoredLength(length)
   return false
 end
 
-function T.cover_opens_the_sparse_grid_and_blank_slots_stay_selectable()
+function T.cover_confirm_and_start_open_the_cursor_entry_directly()
   local PokedexController = requirePresent("cover, sparse numbered grid, and resume")
   local monCatalog, catalog = catalogs()
   local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
@@ -144,28 +174,58 @@ function T.cover_opens_the_sparse_grid_and_blank_slots_stay_selectable()
   observe(owner, monCatalog, { species = "ROTOM", personality = 0 })
   local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
   Assert.equal(controller:view().page, "cover", "a fresh open starts on the cover")
-  openGrid(controller)
-  local view = controller:view()
-  Assert.equal(view.page, "grid", "cover confirm opens the regular grid")
-  Assert.equal(view.mode, "national", "unset resume with national capability defaults to national")
-  Assert.notNil(view.grid, "the grid projection is present")
-  Assert.equal(#view.grid.buffers[1].entries, 30, "the staged buffer carries thirty semantic entries")
-  local slots = view.grid.buffers[1].entries
+  controller:drainEffects()
+  press(controller, { { type = "confirm" } })
+  idle(controller, 10)
+  Assert.equal(controller:view().page, "area", "cover confirm opens the cursor entry directly")
+  Assert.equal(controller:view().selection.species, "CHIKORITA", "the entry names the cursor species")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"),
+    "cover confirm opens with the decide tone"
+  )
+  press(controller, { { type = "cancel" } })
+  idle(controller, 40)
+  local grid = controller:view()
+  Assert.equal(grid.page, "grid", "cancelling the entry restores its grid origin")
+  Assert.equal(#grid.grid.buffers[1].entries, 30, "the staged buffer carries thirty semantic entries")
+  local slots = grid.grid.buffers[1].entries
   Assert.equal(slots[1].species, "CHIKORITA", "a seen member occupies dexNumber minus one")
   Assert.equal(slots[1].dexNumber, 1, "the first slot carries its national number")
   Assert.isFalse(slots[2].seen, "unseen holes are blank but retain their number")
   Assert.equal(slots[2].dexNumber, 2, "blank holes keep their numbers")
   Assert.equal(slots[16].species, "WORMADAM", "the sixteenth seen member sits at slot fifteen")
   Assert.equal(slots[18].species, "ROTOM", "the highest seen member sets the list length")
-  Assert.equal(view.grid.lastPage, 1, "eighteen members spill onto a second page")
+  Assert.equal(grid.grid.lastPage, 1, "eighteen members spill onto a second page")
+  press(controller, { { type = "start" } })
+  Assert.equal(controller:view().page, "cover", "start on the grid returns to the cover")
+  controller:drainEffects()
+  press(controller, { { type = "start" } })
+  idle(controller, 10)
+  Assert.equal(controller:view().page, "area", "cover START opens the cursor entry directly")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"),
+    "cover START opens with the decide tone"
+  )
+  press(controller, { { type = "cancel" } })
+  idle(controller, 40)
   press(controller, { { type = "navigate", direction = "right" } })
-  view = controller:view()
-  Assert.equal(view.selection.species, nil, "the cursor may rest on a trailing blank")
-  Assert.isFalse(view.selection.seen, "a blank selection reports unseen")
+  Assert.isFalse(controller:view().selection.seen, "the cursor may rest on a trailing blank")
+  controller:drainEffects()
   press(controller, { { type = "confirm" } })
   idle(controller, 10)
-  Assert.equal(controller:view().page, "grid", "confirming a blank opens no entry")
-  Assert.deepEqual(controller:drainEffects(), {}, "a blank confirm emits no cry or transition effect")
+  Assert.equal(controller:view().page, "grid", "confirming a blank grid slot opens no entry")
+  Assert.deepEqual(controller:drainEffects(), {}, "a blank grid confirm emits no cry or transition effect")
+  press(controller, { { type = "start" } })
+  Assert.equal(controller:view().page, "cover", "the grid keeps its cursor under the cover")
+  controller:drainEffects()
+  press(controller, { { type = "confirm" } })
+  idle(controller, 10)
+  Assert.equal(controller:view().page, "cover", "confirming a blank cursor opens no entry")
+  Assert.deepEqual(drainSoundRoles(controller), {}, "a blank cover confirm stays silent")
+  press(controller, { { type = "start" } })
+  idle(controller, 10)
+  Assert.equal(controller:view().page, "cover", "START on a blank cursor opens no entry")
+  Assert.deepEqual(drainSoundRoles(controller), {}, "a blank cover START stays silent")
   controller:dispose()
 end
 
@@ -259,6 +319,7 @@ function T.grid_crossings_page_and_selected_cry_uses_first_physical_form()
   end
   local selection = controller:view().selection
   Assert.equal(selection.species, "PICHU", "the cursor reaches the caught pichu slot")
+  controller:drainEffects()
   press(controller, { { type = "menu" } })
   local effects = controller:drainEffects()
   Assert.equal(#effects, 1, "a nonblank cry request emits one effect")
@@ -639,8 +700,8 @@ local function openEntry(controller, species)
   Assert.equal(controller:view().page, "area", "the entry opens on its area page")
 end
 
-function T.entry_tabs_cycle_through_back_and_skip_missing_size()
-  local PokedexController = requirePresent("four-tab entry cycling")
+function T.entry_key_tabs_follow_the_retail_per_screen_map()
+  local PokedexController = requirePresent("retail per-screen entry tabs")
   local monCatalog, catalog = catalogs()
   local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
   observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
@@ -648,16 +709,37 @@ function T.entry_tabs_cycle_through_back_and_skip_missing_size()
   local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
   openGrid(controller)
   openEntry(controller, "EEVEE")
+  controller:drainEffects()
   press(controller, { { type = "navigate", direction = "right" } })
-  Assert.equal(controller:view().page, "size", "the caught entry cycles area into size")
-  press(controller, { { type = "navigate", direction = "right" } })
-  Assert.equal(controller:view().page, "forms", "size cycles into forms")
-  press(controller, { { type = "navigate", direction = "right" } })
-  Assert.equal(controller:view().page, "return", "forms cycles into the fourth back tab")
-  press(controller, { { type = "navigate", direction = "right" } })
-  Assert.equal(controller:view().page, "area", "the fourth tab wraps back to area")
+  Assert.equal(controller:view().page, "size", "area right reaches size on a caught entry")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "the area tab key plays the cursor tone"
+  )
   press(controller, { { type = "navigate", direction = "left" } })
-  Assert.equal(controller:view().page, "return", "reverse cycling reaches the fourth tab from area")
+  Assert.equal(controller:view().page, "area", "size left returns to area")
+  press(controller, { { type = "navigate", direction = "left" } })
+  Assert.equal(controller:view().page, "return", "area left reaches the back tab")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "the back tab key plays the cursor tone"
+  )
+  press(controller, { { type = "navigate", direction = "left" } })
+  Assert.equal(controller:view().page, "forms", "back left reaches forms")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "return", "forms right reaches the back tab")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "area", "back right returns to area")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "size", "area right reaches size again")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "forms", "size right reaches forms")
+  press(controller, { { type = "navigate", direction = "left" } })
+  Assert.equal(controller:view().page, "size", "forms left reaches size on a caught entry")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "forms", "size right reaches forms again")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "return", "forms right reaches the back tab again")
   press(controller, { { type = "confirm" } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "grid", "confirming back restores the originating grid")
@@ -667,8 +749,12 @@ function T.entry_tabs_cycle_through_back_and_skip_missing_size()
   openEntry(seenOnly, "CHIKORITA")
   press(seenOnly, { { type = "navigate", direction = "right" } })
   Assert.equal(seenOnly:view().page, "forms", "a seen-only entry skips its unavailable size tab")
+  press(seenOnly, { { type = "navigate", direction = "left" } })
+  Assert.equal(seenOnly:view().page, "area", "forms left falls back to area without size")
   press(seenOnly, { { type = "navigate", direction = "right" } })
-  Assert.equal(seenOnly:view().page, "return", "cycling still reaches back without size")
+  Assert.equal(seenOnly:view().page, "forms", "area right still skips size")
+  press(seenOnly, { { type = "navigate", direction = "right" } })
+  Assert.equal(seenOnly:view().page, "return", "forms right reaches back without size")
   press(seenOnly, { { type = "activate", action = "return-list" } })
   idle(seenOnly, 40)
   Assert.equal(seenOnly:view().page, "grid", "the back action restores the grid by touch")
@@ -1225,6 +1311,30 @@ function T.search_option_editors_list_their_source_choices()
   end
   Assert.equal(shapeOptions, 0, "the shape editor publishes no invented option labels")
   closeEditor()
+  controller:dispose()
+end
+
+-- START inside an editor commits it like its OK button: the staged
+-- choice persists, the editor closes, and no search runs.
+function T.editor_start_commits_without_running_the_search()
+  local PokedexController = requirePresent("editor START commit")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "activate", action = "criterion", value = "letter" } })
+  press(controller, { { type = "activate", action = "editor-choice", value = "C" } })
+  controller:drainEffects()
+  press(controller, { { type = "start" } })
+  Assert.isNil(controller:view().search.editor, "editor START closes the editor")
+  Assert.equal(controller:view().search.criteria.letter, "c", "editor START keeps the staged choice")
+  Assert.isNil(controller:view().search.feedback, "editor START runs no search")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "editor START commits with the touch tone"
+  )
   controller:dispose()
 end
 
@@ -2272,6 +2382,976 @@ function T.trainer_inside_state_follows_the_painted_dungeon_marker()
   Assert.equal(farPlayer.x, 156, "the outside pin keeps its column")
   Assert.equal(farPlayer.y, 108, "the outside pin keeps its row")
   outside:dispose()
+end
+
+-- Retail cursor, page, and touch-open tones: d-pad cursor moves play
+-- ZKN03, page turns and touch slot changes play ZKN04, a same-tap
+-- entry open plays ZKN04, and a same-tap blank stays silent.
+function T.retail_key_moves_and_touch_opens_play_their_list_tones()
+  local PokedexController = requirePresent("retail list cursor and page tones")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "WORMADAM", personality = 0 })
+  observe(owner, monCatalog, { species = "ROTOM", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "music:duck"),
+    "opening ducks the field music for the dex scene"
+  )
+  openGrid(controller)
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"),
+    "beginning the cover drag plays the decide tone"
+  )
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "a d-pad cursor move plays the cursor tone"
+  )
+  press(controller, { { type = "r" } })
+  Assert.equal(controller:view().grid.page, 1, "page-next turns the page")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "a page turn plays the touch tone"
+  )
+  press(controller, { { type = "r" } })
+  Assert.equal(controller:view().grid.page, 1, "page-next clamps at the last page")
+  Assert.deepEqual(drainSoundRoles(controller), {}, "a clamped page turn stays silent")
+  press(controller, { { type = "l" } })
+  Assert.equal(controller:view().grid.page, 0, "page-prev turns the page")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "page-prev plays the touch tone"
+  )
+  press(controller, { { type = "activate", action = "grid-slot", value = 2 } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "a touch slot change plays the touch tone"
+  )
+  press(controller, { { type = "activate", action = "grid-slot", value = 2 } })
+  Assert.equal(controller:view().page, "grid", "a same-tap blank opens no entry")
+  Assert.deepEqual(drainSoundRoles(controller), {}, "a same-tap blank stays silent")
+  press(controller, { { type = "activate", action = "grid-slot", value = 0 } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "a touch move onto the seen slot plays the touch tone"
+  )
+  press(controller, { { type = "activate", action = "grid-slot", value = 0 } })
+  Assert.equal(controller:view().page, "area", "a same-tap seen slot opens its entry")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "a touch entry open plays the touch tone"
+  )
+  press(controller, { { type = "cancel" } })
+  Assert.equal(controller:view().page, "grid", "cancelling the entry returns to the grid")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "cancelling the entry plays the cancel tone"
+  )
+  press(controller, { { type = "start" } })
+  Assert.equal(controller:view().page, "cover", "start returns to the cover")
+  Assert.isFalse(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"),
+    "start on the grid returns silently like the source list START key"
+  )
+  controller:dispose()
+end
+
+-- Retail cover tones: dex-mode switches play ZKN_BUTTON8, the search
+-- shortcut plays ZKN04, confirms play BUTTON01, and closing plays
+-- GEARCANCEL with the music restore.
+function T.retail_cover_plays_decide_mode_and_search_tones()
+  local PokedexController = requirePresent("retail cover tones")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  Assert.equal(controller:view().page, "cover", "a fresh open starts on the cover")
+  controller:drainEffects()
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().mode, "johto", "cover right selects johto")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN_BUTTON8"),
+    "a dex-mode switch plays the mode tone"
+  )
+  press(controller, { { type = "navigate", direction = "left" } })
+  Assert.equal(controller:view().mode, "national", "cover left selects national")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN_BUTTON8"),
+    "switching back plays the mode tone"
+  )
+  press(controller, { { type = "activate", action = "mode", value = "johto" } })
+  Assert.equal(controller:view().mode, "johto", "touch selects johto")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN_BUTTON8"),
+    "a touch dex-mode switch plays the mode tone"
+  )
+  press(controller, { { type = "activate", action = "mode", value = "johto" } })
+  Assert.deepEqual(drainSoundRoles(controller), {}, "an unchanged dex-mode switch stays silent")
+  press(controller, { { type = "y" } })
+  Assert.equal(controller:view().page, "search", "cover Y reaches the search root")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "the search shortcut plays the touch tone"
+  )
+  press(controller, { { type = "cancel" } })
+  Assert.equal(controller:view().page, "grid", "cancelling the search returns to the grid")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "cancelling the search plays the cancel tone"
+  )
+  press(controller, { { type = "start" } })
+  Assert.equal(controller:view().page, "cover", "start returns to the cover")
+  Assert.isFalse(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"),
+    "start on the grid returns silently like the source list START key"
+  )
+  press(controller, { { type = "confirm" } })
+  idle(controller, 10)
+  Assert.equal(controller:view().page, "area", "cover confirm opens the cursor entry directly")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"),
+    "cover confirm plays the decide tone"
+  )
+  press(controller, { { type = "cancel" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "cancelling the entry restores its grid origin")
+  controller:dispose()
+  local closer = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  closer:drainEffects()
+  press(closer, { { type = "cancel" } })
+  idle(closer, 40)
+  Assert.deepEqual(closer:takeResult(), { kind = "close" }, "cover cancel closes the application")
+  local closing = drainSoundRoles(closer)
+  Assert.isTrue(
+    hasSoundRole(closing, "SEQ_SE_GS_GEARCANCEL"),
+    "closing the cover plays the cancel tone"
+  )
+  Assert.isTrue(
+    hasSoundRole(closing, "music:restore"),
+    "closing restores the field music"
+  )
+  closer:dispose()
+end
+
+-- Retail cancel paths: every B edge behind the browser plays exactly
+-- one GEARCANCEL, including editor dismissal, search and result
+-- dismissal, entry return, comparison dismissal, and the back tab.
+function T.retail_cancel_paths_play_the_cancel_tone()
+  local PokedexController = requirePresent("retail cancel tones")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "activate", action = "criterion", value = "letter" } })
+  Assert.notNil(controller:view().search.editor, "the letter editor opens")
+  controller:drainEffects()
+  press(controller, { { type = "cancel" } })
+  Assert.isNil(controller:view().search.editor, "cancelling closes the editor")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "cancelling the editor plays the cancel tone"
+  )
+  press(controller, { { type = "cancel" } })
+  Assert.equal(controller:view().page, "grid", "cancelling the search returns to the grid")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "cancelling the search plays the cancel tone"
+  )
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "start" } })
+  idle(controller, 200)
+  Assert.equal(controller:view().page, "results", "the completed search lands on the result grid")
+  controller:drainEffects()
+  press(controller, { { type = "cancel" } })
+  Assert.equal(controller:view().page, "grid", "cancelling the results returns to the grid")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "cancelling the results plays the cancel tone"
+  )
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "area", "confirming opens the entry")
+  controller:drainEffects()
+  press(controller, { { type = "cancel" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "cancelling the entry returns to the grid")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "cancelling the entry plays the cancel tone"
+  )
+  Assert.isNil(controller:takeResult(), "entry cancels never close the application")
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "forms", "a seen-only entry skips its missing size tab")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "return", "cycling reaches the back tab")
+  controller:drainEffects()
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "confirming the back tab returns to the grid")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "confirming the back tab plays the cancel tone"
+  )
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  press(controller, { { type = "navigate", direction = "right" } })
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "return", "cycling reaches the back tab again")
+  controller:drainEffects()
+  press(controller, { { type = "activate", action = "return-list" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "the back action returns to the grid")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "the back action plays the cancel tone"
+  )
+  controller:dispose()
+end
+
+-- Retail entry tones: key tab, row, region, and time switches play
+-- ZKN03 while their touch twins play ZKN04, and both return gestures
+-- play GEARCANCEL.
+function T.retail_entry_pages_play_key_and_touch_tones()
+  local PokedexController = requirePresent("retail entry tones")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "opening the entry by key plays the touch tone"
+  )
+  press(controller, { { type = "confirm" } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "cycling the daypart by key plays the cursor tone"
+  )
+  press(controller, { { type = "activate", action = "area-time", value = 2 } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "touching the daypart plays the touch tone"
+  )
+  -- The time switch rebuilds behind a refresh; rows stay inert until it settles.
+  idle(controller, 40)
+  press(controller, { { type = "navigate", direction = "down" } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "scrolling the area rows by key plays the cursor tone"
+  )
+  press(controller, { { type = "activate", action = "area-row", value = 0 } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "touching an area row plays the touch tone"
+  )
+  press(controller, { { type = "select" } })
+  Assert.equal(controller:view().area.region, "kanto", "the region key switches to kanto")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "switching regions by key plays the cursor tone"
+  )
+  press(controller, { { type = "activate", action = "area-region", value = "johto" } })
+  Assert.equal(controller:view().area.region, "johto", "the touch region returns to johto")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "touching the region plays the touch tone"
+  )
+  press(controller, { { type = "l" } })
+  Assert.equal(controller:view().area.region, "johto", "the johto key stays inert on johto")
+  Assert.deepEqual(
+    drainSoundRoles(controller),
+    {},
+    "a region switch with no change stays silent"
+  )
+  press(controller, { { type = "r" } })
+  Assert.equal(controller:view().area.region, "kanto", "the kanto key switches regions")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "switching regions by shoulder key plays the cursor tone"
+  )
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "size", "the caught entry cycles into size")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "cycling tabs by key plays the cursor tone"
+  )
+  idle(controller, 60)
+  Assert.equal(controller:view().size.weight.phase, "drop", "the weight figures start their drop")
+  controller:drainEffects()
+  press(controller, { { type = "activate", action = "size-restart", value = 0 } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "touching the size restart plays the touch tone"
+  )
+  press(controller, { { type = "activate", action = "entry-tab", value = "return" } })
+  Assert.equal(controller:view().page, "return", "the touch tab reaches the back panel")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "touching the entry tab plays the touch tone"
+  )
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "confirming the back tab returns to the grid")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "confirming the back tab plays the cancel tone"
+  )
+  controller:dispose()
+end
+
+-- Retail forms and comparison tones: list rows and tab switches
+-- follow the key/touch split, compare cycling plays ZKN03 by key
+-- and ZKN04 by touch, and dismissing the comparison plays
+-- GEARCANCEL.
+function T.retail_forms_and_comparison_play_key_and_touch_tones()
+  local PokedexController = requirePresent("retail forms tones")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  local function recordForm(species, personality, form, kind)
+    local specimen = owner:describe(PokedexDexFixture.makeMon(monCatalog, {
+      species = species,
+      personality = personality,
+      form = form,
+    }))
+    owner:prepareChanges({ observations = { { kind = kind, specimen = specimen } } }):publish()
+  end
+  recordForm("PICHU", 127, 0, "seen")
+  recordForm("PICHU", 0, 0, "seen")
+  recordForm("PICHU", 0, 1, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "PICHU")
+  press(controller, { { type = "activate", action = "entry-tab", value = "forms" } })
+  Assert.equal(controller:view().page, "forms", "the entry tab reaches the forms page")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "touching the entry tab plays the touch tone"
+  )
+  Assert.equal(#controller:view().forms.variants, 3, "the pichu list carries three seen forms")
+  press(controller, { { type = "navigate", direction = "down" } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "scrolling the form rows by key plays the cursor tone"
+  )
+  press(controller, { { type = "activate", action = "forms-row", value = 0 } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "touching a form row plays the touch tone"
+  )
+  controller:drainEffects()
+  press(controller, { { type = "confirm" } })
+  Assert.notNil(controller:view().forms.comparison, "confirming the list opens the comparison")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "confirming the list plays the touch tone"
+  )
+  local before = controller:view().forms.comparison
+  Assert.equal(before.activeSide, 0, "the comparison starts on the left side")
+  press(controller, { { type = "navigate", direction = "right" } })
+  local switched = controller:view().forms.comparison
+  Assert.equal(switched.activeSide, 1, "right switches to the right side")
+  Assert.deepEqual(switched.indices, before.indices, "switching sides steps no form")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "switching the compare side by key plays the cursor tone"
+  )
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.deepEqual(
+    drainSoundRoles(controller),
+    {},
+    "an unchanged compare side stays silent"
+  )
+  press(controller, { { type = "navigate", direction = "left" } })
+  Assert.equal(controller:view().forms.comparison.activeSide, 0, "left switches back to the left side")
+  Assert.deepEqual(
+    controller:view().forms.comparison.indices,
+    before.indices,
+    "switching back steps no form either"
+  )
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "switching back by key plays the cursor tone"
+  )
+  press(controller, { { type = "navigate", direction = "down" } })
+  local stepped = controller:view().forms.comparison
+  Assert.isTrue(
+    stepped.indices[1] ~= before.indices[1] or stepped.indices[2] ~= before.indices[2],
+    "down steps the active side past the other side index"
+  )
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "cycling the compare forms by key plays the cursor tone"
+  )
+  press(controller, { { type = "menu" } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "flipping the compare faces plays the touch tone"
+  )
+  press(controller, { { type = "activate", action = "compare-side", value = 1 } })
+  Assert.equal(controller:view().forms.comparison.activeSide, 1, "touch selects the right side")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "touching the compare side plays the touch tone"
+  )
+  press(controller, { { type = "confirm" } })
+  Assert.isNil(controller:view().forms.comparison, "confirming closes the comparison")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "confirming the comparison plays the cancel tone"
+  )
+  press(controller, { { type = "activate", action = "compare-back" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "the compare back action returns to the grid")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "the compare back action plays the cancel tone"
+  )
+  controller:dispose()
+  local pairOwner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  local function recordPairForm(personality, form, kind)
+    local specimen = pairOwner:describe(PokedexDexFixture.makeMon(monCatalog, {
+      species = "PICHU",
+      personality = personality,
+      form = form,
+    }))
+    pairOwner:prepareChanges({ observations = { { kind = kind, specimen = specimen } } }):publish()
+  end
+  recordPairForm(127, 0, "seen")
+  recordPairForm(0, 0, "seen")
+  local pair = PokedexController.new(baseArgs(pairOwner, monCatalog, catalog))
+  openGrid(pair)
+  openEntry(pair, "PICHU")
+  press(pair, { { type = "activate", action = "entry-tab", value = "forms" } })
+  Assert.equal(#pair:view().forms.variants, 2, "the pair list carries two seen forms")
+  press(pair, { { type = "activate", action = "compare" } })
+  Assert.notNil(pair:view().forms.comparison, "the touch compare opens the two-form comparison")
+  pair:drainEffects()
+  press(pair, { { type = "navigate", direction = "right" } })
+  Assert.equal(pair:view().forms.comparison.activeSide, 0, "side keys stay inert below three forms")
+  Assert.deepEqual(drainSoundRoles(pair), {}, "side keys below three forms stay silent")
+  press(pair, { { type = "navigate", direction = "left" } })
+  Assert.equal(pair:view().forms.comparison.activeSide, 0, "the other side key stays inert too")
+  Assert.deepEqual(drainSoundRoles(pair), {}, "the other side key stays silent too")
+  pair:dispose()
+  local singleOwner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(singleOwner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local single = PokedexController.new(baseArgs(singleOwner, monCatalog, catalog))
+  openGrid(single)
+  openEntry(single, "EEVEE")
+  press(single, { { type = "activate", action = "entry-tab", value = "forms" } })
+  single:drainEffects()
+  press(single, { { type = "confirm" } })
+  Assert.isNil(single:view().forms.comparison, "confirming a single form opens no comparison")
+  Assert.deepEqual(drainSoundRoles(single), {}, "confirming a single form stays silent")
+  single:dispose()
+end
+
+function T.size_confirm_always_restarts_the_finished_weight_check()
+  local PokedexController = requirePresent("retail size restart")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "size", "area right reaches size on a caught entry")
+  idle(controller, 60)
+  for _ = 1, 2000 do
+    local phase = controller:view().size.weight.phase
+    if phase ~= "drop" and phase ~= "tilt" and phase ~= "beam" and phase ~= "thrown" and phase ~= "escape" then
+      break
+    end
+    tick(controller, {})
+  end
+  local settled = controller:view().size.weight.phase
+  Assert.isTrue(
+    settled == "landed" or settled == "even" or settled == "escaped",
+    "the weight check settles before the restart (" .. tostring(settled) .. ")"
+  )
+  controller:drainEffects()
+  press(controller, { { type = "confirm" } })
+  Assert.equal(controller:view().page, "size", "confirming stays on the size page")
+  Assert.equal(controller:view().size.weight.phase, "setup", "confirming rebuilds the finished check")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "confirming the restart plays the cursor tone"
+  )
+  idle(controller, 60)
+  Assert.equal(controller:view().size.weight.phase, "drop", "the rebuilt check starts its drop")
+  controller:drainEffects()
+  press(controller, { { type = "activate", action = "size-restart" } })
+  Assert.equal(controller:view().size.weight.phase, "setup", "touching restart rebuilds the check")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "touching the size restart plays the touch tone"
+  )
+  controller:dispose()
+end
+
+function T.keyboard_x_cries_the_cursor_species_like_menu()
+  local PokedexController = requirePresent("retail keyboard cry")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  Assert.equal(controller:view().selection.species, "CHIKORITA", "the cursor starts on chikorita")
+  controller:drainEffects()
+  press(controller, { { type = "x" } })
+  local keyed = controller:drainEffects()
+  Assert.equal(#keyed, 1, "keyboard X emits one effect")
+  Assert.equal(keyed[1].kind, "cry", "keyboard X requests a cry")
+  press(controller, { { type = "menu" } })
+  local touched = controller:drainEffects()
+  Assert.equal(#touched, 1, "the menu cry emits one effect")
+  Assert.equal(touched[1].species, keyed[1].species, "keyboard X names the same species as menu")
+  Assert.equal(touched[1].form, keyed[1].form, "keyboard X uses the same form as menu")
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "area", "confirming opens the entry")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "opening the entry by key plays the touch tone"
+  )
+  press(controller, { { type = "x" } })
+  Assert.deepEqual(controller:drainEffects(), {}, "keyboard X stays inert on the area page")
+  Assert.equal(controller:view().page, "area", "keyboard X never leaves the area page")
+  press(controller, { { type = "cancel" } })
+  idle(controller, 40)
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "start" } })
+  idle(controller, 200)
+  Assert.equal(controller:view().page, "results", "the completed search lands on the result grid")
+  controller:drainEffects()
+  press(controller, { { type = "x" } })
+  Assert.deepEqual(controller:drainEffects(), {}, "keyboard X stays silent on the return slot")
+  press(controller, { { type = "navigate", direction = "right" } })
+  local species = controller:view().selection.species
+  Assert.notNil(species, "the cursor reaches a result species")
+  controller:drainEffects()
+  press(controller, { { type = "x" } })
+  local resultCry = controller:drainEffects()
+  Assert.equal(#resultCry, 1, "keyboard X cries the result species")
+  Assert.equal(resultCry[1].kind, "cry", "the result effect is a cry request")
+  Assert.equal(resultCry[1].species, species, "the result cry names the cursor species")
+  controller:dispose()
+end
+
+-- Retail search tones: focus and editor cursor moves play ZKN03,
+-- slider arrow steps and every commit touch play ZKN04, slider drags
+-- play ZKN03 on change, cancels play GEARCANCEL, START plays
+-- BUTTON01, and the completed search chimes ZUKAN06 with Z_SEARCH.
+function T.retail_search_plays_key_and_touch_tones_with_found_chime()
+  local PokedexController = requirePresent("retail search tones")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  controller:drainEffects()
+  press(controller, { { type = "y" } })
+  Assert.equal(controller:view().page, "search", "grid Y reaches the criteria root")
+  Assert.deepEqual(drainSoundRoles(controller), {}, "opening the search by key stays silent")
+  press(controller, { { type = "navigate", direction = "down" } })
+  Assert.equal(controller:view().search.focus, "letter", "search focus steps to the letter criterion")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "moving the search focus plays the cursor tone"
+  )
+  press(controller, { { type = "confirm" } })
+  Assert.notNil(controller:view().search.editor, "confirm opens the focused letter editor")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "confirming the search focus plays the touch tone"
+  )
+  press(controller, { { type = "navigate", direction = "down" } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "moving inside the editor plays the cursor tone"
+  )
+  press(controller, { { type = "confirm" } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "choosing the editor option plays the touch tone"
+  )
+  press(controller, { { type = "cancel" } })
+  Assert.isNil(controller:view().search.editor, "cancelling closes the editor")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_GEARCANCEL"),
+    "cancelling the editor plays the cancel tone"
+  )
+  press(controller, { { type = "activate", action = "criterion", value = "height" } })
+  Assert.notNil(controller:view().search.editor, "the height editor opens")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "touching the criterion plays the touch tone"
+  )
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(
+    controller:view().search.criteria.height.min,
+    1,
+    "the right step raises the height floor"
+  )
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "stepping the slider by key plays the touch tone"
+  )
+  press(controller, { { type = "navigate", direction = "left" } })
+  press(controller, { { type = "navigate", direction = "left" } })
+  Assert.equal(
+    controller:view().search.criteria.height.min,
+    0,
+    "the left steps lower the height floor to its clamp"
+  )
+  Assert.deepEqual(
+    drainSoundRoles(controller),
+    { "SEQ_SE_GS_ZKN04" },
+    "only the changing slider step plays the touch tone"
+  )
+  tick(controller, { { type = "drag", target = "height-min", phase = "begin", value = 10 } })
+  Assert.deepEqual(drainSoundRoles(controller), {}, "beginning the slider drag stays silent")
+  tick(controller, { { type = "drag", target = "height-min", phase = "move", value = 78 } })
+  Assert.equal(
+    controller:view().search.criteria.height.min,
+    78,
+    "the drag stages the captured bound"
+  )
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "dragging the slider plays the cursor tone on change"
+  )
+  tick(controller, { { type = "drag", target = "height-min", phase = "move", value = 78 } })
+  Assert.deepEqual(drainSoundRoles(controller), {}, "an unchanged slider drag stays silent")
+  tick(controller, { { type = "drag", target = "height-min", phase = "end", value = 78 } })
+  Assert.deepEqual(drainSoundRoles(controller), {}, "ending the slider drag stays silent")
+  press(controller, { { type = "activate", action = "editor-ok" } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "committing the editor plays the touch tone"
+  )
+  press(controller, { { type = "activate", action = "search-reset" } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "touching reset plays the touch tone"
+  )
+  for _ = 1, 4 do
+    press(controller, { { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(controller:view().search.focus, "run", "search focus steps to the run action")
+  controller:drainEffects()
+  press(controller, { { type = "start" } })
+  Assert.notNil(controller:view().search.feedback, "search start enters the feedback sequence")
+  local started = drainSoundRoles(controller)
+  Assert.isFalse(
+    hasSoundRole(started, "SEQ_SE_GS_BUTTON01"),
+    "search start runs without the decide tone"
+  )
+  Assert.isTrue(
+    hasSoundRole(started, "SEQ_SE_DP_Z_SEARCH"),
+    "search start keeps its search tone"
+  )
+  idle(controller, 200)
+  Assert.equal(controller:view().page, "results", "the completed search lands on the result grid")
+  local finished = drainSoundRoles(controller)
+  Assert.isTrue(
+    hasSoundRole(finished, "SEQ_SE_GS_ZUKAN06"),
+    "the completed search chimes its results-found tone"
+  )
+  controller:dispose()
+end
+
+-- Retail scrollbar and cover drag tones: paging the list by drag
+-- plays ZKN03 on change, and beginning the cover drag plays
+-- BUTTON01 while the rest of the gesture stays silent.
+function T.retail_drags_play_scroll_and_decide_tones()
+  local PokedexController = requirePresent("retail drag tones")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "WORMADAM", personality = 0 })
+  observe(owner, monCatalog, { species = "ROTOM", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"),
+    "beginning the cover drag plays the decide tone"
+  )
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
+  Assert.deepEqual(drainSoundRoles(controller), {}, "moving the cover drag stays silent")
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 200 } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "completing the cover drag opens the grid")
+  Assert.deepEqual(drainSoundRoles(controller), {}, "completing the cover drag stays silent")
+  tick(controller, { { type = "drag", target = "grid-scroll", phase = "end", value = 1 } })
+  Assert.equal(controller:view().grid.page, 1, "the scrollbar drag turns the page")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "paging the scrollbar plays the cursor tone"
+  )
+  tick(controller, { { type = "drag", target = "grid-scroll", phase = "end", value = 1 } })
+  Assert.deepEqual(drainSoundRoles(controller), {}, "an unchanged scrollbar drag stays silent")
+  controller:dispose()
+end
+
+-- Language flag icons ride the grid beside the selected entry: without
+-- the international view nothing projects, while a foreign-caught
+-- species shows its dimmed flag plus the highlighted native flag
+-- right-aligned from the native columns, with the current-language icon
+-- on the touch pane. SELECT cycling itself is untouched.
+function T.language_flags_gate_on_the_international_view_and_right_align()
+  local PokedexController = requirePresent("language flag icons")
+  local monCatalog, catalog = catalogs()
+  local gated = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(gated, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local closed = PokedexController.new(baseArgs(gated, monCatalog, catalog))
+  openGrid(closed)
+  for _ = 1, 40 do
+    if closed:view().selection.species == "EEVEE" then
+      break
+    end
+    press(closed, { { type = "navigate", direction = "right" } })
+  end
+  local shut = closed:view()
+  Assert.equal(shut.selection.species, "EEVEE", "the cursor reaches the caught selection")
+  Assert.isNil(findObject(shut.objects, "lang-flag"), "a closed view hides its language flags")
+  Assert.isNil(findObject(shut.objects, "lang-current"), "a closed view hides its current icon")
+  closed:dispose()
+  local open = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(open, monCatalog, { species = "EEVEE", personality = 31, language = "french" }, "caught")
+  observe(open, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(open, monCatalog, catalog))
+  openGrid(controller)
+  for _ = 1, 40 do
+    if controller:view().selection.species == "EEVEE" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  local view = controller:view()
+  Assert.equal(view.selection.species, "EEVEE", "the cursor reaches the foreign-caught selection")
+  local flags = {}
+  for _, intent in ipairs(assert(view.objects, "the grid carries its intents")) do
+    if intent.subject == "lang-flag" then
+      checkIntentShape(intent)
+      flags[#flags + 1] = intent
+    end
+  end
+  Assert.equal(#flags, 2, "the native flag joins the one caught foreign flag")
+  local byChoice = {}
+  for _, intent in ipairs(flags) do
+    byChoice[intent.choice] = intent
+  end
+  local french = assert(byChoice["french-dim"], "the unshown caught flag dims")
+  Assert.equal(french.pane, "information", "the flags paint on the upper pane")
+  Assert.equal(french.x, 244, "the first shown flag anchors at the right edge")
+  Assert.equal(french.y, 8, "the flags keep their native row")
+  local english = assert(byChoice["english"], "the shown native flag highlights")
+  Assert.equal(english.x, 220, "the next shown flag steps one slot left")
+  Assert.equal(english.y, 8, "the highlighted flag keeps its native row")
+  local current = assert(findObject(view.objects, "lang-current"), "the grid projects its current icon")
+  checkIntentShape(current)
+  Assert.equal(current.choice, "english", "the current icon names the shown language")
+  Assert.equal(current.pane, "controls", "the current icon paints on the touch pane")
+  Assert.equal(current.x, 92, "the current icon keeps its native column")
+  Assert.equal(current.y, 136, "the current icon keeps its native row")
+  controller:dispose()
+end
+
+-- The weight trainer figure rides its own pan beside the fixed height
+-- portrait: the figure starts over the left pan and drops with the
+-- published simulation while the portrait stays on its authored column.
+function T.size_weight_figure_rides_its_pan()
+  local PokedexController = requirePresent("size weight figure")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  for _ = 1, 40 do
+    if controller:view().selection.species == "EEVEE" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  press(controller, { { type = "navigate", direction = "right" } })
+  idle(controller, 40)
+  local view = controller:view()
+  Assert.equal(view.page, "size", "the caught entry reaches its size")
+  local trainers = {}
+  for _, intent in ipairs(assert(view.objects, "the size carries its intents")) do
+    if intent.subject == "trainer" then
+      checkIntentShape(intent)
+      trainers[#trainers + 1] = intent
+    end
+  end
+  Assert.equal(#trainers, 2, "the portrait and the weight figure both project")
+  local portrait, figure = nil, nil
+  for _, intent in ipairs(trainers) do
+    if intent.x == 184 then
+      portrait = intent
+    else
+      figure = intent
+    end
+  end
+  portrait = assert(portrait, "the height portrait keeps its authored column")
+  Assert.equal(portrait.x, 184, "the height portrait keeps its authored column")
+  figure = assert(figure, "the weight figure projects beside its pan")
+  Assert.equal(figure.x, view.size.pans[1].x, "the figure tracks its pan column")
+  local figures = assert(view.size.figures, "the size projects its figures")
+  local trainerY = nil
+  for _, record in ipairs(figures) do
+    if record.side == "trainer" then
+      trainerY = record.y
+    end
+  end
+  Assert.equal(figure.y, trainerY, "the figure tracks its simulated height")
+  idle(controller, 25)
+  local dropped = controller:view()
+  local nextY = nil
+  for _, record in ipairs(assert(dropped.size.figures, "the figures persist")) do
+    if record.side == "trainer" then
+      nextY = record.y
+    end
+  end
+  Assert.isTrue(nextY ~= trainerY, "accepted ticks move the simulated figure")
+  local moved = nil
+  for _, intent in ipairs(assert(dropped.objects, "the dropped size carries its intents")) do
+    if intent.subject == "trainer" and intent.x ~= 184 then
+      moved = intent
+    end
+  end
+  moved = assert(moved, "the moved figure still projects")
+  Assert.equal(moved.y, nextY, "the figure intent follows the simulation")
+  controller:dispose()
+end
+
+-- Special area markers paint beside their backed dungeon and classify
+-- the pin: the Diglett extra rides at its fixed native pixels while the
+-- dungeon keeps its own silhouette, and the pin inside the extra
+-- reports inside.
+function T.special_markers_paint_beside_their_backed_dungeon()
+  local PokedexController = requirePresent("special area markers")
+  local monCatalog, catalog = catalogs()
+  catalog.areaGeometry["dex-dungeon-23"] = {
+    kind = "dungeon",
+    region = "johto",
+    mapKey = "dex-dungeon-23",
+    name = { bankId = 1, messageId = 11 },
+    position = { x = 5, y = 5 },
+    markerShape = 0,
+    markerOffsetPx = { x = 0, y = 0 },
+  }
+  catalog.areaOrder = { "dex-dungeon-23" }
+  catalog.habitats["EEVEE"] = {
+    morning = { outdoor = {}, dungeon = { "dex-dungeon-23" } },
+    day = { outdoor = {}, dungeon = {} },
+    night = { outdoor = {}, dungeon = {} },
+    other = { outdoor = {}, dungeon = {} },
+  }
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller =
+    PokedexController.new(baseArgs(owner, monCatalog, catalog, { playerPosition = { mapX = 10, mapY = 4 } }))
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  local view = controller:view()
+  Assert.equal(view.page, "area", "the entry opens on its area page")
+  local specials = assert(view.area.specialMarkers, "the area projects its special markers")
+  Assert.equal(#specials, 1, "the backed dungeon carries its one extra marker")
+  Assert.equal(specials[1].position.x, 148, "the extra keeps its fixed column")
+  Assert.equal(specials[1].position.y, 76, "the extra keeps its fixed row")
+  local foundExtra, foundPlayer = nil, nil
+  for _, intent in ipairs(assert(view.objects, "the area carries its intents")) do
+    if intent.subject == "marker" and intent.x == 148 and intent.y == 76 then
+      checkIntentShape(intent)
+      foundExtra = intent
+    elseif intent.subject == "player" then
+      foundPlayer = intent
+    end
+  end
+  foundExtra = assert(foundExtra, "the extra marker paints as a shape-0 marker")
+  Assert.equal(foundExtra.choice, "shape0", "the extra paints its authored silhouette")
+  local player = assert(foundPlayer, "the area projects its trainer pin")
+  Assert.equal(player.choice, "male-here", "the pin inside the extra marker reports inside")
+  controller:dispose()
+end
+
+-- Entry tab switches fade out/in and flash the pressed tab: the page
+-- swaps at once for logic while the shared fade envelope covers the
+-- swap and the 4-tick flash names the pressed control.
+function T.entry_tab_switch_fades_and_flashes_the_pressed_tab()
+  local PokedexController = requirePresent("entry tab fade and flash")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  press(controller, { { type = "activate", action = "entry-tab", value = "size" } })
+  local view = controller:view()
+  Assert.equal(view.page, "size", "the tab switch lands on the size page")
+  Assert.equal(view.visual.transition.phase, "fade", "the tab switch starts the fade envelope")
+  Assert.equal(#view.visual.paletteFades, 2, "the fade publishes both pane fades")
+  Assert.isTrue(view.visual.paletteFades[1].coeff > 0, "the fade starts away from zero")
+  Assert.isTrue(view.visual.flash.active, "the pressed tab flashes")
+  Assert.equal(view.visual.flash.target, "entry-tab:size", "the flash names the pressed tab")
+  idle(controller, 4)
+  Assert.isFalse(controller:view().visual.flash.active, "the pressed flash clears after 4 ticks")
+  idle(controller, 8)
+  local settled = controller:view().visual
+  Assert.equal(settled.transition.phase, "rest", "the fade envelope settles back to rest")
+  Assert.equal(#settled.paletteFades, 0, "the settled fade publishes no panes")
+  controller:dispose()
+end
+
+-- The size restart rebuilds the check under the same fade envelope and
+-- flashes its restart control for 4 ticks.
+function T.size_restart_fades_and_flashes_its_control()
+  local PokedexController = requirePresent("size restart fade and flash")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  press(controller, { { type = "activate", action = "entry-tab", value = "size" } })
+  idle(controller, 10)
+  press(controller, { { type = "activate", action = "size-restart" } })
+  local view = controller:view()
+  Assert.equal(view.page, "size", "the restart stays on the size page")
+  Assert.equal(view.size.weight.phase, "setup", "the restart rebuilds the check")
+  Assert.equal(view.visual.transition.phase, "fade", "the restart starts the fade envelope")
+  Assert.isTrue(view.visual.flash.active, "the restart control flashes")
+  Assert.equal(view.visual.flash.target, "size-restart", "the flash names the restart control")
+  idle(controller, 4)
+  Assert.isFalse(controller:view().visual.flash.active, "the restart flash clears after 4 ticks")
+  controller:dispose()
+end
+
+-- The search feedback gates match the compiled sprite animation dwell
+-- totals: label 28, rise 52, retract 20, with the verifiable 32-tick
+-- hold and the 60-tick empty timeout kept as fixed policy ticks.
+function T.search_feedback_gates_match_their_authored_animation_dwells()
+  local PokedexController = requirePresent("search feedback gate constants")
+  Assert.equal(PokedexController.FEED_LABEL_TICKS, 28, "the label gate matches its animation dwell")
+  Assert.equal(PokedexController.FEED_RISE_TICKS, 52, "the rise gate matches its animation dwell")
+  Assert.equal(PokedexController.FEED_RETRACT_TICKS, 20, "the retract gate matches its animation dwell")
+  Assert.equal(PokedexController.FEED_HOLD_TICKS, 32, "the hold keeps its verifiable wait")
+  Assert.equal(PokedexController.FEED_TIMEOUT_TICKS, 60, "the empty timeout keeps its verifiable wait")
 end
 
 return { tests = T }

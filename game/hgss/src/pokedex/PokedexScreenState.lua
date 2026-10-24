@@ -16,6 +16,7 @@ local PokedexInterface = require("game.hgss.src.pokedex.PokedexInterface")
 ---@field _effect fun(sequence: unknown) borrowed audio effect sink
 ---@field _playCry fun(species: string, pattern: integer, form: integer) borrowed cry sink
 ---@field _commitResume fun(resume: table<string, unknown>): boolean composed one-use resume publication
+---@field _music fun(action: string)? borrowed optional field-music duck/restore sink
 ---@field _session table<string, unknown> owned presentation session
 ---@field _readyKey integer? last matching resource generation behind admitted motion
 ---@field _view table<string, unknown> latest detached projection from the model
@@ -23,7 +24,7 @@ local PokedexInterface = require("game.hgss.src.pokedex.PokedexInterface")
 ---@field _assets table<string, unknown>? last committed whole ready bundle
 ---@field _phase string active, failed
 ---@field _preparationError string? nonempty cause behind the failed phase
----@field _compact { inspect: boolean, size: string } private compact presentation record
+---@field _compact { inspect: boolean, size: string } private compact presentation record (host adaptation: single-display reflow, non-retail arrangement; model ids and art stay native)
 ---@field _compactMode boolean true while the measured display uses the compact arrangement
 ---@field _pointerHeld boolean true while an in-flight drag holds touch across ticks
 ---@field _activeDragTarget string? in-flight drag target behind transactional cancel
@@ -36,12 +37,12 @@ local PokedexInterface = require("game.hgss.src.pokedex.PokedexInterface")
 local PokedexScreenState = {}
 PokedexScreenState.__index = PokedexScreenState
 
--- The finite modal input profile the screen advertises: six extra buttons
+-- The finite modal input profile the screen advertises: seven extra buttons
 -- with the source 8-tick initial delay, 4-tick continuous repeat, and
 -- held-direction facts. Only this opt-in profile receives extra or held
 -- events; default siblings keep their exact previous behavior.
 local UI_INPUT_PROFILE = {
-  buttons = { y = true, l = true, r = true, start = true, select = true, inspect = true },
+  buttons = { y = true, l = true, r = true, start = true, select = true, inspect = true, x = true },
   repeatDelay = 8,
   repeatInterval = 4,
   heldDirections = true,
@@ -127,6 +128,57 @@ local function buildDemand(view)
     if not seenIcons[key] and #iconKeys < 30 then
       seenIcons[key] = true
       iconKeys[#iconKeys + 1] = key
+    end
+  end
+  -- Forms and compare pages stage their per-variant mon icons beside
+  -- the rows: the six list rows around the cursor (the same
+  -- cursor - 1 .. cursor + 4 window the plan lists) and the compared
+  -- pair on the compare page. Icon art resolves outside the native
+  -- sprite archive, so the variant keys ride the icon demand directly
+  -- instead of a native subject binding. The grid keeps its own
+  -- thirty-key scroll closure above; variants stage on top up to eight
+  -- further keys (six rows plus the compared pair) so a full grid
+  -- never crowds them out, matching the source staging list icons and
+  -- form icons through separate sprite sets.
+  if view.page == "forms" and type(view.forms) == "table" then
+    local forms = view.forms
+    local variants = forms.variants
+    if type(variants) == "table" and type(view.selection) == "table" and type(view.selection.species) == "string" then
+      local species = view.selection.species
+      local row = forms.row
+      if type(row) ~= "number" then
+        row = 0
+      end
+      row = math.floor(row)
+      local function wantVariantIcon(form)
+        if type(form) ~= "number" then
+          return
+        end
+        local key = species .. "/f" .. math.floor(form)
+        if not seenIcons[key] and #iconKeys < 38 then
+          seenIcons[key] = true
+          iconKeys[#iconKeys + 1] = key
+        end
+      end
+      for position = 1, 6 do
+        local variant = variants[row + position - 1]
+        if type(variant) == "table" then
+          wantVariantIcon(variant.form)
+        end
+      end
+      local comparison = forms.comparison
+      if type(comparison) == "table" and type(comparison.indices) == "table" then
+        local indices = comparison.indices
+        for _, side in ipairs({ 1, 2 }) do
+          local compared = indices[side]
+          if type(compared) == "number" then
+            local variant = variants[math.floor(compared) + 1]
+            if type(variant) == "table" then
+              wantVariantIcon(variant.form)
+            end
+          end
+        end
+      end
     end
   end
   local pictures = {}
@@ -396,6 +448,10 @@ local function dispatchEffects(self)
   for _, effect in ipairs(effects) do
     if type(effect) == "table" and effect.kind == "sound" then
       self._effect(effect.role)
+    elseif type(effect) == "table" and effect.kind == "music" then
+      if self._music ~= nil then
+        self._music(effect.action)
+      end
     elseif type(effect) == "table" and effect.kind == "cry" then
       self._playCry(effect.species, effect.mode or 0, effect.form or 0)
     elseif type(effect) == "table" and effect.kind == "resume" then
@@ -411,6 +467,7 @@ end
 ---@field effect fun(sequence: unknown) borrowed audio effect sink
 ---@field playCry fun(species: string, pattern: integer, form: integer) borrowed cry sink
 ---@field commitResume fun(resume: table<string, unknown>): boolean composed one-use resume publication
+---@field music fun(action: string)? optional field-music duck/restore sink
 ---@field overrides table<string, unknown>? product per-case interface replacements
 
 ---@param args PokedexScreenStateOptions the per-open construction record
@@ -426,6 +483,10 @@ function PokedexScreenState.new(args)
   assert(type(args.effect) == "function", "the presented screen sinks its sound effects")
   assert(type(args.playCry) == "function", "the presented screen sinks its cry effects")
   assert(type(args.commitResume) == "function", "the presented screen publishes its resume through the owner")
+  local music = args.music
+  if music ~= nil then
+    assert(type(music) == "function", "the presented screen sinks its music requests")
+  end
   -- A fresh screen holds no matching readiness: the first whole bundle
   -- commits view, key, and assets together before any motion is
   -- admitted.
@@ -436,6 +497,7 @@ function PokedexScreenState.new(args)
     _effect = args.effect,
     _playCry = args.playCry,
     _commitResume = args.commitResume,
+    _music = music,
     _session = ApplicationPresentation.new(PokedexInterface.browser(args.overrides)),
     _readyKey = nil,
     _view = controller:view(),

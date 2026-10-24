@@ -108,6 +108,31 @@ function PokedexComposition.open(runtime)
     end
     return false
   end
+  -- Retail opens the dex under scene 54 with no new BGM sequence: the
+  -- field BGM keeps playing while its player ducks to 42, restored to
+  -- 127 on exit (Pokedex_Init/Pokedex_Exit through
+  -- GF_SndHandleSetPlayerVolume). The facade has no secondary-scene or
+  -- player-volume spelling, so the closest sink moves the still-current
+  -- BGM through the unified fader for a single frame; silence or a
+  -- headless music service skips the move.
+  local function duckOrRestoreMusic(action)
+    local audio = runtime.audio
+    if audio == nil then
+      return
+    end
+    if type(audio.currentMusic) ~= "function" or type(audio.moveSequenceVolume) ~= "function" then
+      return
+    end
+    local current = audio:currentMusic()
+    if current == nil then
+      return
+    end
+    if action == "duck" then
+      audio:moveSequenceVolume(current, 42, 1)
+    elseif action == "restore" then
+      audio:moveSequenceVolume(current, 127, 1)
+    end
+  end
   local overrides = runtime.presentationOverrides
   local pokedexOverrides = nil
   if type(overrides) == "table" then
@@ -120,6 +145,7 @@ function PokedexComposition.open(runtime)
     effect = playSequence,
     playCry = playCry,
     commitResume = commitResume,
+    music = duckOrRestoreMusic,
     overrides = pokedexOverrides,
   })
   if not okScreen then

@@ -113,9 +113,11 @@ end
 ---@param controller table browser under test
 ---@param species string entry to open through the grid
 local function openArea(controller, species)
-  tick(controller, { { type = "confirm" } })
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
   idle(controller, 40)
-  Assert.equal(controller:view().page, "grid", "cover confirm opens the grid before the entry")
+  Assert.equal(controller:view().page, "grid", "the cover drag reaches the grid before the entry")
   local slots = controller:view().grid.buffers[1].entries
   local cursor = controller:view().grid.cursor
   local target = nil

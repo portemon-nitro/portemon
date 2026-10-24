@@ -41,6 +41,20 @@ PokedexArea.COALESCED_PAIRS = {
   ["custom.route-16-east"] = "custom.route-16",
 }
 
+-- Extra fixed markers behind dungeons drawn without their own rectangle
+-- (GetSpecialAreaMarkers/PlaceSpecialAreaMarkers in
+-- pokedex_area_sprites.c): bit 0 selects one marker, bit 1 one marker,
+-- bit 2 two markers, all shape 0 in SUB screen pixels. Only three of the
+-- backed dungeon areas hit a set bit: dex-dungeon-23 (Diglett Cave,
+-- map 0x6A, bit 0), dex-dungeon-11 (Ice Path, map 0x78, bit 1) and
+-- dex-dungeon-13 (Dark Cave, map 0xB0, bit 2). Map ids 0x7B and
+-- 0xED-0xEF name no area in the habitat lists, so no row can carry them.
+PokedexArea.SPECIAL_MARKERS = {
+  ["dex-dungeon-23"] = { { x = 148, y = 76 } },
+  ["dex-dungeon-11"] = { { x = 236, y = 76 } },
+  ["dex-dungeon-13"] = { { x = 228, y = 92 }, { x = 220, y = 124 } },
+}
+
 local function fail(message, context)
   Errors.raise("POKEDEX_INVALID", message, context)
 end
@@ -354,7 +368,7 @@ function PokedexArea:playerView()
   }
 end
 
----@return { time: integer, region: string, row: integer, rows: { kind: string, mapKey: string?, timed: boolean?, other: boolean? }[], mapOffset: integer, markers: { shape: string, palette: integer, position: { x: number, y: number }, visible: boolean }[], player: { x: integer, y: integer, visible: boolean }, alpha: integer, phase: string, refresh: integer } detached area projection
+---@return { time: integer, region: string, row: integer, rows: { kind: string, mapKey: string?, timed: boolean?, other: boolean? }[], mapOffset: integer, markers: { shape: string, palette: integer, position: { x: number, y: number }, visible: boolean }[], specialMarkers: { shape: string, palette: integer, position: { x: number, y: number }, visible: boolean, mapKey: string }[], player: { x: integer, y: integer, visible: boolean }, alpha: integer, phase: string, refresh: integer } detached area projection
 function PokedexArea:view()
   local rows = {}
   for _, row in ipairs(self._rows) do
@@ -371,6 +385,24 @@ function PokedexArea:view()
     local marker = self:_markerFor(row.mapKey)
     markers[#markers + 1] = marker
   end
+  local specialMarkers = {}
+  for position = 2, #self._rows do
+    local row = self._rows[position]
+    if row.kind == "dungeon" and type(row.mapKey) == "string" then
+      local extras = PokedexArea.SPECIAL_MARKERS[row.mapKey]
+      if type(extras) == "table" then
+        for _, spot in ipairs(extras) do
+          specialMarkers[#specialMarkers + 1] = {
+            shape = "area",
+            palette = 0,
+            position = { x = spot.x, y = spot.y },
+            visible = self._phase == "rest",
+            mapKey = row.mapKey,
+          }
+        end
+      end
+    end
+  end
   local mapOffset = -72
   if self._region == "kanto" then
     mapOffset = 104
@@ -382,6 +414,7 @@ function PokedexArea:view()
     rows = rows,
     mapOffset = mapOffset,
     markers = markers,
+    specialMarkers = specialMarkers,
     player = self:playerView(),
     alpha = self:alpha(),
     phase = self._phase,

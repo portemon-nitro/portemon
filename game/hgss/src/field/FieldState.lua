@@ -26,7 +26,7 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 -- The finite modal extra-button producers: keyboard Tab stays X/cry and the
 -- existing registered y/u bindings stay intact, so only these six keys and
 -- six gamepad buttons feed the optional per-application input profile.
-local KEY_UI_BUTTONS = { y = "y", q = "l", u = "r", home = "start", ["end"] = "select", i = "inspect" }
+local KEY_UI_BUTTONS = { y = "y", x = "x", q = "l", u = "r", home = "start", ["end"] = "select", i = "inspect" }
 local GAMEPAD_UI_BUTTONS =
   { y = "y", leftshoulder = "l", rightshoulder = "r", start = "start", back = "select", leftstick = "inspect" }
 

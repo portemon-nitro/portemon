@@ -314,8 +314,9 @@ local function seedPortraits(pool, cacheFs, monCatalog, demand, browser)
 end
 
 -- Builds the exact browser demand behind one detached projection: the
--- generation key, the resolved page role, up to thirty staged icon keys,
--- the detached picture slots, and the semantic text.
+-- generation key, the resolved page role, up to thirty staged grid icon
+-- keys plus up to eight staged form-variant keys, the detached picture
+-- slots, and the semantic text.
 ---@param Renderer table prepared rasterizer under test
 ---@param view table detached browser projection
 ---@return table demand immutable browser demand
@@ -345,6 +346,48 @@ local function browserDemandFor(Renderer, view)
     if not seen[key] and #iconKeys < 30 then
       seen[key] = true
       iconKeys[#iconKeys + 1] = key
+    end
+  end
+  -- Form-variant icons stage on top of the grid closure up to eight
+  -- further keys, mirroring ScreenState.buildDemand.
+  if view.page == "forms" and type(view.forms) == "table" then
+    local forms = view.forms
+    local variants = forms.variants
+    if type(variants) == "table" and type(view.selection) == "table" and type(view.selection.species) == "string" then
+      local species = view.selection.species
+      local row = forms.row
+      if type(row) ~= "number" then
+        row = 0
+      end
+      row = math.floor(row)
+      local function wantVariantIcon(form)
+        if type(form) ~= "number" then
+          return
+        end
+        local key = species .. "/f" .. math.floor(form)
+        if not seen[key] and #iconKeys < 38 then
+          seen[key] = true
+          iconKeys[#iconKeys + 1] = key
+        end
+      end
+      for position = 1, 6 do
+        local variant = variants[row + position - 1]
+        if type(variant) == "table" then
+          wantVariantIcon(variant.form)
+        end
+      end
+      local comparison = forms.comparison
+      if type(comparison) == "table" and type(comparison.indices) == "table" then
+        for _, side in ipairs({ 1, 2 }) do
+          local compared = comparison.indices[side]
+          if type(compared) == "number" then
+            local variant = variants[math.floor(compared) + 1]
+            if type(variant) == "table" then
+              wantVariantIcon(variant.form)
+            end
+          end
+        end
+      end
     end
   end
   local pictures = {}
@@ -399,12 +442,14 @@ local function idle(controller, count)
   end
 end
 
--- Drives the real controller to the grid page through its cover confirm.
+-- Drives the real controller to the grid page through its cover drag.
 ---@param controller table live browser controller under test
 local function openGrid(controller)
-  press(controller, { { type = "confirm" } })
+  press(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
+  press(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
+  press(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
   idle(controller, 10)
-  Assert.equal(controller:view().page, "grid", "confirming the cover reaches the grid")
+  Assert.equal(controller:view().page, "grid", "the cover drag reaches the grid")
 end
 
 -- Advances the grid cursor until the named species is selected.
@@ -3283,6 +3328,8 @@ function T.forms_comparison_paints_both_selected_variants(scope)
     seedIcon(pool, "EEVEE/f0", 0, 0, 0)
     seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
     seedIcon(pool, "SPINDA/f0", 0, 1, 0)
+    seedIcon(pool, "PICHU/f0", 1, 1, 0)
+    seedIcon(pool, "PICHU/f1", 1, 0, 1)
     seedChromeFor(pool, rig.cacheFs, rig.manifest, "entry.compare")
     local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
     local function observe(species, personality, form, kind)

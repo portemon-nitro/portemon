@@ -50,18 +50,29 @@ local PokedexSize = require("game.hgss.src.pokedex.PokedexSize")
 ---@field _coverDrag { from: number, preOffset: integer }? in-progress cover drag
 ---@field _held { left: boolean, right: boolean, touch: boolean } last held snapshot
 ---@field _transition { phase: string, tick: integer } named visual phase and tick
+---@field _flash { id: string, tick: integer }? pressed-control flash and tick
 local PokedexController = {}
 PokedexController.__index = PokedexController
 
 PokedexController.LANGUAGE_ORDER = { "english", "french", "german", "italian", "spanish", "japanese" }
 
--- Source feedback gates in fixed updates.
+-- Source feedback gates in fixed updates. The label/rise/retract gates
+-- match the compiled search sprite animation dwell totals (28/52/20);
+-- the policy keeps these fixed ticks because it never reads the
+-- presentation manifest, and the 32-tick hold plus the 60-tick empty
+-- timeout stay as the verifiable retail waits.
 PokedexController.FEED_LABEL_TICKS = 28
 PokedexController.FEED_RISE_TICKS = 52
 PokedexController.FEED_HOLD_TICKS = 32
 PokedexController.FEED_MOVE_TICKS = 24
 PokedexController.FEED_RETRACT_TICKS = 20
 PokedexController.FEED_TIMEOUT_TICKS = 60
+
+-- Pressed-control flash and entry fade in fixed updates: the retail
+-- button palettes swap normal->flash->normal over 4 ticks, and entry
+-- tab switches fade out/in instead of swapping instantly.
+PokedexController.FLASH_TICKS = 4
+PokedexController.FADE_TICKS = 8
 
 -- Ordered keyboard/gamepad focus graph across the search root: the
 -- seven source criteria followed by the run and reset actions.
@@ -293,6 +304,7 @@ function PokedexController.new(args)
     _coverDrag = nil,
     _held = { left = false, right = false, touch = false },
     _transition = { phase = "rest", tick = 0 },
+    _flash = nil,
   }, PokedexController)
   local revision = tryDex(dex, "revision")
   if type(revision) == "number" then
@@ -300,6 +312,10 @@ function PokedexController.new(args)
   end
   self._search:setContext({ mode = mode, profileName = profileName, nationalUnlocked = nationalUnlocked })
   self:_restoreSelection(resume.species)
+  -- Retail opens under scene 54: the field BGM keeps playing while its
+  -- player ducks, so the open ducks through the music sink and the
+  -- close path below restores. No new BGM sequence starts here.
+  self:_emitMusic("duck")
   return self
 end
 
@@ -422,9 +438,35 @@ function PokedexController:_bumpKey()
   self._key = self._key + 1
 end
 
+-- Starts the 4-tick pressed-control flash behind one touched control.
+-- Pure visual state: the tick advance never bumps the demand key.
+---@param id string flash target behind the pressed rect
+function PokedexController:_startFlash(id)
+  if type(id) ~= "string" or id == "" then
+    return
+  end
+  self._flash = { id = id, tick = 0 }
+end
+
+-- Starts the entry fade envelope around a tab switch or size restart.
+-- The page already swapped; the published palette fades carry the
+-- out/in while the phase settles back to rest on its own ticks.
+function PokedexController:_startEntryFade()
+  self._transition = { phase = "fade", tick = 0 }
+end
+
 ---@param role string
 function PokedexController:_emitSound(role)
   self._effects[#self._effects + 1] = { kind = "sound", role = role }
+end
+
+-- Queues a field-music request behind the sound sinks: duck lowers the
+-- still-playing field BGM for the dex scene, restore returns it on
+-- close. The presentation owner routes these through its music sink;
+-- headless tests observe them as one-shot effects like sounds.
+---@param action string "duck" or "restore"
+function PokedexController:_emitMusic(action)
+  self._effects[#self._effects + 1] = { kind = "music", action = action }
 end
 
 ---@param speciesKey string
@@ -812,7 +854,7 @@ local function consumesTransition(event)
   if type(event) ~= "table" then
     return false
   end
-  if event.type == "navigate" or event.type == "confirm" or event.type == "menu" then
+  if event.type == "navigate" or event.type == "confirm" or event.type == "menu" or event.type == "x" then
     return true
   end
   if event.type == "y" or event.type == "l" or event.type == "r" or event.type == "select" then
@@ -922,10 +964,15 @@ function PokedexController:_handleCancel()
   if self._closing == true then
     return
   end
+  -- Every B edge behind the browser plays the cancel tone once: cover
+  -- and grid close, editor dismissal, search and result dismissal,
+  -- comparison dismissal, and entry return all funnel through here.
+  self:_emitSound("SEQ_SE_GS_GEARCANCEL")
   if self._page == "cover" or self._page == "grid" then
     self._closing = true
     self._transition = { phase = "close", tick = 0 }
     self:_emitResume()
+    self:_emitMusic("restore")
     self._result = { kind = "close" }
     self:_bumpKey()
     return
@@ -962,13 +1009,17 @@ function PokedexController:_handleStart()
   if self._feedback ~= nil then
     return
   end
+  if self._page ~= "cover" and self._page ~= "grid" and self._page ~= "search" then
+    return
+  end
   if self._page == "cover" then
-    self._page = "grid"
-    self._coverOffset = 256
-    self:_bumpKey()
+    -- The cover START mirrors its A key: the decide tone, then the
+    -- cursor entry directly.
+    self:_openCoverEntry()
     return
   end
   if self._page == "grid" then
+    -- The grid return is silent like the source list START key.
     self._page = "cover"
     self._coverOffset = 0
     self:_bumpKey()
@@ -978,9 +1029,11 @@ function PokedexController:_handleStart()
     return
   end
   if self._search:isEditorOpen() then
+    -- START in an editor commits it like its OK button, without
+    -- running the search.
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self._search:closeEditor(true)
     self:_bumpKey()
-    self:_runSearch()
     return
   end
   self:_runSearch()
@@ -1031,6 +1084,9 @@ function PokedexController:_advanceFeedback()
   end
   if feedback.phase == "hold" then
     if feedback.tick >= PokedexController.FEED_HOLD_TICKS then
+      -- The results-found chime fires after the hold, before the
+      -- results page slides in.
+      self:_emitSound("SEQ_SE_GS_ZUKAN06")
       self._feedback = { phase = "move", tick = 0, wait = 0, list = feedback.list }
     end
     return
@@ -1112,6 +1168,21 @@ end
 -- pure animation ticks keep the key quiet.
 function PokedexController:_advancePhases()
   self._spriteTick = self._spriteTick + 1
+  -- Pressed-control flashes and entry fades are pure visual ticks:
+  -- they never advance the demand key, only the published fields.
+  if self._flash ~= nil then
+    self._flash.tick = self._flash.tick + 1
+    if self._flash.tick >= PokedexController.FLASH_TICKS then
+      self._flash = nil
+    end
+  end
+  local visual = self._transition
+  if type(visual) == "table" and visual.phase == "fade" then
+    visual.tick = visual.tick + 1
+    if visual.tick >= PokedexController.FADE_TICKS then
+      self._transition = { phase = "rest", tick = 0 }
+    end
+  end
   if self._feedback ~= nil then
     local phase = self._feedback.phase
     self:_advanceFeedback()
@@ -1141,6 +1212,9 @@ function PokedexController:_handleDrag(event)
   local value = event.value
   if target == "cover" then
     if phase == "begin" then
+      -- Beginning the dex-mode switch drag plays the decide tone;
+      -- the rest of the cover gesture stays silent.
+      self:_emitSound("SEQ_SE_GS_BUTTON01")
       self._coverDrag = { from = type(value) == "number" and value or 0, preOffset = self._coverOffset }
     elseif phase == "move" and self._coverDrag ~= nil then
       if type(value) == "number" then
@@ -1205,7 +1279,16 @@ function PokedexController:_handleDrag(event)
       self:_bumpKey()
     elseif phase == "move" then
       if self._search:isDragging() and type(value) == "number" then
+        local bounds = self._search:criteria()[criterion]
+        assert(type(bounds) == "table", "search reads its slider bounds")
+        local before = bounds[endpoint]
         self._search:moveDrag(math.floor(value))
+        local moved = self._search:criteria()[criterion]
+        assert(type(moved) == "table", "search reads its dragged slider bounds")
+        -- Slider drags play the cursor tone on change only.
+        if moved[endpoint] ~= before then
+          self:_emitSound("SEQ_SE_GS_ZKN03")
+        end
       end
     elseif phase == "end" then
       self._search:endDrag(true)
@@ -1232,9 +1315,14 @@ function PokedexController:_handleDrag(event)
       if self._page == "results" then
         lastPage = self:_resultsLastPage()
       end
+      local before = self._pageIndex
       self._pageIndex = math.floor(fraction * (lastPage + 1))
       if self._pageIndex > lastPage then
         self._pageIndex = lastPage
+      end
+      -- Scrollbar drags play the cursor tone when the page changes.
+      if self._pageIndex ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
       end
       if self._page == "grid" then
         self:_refreshGridSelection()
@@ -1245,12 +1333,16 @@ function PokedexController:_handleDrag(event)
     elseif target == "area-scroll" and self._page == "area" and self._area ~= nil then
       local count = self._area:rowCount()
       if count > 0 then
-        self._area:goRow(math.floor(fraction * count))
+        if self._area:goRow(math.floor(fraction * count)) then
+          self:_emitSound("SEQ_SE_GS_ZKN03")
+        end
       end
     elseif target == "forms-scroll" and self._page == "forms" and self._forms ~= nil then
       local count = self._forms:count()
       if count > 0 then
-        self._forms:goRow(math.floor(fraction * count))
+        if self._forms:goRow(math.floor(fraction * count)) then
+          self:_emitSound("SEQ_SE_GS_ZKN03")
+        end
         self:_bumpKey()
       end
     end
@@ -1266,6 +1358,18 @@ function PokedexController:_handleEvent(event)
       self:_bumpKey()
     end
     return
+  end
+  -- Touch presses flash their control for 4 ticks through the visual
+  -- pipeline; key and navigation edges never start a flash.
+  if event.type == "activate" then
+    local action = event.action
+    if type(action) == "string" then
+      local id = action
+      if type(event.value) == "string" or type(event.value) == "number" then
+        id = action .. ":" .. tostring(event.value)
+      end
+      self:_startFlash(id)
+    end
   end
   if self._page == "cover" then
     self:_handleCover(event)
@@ -1286,34 +1390,57 @@ function PokedexController:_handleEvent(event)
   end
 end
 
+-- Opens the cursor entry straight from the cover like the retail
+-- cover confirm/START slide: the decide tone, then the entry of the
+-- cursor species with the grid origin saved for the return. A blank
+-- or unseen cursor slot stays on the cover silently.
+function PokedexController:_openCoverEntry()
+  local species = self:_gridSlotSpecies(self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor)
+  if species == nil then
+    return
+  end
+  self:_emitSound("SEQ_SE_GS_BUTTON01")
+  self:_select(species)
+  self._originGrid = { page = self._pageIndex, cursor = self._cursor }
+  self._coverOffset = 256
+  self:_openEntry(species, "grid")
+end
+
 ---@param event table<string, unknown>
 function PokedexController:_handleCover(event)
   if event.type == "confirm" then
-    self._page = "grid"
-    self._coverOffset = 256
-    self:_bumpKey()
+    self:_openCoverEntry()
   elseif event.type == "navigate" then
     if event.direction == "left" then
       if self._nationalUnlocked == true and self._mode ~= "national" then
+        self:_emitSound("SEQ_SE_GS_ZKN_BUTTON8")
         self._mode = "national"
         self:_reconcileModeSelection()
         self:_bumpKey()
       end
     elseif event.direction == "right" then
       if self._mode ~= "johto" then
+        self:_emitSound("SEQ_SE_GS_ZKN_BUTTON8")
         self._mode = "johto"
         self:_reconcileModeSelection()
         self:_bumpKey()
       end
     end
   elseif event.type == "y" then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self:_openSearch()
   elseif event.type == "activate" and event.action == "mode" then
     if event.value == "national" and self._nationalUnlocked == true then
+      if self._mode ~= "national" then
+        self:_emitSound("SEQ_SE_GS_ZKN_BUTTON8")
+      end
       self._mode = "national"
       self:_reconcileModeSelection()
       self:_bumpKey()
     elseif event.value == "johto" then
+      if self._mode ~= "johto" then
+        self:_emitSound("SEQ_SE_GS_ZKN_BUTTON8")
+      end
       self._mode = "johto"
       self:_reconcileModeSelection()
       self:_bumpKey()
@@ -1326,9 +1453,17 @@ function PokedexController:_moveGridCursor(delta)
   local total = (self:_gridLastPage() + 1) * PokedexController.RESULT_SLOTS
   local absolute = self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor
   absolute = (absolute + delta) % total
+  local before = self._pageIndex
   self._pageIndex = math.floor(absolute / PokedexController.RESULT_SLOTS)
   self._cursor = absolute % PokedexController.RESULT_SLOTS
   self:_refreshGridSelection()
+  -- Moves within the page play the cursor tone; edge page turns play
+  -- the touch tone like the source list page sequences.
+  if self._pageIndex ~= before then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
+  else
+    self:_emitSound("SEQ_SE_GS_ZKN03")
+  end
   self:_bumpKey()
 end
 
@@ -1347,11 +1482,12 @@ function PokedexController:_handleGrid(event)
   elseif event.type == "confirm" then
     local species = self:_gridSlotSpecies(self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor)
     if species ~= nil then
+      self:_emitSound("SEQ_SE_GS_ZKN04")
       self:_select(species)
       self._originGrid = { page = self._pageIndex, cursor = self._cursor }
       self:_openEntry(species, "grid")
     end
-  elseif event.type == "menu" then
+  elseif event.type == "menu" or event.type == "x" then
     local species = self:_gridSlotSpecies(self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor)
     if species ~= nil then
       self:_emitCry(species, self:_cryForm(species))
@@ -1364,6 +1500,7 @@ function PokedexController:_handleGrid(event)
     if self._pageIndex > 0 then
       self._pageIndex = self._pageIndex - 1
       self:_refreshGridSelection()
+      self:_emitSound("SEQ_SE_GS_ZKN04")
       self:_bumpKey()
     end
   elseif event.type == "r" then
@@ -1371,6 +1508,7 @@ function PokedexController:_handleGrid(event)
     if self._pageIndex < lastPage then
       self._pageIndex = self._pageIndex + 1
       self:_refreshGridSelection()
+      self:_emitSound("SEQ_SE_GS_ZKN04")
       self:_bumpKey()
     end
   elseif event.type == "activate" then
@@ -1388,11 +1526,13 @@ function PokedexController:_handleGridActivate(event)
     if slot == self._cursor then
       local species = self:_gridSlotSpecies(self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor)
       if species ~= nil then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
         self:_select(species)
         self._originGrid = { page = self._pageIndex, cursor = self._cursor }
         self:_openEntry(species, "grid")
       end
     else
+      self:_emitSound("SEQ_SE_GS_ZKN04")
       self._cursor = math.floor(slot) --[[@as integer]]
       self:_refreshGridSelection()
       self:_bumpKey()
@@ -1402,6 +1542,7 @@ function PokedexController:_handleGridActivate(event)
     if species == nil then
       return
     end
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self:_select(species)
     self._originGrid = { page = self._pageIndex, cursor = self._cursor }
     self:_openEntry(species, "grid")
@@ -1414,8 +1555,10 @@ function PokedexController:_handleGridActivate(event)
   elseif event.action == "language" then
     self:_cycleLanguage()
   elseif event.action == "search" then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self:_openSearch()
   elseif event.action == "cover" then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self._page = "cover"
     self._coverOffset = 0
     self:_bumpKey()
@@ -1424,12 +1567,14 @@ function PokedexController:_handleGridActivate(event)
     if self._pageIndex < lastPage then
       self._pageIndex = self._pageIndex + 1
       self:_refreshGridSelection()
+      self:_emitSound("SEQ_SE_GS_ZKN04")
       self:_bumpKey()
     end
   elseif event.action == "page-prev" then
     if self._pageIndex > 0 then
       self._pageIndex = self._pageIndex - 1
       self:_refreshGridSelection()
+      self:_emitSound("SEQ_SE_GS_ZKN04")
       self:_bumpKey()
     end
   end
@@ -1482,6 +1627,9 @@ function PokedexController:_moveSearchFocus(delta)
   end
   index = (index + delta - 1) % #SEARCH_FOCUSABLES + 1
   self._searchFocus = SEARCH_FOCUSABLES[index]
+  -- Focus always steps to another criterion, so the focus move tone
+  -- always plays.
+  self:_emitSound("SEQ_SE_GS_ZKN03")
   self:_bumpKey()
 end
 
@@ -1499,16 +1647,32 @@ function PokedexController:_moveEditorFocus(delta, direction)
   if kind == "height" or kind == "weight" then
     if direction == "up" then
       self._search:setSliderEndpoint("min")
+      if self._search:editorView().endpoint == "min" and editor.endpoint ~= "min" then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
+      end
       self:_bumpKey()
     elseif direction == "down" then
       self._search:setSliderEndpoint("max")
+      if self._search:editorView().endpoint == "max" and editor.endpoint ~= "max" then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
+      end
       self:_bumpKey()
     elseif direction == "left" or direction == "right" then
       local endpoint = editor.endpoint
       if endpoint ~= "min" and endpoint ~= "max" then
         endpoint = "min"
       end
+      local bounds = self._search:criteria()[kind]
+      assert(type(bounds) == "table", "search reads its slider bounds")
+      local before = bounds[endpoint]
       self._search:stepSlider(kind, endpoint, searchFocusStep(direction))
+      local moved = self._search:criteria()[kind]
+      assert(type(moved) == "table", "search reads its stepped slider bounds")
+      -- Arrow steps play the touch tone, but a clamped step at the
+      -- bound stays silent.
+      if moved[endpoint] ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
       self:_bumpKey()
     end
     return
@@ -1523,11 +1687,15 @@ function PokedexController:_moveEditorFocus(delta, direction)
       index = position
     end
   end
+  local before = editor.focus
   for _ = 1, #options do
     index = (index + delta - 1) % #options + 1
     local choice = options[index]
     if choice ~= "kanto" or kind ~= "area" or self._nationalUnlocked == true then
       self._search:focusOption(choice)
+      if self._search:editorView().focus ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
+      end
       self:_bumpKey()
       return
     end
@@ -1537,14 +1705,17 @@ end
 function PokedexController:_confirmSearchFocus()
   local focus = self._searchFocus
   if focus == "run" then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self:_runSearch()
     return
   end
   if focus == "reset" then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self._search:reset()
     self:_bumpKey()
     return
   end
+  self:_emitSound("SEQ_SE_GS_ZKN04")
   self._search:openEditor(focus)
   self:_bumpKey()
 end
@@ -1568,14 +1739,17 @@ function PokedexController:_handleSearch(event)
         end
       end
       if known then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
         self._searchFocus = event.value
         self._search:openEditor(event.value)
         self:_bumpKey()
       end
     end
   elseif event.type == "activate" and (event.action == "search-run" or event.action == "editor-ok") then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self:_runSearch()
   elseif event.type == "activate" and event.action == "search-reset" then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self._search:reset()
     self:_bumpKey()
   end
@@ -1594,11 +1768,13 @@ function PokedexController:_handleEditor(event)
   end
   if event.type == "confirm" then
     if kind == "height" or kind == "weight" then
+      self:_emitSound("SEQ_SE_GS_ZKN04")
       self._search:closeEditor(true)
       self:_bumpKey()
     else
       local focus = editor.focus
       if type(focus) == "string" then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
         self._search:choose(focus)
         self:_bumpKey()
       end
@@ -1607,16 +1783,26 @@ function PokedexController:_handleEditor(event)
   end
   if event.type == "activate" and event.action == "editor-choice" then
     if type(event.value) == "string" then
+      self:_emitSound("SEQ_SE_GS_ZKN04")
       self._search:choose(event.value)
       self:_bumpKey()
     end
   elseif event.type == "activate" and event.action == "slider-step" then
+    local stepped = self._search:criteria()[event.criterion]
+    local before = type(stepped) == "table" and stepped[event.endpoint] or nil
     self._search:stepSlider(event.criterion, event.endpoint, event.direction)
+    local after = self._search:criteria()[event.criterion]
+    local moved = type(after) == "table" and after[event.endpoint] or nil
+    if moved ~= before then
+      self:_emitSound("SEQ_SE_GS_ZKN04")
+    end
     self:_bumpKey()
   elseif event.type == "activate" and event.action == "editor-ok" then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self._search:closeEditor(true)
     self:_bumpKey()
   elseif event.type == "activate" and event.action == "editor-cancel" then
+    self:_emitSound("SEQ_SE_GS_GEARCANCEL")
     self._search:closeEditor(false)
     self:_bumpKey()
   end
@@ -1627,9 +1813,17 @@ function PokedexController:_moveResultsCursor(delta)
   local total = (self:_resultsLastPage() + 1) * PokedexController.RESULT_SLOTS
   local absolute = self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor
   absolute = (absolute + delta) % total
+  local before = self._pageIndex
   self._pageIndex = math.floor(absolute / PokedexController.RESULT_SLOTS)
   self._cursor = absolute % PokedexController.RESULT_SLOTS
   self:_refreshResultsSelection()
+  -- Moves within the page play the cursor tone; edge page turns play
+  -- the touch tone like the source result page sequences.
+  if self._pageIndex ~= before then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
+  else
+    self:_emitSound("SEQ_SE_GS_ZKN03")
+  end
   self:_bumpKey()
 end
 
@@ -1646,8 +1840,17 @@ function PokedexController:_handleResults(event)
       self:_moveResultsCursor(5)
     end
   elseif event.type == "confirm" then
+    -- A key open plays the touch tone once; the silent return slot
+    -- and blank slots stay quiet. Touch opens sound through the
+    -- grid-slot path above instead.
+    if not self:_isSearchReturnSlot() then
+      local key = self._results[self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor]
+      if type(key) == "string" then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
+    end
     self:_activateResultsSlot()
-  elseif event.type == "menu" then
+  elseif event.type == "menu" or event.type == "x" then
     if self:_isSearchReturnSlot() ~= true then
       local key = self._results[self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor]
       if type(key) == "string" then
@@ -1661,6 +1864,7 @@ function PokedexController:_handleResults(event)
     if self._pageIndex > 0 then
       self._pageIndex = self._pageIndex - 1
       self:_refreshResultsSelection()
+      self:_emitSound("SEQ_SE_GS_ZKN04")
       self:_bumpKey()
     end
   elseif event.type == "r" then
@@ -1668,12 +1872,18 @@ function PokedexController:_handleResults(event)
     if self._pageIndex < lastPage then
       self._pageIndex = self._pageIndex + 1
       self:_refreshResultsSelection()
+      self:_emitSound("SEQ_SE_GS_ZKN04")
       self:_bumpKey()
     end
   elseif event.type == "activate" then
     if event.action == "grid-slot" and type(event.value) == "number" then
       local slot = event.value
       if slot >= 0 and slot < PokedexController.RESULT_SLOTS and slot % 1 == 0 then
+        -- Touching the already-active return slot is the silent
+        -- criteria recap; every other touch plays the touch tone.
+        if slot ~= self._cursor or not self:_isSearchReturnSlot() then
+          self:_emitSound("SEQ_SE_GS_ZKN04")
+        end
         self._cursor = slot
         self:_refreshResultsSelection()
         self:_activateResultsSlot()
@@ -1709,46 +1919,89 @@ function PokedexController:_handleArea(event)
   end
   if event.type == "confirm" then
     self._area:cycleTime()
+    -- The daypart always advances, so the key cycle plays the cursor tone.
+    self:_emitSound("SEQ_SE_GS_ZKN03")
     self:_bumpKey()
   elseif event.type == "select" then
+    local before = self._area:view().region
     if self._area:view().region == "johto" then
       self:_setAreaRegion("kanto")
     else
       self:_setAreaRegion("johto")
     end
+    if self._area:view().region ~= before then
+      self:_emitSound("SEQ_SE_GS_ZKN03")
+    end
     self:_bumpKey()
   elseif event.type == "l" then
+    local before = self._area:view().region
     self:_setAreaRegion("johto")
+    if self._area:view().region ~= before then
+      self:_emitSound("SEQ_SE_GS_ZKN03")
+    end
     self:_bumpKey()
   elseif event.type == "r" then
+    local before = self._area:view().region
     self:_setAreaRegion("kanto")
+    if self._area:view().region ~= before then
+      self:_emitSound("SEQ_SE_GS_ZKN03")
+    end
     self:_bumpKey()
   elseif event.type == "navigate" then
     if event.direction == "up" then
       if self._area:moveRow(-1) then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
         self:_bumpKey()
       end
     elseif event.direction == "down" then
       if self._area:moveRow(1) then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
         self:_bumpKey()
       end
     elseif event.direction == "left" or event.direction == "right" then
-      self:_cycleEntryTab(event.direction == "left" and -1 or 1)
+      -- Entry tabs move per screen like the retail area handler: left
+      -- reaches the back tab, right reaches size when caught and forms
+      -- otherwise. Key moves play the cursor tone on change.
+      local before = self._page
+      if event.direction == "left" then
+        self:_switchEntryTab("return")
+      elseif tryDex(self._dex, "isCaught", self._entrySpecies) == true then
+        self:_switchEntryTab("size")
+      else
+        self:_switchEntryTab("forms")
+      end
+      if self._page ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
+      end
     end
   elseif event.type == "activate" then
     if event.action == "area-time" then
+      local before = self._area:view().time
       self._area:setTime(event.value)
+      if self._area:view().time ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
       self:_bumpKey()
     elseif event.action == "area-region" then
+      local before = self._area:view().region
       self:_setAreaRegion(event.value)
+      if self._area:view().region ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
       self:_bumpKey()
     elseif event.action == "area-row" then
       if self._area:goRow(event.value) then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
         self:_bumpKey()
       end
     elseif event.action == "entry-tab" then
+      local before = self._page
       self:_switchEntryTab(event.value)
+      if self._page ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
     elseif event.action == "compare-back" then
+      self:_emitSound("SEQ_SE_GS_GEARCANCEL")
       self:_returnToOrigin()
     end
   end
@@ -1757,24 +2010,60 @@ end
 ---@param event table<string, unknown>
 function PokedexController:_handleSize(event)
   if event.type == "confirm" then
-    if self._size ~= nil and self._size:isMoving() then
-      self._size:restart()
+    -- Confirming always rebuilds the weight check like the retail size
+    -- default: the key plays the cursor tone even on a settled check.
+    if self._size ~= nil then
+      self:_emitSound("SEQ_SE_GS_ZKN03")
+      self:_restartSizeCheck()
     end
   elseif event.type == "navigate" then
     if event.direction == "left" or event.direction == "right" then
-      self:_cycleEntryTab(event.direction == "left" and -1 or 1)
+      -- The retail size keys move per screen: left back to area, right
+      -- on to forms. Key moves play the cursor tone on change.
+      local before = self._page
+      if event.direction == "left" then
+        self:_switchEntryTab("area")
+      else
+        self:_switchEntryTab("forms")
+      end
+      if self._page ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
+      end
     end
   elseif event.type == "activate" then
     if event.action == "size-restart" then
-      if self._size ~= nil and self._size:isMoving() then
-        self._size:restart()
+      if self._size ~= nil then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+        self:_restartSizeCheck()
       end
     elseif event.action == "entry-tab" then
+      local before = self._page
       self:_switchEntryTab(event.value)
+      if self._page ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
     elseif event.action == "compare-back" then
+      self:_emitSound("SEQ_SE_GS_GEARCANCEL")
       self:_returnToOrigin()
     end
   end
+end
+
+-- Rebuilds the size helper from scratch so a confirm or restart
+-- always reruns the full weight check, even on a settled one. The
+-- rebuilt check fades back in through the shared entry fade envelope.
+function PokedexController:_restartSizeCheck()
+  if self._size == nil or type(self._entrySpecies) ~= "string" then
+    return
+  end
+  self._size = PokedexSize.new({
+    catalog = self._catalog,
+    species = self._entrySpecies,
+    profileName = self._profileName,
+    playerGender = self._playerGender,
+  })
+  self:_startEntryFade()
+  self:_bumpKey()
 end
 
 ---@param event table<string, unknown>
@@ -1786,32 +2075,94 @@ function PokedexController:_handleForms(event)
     self:_handleComparison(event)
     return
   end
-  if event.type == "navigate" then
+  if event.type == "confirm" then
+    -- Confirming the list opens the comparison when the row carries
+    -- two or more seen forms; a single form stays silent. The helper
+    -- keeps its own preconditions, and the open plays the touch tone.
+    if self._forms:openComparison() then
+      self:_emitSound("SEQ_SE_GS_ZKN04")
+      self:_bumpKey()
+    end
+  elseif event.type == "navigate" then
     if event.direction == "up" then
       if self._forms:moveRow(-1) then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
         self:_bumpKey()
       end
     elseif event.direction == "down" then
       if self._forms:moveRow(1) then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
         self:_bumpKey()
       end
     elseif event.direction == "left" or event.direction == "right" then
-      self:_cycleEntryTab(event.direction == "left" and -1 or 1)
+      -- The retail forms keys move per screen: left reaches size when
+      -- caught and area otherwise, right reaches the back tab. Key
+      -- moves play the cursor tone on change.
+      local before = self._page
+      if event.direction == "left" then
+        if tryDex(self._dex, "isCaught", self._entrySpecies) == true then
+          self:_switchEntryTab("size")
+        else
+          self:_switchEntryTab("area")
+        end
+      else
+        self:_switchEntryTab("return")
+      end
+      if self._page ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
+      end
     end
   elseif event.type == "activate" then
     if event.action == "forms-row" then
-      self._forms:goRow(event.value)
+      if self._forms:goRow(event.value) then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
       self:_bumpKey()
     elseif event.action == "compare" then
       if self._forms:openComparison() then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
         self:_bumpKey()
       end
     elseif event.action == "entry-tab" then
+      local before = self._page
       self:_switchEntryTab(event.value)
+      if self._page ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
     elseif event.action == "compare-back" then
+      self:_emitSound("SEQ_SE_GS_GEARCANCEL")
       self:_returnToOrigin()
     end
   end
+end
+
+-- Compares a detached comparison snapshot against the live comparison:
+-- cycling with two or fewer variants and redundant side selects keep
+-- their indices, so only a real change earns a tone.
+---@param before { indices: integer[], activeSide: integer, facing: string }? detached snapshot before the gesture
+---@return boolean whether the compared indices changed
+function PokedexController:_compareIndicesChanged(before)
+  if self._forms == nil or before == nil then
+    return false
+  end
+  local after = self._forms:comparison()
+  if after == nil then
+    return false
+  end
+  return after.indices[1] ~= before.indices[1] or after.indices[2] ~= before.indices[2]
+end
+
+---@param before { indices: integer[], activeSide: integer, facing: string }? detached snapshot before the gesture
+---@return boolean whether the active side changed
+function PokedexController:_compareSideChanged(before)
+  if self._forms == nil or before == nil then
+    return false
+  end
+  local after = self._forms:comparison()
+  if after == nil then
+    return false
+  end
+  return after.activeSide ~= before.activeSide
 end
 
 ---@param event table<string, unknown>
@@ -1821,9 +2172,12 @@ function PokedexController:_handleComparison(event)
   end
   if event.type == "confirm" then
     self._forms:closeComparison()
+    -- Dismissing the comparison by key plays the cancel tone.
+    self:_emitSound("SEQ_SE_GS_GEARCANCEL")
     self:_bumpKey()
-  elseif event.type == "menu" then
+  elseif event.type == "menu" or event.type == "x" then
     self._forms:flip()
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self:_bumpKey()
   elseif event.type == "navigate" then
     local comparison = self._forms:comparison()
@@ -1832,31 +2186,67 @@ function PokedexController:_handleComparison(event)
       active = 1
     end
     if event.direction == "up" then
+      local before = self._forms:comparison()
       self._forms:cycle(active, -1)
+      if self:_compareIndicesChanged(before) then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
+      end
     elseif event.direction == "down" then
+      local before = self._forms:comparison()
       self._forms:cycle(active, 1)
+      if self:_compareIndicesChanged(before) then
+        self:_emitSound("SEQ_SE_GS_ZKN03")
+      end
     elseif event.direction == "left" then
-      self._forms:setActiveSide(1)
+      -- The retail compare keys only select their own side, gated on
+      -- three or more seen forms; stepping stays with up and down.
+      if self._forms:count() >= 3 then
+        local before = self._forms:comparison()
+        self._forms:setActiveSide(0)
+        if self:_compareSideChanged(before) then
+          self:_emitSound("SEQ_SE_GS_ZKN03")
+        end
+      end
     elseif event.direction == "right" then
-      self._forms:setActiveSide(0)
+      if self._forms:count() >= 3 then
+        local before = self._forms:comparison()
+        self._forms:setActiveSide(1)
+        if self:_compareSideChanged(before) then
+          self:_emitSound("SEQ_SE_GS_ZKN03")
+        end
+      end
     end
     self:_bumpKey()
   elseif event.type == "activate" then
     if event.action == "compare-flip" then
       self._forms:flip()
+      self:_emitSound("SEQ_SE_GS_ZKN04")
       self:_bumpKey()
     elseif event.action == "compare-side" then
+      local before = self._forms:comparison()
       self._forms:setActiveSide(event.value)
+      if self:_compareSideChanged(before) then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
       self:_bumpKey()
     elseif event.action == "compare-cycle" then
+      local before = self._forms:comparison()
       self._forms:cycle(event.side, event.delta)
+      if self:_compareIndicesChanged(before) then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
       self:_bumpKey()
     elseif event.action == "compare-back" then
       self._forms:closeComparison()
+      self:_emitSound("SEQ_SE_GS_GEARCANCEL")
       self:_bumpKey()
     elseif event.action == "entry-tab" then
+      local before = self._page
       self._forms:closeComparison()
       self:_switchEntryTab(event.value)
+      if self._page ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
     end
   end
 end
@@ -1864,20 +2254,28 @@ end
 ---@param event table<string, unknown>
 function PokedexController:_handleReturn(event)
   if event.type == "confirm" then
+    self:_emitSound("SEQ_SE_GS_GEARCANCEL")
     self:_returnToOrigin()
   elseif event.type == "navigate" then
     if event.direction == "left" then
       self._page = "forms"
+      self:_emitSound("SEQ_SE_GS_ZKN03")
       self:_bumpKey()
     elseif event.direction == "right" then
       self._page = "area"
+      self:_emitSound("SEQ_SE_GS_ZKN03")
       self:_bumpKey()
     end
   elseif event.type == "activate" then
     if event.action == "return-list" then
+      self:_emitSound("SEQ_SE_GS_GEARCANCEL")
       self:_returnToOrigin()
     elseif event.action == "entry-tab" then
+      local before = self._page
       self:_switchEntryTab(event.value)
+      if self._page ~= before then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
     end
   end
 end
@@ -1887,40 +2285,28 @@ function PokedexController:_switchEntryTab(tab)
   if type(self._entrySpecies) ~= "string" then
     return
   end
+  local before = self._page
   if tab == "area" then
     self._page = "area"
-    self:_bumpKey()
   elseif tab == "size" then
-    if self._size ~= nil then
-      self._page = "size"
-      self:_bumpKey()
-    end
-  elseif tab == "forms" then
-    self._page = "forms"
-    self:_bumpKey()
-  elseif tab == "return" then
-    self._page = "return"
-    self:_bumpKey()
-  end
-end
-
----@param direction integer -1 or 1 tab cycle
-function PokedexController:_cycleEntryTab(direction)
-  local tabs = { "area", "size", "forms", "return" }
-  local current = 1
-  for index, name in ipairs(tabs) do
-    if name == self._page then
-      current = index
-    end
-  end
-  for _ = 1, #tabs do
-    current = (current + direction - 1) % #tabs + 1
-    local candidate = tabs[current]
-    if candidate ~= "size" or self._size ~= nil then
-      self:_switchEntryTab(candidate)
+    if self._size == nil then
       return
     end
+    self._page = "size"
+  elseif tab == "forms" then
+    self._page = "forms"
+  elseif tab == "return" then
+    self._page = "return"
+  else
+    return
   end
+  -- Successful tab switches keep their immediate page for logic but
+  -- fade out/in through the shared visual envelope like the retail
+  -- palette fades between entry screens.
+  if self._page ~= before then
+    self:_startEntryFade()
+  end
+  self:_bumpKey()
 end
 
 ---@param form integer resolved physical form
@@ -1937,6 +2323,38 @@ function PokedexController:_specimen(form, gender, personality)
     isEgg = false,
     shiny = false,
   }
+end
+
+---@return { mon: number, trainer: number }? sourced height magnification factors, nil without resolved geometry
+function PokedexController:_heightScale()
+  if type(self._entrySpecies) ~= "string" then
+    return nil
+  end
+  local profiles = self._catalog.measurementProfiles
+  if type(profiles) ~= "table" then
+    return nil
+  end
+  local profile = profiles[self._profileName]
+  if type(profile) ~= "table" or type(profile.measurements) ~= "table" then
+    return nil
+  end
+  local row = profile.measurements[self._entrySpecies]
+  if type(row) ~= "table" or type(row.scale) ~= "table" then
+    return nil
+  end
+  local gendered = row.scale[self._playerGender]
+  if type(gendered) ~= "table" or type(gendered.mon) ~= "number" or type(gendered.trainer) ~= "number" then
+    return nil
+  end
+  -- Retail magnifies both height portraits by 256 native units per
+  -- scale unit: the mon BG affine inverts scale << 12 against 0x100000
+  -- (SetMonPicBgAffine) and the trainer sprite divides 1 << 20 by
+  -- player_scale << 12 (ScaleSizeCheckTrainer), both reducing to
+  -- 256 / raw. A zero raw scale keeps the fixed authored rects.
+  if gendered.mon == 0 or gendered.trainer == 0 then
+    return nil
+  end
+  return { mon = 256 / gendered.mon, trainer = 256 / gendered.trainer }
 end
 
 ---@return { slot: integer, specimen: table<string, unknown>, facing: string, mode: string }[] picture slots for the open entry
@@ -2798,6 +3216,48 @@ function PokedexController:_blendView()
   return { information = information, controls = controls }
 end
 
+-- Publishes the pressed-control flash: active for 4 ticks behind the
+-- pressed rect target, then inert. Pure visual state for the renderer.
+---@return { active: boolean, tick: integer, target: string? } flash view
+function PokedexController:_flashView()
+  if self._flash == nil then
+    return { active = false, tick = 0 }
+  end
+  return { active = true, tick = self._flash.tick, target = self._flash.id }
+end
+
+-- Publishes the entry fade envelope as per-pane black fades: 4 ticks
+-- out to full black, 4 ticks back in, read by the composite shader.
+---@return table[] per-pane fade entries with their black coefficient
+function PokedexController:_paletteFades()
+  local visual = self._transition
+  if type(visual) ~= "table" or visual.phase ~= "fade" then
+    return {}
+  end
+  local tick = visual.tick
+  if type(tick) ~= "number" then
+    return {}
+  end
+  local half = math.floor(PokedexController.FADE_TICKS / 2)
+  local coefficient = 0
+  if tick < half then
+    coefficient = math.floor(16 * (tick + 1) / half + 0.5)
+  else
+    coefficient = math.floor(16 * (PokedexController.FADE_TICKS - tick) / half + 0.5)
+  end
+  if coefficient < 0 then
+    coefficient = 0
+  end
+  if coefficient > 16 then
+    coefficient = 16
+  end
+  local target = { r = 0, g = 0, b = 0 }
+  return {
+    { pane = "information", target = target, coeff = coefficient },
+    { pane = "controls", target = target, coeff = coefficient },
+  }
+end
+
 -- Native area marker silhouettes: the twelve width/height pairs behind
 -- shape selection (sPokedexAreaMarkerSizes in pokedex_rodata.s), kept
 -- beside the shape projection so the player overlap test uses the exact
@@ -2948,6 +3408,63 @@ function PokedexController:_areaMarkerShape(mapKey, kind)
   return 0
 end
 
+-- Native dex-flag order behind the language icons (sDexFlagToLanguage in
+-- pokedex_language.c): flag 0 japanese, 1 english, 2 french, 3 german,
+-- 4 italian, 5 spanish. UpdateLanguageIcons walks the cycle table
+-- backwards (which 5 down to 0) and right-aligns the shown icons from
+-- x 124 in 24px steps; the shown language highlights with anim flag
+-- while the rest dim with anim flag + 6. Only the international view
+-- gates the icons; SELECT cycling stays untouched.
+local DEX_FLAG_LANGUAGES = { "japanese", "english", "french", "german", "italian", "spanish" }
+local DEX_CYCLE_FLAGS = { 1, 2, 3, 4, 5, 0 }
+local DEX_FLAG_BY_LANGUAGE = { japanese = 0, english = 1, french = 2, german = 3, italian = 4, spanish = 5 }
+
+---@param objects table[] intent list under projection
+---@param pageKey integer demand generation behind the projection
+---@param species string selected species behind the art
+local function projectLanguageObjects(self, objects, pageKey, species)
+  if tryDex(self._dex, "hasInternationalDex") ~= true then
+    return
+  end
+  local function ageOf(key, choice)
+    return self:_trackObjectAge(pageKey, key, choice)
+  end
+  local acquired = {}
+  local languages = tryDex(self._dex, "caughtLanguages", species)
+  if type(languages) == "table" then
+    for _, key in ipairs(languages) do
+      acquired[key] = true
+    end
+  end
+  local current = self._selection.language
+  if type(current) ~= "string" then
+    current = self._nativeLanguage
+  end
+  local shown = 0
+  for which = 5, 0, -1 do
+    local language = DEX_FLAG_LANGUAGES[DEX_CYCLE_FLAGS[which + 1] + 1]
+    if language == self._nativeLanguage or acquired[language] == true then
+      local choice = language
+      if language ~= current then
+        choice = language .. "-dim"
+      end
+      emitIntent(
+        objects,
+        "lang-flag",
+        choice,
+        "information",
+        124 + 24 * (5 - shown),
+        8,
+        ageOf("lang-flag-" .. shown, choice)
+      )
+      shown = shown + 1
+    end
+  end
+  if DEX_FLAG_BY_LANGUAGE[current] ~= nil then
+    emitIntent(objects, "lang-current", current, "controls", 92, 136, ageOf("lang-current", current))
+  end
+end
+
 ---@param objects table[] intent list under projection
 ---@param pageKey integer demand generation behind the projection
 local function projectGridObjects(self, objects, pageKey)
@@ -3000,6 +3517,9 @@ local function projectGridObjects(self, objects, pageKey)
       emitIntent(objects, "footprint", species, "information", 120, 80, ageOf("footprint", species))
     end
     emitIntent(objects, "caught-mark", "shown", "information", 112, 32, ageOf("caught-mark", "shown"))
+  end
+  if type(selection.species) == "string" then
+    projectLanguageObjects(self, objects, pageKey, selection.species)
   end
 end
 
@@ -3138,6 +3658,24 @@ local function areaPlayerHit(self, area)
       end
     end
   end
+  -- Special markers use the shape-0 8x8 extents like their placed art.
+  if type(area.specialMarkers) == "table" then
+    local selectedRow = area.rows[area.row + 1]
+    for _, extra in ipairs(area.specialMarkers) do
+      if
+        type(extra) == "table"
+        and extra.visible == true
+        and type(extra.position) == "table"
+        and (area.row == 0 or (type(selectedRow) == "table" and selectedRow.mapKey == extra.mapKey))
+      then
+        if px >= extra.position.x - 4 and px < extra.position.x + 4 then
+          if py >= extra.position.y - 4 and py < extra.position.y + 4 then
+            return true
+          end
+        end
+      end
+    end
+  end
   return false
 end
 
@@ -3183,6 +3721,31 @@ local function projectAreaObjects(self, objects, pageKey, area)
         instance = instance,
       }
       objects[#objects + 1] = markerRecord
+    end
+  end
+  -- Fixed special markers ride beside their dungeon row: every row while
+  -- the list shows all, only the matching row once one is selected.
+  if type(area.specialMarkers) == "table" then
+    for _, extra in ipairs(area.specialMarkers) do
+      local selectedRow = area.rows[area.row + 1]
+      if
+        type(extra) == "table"
+        and type(extra.position) == "table"
+        and (area.row == 0 or (type(selectedRow) == "table" and selectedRow.mapKey == extra.mapKey))
+      then
+        instance = instance + 1
+        local extraRecord = {
+          subject = "marker",
+          choice = "shape0",
+          pane = "information",
+          x = extra.position.x,
+          y = extra.position.y,
+          age = self:_trackObjectAge(pageKey, "marker-" .. instance, "shape0"),
+          visible = extra.visible == true,
+          instance = instance,
+        }
+        objects[#objects + 1] = extraRecord
+      end
     end
   end
   local count = #area.rows
@@ -3244,6 +3807,24 @@ local function projectEntryObjects(self, objects, pageKey)
       yOffset = size.height.trainer.yOffset or 0
     end
     emitIntent(objects, "trainer", gender, "information", 184, 112 + yOffset, ageOf("trainer", gender))
+    -- The weight figure rides its pan: sprite 2 over pan 8 while the
+    -- height portrait above stays fixed. The mon figure beside it is
+    -- icon art the renderer draws from the selected icon bundle.
+    if type(size.figures) == "table" and type(size.pans) == "table" and size.pans[1] ~= nil then
+      for _, figure in ipairs(size.figures) do
+        if figure.side == "trainer" and figure.visible ~= false then
+          emitIntent(
+            objects,
+            "trainer",
+            gender,
+            "information",
+            size.pans[1].x,
+            figure.y,
+            ageOf("trainer-figure", gender)
+          )
+        end
+      end
+    end
   elseif self._page == "forms" and self._forms ~= nil then
     local forms = self._forms:view()
     local comparison = self._forms:comparison()
@@ -3316,9 +3897,9 @@ function PokedexController:view()
     visual = {
       coverOffset = self._coverOffset,
       barOffset = 0,
-      paletteFades = {},
+      paletteFades = self:_paletteFades(),
       blend = self:_blendView(),
-      flash = { active = false, tick = 0 },
+      flash = self:_flashView(),
       transition = { phase = self._transition.phase, tick = self._transition.tick },
       spriteTick = self._spriteTick,
     },
@@ -3376,6 +3957,10 @@ function PokedexController:view()
     snapshot.pictures = self:_entryPictures()
   elseif self._page == "size" and self._size ~= nil then
     snapshot.size = self._size:view()
+    local scale = self:_heightScale()
+    if scale ~= nil then
+      snapshot.size.height.scale = scale
+    end
     snapshot.pictures = self:_entryPictures()
   elseif self._page == "forms" and self._forms ~= nil then
     snapshot.forms = self._forms:view()

@@ -1235,6 +1235,136 @@ local function drawControlIcons(graphics, assets, grid, surfaces)
   end
 end
 
+-- Native form-list icon geometry (DrawFormListIcons stages six icons
+-- at x 0x30, y 14 stepping 24 per row; ShowFormCompareSprites stages
+-- the compared pair at 0x40,0x50 and 0xC0,0x50): per-visible-row mon
+-- icons beside the six text rows, and the compared pair beside the
+-- portraits. Portraits, the side selector, and the corner frames keep
+-- their existing draws. Icon art resolves outside the native sprite
+-- archive, so the demanded icon keys paint here from the live forms
+-- projection; a key missing from preparation fails the draw instead
+-- of substituting another variant.
+local FORMS_ICON_X = 48
+local FORMS_ICON_FIRST_Y = 14
+local FORMS_ICON_STEP_Y = 24
+local COMPARE_ICON_LEFT = { x = 64, y = 80 }
+local COMPARE_ICON_RIGHT = { x = 192, y = 80 }
+
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with the lease-owned icons
+---@param view table<string, unknown> detached projection carrying the forms list or comparison
+---@param role string manifest page role behind the pane
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawFormsIcons(graphics, assets, view, role, surfaces)
+  local forms = view.forms
+  if type(forms) ~= "table" or type(forms.variants) ~= "table" then
+    return
+  end
+  local selection = view.selection
+  local species = type(selection) == "table" and selection.species or nil
+  if type(species) ~= "string" then
+    return
+  end
+  local caught = selection.caught == true
+  local icons = assets.icons
+  assert(type(icons) == "table", "forms icon drawing borrows the lease-owned provider")
+  assert(type(icons.handleFor) == "function", "forms icon drawing resolves prepared handles")
+  local variants = forms.variants
+  if role == "entry.compare" then
+    local comparison = forms.comparison
+    if type(comparison) ~= "table" or type(comparison.indices) ~= "table" then
+      return
+    end
+    local indices = comparison.indices
+    local spots = { COMPARE_ICON_LEFT, COMPARE_ICON_RIGHT }
+    for side = 1, 2 do
+      local compared = indices[side]
+      if type(compared) == "number" then
+        local variant = variants[math.floor(compared) + 1]
+        if type(variant) == "table" and type(variant.form) == "number" then
+          drawIconAt(
+            graphics,
+            icons,
+            species .. "/f" .. math.floor(variant.form),
+            { x = spots[side].x, y = spots[side].y, width = 32, height = 32 },
+            caught,
+            surfaces
+          )
+        end
+      end
+    end
+    return
+  end
+  if role ~= "entry.forms" or forms.comparison ~= nil then
+    return
+  end
+  local row = forms.row
+  if type(row) ~= "number" then
+    row = 0
+  end
+  row = math.floor(row)
+  for position = 1, 6 do
+    local variant = variants[row + position - 1]
+    if type(variant) == "table" and type(variant.form) == "number" then
+      drawIconAt(graphics, icons, species .. "/f" .. math.floor(variant.form), {
+        x = FORMS_ICON_X,
+        y = FORMS_ICON_FIRST_Y + (position - 1) * FORMS_ICON_STEP_Y,
+        width = 32,
+        height = 32,
+      }, caught, surfaces)
+    end
+  end
+end
+
+-- Draws the mon weight figure on the size page: the selected icon at the
+-- simulated mon figure origin over its pan, moving with the drop, throw,
+-- and escape the Size helper publishes. The trainer figure beside it rides
+-- the existing trainer subject intent and the height portrait keeps its
+-- sourced scale and y offset from the height draw above. The icon key
+-- stays /f0 like the demanded selection icon, so form-specific figure
+-- variants are not staged here.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with the lease-owned icons
+---@param view table<string, unknown> detached projection carrying the size simulation
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawSizeFigures(graphics, assets, view, surfaces)
+  local size = view.size
+  if type(size) ~= "table" then
+    return
+  end
+  local figures, pans = size.figures, size.pans
+  if type(figures) ~= "table" or type(pans) ~= "table" or type(pans[2]) ~= "table" then
+    return
+  end
+  local selection = view.selection
+  local species = type(selection) == "table" and selection.species or nil
+  if type(species) ~= "string" then
+    return
+  end
+  local figureY = nil
+  local visible = false
+  for _, figure in ipairs(figures) do
+    if type(figure) == "table" and figure.side == "mon" then
+      figureY = figure.y
+      visible = figure.visible ~= false
+    end
+  end
+  if type(figureY) ~= "number" or visible ~= true then
+    return
+  end
+  local icons = assets.icons
+  assert(type(icons) == "table", "size figure drawing borrows the lease-owned provider")
+  assert(type(icons.handleFor) == "function", "size figure drawing resolves prepared handles")
+  drawIconAt(
+    graphics,
+    icons,
+    species .. "/f0",
+    { x = math.floor(pans[2].x), y = math.floor(figureY), width = 32, height = 32 },
+    true,
+    surfaces
+  )
+end
+
 -- Selects the authored information rectangle for one picture slot: the
 -- selected portrait on ordinary pages, the forms pair on the forms page,
 -- and the comparison pair strictly by slot side, never by facing. Facing
@@ -1298,6 +1428,60 @@ local function drawPictureRecordAt(graphics, record, rect, surfaces)
     drawSampled(graphics, handle, record.quad, rect.x, rect.y)
     markObjRect(graphics, meta, rect, 0)
   end
+end
+
+-- Draws the height-comparison mon portrait from sourced geometry: the
+-- prepared front portrait scaled by the catalog magnification factor
+-- (256 native units per 1x, staged per species and trainer gender)
+-- about the authored portrait rect's bottom center, then shifted by the
+-- catalog mon y offset. Absent or identity geometry draws the fixed
+-- authored rect exactly, so weight-only projections never change.
+-- Trainer affine scaling stays deferred: the native subject pipeline
+-- paints static cell geometry with no per-part scale application.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with the entry pictures
+---@param view table<string, unknown> detached projection carrying the size simulation
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawSizeHeightPortrait(graphics, assets, view, surfaces)
+  local pictures = assets.pictures
+  local record = type(pictures) == "table" and pictures[0] or nil
+  if type(record) ~= "table" then
+    return
+  end
+  local size = view.size
+  local height = type(size) == "table" and size.height or nil
+  local mon = type(height) == "table" and height.mon or nil
+  local factor = 1
+  local yOffset = 0
+  if type(mon) == "table" and type(mon.yOffset) == "number" then
+    yOffset = mon.yOffset
+  end
+  local scale = type(height) == "table" and height.scale or nil
+  if type(scale) == "table" and type(scale.mon) == "number" and scale.mon > 0 then
+    factor = scale.mon
+  end
+  local rect = {
+    x = PokedexRenderer.SELECTED_PICTURE_RECT.x,
+    y = PokedexRenderer.SELECTED_PICTURE_RECT.y + yOffset,
+    width = PokedexRenderer.SELECTED_PICTURE_RECT.width,
+    height = PokedexRenderer.SELECTED_PICTURE_RECT.height,
+  }
+  if factor == 1 then
+    drawPictureRecordAt(graphics, record, rect, surfaces)
+    return
+  end
+  assert(type(graphics.push) == "function", "scaled portrait passes preserve their graphics state")
+  assert(type(graphics.translate) == "function", "scaled portrait passes anchor their geometry")
+  assert(type(graphics.scale) == "function", "scaled portrait passes scale their portraits")
+  assert(type(graphics.pop) == "function", "scaled portrait passes restore their graphics state")
+  local anchorX = rect.x + rect.width / 2
+  local anchorY = rect.y + rect.height
+  graphics.push("all")
+  graphics.translate(anchorX, anchorY)
+  graphics.scale(factor, factor)
+  graphics.translate(-anchorX, -anchorY)
+  drawPictureRecordAt(graphics, record, rect, surfaces)
+  graphics.pop()
 end
 
 -- Draws the information picture slots into the OBJ pair through their
@@ -2085,6 +2269,106 @@ local function runCompactPasses(graphics, assets, view, role, paneId, surfaces, 
   end
 end
 
+-- Pressed-control flash and entry fade drawing: the retail button
+-- palettes swap normal->flash->normal over 4 ticks on the pressed rect,
+-- and entry tab switches fade out/in on every plane. Flash rects are the
+-- authored native controls-pane rectangles in half-open pane pixels;
+-- controls without a painted rect still publish flash state and tick out.
+local FLASH_RECTS = {
+  ["entry-tab:area"] = { x = 7, y = 168, width = 51, height = 16 },
+  ["entry-tab:size"] = { x = 71, y = 168, width = 51, height = 16 },
+  ["entry-tab:forms"] = { x = 135, y = 168, width = 51, height = 16 },
+  ["entry-tab:return"] = { x = 199, y = 168, width = 51, height = 16 },
+  ["search-run"] = { x = 92, y = 164, width = 72, height = 24 },
+  ["search-reset"] = { x = 4, y = 164, width = 72, height = 24 },
+  ["editor-ok"] = { x = 4, y = 164, width = 72, height = 24 },
+  ["editor-cancel"] = { x = 180, y = 164, width = 72, height = 24 },
+  ["size-restart"] = { x = 8, y = 8, width = 96, height = 24 },
+  ["compare"] = { x = 200, y = 8, width = 48, height = 24 },
+  ["compare-side:0"] = { x = 8, y = 140, width = 48, height = 24 },
+  ["compare-side:1"] = { x = 64, y = 140, width = 48, height = 24 },
+  ["compare-flip"] = { x = 120, y = 140, width = 48, height = 24 },
+  ["compare-back"] = { x = 176, y = 140, width = 48, height = 24 },
+}
+
+-- Reads the painted flash rectangle behind one published flash target.
+---@param flash table<string, unknown> published flash view
+---@return { x: integer, y: integer, width: integer, height: integer }? painted rect, nil without authored geometry
+local function flashRectFor(flash)
+  if type(flash) ~= "table" or flash.active ~= true then
+    return nil
+  end
+  local rect = FLASH_RECTS[flash.target]
+  if type(rect) ~= "table" then
+    return nil
+  end
+  return rect
+end
+
+-- Resolves the per-pane black fade behind one view: the published
+-- palette fades first, then the entry fade envelope, else no fade.
+---@param view table<string, unknown> detached projection carrying the visual fields
+---@param paneId string browser pane identity
+---@return { target: { r: integer, g: integer, b: integer }, coeff: integer } bgFade
+---@return { target: { r: integer, g: integer, b: integer }, coeff: integer } objFade
+local function fadeForView(view, paneId)
+  local noFade = { target = { r = 0, g = 0, b = 0 }, coeff = 0 }
+  local visual = type(view) == "table" and view.visual or nil
+  if type(visual) ~= "table" then
+    return noFade, noFade
+  end
+  local fades = visual.paletteFades
+  if type(fades) == "table" then
+    for _, entry in ipairs(fades) do
+      if type(entry) == "table" and entry.pane == paneId and type(entry.coeff) == "number" then
+        local target = entry.target
+        if type(target) ~= "table" then
+          target = { r = 0, g = 0, b = 0 }
+        end
+        local fade = { target = target, coeff = entry.coeff }
+        return fade, fade
+      end
+    end
+  end
+  local transition = visual.transition
+  if type(transition) == "table" and transition.phase == "fade" and type(transition.tick) == "number" then
+    local tick = transition.tick
+    local half = 4
+    local coefficient = 0
+    if tick < half then
+      coefficient = (tick + 1) * 4
+    else
+      coefficient = (8 - tick) * 4
+    end
+    if coefficient < 0 then
+      coefficient = 0
+    end
+    if coefficient > 16 then
+      coefficient = 16
+    end
+    local fade = { target = { r = 0, g = 0, b = 0 }, coeff = coefficient }
+    return fade, fade
+  end
+  return noFade, noFade
+end
+
+-- Paints one pressed-control flash as an opaque white rect over the
+-- pressed button, marked opaque so it composites above its background.
+---@param graphics table<string, unknown> host graphics namespace
+---@param rect { x: integer, y: integer, width: integer, height: integer } painted flash rectangle
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawFlashRect(graphics, rect, surfaces)
+  local color = surfaces[5]
+  assert(type(graphics.setCanvas) == "function", "flash passes target their surface")
+  assert(type(graphics.setColor) == "function", "flash passes set their tint")
+  assert(type(graphics.rectangle) == "function", "flash passes fill their rectangle")
+  graphics.setCanvas(color.canvas)
+  graphics.setColor(1, 1, 1, 1)
+  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+  graphics.setColor(1, 1, 1, 1)
+  markObjRect(graphics, surfaces[6], rect, 0)
+end
+
 -- Runs the serial passes for one pane on the identity transform: every
 -- previous target returns before the composite reads them. Backgrounds,
 -- windows/text, and placed page sprites paint first so OBJ art composites
@@ -2115,10 +2399,23 @@ local function runSerialPasses(graphics, assets, view, role, paneId, surfaces)
     drawDynamicSprites(graphics, assets, view, role, paneId, surfaces)
     if paneId == "controls" then
       drawControlIcons(graphics, assets, view.grid, surfaces)
+      drawFormsIcons(graphics, assets, view, role, surfaces)
+      local visual = view.visual
+      if type(visual) == "table" then
+        local rect = flashRectFor(visual.flash)
+        if rect ~= nil then
+          drawFlashRect(graphics, rect, surfaces)
+        end
+      end
     elseif paneId == "information" then
-      local pictures = assets.pictures
-      if type(pictures) == "table" then
-        drawInformationPictures(graphics, assets, pictures, role, surfaces)
+      if role == "entry.size" then
+        drawSizeHeightPortrait(graphics, assets, view, surfaces)
+        drawSizeFigures(graphics, assets, view, surfaces)
+      else
+        local pictures = assets.pictures
+        if type(pictures) == "table" then
+          drawInformationPictures(graphics, assets, pictures, role, surfaces)
+        end
       end
     end
     graphics.setCanvas(previous)
@@ -2248,8 +2545,8 @@ function PokedexRenderer:drawBrowser(prepared, plan)
           runSerialPasses(graphics, assets, view, role, paneId, surfaces)
         end
         local blend = PokedexRenderer.paneBlendOf(view, paneId)
-        local noFade = { target = { r = 0, g = 0, b = 0 }, coeff = 0 }
-        local uniforms = compositeUniforms(manifest, role, paneId, blend, noFade, noFade, paneId == "information")
+        local bgFade, objFade = fadeForView(view, paneId)
+        local uniforms = compositeUniforms(manifest, role, paneId, blend, bgFade, objFade, paneId == "information")
         compositePane(self, graphics, manifest, placement, uniforms, surfaces)
       end
     end

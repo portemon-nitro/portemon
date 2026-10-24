@@ -195,8 +195,9 @@ function T.matching_readiness_admits_motion_while_stale_keys_retain_the_view()
     end,
   })
   screen:updateFixed({ { type = "confirm" } })
+  screen:updateFixed({ { type = "cancel" } })
   local committed = screen:status()
-  Assert.equal(committed.view.page, "grid", "the open cover admits its confirm once ready")
+  Assert.equal(committed.view.page, "grid", "cover confirm opens the entry and cancel returns to the grid")
   Assert.notNil(committed.assets, "the grid demand commits its whole bundle")
   local gridKey = committed.view.key
   local gridPlan = assert(committed.presentation, "the committed grid publishes its resolved plan")
@@ -558,7 +559,8 @@ function T.captured_slider_release_outside_bands_settles_under_pending_assets()
     end,
   })
   screen:updateFixed({ { type = "confirm" } })
-  Assert.equal(screen:status().view.page, "grid", "the open cover admits its confirm")
+  screen:updateFixed({ { type = "cancel" } })
+  Assert.equal(screen:status().view.page, "grid", "cover confirm opens the entry and cancel returns to the grid")
   screen:updateFixed({ { type = "y" } })
   Assert.equal(live:view().page, "search", "grid Y reaches the search root")
   screen:updateFixed({ { type = "activate", action = "criterion", value = "height" } })
@@ -640,6 +642,7 @@ function T.display_reflow_cancels_the_active_drag_exactly_once()
     end,
   })
   screen:updateFixed({ { type = "confirm" } })
+  screen:updateFixed({ { type = "cancel" } })
   screen:updateFixed({ { type = "y" } })
   screen:updateFixed({ { type = "activate", action = "criterion", value = "height" } })
   Assert.notNil(live:view().search.editor, "the height editor opens")
@@ -762,7 +765,8 @@ function T.compact_inspector_shields_every_background_input()
   gate.open = true
   screen:updateFixed({})
   screen:updateFixed({ { type = "confirm" } })
-  Assert.equal(screen:status().view.page, "grid", "the committed cover admits its confirm")
+  screen:updateFixed({ { type = "cancel" } })
+  Assert.equal(screen:status().view.page, "grid", "cover confirm opens the entry and cancel returns to the committed grid")
   screen:updateFixed({ { type = "inspect" } })
   Assert.isTrue(screen:status().compact.inspect, "the inspect action opens the panel")
   local key = screen:status().view.key
@@ -823,7 +827,8 @@ function T.held_input_cancels_once_across_a_display_reflow()
     end,
   })
   screen:updateFixed({ { type = "confirm" } })
-  Assert.equal(screen:status().view.page, "grid", "the open cover admits its confirm once ready")
+  screen:updateFixed({ { type = "cancel" } })
+  Assert.equal(screen:status().view.page, "grid", "cover confirm opens the entry and cancel returns to the grid")
   local gridBundle = assert(screen:status().assets, "the grid demand commits its whole bundle")
   -- Hold the search candidate pending, then capture a press on the
   -- displayed grid before the display reflows underneath it.
@@ -884,7 +889,8 @@ function T.failed_candidate_plans_keep_the_last_ready_triplet()
   })
   local screen = ScreenState.new(args)
   screen:updateFixed({ { type = "confirm" } })
-  Assert.equal(screen:status().view.page, "grid", "the open cover admits its confirm once ready")
+  screen:updateFixed({ { type = "cancel" } })
+  Assert.equal(screen:status().view.page, "grid", "cover confirm opens the entry and cancel returns to the grid")
   local gridBundle = assert(screen:status().assets, "the grid demand commits its whole bundle")
   local gridKey = screen:status().view.key
   -- The search bundle turns ready on the same tick its plan fails to
@@ -961,7 +967,8 @@ function T.inspector_binds_only_eligible_details_and_closes_without_side_effects
     end,
   })
   screen:updateFixed({ { type = "confirm" } })
-  Assert.equal(screen:status().view.page, "grid", "the open cover admits its confirm once ready")
+  screen:updateFixed({ { type = "cancel" } })
+  Assert.equal(screen:status().view.page, "grid", "cover confirm opens the entry and cancel returns to the grid")
   driveSelectionTo(screen, "TOTODILE")
   screen:updateFixed({ { type = "inspect" } })
   Assert.isTrue(screen:status().compact.inspect, "the inspect action opens the panel")
@@ -1017,6 +1024,7 @@ function T.inspector_close_maps_at_its_drawn_rectangle_without_click_through()
     end,
   })
   screen:updateFixed({ { type = "confirm" } })
+  screen:updateFixed({ { type = "cancel" } })
   driveSelectionTo(screen, "TOTODILE")
   screen:updateFixed({ { type = "inspect" } })
   Assert.isTrue(screen:status().compact.inspect, "the inspect action opens the panel")
@@ -1060,6 +1068,109 @@ function T.inspector_close_maps_at_its_drawn_rectangle_without_click_through()
     end
   end
   Assert.equal(activations, 0, "no background activation flows while the panel stays open")
+  screen:dispose()
+end
+
+-- Forms list icons ride the icon demand beside the six text rows, and the
+-- compared pair rides it on the compare page: retail scrolls up to six
+-- per-form mon icons with the list (sprites 14-19) and stages two icons
+-- beside the portraits (sprites 14/15). Mon icon art resolves outside
+-- the native sprite archive, so the keys join the icon demand directly.
+function T.forms_and_compare_demands_stage_their_variant_icon_keys()
+  local ScreenState = requirePresent("forms variant icon demand")
+  local function variants(count)
+    local list = {}
+    for form = 0, count - 1 do
+      list[#list + 1] = { id = form, form = form, gender = "male" }
+    end
+    return list
+  end
+  local views = {}
+  local function scriptForms(row, comparison)
+    views[#views + 1] = {
+      key = #views + 1,
+      mode = "national",
+      page = "forms",
+      selection = { species = "UNOWN", language = "english", seen = true, caught = true },
+      forms = {
+        variants = variants(8),
+        row = row,
+        scrollbar = {},
+        comparison = comparison,
+      },
+      pictures = {},
+      text = {},
+    }
+  end
+  scriptForms(0, nil)
+  scriptForms(3, nil)
+  scriptForms(3, { indices = { 2, 5 }, activeSide = 0, facing = "front" })
+  local controller = { index = 1, views = views }
+  function controller:view()
+    return self.views[self.index]
+  end
+  function controller:updateFixed(events, _)
+    assert(type(events) == "table", "the presented screen steps its controller with a batch")
+    if self.index < #self.views then
+      self.index = self.index + 1
+    end
+  end
+  function controller:takeResult()
+    return nil
+  end
+  function controller:dispose()
+  end
+  local lease = { prepared = {}, released = 0 }
+  function lease:prepare(demand)
+    assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
+    self.prepared[#self.prepared + 1] = demand
+    return { kind = "ready", key = demand.key, assets = {} }
+  end
+  function lease:release()
+    self.released = self.released + 1
+  end
+  local args = screenArgs({
+    controller = controller,
+    lease = lease,
+    measureDisplay = function()
+      return compactMeasurement()
+    end,
+  })
+  local screen = ScreenState.new(args)
+  for _ = 2, #views do
+    screen:updateFixed({})
+  end
+  Assert.equal(#lease.prepared, #views, "every forms projection prepares exactly one demand")
+  local function hasKey(demand, key)
+    for _, iconKey in ipairs(assert(demand.iconKeys, "the demand carries its icon keys")) do
+      if iconKey == key then
+        return true
+      end
+    end
+    return false
+  end
+  local first = lease.prepared[1]
+  for form = 0, 4 do
+    Assert.isTrue(hasKey(first, "UNOWN/f" .. form), "the top window demands its visible variant icon f" .. form)
+  end
+  Assert.isFalse(hasKey(first, "UNOWN/f5"), "icons below the top window stay undemanded")
+  local second = lease.prepared[2]
+  -- The selection fallback keeps UNOWN/f0 wanted on every page; f1 is
+  -- the first key only the scrolled-out window owned, so its absence
+  -- proves the window retired.
+  Assert.isFalse(hasKey(second, "UNOWN/f1"), "icons scrolled out of the window retire")
+  for form = 2, 7 do
+    Assert.isTrue(
+      hasKey(second, "UNOWN/f" .. form),
+      "the scrolled window demands its visible variant icon f" .. form
+    )
+  end
+  local third = lease.prepared[3]
+  Assert.isTrue(hasKey(third, "UNOWN/f2"), "the compare demand stages the left compared icon")
+  Assert.isTrue(hasKey(third, "UNOWN/f5"), "the compare demand stages the right compared icon")
+  for _, demand in ipairs(lease.prepared) do
+    Assert.isTrue(#demand.iconKeys <= 30, "variant icons share the bounded icon demand")
+  end
   screen:dispose()
 end
 

@@ -306,6 +306,10 @@ function PokedexSize:_updateMotion()
   if self._phase == "setup" then
     self._setupTick = self._setupTick + 1
     if self._setupTick >= PokedexSize.SETUP_TICKS then
+      -- The figures start falling here, so the fall tone fires once at
+      -- the drop start like the source weight check; the bucket tone
+      -- still fires at the drop end through the existing takeSound.
+      self._sound = "SEQ_SE_GS_RAKKA01"
       self._phase = "drop"
     end
   elseif self._phase == "drop" then
@@ -367,7 +371,7 @@ function PokedexSize:takeSound()
   return sound
 end
 
----@return { height: { mon: { dm: number, yOffset: number }, trainer: { dm: number, yOffset: number } }, weight: { phase: string, class: integer, beamAngle: integer, dropVelocity: integer, throwVelocity: integer? }, figures: table[], pans: table[], tick: integer } detached size projection
+---@return { height: { mon: { dm: number, yOffset: number }, trainer: { dm: number, yOffset: number }, scale?: { mon: number, trainer: number } }, weight: { phase: string, class: integer, beamAngle: integer, dropVelocity: integer, throwVelocity: integer? }, figures: table[], pans: table[], tick: integer } detached size projection
 function PokedexSize:view()
   local figures = {}
   for _, figure in ipairs(self._figures) do

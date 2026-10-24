@@ -609,6 +609,7 @@ return {
       "trainers:global",
       "encounters:global",
       "audio-bank:702",
+      "audio-bank:756",
       "pokedex-data:global",
     },
     tags = { "pokedex", "battle" },

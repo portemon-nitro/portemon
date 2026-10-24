@@ -1325,6 +1325,36 @@ PokedexSources.pageWindows = {
 -- sprites 9..13 and scrollbar/arrows in ShowFormListSprites;
 -- popup type icons and footprint in pokedex_entry_popup.c
 -- (type sprites at (168,72)/(217,72), footprint at (120,80)).
+-- Shared language-icon choices over the list/sub language family (cells
+-- 54, animations 55: LoadLanguageIconResources/Sub in pokedex_sprites.c
+-- stage the same pair on both engines). Dex flags run japanese 0,
+-- english 1, french 2, german 3, italian 4, spanish 5
+-- (pokedex_language.c); UpdateLanguageIcons highlights the shown
+-- language with anim flag and dims the rest with anim flag + 6, so the
+-- 1-based choices span sequences 1..12. The animation member carries
+-- exactly twelve sequences in the shipped archive.
+local DEX_FLAG_ORDER = { "japanese", "english", "french", "german", "italian", "spanish" }
+
+---@param pane string authored engine pane behind the icons
+---@return table<string, table<string, unknown>> semantic choices behind the flag row
+local function languageFlagSubjects(pane)
+  local choices = {}
+  for flag, name in ipairs(DEX_FLAG_ORDER) do
+    choices[name] = { cells = 54, anims = 55, seq = flag, pane = pane }
+    choices[name .. "-dim"] = { cells = 54, anims = 55, seq = flag + 6, pane = pane }
+  end
+  return choices
+end
+
+---@return table<string, table<string, unknown>> semantic choices behind the current-language icon
+local function languageCurrentSubjects()
+  local choices = {}
+  for flag, name in ipairs(DEX_FLAG_ORDER) do
+    choices[name] = { cells = 54, anims = 55, seq = flag, pane = "controls" }
+  end
+  return choices
+end
+
 local gridSubjects = {
   cursor = {
     active = { cells = 13, anims = 14, seq = 2, pane = "controls" },
@@ -1556,6 +1586,8 @@ local criteriaSubjects = searchSubjects(bodyIconSubjects())
 local gridTypes = typeIconSubjects()
 gridSubjects["type-1"] = gridTypes["type-1"]
 gridSubjects["type-2"] = gridTypes["type-2"]
+gridSubjects["lang-flag"] = languageFlagSubjects("information")
+gridSubjects["lang-current"] = languageCurrentSubjects()
 local resultTypes = typeIconSubjects()
 local registrationTypes = typeIconSubjects()
 
@@ -1569,6 +1601,8 @@ PokedexSources.nativeSpriteSubjects = {
     ["caught-mark"] = gridSubjects["caught-mark"],
     ["type-1"] = resultTypes["type-1"],
     ["type-2"] = resultTypes["type-2"],
+    ["lang-flag"] = gridSubjects["lang-flag"],
+    ["lang-current"] = gridSubjects["lang-current"],
   },
   ["search.criteria"] = criteriaSubjects,
   ["search.order"] = searchSubjects({}),

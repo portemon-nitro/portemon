@@ -340,7 +340,12 @@ local function runFirstReadinessJourney(versionId)
     game:step()
     game:step()
     confirm(game, state)
-    game:advanceUntil("the committed cover admits its confirm", function()
+    game:advanceUntil("the committed cover admits its confirm onto the cursor entry", function()
+      local live = browserLeaf(game)
+      return (live.page or (live.view and live.view.page)) == "area"
+    end, 240)
+    cancel(game, state)
+    game:advanceUntil("entry cancel returns to the grid", function()
       local live = browserLeaf(game)
       return (live.page or (live.view and live.view.page)) == "grid"
     end, 240)
@@ -368,7 +373,14 @@ local function runBrowserJourney(versionId)
     local firstPage = assert(leaf.page or (leaf.view and leaf.view.page), "the browser exposes its page")
     Assert.equal(firstPage, "cover", "the pokedex opens on its cover")
     confirm(game, state)
-    game:advanceUntil("confirming the cover reaches the grid", function()
+    game:advanceUntil("confirming the cover reaches the cursor entry", function()
+      local current = game.runtime.applicationHost:status()
+      local live = current.application
+      local view = live.child or live
+      return (view.page or (view.view and view.view.page)) == "area"
+    end, 240)
+    cancel(game, state)
+    game:advanceUntil("entry cancel returns to the grid", function()
       local current = game.runtime.applicationHost:status()
       local live = current.application
       local view = live.child or live
@@ -418,6 +430,14 @@ local function runRepeatedJourney(versionId)
       confirm(game, state)
       for _ = 1, 8 do
         game:step()
+      end
+      local leaf = browserLeaf(game)
+      if (leaf.page or (leaf.view and leaf.view.page)) == "area" then
+        cancel(game, state)
+        game:advanceUntil("entry cancel returns to the grid", function()
+          local live = browserLeaf(game)
+          return (live.page or (live.view and live.view.page)) == "grid"
+        end, 120)
       end
       closePokedex(game, state)
       cancel(game, state)
@@ -482,6 +502,7 @@ return {
       "trainers:global",
       "encounters:global",
       "audio-bank:702",
+      "audio-bank:756",
       "pokedex-data:global",
     },
     tags = { "pokedex" },

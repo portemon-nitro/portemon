@@ -174,6 +174,11 @@ local NATIVE_ENTRY = {
   backButton = { x = 176, y = 140, width = 48, height = 24 },
 }
 
+-- Compact single-display reflow (host adaptation, non-retail
+-- arrangement over native message ids and art): everything below down to
+-- the compact input mapper reflows the browser onto one 256x192 display
+-- instead of the retail dual panels. Roles reuse native ids and art;
+-- only the geometry and the footer/row records are host-owned.
 -- Compact grid geometry on the 256x168 information region: five 32px
 -- columns at a 34px step and three 32px rows at a 43px step, so all
 -- fifteen cells, the focus ring, and the selected portrait fit together.
