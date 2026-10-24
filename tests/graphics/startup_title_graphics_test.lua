@@ -1112,6 +1112,108 @@ local function hostResizingKeepsTheSourcedTitleLens(scope, context)
   end
 end
 
+-- SoulSilver legendary framing at the first-visible pose and a later
+-- waypoint: expected bounds come from the source eye/target scaled once
+-- with the fixed 4:3 lens, never from the player camera. Occupancy and
+-- centroid must hold within per-pixel tolerance, and a resize plus a
+-- repeated draw must not move the pose or the pixels.
+local function soulsilverLegendaryFramingMatchesSourceProjectionAtTwoPoses(scope, context)
+  if not RomImporter.isReady("soulsilver") then
+    context:skip("no user-owned SoulSilver dump is ready")
+  end
+  local scene = openTitleScene(scope, "soulsilver", REFERENCE_WIDTH, REFERENCE_HEIGHT, "single")
+  local timeline = assert(scene.bundle.timeline, "title bundle carries its camera timeline")
+  local rawTarget = assert(timeline.camera.target, "title bundle carries its camera target")
+  local points = assert(timeline.camera.points, "title bundle carries its camera waypoints")
+  Assert.isTrue(#points >= 1, "the title camera carries a later waypoint")
+  scene:_drawModel()
+  assertSilhouetteNearProduction(
+    silhouetteFractions(scene.canvas, "the first-visible title frame"),
+    renderWorldReferenceSilhouette(scene, scope, scene.cameraPos, rawTarget, "the first-visible reference frame"),
+    "the first-visible soulsilver legendary"
+  )
+  local guard = 0
+  while scene.cameraPointIndex == 1 and guard < 5000 do
+    scene:updateFixed()
+    guard = guard + 1
+  end
+  Assert.equal(scene.cameraPointIndex, 2, "the title camera reaches its later waypoint")
+  Assert.deepEqual(
+    { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] },
+    points[1].position,
+    "the camera lands exactly on its authored later pose"
+  )
+  scene:_drawModel()
+  assertSilhouetteNearProduction(
+    silhouetteFractions(scene.canvas, "the later waypoint title frame"),
+    renderWorldReferenceSilhouette(scene, scope, scene.cameraPos, rawTarget, "the later waypoint reference frame"),
+    "the later soulsilver legendary"
+  )
+  local tick = scene.tick
+  local pose = { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] }
+  scene:resize(1280, 720)
+  Assert.equal(scene.tick, tick, "resizing never restarts title timing")
+  Assert.deepEqual(
+    { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] },
+    pose,
+    "resizing never moves the authored camera"
+  )
+  scene:_drawModel()
+  assertSilhouetteNearProduction(
+    silhouetteFractions(scene.canvas, "the resized later title frame"),
+    renderWorldReferenceSilhouette(scene, scope, scene.cameraPos, rawTarget, "the resized later reference frame"),
+    "the resized later soulsilver legendary"
+  )
+  local first = drawBytes(scene, scope, 1280, 720)
+  local second = drawBytes(scene, scope, 1280, 720)
+  local third = drawBytes(scene, scope, 1280, 720)
+  -- Draw-cadence stability within GPU raster noise: a draw that advanced
+  -- the source timeline would move the legendary and its animation
+  -- (tens of thousands of pixels), while separate 3D passes may round a
+  -- handful of accent texels by a few LSBs.
+  local changed, maxAbs = 0, 0
+  for i = 1, #first, 4 do
+    local r1, g1, b1 = string.byte(first, i, i + 2)
+    local r2, g2, b2 = string.byte(second, i, i + 2)
+    local peak = math.max(math.abs(r1 - r2), math.abs(g1 - g2), math.abs(b1 - b2))
+    if peak > 4 then
+      changed = changed + 1
+    end
+    maxAbs = math.max(maxAbs, peak)
+  end
+  Assert.isTrue(changed < 100, ("repeated draws keep the title stage stable (%d pixels moved)"):format(changed))
+  Assert.isTrue(maxAbs <= 4, ("repeated draws keep title texels within raster noise (peak %d)"):format(maxAbs))
+  local changedThird, maxThird = 0, 0
+  for i = 1, #first, 4 do
+    local r1, g1, b1 = string.byte(first, i, i + 2)
+    local r3, g3, b3 = string.byte(third, i, i + 2)
+    local peak = math.max(math.abs(r1 - r3), math.abs(g1 - g3), math.abs(b1 - b3))
+    if peak > 4 then
+      changedThird = changedThird + 1
+    end
+    maxThird = math.max(maxThird, peak)
+  end
+  Assert.isTrue(
+    changedThird < 100,
+    ("a third draw shows no ratcheting mutation (%d pixels moved)"):format(changedThird)
+  )
+  Assert.isTrue(maxThird <= 4, ("a third draw stays within raster noise (peak %d)"):format(maxThird))
+  scene:dispose()
+end
+
+local function heartgoldTitleFramingIsBlockedWithoutADump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold title framing needs a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the legendary projection legs "
+        .. "cannot run for HeartGold and are never faked"
+    )
+  end
+  local scene = openTitleScene(scope, "heartgold", REFERENCE_WIDTH, REFERENCE_HEIGHT, "single")
+  scene:_drawModel()
+  scene:dispose()
+end
+
 local T = GraphicsSmoke.suite({
   ["generated HGSS titles render, animate and fit each supported display"] = renderAvailableEditions,
   ["title scene delivers the sourced camera framing and lit legendary"] = titleDeliversSourceCameraAndLighting,
@@ -1129,6 +1231,8 @@ local T = GraphicsSmoke.suite({
   ["host resizing keeps the sourced title lens centered"] = hostResizingKeepsTheSourcedTitleLens,
   ["legendary framing shares model world units at native size"] = legendaryFramingSharesModelWorldUnitsAtNativeSize,
   ["title waypoints keep authored timing across host sizes"] = titleWaypointsKeepAuthoredTimingAcrossHostSizes,
+  ["soulsilver legendary framing matches source projection at two poses"] = soulsilverLegendaryFramingMatchesSourceProjectionAtTwoPoses,
+  ["heartgold title framing is blocked without a dump"] = heartgoldTitleFramingIsBlockedWithoutADump,
 })
 T.metadata.capabilities = { "graphics", "rom_dump" }
 T.metadata.derivedAssets = { "startup-title:global" }

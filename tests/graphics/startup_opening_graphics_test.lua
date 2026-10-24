@@ -1198,7 +1198,11 @@ local function soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variab
     probe:dispose()
     return bytes
   end
-  Assert.equal(frameAt(sampleTick, true), frameAt(sampleTick, true), "identical fixed ticks render identical frames")
+  Assert.equal(
+    frameAt(sampleTick, true),
+    frameAt(sampleTick, false),
+    "rendering cadence cannot advance the source timeline"
+  )
   local blank = blankBytes(scope, 512, 384)
   Assert.isTrue(frameAt(sampleTick, false) ~= blank, "a mid-scene frame paints real pixels, never an empty stage")
   for _, layout in ipairs({
@@ -3323,6 +3327,718 @@ local function wipe_kinds_finish_with_their_own_brightness_and_release_their_eng
   movie:dispose()
 end
 
+-- Source-frame pixel conformance: every expected texel below is recomputed
+-- in the test from the staged native art and the retail scroll/offset
+-- arithmetic, never through the player sampler. Transparent staged texels
+-- are legitimate masked content (the plane pass sees through them, so the
+-- test falls through to the next plane exactly like the compositor);
+-- opaque staged texels must match the rendered engine target, and an
+-- opaque-bright texel rendering black fails as missing-coverage black.
+
+---@param value number retail pixel displacement
+---@return integer truncated toward zero, matching the C integer division
+local function truncRetail(value)
+  if value >= 0 then
+    return math.floor(value)
+  end
+  return math.ceil(value)
+end
+
+---@param scope table
+---@param movie table running opening movie
+---@param cacheFs table staged art backing the scenes
+---@param engine string source engine
+---@return table[] visible staged panels front-to-back with decoded art
+local function stagedPanels(scope, movie, cacheFs, engine)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local panels = {}
+  for _, background in pairs(slot.backgrounds[engine]) do
+    if background.visible then
+      local bytes = assert(cacheFs:read(background.image), "the staged panel art reads back")
+      local data = decodedArt(scope, bytes, background.image)
+      panels[#panels + 1] = {
+        data = data,
+        width = data:getWidth(),
+        height = data:getHeight(),
+        offsetX = math.floor(background.scrollX),
+        offsetY = math.floor(background.scrollY),
+        priority = background.priority,
+        bgSlot = background.bgSlot,
+      }
+    end
+  end
+  -- Lowest numeric priority paints last, so it is frontmost; the higher
+  -- slot breaks ties, mirroring the back-to-front plane pass.
+  table.sort(panels, function(a, b)
+    if a.priority ~= b.priority then
+      return a.priority < b.priority
+    end
+    return a.bgSlot > b.bgSlot
+  end)
+  return panels
+end
+
+---@param panels table[] visible staged panels front-to-back
+---@param x integer viewport column
+---@param y integer viewport row
+---@return number r, number g, number b expected source color
+---@return boolean decisive true when an opaque authored texel owns the point
+local function expectedWrapPixel(panels, x, y)
+  for _, panel in ipairs(panels) do
+    local sx = (x + panel.offsetX) % panel.width
+    local sy = (y + panel.offsetY) % panel.height
+    local r, g, b, a = panel.data:getPixel(sx, sy)
+    if a > 0.98 then
+      return r, g, b, true
+    elseif a > 0.02 then
+      return 0, 0, 0, false
+    end
+  end
+  return 0, 0, 0, false
+end
+
+---@param box integer[] exclusion rectangle {x0, x1, y0, y1}
+---@param x integer viewport column
+---@param y integer viewport row
+---@return boolean true when the point falls inside the box
+local function insideBox(box, x, y)
+  return x >= box[1] and x <= box[2] and y >= box[3] and y <= box[4]
+end
+
+-- Sprite exclusion boxes from the running slot state and the manifest
+-- clip frames: points under a visible authored sprite stay out of the
+-- background comparison. Reading positions from the player is fail-safe:
+-- a misplaced sprite paints checked points and fails the match instead
+-- of hiding inside an exclusion.
+---@param movie table running opening movie
+---@param manifest table compiled scene manifest carrying the clip frames
+---@param margin integer exclusion margin in viewport pixels
+---@return table[] exclusion boxes {x0, x1, y0, y1}
+local function spriteExclusions(movie, manifest, margin)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local clips = {}
+  for _, candidate in ipairs(manifest.spriteClips or {}) do
+    clips[candidate.id] = candidate
+  end
+  local boxes = {}
+  for _, instance in pairs(slot.spriteInstances or {}) do
+    if instance.visible and instance.clipId ~= nil then
+      local clip = clips[instance.clipId]
+      local frame = nil
+      if clip ~= nil and type(clip.frames) == "table" and #clip.frames > 0 then
+        local total = 0
+        for _, entry in ipairs(clip.frames) do
+          total = total + (entry.duration or 1)
+        end
+        local elapsed = (instance.tick or 0) % math.max(total, 1)
+        for _, entry in ipairs(clip.frames) do
+          local duration = entry.duration or 1
+          if elapsed < duration then
+            frame = entry
+            break
+          end
+          elapsed = elapsed - duration
+        end
+        frame = frame or clip.frames[#clip.frames]
+      end
+      local width, height, offsetX, offsetY = 16, 16, 0, 0
+      if frame ~= nil then
+        width, height = frame.width or width, frame.height or height
+        offsetX, offsetY = frame.offsetX or 0, frame.offsetY or 0
+      end
+      local x0, y0 = (instance.x or 0) + offsetX, (instance.y or 0) + offsetY
+      boxes[#boxes + 1] = { x0 - margin, x0 + width + margin, y0 - margin, y0 + height + margin }
+    end
+  end
+  return boxes
+end
+
+-- Compares one engine target against the wrapped native art at the
+-- test-authored offsets. Every visible panel must carry an authored
+-- expectation, so an unexpected plane fails instead of passing silently.
+---@param scope table
+---@param movie table running opening movie
+---@param cacheFs table staged art backing the scenes
+---@param engine string source engine
+---@param expected table<integer, integer[]> authored offsets by bg slot
+---@param label string assertion context
+---@param opts table? {exclude, minDecisive}
+local function assertEngineMatchesWrappedArt(scope, movie, cacheFs, manifest, engine, label, expected, opts)
+  local options = opts or {}
+  local margin = options.margin or 12
+  local boxes = spriteExclusions(movie, manifest, margin)
+  for _, box in ipairs(options.exclude or {}) do
+    boxes[#boxes + 1] = box
+  end
+  local panels = stagedPanels(scope, movie, cacheFs, engine)
+  Assert.isTrue(#panels > 0, label .. " stages at least one visible panel")
+  for _, panel in ipairs(panels) do
+    local want = expected[panel.bgSlot]
+    Assert.notNil(want, label .. " authors the expected offset of " .. engine .. " slot " .. panel.bgSlot)
+    Assert.equal(panel.offsetX, want[1], label .. " " .. engine .. " slot " .. panel.bgSlot .. " holds its authored x")
+    Assert.equal(panel.offsetY, want[2], label .. " " .. engine .. " slot " .. panel.bgSlot .. " holds its authored y")
+  end
+  local count, sampled, decisive, matched, missingBlack = 0, 0, 0, 0, 0
+  local authored = 0
+  for _ in pairs(expected) do
+    authored = authored + 1
+  end
+  for _ in ipairs(panels) do
+    count = count + 1
+  end
+  Assert.equal(count, authored, label .. " stages exactly its authored panels")
+  local canvas = (engine == "main") and movie.mainCanvas or movie.subCanvas
+  local actual = sourceBytes(scope, canvas)
+  for y = 0, 191, 16 do
+    for x = 0, 255, 16 do
+      local excluded = false
+      for _, box in ipairs(boxes) do
+        if insideBox(box, x, y) then
+          excluded = true
+          break
+        end
+      end
+      if not excluded then
+        sampled = sampled + 1
+        local er, eg, eb, decisivePoint = expectedWrapPixel(panels, x, y)
+        if decisivePoint and (er + eg + eb) > 0.3 then
+          decisive = decisive + 1
+          local ar, ag, ab = pixelOf(actual, 256, x, y)
+          if ar + ag + ab < 0.05 then
+            missingBlack = missingBlack + 1
+          end
+          if math.abs(ar - er) + math.abs(ag - eg) + math.abs(ab - eb) < 0.08 then
+            matched = matched + 1
+          end
+        end
+      end
+    end
+  end
+  local minimum = options.minDecisive or math.max(24, math.floor(sampled * 0.15))
+  Assert.isTrue(
+    decisive >= minimum,
+    (label .. " samples opaque authored art at %d of %d points (need %d)"):format(decisive, sampled, minimum)
+  )
+  Assert.equal(missingBlack, 0, label .. " shows no missing-coverage black over opaque authored texels")
+  Assert.isTrue(
+    matched / decisive > 0.9,
+    (label .. " matches wrapped native art at %d of %d decisive points"):format(matched, decisive)
+  )
+end
+
+-- Scene 2 pans its aerial maps with three first/mid/end edge samples, scene
+-- 4 holds opposing ±192 slide offsets before settling at the origin, and
+-- scene 5 covers its late panorama frame: every sample recomputes texels
+-- from the staged native bytes under modular arithmetic. Visible authored
+-- sprites are excluded by their live slot boxes, never by output.
+local function soulsilver_source_pan_edges_match_wrapped_native_art(scope, context)
+  local versionId = selectedVersionId(context)
+  local scenes, cacheFs = loadRomPackWithFillers(versionId, { 3 })
+  local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
+  advanceToSceneStep(movie, 2, "flyin", 20000)
+  -- First: instant placements plus five open-ended drift ticks.
+  advance(movie, 5)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(slot.backgrounds.main[0].scrollY, 192, "the flyin holds its main BG0 placement")
+  Assert.equal(slot.backgrounds.main[1].scrollY, 320, "the flyin holds its main BG1 placement")
+  Assert.equal(slot.backgrounds.main[2].scrollY, 320, "the main drift adds 64 per fixed tick")
+  Assert.equal(slot.backgrounds.sub[0].scrollY, 320, "the sub drift advances on its own engine clock")
+  movie:draw()
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "main", "scene 2 first", {
+    [0] = { 0, 192 },
+    [1] = { 0, 320 },
+    [2] = { 0, 320 },
+  }, {})
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "sub", "scene 2 first", {
+    [0] = { 0, 320 },
+  }, {})
+  -- Mid: thirty drift ticks, still before the timed replacement.
+  advance(movie, 25)
+  Assert.equal(slot.backgrounds.main[2].scrollY, 1920, "the main drift keeps adding 64 per fixed tick")
+  movie:draw()
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "main", "scene 2 mid", {
+    [0] = { 0, 192 },
+    [1] = { 0, 320 },
+    [2] = { 0, 1920 },
+  }, {})
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "sub", "scene 2 mid", {
+    [0] = { 0, 1920 },
+  }, {})
+  -- End: the slow ethan pan samples horizontal wrap at x 16 with the
+  -- settled vertical origins. Visible authored sprites are excluded by
+  -- their live slot boxes, never by hardcoded stations.
+  local journey = 0
+  while currentStepId(movie) ~= "slow-pan-ethan" and journey < 20000 do
+    movie:updateFixed()
+    journey = journey + 1
+  end
+  Assert.equal(currentStepId(movie), "slow-pan-ethan", "playback reaches the slow ethan pan")
+  local elapsed = 30 + journey + 45
+  advance(movie, 45)
+  Assert.equal(slot.backgrounds.main[0].scrollX, 16, "the end pan holds its horizontal offset on main BG0")
+  Assert.equal(slot.backgrounds.main[1].scrollX, 16, "the end pan holds its horizontal offset on main BG1")
+  Assert.equal(slot.backgrounds.main[0].scrollY, 0, "the replaced BG0 settles at its origin")
+  Assert.equal(slot.backgrounds.main[1].scrollY, 128, "the replaced BG1 settles at 320 minus 192")
+  Assert.equal(slot.backgrounds.main[2].scrollY, 64 * elapsed, "the main drift accumulates every fixed tick")
+  Assert.equal(slot.backgrounds.sub[0].scrollY, 64 * elapsed, "the sub drift accumulates every fixed tick")
+  movie:draw()
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "main", "scene 2 end", {
+    [0] = { 16, 0 },
+    [1] = { 16, 128 },
+    [2] = { 0, 64 * elapsed },
+  }, {})
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "sub", "scene 2 end", {
+    [0] = { 0, 64 * elapsed },
+  }, {})
+  -- Scene 4: the slide carries opposing offsets before settling. Live
+  -- hand sprites are excluded by their slot boxes.
+  advanceToSceneStep(movie, 4, "slide-in", 20000)
+  advance(movie, 5)
+  slot = assert(movie.current, "scene 4 owns its current slot")
+  Assert.equal(slot.backgrounds.main[1].scrollX, 96, "the main slide holds half its negative run")
+  Assert.equal(slot.backgrounds.sub[1].scrollX, -96, "the sub slide holds half its positive run")
+  Assert.equal(movie.current.mainPhysical, "lower", "scene 4 opens with main on the lower screen")
+  advanceToSceneStep(movie, 4, "hold", 20000)
+  advance(movie, 5)
+  movie:draw()
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[4], "main", "scene 4 hold", {
+    [1] = { 0, 0 },
+    [3] = { 0, 0 },
+  }, {})
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[4], "sub", "scene 4 hold", {
+    [1] = { 0, 0 },
+    [2] = { 0, 0 },
+    [3] = { 0, 0 },
+  }, {})
+  movie:dispose()
+  -- Scene 5: the late panorama frame samples both tall maps near the end
+  -- of their 73-tick run. The scene carries no sprites.
+  local lateScenes, lateCache = loadRomPackWithFillers(versionId, { 3, 4 })
+  local late = openMovieWithCache(scope, lateScenes, lateCache, versionId, 512, 384, "single")
+  advanceToSceneStep(late, 5, "scroll", 20000)
+  advance(late, 70)
+  local lateSlot = assert(late.current, "the late movie owns its current slot")
+  Assert.equal(lateSlot.backgrounds.main[1].scrollY, -61, "the late main BG1 holds its upward run")
+  Assert.equal(lateSlot.backgrounds.main[2].scrollY, 221, "the late main BG2 holds 160 plus its downward run")
+  Assert.equal(lateSlot.backgrounds.sub[1].scrollY, 61, "the late sub BG1 holds its downward run")
+  Assert.equal(lateSlot.backgrounds.sub[2].scrollY, 221, "the late sub BG2 holds 160 plus its downward run")
+  late:draw()
+  assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "main", "scene 5 late", {
+    [1] = { 0, -61 },
+    [2] = { 0, 221 },
+  }, {})
+  assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "sub", "scene 5 late", {
+    [1] = { 0, 61 },
+    [2] = { 0, 61 + 160 },
+  }, {})
+  late:dispose()
+end
+
+local function heartgold_pan_edges_are_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold pan edges need a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the sourced first/mid/end wrap "
+        .. "and opposing-offset legs cannot run for HeartGold and are never faked"
+    )
+  end
+  local scenes, cacheFs = loadRomPackWithFillers("heartgold", { 3 })
+  local movie = openMovieWithCache(scope, scenes, cacheFs, "heartgold", 512, 384, "single")
+  advanceToSceneStep(movie, 2, "flyin", 20000)
+  advance(movie, 5)
+  movie:draw()
+  movie:dispose()
+end
+
+-- The copyright blend runs its capped retail coefficient on both engines
+-- while the closing white fade covers both engine targets: coefficients
+-- come from the independent GBATEK floor(n*31/N) rule capped at sixteen,
+-- never from the player weight helper.
+---@param data love.ImageData decoded staged art
+---@return integer? x, integer? y bright opaque texel coordinates
+local function findBrightTexel(data)
+  local width, height = data:getWidth(), data:getHeight()
+  for y = 0, math.min(height - 1, 191), 4 do
+    for x = 0, width - 1, 4 do
+      local r, g, b, a = data:getPixel(x, y)
+      if a > 0.98 and r > 0.7 and g > 0.7 and b > 0.7 then
+        return x, y
+      end
+    end
+  end
+  return nil
+end
+
+---@param elapsed integer elapsed source ticks
+---@param ticks integer authored duration
+---@param direction integer retail blend direction
+---@return number effective first-target weight
+local function retailBlendWeight(elapsed, ticks, direction)
+  local ev = math.min(31, math.floor(elapsed * 31 / ticks))
+  local raw = (direction == 0) and ev or (31 - ev)
+  return math.min(raw, 16) / 16
+end
+
+---@param bytes string raw RGBA frame bytes
+---@param width integer frame width
+---@param height integer frame height
+---@return number mean distance from white in 0..1
+local function meanWhiteDistance(bytes, width, height)
+  local total, count = 0, 0
+  for y = 0, height - 1, 8 do
+    for x = 0, width - 1, 8 do
+      local r, g, b = pixelOf(bytes, width, x, y)
+      total = total + (1 - (r + g + b) / 3)
+      count = count + 1
+    end
+  end
+  return total / count
+end
+
+local function soulsilver_source_copyright_blend_and_white_fade_match_retail_operands(scope, context)
+  local versionId = selectedVersionId(context)
+  local movie = openMovie(scope, versionId, 512, 384, "single")
+  -- The fades step blends BG0 over cleared black on both engines with
+  -- masks 1/32, direction 1, and 60 ticks: the only eligible first
+  -- target is BG0 itself.
+  advanceToSceneStep(movie, 1, "fades", 20000)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(slot.backgrounds.main[0].scrollX, 0, "the copyright returns its main BG0 to the origin")
+  local checked = 0
+  for _, engine in ipairs({ "main", "sub" }) do
+    local background = slot.backgrounds[engine][0]
+    Assert.notNil(background, "the copyright stages " .. engine .. " BG0")
+    local data = decodedArt(scope, assert(movie.cacheFs:read(background.image)), background.image)
+    local texelX, texelY = findBrightTexel(data)
+    if texelX ~= nil then
+      checked = checked + 1
+      local er, eg, eb = data:getPixel(texelX, texelY)
+      movie:draw()
+      local canvas = (engine == "main") and movie.mainCanvas or movie.subCanvas
+      local preR, preG, preB = pixelOf(sourceBytes(scope, canvas), 256, texelX, texelY)
+      Assert.near(preR, er, 0.06, engine .. " BG0 starts opaque before its blend")
+      Assert.near(preG, eg, 0.06, engine .. " BG0 starts opaque before its blend")
+      Assert.near(preB, eb, 0.06, engine .. " BG0 starts opaque before its blend")
+      advance(movie, 45)
+      Assert.near(retailBlendWeight(45, 60, 1), 0.5, 1e-9, "the retail coefficient halves at 45 of 60 ticks")
+      movie:draw()
+      local midR, midG, midB = pixelOf(sourceBytes(scope, canvas), 256, texelX, texelY)
+      Assert.near(midR, er * 0.5, 0.12, engine .. " BG0 halves toward black under its retail weight")
+      Assert.near(midG, eg * 0.5, 0.12, engine .. " BG0 halves toward black under its retail weight")
+      Assert.near(midB, eb * 0.5, 0.12, engine .. " BG0 halves toward black under its retail weight")
+      -- Rewind to the blend entry for the next engine: the two engines
+      -- share one source clock, so the second engine samples the same
+      -- program from a fresh journey instead of a rewound one.
+      if engine == "main" then
+        movie:dispose()
+        movie = openMovie(scope, versionId, 512, 384, "single")
+        advanceToSceneStep(movie, 1, "fades", 20000)
+        slot = assert(movie.current, "the renewed movie owns its current slot")
+      end
+    end
+  end
+  Assert.equal(checked, 2, "both engine copyright BG0s carry a bright opaque texel")
+  -- The closing white fade fires at run tick 90 for 65 ticks: both
+  -- engine targets move strictly toward white while dark authored art
+  -- stays legitimate pre-fade content.
+  advanceToSceneStep(movie, 1, "run", 20000)
+  advance(movie, 80)
+  movie:draw()
+  local preMain = meanWhiteDistance(sourceBytes(scope, movie.mainCanvas), 256, 192)
+  local preSub = meanWhiteDistance(sourceBytes(scope, movie.subCanvas), 256, 192)
+  local waited = 0
+  while currentStepId(movie) ~= "fade" and waited < 20000 do
+    movie:updateFixed()
+    waited = waited + 1
+  end
+  Assert.equal(currentStepId(movie), "fade", "playback reaches the closing fade")
+  advance(movie, 32)
+  movie:draw()
+  local midMain = meanWhiteDistance(sourceBytes(scope, movie.mainCanvas), 256, 192)
+  local midSub = meanWhiteDistance(sourceBytes(scope, movie.subCanvas), 256, 192)
+  Assert.isTrue(midMain < preMain, "the white fade moves the main target toward white")
+  Assert.isTrue(midSub < preSub, "the white fade moves the sub target toward white")
+  Assert.isTrue(midMain < preMain * 0.75, "the mid-fade main target covers most of its white run")
+  Assert.isTrue(midSub < preSub * 0.75, "the mid-fade sub target covers most of its white run")
+  movie:dispose()
+end
+
+local function heartgold_copyright_blend_and_fade_are_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold copyright blend and fade need a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the sourced coefficient and white-fade "
+        .. "legs cannot run for HeartGold and are never faked"
+    )
+  end
+  local movie = openMovie(scope, "heartgold", 512, 384, "single")
+  advanceToSceneStep(movie, 1, "fades", 20000)
+  movie:dispose()
+end
+
+-- The scene-3 town reveal wipes its sub engine with kind 0 over ten ticks.
+-- The reveal cuts a scanline triangle out of the dark panels: the rightmost
+-- lit texel of each spotlight row must ride the retail boundary law, and
+-- the edge must travel with the source tick instead of sitting on static
+-- art. Rows under the silver silhouette stay out via its live slot box.
+local function wipeBoundaryRetail(elapsed, ticks, vcount)
+  local theta = math.pi * elapsed / ticks
+  local x, y = math.cos(theta), math.sin(theta)
+  if x == 1 then
+    return 255
+  end
+  if x == -1 then
+    return 0
+  end
+  if math.abs(y) < 1e-9 then
+    if x > 0 then
+      return 255
+    end
+    return 0
+  end
+  local quotient = vcount * x / y
+  local trunc = (quotient >= 0) and math.floor(quotient) or math.ceil(quotient)
+  return math.max(0, math.min(255, 127 + trunc))
+end
+
+---@param bytes string raw RGBA bytes of the sub engine target
+---@param y integer scanline to scan
+---@return integer rightmost lit column, or -1 when the row stays dark
+local function rightmostLitColumn(bytes, y)
+  for x = 255, 0, -1 do
+    local r, g, b = pixelOf(bytes, 256, x, y)
+    if r + g + b > 0.15 then
+      return x
+    end
+  end
+  return -1
+end
+
+local function soulsilver_source_town_wipe_slopes_with_the_scanline(scope, context)
+  local versionId = selectedVersionId(context)
+  local movie = openMovie(scope, versionId, 512, 384, "single")
+  local ticks = 0
+  while movie:sceneNumber() < 3 and ticks < 20000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 3, "playback reaches the town scenes")
+  advanceToSceneStep(movie, 3, "show-new-bark-town", 20000)
+  local scenes = loadScenes(versionId)
+  local boxesAt = function()
+    return spriteExclusions(movie, scenes[3], 8)
+  end
+  -- Candidate rows carry lit spotlight art at the center while staying
+  -- clear of the silhouette: dark panel rows are legitimate source
+  -- content and stay out of the measurement.
+  local function candidateRows(bytes)
+    local boxes = boxesAt()
+    local rows = {}
+    for y = 0, 191, 4 do
+      local clear = true
+      for _, box in ipairs(boxes) do
+        if y >= box[3] and y <= box[4] then
+          clear = false
+          break
+        end
+      end
+      if clear then
+        local cr, cg, cb = pixelOf(bytes, 256, 128, y)
+        if cr + cg + cb > 0.15 then
+          local right = rightmostLitColumn(bytes, y)
+          if right >= 64 and right <= 250 then
+            rows[#rows + 1] = { y = y, right = right }
+          end
+        end
+      end
+    end
+    return rows
+  end
+  advance(movie, 3)
+  movie:draw()
+  local early = sourceBytes(scope, movie.subCanvas)
+  local earlyRows = candidateRows(early)
+  if #earlyRows < 3 then
+    context:skip("the town spotlight covers too few rows at the sampled wipe tick, so no slope is measurable")
+  end
+  advance(movie, 3)
+  movie:draw()
+  local late = sourceBytes(scope, movie.subCanvas)
+  local measured = 0
+  local low, high = 255, 0
+  for _, row in ipairs(earlyRows) do
+    local wantEarly = wipeBoundaryRetail(3, 10, row.y)
+    Assert.isTrue(
+      math.abs(row.right + 1 - wantEarly) <= 12,
+      ("town wipe row %d reveals to its scanline law (rightmost %d, want %d)"):format(row.y, row.right, wantEarly)
+    )
+    -- The late edge rides the same row even where the shrinking reveal
+    -- covers the center: only fully dark rows drop out.
+    local lateRight = rightmostLitColumn(late, row.y)
+    if lateRight >= 0 then
+      local wantLate = wipeBoundaryRetail(6, 10, row.y)
+      Assert.isTrue(
+        math.abs(lateRight + 1 - wantLate) <= 12,
+        ("town wipe row %d travels with the source tick (rightmost %d, want %d)"):format(row.y, lateRight, wantLate)
+      )
+      measured = measured + 1
+    end
+    if row.right < low then
+      low = row.right
+    end
+    if row.right > high then
+      high = row.right
+    end
+  end
+  Assert.isTrue(measured >= 2, "the wipe travel is sampled on at least two spotlight rows")
+  Assert.isTrue(high - low >= 16, "the town wipe slopes with the scanline instead of a centered rectangle")
+  movie:dispose()
+end
+
+local function heartgold_town_wipe_is_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold town wipe needs a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the sourced scanline-slope leg "
+        .. "cannot run for HeartGold and is never faked"
+    )
+  end
+  local movie = openMovie(scope, "heartgold", 512, 384, "single")
+  movie:dispose()
+end
+
+-- The first starter paints its authored clip frame at its authored station:
+-- the expected frame comes from the manifest durations and the counted
+-- source ticks, and its staged pixels must match the main target while
+-- the sub target at the same box stays different.
+---@param manifest table compiled opening-scene manifest
+---@param clipId string staged sprite clip identity
+---@param tick integer counted source ticks since the clip showed
+---@return integer expected 1-based frame index
+local function expectedClipFrame(manifest, clipId, tick)
+  local clip = nil
+  for _, candidate in ipairs(manifest.spriteClips) do
+    if candidate.id == clipId then
+      clip = candidate
+      break
+    end
+  end
+  Assert.notNil(clip, "the starter clip resolves: " .. tostring(clipId))
+  local total = 0
+  for _, frame in ipairs(clip.frames) do
+    total = total + (frame.duration or 1)
+  end
+  total = math.max(total, 1)
+  local elapsed = tick % total
+  for index, frame in ipairs(clip.frames) do
+    local duration = frame.duration or 1
+    if elapsed < duration then
+      return index
+    end
+    elapsed = elapsed - duration
+  end
+  return #clip.frames
+end
+
+local function soulsilver_source_starter_paints_its_authored_frame(scope, context)
+  local versionId = selectedVersionId(context)
+  local scenes = loadScenes(versionId)
+  local movie = openMovie(scope, versionId, 512, 384, "single")
+  advanceToSceneStep(movie, 4, "starter-chikorita", 20000)
+  advance(movie, 3)
+  Assert.equal(currentStepId(movie), "starter-chikorita", "the first starter holds its emitter beat")
+  local manifest = scenes[4]
+  local placement = nil
+  for _, event in ipairs(manifest.timeline.events) do
+    if event.op == "setSpriteClip" and event.stepId == "starter-chikorita" and event.instanceId == "chikorita" then
+      placement = event
+      break
+    end
+  end
+  Assert.notNil(placement, "the manifest places the chikorita sprite")
+  Assert.equal(placement.engine, "main", "the starter paints its owning engine")
+  Assert.equal(placement.x, 128, "the starter holds its retail x")
+  Assert.equal(placement.y, 96, "the starter holds its retail y")
+  local live = 0
+  for _, runtime in ipairs(assert(movie.current.emitters, "the movie tracks its live emitters")) do
+    live = live + #(runtime.particles or {})
+  end
+  Assert.isTrue(live > 0, "the starter samples while its particles are live")
+  movie:draw()
+  local clipBytes = assert(movie.cacheFs:read(placement.clipId), "the staged starter clip reads back")
+  local clipData = decodedArt(scope, clipBytes, placement.clipId)
+  local main = sourceBytes(scope, movie.mainCanvas)
+  local sub = sourceBytes(scope, movie.subCanvas)
+  local want = expectedClipFrame(manifest, placement.clipId, 3)
+  local best, bestRate, wantRate = 1, -1, nil
+  local clip = nil
+  for _, candidate in ipairs(manifest.spriteClips) do
+    if candidate.id == placement.clipId then
+      clip = candidate
+      break
+    end
+  end
+  Assert.notNil(clip, "the starter clip carries its frames")
+  -- Frames may hang off the viewport edge while the starter walks in:
+  -- only the visible intersection is decidable, exactly like the canvas.
+  local function frameMatch(frame, bytes, width)
+    local bx, by = placement.x + (frame.offsetX or 0), placement.y + (frame.offsetY or 0)
+    local ix0, iy0 = math.max(bx, 0), math.max(by, 0)
+    local ix1, iy1 = math.min(bx + frame.width, 256), math.min(by + frame.height, 192)
+    if ix1 - ix0 < 8 or iy1 - iy0 < 8 then
+      return nil
+    end
+    local matched, decisive = 0, 0
+    for vy = iy0, iy1 - 1, 2 do
+      for vx = ix0, ix1 - 1, 2 do
+        local cr, cg, cb, ca = clipData:getPixel(frame.x + (vx - bx), frame.y + (vy - by))
+        if ca > 0.98 then
+          decisive = decisive + 1
+          local ar, ag, ab = pixelOf(bytes, width, vx, vy)
+          if math.abs(ar - cr) + math.abs(ag - cg) + math.abs(ab - cb) < 0.08 then
+            matched = matched + 1
+          end
+        end
+      end
+    end
+    if decisive < 20 then
+      return nil
+    end
+    return matched / decisive
+  end
+  for index, frame in ipairs(clip.frames) do
+    local rate = frameMatch(frame, main, 256)
+    if rate ~= nil then
+      if rate > bestRate then
+        best, bestRate = index, rate
+      end
+      if index == want then
+        wantRate = rate
+      end
+    end
+  end
+  Assert.notNil(wantRate, "the expected starter frame carries decidable pixels")
+  Assert.equal(best, want, "the painted starter frame is the source-clocked one")
+  Assert.isTrue((wantRate or 0) > 0.9, "the starter paints its authored frame texels")
+  -- The same frame on the sub target must not carry the sprite.
+  local subRate = frameMatch(clip.frames[want], sub, 256)
+  Assert.notNil(subRate, "the sub comparison samples the expected frame")
+  Assert.isTrue(subRate < 0.5, "the starter never leaks onto the sub engine")
+  movie:dispose()
+end
+
+local function heartgold_starter_frame_is_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold starter frame needs a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the sourced sprite-frame leg "
+        .. "cannot run for HeartGold and is never faked"
+    )
+  end
+  local movie = openMovie(scope, "heartgold", 512, 384, "single")
+  movie:dispose()
+end
+
 local function heartgold_wipe_kinds_are_blocked_without_a_dump(scope, context)
   if not RomImporter.isReady("heartgold") then
     context:skip(
@@ -3355,6 +4071,14 @@ local T = GraphicsSmoke.suite({
   ["swapped viewports follow the active image extents"] = swapped_viewports_follow_the_active_image_extents,
   ["sourced scroll offsets follow absolute source ticks"] = sourced_scroll_offsets_for_edition,
   ["heartgold scroll offsets are blocked without a dump"] = heartgold_scroll_offsets_are_blocked_without_a_dump,
+  ["soulsilver source pan edges match wrapped native art"] = soulsilver_source_pan_edges_match_wrapped_native_art,
+  ["heartgold pan edges are blocked without a dump"] = heartgold_pan_edges_are_blocked_without_a_dump,
+  ["soulsilver source copyright blend and white fade match retail operands"] = soulsilver_source_copyright_blend_and_white_fade_match_retail_operands,
+  ["heartgold copyright blend and fade are blocked without a dump"] = heartgold_copyright_blend_and_fade_are_blocked_without_a_dump,
+  ["soulsilver source town wipe slopes with the scanline"] = soulsilver_source_town_wipe_slopes_with_the_scanline,
+  ["heartgold town wipe is blocked without a dump"] = heartgold_town_wipe_is_blocked_without_a_dump,
+  ["soulsilver source starter paints its authored frame"] = soulsilver_source_starter_paints_its_authored_frame,
+  ["heartgold starter frame is blocked without a dump"] = heartgold_starter_frame_is_blocked_without_a_dump,
   ["sourced panorama pixels match wrapped source art"] = sourced_panorama_for_edition,
   ["heartgold panorama wrap is blocked without a dump"] = heartgold_panorama_wrap_is_blocked_without_a_dump,
   ["synthetic color overlap proves bg ordering"] = synthetic_color_overlap_proves_bg_ordering,
