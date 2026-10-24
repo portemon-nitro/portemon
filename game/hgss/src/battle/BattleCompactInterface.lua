@@ -1538,12 +1538,23 @@ local function drawCompactHudCell(graphics, art, section, side, battler, view, s
   local stripWidth = source:getWidth()
   local stripHeight = source:getHeight()
   local stripArt = source
-  -- Pool leases draw through the shared sampler so indexed strips
-  -- resolve exactly; owned and test handles draw directly.
+  -- The drawable sampler is the handle itself when it samples (pool
+  -- and test leases), else its admitted effect lease: pool borrows
+  -- keep the sampler on the outer handle while the inner borrow token
+  -- only pins the physical entry. Sampling through the shared rule
+  -- resolves indexed strips exactly; raw images and recording
+  -- stand-ins draw directly.
+  local sampler = nil
+  if type(art) == "table" then
+    if type(art.drawQuad) == "function" then
+      sampler = art
+    elseif type(art.lease) == "table" and type(art.lease.drawQuad) == "function" then
+      sampler = art.lease
+    end
+  end
   local function drawStripTile(quad, x, y, sx, sy)
-    local lease = (type(art) == "table" and art.lease) or nil
-    if lease ~= nil and type(lease.drawQuad) == "function" then
-      lease:drawQuad(graphics, quad, x, y, 0, sx, sy)
+    if sampler ~= nil then
+      sampler:drawQuad(graphics, quad, x, y, 0, sx, sy)
     else
       graphics.draw(stripArt, quad, x, y, 0, sx, sy)
     end
@@ -1593,7 +1604,9 @@ local function drawCompactHudCell(graphics, art, section, side, battler, view, s
   local hp, maxHp = displayed.hp, displayed.maxHp
   assert(type(hp) == "number" and type(maxHp) == "number", "compact HUD carries numeric HP values")
   local health = sidePatches ~= nil and sidePatches.health or BattleScene.hpPatchTiles(patchSpans, sideType, hp, maxHp)
-  drawPatches(health, 0)
+  -- Bar patches name component-relative source tiles like the icon
+  -- patches below, so they ride the same staged component base.
+  drawPatches(health, assert(section.componentBase, "compact HUD publishes the native component tile base"))
   local condition, gender, caught = displayed.condition, displayed.gender, displayed.caught
   assert(condition == nil or type(condition) == "string", "compact HUD status is a source status name")
   assert(gender == nil or type(gender) == "string", "compact HUD gender is a source category when present")
@@ -1611,7 +1624,7 @@ local function drawCompactHudCell(graphics, art, section, side, battler, view, s
     drawPatches(
       sidePatches ~= nil and sidePatches.experience
         or BattleScene.expPatchTiles(patchSpans, BattleScene.expTileFills(into, span)),
-      0
+      assert(section.componentBase, "compact HUD publishes the native component tile base")
     )
   end
 end
@@ -1642,7 +1655,11 @@ local function drawHudSide(graphics, assets, text, artKey, battler, side, sectio
   if type(side.regions) == "table" then
     for _, region in ipairs(side.regions) do
       if type(region.text) == "string" and region.text ~= "" then
-        text.drawText(region.text, region.x, region.y)
+        -- Wording never overflows its resolved region into the
+        -- neighboring marks: the paired doubles panels fit the same
+        -- way, so an overlong name truncates instead of painting over
+        -- the gender and caught facts.
+        text.drawText(fitText(text, region.text, region.width), region.x, region.y)
       end
     end
   end

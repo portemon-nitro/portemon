@@ -29,6 +29,9 @@ local BattlePresentationManifestFixture = require("tests.support.BattlePresentat
 local function battleManifest()
   return BattlePresentationManifestFixture.manifest()
 end
+-- Bar patches name component-relative source tiles: recorded bar tiles
+-- below subtract the staged component base beside the icon tiles.
+local COMPONENT_BASE = battleManifest().hud.player.componentBase
 
 local function fakeImageWidth(image)
   return image.width
@@ -1676,7 +1679,7 @@ function T.native_hud_dynamic_content_uses_composite_geometry()
       and entry.quad.h == 8
       and isBarTile(entry.image.handle --[[@as string]], entry)
     then
-      tiles[#tiles + 1] = entry.image.handle .. ":" .. tostring(math.floor(entry.quad.x / 8))
+      tiles[#tiles + 1] = entry.image.handle .. ":" .. tostring(math.floor(entry.quad.x / 8) - COMPONENT_BASE)
     end
   end
   table.sort(tiles)
@@ -3063,7 +3066,7 @@ function T.doubled_health_boxes_use_each_role_source_cell_and_default_fields()
       tiles[handle][#tiles[handle] + 1] = {
         x = entry.x,
         y = entry.y,
-        tile = math.floor(entry.quad.x / 8),
+        tile = math.floor(entry.quad.x / 8) - COMPONENT_BASE,
       }
     end
   end
@@ -3119,7 +3122,7 @@ function T.doubled_health_bars_follow_each_slot_without_numeric_or_experience_la
       then
         local key = tostring(entry.x) .. ":" .. tostring(entry.y)
         grouped[key] = grouped[key] or {}
-        grouped[key][#grouped[key] + 1] = math.floor(entry.quad.x / 8)
+        grouped[key][#grouped[key] + 1] = math.floor(entry.quad.x / 8) - COMPONENT_BASE
       end
     end
     local rows = {}
@@ -3212,11 +3215,18 @@ function T.doubled_player_health_box_switches_between_native_gauge_and_number_ce
   table.sort(leftModeTiles)
   Assert.deepEqual(leftModeTiles, { 197, 198, 199 }, "number mode patches the three native source cell components")
 
+  local partnerTiles = {}
   for _, entry in ipairs(drawsOf(drawn.graphics, "hud:player-right")) do
     if isBarTile("hud:player-right", entry) then
-      Assert.isTrue(entry.quad.x < 128 * 8, "the unrelated partner remains in native gauge mode")
+      partnerTiles[#partnerTiles + 1] = math.floor(entry.quad.x / 8) - COMPONENT_BASE
     end
   end
+  table.sort(partnerTiles)
+  Assert.deepEqual(
+    partnerTiles,
+    { 10, 10, 10, 10, 10, 10 },
+    "the unrelated partner remains in native gauge mode"
+  )
 end
 
 function T.doubled_enemy_caught_markers_follow_wild_and_trainer_visibility()

@@ -41,7 +41,8 @@ local function readyVersions()
 end
 
 local function compactMeasurement()
-  return {
+  
+return {
     width = 256,
     height = 192,
     topology = ScreenTopology.oneDisplay({
@@ -106,6 +107,23 @@ local function countColor(data, rect, want)
         and quantize(green) == want[2]
         and quantize(blue) == want[3]
       then
+        count = count + 1
+      end
+    end
+  end
+  return count
+end
+
+-- Counts green-dominant opaque pixels: the staged gauge art shades the
+-- health fill across a green gradient instead of a single flat channel
+-- triple, so an exact triple never occurs while the bar still paints.
+local function countBarGreen(data, rect)
+  local count = 0
+  for y = rect.y, rect.y + rect.height - 1 do
+    for x = rect.x, rect.x + rect.width - 1 do
+      local red, green, blue, alpha = data:getPixel(x, y)
+      local r, g, b = quantize(red), quantize(green), quantize(blue)
+      if quantize(alpha) == 255 and g >= 150 and g > r + 30 and g > b + 30 then
         count = count + 1
       end
     end
@@ -540,6 +558,8 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
     end
     local firstPixels = render()
     local secondPixels = render()
+
+
     Assert.equal(
       imageDataDigest(firstPixels),
       imageDataDigest(secondPixels),
@@ -563,8 +583,12 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
     local hud = assert(content.hud, versionId .. " carries its compact HUD")
     for _, side in ipairs({ { box = hud.enemy, label = "enemy" }, { box = hud.player, label = "player" } }) do
       local bar = assert(side.box.bar, versionId .. " carries its " .. side.label .. " bar")
+      Assert.isTrue((bar.fraction or 0) > 0, versionId .. " fills the " .. side.label .. " health bar")
+      -- Single-battle health bars are native tile work sampled from the
+      -- staged strip, not flat rectangles at the plan rect: the bar-ink
+      -- census covers the whole HUD box.
       Assert.isTrue(
-        countColor(firstPixels, hostRect(frame, bar), { 51, 204, 51 }) > 10,
+        countBarGreen(firstPixels, hostRect(frame, side.box)) > 10,
         versionId .. " draws the " .. side.label .. " health bar"
       )
     end
@@ -860,6 +884,12 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
   end
 end
 
+
+
+
+
+
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {
@@ -870,4 +900,7 @@ suite.metadata.derivedAssets = {
   "mon-portrait-page:34",
   "mon-portrait-page:164",
 }
+
+
+
 return suite

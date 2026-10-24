@@ -4,6 +4,41 @@
 local BattleMenuPresenter = {}
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
+-- Resolves the drawable sampler behind one handle: the handle itself
+-- when it samples (pool and test leases), else its admitted effect
+-- lease, else nothing. Pool borrows keep their sampler on the outer
+-- handle while the inner borrow token only pins the physical entry.
+---@param art unknown resolved drawable handle under drawing
+---@return table<string, unknown>? drawable sampler, nil for raw images and recording stand-ins
+local function samplerOf(art)
+  if type(art) ~= "table" then
+    return nil
+  end
+  if type(art.drawQuad) == "function" then
+    return art
+  end
+  local inner = art.lease
+  if type(inner) == "table" and type(inner.drawQuad) == "function" then
+    return inner
+  end
+  return nil
+end
+
+-- Draws one resolved handle through the shared sampler when it samples,
+-- directly otherwise.
+---@param graphics table<string, unknown> injected host graphics
+---@param art table<string, unknown> resolved drawable handle under drawing
+---@param x number draw position x
+---@param y number draw position y
+local function drawArtwork(graphics, art, x, y)
+  local sampler = samplerOf(art)
+  if sampler ~= nil then
+    sampler:draw(graphics, x, y)
+  else
+    graphics.draw(art, x, y)
+  end
+end
+
 local BLEND_SHADER = [[
 extern Image underlay;
 vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
@@ -154,7 +189,7 @@ function BattleMenuPresenter._drawLayer(graphics, assets, layout, view, entry)
   local layer = entry.layer
   local art = assets:drawable("menu:" .. layout .. ":screen:" .. tostring(entry.index))
   if art ~= nil then
-    graphics.draw(art, 0, 0)
+    drawArtwork(graphics, art, 0, 0)
   end
   if type(layer.feedback) ~= "table" then
     return
@@ -169,7 +204,7 @@ function BattleMenuPresenter._drawLayer(graphics, assets, layout, view, entry)
   end
   local patchImage = assets:drawable("menu:" .. layout .. ":feedback:" .. selection .. ":" .. feedbackState)
   if patchImage ~= nil then
-    graphics.draw(patchImage, feedback.x, feedback.y)
+    drawArtwork(graphics, patchImage, feedback.x, feedback.y)
   end
 end
 

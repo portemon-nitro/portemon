@@ -14,6 +14,15 @@ local MonCache = require("libs.assets.src.MonCache")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
+-- Staged HUD strips append their native component tiles after the
+-- sprite characters: bar source tiles stay component-relative, so bar
+-- quad origins ride the staged component base beside the icon tiles.
+local COMPONENT_BASE = BattlePresentationManifestFixture.manifest().hud.player.componentBase
+---@param x number recorded quad horizontal origin under inspection
+---@return boolean barQuad true for the green, yellow, and red full-fill bar origins
+local function isBarQuad(x)
+  return x == (COMPONENT_BASE + 10) * 8 or x == (COMPONENT_BASE + 15) * 8 or x == (COMPONENT_BASE + 19) * 8
+end
 local function fakeArtSetFilter() end
 local function fakeArtWidth()
   return 1648
@@ -336,9 +345,9 @@ function T.damaged_and_empty_bars_keep_paired_fractions_and_shades()
         and type(entry.quad) == "table"
         and entry.quad.w == 8
         and entry.quad.h == 8
-        and (entry.quad.x == 80 or entry.quad.x == 120 or entry.quad.x == 152)
+        and isBarQuad(entry.quad.x)
       then
-        tiles[#tiles + 1] = math.floor(entry.quad.x / 8)
+        tiles[#tiles + 1] = math.floor(entry.quad.x / 8) - COMPONENT_BASE
       end
     end
     table.sort(tiles)
@@ -398,7 +407,7 @@ function T.hidden_battler_draws_no_artwork_or_bar()
   local composites, tiles = 0, 0
   for _, entry in ipairs(drawsOf(result.graphics, "hud:player")) do
     if type(entry.quad) == "table" and entry.quad.w == 8 and entry.quad.h == 8 then
-      if entry.quad.x == 80 or entry.quad.x == 120 or entry.quad.x == 152 then
+      if isBarQuad(entry.quad.x) then
         tiles = tiles + 1
       end
     else

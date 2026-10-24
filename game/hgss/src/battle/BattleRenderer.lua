@@ -454,6 +454,55 @@ local function stripHeightOf(art)
   return art.height
 end
 
+-- Resolves the drawable sampler behind one handle: the handle itself
+-- when it samples (pool and test leases), else its admitted effect
+-- lease, else nothing. Pool borrows keep their sampler on the outer
+-- handle while the inner borrow token only pins the physical entry,
+-- so outer-first resolution draws pool art instead of crashing on the
+-- token; raw images and recording stand-ins sample nothing and draw
+-- directly.
+---@param art unknown resolved drawable handle under drawing
+---@return table<string, unknown>? drawable sampler, nil for raw images and recording stand-ins
+local function samplerOf(art)
+  if type(art) ~= "table" then
+    return nil
+  end
+  if type(art.drawQuad) == "function" then
+    return art
+  end
+  local inner = art.lease
+  if type(inner) == "table" and type(inner.drawQuad) == "function" then
+    return inner
+  end
+  return nil
+end
+
+-- Draws one resolved handle with a caller viewport through the shared
+-- sampler when it samples, directly otherwise. Extra placement
+-- arguments forward to the draw call.
+---@param graphics table<string, unknown> injected host graphics
+---@param art table<string, unknown> resolved drawable handle under drawing
+---@param quad table<string, unknown>? caller-owned viewport, nil for whole-image draws
+---@param x number draw position x
+---@param y number draw position y
+---@param ... unknown extra placement arguments forwarded to the draw call
+local function drawArtwork(graphics, art, quad, x, y, ...)
+  local sampler = samplerOf(art)
+  if sampler ~= nil then
+    if quad ~= nil then
+      sampler:drawQuad(graphics, quad, x, y, ...)
+    else
+      sampler:draw(graphics, x, y, ...)
+    end
+    return
+  end
+  if quad ~= nil then
+    graphics.draw(art, quad, x, y, ...)
+  else
+    graphics.draw(art, x, y, ...)
+  end
+end
+
 -- Neutral health-box wording through the borrowed text services: the
 -- field palette triple when the service carries the generated font
 -- definition, a neutral caller palette otherwise. Every health-box word
@@ -617,7 +666,8 @@ local function drawBarTiles(graphics, assets, artKey, anchor, objects, component
           local tileCount = columns * rows
           if tileOffset >= 0 and tileOffset < tileCount then
             found = true
-            graphics.draw(
+            drawArtwork(
+              graphics,
               art,
               quad,
               anchor.x + obj.x + (tileOffset % columns) * 8,
@@ -858,8 +908,8 @@ local function drawSpriteObject(graphics, image, stripWidth, baseX, baseY, obj)
     -- exactly and records carry staged identity; owned, test, and
     -- descriptor handles draw directly, which records them in headless
     -- composition.
-    local lease = (type(image) == "table" and image.lease) or image
-    if type(image) == "table" and type(lease.drawQuad) == "function" then
+    local lease = samplerOf(image)
+    if lease ~= nil then
       lease:drawQuad(graphics, quad, baseX + obj.x --[[@as number]], baseY + obj.y --[[@as number]] + row * 8)
     else
       graphics.draw(image, quad, baseX + obj.x --[[@as number]], baseY + obj.y --[[@as number]] + row * 8)
@@ -1097,7 +1147,9 @@ local function drawDoublesDetail(graphics, text, assets, sections, view, players
       if playerMode ~= "numbers" then
         local patches = gaugeTaskTiles(view.gaugePatchTiles, row.sideType, "health")
           or BattleScene.hpPatchTiles(patchSpans, row.sideType, battler.hp, battler.maxHp)
-        drawBarTiles(graphics, assets, art, { x = row.hudX, y = row.hudY }, cell.objs, 0, patches)
+        -- Bar patches name component-relative source tiles like the
+        -- icons below, so they ride the same staged component base.
+        drawBarTiles(graphics, assets, art, { x = row.hudX, y = row.hudY }, cell.objs, componentBase, patches)
       end
       local caught = nil
       if view.battleKind == "wild" and battler.side == 2 then
@@ -1226,7 +1278,9 @@ local function drawSingleHud(
     local componentBase = assert(section.componentBase, "single HUD strips publish their native component tile base")
     local healthPatches = gaugeTaskTiles(gaugePatchTiles, sideType, "health")
       or BattleScene.hpPatchTiles(patchSpans, sideType, battler.hp, battler.maxHp)
-    drawBarTiles(graphics, assets, artKey, anchor, objects, 0, healthPatches)
+    -- Bar patches name component-relative source tiles like the icon
+    -- patches below, so they ride the same staged component base.
+    drawBarTiles(graphics, assets, artKey, anchor, objects, componentBase, healthPatches)
     local caught = nil
     if not playerBox and battleKind == "wild" then
       caught = battler.caught
@@ -1252,7 +1306,7 @@ local function drawSingleHud(
         artKey,
         anchor,
         objects,
-        0,
+        componentBase,
         gaugeTaskTiles(gaugePatchTiles, sideType, "experience")
           or BattleScene.expPatchTiles(patchSpans, BattleScene.expTileFills(into, span))
       )
@@ -1505,7 +1559,7 @@ local function drawControls(resources, view, layout, regions)
       -- Missing move slots stay visibly empty: no art, no label.
     else
       if art ~= nil then
-        graphics.draw(art, box.x --[[@as number]] + shift, box.y --[[@as number]] + shift)
+        drawArtwork(graphics, art, nil, box.x --[[@as number]] + shift, box.y --[[@as number]] + shift)
       end
       if layout == "command" and COMMAND_ANCHORS[id] ~= nil then
         local anchor = COMMAND_ANCHORS[id]
@@ -1552,9 +1606,20 @@ local function drawControls(resources, view, layout, regions)
           if type(move.moveType) == "string" and typeAnchor ~= nil then
             local icon = assets:drawable("battle:move-type-icon:" .. move.moveType:lower())
             if icon ~= nil then
-              local iconWidth, iconHeight = icon:getDimensions()
-              graphics.draw(
+              local iconWidth, iconHeight
+              if type(icon.getDimensions) == "function" then
+                iconWidth, iconHeight = icon:getDimensions()
+              else
+                iconWidth, iconHeight = icon.width, icon.height
+              end
+              assert(
+                type(iconWidth) == "number" and type(iconHeight) == "number",
+                "move-type icons carry measurable extents"
+              )
+              drawArtwork(
+                graphics,
                 icon,
+                nil,
                 typeAnchor.x + shift - math.floor(iconWidth / 2),
                 typeAnchor.y + shift - math.floor(iconHeight / 2)
               )
@@ -2022,12 +2087,7 @@ local function drawCompactSlots(graphics, assets, view, spots)
           -- Lease-paired cells draw through the shared sampler so the
           -- recorded draw carries the staged cell exactly; owned and
           -- test images draw directly.
-          local lease = image.lease or image
-          if image.quad ~= nil and type(lease.drawQuad) == "function" then
-            lease:drawQuad(graphics, image.quad, spot.x + dx * scale, spot.y, 0, scale, scale)
-          else
-            graphics.draw(image, spot.x + dx * scale, spot.y, 0, scale, scale)
-          end
+          drawArtwork(graphics, image, image.quad, spot.x + dx * scale, spot.y, 0, scale, scale)
         end)
       end
     end
@@ -2088,24 +2148,14 @@ local function drawCompactScene(resources, view, content)
         local front = battlerImage(assets, enemy)
         if front ~= nil then
           local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
-          local frontLease = front.lease or front
-          if front.quad ~= nil and type(frontLease.drawQuad) == "function" then
-            frontLease:drawQuad(graphics, front.quad, enemyCenter.x + dx, enemyCenter.y)
-          else
-            graphics.draw(front, enemyCenter.x + dx, enemyCenter.y)
-          end
+          drawArtwork(graphics, front, front.quad, enemyCenter.x + dx, enemyCenter.y)
         end
       end
       if player ~= nil and player.visible ~= false then
         local back = battlerImage(assets, player)
         if back ~= nil then
           local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
-          local backLease = back.lease or back
-          if back.quad ~= nil and type(backLease.drawQuad) == "function" then
-            backLease:drawQuad(graphics, back.quad, playerCenter.x + dx, playerCenter.y)
-          else
-            graphics.draw(back, playerCenter.x + dx, playerCenter.y)
-          end
+          drawArtwork(graphics, back, back.quad, playerCenter.x + dx, playerCenter.y)
         end
       end
     end

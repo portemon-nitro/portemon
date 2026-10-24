@@ -1024,7 +1024,13 @@ function T.health_box_fields_render_every_native_fact_in_span()
         and entry.quad ~= nil
         and entry.quad.x >= 128 * 8
       then
-        tiles[#tiles + 1] = quadTile(entry.quad) - 128
+        local relative = quadTile(entry.quad) - 128
+        -- Health and experience tiles occupy relative 0..37 (at most
+        -- the red base plus a full fill, then the experience base plus
+        -- a full fill); status marks start above them.
+        if relative >= 38 then
+          tiles[#tiles + 1] = relative
+        end
       end
     end
     table.sort(tiles)

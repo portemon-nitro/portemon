@@ -280,14 +280,18 @@ local function bindEnvelope(runtime, versionId, measurement, graphics, transitio
   local ports = {}
   doubles.descriptors = {}
   local factory = envelope:factory()
-  local binding = runtime:bindBattlePresentation(function(descriptor)
+  local function admit(descriptor)
     doubles.descriptors[#doubles.descriptors + 1] = descriptor
     local port = factory(descriptor)
     ports[#ports + 1] = port
     return port
-  end)
+  end
+  local binding = runtime:bindBattlePresentation(admit)
   doubles.ports = ports
-  return envelope, binding, doubles
+  -- The admission closure is also returned so a journey can withdraw and
+  -- rebind the same presentation across rounds; existing callers keep
+  -- ignoring the fourth value.
+  return envelope, binding, doubles, admit
 end
 
 local function readyVersions()
@@ -528,69 +532,6 @@ local function sparringChoose(runtime, request)
     end
   end
   error("no prepared fragment answers the request", 0)
-end
-
--- A presented wild win returns through cover and receipt: full cover
--- bridges semantic absence, one construction serves the launch, and the
--- continuing receipt publishes only after the revealed field returns.
-function T.presented_win_returns_through_cover_and_receipt()
-  for _, versionId in ipairs(readyVersions()) do
-    local runtime = bootRuntime(versionId)
-    local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("presented-win:dual"))
-    local ok, failure = xpcall(function()
-      local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-      Assert.equal(runtime.overworld:phase(), "present", "the claim holds presence while covering")
-      local coveredAt, leftAt, coverAtLeave = nil, nil, nil
-      local ticks = 0
-      while runtime.battleCoordinator:activeBattle() == nil and ticks < 900 do
-        runtime:update(SourceTick.DT)
-        envelope:updateFixed(TICK)
-        ticks = ticks + 1
-        if coveredAt == nil and envelope:cover().coefficient == 16 then
-          coveredAt = ticks
-        end
-        local phase = runtime.overworld:phase()
-        if leftAt == nil and phase ~= "present" then
-          leftAt = ticks
-          coverAtLeave = envelope:cover().coefficient
-        end
-      end
-      Assert.notNil(runtime.battleCoordinator:activeBattle(), "the covered launch constructs its battle")
-      Assert.notNil(coveredAt, "cover completes before construction")
-      Assert.notNil(leftAt, "semantic leave follows cover")
-      Assert.isTrue(coveredAt <= leftAt, "leave never precedes full cover")
-      Assert.equal(coverAtLeave, 16, "semantic leave happens under full cover")
-      -- Construction follows the full-cover leave by one accepted tick, and that
-      -- tick performs the reveal's single cover step first, so the battle starts
-      -- one step into the reveal beside its intro instead of under full cover.
-      Assert.equal(envelope:cover().coefficient, 14, "the battle starts one reveal step after full cover")
-      local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
-      local turns = settle(runtime, envelope, function(request)
-        return sparringChoose(runtime, request)
-      end, 6000)
-      Assert.isTrue(turns > 0, "the presented battle answers decisions to its committed words")
-      pump(runtime, envelope, 60)
-      Assert.equal(runtime:lastBattleResult().result, "win", "the win reports its exact word")
-      Assert.equal(runtime:lastBattleResult().sourceResult, 1, "the win reads back won")
-      Assert.equal(runtime:battleStatus(launchId).result, "win", "the launch receipt carries the win")
-      Assert.isTrue(runtime:battleStatus(launchId).committed, "the receipt commits only at the safe field")
-      Assert.isTrue(runtime.monService:partyMon(0).experience > experienceBefore, "the win publishes experience once")
-      Assert.equal(runtime.overworld:phase(), "present", "the continuing return restores presence")
-      local _, reason = runtime.saveCoordinator:capture(false)
-      Assert.isNil(reason, "the save gate opens at the safe field")
-    end, debug.traceback)
-    local unbound = pcall(function()
-      runtime:unbindBattlePresentation(binding)
-    end)
-    local closed = pcall(function()
-      runtime:dispose()
-    end)
-    if not ok then
-      error(failure, 0)
-    end
-    Assert.isTrue(unbound, "the lifetime releases its factory binding")
-    Assert.isTrue(closed, "teardown releases the presented lifetime")
-  end
 end
 
 -- Native encounter admission starts battle music with the selected effect
@@ -914,34 +855,64 @@ function T.recovery_message_answers_only_a_matched_genuine_edge()
   end
 end
 
--- Two consecutive launches build two fresh ports and screens, each
--- disposed exactly once, while the live field session survives both.
-function T.second_launch_gets_a_fresh_port_and_screen()
+
+-- Two consecutive wins build two fresh ports and screens, each disposed
+-- exactly once, while withdrawing between rounds keeps the in-flight
+-- launch on its admitted port and fails later admissions loudly: the
+-- first round runs under a withdrawn binding to prove the admitted
+-- launch completes on its own port, the second round rebinds the same
+-- presentation for a fresh port, and a third admission without a
+-- binding is refused instead of presenting without a screen.
+function T.launches_reuse_ports_across_rebinds_and_refuse_without_a_binding()
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
-    local envelope, binding, doubles = bindEnvelope(runtime, versionId, dualMeasurement("presented-second:dual"))
+    local envelope, binding, doubles, admit =
+      bindEnvelope(runtime, versionId, dualMeasurement("presented-rebind:dual"))
     local disposed = {}
+    local function watchDispose(round, port)
+      local firstDispose = port.dispose
+      port.dispose = function()
+        disposed[#disposed + 1] = round
+        return firstDispose()
+      end
+    end
     local ok, failure = xpcall(function()
       local firstField = runtime.session
-      for round = 1, 2 do
-        runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-        waitConstructed(runtime, envelope)
-        local port = doubles.ports[#doubles.ports]
-        local firstDispose = port.dispose
-        port.dispose = function()
-          disposed[#disposed + 1] = round
-          return firstDispose()
-        end
-        settle(runtime, envelope, function(request)
-          return sparringChoose(runtime, request)
-        end, 6000)
-        pump(runtime, envelope, 60)
-        Assert.equal(runtime:lastBattleResult().result, "win", "round " .. round .. " reports its own win")
-        Assert.isTrue(runtime.session == firstField, "round " .. round .. " reuses the live field session")
-      end
+      -- Round one runs under a withdrawn binding: the in-flight launch
+      -- keeps the port it was admitted with and completes normally.
+      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      waitConstructed(runtime, envelope)
+      watchDispose(1, doubles.ports[#doubles.ports])
+      runtime:unbindBattlePresentation(binding)
+      settle(runtime, envelope, function(request)
+        return sparringChoose(runtime, request)
+      end, 6000)
+      pump(runtime, envelope, 60)
+      Assert.equal(runtime:lastBattleResult().result, "win", "round 1 reports its own win")
+      Assert.isTrue(runtime.session == firstField, "round 1 reuses the live field session")
+      -- Round two rebinds the same presentation for a fresh port.
+      binding = runtime:bindBattlePresentation(admit)
+      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      waitConstructed(runtime, envelope)
+      local secondPort = doubles.ports[#doubles.ports]
+      Assert.isTrue(secondPort ~= nil, "the second launch owns its port")
+      watchDispose(2, secondPort)
+      settle(runtime, envelope, function(request)
+        return sparringChoose(runtime, request)
+      end, 6000)
+      pump(runtime, envelope, 60)
+      Assert.equal(runtime:lastBattleResult().result, "win", "round 2 reports its own win")
+      Assert.isTrue(runtime.session == firstField, "round 2 reuses the live field session")
       Assert.equal(#doubles.ports, 2, "two launches build two fresh ports")
       Assert.isTrue(doubles.ports[1] ~= doubles.ports[2], "each launch owns its port")
       Assert.deepEqual(disposed, { 1, 2 }, "each port disposes exactly once in launch order")
+      -- A third admission without a binding fails loudly.
+      runtime:unbindBattlePresentation(binding)
+      local admitted, admitErr = pcall(runtime.launchBattle, runtime, {
+        kind = "wild",
+        details = { species = "CATERPIE", level = 3 },
+      })
+      Assert.isFalse(admitted, "admission without its factory fails loudly: " .. tostring(admitErr))
     end, debug.traceback)
     local unbound = pcall(function()
       runtime:unbindBattlePresentation(binding)
@@ -957,37 +928,6 @@ function T.second_launch_gets_a_fresh_port_and_screen()
   end
 end
 
--- Withdrawing the factory binding fails later admissions instead of
--- presenting without a screen, while the in-flight launch keeps the
--- port it was admitted with and completes normally.
-function T.withdrawn_binding_fails_later_admissions()
-  for _, versionId in ipairs(readyVersions()) do
-    local runtime = bootRuntime(versionId)
-    local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("presented-withdraw:dual"))
-    local ok, failure = xpcall(function()
-      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-      waitConstructed(runtime, envelope)
-      runtime:unbindBattlePresentation(binding)
-      settle(runtime, envelope, function(request)
-        return sparringChoose(runtime, request)
-      end, 6000)
-      pump(runtime, envelope, 60)
-      Assert.equal(runtime:lastBattleResult().result, "win", "the admitted launch completes on its own port")
-      local admitted, admitErr = pcall(runtime.launchBattle, runtime, {
-        kind = "wild",
-        details = { species = "CATERPIE", level = 3 },
-      })
-      Assert.isFalse(admitted, "admission without its factory fails loudly: " .. tostring(admitErr))
-    end, debug.traceback)
-    local closed = pcall(function()
-      runtime:dispose()
-    end)
-    if not ok then
-      error(failure, 0)
-    end
-    Assert.isTrue(closed, "teardown releases the presented lifetime")
-  end
-end
 
 -- Quitting mid-battle releases the live battle and screen exactly once
 -- while borrowed field services survive for their owner.
@@ -1012,169 +952,6 @@ function T.quit_mid_battle_releases_once()
       error(failure, 0)
     end
     Assert.isTrue(unbound, "the lifetime releases its factory binding")
-  end
-end
-
--- Follower reconciliation and transition clocks freeze under the
--- presented hold alongside player movement, then resume with the field.
-function T.follower_clocks_freeze_under_the_hold()
-  for _, versionId in ipairs(readyVersions()) do
-    local runtime = bootRuntime(versionId)
-    local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("presented-follower:dual"))
-    local followerSteps, transitionSteps = 0, 0
-    runtime.followingMon = {
-      update = function()
-        followerSteps = followerSteps + 1
-      end,
-      dispose = function() end,
-    }
-    runtime.followingMonTransition = {
-      updateFixed = function()
-        transitionSteps = transitionSteps + 1
-      end,
-      dispose = function() end,
-    }
-    local ok, failure = xpcall(function()
-      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-      waitConstructed(runtime, envelope)
-      local heldFollower, heldTransition = followerSteps, transitionSteps
-      pump(runtime, envelope, 20)
-      Assert.equal(followerSteps, heldFollower, "the follower freezes under the hold")
-      Assert.equal(transitionSteps, heldTransition, "follower transitions freeze under the hold")
-      settle(runtime, envelope, function(request)
-        return sparringChoose(runtime, request)
-      end, 6000)
-      pump(runtime, envelope, 60)
-      Assert.isTrue(followerSteps > heldFollower, "the follower resumes with the field")
-      Assert.isTrue(transitionSteps > heldTransition, "follower transitions resume with the field")
-    end, debug.traceback)
-    local unbound = pcall(function()
-      runtime:unbindBattlePresentation(binding)
-    end)
-    local closed = pcall(function()
-      runtime:dispose()
-    end)
-    if not ok then
-      error(failure, 0)
-    end
-    Assert.isTrue(unbound, "the lifetime releases its factory binding")
-    Assert.isTrue(closed, "teardown releases the presented lifetime")
-  end
-end
-
--- Semantic battle input reaches the live screen before field controls:
--- a confirm moves the command cursor into its moves view while the
--- player tile and the Start Menu stay untouched.
-function T.battle_input_reaches_the_screen_before_field_controls()
-  for _, versionId in ipairs(readyVersions()) do
-    local runtime = bootRuntime(versionId)
-    local envelope, binding, _ = bindEnvelope(runtime, versionId, compactMeasurement("presented-input:compact"))
-    local ok, failure = xpcall(function()
-      local before = { fieldX = runtime.player.fieldX, fieldZ = runtime.player.fieldZ }
-      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-      waitConstructed(runtime, envelope)
-      local ticks = 0
-      while ticks < 900 do
-        runtime:update(SourceTick.DT)
-        envelope:updateFixed(TICK)
-        ticks = ticks + 1
-        local screen = envelope:liveScreen()
-        if screen ~= nil and screen:status().mode == "command" then
-          break
-        end
-      end
-      local screen = assert(envelope:liveScreen(), "the battle reaches its command root")
-      Assert.equal(screen:status().mode, "command", "the root shows its commands")
-      waitMenuInput(runtime, envelope)
-      envelope:input({ { type = "confirm" } })
-      pump(runtime, envelope, 5)
-      Assert.equal(screen:status().mode, "moves", "a confirm enters the move view")
-      Assert.deepEqual(
-        { fieldX = runtime.player.fieldX, fieldZ = runtime.player.fieldZ },
-        before,
-        "battle input never moves the player"
-      )
-      Assert.isFalse(runtime.applicationHost:isActive(), "battle input never opens the Start Menu")
-      waitMenuInput(runtime, envelope)
-      envelope:input({ { type = "cancel" } })
-      pump(runtime, envelope, 5)
-      Assert.equal(screen:status().mode, "command", "a cancel returns to the command root")
-    end, debug.traceback)
-    local unbound = pcall(function()
-      runtime:unbindBattlePresentation(binding)
-    end)
-    local closed = pcall(function()
-      runtime:dispose()
-    end)
-    if not ok then
-      error(failure, 0)
-    end
-    Assert.isTrue(unbound, "the lifetime releases its factory binding")
-    Assert.isTrue(closed, "teardown releases the presented lifetime")
-  end
-end
-
--- The continuing receipt publishes only after the revealed field
--- returns: mid-reveal polls stay pending while the safe field commits.
-function T.continuing_receipts_wait_for_the_reveal()
-  for _, versionId in ipairs(readyVersions()) do
-    local runtime = bootRuntime(versionId)
-    local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("presented-reveal:dual"))
-    local ok, failure = xpcall(function()
-      local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-      waitConstructed(runtime, envelope)
-      local revealing = false
-      local turns, ticks = 0, 0
-      while runtime.battleCoordinator:activeBattle() ~= nil and ticks < 6000 do
-        local battle = runtime.battleCoordinator:activeBattle()
-        local current = battle:status()
-        if current.phase == "failed" then
-          error("the presented battle failed: " .. tostring(current.error), 0)
-        end
-        if current.phase == "running" and current.request ~= nil then
-          turns = turns + 1
-          local answer = sparringChoose(runtime, current.request)
-          local choices = answer
-          if type(answer) == "table" and answer.kind ~= nil then
-            choices = { answer }
-          end
-          local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
-          Assert.isTrue(accepted, "a legal presented decision is accepted: " .. tostring(replyErr))
-        end
-        -- The terminal leave needs its explicit final-page acknowledgment.
-        local screen = envelope:liveScreen()
-        if screen ~= nil then
-          local shown = screen:status()
-          if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
-            envelope:input({ { type = "confirm" } })
-          end
-        end
-        runtime:update(SourceTick.DT)
-        envelope:updateFixed(TICK)
-        ticks = ticks + 1
-        local launch = runtime.battleCoordinator._battleLaunch
-        if launch ~= nil and launch.phase == "revealing" then
-          revealing = true
-          local status = runtime:battleStatus(launchId)
-          Assert.isTrue(status ~= nil and not status.committed, "mid-reveal polls stay pending")
-        end
-      end
-      Assert.isNil(runtime.battleCoordinator:activeBattle(), "answered decisions settle the owned presented lifetime")
-      Assert.isTrue(turns > 0, "the presented battle answers decisions")
-      Assert.isTrue(revealing, "the return reveals before publishing")
-      Assert.isNil(runtime.battleCoordinator._battleLaunch, "the receipt clears the launch")
-    end, debug.traceback)
-    local unbound = pcall(function()
-      runtime:unbindBattlePresentation(binding)
-    end)
-    local closed = pcall(function()
-      runtime:dispose()
-    end)
-    if not ok then
-      error(failure, 0)
-    end
-    Assert.isTrue(unbound, "the lifetime releases its factory binding")
-    Assert.isTrue(closed, "teardown releases the presented lifetime")
   end
 end
 
@@ -1381,46 +1158,6 @@ function T.surfing_background_time_and_fallback_rules_hold_for_both_launch_kinds
   end
 end
 
--- The host-update pump never advances a presented launch: without the
--- envelope driver the cover, leave, construction, and battle all freeze,
--- and the envelope resumes them on its next tick.
-function T.host_updates_never_advance_presented_launches()
-  for _, versionId in ipairs(readyVersions()) do
-    local runtime = bootRuntime(versionId)
-    local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("presented-clock:dual"))
-    local ok, failure = xpcall(function()
-      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-      for _ = 1, 10 do
-        runtime:update(SourceTick.DT)
-      end
-      Assert.equal(runtime.overworld:phase(), "present", "host updates never request leave")
-      Assert.isNil(runtime.battleCoordinator:activeBattle(), "host updates never construct")
-      Assert.equal(envelope:cover().coefficient, 0, "host updates never advance cover")
-      waitConstructed(runtime, envelope)
-      local phaseBefore = runtime.battleCoordinator:activeBattle():status().phase
-      for _ = 1, 10 do
-        runtime:update(SourceTick.DT)
-      end
-      Assert.equal(
-        runtime.battleCoordinator:activeBattle():status().phase,
-        phaseBefore,
-        "host updates never advance the owned battle clock"
-      )
-    end, debug.traceback)
-    local unbound = pcall(function()
-      runtime:unbindBattlePresentation(binding)
-    end)
-    local closed = pcall(function()
-      runtime:dispose()
-    end)
-    if not ok then
-      error(failure, 0)
-    end
-    Assert.isTrue(unbound, "the lifetime releases its factory binding")
-    Assert.isTrue(closed, "teardown releases the presented lifetime")
-  end
-end
-
 -- Forces the live screen into its failed mode with probe error text: the
 -- envelope observes it on the next fixed tick exactly like a genuine
 -- asset, audio, or draw failure.
@@ -1494,6 +1231,14 @@ function T.failed_screen_before_commit_restores_the_field_without_a_result()
         bindEnvelope(runtime, versionId, dualMeasurement("lost-renderer-precommit:" .. point))
       local ok, failure = xpcall(function()
         local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+        -- Host-only updates never advance a presented launch: presence
+        -- holds, nothing constructs, and cover stays down.
+        for _ = 1, 10 do
+          runtime:update(SourceTick.DT)
+        end
+        Assert.equal(runtime.overworld:phase(), "present", "host updates never request leave")
+        Assert.isNil(runtime.battleCoordinator:activeBattle(), "host updates never construct")
+        Assert.equal(envelope:cover().coefficient, 0, "host updates never advance cover")
         if point == "leaving" then
           local ticks = 0
           while runtime.overworld:phase() ~= "leaving" and ticks < 900 do
@@ -1505,6 +1250,16 @@ function T.failed_screen_before_commit_restores_the_field_without_a_result()
         elseif point == "active" then
           waitConstructed(runtime, envelope)
           Assert.equal(runtime.overworld:phase(), "absent", "the fault lands while the world is absent")
+          -- Host-only updates never advance the owned battle clock either.
+          local phaseBefore = runtime.battleCoordinator:activeBattle():status().phase
+          for _ = 1, 10 do
+            runtime:update(SourceTick.DT)
+          end
+          Assert.equal(
+            runtime.battleCoordinator:activeBattle():status().phase,
+            phaseBefore,
+            "host updates never advance the owned battle clock"
+          )
         else
           Assert.equal(runtime.overworld:phase(), "present", "the covering fault lands before the world leaves")
         end
@@ -2873,16 +2628,71 @@ local function settleArrowRun(envelope)
   error("the live command view never settled into one arrow run", 0)
 end
 
--- Fixed updates paint nothing without an explicit draw: text, windows,
--- and host graphics stay untouched across update-only ticks while the
--- command view holds, and one explicit draw prints and frames the view.
-function T.fixed_updates_paint_nothing_without_an_explicit_draw()
+-- One presented wild win carries every phase-shaped assertion of the
+-- shared fixture: cover completes before construction with semantic
+-- leave under full cover, follower clocks freeze under the hold, fixed
+-- updates paint nothing without an explicit draw at the command root,
+-- menu input reaches the screen without leaking to the field, the
+-- reveal withholds its receipt until the safe field commits, and the
+-- return reports its word with experience and resumed clocks. A single
+-- fought battle proves all phases in journey order instead of replaying
+-- the opening once per phase.
+function T.presented_win_carries_every_phase_assertion()
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
     local envelope, binding, doubles =
-      bindEnvelope(runtime, versionId, dualMeasurement("paint-free-updates:dual"), paintCountingGraphics())
+      bindEnvelope(runtime, versionId, dualMeasurement("presented-win-phases:dual"), paintCountingGraphics())
+    local followerSteps, transitionSteps = 0, 0
+    runtime.followingMon = {
+      update = function()
+        followerSteps = followerSteps + 1
+      end,
+      dispose = function() end,
+    }
+    runtime.followingMonTransition = {
+      updateFixed = function()
+        transitionSteps = transitionSteps + 1
+      end,
+      dispose = function() end,
+    }
     local ok, failure = xpcall(function()
-      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      local before = { fieldX = runtime.player.fieldX, fieldZ = runtime.player.fieldZ }
+      local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      -- The claim holds presence while covering: cover completes before
+      -- construction and semantic leave follows under full cover, with
+      -- the battle starting one reveal step after full cover.
+      Assert.equal(runtime.overworld:phase(), "present", "the claim holds presence while covering")
+      local coveredAt, leftAt, coverAtLeave = nil, nil, nil
+      local ticks = 0
+      while runtime.battleCoordinator:activeBattle() == nil and ticks < 900 do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        ticks = ticks + 1
+        if coveredAt == nil and envelope:cover().coefficient == 16 then
+          coveredAt = ticks
+        end
+        local phase = runtime.overworld:phase()
+        if leftAt == nil and phase ~= "present" then
+          leftAt = ticks
+          coverAtLeave = envelope:cover().coefficient
+        end
+      end
+      Assert.notNil(runtime.battleCoordinator:activeBattle(), "the covered launch constructs its battle")
+      Assert.notNil(coveredAt, "cover completes before construction")
+      Assert.notNil(leftAt, "semantic leave follows cover")
+      Assert.isTrue(coveredAt <= leftAt, "leave never precedes full cover")
+      Assert.equal(coverAtLeave, 16, "semantic leave happens under full cover")
+      -- Construction follows the full-cover leave by one accepted tick, and that
+      -- tick performs the reveal's single cover step first, so the battle starts
+      -- one step into the reveal beside its intro instead of under full cover.
+      Assert.equal(envelope:cover().coefficient, 14, "the battle starts one reveal step after full cover")
+      local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
+      -- Follower clocks freeze under the hold.
+      local heldFollower, heldTransition = followerSteps, transitionSteps
+      pump(runtime, envelope, 20)
+      Assert.equal(followerSteps, heldFollower, "the follower freezes under the hold")
+      Assert.equal(transitionSteps, heldTransition, "follower transitions freeze under the hold")
+      -- The command root holds still without paint until an explicit draw.
       local screen = driveToCommandMode(runtime, envelope)
       doubles.text.draws = {}
       doubles.windows.calls = {}
@@ -2905,6 +2715,79 @@ function T.fixed_updates_paint_nothing_without_an_explicit_draw()
       Assert.equal(#doubles.text.draws, texts, "later updates paint no further text")
       Assert.equal(#doubles.windows.calls, frames, "later updates paint no further windows")
       Assert.equal(#doubles.audio.plays, audioBefore, "updates and draws play no extra cues")
+      -- Semantic input reaches the live screen before field controls.
+      Assert.equal(screen:status().mode, "command", "the root shows its commands")
+      waitMenuInput(runtime, envelope)
+      envelope:input({ { type = "confirm" } })
+      pump(runtime, envelope, 5)
+      Assert.equal(screen:status().mode, "moves", "a confirm enters the move view")
+      Assert.deepEqual(
+        { fieldX = runtime.player.fieldX, fieldZ = runtime.player.fieldZ },
+        before,
+        "battle input never moves the player"
+      )
+      Assert.isFalse(runtime.applicationHost:isActive(), "battle input never opens the Start Menu")
+      waitMenuInput(runtime, envelope)
+      envelope:input({ { type = "cancel" } })
+      pump(runtime, envelope, 5)
+      Assert.equal(screen:status().mode, "command", "a cancel returns to the command root")
+      -- The fought win settles through the reveal: mid-reveal polls stay
+      -- pending while the safe field commits.
+      local revealing = false
+      local turns = 0
+      ticks = 0
+      while runtime.battleCoordinator:activeBattle() ~= nil and ticks < 6000 do
+        local battle = runtime.battleCoordinator:activeBattle()
+        local current = battle:status()
+        if current.phase == "failed" then
+          error("the presented battle failed: " .. tostring(current.error), 0)
+        end
+        if current.phase == "running" and current.request ~= nil then
+          turns = turns + 1
+          local answer = sparringChoose(runtime, current.request)
+          local choices = answer
+          if type(answer) == "table" and answer.kind ~= nil then
+            choices = { answer }
+          end
+          local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
+          Assert.isTrue(accepted, "a legal presented decision is accepted: " .. tostring(replyErr))
+        end
+        -- The terminal leave needs its explicit final-page acknowledgment.
+        local live = envelope:liveScreen()
+        if live ~= nil then
+          local shown = live:status()
+          if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+            envelope:input({ { type = "confirm" } })
+          end
+        end
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        ticks = ticks + 1
+        local launch = runtime.battleCoordinator._battleLaunch
+        if launch ~= nil and launch.phase == "revealing" then
+          revealing = true
+          local status = runtime:battleStatus(launchId)
+          Assert.isTrue(status ~= nil and not status.committed, "mid-reveal polls stay pending")
+        end
+      end
+      Assert.isNil(runtime.battleCoordinator:activeBattle(), "answered decisions settle the owned presented lifetime")
+      Assert.isTrue(turns > 0, "the presented battle answers decisions to its committed words")
+      Assert.isTrue(turns > 0, "the presented battle answers decisions")
+      Assert.isTrue(revealing, "the return reveals before publishing")
+      Assert.isNil(runtime.battleCoordinator._battleLaunch, "the receipt clears the launch")
+      -- The continuing return restores presence with the win word,
+      -- experience, an open save gate, and resumed clocks.
+      pump(runtime, envelope, 60)
+      Assert.equal(runtime:lastBattleResult().result, "win", "the win reports its exact word")
+      Assert.equal(runtime:lastBattleResult().sourceResult, 1, "the win reads back won")
+      Assert.equal(runtime:battleStatus(launchId).result, "win", "the launch receipt carries the win")
+      Assert.isTrue(runtime:battleStatus(launchId).committed, "the receipt commits only at the safe field")
+      Assert.isTrue(runtime.monService:partyMon(0).experience > experienceBefore, "the win publishes experience once")
+      Assert.equal(runtime.overworld:phase(), "present", "the continuing return restores presence")
+      Assert.isTrue(followerSteps > heldFollower, "the follower resumes with the field")
+      Assert.isTrue(transitionSteps > heldTransition, "follower transitions resume with the field")
+      local _, reason = runtime.saveCoordinator:capture(false)
+      Assert.isNil(reason, "the save gate opens at the safe field")
     end, debug.traceback)
     local unbound = pcall(function()
       runtime:unbindBattlePresentation(binding)

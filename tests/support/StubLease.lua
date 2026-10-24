@@ -40,7 +40,11 @@ end
 -- The pool-lease draw surface over an already-realized image (real love Image
 -- or another stub): same sampler draw contract, no new image. Stub
 -- tables gain the no-op filter the sampler normalizes; real images
--- already filter. Identity stays with the wrapped image.
+-- already filter. Identity stays with the wrapped image. Production pool
+-- leases publish their decoded extents beside the sampler so strip math
+-- resolves, so realized images publish theirs here too; pixel-less
+-- stand-ins stay extent-free and keep skipping strip sampling exactly
+-- like an unstaged strip.
 ---@param image table<string, unknown> realized image behind the stub
 ---@return table<string, unknown> pool-lease-shaped drawable stub
 function StubLease.over(image)
@@ -48,10 +52,24 @@ function StubLease.over(image)
   if type(image) == "table" and type(image.setFilter) ~= "function" then
     image.setFilter = noopFilter
   end
-  return setmetatable({
+  local lease = setmetatable({
     image = image,
     kind = "rgba8",
   }, ImageAssetPool.Lease)
+  -- Real images publish their decoded extents beside the sampler so
+  -- strip math resolves; anything without measurable extents keeps
+  -- skipping strip sampling exactly like an unstaged strip.
+  local widthOk, width = pcall(function()
+    return (image --[[@as table<string, unknown>]]):getWidth()
+  end)
+  local heightOk, height = pcall(function()
+    return (image --[[@as table<string, unknown>]]):getHeight()
+  end)
+  if widthOk and type(width) == "number" and heightOk and type(height) == "number" then
+    lease.width = width
+    lease.height = height
+  end
+  return lease
 end
 
 return StubLease

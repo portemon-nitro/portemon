@@ -12,6 +12,14 @@ local ManifestFixture = require("tests.support.BattlePresentationManifestFixture
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 
 local T = {}
+-- Bar patches name component-relative source tiles: the expected
+-- quad origins below ride the staged component base beside icons.
+local COMPONENT_BASE = ManifestFixture.manifest().hud.player.componentBase
+---@param x number recorded quad horizontal origin under inspection
+---@return boolean barOrigin true for the yellow partial and red bar origins of the probe vectors
+local function isBarOrigin(x)
+  return x == (COMPONENT_BASE + 15) * 8 or x == (COMPONENT_BASE + 19) * 8
+end
 
 local function stagedDrawable(key)
   local hud = key:match("^hud:") ~= nil
@@ -242,8 +250,8 @@ function T.source_gauge_task_tile_patches_override_the_static_hud_checkpoint()
   local sourceTiles = {}
   for _, draw in ipairs(graphics.draws) do
     if type(draw.image) == "table" and draw.image.handle == "hud:player" and draw.quad ~= nil then
-      if draw.quad.w == 8 and draw.quad.h == 8 and draw.quad.x < 128 * 8 then
-        sourceTiles[#sourceTiles + 1] = draw.quad.x / 8
+      if draw.quad.w == 8 and draw.quad.h == 8 and draw.quad.x == (COMPONENT_BASE + 2) * 8 then
+        sourceTiles[#sourceTiles + 1] = draw.quad.x / 8 - COMPONENT_BASE
       end
     end
   end
@@ -275,7 +283,7 @@ function T.source_experience_task_tile_patches_override_the_level_snapshot()
   local taskTiles = 0
   for _, draw in ipairs(graphics.draws) do
     if type(draw.image) == "table" and draw.image.handle == "hud:player" and draw.quad ~= nil then
-      if draw.quad.w == 8 and draw.quad.h == 8 and draw.quad.x == 2 * 8 then
+      if draw.quad.w == 8 and draw.quad.h == 8 and draw.quad.x == (COMPONENT_BASE + 2) * 8 then
         taskTiles = taskTiles + 1
       end
     end
@@ -391,7 +399,7 @@ function T.single_hud_tiles_follow_the_published_cell_object_coordinates()
   local patchPosition
   for _, draw in ipairs(graphics.draws) do
     if type(draw.image) == "table" and draw.image.handle == "hud:player" and draw.quad ~= nil then
-      if draw.quad.w == 8 and draw.quad.h == 8 and draw.quad.x == 80 then
+      if draw.quad.w == 8 and draw.quad.h == 8 and draw.quad.x == (COMPONENT_BASE + 10) * 8 then
         patchPosition = patchPosition or { x = draw.x, y = draw.y }
       end
     end
@@ -591,7 +599,7 @@ function T.quads_sample_the_strip_at_normalized_tile_origins()
       and entry.image.handle:sub(1, 4) == "hud:"
       and type(entry.quad) == "table"
     then
-      if entry.quad.w == 8 and entry.quad.h == 8 and entry.quad.x < 128 * 8 then
+      if entry.quad.w == 8 and entry.quad.h == 8 and isBarOrigin(entry.quad.x) then
         tiles[#tiles + 1] = entry.quad.x
       else
         cells[#cells + 1] = entry.quad.x
@@ -607,7 +615,7 @@ function T.quads_sample_the_strip_at_normalized_tile_origins()
   table.sort(tiles)
   Assert.deepEqual(
     tiles,
-    { 120, 120, 152, 152 },
+    { (COMPONENT_BASE + 15) * 8, (COMPONENT_BASE + 15) * 8, (COMPONENT_BASE + 19) * 8, (COMPONENT_BASE + 19) * 8 },
     "bar tiles sample the color base plus their fill level on both sides"
   )
 end
@@ -811,7 +819,7 @@ function T.compact_bars_declare_their_vertical_adaptation()
       and type(entry.quad) == "table"
       and entry.quad.w == 8
       and entry.quad.h == 8
-      and entry.quad.x < 128 * 8
+      and isBarOrigin(entry.quad.x)
     then
       tiles[#tiles + 1] = { x = entry.quad.x, sy = entry.sy, key = entry.image.handle }
     end
@@ -826,7 +834,11 @@ function T.compact_bars_declare_their_vertical_adaptation()
     Assert.equal(tile.sy, sourceCellScale, "each dynamic tile uses its own HUD cell's compact transform")
   end
   table.sort(sampled)
-  Assert.deepEqual(sampled, { 120, 120, 152, 152 }, "compact tiles sample the same selection per side")
+  Assert.deepEqual(
+    sampled,
+    { (COMPONENT_BASE + 15) * 8, (COMPONENT_BASE + 15) * 8, (COMPONENT_BASE + 19) * 8, (COMPONENT_BASE + 19) * 8 },
+    "compact tiles sample the same selection per side"
+  )
   local paired = drawnDetail(view)
   local pairedTiles = 0
   for _, entry in ipairs(paired.draws) do
@@ -837,7 +849,7 @@ function T.compact_bars_declare_their_vertical_adaptation()
       and type(entry.quad) == "table"
       and entry.quad.w == 8
       and entry.quad.h == 8
-      and entry.quad.x < 128 * 8
+      and isBarOrigin(entry.quad.x)
     then
       pairedTiles = pairedTiles + 1
       Assert.isTrue(entry.sy == nil or entry.sy == 1, "paired tiles patch full tile rows")
