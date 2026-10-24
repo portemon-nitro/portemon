@@ -1275,4 +1275,140 @@ function T.tests.throwing_transfer_callback_propagates_without_resurrecting_the_
   end)
 end
 
+-- An already renderable opening movie starts on the next eligible update
+-- without waiting out the loader beat on a warm entry, while a true first
+-- import keeps its bounded beat until the staged movie is drawable.
+function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_beat()
+  local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local MovieModule = require("libs.hgss.src.presentation.HgssOpeningMovie")
+  local saved = {
+    forVersion = CacheFs.forVersion,
+    loadScenes = MovieModule.loadValidatedScenes,
+    movieNew = MovieModule.new,
+  }
+  local function fakeLoading()
+    local presentation = {}
+    function presentation:update()
+    end
+    function presentation:resize()
+    end
+    function presentation:draw()
+    end
+    function presentation:dispose()
+    end
+    function presentation:adoptGeneratedAssets()
+      return true
+    end
+    return presentation
+  end
+  local function fakeHost()
+    local host = {}
+    function host.requestMilestone(name, _)
+      if name == "startup-loader" or name == "startup-title" then
+        return true, nil
+      end
+      return false, nil
+    end
+    function host.requestOpeningScene(_, _)
+      return true, nil
+    end
+    function host.milestoneStatus(_)
+      return { state = "ready", ready = 1, total = 1, failure = nil }
+    end
+    return host
+  end
+  local function fakeMovie()
+    local movie = { draws = 0 }
+    function movie:updateFixed()
+    end
+    function movie:draw()
+      self.draws = self.draws + 1
+    end
+    function movie:resize()
+    end
+    function movie:skipAllowed()
+      return false
+    end
+    function movie:requestSkip()
+      return false
+    end
+    function movie:isFinished()
+      return false
+    end
+    function movie:sceneNumber()
+      return 1
+    end
+    function movie:dispose()
+    end
+    return movie
+  end
+  local function build(initialImport)
+    local staged = fakeMovie()
+    CacheFs.forVersion = function(_)
+      return {}
+    end
+    MovieModule.loadValidatedScenes = function()
+      return { {}, {}, {}, {}, {} }
+    end
+    MovieModule.new = function(_)
+      return staged
+    end
+    local state = StartupTitleState.new({
+      versionId = "soulsilver",
+      epoch = 7,
+      derivedAssets = fakeHost(),
+      stageMenu = function()
+        error("the movie beat test never stages a menu")
+      end,
+      onFinished = function()
+        error("the movie beat test never finishes")
+      end,
+      onSwitchEdition = function()
+      end,
+      isCurrent = function()
+        return true
+      end,
+      width = 800,
+      height = 600,
+      initialImport = initialImport,
+      loading = fakeLoading(),
+    })
+    return state, staged
+  end
+  local function restore()
+    CacheFs.forVersion = saved.forVersion
+    MovieModule.loadValidatedScenes = saved.loadScenes
+    MovieModule.new = saved.movieNew
+  end
+  local ok, err = xpcall(function()
+    do
+      local state, staged = build(false)
+      state:update(1 / 30)
+      Assert.notNil(state.movie, "the five ready scenes stage the movie behind the loader")
+      state:update(1 / 30)
+      Assert.equal(state.phase, "movie", "the warm entry enters the staged movie without the loader beat")
+      state:draw()
+      Assert.isTrue(staged.draws >= 1, "the entered movie paints its first frame")
+      state:dispose()
+    end
+    do
+      local state, _ = build(true)
+      state:update(1 / 30)
+      Assert.notNil(state.movie, "the cold entry stages the movie the same way")
+      state:update(1 / 30)
+      Assert.equal(state.phase, "loading", "the true first import keeps its bounded beat while fresh")
+      for _ = 1, 30 do
+        state:update(1 / 30)
+      end
+      Assert.equal(state.phase, "movie", "the cold entry still reaches its staged movie after the beat")
+      state:dispose()
+    end
+  end, debug.traceback)
+  restore()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return T

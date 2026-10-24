@@ -2351,4 +2351,203 @@ function T.superseded_import_completion_never_replaces_the_current_selection()
   end
 end
 
+-- A repeated completion for an already registered ROM stays on the themed
+-- warm loader even without the launch-path rebind flag, while a genuinely
+-- new ROM keeps its cold artwork card. Classification follows the verified
+-- prior binding, never the filename or the entry route alone.
+function T.registered_reimport_stays_warm_while_true_first_import_stays_cold()
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local originalRead = RomBinding.read
+  local function completeImporter(versionId)
+    return {
+      state = "complete",
+      status = function()
+        return {
+          state = "complete",
+          progress = 1,
+          versionId = versionId,
+          displayName = versionId,
+          sourceName = versionId .. ".nds",
+        }
+      end,
+      takeVerifiedSource = function()
+        return {
+          byteData = function()
+            return nil
+          end,
+          release = function()
+          end,
+        }
+      end,
+    }
+  end
+  local function captureCopy(draw)
+    local graphics = love.graphics
+    local saved = {
+      getDimensions = graphics.getDimensions,
+      getWidth = graphics.getWidth,
+      setColor = graphics.setColor,
+      rectangle = graphics.rectangle,
+      print = graphics.print,
+      printf = graphics.printf,
+    }
+    local copy = {}
+    graphics.getDimensions = function()
+      return 800, 600
+    end
+    graphics.getWidth = function()
+      return 800
+    end
+    graphics.setColor = function()
+    end
+    graphics.rectangle = function()
+    end
+    graphics.print = function(value)
+      copy[#copy + 1] = tostring(value)
+    end
+    graphics.printf = function(value)
+      copy[#copy + 1] = tostring(value)
+    end
+    local ok, err = xpcall(draw, debug.traceback)
+    graphics.getDimensions = saved.getDimensions
+    graphics.getWidth = saved.getWidth
+    graphics.setColor = saved.setColor
+    graphics.rectangle = saved.rectangle
+    graphics.print = saved.print
+    graphics.printf = saved.printf
+    if not ok then
+      error(err, 0)
+    end
+    return table.concat(copy, "\n")
+  end
+  RomBinding.read = function(_, versionId)
+    if versionId == "soulsilver" then
+      return { versionId = "soulsilver", romSha1 = "synthetic-same-sha1" }
+    end
+    return nil, "synthetic missing registration"
+  end
+  local ok, err = xpcall(function()
+    withAppHarness({ dev = false }, function(id)
+      return id == "soulsilver"
+    end, function(result)
+      result.firstPlayCurrent = true
+      result.firstPlayStored = true
+      App._rebindVersionId = nil
+      App.importer = completeImporter("soulsilver")
+      App._onImported("soulsilver")
+      Assert.equal(
+        getmetatable(App.state).__index,
+        CachePreparationState,
+        "the repeated registered completion waits visibly instead of launching retail"
+      )
+      Assert.isFalse(App.state.freshImport, "a registered reimport is never a first import")
+      local copy = captureCopy(function()
+        App.state:draw()
+      end)
+      Assert.isTrue(
+        copy:find("Preparing", 1, true) == nil,
+        "the warm loader never shows the cold artwork card, got: " .. copy
+      )
+      App.update(0.016)
+      Assert.equal(
+        getmetatable(App.state).__index,
+        require("app.src.launcher.StartupTitleState"),
+        "the ready pair completes the warm handoff"
+      )
+      Assert.isFalse(App.state.initialImport, "the warm title knows this selection was not imported fresh")
+    end)
+    withAppHarness({ dev = false }, function()
+      return false
+    end, function(result)
+      result.firstPlayCurrent = false
+      result.firstPlayStored = false
+      App.importer = completeImporter("heartgold")
+      App._onImported("heartgold")
+      Assert.equal(
+        getmetatable(App.state).__index,
+        CachePreparationState,
+        "the first import holds its card"
+      )
+      Assert.isTrue(App.state.freshImport, "a genuinely new ROM takes the first-import path")
+      local copy = captureCopy(function()
+        App.state:draw()
+      end)
+      Assert.isTrue(
+        copy:find("Preparing walking sprites", 1, true) ~= nil,
+        "the true first import keeps its truthful artwork progress, got: " .. copy
+      )
+      App.update(0.016)
+      Assert.equal(
+        getmetatable(App.state).__index,
+        require("app.src.launcher.StartupTitleState"),
+        "the drawable pair completes the cold handoff"
+      )
+      Assert.isTrue(App.state.initialImport, "the cold title keeps its bounded beat")
+    end)
+  end, debug.traceback)
+  RomBinding.read = originalRead
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A warm selection keeps its one published pair across the title handoff,
+-- retail entry, and the save editor: every owner forwards the same index
+-- without reselecting.
+function T.warm_selection_keeps_one_pair_across_title_game_and_editor()
+  local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
+  local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
+  local savedLoadWalker = StartupAssetCache.loadWalker
+  local savedEditorNew = SaveEditorState.new
+  local ok, err = xpcall(function()
+    StartupAssetCache.loadWalker = function(_, pairIndex)
+      if pairIndex == 7 then
+        return { pairIndex = 7 }
+      end
+      return nil, "synthetic missing pair"
+    end
+    local editorOptions = nil
+    SaveEditorState.new = function(options)
+      editorOptions = options
+      return {
+        dispose = function() end,
+      }
+    end
+    withAppHarness({ dev = false }, function(id)
+      return id == "soulsilver"
+    end, function(result)
+      App._selectVersion("soulsilver")
+      App.update(0.016)
+      App.update(0.016)
+      local StartupTitleState = require("app.src.launcher.StartupTitleState")
+      Assert.equal(
+        getmetatable(App.state).__index,
+        StartupTitleState,
+        "the warm pair transfers into startup title ownership"
+      )
+      Assert.equal(App.pairIndex, 7, "the warm epoch settles on the published pair")
+      Assert.isFalse(App.state.initialImport, "the ordinary warm selection takes no import beat")
+      finishStartupTitle(result)
+      local menu = assert(App.state, "skip installs the staged menu")
+      Assert.equal(menu, result.menus[#result.menus], "the exact staged menu installs")
+      menu.options.onResult({ kind = "new_game" })
+      local launch = assert(result.launches[#result.launches], "retail entry is captured")
+      Assert.equal(launch.startupPairIndex, 7, "retail entry forwards the selected pair")
+      Assert.equal(App.pairIndex, 7, "entering retail never reselects the pair")
+      launch.onExit({ kind = "main_menu" })
+      local returned = assert(App.state, "returning installs a menu")
+      Assert.equal(App.pairIndex, 7, "returning to the menu never reselects the pair")
+      returned.options.onResult({ kind = "edit", saveId = "synthetic-save" })
+      Assert.notNil(editorOptions, "the save editor receives the selection")
+      Assert.equal(editorOptions.startupPairIndex, 7, "the editor forwards the selected pair")
+      Assert.equal(App.pairIndex, 7, "opening the editor never reselects the pair")
+    end)
+  end, debug.traceback)
+  StartupAssetCache.loadWalker = savedLoadWalker
+  SaveEditorState.new = savedEditorNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }

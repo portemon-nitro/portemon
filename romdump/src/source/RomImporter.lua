@@ -65,6 +65,18 @@ local IMPORT_ERROR_CODES = {
 -- default GameVersion. Readiness is the strict persisted source binding
 -- only: the registered file is never opened here, so a moved ROM never
 -- blocks an installed cache and actual bytes load lazily on a real miss.
+-- Whether the version already carries a persisted source registration.
+-- Checked through the version cache only: the binding proves a prior
+-- registration without opening the ROM, while a filename or launch route
+-- alone never does. A failed or corrupt read counts as unregistered.
+---@param cacheFs table<string, function> version cache holding the registration
+---@param versionId string
+---@return boolean
+function RomImporter.isRegistered(cacheFs, versionId)
+  local ok, binding = pcall(RomBinding.read, cacheFs, versionId)
+  return ok and binding ~= nil
+end
+
 function RomImporter.isReady(versionId, cache, versions)
   local catalog = versions or GameVersion
   local info

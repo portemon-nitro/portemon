@@ -579,4 +579,220 @@ function T.cancelled_or_retired_selection_releases_loading_once_and_never_transf
   end)
 end
 
+-- The full warm journey keeps exactly one pair alive: the production
+-- selection settles on the published ready pair, the transfer adopts it
+-- exactly once with no demand for any other pair, the identity survives
+-- later updates, and switching edition releases the one presentation once.
+function T.warm_journey_keeps_one_pair_alive_and_retires_it_once()
+  local App = require("app.src.App")
+  local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local LoadingModule = require("libs.hgss.src.ui.HgssLoadingPresentation")
+  local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
+  local HgssGame = require("game.hgss.src.HgssGame")
+  local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  local saved = {
+    state = App.state,
+    importer = App.importer,
+    provisioner = App.provisioner,
+    service = App.service,
+    epoch = App.epoch,
+    pairIndex = App.pairIndex,
+    pendingQuiesce = App.pendingQuiesce,
+    selectedVersionId = App.selectedVersionId,
+    rebindVersionId = App._rebindVersionId,
+    bootBlockedVersionId = App._bootBlockedVersionId,
+    startupWarmup = App._startupWarmup,
+    opts = App.opts,
+    loadWalker = StartupAssetCache.loadWalker,
+    forVersion = CacheFs.forVersion,
+    loadingNew = LoadingModule.new,
+    isCurrent = FirstPlayCompletion.isCurrent,
+    firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
+    random = love.math.random,
+  }
+  local demands = {}
+  local epochs = 0
+  local retires = 0
+  local service = {}
+  function service:select(_)
+    epochs = epochs + 1
+    return epochs
+  end
+  function service:request(_, selector)
+    if type(selector) == "table" and selector.requestKind == "startup-walker" then
+      demands[#demands + 1] = { epoch = epochs, pairIndex = selector.pairIndex, urgency = selector.urgency }
+    end
+  end
+  function service:observe(_, selector)
+    if type(selector) == "table" and selector.requestKind == "startup-walker" then
+      if selector.pairIndex == 7 then
+        return true, nil
+      end
+      return nil, nil
+    end
+    return nil, nil
+  end
+  function service:requestBootSource(_)
+  end
+  function service:bootSourceStatus(_)
+    return "ready", nil
+  end
+  function service:update()
+  end
+  function service:retire(_)
+    retires = retires + 1
+  end
+  function service:generationId(_)
+    return "synthetic-test-generation"
+  end
+  local presentations = {}
+  local function fakeLoading()
+    local presentation = { adopted = false, adoptions = 0, disposals = 0 }
+    function presentation:update()
+    end
+    function presentation:resize()
+    end
+    function presentation:draw()
+    end
+    function presentation:dispose()
+      self.disposals = self.disposals + 1
+    end
+    function presentation:adoptGeneratedAssets()
+      self.adoptions = self.adoptions + 1
+      self.adopted = true
+      return true
+    end
+    presentations[#presentations + 1] = presentation
+    return presentation
+  end
+  local function restore()
+    if App.state ~= nil then
+      App.setState(nil)
+    end
+    if App.provisioner ~= nil then
+      App._retireSelection()
+    end
+    App.state = saved.state
+    App.importer = saved.importer
+    App.provisioner = saved.provisioner
+    App.service = saved.service
+    App.epoch = saved.epoch
+    App.pairIndex = saved.pairIndex
+    App.pendingQuiesce = saved.pendingQuiesce
+    App.selectedVersionId = saved.selectedVersionId
+    App._rebindVersionId = saved.rebindVersionId
+    App._bootBlockedVersionId = saved.bootBlockedVersionId
+    App._startupWarmup = saved.startupWarmup
+    App.opts = saved.opts
+    StartupAssetCache.loadWalker = saved.loadWalker
+    CacheFs.forVersion = saved.forVersion
+    LoadingModule.new = saved.loadingNew
+    FirstPlayCompletion.isCurrent = saved.isCurrent
+    HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
+    love.math.random = saved.random
+  end
+  local ok, err = xpcall(function()
+    StartupAssetCache.loadWalker = function(_, pairIndex)
+      if pairIndex == 7 then
+        return { pairIndex = 7 }
+      end
+      return nil, "synthetic missing pair"
+    end
+    CacheFs.forVersion = function(_)
+      return {}
+    end
+    LoadingModule.new = function()
+      return fakeLoading()
+    end
+    FirstPlayCompletion.isCurrent = function()
+      return false
+    end
+    HgssGame.newFirstPlayCachePreparation = function(_)
+      local preparation = {}
+      function preparation:poll()
+        return nil, nil
+      end
+      function preparation:dispose()
+      end
+      return preparation
+    end
+    love.math.random = function()
+      return 23
+    end
+    App.state = nil
+    App.importer = nil
+    App.provisioner = nil
+    App.service = service
+    App.epoch = 0
+    App.pairIndex = nil
+    App.pendingQuiesce = nil
+    App.selectedVersionId = nil
+    App._rebindVersionId = nil
+    App._bootBlockedVersionId = nil
+    App._startupWarmup = nil
+    App.opts = { dev = false }
+    App._selectVersion("soulsilver")
+    for _ = 1, 5 do
+      App.update(0.016)
+    end
+    Assert.equal(App.pairIndex, 7, "the warm epoch keeps the published ready pair")
+    Assert.isTrue(#demands >= 1, "the warm journey demands its pair while it waits")
+    for _, demand in ipairs(demands) do
+      Assert.equal(demand.pairIndex, 7, "every demand names the one selected pair")
+      Assert.equal(demand.urgency, "required", "the selected pair stays a required demand")
+    end
+    Assert.equal(
+      getmetatable(App.state).__index,
+      StartupTitleState,
+      "the adopted pair transfers the warm journey"
+    )
+    Assert.equal(presentations[1].adoptions, 1, "the selected pair is adopted exactly once")
+    local chosen = App.pairIndex
+    for _ = 1, 10 do
+      App.update(0.016)
+    end
+    Assert.equal(App.pairIndex, chosen, "later updates never reselect the pair within the epoch")
+    for _, demand in ipairs(demands) do
+      Assert.equal(demand.pairIndex, chosen, "no second pair ever leaves the game thread")
+    end
+    App._selectVersion("soulsilver")
+    for _ = 1, 3 do
+      App.update(0.016)
+    end
+    Assert.equal(presentations[1].disposals, 1, "switching edition releases the retired presentation once")
+    Assert.equal(App.pairIndex, 7, "the fresh epoch settles on the ready pair again")
+    Assert.isTrue(retires >= 1, "switching edition retires the previous selection")
+  end, debug.traceback)
+  restore()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- The selected pair is demanded while the source gate is still blocked:
+-- the worker compiles during the wait, but nothing is adopted and nothing
+-- transfers until the gate admits the epoch.
+function T.blocked_boot_demands_the_selected_pair_before_admission()
+  local loading = fakeLoading()
+  local record = {}
+  withPatchedLoading(loading, record, function()
+    local script = { sourceDetail = { code = "ROM_SOURCE_REQUIRED", message = "the original file is missing" } }
+    local state = bootWait(script)
+    state:update(0.016)
+    state:update(0.016)
+    Assert.isTrue(#script.pairRequests >= 1, "the blocked wait demands the selected pair early")
+    for _, pairIndex in ipairs(script.pairRequests) do
+      Assert.equal(pairIndex, 5, "the early demand names exactly the selected pair")
+    end
+    Assert.equal(script.fired or 0, 0, "the blocked gate never transfers")
+    Assert.isFalse(loading.adopted, "nothing is adopted before the gate admits the epoch")
+    Assert.throws(function()
+      state:takeLoading()
+    end, "nothing detaches before admission and adoption")
+    state:dispose()
+    Assert.equal(loading.disposals, 1, "retiring the blocked wait releases its stage once")
+  end)
+end
+
 return { tests = T }

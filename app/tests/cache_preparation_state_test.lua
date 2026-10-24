@@ -26,6 +26,24 @@ local function bootService(script)
     end
     return "source-required", script.detail
   end
+  -- Selected-pair demand seam: the wait requests its pair early, even
+  -- while the source gate is still blocked, and only observes readiness
+  -- once the gate admits. Fixtures answer through script.walkerReady.
+  function service:request(_, selector)
+    if type(selector) == "table" and selector.requestKind == "startup-walker" then
+      script.pairDemands = (script.pairDemands or 0) + 1
+      script.pairIndexes = script.pairIndexes or {}
+      script.pairIndexes[#script.pairIndexes + 1] = selector.pairIndex
+      return "walker-request"
+    end
+    return nil
+  end
+  function service:observe(_, selector)
+    if type(selector) == "table" and selector.requestKind == "startup-walker" then
+      return script.walkerReady == true, nil
+    end
+    return false, nil
+  end
   return service
 end
 
@@ -57,6 +75,26 @@ local function onTransfer(script, options)
     script.cancelled = script.cancelled + 1
   end
   return options
+end
+
+local LOADING_MODULE = "libs.hgss.src.ui.HgssLoadingPresentation"
+
+local function fakeAdopter()
+  local presentation = { adoptions = 0, disposals = 0, adoptResult = true }
+  function presentation:update() end
+  function presentation:resize() end
+  function presentation:draw() end
+  function presentation:dispose()
+    self.disposals = self.disposals + 1
+  end
+  function presentation:adoptGeneratedAssets()
+    self.adoptions = self.adoptions + 1
+    if self.adoptResult then
+      return true
+    end
+    return false, "synthetic adoption failure"
+  end
+  return presentation
 end
 
 ---@param script table
@@ -103,17 +141,32 @@ function T.boot_source_wait_transfers_exactly_once_on_readiness()
 end
 
 function T.boot_source_wait_stays_blocked_while_the_source_is_required()
-  local script = { detail = { code = "ROM_SOURCE_REQUIRED", message = "the original file is missing" } }
-  local state = bootWait(script, { mismatch = "Dropped SoulSilver does not match the expected HeartGold version." })
-  state:update(0.016)
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a missing source never transfers")
-  Assert.isNil(state.error, "a missing source is a block, not a failure")
-  Assert.equal(state.sourceDetail, script.detail, "the typed source reason stays visible on the wait")
-  Assert.notNil(state.mismatch, "the wrong-version diagnostic stays on the blocked wait")
-  script.ready = true
-  state:update(0.016)
-  Assert.equal(script.fired, 1, "the admitted source transfers on the same wait")
+  local Loading = require("libs.hgss.src.ui.HgssLoadingPresentation")
+  local savedNew = Loading.new
+  local loading = fakeAdopter()
+  Loading.new = function()
+    return loading
+  end
+  local ok, err = xpcall(function()
+    local script = { detail = { code = "ROM_SOURCE_REQUIRED", message = "the original file is missing" } }
+    local state =
+      bootWait(script, { mismatch = "Dropped SoulSilver does not match the expected HeartGold version.", pairIndex = 5 })
+    state:update(0.016)
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "a missing source never transfers")
+    Assert.isTrue((script.pairDemands or 0) >= 1, "the blocked wait still demands the selected pair early")
+    Assert.isNil(state.error, "a missing source is a block, not a failure")
+    Assert.equal(state.sourceDetail, script.detail, "the typed source reason stays visible on the wait")
+    Assert.notNil(state.mismatch, "the wrong-version diagnostic stays on the blocked wait")
+    script.ready = true
+    script.walkerReady = true
+    state:update(0.016)
+    Assert.equal(script.fired, 1, "the admitted source transfers on the same wait")
+  end, debug.traceback)
+  Loading.new = savedNew
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.boot_source_failure_latches_without_transfer()
@@ -129,21 +182,35 @@ function T.boot_source_failure_latches_without_transfer()
 end
 
 function T.boot_source_cancel_never_publishes_a_stale_transfer()
-  local script = {}
-  local state = bootWait(script)
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "the pending gate transfers nothing yet")
-  state:keypressed("escape")
-  Assert.equal(script.cancelled, 1, "escape returns to the owning selection exactly once")
-  state:keypressed("escape")
-  Assert.equal(script.cancelled, 1, "a second escape never cancels twice")
-  script.ready = true
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a cancelled wait never transfers even when the gate answers")
-  state:dispose()
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a disposed wait stays silent")
-  Assert.equal(script.cancelled, 1, "disposal never re-cancels")
+  local Loading = require("libs.hgss.src.ui.HgssLoadingPresentation")
+  local savedNew = Loading.new
+  local loading = fakeAdopter()
+  Loading.new = function()
+    return loading
+  end
+  local ok, err = xpcall(function()
+    local script = {}
+    local state = bootWait(script, { pairIndex = 5 })
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "the pending gate transfers nothing yet")
+    Assert.isTrue((script.pairDemands or 0) >= 1, "the pending wait still demands the selected pair early")
+    state:keypressed("escape")
+    Assert.equal(script.cancelled, 1, "escape returns to the owning selection exactly once")
+    state:keypressed("escape")
+    Assert.equal(script.cancelled, 1, "a second escape never cancels twice")
+    script.ready = true
+    script.walkerReady = true
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "a cancelled wait never transfers even when the gate answers")
+    state:dispose()
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "a disposed wait stays silent")
+    Assert.equal(script.cancelled, 1, "disposal never re-cancels")
+  end, debug.traceback)
+  Loading.new = savedNew
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.stale_wait_never_polls_or_transfers()
@@ -314,26 +381,6 @@ local function walkerCommandId(host, epoch)
     end
   end
   return found
-end
-
-local LOADING_MODULE = "libs.hgss.src.ui.HgssLoadingPresentation"
-
-local function fakeAdopter()
-  local presentation = { adoptions = 0, disposals = 0, adoptResult = true }
-  function presentation:update() end
-  function presentation:resize() end
-  function presentation:draw() end
-  function presentation:dispose()
-    self.disposals = self.disposals + 1
-  end
-  function presentation:adoptGeneratedAssets()
-    self.adoptions = self.adoptions + 1
-    if self.adoptResult then
-      return true
-    end
-    return false, "synthetic adoption failure"
-  end
-  return presentation
 end
 
 local function captureWarmCopy(draw)

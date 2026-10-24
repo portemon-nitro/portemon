@@ -258,6 +258,22 @@ function HgssLoadingPresentation:_ensureCaptionFont()
   return nil
 end
 
+-- Smallest currently published walking pair (1..32) for one version cache,
+-- or nil when no manifest loads. Read-only: manifests are verified on
+-- load and the cache controller still gates every transfer, so an
+-- unverified file can never pose as a ready pair.
+---@param cacheFs table<string, function> version cache holding the walker manifests
+---@return integer? currently published pair, or nil when none loads
+function HgssLoadingPresentation.publishedPair(cacheFs)
+  for pairIndex = 1, 32 do
+    local ok, manifest = pcall(StartupAssetCache.loadWalker, cacheFs, pairIndex)
+    if ok and manifest ~= nil then
+      return pairIndex
+    end
+  end
+  return nil
+end
+
 function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
   assert(not self.disposed, "disposed loading presentation cannot adopt art")
   if self.hero ~= nil then
