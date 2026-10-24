@@ -11,6 +11,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 ---@field onPick fun()? whole-card activation, present only when available
 ---@field _received string? sanitized basename latched synchronously on input
 ---@field _rejected string? concise rejection shown while the importer stays busy
+---@field _painted string? receipt actually painted by the latest successful draw
 local ImportState = {}
 ImportState.__index = ImportState
 
@@ -77,6 +78,7 @@ function ImportState.new(importer, saveDir, options)
     onPick = options.onPick,
     _received = nil,
     _rejected = nil,
+    _painted = nil,
   }, ImportState)
 end
 
@@ -84,7 +86,11 @@ function ImportState:update() end
 
 function ImportState:resize() end
 
-function ImportState:dispose() end
+function ImportState:dispose()
+  self._received = nil
+  self._rejected = nil
+  self._painted = nil
+end
 
 -- One receipt seam shared by the drop and picker channels: the visible
 -- acknowledgement latches synchronously, before importer validation runs,
@@ -97,11 +103,20 @@ function ImportState:markReceived(displayName)
   end
   self._received = clean
   self._rejected = nil
+  self._painted = nil
 end
 
 ---@return string? the latched receipt basename, or nil when nothing was received
 function ImportState:receivedName()
   return self._received
+end
+
+-- Fact for the shell's import ordering: the receipt counts as painted only
+-- once a draw actually rendered it. Latching a name is not painting; a
+-- rejection, an error card, or disposal clears the fact.
+---@return string? the receipt painted by the latest successful draw, or nil
+function ImportState:paintedReceipt()
+  return self._painted
 end
 
 ---@param importer RomImporter the owned import session
@@ -135,6 +150,7 @@ function ImportState:filedropped(file)
   -- frame without touching the running session or resetting its progress.
   if importerBusy(self.importer) then
     self._received = nil
+    self._painted = nil
     self._rejected = "an import is already in progress"
     return
   end
@@ -145,6 +161,7 @@ function ImportState:filedropped(file)
     end
   else
     self._received = nil
+    self._painted = nil
     self._rejected = rejectionReason(failure)
   end
 end
@@ -266,6 +283,7 @@ end
 
 function ImportState:draw(statusOverride)
   local lg = love.graphics
+  self._painted = nil
   local width, height = lg.getDimensions()
   lg.setColor(0.055, 0.09, 0.13, 1)
   lg.rectangle("fill", 0, 0, width, height)
@@ -405,6 +423,9 @@ function ImportState:draw(statusOverride)
     lg.setColor(0.94, 0.94, 0.9, 1)
     lg.printf(receiptText, textX, y, textWidth, "center")
     y = y + LINE_HEIGHT
+    -- The receipt row above is on screen: the shell may now start the
+    -- background validation it deferred until this first paint.
+    self._painted = self._received
   end
 
   -- Progress is a real determinate bar for importer verification within its

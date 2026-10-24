@@ -34,6 +34,13 @@ local Errors = require("libs.errors.src.Errors")
 ---@field private _now (fun(): number)?
 ---@field private _expectedVersionId string? edition required by a targeted import
 ---@field private _verified table<string, unknown>? one-shot validated buffer for the controller handoff
+---@field private _registerGate (fun(): nil)? worker-only authorization before the binding write
+---@field private _queued table<string, unknown>? live background session, when queued
+---@field private _queueSeq integer background session counter guarding late packets
+---@field private _queueCanceled boolean whether the queued session was retired
+---@field private _queueRequest table<string, unknown>? restartable worker input for one retry
+---@field private _queueAttempts integer background starts for the live request
+---@field private _commitSent boolean whether the live session authorized registration
 local RomImporter = {}
 RomImporter.__index = RomImporter
 
@@ -87,14 +94,20 @@ local function defaultNow()
   return 0
 end
 
--- opts: { onComplete=, versions=, cacheFactory=, now= }. All optional;
--- tests inject a synthetic version catalog, a FakeCache-backed cacheFactory, and
--- a static `now` (which disables yielding, so one update() runs to completion).
+-- opts: { onComplete=, versions=, cacheFactory=, now=, registerGate= }. All
+-- optional; tests inject a synthetic version catalog, a FakeCache-backed
+-- cacheFactory, and a static `now` (which disables yielding, so one
+-- update() runs to completion). registerGate is worker-only: the
+-- background worker authorizes its binding write through it, while the
+-- direct path continues without a gate.
 function RomImporter.new(opts)
   opts = opts or {}
   local expectedVersionId = opts.expectedVersionId
   if expectedVersionId ~= nil then
     assert(GameVersion.VERSIONS[expectedVersionId], "unknown expected game version")
+  end
+  if opts.registerGate ~= nil then
+    assert(type(opts.registerGate) == "function", "registerGate must be a function")
   end
   return setmetatable({
     _onComplete = opts.onComplete,
@@ -104,6 +117,11 @@ function RomImporter.new(opts)
     end,
     _now = opts.now or defaultNow,
     _expectedVersionId = expectedVersionId,
+    _registerGate = opts.registerGate,
+    _queueSeq = 0,
+    _queueCanceled = false,
+    _queueAttempts = 0,
+    _commitSent = false,
     state = RomImporter.STATES.IDLE,
     progress = 0,
   }, RomImporter)
@@ -262,6 +280,15 @@ function RomImporter:_beginWork()
         origin.path = candidate
       end
     end
+    -- Worker-only authorization seam directly before the binding write.
+    -- The direct path registers no gate, so its behavior is unchanged; the
+    -- background worker announces its validated version here and waits for
+    -- the game thread's explicit commit, and a cancel raises out of the
+    -- validation coroutine so nothing is recorded.
+    local gate = self._registerGate
+    if gate ~= nil then
+      gate()
+    end
     local recorded, recordErr = RomBinding.record(cache, rom, {
       kind = origin.kind,
       path = origin.path,
@@ -338,8 +365,372 @@ function RomImporter:filedropped(droppedFile)
   self:startDroppedFile(droppedFile)
 end
 
+-- Copy only channel-safe scalars so the version catalog snapshot crosses
+-- into the background worker without carrying live objects.
+---@param value unknown
+---@param depth integer
+---@return unknown? plain copy, or nil when the value cannot travel
+local function plainValue(value, depth)
+  if depth <= 0 then
+    return nil
+  end
+  local kind = type(value)
+  if kind == "string" or kind == "number" or kind == "boolean" then
+    return value
+  end
+  if kind ~= "table" then
+    return nil
+  end
+  local out = {}
+  for key, item in pairs(value) do
+    if type(key) == "string" or type(key) == "number" then
+      local part = plainValue(item, depth - 1)
+      if part ~= nil then
+        out[key] = part
+      end
+    end
+  end
+  return out
+end
+
+-- Snapshot the version catalog as plain record data for the background
+-- worker. GameVersion-shaped catalogs expose their VERSIONS table;
+-- function catalogs are probed over the known version identities, which
+-- also covers injected test catalogs answering the same lookup.
+---@param versions table<string, unknown>
+---@return table<integer, table<string, unknown>> plain version records
+local function snapshotCatalog(versions)
+  local entries, seen = {}, {}
+  local function add(info)
+    if type(info) == "table" and type(info.id) == "string" and not seen[info.id] then
+      seen[info.id] = true
+      local copied = plainValue(info, 4)
+      if type(copied) == "table" then
+        entries[#entries + 1] = copied
+      end
+    end
+  end
+  if type(versions) == "table" then
+    local catalog = versions --[[@as table<string, unknown>]]
+    if type(catalog.VERSIONS) == "table" then
+      for _, info in
+        pairs(catalog.VERSIONS --[[@as table<string, unknown>]])
+      do
+        add(info)
+      end
+    end
+    if type(catalog.info) == "function" then
+      local order = GameVersion.ORDER
+      if type(catalog.ORDER) == "table" then
+        order = catalog.ORDER --[[@as string[] ]]
+      end
+      local lookup = catalog.info --[[@as fun(string): unknown]]
+      for _, id in ipairs(order) do
+        local ok, info = pcall(lookup, id)
+        if ok then
+          add(info)
+        end
+      end
+    end
+  end
+  return entries
+end
+
+---@param fraction unknown
+---@return number clamped determinate fraction
+local function clampFraction(fraction)
+  if type(fraction) ~= "number" or fraction ~= fraction then
+    return 0
+  end
+  if fraction < 0 then
+    return 0
+  end
+  if fraction > 1 then
+    return 1
+  end
+  return fraction
+end
+
+-- Start one background session for an already-built worker request. The
+-- game thread performs no source read, hash, or registration here: the
+-- worker owns the authoritative sequence and answers over its channels.
+---@param request table<string, unknown> worker input (kind/path/file/bytes/name)
+---@param requestId unknown? caller correlation, defaults to the next session id
+---@param attempts integer? background starts so far for this request
+---@return nil
+function RomImporter:_startQueued(request, requestId, attempts)
+  self._source, self._co, self._verified = nil, nil, nil
+  self._versionId, self._displayName, self._sourceName = nil, nil, nil
+  self._report, self._error, self._errorCode = nil, nil, nil
+  self._stage, self._stageLabel, self._detail = nil, nil, nil
+  self._completeFired = false
+  self._queueCanceled = false
+  self._commitSent = false
+  self._queueAttempts = attempts or 1
+  self._queueRequest = {
+    kind = request.kind,
+    path = request.path,
+    file = request.file,
+    bytes = request.bytes,
+    name = request.name,
+  }
+  self.progress = 0
+  self._queueSeq = (self._queueSeq or 0) + 1
+  local id = requestId == nil and self._queueSeq or requestId
+  local host = love ~= nil and love.thread or nil
+  if type(host) ~= "table" or type(host.newChannel) ~= "function" or type(host.newThread) ~= "function" then
+    return self:_fail(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import needs love.thread", {}))
+  end
+  local RomImportWorker = require("romdump.src.source.RomImportWorker")
+  local inbox, outbox = host.newChannel(), host.newChannel()
+  if inbox == nil or outbox == nil then
+    return self:_fail(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import has no channels", {}))
+  end
+  request.id = id
+  request.catalog = snapshotCatalog(self._versions --[[@as table<string, unknown>]])
+  request.expectedVersionId = self._expectedVersionId
+  if not pcall(inbox.push, inbox, request) then
+    return self:_fail(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import could not take its request", {}))
+  end
+  local threadOk, threadOrErr = pcall(host.newThread, RomImportWorker.bootstrap())
+  if not threadOk or threadOrErr == nil then
+    return self:_fail(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import thread failed to start", {}))
+  end
+  local thread = threadOrErr --[[@as table<string, function>]]
+  if not pcall(thread.start, thread, package.path, inbox, outbox) then
+    return self:_fail(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import thread failed to start", {}))
+  end
+  self._queued = { id = id, thread = thread, inbox = inbox, outbox = outbox }
+  self.state = RomImporter.STATES.READING
+end
+
+-- Queue a path import for background validation. Unlike startPath, no source
+-- is opened on the calling thread; progress and the terminal result arrive
+-- through update(). requestId optionally correlates the session.
+---@param path string picked .nds/.zip path
+---@param requestId unknown? caller correlation
+---@return nil
+function RomImporter:queuePath(path, requestId)
+  self:_requireNotBusy()
+  assert(type(path) == "string" and path ~= "", "queuePath requires a ROM path")
+  return self:_startQueued({ kind = "path", path = path }, requestId)
+end
+
+---@param name unknown raw dropped file label
+---@return string? sanitized basename for the queued memory handoff
+local function queuedDropName(name)
+  if type(name) ~= "string" or name == "" then
+    return nil
+  end
+  local base = (name:gsub("\\", "/"):match("([^/]+)$")) or name
+  local clean = base:gsub("[%c]", "?")
+  if clean == "" then
+    return nil
+  end
+  return clean
+end
+
+-- Queue a dropped file for background validation. An invalid extension
+-- fails synchronously without starting a worker. Host file handles travel
+-- by reference so large reads stay in the worker; drops whose bytes are
+-- already resident travel by value after the caller hands them over.
+---@param droppedFile table<string, unknown>|userdata dropped file
+---@param requestId unknown? caller correlation
+---@return nil
+function RomImporter:queueDroppedFile(droppedFile, requestId)
+  self:_requireNotBusy()
+  assert(droppedFile ~= nil, "queueDroppedFile requires a dropped file")
+  local name = droppedFile:getFilename() or ""
+  if not name:lower():match("%.nds$") and not name:lower():match("%.zip$") then
+    return self:_fail(
+      Errors.new(IMPORT_ERROR_CODES.NOT_NDS, "dropped file is not a .nds or .zip ROM: " .. name, { name = name })
+    )
+  end
+  if type(droppedFile) == "userdata" then
+    return self:_startQueued({ kind = "drop", file = droppedFile }, requestId)
+  end
+  local openOk, opened = pcall(droppedFile.open, droppedFile, "r")
+  if not openOk or not opened then
+    return self:_fail(Errors.new("ROM_OPEN_FAILED", tostring(opened), { name = name }))
+  end
+  local readOk, data = pcall(droppedFile.read, droppedFile)
+  pcall(droppedFile.close, droppedFile)
+  if not readOk or data == nil then
+    return self:_fail(Errors.new("ROM_READ_FAILED", "could not read dropped file", { name = name }))
+  end
+  return self:_startQueued({ kind = "dropBytes", bytes = data, name = queuedDropName(name) or name }, requestId)
+end
+
+-- Retire the queued background session without blocking: the worker is told
+-- to abandon its registration gate, late packets are invalidated, and the
+-- session returns to idle. A direct (non-queued) import is untouched.
+function RomImporter:cancelQueued()
+  local queued = self._queued
+  if queued == nil then
+    return
+  end
+  self._queued = nil
+  self._queueCanceled = true
+  self._queueSeq = (self._queueSeq or 0) + 1
+  local inbox = queued.inbox --[[@as table<string, function>]]
+  if type(inbox) == "table" or type(inbox) == "userdata" then
+    pcall(inbox.push, inbox, { id = queued.id, op = "cancel" })
+  end
+  self._verified = nil
+  if self.state ~= RomImporter.STATES.COMPLETE and self.state ~= RomImporter.STATES.ERROR then
+    self.state = RomImporter.STATES.IDLE
+  end
+  self.progress = 0
+  self._stage, self._stageLabel, self._detail = nil, nil, nil
+end
+
+-- Mirror one worker status packet onto the visible import state so the
+-- receipt card animates while validation runs elsewhere.
+---@param packet table<string, unknown>
+function RomImporter:_applyWorkerStatus(packet)
+  local states = RomImporter.STATES
+  if packet.state == states.READING or packet.state == states.VERIFYING or packet.state == states.REGISTERING then
+    self.state = packet.state --[[@as string]]
+  end
+  self.progress = clampFraction(packet.progress)
+  if packet.stage == nil or type(packet.stage) == "string" then
+    self._stage = packet.stage
+  end
+  if packet.stageLabel == nil or type(packet.stageLabel) == "string" then
+    self._stageLabel = packet.stageLabel
+  end
+  if packet.detail == nil or type(packet.detail) == "string" then
+    self._detail = packet.detail
+  end
+end
+
+-- Sending commit is the registration linearization point: it is answered
+-- only for the live session, so a retired session can never authorize a
+-- binding it no longer owns.
+---@param queued table<string, unknown> live background session
+---@return nil
+function RomImporter:_answerValidationGate(queued)
+  local inbox = queued.inbox --[[@as table<string, function>]]
+  pcall(inbox.push, inbox, { id = queued.id, op = "commit" })
+  self._commitSent = true
+end
+
+-- Accept one terminal worker result for the live session: publish the
+-- worker-decided binding through the configured cache with the same
+-- atomicity as a direct registration, then complete with the same
+-- one-shot handoff. No revalidation happens on this thread.
+---@param packet table<string, unknown>
+---@return nil
+function RomImporter:_acceptWorkerResult(packet)
+  self._queued = nil
+  local cache = (self._cacheFactory --[[@as fun(versionId: string): table]])(packet.versionId)
+  local published, publishErr = pcall(function()
+    cache:writeLua(RomBinding.STAGE_PATH, packet.binding)
+    cache:replace(RomBinding.STAGE_PATH, RomBinding.PATH)
+  end)
+  if not published then
+    if Errors.is(publishErr) then
+      return self:_fail(publishErr)
+    end
+    return self:_fail(publishErr)
+  end
+  self._versionId = packet.versionId
+  self._displayName = packet.displayName
+  self._sourceName = packet.sourceName
+  self._verified = { byteData = packet.byteData, displayName = packet.displayName or packet.sourceName }
+  self:_complete(packet.report --[[@as table<string, unknown>]])
+end
+
+---@param packet table<string, unknown>
+---@return nil
+function RomImporter:_failWorker(packet)
+  self._queued = nil
+  self._queueRequest = nil
+  self._verified = nil
+  self:_fail(
+    Errors.new(
+      type(packet.errorCode) == "string" and packet.errorCode or "ROM_IMPORT_FAILED",
+      type(packet.message) == "string" and packet.message or "background import failed",
+      type(packet.context) == "table" and packet.context or {}
+    )
+  )
+end
+
+-- Restart a session whose worker produced no validation outcome.
+-- Bounded to one retry: a repeated infrastructure failure still surfaces,
+-- and validation failures never retry. The restart is safe at any point
+-- before completion: the worker records only into its own staging, which
+-- dies with it, while the durable publication happens on this thread for
+-- the current session id alone. The retired session is canceled first, so
+-- at most one worker stays current and its late packets no longer match.
+---@param packet table<string, unknown> terminal infrastructure failure
+---@return nil
+function RomImporter:_failOrRetryWorker(packet)
+  local code = packet.errorCode
+  local infrastructure = code == "IMPORT_WORKER_LOST" or code == "ROM_IMPORT_WORKER_FAILED"
+  local request = self._queueRequest
+  local attempts = self._queueAttempts or 1
+  if infrastructure and attempts < 2 and type(request) == "table" then
+    self:cancelQueued()
+    local retry = {
+      kind = request.kind,
+      path = request.path,
+      file = request.file,
+      bytes = request.bytes,
+      name = request.name,
+    }
+    return self:_startQueued(retry, nil, attempts + 1)
+  end
+  return self:_failWorker(packet)
+end
+
+-- Drain worker packets without blocking. Only packets for the live session
+-- id are honored; late packets from retired sessions are discarded, and a
+-- worker that died without a terminal packet surfaces an explicit error.
+---@param queued table<string, unknown> live background session
+---@return nil
+function RomImporter:_pollQueued(queued)
+  local outbox = queued.outbox --[[@as table<string, function>]]
+  for _ = 1, 64 do
+    local packet = outbox:pop()
+    if packet == nil then
+      break
+    end
+    if type(packet) == "table" and packet.id == queued.id then
+      if packet.kind == "status" then
+        self:_applyWorkerStatus(packet)
+      elseif packet.kind == "validated" then
+        self:_answerValidationGate(queued)
+      elseif packet.kind == "complete" then
+        return self:_acceptWorkerResult(packet)
+      elseif packet.kind == "error" then
+        return self:_failOrRetryWorker(packet)
+      end
+    end
+  end
+  if self._queued ~= nil then
+    local thread = queued.thread --[[@as table<string, function>]]
+    local ok, running = pcall(thread.isRunning, thread)
+    if ok and running == false then
+      local _, threadError = pcall(thread.getError, thread)
+      local context = {}
+      if type(threadError) == "string" and threadError ~= "" then
+        context.threadError = threadError
+      end
+      self:_failOrRetryWorker({
+        errorCode = "IMPORT_WORKER_LOST",
+        message = "background import ended without a result",
+        context = context,
+      })
+    end
+  end
+end
+
 -- Resume the import coroutine one slice. Safe to call in any state. Fires
 -- onComplete exactly once, outside the coroutine, on reaching "complete".
+-- A queued session instead drains its worker packets here, still
+-- nonblocking; the terminal packet completes with the same one-shot
+-- semantics as the direct path.
 function RomImporter:update()
   local co = self._co
   if co and coroutine.status(co) ~= "dead" then
@@ -347,6 +738,10 @@ function RomImporter:update()
     if not ok and self.state ~= RomImporter.STATES.ERROR then
       self:_fail(err)
     end
+  end
+  local queued = self._queued
+  if queued ~= nil then
+    self:_pollQueued(queued)
   end
   if self.state == RomImporter.STATES.COMPLETE and not self._completeFired then
     self._completeFired = true

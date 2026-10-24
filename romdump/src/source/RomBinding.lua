@@ -15,7 +15,12 @@ local RomBinding = {}
 
 RomBinding.PATH = "rom-source.lua"
 
-local STAGE_PATH = "rom-source.lua.new"
+-- Staging sibling for the atomic stage-then-rename publication. Public so
+-- the background import worker's decided binding can be published through
+-- the configured cache with the same atomicity without revalidating.
+RomBinding.STAGE_PATH = "rom-source.lua.new"
+
+local STAGE_PATH = RomBinding.STAGE_PATH
 
 local EXPECTED_KEYS = {
   schema = true,
