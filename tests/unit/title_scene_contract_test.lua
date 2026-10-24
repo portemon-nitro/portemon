@@ -76,6 +76,15 @@ local function fovOf(projection)
   return 2 * math.atan(1 / projection[6])
 end
 
+local function worldView(eye, target)
+  local unit = 1 / 16
+  return Matrix4.lookAt(
+    { eye[1] * unit, eye[2] * unit, eye[3] * unit },
+    { target[1] * unit, target[2] * unit, target[3] * unit },
+    { 0, 1, 0 }
+  )
+end
+
 local function eyeOf(scene)
   return { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] }
 end
@@ -111,21 +120,21 @@ function T.title_camera_steps_each_waypoint_then_wraps_its_script()
   local function viewNow()
     return scene:_camera().view()
   end
-  Assert.deepEqual(viewNow(), Matrix4.lookAt({ 0, 0, 0 }, target, { 0, 1, 0 }))
+  Assert.deepEqual(viewNow(), worldView({ 0, 0, 0 }, target))
   for _ = 1, 30 do
     scene:updateFixed()
   end
-  Assert.deepEqual(viewNow(), Matrix4.lookAt({ 0, 0, 0 }, target, { 0, 1, 0 }), "first waypoint wait holds")
+  Assert.deepEqual(viewNow(), worldView({ 0, 0, 0 }, target), "first waypoint wait holds")
   scene:updateFixed()
-  Assert.deepEqual(viewNow(), Matrix4.lookAt({ 5, 0, 0 }, target, { 0, 1, 0 }), "one axis steps per tick")
+  Assert.deepEqual(viewNow(), worldView({ 5, 0, 0 }, target), "one axis steps per tick")
   scene:updateFixed()
-  Assert.deepEqual(viewNow(), Matrix4.lookAt({ 10, 0, 0 }, target, { 0, 1, 0 }), "the waypoint snaps on arrival")
+  Assert.deepEqual(viewNow(), worldView({ 10, 0, 0 }, target), "the waypoint snaps on arrival")
   for _ = 1, 30 do
     scene:updateFixed()
   end
   Assert.deepEqual(
     viewNow(),
-    Matrix4.lookAt({ 10, 0, 0 }, target, { 0, 1, 0 }),
+    worldView({ 10, 0, 0 }, target),
     "the second waypoint wait holds its pose"
   )
   for _ = 1, 4 do
@@ -133,7 +142,7 @@ function T.title_camera_steps_each_waypoint_then_wraps_its_script()
   end
   Assert.deepEqual(
     viewNow(),
-    Matrix4.lookAt({ 10, 20, 0 }, target, { 0, 1, 0 }),
+    worldView({ 10, 20, 0 }, target),
     "the second waypoint completes after four steps"
   )
   for _ = 1, 30 do
@@ -142,8 +151,34 @@ function T.title_camera_steps_each_waypoint_then_wraps_its_script()
   scene:updateFixed()
   Assert.deepEqual(
     viewNow(),
-    Matrix4.lookAt({ 10, 15, 0 }, target, { 0, 1, 0 }),
+    worldView({ 10, 15, 0 }, target),
     "the script wraps back to its first waypoint"
+  )
+end
+
+function T.title_camera_scales_source_units_once_and_keeps_authored_pose()
+  local scene = stubScene(twoWaypointBundle())
+  scene.cameraPos = { 16, 32, 48 }
+  local target = scene.bundle.timeline.camera.target
+  local before = { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] }
+  Assert.deepEqual(
+    scene:_camera().view(),
+    worldView({ 16, 32, 48 }, target),
+    "the view converts both eye and target into model world units"
+  )
+  Assert.deepEqual(
+    { scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3] },
+    before,
+    "view composition leaves the authored camera position untouched"
+  )
+  local scaledTwice = Matrix4.lookAt(
+    { 16 / 256, 32 / 256, 48 / 256 },
+    { target[1] / 256, target[2] / 256, target[3] / 256 },
+    { 0, 1, 0 }
+  )
+  Assert.isFalse(
+    pcall(Assert.deepEqual, scene:_camera().view(), scaledTwice),
+    "the view scales source units exactly once"
   )
 end
 

@@ -92,7 +92,12 @@ local function fovOf(projection)
 end
 
 local function expectedView(eye, target)
-  return Matrix4.lookAt(eye, target, { 0, 1, 0 })
+  local unit = 1 / 16
+  return Matrix4.lookAt(
+    { eye[1] * unit, eye[2] * unit, eye[3] * unit },
+    { target[1] * unit, target[2] * unit, target[3] * unit },
+    { 0, 1, 0 }
+  )
 end
 
 local function promptShown(printed, text)

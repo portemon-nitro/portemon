@@ -433,7 +433,12 @@ function HgssTitleScene:_camera()
   -- host shape only repositions the bounded source target, never the lens.
   local aspect = 4 / 3
   local halfAngle = (HALF_ANGLE_INDEX / 65536) * (2 * math.pi)
-  local viewMatrix = Matrix4.lookAt(assert(self.cameraPos), camera.target, { 0, 1, 0 })
+  -- View-space only. Source timeline coordinates remain unchanged.
+  local unit = 1 / 16
+  local eyeSource = assert(self.cameraPos)
+  local eye = { eyeSource[1] * unit, eyeSource[2] * unit, eyeSource[3] * unit }
+  local target = { camera.target[1] * unit, camera.target[2] * unit, camera.target[3] * unit }
+  local viewMatrix = Matrix4.lookAt(eye, target, { 0, 1, 0 })
   local projectionMatrix = Matrix4.perspective(2 * halfAngle, aspect, GPU_NEAR, GPU_FAR)
   local function cameraView()
     return viewMatrix
