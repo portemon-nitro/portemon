@@ -14,6 +14,7 @@ local ImportState = require("app.src.launcher.ImportState")
 local VersionSelectState = require("app.src.launcher.VersionSelectState")
 local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
 local EditionPreference = require("app.src.launcher.EditionPreference")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local StartupTitleState = require("app.src.launcher.StartupTitleState")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -559,6 +560,34 @@ function App._publishFirstPlay(versionId)
   pcall(FirstPlayCompletion.publish, versionId, generation)
 end
 
+-- Warm pair scan: the smallest currently published walking pair (1..32) is
+-- reused for the new epoch; when no manifest loads, the epoch falls back
+-- to one fresh random pair for normal preparation. The scan itself lives
+-- with the presentation that owns walker manifests; the controller still
+-- gates every transfer, so an unverified file can never pose as a pair.
+---@param versionId string newly selected game version
+---@return integer? currently published pair, or nil when none loads
+local function publishedPair(versionId)
+  local cacheOk, cacheFs = pcall(CacheFs.forVersion, versionId)
+  if not cacheOk or cacheFs == nil then
+    return nil
+  end
+  return HgssLoadingPresentation.publishedPair(cacheFs)
+end
+
+-- Whether the version already carries a persisted source registration.
+-- Answered behind the importer seam without opening the ROM: a filename
+-- or launch route alone never counts, and a failed read is unregistered.
+---@param versionId string newly selected game version
+---@return boolean
+local function alreadyRegistered(versionId)
+  local cacheOk, cacheFs = pcall(CacheFs.forVersion, versionId)
+  if not cacheOk or cacheFs == nil then
+    return false
+  end
+  return RomImporter.isRegistered(cacheFs, versionId)
+end
+
 -- Selects a game version: borrows a controller epoch through its
 -- provisioner, hands any verified offered source to the controller, queues
 -- the boot readiness gate behind it on the same control stream, and waits
@@ -576,10 +605,12 @@ function App._selectVersion(versionId, options)
   local provisioner = DerivedAssetProvisioner.new(provisionerOptions(versionId))
   App.provisioner = provisioner
   App.epoch = assert(provisioner.epoch, "selection borrowed no epoch")
-  -- One walking pair per newly selected epoch: the App alone rolls the
-  -- source-independent 1..32 choice, and later journeys (menu returns,
-  -- New Game, Continue, editor, late GPU adoption) reuse it, never reroll.
-  App.pairIndex = math.floor(love.math.random(1, 32))
+  -- One walking pair per newly selected epoch: the App alone chooses it
+  -- once per selection, preferring the smallest currently published pair
+  -- on a warm cache and rolling one fresh random pair otherwise. Later
+  -- journeys (menu returns, New Game, Continue, editor, late GPU adoption)
+  -- reuse it, never reroll.
+  App.pairIndex = publishedPair(versionId) or math.floor(love.math.random(1, 32))
   local epoch = App.epoch
   local service = assert(App.service, "process cache service is unavailable")
   -- A newly imported verified source crosses on the same control stream
@@ -1082,11 +1113,18 @@ function App._onImported(versionId)
   App._bootBlockedVersionId = nil
   -- A rebind that supplies the same ROM resumes the waiting version on
   -- the ordinary path: its receipts, assets, and saves survive instead of
-  -- restarting as a fresh import. Only a genuinely new version takes the
-  -- fresh-import path.
+  -- restarting as a fresh import. A repeated completion for an already
+  -- registered version is warm even without that launch-path flag, while
+  -- only a genuinely new version takes the fresh-import path.
   local rebindId = App._rebindVersionId
   App._rebindVersionId = nil
   if rebindId ~= nil and versionId == rebindId then
+    if offeredBytes ~= nil then
+      App._selectVersion(versionId, { sourceOffer = offeredBytes })
+    else
+      App._selectVersion(versionId)
+    end
+  elseif alreadyRegistered(versionId) then
     if offeredBytes ~= nil then
       App._selectVersion(versionId, { sourceOffer = offeredBytes })
     else

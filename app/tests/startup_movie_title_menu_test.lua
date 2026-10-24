@@ -550,35 +550,38 @@ function T.tests.startup_demands_all_five_opening_scenes_and_keeps_one_menu_thro
   end)
 end
 
-function T.tests.visible_walking_loader_dwells_before_the_opening_movie_starts()
+function T.tests.warm_movie_starts_at_once_while_a_true_first_import_keeps_its_beat()
   withStartup(function()
+    -- Warm: an ordinary selection enters the staged movie on the next
+    -- eligible update with no loader beat.
     local state = startSelection()
     Assert.notNil(state, "the selected edition installs its startup state")
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
     App.update(1 / 30)
+    Assert.equal(#active.movies, 1, "the warm entry stages the movie behind the loader")
+    App.update(1 / 30)
+    Assert.equal(state.phase, "movie", "the warm entry starts the staged movie without a loader beat")
+    App.draw()
+    Assert.isTrue(active.movies[1].draws >= 1, "the entered movie paints its first frame at once")
+    -- Cold: a genuinely new import keeps one bounded beat so its freshly
+    -- adopted art stays visible before the same handoff.
+    App._selectVersion("heartgold", { freshImport = true })
+    App.update(1 / 60)
+    App.update(1 / 30)
+    local cold = assert(App.state, "the first import installs its startup state")
     for _ = 1, 15 do
       App.update(1 / 30)
       App.draw()
     end
-    Assert.equal(
-      state.phase,
-      "loading",
-      "the walking loader stays visible for its dwell even when every scene is instantly ready"
-    )
-    Assert.equal(#active.movies, 1, "the movie is staged behind the loader while it dwells")
-    Assert.equal(active.movies[1].ticks, 0, "the staged movie holds its source clock at zero during the dwell")
-    Assert.equal(active.movies[1].draws, 0, "no movie frame draws before the handoff")
-    local paints = active.paints
+    Assert.equal(cold.phase, "loading", "the true first import keeps its bounded beat while fresh")
+    Assert.equal(#active.movies, 2, "the cold entry stages the same movie behind its loader")
+    Assert.equal(active.movies[2].ticks, 0, "the staged movie holds its source clock at zero during the beat")
+    pumpUntilMovie(cold)
+    Assert.equal(cold.phase, "movie", "the cold entry still reaches its staged movie after the beat")
     App.draw()
-    Assert.isTrue(active.paints > paints, "the dwelling loader keeps painting")
-    for _ = 1, 20 do
-      App.update(1 / 30)
-      App.draw()
-    end
-    Assert.equal(state.phase, "movie", "the dwell hands off to the opening movie")
-    Assert.isTrue(active.movies[1].draws >= 1, "the first playable source frame draws at the transition")
+    Assert.isTrue(active.movies[2].draws >= 1, "the first playable source frame draws at the transition")
   end)
 end
 

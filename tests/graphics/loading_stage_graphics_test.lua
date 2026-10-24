@@ -516,22 +516,9 @@ function T.decorative_stage_prints_only_flavor_without_progress_copy(scope)
   Assert.isTrue(stringPixels == plainPixels, "a passed string status never paints progress pixels")
 end
 
-function T.startup_handoff_dwells_on_the_adopted_pair_before_the_first_movie_frame(scope)
+function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
   local StartupTitleState = require("app.src.launcher.StartupTitleState")
   local Movie = require("libs.hgss.src.presentation.HgssOpeningMovie")
-  local presentation = Presentation.new({
-    versionId = "heartgold",
-    width = WIDTH,
-    height = HEIGHT,
-    pairIndex = 5,
-    random = function()
-      return 0.25
-    end,
-  })
-  Assert.isTrue(
-    presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
-    "the chosen pair adopts its two transparent atlases"
-  )
   local staged = {}
   local savedNew, savedScenes = Movie.new, Movie.loadValidatedScenes
   Movie.loadValidatedScenes = function()
@@ -583,23 +570,40 @@ function T.startup_handoff_dwells_on_the_adopted_pair_before_the_first_movie_fra
     draw = function() end,
     dispose = function() end,
   }
-  local state = StartupTitleState.new({
-    versionId = "heartgold",
-    epoch = 7,
-    derivedAssets = host,
-    stageMenu = function()
-      return menu
-    end,
-    onFinished = function() end,
-    onSwitchEdition = function() end,
-    isCurrent = function()
-      return true
-    end,
-    width = WIDTH,
-    height = HEIGHT,
-    loading = presentation,
-  })
-  local function renderFrame(lines)
+  local function build(initialImport)
+    local presentation = Presentation.new({
+      versionId = "heartgold",
+      width = WIDTH,
+      height = HEIGHT,
+      pairIndex = 5,
+      random = function()
+        return 0.25
+      end,
+    })
+    Assert.isTrue(
+      presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+      "the chosen pair adopts its two transparent atlases"
+    )
+    local state = StartupTitleState.new({
+      versionId = "heartgold",
+      epoch = 7,
+      derivedAssets = host,
+      stageMenu = function()
+        return menu
+      end,
+      onFinished = function() end,
+      onSwitchEdition = function() end,
+      isCurrent = function()
+        return true
+      end,
+      width = WIDTH,
+      height = HEIGHT,
+      initialImport = initialImport,
+      loading = presentation,
+    })
+    return state
+  end
+  local function renderFrame(state, lines)
     local originalPrint, originalPrintf = love.graphics.print, love.graphics.printf
     local pixels
     local ok, err = xpcall(function()
@@ -634,49 +638,65 @@ function T.startup_handoff_dwells_on_the_adopted_pair_before_the_first_movie_fra
   love.graphics.pop()
   local blank = scope:own(blankCanvas:newImageData()):getString()
   local ok, err = xpcall(function()
+    -- Warm: the adopted pair hands off on the next eligible update with no
+    -- loader beat.
+    local warm = build(nil)
+    warm:update(1 / 30)
+    Assert.equal(#staged, 1, "the warm entry stages the movie behind the loader")
+    warm:update(1 / 30)
+    Assert.equal(warm.phase, "movie", "the warm entry starts the staged movie without a loader beat")
+    local warmLines = {}
+    local warmPixels = renderFrame(warm, warmLines)
+    Assert.isTrue(staged[1].draws >= 1, "the entered movie paints its first frame at once")
+    Assert.isTrue(warmPixels ~= blank, "the transition frame is playable pixels, never an empty stage")
+    warm:dispose()
+    Assert.equal(staged[1].disposed, 1, "leaving releases the staged movie exactly once")
+    -- Cold: a genuinely new import keeps one bounded beat so its freshly
+    -- adopted art stays visible before the same handoff.
+    local state = build(true)
     local hold = {}
     for _ = 1, 16 do
       state:update(1 / 30)
       local lines = {}
-      hold[#hold + 1] = { bytes = renderFrame(lines), lines = lines }
+      hold[#hold + 1] = { bytes = renderFrame(state, lines), lines = lines }
     end
-    Assert.equal(state.phase, "loading", "the adopted pair stays visible for its dwell before the first movie frame")
-    Assert.equal(#staged, 1, "the movie is staged behind the loader while it dwells")
-    Assert.equal(staged[1].ticks, 0, "the staged movie holds its source clock at zero during the dwell")
-    Assert.equal(staged[1].draws, 0, "no movie frame draws before the handoff")
+    Assert.equal(state.phase, "loading", "the adopted pair stays visible for its beat before the first movie frame")
+    Assert.equal(#staged, 2, "the movie is staged behind the loader while it holds its beat")
+    Assert.equal(staged[2].ticks, 0, "the staged movie holds its source clock at zero during the beat")
+    Assert.equal(staged[2].draws, 0, "no movie frame draws before the handoff")
     for index, frame in ipairs(hold) do
-      Assert.isTrue(frame.bytes ~= blank, "dwell frame " .. index .. " paints the loader, never an empty stage")
+      Assert.isTrue(frame.bytes ~= blank, "beat frame " .. index .. " paints the loader, never an empty stage")
       if index > 1 then
         Assert.isTrue(
           frame.bytes ~= hold[index - 1].bytes,
-          "dwell frame " .. index .. " keeps animating behind the adopted pair"
+          "beat frame " .. index .. " keeps animating behind the adopted pair"
         )
       end
-      Assert.equal(#frame.lines, 1, "dwell frame " .. index .. " prints only its flavor caption")
+      Assert.equal(#frame.lines, 1, "beat frame " .. index .. " prints only its flavor caption")
       for _, leak in ipairs({ "Preparing", "Waiting", "Loading your game" }) do
         Assert.isTrue(
           frame.lines[1]:find(leak, 1, true) == nil,
-          "the dwelling loader never prints internal copy, found: " .. leak
+          "the holding loader never prints internal copy, found: " .. leak
         )
       end
     end
     for _ = 1, 15 do
       state:update(1 / 30)
     end
-    Assert.equal(state.phase, "movie", "the dwell hands off to the opening movie")
+    Assert.equal(state.phase, "movie", "the beat hands off to the opening movie")
     local firstLines = {}
-    local first = renderFrame(firstLines)
-    Assert.isTrue(staged[1].draws >= 1, "the first playable source frame draws at the transition")
+    local first = renderFrame(state, firstLines)
+    Assert.isTrue(staged[2].draws >= 1, "the first playable source frame draws at the transition")
     Assert.isTrue(first ~= blank, "the transition frame is playable pixels, never an empty stage")
     Assert.isTrue(first ~= hold[#hold].bytes, "the transition swaps directly to movie pixels")
+    state:dispose()
+    Assert.equal(staged[2].disposed, 1, "leaving releases the staged movie exactly once")
   end, debug.traceback)
   Movie.new = savedNew
   Movie.loadValidatedScenes = savedScenes
-  state:dispose()
   if not ok then
     error(err, 0)
   end
-  Assert.equal(staged[1].disposed, 1, "leaving releases the staged movie exactly once")
 end
 
 -- The boot wait paints its animated themed stage from the very first frame,
@@ -689,6 +709,19 @@ function T.boot_wait_paints_the_animated_stage_before_the_gate_answers(scope)
   function service:bootSourceStatus(_)
     script.calls = script.calls + 1
     return "source-required", { code = "ROM_SOURCE_REQUIRED" }
+  end
+  -- Selected-pair demand seam: the blocked wait requests its pair early
+  -- while the matching-ROM remedy stays visible; the demand never
+  -- transfers, and adoption still waits for admission below.
+  function service:request(_, selector)
+    if type(selector) == "table" and selector.requestKind == "startup-walker" then
+      script.pairDemands = (script.pairDemands or 0) + 1
+      return "walker-request"
+    end
+    return nil
+  end
+  function service:observe()
+    return false, nil
   end
   local fired = 0
   local state = CachePreparationState.new({

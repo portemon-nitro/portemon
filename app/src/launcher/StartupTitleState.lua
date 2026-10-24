@@ -71,9 +71,11 @@ StartupTitleState.__index = StartupTitleState
 local FRAME_SECONDS = 1 / 30
 local FADE_OUT_FRAMES = 60
 local FADE_IN_FRAMES = 18
--- Minimum visible loader time after transfer before the staged opening may
--- play: the adopted walking pair animates behind the loader while the
--- fully acquired movie waits at its first frame.
+-- Minimum visible loader time after transfer before the staged opening
+-- may play on a genuinely new import: the adopted walking pair animates
+-- behind the loader while the fully acquired movie waits at its first
+-- frame. Warm entries skip this beat and enter as soon as the movie is
+-- drawable.
 local LOADER_DWELL_SECONDS = 0.8
 local DWELL_DT_CAP = 0.25
 local EDITIONS = { heartgold = "soulsilver", soulsilver = "heartgold" }
@@ -371,19 +373,23 @@ function StartupTitleState:_adoptMovie()
     return
   end
   -- Otherwise the fully acquired movie stays staged behind the visible
-  -- loader at its first frame: update() enters the movie phase only after
-  -- the loader has animated for its minimum beat. No source tick advances
-  -- and no movie frame draws before that handoff.
+  -- loader at its first frame: update() enters the movie phase on the next
+  -- eligible update (at once on a warm entry, after the minimum beat on a
+  -- genuinely new import). No source tick advances and no movie frame
+  -- draws before that handoff.
 end
 
--- Enters the staged movie once the transferred loader has animated for its
--- minimum beat. The staged movie is fully acquired, so the first playable
--- source frame draws directly at the transition with no interstitial.
+-- Enters the staged movie as soon as it is drawable. A genuinely new
+-- import keeps one bounded loader beat so freshly adopted art stays
+-- visible; a warm entry whose movie is already staged enters on the next
+-- eligible update with no cosmetic wait. The staged movie is fully
+-- acquired, so the first playable source frame draws directly at the
+-- transition with no interstitial.
 function StartupTitleState:_maybeEnterMovie()
   if self.phase ~= "loading" or self.movie == nil or not self:_live() then
     return
   end
-  if self.loaderVisibleTime < LOADER_DWELL_SECONDS then
+  if self.initialImport and self.loaderVisibleTime < LOADER_DWELL_SECONDS then
     return
   end
   self.phase = "movie"

@@ -300,11 +300,18 @@ function CachePreparationState:_pollWalker()
   end
   local cold = self.freshImport
   if self.pairIndex ~= nil and serviceSupportsWalker(self.service) then
+    -- Demand the selected pair early, even while the source gate is still
+    -- blocked, so the worker compiles during the wait. Only the readiness
+    -- observation, the GPU adoption, and the transfer below wait for the
+    -- admitted gate; the demand itself never does.
     self.service:request(self.epoch, {
       requestKind = "startup-walker",
       pairIndex = self.pairIndex,
       urgency = "required",
     })
+    if not self.bootAdmitted then
+      return
+    end
     local ready, failure = self.service:observe(self.epoch, {
       requestKind = "startup-walker",
       pairIndex = self.pairIndex,
@@ -339,9 +346,11 @@ function CachePreparationState:_pollBootSource()
   -- corpus already attests current or its exact source is pinned below
   -- the controller. Source-required stays blocked with its typed detail,
   -- a genuine controller failure latches as a boot error, and a stale
-  -- epoch resolves through the liveness guard without firing. Only an
-  -- admitted source may request the selected pair; the pair answer and,
-  -- on a cold import, its GPU adoption are separate facts after that.
+  -- epoch resolves through the liveness guard without firing. The
+  -- selected pair is demanded early, even while blocked, so the worker
+  -- compiles during the wait; only adoption and transfer wait for the
+  -- admitted gate, and the pair answer and, on a cold import, its GPU
+  -- adoption are separate facts after that.
   local service = assert(self.service, "boot-source preparation requires the process cache service")
   local statusOk, status, detail = pcall(service.bootSourceStatus, service, self.epoch)
   if not statusOk then
@@ -352,7 +361,11 @@ function CachePreparationState:_pollBootSource()
     self.bootAdmitted = true
     self:_pollWalker()
   elseif status == "source-required" then
+    -- A blocked boot still demands its selected pair early while the
+    -- matching-ROM remedy stays visible: the demand never transfers, and
+    -- adoption still waits for admission below.
     self.sourceDetail = detail
+    self:_pollWalker()
   elseif status == "failed" then
     if type(detail) == "table" then
       self.error = detail.message or detail.code or "cache boot failed"
