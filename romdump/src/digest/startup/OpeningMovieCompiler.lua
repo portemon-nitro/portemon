@@ -545,6 +545,7 @@ local function compileBackgrounds(archive, versionId, sceneNumber, root, files, 
       sourceHash = Hashing.sha1hex(
         tostring(background.char) .. tostring(background.screen) .. tostring(background.palette)
       ),
+      initialVisible = SceneSources.initialVisible(sceneNumber, background.engine, background.bgSlot),
     }
   end
   return layers
@@ -677,22 +678,176 @@ local function layerImage(layers, engine, bgSlot, variant)
   error("unreachable background slot", 0)
 end
 
+-- Source renderer surface origins per scene: the retail
+-- IntroMovie_RendererSetSurfaceCoords(mainx, mainy, subx, suby) call runs
+-- (0,0,0,0) on scene 1 (no call; main-only sprites), (0,0,0,192) on
+-- scene 2, (0,0,0,512) on scene 3, and (0,0,0,256) on scenes 4 and 5.
+-- Every emitted sprite station subtracts its owning engine origin once so
+-- the manifest carries 256x192 engine-local coordinates.
+local SOURCE_SUB_ORIGIN_Y = { [1] = 0, [2] = 192, [3] = 512, [4] = 256, [5] = 256 }
+
+---@param sceneNumber integer owning scene
+---@param engine string source engine owning the sprite
+---@param x number raw shared-renderer coordinate
+---@param y number raw shared-renderer coordinate
+---@return number engine-local x
+---@return number engine-local y
+local function sourceLocalPosition(sceneNumber, engine, x, y)
+  if engine == "sub" then
+    return x, y - assert(SOURCE_SUB_ORIGIN_Y[sceneNumber])
+  end
+  return x, y
+end
+
+-- Compiler-local per-slot snapshot: toggling a plane off and on preserves
+-- the most recently staged tilemap instead of resetting the slot to its
+-- base image, and panel swaps preserve the current enable state instead
+-- of forcing the plane on.
+---@param layers table<string, unknown> compiled engine layers
+---@return table<string, table<integer, { image: string, priority: integer, visible: boolean }>> snapshot
+local function snapshotPlanes(layers)
+  local planes = {}
+  for _, engine in ipairs({ "main", "sub" }) do
+    planes[engine] = {}
+    for _, layer in ipairs(layers[engine]) do
+      planes[engine][layer.bgSlot] = { image = layer.image, priority = layer.priority, visible = layer.initialVisible }
+    end
+  end
+  return planes
+end
+
+-- Complete plane state replacement for a slot. A variant swap stages new
+-- art while preserving the current enable state; a nil variant keeps the
+-- staged image while replacing the enable state.
 ---@param events table<string, unknown>[]
+---@param planes table<string, table<integer, { image: string, priority: integer, visible: boolean }>> snapshot
 ---@param layers table<string, unknown> compiled engine layers
 ---@param stepId string
 ---@param atStepTick integer
 ---@param engine string source engine owning the slot
 ---@param bgSlot integer numeric background slot
----@param variant integer|nil alternate tilemap index, nil for the base image
-local function setLayerEvent(events, layers, stepId, atStepTick, engine, bgSlot, variant)
-  local image, priority = layerImage(layers, engine, bgSlot, variant)
+---@param variant integer|nil alternate tilemap index, nil to keep the staged image
+---@param visible boolean|nil plane enable state, nil to preserve the current state
+local function setLayerEvent(events, planes, layers, stepId, atStepTick, engine, bgSlot, variant, visible)
+  local slot = planes[engine] and planes[engine][bgSlot]
+  if slot == nil then
+    sourceError("opening scene layer change names a missing background slot", { engine = engine, slot = bgSlot })
+  end
+  assert(slot ~= nil, "unreachable: missing plane change always raises")
+  if variant ~= nil then
+    local image, priority = layerImage(layers, engine, bgSlot, variant)
+    slot.image, slot.priority = image, priority
+  end
+  if visible ~= nil then
+    slot.visible = visible
+  end
   events[#events + 1] = event("setLayer", stepId, atStepTick, {
     engine = engine,
     bgSlot = bgSlot,
-    image = image,
-    visible = true,
-    priority = priority,
+    image = slot.image,
+    visible = slot.visible,
+    priority = slot.priority,
   })
+end
+
+-- Complete plane state replacement for a slot that keeps its staged image.
+---@param events table<string, unknown>[]
+---@param planes table<string, table<integer, { image: string, priority: integer, visible: boolean }>> snapshot
+---@param layers table<string, unknown> compiled engine layers
+---@param stepId string
+---@param atStepTick integer
+---@param engine string source engine owning the slot
+---@param bgSlot integer numeric background slot
+---@param visible boolean plane enable state
+local function setPlaneVisible(events, planes, layers, stepId, atStepTick, engine, bgSlot, visible)
+  setLayerEvent(events, planes, layers, stepId, atStepTick, engine, bgSlot, nil, visible)
+end
+
+-- Source window pan lookup: the declared retail pan rows per scene.
+---@param sceneNumber integer owning scene
+---@param id string stable source pan identity
+---@return table<string, unknown> pan declaration
+local function windowPan(sceneNumber, id)
+  for _, pan in ipairs(SceneSources.windowPans(sceneNumber)) do
+    if pan.id == id then
+      return pan
+    end
+  end
+  sourceError("opening scene timeline references a missing window pan", { scene = sceneNumber, pan = id })
+  error("unreachable window pan", 0)
+end
+
+---@param value unknown pan coordinate or mask
+---@return integer validated source pixel or mask value
+local function windowNumber(value)
+  if type(value) ~= "number" or value % 1 ~= 0 then
+    sourceError("opening scene window pan carries a non-integer coordinate", { value = value })
+  end
+  return value
+end
+
+-- Engine-local v3 window record from one declared source pan. whichScreen
+-- 0 writes the sub-engine registers, nonzero the main-engine registers.
+---@param events table<string, unknown>[]
+---@param sceneNumber integer owning scene
+---@param panId string stable source pan identity
+---@param stepId string
+---@param atStepTick integer
+---@param effect string|nil waitable effect started when the duration is positive
+local function emitWindow(events, sceneNumber, panId, stepId, atStepTick, effect)
+  local pan = windowPan(sceneNumber, panId)
+  local engine = pan.whichScreen == 0 and "sub" or "main"
+  local duration = windowNumber(pan.duration)
+  if effect ~= nil and duration <= 0 then
+    sourceError("opening scene zero-duration window starts no effect", { pan = panId })
+  end
+  local record = {
+    engine = engine,
+    from = {
+      x1 = windowNumber(pan.x1Start),
+      y1 = windowNumber(pan.y1Start),
+      x2 = windowNumber(pan.x2Start),
+      y2 = windowNumber(pan.y2Start),
+    },
+    to = {
+      x1 = windowNumber(pan.x1End),
+      y1 = windowNumber(pan.y1End),
+      x2 = windowNumber(pan.x2End),
+      y2 = windowNumber(pan.y2End),
+    },
+    ticks = duration,
+    insideMask = windowNumber(pan.winIn),
+    outsideMask = windowNumber(pan.winOut),
+  }
+  if effect ~= nil then
+    record.effect = effect
+  end
+  events[#events + 1] = event("window", stepId, atStepTick, record)
+end
+
+-- Direct G2/G2S WIN1 register override: immediate rect and inside mask.
+---@param events table<string, unknown>[]
+---@param stepId string
+---@param atStepTick integer
+---@param engine string source engine owning the window
+---@param rect integer[] { x1, y1, x2, y2 } source pixel rectangle
+---@param insideMask integer WIN1 inside plane mask
+local function setWindowSecondary(events, stepId, atStepTick, engine, rect, insideMask)
+  events[#events + 1] = event("setWindowSecondary", stepId, atStepTick, {
+    engine = engine,
+    rect = { x1 = rect[1], y1 = rect[2], x2 = rect[3], y2 = rect[4] },
+    insideMask = insideMask,
+  })
+end
+
+-- Whole engine-window enable switch; retains positions and masks for later.
+---@param events table<string, unknown>[]
+---@param stepId string
+---@param atStepTick integer
+---@param engine string source engine owning the window
+---@param visible boolean window enable state
+local function setWindowVisible(events, stepId, atStepTick, engine, visible)
+  events[#events + 1] = event("setWindowVisible", stepId, atStepTick, { engine = engine, visible = visible })
 end
 
 ---@param instances table<string, unknown>[] scene sprite instance declarations
@@ -737,6 +892,7 @@ local function truncStep(speed, tick, duration)
 end
 
 ---@param events table<string, unknown>[]
+---@param sceneNumber integer owning scene
 ---@param instances table<string, unknown>[] scene sprite instance declarations
 ---@param clips table<string, unknown>[] compiled sprite clips
 ---@param stepId string
@@ -744,40 +900,43 @@ end
 ---@param sprite string source sprite name
 ---@param bank string sprite bank name
 ---@param sequence integer played animation sequence
-local function showSprite(events, instances, clips, stepId, atStepTick, sprite, bank, sequence)
+local function showSprite(events, sceneNumber, instances, clips, stepId, atStepTick, sprite, bank, sequence)
   local instance = instanceFor(instances, sprite)
   local clip = clipPath(clips, bank, sequence)
+  local x, y = sourceLocalPosition(sceneNumber, instance.engine, instance.x, instance.y)
   events[#events + 1] = event("setSpriteClip", stepId, atStepTick, {
     instanceId = instance.id,
     engine = instance.engine,
-    x = instance.x,
-    y = instance.y,
+    x = x,
+    y = y,
     drawOrder = instance.drawOrder,
     clipId = clip,
   })
   events[#events + 1] = event("spriteVisible", stepId, atStepTick, {
     instanceId = instance.id,
     engine = instance.engine,
-    x = instance.x,
-    y = instance.y,
+    x = x,
+    y = y,
     drawOrder = instance.drawOrder,
     visible = true,
   })
 end
 
 ---@param events table<string, unknown>[]
+---@param sceneNumber integer owning scene
 ---@param instances table<string, unknown>[] scene sprite instance declarations
 ---@param stepId string
 ---@param atStepTick integer
 ---@param sprite string source sprite name
 ---@param visible boolean whether the instance shows
-local function setSpriteVisible(events, instances, stepId, atStepTick, sprite, visible)
+local function setSpriteVisible(events, sceneNumber, instances, stepId, atStepTick, sprite, visible)
   local instance = instanceFor(instances, sprite)
+  local x, y = sourceLocalPosition(sceneNumber, instance.engine, instance.x, instance.y)
   events[#events + 1] = event("spriteVisible", stepId, atStepTick, {
     instanceId = instance.id,
     engine = instance.engine,
-    x = instance.x,
-    y = instance.y,
+    x = x,
+    y = y,
     drawOrder = instance.drawOrder,
     visible = visible,
   })
@@ -789,17 +948,19 @@ end
 local function scene1Program(clips, layers)
   local instances = SceneSources.spriteInstances(1)
   local steps, events = {}, {}
+  -- LoadBgGfx disables every plane after the templates enable them, so the
+  -- copyright beat enables only its two planes and later beats toggle the
+  -- rest on and off explicitly.
+  local planes = snapshotPlanes(layers)
   -- Entry polarity is a sourced retail fact: each scene Init writes
   -- gSystem.screensFlipped then calls GfGfx_SwapDisplay, so scenes 1, 4,
   -- and 5 (TRUE) open with the main engine on the physical lower screen
   -- while scenes 2 and 3 (FALSE) open with it on the upper screen.
   local copyright = { nextIndex(events) }
   events[#events + 1] = event("setScreenMapping", "copyright", 0, { mainPhysical = "lower" })
-  setLayerEvent(events, layers, "copyright", 0, "sub", 1)
+  setPlaneVisible(events, planes, layers, "copyright", 0, "sub", 0, true)
   copyright[#copyright + 1] = #events
-  setLayerEvent(events, layers, "copyright", 0, "sub", 0)
-  copyright[#copyright + 1] = #events
-  setLayerEvent(events, layers, "copyright", 0, "main", 0)
+  setPlaneVisible(events, planes, layers, "copyright", 0, "main", 0, true)
   copyright[#copyright + 1] = #events
   copyright[#copyright + 1] = nextIndex(events)
   events[#events + 1] = event("waitTicks", "copyright", 0, { ticks = 30 })
@@ -813,18 +974,22 @@ local function scene1Program(clips, layers)
   local setup = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitTicks", "setup", 0, { ticks = 20 })
   events[#events + 1] = event("enableSkip", "setup", 20)
+  setPlaneVisible(events, planes, layers, "setup", 20, "sub", 0, false)
+  setup[#setup + 1] = #events
+  setPlaneVisible(events, planes, layers, "setup", 20, "sub", 1, true)
+  setup[#setup + 1] = #events
   step(steps, "setup", setup, { kind = "duration", ticks = 20 })
   local logo = { nextIndex(events) }
   events[#events + 1] = event("waitTicks", "logo", 0, { ticks = 110 })
   step(steps, "logo", logo, { kind = "duration", ticks = 110 })
   local sunrise = {}
-  setLayerEvent(events, layers, "sunrise", 0, "sub", 3)
+  setLayerEvent(events, planes, layers, "sunrise", 0, "sub", 3, nil, true)
   sunrise[#sunrise + 1] = #events
-  setLayerEvent(events, layers, "sunrise", 0, "main", 1)
+  setLayerEvent(events, planes, layers, "sunrise", 0, "main", 1, nil, true)
   sunrise[#sunrise + 1] = #events
-  setLayerEvent(events, layers, "sunrise", 0, "main", 2)
+  setLayerEvent(events, planes, layers, "sunrise", 0, "main", 2, nil, true)
   sunrise[#sunrise + 1] = #events
-  setLayerEvent(events, layers, "sunrise", 0, "main", 3)
+  setLayerEvent(events, planes, layers, "sunrise", 0, "main", 3, nil, true)
   sunrise[#sunrise + 1] = #events
   sunrise[#sunrise + 1] = nextIndex(events)
   events[#events + 1] = event("waitTicks", "sunrise", 0, { ticks = 1 })
@@ -848,13 +1013,13 @@ local function scene1Program(clips, layers)
     0,
     { engine = "main", bgSlot = 2, dx = 0, dy = -0x10, ticks = 240, direction = "up", effect = "scroll-sunrise" }
   )
-  showSprite(events, instances, clips, "scroll", 0, "sun", "bird", 0)
+  showSprite(events, 1, instances, clips, "scroll", 0, "sun", "bird", 0)
   scroll[#scroll + 1] = #events - 1
   scroll[#scroll + 1] = #events
   step(steps, "scroll", scroll, { kind = "effect", effect = "scroll-sunrise" })
   local bird = { nextIndex(events) }
   events[#events + 1] = event("waitTicks", "bird", 0, { ticks = 128 })
-  showSprite(events, instances, clips, "bird", 128, "bird", "bird", 1)
+  showSprite(events, 1, instances, clips, "bird", 128, "bird", "bird", 1)
   bird[#bird + 1] = #events - 1
   bird[#bird + 1] = #events
   step(steps, "bird", bird, { kind = "duration", ticks = 128 })
@@ -887,19 +1052,20 @@ local function scene2Program(clips)
   local function showInstance(stepId, atStepTick, instanceId, bank, sequence)
     local instance = instanceById(instances, instanceId)
     local clip = clipPath(clips, bank, sequence)
+    local x, y = sourceLocalPosition(2, instance.engine, instance.x, instance.y)
     events[#events + 1] = event("setSpriteClip", stepId, atStepTick, {
       instanceId = instance.id,
       engine = instance.engine,
-      x = instance.x,
-      y = instance.y,
+      x = x,
+      y = y,
       drawOrder = instance.drawOrder,
       clipId = clip,
     })
     events[#events + 1] = event("spriteVisible", stepId, atStepTick, {
       instanceId = instance.id,
       engine = instance.engine,
-      x = instance.x,
-      y = instance.y,
+      x = x,
+      y = y,
       drawOrder = instance.drawOrder,
       visible = true,
     })
@@ -929,10 +1095,11 @@ local function scene2Program(clips)
   local function panPositions(stepId, groupIds, xSpeed, ySpeed, duration, startX, startY)
     local indices = {}
     for tick = 1, duration do
-      local x = startX + truncStep(xSpeed, tick, duration)
-      local y = startY + truncStep(ySpeed, tick, duration)
+      local rawX = startX + truncStep(xSpeed, tick, duration)
+      local rawY = startY + truncStep(ySpeed, tick, duration)
       for _, instanceId in ipairs(groupIds) do
         local instance = instanceById(instances, instanceId)
+        local x, y = sourceLocalPosition(2, instance.engine, rawX, rawY)
         indices[#indices + 1] = nextIndex(events)
         events[#events + 1] = event("spriteVisible", stepId, tick, {
           instanceId = instance.id,
@@ -1067,9 +1234,12 @@ local function scene3Program(clips, layers)
     ["beast1"] = { engine = "sub", bgSlot = 2, variant = 1 },
     ["beast2"] = { engine = "sub", bgSlot = 3, variant = 1 },
   }
+  -- Compiler-local slot images: plane toggles preserve the most recently
+  -- staged tilemap variant instead of resetting the slot to base art.
+  local planes = snapshotPlanes(layers)
   local function showPanel(stepId, atStepTick, phase)
     local slot = assert(panels[phase], "opening scene 3 phase names its panel: " .. tostring(phase))
-    setLayerEvent(events, layers, stepId, atStepTick, slot.engine, slot.bgSlot, slot.variant)
+    setLayerEvent(events, planes, layers, stepId, atStepTick, slot.engine, slot.bgSlot, slot.variant, nil)
     return #events
   end
   local towns = { "new-bark-town", "goldenrod-city", "ecruteak-city" }
@@ -1080,7 +1250,7 @@ local function scene3Program(clips, layers)
   -- Retail animates the silver silhouette from scene setup until the
   -- rival panels finish, so it shows at the first town beat and hides
   -- at the panels beat below.
-  showSprite(events, instances, clips, "show-new-bark-town", 0, "silver-silhouette", "silver", 0)
+  showSprite(events, 3, instances, clips, "show-new-bark-town", 0, "silver-silhouette", "silver", 0)
   local silhouetteClip, silhouetteVisible = #events - 1, #events
   for town = 1, 3 do
     local show = {}
@@ -1102,9 +1272,14 @@ local function scene3Program(clips, layers)
     events[#events + 1] = event("waitTicks", "show-" .. towns[town], holds[town] + 1, { ticks = holds[town] })
     step(steps, "show-" .. towns[town], show, { kind = "duration", ticks = holds[town] + 1 })
   end
+  -- The retail end-of-3D boundary sets whichMap=0xFFFF once the town wipe
+  -- finishes, before any rival-only output: town pixels stop while the
+  -- staged town resources stay owned by the slot.
   local rival = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitEffects", "rival", 0, { effects = { "wipe-circle" } })
   events[#events + 1] = event("circleWipe", "rival", 0, { mode = "out", effect = "wipe-circle" })
+  rival[#rival + 1] = nextIndex(events)
+  events[#events + 1] = event("setModelVisible", "rival", 0, { visible = false })
   step(steps, "rival", rival, { kind = "effect", effect = "wipe-circle" })
   local panelsStep = { nextIndex(events) }
   events[#events + 1] = event("waitEffects", "panels", 0, { effects = { "wipe-circle" } })
@@ -1113,34 +1288,93 @@ local function scene3Program(clips, layers)
   end
   panelsStep[#panelsStep + 1] = nextIndex(events)
   local silhouette = instanceFor(instances, "silver-silhouette")
+  local silhouetteX, silhouetteY = sourceLocalPosition(3, silhouette.engine, silhouette.x, silhouette.y)
   events[#events + 1] = event("spriteVisible", "panels", 92, {
     instanceId = silhouette.id,
     engine = silhouette.engine,
-    x = silhouette.x,
-    y = silhouette.y,
+    x = silhouetteX,
+    y = silhouetteY,
     drawOrder = silhouette.drawOrder,
     visible = false,
   })
   step(steps, "panels", panelsStep, { kind = "duration", ticks = 92 })
   local borders = { nextIndex(events) }
   events[#events + 1] = event("waitTicks", "borders", 0, { ticks = 10 })
+  setPlaneVisible(events, planes, layers, "borders", 10, "sub", 0, false)
+  borders[#borders + 1] = #events
   borders[#borders + 1] = showPanel("borders", 10, "rival-whole")
   step(steps, "borders", borders, { kind = "duration", ticks = 10 })
-  local aspect = { nextIndex(events) }
-  events[#events + 1] = event("window", "aspect", 5, { target = "lower", kind = "narrow-y", effect = "window-aspect" })
-  step(steps, "aspect", aspect, { kind = "duration", ticks = 5 })
-  local narrow = { nextIndex(events) }
-  events[#events + 1] = event("waitEffects", "narrow", 0, { effects = { "window-aspect" } })
-  step(steps, "narrow", narrow, { kind = "effect", effect = "window-aspect" })
+  -- One source step holds both the narrow pan at tick 5 and the widening
+  -- pan, visibility, scroll, and plane enable at tick 44.
+  local aspect = {}
+  emitWindow(events, 3, "narrow-aspect", "aspect", 5, "window-aspect")
+  aspect[#aspect + 1] = #events
+  emitWindow(events, 3, "widen-aspect", "aspect", 44, "window-aspect-widen")
+  aspect[#aspect + 1] = #events
+  setWindowVisible(events, "aspect", 44, "sub", true)
+  aspect[#aspect + 1] = #events
+  aspect[#aspect + 1] = nextIndex(events)
+  events[#events + 1] = event(
+    "setScroll",
+    "aspect",
+    44,
+    { engine = "sub", bgSlot = 0, dx = -256, dy = 0, ticks = 7, direction = "left", effect = "scroll-sub0" }
+  )
+  setPlaneVisible(events, planes, layers, "aspect", 44, "sub", 0, true)
+  aspect[#aspect + 1] = #events
+  step(steps, "aspect", aspect, { kind = "duration", ticks = 44 })
+  local appearEntei = {}
+  emitWindow(events, 3, "widen-entei", "appear-entei", 0, "window-appear-entei")
+  appearEntei[#appearEntei + 1] = #events
+  appearEntei[#appearEntei + 1] = nextIndex(events)
+  events[#events + 1] = event(
+    "setScroll",
+    "appear-entei",
+    0,
+    { engine = "sub", bgSlot = 1, dx = 256, dy = 0, ticks = 7, direction = "right", effect = "scroll-sub1" }
+  )
+  setPlaneVisible(events, planes, layers, "appear-entei", 0, "sub", 1, true)
+  appearEntei[#appearEntei + 1] = #events
+  step(steps, "appear-entei", appearEntei, { kind = "effect", effect = "scroll-sub0" })
+  local appearRaikou = {}
+  emitWindow(events, 3, "widen-raikou", "appear-raikou", 0, "window-appear-raikou")
+  appearRaikou[#appearRaikou + 1] = #events
+  appearRaikou[#appearRaikou + 1] = nextIndex(events)
+  events[#events + 1] = event(
+    "setScroll",
+    "appear-raikou",
+    0,
+    { engine = "sub", bgSlot = 2, dx = -256, dy = 0, ticks = 1, direction = "left", effect = "scroll-sub2" }
+  )
+  setPlaneVisible(events, planes, layers, "appear-raikou", 0, "sub", 2, true)
+  appearRaikou[#appearRaikou + 1] = #events
+  step(steps, "appear-raikou", appearRaikou, { kind = "effect", effect = "scroll-sub1" })
+  local loadRockets = {}
+  setWindowVisible(events, "load-rockets", 0, "sub", false)
+  loadRockets[#loadRockets + 1] = #events
+  setWindowVisible(events, "load-rockets", 0, "main", false)
+  loadRockets[#loadRockets + 1] = #events
+  step(steps, "load-rockets", loadRockets, { kind = "effect", effect = "scroll-sub2" })
+  local narrowWindows = {}
+  emitWindow(events, 3, "narrow-x", "narrow-windows", 42, "window-narrow-x")
+  narrowWindows[#narrowWindows + 1] = #events
+  setWindowVisible(events, "narrow-windows", 42, "sub", true)
+  narrowWindows[#narrowWindows + 1] = #events
+  step(steps, "narrow-windows", narrowWindows, { kind = "duration", ticks = 42 })
+  local waitNarrow = { nextIndex(events) }
+  events[#events + 1] = event("waitEffects", "wait-narrow", 0, { effects = { "window-narrow-x" } })
+  step(steps, "wait-narrow", waitNarrow, { kind = "effect", effect = "window-narrow-x" })
   local sprites = {}
-  showSprite(events, instances, clips, "sprites", 56, "eusine", "eusine", 0)
+  showSprite(events, 3, instances, clips, "sprites", 56, "eusine", "eusine", 0)
   sprites[#sprites + 1] = #events - 1
   sprites[#sprites + 1] = #events
-  showSprite(events, instances, clips, "sprites", 145, "unown0", "eusine", 1)
+  showSprite(events, 3, instances, clips, "sprites", 145, "unown0", "eusine", 1)
   sprites[#sprites + 1] = #events - 1
   sprites[#sprites + 1] = #events
-  sprites[#sprites + 1] = nextIndex(events)
-  events[#events + 1] = event("window", "sprites", 145, { target = "lower", kind = "slide-left" })
+  emitWindow(events, 3, "slide-sprites", "sprites", 145, "window-sprites-slide")
+  sprites[#sprites + 1] = #events
+  setWindowSecondary(events, "sprites", 145, "sub", { 0x46, 0x40, 0xB9, 0xC0 }, 0x1D)
+  sprites[#sprites + 1] = #events
   sprites[#sprites + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
@@ -1151,13 +1385,19 @@ local function scene3Program(clips, layers)
   step(steps, "sprites", sprites, { kind = "duration", ticks = 145 })
   local entei = { nextIndex(events) }
   events[#events + 1] = event("waitEffects", "entei-exit", 0, { effects = { "scroll-sub1" } })
+  setPlaneVisible(events, planes, layers, "entei-exit", 0, "sub", 1, false)
+  entei[#entei + 1] = #events
+  emitWindow(events, 3, "nop-entei-exit", "entei-exit", 0, nil)
+  entei[#entei + 1] = #events
   step(steps, "entei-exit", entei, { kind = "effect", effect = "scroll-sub1" })
   local raikou = {}
-  showSprite(events, instances, clips, "raikou", 0, "unown1", "eusine", 2)
+  showSprite(events, 3, instances, clips, "raikou", 0, "unown1", "eusine", 2)
   raikou[#raikou + 1] = #events - 1
   raikou[#raikou + 1] = #events
-  raikou[#raikou + 1] = nextIndex(events)
-  events[#events + 1] = event("window", "raikou", 10, { target = "lower", kind = "slide-left" })
+  emitWindow(events, 3, "slide-raikou-exit", "raikou", 10, "window-raikou-exit")
+  raikou[#raikou + 1] = #events
+  setWindowSecondary(events, "raikou", 10, "sub", { 0x46, 0x40, 0xB9, 0x80 }, 0x19)
+  raikou[#raikou + 1] = #events
   raikou[#raikou + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
@@ -1168,18 +1408,28 @@ local function scene3Program(clips, layers)
   step(steps, "raikou", raikou, { kind = "duration", ticks = 10 })
   local rockets = { nextIndex(events) }
   events[#events + 1] = event("waitEffects", "rockets", 0, { effects = { "scroll-sub1", "scroll-sub2" } })
+  setPlaneVisible(events, planes, layers, "rockets", 0, "sub", 2, false)
+  rockets[#rockets + 1] = #events
+  emitWindow(events, 3, "nop-rocket", "rockets", 0, nil)
+  rockets[#rockets + 1] = #events
   for _, beast in ipairs({ "beast0", "beast1", "beast2" }) do
     rockets[#rockets + 1] = showPanel("rockets", 0, beast)
   end
-  -- The beast panels show as a zero-duration transition beat once the
-  -- panel slides have finished; the beat completes on the latest slide.
+  setPlaneVisible(events, planes, layers, "rockets", 0, "sub", 1, true)
+  rockets[#rockets + 1] = #events
+  setPlaneVisible(events, planes, layers, "rockets", 0, "sub", 2, true)
+  rockets[#rockets + 1] = #events
+  -- The beast panels show as a transition beat once both panel slides
+  -- have finished; the beat completes on the latest slide.
   step(steps, "rockets", rockets, { kind = "effect", effect = "scroll-sub2" })
   local suicune = {}
-  showSprite(events, instances, clips, "suicune", 0, "unown2", "eusine", 3)
+  showSprite(events, 3, instances, clips, "suicune", 0, "unown2", "eusine", 3)
   suicune[#suicune + 1] = #events - 1
   suicune[#suicune + 1] = #events
-  suicune[#suicune + 1] = nextIndex(events)
-  events[#events + 1] = event("window", "suicune", 30, { target = "lower", kind = "slide-right" })
+  emitWindow(events, 3, "slide-suicune-exit", "suicune", 30, "window-suicune-exit")
+  suicune[#suicune + 1] = #events
+  setWindowSecondary(events, "suicune", 30, "sub", { 0x46, 0x40, 0xB9, 0x80 }, 0x1E)
+  suicune[#suicune + 1] = #events
   suicune[#suicune + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
@@ -1188,13 +1438,18 @@ local function scene3Program(clips, layers)
     { engine = "sub", bgSlot = 0, dx = 0x74, dy = 0, ticks = 10, direction = "right", effect = "scroll-sub0" }
   )
   step(steps, "suicune", suicune, { kind = "duration", ticks = 30 })
-  local viewport = { nextIndex(events), nextIndex(events) + 1, nextIndex(events) + 2, nextIndex(events) + 3 }
+  local viewport = { nextIndex(events) }
   events[#events + 1] = event("waitEffects", "viewport", 0, { effects = { "scroll-sub0" } })
-  events[#events + 1] = event("window", "viewport", 0, { target = "lower", kind = "expand" })
+  setPlaneVisible(events, planes, layers, "viewport", 0, "sub", 0, false)
+  viewport[#viewport + 1] = #events
+  emitWindow(events, 3, "expand-viewport", "viewport", 0, "window-expand-viewport")
+  viewport[#viewport + 1] = #events
+  viewport[#viewport + 1] = nextIndex(events)
   events[#events + 1] =
     event("setScroll", "viewport", 0, { engine = "sub", bgSlot = 1, dx = 0, dy = -0x30, ticks = 254, direction = "up" })
   events[#events + 1] =
     event("setScroll", "viewport", 0, { engine = "sub", bgSlot = 2, dx = 0, dy = -0x20, ticks = 254, direction = "up" })
+  viewport[#viewport + 1] = #events
   -- The viewport hold completes when the tail scroll started by the next
   -- step finishes; effect starts may complete in a later step.
   step(steps, "viewport", viewport, { kind = "effect", effect = "scroll-sub3" })
@@ -1214,10 +1469,12 @@ local function scene3Program(clips, layers)
 end
 
 ---@param clips table<string, unknown>[]
+---@param layers table<string, unknown>
 ---@return table<string, unknown>[], table<string, unknown>[] steps and events
-local function scene4Program(clips)
+local function scene4Program(clips, layers)
   local instances = SceneSources.spriteInstances(4)
   local steps, events = {}, {}
+  local planes = snapshotPlanes(layers)
   local fadeIn = { nextIndex(events) }
   events[#events + 1] = event("setScreenMapping", "fade-in", 0, { mainPhysical = "lower" })
   fadeIn[#fadeIn + 1] = nextIndex(events)
@@ -1226,10 +1483,12 @@ local function scene4Program(clips)
   local slideIn = {}
   slideIn[#slideIn + 1] = nextIndex(events)
   events[#events + 1] = event("waitEffects", "slide-in", 0, { effects = { "fade-in" } })
-  slideIn[#slideIn + 1] = nextIndex(events)
-  events[#events + 1] = event("window", "slide-in", 0, { target = "upper", kind = "widen-left" })
-  slideIn[#slideIn + 1] = nextIndex(events)
-  events[#events + 1] = event("window", "slide-in", 0, { target = "lower", kind = "widen-right" })
+  -- The simultaneous top pan addresses the sub engine while the bottom
+  -- pan addresses the main engine; both span the full display width.
+  emitWindow(events, 4, "slide-in-top", "slide-in", 0, nil)
+  slideIn[#slideIn + 1] = #events
+  emitWindow(events, 4, "slide-in-bottom", "slide-in", 0, nil)
+  slideIn[#slideIn + 1] = #events
   slideIn[#slideIn + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
@@ -1244,21 +1503,25 @@ local function scene4Program(clips)
     0,
     { engine = "main", bgSlot = 1, dx = -0xC0, dy = 0, ticks = 10, direction = "left", effect = "scroll-slide-in" }
   )
-  showSprite(events, instances, clips, "slide-in", 0, "hand1", "hands", 0)
+  showSprite(events, 4, instances, clips, "slide-in", 0, "hand1", "hands", 0)
   slideIn[#slideIn + 1] = #events - 1
   slideIn[#slideIn + 1] = #events
-  showSprite(events, instances, clips, "slide-in", 0, "hand2", "hands", 1)
+  showSprite(events, 4, instances, clips, "slide-in", 0, "hand2", "hands", 1)
   slideIn[#slideIn + 1] = #events - 1
+  slideIn[#slideIn + 1] = #events
+  setPlaneVisible(events, planes, layers, "slide-in", 0, "main", 1, true)
+  slideIn[#slideIn + 1] = #events
+  setPlaneVisible(events, planes, layers, "slide-in", 0, "sub", 1, true)
   slideIn[#slideIn + 1] = #events
   step(steps, "slide-in", slideIn, { kind = "effect", effect = "scroll-slide-in" })
   local hold = { nextIndex(events) }
   events[#events + 1] = event("waitTicks", "hold", 26, { ticks = 25 })
   step(steps, "hold", hold, { kind = "duration", ticks = 26 })
   local slideOut = {}
-  slideOut[#slideOut + 1] = nextIndex(events)
-  events[#events + 1] = event("window", "slide-out", 0, { target = "upper", kind = "narrow-right" })
-  slideOut[#slideOut + 1] = nextIndex(events)
-  events[#events + 1] = event("window", "slide-out", 0, { target = "lower", kind = "narrow-left" })
+  emitWindow(events, 4, "slide-out-top", "slide-out", 0, nil)
+  slideOut[#slideOut + 1] = #events
+  emitWindow(events, 4, "slide-out-bottom", "slide-out", 0, nil)
+  slideOut[#slideOut + 1] = #events
   slideOut[#slideOut + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
@@ -1275,9 +1538,17 @@ local function scene4Program(clips)
   )
   step(steps, "slide-out", slideOut, { kind = "effect", effect = "scroll-slide-out" })
   local hide = {}
-  setSpriteVisible(events, instances, "hide-hands", 0, "hand1", false)
+  setSpriteVisible(events, 4, instances, "hide-hands", 0, "hand1", false)
   hide[#hide + 1] = #events
-  setSpriteVisible(events, instances, "hide-hands", 0, "hand2", false)
+  setSpriteVisible(events, 4, instances, "hide-hands", 0, "hand2", false)
+  hide[#hide + 1] = #events
+  setPlaneVisible(events, planes, layers, "hide-hands", 0, "main", 1, false)
+  hide[#hide + 1] = #events
+  setPlaneVisible(events, planes, layers, "hide-hands", 0, "sub", 1, false)
+  hide[#hide + 1] = #events
+  setWindowVisible(events, "hide-hands", 0, "main", false)
+  hide[#hide + 1] = #events
+  setWindowVisible(events, "hide-hands", 0, "sub", false)
   hide[#hide + 1] = #events
   step(steps, "hide-hands", hide, { kind = "effect", effect = "scroll-slide-out" })
   local starters = { "chikorita", "cyndaquil", "totodile" }
@@ -1286,7 +1557,7 @@ local function scene4Program(clips)
   local banks = { "chikorita", "cyndaquil", "totodile" }
   for round = 1, 3 do
     local show = {}
-    showSprite(events, instances, clips, "starter-" .. starters[round], 0, starters[round], banks[round], 0)
+    showSprite(events, 4, instances, clips, "starter-" .. starters[round], 0, starters[round], banks[round], 0)
     show[#show + 1] = #events - 1
     show[#show + 1] = #events
     show[#show + 1] = nextIndex(events)
@@ -1294,25 +1565,43 @@ local function scene4Program(clips)
       event("startEmitters", "starter-" .. starters[round], 0, { group = groups[round], emitters = emitterIds[round] })
     step(steps, "starter-" .. starters[round], show, { kind = "effect", effect = "emitters-" .. groups[round] })
     if round < 3 then
+      -- Retail Task_IntroMovie_Scene4_FlipScreens: argument 0 (after the
+      -- first starter) clears the flip so main returns upper with main
+      -- BG2 on/BG3 off and sub BG2 off/BG3 on; argument 1 (after the
+      -- second starter) sets the flip so main returns lower with the
+      -- mirrored plane masks.
       local flip = { nextIndex(events) }
+      local afterFirst = round == 1
       events[#events + 1] = event(
         "setScreenMapping",
         "flip-" .. starters[round],
         0,
-        round == 1 and { mainPhysical = "lower" } or { mainPhysical = "upper" }
+        afterFirst and { mainPhysical = "upper" } or { mainPhysical = "lower" }
       )
+      setPlaneVisible(events, planes, layers, "flip-" .. starters[round], 0, "main", 2, afterFirst)
+      flip[#flip + 1] = #events
+      setPlaneVisible(events, planes, layers, "flip-" .. starters[round], 0, "main", 3, not afterFirst)
+      flip[#flip + 1] = #events
+      setPlaneVisible(events, planes, layers, "flip-" .. starters[round], 0, "sub", 2, not afterFirst)
+      flip[#flip + 1] = #events
+      setPlaneVisible(events, planes, layers, "flip-" .. starters[round], 0, "sub", 3, afterFirst)
+      flip[#flip + 1] = #events
       step(steps, "flip-" .. starters[round], flip, { kind = "effect", effect = "emitters-" .. groups[round] })
     end
   end
   local finishTotodile = { nextIndex(events) }
   events[#events + 1] =
     event("setFade", "finish-totodile", 0, { kind = "black-shutter-close", ticks = 26, effect = "fade-close" })
+  for _, bgSlot in ipairs({ 1, 2, 3 }) do
+    setPlaneVisible(events, planes, layers, "finish-totodile", 0, "main", bgSlot, false)
+    finishTotodile[#finishTotodile + 1] = #events
+  end
   step(steps, "finish-totodile", finishTotodile, { kind = "effect", effect = "fade-close" })
   -- The closing sparkle waits on its own compiled clip: the animation's
   -- frame durations bound the wait, with no separate named effect.
   local sparkleClip = clipPath(clips, "hands", 2)
   local sparkle = {}
-  showSprite(events, instances, clips, "sparkle", 0, "sparkles", "hands", 2)
+  showSprite(events, 4, instances, clips, "sparkle", 0, "sparkles", "hands", 2)
   sparkle[#sparkle + 1] = #events - 1
   sparkle[#sparkle + 1] = #events
   step(steps, "sparkle", sparkle, { kind = "effect", effect = sparkleClip })
@@ -1476,7 +1765,7 @@ function OpeningMovieCompiler.compileScene(romFs, versionId, sceneNumber)
   elseif sceneNumber == 3 then
     steps, events = scene3Program(clips, layers)
   elseif sceneNumber == 4 then
-    steps, events = scene4Program(clips)
+    steps, events = scene4Program(clips, layers)
   else
     steps, events = scene5Program(versionId)
   end

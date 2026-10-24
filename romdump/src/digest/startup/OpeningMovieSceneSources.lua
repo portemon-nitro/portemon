@@ -12,7 +12,7 @@
 
 local OpeningMovieSceneSources = {}
 
-OpeningMovieSceneSources.SCHEMA = "g4-startup-opening-scene-v2"
+OpeningMovieSceneSources.SCHEMA = "g4-startup-opening-scene-v3"
 OpeningMovieSceneSources.TICK_RATE = 30
 OpeningMovieSceneSources.ARCHIVE = "NARC_demo_opening_gs_opening"
 OpeningMovieSceneSources.PARTICLE_ARCHIVE = "NARC_a_0_5_9"
@@ -425,6 +425,320 @@ function OpeningMovieSceneSources.scene5ScrollDirection(versionId)
     return "left"
   end
   return "right"
+end
+
+-- Post-init plane visibility per compiled slot: template defaults enable
+-- every plane, then each scene toggles selected planes off before its first
+-- step runs (retail InitBgFromTemplate enables by default; scene 1 then
+-- disables all four planes in LoadBgGfx, scene 3 disables sub BG1/BG2 in
+-- Show2DGfx, scene 4 disables main BG1/BG2 and sub BG1 in EnableBgLayers).
+-- The compiler records these verbatim as layer initialVisible facts.
+-- Post-init visibility per compiled slot: template defaults enable every
+-- plane; each scene then toggles selected planes off before its first
+-- step runs. See initialVisible below.
+local INITIAL_VISIBLE = {
+  [1] = {
+    main = { [0] = false, [1] = false, [2] = false, [3] = false },
+    sub = { [0] = false, [1] = false, [3] = false },
+  },
+  [2] = { main = { [0] = true, [1] = true, [2] = true }, sub = { [0] = true } },
+  [3] = { sub = { [0] = true, [1] = false, [2] = false, [3] = true } },
+  [4] = {
+    main = { [1] = false, [2] = false, [3] = true },
+    sub = { [1] = false, [2] = true, [3] = true },
+  },
+  [5] = { main = { [1] = true, [2] = true }, sub = { [1] = true, [2] = true } },
+}
+
+---@param sceneNumber integer
+---@param engine string source engine owning the slot
+---@param bgSlot integer numeric background plane 0..3
+---@return boolean whether the plane shows after scene setup
+function OpeningMovieSceneSources.initialVisible(sceneNumber, engine, bgSlot)
+  checkScene(sceneNumber)
+  local scene = INITIAL_VISIBLE[sceneNumber]
+  local group = scene and scene[engine]
+  local visible = group and group[bgSlot]
+  assert(visible ~= nil, "opening scene plane state names a compiled slot")
+  return visible
+end
+
+-- Source window pan facts: the retail IntroMovieBgWindowAnimParam rows
+-- each scene hands to IntroMovie_StartWindowPanEffect (whichScreen 0
+-- writes the sub-engine G2S registers, nonzero writes the main-engine G2
+-- registers), with the source duration. The compiler emits these verbatim
+-- as engine-local v3 window records at the source steps and ticks.
+-- Source window pan rows per scene: the retail IntroMovieBgWindowAnimParam
+-- values each scene hands to its pan starter. See windowPans below.
+local WINDOW_PANS = {
+  [3] = {
+    {
+      id = "narrow-aspect",
+      duration = 5,
+      whichScreen = 0,
+      x1Start = 0x00,
+      y1Start = 0x00,
+      x2Start = 0xFF,
+      y2Start = 0xC0,
+      x1End = 0x00,
+      y1End = 0x40,
+      x2End = 0xFF,
+      y2End = 0x80,
+      winIn = 0x1F,
+      winOut = 0x10,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "widen-aspect",
+      duration = 7,
+      whichScreen = 0,
+      x1Start = 0x00,
+      y1Start = 0x40,
+      x2Start = 0x01,
+      y2Start = 0x80,
+      x1End = 0x00,
+      y1End = 0x40,
+      x2End = 0xFF,
+      y2End = 0x80,
+      winIn = 0x1F,
+      winOut = 0x10,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "widen-entei",
+      duration = 7,
+      whichScreen = 0,
+      x1Start = 0xFE,
+      y1Start = 0x00,
+      x2Start = 0xFF,
+      y2Start = 0x80,
+      x1End = 0x00,
+      y1End = 0x00,
+      x2End = 0xFF,
+      y2End = 0x80,
+      winIn = 0x1F,
+      winOut = 0x11,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "widen-raikou",
+      duration = 1,
+      whichScreen = 0,
+      x1Start = 0x00,
+      y1Start = 0x00,
+      x2Start = 0x01,
+      y2Start = 0xC0,
+      x1End = 0x00,
+      y1End = 0x00,
+      x2End = 0xFF,
+      y2End = 0xC0,
+      winIn = 0x1F,
+      winOut = 0x13,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "narrow-x",
+      duration = 3,
+      whichScreen = 0,
+      x1Start = 0x00,
+      y1Start = 0x00,
+      x2Start = 0xFF,
+      y2Start = 0xC0,
+      x1End = 0x46,
+      y1End = 0x00,
+      x2End = 0xB9,
+      y2End = 0xC0,
+      winIn = 0x1F,
+      winOut = 0x10,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "slide-sprites",
+      duration = 10,
+      whichScreen = 0,
+      x1Start = 0x46,
+      y1Start = 0x00,
+      x2Start = 0xB9,
+      y2Start = 0xC0,
+      x1End = 0xB9,
+      y1End = 0x00,
+      x2End = 0xB9,
+      y2End = 0xC0,
+      winIn = 0x1F,
+      winOut = 0x10,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "nop-entei-exit",
+      duration = 0,
+      whichScreen = 0,
+      x1Start = 0x46,
+      y1Start = 0x40,
+      x2Start = 0xB9,
+      y2Start = 0xC0,
+      x1End = 0x46,
+      y1End = 0x40,
+      x2End = 0xB9,
+      y2End = 0xC0,
+      winIn = 0x1F,
+      winOut = 0x10,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "slide-raikou-exit",
+      duration = 10,
+      whichScreen = 0,
+      x1Start = 0x46,
+      y1Start = 0x40,
+      x2Start = 0xB9,
+      y2Start = 0xC0,
+      x1End = 0xB9,
+      y1End = 0x40,
+      x2End = 0xB9,
+      y2End = 0xC0,
+      winIn = 0x1F,
+      winOut = 0x10,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "nop-rocket",
+      duration = 0,
+      whichScreen = 0,
+      x1Start = 0x46,
+      y1Start = 0x40,
+      x2Start = 0xB9,
+      y2Start = 0x80,
+      x1End = 0x46,
+      y1End = 0x40,
+      x2End = 0xB9,
+      y2End = 0x80,
+      winIn = 0x1F,
+      winOut = 0x10,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "slide-suicune-exit",
+      duration = 10,
+      whichScreen = 0,
+      x1Start = 0x46,
+      y1Start = 0x40,
+      x2Start = 0xB9,
+      y2Start = 0x80,
+      x1End = 0x46,
+      y1End = 0x40,
+      x2End = 0x46,
+      y2End = 0x80,
+      winIn = 0x1F,
+      winOut = 0x10,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "expand-viewport",
+      duration = 253,
+      whichScreen = 0,
+      x1Start = 0x46,
+      y1Start = 0x40,
+      x2Start = 0xB9,
+      y2Start = 0x80,
+      x1End = 0x00,
+      y1End = 0x00,
+      x2End = 0xFF,
+      y2End = 0xC0,
+      winIn = 0x1F,
+      winOut = 0x10,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+  },
+  [4] = {
+    {
+      id = "slide-in-top",
+      duration = 10,
+      whichScreen = 0,
+      x1Start = 0xFF,
+      y1Start = 0x00,
+      x2Start = 0xFF,
+      y2Start = 0xC0,
+      x1End = 0x00,
+      y1End = 0x00,
+      x2End = 0xFF,
+      y2End = 0xC0,
+      winIn = 30,
+      winOut = 28,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "slide-in-bottom",
+      duration = 10,
+      whichScreen = 1,
+      x1Start = 0x00,
+      y1Start = 0x00,
+      x2Start = 0x00,
+      y2Start = 0xC0,
+      x1End = 0x00,
+      y1End = 0x00,
+      x2End = 0xFF,
+      y2End = 0xC0,
+      winIn = 30,
+      winOut = 28,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "slide-out-top",
+      duration = 10,
+      whichScreen = 0,
+      x1Start = 0x00,
+      y1Start = 0x00,
+      x2Start = 0xFF,
+      y2Start = 0xC0,
+      x1End = 0x00,
+      y1End = 0x00,
+      x2End = 0x00,
+      y2End = 0xC0,
+      winIn = 30,
+      winOut = 28,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+    {
+      id = "slide-out-bottom",
+      duration = 10,
+      whichScreen = 1,
+      x1Start = 0x00,
+      y1Start = 0x00,
+      x2Start = 0xFF,
+      y2Start = 0xC0,
+      x1End = 0xFF,
+      y1End = 0x00,
+      x2End = 0xFF,
+      y2End = 0xC0,
+      winIn = 30,
+      winOut = 28,
+      topEffect = 1,
+      bottomEffect = 1,
+    },
+  },
+}
+
+---@param sceneNumber integer
+---@return table<string, unknown>[] source window pan declarations
+function OpeningMovieSceneSources.windowPans(sceneNumber)
+  checkScene(sceneNumber)
+  local pans = WINDOW_PANS[sceneNumber]
+  assert(pans ~= nil, "opening scene declares no window pans")
+  return pans
 end
 
 -- Scene member inventory: every source member the producer reads for one
