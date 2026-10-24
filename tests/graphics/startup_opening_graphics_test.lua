@@ -1,8 +1,9 @@
--- Source-backed opening movie graphics: the compiled SoulSilver scenes play
--- in order with real town and particle motion at fixed source timing, the
--- skip gate finishes only the movie, and GPU resources are released.
--- HeartGold coverage stays blocked: no HeartGold dump is available here, so
--- its scenarios skip instead of running against faked art.
+-- Source-backed opening movie graphics: the compiled scenes from the selected
+-- user-owned edition play in order with real town and particle motion at fixed
+-- source timing, the skip gate finishes only the movie, and GPU resources are
+-- released. HeartGold coverage stays blocked: no HeartGold dump is available
+-- here, so its dedicated scenario skips instead of running against faked art;
+-- every other real-source scenario runs against whichever edition is ready.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -154,10 +155,225 @@ local function blankBytes(scope, width, height)
   return imageData:getString()
 end
 
-local function readyOrSkip(context, versionId, what)
-  if not RomImporter.isReady(versionId) then
-    context:skip("no user-owned " .. what .. " dump is ready")
+-- Samples one device pixel out of a captured RGBA frame. Defined early
+-- because the engine-target probes below sample through it.
+---@param bytes string raw RGBA frame bytes
+---@param width integer device frame width
+---@param x integer device pixel column
+---@param y integer device pixel row
+---@return number r, number g, number b in 0..1
+local function pixelOf(bytes, width, x, y)
+  local base = (y * width + x) * 4 + 1
+  local r, g, b = string.byte(bytes, base, base + 2)
+  return r / 255, g / 255, b / 255
+end
+
+-- The opening cinema runs against whichever user-owned edition the runner
+-- selected: SoulSilver here, HeartGold where that dump is ready. Beats are
+-- addressed by scene/step identity, so one scenario covers either edition;
+-- a missing dump skips instead of faking the other game's art.
+---@param context table runner context owning skip
+---@return string selected edition identity
+local function selectedVersionId(context)
+  if RomImporter.isReady("soulsilver") then
+    return "soulsilver"
   end
+  if RomImporter.isReady("heartgold") then
+    return "heartgold"
+  end
+  context:skip("no user-owned HeartGold or SoulSilver dump is ready")
+  error("unreachable selected edition", 0)
+end
+
+-- Reads one fixed 256x192 source engine target after a draw. The caller
+-- draws first so the canvases carry the current source tick; reading never
+-- advances the movie clock.
+---@param scope table test scope owning the readback
+---@param canvas love.Canvas fixed source engine target
+---@return string raw RGBA bytes of the engine target
+local function sourceBytes(scope, canvas)
+  local imageData = scope:own(canvas:newImageData())
+  return imageData:getString()
+end
+
+-- Names the source step the movie currently plays, so beats are addressed
+-- by authored identity instead of hardcoded tick counts.
+---@param movie table running opening movie
+---@return string current source step identity
+local function currentStepId(movie)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local timeline = assert(slot.manifest.timeline, "the current scene carries its timeline")
+  local step = assert(timeline.steps[slot.stepIndex], "the movie stays on a known source step")
+  return assert(step.id, "the current step carries its source identity")
+end
+
+-- Ticks the movie until it plays the named step of the named scene.
+---@param movie table running opening movie
+---@param sceneNumber integer retail scene position
+---@param stepId string authored step identity
+---@param budget integer maximum fixed ticks to spend seeking
+local function advanceToSceneStep(movie, sceneNumber, stepId, budget)
+  local elapsed = 0
+  while elapsed < budget and not movie:isFinished() do
+    if movie:sceneNumber() == sceneNumber and currentStepId(movie) == stepId then
+      return
+    end
+    movie:updateFixed()
+    elapsed = elapsed + 1
+  end
+  Assert.equal(movie:sceneNumber(), sceneNumber, "playback reaches scene " .. sceneNumber .. " step " .. stepId)
+  Assert.equal(currentStepId(movie), stepId, "playback reaches scene " .. sceneNumber .. " step " .. stepId)
+end
+
+---@param r1 number
+---@param g1 number
+---@param b1 number
+---@param r2 number
+---@param g2 number
+---@param b2 number
+---@return number summed per-channel distance in 0..3
+local function colorDistance(r1, g1, b1, r2, g2, b2)
+  return math.abs(r1 - r2) + math.abs(g1 - g2) + math.abs(b1 - b2)
+end
+
+-- A host region shows the mapped engine when its center color is clearly
+-- nearer the mapped source target than the other engine's target.
+---@param r number
+---@param g number
+---@param b number sampled host region color
+---@param mr number
+---@param mg number
+---@param mb number mapped engine target color
+---@param or_ number
+---@param og number
+---@param ob number other engine target color
+---@param message string assertion context
+local function assertPaneShowsEngine(r, g, b, mr, mg, mb, or_, og, ob, message)
+  local mapped = colorDistance(r, g, b, mr, mg, mb)
+  local other = colorDistance(r, g, b, or_, og, ob)
+  Assert.isTrue(
+    mapped + 0.2 < other,
+    message .. (" (mapped %.3f vs other %.3f)"):format(mapped, other)
+  )
+end
+
+-- Fraction of coarsely sampled pixels that change between two frames.
+---@param before string raw RGBA bytes of the earlier frame
+---@param after string raw RGBA bytes of the later frame
+---@param width integer frame width
+---@param height integer frame height
+---@return number changed fraction in 0..1
+-- Majority color of an arbitrary device rectangle on a coarse grid: solid
+-- authored art resolves exactly, so a region owned by one engine reports it.
+---@param bytes string raw RGBA frame bytes
+---@param width integer device frame width
+---@param x0 integer first device column in the region
+---@param x1 integer last device column in the region
+---@param y0 integer first device row in the region
+---@param y1 integer last device row in the region
+---@return number r, number g, number b region majority color in 0..1
+local function rectMajority(bytes, width, x0, x1, y0, y1)
+  local buckets = {}
+  local order = {}
+  for y = y0, y1, 8 do
+    for x = x0, x1, 8 do
+      local r, g, b = pixelOf(bytes, width, x, y)
+      local key = string.format("%d:%d:%d", math.floor(r * 4 + 0.5), math.floor(g * 4 + 0.5), math.floor(b * 4 + 0.5))
+      local entry = buckets[key]
+      if entry == nil then
+        entry = { count = 0, r = r, g = g, b = b }
+        buckets[key] = entry
+        order[#order + 1] = key
+      end
+      entry.count = entry.count + 1
+    end
+  end
+  local best = nil
+  for _, key in ipairs(order) do
+    if best == nil or buckets[key].count > buckets[best].count then
+      best = key
+    end
+  end
+  return buckets[best].r, buckets[best].g, buckets[best].b
+end
+
+-- Majority color of a small window around a mapped engine point. Object
+-- beats (town, starters) occupy only part of their 256x192 target, so
+-- probes sample the authored point instead of averaging whole frames.
+-- Every blit centers its source canvas, so an engine point maps to the
+-- pane center on every host layout.
+---@param bytes string raw RGBA frame bytes
+---@param width integer frame width
+---@param cx integer mapped point column
+---@param cy integer mapped point row
+---@return number r, number g, number b point majority color in 0..1
+local function pointMajority(bytes, width, cx, cy)
+  return rectMajority(bytes, width, math.max(cx - 10, 0), cx + 10, math.max(cy - 10, 0), cy + 10)
+end
+
+-- Fraction of lit device pixels in a rectangle on a coarse grid.
+---@param bytes string raw RGBA frame bytes
+---@param width integer device frame width
+---@param x0 integer first device column in the region
+---@param x1 integer last device column in the region
+---@param y0 integer first device row in the region
+---@param y1 integer last device row in the region
+---@return number lit fraction in 0..1
+local function regionLit(bytes, width, x0, x1, y0, y1)
+  local lit, total = 0, 0
+  for y = y0, y1, 4 do
+    for x = x0, x1, 4 do
+      total = total + 1
+      local r, g, b = pixelOf(bytes, width, x, y)
+      if r + g + b > 0.05 then
+        lit = lit + 1
+      end
+    end
+  end
+  return lit / total
+end
+
+local function changeFraction(before, after, width, height)
+  local changed, total = 0, 0
+  for y = 0, height - 1, 4 do
+    for x = 0, width - 1, 4 do
+      total = total + 1
+      local r1, g1, b1 = pixelOf(before, width, x, y)
+      local r2, g2, b2 = pixelOf(after, width, x, y)
+      if math.abs(r1 - r2) + math.abs(g1 - g2) + math.abs(b1 - b2) > 0.05 then
+        changed = changed + 1
+      end
+    end
+  end
+  return changed / total
+end
+
+-- Fraction of coarsely sampled pixels that change between two frames
+-- inside one vertical half of the frame.
+---@param before string raw RGBA bytes of the earlier frame
+---@param after string raw RGBA bytes of the later frame
+---@param width integer frame width
+---@param height integer frame height
+---@param left boolean true for the left half, false for the right half
+---@return number changed fraction in 0..1
+local function halfChangeFraction(before, after, width, height, left)
+  local half = math.floor(width / 2)
+  local x0, x1 = 0, half - 1
+  if not left then
+    x0, x1 = half, width - 1
+  end
+  local changed, total = 0, 0
+  for y = 0, height - 1, 4 do
+    for x = x0, x1, 4 do
+      total = total + 1
+      local r1, g1, b1 = pixelOf(before, width, x, y)
+      local r2, g2, b2 = pixelOf(after, width, x, y)
+      if math.abs(r1 - r2) + math.abs(g1 - g2) + math.abs(b1 - b2) > 0.05 then
+        changed = changed + 1
+      end
+    end
+  end
+  return changed / total
 end
 
 -- Composite playback proves the same contracts as the draw-call suites, but
@@ -633,15 +849,15 @@ local function step_relative_fades_composite_on_the_gpu(scope)
 end
 
 local function soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates(scope, context)
-  readyOrSkip(context, "soulsilver", "SoulSilver")
-  local first = openMovie(scope, "soulsilver", 512, 384, "single")
+  local versionId = selectedVersionId(context)
+  local first = openMovie(scope, versionId, 512, 384, "single")
   local entries, _ = recordEntries(first, scope, 7)
-  local second = openMovie(scope, "soulsilver", 512, 384, "single")
+  local second = openMovie(scope, versionId, 512, 384, "single")
   local secondEntries, _ = recordEntries(second, scope, 1)
   Assert.deepEqual(secondEntries, entries, "host draw cadence never changes source scene timing")
   local sampleTick = entries[2] + 10
   local function frameAt(ticks, withDraws)
-    local probe = openMovie(scope, "soulsilver", 512, 384, "single")
+    local probe = openMovie(scope, versionId, 512, 384, "single")
     if withDraws then
       advance(probe, ticks, function()
         probe:draw()
@@ -674,8 +890,8 @@ local function soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variab
 end
 
 local function soulsilver_town_segments_and_starter_particles_move(scope, context)
-  readyOrSkip(context, "soulsilver", "SoulSilver")
-  local movie = openMovie(scope, "soulsilver", 512, 384, "single")
+  local versionId = selectedVersionId(context)
+  local movie = openMovie(scope, versionId, 512, 384, "single")
   local ticks = 0
   while movie:sceneNumber() < 3 and ticks < 20000 do
     movie:updateFixed()
@@ -703,7 +919,7 @@ local function soulsilver_town_segments_and_starter_particles_move(scope, contex
   Assert.equal(movie:sceneNumber(), 4, "the starter step holds across its emitter activity")
   local emitterAfter = drawBytes(movie, scope, 512, 384)
   Assert.isTrue(emitterBefore ~= emitterAfter, "live starter particles move real stage pixels")
-  local replay = openMovie(scope, "soulsilver", 512, 384, "single")
+  local replay = openMovie(scope, versionId, 512, 384, "single")
   advance(replay, ticks)
   Assert.equal(movie:sceneNumber(), replay:sceneNumber(), "a replayed clock reaches the same scene")
   Assert.equal(
@@ -716,9 +932,9 @@ local function soulsilver_town_segments_and_starter_particles_move(scope, contex
 end
 
 local function soulsilver_skip_is_source_gated_and_gpu_stays_bounded(scope, context)
-  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local versionId = selectedVersionId(context)
   local baseline = love.graphics.getStats()
-  local movie = openMovie(scope, "soulsilver", 512, 384, "single")
+  local movie = openMovie(scope, versionId, 512, 384, "single")
   Assert.isFalse(movie:skipAllowed(), "the skip gate is closed on the first frame")
   Assert.isFalse(movie:requestSkip(), "an early skip is ignored")
   local gateTick = nil
@@ -756,7 +972,7 @@ local function soulsilver_skip_is_source_gated_and_gpu_stays_bounded(scope, cont
   love.graphics.newCanvas = function()
     error("injected title-style canvas failure")
   end
-  local constructed, failure = pcall(openMovie, scope, "soulsilver", 512, 384, "single")
+  local constructed, failure = pcall(openMovie, scope, versionId, 512, 384, "single")
   love.graphics.newCanvas = realNewCanvas
   Assert.isFalse(constructed, "a canvas allocation failure stops movie construction: " .. tostring(failure))
   local afterFailure = love.graphics.getStats()
@@ -825,10 +1041,11 @@ end
 ---@param scope table
 ---@param scenes table[] validated scene bundles in retail order
 ---@param cacheFs table staged art backing the scenes
+---@param versionId string selected edition identity
 ---@return table? movie, unknown failure
-local function driveMovieCatching(scope, scenes, cacheFs)
+local function driveMovieCatching(scope, scenes, cacheFs, versionId)
   local constructed, movieOrFailure =
-    pcall(openMovieWithCache, scope, scenes, cacheFs, "soulsilver", 512, 384, "single")
+    pcall(openMovieWithCache, scope, scenes, cacheFs, versionId, 512, 384, "single")
   if not constructed then
     return nil, movieOrFailure
   end
@@ -896,10 +1113,10 @@ local function laterTownTexturePaths(models, skipTown)
 end
 
 local function soulsilver_town_texture_failure_aborts_with_a_typed_error(scope, context)
-  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local versionId = selectedVersionId(context)
   local baseline = love.graphics.getStats()
-  local baseFs = CacheFs.forVersion("soulsilver")
-  local scenes = loadScenes("soulsilver")
+  local baseFs = CacheFs.forVersion(versionId)
+  local scenes = loadScenes(versionId)
   -- The first town keeps every texture it needs, so its model and textures
   -- are genuinely acquired before the injected failure; only textures owned
   -- by the later towns are poisoned.
@@ -925,7 +1142,7 @@ local function soulsilver_town_texture_failure_aborts_with_a_typed_error(scope, 
       return baseFs:read(path)
     end,
   }
-  local movie, failure = driveMovieCatching(scope, scenes, cacheFs)
+  local movie, failure = driveMovieCatching(scope, scenes, cacheFs, versionId)
   if failure == nil then
     Assert.isTrue(
       movie ~= nil and movie:isFinished(),
@@ -939,9 +1156,9 @@ local function soulsilver_town_texture_failure_aborts_with_a_typed_error(scope, 
 end
 
 local function soulsilver_town_clip_failure_aborts_with_a_typed_error(scope, context)
-  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local versionId = selectedVersionId(context)
   local baseline = love.graphics.getStats()
-  local scenes = loadScenes("soulsilver")
+  local scenes = loadScenes(versionId)
   local third = {}
   for key, value in pairs(scenes[3]) do
     third[key] = value
@@ -962,7 +1179,7 @@ local function soulsilver_town_clip_failure_aborts_with_a_typed_error(scope, con
   end
   third.models = models
   local swapped = { scenes[1], scenes[2], third, scenes[4], scenes[5] }
-  local movie, failure = driveMovieCatching(scope, swapped, CacheFs.forVersion("soulsilver"))
+  local movie, failure = driveMovieCatching(scope, swapped, CacheFs.forVersion(versionId), versionId)
   if failure == nil then
     Assert.isTrue(movie ~= nil and movie:isFinished(), "without a failure the movie plays the clipless town as success")
   end
@@ -972,9 +1189,9 @@ local function soulsilver_town_clip_failure_aborts_with_a_typed_error(scope, con
 end
 
 local function soulsilver_town_model_failure_aborts_with_a_typed_error(scope, context)
-  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local versionId = selectedVersionId(context)
   local baseline = love.graphics.getStats()
-  local scenes = loadScenes("soulsilver")
+  local scenes = loadScenes(versionId)
   local third = {}
   for key, value in pairs(scenes[3]) do
     third[key] = value
@@ -999,7 +1216,7 @@ local function soulsilver_town_model_failure_aborts_with_a_typed_error(scope, co
   end
   third.models = models
   local swapped = { scenes[1], scenes[2], third, scenes[4], scenes[5] }
-  local movie, failure = driveMovieCatching(scope, swapped, CacheFs.forVersion("soulsilver"))
+  local movie, failure = driveMovieCatching(scope, swapped, CacheFs.forVersion(versionId), versionId)
   if failure == nil then
     Assert.isTrue(
       movie ~= nil and movie:isFinished(),
@@ -1060,7 +1277,7 @@ local function packRgb555(triple)
 end
 
 local function soulsilver_town_camera_uses_the_sourced_angle_and_lens(scope, context)
-  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local versionId = selectedVersionId(context)
   local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
   local realDraw = FieldRenderer.draw
   local captured = {}
@@ -1068,10 +1285,10 @@ local function soulsilver_town_camera_uses_the_sourced_angle_and_lens(scope, con
     captured[#captured + 1] = { environment = environment, camera = camera, worldParts = worldParts }
     return realDraw(self, environment, camera, worldParts, spriteItems, viewport, alpha, scale)
   end
-  local scenes = loadScenes("soulsilver")
+  local scenes = loadScenes(versionId)
   local windows = {}
   local journeyOk, journeyErr = pcall(function()
-    local movie = openMovie(scope, "soulsilver", 1200, 600, "single")
+    local movie = openMovie(scope, versionId, 1200, 600, "single")
     local ticks = 0
     while movie:sceneNumber() < 3 and ticks < 20000 do
       movie:updateFixed()
@@ -1159,18 +1376,6 @@ local function soulsilver_town_camera_uses_the_sourced_angle_and_lens(scope, con
       "town window " .. window .. " carries its own authored light"
     )
   end
-end
-
--- Samples one device pixel out of a captured RGBA frame.
----@param bytes string raw RGBA frame bytes
----@param width integer device frame width
----@param x integer device pixel column
----@param y integer device pixel row
----@return number r, number g, number b in 0..1
-local function pixelOf(bytes, width, x, y)
-  local base = (y * width + x) * 4 + 1
-  local r, g, b = string.byte(bytes, base, base + 2)
-  return r / 255, g / 255, b / 255
 end
 
 -- Asserts two device pixels carry the same color: one composed role paints
@@ -1747,14 +1952,14 @@ end
 -- no wipe covers. The window matches the earlier town-camera sampling, so
 -- the motion cannot come from a circle-wipe reveal.
 local function composited_town_pixels_stay_visible_and_animate_across_hold_ticks(scope, context)
-  readyOrSkip(context, "soulsilver", "SoulSilver")
+  local versionId = selectedVersionId(context)
   local realNewCanvas = love.graphics.newCanvas
   local calls = {}
   love.graphics.newCanvas = function(width, height, opts)
     calls[#calls + 1] = { width = width, height = height, at = debug.traceback("", 2):sub(1, 500) }
     return realNewCanvas(width, height, opts)
   end
-  local constructed, movieOrFailure = pcall(openMovie, scope, "soulsilver", 512, 384, "dual")
+  local constructed, movieOrFailure = pcall(openMovie, scope, versionId, 512, 384, "dual")
   love.graphics.newCanvas = realNewCanvas
   Assert.isTrue(constructed, "a town-staging movie constructs on bounded targets")
   local movie = movieOrFailure
@@ -1953,8 +2158,8 @@ local function synthetic_window_masks_isolate_engine_planes(scope)
 end
 
 local function soulsilver_town_stays_on_main_and_stops_at_the_rival_beat(scope, context)
-  readyOrSkip(context, "soulsilver", "SoulSilver")
-  local movie = openMovie(scope, "soulsilver", 512, 384, "dual")
+  local versionId = selectedVersionId(context)
+  local movie = openMovie(scope, versionId, 512, 384, "dual")
   local ticks = 0
   while movie:sceneNumber() < 3 and ticks < 20000 do
     movie:updateFixed()
@@ -2022,6 +2227,367 @@ local function soulsilver_town_stays_on_main_and_stops_at_the_rival_beat(scope, 
   Assert.equal(townPool.triangles, 0, "slot disposal releases the town geometry")
 end
 
+-- The authored scene-4 physical flips place the main engine on the lower,
+-- upper, then lower host pane across the three starter beats. Each beat is
+-- read from both fixed source targets and from the composed host frame, so
+-- a flipped engine assignment fails on pixels, not on event names.
+local function real_starter_flips_map_each_source_engine_onto_its_authored_host_pane(scope, context)
+  local versionId = selectedVersionId(context)
+  local movie = openMovie(scope, versionId, 512, 384, "dual")
+  -- Asserts the two host panes show the mapped source engines on the current
+  -- beat. Object beats paint only part of their 256x192 target, so the
+  -- probes compare the authored engine point through the centered blit:
+  -- every layout centers its source canvas, so the mapped host point
+  -- samples the exact authored texel under nearest filtering.
+  local function assertStackedPlacement(target, width, height, firstPt, secondPt, label)
+    target:draw()
+    local hostBytes = drawBytes(target, scope, width, height)
+    local mainBytes = sourceBytes(scope, target.mainCanvas)
+    local subBytes = sourceBytes(scope, target.subCanvas)
+    local upperR, upperG, upperB = pixelOf(hostBytes, width, firstPt[1], firstPt[2])
+    local lowerR, lowerG, lowerB = pixelOf(hostBytes, width, secondPt[1], secondPt[2])
+    local mainR, mainG, mainB = pixelOf(mainBytes, 256, 128, 96)
+    local subR, subG, subB = pixelOf(subBytes, 256, 128, 96)
+    if target.current.mainPhysical == "upper" then
+      assertPaneShowsEngine(
+        upperR,
+        upperG,
+        upperB,
+        mainR,
+        mainG,
+        mainB,
+        subR,
+        subG,
+        subB,
+        label .. ": upper pane shows main"
+      )
+      assertPaneShowsEngine(
+        lowerR,
+        lowerG,
+        lowerB,
+        subR,
+        subG,
+        subB,
+        mainR,
+        mainG,
+        mainB,
+        label .. ": lower pane shows sub"
+      )
+    else
+      assertPaneShowsEngine(
+        upperR,
+        upperG,
+        upperB,
+        subR,
+        subG,
+        subB,
+        mainR,
+        mainG,
+        mainB,
+        label .. ": upper pane shows sub"
+      )
+      assertPaneShowsEngine(
+        lowerR,
+        lowerG,
+        lowerB,
+        mainR,
+        mainG,
+        mainB,
+        subR,
+        subG,
+        subB,
+        label .. ": lower pane shows main"
+      )
+    end
+  end
+  local starters = {
+    { step = "starter-chikorita", mainPhysical = "lower" },
+    { step = "starter-cyndaquil", mainPhysical = "upper" },
+    { step = "starter-totodile", mainPhysical = "lower" },
+  }
+  for _, beat in ipairs(starters) do
+    advanceToSceneStep(movie, 4, beat.step, 20000)
+    advance(movie, 4)
+    Assert.equal(currentStepId(movie), beat.step, beat.step .. " holds across its emitter beat")
+    Assert.equal(movie.current.mainPhysical, beat.mainPhysical, beat.step .. " maps main to " .. beat.mainPhysical)
+    movie:draw()
+    local mainBytes = sourceBytes(scope, movie.mainCanvas)
+    local subBytes = sourceBytes(scope, movie.subCanvas)
+    Assert.isTrue(mainBytes ~= subBytes, beat.step .. " keeps the two source engines distinct")
+    assertStackedPlacement(movie, 512, 384, { 256, 96 }, { 256, 288 }, beat.step .. " dual")
+  end
+  movie:dispose()
+  -- The same cyndaquil beat keeps its role mapping on every host geometry.
+  -- Resizing never rewinds the source clock, so one single-surface movie
+  -- covers the tall, wide, and native-like stages.
+  local single = openMovie(scope, versionId, 600, 1000, "single")
+  advanceToSceneStep(single, 4, "starter-cyndaquil", 20000)
+  advance(single, 4)
+  Assert.equal(currentStepId(single), "starter-cyndaquil", "the single-surface movie holds its emitter beat")
+  Assert.equal(single.current.mainPhysical, "upper", "the cyndaquil beat maps main to upper")
+  for _, layout in ipairs({
+    { width = 600, height = 1000, first = { 300, 250 }, second = { 300, 750 }, name = "tall" },
+    { width = 1200, height = 600, first = { 300, 300 }, second = { 900, 300 }, name = "wide" },
+    { width = 512, height = 384, first = { 256, 96 }, second = { 256, 288 }, name = "nativeLike" },
+  }) do
+    single:resize(layout.width, layout.height)
+    Assert.equal(single:sceneNumber(), 4, layout.name .. " keeps the movie on its scene")
+    Assert.equal(currentStepId(single), "starter-cyndaquil", layout.name .. " keeps the movie on its beat")
+    assertStackedPlacement(
+      single,
+      layout.width,
+      layout.height,
+      layout.first,
+      layout.second,
+      "cyndaquil " .. layout.name
+    )
+  end
+  single:dispose()
+end
+
+-- Starter particles animate only the main source target. Each starter step
+-- waits on its own emitter effect, so live particles are guaranteed while
+-- the step holds; the sub target must stay pixel-identical across the same
+-- ticks on both sides of a physical flip, proving output follows main.
+local function starter_particles_move_only_the_main_source_target(scope, context)
+  local versionId = selectedVersionId(context)
+  local scenes = loadScenes(versionId)
+  local function stepEffect(stepId)
+    for _, step in ipairs(scenes[4].timeline.steps) do
+      if step.id == stepId then
+        local finish = assert(step["until"], stepId .. " carries its completion")
+        return finish.effect
+      end
+    end
+    Assert.notNil(nil, "scene 4 keeps its " .. stepId .. " step")
+  end
+  Assert.equal(stepEffect("starter-chikorita"), "emitters-grass", "the first starter waits on its grass emitters")
+  Assert.equal(stepEffect("starter-cyndaquil"), "emitters-fire", "the second starter waits on its fire emitters")
+  local movie = openMovie(scope, versionId, 512, 384, "dual")
+  local function liveParticles()
+    local count = 0
+    for _, runtime in ipairs(assert(movie.current.emitters, "the movie tracks its live emitters")) do
+      count = count + #(runtime.particles or {})
+    end
+    return count
+  end
+  local mappings = {}
+  for _, beat in ipairs({ "starter-chikorita", "starter-cyndaquil" }) do
+    advanceToSceneStep(movie, 4, beat, 20000)
+    advance(movie, 3)
+    Assert.equal(currentStepId(movie), beat, beat .. " holds across its emitter beat")
+    mappings[#mappings + 1] = movie.current.mainPhysical
+    movie:draw()
+    local mainBefore = sourceBytes(scope, movie.mainCanvas)
+    local subBefore = sourceBytes(scope, movie.subCanvas)
+    Assert.isTrue(liveParticles() > 0, beat .. " samples while starter particles are live")
+    advance(movie, 3)
+    Assert.equal(currentStepId(movie), beat, beat .. " still holds after three more ticks")
+    movie:draw()
+    local mainAfter = sourceBytes(scope, movie.mainCanvas)
+    local subAfter = sourceBytes(scope, movie.subCanvas)
+    Assert.isTrue(mainAfter ~= mainBefore, beat .. " animates the main source target")
+    Assert.equal(subAfter, subBefore, beat .. " leaves the sub source target untouched")
+  end
+  Assert.equal(mappings[1], "lower", "the first starter plays with main on the lower pane")
+  Assert.equal(mappings[2], "upper", "the second starter plays after the flip with main on the upper pane")
+  movie:dispose()
+end
+
+-- The scene-4 slide-in runs one ten-tick window per engine in opposite
+-- directions: main reveals left to right, sub right to left. Between the
+-- midway and completed frames the still-scrolling background shifts both
+-- halves alike, so the half that changes more is the half the window
+-- finishes revealing.
+local function slide_in_windows_reveal_opposite_halves_on_each_engine(scope, context)
+  local versionId = selectedVersionId(context)
+  local movie = openMovie(scope, versionId, 512, 384, "dual")
+  advanceToSceneStep(movie, 4, "slide-in", 20000)
+  movie:draw()
+  local mainEarly = sourceBytes(scope, movie.mainCanvas)
+  local subEarly = sourceBytes(scope, movie.subCanvas)
+  advance(movie, 5)
+  Assert.equal(currentStepId(movie), "slide-in", "the slide still runs at its fifth tick")
+  movie:draw()
+  local mainMid = sourceBytes(scope, movie.mainCanvas)
+  local subMid = sourceBytes(scope, movie.subCanvas)
+  local guard = 0
+  while currentStepId(movie) == "slide-in" and guard < 20 do
+    movie:updateFixed()
+    guard = guard + 1
+  end
+  movie:draw()
+  local mainDone = sourceBytes(scope, movie.mainCanvas)
+  local subDone = sourceBytes(scope, movie.subCanvas)
+  advance(movie, 10)
+  Assert.equal(currentStepId(movie), "hold", "the hold follows the completed slide")
+  movie:draw()
+  local mainHold = sourceBytes(scope, movie.mainCanvas)
+  local subHold = sourceBytes(scope, movie.subCanvas)
+  local mainFirst = changeFraction(mainEarly, mainMid, 256, 192)
+  local subFirst = changeFraction(subEarly, subMid, 256, 192)
+  Assert.isTrue(mainFirst > 0.05, ("the main reveal starts (%.3f)"):format(mainFirst))
+  Assert.isTrue(subFirst > 0.05, ("the sub reveal starts (%.3f)"):format(subFirst))
+  local mainSecond = changeFraction(mainMid, mainDone, 256, 192)
+  local subSecond = changeFraction(subMid, subDone, 256, 192)
+  Assert.isTrue(mainSecond > 0.05, ("the main reveal runs to completion (%.3f)"):format(mainSecond))
+  Assert.isTrue(subSecond > 0.05, ("the sub reveal runs to completion (%.3f)"):format(subSecond))
+  local mainSettled = changeFraction(mainDone, mainHold, 256, 192)
+  local subSettled = changeFraction(subDone, subHold, 256, 192)
+  Assert.isTrue(mainSettled < 0.02, ("the completed main reveal holds still (%.3f)"):format(mainSettled))
+  Assert.isTrue(subSettled < 0.02, ("the completed sub reveal holds still (%.3f)"):format(subSettled))
+  local mainLeft = halfChangeFraction(mainMid, mainDone, 256, 192, true)
+  local mainRight = halfChangeFraction(mainMid, mainDone, 256, 192, false)
+  Assert.isTrue(
+    mainRight > mainLeft,
+    ("the main reveal finishes on the right (right %.3f vs left %.3f)"):format(mainRight, mainLeft)
+  )
+  local subLeft = halfChangeFraction(subMid, subDone, 256, 192, true)
+  local subRight = halfChangeFraction(subMid, subDone, 256, 192, false)
+  Assert.isTrue(
+    subLeft > subRight,
+    ("the sub reveal finishes on the left (left %.3f vs right %.3f)"):format(subLeft, subRight)
+  )
+  movie:dispose()
+end
+
+-- One grouped journey across all five scenes: each authored beat lights
+-- both fixed source targets with distinct engine content. Repeated host
+-- draws between the samples prove draws never advance the source clock.
+local function every_scene_paints_its_authored_beat_on_both_engines(scope, context)
+  local versionId = selectedVersionId(context)
+  local movie = openMovie(scope, versionId, 512, 384, "dual")
+  local function sampleBeat(label)
+    movie:draw()
+    local main = sourceBytes(scope, movie.mainCanvas)
+    local sub = sourceBytes(scope, movie.subCanvas)
+    Assert.isTrue(regionLit(main, 256, 0, 255, 0, 191) > 0.2, label .. " lights the main source target")
+    Assert.isTrue(regionLit(sub, 256, 0, 255, 0, 191) > 0.2, label .. " lights the sub source target")
+    Assert.isTrue(main ~= sub, label .. " keeps the two source engines distinct")
+    return main
+  end
+  advanceToSceneStep(movie, 1, "sunrise", 20000)
+  sampleBeat("scene 1 sunrise")
+  movie:draw()
+  local firstDraw = sourceBytes(scope, movie.mainCanvas)
+  movie:draw()
+  Assert.equal(sourceBytes(scope, movie.mainCanvas), firstDraw, "a repeated draw paints the identical source frame")
+  -- The flyin black-out fade has no clearing event, so the later pan beats
+  -- stay covered; the flyin beat itself carries visible grass, flowers, and
+  -- heroes on both engines. Pan-beat pixels wait on the fade-lifecycle
+  -- follow-up instead of being asserted here.
+  advanceToSceneStep(movie, 2, "flyin", 20000)
+  advance(movie, 30)
+  Assert.equal(currentStepId(movie), "flyin", "scene 2 samples its visible flyin beat")
+  sampleBeat("scene 2 flowers")
+  local waited = 0
+  while waited < 20000 and (movie:sceneNumber() ~= 3 or movie.current.activeTown == nil) do
+    movie:updateFixed()
+    waited = waited + 1
+  end
+  Assert.notNil(movie.current.activeTown, "scene 3 selects its town stage")
+  advance(movie, 15)
+  sampleBeat("scene 3 town (" .. tostring(movie.current.activeTown) .. ")")
+  advanceToSceneStep(movie, 4, "starter-cyndaquil", 20000)
+  advance(movie, 3)
+  sampleBeat("scene 4 starter")
+  advanceToSceneStep(movie, 5, "scroll", 20000)
+  advance(movie, 5)
+  movie:draw()
+  local scrollBefore = sourceBytes(scope, movie.mainCanvas)
+  advance(movie, 5)
+  movie:draw()
+  Assert.isTrue(sourceBytes(scope, movie.mainCanvas) ~= scrollBefore, "scene 5 panorama scrolls main source pixels")
+  sampleBeat("scene 5 panorama")
+  movie:dispose()
+end
+
+-- Single-role beats fill a single-screen stage with the authored active
+-- engine: the town beat shows main, the rival-only beat after the town
+-- stop shows sub. Dual stages keep both roles mapped instead.
+local function single_screen_stages_show_the_authored_active_engine(scope, context)
+  local versionId = selectedVersionId(context)
+  local single = openMovie(scope, versionId, 512, 384, "single")
+  local waited = 0
+  while waited < 20000 and (single:sceneNumber() ~= 3 or single.current.activeTown == nil) do
+    single:updateFixed()
+    waited = waited + 1
+  end
+  Assert.notNil(single.current.activeTown, "scene 3 selects its town stage")
+  advance(single, 5)
+  Assert.equal(single.current.mainPhysical, "upper", "the town beat maps main to physical upper")
+  for _, layout in ipairs({
+    { width = 1200, height = 600, center = { 600, 300 }, name = "wide" },
+    { width = 512, height = 384, center = { 256, 192 }, name = "nativeLike" },
+  }) do
+    single:resize(layout.width, layout.height)
+    local hostBytes = drawBytes(single, scope, layout.width, layout.height)
+    local mainR, mainG, mainB = pixelOf(sourceBytes(scope, single.mainCanvas), 256, 128, 96)
+    local subR, subG, subB = pixelOf(sourceBytes(scope, single.subCanvas), 256, 128, 96)
+    local hostR, hostG, hostB = pixelOf(hostBytes, layout.width, layout.center[1], layout.center[2])
+    assertPaneShowsEngine(hostR, hostG, hostB, mainR, mainG, mainB, subR, subG, subB, layout.name .. " town stage shows main")
+  end
+  advanceToSceneStep(single, 3, "panels", 20000)
+  advance(single, 5)
+  for _, layout in ipairs({
+    { width = 512, height = 384, center = { 256, 192 }, name = "nativeLike" },
+    { width = 1200, height = 600, center = { 600, 300 }, name = "wide" },
+  }) do
+    single:resize(layout.width, layout.height)
+    local hostBytes = drawBytes(single, scope, layout.width, layout.height)
+    local subBytes = sourceBytes(scope, single.subCanvas)
+    -- Rival panels avoid the exact canvas center, so the probes sample
+    -- the lit panel point (96, 96) the column survey identified.
+    local mainR, mainG, mainB = pixelOf(sourceBytes(scope, single.mainCanvas), 256, 96, 96)
+    local subR, subG, subB = pixelOf(subBytes, 256, 96, 96)
+    local hostPt = { layout.name == "wide" and 500 or 192, layout.name == "wide" and 300 or 192 }
+    local hostR, hostG, hostB = pixelOf(hostBytes, layout.width, hostPt[1], hostPt[2])
+    assertPaneShowsEngine(hostR, hostG, hostB, subR, subG, subB, mainR, mainG, mainB, layout.name .. " rival stage shows sub")
+  end
+  single:dispose()
+  local dual = openMovie(scope, versionId, 512, 384, "dual")
+  local function assertBothPanesMapped(width, height, upperPt, lowerPt, enginePt, sceneLabel)
+    dual:draw()
+    local hostBytes = drawBytes(dual, scope, width, height)
+    local mainBytes = sourceBytes(scope, dual.mainCanvas)
+    local subBytes = sourceBytes(scope, dual.subCanvas)
+    local upperR, upperG, upperB = pixelOf(hostBytes, width, upperPt[1], upperPt[2])
+    local lowerR, lowerG, lowerB = pixelOf(hostBytes, width, lowerPt[1], lowerPt[2])
+    local mainR, mainG, mainB = pixelOf(mainBytes, 256, enginePt[1], enginePt[2])
+    local subR, subG, subB = pixelOf(subBytes, 256, enginePt[1], enginePt[2])
+    local firstR, firstG, firstB, firstMappedR, firstMappedG, firstMappedB, firstOtherR, firstOtherG, firstOtherB
+    local secondR, secondG, secondB, secondMappedR, secondMappedG, secondMappedB, secondOtherR, secondOtherG, secondOtherB
+    if dual.current.mainPhysical == "upper" then
+      firstR, firstG, firstB = upperR, upperG, upperB
+      firstMappedR, firstMappedG, firstMappedB = mainR, mainG, mainB
+      firstOtherR, firstOtherG, firstOtherB = subR, subG, subB
+      secondR, secondG, secondB = lowerR, lowerG, lowerB
+      secondMappedR, secondMappedG, secondMappedB = subR, subG, subB
+      secondOtherR, secondOtherG, secondOtherB = mainR, mainG, mainB
+    else
+      firstR, firstG, firstB = upperR, upperG, upperB
+      firstMappedR, firstMappedG, firstMappedB = subR, subG, subB
+      firstOtherR, firstOtherG, firstOtherB = mainR, mainG, mainB
+      secondR, secondG, secondB = lowerR, lowerG, lowerB
+      secondMappedR, secondMappedG, secondMappedB = mainR, mainG, mainB
+      secondOtherR, secondOtherG, secondOtherB = subR, subG, subB
+    end
+    assertPaneShowsEngine(firstR, firstG, firstB, firstMappedR, firstMappedG, firstMappedB, firstOtherR, firstOtherG, firstOtherB, sceneLabel .. ": first pane shows its mapped engine")
+    assertPaneShowsEngine(secondR, secondG, secondB, secondMappedR, secondMappedG, secondMappedB, secondOtherR, secondOtherG, secondOtherB, sceneLabel .. ": second pane shows its mapped engine")
+  end
+  waited = 0
+  while waited < 20000 and (dual:sceneNumber() ~= 3 or dual.current.activeTown == nil) do
+    dual:updateFixed()
+    waited = waited + 1
+  end
+  advance(dual, 5)
+  assertBothPanesMapped(512, 384, { 256, 96 }, { 256, 288 }, { 128, 96 }, "town dual")
+  advanceToSceneStep(dual, 3, "panels", 20000)
+  advance(dual, 5)
+  assertBothPanesMapped(512, 384, { 192, 96 }, { 192, 288 }, { 96, 96 }, "panels dual")
+  dual:dispose()
+end
+
 local T = GraphicsSmoke.suite({
   ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
@@ -2042,6 +2608,11 @@ local T = GraphicsSmoke.suite({
   ["movie targets stay bounded across resizes to very large stages"] = movie_targets_stay_bounded_across_resizes_to_very_large_stages,
   ["construction fails before the first frame unless all five scenes acquire"] = construction_fails_before_the_first_frame_unless_all_five_scenes_acquire,
   ["composited town pixels stay visible and animate across hold ticks"] = composited_town_pixels_stay_visible_and_animate_across_hold_ticks,
+  ["real starter flips map each source engine onto its authored host pane"] = real_starter_flips_map_each_source_engine_onto_its_authored_host_pane,
+  ["starter particles move only the main source target"] = starter_particles_move_only_the_main_source_target,
+  ["slide-in windows reveal opposite halves on each engine"] = slide_in_windows_reveal_opposite_halves_on_each_engine,
+  ["every scene paints its authored beat on both engines"] = every_scene_paints_its_authored_beat_on_both_engines,
+  ["single-screen stages show the authored active engine"] = single_screen_stages_show_the_authored_active_engine,
 })
 T.metadata.capabilities = { "graphics", "rom_dump" }
 T.metadata.derivedAssets = {
