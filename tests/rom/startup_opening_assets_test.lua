@@ -5,7 +5,7 @@
 local Assert = require("tests.support.Assert")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v2"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v3"
 local SOURCE_TICK_RATE = 30
 
 local CLOSED_OPS = {
@@ -14,10 +14,13 @@ local CLOSED_OPS = {
   setScroll = true,
   setBlend = true,
   window = true,
+  setWindowSecondary = true,
+  setWindowVisible = true,
   circleWipe = true,
   setSpriteClip = true,
   spriteVisible = true,
   setModelClip = true,
+  setModelVisible = true,
   setCamera = true,
   setLighting = true,
   startEmitters = true,
@@ -479,7 +482,7 @@ end
 -- below reads the exact compiled bundles and fails until the producer
 -- emits that contract and the central reader enforces it.
 
-local STRICT_SCHEMA = "g4-startup-opening-scene-v2"
+local STRICT_SCHEMA = "g4-startup-opening-scene-v3"
 
 local function strictManifest(bundle, versionId, sceneNumber)
   local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
@@ -744,6 +747,11 @@ end
 -- (128, 352) on the sub engine with hand2, sparkles, and all three
 -- starters at (128, 96) on the main engine; its slide-ins move
 -- background layers, never sprites. Scene 5 creates no sprites.
+-- The compiled program normalizes every sprite station into its owning
+-- engine's 256x192 surface by subtracting the source renderer origin once:
+-- sub origins are scene1 0, scene2 192, scene3 512, scene4 256, scene5 256
+-- while every main origin is 0. The tables below carry those normalized
+-- engine-local stations, not the raw shared-renderer coordinates.
 local function exactSceneInstances()
   local scenes = {
     [1] = {
@@ -751,14 +759,14 @@ local function exactSceneInstances()
       { id = "bird", engine = "main", x = 128, y = 96 },
     },
     [3] = {
-      { id = "eusine", engine = "sub", x = 32, y = 608 },
-      { id = "unown0", engine = "sub", x = 128, y = 544 },
-      { id = "unown1", engine = "sub", x = 128, y = 672 },
-      { id = "unown2", engine = "sub", x = 128, y = 608 },
-      { id = "silver-silhouette", engine = "sub", x = 128, y = 608 },
+      { id = "eusine", engine = "sub", x = 32, y = 96 },
+      { id = "unown0", engine = "sub", x = 128, y = 32 },
+      { id = "unown1", engine = "sub", x = 128, y = 160 },
+      { id = "unown2", engine = "sub", x = 128, y = 96 },
+      { id = "silver-silhouette", engine = "sub", x = 128, y = 96 },
     },
     [4] = {
-      { id = "hand1", engine = "sub", x = 128, y = 352 },
+      { id = "hand1", engine = "sub", x = 128, y = 96 },
       { id = "hand2", engine = "main", x = 128, y = 96 },
       { id = "chikorita", engine = "main", x = 128, y = 96 },
       { id = "cyndaquil", engine = "main", x = 128, y = 96 },
@@ -769,7 +777,7 @@ local function exactSceneInstances()
   local second = {}
   for flower = 1, 10 do
     second[#second + 1] = { id = "flower" .. flower .. "-main", engine = "main", x = 128, y = 192 }
-    second[#second + 1] = { id = "flower" .. flower .. "-sub", engine = "sub", x = 128, y = 192 }
+    second[#second + 1] = { id = "flower" .. flower .. "-sub", engine = "sub", x = 128, y = 0 }
   end
   for hero = 0, 2 do
     second[#second + 1] = { id = "ethan" .. hero, engine = "main", x = 64, y = -96 }
@@ -906,9 +914,10 @@ local function checkScene2Motion(manifest)
   for flower = 1, 10 do
     for _, engine in ipairs({ "main", "sub" }) do
       local id = "flower" .. flower .. "-" .. engine
+      local homeY = engine == "sub" and 0 or 192
       for _, event in ipairs(byKey["flyin\0" .. id] or {}) do
-        Assert.equal(event.x, 128, id .. " stays at its retail x")
-        Assert.equal(event.y, 192, id .. " stays at its retail y")
+        Assert.equal(event.x, 128, id .. " stays at its engine-local x")
+        Assert.equal(event.y, homeY, id .. " stays at its engine-local y")
         Assert.equal(event.engine, engine, id .. " stays on its retail engine")
       end
     end
@@ -1071,7 +1080,7 @@ local function strictValidationAcceptsOnlyCompleteContracts(romFs, versionId)
     compiled[sceneNumber] = compileScene(romFs, versionId, sceneNumber)
   end
   local staleManifest = deepCopyManifest(compiled[2].manifest)
-  staleManifest.schema = "g4-startup-opening-scene-v1"
+  staleManifest.schema = "g4-startup-opening-scene-v2"
   local staleLoaded, staleErr = strictLoad(versionId, 2, staleManifest, compiled[2].files, nil)
   Assert.isNil(staleLoaded, "a stale schema never validates")
   Assert.notNil(staleErr, "a stale schema reports its cause")
@@ -1100,9 +1109,276 @@ local function strictValidationAcceptsOnlyCompleteContracts(romFs, versionId)
   end
 end
 
+local function setLayerAt(events, stepId)
+  local found = {}
+  for _, event in ipairs(events) do
+    if event.op == "setLayer" and event.stepId == stepId then
+      found[#found + 1] = event
+    end
+  end
+  return found
+end
+
+local function planeStateAt(manifest, events, stepId)
+  local state = {}
+  for _, role in ipairs({ "main", "sub" }) do
+    for _, layer in ipairs(manifest.layers[role]) do
+      state[role .. ":" .. layer.bgSlot] = layer.initialVisible
+    end
+  end
+  -- Replay in step order up to and including the named step: later steps
+  -- must not leak into the snapshot.
+  local ordered = opsInOrder(manifest, events)
+  local targetPos = stepPosition(manifest, stepId)
+  for _, event in ipairs(ordered) do
+    local eventPos = stepPosition(manifest, event.stepId)
+    if (eventPos or 0) > (targetPos or 0) then
+      break
+    end
+    if event.op == "setLayer" then
+      state[event.engine .. ":" .. event.bgSlot] = event.visible
+    end
+  end
+  return state
+end
+
+local function starterMappingAndPlaneMasksFollowTheRetailFlipOrder(romFs, versionId)
+  local bundle = compileScene(romFs, versionId, 4)
+  local manifest = strictManifest(bundle, versionId, 4)
+  local _, events = strictTimeline(manifest, 4)
+  local ordered = opsInOrder(manifest, events)
+  local mappings = {}
+  for _, event in ipairs(ordered) do
+    if event.op == "setScreenMapping" then
+      mappings[#mappings + 1] = event
+    end
+  end
+  Assert.equal(#mappings, 3, "scene 4 records its entry mapping and its two starter flips")
+  Assert.equal(mappings[1].mainPhysical, "lower", "scene 4 opens with its main engine on the lower screen")
+  Assert.equal(
+    mappings[2].mainPhysical,
+    "upper",
+    "the first flip moves the main engine upper for the second starter"
+  )
+  Assert.equal(
+    mappings[3].mainPhysical,
+    "lower",
+    "the second flip returns the main engine lower for the third starter"
+  )
+  Assert.equal(mappings[2].stepId, "flip-chikorita", "the first flip follows the first starter")
+  Assert.equal(mappings[3].stepId, "flip-cyndaquil", "the second flip follows the second starter")
+  local function visibleAt(stepId, engine, bgSlot)
+    local state = planeStateAt(manifest, events, stepId)
+    return state[engine .. ":" .. bgSlot]
+  end
+  Assert.isTrue(visibleAt("flip-chikorita", "main", 2), "the first flip enables main plane 2")
+  Assert.isFalse(visibleAt("flip-chikorita", "main", 3), "the first flip disables main plane 3")
+  Assert.isFalse(visibleAt("flip-chikorita", "sub", 2), "the first flip disables sub plane 2")
+  Assert.isTrue(visibleAt("flip-chikorita", "sub", 3), "the first flip enables sub plane 3")
+  Assert.isFalse(visibleAt("flip-cyndaquil", "main", 2), "the second flip disables main plane 2")
+  Assert.isTrue(visibleAt("flip-cyndaquil", "main", 3), "the second flip enables main plane 3")
+  Assert.isTrue(visibleAt("flip-cyndaquil", "sub", 2), "the second flip enables sub plane 2")
+  Assert.isFalse(visibleAt("flip-cyndaquil", "sub", 3), "the second flip disables sub plane 3")
+end
+
+local EXPECTED_INITIAL_PLANES = {
+  [1] = {
+    ["main:0"] = false,
+    ["main:1"] = false,
+    ["main:2"] = false,
+    ["main:3"] = false,
+    ["sub:0"] = false,
+    ["sub:1"] = false,
+    ["sub:3"] = false,
+  },
+  [2] = { ["main:2"] = true, ["main:1"] = true, ["main:0"] = true, ["sub:0"] = true },
+  [3] = { ["sub:0"] = true, ["sub:3"] = true, ["sub:1"] = false, ["sub:2"] = false },
+  [4] = {
+    ["main:1"] = false,
+    ["main:2"] = false,
+    ["main:3"] = true,
+    ["sub:1"] = false,
+    ["sub:2"] = true,
+    ["sub:3"] = true,
+  },
+  [5] = { ["sub:1"] = true, ["sub:2"] = true, ["main:1"] = true, ["main:2"] = true },
+}
+
+local function planeEnableStateIsExplicitInEveryCompiledScene(romFs, versionId)
+  for sceneNumber = 1, 5 do
+    local bundle = compileScene(romFs, versionId, sceneNumber)
+    local manifest = strictManifest(bundle, versionId, sceneNumber)
+    local wanted = assert(EXPECTED_INITIAL_PLANES[sceneNumber], "scene carries expected plane state")
+    local seen = 0
+    for _, role in ipairs({ "main", "sub" }) do
+      for _, layer in ipairs(manifest.layers[role]) do
+        local key = role .. ":" .. layer.bgSlot
+        Assert.notNil(wanted[key], "scene " .. sceneNumber .. " compiles only its known slot " .. key)
+        Assert.equal(
+          layer.initialVisible,
+          wanted[key],
+          "scene " .. sceneNumber .. " slot " .. key .. " declares its post-init plane state"
+        )
+        seen = seen + 1
+      end
+    end
+    local count = 0
+    for _ in pairs(wanted) do
+      count = count + 1
+    end
+    Assert.equal(seen, count, "scene " .. sceneNumber .. " declares every compiled slot exactly once")
+    local _, events = strictTimeline(manifest, sceneNumber)
+    for _, event in ipairs(events) do
+      if event.op == "setLayer" then
+        Assert.isTrue(
+          event.visible == true or event.visible == false,
+          "scene " .. sceneNumber .. " toggles planes with an explicit boolean"
+        )
+      end
+    end
+  end
+  local first = strictManifest(compileScene(romFs, versionId, 1), versionId, 1)
+  local _, firstEvents = strictTimeline(first, 1)
+  local copyright = planeStateAt(first, firstEvents, "copyright")
+  Assert.isTrue(copyright["main:0"], "the copyright enables the main plane")
+  Assert.isTrue(copyright["sub:0"], "the copyright enables the sub plane")
+  Assert.isFalse(copyright["sub:1"], "the copyright leaves the second sub plane dark")
+  local setup = planeStateAt(first, firstEvents, "setup")
+  Assert.isFalse(setup["sub:0"], "the logo beat turns the first sub plane off")
+  Assert.isTrue(setup["sub:1"], "the logo beat turns the second sub plane on")
+  local sunrise = planeStateAt(first, firstEvents, "sunrise")
+  Assert.isTrue(sunrise["main:1"] and sunrise["main:2"] and sunrise["main:3"], "sunrise lights the main planes")
+  Assert.isTrue(sunrise["sub:3"], "sunrise lights the third sub plane")
+  local fourth = strictManifest(compileScene(romFs, versionId, 4), versionId, 4)
+  local _, fourthEvents = strictTimeline(fourth, 4)
+  local slideIn = planeStateAt(fourth, fourthEvents, "slide-in")
+  Assert.isTrue(slideIn["main:1"] and slideIn["sub:1"], "the slide-in enables both first planes")
+  local hidden = planeStateAt(fourth, fourthEvents, "hide-hands")
+  Assert.isFalse(hidden["main:1"] or hidden["sub:1"], "the slide-out disables both first planes")
+  local finale = planeStateAt(fourth, fourthEvents, "finish-totodile")
+  Assert.isFalse(
+    finale["main:1"] or finale["main:2"] or finale["main:3"],
+    "the finale disables the main planes"
+  )
+  local third = strictManifest(compileScene(romFs, versionId, 3), versionId, 3)
+  local _, thirdEvents = strictTimeline(third, 3)
+  local borders = planeStateAt(third, thirdEvents, "borders")
+  Assert.isFalse(borders["sub:0"], "the border beat turns the rival panel off")
+  local aspect = planeStateAt(third, thirdEvents, "aspect")
+  Assert.isTrue(aspect["sub:0"], "the widening beat turns the rival panel back on")
+  local expansion = planeStateAt(third, thirdEvents, "viewport")
+  Assert.isFalse(expansion["sub:0"], "the rocket expansion turns the rival panel off")
+end
+
+local function townDrawingStopsBeforeRivalOnlyVisuals(romFs, versionId)
+  local bundle = compileScene(romFs, versionId, 3)
+  local manifest = strictManifest(bundle, versionId, 3)
+  local _, events = strictTimeline(manifest, 3)
+  local stops = {}
+  for _, event in ipairs(events) do
+    if event.op == "setModelVisible" then
+      stops[#stops + 1] = event
+    end
+  end
+  Assert.equal(#stops, 1, "scene 3 carries exactly one town drawing stop")
+  Assert.isFalse(stops[1].visible, "the town stop disables town drawing")
+  local stopStep = stepPosition(manifest, stops[1].stepId)
+  local lastTown = stepPosition(manifest, "show-ecruteak-city")
+  local rivalOnly = stepPosition(manifest, "panels")
+  Assert.isTrue((stopStep or 0) > (lastTown or 0), "the town stop fires after the last town beat")
+  Assert.isTrue((stopStep or 0) < (rivalOnly or 0), "the town stop fires before the rival-only beats")
+  Assert.equal(#manifest.models, 3, "the town models stay staged after the drawing stop")
+  for _, event in ipairs(events) do
+    Assert.isFalse(event.op == "finish" and (stepPosition(manifest, event.stepId) or 0) < (stopStep or 0)
+      , "no early finish ends the scene before the town stop")
+  end
+end
+
+local function engineWindowRecordsReplaceTheSyntheticKindShapes(romFs, versionId)
+  local fourthBundle = compileScene(romFs, versionId, 4)
+  local fourth = strictManifest(fourthBundle, versionId, 4)
+  local _, fourthEvents = strictTimeline(fourth, 4)
+  local windows = {}
+  for _, event in ipairs(fourthEvents) do
+    if event.op == "window" then
+      windows[#windows + 1] = event
+    end
+  end
+  Assert.equal(#windows, 4, "scene 4 carries its two slide-in and two slide-out windows")
+  for _, window in ipairs(windows) do
+    Assert.isTrue(window.target == nil and window.kind == nil, "windows carry no synthetic shape")
+    Assert.isTrue(window.engine == "main" or window.engine == "sub", "windows name their source engine")
+    Assert.equal(window.ticks, 10, "scene 4 slides run ten source frames")
+    Assert.equal(window.insideMask, 30, "scene 4 slides keep their inside mask")
+    Assert.equal(window.outsideMask, 28, "scene 4 slides keep their outside mask")
+  end
+  local slideIn = {}
+  for _, window in ipairs(windows) do
+    if window.stepId == "slide-in" then
+      slideIn[#slideIn + 1] = window
+    end
+  end
+  Assert.equal(#slideIn, 2, "the slide-in carries one window per engine")
+  for _, window in ipairs(slideIn) do
+    if window.engine == "sub" then
+      Assert.deepEqual(
+        { window.from, window.to },
+        { { x1 = 255, y1 = 0, x2 = 255, y2 = 192 }, { x1 = 0, y1 = 0, x2 = 255, y2 = 192 } },
+        "the sub slide opens right to left"
+      )
+    else
+      Assert.deepEqual(
+        { window.from, window.to },
+        { { x1 = 0, y1 = 0, x2 = 0, y2 = 192 }, { x1 = 0, y1 = 0, x2 = 255, y2 = 192 } },
+        "the main slide opens left to right"
+      )
+    end
+  end
+  local thirdBundle = compileScene(romFs, versionId, 3)
+  local third = strictManifest(thirdBundle, versionId, 3)
+  local _, thirdEvents = strictTimeline(third, 3)
+  local narrow, widen = nil, nil
+  local secondaries = 0
+  local subVisibilities = 0
+  local mainDisables = 0
+  for _, event in ipairs(thirdEvents) do
+    if event.op == "window" then
+      Assert.equal(event.engine, "sub", "every scene 3 pan addresses the sub engine")
+      Assert.isTrue(event.target == nil and event.kind == nil, "scene 3 windows carry no synthetic shape")
+      if event.ticks == 5 then
+        narrow = event
+      end
+      if event.atStepTick == 44 then
+        widen = event
+      end
+    elseif event.op == "setWindowSecondary" then
+      secondaries = secondaries + 1
+      Assert.equal(event.engine, "sub", "manual overrides address the sub engine")
+    elseif event.op == "setWindowVisible" then
+      if event.engine == "sub" then
+        subVisibilities = subVisibilities + 1
+      else
+        Assert.equal(event.engine, "main", "visibility toggles name a source engine")
+        Assert.isFalse(event.visible, "the main engine window is only ever disabled")
+        mainDisables = mainDisables + 1
+      end
+    end
+  end
+  Assert.notNil(narrow, "scene 3 keeps its five-frame narrow pan")
+  Assert.notNil(widen, "scene 3 keeps its widening pan at tick 44")
+  Assert.equal(widen.ticks, 7, "the widening pan runs seven source frames")
+  Assert.isTrue(secondaries >= 3, "scene 3 keeps its manual window overrides")
+  Assert.isTrue(subVisibilities >= 3, "scene 3 keeps its window visibility toggles")
+  Assert.equal(mainDisables, 1, "scene 3 disables the never-shown main window once")
+end
+
 return RomSuite.fromFacts({
   ["source opening scenes compile to five independent versioned bundles"] = sourceOpeningScenesCompileToFiveIndependentVersionedBundles,
   ["source opening timeline keeps its five-scene transitions and skip gate"] = sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate,
+  ["starter mapping and plane masks follow the retail flip order"] = starterMappingAndPlaneMasksFollowTheRetailFlipOrder,
+  ["plane enable state is explicit in every compiled scene"] = planeEnableStateIsExplicitInEveryCompiledScene,
+  ["town drawing stops before rival-only visuals"] = townDrawingStopsBeforeRivalOnlyVisuals,
+  ["engine window records replace the synthetic kind shapes"] = engineWindowRecordsReplaceTheSyntheticKindShapes,
   ["source opening assets keep layered models particles and failed stages preserve good output"] = sourceOpeningAssetsKeepLayeredModelsParticlesAndFailedStagesPreserveGoodOutput,
   ["concurrent sunrise background slots keep distinct indexed slots with scroll sources"] = concurrentSunriseSlotsKeepDistinctIndexedSlots,
   ["alternate scene panels resolve to staged images"] = alternatePanelsResolveToStagedImages,

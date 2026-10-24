@@ -43,7 +43,7 @@ function T.scene_sources_reject_bad_scenes_and_editions()
 end
 
 function T.scene_sources_keep_five_bounded_scenes_at_the_source_tick_rate()
-  Assert.equal(SceneSources.SCHEMA, "g4-startup-opening-scene-v2", "the scene schema is pinned")
+  Assert.equal(SceneSources.SCHEMA, "g4-startup-opening-scene-v3", "the scene schema is pinned")
   Assert.equal(SceneSources.TICK_RATE, 30, "the scenes run at the source frame rate")
   Assert.equal(SceneSources.PARTICLE_ARCHIVE, "NARC_a_0_5_9", "the particle archive is pinned")
   Assert.equal(SceneSources.PARTICLE_MEMBER, 4, "the starter particle member is pinned")
@@ -260,6 +260,108 @@ function T.scene_sources_group_nine_starter_emitters()
   Assert.equal(SceneSources.starterSpecies("cyndaquil"), 155, "cyndaquil resolves its species")
   Assert.equal(SceneSources.starterSpecies("totodile"), 158, "totodile resolves its species")
   Assert.isFalse(pcall(SceneSources.starterSpecies, "pikachu"), "an unknown starter is rejected")
+end
+
+function T.scene_sources_declare_post_init_plane_visibility_per_slot()
+  -- Post-init plane facts transcribed from the retail scene setup: template
+  -- defaults enable every plane, then each scene toggles selected planes off
+  -- before the first step runs. The compiler records these verbatim; the
+  -- reader requires one boolean per compiled slot.
+  local cases = {
+    { scene = 1, engine = "main", slot = 0, visible = false },
+    { scene = 1, engine = "main", slot = 1, visible = false },
+    { scene = 1, engine = "main", slot = 2, visible = false },
+    { scene = 1, engine = "main", slot = 3, visible = false },
+    { scene = 1, engine = "sub", slot = 0, visible = false },
+    { scene = 1, engine = "sub", slot = 1, visible = false },
+    { scene = 1, engine = "sub", slot = 3, visible = false },
+    { scene = 2, engine = "main", slot = 0, visible = true },
+    { scene = 2, engine = "main", slot = 1, visible = true },
+    { scene = 2, engine = "main", slot = 2, visible = true },
+    { scene = 2, engine = "sub", slot = 0, visible = true },
+    { scene = 3, engine = "sub", slot = 0, visible = true },
+    { scene = 3, engine = "sub", slot = 1, visible = false },
+    { scene = 3, engine = "sub", slot = 2, visible = false },
+    { scene = 3, engine = "sub", slot = 3, visible = true },
+    { scene = 4, engine = "main", slot = 1, visible = false },
+    { scene = 4, engine = "main", slot = 2, visible = false },
+    { scene = 4, engine = "main", slot = 3, visible = true },
+    { scene = 4, engine = "sub", slot = 1, visible = false },
+    { scene = 4, engine = "sub", slot = 2, visible = true },
+    { scene = 4, engine = "sub", slot = 3, visible = true },
+    { scene = 5, engine = "main", slot = 1, visible = true },
+    { scene = 5, engine = "main", slot = 2, visible = true },
+    { scene = 5, engine = "sub", slot = 1, visible = true },
+    { scene = 5, engine = "sub", slot = 2, visible = true },
+  }
+  Assert.isTrue(type(SceneSources.initialVisible) == "function", "the sources publish post-init plane state")
+  for _, case in ipairs(cases) do
+    Assert.equal(
+      SceneSources.initialVisible(case.scene, case.engine, case.slot),
+      case.visible,
+      "scene " .. case.scene .. " " .. case.engine .. " plane " .. case.slot .. " starts "
+        .. (case.visible and "enabled" or "disabled")
+    )
+  end
+  Assert.isFalse(
+    pcall(SceneSources.initialVisible, 1, "main", 9),
+    "an uncompiled slot declares no plane state"
+  )
+end
+
+function T.scene_sources_declare_engine_window_pans_with_masks()
+  Assert.isTrue(type(SceneSources.windowPans) == "function", "the sources publish window pan facts")
+  local fourth = SceneSources.windowPans(4)
+  Assert.equal(#fourth, 4, "scene 4 keeps its two slide-in and two slide-out pans")
+  local slideInTop = nil
+  local slideInBottom = nil
+  for _, pan in ipairs(fourth) do
+    Assert.isTrue(pan.duration == 10, "scene 4 slides run ten source frames")
+    Assert.equal(pan.winIn, 30, "scene 4 slides keep their inside mask")
+    Assert.equal(pan.winOut, 28, "scene 4 slides keep their outside mask")
+    if pan.whichScreen == 0 then
+      slideInTop = slideInTop or pan
+    else
+      slideInBottom = slideInBottom or pan
+    end
+  end
+  Assert.notNil(slideInTop, "scene 4 keeps its top-screen pan")
+  Assert.notNil(slideInBottom, "scene 4 keeps its bottom-screen pan")
+  Assert.deepEqual(
+    { slideInTop.x1Start, slideInTop.y1Start, slideInTop.x2Start, slideInTop.y2Start },
+    { 255, 0, 255, 192 },
+    "the top slide starts retracted"
+  )
+  Assert.deepEqual(
+    { slideInBottom.x1Start, slideInBottom.y1Start, slideInBottom.x2Start, slideInBottom.y2Start },
+    { 0, 0, 0, 192 },
+    "the bottom slide starts retracted"
+  )
+  local third = SceneSources.windowPans(3)
+  Assert.equal(#third, 11, "scene 3 keeps its eleven pan facts")
+  for _, pan in ipairs(third) do
+    Assert.equal(pan.whichScreen, 0, "every scene 3 pan addresses the sub engine registers")
+    Assert.isTrue(pan.winIn >= 0 and pan.winIn <= 31, "scene 3 pans keep a plane inside mask")
+    Assert.isTrue(pan.winOut >= 0 and pan.winOut <= 31, "scene 3 pans keep a plane outside mask")
+  end
+  local narrowY = nil
+  for _, pan in ipairs(third) do
+    if pan.duration == 5 then
+      narrowY = pan
+    end
+  end
+  Assert.notNil(narrowY, "scene 3 keeps its five-frame narrow pan")
+  Assert.deepEqual(
+    { narrowY.x1Start, narrowY.y1Start, narrowY.x2Start, narrowY.y2Start },
+    { 0, 0, 255, 192 },
+    "the narrow pan starts full width"
+  )
+  Assert.deepEqual(
+    { narrowY.x1End, narrowY.y1End, narrowY.x2End, narrowY.y2End },
+    { 0, 64, 255, 128 },
+    "the narrow pan ends on the cinematic band"
+  )
+  Assert.isFalse(pcall(SceneSources.windowPans, 6), "an unknown scene declares no window pans")
 end
 
 function T.scene_sources_scroll_scene_five_by_edition()
