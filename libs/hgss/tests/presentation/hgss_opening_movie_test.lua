@@ -9,6 +9,7 @@ local Assert = require("tests.support.Assert")
 local Contract = require("libs.assets.src.DerivedAssetContract")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FakeGraphics = require("tests.support.FakeGraphics")
+local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local NitroModelFixture = require("tests.support.NitroModelFixture")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
@@ -36,8 +37,9 @@ end
 ---@param width integer claimed source extent
 ---@param height integer claimed source extent
 ---@param priority integer|nil source priority, defaults to the slot
+---@param initialVisible boolean|nil source plane enable state, defaults to visible
 ---@return table compiled engine layer record
-local function layer(bgSlot, image, width, height, priority)
+local function layer(bgSlot, image, width, height, priority, initialVisible)
   return {
     bgSlot = bgSlot,
     priority = priority == nil and bgSlot or priority,
@@ -46,6 +48,7 @@ local function layer(bgSlot, image, width, height, priority)
     width = width,
     height = height,
     sourceHash = string.rep("c", 40),
+    initialVisible = initialVisible ~= false,
   }
 end
 
@@ -1271,6 +1274,7 @@ function T.step_events_apply_in_listed_order()
           width = 256,
           height = 192,
           sourceHash = string.rep("c", 40),
+          initialVisible = true,
         },
       },
       { layer(0, root .. "layers/lower.png", 32, 32) },
@@ -1488,6 +1492,9 @@ local function buildableTown(name, index, clips, texture, descriptorClips)
           baseColor = { r = 255, g = 255, b = 255, a = 255 },
           alphaMode = "opaque",
           polygonAlpha = 31,
+          texMtxMode = 0,
+          texWidth = 16,
+          texHeight = 16,
         },
       },
       animations = descriptorClips or {},
@@ -1905,6 +1912,797 @@ function T.steps_hold_until_a_later_start_fires_and_completes()
     movie:updateFixed()
   end
   Assert.equal(movie:sceneNumber(), 3, "the tail step still costs its authored duration")
+  movie:dispose()
+end
+
+-- Engine-compositor acceptance fixtures: per-engine plane visibility and
+-- priority, main-only town and particle stages, and independent
+-- engine-local source windows with plane masks. Every fixture below passes
+-- the strict generated reader, so each test fails on the compositor
+-- behavior itself rather than on fixture loading.
+
+---@param stepId string owning step identity
+---@param atStepTick integer source tick the window program starts
+---@param engine string source engine owning the window registers
+---@param from table source start rectangle {x1,y1,x2,y2}
+---@param to table source end rectangle {x1,y1,x2,y2}
+---@param ticks integer authored pan length in source frames
+---@param insideMask integer plane mask inside the window
+---@param outsideMask integer plane mask outside the window
+---@param effect string|nil waitable effect started for a positive duration
+---@return table engine-local source window event
+local function windowEvent(stepId, atStepTick, engine, from, to, ticks, insideMask, outsideMask, effect)
+  local event = {
+    op = "window",
+    stepId = stepId,
+    atStepTick = atStepTick,
+    engine = engine,
+    from = from,
+    to = to,
+    ticks = ticks,
+    insideMask = insideMask,
+    outsideMask = outsideMask,
+  }
+  if effect ~= nil then
+    event.effect = effect
+  end
+  return event
+end
+
+---@param x1 integer
+---@param y1 integer
+---@param x2 integer
+---@param y2 integer
+---@return table source pixel rectangle
+local function windowRect(x1, y1, x2, y2)
+  return { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }
+end
+
+---@param graphics table fake graphics namespace
+---@param movie table player owning the fixed role canvases
+---@param engine string "main" or "sub"
+---@param image table staged image handle to count
+---@param baseline integer only draws after this draw index
+---@return table[] draws of the image into the engine target
+local function engineDrawsOf(graphics, movie, engine, image, baseline)
+  local target = (engine == "main") and movie.mainCanvas or movie.subCanvas
+  local found = {}
+  for index = (baseline or 0) + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if graphics.drawCanvases[index].canvas == target and draw.image == image then
+      found[#found + 1] = draw
+    end
+  end
+  return found
+end
+
+---@param graphics table fake graphics namespace
+---@param movie table player owning the fixed role canvases
+---@param engine string "main" or "sub"
+---@param baseline integer only scissor records after this index
+---@return table[] requested scissor rects on the engine target
+local function engineScissors(graphics, movie, engine, baseline)
+  local target = (engine == "main") and movie.mainCanvas or movie.subCanvas
+  local found = {}
+  for index = (baseline or 0) + 1, #graphics.scissorIntersections do
+    local entry = graphics.scissorIntersections[index]
+    if graphics.scissorCanvases[index].canvas == target then
+      found[#found + 1] = entry.requested
+    end
+  end
+  return found
+end
+
+---@param rects table[] requested scissor rects
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
+---@return boolean true when the exact region was clipped
+local function hasScissor(rects, x, y, w, h)
+  for _, rect in ipairs(rects) do
+    if rect[1] == x and rect[2] == y and rect[3] == w and rect[4] == h then
+      return true
+    end
+  end
+  return false
+end
+
+---@param steps table[] source step records
+---@param events table[] closed step-clocked timeline events
+---@return table strict synthetic scene-four manifest with all nine starter emitters
+local function particleScene(steps, events)
+  local root = sceneRoot(4)
+  local upperImage = root .. "upper-bg.png"
+  local lowerImage = root .. "lower-bg.png"
+  local ethanClip = root .. "sprites/ethan.g4sprite"
+  local emitters, textures = {}, {}
+  local assets = { [upperImage] = true, [lowerImage] = true, [ethanClip] = true }
+  for id = 0, 8 do
+    local group = id < 3 and "water" or (id < 6 and "fire" or "grass")
+    emitters[#emitters + 1] = testEmitter(id, group)
+    textures[#textures + 1] = {
+      id = id,
+      format = 1,
+      width = 16,
+      height = 16,
+      image = root .. "particles/texture" .. id .. ".png",
+      sourceHash = string.rep("d", 40),
+    }
+    assets[root .. "particles/texture" .. id .. ".png"] = true
+  end
+  return {
+    schema = Contract.startupOpeningScene.schema,
+    versionId = VERSION_ID,
+    generationId = "movie-test-generation",
+    sceneNumber = 4,
+    sourceTickRate = Contract.startupOpeningScene.tickRate,
+    layers = {
+      main = { layer(0, upperImage, 256, 192) },
+      sub = { layer(0, lowerImage, 256, 192) },
+    },
+    spriteClips = { spriteClip(ethanClip, { stillFrame() }) },
+    models = {},
+    particles = { seed = 0, emitters = emitters, textures = textures },
+    timeline = { steps = steps, events = events },
+    assets = assets,
+  }
+end
+
+---@param models table[] town model records for a synthetic scene three
+---@param steps table[] source step records
+---@param events table[] closed step-clocked timeline events
+---@param mainVisible boolean source enable state of the main panel
+---@return table strict synthetic scene-three manifest with caller-supplied towns and program
+local function townSceneCustom(models, steps, events, mainVisible)
+  local root = sceneRoot(3)
+  local upperImage = root .. "upper-bg.png"
+  local lowerImage = root .. "lower-bg.png"
+  return {
+    schema = Contract.startupOpeningScene.schema,
+    versionId = VERSION_ID,
+    generationId = "movie-test-generation",
+    sceneNumber = 3,
+    sourceTickRate = Contract.startupOpeningScene.tickRate,
+    layers = {
+      main = { layer(0, upperImage, 256, 192, 0, mainVisible) },
+      sub = { layer(0, lowerImage, 256, 192) },
+    },
+    spriteClips = {},
+    models = models,
+    particles = { seed = 0, emitters = {} },
+    timeline = { steps = steps, events = events },
+    assets = { [upperImage] = true, [lowerImage] = true },
+  }
+end
+
+function T.bg_priority_zero_paints_last_and_hidden_planes_stay_dark()
+  local root = sceneRoot(1)
+  local backImage = root .. "layers/back.png"
+  local frontImage = root .. "layers/front.png"
+  local middleImage = root .. "layers/middle.png"
+  local hiddenImage = root .. "layers/hidden.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      {
+        layer(2, backImage, 256, 192, 2),
+        layer(0, frontImage, 64, 192, 0),
+        layer(1, middleImage, 128, 192, 1),
+        layer(3, hiddenImage, 48, 192, 3, false),
+      },
+      { layer(0, root .. "layers/lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "show", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setLayer",
+          stepId = "show",
+          atStepTick = 5,
+          engine = "main",
+          bgSlot = 3,
+          image = hiddenImage,
+          visible = true,
+          priority = 3,
+        },
+        { op = "enableSkip", stepId = "show", atStepTick = 10 },
+        { op = "waitTicks", stepId = "show", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "show", atStepTick = 40 },
+      }
+    ),
+    1
+  )
+  -- Acquisition order fixes the fake image sizes: the three visible main
+  -- planes tag their priority by width, then the hidden plane, the sub
+  -- plane, and the sprite clip.
+  local graphics = movieGraphics({
+    imageSizes = { { 256, 192 }, { 64, 192 }, { 128, 192 }, { 48, 192 }, { 256, 192 }, { 16, 16 } },
+  })
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local baseline = #graphics.draws
+  for _ = 1, 2 do
+    movie:updateFixed()
+  end
+  movie:draw()
+  local order = {}
+  local hiddenDrawn = false
+  for index = baseline + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if graphics.drawCanvases[index].canvas == movie.mainCanvas then
+      local width = draw.image:getWidth()
+      if width == 256 or width == 128 or width == 64 then
+        order[#order + 1] = width
+      elseif width == 48 then
+        hiddenDrawn = true
+      end
+    end
+  end
+  Assert.equal(#order, 3, "every visible main plane paints exactly once")
+  Assert.equal(order[1], 256, "numeric priority 2 paints first (backmost)")
+  Assert.equal(order[2], 128, "numeric priority 1 paints next")
+  Assert.equal(order[3], 64, "numeric priority 0 paints last (frontmost)")
+  Assert.isFalse(hiddenDrawn, "the disabled slot contributes no pixels despite its staged image")
+  for _ = 1, 4 do
+    movie:updateFixed()
+  end
+  local revealBaseline = #graphics.draws
+  movie:draw()
+  local revealed = false
+  for index = revealBaseline + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if graphics.drawCanvases[index].canvas == movie.mainCanvas and draw.image:getWidth() == 48 then
+      revealed = true
+    end
+  end
+  Assert.isTrue(revealed, "setLayer reveals the hidden plane on its authored tick")
+  movie:dispose()
+end
+
+function T.town_stage_draws_on_main_and_stops_without_releasing()
+  local root = sceneRoot(3)
+  local models = {}
+  for town = 0, 2 do
+    local texture = root .. "textures/town-" .. town .. ".png"
+    local clips = sameIdentityClips("synthetic:town-" .. town .. ":spin")
+    models[#models + 1] = buildableTown("town-" .. town, town, clips, texture, clips)
+  end
+  local customThird = townSceneCustom(models, {
+      { id = "arrive", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 20 } },
+      { id = "hold", events = { 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 30 } },
+    }, {
+      { op = "setCamera", stepId = "arrive", atStepTick = 0, distance = 100 },
+      { op = "setModelClip", stepId = "arrive", atStepTick = 0, model = "town-0", clip = "arrive-pose" },
+      { op = "waitTicks", stepId = "arrive", atStepTick = 0, ticks = 20 },
+      { op = "setLighting", stepId = "hold", atStepTick = 0, map = 1 },
+      { op = "setModelVisible", stepId = "hold", atStepTick = 10, visible = false },
+      { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 30 },
+      { op = "finish", stepId = "hold", atStepTick = 0 },
+    }, false)
+  -- Town geometry decodes from real encoded mesh bytes; every other staged
+  -- path serves synthetic bytes the fake image host accepts.
+  local meshBytes = MeshWriter.encode(NitroModelFixture.doorQuad())
+  local rawThird = {}
+  for sceneNumber = 1, 5 do
+    rawThird[sceneNumber] = manifestFor(sceneNumber)
+  end
+  rawThird[3] = customThird
+  local byPathThird = {}
+  for sceneNumber, manifest in pairs(rawThird) do
+    byPathThird[StartupAssetCache.openingScenePath(sceneNumber)] = manifest
+  end
+  local cacheFs = {
+    loadLua = function(_, path)
+      return byPathThird[path]
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      if path:find("/geometry/", 1, true) ~= nil then
+        return meshBytes
+      end
+      return "bytes:" .. tostring(path)
+    end,
+  }
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local graphics = movieGraphics()
+  -- The town stage composites through the real field renderer, which the
+  -- fake image host cannot feed: construction already proves the preflight
+  -- keeps town pixels off both targets until the authored clip selects the
+  -- town, and the run below never draws while the town is live. Per-engine
+  -- town pixels are proved on the real GPU suite instead.
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local ticks = 0
+  while movie:sceneNumber() < 3 and ticks < 5000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 3, "playback reaches the town scene")
+  Assert.isFalse(movie.current.townVisible, "the town stage contributes nothing before its clip")
+  -- The town beat runs silently: drawing it would composite staged town
+  -- meshes the fake host cannot texture. Scene 3 arrives at tick 130,
+  -- holds 20 arrive ticks, and stops its town at the eleventh hold tick,
+  -- so 31 silent ticks land just past the authored stop.
+  for _ = 1, 10 do
+    movie:updateFixed()
+  end
+  Assert.isTrue(movie.current.townVisible, "the town clip opens the main BG0 stage")
+  for _ = 1, 21 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 3, "the town beat holds past its authored stop tick")
+  Assert.isFalse(movie.current.townVisible, "the authored stop retires the town stage")
+  Assert.equal(#movie.current.towns, 3, "the live town stage keeps all three towns staged")
+  Assert.isTrue(movie.current.pool.triangles > 0, "the live town stage keeps its geometry")
+  local townPool = movie.current.pool
+  -- Past the stop the rival-only sub panel draws alone on the
+  -- single-screen stage; the quiet main target contributes nothing.
+  local stopBaseline = #graphics.draws
+  movie:draw()
+  local mainDraws, subDraws = 0, 0
+  for index = stopBaseline + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if draw.image == movie.mainCanvas then
+      mainDraws = mainDraws + 1
+    elseif draw.image == movie.subCanvas then
+      subDraws = subDraws + 1
+    end
+  end
+  Assert.equal(mainDraws, 0, "the quiet main target no longer fills the single-screen stage")
+  Assert.isTrue(subDraws > 0, "the rival-only sub target fills the single-screen stage")
+  movie:dispose()
+  Assert.equal(townPool.triangles, 0, "slot disposal releases the town geometry")
+  Assert.equal(liveHandles(graphics), 0, "disposing the town movie releases every handle")
+end
+
+function T.independent_engine_windows_mask_planes_through_flips()
+  local root = sceneRoot(1)
+  local mainBg1 = root .. "layers/main-bg1.png"
+  local mainBg2 = root .. "layers/main-bg2.png"
+  local subBg1 = root .. "layers/sub-bg1.png"
+  local subBg2 = root .. "layers/sub-bg2.png"
+  local heroMain = root .. "sprites/hero-main.g4sprite"
+  local heroSub = root .. "sprites/hero-sub.g4sprite"
+  local function opposingScene(mapping)
+    return compositeManifest(
+      1,
+      { layer(1, mainBg1, 64, 192, 1), layer(2, mainBg2, 128, 192, 2) },
+      { layer(1, subBg1, 96, 192, 1), layer(2, subBg2, 112, 192, 2) },
+      {
+        spriteClip(heroMain, { stillFrame() }),
+        spriteClip(heroSub, { stillFrame() }),
+      },
+      { { id = "reveal", events = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 }, ["until"] = { kind = "duration", ticks = 20 } } },
+      {
+        windowEvent("reveal", 0, "main", windowRect(255, 0, 255, 192), windowRect(0, 0, 255, 192), 10, 30, 28),
+        windowEvent("reveal", 0, "sub", windowRect(0, 0, 0, 192), windowRect(0, 0, 255, 192), 10, 30, 28),
+        {
+          op = "setSpriteClip",
+          stepId = "reveal",
+          atStepTick = 0,
+          instanceId = "hero1",
+          engine = "main",
+          x = 200,
+          y = 96,
+          drawOrder = 1,
+          clipId = heroMain,
+        },
+        {
+          op = "spriteVisible",
+          stepId = "reveal",
+          atStepTick = 0,
+          instanceId = "hero1",
+          engine = "main",
+          x = 200,
+          y = 96,
+          drawOrder = 1,
+          visible = true,
+        },
+        {
+          op = "setSpriteClip",
+          stepId = "reveal",
+          atStepTick = 0,
+          instanceId = "hero2",
+          engine = "sub",
+          x = 32,
+          y = 96,
+          drawOrder = 1,
+          clipId = heroSub,
+        },
+        {
+          op = "spriteVisible",
+          stepId = "reveal",
+          atStepTick = 0,
+          instanceId = "hero2",
+          engine = "sub",
+          x = 32,
+          y = 96,
+          drawOrder = 1,
+          visible = true,
+        },
+        {
+          op = "setWindowSecondary",
+          stepId = "reveal",
+          atStepTick = 12,
+          engine = "main",
+          rect = windowRect(0, 64, 255, 128),
+          insideMask = 16,
+        },
+        { op = "setScreenMapping", stepId = "reveal", atStepTick = 5, mainPhysical = mapping },
+        { op = "enableSkip", stepId = "reveal", atStepTick = 10 },
+        { op = "waitTicks", stepId = "reveal", atStepTick = 0, ticks = 20 },
+        { op = "finish", stepId = "reveal", atStepTick = 20 },
+      }
+    )
+  end
+  -- Acquisition order fixes the fake image sizes behind each engine slot.
+  local sizes = { { 64, 192 }, { 128, 192 }, { 96, 192 }, { 112, 192 }, { 16, 16 }, { 16, 16 } }
+  local flipScenes, flipCache = packWithSceneAt(opposingScene("lower"), 1)
+  local flipGraphics = movieGraphics({ imageSizes = sizes })
+  local flipped = openMovie(flipScenes, flipCache, flipGraphics)
+  local plainScenes, plainCache = packWithSceneAt(opposingScene("upper"), 1)
+  local plainGraphics = movieGraphics({ imageSizes = sizes })
+  local plain = openMovie(plainScenes, plainCache, plainGraphics)
+  for _ = 1, 5 do
+    flipped:updateFixed()
+    plain:updateFixed()
+  end
+  local flipBaseline = #flipGraphics.draws
+  local flipScissorBaseline, plainScissorBaseline =
+    #flipGraphics.scissorIntersections, #plainGraphics.scissorIntersections
+  flipped:draw()
+  plain:draw()
+  -- At the fifth pan tick the main window spans [128,256) and the sub
+  -- window spans [0,128). Draws pair with their preceding clip in order:
+  -- BG2 paints first and full, BG1 paints only its inside band, and the
+  -- sprite rides the OBJ bit across the whole target.
+  local function engineFrame(graphics, movie, engine, drawBaseline, scissorBaseline)
+    local target = (engine == "main") and movie.mainCanvas or movie.subCanvas
+    local draws, scissors = {}, {}
+    for index = drawBaseline + 1, #graphics.draws do
+      local draw = graphics.draws[index]
+      if graphics.drawCanvases[index].canvas == target then
+        draws[#draws + 1] = draw
+      end
+    end
+    for index = scissorBaseline + 1, #graphics.scissorIntersections do
+      local entry = graphics.scissorIntersections[index]
+      if graphics.scissorCanvases[index].canvas == target then
+        scissors[#scissors + 1] = entry.requested
+      end
+    end
+    return draws, scissors
+  end
+  local mainDraws, mainScissors = engineFrame(flipGraphics, flipped, "main", flipBaseline, flipScissorBaseline)
+  Assert.equal(#mainDraws, 3, "main BG2, BG1, and its sprite each paint once")
+  Assert.equal(mainDraws[1].image, flipGraphics.images[2], "main BG2 paints first (backmost)")
+  Assert.equal(mainDraws[2].image, flipGraphics.images[1], "main BG1 paints next")
+  Assert.notNil(mainDraws[3].quad, "the main sprite paints through its authored clip")
+  Assert.equal(#mainScissors, 3, "every main plane draws under its own clip")
+  Assert.isTrue(hasScissor({ mainScissors[1] }, 0, 0, 256, 192), "main BG2 paints the whole target")
+  Assert.isTrue(
+    hasScissor({ mainScissors[2] }, 128, 0, 128, 192),
+    "main BG1 paints only its inside band from the authored right edge"
+  )
+  Assert.isTrue(hasScissor({ mainScissors[3] }, 0, 0, 256, 192), "main OBJ paints wherever the mask allows")
+  local subDraws, subScissors = engineFrame(flipGraphics, flipped, "sub", flipBaseline, flipScissorBaseline)
+  Assert.equal(#subDraws, 3, "sub BG2, BG1, and its sprite each paint once")
+  Assert.equal(subDraws[1].image, flipGraphics.images[4], "sub BG2 paints first (backmost)")
+  Assert.equal(subDraws[2].image, flipGraphics.images[3], "sub BG1 paints next")
+  Assert.notNil(subDraws[3].quad, "the sub sprite paints through its authored clip")
+  Assert.equal(#subScissors, 3, "every sub plane draws under its own clip")
+  Assert.isTrue(hasScissor({ subScissors[1] }, 0, 0, 256, 192), "sub BG2 paints the whole target")
+  Assert.isTrue(
+    hasScissor({ subScissors[2] }, 0, 0, 128, 192),
+    "sub BG1 paints only its inside band from the authored left edge"
+  )
+  Assert.isTrue(hasScissor({ subScissors[3] }, 0, 0, 256, 192), "sub OBJ paints wherever the mask allows")
+  -- The physical flip moves placement, never engine window ownership.
+  local flippedMain = engineScissors(flipGraphics, flipped, "main", flipScissorBaseline)
+  local plainMain = engineScissors(plainGraphics, plain, "main", plainScissorBaseline)
+  Assert.equal(#flippedMain, #plainMain, "the flip preserves the main window region count")
+  for _, rect in ipairs(plainMain) do
+    Assert.isTrue(
+      hasScissor(flippedMain, rect[1], rect[2], rect[3], rect[4]),
+      "the flip preserves every main window region"
+    )
+  end
+  -- The manual second-register override splits the main target horizontally:
+  -- only its band edges can cut the BG1 rows the completed full-width pan
+  -- would otherwise paint whole.
+  for _ = 1, 8 do
+    flipped:updateFixed()
+  end
+  local overrideBaseline = #flipGraphics.scissorIntersections
+  flipped:draw()
+  local overrideScissors = engineScissors(flipGraphics, flipped, "main", overrideBaseline)
+  Assert.isTrue(
+    hasScissor(overrideScissors, 0, 64, 128, 64) or hasScissor(overrideScissors, 0, 64, 128, 65),
+    "the manual second-register override cuts its authored horizontal band"
+  )
+  flipped:dispose()
+  plain:dispose()
+end
+
+function T.starter_particles_draw_only_on_main_through_flips()
+  local scenes, cacheFs = packWithSceneAt(
+    particleScene(
+      {
+        { id = "intro", events = { 1 }, ["until"] = { kind = "duration", ticks = 10 } },
+        { id = "starters", events = { 2, 3, 4 }, ["until"] = { kind = "effect", effect = "emitters-grass" } },
+        { id = "outro", events = { 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 10 } },
+      },
+      {
+        { op = "waitTicks", stepId = "intro", atStepTick = 0, ticks = 10 },
+        { op = "startEmitters", stepId = "starters", atStepTick = 0, group = "grass", emitters = { 6, 7, 8 } },
+        { op = "setScreenMapping", stepId = "starters", atStepTick = 5, mainPhysical = "lower" },
+        { op = "waitEffects", stepId = "starters", atStepTick = 0, effects = { "emitters-grass" } },
+        { op = "setScreenMapping", stepId = "outro", atStepTick = 2, mainPhysical = "upper" },
+        { op = "waitTicks", stepId = "outro", atStepTick = 0, ticks = 10 },
+        { op = "finish", stepId = "outro", atStepTick = 0 },
+      }
+    ),
+    4
+  )
+  -- Images 11..19 are the nine staged particle textures behind the 8-wide tag.
+  local sizes = {}
+  for index = 1, 21 do
+    sizes[index] = { 16, 16 }
+  end
+  for index = 11, 19 do
+    sizes[index] = { 8, 8 }
+  end
+  local graphics = movieGraphics({ imageSizes = sizes })
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local ticks = 0
+  while movie:sceneNumber() < 4 and ticks < 5000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 4, "playback reaches the starter scene")
+  for _ = 1, 30 do
+    movie:updateFixed()
+  end
+  -- Playback re-acquires each scene on entry, so particle art is
+  -- identified through the live slot's staged handles, never by creation
+  -- order or tag size.
+  local particleImages = {}
+  for id = 0, 8 do
+    local handle = movie.current.imageByPath[sceneRoot(4) .. "particles/texture" .. id .. ".png"]
+    Assert.notNil(handle, "starter texture " .. id .. " stays staged while its scene plays")
+    particleImages[handle] = true
+  end
+  local firstBaseline = #graphics.draws
+  movie:draw()
+  local mainParticles, subParticles = 0, 0
+  for index = firstBaseline + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if particleImages[draw.image] == true then
+      if graphics.drawCanvases[index].canvas == movie.mainCanvas then
+        mainParticles = mainParticles + 1
+      elseif graphics.drawCanvases[index].canvas == movie.subCanvas then
+        subParticles = subParticles + 1
+      end
+    end
+  end
+  Assert.isTrue(mainParticles > 0, "starter particles paint the main engine target")
+  Assert.equal(subParticles, 0, "starter particles never paint the sub engine target")
+  -- Past the second flip the ownership still holds while placement follows.
+  local guard = 0
+  while movie:sceneNumber() == 4 and guard < 5000 do
+    movie:updateFixed()
+    guard = guard + 1
+  end
+  Assert.equal(movie:sceneNumber(), 5, "the starter step ends on its emitter effect")
+  local secondBaseline = #graphics.draws
+  movie:draw()
+  local lateSub = 0
+  for index = secondBaseline + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if particleImages[draw.image] == true and graphics.drawCanvases[index].canvas == movie.subCanvas then
+      lateSub = lateSub + 1
+    end
+  end
+  -- Scene 5 carries no emitters, so its frame draws no particle pixels;
+  -- the assertion is that no sub-engine copy ever appears on the way out.
+  Assert.equal(lateSub, 0, "no sub-engine particle copy appears through the flips")
+  movie:dispose()
+end
+
+function T.window_sampling_truncates_toward_zero_and_applies_zero_ticks_immediately()
+  local root = sceneRoot(1)
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      { layer(1, root .. "layers/plane.png", 256, 192, 1) },
+      { layer(0, root .. "layers/lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "sweep", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "effect", effect = "win-sweep" } } },
+      {
+        windowEvent("sweep", 0, "main", windowRect(200, 0, 255, 100), windowRect(50, 0, 255, 100), 7, 31, 0, "win-sweep"),
+        { op = "enableSkip", stepId = "sweep", atStepTick = 10 },
+        { op = "waitTicks", stepId = "sweep", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "sweep", atStepTick = 40 },
+        windowEvent("sweep", 5, "main", windowRect(9, 9, 19, 19), windowRect(10, 10, 20, 20), 0, 31, 0),
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  -- The negative edge moves (50-200)*3/7 = -64.28, truncated toward zero
+  -- to -64: the window opens at x=136, never the floored 135.
+  for _ = 1, 3 do
+    movie:updateFixed()
+  end
+  local sweepBaseline = #graphics.scissorIntersections
+  movie:draw()
+  local sweepScissors = engineScissors(graphics, movie, "main", sweepBaseline)
+  Assert.isTrue(hasScissor(sweepScissors, 136, 0, 120, 101), "negative window edges truncate toward zero")
+  -- A zero-duration assignment lands on its target rectangle immediately.
+  for _ = 1, 3 do
+    movie:updateFixed()
+  end
+  local snapBaseline = #graphics.scissorIntersections
+  movie:draw()
+  local snapScissors = engineScissors(graphics, movie, "main", snapBaseline)
+  Assert.isTrue(hasScissor(snapScissors, 10, 10, 11, 11), "a zero-tick window applies its target at once")
+  movie:dispose()
+end
+
+function T.screen_flip_preserves_engine_window_state()
+  local root = sceneRoot(1)
+  local function flipScene(mapping, atTick)
+    return compositeManifest(
+      1,
+      { layer(1, root .. "layers/plane.png", 256, 192, 1) },
+      { layer(0, root .. "layers/lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "pan", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 20 } } },
+      {
+        windowEvent("pan", 0, "main", windowRect(255, 0, 255, 192), windowRect(0, 0, 255, 192), 10, 31, 0),
+        { op = "setScreenMapping", stepId = "pan", atStepTick = atTick, mainPhysical = mapping },
+        { op = "enableSkip", stepId = "pan", atStepTick = 10 },
+        { op = "finish", stepId = "pan", atStepTick = 20 },
+      }
+    )
+  end
+  local flipScenes, flipCache = packWithSceneAt(flipScene("lower", 5), 1)
+  local flipGraphics = movieGraphics()
+  local flipped = openMovie(flipScenes, flipCache, flipGraphics)
+  local plainScenes, plainCache = packWithSceneAt(flipScene("upper", 5), 1)
+  local plainGraphics = movieGraphics()
+  local plain = openMovie(plainScenes, plainCache, plainGraphics)
+  for _ = 1, 8 do
+    flipped:updateFixed()
+    plain:updateFixed()
+  end
+  local flipBaseline, plainBaseline = #flipGraphics.scissorIntersections, #plainGraphics.scissorIntersections
+  flipped:draw()
+  plain:draw()
+  local flippedMain = engineScissors(flipGraphics, flipped, "main", flipBaseline)
+  local plainMain = engineScissors(plainGraphics, plain, "main", plainBaseline)
+  Assert.equal(#flippedMain, #plainMain, "the flip preserves the main window region count")
+  for _, rect in ipairs(plainMain) do
+    Assert.isTrue(
+      hasScissor(flippedMain, rect[1], rect[2], rect[3], rect[4]),
+      "the flip preserves every main window region"
+    )
+  end
+  flipped:dispose()
+  plain:dispose()
+end
+
+function T.failed_plane_draw_restores_scissor_state()
+  local root = sceneRoot(1)
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      { layer(1, root .. "layers/plane.png", 256, 192, 1), layer(2, root .. "layers/other.png", 256, 192, 2) },
+      { layer(0, root .. "layers/lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "reveal", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 20 } } },
+      {
+        windowEvent("reveal", 0, "main", windowRect(255, 0, 255, 192), windowRect(0, 0, 255, 192), 10, 30, 28),
+        { op = "enableSkip", stepId = "reveal", atStepTick = 10 },
+        { op = "waitTicks", stepId = "reveal", atStepTick = 0, ticks = 20 },
+        { op = "finish", stepId = "reveal", atStepTick = 20 },
+      }
+    ),
+    1
+  )
+  local fakeOpts = {}
+  local graphics = movieGraphics(fakeOpts)
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 5 do
+    movie:updateFixed()
+  end
+  local scissor = { graphics.getScissor() }
+  fakeOpts.failOnDrawCall = #graphics.draws + 2
+  local ok = pcall(function()
+    movie:draw()
+  end)
+  Assert.isFalse(ok, "a failed plane draw surfaces explicitly")
+  Assert.equal(graphics.pushDepth(), 0, "a failed plane draw leaves no pushed scope behind")
+  local after = { graphics.getScissor() }
+  Assert.equal(#after, #scissor, "a failed plane draw restores the borrowed scissor")
+  for index, value in ipairs(scissor) do
+    Assert.equal(after[index], value, "a failed plane draw restores the borrowed scissor")
+  end
+  fakeOpts.failOnDrawCall = nil
+  movie:draw()
+  movie:dispose()
+end
+
+function T.hidden_planes_stay_hidden_without_leaking_across_scenes()
+  local mainUpper = sceneRoot(3) .. "upper-bg.png"
+  local hiddenScene = compositeManifest(3, { layer(0, mainUpper, 256, 192, 0, false) }, {
+    layer(0, sceneRoot(3) .. "lower-bg.png", 256, 192),
+  }, {}, {
+    { id = "arrive", events = { 1 }, ["until"] = { kind = "duration", ticks = 20 } },
+    { id = "hold", events = { 2, 3 }, ["until"] = { kind = "duration", ticks = 30 } },
+  }, {
+    { op = "waitTicks", stepId = "arrive", atStepTick = 0, ticks = 20 },
+    { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 30 },
+    { op = "finish", stepId = "hold", atStepTick = 0 },
+  })
+  -- Scene 4 reuses the full starter-emitter program shape the strict reader
+  -- requires; only its main panel visibility differs from scene 3.
+  local shownScene = particleScene(
+    { { id = "frame", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 20 } } },
+    {
+      { op = "waitTicks", stepId = "frame", atStepTick = 0, ticks = 20 },
+      { op = "finish", stepId = "frame", atStepTick = 0 },
+    }
+  )
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    raw[sceneNumber] = manifestFor(sceneNumber)
+  end
+  raw[3], raw[4] = hiddenScene, shownScene
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local ticks = 0
+  while movie:sceneNumber() < 3 and ticks < 5000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 3, "playback reaches scene 3")
+  -- Playback re-acquires each scene on entry, so the disabled panel is
+  -- identified through the live slot's staged handle, never by creation
+  -- order.
+  local hiddenImage = movie.current.imageByPath[mainUpper]
+  Assert.notNil(hiddenImage, "the disabled panel stays staged while its scene plays")
+  local sceneBaseline = #graphics.draws
+  for _ = 1, 10 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  local leaked = engineDrawsOf(graphics, movie, "main", hiddenImage, sceneBaseline)
+  Assert.equal(#leaked, 0, "the disabled scene-3 plane never paints its engine target")
+  while movie:sceneNumber() < 4 and ticks < 5000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 4, "playback reaches scene 4")
+  local shownImage = movie.current.imageByPath[sceneRoot(4) .. "upper-bg.png"]
+  Assert.notNil(shownImage, "the scene-4 panel stays staged while its scene plays")
+  local nextBaseline = #graphics.draws
+  movie:draw()
+  local painted = engineDrawsOf(graphics, movie, "main", shownImage, nextBaseline)
+  Assert.isTrue(#painted > 0, "scene 4 paints its own enabled plane")
   movie:dispose()
 end
 
