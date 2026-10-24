@@ -14,7 +14,6 @@
 local Errors = require("libs.errors.src.Errors")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
-local RgbaImage = require("romdump.src.digest.ui.RgbaImage")
 local Hashing = require("romdump.src.digest.Hashing")
 local Lz10 = require("romdump.src.digest.Lz10")
 local PngWriter = require("libs.assets.src.PngWriter")
@@ -524,24 +523,24 @@ local function compileBackgrounds(archive, versionId, sceneNumber, root, files, 
         scene = sceneNumber,
         layer = role,
       })
-      local surface = RgbaImage.crop(rendered, { x = 0, y = 0, width = 256, height = 192 }, "opening scene " .. role)
       local path = root .. "/layers/" .. base .. suffix .. ".png"
-      files[path] = PngWriter.encode(surface.width, surface.height, surface.pixels)
-      return path
+      files[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
+      return path, rendered.width, rendered.height
     end
-    local image = renderTriple(background.char, background.screen, background.palette, "", base)
+    local image, width, height = renderTriple(background.char, background.screen, background.palette, "", base)
     local variants = {}
     for index, alternate in ipairs(type(background.alternates) == "table" and background.alternates or {}) do
-      variants[index] =
+      local altImage, altWidth, altHeight =
         renderTriple(alternate.char, alternate.screen, background.palette, "-alt" .. index, base .. "-alt" .. index)
+      variants[index] = { image = altImage, width = altWidth, height = altHeight }
     end
     layers[background.engine][#layers[background.engine] + 1] = {
       bgSlot = background.bgSlot,
       priority = background.priority,
       image = image,
       variants = variants,
-      width = 256,
-      height = 192,
+      width = width,
+      height = height,
       sourceHash = Hashing.sha1hex(
         tostring(background.char) .. tostring(background.screen) .. tostring(background.palette)
       ),
@@ -663,15 +662,15 @@ local function layerImage(layers, engine, bgSlot, variant)
         return layer.image, layer.priority
       end
       local alternate = layer.variants and layer.variants[variant]
-      if alternate == nil then
+      if type(alternate) ~= "table" or type(alternate.image) ~= "string" then
         sourceError("opening scene timeline references a missing alternate tilemap", {
           engine = engine,
           slot = bgSlot,
           variant = variant,
         })
       end
-      ---@cast alternate string
-      return alternate, layer.priority
+      ---@cast alternate { image: string }
+      return alternate.image, layer.priority
     end
   end
   sourceError("opening scene timeline references a missing background slot", { engine = engine, slot = bgSlot })
@@ -963,14 +962,31 @@ local function scene1Program(clips, layers)
   setPlaneVisible(events, planes, layers, "copyright", 0, "main", 0, true)
   copyright[#copyright + 1] = #events
   copyright[#copyright + 1] = nextIndex(events)
+  events[#events + 1] = event("setScroll", "copyright", 0, { engine = "main", bgSlot = 0, dx = 0, dy = 128, ticks = 0 })
+  copyright[#copyright + 1] = nextIndex(events)
+  events[#events + 1] =
+    event("setScroll", "copyright", 0, { engine = "main", bgSlot = 0, dx = 0, dy = -128, ticks = 0 })
+  copyright[#copyright + 1] = nextIndex(events)
   events[#events + 1] = event("waitTicks", "copyright", 0, { ticks = 30 })
   step(steps, "copyright", copyright, { kind = "duration", ticks = 30 })
   local fades = { nextIndex(events), nextIndex(events) + 1 }
-  events[#events + 1] =
-    event("setBlend", "fades", 0, { effect = "blend-copyright", ticks = 60, from = 0x20, to = 0x1F })
-  events[#events + 1] =
-    event("setBlend", "fades", 0, { effect = "blend-copyright", ticks = 60, from = 0x20, to = 0x1F })
-  step(steps, "fades", fades, { kind = "effect", effect = "blend-copyright" })
+  events[#events + 1] = event("setBlend", "fades", 0, {
+    engine = "main",
+    firstMask = 1,
+    secondMask = 32,
+    direction = 1,
+    ticks = 60,
+    effect = "blend-copyright-main",
+  })
+  events[#events + 1] = event("setBlend", "fades", 0, {
+    engine = "sub",
+    firstMask = 1,
+    secondMask = 32,
+    direction = 1,
+    ticks = 60,
+    effect = "blend-copyright-sub",
+  })
+  step(steps, "fades", fades, { kind = "effect", effect = "blend-copyright-main" })
   local setup = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitTicks", "setup", 0, { ticks = 20 })
   events[#events + 1] = event("enableSkip", "setup", 20)
@@ -996,22 +1012,36 @@ local function scene1Program(clips, layers)
   step(steps, "sunrise", sunrise, { kind = "duration", ticks = 1 })
   local scroll = {}
   scroll[#scroll + 1] = nextIndex(events)
-  events[#events + 1] = event("setBlend", "scroll", 0, { effect = "scroll-sunrise", ticks = 80, from = 0x1E })
+  events[#events + 1] = event("setBlend", "scroll", 0, {
+    engine = "main",
+    firstMask = 30,
+    secondMask = 0,
+    direction = 1,
+    ticks = 80,
+    effect = "scroll-sunrise-main",
+  })
   scroll[#scroll + 1] = nextIndex(events)
-  events[#events + 1] = event("setBlend", "scroll", 0, { effect = "scroll-sunrise", ticks = 80, from = 0x1E })
+  events[#events + 1] = event("setBlend", "scroll", 0, {
+    engine = "sub",
+    firstMask = 30,
+    secondMask = 0,
+    direction = 1,
+    ticks = 80,
+    effect = "scroll-sunrise-sub",
+  })
   scroll[#scroll + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
     "scroll",
     0,
-    { engine = "main", bgSlot = 1, dx = 0, dy = -0x20, ticks = 240, direction = "up", effect = "scroll-sunrise" }
+    { engine = "main", bgSlot = 1, dx = 0, dy = -0x20, ticks = 240, effect = "scroll-sunrise" }
   )
   scroll[#scroll + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
     "scroll",
     0,
-    { engine = "main", bgSlot = 2, dx = 0, dy = -0x10, ticks = 240, direction = "up", effect = "scroll-sunrise" }
+    { engine = "main", bgSlot = 2, dx = 0, dy = -0x10, ticks = 240, effect = "scroll-sunrise" }
   )
   showSprite(events, 1, instances, clips, "scroll", 0, "sun", "bird", 0)
   scroll[#scroll + 1] = #events - 1
@@ -1116,6 +1146,14 @@ local function scene2Program(clips)
   local flyin = { nextIndex(events) }
   events[#events + 1] = event("setScreenMapping", "flyin", 0, { mainPhysical = "upper" })
   flyin[#flyin + 1] = nextIndex(events)
+  events[#events + 1] = event("setScroll", "flyin", 0, { engine = "main", bgSlot = 1, dx = 0, dy = 320, ticks = 0 })
+  flyin[#flyin + 1] = nextIndex(events)
+  events[#events + 1] = event("setScroll", "flyin", 0, { engine = "main", bgSlot = 0, dx = 0, dy = 192, ticks = 0 })
+  flyin[#flyin + 1] = nextIndex(events)
+  events[#events + 1] = event("setScroll", "flyin", 0, { engine = "main", bgSlot = 2, dx = 0, dy = 64, ticks = -1 })
+  flyin[#flyin + 1] = nextIndex(events)
+  events[#events + 1] = event("setScroll", "flyin", 0, { engine = "sub", bgSlot = 0, dx = 0, dy = 64, ticks = -1 })
+  flyin[#flyin + 1] = nextIndex(events)
   events[#events + 1] = event("setFade", "flyin", 0, { kind = "white-in", ticks = 3 })
   -- Retail creation leaves ethan and lyra drawn but unanimated, so they
   -- show at their creation stations from the first step clock tick.
@@ -1134,11 +1172,9 @@ local function scene2Program(clips)
     end
   end
   flyin[#flyin + 1] = nextIndex(events)
-  events[#events + 1] =
-    event("setScroll", "flyin", 56, { engine = "main", bgSlot = 1, dx = 0, dy = -0xC0, ticks = 5, direction = "down" })
+  events[#events + 1] = event("setScroll", "flyin", 56, { engine = "main", bgSlot = 1, dx = 0, dy = -0xC0, ticks = 5 })
   flyin[#flyin + 1] = nextIndex(events)
-  events[#events + 1] =
-    event("setScroll", "flyin", 56, { engine = "main", bgSlot = 0, dx = 0, dy = -0xC0, ticks = 5, direction = "down" })
+  events[#events + 1] = event("setScroll", "flyin", 56, { engine = "main", bgSlot = 0, dx = 0, dy = -0xC0, ticks = 5 })
   flyin[#flyin + 1] = nextIndex(events)
   events[#events + 1] = event("setFade", "flyin", 56, { kind = "black-out", ticks = 8 })
   step(steps, "flyin", flyin, { kind = "duration", ticks = 56 })
@@ -1170,7 +1206,7 @@ local function scene2Program(clips)
         "setScroll",
         id,
         0,
-        { engine = "main", bgSlot = slot, dx = dx, dy = dy, ticks = ticks, direction = "pan", effect = "scroll-" .. id }
+        { engine = "main", bgSlot = slot, dx = dx, dy = dy, ticks = ticks, effect = "scroll-" .. id }
       )
     end
     for _, position in ipairs(panPositions(id, ethanIds, -dx, -dy, ticks, startEthan[1], startEthan[2])) do
@@ -1190,14 +1226,14 @@ local function scene2Program(clips)
     "setScroll",
     "lyra-exit",
     0,
-    { engine = "main", bgSlot = 1, dx = 0, dy = -0x80, ticks = 10, direction = "up", effect = "scroll-lyra-exit" }
+    { engine = "main", bgSlot = 1, dx = 0, dy = -0x80, ticks = 10, effect = "scroll-lyra-exit" }
   )
   exit[#exit + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
     "lyra-exit",
     0,
-    { engine = "main", bgSlot = 0, dx = 0, dy = -0x40, ticks = 5, direction = "up", effect = "scroll-lyra-exit" }
+    { engine = "main", bgSlot = 0, dx = 0, dy = -0x40, ticks = 5, effect = "scroll-lyra-exit" }
   )
   for _, position in ipairs(panPositions("lyra-exit", ethanIds, 0, 0x80, 10, -64, 96)) do
     exit[#exit + 1] = position
@@ -1208,7 +1244,8 @@ local function scene2Program(clips)
   step(steps, "lyra-exit", exit, { kind = "effect", effect = "scroll-lyra-exit" })
   local wipe = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitEffects", "wipe", 0, { effects = { "scroll-lyra-exit" } })
-  events[#events + 1] = event("circleWipe", "wipe", 0, { mode = "out", effect = "wipe-circle" })
+  events[#events + 1] =
+    event("circleWipe", "wipe", 0, { engine = "main", kind = 1, ticks = 10, effect = "wipe-circle" })
   step(steps, "wipe", wipe, { kind = "effect", effect = "wipe-circle" })
   local done = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitEffects", "done", 0, { effects = { "wipe-circle" } })
@@ -1267,7 +1304,8 @@ local function scene3Program(clips, layers)
     show[#show + 1] = nextIndex(events)
     events[#events + 1] = event("setLighting", "show-" .. towns[town], 0, { map = town - 1, town = towns[town] })
     show[#show + 1] = nextIndex(events)
-    events[#events + 1] = event("circleWipe", "show-" .. towns[town], 0, { mode = "in", effect = "wipe-circle" })
+    events[#events + 1] =
+      event("circleWipe", "show-" .. towns[town], 0, { engine = "sub", kind = 0, ticks = 10, effect = "wipe-circle" })
     show[#show + 1] = nextIndex(events)
     events[#events + 1] = event("waitTicks", "show-" .. towns[town], holds[town] + 1, { ticks = holds[town] })
     step(steps, "show-" .. towns[town], show, { kind = "duration", ticks = holds[town] + 1 })
@@ -1277,7 +1315,8 @@ local function scene3Program(clips, layers)
   -- staged town resources stay owned by the slot.
   local rival = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitEffects", "rival", 0, { effects = { "wipe-circle" } })
-  events[#events + 1] = event("circleWipe", "rival", 0, { mode = "out", effect = "wipe-circle" })
+  events[#events + 1] =
+    event("circleWipe", "rival", 0, { engine = "sub", kind = 1, ticks = 10, effect = "wipe-circle" })
   rival[#rival + 1] = nextIndex(events)
   events[#events + 1] = event("setModelVisible", "rival", 0, { visible = false })
   step(steps, "rival", rival, { kind = "effect", effect = "wipe-circle" })
@@ -1318,7 +1357,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "aspect",
     44,
-    { engine = "sub", bgSlot = 0, dx = -256, dy = 0, ticks = 7, direction = "left", effect = "scroll-sub0" }
+    { engine = "sub", bgSlot = 0, dx = -256, dy = 0, ticks = 7, effect = "scroll-sub0" }
   )
   setPlaneVisible(events, planes, layers, "aspect", 44, "sub", 0, true)
   aspect[#aspect + 1] = #events
@@ -1331,7 +1370,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "appear-entei",
     0,
-    { engine = "sub", bgSlot = 1, dx = 256, dy = 0, ticks = 7, direction = "right", effect = "scroll-sub1" }
+    { engine = "sub", bgSlot = 1, dx = 256, dy = 0, ticks = 7, effect = "scroll-sub1" }
   )
   setPlaneVisible(events, planes, layers, "appear-entei", 0, "sub", 1, true)
   appearEntei[#appearEntei + 1] = #events
@@ -1344,7 +1383,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "appear-raikou",
     0,
-    { engine = "sub", bgSlot = 2, dx = -256, dy = 0, ticks = 1, direction = "left", effect = "scroll-sub2" }
+    { engine = "sub", bgSlot = 2, dx = -256, dy = 0, ticks = 1, effect = "scroll-sub2" }
   )
   setPlaneVisible(events, planes, layers, "appear-raikou", 0, "sub", 2, true)
   appearRaikou[#appearRaikou + 1] = #events
@@ -1380,7 +1419,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "sprites",
     145,
-    { engine = "sub", bgSlot = 1, dx = -116, dy = 0, ticks = 10, direction = "left", effect = "scroll-sub1" }
+    { engine = "sub", bgSlot = 1, dx = -116, dy = 0, ticks = 10, effect = "scroll-sub1" }
   )
   step(steps, "sprites", sprites, { kind = "duration", ticks = 145 })
   local entei = { nextIndex(events) }
@@ -1403,7 +1442,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "raikou",
     10,
-    { engine = "sub", bgSlot = 2, dx = -116, dy = 0, ticks = 10, direction = "left", effect = "scroll-sub2" }
+    { engine = "sub", bgSlot = 2, dx = -116, dy = 0, ticks = 10, effect = "scroll-sub2" }
   )
   step(steps, "raikou", raikou, { kind = "duration", ticks = 10 })
   local rockets = { nextIndex(events) }
@@ -1435,7 +1474,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "suicune",
     30,
-    { engine = "sub", bgSlot = 0, dx = 0x74, dy = 0, ticks = 10, direction = "right", effect = "scroll-sub0" }
+    { engine = "sub", bgSlot = 0, dx = 0x74, dy = 0, ticks = 10, effect = "scroll-sub0" }
   )
   step(steps, "suicune", suicune, { kind = "duration", ticks = 30 })
   local viewport = { nextIndex(events) }
@@ -1446,9 +1485,9 @@ local function scene3Program(clips, layers)
   viewport[#viewport + 1] = #events
   viewport[#viewport + 1] = nextIndex(events)
   events[#events + 1] =
-    event("setScroll", "viewport", 0, { engine = "sub", bgSlot = 1, dx = 0, dy = -0x30, ticks = 254, direction = "up" })
+    event("setScroll", "viewport", 0, { engine = "sub", bgSlot = 1, dx = 0, dy = -0x30, ticks = 254 })
   events[#events + 1] =
-    event("setScroll", "viewport", 0, { engine = "sub", bgSlot = 2, dx = 0, dy = -0x20, ticks = 254, direction = "up" })
+    event("setScroll", "viewport", 0, { engine = "sub", bgSlot = 2, dx = 0, dy = -0x20, ticks = 254 })
   viewport[#viewport + 1] = #events
   -- The viewport hold completes when the tail scroll started by the next
   -- step finishes; effect starts may complete in a later step.
@@ -1458,7 +1497,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "viewport-tail",
     0,
-    { engine = "sub", bgSlot = 3, dx = 0, dy = -0x08, ticks = 254, direction = "up", effect = "scroll-sub3" }
+    { engine = "sub", bgSlot = 3, dx = 0, dy = -0x08, ticks = 254, effect = "scroll-sub3" }
   )
   step(steps, "viewport-tail", viewportTail, { kind = "effect", effect = "scroll-sub3" })
   local admins = { nextIndex(events), nextIndex(events) + 1 }
@@ -1478,6 +1517,10 @@ local function scene4Program(clips, layers)
   local fadeIn = { nextIndex(events) }
   events[#events + 1] = event("setScreenMapping", "fade-in", 0, { mainPhysical = "lower" })
   fadeIn[#fadeIn + 1] = nextIndex(events)
+  events[#events + 1] = event("setScroll", "fade-in", 0, { engine = "sub", bgSlot = 1, dx = -192, dy = 0, ticks = 0 })
+  fadeIn[#fadeIn + 1] = nextIndex(events)
+  events[#events + 1] = event("setScroll", "fade-in", 0, { engine = "main", bgSlot = 1, dx = 192, dy = 0, ticks = 0 })
+  fadeIn[#fadeIn + 1] = nextIndex(events)
   events[#events + 1] = event("setFade", "fade-in", 0, { kind = "black-shutter-open", ticks = 10, effect = "fade-in" })
   step(steps, "fade-in", fadeIn, { kind = "effect", effect = "fade-in" })
   local slideIn = {}
@@ -1494,14 +1537,14 @@ local function scene4Program(clips, layers)
     "setScroll",
     "slide-in",
     0,
-    { engine = "sub", bgSlot = 1, dx = 0xC0, dy = 0, ticks = 10, direction = "right", effect = "scroll-slide-in" }
+    { engine = "sub", bgSlot = 1, dx = 0xC0, dy = 0, ticks = 10, effect = "scroll-slide-in" }
   )
   slideIn[#slideIn + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
     "slide-in",
     0,
-    { engine = "main", bgSlot = 1, dx = -0xC0, dy = 0, ticks = 10, direction = "left", effect = "scroll-slide-in" }
+    { engine = "main", bgSlot = 1, dx = -0xC0, dy = 0, ticks = 10, effect = "scroll-slide-in" }
   )
   showSprite(events, 4, instances, clips, "slide-in", 0, "hand1", "hands", 0)
   slideIn[#slideIn + 1] = #events - 1
@@ -1527,14 +1570,14 @@ local function scene4Program(clips, layers)
     "setScroll",
     "slide-out",
     0,
-    { engine = "sub", bgSlot = 1, dx = 0xC0, dy = 0, ticks = 10, direction = "right", effect = "scroll-slide-out" }
+    { engine = "sub", bgSlot = 1, dx = 0xC0, dy = 0, ticks = 10, effect = "scroll-slide-out" }
   )
   slideOut[#slideOut + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
     "slide-out",
     0,
-    { engine = "main", bgSlot = 1, dx = -0xC0, dy = 0, ticks = 10, direction = "left", effect = "scroll-slide-out" }
+    { engine = "main", bgSlot = 1, dx = -0xC0, dy = 0, ticks = 10, effect = "scroll-slide-out" }
   )
   step(steps, "slide-out", slideOut, { kind = "effect", effect = "scroll-slide-out" })
   local hide = {}
@@ -1620,7 +1663,11 @@ local function scene5Program(versionId)
   local wipe = { nextIndex(events) }
   events[#events + 1] = event("setScreenMapping", "wipe", 0, { mainPhysical = "lower" })
   wipe[#wipe + 1] = nextIndex(events)
-  events[#events + 1] = event("circleWipe", "wipe", 0, { mode = "in", ticks = 18, effect = "wipe-in" })
+  events[#events + 1] = event("setScroll", "wipe", 0, { engine = "main", bgSlot = 2, dx = 0, dy = 160, ticks = 0 })
+  wipe[#wipe + 1] = nextIndex(events)
+  events[#events + 1] = event("setScroll", "wipe", 0, { engine = "sub", bgSlot = 2, dx = 0, dy = 160, ticks = 0 })
+  wipe[#wipe + 1] = nextIndex(events)
+  events[#events + 1] = event("circleWipe", "wipe", 0, { engine = "main", kind = 0, ticks = 18, effect = "wipe-in" })
   step(steps, "wipe", wipe, { kind = "duration", ticks = 18 })
   local scroll = {}
   scroll[#scroll + 1] = nextIndex(events)
@@ -1630,7 +1677,7 @@ local function scene5Program(versionId)
     "setScroll",
     "scroll",
     0,
-    { engine = "main", bgSlot = 1, dx = 0, dy = -0x40, ticks = 73, direction = "up", effect = "scroll-panorama" }
+    { engine = "main", bgSlot = 1, dx = 0, dy = -0x40, ticks = 73, effect = "scroll-panorama" }
   )
   local paired = { { engine = "main", bgSlot = 2 }, { engine = "sub", bgSlot = 1 }, { engine = "sub", bgSlot = 2 } }
   for _, slot in ipairs(paired) do
@@ -1641,7 +1688,6 @@ local function scene5Program(versionId)
       dx = 0,
       dy = direction == "left" and -0x40 or 0x40,
       ticks = 73,
-      direction = direction,
       effect = "scroll-panorama",
     })
   end

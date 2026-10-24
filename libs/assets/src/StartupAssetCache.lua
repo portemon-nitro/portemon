@@ -651,6 +651,14 @@ local function isHexHash(value)
   return type(value) == "string" and #value == 40 and value:find("[^0-9a-f]") == nil
 end
 
+local function isInteger(value)
+  return type(value) == "number" and value % 1 == 0 and value ~= math.huge
+end
+
+local function isSixBitMask(value)
+  return isNonnegativeInteger(value) and value <= 63
+end
+
 local function validateOpeningLayer(layer, sceneNumber, role)
   local path = StartupAssetCache.openingScenePath(sceneNumber)
   if
@@ -670,21 +678,31 @@ local function validateOpeningLayer(layer, sceneNumber, role)
     or layer.bgSlot > 3
     or not isNonnegativeInteger(layer.priority)
     or type(layer.image) ~= "string"
+    or layer.image == ""
     or type(layer.variants) ~= "table"
     or not isNonnegativeInteger(layer.width)
-    or layer.width == 0
+    or layer.width < 256
     or not isNonnegativeInteger(layer.height)
-    or layer.height == 0
+    or layer.height < 192
     or not isHexHash(layer.sourceHash)
   then
     return nil, invalid("opening scene " .. role .. " layer is malformed", path)
   end
   local images = { layer.image }
   for _, alternate in ipairs(layer.variants) do
-    if type(alternate) ~= "string" then
+    if
+      type(alternate) ~= "table"
+      or not onlyKeys(alternate, { image = true, width = true, height = true })
+      or type(alternate.image) ~= "string"
+      or alternate.image == ""
+      or not isNonnegativeInteger(alternate.width)
+      or alternate.width < 256
+      or not isNonnegativeInteger(alternate.height)
+      or alternate.height < 192
+    then
       return nil, invalid("opening scene " .. role .. " layer alternate is malformed", path)
     end
-    images[#images + 1] = alternate
+    images[#images + 1] = alternate.image
   end
   return images
 end
@@ -770,7 +788,7 @@ local function validateOpeningEventOperands(event, sceneNumber)
     if not isPositiveInteger(event.ticks) then
       return nil, "opening scene wait carries no source tick count"
     end
-  elseif op == "setFade" or op == "setBlend" then
+  elseif op == "setFade" then
     if not isPositiveInteger(event.ticks) then
       return nil, "opening scene effect carries no source tick count"
     end
@@ -783,37 +801,53 @@ local function validateOpeningEventOperands(event, sceneNumber)
     if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
       return nil, "opening scene effect start names no effect"
     end
-  elseif op == "setScroll" then
-    if not isPositiveInteger(event.ticks) or not isFiniteNumber(event.dx) or not isFiniteNumber(event.dy) then
-      return nil, "opening scene scroll carries no source displacement"
+  elseif op == "setBlend" then
+    if OPENING_ENGINES[event.engine] ~= true then
+      return nil, "opening scene blend names no source engine"
     end
-    if event.direction ~= nil and type(event.direction) ~= "string" then
-      return nil, "opening scene scroll direction is malformed"
+    if not isSixBitMask(event.firstMask) then
+      return nil, "opening scene blend carries no six-bit first plane mask"
+    end
+    if not isSixBitMask(event.secondMask) then
+      return nil, "opening scene blend carries no six-bit second plane mask"
+    end
+    if event.direction ~= 0 and event.direction ~= 1 then
+      return nil, "opening scene blend carries no source direction"
+    end
+    if not isPositiveInteger(event.ticks) then
+      return nil, "opening scene blend carries no source tick count"
+    end
+    if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
+      return nil, "opening scene blend start names no effect"
+    end
+  elseif op == "setScroll" then
+    if OPENING_ENGINES[event.engine] ~= true then
+      return nil, "opening scene scroll names no source engine"
+    end
+    if not isNonnegativeInteger(event.bgSlot) or event.bgSlot > 3 then
+      return nil, "opening scene scroll names no numeric background slot"
+    end
+    if not isInteger(event.dx) or not isInteger(event.dy) then
+      return nil, "opening scene scroll carries no integer source displacement"
+    end
+    if not isInteger(event.ticks) or event.ticks < -1 then
+      return nil, "opening scene scroll carries no source duration mode"
+    end
+    if event.ticks <= 0 and event.effect ~= nil then
+      return nil, "opening scene immediate scroll schedules no effect wait"
     end
     if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
       return nil, "opening scene scroll start names no effect"
     end
-    local hasSlot = event.engine ~= nil or event.bgSlot ~= nil
-    local hasTarget = event.target ~= nil
-    if hasSlot == hasTarget then
-      return nil, "opening scene scroll names neither its slot nor its sprite group"
-    end
-    if hasSlot then
-      if OPENING_ENGINES[event.engine] ~= true then
-        return nil, "opening scene scroll names no source engine"
-      end
-      if not isNonnegativeInteger(event.bgSlot) or event.bgSlot > 3 then
-        return nil, "opening scene scroll names no numeric background slot"
-      end
-    elseif type(event.target) ~= "string" or event.target == "" then
-      return nil, "opening scene scroll names no sprite group"
-    end
   elseif op == "circleWipe" then
-    if type(event.mode) ~= "string" or event.mode == "" then
-      return nil, "opening scene wipe carries no mode"
+    if OPENING_ENGINES[event.engine] ~= true then
+      return nil, "opening scene wipe names no source engine"
     end
-    if event.ticks ~= nil and not isPositiveInteger(event.ticks) then
-      return nil, "opening scene wipe carries a malformed tick count"
+    if not isNonnegativeInteger(event.kind) or event.kind > 3 then
+      return nil, "opening scene wipe carries no source kind"
+    end
+    if not isPositiveInteger(event.ticks) then
+      return nil, "opening scene wipe carries no source tick count"
     end
     if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
       return nil, "opening scene wipe start names no effect"
@@ -973,18 +1007,23 @@ end
 local OPENING_EVENT_KEYS = {
   waitTicks = { ticks = true },
   setFade = { ticks = true, kind = true, effect = true, direction = true, from = true, to = true },
-  setBlend = { ticks = true, effect = true, direction = true, from = true, to = true },
+  setBlend = {
+    ticks = true,
+    effect = true,
+    engine = true,
+    firstMask = true,
+    secondMask = true,
+    direction = true,
+  },
   setScroll = {
     ticks = true,
     dx = true,
     dy = true,
-    direction = true,
     effect = true,
     engine = true,
     bgSlot = true,
-    target = true,
   },
-  circleWipe = { mode = true, ticks = true, effect = true },
+  circleWipe = { engine = true, kind = true, ticks = true, effect = true },
   setLayer = { engine = true, bgSlot = true, image = true, visible = true, priority = true },
   window = {
     engine = true,
@@ -1167,7 +1206,7 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
 end
 
 -- One independently staged opening-movie scene: strict source-independent
--- g4-startup-opening-scene-v3 package with numbered scene, edition, 30Hz
+-- g4-startup-opening-scene-v4 package with numbered scene, edition, 30Hz
 -- duration, per-engine BG slots with priority and alternate tilemaps, sprite
 -- clips with frame offsets, model descriptors and animations where used,
 -- starter emitter records where used, and the closed step-clocked event

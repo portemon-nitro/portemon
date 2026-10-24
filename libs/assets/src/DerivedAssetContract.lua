@@ -590,7 +590,7 @@ DerivedAssetContract.startupTitle = {
 -- scene or edition never reads as ready. The v1 record could not represent
 -- engine planes or simultaneous slots, so it rebuilds instead of aliasing.
 DerivedAssetContract.startupOpeningScene = {
-  schema = "g4-startup-opening-scene-v3",
+  schema = "g4-startup-opening-scene-v4",
   tickRate = 30,
 }
 
