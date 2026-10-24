@@ -303,4 +303,126 @@ function T.tests.arriving_from_another_card_slides_the_panel_in()
   Assert.isFalse(box.controller:status().busy, "the arrival transition ends")
 end
 
+function T.tests.map_card_plays_its_source_tones()
+  local effects = {}
+  local function play(sequence)
+    effects[#effects + 1] = sequence
+  end
+  local box = Fixture.openMap({ effect = play })
+  -- Key motion across the region map is silent; only the cited actions answer.
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(#effects, 0, "cursor motion across the map plays nothing")
+  tick(box.controller, 2)
+  -- The X button zooms with its directional tones. The zoom tween runs
+  -- four ticks outside the card busy flag, so the test ticks it out.
+  box.controller:updateFixed({ { type = "menu" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARXBUTTON", "zooming in plays the X tone")
+  box.controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(#effects, 1, "a confirm during the zoom tween plays nothing")
+  tick(box.controller, 6)
+  box.controller:updateFixed({ { type = "menu" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_XBUTTON_SYUKUSHOU", "zooming out plays the unzoom tone")
+  tick(box.controller, 6)
+  -- A opens the marking editor with the decide tone; gated presses stay silent.
+  box.controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARDECIDE", "opening markings plays the decide tone")
+  box.controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(#effects, 3, "a confirm during the entrance transition plays nothing")
+  settle(box.controller)
+  Assert.equal(view(box.controller).mode, "marking", "the entrance settles in marking mode")
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "the mode change plays the cursor tone")
+  -- B leaves the editor with the cancel tone and the return plays the cursor tone.
+  -- The editor opens in touch mode, so the first key only reveals the cursor.
+  box.controller:updateFixed({ { type = "cancel" } })
+  Assert.equal(view(box.controller).mode, "marking", "the first key only reveals the cursor")
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "revealing plays nothing further")
+  box.controller:updateFixed({ { type = "cancel" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCANCEL", "leaving markings plays the cancel tone")
+  settle(box.controller)
+  Assert.equal(view(box.controller).mode, "map", "the exit settles back in map mode")
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "returning to the map plays the cursor tone")
+  -- Touch on the map opening plays the touch tone.
+  box.controller:updateFixed({ { type = "pointer_down", pointerId = "t", x = 100, y = 100 } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARMAPTOUCH", "touching the map plays the touch tone")
+  box.controller:updateFixed({ { type = "pointer_up", pointerId = "t", x = 100, y = 100 } })
+end
+
+function T.tests.marking_edits_play_their_source_tones()
+  local effects = {}
+  local function play(sequence)
+    effects[#effects + 1] = sequence
+  end
+  local mode = MarkingMode.new({
+    marking = { icons = { false, false, false, false }, words = { false, false, false, false } },
+    effect = play,
+  })
+  mode:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(#effects, 0, "revealing the key cursor plays nothing")
+  mode:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "key motion plays the cursor tone")
+  mode:updateFixed({ { type = "confirm" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARSEALGRAB", "grabbing the seal pool plays the grab tone")
+  mode:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "pool motion plays the cursor tone")
+  mode:updateFixed({ { type = "confirm" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARSEALHAMERU", "stamping the seal plays the stamp tone")
+  mode:updateFixed({ { type = "cancel" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCANCEL", "cancelling the pool plays the cancel tone")
+  mode:updateFixed({ { type = "confirm" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARSEALGRAB", "grabbing a set seal plays the grab tone")
+  mode:updateFixed({ { type = "confirm" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARGOMIBAKO", "trashing the seal plays the trash tone")
+  local before = #effects
+  mode:updateFixed({ { type = "navigate", direction = "down" } })
+  mode:updateFixed({ { type = "navigate", direction = "left" } })
+  mode:updateFixed({ { type = "navigate", direction = "down" } })
+  mode:updateFixed({ { type = "navigate", direction = "down" } })
+  local anchored = #effects
+  mode:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(#effects, anchored, "a blocked cursor step plays nothing")
+  Assert.isTrue(anchored > before, "the walk to Back answers audibly")
+  mode:updateFixed({ { type = "cancel" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCANCEL", "leaving the editor plays the cancel tone")
+end
+
+function T.tests.marking_touch_drags_play_their_source_tones()
+  local effects = {}
+  local function play(sequence)
+    effects[#effects + 1] = sequence
+  end
+  local quiet = MarkingMode.new({
+    marking = { icons = { false, false, false, false }, words = { false, false, false, false } },
+    effect = play,
+  })
+  local result = select(1, quiet:updateFixed({ { type = "pointer_down", x = 80, y = 30 } }))
+  Assert.equal(result, "word", "touching an empty word slot asks for a word")
+  Assert.equal(#effects, 0, "asking for a word plays nothing")
+  local mode = MarkingMode.new({
+    marking = { icons = { 2, false, false, false }, words = { false, false, false, false } },
+    effect = play,
+  })
+  mode:updateFixed({ { type = "pointer_down", x = 30, y = 30 } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARSEALGRAB", "touching a set slot grabs it audibly")
+  mode:updateFixed({ { type = "pointer_move", x = 70, y = 80 } })
+  mode:updateFixed({ { type = "pointer_up", x = 70, y = 80 } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARGOMIBAKO", "dropping on the trash plays the trash tone")
+end
+
+function T.tests.touch_waits_for_the_cursor_tween()
+  local box = Fixture.openMap()
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  box.controller:updateFixed({ { type = "pointer_down", pointerId = "t", x = 40, y = 16 } })
+  Assert.deepEqual(
+    view(box.controller).cell,
+    { x = 13, y = 10 },
+    "a touch during the cursor tween reselects nothing"
+  )
+  tick(box.controller, 2)
+  box.controller:updateFixed({ { type = "pointer_down", pointerId = "t", x = 40, y = 16 } })
+  Assert.isFalse(
+    view(box.controller).cell.x == 13 and view(box.controller).cell.y == 10,
+    "a touch once idle reselects the touched cell"
+  )
+end
+
 return T

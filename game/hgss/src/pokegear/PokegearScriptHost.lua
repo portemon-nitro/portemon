@@ -23,6 +23,7 @@ local PhoneController = require("game.hgss.src.pokegear.PhoneController")
 ---@field _world table<string, unknown> the borrowed world fixture
 ---@field _assets table<string, unknown>? the borrowed compiled family behind the map entries
 ---@field _regionMapOwners (fun(): table<string, unknown>, table<string, unknown>)? the region map text and flag owners
+---@field _mapPanel table<string, unknown>? the shared fly/town information-pane readers
 ---@field _audio table<string, unknown>? the borrowed audio boundary
 ---@field _random table<string, unknown>? the borrowed companion streams
 ---@field _active table<string, unknown>? the live application record
@@ -59,9 +60,14 @@ function PokegearScriptHost.new(opts)
     opts.regionMapOwners == nil or type(opts.regionMapOwners) == "function",
     "the companion host reads the region map owners through a function"
   )
+  assert(
+    opts.mapPanel == nil or type(opts.mapPanel) == "table",
+    "the companion host borrows its shared map panel readers as a record"
+  )
   return setmetatable({
     _assets = opts.assets,
     _regionMapOwners = opts.regionMapOwners,
+    _mapPanel = opts.mapPanel,
     _state = opts.state,
     _catalog = opts.catalog,
     _messages = opts.messages,
@@ -284,7 +290,28 @@ function PokegearScriptHost:_openMap(args)
     )
   end
   local messages, facts = (regionMapOwners --[[@as fun(): table<string, unknown>, table<string, unknown>]])()
+  -- The shared information-pane readers ride the facts record when the
+  -- composition supplies them; direct hosts without panel owners keep
+  -- the previous facts shape.
+  if type(self._mapPanel) == "table" then
+    local panel = self._mapPanel --[[@as table<string, unknown>]]
+    if type(panel.markingFor) == "function" then
+      facts.markingFor = panel.markingFor
+    end
+    if type(panel.rematchOnMap) == "function" then
+      facts.rematchOnMap = panel.rematchOnMap
+    end
+  end
   local identity = mode .. "-" .. tostring(self._nextId + 1)
+  local audio = self._audio
+  local flyPlay = nil
+  if type(audio) == "table" and type(audio.play) == "function" then
+    local playAudio = audio.play --[[@as fun(self: table<string, unknown>, sequence: unknown)]]
+    local function playFlyEffect(sequence)
+      playAudio(audio, sequence)
+    end
+    flyPlay = playFlyEffect
+  end
   local ok, controller = pcall(FlyMapController.new, {
     mode = mode,
     operationId = identity,
@@ -293,6 +320,7 @@ function PokegearScriptHost:_openMap(args)
     assets = self._assets,
     messages = messages,
     facts = facts,
+    effect = flyPlay,
   })
   if not ok then
     if Errors.is(controller) then

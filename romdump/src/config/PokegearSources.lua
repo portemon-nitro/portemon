@@ -164,6 +164,9 @@ end
 -- text, and Fly prompts (landmark names read from the phone landmark bank).
 PokegearSources.regionMapMessageBank = 273
 
+-- The setup card reads its CHANGE/QUIT context labels from this bank.
+PokegearSources.configureMessageBank = 270
+
 -- Text colors of the map windows: the upper windows print with sub palette
 -- bank 1 (member 14+s), the marking-mode landmark name with main palette
 -- bank 10 (member 20+s), and the marking word text objects with object
@@ -204,6 +207,24 @@ PokegearSources.mapSprites = {
   markers = { char = 4, cell = 5, anim = 6, banks = {} },
   mapObjects = { char = 1, cell = 2, anim = 3, banks = { [6] = 2, [7] = 2, [8] = 2, [9] = 2 } },
   wordPlate = { char = 7, cell = 8, anim = 9, banks = { [1] = 3 } },
+}
+
+-- Card-app OBJ sprite sets of the setup archive a/1/4/5 and the phone
+-- archive a/1/4/6, every set drawn with its card palette member 0. The
+-- sprite resource descriptors of archive a/1/7/5 bind these members:
+-- setup descriptors 40-43 point at setup archive members 3/2/1/0 and
+-- phone descriptors 44-47 at phone archive members 3/2/1/0. Per-sequence
+-- palette banks are untranscribed for both cards, so every sequence
+-- draws with bank 0 following the unlisted-sequence convention above.
+PokegearSources.configureSpritePalette = 0
+PokegearSources.phoneSpritePalette = 0
+
+PokegearSources.configureSprites = {
+  configure = { char = 1, cell = 2, anim = 3, banks = {} },
+}
+
+PokegearSources.phoneSprites = {
+  phone = { char = 1, cell = 2, anim = 3, banks = {} },
 }
 
 -- Native radio broadcast programs in source program order with the

@@ -132,8 +132,9 @@ end
 ---@param seed integer
 ---@param map table<string, unknown>
 ---@param flags table<string, unknown>
+---@param effect fun(sequence: string)?
 ---@return table box with controller, program, audio, state
-local function openController(seed, map, flags)
+local function openController(seed, map, flags, effect)
   local Reception = requireFeature(
     "game.hgss.src.pokegear.RadioReception",
     "radio channel selection has no ordered reception policy yet: no map can choose its source channel table"
@@ -151,6 +152,7 @@ local function openController(seed, map, flags)
     presentation = stubPresentation(),
     map = map,
     flags = flags,
+    effect = effect,
   })
   return { controller = controller, program = program, audio = audio, state = state }
 end
@@ -465,6 +467,30 @@ function T.tests.tuning_selects_source_channels_and_resolves_exact_circular_boun
     { x = 96, y = 108 },
     "unloading persists the tuner position"
   )
+end
+
+function T.tests.radio_card_plays_its_source_tones()
+  local effects = {}
+  local function play(sequence)
+    effects[#effects + 1] = sequence
+  end
+  local live = openController(31, mapFacts(), worldFlags(), play)
+  live.controller:updateFixed({ { type = "cancel" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCANCEL", "the back key plays the cancel tone")
+  Assert.isNil(live.controller:takeResult(), "the back key still closes nothing")
+  live.controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "stepping the preset plays the cursor tone")
+  local walked = #effects
+  live.controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(#effects, walked, "walking the dial plays no card tone")
+  local cursor = live.controller:status().cursor
+  live.controller:updateFixed(
+    { { type = "pointer_down", pointerId = "t", x = cursor.x, y = cursor.y } }
+  )
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "touching the tuner plays the cursor tone")
+  live.controller:updateFixed({ { type = "pointer_up", pointerId = "t", x = cursor.x, y = cursor.y } })
+  Assert.equal(#effects, walked + 1, "releasing the drag plays nothing further")
+  live.controller:dispose()
 end
 
 return T

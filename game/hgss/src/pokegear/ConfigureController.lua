@@ -8,8 +8,10 @@
 ---@class ConfigureController
 ---@field _state table<string, unknown> the borrowed durable companion owner
 ---@field _assets table<string, unknown> the borrowed compiled asset family
+---@field _labels table<string, string> the CHANGE/QUIT menu labels
 ---@field _effect fun(sequence: string)? source UI sound effect boundary
 ---@field _cursor integer the focused skin, 0..5
+---@field _menuCursor integer the focused menu option, 0 for CHANGE and 1 for QUIT
 ---@field _menuOpen boolean
 ---@field _disposed boolean
 local ConfigureController = {}
@@ -24,9 +26,48 @@ local CELL_HEIGHT = 40
 local SURFACE_WIDTH = 256
 local SURFACE_HEIGHT = 192
 
--- The context window sits clear of the upper row's selected cells and fully
--- inside the surface.
-local MENU_RECT = { x = 88, y = 120, width = 80, height = 48 }
+-- The context window sits by the selected cell at the source tile
+-- origins (sContextMenuParam): the two right-column cells anchor their
+-- right edge, the rest their left edge. The window frames two sixteen-
+-- pixel text rows exactly like the shared list menu.
+local MENU_ORIGINS = {
+  { x = 10, y = 2, right = false },
+  { x = 20, y = 2, right = false },
+  { x = 22, y = 2, right = true },
+  { x = 10, y = 11, right = false },
+  { x = 20, y = 11, right = false },
+  { x = 22, y = 11, right = true },
+}
+local MENU_ROW_PITCH = 24
+local MENU_TEXT_TOP = 8
+local MENU_TEXT_HEIGHT = 16
+local MENU_FRAME_ROWS = 7
+
+---@param skin integer
+---@param labels table<string, string>
+---@return table<string, integer> the menu window rectangle
+local function menuRect(skin, labels)
+  local origin = assert(MENU_ORIGINS[skin + 1], "the setup menu anchors every skin")
+  local width = (math.max(#labels.change, #labels.quit) + 2) * 8
+  local height = MENU_FRAME_ROWS * 8
+  local x = origin.x * 8
+  if origin.right then
+    x = x - width
+  end
+  return { x = x, y = origin.y * 8, width = width, height = height }
+end
+
+---@param menu table<string, integer> the menu window rectangle
+---@param index integer zero-based option row
+---@return table<string, integer> the row touch rectangle
+local function menuRowRect(menu, index)
+  return {
+    x = menu.x,
+    y = menu.y + MENU_TEXT_TOP + MENU_ROW_PITCH * index,
+    width = menu.width,
+    height = MENU_TEXT_HEIGHT,
+  }
+end
 
 ---@param skin integer
 ---@return table<string, integer> the fixed cell rectangle
@@ -133,23 +174,23 @@ local function sourceSkins(assets)
   return skins
 end
 
--- Right/left walk the six cells in reading order with wrap; down crosses to
--- the other row; up crosses to the other row one column over, so a fixed
--- directional exploration always reaches every cell.
+-- The two-row directional grid behind the six cells: left and right
+-- wrap within their row, up and down cross to the same column of the
+-- other row (source sCursorButtons: every horizontal edge stays in its
+-- row, every vertical edge toggles rows). A fixed exploration from any
+-- cell reaches every cell.
 ---@param cursor integer
 ---@param direction string
 ---@return integer
 local function stepCursor(cursor, direction)
+  local row = math.floor(cursor / 3)
+  local column = cursor % 3
   if direction == "right" then
-    return (cursor + 1) % 6
+    return row * 3 + ((column + 1) % 3)
   elseif direction == "left" then
-    return (cursor - 1) % 6
-  elseif direction == "down" then
-    return cursor + (cursor < 3 and 3 or -3)
-  elseif direction == "up" then
-    local row = math.floor(cursor / 3)
-    local column = cursor % 3
-    return (1 - row) * 3 + ((column + 1) % 3)
+    return row * 3 + ((column + 2) % 3)
+  elseif direction == "down" or direction == "up" then
+    return ((row + 1) % 2) * 3 + column
   end
   return cursor
 end
@@ -157,6 +198,7 @@ end
 ---@class ConfigureController.Options
 ---@field state table<string, unknown> the durable companion owner
 ---@field assets table<string, unknown> the borrowed compiled asset family
+---@field labels table<string, string> the CHANGE/QUIT menu labels in message-bank order
 ---@field effect fun(sequence: string)? source UI sound effect boundary
 
 ---@param opts ConfigureController.Options
@@ -170,6 +212,14 @@ function ConfigureController.new(opts)
     "the setup card requires the durable companion owner"
   )
   assert(type(opts.assets) == "table", "the setup card requires its compiled asset family")
+  assert(
+    type(opts.labels) == "table"
+      and type(opts.labels.change) == "string"
+      and opts.labels.change ~= ""
+      and type(opts.labels.quit) == "string"
+      and opts.labels.quit ~= "",
+    "the setup card names its CHANGE/QUIT menu labels"
+  )
   assert(opts.effect == nil or type(opts.effect) == "function", "the setup sound boundary must be a function")
   local preferences = opts.state:readPreferences()
   assert(type(preferences) == "table", "the setup card reads its saved preferences")
@@ -182,8 +232,10 @@ function ConfigureController.new(opts)
   return setmetatable({
     _state = opts.state,
     _assets = opts.assets,
+    _labels = { change = opts.labels.change, quit = opts.labels.quit },
     _effect = opts.effect,
     _cursor = cursor,
+    _menuCursor = 0,
     _menuOpen = false,
     _disposed = false,
   }, ConfigureController)
@@ -194,10 +246,35 @@ function ConfigureController:_unlocked()
   return sourceSkins(self._assets --[[@as table<string, unknown>]])
 end
 
+-- The source UI tones on the setup card: cursor motion, menu
+-- decisions, and cancellation.
+local CURSOR_SOUND = "SEQ_SE_GS_GEARCURSOR"
+local DECIDE_SOUND = "SEQ_SE_GS_GEARDECIDE"
+local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
+
+---@param sequence string
+function ConfigureController:_play(sequence)
+  if self._effect ~= nil then
+    self._effect(sequence)
+  end
+end
+
+-- Opens the context menu over the focused cell: the cursor restarts on
+-- CHANGE, matching the source spawn.
+function ConfigureController:_openMenu()
+  self._menuCursor = 0
+  self._menuOpen = true
+  self:_play(DECIDE_SOUND)
+end
+
+-- Chooses the focused menu option: CHANGE commits the focused skin,
+-- QUIT returns without writing.
+
 -- One fixed tick: directional input walks the six grid positions while no
--- menu is open; confirming an unlocked cell opens its context menu and
--- confirming the menu commits exactly once; cancelling closes the menu and
--- writes nothing; pointer taps on a cell move the cursor.
+-- menu is open; confirming or tapping an unlocked cell opens its CHANGE/
+-- QUIT context menu; confirming CHANGE commits exactly once while QUIT,
+-- cancelling, and outside taps close it without writing; every motion
+-- and decision plays its source tone through the sound boundary.
 ---@param uiInput table[]
 function ConfigureController:updateFixed(uiInput)
   assert(not self._disposed, "a disposed setup card steps nothing")
@@ -212,20 +289,49 @@ end
 ---@param event table<string, unknown>
 function ConfigureController:_handle(event)
   if event.type == "navigate" and type(event.direction) == "string" then
-    if not self._menuOpen then
-      self._cursor = stepCursor(self._cursor, event.direction)
+    if self._menuOpen then
+      if event.direction == "up" or event.direction == "down" then
+        self._menuCursor = (self._menuCursor + 1) % 2
+        self:_play(CURSOR_SOUND)
+      end
+    else
+      local moved = stepCursor(self._cursor, event.direction)
+      if moved ~= self._cursor then
+        self._cursor = moved
+        self:_play(CURSOR_SOUND)
+      end
     end
   elseif event.type == "confirm" then
     if self._menuOpen then
-      self._state:setPreference("skin", self._cursor)
+      if self._menuCursor == 0 then
+        self._state:setPreference("skin", self._cursor)
+        self:_play(DECIDE_SOUND)
+      end
       self._menuOpen = false
     elseif isUnlocked(self:_unlocked(), self._cursor) then
-      self._menuOpen = true
+      self:_openMenu()
     end
   elseif event.type == "cancel" then
-    self._menuOpen = false
+    if self._menuOpen then
+      self._menuOpen = false
+      self:_play(CANCEL_SOUND)
+    end
   elseif event.type == "pointer_down" and type(event.x) == "number" and type(event.y) == "number" then
-    if not self._menuOpen then
+    if self._menuOpen then
+      local menu = menuRect(self._cursor, self._labels)
+      for index = 0, 1 do
+        local row = menuRowRect(menu, index)
+        if event.x >= row.x and event.x < row.x + row.width and event.y >= row.y and event.y < row.y + row.height then
+          self._menuCursor = index
+          if index == 0 then
+            self._state:setPreference("skin", self._cursor)
+            self:_play(DECIDE_SOUND)
+          end
+          self._menuOpen = false
+          return
+        end
+      end
+    else
       for skin = 0, 5 do
         local rect = cellRect(skin)
         if
@@ -234,7 +340,14 @@ function ConfigureController:_handle(event)
           and event.y >= rect.y
           and event.y < rect.y + rect.height
         then
-          self._cursor = skin
+          -- A tap on a locked cell settles nothing and never moves the
+          -- cursor; a tap on an unlocked cell focuses it and opens its
+          -- menu at once, matching the source touch path.
+          if isUnlocked(self:_unlocked(), skin) then
+            self._cursor = skin
+            self:_openMenu()
+          end
+          return
         end
       end
     end
@@ -243,8 +356,9 @@ end
 
 -- The detached selection view: all six fixed thumbnail cells at their
 -- source rectangles, the semantic selected skin, and, while the menu is
--- open, the window rectangle plus the exact spotlight coverage. Fresh
--- tables per call.
+-- open, the per-skin window rectangle, its CHANGE/QUIT options with the
+-- focused option, plus the exact spotlight coverage. Fresh tables per
+-- call.
 ---@return table<string, unknown>
 function ConfigureController:view()
   local thumbnails = {}
@@ -255,11 +369,16 @@ function ConfigureController:view()
     thumbnails = thumbnails,
     selectedSkin = self._cursor,
     menu = nil,
+    menuOptions = nil,
     spotlight = nil,
   }
   if self._menuOpen then
-    local menu = copyRect(MENU_RECT)
+    local menu = menuRect(self._cursor, self._labels)
     out.menu = menu
+    out.menuOptions = {
+      labels = { self._labels.change, self._labels.quit },
+      cursor = self._menuCursor,
+    }
     out.spotlight = spotlightRects(menu, cellRect(self._cursor))
   end
   return out

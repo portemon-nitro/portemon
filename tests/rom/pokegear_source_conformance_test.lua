@@ -64,6 +64,30 @@ local function openArchive(romFs, path)
   return assert(archive)
 end
 
+-- Source OBJ sprite sets behind the phone and setup cards: per-sequence
+-- frame counts transcribed from the retail animation resources (phone
+-- card archive a/1/4/6 member 3, setup card archive a/1/4/5 member 3).
+-- The sprite resource descriptors of archive a/1/7/5 bind these members:
+-- phone descriptors 44-47 point at phone archive members 3/2/1/0, setup
+-- descriptors 40-43 at setup archive members 3/2/1/0.
+local PHONE_SPRITE_FRAMES = { 2, 2, 2, 2, 2, 2, 1, 1, 3 }
+local CONFIGURE_SPRITE_FRAMES = { 2, 2, 2, 2, 1, 1, 1, 1, 2 }
+
+---@param sequences table
+---@param expected integer[]
+---@param label string
+local function checkSpriteSequences(sequences, expected, label)
+  Assert.equal(#sequences, #expected, label .. " compiles all nine source animations")
+  for index, frames in ipairs(expected) do
+    local clip = assert(sequences[index], label .. " sequence " .. index .. " is published")
+    Assert.equal(#clip.frames, frames, label .. " sequence " .. index .. " keeps its source frame count")
+    for _, frame in ipairs(clip.frames) do
+      Assert.isTrue(type(frame.image) == "string", label .. " frames stage their generated image")
+      Assert.isTrue(type(frame.width) == "number" and frame.width > 0, label .. " frames carry dimensions")
+    end
+  end
+end
+
 ---@param context table?
 ---@param versionId string
 local function requireHeartGold(context, versionId)
@@ -204,6 +228,28 @@ function T.heartgold_region_map_carries_the_source_location_and_flypoint_tables(
     height = 2,
     overlay = { srcX = 0, srcY = 0, destX = 0, destY = 0, width = 0, height = 0 },
   }, versionId .. " keeps a flypoint whose warp map differs from its name map")
+end
+
+-- The phone and setup cards compile their source OBJ sprite sets from
+-- their card archives with the map sprite shape: named sets of ordered
+-- animations with staged frame images.
+function T.heartgold_phone_and_setup_compile_their_source_sprite_sets(romFs, versionId, context)
+  requireHeartGold(context, versionId)
+  local PokegearAssetCompiler = require("romdump.src.digest.ui.PokegearAssetCompiler")
+  local compiled = assert(PokegearAssetCompiler.compile(romFs, versionId), versionId .. " must compile the family")
+  local manifest = assert(compiled.manifest, versionId .. " publishes its manifest")
+  local phone = assert(manifest.phone.sprites, versionId .. " publishes its phone sprites")
+  checkSpriteSequences(
+    assert(phone.phone, versionId .. " publishes its phone sprite set"),
+    PHONE_SPRITE_FRAMES,
+    versionId .. " phone sprites"
+  )
+  local configure = assert(manifest.configure.sprites, versionId .. " publishes its setup sprites")
+  checkSpriteSequences(
+    assert(configure.configure, versionId .. " publishes its setup sprite set"),
+    CONFIGURE_SPRITE_FRAMES,
+    versionId .. " setup sprites"
+  )
 end
 
 -- SoulSilver parity waits on owned SoulSilver bytes: reported as an

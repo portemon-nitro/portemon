@@ -27,6 +27,7 @@ local MapProjection = require("game.hgss.src.pokegear.MapProjection")
 ---@field _flyDestination integer? the highlighted flypoint index
 ---@field _menu table<string, unknown>? the open Fly/Quit menu
 ---@field _touch { held: boolean, x: number, y: number }
+---@field _effect fun(sequence: string)? source UI sound effect boundary
 ---@field _touchNew boolean
 ---@field _patches table<integer, table<string, integer>>
 ---@field _terminal table<string, unknown>?
@@ -61,6 +62,7 @@ end
 ---@field assets table<string, unknown> the borrowed compiled asset family
 ---@field facts table<string, unknown> flypointVisited(index)
 ---@field messages table<string, unknown>? text resolvers: region(name), landmark(entry), flavor(entry), flyPrompt(landmark), close(), menuLabel(index)
+---@field effect fun(sequence: string)? source UI sound effect boundary
 
 ---@param opts FlyMapController.Options
 ---@return FlyMapController
@@ -76,6 +78,7 @@ function FlyMapController.new(opts)
     type(opts.facts) == "table" and type(opts.facts.flypointVisited) == "function",
     "the fly selector reads its flags"
   )
+  assert(opts.effect == nil or type(opts.effect) == "function", "the fly sound boundary must be a function")
   local catalog = opts.assets.catalog
   assert(type(catalog) == "table" and type(catalog.regionMap) == "table", "the fly selector borrows its source tables")
   local destinations = {}
@@ -121,6 +124,7 @@ function FlyMapController.new(opts)
     _region = MapLocations.regionOf(matrix.x, matrix.y),
     _world = MapWorld.new({ kind = "fly", unlock = unlock, matrix = matrix }),
     _touch = { held = false, x = 0, y = 0 },
+    _effect = opts.effect,
     _touchNew = false,
     _terminal = nil,
     _disposed = false,
@@ -203,6 +207,21 @@ function FlyMapController:_keyFor(flypoint)
   return nil
 end
 
+-- The source UI tones on the fly card: opening the destination menu,
+-- cancelling, and touching the map. Menu choices settle silently behind
+-- the opening tone, and gated input never reaches these handlers.
+local DECIDE_SOUND = "SEQ_SE_GS_GEARDECIDE"
+local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
+local MAP_TOUCH_SOUND = "SEQ_SE_GS_GEARMAPTOUCH"
+
+---@param self FlyMapController
+---@param sequence string
+local function playEffect(self, sequence)
+  if self._effect ~= nil then
+    self._effect(sequence)
+  end
+end
+
 function FlyMapController:_openMenu()
   local flypoint = self:_confirmable()
   if flypoint == nil then
@@ -215,6 +234,7 @@ function FlyMapController:_openMenu()
     cursor = 0,
     x = (column >= 8 and column <= 15) and 3 or 11,
   }
+  playEffect(self, DECIDE_SOUND)
 end
 
 ---@param choice integer zero-based menu entry
@@ -248,6 +268,10 @@ function FlyMapController:_pointer(event)
   end
 end
 
+-- Fresh touches resolve on rect-hit alone: the source MAIN_1 pixel gate
+-- only trims a 1-2px chrome border inside these rects, and no
+-- input-time framebuffer owner exists to sample, so the rects stay the
+-- intentional approximation.
 function FlyMapController:_touchDown()
   local world = self._world
   local touch = self._touch
@@ -265,15 +289,18 @@ function FlyMapController:_touchDown()
         return
       end
     end
-    self._menu = nil
+    -- Taps outside the menu frame settle nothing: the source list menu
+    -- reports no input there, so the menu stays open for a real choice.
     return
   end
   if inRect(CLOSE_RECT, touch.x, touch.y) then
     self._terminal = { kind = "cancelled", operationId = self._operationId }
+    playEffect(self, CANCEL_SOUND)
   elseif inRect(MAP_RECT, touch.x, touch.y) then
     local x, y = world:cellFromTouch(touch.x, touch.y)
     world:selectCell(x, y)
     self:_select()
+    playEffect(self, MAP_TOUCH_SOUND)
     if self._mode == "fly" and self:_confirmable() ~= nil then
       self:_openMenu()
       return
@@ -283,8 +310,9 @@ function FlyMapController:_touchDown()
 end
 
 -- One fixed tick: input settles at most one terminal result, an open menu
--- owns its keys, and the world tween advances. A settled selector ignores
--- further input, so repeats never publish a second operation.
+-- owns its keys, keys and new touches wait while the cursor tween or a
+-- touch drag owns the world, and the world tween advances. A settled
+-- selector ignores further input, so repeats never publish a second operation.
 ---@param events table<integer, table<string, unknown>>
 function FlyMapController:updateFixed(events)
   assert(not self._disposed, "a disposed fly selector steps nothing")
@@ -295,13 +323,29 @@ function FlyMapController:updateFixed(events)
   local world = self._world
   local up, down, left, right = false, false, false, false
   self._touchNew = false
+  -- The source ignores keys and new touches while the cursor tween runs
+  -- and while a touch drag owns the map (fly_map.c gates keys on
+  -- draggingMarking/cursorMoving and new touches while dragging; the
+  -- drag and the two-tick tween each settle first), so a menu never
+  -- opens and nothing cancels mid-motion. Pointer tracking still runs
+  -- while gated so the drag anchor never goes stale.
+  local gated = world:dragging() or world:busy()
   for _, event in ipairs(events) do
+    if self._terminal ~= nil then
+      return
+    end
     local kind = event.type
-    if kind == "cancel" then
+    if kind == "pointer_down" or kind == "pointer_move" or kind == "pointer_up" or kind == "pointer_cancel" then
+      self:_pointer(event)
+    elseif gated then
+      -- ignored until the tween or drag settles
+    elseif kind == "cancel" then
       if self._menu ~= nil then
         self._menu = nil
+        playEffect(self, CANCEL_SOUND)
       else
         self._terminal = { kind = "cancelled", operationId = self._operationId }
+        playEffect(self, CANCEL_SOUND)
         return
       end
     elseif kind == "confirm" then
@@ -323,11 +367,18 @@ function FlyMapController:updateFixed(events)
         left = left or direction == "left"
         right = right or direction == "right"
       end
-    elseif kind == "pointer_down" or kind == "pointer_move" or kind == "pointer_up" or kind == "pointer_cancel" then
-      self:_pointer(event)
     end
   end
   if self._terminal ~= nil then
+    return
+  end
+  if world:dragging() then
+    world:stepDrag(self._touch.held, self._touch.x, self._touch.y)
+    world:tick()
+    return
+  end
+  if world:busy() then
+    world:tick()
     return
   end
   if self._touchNew then
@@ -425,6 +476,23 @@ function FlyMapController:_panel()
   if selection ~= nil and self._mode == "fly" then
     panel.previewFrame = selection.previewBlock ~= 0
     panel.previewBlock = selection.previewBlock ~= 0 and selection.previewBlock - 1 or 0
+    -- The source info pane shares the gear card's marking and rematch
+    -- icon: the readers are optional, so entries without panel owners
+    -- keep the previous bare panel.
+    local rematchOnMap = self._facts.rematchOnMap
+    if type(rematchOnMap) == "function" then
+      panel.battleIcon = rematchOnMap(selection.mapId) == true
+    end
+    local markingFor = self._facts.markingFor
+    if type(markingFor) == "function" and messages ~= nil then
+      local saved = markingFor(selection.mapSymbol)
+      if type(saved) == "table" and type(saved.icons) == "table" and type(saved.words) == "table" then
+        for index = 1, 4 do
+          panel.markers[index] = saved.icons[index] ~= false and saved.icons[index] or nil
+          panel.words[index] = saved.words[index] ~= false and messages.word(saved.words[index]) or nil
+        end
+      end
+    end
   end
   return panel
 end

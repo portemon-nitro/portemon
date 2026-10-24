@@ -1,7 +1,7 @@
 -- The phone card's exact list/call composition: the six-row scroll
 -- viewport with its source slot offsets, the name/class text cells in
--- their own palette combinations, the scroll strip and manual-move
--- arrows, the context window, the call speech/name windows driven by the
+-- their own palette combinations, the selected-row corner frame, the
+-- scroll strip and manual-move arrows, the context window, the call speech/name windows driven by the
 -- conversation view, and the 240x48 panel cells behind the list-to-call
 -- transition. Consumes the controller's detached view and the plan's
 -- resolved image paths only; allocates no images while drawing. Name
@@ -12,6 +12,22 @@
 
 ---@class PokegearPhoneRenderer
 local PokegearPhoneRenderer = {}
+
+local PokegearMapLayers = require("libs.hgss.src.presentation.PokegearMapLayers")
+
+local drawSprite = PokegearMapLayers.drawSprite
+
+-- The compiled phone OBJ set (one-based compiled sequences): the scroll
+-- arrows, the four selected-row corners in template order (top-left,
+-- bottom-left, top-right, bottom-right), and the manual-move chevrons
+-- (plain, then selected). Sprite positions are source surface centers;
+-- the compiled center anchors land them exactly like the map objects.
+local PHONE_SET = "phone"
+local SCROLL_UP_SEQUENCE = 1
+local SCROLL_DOWN_SEQUENCE = 2
+local CORNER_SEQUENCES = { 3, 4, 5, 6 }
+local MOVE_SEQUENCE = 7
+local MOVE_SELECTED_SEQUENCE = 8
 
 local SURFACE_WIDTH = 256
 local SURFACE_HEIGHT = 192
@@ -74,6 +90,12 @@ local PANEL_OPEN_CELL = 11
 
 local MENU_RECT = { x = 128, y = 32, width = 120, height = 16 }
 local MENU_ROW_HEIGHT = 14
+
+-- The context window at its source frame with its options and cursor
+-- highlight: sixteen-pixel text rows on the shared twenty-four pitch.
+local MENU_FRAME_ROW_PITCH = 24
+local MENU_FRAME_TEXT_TOP = 8
+local MENU_FRAME_TEXT_HEIGHT = 16
 
 local NAME_WINDOW = { x = 32, y = 128, width = 72, height = 16 }
 local SPEECH_WINDOW = { x = 16, y = 152, width = 216, height = 32 }
@@ -177,15 +199,48 @@ local function drawPaletteText(text, palette, line, x, y, foreground, shadow, ba
   })
 end
 
+-- Draws the four compiled corner sprites framing the selected row at
+-- the source sprite positions, and the compiled scroll arrows above and
+-- below the list while paging is available.
+---@param graphics love.graphics
+---@param images table<string, unknown>
+---@param list table<string, unknown>
+---@param sprites table<string, unknown>
+local function drawListChrome(graphics, images, list, sprites)
+  local selected = list.selected --[[@as integer]]
+  local scrollOffset = list.scrollOffset --[[@as integer]]
+  local total = list.total --[[@as integer?]]
+  graphics.setColor(1, 1, 1, 1)
+  if list.cursorVisible == true then
+    local slot = selected - scrollOffset
+    local top = slot * ROW_HEIGHT + 8
+    local corners = { { 16, top }, { 16, top + 22 }, { 224, top }, { 224, top + 22 } }
+    for index, point in ipairs(corners) do
+      drawSprite(graphics, images, sprites, PHONE_SET, CORNER_SEQUENCES[index], 1, point[1], point[2])
+    end
+  end
+  if scrollOffset > 0 then
+    drawSprite(graphics, images, sprites, PHONE_SET, SCROLL_UP_SEQUENCE, 1, 124, 8)
+  end
+  if type(total) == "number" and scrollOffset + VISIBLE_ROWS < total then
+    drawSprite(graphics, images, sprites, PHONE_SET, SCROLL_DOWN_SEQUENCE, 1, 124, 156)
+  end
+  graphics.setColor(1, 1, 1, 1)
+end
+
 -- Draws the six-row viewport the way the source prints its window bitmap:
 -- per row the band fill, the name and class cells, the marker dots, then
 -- the name and class text in the selected or deselected palette colors.
--- The manual-move arrows replace the left marker while a move is armed.
+-- Manual move mode swaps the corner frame for per-row move chevrons. A
+-- running slide displaces every row band by the view's pixel offset while
+-- the alternating colors follow the settled viewport's first color.
 ---@param graphics love.graphics
+---@param images table<string, unknown>
 ---@param text table<string, unknown>?
 ---@param list table<string, unknown>
+---@param sprites table<string, unknown>
 ---@param palette table<integer, table<string, number>>
-local function drawList(graphics, text, list, palette)
+local function drawList(graphics, images, text, list, sprites, palette)
   local rows = list.rows --[[@as table[] ]]
   local selected = list.selected --[[@as integer]]
   local scrollOffset = list.scrollOffset --[[@as integer]]
@@ -193,11 +248,19 @@ local function drawList(graphics, text, list, palette)
   assert(type(rows) == "table", "the list projection carries its rows")
   assert(type(selected) == "number", "the list projection carries its selection")
   assert(type(scrollOffset) == "number", "the list projection carries its scroll offset")
+  local offset = list.scrollPixels
+  if type(offset) ~= "number" then
+    offset = 0
+  end
+  local firstBg = list.firstBgColor
+  if type(firstBg) ~= "number" then
+    firstBg = scrollOffset % 2
+  end
   for slot = 0, VISIBLE_ROWS - 1 do
     local row = rows[slot + 1]
     local absolute = scrollOffset + slot
-    local colors = ROW_COLORS[(absolute % 2) + 1]
-    local top = LIST_Y + slot * ROW_HEIGHT
+    local colors = ROW_COLORS[((firstBg + slot) % 2) + 1]
+    local top = LIST_Y + slot * ROW_HEIGHT + offset
     fillPalette(graphics, palette, colors.fill1, LIST_X, top, ROW_WIDTH, ROW_HEIGHT)
     fillPalette(graphics, palette, colors.bg1, LIST_X + NAME_CELL_X, top, NAME_CELL_WIDTH, CELL_HEIGHT)
     fillPalette(graphics, palette, colors.bg2, LIST_X + CLASS_CELL_X, top, CLASS_CELL_WIDTH, CELL_HEIGHT)
@@ -233,16 +296,14 @@ local function drawList(graphics, text, list, palette)
         )
       end
       if manual then
-        if isSelected then
-          graphics.setColor(0.95, 0.80, 0.20, 1)
-        else
-          graphics.setColor(0.45, 0.45, 0.50, 1)
-        end
-        graphics.rectangle("fill", 0, top + 8, 8, 8)
+        graphics.setColor(1, 1, 1, 1)
+        local sequence = isSelected and MOVE_SELECTED_SEQUENCE or MOVE_SEQUENCE
+        drawSprite(graphics, images, sprites, PHONE_SET, sequence, 1, 12, top + 12)
       end
     end
   end
   graphics.setColor(1, 1, 1, 1)
+  drawListChrome(graphics, images, list, sprites)
 end
 
 -- Draws the context window with its options and cursor highlight.
@@ -256,17 +317,31 @@ local function drawMenu(graphics, text, menu)
   if type(cursor) ~= "number" then
     cursor = 0
   end
-  local height = MENU_RECT.height + #options * MENU_ROW_HEIGHT
-  fillRect(graphics, { 0.10, 0.10, 0.14 }, MENU_RECT.x, MENU_RECT.y, MENU_RECT.width, height)
+  local frame = menu.frame --[[@as table<string, integer>?]]
+  local x, y, width, height = MENU_RECT.x, MENU_RECT.y, MENU_RECT.width, MENU_RECT.height
+  if type(frame) == "table" then
+    x = frame.x or x
+    y = frame.y or y
+    width = frame.width or width
+    height = frame.height or height
+  else
+    height = height + #options * MENU_ROW_HEIGHT
+  end
+  fillRect(graphics, { 0.10, 0.10, 0.14 }, x, y, width, height)
   graphics.setColor(1, 1, 1, 1)
-  graphics.rectangle("line", MENU_RECT.x + 0.5, MENU_RECT.y + 0.5, MENU_RECT.width - 1, height - 1)
+  graphics.rectangle("line", x + 0.5, y + 0.5, width - 1, height - 1)
+  local pitch = MENU_ROW_HEIGHT
+  local textHeight = MENU_ROW_HEIGHT
+  if type(frame) == "table" then
+    pitch, textHeight = MENU_FRAME_ROW_PITCH, MENU_FRAME_TEXT_HEIGHT
+  end
   for index, option in ipairs(options) do
-    local y = MENU_RECT.y + 8 + (index - 1) * MENU_ROW_HEIGHT
+    local rowY = y + MENU_FRAME_TEXT_TOP + (index - 1) * pitch
     if index - 1 == cursor then
-      fillRect(graphics, SELECTED_NAME_FILL, MENU_RECT.x + 4, y - 2, MENU_RECT.width - 8, MENU_ROW_HEIGHT)
+      fillRect(graphics, SELECTED_NAME_FILL, x + 4, rowY - 2, width - 8, textHeight)
     end
     graphics.setColor(1, 1, 1, 1)
-    drawLine(text, tostring(option), MENU_RECT.x + 8, y)
+    drawLine(text, tostring(option), x + 8, rowY)
   end
   graphics.setColor(1, 1, 1, 1)
 end
@@ -346,6 +421,25 @@ local function drawPanel(graphics, images, cell, content)
   graphics.setColor(1, 1, 1, 1)
 end
 
+-- The bottom tooltip bar: the source centres the menu prompt in the
+-- lower window in the list palette's 3/2/5 combination.
+---@param text table<string, unknown>?
+---@param palette table<integer, table<string, number>>
+---@param line string
+local function drawTooltip(text, palette, line)
+  local x = 8
+  if
+    text ~= nil and type((text --[[@as table<string, unknown>]]).textWidth) == "function"
+  then
+    local measure = (text --[[@as table<string, unknown>]]).textWidth --[[@as fun(self: table, line: string): number]]
+    local ok, width = pcall(measure, text, line)
+    if ok and type(width) == "number" then
+      x = math.max(0, math.floor((SURFACE_WIDTH - width) / 2))
+    end
+  end
+  drawPaletteText(text, palette, line, x, 168, 3, 2, 5)
+end
+
 -- Draws the published phone surface with borrowed collaborators: the
 -- per-skin background plane, the clipped contact list with its tooltip
 -- strip, the context window while one is open, the conversation windows
@@ -381,8 +475,10 @@ function PokegearPhoneRenderer.draw(resources, view, content)
   if type(list) == "table" then
     drawList(
       graphics --[[@as love.graphics]],
+      images --[[@as table<string, unknown>]],
       text --[[@as table<string, unknown>?]],
       list --[[@as table<string, unknown>]],
+      assert(content.sprites, "the phone plan resolves its sprite set") --[[@as table<string, unknown>]],
       assert(content.listPalette, "the phone plan resolves its list palette") --[[@as table]]
     )
   end
@@ -408,6 +504,14 @@ function PokegearPhoneRenderer.draw(resources, view, content)
       graphics --[[@as love.graphics]],
       text --[[@as table<string, unknown>?]],
       call --[[@as table<string, unknown>]]
+    )
+  end
+  local tooltip = view.tooltip
+  if type(tooltip) == "string" and tooltip ~= "" and type(list) == "table" then
+    drawTooltip(
+      text --[[@as table<string, unknown>?]],
+      assert(content.listPalette, "the phone plan resolves its list palette") --[[@as table]],
+      tooltip
     )
   end
   (graphics --[[@as love.graphics]]).setColor(1, 1, 1, 1)

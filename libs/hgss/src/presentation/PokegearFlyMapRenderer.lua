@@ -203,9 +203,35 @@ function PokegearFlyMapRenderer.renderInformation(resources, child, plan)
     printText(text, panel.region --[[@as string]], 10, 68 + slide, colors.upper --[[@as table]])
   end
   if panel.landmark ~= nil then
-    printText(text, panel.landmark --[[@as string]], 24, (town and 97 or 88) + slide, colors.upper --[[@as table]])
+    printText(text, panel.landmark --[[@as string]], 24, (town and 89 or 88) + slide, colors.upper --[[@as table]])
     if panel.flavor ~= nil then
       printText(text, panel.flavor --[[@as string]], 8, 112, colors.upper --[[@as table]])
+    end
+  end
+  -- The source info pane shares the gear card's marking rows and
+  -- rematch icon at the same window tiles; town mode prints neither.
+  if not town then
+    local words = panel.words --[[@as table<integer, string>]]
+    if type(words) == "table" then
+      for index = 1, 4 do
+        if words[index] ~= nil then
+          local column, row = (index - 1) % 2, math.floor((index - 1) / 2)
+          printText(text, words[index], 44 + column * 104, 146 + row * 21, colors.upperWord --[[@as table]])
+        end
+      end
+    end
+    local sprites = content.sprites --[[@as table<string, table>?]]
+    local markers = panel.markers --[[@as table<integer, integer>?]]
+    if type(sprites) == "table" and type(markers) == "table" then
+      for index = 1, 4 do
+        if markers[index] ~= nil then
+          local column, row = (index - 1) % 2, math.floor((index - 1) / 2)
+          drawSprite(graphics, images, sprites, "markers", 1, markers[index], 32 + column * 104, 155 + row * 21)
+        end
+      end
+      if panel.battleIcon == true then
+        drawSprite(graphics, images, sprites, "markers", 2, 1, 16, 104)
+      end
     end
   end
   graphics.setColor(1, 1, 1, 1)

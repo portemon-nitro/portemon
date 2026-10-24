@@ -39,6 +39,7 @@ local ScriptErrors = require("libs.script.src.errors")
 ---@field _unlock integer
 ---@field _rematch table<integer, boolean> rematch and gift facts sampled per map
 ---@field _phoneProjection fun(location: string): table<integer, table<string, unknown>>
+---@field _effect fun(sequence: string)? source UI sound effect boundary
 ---@field _touchNew boolean
 ---@field _patches table<integer, table<string, integer>>
 ---@field _roamers table<integer, table<string, unknown>>
@@ -91,6 +92,7 @@ end
 ---@field roamerProjection table<integer, table<string, unknown>> the creation-time roamer snapshot
 ---@field wordEntry table<string, unknown> the narrow word-selector handoff
 ---@field switched boolean? true when the card opens from another tab
+---@field effect fun(sequence: string)? source UI sound effect boundary
 
 ---@param opts MapController.Options
 ---@return MapController
@@ -126,6 +128,7 @@ function MapController.new(opts)
   for _, method in ipairs({ "open", "step", "result", "cancel" }) do
     assert(type(wordEntry[method]) == "function", "the word-entry handoff needs " .. method)
   end
+  assert(opts.effect == nil or type(opts.effect) == "function", "the region map sound boundary must be a function")
   local catalog = opts.assets.catalog
   assert(type(catalog) == "table" and type(catalog.regionMap) == "table", "the region map borrows its source tables")
   local unlock = math.floor(clamp(context.unlockLevel, 0, 2))
@@ -143,6 +146,7 @@ function MapController.new(opts)
     _touch = { held = false, x = 0, y = 0 },
     _markingsPressed = false,
     _wordEntry = wordEntry,
+    _effect = opts.effect,
     _consumed = {},
     _operations = 0,
     _ticks = 0,
@@ -308,6 +312,24 @@ function MapController:_findRematchOrGift(mapId)
   return false
 end
 
+-- The source UI tones on the gear map card: opening the editor,
+-- touching the map, zooming with its directional tones, and the mode
+-- change. B in map mode belongs to the shell's app-switch zone, and Y
+-- tab switches belong to the shell chrome, so neither plays here.
+local DECIDE_SOUND = "SEQ_SE_GS_GEARDECIDE"
+local CURSOR_SOUND = "SEQ_SE_GS_GEARCURSOR"
+local MAP_TOUCH_SOUND = "SEQ_SE_GS_GEARMAPTOUCH"
+local ZOOM_SOUND = "SEQ_SE_GS_GEARXBUTTON"
+local UNZOOM_SOUND = "SEQ_SE_GS_XBUTTON_SYUKUSHOU"
+
+---@param self MapController
+---@param sequence string
+local function playEffect(self, sequence)
+  if self._effect ~= nil then
+    self._effect(sequence)
+  end
+end
+
 function MapController:_beginMarking()
   if not self:_mayMark() or self._world:busy() then
     return
@@ -315,6 +337,7 @@ function MapController:_beginMarking()
   self._markingsPressed = true
   self._session = self._world:snapshot()
   self._transition = { kind = "enter", t = 0 }
+  playEffect(self, DECIDE_SOUND)
 end
 
 function MapController:_toggleZoom()
@@ -323,6 +346,11 @@ function MapController:_toggleZoom()
   end
   self._world:toggleZoom()
   self._state:setPreference("mapZoomed", self._world.zoomed)
+  if self._world.zoomed then
+    playEffect(self, ZOOM_SOUND)
+  else
+    playEffect(self, UNZOOM_SOUND)
+  end
 end
 
 ---@param event table<string, unknown>
@@ -344,7 +372,10 @@ function MapController:_pointer(event)
 end
 
 -- A fresh touch: the markings or zoom button, or a map selection that
--- begins a drag (source ov101_021EBA44).
+-- begins a drag (source ov101_021EBA44). The source refines rect hits
+-- with a MAIN_1 framebuffer pixel check; the rects already bound the
+-- openings to a 1-2px border, and no input-time framebuffer owner exists
+-- to sample, so rect-hit stays the intentional approximation.
 function MapController:_touchDown()
   local world = self._world
   local touch = self._touch
@@ -362,6 +393,7 @@ function MapController:_touchDown()
     world:selectCell(x, y)
     self._selection = self._locations:select(x, y)
     world:beginDrag(touch.x, touch.y)
+    playEffect(self, MAP_TOUCH_SOUND)
   end
 end
 
@@ -439,8 +471,10 @@ function MapController:_advanceTransition()
     self._marking = MarkingMode.new({
       marking = self:_savedMarking(self._selection.mapSymbol --[[@as string]]),
       wordSlot = transition.wordSlot,
+      effect = self._effect,
     })
     self._mode = "marking"
+    playEffect(self, CURSOR_SOUND)
   elseif transition.kind == "exit" and frame.content == "map" and self._mode == "marking" then
     self._mode = "map"
     self._marking = nil
@@ -449,6 +483,7 @@ function MapController:_advanceTransition()
       self._world:restore(self._session)
       self._session = nil
     end
+    playEffect(self, CURSOR_SOUND)
   end
   if frame.done == true then
     self._transition = nil
@@ -583,7 +618,9 @@ function MapController:updateFixed(events)
       return
     end
   end
-  if self._touchNew then
+  -- A fresh touch waits while the cursor or zoom tween runs: the source
+  -- ignores new touches until the tween settles.
+  if self._touchNew and not world:busy() then
     self:_touchDown()
     if self._transition ~= nil then
       return

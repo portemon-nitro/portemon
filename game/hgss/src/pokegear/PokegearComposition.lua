@@ -448,6 +448,14 @@ local function cardFactories(runtime, shared)
   end
   local function map(context)
     local MapController = require("game.hgss.src.pokegear.MapController")
+    local mapPlay = nil
+    if type(audio) == "table" and type(audio.play) == "function" then
+      local playAudio = audio.play --[[@as fun(self: table<string, unknown>, sequence: unknown)]]
+      local function playMapEffect(sequence)
+        playAudio(audio, sequence)
+      end
+      mapPlay = playMapEffect
+    end
     local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
     local phoneEngine = PhoneCall.new({
       state = state,
@@ -474,6 +482,7 @@ local function cardFactories(runtime, shared)
       phoneProjection = phoneProjection,
       roamerProjection = roamerSnapshot(runtime),
       wordEntry = PokegearComposition.wordEntryHandoff(runtime, assets),
+      effect = mapPlay,
     })
   end
   local function radio(_)
@@ -505,6 +514,14 @@ local function cardFactories(runtime, shared)
     })
     local facts = PokegearComposition.radioFacts(runtime, catalog)
     local PokegearInterface = require("game.hgss.src.pokegear.PokegearInterface")
+    local radioPlay = nil
+    if type(audio) == "table" and type(audio.play) == "function" then
+      local playAudio = audio.play --[[@as fun(self: table<string, unknown>, sequence: unknown)]]
+      local function playRadioEffect(sequence)
+        playAudio(audio, sequence)
+      end
+      radioPlay = playRadioEffect
+    end
     return RadioController.new({
       state = state,
       catalog = catalog,
@@ -513,6 +530,7 @@ local function cardFactories(runtime, shared)
       presentation = PokegearInterface.defaults(),
       map = facts.map,
       flags = facts.flags,
+      effect = radioPlay,
     })
   end
   local function configure(_)
@@ -525,9 +543,31 @@ local function cardFactories(runtime, shared)
       end
       play = playConfigureEffect
     end
+    -- The CHANGE/QUIT context labels resolve through message bank 270,
+    -- following the region-map bank pattern: entries 0 and 1 in order.
+    local provider = checkOwner(runtime.messageProvider, "the live message provider")
+    local acquire = provider.acquireBank --[[@as fun(self: table<string, unknown>, bank: integer): table<string, unknown>?, Errors.Error?]]
+    local getMessage = provider.get --[[@as fun(self: table<string, unknown>, bank: integer, id: integer): table<string, unknown>?]]
+    local release = provider.releaseBank --[[@as fun(self: table<string, unknown>, bank: integer)]]
+    assert(acquire(provider, 270), "the setup menu text bank is available")
+    local changeEntry = getMessage(provider, 270, 0)
+    local quitEntry = getMessage(provider, 270, 1)
+    release(provider, 270)
+    assert(
+      type(changeEntry) == "table" and type((changeEntry --[[@as table<string, unknown>]]).text) == "string",
+      "the setup menu reads its CHANGE label"
+    )
+    assert(
+      type(quitEntry) == "table" and type((quitEntry --[[@as table<string, unknown>]]).text) == "string",
+      "the setup menu reads its QUIT label"
+    )
     return ConfigureController.new({
       state = state,
       assets = assets,
+      labels = {
+        change = (changeEntry --[[@as table<string, unknown>]]).text --[[@as string]],
+        quit = (quitEntry --[[@as table<string, unknown>]]).text --[[@as string]],
+      },
       effect = play,
     })
   end
@@ -568,6 +608,61 @@ function PokegearComposition.compose(runtime, owners)
   local function hostMapOwners()
     return regionMapOwners(runtime)
   end
+  -- The fly and town entries share the gear card's information pane:
+  -- saved markings read through the durable companion owner, and the
+  -- rematch/gift icon resolves through the shared phone projection.
+  -- Both stay lazy: the conversation engine builds on first use, so an
+  -- unopened map costs nothing.
+  local panelEngine = nil
+  local function panelPhoneEngine()
+    if panelEngine == nil then
+      local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+      panelEngine = PhoneCall.new({
+        state = state,
+        catalog = catalog,
+        messages = messages,
+        world = world,
+        audio = audio,
+        random = random,
+      })
+    end
+    return panelEngine
+  end
+  local function markingFor(symbol)
+    if type(symbol) ~= "string" then
+      return nil
+    end
+    local bucket = state:capture()
+    local markings = type(bucket) == "table" and bucket.markings or nil
+    local stored = type(markings) == "table" and markings[symbol] or nil
+    if type(stored) ~= "table" then
+      return nil
+    end
+    return stored
+  end
+  local function rematchOnMap(mapId)
+    if type(mapId) ~= "number" then
+      return false
+    end
+    local markers = world.locationMarkers
+    if type(markers) ~= "function" then
+      return false
+    end
+    local places = contactPlaces(catalog)
+    for _, record in ipairs(catalog.locations) do
+      if type(record) == "table" and record.mapRef == mapId and type(record.key) == "string" then
+        local ok, found = pcall(markers, world, record.key, panelPhoneEngine(), places)
+        if ok and type(found) == "table" then
+          for _, marker in ipairs(found) do
+            if type(marker) == "table" and (marker.ready == true or marker.gift ~= nil) then
+              return true
+            end
+          end
+        end
+      end
+    end
+    return false
+  end
   local PokegearScriptHost = require("game.hgss.src.pokegear.PokegearScriptHost")
   local host = PokegearScriptHost.new({
     state = state,
@@ -578,6 +673,7 @@ function PokegearComposition.compose(runtime, owners)
     random = random,
     assets = assets,
     regionMapOwners = hostMapOwners,
+    mapPanel = { markingFor = markingFor, rematchOnMap = rematchOnMap },
   })
 
   local IncomingCalls = require("game.hgss.src.pokegear.IncomingCalls")

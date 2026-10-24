@@ -7,10 +7,17 @@ local Fixture = require("tests.support.PokegearJourneyFixture")
 local PokegearCache = require("libs.assets.src.PokegearCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 
+local DERIVED_ASSETS = {}
+for _, key in ipairs(Fixture.JOURNEY_ASSETS) do
+  DERIVED_ASSETS[#DERIVED_ASSETS + 1] = key
+end
+-- The setup card reads its CHANGE/QUIT context labels from bank 270.
+DERIVED_ASSETS[#DERIVED_ASSETS + 1] = "message-bank:270"
+
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = Fixture.JOURNEY_ASSETS,
+    derivedAssets = DERIVED_ASSETS,
     tags = { "pokegear" },
   },
   tests = {},
@@ -107,9 +114,11 @@ function T.tests.saved_v9_skin_subset_can_select_and_persist_skin_five()
     )
     openConfigure(game)
     Assert.deepEqual(application(game).unlockedSkins, { 0, 1, 2, 3, 4, 5 }, "all six Configure cells are enabled")
-    for _ = 1, 5 do
-      direction(game, "right")
-    end
+    -- Right wraps within its row and down crosses rows, so skin five is
+    -- right, right, down from skin zero.
+    direction(game, "right")
+    direction(game, "right")
+    direction(game, "down")
     confirm(game)
     Assert.isTrue(application(game).child.menuOpen, "skin five opens its normal Configure selection menu")
     confirm(game)

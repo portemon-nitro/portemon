@@ -297,6 +297,7 @@ function PokegearMapFixture.openMap(params)
     roamerProjection = params.roamerProjection or {},
     wordEntry = params.wordEntry or PokegearMapFixture.wordEntry(),
     switched = params.switched,
+    effect = params.effect,
   })
   return { controller = controller, state = state, record = record }
 end

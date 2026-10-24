@@ -57,6 +57,8 @@ local function sourceReferenceBankIds()
   ids[PokegearSources.phoneClassLabels.landmarkFallbackBank] = true
   -- The compiled region map names its places from this bank.
   ids[PokegearSources.regionMapMessageBank] = true
+  -- The setup card reads its CHANGE/QUIT context labels from this bank.
+  ids[PokegearSources.configureMessageBank] = true
   local out = {}
   for bankId in pairs(ids) do
     out[#out + 1] = bankId
@@ -224,6 +226,7 @@ function T.source_references_form_one_sorted_bank_set()
   expected[PokegearSources.phoneClassLabels.landmarkBank] = true
   expected[PokegearSources.phoneClassLabels.landmarkFallbackBank] = true
   expected[PokegearSources.regionMapMessageBank] = true
+  expected[PokegearSources.configureMessageBank] = true
 
   Assert.deepEqual(required, sourceReferenceBankIds())
 

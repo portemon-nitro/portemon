@@ -13,6 +13,7 @@
 
 ---@class MarkingMode
 ---@field _marking MarkingMode.Marking
+---@field _effect fun(sequence: string)? source UI sound effect boundary
 ---@field _group string "main", "pool", or "trash": the active key cursor
 ---@field _mainPos integer zero-based main cursor spec
 ---@field _poolPos integer zero-based pool cursor spec
@@ -90,15 +91,36 @@ function MarkingMode.emptyMarking()
   return { icons = { false, false, false, false }, words = { false, false, false, false } }
 end
 
+-- The source UI tones in marking mode: cursor motion, seal grabs and
+-- stamps, trash drops, and cancellation. Exits close silently here; the
+-- owning controller answers the exit itself, so Back stays silent while
+-- every B press answers.
+local CURSOR_SOUND = "SEQ_SE_GS_GEARCURSOR"
+local GRAB_SOUND = "SEQ_SE_GS_GEARSEALGRAB"
+local STAMP_SOUND = "SEQ_SE_GS_GEARSEALHAMERU"
+local TRASH_SOUND = "SEQ_SE_GS_GEARGOMIBAKO"
+local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
+
+---@param self MarkingMode
+---@param sequence string
+local function playEffect(self, sequence)
+  if self._effect ~= nil then
+    self._effect(sequence)
+  end
+end
+
 ---@class MarkingMode.Options
 ---@field marking MarkingMode.Marking? the location's saved marking, or nil
 ---@field wordSlot integer? zero-based word slot to focus, after a word hand-off
+---@field effect fun(sequence: string)? source UI sound effect boundary
 
 ---@param opts MarkingMode.Options
 ---@return MarkingMode
 function MarkingMode.new(opts)
+  assert(opts.effect == nil or type(opts.effect) == "function", "the marking sound boundary must be a function")
   local self = setmetatable({
     _marking = copyMarking(opts.marking or MarkingMode.emptyMarking()),
+    _effect = opts.effect,
     _group = "main",
     _mainPos = 0,
     _poolPos = 0,
@@ -197,19 +219,23 @@ function MarkingMode:_returnToTop()
   self._trashOpen = false
 end
 
--- Moves one spec along the key graph; blocked or absent neighbours stay put.
+-- Moves one spec along the key graph; blocked or absent neighbours stay
+-- put and silent, while every real step answers with the cursor tone.
 ---@param direction string
 function MarkingMode:_move(direction)
   if self._group == "main" then
     local next = MAIN_SPECS[self._mainPos][direction]
-    if next ~= nil then
+    if next ~= nil and next ~= self._mainPos then
       self._mainPos = next
+      playEffect(self, CURSOR_SOUND)
     end
   elseif self._group == "pool" then
     if direction == "left" then
       self._poolPos = (self._poolPos + POOL_SIZE - 1) % POOL_SIZE
+      playEffect(self, CURSOR_SOUND)
     elseif direction == "right" then
       self._poolPos = (self._poolPos + 1) % POOL_SIZE
+      playEffect(self, CURSOR_SOUND)
     end
   end
 end
@@ -227,6 +253,7 @@ function MarkingMode:_handleKey(event)
       return nil
     end
     if pressedCancel then
+      playEffect(self, CANCEL_SOUND)
       return "exit"
     end
     if pressedConfirm then
@@ -239,10 +266,12 @@ function MarkingMode:_handleKey(event)
         self._dragType = "set"
         self._group = "trash"
         self._trashOpen = true
+        playEffect(self, GRAB_SOUND)
       elseif slot % 2 == 0 then
         self._dragType = "pool"
         self._group = "pool"
         self._poolPos = 0
+        playEffect(self, GRAB_SOUND)
       else
         return "word", math.floor(slot / 2)
       end
@@ -252,16 +281,20 @@ function MarkingMode:_handleKey(event)
       self:_move(direction)
     elseif pressedConfirm then
       self:_setIcon(math.floor(self._mainPos / 2) + 1, self._poolPos + 1)
+      playEffect(self, STAMP_SOUND)
     elseif pressedCancel then
       self:_returnToTop()
+      playEffect(self, CANCEL_SOUND)
     end
   else
     if pressedConfirm then
       local slot = self._mainPos
       self:_remove(slot % 2 == 0 and "icon" or "word", math.floor(slot / 2) + 1)
       self:_returnToTop()
+      playEffect(self, TRASH_SOUND)
     elseif pressedCancel then
       self:_returnToTop()
+      playEffect(self, CANCEL_SOUND)
     end
   end
   return nil
@@ -314,6 +347,7 @@ function MarkingMode:_handlePointer(event)
       self._dragIcon = hit - 8
       self._dragOffset = { x = 0, y = 0 }
       self._touch = { x = x, y = y }
+      playEffect(self, GRAB_SOUND)
     else
       if self:_slotIsSet(hit) then
         local index = math.floor(hit / 2)
@@ -326,6 +360,7 @@ function MarkingMode:_handlePointer(event)
           self._dragIcon = index + 4
           self._dragOffset = { x = (index % 2) * 104 + 40 - x, y = math.floor(index / 2) * 21 + 31 - y }
         end
+        playEffect(self, GRAB_SOUND)
       elseif hit % 2 == 1 then
         return "word", math.floor(hit / 2)
       end
@@ -355,6 +390,7 @@ function MarkingMode:_drop(x, y)
     for index, rect in ipairs(targets) do
       if inRect(rect, x, y) then
         self:_setIcon(index, self._dragIcon + 1)
+        playEffect(self, STAMP_SOUND)
         break
       end
     end
@@ -381,8 +417,10 @@ function MarkingMode:_drop(x, y)
     end
     if hit == 8 then
       self:_remove(sourceGroup == 0 and "icon" or "word", sourceIndex + 1)
+      playEffect(self, TRASH_SOUND)
     elseif hit ~= nil and math.floor(hit / 4) == sourceGroup and hit ~= source then
       self:_swap(sourceGroup == 0 and "icon" or "word", sourceIndex + 1, hit % 4 + 1)
+      playEffect(self, STAMP_SOUND)
     end
   end
   self._dragType = "none"

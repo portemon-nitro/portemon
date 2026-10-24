@@ -48,6 +48,10 @@ local WALK_ORDER = { "configure", "radio", "map", "phone" }
 
 local SWITCH_SOUND = "SEQ_SE_DP_SELECT"
 local RESELECT_SOUND = "SEQ_SE_DP_DECIDE"
+-- Leaving a card for the strip answers with the card cancel tone: the
+-- source moves the cursor into the app-switch zone with GEARCANCEL. This
+-- also covers B in the phone list and the gear map, which the shell owns.
+local UNFOCUS_SOUND = "SEQ_SE_GS_GEARCANCEL"
 
 ---@param child unknown
 ---@param tab string
@@ -333,6 +337,7 @@ function PokegearScreenState:_handle(mapped, view)
         elseif self._entered then
           self._entered = false
           self._focus = self._tab
+          self:_playSound(UNFOCUS_SOUND)
         else
           self:_close()
         end

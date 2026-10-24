@@ -111,8 +111,9 @@ end
 ---@param operationId string
 ---@param context table?
 ---@param destinations string[]?
+---@param effect fun(sequence: string)?
 ---@return table
-local function openSelector(controllerClass, record, operationId, context, destinations)
+local function openSelector(controllerClass, record, operationId, context, destinations, effect)
   return controllerClass.new({
     mode = "fly",
     operationId = operationId,
@@ -121,6 +122,7 @@ local function openSelector(controllerClass, record, operationId, context, desti
     assets = record,
     facts = Fixture.facts(),
     messages = Fixture.messages(),
+    effect = effect,
   })
 end
 
@@ -712,6 +714,249 @@ function T.tests.cancelled_fly_choice_releases_without_travel()
   Assert.isFalse(runtime:isBusy(), "repeated cancellation stays idle")
   Assert.deepEqual(world.calls, { "cancelMotion" }, "cancellation releases motion once and warps nothing")
   runtime:dispose()
+end
+
+-- The source map application ignores keys and new touches while the
+-- cursor tween runs (two ticks per cell): A never opens the Fly/Quit
+-- menu mid-tween, B never cancels mid-tween, and a fresh touch never
+-- reselects mid-tween. Input applies again once the tween settles.
+function T.tests.input_waits_for_the_cursor_tween()
+  local FlyMapController = requireFeature(
+    "game.hgss.src.pokegear.FlyMapController",
+    "there is no fly destination selector yet: gated input cannot resolve without it"
+  )
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+
+  local selector = openSelector(FlyMapController, record, "fly-op-tween-confirm")
+  selector:updateFixed({ { type = "navigate", direction = "right" } })
+  selector:updateFixed({ { type = "confirm" } })
+  Assert.isNil(selector:status().view.menu, "A during the cursor tween opens no menu")
+  selector:updateFixed({})
+  selector:updateFixed({ { type = "confirm" } })
+  Assert.notNil(selector:status().view.menu, "A once idle opens the Fly/Quit menu")
+  selector:dispose()
+
+  local cancelling = openSelector(FlyMapController, record, "fly-op-tween-cancel")
+  cancelling:updateFixed({ { type = "navigate", direction = "right" } })
+  cancelling:updateFixed({ { type = "cancel" } })
+  Assert.isNil(cancelling:takeResult(), "B during the cursor tween cancels nothing")
+  cancelling:updateFixed({})
+  cancelling:updateFixed({ { type = "cancel" } })
+  local terminal = cancelling:takeResult()
+  Assert.notNil(terminal, "B once idle still cancels the selector")
+  assert(type(terminal) == "table", "cancel terminal validated above")
+  Assert.equal(terminal.kind, "cancelled", "the idle cancel reports cancellation")
+  cancelling:dispose()
+
+  local touching = openSelector(FlyMapController, record, "fly-op-tween-touch")
+  touching:updateFixed({ { type = "navigate", direction = "right" } })
+  touching:updateFixed({ { type = "pointer_down", pointerId = "t", x = 40, y = 16 } })
+  Assert.isNil(touching:status().view.menu, "a touch during the cursor tween opens no menu")
+  Assert.equal(
+    touching:status().view.panel.landmark,
+    "Landmark 41",
+    "a touch during the cursor tween reselects nothing"
+  )
+  touching:dispose()
+end
+
+-- The source list menu reports no input for taps outside its frame, so
+-- the Fly/Quit menu stays open until Fly or Quit settles it: an outside
+-- tap keeps the prompt naming the destination, and Quit returns to the
+-- map with the neutral prompt and no terminal.
+function T.tests.taps_outside_the_fly_menu_keep_it_open()
+  local FlyMapController = requireFeature(
+    "game.hgss.src.pokegear.FlyMapController",
+    "there is no fly destination selector yet: menu taps cannot resolve without it"
+  )
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local selector = openSelector(FlyMapController, record, "fly-op-menu-tap")
+  selector:updateFixed({ { type = "confirm" } })
+  Assert.notNil(selector:status().view.menu, "A on a flypoint opens the Fly/Quit menu")
+  selector:updateFixed({ { type = "pointer_down", pointerId = "t", x = 8, y = 8 } })
+  selector:updateFixed({ { type = "pointer_up", pointerId = "t", x = 8, y = 8 } })
+  Assert.notNil(selector:status().view.menu, "a tap outside the menu frame keeps it open")
+  Assert.isNil(selector:takeResult(), "the outside tap settles no terminal")
+  Assert.equal(
+    selector:status().view.prompt,
+    "Fly to Landmark 41?",
+    "the open menu keeps naming the destination"
+  )
+  selector:updateFixed({ { type = "navigate", direction = "down" } })
+  selector:updateFixed({ { type = "confirm" } })
+  Assert.isNil(selector:status().view.menu, "Quit closes the menu")
+  Assert.isNil(selector:takeResult(), "Quit settles no destination")
+  Assert.equal(
+    selector:status().view.prompt,
+    "Choose your destination.",
+    "quitting restores the neutral prompt"
+  )
+  selector:dispose()
+end
+
+function T.tests.fly_card_plays_its_source_tones()
+  local FlyMapController = requireFeature(
+    "game.hgss.src.pokegear.FlyMapController",
+    "there is no fly destination selector yet: card tones cannot resolve without it"
+  )
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local effects = {}
+  local function play(sequence)
+    effects[#effects + 1] = sequence
+  end
+  local selector = openSelector(FlyMapController, record, "fly-op-sound", nil, nil, play)
+  selector:updateFixed({ { type = "confirm" } })
+  Assert.notNil(selector:status().view.menu, "A on a destination opens the menu")
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARDECIDE", "opening the menu plays the decide tone")
+  selector:dispose()
+  -- Each gate check runs on the tick right after the move starts: any
+  -- further tick settles the two-tick tween, so each uses its own selector.
+  local effectsBefore = #effects
+  local gatedConfirm = openSelector(FlyMapController, record, "fly-op-sound-gated-a", nil, nil, play)
+  gatedConfirm:updateFixed({ { type = "navigate", direction = "right" } })
+  gatedConfirm:updateFixed({ { type = "confirm" } })
+  Assert.isNil(gatedConfirm:status().view.menu, "A during the cursor tween opens no menu")
+  Assert.equal(#effects, effectsBefore, "a gated confirm plays nothing")
+  gatedConfirm:dispose()
+  local gatedCancel = openSelector(FlyMapController, record, "fly-op-sound-gated-b", nil, nil, play)
+  gatedCancel:updateFixed({ { type = "navigate", direction = "right" } })
+  gatedCancel:updateFixed({ { type = "cancel" } })
+  Assert.isNil(gatedCancel:takeResult(), "B during the cursor tween cancels nothing")
+  Assert.equal(#effects, effectsBefore, "a gated cancel plays nothing")
+  gatedCancel:dispose()
+  local cancelling = openSelector(FlyMapController, record, "fly-op-sound-cancel", nil, nil, play)
+  cancelling:updateFixed({ { type = "cancel" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCANCEL", "B plays the cancel tone")
+  Assert.equal(cancelling:takeResult().kind, "cancelled", "B still cancels the selector")
+  cancelling:dispose()
+  local closer = openSelector(FlyMapController, record, "fly-op-sound-touch-close", nil, nil, play)
+  closer:updateFixed({ { type = "pointer_down", pointerId = "t", x = 220, y = 168 } })
+  Assert.equal(closer:takeResult().kind, "cancelled", "touching Close cancels the selector")
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCANCEL", "touching Close plays the cancel tone")
+  closer:dispose()
+  local touching = openSelector(FlyMapController, record, "fly-op-sound-touch-map", nil, nil, play)
+  local mapBefore = #effects
+  touching:updateFixed({ { type = "pointer_down", pointerId = "t", x = 100, y = 100 } })
+  local found = false
+  for index = mapBefore + 1, #effects do
+    if effects[index] == "SEQ_SE_GS_GEARMAPTOUCH" then
+      found = true
+    end
+  end
+  Assert.isTrue(found, "touching the map plays the touch tone")
+  touching:dispose()
+end
+
+-- The fly information panel mirrors the gear card: the rematch/gift icon
+-- resolves through the shared phone projection and the saved marking
+-- through the durable companion owner, both optional readers the
+-- view-only and synthetic entries omit. Town mode keeps only the name.
+function T.tests.fly_panel_shows_markings_and_battle_icon()
+  local FlyMapController = requireFeature(
+    "game.hgss.src.pokegear.FlyMapController",
+    "there is no fly destination selector yet: the panel cannot show markings without it"
+  )
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local facts = Fixture.facts()
+  facts.markingFor = function(symbol)
+    if symbol == "MAP_A" then
+      return { icons = { 2, false, false, false }, words = { "7", false, false, false } }
+    end
+    return nil
+  end
+  facts.rematchOnMap = function(mapId)
+    return mapId == 10
+  end
+  local selector = FlyMapController.new({
+    mode = "fly",
+    operationId = "fly-op-panel",
+    context = outdoorContext(),
+    destinations = { "test.fly.violet", "test.fly.new-bark" },
+    assets = record,
+    facts = facts,
+    messages = Fixture.messages(),
+  })
+  local panel = selector:status().view.panel
+  Assert.equal(panel.markers[1], 2, "the fly panel shows the saved marking icon")
+  Assert.equal(panel.words[1], "Word 7", "the fly panel resolves the saved marking word")
+  Assert.isTrue(panel.battleIcon, "the fly panel shows the rematch icon on a ready map")
+  selector:dispose()
+  local town = FlyMapController.new({
+    mode = "townMap",
+    operationId = "town-op-panel",
+    context = outdoorContext(),
+    destinations = {},
+    assets = record,
+    facts = facts,
+    messages = Fixture.messages(),
+  })
+  local townPanel = town:status().view.panel
+  Assert.isNil(townPanel.markers[1], "the town map prints no marking icons")
+  Assert.isNil(townPanel.words[1], "the town map prints no marking words")
+  Assert.isNil(townPanel.battleIcon, "the town map shows no battle icon")
+  town:dispose()
+end
+
+-- Host-opened maps borrow the shared information-pane readers: the fly
+-- entry shows saved markings and the rematch icon through them, while
+-- the town entry without panel owners keeps the previous bare facts.
+function T.tests.host_map_entries_carry_the_shared_panel_readers()
+  local FlyMapController = requireFeature(
+    "game.hgss.src.pokegear.FlyMapController",
+    "there is no fly destination selector yet: host panel readers cannot resolve without it"
+  )
+  assert(FlyMapController ~= nil, "fly selector checked above")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearScriptHost = require("game.hgss.src.pokegear.PokegearScriptHost")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  local host = PokegearScriptHost.new({
+    state = state,
+    catalog = record.catalog,
+    messages = {},
+    world = { player = { x = 1, y = 2 } },
+    assets = record,
+    regionMapOwners = function()
+      return Fixture.messages(), Fixture.facts()
+    end,
+    mapPanel = {
+      markingFor = function(symbol)
+        if symbol == "MAP_A" then
+          return { icons = { 2, false, false, false }, words = { "7", false, false, false } }
+        end
+        return nil
+      end,
+      rematchOnMap = function(mapId)
+        return mapId == 10
+      end,
+    },
+  })
+  local townHandle = host:open({ mode = "townMap", parentOwner = "script:test" })
+  local townPanel = host._active.controller:status().view.panel
+  Assert.isNil(townPanel.markers[1], "the town map prints no marking icons")
+  host:close(townHandle)
+  local context = outdoorContext()
+  local flyHandle = host:open({
+    mode = "fly",
+    parentOwner = "script:test",
+    selection = { slot = 0, mapContext = context, destinations = { "test.fly.violet" } },
+  })
+  local flyPanel = host._active.controller:status().view.panel
+  Assert.equal(flyPanel.markers[1], 2, "the hosted fly entry shows the saved marking icon")
+  Assert.equal(flyPanel.words[1], "Word 7", "the hosted fly entry resolves the saved marking word")
+  Assert.isTrue(flyPanel.battleIcon, "the hosted fly entry shows the rematch icon")
+  host:close(flyHandle)
+  host:dispose()
 end
 
 return T

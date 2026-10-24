@@ -146,5 +146,62 @@ function T.the_town_map_shifts_its_banner_and_never_opens_the_menu(scope)
   Assert.equal(town:status().view.closeLabel, "Close", "the Close label prints in both entries")
 end
 
+-- The information and prompt text sits in the source window frames: the
+-- region, landmark, and flavor rows of the upper pane, the prompt and the
+-- centred Close label of the lower bar, and the Town map's slid banner.
+-- Pixel positions come from the Fly entry's window templates (region
+-- window row 8 with its 2,4 text offset, landmark window row 11, flavor
+-- window row 14, lower bar row 21) and the Town map's 81-pixel slide.
+function T.info_pane_text_matches_the_source_window_layout(scope)
+  local selector, record = openFly("fly")
+  local resources = renderResources(scope, record)
+  local calls = {}
+  resources.textRenderer = {
+    drawTextWithPalette = function(_, line, x, y)
+      calls[#calls + 1] = { line = line, x = x, y = y }
+    end,
+    textWidth = function()
+      return 24
+    end,
+  }
+  local status = selector:status()
+  local plan = status.presentation
+  local canvas = scope:own(love.graphics.newCanvas(256, 192))
+  love.graphics.setCanvas(canvas)
+  plan.render(resources, status, plan)
+  plan.renderInformation(resources, status, plan)
+  love.graphics.setCanvas()
+  local at = {}
+  for _, call in ipairs(calls) do
+    at[call.line .. "@" .. call.x .. "," .. call.y] = true
+  end
+  local function said(line, x, y, why)
+    Assert.isTrue(at[line .. "@" .. x .. "," .. y] == true, why)
+  end
+  said("Choose your destination.", 8, 168, "the prompt sits in the lower bar")
+  said("Close", 212, 168, "the Close label centres in its tile")
+  said("Johto", 10, 68, "the region name sits in the upper window")
+  said("Landmark 41", 24, 88, "the landmark name sits under the region")
+  said("Flavor 6", 8, 112, "the flavor text fills the lower window")
+  said("second line", 8, 128, "the flavor text wraps to its second row")
+
+  local town = openFly("townMap")
+  local townStatus = town:status()
+  local townPlan = townStatus.presentation
+  for index = #calls, 1, -1 do
+    calls[index] = nil
+  end
+  love.graphics.setCanvas(canvas)
+  townPlan.renderInformation(resources, townStatus, townPlan)
+  love.graphics.setCanvas()
+  at = {}
+  for _, call in ipairs(calls) do
+    at[call.line .. "@" .. call.x .. "," .. call.y] = true
+  end
+  said("Johto", 10, -13, "the Town map slides the region name off screen")
+  said("Landmark 41", 24, 8, "the Town map shows the landmark at the top")
+  Assert.isNil(at["Flavor 6@8,112"], "the Town map prints no flavor text")
+end
+
 local suite = GraphicsSmoke.suite(T, { tags = { "pokegear" } })
 return suite

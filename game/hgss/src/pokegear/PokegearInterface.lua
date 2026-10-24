@@ -226,6 +226,7 @@ local function shellContent(assets, skin)
     clockSprites = clockSprites(assets),
     configureForeground = optionalPath(configure.foreground or configure.panel) or childVisuals.configure,
     configurePatch = optionalPath(configure.patch),
+    configureSprites = configure.sprites,
   }
 end
 

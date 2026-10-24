@@ -166,17 +166,21 @@ local function compileCursorAnimation(archive, assets)
   return sequences
 end
 
--- One-based animation sequences of a map-app OBJ set, each frame drawn with
--- the set's per-sequence palette bank and the cell bank's OBJ mapping mode.
-local function compileMapSpriteSet(archive, assets, setName, selection)
-  local role = "map.sprites." .. setName
+-- One-based animation sequences of one card-app OBJ set, each frame drawn
+-- with the set's per-sequence palette bank and the cell bank's OBJ mapping
+-- mode. Map sets read the shared map palette member; card sets read their
+-- own card palette member. `filePrefix` names the staged frame images.
+---@param archive table<string, unknown> the opened source NARC
+---@param assets table<string, string> the staged asset bytes by path
+---@param role string the provenance role behind the set
+---@param filePrefix string the staged image name prefix
+---@param selection table<string, unknown> the char/cell/anim/banks member selection
+---@param paletteMember integer the palette member behind the set
+---@return table<integer, table<string, unknown>> one-based animation sequences
+local function compileSpriteSet(archive, assets, role, filePrefix, selection, paletteMember)
   local character =
     decode("decodeChar", unpackMember(archive, selection.char, role .. ".character"), role .. ".character")
-  local palette = decode(
-    "decodePalette",
-    unpackMember(archive, PokegearSources.mapSpritePalette, role .. ".palette"),
-    role .. ".palette"
-  )
+  local palette = decode("decodePalette", unpackMember(archive, paletteMember, role .. ".palette"), role .. ".palette")
   local cellBytes = unpackMember(archive, selection.cell, role .. ".cell")
   local cells = decode("decodeCell", cellBytes, role .. ".cell")
   local mapping, mappingErr = G2dDecoder.decodeCellMapping(cellBytes, { label = "pokegear:" .. role .. ".cell" })
@@ -199,14 +203,7 @@ local function compileMapSpriteSet(archive, assets, setName, selection)
         selection.banks[sequenceIndex] or 0,
         mapping
       )
-      local path = PokegearCache.assetDir()
-        .. "/map-sprite-"
-        .. setName
-        .. "-"
-        .. sequenceIndex
-        .. "-"
-        .. frameIndex
-        .. ".png"
+      local path = PokegearCache.assetDir() .. "/" .. filePrefix .. "-" .. sequenceIndex .. "-" .. frameIndex .. ".png"
       assets[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
       frames[frameIndex] = {
         image = path,
@@ -405,7 +402,60 @@ local function _compile(romFs, versionId)
         banks = selection.banks,
       },
     }
-    mapSprites[setName] = compileMapSpriteSet(mapArchive, assets, setName, selection)
+    mapSprites[setName] = compileSpriteSet(
+      mapArchive,
+      assets,
+      "map.sprites." .. setName,
+      "map-sprite-" .. setName,
+      selection,
+      PokegearSources.mapSpritePalette
+    )
+  end
+
+  -- The setup and phone OBJ sets follow the map sprite shape exactly:
+  -- one named set per card from its own card archive and palette.
+  local configureSprites = {}
+  for setName, selection in pairs(PokegearSources.configureSprites) do
+    selections["configure.sprites." .. setName] = {
+      path = PokegearSources.archives.configure.path,
+      members = {
+        char = selection.char,
+        cell = selection.cell,
+        anim = selection.anim,
+        palette = PokegearSources.configureSpritePalette,
+        banks = selection.banks,
+      },
+    }
+    configureSprites[setName] = compileSpriteSet(
+      configureArchive,
+      assets,
+      "configure.sprites." .. setName,
+      "configure-sprite-" .. setName,
+      selection,
+      PokegearSources.configureSpritePalette
+    )
+  end
+
+  local phoneSprites = {}
+  for setName, selection in pairs(PokegearSources.phoneSprites) do
+    selections["phone.sprites." .. setName] = {
+      path = PokegearSources.archives.phone.path,
+      members = {
+        char = selection.char,
+        cell = selection.cell,
+        anim = selection.anim,
+        palette = PokegearSources.phoneSpritePalette,
+        banks = selection.banks,
+      },
+    }
+    phoneSprites[setName] = compileSpriteSet(
+      phoneArchive,
+      assets,
+      "phone.sprites." .. setName,
+      "phone-sprite-" .. setName,
+      selection,
+      PokegearSources.phoneSpritePalette
+    )
   end
 
   local sequences = compileCursorAnimation(shellArchive, assets)
@@ -448,8 +498,13 @@ local function _compile(romFs, versionId)
     schema = PokegearAssetSchema.SCHEMA,
     skins = skins,
     shell = { foreground = shellForeground, information = shellInformation },
-    configure = { foreground = configureForeground, patch = configurePatch },
-    phone = { foreground = phoneForeground, upper = phoneUpper, listPalette = phoneListPalette },
+    configure = { foreground = configureForeground, patch = configurePatch, sprites = configureSprites },
+    phone = {
+      foreground = phoneForeground,
+      upper = phoneUpper,
+      listPalette = phoneListPalette,
+      sprites = phoneSprites,
+    },
     map = {
       foreground = mapForeground,
       world = mapWorld,

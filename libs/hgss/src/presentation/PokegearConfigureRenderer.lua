@@ -8,7 +8,24 @@
 ---@class PokegearConfigureRenderer
 local PokegearConfigureRenderer = {}
 
+local PokegearMapLayers = require("libs.hgss.src.presentation.PokegearMapLayers")
+
+local drawSprite = PokegearMapLayers.drawSprite
+
+-- The compiled setup OBJ set (one-based compiled sequences): the focus
+-- cursor is four corner sprites in phone order (top-left, bottom-left,
+-- top-right, bottom-right), matching the setup set's four two-frame
+-- corner animations. Positions are source surface centers.
+local CONFIGURE_SET = "configure"
+local CURSOR_SEQUENCES = { 1, 2, 3, 4 }
+
 local DIM_ALPHA = 0.5
+
+-- The CHANGE/QUIT option rows inside the menu window at the shared
+-- list-menu pitch: sixteen-pixel text rows on a twenty-four pitch.
+local MENU_ROW_PITCH = 24
+local MENU_TEXT_TOP = 8
+local MENU_TEXT_HEIGHT = 16
 
 ---@param list table<integer, integer>?
 ---@return table<integer, boolean>
@@ -36,8 +53,10 @@ local function preparedImage(images, path)
   return lease
 end
 
--- Draws the six thumbnail cells with lock patches and the OBJ cursor, then
--- the spotlight dim and the context window while a menu is open. Runs
+-- Draws the six thumbnail cells, the OBJ cursor over the focused cell,
+-- and the dim mask with its context window while a menu is open. The
+-- thumbnail art rides the prepared foreground plane, so the pane paints
+-- no cell fills of its own; only locked cells take the lock patch. Runs
 -- inside the controls-pane logical transform owned by the caller.
 ---@param graphics love.graphics
 ---@param images table<string, unknown> borrowed prepared images by path
@@ -62,28 +81,34 @@ function PokegearConfigureRenderer.drawPane(graphics, images, text, content, chi
   if type(cursor) ~= "number" then
     cursor = childView.selectedSkin
   end
+  -- The six skin previews are background art: locked cells take the
+  -- source lock patch over their cell, nothing else paints over them.
   for skin = 0, 5 do
-    local rect = assert(thumbnails[skin], "the setup view carries all six thumbnail cells")
-    assert(type(rect) == "table", "the setup thumbnail cells are rectangles")
-    local cell = rect --[[@as table<string, number>]]
-    if unlocked[skin] == true then
-      graphics.setColor(0.92, 0.92, 0.92, 1)
-    else
-      graphics.setColor(0.35, 0.35, 0.38, 1)
+    if unlocked[skin] ~= true then
+      local rect = assert(childView.thumbnails[skin], "the setup view carries all six thumbnail cells")
+      local cell = rect --[[@as table<string, number>]]
+      if patch ~= nil then
+        graphics.setColor(1, 1, 1, 1)
+        patch:draw(graphics, cell.x, cell.y)
+      else
+        graphics.setColor(0.35, 0.35, 0.38, 1)
+        graphics.rectangle("fill", cell.x, cell.y, cell.width, cell.height)
+      end
     end
-    graphics.rectangle("fill", cell.x, cell.y, cell.width, cell.height)
-    if unlocked[skin] ~= true and patch ~= nil then
-      graphics.setColor(1, 1, 1, 1)
-      patch:draw(graphics, cell.x, cell.y)
-    end
-    graphics.setColor(0.08, 0.08, 0.1, 1)
-    graphics.rectangle("line", cell.x + 0.5, cell.y + 0.5, cell.width - 1, cell.height - 1)
   end
   if type(cursor) == "number" and thumbnails[cursor] ~= nil then
     local rect = thumbnails[cursor] --[[@as table<string, number>]]
+    local sprites = assert(content.configureSprites, "the setup plan resolves its sprite set")
+    local corners = {
+      { rect.x, rect.y },
+      { rect.x, rect.y + rect.height },
+      { rect.x + rect.width, rect.y },
+      { rect.x + rect.width, rect.y + rect.height },
+    }
     graphics.setColor(1, 1, 1, 1)
-    graphics.rectangle("line", rect.x - 1.5, rect.y - 1.5, rect.width + 3, rect.height + 3)
-    graphics.rectangle("fill", rect.x + 2, rect.y + 2, 10, 10)
+    for index, point in ipairs(corners) do
+      drawSprite(graphics, images, sprites, CONFIGURE_SET, CURSOR_SEQUENCES[index], 1, point[1], point[2])
+    end
   end
   local menu = childView.menu
   local spotlight = childView.spotlight
@@ -100,11 +125,20 @@ function PokegearConfigureRenderer.drawPane(graphics, images, text, content, chi
     graphics.rectangle("fill", window.x, window.y, window.width, window.height)
     graphics.setColor(1, 1, 1, 1)
     graphics.rectangle("line", window.x + 0.5, window.y + 0.5, window.width - 1, window.height - 1)
-    if text ~= nil and type(text.drawText) == "function" then
-      local selected = childView.selectedSkin
-      if type(selected) == "number" then
+    local options = childView.menuOptions
+    local labels = type(options) == "table" and options.labels or nil
+    local cursorOption = type(options) == "table" and options.cursor or 0
+    if type(labels) == "table" then
+      for index = 1, #labels do
+        local rowY = window.y + MENU_TEXT_TOP + MENU_ROW_PITCH * (index - 1)
+        if index - 1 == cursorOption then
+          graphics.setColor(0.12, 0.28, 0.62, 1)
+          graphics.rectangle("fill", window.x + 4, rowY - 2, window.width - 8, MENU_TEXT_HEIGHT)
+        end
         graphics.setColor(1, 1, 1, 1)
-        text:drawText("Skin " .. tostring(selected + 1), window.x + 8, window.y + 8)
+        if text ~= nil and type(text.drawText) == "function" then
+          text:drawText(tostring(labels[index]), window.x + 8, rowY)
+        end
       end
     end
   end

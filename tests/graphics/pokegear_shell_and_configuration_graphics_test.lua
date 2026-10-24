@@ -48,6 +48,30 @@ end
 -- animation with source durations, and the immutable semantic catalogs.
 -- Every visual gets a distinct path so the test can hang a distinct solid
 -- color on each and watch skin swaps move pixels.
+-- The compiled setup OBJ set in source animation order: four two-frame
+-- corner cursors, four single frames, and one two-frame tail. Paths
+-- mirror the producer's staged sprite names.
+---@return table<string, table> the named setup sprite sets
+local function fixtureSprites()
+  local counts = { 2, 2, 2, 2, 1, 1, 1, 1, 2 }
+  local sets = {}
+  for sequence, frames in ipairs(counts) do
+    local list = {}
+    for frame = 1, frames do
+      list[frame] = {
+        image = "assets/generated/pokegear/configure-sprite-configure-" .. sequence .. "-" .. frame .. ".png",
+        width = sequence == 9 and 32 or 16,
+        height = 16,
+        anchorX = sequence == 9 and -16 or -8,
+        anchorY = -8,
+        duration = 1,
+      }
+    end
+    sets[sequence] = { frames = list, playMode = "forward", loopStartFrameIdx = 0 }
+  end
+  return { configure = sets }
+end
+
 ---@return table
 local function fixtureManifest()
   local skins, shellForeground, shellInformation = {}, {}, {}
@@ -74,7 +98,7 @@ local function fixtureManifest()
     schema = "g4-pokegear-assets-v2",
     skins = skins,
     shell = { foreground = shellForeground, information = shellInformation },
-    configure = { foreground = configureForeground, patch = configurePatch },
+    configure = { foreground = configureForeground, patch = configurePatch, sprites = fixtureSprites() },
     phone = { foreground = phoneForeground, upper = phoneUpper },
     map = {
       foreground = mapForeground,
@@ -465,17 +489,17 @@ end
 ---@param shell table
 ---@param configure table
 ---@param target integer
+-- Drives the setup cursor to a skin by walking a fixed cycle that visits
+-- every cell: right, right, down, left, left, down. The grid wraps
+-- within rows and toggles rows vertically, so six steps always pass
+-- through the target.
 local function driveCursorTo(shell, configure, target)
-  for _ = 1, 6 do
+  local walk = { "right", "right", "down", "left", "left", "down" }
+  for step = 1, 6 do
     if configure:status().cursor == target then
       return
     end
-    for _, direction in ipairs({ "right", "down", "left", "up" }) do
-      shell:updateFixed({ { type = "navigate", direction = direction } })
-      if configure:status().cursor == target then
-        return
-      end
-    end
+    shell:updateFixed({ { type = "navigate", direction = walk[step] } })
   end
   Assert.equal(configure:status().cursor, target, "the setup cursor reaches skin " .. target)
 end
@@ -507,6 +531,7 @@ function T.setup_skin_selection_commits_and_spotlights(scope)
       local controller = ConfigureController.new({
         state = state,
         assets = record,
+        labels = { change = "CHANGE", quit = "QUIT" },
         effect = function(_) end,
       })
       configureHandle.controller = controller
@@ -650,6 +675,83 @@ function T.setup_skin_selection_commits_and_spotlights(scope)
     "the context window paints over the dimmed surface"
   )
   host.shell:dispose()
+end
+
+-- The focus cursor paints from the compiled setup sprite set: the
+-- focused cell's corner sample matches the first corner sprite lease,
+-- and moving focus restores the prepared background there.
+function T.setup_cursor_paints_from_compiled_sprites(scope)
+  local ConfigureController = requireFeature(
+    "game.hgss.src.pokegear.ConfigureController",
+    "the gear setup card has no controller yet: the compiled focus cursor cannot draw"
+  )
+  local PokegearConfigureRenderer =
+    require("libs.hgss.src.presentation.PokegearConfigureRenderer")
+  local manifest = fixtureManifest()
+  local record = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local state = PokegearState.new(nil, { catalog = record.catalog })
+  local controller = ConfigureController.new({
+    state = state,
+    assets = record,
+    labels = { change = "CHANGE", quit = "QUIT" },
+    effect = function(_) end,
+  })
+  local resources = renderResources(scope, manifest)
+  local content = {
+    configureForeground = "assets/generated/pokegear/configure-foreground-skin-0.png",
+    configurePatch = "assets/generated/pokegear/configure-patch-skin-0.png",
+    configureSprites = record.configure.sprites,
+  }
+  local function drawPane()
+    local canvas = scope:own(love.graphics.newCanvas(256, 192))
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(0, 0, 0, 0)
+    love.graphics.setColor(1, 1, 1, 1)
+    PokegearConfigureRenderer.drawPane(
+      love.graphics,
+      resources.images,
+      resources.textRenderer,
+      content,
+      controller:status().view,
+      { 0, 1, 2, 3, 4, 5 }
+    )
+    love.graphics.setCanvas()
+    return scope:own(canvas:newImageData())
+  end
+  local function leaseBytes(path)
+    local lease = assert(resources.images[path], "the prepared sprite image exists: " .. path)
+    local canvas = scope:own(love.graphics.newCanvas(32, 32))
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(0, 0, 0, 0)
+    love.graphics.setColor(1, 1, 1, 1)
+    lease:draw(love.graphics, 0, 0)
+    love.graphics.setCanvas()
+    local data = scope:own(canvas:newImageData())
+    local red, green, blue = data:getPixel(8, 8)
+    return { math.floor(red * 255 + 0.5), math.floor(green * 255 + 0.5), math.floor(blue * 255 + 0.5) }
+  end
+  local function surfaceBytes(data, x, y)
+    local red, green, blue = pixel(data, x, y)
+    return { math.floor(red * 255 + 0.5), math.floor(green * 255 + 0.5), math.floor(blue * 255 + 0.5) }
+  end
+  Assert.equal(controller:status().cursor, 0, "the setup cursor opens on the first skin")
+  Assert.deepEqual(
+    surfaceBytes(drawPane(), 24, 24),
+    leaseBytes("assets/generated/pokegear/configure-sprite-configure-1-1.png"),
+    "the focused cell shows its compiled corner sprite"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(controller:status().cursor, 5, "right, right, down focuses skin five")
+  Assert.deepEqual(
+    surfaceBytes(drawPane(), 24, 24),
+    leaseBytes("assets/generated/pokegear/configure-foreground-skin-0.png"),
+    "the vacated cell restores its prepared background"
+  )
+  controller:dispose()
 end
 
 function T.display_plan_keeps_roles_and_pointer_targets(scope)
@@ -892,6 +994,7 @@ function T.every_skin_repaints_from_prepared_assets(scope)
       local controller = ConfigureController.new({
         state = state,
         assets = record,
+        labels = { change = "CHANGE", quit = "QUIT" },
         effect = function(_) end,
       })
       configureHandle.controller = controller
@@ -961,6 +1064,7 @@ function T.spotlight_covers_a_menu_overlapping_other_cells(scope)
       local controller = ConfigureController.new({
         state = state,
         assets = record,
+        labels = { change = "CHANGE", quit = "QUIT" },
         effect = function(_) end,
       })
       configureHandle.controller = controller
@@ -969,9 +1073,9 @@ function T.spotlight_covers_a_menu_overlapping_other_cells(scope)
   })
   settle(host.shell)
   local configure = assert(configureHandle.controller, "the setup factory built the real controller")
-  -- Skin 4 sits at x104..152, y96..136, overlapping the context window's
-  -- y120..136 band over x104..152: the union math below is independent of
-  -- the controller under test.
+  -- Skin 4 sits at x104..152, y96..136 while its context window opens
+  -- at the skin's source tile origin x20/y11 (160,88) clear of the cell:
+  -- the union math below is independent of the controller under test.
   driveCursorTo(host.shell, configure, 4)
   host.shell:updateFixed({ { type = "confirm" } })
   Assert.isTrue(configure:status().menuOpen, "confirming skin 4 opens its context menu")
@@ -993,7 +1097,7 @@ function T.spotlight_covers_a_menu_overlapping_other_cells(scope)
     end
     covered = covered + area(rect)
   end
-  Assert.equal(covered, 256 * 192 - 3840 - 1920 + 768, "the spotlight dims exactly the menu/thumbnail union")
+  Assert.equal(covered, 256 * 192 - 3584 - 1920, "the spotlight dims exactly the menu/window union")
   local resources = renderResources(scope, manifest)
   local lit = drawShell(scope, host.shell, resources, 512, 192)
   local openSpot = spotlights[1]

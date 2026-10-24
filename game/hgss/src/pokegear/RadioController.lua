@@ -19,6 +19,7 @@
 ---@field _selectedButton integer the remembered preset button, 0..3
 ---@field _station integer the tuned station, 0..7, or 255 for none
 ---@field _signal integer the tuned signal: 2 clear, 1 weak, 0 none
+---@field _effect fun(sequence: string)? source UI sound effect boundary
 ---@field _dragging boolean whether a cursor drag is open
 ---@field _dragId unknown the pointer identity behind the open drag
 ---@field _disposed boolean
@@ -134,6 +135,7 @@ end
 ---@field presentation table<string, unknown> the borrowed presentation owner
 ---@field map table<string, unknown> the live map signal facts
 ---@field flags table<string, unknown> the live story flags
+---@field effect fun(sequence: string)? source UI sound effect boundary
 
 ---@param opts RadioController.Options
 ---@return RadioController
@@ -161,6 +163,7 @@ function RadioController.new(opts)
   assert(type(opts.presentation) == "table", "the radio card borrows its presentation owner")
   assert(type(opts.map) == "table", "the radio card borrows its live map facts")
   assert(type(opts.flags) == "table", "the radio card borrows its live story flags")
+  assert(opts.effect == nil or type(opts.effect) == "function", "the radio sound boundary must be a function")
   local preferences = opts.state:readPreferences()
   assert(type(preferences) == "table", "the radio card reads its saved preferences")
   local saved = preferences.radioCursor
@@ -182,6 +185,7 @@ function RadioController.new(opts)
     _map = opts.map,
     _flags = opts.flags,
     _cursor = { x = saved.x, y = saved.y },
+    _effect = opts.effect,
     _receptionKey = initialKey,
     _moved = false,
     _selectedButton = 3,
@@ -286,6 +290,20 @@ function RadioController:_walk(dx, dy)
   end
 end
 
+-- The source UI tones on the radio card: the back key, the A preset
+-- step, and grabbing the tuner. Dial walks and drag motion retune
+-- silently behind the broadcast program's own audio.
+local CURSOR_SOUND = "SEQ_SE_GS_GEARCURSOR"
+local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
+
+---@param self RadioController
+---@param sequence string
+local function playEffect(self, sequence)
+  if self._effect ~= nil then
+    self._effect(sequence)
+  end
+end
+
 ---@param event table<string, unknown>
 function RadioController:_handle(event)
   if event.type == "navigate" and type(event.direction) == "string" then
@@ -305,9 +323,11 @@ function RadioController:_handle(event)
     assert(type(center) == "table", "preset buttons snap through the fixed center table")
     self._cursor = { x = center.x, y = center.y }
     self._moved = true
+    playEffect(self, CURSOR_SOUND)
   elseif event.type == "cancel" then
     -- The back key returns focus to the shell: the running show, latch,
     -- and tuner all survive. The shell owns dismissal.
+    playEffect(self, CANCEL_SOUND)
   elseif event.type == "pointer_down" and type(event.x) == "number" and type(event.y) == "number" then
     local cursor = self._cursor
     assert(type(cursor) == "table", "touch input reads the tuner position")
@@ -319,6 +339,7 @@ function RadioController:_handle(event)
       self._dragging = true
       self._dragId = event.pointerId
       self._moved = true
+      playEffect(self, CURSOR_SOUND)
     end
   elseif event.type == "pointer_move" and type(event.x) == "number" and type(event.y) == "number" then
     if self._dragging and event.pointerId == self._dragId and insideTuningRim(event.x, event.y) then

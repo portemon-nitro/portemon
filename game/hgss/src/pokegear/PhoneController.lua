@@ -31,6 +31,7 @@ local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhoneP
 ---@field _records table<string, table<string, unknown>> catalog contact records by key
 ---@field _selected integer zero-based absolute selection
 ---@field _scroll integer zero-based top offset into the order
+---@field _scrollAnim { remaining: integer, from: integer, to: integer }? the running viewport slide
 ---@field _mode string list, menu, sort, manual, or call
 ---@field _entryOwner string menu or host, fixed by the initial entry path
 ---@field _menuCursor integer zero-based menu cursor
@@ -41,6 +42,7 @@ local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhoneP
 ---@field _result table<string, unknown>? the peekable terminal result
 ---@field _choiceCursor integer zero-based call choice cursor
 ---@field _held table<string, unknown>? the captured pointer press, when present
+---@field _effect fun(sequence: string)? source UI sound effect boundary
 ---@field _disposed boolean
 local PhoneController = {}
 PhoneController.__index = PhoneController
@@ -51,11 +53,43 @@ local ROW_X0 = 8
 local ROW_X1 = 224
 local SCROLL_X0 = 224
 local SCROLL_X1 = 248
-local ARROW_X1 = 8
+-- The manual-move arrow strip spans the source touch column x4..36.
+local MOVE_STRIP_X0 = 4
+local MOVE_STRIP_X1 = 36
 local LIST_TOP = 8
 
 local MENU_OPTIONS = { "Call", "Sort", "Quit" }
 local SORT_OPTIONS = { "Title", "Alphabet", "Location", "Move", "Quit" }
+
+-- Source context-menu frames in tiles (sContextMenuParam): the list
+-- menu sizes to its longest entry, so the window frames two
+-- sixteen-pixel text rows per option exactly like the shared list menu.
+local MENU_FRAMES = {
+  menu = { x = 13, y = 9, width = 16, options = 3 },
+  sort = { x = 13, y = 3, width = 16, options = 5 },
+}
+local MENU_ROW_PITCH = 24
+local MENU_TEXT_TOP = 8
+local MENU_TEXT_HEIGHT = 16
+
+-- Source tooltip lines (msg_0271 entries 20-27): the bottom bar names
+-- the open menu's first prompt, and the sort menu tracks its cursor.
+local TOOLTIPS = {
+  "Please select the next search.",
+  "Select where you wish to move.",
+  "What will you do?",
+  "Sort by Trainer type",
+  "Sort by alphabet",
+  "Sort by location",
+  "Manual sort",
+  "Finish sorting",
+}
+
+-- Source UI tones on the phone card: cursor motion, list decisions and
+-- scrolling, and cancellation.
+local CURSOR_SOUND = "SEQ_SE_GS_GEARCURSOR"
+local DECIDE_SOUND = "SEQ_SE_GS_GEARDECIDE"
+local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
 
 -- The list-to-call panel timeline: closed for one tick, open for six,
 -- closed again. Cells are source sprite identities, not generic frames.
@@ -181,6 +215,17 @@ function PhoneController.new(opts)
   assert(opts.audio == nil or type(opts.audio) == "table", "the phone card uses the audio boundary as a record")
   assert(opts.random == nil or type(opts.random) == "table", "the phone card draws through the companion streams")
   assert(opts.assets == nil or type(opts.assets) == "table", "the phone card borrows its asset family as a record")
+  -- UI tones ride the shared one-shot effect boundary when the audio
+  -- owner plays named sequences; toneless fakes simply stay silent.
+  local effect = nil
+  if type(opts.audio) == "table" and type(opts.audio.play) == "function" then
+    local owner = opts.audio --[[@as table<string, unknown>]]
+    local playAudio = opts.audio.play --[[@as fun(self: table<string, unknown>, sequence: unknown)]]
+    local function playPhoneEffect(sequence)
+      playAudio(owner, sequence)
+    end
+    effect = playPhoneEffect
+  end
   local self = setmetatable({
     _state = opts.state,
     _catalog = opts.catalog,
@@ -204,6 +249,7 @@ function PhoneController.new(opts)
     _records = {},
     _selected = 0,
     _scroll = 0,
+    _scrollAnim = nil,
     _mode = "list",
     _entryOwner = opts.request == nil and "menu" or "host",
     _menuCursor = 0,
@@ -214,6 +260,7 @@ function PhoneController.new(opts)
     _result = nil,
     _choiceCursor = 0,
     _held = nil,
+    _effect = effect,
     _disposed = false,
   }, PhoneController)
   self:_readCatalog()
@@ -320,22 +367,30 @@ function PhoneController:_maxScroll()
 end
 
 -- Keeps the absolute selection inside the list and the viewport behind
--- it: scrolling follows the cursor but never exceeds its bound.
+-- it: scrolling follows the cursor but never exceeds its bound. A
+-- viewport shift starts its source slide right away: three eight-pixel
+-- ticks per row, so a page chains six singles while the end state lands
+-- at once and input gates until the slide settles.
 ---@param selected integer
 function PhoneController:_moveSelection(selected)
   local count = #self._order
   if count == 0 then
     self._selected = 0
     self._scroll = 0
+    self._scrollAnim = nil
     return
   end
   self._selected = math.min(math.max(selected, 0), count - 1)
+  local from = self._scroll
   if self._selected < self._scroll then
     self._scroll = self._selected
   elseif self._selected > self._scroll + 5 then
     self._scroll = self._selected - 5
   end
   self._scroll = math.min(math.max(self._scroll, 0), self:_maxScroll())
+  if self._scroll ~= from then
+    self._scrollAnim = { remaining = 3 * math.abs(self._scroll - from), from = from, to = self._scroll }
+  end
 end
 
 -- Drops held pointer capture: mode changes, menu travel, and call stages
@@ -421,6 +476,33 @@ function PhoneController:_menuKind(contact)
   return "ordinary"
 end
 
+-- The detached menu frame in pixels for touch and presentation.
+---@param kind string "menu" or "sort"
+---@return table<string, integer>
+local function menuFrame(kind)
+  local spec = assert(MENU_FRAMES[kind], "phone context menus stay known")
+  local height = (2 * spec.options + 3) * 8
+  return { x = spec.x * 8, y = spec.y * 8, width = spec.width * 8, height = height }
+end
+
+---@param self PhoneController
+---@param sequence string
+local function playEffect(self, sequence)
+  if self._effect ~= nil then
+    self._effect(sequence)
+  end
+end
+
+-- Opens the context menu over the selected row: the source hides the
+-- list cursors and prints the menu tooltip behind it.
+---@param self PhoneController
+local function openMenu(self)
+  self._mode = "menu"
+  self._menuCursor = 0
+  self._held = nil
+  playEffect(self, DECIDE_SOUND)
+end
+
 -- Applies one automatic sort way as a view-only reordering: the source
 -- weights order the session with stable ties, and the viewport returns
 -- to the top. Saved order is untouched; manual move owns persistence.
@@ -443,6 +525,7 @@ function PhoneController:_applySort(way)
   self._order = order
   self._selected = 0
   self._scroll = 0
+  self._scrollAnim = nil
   self._mode = "list"
   self._held = nil
 end
@@ -490,17 +573,22 @@ function PhoneController:_rowAt(x, y)
   return absolute
 end
 
--- Handles one tap release: ordinary row taps select, scroll-strip taps
--- walk, and manual arrows move the move cursor. Row bodies never open
--- menus and manual row bodies never select.
+-- Handles one tap release: ordinary row taps select and open the row's
+-- context menu at once, scroll-strip taps walk, and manual arrows move
+-- the move cursor. Row bodies never open menus in manual mode and
+-- manual row bodies never select.
 ---@param x number
 ---@param y number
 function PhoneController:_tap(x, y)
   if self._mode == "manual" then
-    if x >= 0 and x < ARROW_X1 then
+    if x >= MOVE_STRIP_X0 and x < MOVE_STRIP_X1 then
       local slot = math.floor((y - LIST_TOP) / ROW_HEIGHT)
       if slot >= 0 and slot < VISIBLE_ROWS and self._scroll + slot < #self._order then
+        local before = self._selected
         self:_moveSelection(self._scroll + slot)
+        if self._selected ~= before then
+          playEffect(self, DECIDE_SOUND)
+        end
       end
     end
     return
@@ -511,13 +599,19 @@ function PhoneController:_tap(x, y)
   local row = self:_rowAt(x, y)
   if row ~= nil then
     self:_moveSelection(row)
+    openMenu(self)
     return
   end
   if x >= SCROLL_X0 and x < SCROLL_X1 then
+    -- The scroll strip pages exactly like the edge keys.
     if y < LIST_TOP + (VISIBLE_ROWS * ROW_HEIGHT) / 2 then
-      self:_moveSelection(self._selected - 1)
-    else
-      self:_moveSelection(self._selected + 1)
+      if self._scroll > 0 then
+        self:_moveSelection(self._selected - VISIBLE_ROWS)
+        playEffect(self, CURSOR_SOUND)
+      end
+    elseif self._scroll < self:_maxScroll() then
+      self:_moveSelection(self._selected + VISIBLE_ROWS)
+      playEffect(self, CURSOR_SOUND)
     end
   end
 end
@@ -525,16 +619,26 @@ end
 ---@param event table<string, unknown>
 function PhoneController:_handleList(event)
   if event.type == "navigate" and type(event.direction) == "string" then
-    if event.direction == "up" then
-      self:_moveSelection(self._selected - 1)
-    elseif event.direction == "down" then
-      self:_moveSelection(self._selected + 1)
+    if event.direction == "up" or event.direction == "down" then
+      local before = self._selected
+      self:_moveSelection(self._selected + (event.direction == "down" and 1 or -1))
+      if self._selected ~= before then
+        playEffect(self, CURSOR_SOUND)
+      end
+    elseif event.direction == "left" then
+      if self._scroll > 0 then
+        self:_moveSelection(self._selected - VISIBLE_ROWS)
+        playEffect(self, CURSOR_SOUND)
+      end
+    elseif event.direction == "right" then
+      if self._scroll < self:_maxScroll() then
+        self:_moveSelection(self._selected + VISIBLE_ROWS)
+        playEffect(self, CURSOR_SOUND)
+      end
     end
   elseif event.type == "confirm" then
     if #self._order > 0 then
-      self._mode = "menu"
-      self._menuCursor = 0
-      self._held = nil
+      openMenu(self)
     end
   elseif event.type == "pointer_down" then
     if type(event.x) == "number" and type(event.y) == "number" then
@@ -577,31 +681,110 @@ function PhoneController:_handleList(event)
   end
 end
 
+---@param option integer zero-based main-menu option
+function PhoneController:_chooseMain(option)
+  if option == 0 then
+    local contact = self._order[self._selected + 1]
+    assert(contact ~= nil, "menu calls name the selected contact")
+    self._callId = self._callId + 1
+    self:_beginCall(contact, "outgoing", self:_menuKind(contact), "phone-menu-" .. self._callId, true)
+    playEffect(self, DECIDE_SOUND)
+  elseif option == 1 then
+    self._mode = "sort"
+    self._menuCursor = 0
+    self._held = nil
+    playEffect(self, DECIDE_SOUND)
+  else
+    self._mode = "list"
+    self._held = nil
+  end
+end
+
+-- The zero-based menu row under a tap release, if the tap lands on one.
+---@param frame table<string, integer> the menu window frame
+---@param x number
+---@param y number
+---@return integer? zero-based option row
+local function menuRowAt(frame, x, y)
+  if x < frame.x or x >= frame.x + frame.width then
+    return nil
+  end
+  local slot = math.floor((y - frame.y - MENU_TEXT_TOP) / MENU_ROW_PITCH)
+  local rowTop = frame.y + MENU_TEXT_TOP + MENU_ROW_PITCH * slot
+  if slot < 0 or y < rowTop or y >= rowTop + MENU_TEXT_HEIGHT then
+    return nil
+  end
+  return slot
+end
+
 ---@param event table<string, unknown>
 function PhoneController:_handleMenu(event)
   if event.type == "navigate" and type(event.direction) == "string" then
     if event.direction == "up" then
       self._menuCursor = (self._menuCursor - 1) % #MENU_OPTIONS
+      playEffect(self, CURSOR_SOUND)
     elseif event.direction == "down" then
       self._menuCursor = (self._menuCursor + 1) % #MENU_OPTIONS
+      playEffect(self, CURSOR_SOUND)
     end
   elseif event.type == "confirm" then
-    local option = self._menuCursor
-    if option == 0 then
-      local contact = self._order[self._selected + 1]
-      assert(contact ~= nil, "menu calls name the selected contact")
-      self._callId = self._callId + 1
-      self:_beginCall(contact, "outgoing", self:_menuKind(contact), "phone-menu-" .. self._callId, true)
-    elseif option == 1 then
-      self._mode = "sort"
-      self._menuCursor = 0
-      self._held = nil
-    else
-      self._mode = "list"
+    self:_chooseMain(self._menuCursor)
+  elseif event.type == "cancel" then
+    self._mode = "list"
+    self._held = nil
+    playEffect(self, CANCEL_SOUND)
+  elseif event.type == "pointer_cancel" then
+    self._mode = "list"
+    self._held = nil
+  elseif event.type == "pointer_down" then
+    if type(event.x) == "number" and type(event.y) == "number" then
+      self._held = { id = event.pointerId, x = event.x, y = event.y }
+    end
+  elseif event.type == "pointer_up" then
+    local held = self._held
+    self._held = nil
+    if
+      held ~= nil
+      and held.id == event.pointerId
+      and type(event.x) == "number"
+      and type(event.y) == "number"
+      and math.abs(event.x - held.x --[[@as number]]) <= 8
+      and math.abs(event.y - held.y --[[@as number]]) <= 8
+    then
+      local row = menuRowAt(menuFrame("menu"), event.x, event.y)
+      if row ~= nil and row < #MENU_OPTIONS then
+        self:_chooseMain(row)
+      end
+    end
+  elseif event.type == "pointer_move" then
+    local held = self._held
+    if
+      held ~= nil
+      and held.id == event.pointerId
+      and type(event.x) == "number"
+      and type(event.y) == "number"
+      and (
+        math.abs(event.x - held.x --[[@as number]]) > 8 or math.abs(event.y - held.y --[[@as number]]) > 8
+      )
+    then
       self._held = nil
     end
-  elseif event.type == "cancel" or event.type == "pointer_cancel" then
-    self._mode = "list"
+  end
+end
+
+---@param option integer zero-based sort-menu option
+function PhoneController:_chooseSort(option)
+  if option <= 2 then
+    self:_applySort(option + 1)
+    playEffect(self, DECIDE_SOUND)
+  elseif option == 3 then
+    self._mode = "manual"
+    self._grab = nil
+    self._held = nil
+    playEffect(self, DECIDE_SOUND)
+  else
+    self._mode = "menu"
+    self._menuCursor = 1
     self._held = nil
   end
 end
@@ -611,36 +794,77 @@ function PhoneController:_handleSort(event)
   if event.type == "navigate" and type(event.direction) == "string" then
     if event.direction == "up" then
       self._menuCursor = (self._menuCursor - 1) % #SORT_OPTIONS
+      playEffect(self, CURSOR_SOUND)
     elseif event.direction == "down" then
       self._menuCursor = (self._menuCursor + 1) % #SORT_OPTIONS
+      playEffect(self, CURSOR_SOUND)
     end
   elseif event.type == "confirm" then
-    local option = self._menuCursor
-    if option <= 2 then
-      self:_applySort(option + 1)
-    elseif option == 3 then
-      self._mode = "manual"
-      self._grab = nil
-      self._held = nil
-    else
-      self._mode = "menu"
-      self._menuCursor = 1
-      self._held = nil
-    end
-  elseif event.type == "cancel" or event.type == "pointer_cancel" then
+    self:_chooseSort(self._menuCursor)
+  elseif event.type == "cancel" then
     self._mode = "menu"
     self._menuCursor = 1
     self._held = nil
+    playEffect(self, CANCEL_SOUND)
+  elseif event.type == "pointer_cancel" then
+    self._mode = "menu"
+    self._menuCursor = 1
+    self._held = nil
+  elseif event.type == "pointer_down" then
+    if type(event.x) == "number" and type(event.y) == "number" then
+      self._held = { id = event.pointerId, x = event.x, y = event.y }
+    end
+  elseif event.type == "pointer_up" then
+    local held = self._held
+    self._held = nil
+    if
+      held ~= nil
+      and held.id == event.pointerId
+      and type(event.x) == "number"
+      and type(event.y) == "number"
+      and math.abs(event.x - held.x --[[@as number]]) <= 8
+      and math.abs(event.y - held.y --[[@as number]]) <= 8
+    then
+      local row = menuRowAt(menuFrame("sort"), event.x, event.y)
+      if row ~= nil and row < #SORT_OPTIONS then
+        self:_chooseSort(row)
+      end
+    end
+  elseif event.type == "pointer_move" then
+    local held = self._held
+    if
+      held ~= nil
+      and held.id == event.pointerId
+      and type(event.x) == "number"
+      and type(event.y) == "number"
+      and (
+        math.abs(event.x - held.x --[[@as number]]) > 8 or math.abs(event.y - held.y --[[@as number]]) > 8
+      )
+    then
+      self._held = nil
+    end
   end
 end
 
 ---@param event table<string, unknown>
 function PhoneController:_handleManual(event)
   if event.type == "navigate" and type(event.direction) == "string" then
-    if event.direction == "up" then
-      self:_moveSelection(self._selected - 1)
-    elseif event.direction == "down" then
-      self:_moveSelection(self._selected + 1)
+    if event.direction == "up" or event.direction == "down" then
+      local before = self._selected
+      self:_moveSelection(self._selected + (event.direction == "down" and 1 or -1))
+      if self._selected ~= before then
+        playEffect(self, CURSOR_SOUND)
+      end
+    elseif event.direction == "left" then
+      if self._scroll > 0 then
+        self:_moveSelection(self._selected - VISIBLE_ROWS)
+        playEffect(self, CURSOR_SOUND)
+      end
+    elseif event.direction == "right" then
+      if self._scroll < self:_maxScroll() then
+        self:_moveSelection(self._selected + VISIBLE_ROWS)
+        playEffect(self, CURSOR_SOUND)
+      end
     end
   elseif event.type == "confirm" then
     if self._grab == nil then
@@ -761,6 +985,11 @@ function PhoneController:updateFixed(uiInput)
   -- the closed cell until this tick settles.
   local panelRunning = self._panelTicks ~= nil
   for _, event in ipairs(uiInput) do
+    -- A running viewport slide gates all key and touch input, mirroring
+    -- the fly cursor-tween gate: the slide still settles below.
+    if self._scrollAnim ~= nil then
+      break
+    end
     if type(event) == "table" and type(event.type) == "string" then
       local previousMode = self._mode
       local previousCallId = self._callId
@@ -803,6 +1032,13 @@ function PhoneController:updateFixed(uiInput)
   if panelRunning and self._panelTicks ~= nil then
     self._panelTicks = self._panelTicks --[[@as integer]] + 1
   end
+  local anim = self._scrollAnim
+  if anim ~= nil then
+    anim.remaining = anim.remaining - 1
+    if anim.remaining <= 0 then
+      self._scrollAnim = nil
+    end
+  end
 end
 
 ---@return table<string, unknown> the detached contact list projection
@@ -819,21 +1055,40 @@ function PhoneController:_listView()
       }
     end
   end
+  -- The running slide offset in pixels: the full row count times
+  -- twenty-four at the start, decaying eight pixels per tick to the
+  -- settled viewport. Positive slides the rows down, negative up.
+  local pixels = 0
+  local anim = self._scrollAnim
+  if anim ~= nil then
+    pixels = (anim.to > anim.from and 1 or -1) * anim.remaining * 8
+  end
   return {
     rows = rows,
     selected = self._selected,
     scrollOffset = self._scroll,
+    scrollPixels = pixels,
+    firstBgColor = self._scroll % 2,
     manual = self._mode == "manual",
+    total = #self._order,
+    -- The source frames the selected row with four corner sprites and
+    -- shows the scroll arrows only while the plain list owns the card:
+    -- menus hide the corners, manual mode swaps them for move arrows.
+    cursorVisible = self._mode == "list",
   }
 end
 
 ---@return table<string, unknown>? the detached menu projection, if open
 function PhoneController:_menuView()
   if self._mode == "menu" then
-    return { options = { "Call", "Sort", "Quit" }, cursor = self._menuCursor }
+    return { options = { "Call", "Sort", "Quit" }, cursor = self._menuCursor, frame = menuFrame("menu") }
   end
   if self._mode == "sort" then
-    return { options = { "Title", "Alphabet", "Location", "Move", "Quit" }, cursor = self._menuCursor }
+    return {
+      options = { "Title", "Alphabet", "Location", "Move", "Quit" },
+      cursor = self._menuCursor,
+      frame = menuFrame("sort"),
+    }
   end
   return nil
 end
@@ -878,12 +1133,22 @@ function PhoneController:view()
   if panel ~= nil then
     transition = { kind = "panel" }
   end
+  -- The bottom bar names the open menu's prompt: the first tooltip
+  -- behind the Call menu, the cursor-tracking sort tooltip behind the
+  -- sort menu. The bar stays empty everywhere else.
+  local tooltip = nil
+  if self._mode == "menu" then
+    tooltip = TOOLTIPS[1]
+  elseif self._mode == "sort" then
+    tooltip = TOOLTIPS[4 + self._menuCursor]
+  end
   return {
     list = self:_listView(),
     contextMenu = self:_menuView(),
     call = self:_callView(),
     panel = panel,
     transition = transition,
+    tooltip = tooltip,
   }
 end
 
@@ -902,6 +1167,7 @@ function PhoneController:_planContent(skin)
   local section = phone --[[@as table<string, unknown>]]
   content.foreground = skinImage(section.foreground, skin)
   content.upper = skinImage(section.upper, skin)
+  content.sprites = section.sprites
   local palettes = section.listPalette
   if type(palettes) == "table" then
     content.listPalette = (palettes --[[@as table<integer, table>]])[skin]

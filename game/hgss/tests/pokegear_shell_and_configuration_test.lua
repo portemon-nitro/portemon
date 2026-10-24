@@ -1057,6 +1057,71 @@ function T.tests.close_is_reported_once_and_disposal_is_silent()
   Assert.equal(host.state:readPreferences().lastApp, entered, "a completed exit remembers the actual last card")
 end
 
+function T.tests.configuration_cursor_follows_the_source_grid()
+  local ConfigureController = require("game.hgss.src.pokegear.ConfigureController")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic companion catalog must validate")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local state = PokegearState.new(nil, catalogRefs(record))
+  state:setPreference("skin", 0)
+  local labels = { change = "CHANGE", quit = "QUIT" }
+  local controller =
+    ConfigureController.new({ state = state, assets = fixtureManifest(), labels = labels })
+  Assert.equal(controller:status().cursor, 0, "the setup cursor starts on skin zero")
+  local function move(direction)
+    controller:updateFixed({ { type = "navigate", direction = direction } })
+    return controller:status().cursor
+  end
+  Assert.equal(move("left"), 2, "left from the first cell wraps within the top row")
+  Assert.equal(move("left"), 1, "left keeps walking the top row")
+  Assert.equal(move("left"), 0, "left returns to the first cell")
+  Assert.equal(move("right"), 1, "right walks the top row")
+  Assert.equal(move("right"), 2, "right reaches the top-right cell")
+  Assert.equal(move("right"), 0, "right wraps within the top row")
+  Assert.equal(move("down"), 3, "down crosses to the same column below")
+  Assert.equal(move("left"), 5, "left from the second row wraps within its row")
+  Assert.equal(move("right"), 3, "right from the row end wraps within its row")
+  Assert.equal(move("up"), 0, "up crosses to the same column above")
+  Assert.equal(move("up"), 3, "up from the top row wraps to the same column below")
+  controller:dispose()
+end
+
+function T.tests.configuration_touch_opens_the_menu_and_plays_sounds()
+  local ConfigureController = require("game.hgss.src.pokegear.ConfigureController")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic companion catalog must validate")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local state = PokegearState.new(nil, catalogRefs(record))
+  state:setPreference("skin", 0)
+  local effects = {}
+  local labels = { change = "CHANGE", quit = "QUIT" }
+  local controller = ConfigureController.new({
+    state = state,
+    assets = fixtureManifest(),
+    labels = labels,
+    effect = function(sequence)
+      effects[#effects + 1] = sequence
+    end,
+  })
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "cursor moves play the cursor tone")
+  controller:updateFixed({ { type = "pointer_down", x = 48, y = 44 } })
+  Assert.isTrue(controller:status().menuOpen, "a tap on an unlocked cell opens its menu at once")
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARDECIDE", "opening the menu plays the decide tone")
+  Assert.equal(controller:status().view.menuOptions.cursor, 0, "the menu starts on CHANGE")
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(controller:status().view.menuOptions.cursor, 1, "the menu cursor reaches QUIT")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.isFalse(controller:status().menuOpen, "QUIT closes the menu")
+  Assert.equal(state:readPreferences().skin, 0, "QUIT writes nothing")
+  controller:updateFixed({ { type = "pointer_down", x = 208, y = 116 } })
+  Assert.isTrue(controller:status().menuOpen, "a tap on skin five opens its menu")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:readPreferences().skin, 5, "CHANGE on the menu commits the tapped skin")
+  Assert.isFalse(controller:status().menuOpen, "committing closes the menu")
+  controller:dispose()
+end
+
 function T.tests.configuration_accepts_all_source_skins_with_an_old_saved_subset()
   local ConfigureController = require("game.hgss.src.pokegear.ConfigureController")
   local record = PokegearAssetSchema.validate(fixtureManifest())
@@ -1065,10 +1130,13 @@ function T.tests.configuration_accepts_all_source_skins_with_an_old_saved_subset
   local state = PokegearState.new(nil, catalogRefs(record))
   state:setPreference("unlockedSkins", { 0 })
 
-  local keyboard = ConfigureController.new({ state = state, assets = fixtureManifest() })
-  for _ = 1, 5 do
-    keyboard:updateFixed({ { type = "navigate", direction = "right" } })
-  end
+  local keyboard = ConfigureController.new({ state = state, assets = fixtureManifest(), labels = { change = "CHANGE", quit = "QUIT" } })
+  -- Right wraps within its row and down crosses rows, so skin five is
+  -- right, right, down from skin zero.
+  keyboard:updateFixed({ { type = "navigate", direction = "right" } })
+  keyboard:updateFixed({ { type = "navigate", direction = "right" } })
+  keyboard:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(keyboard:status().cursor, 5, "right, right, down focuses source skin five")
   keyboard:updateFixed({ { type = "confirm" } })
   Assert.isTrue(keyboard:status().menuOpen, "keyboard focus can open the source skin five menu")
   keyboard:updateFixed({ { type = "confirm" } })
@@ -1076,13 +1144,33 @@ function T.tests.configuration_accepts_all_source_skins_with_an_old_saved_subset
   keyboard:dispose()
 
   state:setPreference("skin", 0)
-  local pointer = ConfigureController.new({ state = state, assets = fixtureManifest() })
+  local pointer =
+    ConfigureController.new({ state = state, assets = fixtureManifest(), labels = { change = "CHANGE", quit = "QUIT" } })
   pointer:updateFixed({ { type = "pointer_down", x = 208, y = 116 } })
-  pointer:updateFixed({ { type = "confirm" } })
-  Assert.isTrue(pointer:status().menuOpen, "pointer selection can open the source skin five menu")
+  Assert.isTrue(pointer:status().menuOpen, "pointer selection opens the source skin five menu")
   pointer:updateFixed({ { type = "confirm" } })
   Assert.equal(state:readPreferences().skin, 5, "pointer selection persists source skin five")
   pointer:dispose()
+end
+
+function T.tests.cancelling_to_the_strip_plays_the_cancel_tone()
+  local host = openShell({ manifest = fixtureManifest() })
+  settle(host.shell)
+  local tab = host.shell:status().tab
+  local child = assert(host.log.children[tab], "the entered card exists")
+  local eventsBefore = #child.events
+  press(host.shell, { type = "cancel" })
+  Assert.isNil(host.shell:takeResult(), "the first cancel returns focus without closing")
+  Assert.equal(
+    host.log.effects[#host.log.effects],
+    "SEQ_SE_GS_GEARCANCEL",
+    "leaving the card for the strip plays the cancel tone"
+  )
+  Assert.equal(#child.events, eventsBefore, "the unfocused card never sees the strip press")
+  local silent = #host.log.effects
+  press(host.shell, { type = "cancel" })
+  Assert.equal(#host.log.effects, silent, "closing from the strip plays nothing further")
+  host.shell:dispose()
 end
 
 function T.tests.shell_prepares_the_active_cards_presentation_images()
