@@ -83,7 +83,45 @@ local function manifest()
   return { mail = { stationery = stationery } }
 end
 
-local function services(mailboxSnapshot)
+local function composeManifest()
+  local stationery = {}
+  for type = 0, 11 do
+    stationery[type] = { itemKey = STATIONERY[type + 1] }
+  end
+  -- The composed templates carry the two source EC slots each; only the
+  -- browsed words are compiled so validation mirrors the renderer check.
+  local twoSlotTemplate = {
+    { kind = "text", value = "fixture" },
+    { kind = "substitution" },
+    { kind = "substitution" },
+  }
+  return {
+    mail = {
+      stationery = stationery,
+      text = { templates = { ["mail-template:0:0"] = twoSlotTemplate } },
+      wordDictionary = {
+        ["0"] = { { kind = "text", value = "PIKA" } },
+        ["1"] = { { kind = "text", value = "CHU" } },
+      },
+    },
+  }
+end
+
+local function composedLetter(type)
+  return {
+    schema = "g4-mail-v1",
+    type = type,
+    author = { trainerId = 12345, name = "MISTY", gender = 1, language = 2, game = 8 },
+    icons = { false, false, false },
+    lines = {
+      { template = "mail-template:0:0", words = { "0", "1" } },
+      false,
+      false,
+    },
+  }
+end
+
+local function services(mailboxSnapshot, manifestOverride)
   local items = itemCatalog()
   local catalog = MonCatalog.new(CatalogFixture.buildAssetRoot(), items)
   local rng = Lcrng.new(0x11223344)
@@ -112,7 +150,8 @@ local function services(mailboxSnapshot)
   prepared.publish()
   local mailbox = Mailbox.new(mailboxSnapshot)
   local bag = HgssBagService.new({ catalog = items })
-  return mons, mailbox, bag, PcMailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = manifest() })
+  local applied = manifestOverride or manifest()
+  return mons, mailbox, bag, PcMailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = applied })
 end
 
 local function fullMailbox(letter)
@@ -250,6 +289,55 @@ function T.confirmation_and_give_intents_cannot_publish_after_decline_or_recipie
   Assert.deepEqual(mons:partyMon(1).mail, {}, "a stale recipient never receives the authored letter")
 end
 
+function T.hold_erased_mail_attaches_the_retained_letter_and_consumes_stationery()
+  local slots = { mail(0) }
+  for slot = 2, Mailbox.CAPACITY do
+    slots[slot] = false
+  end
+  local mons, mailbox, bag, actions = services({ schema = Mailbox.SCHEMA, slots = slots })
+  Assert.isTrue(bag:add("GRASS_MAIL", 1), "the erased stationery returns to the Bag")
+  local mailboxBefore = mailbox:capture()
+  local missing = actions:preview({
+    kind = "holdErasedMail",
+    targetSlot = 1,
+    letter = mail(3),
+    itemKey = "BLOOM_MAIL",
+    partyRevision = mons:partyRevision(),
+    bagRevision = bag:revision(),
+  })
+  Assert.equal(missing.kind, "refused", "hold-mail refuses without its stationery in the Bag")
+  Assert.equal(missing.reason, "bag_missing_item")
+
+  local holder = actions:preview({
+    kind = "holdErasedMail",
+    targetSlot = 0,
+    letter = mail(0),
+    itemKey = "GRASS_MAIL",
+    partyRevision = mons:partyRevision(),
+    bagRevision = bag:revision(),
+  })
+  Assert.equal(holder.kind, "refused", "a mon holding an item cannot hold Mail")
+  Assert.equal(holder.reason, "recipient_holds_item")
+
+  local intent = actions:preview({
+    kind = "holdErasedMail",
+    targetSlot = 1,
+    letter = mail(0),
+    itemKey = "GRASS_MAIL",
+    partyRevision = mons:partyRevision(),
+    bagRevision = bag:revision(),
+  })
+  Assert.equal(intent.kind, "ready", "hold-mail previews without further confirmation")
+  local outcome = actions:commit(intent)
+  Assert.equal(outcome.kind, "changed")
+  Assert.equal(outcome.outcome, "held")
+  Assert.equal(outcome.targetSlot, 1)
+  Assert.deepEqual(mons:partyMon(1).mail, mail(0), "the retained letter reaches its selected recipient")
+  Assert.equal(mons:partyMon(1).heldItem, "GRASS_MAIL")
+  Assert.equal(bag:quantity("GRASS_MAIL"), 0, "holding consumes the returned stationery")
+  Assert.deepEqual(mailbox:capture(), mailboxBefore, "hold-mail never touches Mailbox custody")
+end
+
 function T.confirmation_intent_cannot_be_mutated_before_commit()
   local slots = { mail(0) }
   for slot = 2, Mailbox.CAPACITY do
@@ -267,6 +355,112 @@ function T.confirmation_intent_cannot_be_mutated_before_commit()
   Assert.equal(actions:commit(intent, true).reason, "stale_intent")
   Assert.deepEqual(mailbox:capture(), mailboxBefore, "mutating a caller-held intent cannot erase Mail")
   Assert.deepEqual(bag:capture(), bagBefore, "mutating a caller-held intent cannot mint stationery")
+end
+
+function T.compose_give_mail_attaches_the_composed_letter_and_consumes_stationery()
+  local slots = { mail(0) }
+  for slot = 2, Mailbox.CAPACITY do
+    slots[slot] = false
+  end
+  local ours = composeManifest()
+  local mons, mailbox, bag, actions = services({ schema = Mailbox.SCHEMA, slots = slots }, ours)
+  Assert.isTrue(bag:add("GRASS_MAIL", 1), "the erased stationery returns to the Bag")
+  local mailboxBefore = mailbox:capture()
+  local unknown = composedLetter(0)
+  unknown.lines[1].words = { "0", "1494" }
+  local refusedWord = actions:preview({
+    kind = "composeGiveMail",
+    targetSlot = 1,
+    letter = unknown,
+    itemKey = "GRASS_MAIL",
+    partyRevision = mons:partyRevision(),
+    bagRevision = bag:revision(),
+  })
+  Assert.equal(refusedWord.kind, "refused", "uncompiled words never reach custody")
+  Assert.equal(refusedWord.reason, "invalid_letter")
+
+  local mismatched = actions:preview({
+    kind = "composeGiveMail",
+    targetSlot = 1,
+    letter = composedLetter(3),
+    itemKey = "GRASS_MAIL",
+    partyRevision = mons:partyRevision(),
+    bagRevision = bag:revision(),
+  })
+  Assert.equal(mismatched.kind, "refused", "stationery must match the composed type")
+  Assert.equal(mismatched.reason, "mail_stationery_mismatch")
+
+  local holder = actions:preview({
+    kind = "composeGiveMail",
+    targetSlot = 0,
+    letter = composedLetter(0),
+    itemKey = "GRASS_MAIL",
+    partyRevision = mons:partyRevision(),
+    bagRevision = bag:revision(),
+  })
+  Assert.equal(holder.kind, "refused", "a mon holding an item cannot hold composed Mail")
+  Assert.equal(holder.reason, "recipient_holds_item")
+
+  local intent = actions:preview({
+    kind = "composeGiveMail",
+    targetSlot = 1,
+    letter = composedLetter(0),
+    itemKey = "GRASS_MAIL",
+    partyRevision = mons:partyRevision(),
+    bagRevision = bag:revision(),
+  })
+  Assert.equal(intent.kind, "ready", "composed Mail previews without further confirmation")
+  Assert.equal(intent.operation, "compose")
+  local outcome = actions:commit(intent)
+  Assert.equal(outcome.kind, "changed")
+  Assert.equal(outcome.outcome, "held")
+  Assert.equal(outcome.targetSlot, 1)
+  Assert.deepEqual(mons:partyMon(1).mail, composedLetter(0), "the composed letter reaches its recipient")
+  Assert.equal(mons:partyMon(1).heldItem, "GRASS_MAIL")
+  Assert.equal(bag:quantity("GRASS_MAIL"), 0, "giving consumes the composed stationery")
+  Assert.deepEqual(mailbox:capture(), mailboxBefore, "composed giving never touches Mailbox custody")
+end
+
+function T.compose_give_mail_accepts_trailing_null_fields_on_single_slot_templates()
+  local slots = { mail(0) }
+  for slot = 2, Mailbox.CAPACITY do
+    slots[slot] = false
+  end
+  local ours = composeManifest()
+  ours.mail.text.templates["mail-template:0:1"] = {
+    { kind = "text", value = "fixture" },
+    { kind = "substitution" },
+  }
+  local mons, mailbox, bag, actions = services({ schema = Mailbox.SCHEMA, slots = slots }, ours)
+  Assert.isTrue(bag:add("GRASS_MAIL", 1), "the erased stationery returns to the Bag")
+  local garbage = composedLetter(0)
+  garbage.lines[1] = { template = "mail-template:0:1", words = { "0", "1" } }
+  local refused = actions:preview({
+    kind = "composeGiveMail",
+    targetSlot = 1,
+    letter = garbage,
+    itemKey = "GRASS_MAIL",
+    partyRevision = mons:partyRevision(),
+    bagRevision = bag:revision(),
+  })
+  Assert.equal(refused.kind, "refused", "trailing garbage never reaches custody")
+  Assert.equal(refused.reason, "invalid_letter")
+
+  local single = composedLetter(0)
+  single.lines[1] = { template = "mail-template:0:1", words = { "0", false } }
+  local intent = actions:preview({
+    kind = "composeGiveMail",
+    targetSlot = 1,
+    letter = single,
+    itemKey = "GRASS_MAIL",
+    partyRevision = mons:partyRevision(),
+    bagRevision = bag:revision(),
+  })
+  Assert.equal(intent.kind, "ready", "a single filled slot with trailing null previews")
+  local outcome = actions:commit(intent)
+  Assert.equal(outcome.kind, "changed")
+  Assert.deepEqual(mons:partyMon(1).mail, single, "the single-slot letter reaches its recipient")
+  Assert.equal(bag:quantity("GRASS_MAIL"), 0, "giving consumes the composed stationery")
 end
 
 return { tests = T }

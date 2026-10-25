@@ -346,7 +346,7 @@ function PartyMenuComposition.create(deps)
         measureDisplay = measureDisplay,
         effect = assert(deps.effect, "box naming requires the menu effect boundary"),
       })
-      child:open({ currentText = metadata.name, maxLength = 16 })
+      child:open({ currentText = metadata.name, maxLength = 8 })
       return child
     end
     -- The info panel's dex number follows the summary's dex mode and tables;

@@ -948,10 +948,19 @@ function FieldPresentationResources:preparePcApplication(status, runtime)
     for _, icon in ipairs(assert(status.icons, "Mailbox status publishes message icon snapshots")) do
       iconKeys[#iconKeys + 1] = icon.iconKey
     end
+    -- Readiness composes independent prerequisites without serializing
+    -- enrollment: mon icon pages plus the Mailbox renderer's exact drawn
+    -- visuals (list background and stationery backgrounds).
+    local iconsReady, iconsFailure =
+      assert(self.monIconProvider, "PC applications borrow the shared mon icon provider"):prepareKeys(iconKeys)
+    local imagesReady, imageFailure = assert(self.mailboxRenderer, "Mailbox borrows its owned renderer"):prepare(status)
+    if not iconsReady or not imagesReady then
+      return false, iconsFailure or imageFailure
+    end
+    return true
   else
     error("PC application kind has no presentation preparation", 0)
   end
-  return assert(self.monIconProvider, "PC applications borrow the shared mon icon provider"):prepareKeys(iconKeys)
 end
 
 ---@param runtime FieldRuntime runtime owners borrowed by the app renderers

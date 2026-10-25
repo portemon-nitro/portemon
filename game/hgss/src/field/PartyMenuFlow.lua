@@ -17,8 +17,6 @@ local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 
 local TERMINAL_FIELD_ACTION = "pokemon.field_move"
 
-local function silentAudio() end
-
 -- The complete set of pages the flow's single live child can occupy.
 local PAGE = {
   BAG_BROWSE = "bag_browse",
@@ -477,18 +475,21 @@ function PartyMenuFlow:_openPage(page, continuation)
       manifest = self._pcManifest,
       monCatalog = self._assets.monCatalog,
       measureDisplay = measureDisplay,
-      audio = { play = silentAudio },
+      audio = { play = self._effect },
     })
   end
   if page == PAGE.MAIL_CONFIRM or page == PAGE.MAIL_ERASE_CONFIRM then
     assert(continuation, "the Mail confirmation retains its operation intent")
+    -- Retail party-menu TakeMail custody questions (bank 300,
+    -- party_menu_list_items.c): 44 sends the removed Mail to the PC,
+    -- 48 confirms erasing its written message.
+    local messageId = page == PAGE.MAIL_CONFIRM and 44 or 48
     return MailboxScreenState.new({
       mode = "confirm",
-      prompt = page == PAGE.MAIL_CONFIRM and "Send this letter to the PC?"
-        or "Erase this letter and return its stationery?",
+      prompt = { bank = 300, id = messageId },
       manifest = self._pcManifest,
       measureDisplay = measureDisplay,
-      audio = { play = silentAudio },
+      audio = { play = self._effect },
     })
   end
   error("unknown menu flow page " .. tostring(page), 0)
@@ -598,6 +599,23 @@ local function takeCompletion(outcome, displayName)
     return { kind = outcome.kind, message = { templateKey = "takeNoItem", displayName = displayName } }
   end
   return { kind = outcome.kind }
+end
+
+-- Retail party-menu TakeMail outcome messages (bank 300,
+-- party_menu_list_items.c) reported through the Mail outcome: 47 sent to
+-- the PC, 51 Mailbox full, 52 taken from the Pokemon, 84 Bag full.
+-- Refusals and cancellations without a retail message ride bare.
+local TAKE_MAIL_OUTCOME_MESSAGES = { sent = 47, mailbox_full = 51, returned = 52, bag_full = 84 }
+
+---@param outcome table<string, unknown>
+---@return table<string, unknown>
+local function takeMailOutcome(outcome)
+  assert(type(outcome) == "table", "Mail outcomes arrive as records")
+  local messageId = TAKE_MAIL_OUTCOME_MESSAGES[outcome.outcome or outcome.reason]
+  if messageId ~= nil then
+    outcome.prompt = { bank = 300, id = messageId }
+  end
+  return outcome
 end
 
 -- Completes a parked party intent with a publication outcome; the child
@@ -1171,7 +1189,7 @@ function PartyMenuFlow:_routeResult(result)
   if self._page == PAGE.MAIL_CONFIRM then
     local continuation = assert(self._continuation, "the send confirmation retains the pending request")
     if result.kind == "confirmed" then
-      self._mailOutcome = self._mailActions:commit(continuation.intent, true)
+      self._mailOutcome = takeMailOutcome(self._mailActions:commit(continuation.intent, true))
     else
       assert(result.kind == "declined", "the Mail send offer is confirmed or declined")
       self._mailActions:commit(continuation.intent, false)
@@ -1185,7 +1203,7 @@ function PartyMenuFlow:_routeResult(result)
         self:_replace(PAGE.MAIL_ERASE_CONFIRM, { intent = erase, focusSlot = continuation.focusSlot })
         return
       end
-      self._mailOutcome = erase
+      self._mailOutcome = takeMailOutcome(erase)
     end
     self:_replace(PAGE.PARTY_BROWSE, { focusSlot = continuation.focusSlot })
     return
@@ -1193,10 +1211,10 @@ function PartyMenuFlow:_routeResult(result)
   if self._page == PAGE.MAIL_ERASE_CONFIRM then
     local continuation = assert(self._continuation, "the Mail erase confirmation retains its pending request")
     if result.kind == "confirmed" then
-      self._mailOutcome = self._mailActions:commit(continuation.intent, true)
+      self._mailOutcome = takeMailOutcome(self._mailActions:commit(continuation.intent, true))
     else
       assert(result.kind == "declined", "the Mail erase offer is confirmed or declined")
-      self._mailOutcome = self._mailActions:commit(continuation.intent, false)
+      self._mailOutcome = takeMailOutcome(self._mailActions:commit(continuation.intent, false))
     end
     self:_replace(PAGE.PARTY_BROWSE, { focusSlot = continuation.focusSlot })
     return

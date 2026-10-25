@@ -131,6 +131,41 @@ PcSources.storageWallpaperSwatches = { palette = 75, count = 24, lockedIndex = 2
 -- Sprite loaders in ov103_021EE2E0 and ov109_021E6EE4 bind these archive
 -- resources to the Mailbox and Photo Album application sprites.
 PcSources.mailboxUiMembers = { character = 7, palette = 10, cell = 8, animation = 9 }
+-- Mailbox sprite roles over the compiled mailbox.animation.* sequences
+-- (gMailboxSpriteTemplates, MailboxApp_CreateSprites/MoveCursor/
+-- SetSpriteAnim in mailbox_app.c). Anims 4/5 are the list-cursor flash
+-- (cells 7/8: 64- and 112-pixel highlights); anims 0/1 are the
+-- previous/next page arrows (cells 0/1: mirrored 32x32 arrow tiles) at
+-- (24,176)/(56,176). Sprite 3 is the static quit/close target at
+-- (224,176), anim 2, never re-animated. Anim 3 is set by no code and
+-- no template: it stays compiled but undrawn.
+PcSources.mailboxSpriteRoles = {
+  cursor = { animations = { 4, 5 } },
+  pagePrevious = { animation = 0 },
+  pageNext = { animation = 1 },
+  -- Grid inputs 0-9 are the mail cells (MoveCursor :1594-1601: x
+  -- 64/192, y 16+32k with k = row); input 10 is CLOSE at (224,176)
+  -- (MoveCursorToCloseButton :1353-1356) and selects cursor anim 4,
+  -- every other grid input selects anim 5. Cells are 1-based so
+  -- cells[inputId + 1] is the input's anchor.
+  cursorGrid = {
+    closeInput = 10,
+    cells = {
+      { x = 64, y = 16 },
+      { x = 192, y = 16 },
+      { x = 64, y = 48 },
+      { x = 192, y = 48 },
+      { x = 64, y = 80 },
+      { x = 192, y = 80 },
+      { x = 64, y = 112 },
+      { x = 192, y = 112 },
+      { x = 64, y = 144 },
+      { x = 192, y = 144 },
+      { x = 224, y = 176 },
+    },
+  },
+  sprite3 = { animation = 2, x = 224, y = 176 },
+}
 PcSources.photoAlbumSpriteMembers = { character = 1, palette = 0, cell = 2, animation = 3 }
 -- Source prop policy from overlay_02_02248728.s.
 PcSources.terminal = {
@@ -147,6 +182,10 @@ PcSources.terminal = {
 PcSources.mailText = {
   storageBanks = { 24, 25 },
   mailboxBank = 232,
+  -- Bank 300 carries the party-menu TakeMail custody messages
+  -- (party_menu_list_items.c): 44 send-to-PC confirm, 48 erase
+  -- follow-up, 47 sent, 51 mailbox full, 52 taken, 84 bag full.
+  partyMailBank = 300,
   albumBank = 0,
   -- The retail ROM resolves native map sections through this bank.
   landmarkBank = 279,

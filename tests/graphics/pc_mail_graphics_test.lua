@@ -49,6 +49,23 @@ local function readyVersions()
   return versions
 end
 
+-- Drawing never acquires: each state stages its exact visuals through
+-- the renderer first, with the same bounded wait the icon pages use.
+local function prepareMailbox(renderer, state)
+  local deadline = os.clock() + 120
+  while true do
+    local ready, failure = renderer:prepare(state:status())
+    if ready then
+      return
+    end
+    Assert.isNil(failure, "mailbox visuals prepare: " .. tostring(failure))
+    Assert.isTrue(os.clock() < deadline, "mailbox visuals prepare without stalling")
+    if love.timer ~= nil and love.timer.sleep ~= nil then
+      love.timer.sleep(0.005)
+    end
+  end
+end
+
 local function mailFixture(manifest, stationeryType)
   local selectedTemplate
   for key, tokens in pairs(assert(manifest.mail.text.templates)) do
@@ -166,6 +183,7 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
         audio = { play = function() end },
         monCatalog = monCatalog,
       })
+      prepareMailbox(renderer, state)
       state:draw(resources)
       love.graphics.setCanvas()
       local pixels = scope:own(canvas:newImageData()):getString()
@@ -203,6 +221,7 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
       audio = { play = function() end },
       monCatalog = monCatalog,
     })
+    prepareMailbox(renderer, noTextState)
     noTextState:draw(resources)
     love.graphics.setCanvas()
     local noTextPixels = scope:own(noText:newImageData()):getString()
@@ -234,6 +253,7 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
       audio = { play = function() end },
       monCatalog = monCatalog,
     })
+    prepareMailbox(renderer, noIconsState)
     noIconsState:draw(resources)
     love.graphics.setCanvas()
     Assert.isTrue(
@@ -281,6 +301,7 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
     local focused = scope:own(love.graphics.newCanvas(256, 192))
     love.graphics.setCanvas(focused)
     love.graphics.clear(0, 0, 0, 0)
+    prepareMailbox(renderer, mailboxState)
     mailboxState:draw(resources)
     love.graphics.setCanvas()
     local focusedPixels = scope:own(focused:newImageData()):getString()
@@ -288,6 +309,7 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
     local moved = scope:own(love.graphics.newCanvas(256, 192))
     love.graphics.setCanvas(moved)
     love.graphics.clear(0, 0, 0, 0)
+    prepareMailbox(renderer, mailboxState)
     mailboxState:draw(resources)
     love.graphics.setCanvas()
     Assert.isTrue(
@@ -298,6 +320,7 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
     local actionMenu = scope:own(love.graphics.newCanvas(256, 192))
     love.graphics.setCanvas(actionMenu)
     love.graphics.clear(0, 0, 0, 0)
+    prepareMailbox(renderer, mailboxState)
     mailboxState:draw(resources)
     love.graphics.setCanvas()
     local actionPixels = scope:own(actionMenu:newImageData()):getString()
@@ -307,6 +330,7 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
     local movedAction = scope:own(love.graphics.newCanvas(256, 192))
     love.graphics.setCanvas(movedAction)
     love.graphics.clear(0, 0, 0, 0)
+    prepareMailbox(renderer, mailboxState)
     mailboxState:draw(resources)
     love.graphics.setCanvas()
     local actionImage = scope:own(actionMenu:newImageData())
@@ -360,6 +384,7 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
     local emptyPartyMenu = scope:own(love.graphics.newCanvas(256, 192))
     love.graphics.setCanvas(emptyPartyMenu)
     love.graphics.clear(0, 0, 0, 0)
+    prepareMailbox(renderer, emptyPartyState)
     emptyPartyState:draw(resources)
     love.graphics.setCanvas()
     Assert.isTrue(

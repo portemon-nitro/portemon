@@ -447,8 +447,9 @@ function T.messages_follow_the_screen_state_and_refusals()
   state:dispose()
 
   -- Depositing the last usable mon is refused, with that mon's message.
+  -- The TryDeposit custody checks run when DEPOSIT is chosen, before any
+  -- target-box selector opens.
   local deposit = PcStorageState.new(openOptions(mons, 0, "wide"))
-  deposit:updateFixed({ { type = "confirm" } })
   deposit:updateFixed({ { type = "confirm" } })
   deposit:updateFixed({ { type = "confirm" } })
   Assert.equal(deposit:_view().message.id, 6, "the last Pokémon cannot be deposited")
@@ -2909,6 +2910,215 @@ function T.rejected_parent_reflow_keeps_the_last_valid_plan_and_recovers()
   Assert.equal(plan.inputKey, expected.inputKey, "recovery keeps the current input key")
   state:dispose()
   state:dispose()
+end
+
+function T.deposit_selector_reports_where_and_commits_to_the_first_empty_slot()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0x99aabbcc, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))))
+  local blocker = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE" }))
+  assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = blocker } } })).publish()
+  local deposited = mons:partyMon(1)
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  state:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 1 } } })
+  state:updateFixed({ { type = "confirm" } })
+  state:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:status().phase, "carry", "choosing DEPOSIT opens the target-box selector")
+  local asking = state:_view().message
+  Assert.equal(asking.id, 19, "the selector asks where to deposit")
+  Assert.equal(asking.window, "W39")
+  -- Focusing the occupied slot is harmless: the commit lands in the first
+  -- empty slot instead of the focused occupied slot.
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", slot = 0 } } })
+  state:updateFixed({ { type = "confirm" } })
+  Assert.isNil(state:status().carry, "the selector closes once the deposit commits")
+  Assert.equal(mons:boxMon(0, 0).personality, blocker.personality, "the occupied slot keeps its mon")
+  local firstEmpty = assert(mons:boxMon(0, 1), "the deposit lands in the first empty slot")
+  Assert.equal(firstEmpty.personality, deposited.personality)
+  Assert.equal(mons:partyCount(), 1)
+  state:dispose()
+end
+
+function T.full_deposit_target_reports_full_and_keeps_the_selector_open()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0xddeeff11, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))))
+  local updates = {}
+  for slot = 0, 29 do
+    updates[#updates + 1] = { box = 0, slot = slot, mon = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" })) }
+  end
+  assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = updates })).publish()
+  local deposited = mons:partyMon(1)
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  state:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 1 } } })
+  state:updateFixed({ { type = "confirm" } })
+  state:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:_view().message.id, 19, "the selector opens even when the active box is full")
+  state:updateFixed({ { type = "confirm" } })
+  local full = state:_view().message
+  Assert.equal(full.id, 13, "confirming a full box reports that the box is full")
+  Assert.notNil(state:status().carry, "a full box keeps the selector open")
+  Assert.equal(mons:partyCount(), 2, "a full box never takes party custody")
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(state:_view().message.id, 19, "leaving the full box returns to the deposit prompt")
+  state:updateFixed({ { type = "confirm" } })
+  Assert.isNil(state:status().carry, "the next box accepts the deposit")
+  Assert.equal(assert(mons:boxMon(1, 0)).personality, deposited.personality)
+  Assert.equal(mons:partyCount(), 1)
+  state:dispose()
+end
+
+function T.release_followups_show_bye_bye_and_worried_once_each()
+  local mons = releaseService()
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  local nickname = Mon.displayName(mons:partyMon(0), mons:catalog())
+  finishReleaseScan(state)
+  Assert.equal(state:status().releaseCheck.outcome, "removed")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  local bye = state:_view().message
+  Assert.equal(bye.id, 4, "acknowledging a removal shows the bye-bye line once")
+  Assert.equal(bye.subject, nickname, "the bye-bye line retains the released nickname")
+  Assert.equal(bye.window, "W37")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  local dismissed = state:_view().message
+  Assert.isTrue(dismissed == nil or dismissed.id ~= 4, "a second input dismisses the bye-bye line")
+  Assert.equal(state:status().releaseCheck.outcome, "removed")
+  state:dispose()
+
+  local protected = releaseService()
+  protected:setMove(0, 1, "TACKLE")
+  protected:setMove(0, 0, "FLY")
+  protected:setMove(0, 1, "SURF")
+  local returned = PcStorageState.new(openOptions(protected, 2, "wide"))
+  finishReleaseScan(returned)
+  Assert.equal(returned:status().releaseCheck.outcome, "returned")
+  returned:updateFixed({ { type = "navigate", direction = "up" } })
+  local worried = returned:_view().message
+  Assert.equal(worried.id, 33, "acknowledging a return shows the worried line once")
+  Assert.equal(worried.window, "W37")
+  returned:updateFixed({ { type = "navigate", direction = "up" } })
+  local settled = returned:_view().message
+  Assert.isTrue(settled == nil or settled.id ~= 33, "a second input dismisses the worried line")
+  Assert.equal(returned:status().releaseCheck.outcome, "returned")
+  returned:dispose()
+end
+
+function T.give_item_replacement_confirms_with_the_incoming_item()
+  local mons = monService()
+  local options = openOptions(mons, 3, "wide")
+  local bag = options.bag
+  Assert.isTrue(bag:add("POTION", 1))
+  Assert.isTrue(bag:add("SITRUS_BERRY", 1))
+  setPartyHeldItem(mons, "POTION")
+  options.childFactories.heldItemPicker = heldItemPicker("SITRUS_BERRY")
+  local state = PcStorageState.new(options)
+  state:updateFixed({ { type = "action", action = "giveItem" } })
+  state:updateFixed({})
+  local pending = state:_view().message
+  Assert.equal(pending.id, 26, "replacing a held item asks to put the incoming item away")
+  Assert.equal(pending.window, "W37")
+  Assert.isTrue(pending.yesNo)
+  Assert.equal(pending.subject, bag:catalog():item("SITRUS_BERRY").name)
+  state:dispose()
+end
+
+function T.storage_cues_follow_the_retail_situations()
+  local function recordingOptions(mons, mode)
+    local cues = {}
+    local options = openOptions(mons, mode, "wide")
+    options.audio = {
+      play = function(name)
+        cues[#cues + 1] = name
+      end,
+    }
+    return options, cues
+  end
+  local function played(cues, name)
+    for _, cue in ipairs(cues) do
+      if cue == name then
+        return true
+      end
+    end
+    return false
+  end
+
+  do
+    local mons = monService()
+    local options, cues = recordingOptions(mons, 0)
+    local booted = PcStorageState.new(options)
+    booted:updateFixed({})
+    booted:updateFixed({})
+    Assert.equal(#cues, 1, "the login cue plays once on boot, not per tick")
+    Assert.equal(cues[1], "SEQ_SE_DP_PC_LOGIN")
+    booted:dispose()
+  end
+
+  do
+    local mons = monService()
+    local boxed = mons:partyMon(0)
+    assert(mons:preparePcChanges({
+      partyRevision = mons:partyRevision(),
+      boxRevision = mons:boxRevision(),
+    }, { boxUpdates = { { box = 0, slot = 3, mon = boxed } } })).publish()
+    local options, cues = recordingOptions(mons, 1)
+    local state = PcStorageState.new(options)
+    state:updateFixed({})
+    local booted = #cues
+    state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 3 } } })
+    state:updateFixed({ { type = "confirm" } })
+    Assert.isTrue(played(cues, "SEQ_SE_DP_BOX02"), "touching an occupied mon plays the pickup cue")
+    state:updateFixed({ { type = "confirm" } })
+    Assert.isTrue(played(cues, "SEQ_SE_DP_DECIDE"), "choosing a menu action plays the decide cue")
+    state:updateFixed({ { type = "navigate", direction = "down" } })
+    Assert.isTrue(played(cues, "SEQ_SE_DP_SELECT"), "cursor movement plays the select cue")
+    state:updateFixed({ { type = "cancel" } })
+    Assert.isTrue(state:status().carry == nil, "cancel puts the picked-up mon back")
+    state:dispose()
+    Assert.isTrue(booted >= 1, "the boot cue played before the interaction cues")
+  end
+
+  do
+    -- Depositing the last usable mon refuses with the error cue.
+    local mons = monService()
+    local options, cues = recordingOptions(mons, 0)
+    local state = PcStorageState.new(options)
+    state:updateFixed({})
+    state:updateFixed({ { type = "confirm" } })
+    state:updateFixed({ { type = "confirm" } })
+    Assert.equal(state:_view().message.id, 6)
+    Assert.isTrue(played(cues, "SEQ_SE_DP_BOX03"), "a refused deposit plays the error cue")
+    state:dispose()
+  end
+
+  do
+    -- A successful drop applies with the drop cue.
+    local mons = monService()
+    local factory = CatalogFixture.makeFactory(0x44556677, mons:catalog())
+    Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))))
+    local boxed = mons:partyMon(1)
+    assert(mons:preparePcChanges({
+      partyRevision = mons:partyRevision(),
+      boxRevision = mons:boxRevision(),
+    }, { boxUpdates = { { box = 0, slot = 1, mon = boxed } } })).publish()
+    local options, cues = recordingOptions(mons, 2)
+    local state = PcStorageState.new(options)
+    state:updateFixed({})
+    state:updateFixed({ { type = "party" } })
+    state:updateFixed({ { type = "action", action = "move" } })
+    state:updateFixed({
+      { type = "storage_target", target = { kind = "box", box = 0, slot = 2 } },
+      { type = "confirm" },
+    })
+    Assert.isTrue(played(cues, "SEQ_SE_DP_BOX01"), "applying a move plays the drop cue")
+    Assert.isNil(state:status().carry)
+    state:dispose()
+  end
 end
 
 return { tests = T }

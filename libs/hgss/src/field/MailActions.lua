@@ -42,10 +42,17 @@ function MailActions.new(deps)
   local bag = assert(deps.bag)
   local manifest = assert(deps.manifest)
   local stationery = assert(manifest.mail.stationery)
-  return setmetatable(
-    { mons = mons, mailbox = mailbox, bag = bag, stationery = stationery, nextToken = 0 },
-    MailActions
-  )
+  local mailText = manifest.mail.text
+  local wordDictionary = manifest.mail.wordDictionary
+  return setmetatable({
+    mons = mons,
+    mailbox = mailbox,
+    bag = bag,
+    stationery = stationery,
+    mailText = mailText,
+    wordDictionary = wordDictionary,
+    nextToken = 0,
+  }, MailActions)
 end
 
 function MailActions:revisionSnapshot()
@@ -71,6 +78,83 @@ end
 
 function MailActions:_resolve(request)
   assert(type(request) == "table" and type(request.kind) == "string", "mail requests carry a kind")
+  -- Composed letters must satisfy the renderer expansion contract:
+  -- every line template is compiled, its substitution slots match the
+  -- stored word fields, and every filled word is a compiled entry.
+  local function checkComposedLetter(letter)
+    local templates = self.mailText and self.mailText.templates or nil
+    local wordDictionary = self.wordDictionary
+    if type(templates) ~= "table" or type(wordDictionary) ~= "table" then
+      return false
+    end
+    if not pcall(Mail.validate, letter) then
+      return false
+    end
+    for _, line in ipairs(letter.lines) do
+      if line ~= false then
+        local template = templates[line.template]
+        if type(template) ~= "table" then
+          return false
+        end
+        local substitutions = 0
+        for _, token in ipairs(template) do
+          if token.kind == "substitution" then
+            substitutions = substitutions + 1
+          end
+        end
+        -- words rides the fixed two-field storage shape (MAILMSG_FIELDS_MAX);
+        -- only the first nmsg fields carry words, trailing fields stay false
+        -- (EC_WORD_NULL), mirroring retail SetTrailingFieldsEmpty.
+        if #line.words ~= 2 then
+          return false
+        end
+        for position, wordKey in ipairs(line.words) do
+          if position <= substitutions then
+            if wordKey == false or wordDictionary[wordKey] == nil then
+              return false
+            end
+          elseif wordKey ~= false then
+            return false
+          end
+        end
+      end
+    end
+    return true
+  end
+  -- The hold-mail follow-up attaches the retained erased letter to a
+  -- party mon while consuming its stationery from the Bag. The letter
+  -- rides the request because the Mailbox slot is already empty.
+  if request.kind == "holdErasedMail" or request.kind == "composeGiveMail" then
+    if request.partyRevision ~= self.mons:partyRevision() then
+      return nil, "stale"
+    end
+    local recipient = self.mons:partyMon(assert(request.targetSlot))
+    if recipient == nil or recipient.isEgg then
+      return nil, "ineligible_recipient"
+    end
+    if recipient.heldItem ~= "NONE" then
+      return nil, "recipient_holds_item"
+    end
+    local letter = assert(request.letter, "hold-mail carries its retained letter")
+    local itemKey = assert(request.itemKey, "hold-mail carries its stationery")
+    if request.kind == "composeGiveMail" and not checkComposedLetter(letter) then
+      return nil, "invalid_letter"
+    end
+    local stationery = assert(self.stationery[letter.type], "mail stationery is compiled")
+    if stationery.itemKey ~= itemKey then
+      return nil, "mail_stationery_mismatch"
+    end
+    if not self.bag:has(itemKey, 1) then
+      return nil, "bag_missing_item"
+    end
+    return {
+      letter = letter,
+      itemKey = itemKey,
+      recipient = recipient,
+      targetSlot = request.targetSlot,
+      partyRevision = self.mons:partyRevision(),
+    }
+  end
   if request.kind == "eraseMailboxMessage" or request.kind == "giveMailboxMail" then
     if request.mailboxRevision ~= self.mailbox:revision() then
       return nil, "stale"
@@ -147,6 +231,18 @@ function MailActions:preview(request)
   if request.kind == "giveMailboxMail" then
     return self:_intent("ready", request, resolved, "give")
   end
+  if request.kind == "holdErasedMail" then
+    if request.bagRevision ~= self.bag:revision() then
+      return result("refused", { reason = "stale" })
+    end
+    return self:_intent("ready", request, resolved, "hold")
+  end
+  if request.kind == "composeGiveMail" then
+    if request.bagRevision ~= self.bag:revision() then
+      return result("refused", { reason = "stale" })
+    end
+    return self:_intent("ready", request, resolved, "compose")
+  end
   return result("refused", { reason = "unavailable" })
 end
 
@@ -178,8 +274,11 @@ function MailActions:commit(intent, confirmation)
     self.intents[intent.token] = nil
     return result("refused", { reason = "declined" })
   end
-  local isGive = intent.kind == "ready" and intent.operation == "give"
-  if (intent.kind ~= "confirm" and not isGive) or (intent.kind == "confirm" and confirmation ~= true) then
+  -- Ready intents publish without further confirmation: the give and
+  -- hold selections already confirmed through the party picker.
+  local isDirect = intent.kind == "ready"
+    and (intent.operation == "give" or intent.operation == "hold" or intent.operation == "compose")
+  if (intent.kind ~= "confirm" and not isDirect) or (intent.kind == "confirm" and confirmation ~= true) then
     return result("refused", { reason = "confirmation_required" })
   end
   self.intents[intent.token] = nil
@@ -236,6 +335,36 @@ function MailActions:commit(intent, confirmation)
     partyChange.publish()
     mailboxChange.publish()
     return result("changed", { outcome = "given", targetSlot = request.targetSlot })
+  end
+  if request.kind == "holdErasedMail" or request.kind == "composeGiveMail" then
+    if request.bagRevision ~= self.bag:revision() then
+      return result("refused", { reason = "stale" })
+    end
+    local bagChange, bagReason = self.bag:prepareInventoryChanges(request.bagRevision, {
+      { op = "take", item = intent.itemKey, quantity = 1 },
+    })
+    if bagChange == nil then
+      return result("refused", { reason = bagReason or "stale" })
+    end
+    local partyChange = self.mons:preparePartyChanges(request.partyRevision, {
+      {
+        slot = request.targetSlot,
+        mon = (function()
+          local recipient = resolved.recipient
+          recipient.heldItem, recipient.mail = intent.itemKey, copy(intent.letter)
+          return recipient
+        end)(),
+      },
+    })
+    if not partyChange then
+      return result("refused", { reason = "stale" })
+    end
+    if not partyChange.isCurrent() or not bagChange.isCurrent() then
+      return result("refused", { reason = "stale" })
+    end
+    partyChange.publish()
+    bagChange.publish()
+    return result("changed", { outcome = "held", targetSlot = request.targetSlot })
   end
   local bagRevision = request.bagRevision
   if bagRevision ~= self.bag:revision() then

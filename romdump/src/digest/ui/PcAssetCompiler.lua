@@ -364,7 +364,19 @@ local function compileText(romFs, dependencies)
     error(err or "PC message archive is unavailable", 0)
   end
   local banks, boxLabels = {}, {}
-  local ids = { PcSources.mailText.albumBank, PcSources.mailText.landmarkBank, 24, 25, 232, 292, 293, 294, 295, 296 }
+  local ids = {
+    PcSources.mailText.albumBank,
+    PcSources.mailText.landmarkBank,
+    24,
+    25,
+    232,
+    PcSources.mailText.partyMailBank,
+    292,
+    293,
+    294,
+    295,
+    296,
+  }
   for _, wordBank in ipairs(PcSources.mailText.wordBanks) do
     ids[#ids + 1] = wordBank.messageBank
   end

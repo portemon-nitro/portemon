@@ -304,6 +304,84 @@ function T.real_source_compiles_all_wallpaper_and_stationery_variants(romFs, _)
   Assert.equal(actualTemplateCount, templateCount, "Mail template catalog has no unsupported keys")
 end
 
+function T.real_source_compiles_party_mail_bank_and_sprite_roles(romFs, _)
+  local loaded, PcAssetCompiler = pcall(require, "romdump.src.digest.ui.PcAssetCompiler")
+  Assert.isTrue(loaded, "the PC presentation compiler is missing")
+  local bundle = assert(PcAssetCompiler.compile(romFs), "the PC presentation bundle compiles")
+  local manifest = assert(bundle.manifest, "the compiled family publishes its manifest")
+  Assert.isTrue(PcAssetSchema.isValidManifest(manifest), "the extra party-mail bank stays schema-compatible")
+  Assert.equal(PcSources.mailText.partyMailBank, 300, "the party-mail bank identity is pinned")
+  local bank300 = assert(manifest.text.banks[300], "the party TakeMail message bank is compiled")
+  local messageArchive = assert(romFs:openNarc("messages"), "the source message archive opens")
+  local bank300Bytes = assert(messageArchive:readMember(300), "the party source text bank exists")
+  local sourceBank300 = assert(FieldMessageBank.decode(bank300Bytes, { label = "pc-party-mail-source" }))
+  local compiledMessageCount = 0
+  for _ in pairs(bank300) do
+    compiledMessageCount = compiledMessageCount + 1
+  end
+  Assert.equal(compiledMessageCount, #sourceBank300.messages, "every source message in bank 300 is compiled")
+  local function displayText(tokens)
+    local parts = {}
+    for _, token in ipairs(tokens) do
+      if token.kind == "glyph" then
+        parts[#parts + 1] = token.text
+      elseif token.kind == "line_break" then
+        parts[#parts + 1] = "\n"
+      end
+    end
+    return table.concat(parts)
+  end
+  for _, expected in ipairs({
+    { id = 44, text = "Send the removed Mail to\nyour PC?" },
+    { id = 47, text = "The Mail was sent to your PC." },
+    { id = 48, text = "If the Mail is removed, its written\nmessage will be lost. Is that OK?" },
+    { id = 51, text = "Your PC’s Mailbox is full." },
+    { id = 52, text = "Mail was taken from the\nPokémon." },
+    { id = 84, text = "The Bag is full." },
+  }) do
+    Assert.equal(
+      displayText(assert(bank300[expected.id], "bank 300 carries message " .. expected.id)),
+      expected.text,
+      "bank 300 msg " .. expected.id .. " keeps its source text"
+    )
+  end
+  Assert.deepEqual(
+    PcSources.mailboxSpriteRoles,
+    {
+      cursor = { animations = { 4, 5 } },
+      pagePrevious = { animation = 0 },
+      pageNext = { animation = 1 },
+      cursorGrid = {
+        closeInput = 10,
+        cells = {
+          { x = 64, y = 16 },
+          { x = 192, y = 16 },
+          { x = 64, y = 48 },
+          { x = 192, y = 48 },
+          { x = 64, y = 80 },
+          { x = 192, y = 80 },
+          { x = 64, y = 112 },
+          { x = 192, y = 112 },
+          { x = 64, y = 144 },
+          { x = 192, y = 144 },
+          { x = 224, y = 176 },
+        },
+      },
+      sprite3 = { animation = 2, x = 224, y = 176 },
+    },
+    "mailbox sprite roles pin the decomp cursor/page-arrow animation ids"
+  )
+  local animations = assert(manifest.mailbox.ui.animations, "mailbox UI animations are compiled")
+  for _, animId in ipairs({ 0, 1, 4, 5 }) do
+    local entry = assert(animations[animId], "the sprite role animation is compiled: " .. animId)
+    Assert.equal(#entry.frames, 1, "the role animation carries its single source frame: " .. animId)
+  end
+  for _, key in ipairs({ "mailbox.animation.0", "mailbox.animation.1", "mailbox.animation.4", "mailbox.animation.5" }) do
+    local sequence = assert(manifest.sequences[key], "the sprite role sequence resolves: " .. key)
+    Assert.equal(#sequence.frames, 1, "the role sequence carries its single source frame: " .. key)
+  end
+end
+
 assertSelection = function(romFs, selections, selector, path, members, engine, bg)
   local selection = assert(selections[selector], "the compiler records " .. selector)
   Assert.equal(selection.path, path, selector .. " resolves through the expected archive path")

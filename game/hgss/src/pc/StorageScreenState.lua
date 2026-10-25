@@ -11,6 +11,7 @@ local Personality = require("libs.mons.src.gen4.Personality")
 ---@field _mode integer
 ---@field _mons HgssMonService
 ---@field _bag HgssBagService
+---@field _audio table<string, unknown>?
 ---@field _actions PcStorageActions
 ---@field _manifest table<string, unknown>
 ---@field _measureDisplay fun(): DisplayMeasurement
@@ -138,6 +139,7 @@ function StorageScreenState.new(options)
     _releaseIntent = nil,
     _releaseRevisions = nil,
     _transitionTick = 0,
+    _booted = false,
     _closed = false,
     _resultTaken = false,
     _disposed = false,
@@ -223,6 +225,7 @@ local REFUSAL_MESSAGES = {
   capsule_attached = 29,
   last_usable = 6,
   bag_full = 14,
+  box_full = 13,
   no_item = nil,
 }
 
@@ -278,6 +281,20 @@ function StorageScreenState:_pendingSubject()
   return source ~= nil and self:_itemSubject(self:_occupant(source), {}) or nil
 end
 
+-- Names the incoming item for a give-item replacement confirmation (bank 25
+-- msg 26 'Put away {item}?'), resolved through the live Bag catalog.
+---@param request table<string, unknown>
+---@return string?
+function StorageScreenState:_incomingItemSubject(request)
+  if type(request.item) ~= "string" then
+    return nil
+  end
+  local ok, item = pcall(function()
+    return self._bag:catalog():item(request.item)
+  end)
+  return ok and item.name or nil
+end
+
 -- The prompt or message line, chosen by what the screen is doing (windows
 -- W37/W39/W40/W38 of ov14_021F84B4 and resolvers F685C, F67B0, F68C0, F6844,
 -- F6928). The browse prompt shows only in Deposit and Withdraw.
@@ -291,15 +308,19 @@ function StorageScreenState:_message()
     if check.outcome == "confirm" then
       return { id = 2, window = "W37", subject = check.name, yesNo = true }
     elseif check.outcome == "removed" then
-      return { id = 3, window = "W37", subject = check.name }
+      return { id = check.sequel and 4 or 3, window = "W37", subject = check.name }
     elseif check.outcome == "returned" then
-      return { id = 32, window = "W37", subject = check.name }
+      return { id = check.sequel and 33 or 32, window = "W37", subject = check.sequel and nil or check.name }
     elseif check.outcome == "cancelled" and check.reason ~= nil then
       local id = refusalMessageId({ action = "release", reason = check.reason })
       return id ~= nil and { id = id, window = "W37" } or nil
     end
   end
   if self._pendingIntent ~= nil then
+    local request = self._pendingIntent.request
+    if request ~= nil and request.kind == "giveItem" then
+      return { id = 26, window = "W37", yesNo = true, subject = self:_incomingItemSubject(request) }
+    end
     return { id = 23, window = "W37", yesNo = true, subject = self:_pendingSubject() }
   end
   if self._notice ~= nil then
@@ -310,6 +331,9 @@ function StorageScreenState:_message()
       return { id = 35, window = "W38" }
     end
     return { id = 10, window = "W39" }
+  end
+  if self._carry ~= nil and self._carry.action == "deposit" then
+    return { id = 19, window = "W39" }
   end
   if self._menu ~= nil and self._menu.address == nil then
     return { id = 7, window = "W39" }
@@ -470,6 +494,45 @@ function StorageScreenState:_preview(request)
   return decision
 end
 
+-- Nil-guarded retail cue player: the composed audio boundary may be absent
+-- or carry a nil play function, and silent presentation paths must never
+-- fail on a missing cue.
+---@param sequenceName string
+function StorageScreenState:_cue(sequenceName)
+  local audio = self._audio
+  if audio ~= nil and audio.play ~= nil then
+    audio.play(sequenceName)
+  end
+end
+
+-- First empty slot of one box, or nil when the box is full.
+---@param box integer
+---@return integer?
+function StorageScreenState:_firstEmptySlot(box)
+  for slot = 0, 29 do
+    if self._mons:boxMon(box, slot) == nil then
+      return slot
+    end
+  end
+  return nil
+end
+
+-- First empty deposit target scanning forward from the active box, wrapping
+-- across every box (retail lets the depositor pick any box). Nil only when
+-- every box is full.
+---@return table<string, unknown>?
+function StorageScreenState:_firstEmptyDepositTarget()
+  local count = self._mons:boxCount()
+  for step = 0, count - 1 do
+    local box = (self._activeBox + step) % count
+    local slot = self:_firstEmptySlot(box)
+    if slot ~= nil then
+      return { kind = "box", box = box, slot = slot }
+    end
+  end
+  return nil
+end
+
 function StorageScreenState:_occupant(address)
   if address.kind == "party" then
     return address.slot < self._mons:partyCount() and self._mons:partyMon(address.slot) or nil
@@ -483,6 +546,9 @@ function StorageScreenState:_openMenu()
   local address = self:_address(self._focus)
   local mon = self:_occupant(address)
   if self._mode == 3 then
+    if mon ~= nil then
+      self:_cue("SEQ_SE_DP_BOX02")
+    end
     if mon ~= nil and mon.heldItem ~= "NONE" then
       self:_beginAction("swapItems", nil, address)
     end
@@ -493,6 +559,7 @@ function StorageScreenState:_openMenu()
     self._menu = nil
     return
   end
+  self:_cue("SEQ_SE_DP_BOX02")
   self._menu = { actions = actions, selected = 1, address = address }
   if self._mode == 2 then
     self._carry = { kind = "mon", action = "move", source = address, mon = self:_monVisual(address) }
@@ -540,6 +607,9 @@ function StorageScreenState:_startRelease(address)
       total = self._mons:boxCount() * 30 + 6,
       outcome = intent.kind == "stale" and "stale" or "cancelled",
     }
+    if self._releaseCheck.outcome == "cancelled" then
+      self:_cue("SEQ_SE_DP_BOX03")
+    end
   end
 end
 
@@ -562,6 +632,28 @@ function StorageScreenState:_beginAction(action, data, address)
     assert(source ~= nil, "Storage actions start at a selected address")
   end
   if action == "deposit" then
+    -- Retail TryDeposit runs the custody checks first, then opens the
+    -- target-box selector: probe with the first empty slot so refusals
+    -- surface before any carry is armed, and deposit at confirm time into
+    -- the chosen box's first empty slot (never a focused occupied slot).
+    local target = self:_firstEmptyDepositTarget()
+    local probe
+    if target ~= nil then
+      probe = self:_preview({ kind = "deposit", source = source, destination = target })
+    else
+      -- Every box is full: the swap preview still runs the same
+      -- party-custody checks without needing an empty destination.
+      probe = self:_preview({
+        kind = "swap",
+        source = source,
+        destination = { kind = "box", box = self._activeBox, slot = 0 },
+      })
+    end
+    if probe.kind == "refused" then
+      self._lastAction = probe
+      self:_cue("SEQ_SE_DP_BOX03")
+      return
+    end
     self._focus = { domain = "box", slot = self._focus.slot }
     self._carry = {
       kind = "mon",
@@ -569,6 +661,7 @@ function StorageScreenState:_beginAction(action, data, address)
       source = source,
       mon = self:_monVisual(source),
     }
+    return
   elseif action == "withdraw" then
     self._carry = {
       kind = "mon",
@@ -589,6 +682,9 @@ function StorageScreenState:_beginAction(action, data, address)
     if intent.kind == "confirm" then
       self._pendingIntent = intent
     end
+    if self._lastAction.kind == "refused" then
+      self:_cue("SEQ_SE_DP_BOX03")
+    end
   elseif action == "bagItem" then
     -- BAG puts the held item away (mode 3's bottom-right button).
     local carried = self._carry
@@ -600,7 +696,8 @@ function StorageScreenState:_beginAction(action, data, address)
     -- One entry that branches on the held item (ov14_021F5EE4 handlers).
     local mon = self:_occupant(source)
     if mon ~= nil and mon.isEgg == true then
-      self._lastAction = { kind = "rejected", reason = "egg" }
+      self._lastAction = { kind = "refused", reason = "egg", action = "heldItems" }
+      self:_cue("SEQ_SE_DP_BOX03")
     elseif mon ~= nil and mon.heldItem == "NONE" then
       self:_openChild("heldItemPicker", { source = source })
     else
@@ -747,6 +844,7 @@ function StorageScreenState:_updateChild(events)
         self._lastAction = decision
       else
         self._lastAction = decision
+        self:_cue("SEQ_SE_DP_BOX03")
       end
       self:_disposeChild()
       return
@@ -771,6 +869,26 @@ end
 
 function StorageScreenState:_confirmCarry()
   local carry = assert(self._carry)
+  if carry.action == "deposit" then
+    -- The selector commits into the chosen box's first empty slot; a full
+    -- box reports bank-25 msg 13 and keeps the selector open.
+    local slot = self:_firstEmptySlot(self._activeBox)
+    if slot == nil then
+      self._lastAction = { kind = "refused", reason = "box_full", action = "deposit" }
+      self:_cue("SEQ_SE_DP_BOX03")
+      return
+    end
+    local deposit = { kind = "box", box = self._activeBox, slot = slot }
+    local intent = self:_preview({ kind = "deposit", source = carry.source, destination = deposit })
+    self._lastAction = self._actions:commit(intent)
+    if self._lastAction.kind == "changed" or self._lastAction.kind == "unchanged" then
+      self._focus, self._carry, self._menu = { domain = "box", slot = slot }, nil, nil
+      self:_cue("SEQ_SE_DP_BOX01")
+    elseif self._lastAction.kind == "refused" then
+      self:_cue("SEQ_SE_DP_BOX03")
+    end
+    return
+  end
   local destination = carry.destination or self:_address(self._focus)
   if
     destination.kind == carry.source.kind and destination.kind == "party" and destination.slot == carry.source.slot
@@ -788,6 +906,9 @@ function StorageScreenState:_confirmCarry()
     self._carry, self._menu = nil, nil
     if self._lastAction.kind == "changed" or self._lastAction.kind == "unchanged" then
       self._focus = { domain = destination.kind, slot = destination.slot }
+      self:_cue("SEQ_SE_DP_BOX01")
+    elseif self._lastAction.kind == "refused" then
+      self:_cue("SEQ_SE_DP_BOX03")
     end
     return
   end
@@ -801,6 +922,9 @@ function StorageScreenState:_confirmCarry()
   self._lastAction = self._actions:commit(intent)
   if self._lastAction.kind == "changed" or self._lastAction.kind == "unchanged" then
     self._focus, self._carry, self._menu = { domain = destination.kind, slot = destination.slot }, nil, nil
+    self:_cue("SEQ_SE_DP_BOX01")
+  elseif self._lastAction.kind == "refused" then
+    self:_cue("SEQ_SE_DP_BOX03")
   end
 end
 
@@ -922,12 +1046,16 @@ function StorageScreenState:_handleCancelInput()
     self._releaseCheck.outcome = "cancelled"
     self._releaseIntent = nil
     self._releaseRevisions = nil
+    self:_cue("SEQ_SE_DP_SELECT")
   elseif self._pendingIntent ~= nil then
     self._pendingIntent = nil
+    self:_cue("SEQ_SE_DP_SELECT")
   elseif self._carry ~= nil then
     self._carry, self._menu = nil, nil
+    self:_cue("SEQ_SE_DP_SELECT")
   elseif self._menu ~= nil then
     self._menu = nil
+    self:_cue("SEQ_SE_DP_SELECT")
   elseif self._mode >= 2 and self._tray ~= "closed" then
     self:_closeTray()
   else
@@ -967,6 +1095,7 @@ function StorageScreenState:_handleFocusInput(event)
     end
   elseif event.type == "navigate" then
     local direction = assert(event.direction)
+    self:_cue("SEQ_SE_DP_SELECT")
     if self._menu ~= nil and self._carry == nil and (direction == "up" or direction == "down") then
       local delta = direction == "up" and -1 or 1
       self._menu.selected = math.max(1, math.min(#self._menu.actions, self._menu.selected + delta))
@@ -995,11 +1124,13 @@ function StorageScreenState:_handleConfirmInput(event)
     elseif self._menu ~= nil then
       local menu = assert(self._menu)
       local selectedAction = assert(menu.actions[menu.selected], "Storage selection resolves to a menu action")
+      self:_cue("SEQ_SE_DP_DECIDE")
       self:_beginAction(selectedAction)
     else
       self:_openMenu()
     end
   elseif event.type == "action" then
+    self:_cue("SEQ_SE_DP_DECIDE")
     self:_beginAction(assert(event.action), event, self._menu == nil and self:_address(self._focus) or nil)
   else
     assert(false, "unknown Storage input event " .. tostring(event.type))
@@ -1108,6 +1239,11 @@ end
 function StorageScreenState:updateFixed(events)
   assert(not self._disposed, "disposed Storage does not update")
   assert(type(events) == "table", "Storage updates use an ordered event batch")
+  if not self._booted then
+    -- Retail plays the login cue once when the app opens, not per tick.
+    self._booted = true
+    self:_cue("SEQ_SE_DP_PC_LOGIN")
+  end
   if self._closed then
     return
   end
@@ -1116,7 +1252,14 @@ function StorageScreenState:updateFixed(events)
     self._notice = nil
     local acknowledged = self._releaseCheck
     if acknowledged ~= nil and acknowledged.outcome ~= "confirm" and acknowledged.outcome ~= "pending" then
-      acknowledged.acknowledged = true
+      if acknowledged.sequel then
+        acknowledged.acknowledged = true
+      elseif acknowledged.outcome == "removed" or acknowledged.outcome == "returned" then
+        -- The bye-bye/worried follow-up shows once before dismissal.
+        acknowledged.sequel = true
+      else
+        acknowledged.acknowledged = true
+      end
     end
   end
   if self._child ~= nil then

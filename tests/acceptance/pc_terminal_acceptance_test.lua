@@ -467,6 +467,10 @@ function T.tests.mailbox_actions_follow_party_presence_at_open()
     host:step(emptyHandle, { { type = "cancel" } })
     Assert.equal(host:status().phase, "list", "cancelling the letter returns to the Mailbox list")
     host:step(emptyHandle, { { type = "cancel" } })
+    Assert.isNil(host:result(emptyHandle), "quitting plays the sprite-3 flash before reporting closed")
+    for _ = 1, 8 do
+      host:step(emptyHandle, {})
+    end
     Assert.deepEqual(host:result(emptyHandle), { kind = "closed" }, "cancelling the Mailbox reports its closed child")
     host:close(emptyHandle)
     Assert.isFalse(host:isActive(), "the field host closes the completed child")
