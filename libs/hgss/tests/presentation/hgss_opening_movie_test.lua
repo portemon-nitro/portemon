@@ -2372,7 +2372,7 @@ function T.steps_hold_until_a_later_start_fires_and_completes()
   movie:dispose()
 end
 
--- Engine-compositor acceptance fixtures: per-engine plane visibility and
+-- Engine-compositor behavior fixtures: per-engine plane visibility and
 -- priority, main-only town and particle stages, and independent
 -- engine-local source windows with plane masks. Every fixture below passes
 -- the strict generated reader, so each test fails on the compositor
@@ -2431,6 +2431,85 @@ local function engineDrawsOf(graphics, movie, engine, image, baseline)
     end
   end
   return found
+end
+
+-- Blend-active engines rasterize each plane into the transparent compositor
+-- scratch (movie.planeCanvas) under their window clip instead of painting
+-- the role target directly; the dual-coefficient shaders then resolve the
+-- per-pixel pair. Structural blend assertions therefore follow the planes
+-- into the scratch with native colors plus the eva/evb/firstMask/secondMask
+-- uniforms, while pixel correctness stays with the graphics readback tests.
+---@param graphics table fake graphics namespace
+---@param movie table player owning the compositor scratch
+---@param image table staged plane image
+---@param baseline integer only draws after this index
+---@return table[] scratch draws of the staged plane image
+local function compositorDrawsOf(graphics, movie, image, baseline)
+  local target = assert(movie.planeCanvas, "the blend movie owns its raster scratch")
+  local found = {}
+  for index = (baseline or 0) + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if graphics.drawCanvases[index].canvas == target and draw.image == image then
+      found[#found + 1] = draw
+    end
+  end
+  return found
+end
+
+---@param graphics table fake graphics namespace
+---@param movie table player owning the compositor scratch
+---@param baseline integer only scissor records after this index
+---@return table[] requested scissor rects on the compositor scratch
+local function compositorScissors(graphics, movie, baseline)
+  local target = assert(movie.planeCanvas, "the blend movie owns its raster scratch")
+  local found = {}
+  for index = (baseline or 0) + 1, #graphics.scissorIntersections do
+    local entry = graphics.scissorIntersections[index]
+    if graphics.scissorCanvases[index].canvas == target then
+      found[#found + 1] = entry.requested
+    end
+  end
+  return found
+end
+
+---@param graphics table fake graphics namespace
+---@param name string shader uniform name
+---@return unknown[] every value sent under that name, in send order
+local function uniformSends(graphics, name)
+  local found = {}
+  for _, shader in ipairs(graphics.shaders) do
+    for _, send in ipairs(shader.sends) do
+      if send.name == name then
+        found[#found + 1] = send.value
+      end
+    end
+  end
+  return found
+end
+
+---@param graphics table fake graphics namespace
+---@param name string shader uniform name
+---@param skip integer only sends after this many recorded values
+---@return unknown[] values sent under that name after the skip point
+local function uniformSendsSince(graphics, name, skip)
+  local all = uniformSends(graphics, name)
+  local found = {}
+  for index = (skip or 0) + 1, #all do
+    found[#found + 1] = all[index]
+  end
+  return found
+end
+
+---@param draws table[] scratch draws to check
+---@param label string plane label for diagnostics
+local function assertNativeScratchDraws(draws, label)
+  Assert.isTrue(#draws > 0, "the " .. label .. " plane paints into the compositor scratch")
+  for _, draw in ipairs(draws) do
+    Assert.equal(draw.color[1], 1, "the " .. label .. " plane keeps its native red")
+    Assert.equal(draw.color[2], 1, "the " .. label .. " plane keeps its native green")
+    Assert.equal(draw.color[3], 1, "the " .. label .. " plane keeps its native blue")
+    Assert.equal(draw.color[4], 1, "the " .. label .. " plane carries no global alpha")
+  end
 end
 
 ---@param graphics table fake graphics namespace
@@ -3247,60 +3326,62 @@ function T.opposing_engine_blends_keep_separate_weights_across_a_flip()
   local mainBackHandle = assert(current.imageByPath[mainBack], "the main selected plane is staged")
   local subFrontHandle = assert(current.imageByPath[subFront], "the sub front plane is staged")
   local subBackHandle = assert(current.imageByPath[subBack], "the sub selected plane is staged")
-  local function frameColors(engine, image, baseline)
-    local found = {}
-    for _, draw in ipairs(engineDrawsOf(graphics, movie, engine, image, baseline)) do
-      found[#found + 1] = { draw.color[1], draw.color[2], draw.color[3], draw.color[4] }
+  -- Both engines rasterize natively into the compositor scratch; the old
+  -- per-draw tint was the single complementary weight, which the
+  -- normative equation replaces with two independently saturated
+  -- coefficients. The per-engine weights below are the raw step law:
+  -- ev=floor(elapsed*31/ticks), direction 0 opens (ev,31-ev) and
+  -- direction 1 opens (31-ev,ev), each side capped at sixteen.
+  local function frameWeightSet(name, drawBaseline, evaBaseline)
+    local weights = {}
+    for _, weight in ipairs(uniformSendsSince(graphics, name, evaBaseline)) do
+      weights[weight] = true
     end
-    return found
-  end
-  local function isPlainWhiteOpaque(color)
-    return color[1] == 1 and color[2] == 1 and color[3] == 1 and color[4] == 1
+    Assert.isTrue(
+      #uniformSendsSince(graphics, name, evaBaseline) > 0,
+      "the frame drives the compositor " .. name .. " uniforms"
+    )
+    return weights
   end
   movie:updateFixed()
   local firstBaseline = #graphics.draws
+  local firstEva = #uniformSends(graphics, "eva")
+  local firstEvb = #uniformSends(graphics, "evb")
   movie:draw()
-  local mainFrontFirst = frameColors("main", mainFrontHandle, firstBaseline)
+  local mainFrontFirst = compositorDrawsOf(graphics, movie, mainFrontHandle, firstBaseline)
   Assert.equal(#mainFrontFirst, 1, "the excluded main front plane paints once")
-  Assert.isTrue(
-    isPlainWhiteOpaque(mainFrontFirst[1]),
-    "the excluded front plane stays opaque while the back planes blend"
-  )
-  local mainBackFirst = frameColors("main", mainBackHandle, firstBaseline)
+  assertNativeScratchDraws(mainFrontFirst, "excluded main front")
+  local mainBackFirst = compositorDrawsOf(graphics, movie, mainBackHandle, firstBaseline)
   Assert.equal(#mainBackFirst, 1, "the selected main plane paints once")
-  Assert.isFalse(
-    isPlainWhiteOpaque(mainBackFirst[1]),
-    "the selected main plane carries the opening blend weight"
-  )
-  local subBackFirst = frameColors("sub", subBackHandle, firstBaseline)
+  assertNativeScratchDraws(mainBackFirst, "selected main")
+  local subBackFirst = compositorDrawsOf(graphics, movie, subBackHandle, firstBaseline)
   Assert.equal(#subBackFirst, 1, "the selected sub plane paints once")
-  Assert.isTrue(
-    isPlainWhiteOpaque(subBackFirst[1]),
-    "the reversed sub blend opens fully saturated: ev=floor(31/20)=1, raw=31-1=30, min(30,16)/16=1.0"
-  )
-  Assert.isFalse(
-    mainBackFirst[1][1] == subBackFirst[1][1]
-      and mainBackFirst[1][2] == subBackFirst[1][2]
-      and mainBackFirst[1][3] == subBackFirst[1][3]
-      and mainBackFirst[1][4] == subBackFirst[1][4],
-    "opposite directions paint opposite weights on the two engines"
-  )
+  assertNativeScratchDraws(subBackFirst, "selected sub")
+  -- Opening tick: ev=floor(31/20)=1, so main (direction 0) sends (1,16)
+  -- while sub (direction 1) sends (16,1).
+  local firstEvaSet = frameWeightSet("eva", firstBaseline, firstEva)
+  local firstEvbSet = frameWeightSet("evb", firstBaseline, firstEvb)
+  Assert.isTrue(firstEvaSet[1], "the main engine opens its first side at one sixteenth")
+  Assert.isTrue(firstEvaSet[16], "the reversed sub engine opens its first side saturated")
+  Assert.isTrue(firstEvbSet[16], "the main engine opens its second side saturated")
+  Assert.isTrue(firstEvbSet[1], "the reversed sub engine opens its second side at one sixteenth")
   for _ = 1, 9 do
     movie:updateFixed()
   end
   local midBaseline = #graphics.draws
+  local midEva = #uniformSends(graphics, "eva")
+  local midEvb = #uniformSends(graphics, "evb")
   movie:draw()
-  local mainBackMid = frameColors("main", mainBackHandle, midBaseline)
-  local subBackMid = frameColors("sub", subBackHandle, midBaseline)
+  local mainBackMid = compositorDrawsOf(graphics, movie, mainBackHandle, midBaseline)
   Assert.equal(#mainBackMid, 1, "the selected main plane still paints mid-transition")
-  Assert.isFalse(
-    isPlainWhiteOpaque(mainBackMid[1]),
-    "the selected main plane still carries its mid blend weight"
-  )
-  Assert.isFalse(
-    mainBackMid[1][4] == subBackMid[1][4] and mainBackMid[1][1] == subBackMid[1][1],
-    "opposite directions stay opposite mid-transition"
-  )
+  assertNativeScratchDraws(mainBackMid, "selected main mid-transition")
+  -- Tenth tick: ev=floor(10*31/20)=15, so main sends (15,16) and sub (16,15).
+  local midEvaSet = frameWeightSet("eva", midBaseline, midEva)
+  local midEvbSet = frameWeightSet("evb", midBaseline, midEvb)
+  Assert.isTrue(midEvaSet[15], "the main engine still counts its first side up mid-transition")
+  Assert.isTrue(midEvaSet[16], "the reversed sub engine keeps its first side saturated")
+  Assert.isTrue(midEvbSet[16], "the main engine keeps its second side saturated")
+  Assert.isTrue(midEvbSet[15], "the reversed sub engine still counts its second side up")
   local midEffects = assert(movie.current, "the running movie owns its current slot").effects
   Assert.isFalse(midEffects["main-cross"].done, "the main blend still runs at its tenth tick")
   Assert.isFalse(midEffects["sub-cross"].done, "the sub blend still runs at its tenth tick")
@@ -3309,13 +3390,17 @@ function T.opposing_engine_blends_keep_separate_weights_across_a_flip()
   end
   Assert.equal(movie.current.mainPhysical, "lower", "the authored flip moves the main engine")
   local flipBaseline = #graphics.draws
+  local flipEva = #uniformSends(graphics, "eva")
+  local flipEvb = #uniformSends(graphics, "evb")
   movie:draw()
-  local mainBackFlip = frameColors("main", mainBackHandle, flipBaseline)
-  local subBackFlip = frameColors("sub", subBackHandle, flipBaseline)
-  Assert.isFalse(
-    mainBackFlip[1][4] == subBackFlip[1][4] and mainBackFlip[1][1] == subBackFlip[1][1],
-    "the flip carries each engine result instead of merging them"
-  )
+  -- Sixteenth tick: ev=floor(16*31/20)=24, so main sends (16,7) and sub
+  -- (7,16); the flip carries each running pair instead of merging them.
+  local flipEvaSet = frameWeightSet("eva", flipBaseline, flipEva)
+  local flipEvbSet = frameWeightSet("evb", flipBaseline, flipEvb)
+  Assert.isTrue(flipEvaSet[16], "the flipped main engine keeps its saturated first side")
+  Assert.isTrue(flipEvaSet[7], "the flipped sub engine keeps its running first side")
+  Assert.isTrue(flipEvbSet[7], "the flipped main engine keeps its running second side")
+  Assert.isTrue(flipEvbSet[16], "the flipped sub engine keeps its saturated second side")
   for _ = 1, 4 do
     movie:updateFixed()
   end
@@ -3386,57 +3471,66 @@ function T.selected_planes_blend_with_capped_coefficients_under_window_masks()
   local current = assert(movie.current, "the running movie owns its current slot")
   local midHandle = assert(current.imageByPath[midImage], "the selected middle plane is staged")
   local frontHandle = assert(current.imageByPath[frontImage], "the excluded front plane is staged")
-  local function drawColors(image, baseline)
-    local found = {}
-    for _, draw in ipairs(engineDrawsOf(graphics, movie, "main", image, baseline)) do
-      found[#found + 1] = { draw.color[1], draw.color[2], draw.color[3], draw.color[4] }
-    end
-    return found
-  end
+  -- Both planes rasterize natively into the compositor scratch; the old
+  -- per-draw tint was the single global weight, which the normative
+  -- equation replaces with the per-pixel pair test. The masks below
+  -- select the middle plane first and only the backdrop second, so the
+  -- middle pair never qualifies and both planes keep native colors while
+  -- the dual uniforms still travel: elapsed 15 of 31 counts raw fifteen,
+  -- direction 0 sends (15,16).
   for _ = 1, 15 do
     movie:updateFixed()
   end
   local midBaseline = #graphics.draws
   movie:draw()
-  local midColors = drawColors(midHandle, midBaseline)
-  Assert.isTrue(#midColors > 0, "the selected middle plane paints under its window")
-  local midInfluenced = false
-  for _, color in ipairs(midColors) do
-    if not (color[1] == 1 and color[2] == 1 and color[3] == 1 and color[4] == 1) then
-      midInfluenced = true
-    end
-  end
-  Assert.isTrue(midInfluenced, "the non-frontmost selected plane carries the blend instead of the frontmost")
-  local frontColors = drawColors(frontHandle, midBaseline)
-  Assert.isTrue(#frontColors > 0, "the excluded front plane still paints where its window allows")
-  for _, color in ipairs(frontColors) do
-    Assert.isTrue(
-      color[1] == 1 and color[2] == 1 and color[3] == 1 and color[4] == 1,
-      "the masked-out front plane stays opaque instead of taking the global weight"
-    )
-  end
+  local midDraws = compositorDrawsOf(graphics, movie, midHandle, midBaseline)
+  assertNativeScratchDraws(midDraws, "selected middle")
+  local evaSends = uniformSends(graphics, "eva")
+  local evbSends = uniformSends(graphics, "evb")
+  Assert.equal(evaSends[#evaSends], 15, "the middle tick sends fifteen first sixteenths")
+  Assert.equal(evbSends[#evbSends], 16, "the second side saturates independently of the first")
+  local firstSends = uniformSends(graphics, "firstMask")
+  local secondSends = uniformSends(graphics, "secondMask")
+  Assert.equal(firstSends[#firstSends], 2, "the first mask selects only the middle plane")
+  Assert.equal(secondSends[#secondSends], 32, "the second mask selects only the backdrop")
+  local frontDraws = compositorDrawsOf(graphics, movie, frontHandle, midBaseline)
+  assertNativeScratchDraws(frontDraws, "excluded front")
   for _ = 1, 1 do
     movie:updateFixed()
   end
-  local capBaseline = #graphics.draws
+  -- Elapsed 16 counts raw sixteen and elapsed 31 counts raw thirty-one:
+  -- the first side plateaus at sixteen on both frames while the second
+  -- side falls from fifteen to zero independently.
   movie:draw()
-  local atSixteen = drawColors(midHandle, capBaseline)
+  local evaAtSixteen = uniformSends(graphics, "eva")
+  local evbAtSixteen = uniformSends(graphics, "evb")
+  Assert.equal(
+    evaAtSixteen[#evaAtSixteen],
+    16,
+    "the saturation tick caps the first side at sixteen"
+  )
+  Assert.equal(
+    evbAtSixteen[#evbAtSixteen],
+    15,
+    "the second side stays near-full at sixteen steps"
+  )
   for _ = 1, 15 do
     movie:updateFixed()
   end
-  local fullBaseline = #graphics.draws
   movie:draw()
-  local atFull = drawColors(midHandle, fullBaseline)
-  Assert.equal(#atSixteen, #atFull, "the capped plateau keeps the same draw count")
-  Assert.equal(#atSixteen > 0, true, "the plateau comparison samples the selected plane")
-  for index, color in ipairs(atSixteen) do
-    local other = atFull[index]
-    Assert.notNil(other, "the plateau keeps every selected draw")
-    Assert.equal(color[1], other[1], "the capped channel plateaus instead of dividing by the tick count")
-    Assert.equal(color[2], other[2], "the capped channel plateaus instead of dividing by the tick count")
-    Assert.equal(color[3], other[3], "the capped channel plateaus instead of dividing by the tick count")
-    Assert.equal(color[4], other[4], "the capped channel plateaus instead of dividing by the tick count")
-  end
+  local evaAtFull = uniformSends(graphics, "eva")
+  local evbAtFull = uniformSends(graphics, "evb")
+  Assert.equal(
+    evaAtFull[#evaAtFull],
+    evaAtSixteen[#evaAtSixteen],
+    "the capped first side plateaus instead of tracking the tick count"
+  )
+  Assert.equal(evaAtFull[#evaAtFull], 16, "the final raw step stays saturated")
+  Assert.equal(
+    evbAtFull[#evbAtFull],
+    0,
+    "the independent second side retires while the first side plateaus"
+  )
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the mask movie releases every handle")
 end
@@ -3609,48 +3703,66 @@ function T.blend_coefficients_follow_exact_sixteenth_steps()
   local current = assert(movie.current, "the running movie owns its current slot")
   local backHandle = assert(current.imageByPath[backImage], "the selected back plane is staged")
   local frontHandle = assert(current.imageByPath[frontImage], "the excluded front plane is staged")
-  local function alphas(image, baseline)
-    local found = {}
-    for _, draw in ipairs(engineDrawsOf(graphics, movie, "main", image, baseline)) do
-      found[#found + 1] = draw.color[4]
-    end
-    return found
+  -- The old per-draw alpha was the single complementary weight; the
+  -- normative equation sends two independently saturated coefficients
+  -- while every plane rasterizes natively. Raw ev counts
+  -- floor(elapsed*31/31) and direction 0 opens (ev,31-ev) with each side
+  -- capped at sixteen, so the frames below send (0,16), (1,16),
+  -- (15,16), (16,15), and (16,0).
+  local function framePair(baseline, evaBaseline, evbBaseline)
+    local evaSends = uniformSendsSince(graphics, "eva", evaBaseline)
+    local evbSends = uniformSendsSince(graphics, "evb", evbBaseline)
+    Assert.isTrue(#evaSends > 0, "the frame drives the first-weight uniforms")
+    Assert.isTrue(#evbSends > 0, "the frame drives the second-weight uniforms")
+    local draws = compositorDrawsOf(graphics, movie, backHandle, baseline)
+    Assert.equal(#draws, 1, "the frame paints the selected plane once")
+    assertNativeScratchDraws(draws, "selected back")
+    return evaSends[#evaSends], evbSends[#evbSends]
   end
-  local preflight = alphas(backHandle, 0)
-  Assert.equal(#preflight, 1, "the opening frame paints the selected plane once")
-  Assert.equal(preflight[1], 0, "the opening tick carries raw step zero")
+  local preflightEva, preflightEvb = framePair(0, 0, 0)
+  Assert.equal(preflightEva, 0, "the opening tick sends raw step zero first")
+  Assert.equal(preflightEvb, 16, "the opening tick saturates the second side")
   movie:updateFixed()
   local firstBaseline = #graphics.draws
+  local firstEvaCount = #uniformSends(graphics, "eva")
+  local firstEvbCount = #uniformSends(graphics, "evb")
   movie:draw()
-  local first = alphas(backHandle, firstBaseline)
-  Assert.equal(#first, 1, "the first tick paints the selected plane once")
-  Assert.equal(first[1], 1 / 16, "the first tick carries one capped sixteenth")
+  local firstEva, firstEvb = framePair(firstBaseline, firstEvaCount, firstEvbCount)
+  Assert.equal(firstEva, 1, "the first tick sends one capped sixteenth first")
+  Assert.equal(firstEvb, 16, "the first tick keeps the second side saturated")
   for _ = 1, 14 do
     movie:updateFixed()
   end
   local midBaseline = #graphics.draws
+  local midEvaCount = #uniformSends(graphics, "eva")
+  local midEvbCount = #uniformSends(graphics, "evb")
   movie:draw()
-  local mid = alphas(backHandle, midBaseline)
-  Assert.equal(#mid, 1, "the middle tick paints the selected plane once")
-  Assert.equal(mid[1], 15 / 16, "the middle tick carries fifteen capped sixteenths")
+  local midEva, midEvb = framePair(midBaseline, midEvaCount, midEvbCount)
+  Assert.equal(midEva, 15, "the middle tick sends fifteen capped sixteenths first")
+  Assert.equal(midEvb, 16, "the middle tick keeps the second side saturated")
   movie:updateFixed()
   local capBaseline = #graphics.draws
+  local capEvaCount = #uniformSends(graphics, "eva")
+  local capEvbCount = #uniformSends(graphics, "evb")
   movie:draw()
-  local capped = alphas(backHandle, capBaseline)
-  Assert.equal(#capped, 1, "the saturation tick paints the selected plane once")
-  Assert.equal(capped[1], 1, "raw steps past sixteen saturate opaque")
+  local cappedEva, cappedEvb = framePair(capBaseline, capEvaCount, capEvbCount)
+  Assert.equal(cappedEva, 16, "raw steps past sixteen saturate the first side")
+  Assert.equal(cappedEvb, 15, "the second side counts down independently")
   for _ = 1, 15 do
     movie:updateFixed()
   end
   local fullBaseline = #graphics.draws
+  local fullEvaCount = #uniformSends(graphics, "eva")
+  local fullEvbCount = #uniformSends(graphics, "evb")
   movie:draw()
-  local full = alphas(backHandle, fullBaseline)
-  Assert.equal(#full, 1, "the final tick paints the selected plane once")
-  Assert.equal(full[1], 1, "the final raw step stays saturated opaque")
-  Assert.equal(full[1], capped[1], "saturation plateaus instead of tracking the tick count")
-  for _, alpha in ipairs(alphas(frontHandle, 0)) do
-    Assert.equal(alpha, 1, "the excluded front plane stays opaque on every draw")
-  end
+  local fullEva, fullEvb = framePair(fullBaseline, fullEvaCount, fullEvbCount)
+  Assert.equal(fullEva, 16, "the final raw step stays saturated")
+  Assert.equal(fullEva, cappedEva, "saturation plateaus instead of tracking the tick count")
+  Assert.equal(fullEvb, 0, "the independent second side retires at the final tick")
+  assertNativeScratchDraws(
+    compositorDrawsOf(graphics, movie, frontHandle, 0),
+    "excluded front"
+  )
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the coefficient movie releases every handle")
 end
@@ -3847,36 +3959,75 @@ function T.engine_effects_stay_local_across_a_physical_flip()
   local mainBackHandle = assert(current.imageByPath[mainBack], "the selected main plane is staged")
   local mainFrontHandle = assert(current.imageByPath[mainFront], "the excluded main plane is staged")
   local subBackHandle = assert(current.imageByPath[subBack], "the idle sub plane is staged")
-  local function alphas(engine, image, baseline)
-    local found = {}
-    for _, draw in ipairs(engineDrawsOf(graphics, movie, engine, image, baseline)) do
-      found[#found + 1] = draw.color[4]
+  -- The blended main engine rasterizes natively into the compositor
+  -- scratch while the idle sub engine keeps painting its role target
+  -- directly; the old per-draw alpha was the single complementary weight,
+  -- which the normative equation replaces with two independently
+  -- saturated coefficients. Ticks are out of twenty: the opening frame
+  -- sends main (1,16) uniformly and the flip frame sends main (7,16)
+  -- uniformly, with no sub-engine coefficient anywhere.
+  local function frameWeights(evaBaseline, evbBaseline)
+    local evaSends = uniformSendsSince(graphics, "eva", evaBaseline)
+    local evbSends = uniformSendsSince(graphics, "evb", evbBaseline)
+    Assert.isTrue(#evaSends > 0, "the frame drives the first-weight uniforms")
+    Assert.isTrue(#evbSends > 0, "the frame drives the second-weight uniforms")
+    return evaSends, evbSends
+  end
+  local function assertUniform(weights, expected, message)
+    for _, weight in ipairs(weights) do
+      Assert.equal(weight, expected, message)
     end
-    return found
   end
   movie:updateFixed()
   local firstBaseline = #graphics.draws
+  local firstEva = #uniformSends(graphics, "eva")
+  local firstEvb = #uniformSends(graphics, "evb")
   movie:draw()
-  local backFirst = alphas("main", mainBackHandle, firstBaseline)
-  Assert.equal(#backFirst, 1, "the selected main plane paints once")
-  Assert.equal(backFirst[1], 1 / 16, "the opening weight selects the masked back plane")
-  for _, alpha in ipairs(alphas("main", mainFrontHandle, firstBaseline)) do
-    Assert.equal(alpha, 1, "the unmasked main plane stays opaque")
-  end
-  for _, alpha in ipairs(alphas("sub", subBackHandle, firstBaseline)) do
-    Assert.equal(alpha, 1, "the blend never spills onto the idle engine")
+  assertNativeScratchDraws(
+    compositorDrawsOf(graphics, movie, mainBackHandle, firstBaseline),
+    "selected main"
+  )
+  local firstEvaSends, firstEvbSends = frameWeights(firstEva, firstEvb)
+  assertUniform(firstEvaSends, 1, "the opening weight selects the masked back plane first")
+  assertUniform(firstEvbSends, 16, "the main engine opens saturated second")
+  assertNativeScratchDraws(
+    compositorDrawsOf(graphics, movie, mainFrontHandle, firstBaseline),
+    "unmasked main"
+  )
+  -- The idle engine never enters the compositor: it paints its own role
+  -- target natively with no coefficient sends of its own.
+  local subFirst = engineDrawsOf(graphics, movie, "sub", subBackHandle, firstBaseline)
+  Assert.isTrue(#subFirst > 0, "the idle sub engine still paints its own target")
+  for _, draw in ipairs(subFirst) do
+    Assert.equal(draw.color[4], 1, "the blend never spills onto the idle engine")
   end
   for _ = 1, 4 do
     movie:updateFixed()
   end
   Assert.equal(movie.current.mainPhysical, "lower", "the authored flip moves the main engine")
   local flipBaseline = #graphics.draws
+  local flipEva = #uniformSends(graphics, "eva")
+  local flipEvb = #uniformSends(graphics, "evb")
   movie:draw()
-  local backFlip = alphas("main", mainBackHandle, flipBaseline)
-  Assert.equal(#backFlip, 1, "the flipped engine still paints its selected plane once")
-  Assert.equal(backFlip[1], 7 / 16, "the flip carries the running weight instead of restarting it")
-  for _, alpha in ipairs(alphas("sub", subBackHandle, flipBaseline)) do
-    Assert.equal(alpha, 1, "the idle engine stays opaque across the flip")
+  assertNativeScratchDraws(
+    compositorDrawsOf(graphics, movie, mainBackHandle, flipBaseline),
+    "flipped selected main"
+  )
+  local flipEvaSends, flipEvbSends = frameWeights(flipEva, flipEvb)
+  assertUniform(
+    flipEvaSends,
+    7,
+    "the flip carries the running main first weight instead of restarting it"
+  )
+  assertUniform(
+    flipEvbSends,
+    16,
+    "the flip carries the running main second weight instead of restarting it"
+  )
+  local subFlip = engineDrawsOf(graphics, movie, "sub", subBackHandle, flipBaseline)
+  Assert.isTrue(#subFlip > 0, "the idle engine still paints its own target across the flip")
+  for _, draw in ipairs(subFlip) do
+    Assert.equal(draw.color[4], 1, "the idle engine stays opaque across the flip")
   end
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the flip movie releases every handle")
@@ -4101,6 +4252,267 @@ function T.seven_source_wipes_play_in_order_with_their_own_engines_and_gates()
   end
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the seven-beat movie releases every handle")
+end
+
+-- Separate 5-bit mix of the raw top and raw under channels with the two
+-- independently saturated source weights, clamped to the channel ceiling.
+-- The oracle is transcribed from the hardware blend law, never from the
+-- runtime helper under test.
+---@param top integer 5-bit top channel
+---@param under integer 5-bit under channel
+---@param firstWeight integer raw first-target coefficient
+---@param secondWeight integer raw second-target coefficient
+---@return integer blended 5-bit channel
+local function mixedChannel(top, under, firstWeight, secondWeight)
+  return math.min(31, math.floor((top * math.min(firstWeight, 16) + under * math.min(secondWeight, 16)) / 16))
+end
+
+-- Source step-clock first/second coefficient pair: the raw step counts
+-- floor(elapsed*31/ticks) capped at 31, the direction selects which end
+-- starts full, and each side saturates independently at sixteen.
+---@param elapsed integer elapsed source ticks
+---@param ticks integer authored duration
+---@param direction integer retail blend direction
+---@return integer first coefficient, integer second coefficient
+local function sourceCoefficients(elapsed, ticks, direction)
+  local ev = math.min(31, math.floor(elapsed * 31 / ticks))
+  if direction == 0 then
+    return math.min(ev, 16), math.min(31 - ev, 16)
+  end
+  return math.min(31 - ev, 16), math.min(ev, 16)
+end
+
+---@param graphics table fake graphics namespace
+---@param name string shader uniform name
+---@return unknown[] every value sent under that name, in send order
+local function shaderSends(graphics, name)
+  local found = {}
+  for _, shader in ipairs(graphics.shaders) do
+    for _, send in ipairs(shader.sends) do
+      if send.name == name then
+        found[#found + 1] = send.value
+      end
+    end
+  end
+  return found
+end
+
+function T.independent_weights_mix_raw_pairs_without_a_global_alpha()
+  Assert.equal(mixedChannel(31, 31, 16, 16), 31, "two saturated weights clamp instead of doubling")
+  Assert.equal(
+    mixedChannel(31, 0, 15, 16),
+    29,
+    "the lower weight still contributes beside a saturated upper weight"
+  )
+  Assert.equal(
+    mixedChannel(31, 31, 15, 16),
+    31,
+    "near-saturated pairs exceed any complementary single-weight mix"
+  )
+  Assert.equal(mixedChannel(31, 0, 0, 16), 0, "a zero first weight shows the raw under pixel")
+  local first, second = sourceCoefficients(15, 31, 0)
+  Assert.equal(first, 15, "the opening direction counts the first side up from zero")
+  Assert.equal(second, 16, "the second side saturates independently of the first")
+  local root = sceneRoot(1)
+  local backImage = root .. "layers/dual-back.png"
+  local midImage = root .. "layers/dual-mid.png"
+  local frontImage = root .. "layers/dual-front.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      {
+        layer(2, backImage, 256, 192, 2),
+        layer(1, midImage, 256, 192, 1),
+        layer(0, frontImage, 256, 192, 0),
+      },
+      { layer(0, root .. "layers/dual-lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "hold", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 1,
+          secondMask = 2,
+          direction = 0,
+          effect = "dual-cross",
+          ticks = 31,
+        },
+        { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "hold", atStepTick = 40 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 15 do
+    movie:updateFixed()
+  end
+  movie:draw()
+  Assert.equal(#graphics.shaders, 2, "the compositor owns exactly two private shaders")
+  local firstWeights = shaderSends(graphics, "eva")
+  local secondWeights = shaderSends(graphics, "evb")
+  Assert.isTrue(
+    #firstWeights > 0 and #secondWeights > 0,
+    "both source weights reach the compositor as separate uniforms"
+  )
+  local eva, evb = firstWeights[#firstWeights], secondWeights[#secondWeights]
+  Assert.near(evb / eva, 16 / 15, 0.001, "the pair stays independently saturated instead of complementary")
+  local firstMasks = shaderSends(graphics, "firstMask")
+  local secondMasks = shaderSends(graphics, "secondMask")
+  Assert.isTrue(#firstMasks > 0, "the first plane mask reaches the compositor")
+  Assert.equal(firstMasks[#firstMasks], 1, "the first plane mask selects the top plane")
+  Assert.isTrue(#secondMasks > 0, "the second plane mask reaches the compositor")
+  Assert.equal(secondMasks[#secondMasks], 2, "the second plane mask selects the raw under plane")
+  -- Planes rasterize with their native colors; only the compositor mixes.
+  for _, staged in ipairs({
+    { image = frontImage, label = "top" },
+    { image = midImage, label = "middle" },
+    { image = backImage, label = "back" },
+  }) do
+    local handle = assert(movie.current.imageByPath[staged.image], "the " .. staged.label .. " plane is staged")
+    local draws = compositorDrawsOf(graphics, movie, handle, 0)
+    Assert.isTrue(#draws > 0, "the " .. staged.label .. " plane paints into the compositor")
+    for _, draw in ipairs(draws) do
+      Assert.equal(draw.color[1], 1, "the " .. staged.label .. " plane keeps its native red")
+      Assert.equal(draw.color[2], 1, "the " .. staged.label .. " plane keeps its native green")
+      Assert.equal(draw.color[3], 1, "the " .. staged.label .. " plane keeps its native blue")
+      Assert.equal(draw.color[4], 1, "the " .. staged.label .. " plane carries no global alpha")
+    end
+  end
+  local roleTargets = { [movie.mainCanvas] = true, [movie.subCanvas] = true }
+  local compositorDraws = 0
+  for index = 1, #graphics.draws do
+    local target = graphics.drawCanvases[index].canvas
+    if target ~= nil and not roleTargets[target] then
+      compositorDraws = compositorDraws + 1
+    end
+  end
+  Assert.isTrue(compositorDraws > 0, "plane passes route through fixed compositor targets")
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the dual-weight movie releases every handle")
+end
+
+function T.masked_pairs_keep_raw_under_planes_with_sprites_and_windows()
+  local root = sceneRoot(1)
+  local backImage = root .. "layers/masked-back.png"
+  local midImage = root .. "layers/masked-mid.png"
+  local frontImage = root .. "layers/masked-front.png"
+  local probeClip = root .. "sprites/probe.g4sprite"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      {
+        layer(2, backImage, 256, 192, 2),
+        layer(1, midImage, 256, 192, 1),
+        layer(0, frontImage, 256, 192, 0),
+      },
+      { layer(0, root .. "layers/masked-lower.png", 256, 192) },
+      { spriteClip(probeClip, { stillFrame() }) },
+      { { id = "hold", events = { 1, 2, 3, 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 17,
+          secondMask = 2,
+          direction = 0,
+          effect = "masked-cross",
+          ticks = 31,
+        },
+        {
+          op = "setSpriteClip",
+          stepId = "hold",
+          atStepTick = 0,
+          instanceId = "probe",
+          engine = "main",
+          x = 120,
+          y = 80,
+          drawOrder = 0,
+          clipId = probeClip,
+        },
+        {
+          op = "spriteVisible",
+          stepId = "hold",
+          atStepTick = 0,
+          instanceId = "probe",
+          engine = "main",
+          x = 120,
+          y = 80,
+          drawOrder = 0,
+          visible = true,
+        },
+        windowEvent(
+          "hold",
+          0,
+          "main",
+          windowRect(128, 0, 255, 191),
+          windowRect(128, 0, 255, 191),
+          40,
+          23,
+          22
+        ),
+        { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "hold", atStepTick = 40 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 15 do
+    movie:updateFixed()
+  end
+  movie:draw()
+  Assert.equal(#graphics.shaders, 2, "the masked pair routes through the two compositor shaders")
+  local planeIds = shaderSends(graphics, "planeId")
+  local seen = {}
+  for _, planeId in ipairs(planeIds) do
+    seen[planeId] = true
+  end
+  Assert.isTrue(seen[0], "the compositor rasterizes the top background plane")
+  Assert.isTrue(seen[4], "the compositor rasterizes the sprite plane separately")
+  local firstMasks = shaderSends(graphics, "firstMask")
+  Assert.isTrue(#firstMasks > 0, "the combined first mask reaches the compositor")
+  Assert.equal(firstMasks[#firstMasks], 17, "top background and sprite stay selected together")
+  local secondMasks = shaderSends(graphics, "secondMask")
+  Assert.isTrue(#secondMasks > 0, "the second mask reaches the compositor")
+  Assert.equal(secondMasks[#secondMasks], 2, "only the middle plane stays eligible underneath")
+  local firstWeights = shaderSends(graphics, "eva")
+  local secondWeights = shaderSends(graphics, "evb")
+  Assert.isTrue(
+    #firstWeights > 0 and #secondWeights > 0,
+    "the masked pair keeps both independent weights"
+  )
+  Assert.near(
+    secondWeights[#secondWeights] / firstWeights[#firstWeights],
+    16 / 15,
+    0.001,
+    "windowed pairs still saturate independently instead of complementing"
+  )
+  local spriteHandle = assert(movie.current.imageByPath[probeClip], "the probe sprite is staged")
+  local spriteDraws = compositorDrawsOf(graphics, movie, spriteHandle, 0)
+  Assert.isTrue(#spriteDraws > 0, "the sprite paints where its window allows")
+  for _, draw in ipairs(spriteDraws) do
+    Assert.equal(draw.color[4], 1, "the sprite carries no global alpha into the compositor")
+  end
+  local frontHandle = assert(movie.current.imageByPath[frontImage], "the top plane is staged")
+  for _, draw in ipairs(compositorDrawsOf(graphics, movie, frontHandle, 0)) do
+    Assert.equal(draw.color[4], 1, "the windowed top plane carries no global alpha")
+  end
+  Assert.isTrue(
+    #compositorScissors(graphics, movie, 0) > 0,
+    "the source window still clips planes around the compositor"
+  )
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the masked movie releases every handle")
 end
 
 return { tests = T }

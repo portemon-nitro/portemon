@@ -1362,4 +1362,222 @@ function T.scene_five_shutter_opens_main_center_out_before_sub_bottom_up_and_wai
   Assert.equal(liveHandles(graphics), 0, "the shutter movie releases every handle")
 end
 
+-- A first-target blend program for the compositor ownership proofs: two
+-- opaque main planes with the top selected and the middle underneath.
+---@return table strict synthetic opening scene carrying one blend program
+local function blendScene()
+  local root = sceneRoot(1)
+  local upperImage = root .. "layers/blend-upper.png"
+  local midImage = root .. "layers/blend-mid.png"
+  local lowerImage = root .. "layers/blend-lower.png"
+  return {
+    schema = Contract.startupOpeningScene.schema,
+    versionId = VERSION_ID,
+    generationId = "movie-test-generation",
+    sceneNumber = 1,
+    sourceTickRate = Contract.startupOpeningScene.tickRate,
+    layers = {
+      main = { layer(0, upperImage), layer(1, midImage) },
+      sub = { layer(0, lowerImage) },
+    },
+    spriteClips = {},
+    models = {},
+    particles = { seed = 0, emitters = {} },
+    timeline = {
+      steps = { { id = "hold", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      events = {
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 1,
+          secondMask = 2,
+          direction = 0,
+          effect = "blend-hold",
+          ticks = 31,
+        },
+        { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "hold", atStepTick = 40 },
+      },
+    },
+    assets = { [upperImage] = true, [midImage] = true, [lowerImage] = true },
+  }
+end
+
+---@return table[] scenes, table cacheFs strict pack with the blend scene first
+local function packWithBlend()
+  local raw = {
+    blendScene(),
+    manifestFor(2),
+    manifestFor(3),
+    manifestFor(4),
+    neutralSceneFive(),
+  }
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  return scenes, cacheFs
+end
+
+---@param graphics table fake graphics namespace
+---@return integer total shader uniform sends recorded so far
+local function shaderSendCount(graphics)
+  local total = 0
+  for _, shader in ipairs(graphics.shaders) do
+    total = total + #shader.sends
+  end
+  return total
+end
+
+function T.compositor_targets_stay_bounded_across_draws_and_resizes()
+  local scenes, cacheFs = packWithBlend()
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  Assert.equal(#graphics.shaders, 2, "the compositor acquires exactly two private shaders once")
+  local auxiliary = 0
+  for _, canvas in ipairs(graphics.canvases) do
+    if canvas.width == 256 and canvas.height == 192 and canvas ~= movie.mainCanvas and canvas ~= movie.subCanvas then
+      auxiliary = auxiliary + 1
+    end
+  end
+  Assert.equal(auxiliary, 5, "the compositor owns exactly five fixed auxiliary targets")
+  Assert.isTrue(#graphics.canvases <= 8, "standing native targets stay bounded")
+  for _ = 1, 5 do
+    movie:updateFixed()
+  end
+  -- Construction preflight already renders the opening frame through the
+  -- compositor, so the replay comparison counts frame deltas exactly like
+  -- the draws assertion instead of doubling the construction total.
+  local drawsAfterConstruct = #graphics.draws
+  local sendsAfterConstruct = shaderSendCount(graphics)
+  movie:draw()
+  local firstFrameDraws = #graphics.draws - drawsAfterConstruct
+  local firstFrameSends = shaderSendCount(graphics) - sendsAfterConstruct
+  Assert.isTrue(firstFrameSends > 0, "a blend frame drives the compositor shaders")
+  local sceneTick = assert(movie.current, "the running movie owns its current slot").sceneTick
+  movie:draw()
+  Assert.equal(
+    #graphics.draws - drawsAfterConstruct - firstFrameDraws,
+    firstFrameDraws,
+    "a repeated draw replays the identical frame"
+  )
+  Assert.equal(
+    shaderSendCount(graphics) - sendsAfterConstruct,
+    firstFrameSends * 2,
+    "a repeated draw replays the identical compositor passes"
+  )
+  Assert.equal(
+    assert(movie.current, "the running movie owns its current slot").sceneTick,
+    sceneTick,
+    "repeated draws never advance source time"
+  )
+  local canvasCount = #graphics.canvases
+  movie:resize(800, 600)
+  movie:draw()
+  Assert.equal(#graphics.shaders, 2, "a resize acquires no additional shader")
+  Assert.equal(#graphics.canvases, canvasCount, "a resize keeps the standing targets")
+  Assert.equal(
+    assert(movie.current, "the running movie owns its current slot").sceneTick,
+    sceneTick,
+    "a resize never advances source time"
+  )
+  movie:resize(WIDTH, HEIGHT)
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "disposing the bounded movie releases every handle")
+  for _, canvas in ipairs(graphics.canvases) do
+    Assert.equal(canvas.releaseCount, 1, "every standing target releases exactly once")
+  end
+  for _, shader in ipairs(graphics.shaders) do
+    Assert.isTrue(shader.released, "every private shader releases exactly once")
+  end
+end
+
+---@param graphics table fake graphics namespace
+---@param message string assertion context
+local function assertReleasedExactlyOnce(graphics, message)
+  for _, group in ipairs({ graphics.images, graphics.canvases, graphics.meshes or {} }) do
+    for _, handle in ipairs(group) do
+      Assert.isTrue(handle.released, message)
+      Assert.equal(handle.releaseCount, 1, message)
+    end
+  end
+  for _, shader in ipairs(graphics.shaders) do
+    Assert.isTrue(shader.released, message)
+  end
+end
+
+function T.compositor_acquisition_failures_release_every_handle_exactly_once()
+  for _, failing in ipairs({
+    { failOnShaderCall = 1, label = "first shader" },
+    { failOnShaderCall = 2, label = "second shader" },
+    { failOnCanvasCall = 4, label = "middle auxiliary target" },
+  }) do
+    local scenes, cacheFs = packWithBlend()
+    local fakeOpts = {}
+    if failing.failOnShaderCall ~= nil then
+      fakeOpts.failOnShaderCall = failing.failOnShaderCall
+    else
+      fakeOpts.failOnCanvasCall = failing.failOnCanvasCall
+    end
+    local graphics = movieGraphics(fakeOpts)
+    Assert.throws(function()
+      openMovie(scenes, cacheFs, graphics)
+    end, "a failed " .. failing.label .. " acquisition aborts construction")
+    Assert.equal(liveHandles(graphics), 0, "a failed " .. failing.label .. " leaves no live handle")
+    assertReleasedExactlyOnce(
+      graphics,
+      "a failed " .. failing.label .. " releases every acquired handle exactly once"
+    )
+  end
+end
+
+function T.failed_compositor_draws_restore_graphics_state_and_keep_playing()
+  local scenes, cacheFs = packWithBlend()
+  local fakeOpts = {}
+  local graphics = movieGraphics(fakeOpts)
+  local movie = openMovie(scenes, cacheFs, graphics)
+  Assert.equal(#graphics.shaders, 2, "the failing frame routes through the compositor shaders")
+  for _ = 1, 5 do
+    movie:updateFixed()
+  end
+  local canvas, shader = graphics.getCanvas(), graphics.getShader()
+  local r, g, b, a = graphics.getColor()
+  local blend, alpha = graphics.getBlendMode()
+  fakeOpts.failOnDrawCall = #graphics.draws + 2
+  local ok = pcall(function()
+    movie:draw()
+  end)
+  Assert.isFalse(ok, "a failed compositor draw surfaces explicitly")
+  Assert.isTrue(shaderSendCount(graphics) > 0, "the failing draw reached the compositor passes")
+  Assert.equal(graphics.getCanvas(), canvas, "a failed compositor draw restores the borrowed canvas")
+  Assert.equal(graphics.getShader(), shader, "a failed compositor draw restores the borrowed shader")
+  local r2, g2, b2, a2 = graphics.getColor()
+  Assert.equal(r2, r, "a failed compositor draw restores the borrowed color")
+  Assert.equal(g2, g, "a failed compositor draw restores the borrowed color")
+  Assert.equal(b2, b, "a failed compositor draw restores the borrowed color")
+  Assert.equal(a2, a, "a failed compositor draw restores the borrowed color")
+  local blend2, alpha2 = graphics.getBlendMode()
+  Assert.equal(blend2, blend, "a failed compositor draw restores the borrowed blend mode")
+  Assert.equal(alpha2, alpha, "a failed compositor draw restores the borrowed blend mode")
+  Assert.equal(graphics.pushDepth(), 0, "a failed compositor draw leaves no pushed scope behind")
+  fakeOpts.failOnDrawCall = nil
+  movie:draw()
+  local ticks = 0
+  while not movie:isFinished() and ticks < 5000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+    movie:draw()
+  end
+  Assert.isTrue(movie:isFinished(), "playback resumes and completes after the failed compositor draw")
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "disposing after the failed draw releases everything")
+  assertReleasedExactlyOnce(graphics, "every handle releases exactly once after the failed draw")
+end
+
 return { tests = T }

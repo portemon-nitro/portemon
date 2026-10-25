@@ -778,11 +778,14 @@ local function composite_layers_pan_independently_with_true_blending(scope)
   local blend = openCompositeMovie(scope, blendScenes, blendCache, 512, 384, "dual")
   advance(blend, 10)
   local xr, xg, xb = samplePixel(scope, blend, 512, 384, 8, 96)
-  -- Ten of twenty source ticks count raw fifteen, capped below sixteen:
-  -- the first weight holds fifteen sixteenths over the second plane.
+  -- Ten of twenty source ticks count raw fifteen: the old complementary
+  -- single weight would leave the under plane one sixteenth, but the
+  -- normative equation saturates each side independently, so the second
+  -- side stays full: (31*15+0)/16=29 red-blue-side, (0+31*16)/16=31 green.
+  -- The top blue keeps 29/31 while the under green keeps its full share.
   Assert.near(xr, 0, 0.05, "the blend keeps no bottom red under the settling top layer")
-  Assert.near(xg, 1 / 16, 0.05, "the capped weight leaves a measured middle-layer share")
-  Assert.near(xb, 15 / 16, 0.05, "the capped first weight keeps the top layer dominant")
+  Assert.near(xg, 1, 0.06, "the independently saturated second side keeps its full green share")
+  Assert.near(xb, 29 / 31, 0.08, "the top keeps its fifteen-sixteenths blue share")
 end
 
 -- Four-quadrant chart: wrap sampling must rearrange the quadrants
@@ -2349,7 +2352,14 @@ local function composited_town_pixels_stay_visible_and_animate_across_hold_ticks
       Assert.equal(call.height, 192, "movie canvas call " .. movieCalls .. " keeps the source engine height")
     end
   end
-  Assert.equal(movieCalls, 3, "a town-staging movie keeps two role targets plus one fixed town scratch")
+  -- A blend timeline owns the five fixed compositor targets alongside the
+  -- two role targets and the town scratch: eight standing source canvases
+  -- at most, every one exactly 256x192.
+  Assert.equal(
+    movieCalls,
+    8,
+    "a town-staging movie keeps two role targets plus five compositor targets plus one fixed town scratch"
+  )
   local ticks = 0
   while movie:sceneNumber() < 3 and ticks < 20000 do
     movie:updateFixed()
@@ -2526,6 +2536,237 @@ local function synthetic_window_masks_isolate_engine_planes(scope)
   Assert.isTrue(g3 > 0.9 and r3 < 0.1, "sub BG1 reveals inside its window")
   local r4, g4, b4 = samplePixel(scope, movie, 512, 384, 384, 288)
   Assert.isTrue(r4 > 0.9 and g4 > 0.9 and b4 < 0.1, "sub BG1 stays masked outside its window")
+end
+
+-- Separate 5-bit mix of the raw top and raw under channels with the two
+-- independently saturated source weights, clamped to the channel ceiling.
+-- The oracle is transcribed from the hardware blend law, never from the
+-- runtime helper under test.
+---@param top integer 5-bit top channel
+---@param under integer 5-bit under channel
+---@param firstWeight integer raw first-target coefficient
+---@param secondWeight integer raw second-target coefficient
+---@return integer blended 5-bit channel
+local function dualBlendChannel(top, under, firstWeight, secondWeight)
+  return math.min(31, math.floor((top * math.min(firstWeight, 16) + under * math.min(secondWeight, 16)) / 16))
+end
+
+---@param value number normalized channel in 0..1
+---@return integer quantized 5-bit channel
+local function fiveBitChannel(value)
+  return math.max(0, math.min(31, math.floor(value * 31 + 0.5)))
+end
+
+local function synthetic_dual_coefficients_saturate_both_weights_per_pixel(scope)
+  local root = sceneArtRoot(1)
+  local frontImage = root .. "layers/dual-front.png"
+  local midImage = root .. "layers/dual-mid.png"
+  local backImage = root .. "layers/dual-back.png"
+  local grayImage = root .. "layers/dual-gray.png"
+  local probeClip = root .. "sprites/dual-probe.g4sprite"
+  local art = {
+    [frontImage] = solidPng(256, 192, 255, 0, 0),
+    [midImage] = solidPng(256, 192, 0, 255, 0),
+    [backImage] = solidPng(256, 192, 0, 0, 255),
+    [grayImage] = solidPng(256, 192, 128, 128, 128),
+    [probeClip] = solidPng(128, 96, 0, 255, 255),
+  }
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      {
+        compositeLayer(2, backImage, 256, 192, true, 2),
+        compositeLayer(1, midImage, 256, 192, true, 1),
+        compositeLayer(0, frontImage, 256, 192, true, 0),
+      },
+      { compositeLayer(0, grayImage, 256, 192) },
+      { compositeClip(probeClip, { compositeFrame(0, 0, 128, 96, 0, 0, 1) }) },
+      { seed = 0, emitters = {} },
+      { { id = "hold", events = { 1, 2, 3, 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 17,
+          secondMask = 2,
+          direction = 0,
+          effect = "dual-cross",
+          ticks = 31,
+        },
+        {
+          op = "setSpriteClip",
+          stepId = "hold",
+          atStepTick = 0,
+          instanceId = "probe",
+          engine = "main",
+          x = 128,
+          y = 0,
+          drawOrder = 0,
+          clipId = probeClip,
+        },
+        {
+          op = "spriteVisible",
+          stepId = "hold",
+          atStepTick = 0,
+          instanceId = "probe",
+          engine = "main",
+          x = 128,
+          y = 0,
+          drawOrder = 0,
+          visible = true,
+        },
+        {
+          op = "window",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          from = { x1 = 128, y1 = 0, x2 = 255, y2 = 191 },
+          to = { x1 = 128, y1 = 0, x2 = 255, y2 = 191 },
+          ticks = 40,
+          insideMask = 23,
+          outsideMask = 22,
+        },
+        { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "hold", atStepTick = 40 },
+      }
+    ),
+    art,
+    solidPng(16, 16, 128, 128, 128)
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  -- The dual stage carries the main target on its upper pane: the source
+  -- texel is half the host column and half the cropped host row, so the
+  -- left guard reads source (32, 96), the sprite point source (160, 72),
+  -- and the blend point source (160, 120).
+  local function sampleAt(x, y)
+    return samplePixel(scope, movie, 512, 384, x, y)
+  end
+  -- At the opening tick the first weight is zero, so every eligible pair
+  -- shows its raw under pixel while the masked region stays raw middle.
+  local lr, lg, lb = sampleAt(64, 96)
+  Assert.near(lg, 1, 0.06, "the masked region shows the raw middle plane at the opening tick")
+  Assert.near(lr, 0, 0.06, "no masked top red leaks at the opening tick")
+  Assert.near(lb, 0, 0.06, "no lower blue leaks at the opening tick")
+  -- The sprite pair is not eligible: its red under plane is outside the
+  -- second mask, so the sprite paints unchanged at every tick while the
+  -- masked region stays raw middle.
+  local or_, og, ob = sampleAt(320, 48)
+  Assert.near(or_, 0, 0.1, "the unselected under plane leaves the sprite raw at the opening tick")
+  Assert.near(og, 1, 0.06, "the sprite keeps full green at the opening tick")
+  Assert.near(ob, 1, 0.06, "the sprite keeps full blue at the opening tick")
+  local br, bg, bb = sampleAt(320, 144)
+  Assert.near(bg, 1, 0.06, "the blend pair shows its raw green under pixel at the opening tick")
+  Assert.near(br, 0, 0.06, "no top red covers at the opening tick")
+  Assert.near(bb, 0, 0.06, "no lower blue leaks into the blend at the opening tick")
+  -- Fifteen of thirty-one steps: raw (15, 16), so both sides contribute
+  -- near-fully and the mixed pixel outshines any single-weight overlap.
+  advance(movie, 15)
+  lr, lg, lb = sampleAt(64, 96)
+  Assert.near(lg, 1, 0.06, "the masked region stays raw middle through the blend")
+  Assert.near(lr, 0, 0.06, "the masked top never blends where its window hides it")
+  or_, og, ob = sampleAt(320, 48)
+  Assert.isTrue(or_ < 0.04, "the unselected under plane never tints the sprite")
+  Assert.near(og, 1, 0.06, "the sprite keeps full green at fifteen steps")
+  Assert.near(ob, 1, 0.06, "the sprite keeps full blue at fifteen steps")
+  br, bg, bb = sampleAt(320, 144)
+  Assert.near(br, 29 / 31, 0.08, "the top keeps its red share at fifteen steps")
+  Assert.near(bg, 1, 0.06, "the under keeps its full green share at fifteen steps")
+  Assert.near(bb, 0, 0.06, "no lower blue leaks into the blend at fifteen steps")
+  -- Sixteen steps saturates the first side: raw (16, 15).
+  advance(movie, 1)
+  or_, og, ob = sampleAt(320, 48)
+  Assert.isTrue(or_ < 0.04, "the sprite stays untinted at sixteen steps")
+  Assert.near(og, 1, 0.06, "the sprite keeps full green at sixteen steps")
+  Assert.near(ob, 1, 0.06, "the sprite keeps full blue at sixteen steps")
+  br, bg, bb = sampleAt(320, 144)
+  Assert.near(br, 1, 0.06, "the saturated first side keeps full red at sixteen steps")
+  Assert.near(bg, 29 / 31, 0.08, "the under keeps its green share at sixteen steps")
+  -- The final step retires to the raw top pixel on both pairs.
+  advance(movie, 15)
+  or_, og, ob = sampleAt(320, 48)
+  Assert.isTrue(or_ < 0.04, "the sprite stays untinted at the final tick")
+  Assert.near(og, 1, 0.06, "the sprite keeps full green at the final tick")
+  Assert.near(ob, 1, 0.06, "the sprite keeps full blue at the final tick")
+  br, bg, bb = sampleAt(320, 144)
+  Assert.near(br, 1, 0.06, "the blend retires to the raw top red")
+  Assert.near(bg, 0, 0.06, "no under green survives the final tick")
+  lr, lg, lb = sampleAt(64, 96)
+  Assert.near(lg, 1, 0.06, "the masked region stays raw middle at the final tick")
+end
+
+local function synthetic_masked_pairs_use_raw_under_pixels_without_cascading(scope)
+  local root = sceneArtRoot(1)
+  local frontImage = root .. "layers/pair-front.png"
+  local midImage = root .. "layers/pair-mid.png"
+  local backImage = root .. "layers/pair-back.png"
+  local grayImage = root .. "layers/pair-gray.png"
+  local art = {
+    [frontImage] = solidPng(256, 192, 255, 0, 0),
+    [midImage] = solidPng(256, 192, 0, 255, 0),
+    [backImage] = solidPng(256, 192, 0, 0, 255),
+    [grayImage] = solidPng(256, 192, 128, 128, 128),
+  }
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      {
+        compositeLayer(2, backImage, 256, 192, true, 2),
+        compositeLayer(1, midImage, 256, 192, true, 1),
+        compositeLayer(0, frontImage, 256, 192, true, 0),
+      },
+      { compositeLayer(0, grayImage, 256, 192) },
+      {},
+      { seed = 0, emitters = {} },
+      { { id = "hold", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        {
+          op = "setBlend",
+          stepId = "hold",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 3,
+          secondMask = 4,
+          direction = 0,
+          effect = "masked-pair",
+          ticks = 31,
+        },
+        { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "hold", atStepTick = 40 },
+      }
+    ),
+    art,
+    solidPng(16, 16, 128, 128, 128)
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  -- The middle plane is eligible as a first target over the back plane,
+  -- yet the top pixel must still pair with its raw middle under pixel,
+  -- which the second mask does not select: the frame stays pure red.
+  local function sampleCenter()
+    return samplePixel(scope, movie, 512, 384, 256, 96)
+  end
+  local r, g, b = sampleCenter()
+  Assert.near(r, 1, 0.06, "the unselected under plane blocks the pair at the opening tick")
+  Assert.isTrue(g < 0.04, "no middle green shows at the opening tick")
+  Assert.isTrue(b < 0.04, "no back blue shows at the opening tick")
+  advance(movie, 15)
+  r, g, b = sampleCenter()
+  Assert.near(r, 1, 0.06, "the unselected under plane blocks the pair at fifteen steps")
+  Assert.isTrue(g < 0.04, "no middle green tints the blocked top pixel")
+  Assert.isTrue(b < 0.04, "no cascaded back blue leaks through the lower blend")
+  advance(movie, 1)
+  r, g, b = sampleCenter()
+  Assert.near(r, 1, 0.06, "the blocked pair stays pure red at sixteen steps")
+  Assert.isTrue(g < 0.04, "no middle green tints at sixteen steps")
+  Assert.isTrue(b < 0.04, "no cascaded back blue leaks at sixteen steps")
+  advance(movie, 15)
+  r, g, b = sampleCenter()
+  Assert.near(r, 1, 0.06, "the blocked pair retires to the raw top red")
+  Assert.isTrue(g < 0.04, "no middle green survives the final tick")
+  Assert.isTrue(b < 0.04, "no back blue survives the final tick")
 end
 
 local function soulsilver_town_stays_on_main_and_stops_at_the_rival_beat(scope, context)
@@ -3041,6 +3282,311 @@ local function decodedArt(scope, pngBytes, name)
   local fileData = love.filesystem.newFileData(pngBytes, name)
   return scope:own(love.image.newImageData(fileData))
 end
+
+-- Front-to-back visible stack with staged art for one source engine.
+---@param scope table test scope owning the decoded art
+---@param cacheFs table staged art backing the scenes
+---@param slot table running scene slot
+---@param engine string source engine owning the planes
+---@return table[] visible planes with wrapped art, front first
+local function sunriseStack(scope, cacheFs, slot, engine)
+  local ordered = {}
+  for _, background in pairs(slot.backgrounds[engine]) do
+    if background.visible then
+      ordered[#ordered + 1] = background
+    end
+  end
+  table.sort(ordered, function(a, b)
+    if a.priority ~= b.priority then
+      return a.priority > b.priority
+    end
+    return a.bgSlot < b.bgSlot
+  end)
+  local stack = {}
+  for _, background in ipairs(ordered) do
+    local bytes = assert(cacheFs:read(background.image), "the staged panel art reads back")
+    local data = decodedArt(scope, bytes, background.image)
+    stack[#stack + 1] = {
+      background = background,
+      data = data,
+      width = data:getWidth(),
+      height = data:getHeight(),
+    }
+  end
+  return stack
+end
+
+---@param value integer target pixel coordinate
+---@param extent integer art extent along that axis
+---@param scroll number live signed source scroll
+---@return integer wrapped art texel
+local function sunriseTexel(value, extent, scroll)
+  return (value + math.floor(scroll)) % extent
+end
+
+-- First target pixel whose raw top and raw under texels are both opaque,
+-- differ decisively, and separate the dual mix from a single top weight,
+-- skipping sprite-covered and translucent pixels.
+---@param scope table test scope owning the decoded art
+---@param cacheFs table staged art backing the scenes
+---@param slot table running scene slot
+---@param engine string source engine owning the planes
+---@param spriteRects table[] sprite coverage in target pixels
+---@param firstWeight integer raw first-target coefficient
+---@param secondWeight integer raw second-target coefficient
+---@param minSeparation integer required oracle/top 5-bit separation
+---@param firstMask integer required first-target plane mask
+---@param secondMask integer required second-target plane mask
+---@return table? decisive sample with quantized top/under channels and plane slots
+local function sunriseDecisivePixel(scope, cacheFs, slot, engine, spriteRects, firstWeight, secondWeight,
+  minSeparation, firstMask, secondMask)
+  local stack = sunriseStack(scope, cacheFs, slot, engine)
+  for y = 0, 191, 4 do
+    for x = 0, 255, 4 do
+      local covered = false
+      for _, rect in ipairs(spriteRects) do
+        if x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h then
+          covered = true
+          break
+        end
+      end
+      if not covered then
+        -- The plane pass paints lower numeric priorities later, so the
+        -- front of the stack is its lowest priority entry.
+        local top, under, topSlot, underSlot = nil, nil, nil, nil
+        local settled = true
+        for index = #stack, 1, -1 do
+          local entry = stack[index]
+          local sx = sunriseTexel(x, entry.width, entry.background.scrollX)
+          local sy = sunriseTexel(y, entry.height, entry.background.scrollY)
+          local r, g, b, a = entry.data:getPixel(sx, sy)
+          if a > 0.98 then
+            local quantized = { fiveBitChannel(r), fiveBitChannel(g), fiveBitChannel(b) }
+            if top == nil then
+              top = quantized
+              topSlot = entry.background.bgSlot
+            else
+              under = quantized
+              underSlot = entry.background.bgSlot
+              break
+            end
+          elseif a > 0.02 then
+            settled = false
+            break
+          end
+        end
+        if settled and top ~= nil and under ~= nil then
+          local distance = 0
+          local separation = 0
+          for channel = 1, 3 do
+            distance = math.max(distance, math.abs(top[channel] - under[channel]))
+            separation = math.max(
+              separation,
+              math.abs(dualBlendChannel(top[channel], under[channel], firstWeight, secondWeight) - top[channel])
+            )
+          end
+          -- The hardware blends only when the top plane is first-selected
+          -- and the raw under plane is second-selected; an unselected
+          -- under plane blocks the pair and the top shows raw, so the
+          -- oracle must hold an eligible pair to predict a mix.
+          local topSelected = math.floor(firstMask / (2 ^ topSlot)) % 2 == 1
+          local underSelected = math.floor(secondMask / (2 ^ underSlot)) % 2 == 1
+          if distance >= 6 and separation >= minSeparation and topSelected and underSelected then
+            return { x = x, y = y, top = top, under = under, topSlot = topSlot, underSlot = underSlot }
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+-- First front-opaque top texel in target pixels, skipping translucent stacks.
+---@param scope table test scope owning the decoded art
+---@param cacheFs table staged art backing the scenes
+---@param slot table running scene slot
+---@param engine string source engine owning the planes
+---@return table? sample with target coords and quantized top channels
+local function sunriseTopTexel(scope, cacheFs, slot, engine)
+  local stack = sunriseStack(scope, cacheFs, slot, engine)
+  for y = 0, 191, 4 do
+    for x = 0, 255, 4 do
+      local settled = true
+      local top = nil
+      for index = #stack, 1, -1 do
+        local entry = stack[index]
+        local sx = sunriseTexel(x, entry.width, entry.background.scrollX)
+        local sy = sunriseTexel(y, entry.height, entry.background.scrollY)
+        local r, g, b, a = entry.data:getPixel(sx, sy)
+        if a > 0.98 then
+          top = { fiveBitChannel(r), fiveBitChannel(g), fiveBitChannel(b) }
+          break
+        elseif a > 0.02 then
+          settled = false
+          break
+        end
+      end
+      if settled and top ~= nil then
+        return { x = x, y = y, top = top }
+      end
+    end
+  end
+  return nil
+end
+
+-- Source sprite coverage in target pixels for one engine.
+---@param slot table running scene slot
+---@param engine string source engine owning the sprites
+---@return table[] sprite rectangles in target pixels
+local function sunriseSpriteRects(slot, engine)
+  local rects = {}
+  for _, instanceId in ipairs(slot.spriteOrder) do
+    local instance = slot.spriteInstances[instanceId]
+    if instance ~= nil and instance.engine == engine and instance.visible and instance.clipId ~= nil then
+      local clip = nil
+      for _, candidate in ipairs(slot.manifest.spriteClips) do
+        if candidate.id == instance.clipId then
+          clip = candidate
+          break
+        end
+      end
+      local frame = clip ~= nil and clip.frames ~= nil and clip.frames[1] or nil
+      if frame ~= nil and frame.width ~= nil and frame.height ~= nil and frame.width > 0 and frame.height > 0 then
+        rects[#rects + 1] = {
+          x = math.floor(instance.x + (frame.offsetX or 0)),
+          y = math.floor(instance.y + (frame.offsetY or 0)),
+          w = frame.width,
+          h = frame.height,
+        }
+      end
+    end
+  end
+  return rects
+end
+
+---@param scope table test scope owning the readback
+---@param canvas love.Canvas fixed source engine target
+---@param sample table decisive sample with quantized top/under channels
+---@param firstWeight integer raw first-target coefficient
+---@param secondWeight integer raw second-target coefficient
+---@param label string engine label for diagnostics
+local function assertSunrisePixel(scope, canvas, sample, firstWeight, secondWeight, label)
+  local bytes = sourceBytes(scope, canvas)
+  local ar, ag, ab = pixelOf(bytes, 256, sample.x, sample.y)
+  local actual = { fiveBitChannel(ar), fiveBitChannel(ag), fiveBitChannel(ab) }
+  local expected = {}
+  for channel = 1, 3 do
+    expected[channel] = dualBlendChannel(sample.top[channel], sample.under[channel], firstWeight, secondWeight)
+  end
+  for channel = 1, 3 do
+    Assert.near(
+      actual[channel] / 31,
+      expected[channel] / 31,
+      0.12,
+      label .. " channel " .. channel .. " matches the dual-coefficient mix"
+    )
+  end
+end
+
+local function sunrise_blend_uses_both_source_masks(scope, versionId)
+  local scenes, cacheFs = loadRomPackWithFillers(versionId, { 3, 4, 5 })
+  local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
+  advanceToSceneStep(movie, 1, "scroll", 20000)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local mainProgram = assert(slot.blendPrograms.main, "the sunrise step blends the main engine")
+  local subProgram = assert(slot.blendPrograms.sub, "the sunrise step blends the sub engine")
+  Assert.equal(mainProgram.firstMask, 1, "the sunrise blends the main top plane")
+  Assert.equal(mainProgram.secondMask, 30, "the sunrise blends main planes under the top")
+  Assert.equal(subProgram.firstMask, 2, "the sunrise blends the sub second plane independently")
+  Assert.equal(subProgram.secondMask, 30, "the sunrise blends sub planes under the top")
+  Assert.equal(mainProgram.direction, 1, "the sunrise counts its main coefficients down")
+  Assert.equal(subProgram.direction, 1, "the sunrise counts its sub coefficients down")
+  Assert.equal(mainProgram.ticks, 80, "the sunrise holds its authored main duration")
+  Assert.equal(subProgram.ticks, 80, "the sunrise holds its authored sub duration")
+  -- At step entry both coefficients sit at their ends: the first side is
+  -- full, so the main stack shows its raw top texel while the sub stack
+  -- falls through its transparent selected plane to its raw back plane.
+  movie:draw()
+  local mainEntry = sunriseDecisivePixel(
+    scope,
+    cacheFs,
+    slot,
+    "main",
+    sunriseSpriteRects(slot, "main"),
+    16,
+    0,
+    0,
+    mainProgram.firstMask,
+    mainProgram.secondMask
+  )
+  Assert.notNil(mainEntry, "the main stack holds a decisive blend pixel")
+  mainEntry = assert(mainEntry, "the main stack holds a decisive blend pixel")
+  local mainBytes = sourceBytes(scope, movie.mainCanvas)
+  local mar, mag, mab = pixelOf(mainBytes, 256, mainEntry.x, mainEntry.y)
+  Assert.near(mar, mainEntry.top[1] / 31, 0.1, "the main blend opens on its raw top red")
+  Assert.near(mag, mainEntry.top[2] / 31, 0.1, "the main blend opens on its raw top green")
+  Assert.near(mab, mainEntry.top[3] / 31, 0.1, "the main blend opens on its raw top blue")
+  local subEntry = sunriseTopTexel(scope, cacheFs, slot, "sub")
+  Assert.notNil(subEntry, "the sub stack shows its back plane through the transparent top")
+  subEntry = assert(subEntry, "the sub stack shows its back plane through the transparent top")
+  local subBytes = sourceBytes(scope, movie.subCanvas)
+  local sar, sag, sab = pixelOf(subBytes, 256, subEntry.x, subEntry.y)
+  Assert.near(sar, subEntry.top[1] / 31, 0.1, "the sub blend opens on its raw back red")
+  Assert.near(sag, subEntry.top[2] / 31, 0.1, "the sub blend opens on its raw back green")
+  Assert.near(sab, subEntry.top[3] / 31, 0.1, "the sub blend opens on its raw back blue")
+  -- Forty steps in, raw (31-ev, ev) saturates the first side while the
+  -- second side stays near-full: both main planes contribute, which a
+  -- single weight cannot reproduce, while sub still shows its raw stack.
+  advance(movie, 40)
+  slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(currentStepId(movie), "scroll", "the sunrise blend still runs at forty steps")
+  local mainProgram = assert(slot.blendPrograms.main, "the sunrise blends the main engine")
+  local mainEv = math.min(31, math.floor(mainProgram.elapsed * 31 / mainProgram.ticks))
+  Assert.equal(mainEv, 15, "the main blend sits mid-transition at forty steps")
+  local mainSample =
+    sunriseDecisivePixel(
+      scope,
+      cacheFs,
+      slot,
+      "main",
+      sunriseSpriteRects(slot, "main"),
+      16,
+      15,
+      5,
+      mainProgram.firstMask,
+      mainProgram.secondMask
+    )
+  Assert.notNil(mainSample, "the main stack holds a decisive mid-blend pixel")
+  mainSample = assert(mainSample, "the main stack holds a decisive mid-blend pixel")
+  movie:draw()
+  assertSunrisePixel(scope, movie.mainCanvas, mainSample, 31 - mainEv, mainEv, "main")
+  local subSample = sunriseTopTexel(scope, cacheFs, slot, "sub")
+  Assert.notNil(subSample, "the sub stack still shows its back plane mid-blend")
+  subSample = assert(subSample, "the sub stack still shows its back plane mid-blend")
+  local midSubBytes = sourceBytes(scope, movie.subCanvas)
+  local mbr, mbg, mbb = pixelOf(midSubBytes, 256, subSample.x, subSample.y)
+  Assert.near(mbr, subSample.top[1] / 31, 0.1, "the sub stack stays raw while main blends red")
+  Assert.near(mbg, subSample.top[2] / 31, 0.1, "the sub stack stays raw while main blends green")
+  Assert.near(mbb, subSample.top[3] / 31, 0.1, "the sub stack stays raw while main blends blue")
+  movie:dispose()
+end
+
+local function soulsilver_sunrise_blend_uses_both_source_masks(scope, context)
+  local versionId = selectedVersionId(context)
+  sunrise_blend_uses_both_source_masks(scope, versionId)
+end
+
+local function heartgold_sunrise_blend_is_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold sunrise blend needs a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the per-engine coefficient and mask legs "
+        .. "cannot run for HeartGold and are never faked"
+    )
+  end
+  sunrise_blend_uses_both_source_masks(scope, "heartgold")
+end
+
 
 ---@param scope table
 ---@param versionId string selected edition identity
@@ -4760,6 +5306,10 @@ local T = GraphicsSmoke.suite({
   ["heartgold panorama wrap is blocked without a dump"] = heartgold_panorama_wrap_is_blocked_without_a_dump,
   ["synthetic color overlap proves bg ordering"] = synthetic_color_overlap_proves_bg_ordering,
   ["synthetic window masks isolate engine planes"] = synthetic_window_masks_isolate_engine_planes,
+  ["synthetic dual coefficients saturate both weights per pixel"] = synthetic_dual_coefficients_saturate_both_weights_per_pixel,
+  ["synthetic masked pairs use raw under pixels without cascading"] = synthetic_masked_pairs_use_raw_under_pixels_without_cascading,
+  ["soulsilver sunrise blend uses both source masks per engine"] = soulsilver_sunrise_blend_uses_both_source_masks,
+  ["heartgold sunrise blend is blocked without a dump"] = heartgold_sunrise_blend_is_blocked_without_a_dump,
   ["soulsilver town stays on main and stops at the rival beat"] = soulsilver_town_stays_on_main_and_stops_at_the_rival_beat,
   ["authored sprites stay on their engine with frame offsets"] = authored_sprites_stay_on_their_engine_with_frame_offsets,
   ["step relative fades composite on the gpu"] = step_relative_fades_composite_on_the_gpu,
