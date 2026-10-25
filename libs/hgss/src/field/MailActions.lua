@@ -1,5 +1,6 @@
 -- Owns atomic custody changes for authored Mail across Party, Mailbox and Bag.
 local Mail = require("libs.mons.src.gen4.Mail")
+local MailTemplate = require("libs.hgss.src.field.MailTemplate")
 
 local MailActions = {}
 MailActions.__index = MailActions
@@ -81,46 +82,6 @@ function MailActions:_resolve(request)
   -- Composed letters must satisfy the renderer expansion contract:
   -- every line template is compiled, its substitution slots match the
   -- stored word fields, and every filled word is a compiled entry.
-  local function checkComposedLetter(letter)
-    local templates = self.mailText and self.mailText.templates or nil
-    local wordDictionary = self.wordDictionary
-    if type(templates) ~= "table" or type(wordDictionary) ~= "table" then
-      return false
-    end
-    if not pcall(Mail.validate, letter) then
-      return false
-    end
-    for _, line in ipairs(letter.lines) do
-      if line ~= false then
-        local template = templates[line.template]
-        if type(template) ~= "table" then
-          return false
-        end
-        local substitutions = 0
-        for _, token in ipairs(template) do
-          if token.kind == "substitution" then
-            substitutions = substitutions + 1
-          end
-        end
-        -- words rides the fixed two-field storage shape (MAILMSG_FIELDS_MAX);
-        -- only the first nmsg fields carry words, trailing fields stay false
-        -- (EC_WORD_NULL), mirroring retail SetTrailingFieldsEmpty.
-        if #line.words ~= 2 then
-          return false
-        end
-        for position, wordKey in ipairs(line.words) do
-          if position <= substitutions then
-            if wordKey == false or wordDictionary[wordKey] == nil then
-              return false
-            end
-          elseif wordKey ~= false then
-            return false
-          end
-        end
-      end
-    end
-    return true
-  end
   -- The hold-mail follow-up attaches the retained erased letter to a
   -- party mon while consuming its stationery from the Bag. The letter
   -- rides the request because the Mailbox slot is already empty.
@@ -137,8 +98,11 @@ function MailActions:_resolve(request)
     end
     local letter = assert(request.letter, "hold-mail carries its retained letter")
     local itemKey = assert(request.itemKey, "hold-mail carries its stationery")
-    if request.kind == "composeGiveMail" and not checkComposedLetter(letter) then
-      return nil, "invalid_letter"
+    if request.kind == "composeGiveMail" then
+      local composedOk = MailTemplate.checkComposed(letter, self.mailText, self.wordDictionary)
+      if not composedOk then
+        return nil, "invalid_letter"
+      end
     end
     local stationery = assert(self.stationery[letter.type], "mail stationery is compiled")
     if stationery.itemKey ~= itemKey then

@@ -6,6 +6,7 @@
 -- slot starts empty. Submitted letters satisfy the same template/word
 -- contract the Mailbox renderer expands.
 local Mail = require("libs.mons.src.gen4.Mail")
+local MailTemplate = require("libs.hgss.src.field.MailTemplate")
 local MailboxInterface = require("game.hgss.src.pc.MailboxInterface")
 
 local MailComposeState = {}
@@ -52,88 +53,6 @@ local function cue(self, sequence)
   if type(audio) == "table" and type(audio.play) == "function" then
     audio.play(sequence)
   end
-end
-
--- Mirrors MailboxRenderer.expandLine so only submittable assemblies reach
--- the custody intent: the template must be compiled, the first nmsg word
--- fields fill the substitution slots, trailing fields stay EC_WORD_NULL,
--- and every filled word is a compiled dictionary entry.
-local function expandLine(line, manifest)
-  local templates = assert(manifest.mail.text.templates, "Mail templates are compiled with the PC manifest")
-  local template = assert(templates[line.template], "stored Mail template is present in the compiled manifest")
-  assert(type(template) == "table", "Mail template is a lossless token array")
-  local substitutions = 0
-  for _, token in ipairs(template) do
-    if token.kind == "substitution" then
-      substitutions = substitutions + 1
-    end
-  end
-  assert(#line.words == 2, "stored Mail keeps its two EC fields")
-  assert(substitutions <= #line.words, "Mail template substitution slots fit the stored EC fields")
-  for position = substitutions + 1, #line.words do
-    assert(line.words[position] == false, "trailing Mail EC fields stay EC_WORD_NULL")
-  end
-  local tokens, wordIndex = {}, 0
-  for _, token in ipairs(template) do
-    if token.kind == "substitution" then
-      wordIndex = wordIndex + 1
-      local wordKey = line.words[wordIndex]
-      if wordKey ~= false then
-        local word =
-          assert(manifest.mail.wordDictionary[wordKey], "stored EC word is present in the compiled dictionary")
-        for _, wordToken in ipairs(word) do
-          tokens[#tokens + 1] = wordToken
-        end
-      end
-    else
-      tokens[#tokens + 1] = token
-    end
-  end
-  assert(wordIndex == substitutions, "every template substitution consumes one stored EC field")
-  return tokens
-end
-
-local function checkAssembly(lines, manifest)
-  local templates = manifest.mail.text.templates
-  local wordDictionary = manifest.mail.wordDictionary
-  if type(templates) ~= "table" or type(wordDictionary) ~= "table" then
-    return false, "invalid_letter"
-  end
-  for _, line in ipairs(lines) do
-    if line ~= false then
-      local template = templates[line.template]
-      if type(template) ~= "table" then
-        return false, "invalid_letter"
-      end
-      local substitutions = 0
-      for _, token in ipairs(template) do
-        if token.kind == "substitution" then
-          substitutions = substitutions + 1
-        end
-      end
-      -- The stored word array stays length 2 (MAILMSG_FIELDS_MAX): the
-      -- first nmsg fields fill the substitution slots while trailing
-      -- fields stay EC_WORD_NULL.
-      if #line.words ~= 2 or substitutions > #line.words then
-        return false, "invalid_letter"
-      end
-      for position = 1, substitutions do
-        local wordKey = line.words[position]
-        if wordKey == false then
-          return false, "incomplete"
-        end
-        if wordDictionary[wordKey] == nil then
-          return false, "invalid_letter"
-        end
-      end
-      for position = substitutions + 1, #line.words do
-        if line.words[position] ~= false then
-          return false, "invalid_letter"
-        end
-      end
-    end
-  end
-  return true
 end
 
 function MailComposeState.new(opts)
@@ -201,12 +120,7 @@ function MailComposeState.new(opts)
       -- Only the template substitution slots are fillable: a 0/1-slot
       -- retail template leaves its trailing EC fields EC_WORD_NULL.
       local template = assert(templates[line.template], "composed Mail templates are present in the compiled manifest")
-      local substitutions = 0
-      for _, token in ipairs(template) do
-        if token.kind == "substitution" then
-          substitutions = substitutions + 1
-        end
-      end
+      local substitutions = MailTemplate.substitutionCount(template)
       assert(substitutions <= #line.words, "composed Mail substitution slots fit the stored EC fields")
       for position = 1, substitutions do
         state.slots[#state.slots + 1] = { line = lineIndex, position = position }
@@ -262,15 +176,10 @@ function MailComposeState:letter()
   }
 end
 
+-- The shared template check already enforces the Mail shape through
+-- Mail.validate, so its verdict is the composer verdict directly.
 function MailComposeState:validate()
-  local ok, reason = checkAssembly(self:letter().lines, self.manifest)
-  if not ok then
-    return false, reason
-  end
-  if pcall(Mail.validate, self:letter()) then
-    return true
-  end
-  return false, "invalid_letter"
+  return MailTemplate.checkComposed(self:letter(), self.manifest.mail.text, self.manifest.mail.wordDictionary)
 end
 
 -- Attempts submission: incomplete or invalid assemblies stay open with
@@ -423,7 +332,12 @@ function MailComposeState:draw(resources, status)
   for index, line in ipairs(value.lines) do
     if line ~= false then
       local placement = assert(geometry.lines[index], "each Mail line uses its source window anchor")
-      drawMailLine(text, expandLine(line, self.manifest), placement.x, placement.y)
+      drawMailLine(
+        text,
+        MailTemplate.expandLine(line, self.manifest.mail.text, self.manifest.mail.wordDictionary),
+        placement.x,
+        placement.y
+      )
     end
   end
   local browser = assert(value.presentation.browser, "composition browsing uses the source box geometry")

@@ -463,4 +463,46 @@ function T.compose_give_mail_accepts_trailing_null_fields_on_single_slot_templat
   Assert.equal(bag:quantity("GRASS_MAIL"), 0, "giving consumes the composed stationery")
 end
 
+function T.composed_three_slot_templates_cannot_reach_custody()
+  local slots = { mail(0) }
+  for slot = 2, Mailbox.CAPACITY do
+    slots[slot] = false
+  end
+  local ours = composeManifest()
+  ours.mail.text.templates["mail-template:0:3"] = {
+    { kind = "text", value = "fixture" },
+    { kind = "substitution" },
+    { kind = "substitution" },
+    { kind = "substitution" },
+  }
+  local mons, mailbox, bag, actions = services({ schema = Mailbox.SCHEMA, slots = slots }, ours)
+  Assert.isTrue(bag:add("GRASS_MAIL", 1), "the erased stationery returns to the Bag")
+  local partyRevision, mailboxRevision, bagRevision = mons:partyRevision(), mailbox:revision(), bag:revision()
+  local mailboxBefore, bagBefore = mailbox:capture(), bag:capture()
+  local recipientBefore = { heldItem = mons:partyMon(1).heldItem, mail = mons:partyMon(1).mail }
+  local oversized = composedLetter(0)
+  oversized.lines[1] = { template = "mail-template:0:3", words = { "0", "1" } }
+  local oversizedBefore = { template = oversized.lines[1].template, first = "0", second = "1" }
+  local refused = actions:preview({
+    kind = "composeGiveMail",
+    targetSlot = 1,
+    letter = oversized,
+    itemKey = "GRASS_MAIL",
+    partyRevision = partyRevision,
+    bagRevision = bagRevision,
+  })
+  Assert.equal(refused.kind, "refused", "three substitutions cannot fit the two stored fields")
+  Assert.equal(refused.reason, "invalid_letter")
+  Assert.equal(oversized.lines[1].template, oversizedBefore.template)
+  Assert.equal(oversized.lines[1].words[1], oversizedBefore.first)
+  Assert.equal(oversized.lines[1].words[2], oversizedBefore.second)
+  Assert.equal(mons:partyRevision(), partyRevision, "refusal stages no party change")
+  Assert.equal(mailbox:revision(), mailboxRevision, "refusal stages no mailbox change")
+  Assert.equal(bag:revision(), bagRevision, "refusal stages no bag change")
+  Assert.deepEqual(mailbox:capture(), mailboxBefore, "refusal leaves mailbox custody untouched")
+  Assert.deepEqual(bag:capture(), bagBefore, "refusal leaves stationery inventory untouched")
+  Assert.equal(mons:partyMon(1).heldItem, recipientBefore.heldItem)
+  Assert.deepEqual(mons:partyMon(1).mail, recipientBefore.mail)
+end
+
 return { tests = T }

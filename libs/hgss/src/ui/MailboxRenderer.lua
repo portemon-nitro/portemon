@@ -11,6 +11,7 @@ local MailboxRenderer = {}
 MailboxRenderer.__index = MailboxRenderer
 local FieldMenuTheme = require("libs.hgss.src.ui.FieldMenuTheme")
 local ImageSampling = require("libs.nds.src.love.ImageSampling")
+local MailTemplate = require("libs.hgss.src.field.MailTemplate")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 -- Mail visuals sample point-filtered and clamped, matching the private
@@ -71,45 +72,6 @@ local function nameplateInput(row, page)
     return row.input
   end
   return row.slot - (page or 0) * 10
-end
-
-local function expandLine(line, manifest)
-  local templates = assert(manifest.mail.text.templates, "Mail templates are compiled with the PC manifest")
-  local template = assert(templates[line.template], "stored Mail template is present in the compiled manifest")
-  assert(type(template) == "table", "Mail template is a lossless token array")
-  -- Retail fills only the first nmsg fields (mail_message.c) and leaves
-  -- trailing EC_WORD_NULL slots; the stored word array stays length 2
-  -- (MAILMSG_FIELDS_MAX) so a 0/1-slot template renders with trailing
-  -- false entries instead of one word per substitution.
-  local substitutions = 0
-  for _, token in ipairs(template) do
-    if token.kind == "substitution" then
-      substitutions = substitutions + 1
-    end
-  end
-  assert(#line.words == 2, "stored Mail keeps its two EC fields")
-  assert(substitutions <= #line.words, "Mail template substitution slots fit the stored EC fields")
-  for position = substitutions + 1, #line.words do
-    assert(line.words[position] == false, "trailing Mail EC fields stay EC_WORD_NULL")
-  end
-  local tokens, wordIndex = {}, 0
-  for _, token in ipairs(template) do
-    if token.kind == "substitution" then
-      wordIndex = wordIndex + 1
-      local wordKey = line.words[wordIndex]
-      if wordKey ~= false then
-        local word =
-          assert(manifest.mail.wordDictionary[wordKey], "stored EC word is present in the compiled dictionary")
-        for _, wordToken in ipairs(word) do
-          tokens[#tokens + 1] = wordToken
-        end
-      end
-    else
-      tokens[#tokens + 1] = token
-    end
-  end
-  assert(wordIndex == substitutions, "every template substitution consumes one stored EC field")
-  return tokens
 end
 
 local function drawMailLine(text, tokens, x, y)
@@ -542,7 +504,12 @@ function MailboxRenderer:draw(status, resources)
     for index, line in ipairs(letter.lines) do
       if line ~= false then
         local placement = assert(geometry.lines[index], "each Mail line uses its source window anchor")
-        drawMailLine(text, expandLine(line, self.manifest), placement.x, placement.y)
+        drawMailLine(
+          text,
+          MailTemplate.expandLine(line, self.manifest.mail.text, self.manifest.mail.wordDictionary),
+          placement.x,
+          placement.y
+        )
       end
     end
     for index, location in ipairs(self.manifest.mail.geometry.iconLocations) do

@@ -1206,4 +1206,53 @@ function T.mail_compose_word_cancel_returns_through_the_bank_browser()
   compose:dispose()
 end
 
+function T.stored_lines_with_missing_words_render_while_composition_stays_incomplete()
+  local compose = MailComposeState.new({
+    manifest = manifest(),
+    stationeryType = 0,
+    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
+    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
+    measureDisplay = measurement,
+    audio = { play = function() end },
+  })
+  compose:setWord(1, 1, "0")
+  local ok, reason = compose:validate()
+  Assert.isFalse(ok, "a missing required word keeps the composed letter submittable-free")
+  Assert.equal(reason, "incomplete")
+  Assert.isFalse(compose:status().submitReady, "empty required slots block submission")
+  local submitted, submitReason = compose:submit()
+  Assert.isFalse(submitted)
+  Assert.equal(submitReason, "incomplete")
+  Assert.equal(compose:status().error, "incomplete")
+  local drawn = {}
+  compose:draw({
+    textRenderer = {
+      fontDef = { lineHeight = 16, charmap = {} },
+      windowBackgroundColor = function()
+        return { 1, 1, 1, 1 }
+      end,
+      drawText = function() end,
+      drawLine = function(_, row)
+        drawn[#drawn + 1] = row
+      end,
+    },
+    windowRenderer = {
+      drawWindow = function() end,
+    },
+    applicationFrameIndex = 1,
+  })
+  Assert.isTrue(#drawn > 0, "the stored short line expands through the draw path")
+  local seenWord = false
+  for _, row in ipairs(drawn) do
+    for _, token in ipairs(row) do
+      Assert.isFalse(token.kind == "substitution", "rendered lines carry no substitution markers")
+      if token.value == "word0" then
+        seenWord = true
+      end
+    end
+  end
+  Assert.isTrue(seenWord, "the present stored word renders")
+  compose:dispose()
+end
+
 return { tests = T }

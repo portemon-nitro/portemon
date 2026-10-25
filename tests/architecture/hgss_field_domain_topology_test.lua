@@ -115,6 +115,7 @@ local FIELD_COORDINATION = {
   "LegendCutsceneRig",
   "MapInitScriptController",
   "MailActions",
+  "MailTemplate",
   "PokemonCenterHealFlow",
   "PartyActions",
   "PcStorageActions",
