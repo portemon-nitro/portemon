@@ -2174,6 +2174,8 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
     end
     return table.concat(copy, "\n")
   end
+  local dropImporter = nil
+  local dropThread = nil
   local ok, err = xpcall(function()
     do
       fresh()
@@ -2188,6 +2190,8 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
       local writer = assert(io.open(tmpPath, "wb"))
       writer:write("not a real rom")
       assert(writer:close())
+      local receiptImporter = nil
+      local receiptThread = nil
       local runOk, runErr = xpcall(function()
         calls = {}
         App._beginImportPath(tmpPath)
@@ -2217,7 +2221,27 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
           App.importer ~= nil and App.importer.state ~= RomImporter.STATES.IDLE,
           "the painted pick starts its import only after the first draw"
         )
+        receiptImporter = App.importer
+        local session = receiptImporter ~= nil and receiptImporter._queued or nil
+        receiptThread = session ~= nil and session.thread or nil
       end, debug.traceback)
+      local drainImporter = receiptImporter or App.importer
+      if drainImporter ~= nil and type(drainImporter.cancelQueued) == "function" then
+        drainImporter:cancelQueued()
+      end
+      if receiptThread == nil and drainImporter ~= nil and drainImporter._queued ~= nil then
+        receiptThread = drainImporter._queued.thread
+      end
+      if receiptThread ~= nil and drainImporter ~= nil then
+        for _ = 1, 200 do
+          drainImporter:update()
+          local threadOk, running = pcall(receiptThread.isRunning, receiptThread)
+          if not threadOk or running ~= true then
+            break
+          end
+          love.timer.sleep(0.01)
+        end
+      end
       os.remove(tmpPath)
       os.execute("rm -rf -- '" .. tmpDir:gsub("'", "'\\''") .. "'")
       if not runOk then
@@ -2262,8 +2286,30 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
         App.importer ~= nil and App.importer.state ~= RomImporter.STATES.IDLE,
         "the painted drop starts its import only after the first draw"
       )
+      dropImporter = App.importer
+      local dropSession = dropImporter ~= nil and dropImporter._queued or nil
+      dropThread = dropSession ~= nil and dropSession.thread or nil
     end
   end, debug.traceback)
+  if dropImporter == nil and App.importer ~= nil then
+    dropImporter = App.importer
+  end
+  if dropThread == nil and dropImporter ~= nil and dropImporter._queued ~= nil then
+    dropThread = dropImporter._queued.thread
+  end
+  if dropImporter ~= nil and type(dropImporter.cancelQueued) == "function" then
+    dropImporter:cancelQueued()
+  end
+  if dropThread ~= nil and dropImporter ~= nil then
+    for _ = 1, 200 do
+      dropImporter:update()
+      local dropThreadOk, dropRunning = pcall(dropThread.isRunning, dropThread)
+      if not dropThreadOk or dropRunning ~= true then
+        break
+      end
+      love.timer.sleep(0.01)
+    end
+  end
   restoreSources()
   fresh()
   if not ok then
@@ -2545,6 +2591,234 @@ function T.warm_selection_keeps_one_pair_across_title_game_and_editor()
   end, debug.traceback)
   StartupAssetCache.loadWalker = savedLoadWalker
   SaveEditorState.new = savedEditorNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A superseding selection admitted while a reader is still retiring paints its
+-- receipt first, performs no render-thread source work, and waits for the
+-- single reader lease instead of starting an overlapping worker. Releasing
+-- the stalled input lets the retired reader fail closed; the waiting import
+-- then starts its own worker and fails closed on its own garbage bytes.
+function T.superseding_import_waits_for_retiring_reader_after_receipt()
+  local RomSource = require("romdump.src.source.RomSource")
+  local NdsRom = require("romdump.src.source.NdsRom")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local originalFromPath = RomSource.fromPath
+  local originalFromDroppedFile = RomSource.fromDroppedFile
+  local originalOpen = NdsRom.open
+  local originalRecord = RomBinding.record
+  local calls = {}
+  RomSource.fromPath = function(...)
+    calls[#calls + 1] = "path"
+    return originalFromPath(...)
+  end
+  RomSource.fromDroppedFile = function(...)
+    calls[#calls + 1] = "drop"
+    return originalFromDroppedFile(...)
+  end
+  NdsRom.open = function(...)
+    calls[#calls + 1] = "verify"
+    return originalOpen(...)
+  end
+  RomBinding.record = function(...)
+    calls[#calls + 1] = "record"
+    return originalRecord(...)
+  end
+  local function restoreSources()
+    RomSource.fromPath = originalFromPath
+    RomSource.fromDroppedFile = originalFromDroppedFile
+    NdsRom.open = originalOpen
+    RomBinding.record = originalRecord
+  end
+  local function captureCopy(draw)
+    local lg = love.graphics
+    local saved = {
+      getDimensions = lg.getDimensions,
+      setColor = lg.setColor,
+      rectangle = lg.rectangle,
+      print = lg.print,
+      printf = lg.printf,
+    }
+    local copy = {}
+    lg.getDimensions = function()
+      return 800, 600
+    end
+    lg.setColor = function() end
+    lg.rectangle = function() end
+    lg.print = function(value)
+      copy[#copy + 1] = tostring(value)
+    end
+    lg.printf = function(value)
+      copy[#copy + 1] = tostring(value)
+    end
+    local ok, err = xpcall(draw, debug.traceback)
+    lg.getDimensions = saved.getDimensions
+    lg.setColor = saved.setColor
+    lg.rectangle = saved.rectangle
+    lg.print = saved.print
+    lg.printf = saved.printf
+    if not ok then
+      error(err, 0)
+    end
+    return table.concat(copy, "\n")
+  end
+  local function threadAlive(thread)
+    if thread == nil then
+      return false
+    end
+    local ok, running = pcall(thread.isRunning, thread)
+    return ok and running == true
+  end
+  local ok, err = xpcall(function()
+    fresh()
+    App.service = nil
+    App.pendingQuiesce = nil
+    App._importReceipt = nil
+    local shellRoot = assert(io.popen("mktemp -d"))
+    local tmpDir = ((shellRoot:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+    assert(shellRoot:close(), "mktemp -d did not exit successfully")
+    assert(tmpDir ~= "", "mktemp -d produced no path")
+    local fifoPath = tmpDir .. "/stall.nds"
+    assert(os.execute("mkfifo -- '" .. fifoPath:gsub("'", "'\\''") .. "'"))
+    local secondPath = tmpDir .. "/second.nds"
+    local secondWriter = assert(io.open(secondPath, "wb"))
+    secondWriter:write("not a real rom")
+    assert(secondWriter:close())
+    local released = false
+    local function releaseFifo()
+      if released then
+        return
+      end
+      released = true
+      pcall(function()
+        local writer = assert(io.open(fifoPath, "wb"))
+        writer:write("not a real rom")
+        assert(writer:close())
+      end)
+    end
+    local firstThread = nil
+    local reachedReading = false
+    local runOk, runErr = xpcall(function()
+      calls = {}
+      App._beginImportPath(fifoPath)
+      Assert.equal(#calls, 0, "the stalled pick opens no source before its receipt is drawn")
+      Assert.isFalse(
+        App.importer ~= nil and App.importer:isBusy(),
+        "no import work runs before the receipt is painted"
+      )
+      local first = captureCopy(function()
+        App.draw()
+      end)
+      Assert.isTrue(
+        first:find("File received", 1, true) ~= nil,
+        "the first painted frame names the receipt, got: " .. first
+      )
+      Assert.isTrue(
+        first:find("stall.nds", 1, true) ~= nil,
+        "the painted receipt names the stalled file, got: " .. first
+      )
+      App.update(0.016)
+      Assert.equal(#calls, 0, "the render thread never reads the picked ROM")
+      local firstImporter = assert(App.importer, "the first pick owns its importer")
+      for _ = 1, 500 do
+        firstImporter:update()
+        if firstImporter:status().stage == "opening" then
+          break
+        end
+        love.timer.sleep(0.01)
+      end
+      Assert.equal(firstImporter:status().stage, "opening", "the first worker reaches its read")
+      reachedReading = true
+      local session = assert(firstImporter._queued, "the first import owns its worker")
+      firstThread = session.thread
+      Assert.isTrue(threadAlive(firstThread), "the stalled reader is physically alive")
+      App._openImportCard("path", secondPath, nil, App._receiptName("path", secondPath))
+      local secondImporter = assert(App.importer, "the replacement owns its importer")
+      Assert.isTrue(secondImporter ~= firstImporter, "the replacement retires the prior importer")
+      local second = captureCopy(function()
+        App.draw()
+      end)
+      Assert.isTrue(
+        second:find("File received", 1, true) ~= nil,
+        "the replacement receipt paints, got: " .. second
+      )
+      Assert.isTrue(
+        second:find("second.nds", 1, true) ~= nil,
+        "the replacement receipt names the new file, got: " .. second
+      )
+      Assert.equal(#calls, 0, "the replacement receipt paints before any source read")
+      App.update(0.016)
+      Assert.isTrue(threadAlive(firstThread), "the retired reader still occupies the lease")
+      Assert.isNil(secondImporter._queued, "no overlapping worker starts while it lives")
+      Assert.isTrue(secondImporter:isBusy(), "the superseding import reports busy while waiting")
+      Assert.equal(secondImporter:status().state, "reading", "the superseding import waits")
+      local label = secondImporter:status().stageLabel
+      Assert.isTrue(
+        type(label) == "string" and label:lower():find("wait", 1, true) ~= nil,
+        "the waiting status is truthful, got: " .. tostring(label)
+      )
+      for _ = 1, 50 do
+        App.update(0.016)
+        love.timer.sleep(0.01)
+      end
+      Assert.isTrue(threadAlive(firstThread), "the retired reader keeps occupying the lease")
+      Assert.isNil(secondImporter._queued, "the wait persists without spawning a worker")
+      Assert.isTrue(secondImporter:isBusy(), "the superseding import stays busy while waiting")
+      Assert.equal(#calls, 0, "waiting performs no render-thread source work")
+      releaseFifo()
+      local oldExited = false
+      local sawSecondWorker = false
+      local terminal = nil
+      for _ = 1, 500 do
+        App.update(0.016)
+        if not threadAlive(firstThread) then
+          oldExited = true
+        end
+        if App.importer == secondImporter and secondImporter._queued ~= nil then
+          sawSecondWorker = true
+        end
+        if oldExited and sawSecondWorker then
+          if secondImporter.state == "complete" or secondImporter.state == "error" then
+            terminal = secondImporter.state
+            break
+          end
+          if App.importer == nil then
+            terminal = "error-cleared"
+            break
+          end
+        end
+        love.timer.sleep(0.01)
+      end
+      Assert.isTrue(oldExited, "the retired reader exits after its input is released")
+      Assert.isTrue(sawSecondWorker, "the waiting import starts its worker after the lease frees")
+      Assert.isTrue(
+        terminal == "error" or terminal == "error-cleared",
+        "the garbage follow-up fails closed, got: " .. tostring(terminal)
+      )
+      Assert.equal(#calls, 0, "no render-thread source work runs at any point")
+      Assert.equal(firstImporter.state, "idle", "the retired session never revives")
+    end, debug.traceback)
+    if reachedReading then
+      releaseFifo()
+    end
+    if threadAlive(firstThread) then
+      for _ = 1, 200 do
+        if not threadAlive(firstThread) then
+          break
+        end
+        love.timer.sleep(0.01)
+      end
+    end
+    os.remove(secondPath)
+    os.execute("rm -rf -- '" .. tmpDir:gsub("'", "'\\''") .. "'")
+    if not runOk then
+      error(runErr, 0)
+    end
+  end, debug.traceback)
+  restoreSources()
+  fresh()
   if not ok then
     error(err, 0)
   end

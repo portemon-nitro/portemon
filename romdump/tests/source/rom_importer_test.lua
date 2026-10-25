@@ -1299,4 +1299,216 @@ function T.stalled_background_read_keeps_the_receipt_painted_across_draws()
   end)
 end
 
+-- A retired reader keeps occupying the single physical reader lease until it
+-- actually exits: canceling a FIFO-stalled first import retires the session
+-- logically, but a second queued import on a separate importer must stay
+-- pending (busy with a truthful waiting status) and start no overlapping
+-- worker. Releasing the FIFO lets the retired worker fail closed without
+-- publishing; the waiting import then starts and validates normally.
+function T.successive_queued_imports_never_overlap_physical_readers()
+  withOwnedRoot(function(root)
+    local h = harness()
+    local fifoPath = root .. "/stall.nds"
+    local fifoStatus = os.execute("mkfifo -- '" .. fifoPath:gsub("'", "'\\''") .. "'")
+    assert(commandSucceeded(fifoStatus), "mkfifo did not exit successfully")
+    local romPath = root .. "/valid.nds"
+    local romWriter = assert(io.open(romPath, "wb"))
+    romWriter:write(h.data)
+    assert(romWriter:close())
+    local released = false
+    local function releaseFifo()
+      if released then
+        return
+      end
+      released = true
+      pcall(function()
+        local writer = assert(io.open(fifoPath, "wb"))
+        writer:write("not a real rom")
+        assert(writer:close())
+      end)
+    end
+    local firstThread = nil
+    local ok, err = xpcall(function()
+      local first, firstEvents = queuedImporter(h)
+      first:queuePath(fifoPath)
+      waitForWorkerRead(first)
+      local session = assert(first._queued, "the first import owns its worker")
+      firstThread = session.thread
+      local aliveOk, alive = pcall(firstThread.isRunning, firstThread)
+      Assert.isTrue(aliveOk and alive, "the stalled worker is physically alive")
+      first:cancelQueued()
+      Assert.equal(first.state, "idle", "cancel retires the session without failing it")
+      local second, secondEvents = queuedImporter(h)
+      second:queuePath(romPath)
+      for _ = 1, 50 do
+        first:update()
+        second:update()
+        love.timer.sleep(0.01)
+      end
+      local stillOk, stillRunning = pcall(firstThread.isRunning, firstThread)
+      Assert.isTrue(stillOk and stillRunning, "the retired worker still occupies the lease")
+      Assert.equal(second.state, "reading", "the second import waits instead of overlapping")
+      Assert.isTrue(second:isBusy(), "the waiting import still reports busy")
+      Assert.isNil(second._queued, "no overlapping worker starts while the first is alive")
+      local label = second:status().stageLabel
+      Assert.isTrue(
+        type(label) == "string" and label:lower():find("wait", 1, true) ~= nil,
+        "the waiting import names its wait, got: " .. tostring(label)
+      )
+      Assert.isNil(second:takeVerifiedSource(), "the waiting import hands nothing yet")
+      Assert.equal(#firstEvents, 0, "the retired session fires no completion")
+      Assert.equal(#secondEvents, 0, "the waiting import fires no completion")
+      Assert.isNil(
+        CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua"),
+        "no binding is recorded while the second import waits"
+      )
+      releaseFifo()
+      for _ = 1, 500 do
+        first:update()
+        second:update()
+        local doneOk, doneRunning = pcall(firstThread.isRunning, firstThread)
+        if doneOk and not doneRunning and second._queued ~= nil then
+          break
+        end
+        love.timer.sleep(0.01)
+      end
+      local exitedOk, exited = pcall(firstThread.isRunning, firstThread)
+      Assert.isTrue(exitedOk and not exited, "the retired reader exits after release")
+      Assert.equal(first.state, "idle", "the retired session never revives")
+      Assert.equal(#firstEvents, 0, "the late worker result fires no completion")
+      pumpQueued(second)
+      Assert.equal(second.state, "complete", "the waiting import validates once the lease frees")
+      Assert.deepEqual(secondEvents, { "heartgold" }, "the second session completes exactly once")
+      local binding = CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua")
+      Assert.notNil(binding, "the second session records its source binding")
+      assert(binding, "the second session records its source binding")
+      Assert.equal(binding.romSha1, h.info.sha1, "the second binding keeps its verified identity")
+      Assert.equal(binding.path, romPath, "the second binding keeps the verified user path")
+      local handed = second:takeVerifiedSource()
+      Assert.notNil(handed, "the second session hands its verified source once")
+      assert(handed, "the second session hands its verified source once")
+      Assert.equal(handed:sha1(), h.info.sha1, "the handed source keeps its verified identity")
+      Assert.isNil(second:takeVerifiedSource(), "the second handoff is one-shot")
+    end, debug.traceback)
+    releaseFifo()
+    if firstThread ~= nil then
+      for _ = 1, 200 do
+        local doneOk, doneRunning = pcall(firstThread.isRunning, firstThread)
+        if doneOk and not doneRunning then
+          break
+        end
+        love.timer.sleep(0.01)
+      end
+    end
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+-- Minimal in-process stand-ins for the worker channels and thread handle, so
+-- stale terminal output can be delivered deterministically without timing.
+local function fakeImportChannel()
+  local queue = {}
+  local channel = {}
+  function channel:push(packet)
+    queue[#queue + 1] = packet
+    return true
+  end
+  function channel:pop()
+    if #queue == 0 then
+      return nil
+    end
+    return table.remove(queue, 1)
+  end
+  function channel:depth()
+    return #queue
+  end
+  return channel
+end
+
+local function exitedImportThread()
+  return {
+    isRunning = function()
+      return false
+    end,
+    getError = function()
+      return nil
+    end,
+  }
+end
+
+-- A retired worker's late terminal packets are drained, never published: the
+-- prior binding survives a stale completion carrying foreign bytes, the
+-- retired session offers no handoff and fires nothing, and a live second
+-- session still publishes and hands its source exactly once.
+function T.retired_worker_output_is_drained_and_never_publishes()
+  local h = harness()
+  h.importer:startSource(RomSource.fromString(h.data, "prior.nds"))
+  runToTerminal(h.importer)
+  Assert.equal(h.importer.state, "complete")
+  local cache = CacheFs.forVersion("heartgold", h.backend)
+  local prior = assert(cache:loadLua("rom-source.lua"), "the prior import records its binding")
+  local retired, retiredEvents = queuedImporter(h)
+  local retiredInbox = fakeImportChannel()
+  local retiredOutbox = fakeImportChannel()
+  retired._queueSeq = 7
+  retired._queued = { id = 7, thread = exitedImportThread(), inbox = retiredInbox, outbox = retiredOutbox }
+  retired.state = RomImporter.STATES.READING
+  retired:cancelQueued()
+  Assert.equal(retired.state, "idle", "cancel retires the session without failing it")
+  Assert.equal(retiredInbox:depth(), 1, "the cancellation reaches the retired worker")
+  retiredOutbox:push({
+    kind = "complete",
+    id = 7,
+    versionId = "heartgold",
+    displayName = "Stale",
+    sourceName = "stale.nds",
+    report = { sha1 = "stale" },
+    binding = {
+      versionId = "heartgold",
+      romSha1 = "STALE-SHA1",
+      kind = "nds",
+      path = false,
+      displayName = "Stale",
+    },
+    byteData = love.data.newByteData("stale-bytes"),
+  })
+  retiredOutbox:push({
+    kind = "error",
+    id = 7,
+    errorCode = "ROM_OPEN_FAILED",
+    message = "stale",
+    context = {},
+  })
+  local live, liveEvents = queuedImporter(h)
+  for _ = 1, 10 do
+    retired:update()
+    live:update()
+  end
+  Assert.isNil(retiredOutbox:pop(), "the retired terminal output is drained instead of retained")
+  Assert.equal(retired.state, "idle", "stale packets never revive the retired session")
+  Assert.equal(#retiredEvents, 0, "the retired session fires no completion")
+  Assert.isNil(retired:takeVerifiedSource(), "the retired session hands nothing")
+  local kept = assert(cache:loadLua("rom-source.lua"), "a binding remains recorded")
+  Assert.equal(kept.romSha1, prior.romSha1, "the stale completion never republishes the binding")
+  withOwnedRoot(function(root)
+    local romPath = root .. "/live.nds"
+    local writer = assert(io.open(romPath, "wb"))
+    writer:write(h.data)
+    assert(writer:close())
+    live:queuePath(romPath)
+    pumpQueued(live)
+    Assert.equal(live.state, "complete", "the live session still validates")
+    Assert.deepEqual(liveEvents, { "heartgold" }, "the live session completes exactly once")
+    local published = assert(cache:loadLua("rom-source.lua"), "the live session publishes")
+    Assert.equal(published.romSha1, h.info.sha1, "the live binding keeps its verified identity")
+    local handed = live:takeVerifiedSource()
+    Assert.notNil(handed, "the live session hands its verified source once")
+    assert(handed, "the live session hands its verified source once")
+    Assert.equal(handed:sha1(), h.info.sha1, "the handed source keeps its verified identity")
+    Assert.isNil(live:takeVerifiedSource(), "the live handoff is one-shot")
+  end)
+end
+
 return { tests = T }
