@@ -52,7 +52,7 @@ local function manifest()
     wordDictionary[tostring(wordId)] = { { kind = "text", value = "word" .. wordId } }
   end
   return {
-    schema = "g4-pc-v2",
+    schema = "g4-pc-v3",
     mailbox = { background = {}, geometry = { visibleLetters = 10 }, pageSize = 10 },
     mail = {
       stationery = stationery,

@@ -499,9 +499,12 @@ DerivedAssetContract.party = {
 
 -- The PC family retains its source-independent Storage, Mailbox, Mail and
 -- Photo Album presentation records as one independently published family.
+-- v3 requires the drawn Mailbox sprite roles (previous arrow 0, next
+-- arrow 1, static close 2, CLOSE cursor 4, row cursor 5) with usable
+-- rendered frames; a stale v2 cache without that guarantee rebuilds.
 DerivedAssetContract.pc = {
   cacheFormat = "pc-cache-v1",
-  schema = "g4-pc-v2",
+  schema = "g4-pc-v3",
 }
 
 -- The Pokegear family carries the source-independent shell, Configure,

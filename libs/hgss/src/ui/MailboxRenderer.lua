@@ -67,13 +67,6 @@ local NAMEPLATE_COLUMN_X = { [0] = 8, [1] = 136 }
 local NAMEPLATE_TEXT_DX = 32
 local NAMEPLATE_TEXT_DY = 8
 
-local function nameplateInput(row, page)
-  if type(row.input) == "number" then
-    return row.input
-  end
-  return row.slot - (page or 0) * 10
-end
-
 local function drawMailLine(text, tokens, x, y)
   local row, lineHeight = {}, text.fontDef.lineHeight
   for _, token in ipairs(tokens) do
@@ -159,36 +152,12 @@ local function authorPromptTokens(self, status, text)
   return tokens
 end
 
--- Maps the list selection through the retail cursor grid inputs 0-10:
--- the page-relative slot offset for a selected row, CLOSE_INPUT when no
--- row is selected (empty list or cleared focus). Only CLOSE selects
--- cursor anim 4; every row input selects anim 5.
----@param status table<string, unknown>
----@return integer input
-local function selectedGridInput(status)
-  local selectedSlot = status.selectedSlot
-  if type(selectedSlot) ~= "number" then
-    return CLOSE_INPUT
-  end
-  local page = status.page
-  if type(page) ~= "number" then
-    page = 0
-  end
-  local input = selectedSlot - page * 10
-  if input < 0 or input > 9 then
-    return CLOSE_INPUT
-  end
-  return input
-end
-
 -- Resolves the compiled sprite frames one mailbox list status draws: the
--- cursor flash driven by the selected grid input, the static sprite-3
--- close target, and the page arrows at their page controls. Single-frame
--- looping sequences draw their first frame. Every input anchors on its
--- decoded grid cell (row inputs use anim 5, CLOSE input 10 uses anim 4).
--- Anim 3 is set by no code and no template and stays undrawn, as do
--- sprites behind manifests that predate the compiled mailbox UI
--- animations.
+-- cursor flash driven by the retail grid input, the static sprite-3
+-- close target, and the page arrows at their page controls. Every input
+-- anchors on its decoded grid cell (row inputs use anim 5, CLOSE input
+-- 10 uses anim 4). Anim 3 is set by no code and no template and stays
+-- undrawn.
 ---@alias MailboxSpriteFrame { image: string, width: number, height: number, anchorX: number, anchorY: number, duration: number }
 ---@alias MailboxSpritePlacement { frame: MailboxSpriteFrame, cx: number, cy: number }
 ---@param manifest table<string, unknown>
@@ -199,72 +168,48 @@ local function mailboxSprites(manifest, status)
   if status.mode ~= "mailbox" then
     return sprites
   end
-  local ui = manifest.mailbox.ui
-  if type(ui) ~= "table" or type(ui.animations) ~= "table" then
-    return sprites
+  local mailbox = assert(manifest.mailbox, "mailbox sprites use the compiled mailbox records")
+  local ui = assert(mailbox.ui, "mailbox sprites use the compiled mailbox UI")
+  local animations = assert(ui.animations, "mailbox sprites use compiled source animations")
+  local function frameOf(animId, role)
+    local entry = animations[animId]
+    assert(type(entry) == "table", "mailbox source animation is compiled: " .. role)
+    local frames = entry.frames
+    assert(type(frames) == "table", "mailbox source animation carries rendered frames: " .. role)
+    return assert(frames[1], "mailbox source animation carries its first frame: " .. role)
   end
-  local function frameOf(animId)
-    local entry = ui.animations[animId]
-    if type(entry) ~= "table" or type(entry.frames) ~= "table" then
-      return nil
-    end
-    return entry.frames[1]
-  end
-  local presentation = status.presentation
-  local controls = type(presentation) == "table" and presentation.pageControls or nil
+  local presentation = assert(status.presentation, "mailbox sprites use the source geometry")
+  local controls = assert(presentation.pageControls, "page arrows use the source hitbox geometry")
   local lastPage = status.lastPage or 0
-  if lastPage > 0 and controls ~= nil then
+  if lastPage > 0 then
     if status.page > 0 then
-      local frame = frameOf(SPRITE_ROLE_ANIMATIONS.pagePrevious)
-      if frame ~= nil then
-        local box = controls.previous
-        sprites.previous = { frame = frame, cx = box.x + box.width / 2, cy = box.y + box.height / 2 }
-      end
+      local frame = frameOf(SPRITE_ROLE_ANIMATIONS.pagePrevious, "pagePrevious")
+      local box = controls.previous
+      sprites.previous = { frame = frame, cx = box.x + box.width / 2, cy = box.y + box.height / 2 }
     end
     if status.page < lastPage then
-      local frame = frameOf(SPRITE_ROLE_ANIMATIONS.pageNext)
-      if frame ~= nil then
-        local box = controls.next
-        sprites.next = { frame = frame, cx = box.x + box.width / 2, cy = box.y + box.height / 2 }
-      end
+      local frame = frameOf(SPRITE_ROLE_ANIMATIONS.pageNext, "pageNext")
+      local box = controls.next
+      sprites.next = { frame = frame, cx = box.x + box.width / 2, cy = box.y + box.height / 2 }
     end
   end
-  local selectedIndex = nil
-  for index, row in ipairs(status.rows or {}) do
-    if row.selected then
-      selectedIndex = index
-      break
-    end
-  end
-  local closeFrame = frameOf(SPRITE_ROLE_ANIMATIONS.closeStatic)
-  if closeFrame ~= nil then
-    -- Sprite 3 is static: it rides the CLOSE anchor every list frame
-    -- and is never re-animated. No palette flash is applied: the
-    -- renderer owns no flash pattern to reuse.
-    sprites.close = { frame = closeFrame, cx = CLOSE_ANCHOR.x, cy = CLOSE_ANCHOR.y }
-  end
+  local closeFrame = frameOf(SPRITE_ROLE_ANIMATIONS.closeStatic, "closeStatic")
+  -- Sprite 3 is static: it rides the CLOSE anchor every list frame
+  -- and is never re-animated. No palette flash is applied: the
+  -- renderer owns no flash pattern to reuse.
+  sprites.close = { frame = closeFrame, cx = CLOSE_ANCHOR.x, cy = CLOSE_ANCHOR.y }
   local input = status.cursorInput
-  if type(input) ~= "number" then
-    input = selectedGridInput(status)
-  end
+  assert(
+    type(input) == "number" and input % 1 == 0 and input >= 0 and input <= CLOSE_INPUT,
+    "mailbox cursor uses retail grid inputs 0-10"
+  )
   local animId = input == CLOSE_INPUT and SPRITE_ROLE_ANIMATIONS.cursor.close or SPRITE_ROLE_ANIMATIONS.cursor.cell
-  local frame = frameOf(animId)
-  if frame ~= nil then
-    local cells = presentation ~= nil and presentation.cursorGrid ~= nil and presentation.cursorGrid.cells or nil
-    local anchor = cells ~= nil and cells[input + 1] or nil
-    if anchor ~= nil then
-      -- Every grid input parks the cursor flash on its decoded cell.
-      sprites.cursor = { frame = frame, cx = anchor.x, cy = anchor.y }
-    elseif selectedIndex ~= nil and input ~= CLOSE_INPUT then
-      -- Manifests without the compiled grid keep the legacy mark: the
-      -- selected-row highlight rect is (8, rowY - 1, 224, 12).
-      local rowY = 24 + (selectedIndex - 1) * 13
-      sprites.cursor = { frame = frame, cx = 8 + 224 / 2, cy = rowY - 1 + 12 / 2 }
-    else
-      -- Input 10 (CLOSE) parks the cursor on the CLOSE anchor.
-      sprites.cursor = { frame = frame, cx = CLOSE_ANCHOR.x, cy = CLOSE_ANCHOR.y }
-    end
-  end
+  local frame = frameOf(animId, input == CLOSE_INPUT and "cursorClose" or "cursorCell")
+  local grid = assert(presentation.cursorGrid, "mailbox cursor uses the source cursor grid")
+  local cells = assert(grid.cells, "mailbox cursor uses the compiled grid cells")
+  local anchor = assert(cells[input + 1], "mailbox cursor input has a decoded grid cell")
+  -- Every grid input parks the cursor flash on its decoded cell.
+  sprites.cursor = { frame = frame, cx = anchor.x, cy = anchor.y }
   return sprites
 end
 
@@ -319,8 +264,9 @@ function MailboxRenderer:prepare(status)
   assert(not self.released, "disposed mailbox renderer prepares nothing")
   assert(type(status) == "table", "mailbox preparation requires its published status")
   local pool = assert(self._pool, "mailbox renderer borrows its shared image owner")
+  local paths = requiredPaths(self.manifest, status)
   local acquired = 0
-  for _, path in ipairs(requiredPaths(self.manifest, status)) do
+  for _, path in ipairs(paths) do
     if self.leases[path] == nil then
       local token = self._tokens[path]
       if token == nil then
@@ -350,7 +296,7 @@ function MailboxRenderer:prepare(status)
       end
     end
   end
-  for _, path in ipairs(requiredPaths(self.manifest, status)) do
+  for _, path in ipairs(paths) do
     if self.leases[path] == nil then
       return false
     end
@@ -425,47 +371,21 @@ local function drawListChrome(self, resources, status)
   text:drawLine(assert(bank[TITLE_MESSAGE_ID], "the Mailbox title has a compiled source label"), 100, 4)
   local lastPage = status.lastPage or 0
   local presentation = assert(status.presentation, "mailbox chrome uses the source geometry")
-  local controls = assert(presentation.pageControls, "page arrows use the source hitbox geometry")
+  local controls = presentation.pageControls
   graphics.setColor(1, 1, 1, 1)
   local sprites = mailboxSprites(self.manifest, status)
   if lastPage > 0 then
     if status.page > 0 then
-      if sprites.previous ~= nil then
-        local sprite = sprites.previous
-        local frame = sprite.frame
-        ImageSampling.draw(graphics, self:_prepared(frame), nil, sprite.cx + frame.anchorX, sprite.cy + frame.anchorY)
-        graphics.setColor(1, 1, 1, 1)
-      else
-        local previous = controls.previous
-        graphics.polygon(
-          "fill",
-          previous.x + 4,
-          previous.y + 16,
-          previous.x + 20,
-          previous.y + 6,
-          previous.x + 20,
-          previous.y + 26
-        )
-      end
+      local sprite = assert(sprites.previous, "the previous arrow draws from its source frame")
+      local frame = sprite.frame
+      ImageSampling.draw(graphics, self:_prepared(frame), nil, sprite.cx + frame.anchorX, sprite.cy + frame.anchorY)
+      graphics.setColor(1, 1, 1, 1)
     end
     if status.page < lastPage then
-      if sprites.next ~= nil then
-        local sprite = sprites.next
-        local frame = sprite.frame
-        ImageSampling.draw(graphics, self:_prepared(frame), nil, sprite.cx + frame.anchorX, sprite.cy + frame.anchorY)
-        graphics.setColor(1, 1, 1, 1)
-      else
-        local nextPage = controls.next
-        graphics.polygon(
-          "fill",
-          nextPage.x + 28,
-          nextPage.y + 16,
-          nextPage.x + 12,
-          nextPage.y + 6,
-          nextPage.x + 12,
-          nextPage.y + 26
-        )
-      end
+      local sprite = assert(sprites.next, "the next arrow draws from its source frame")
+      local frame = sprite.frame
+      ImageSampling.draw(graphics, self:_prepared(frame), nil, sprite.cx + frame.anchorX, sprite.cy + frame.anchorY)
+      graphics.setColor(1, 1, 1, 1)
     end
   end
   local left, right = tostring(status.page + 1), tostring(lastPage + 1)
@@ -543,8 +463,12 @@ function MailboxRenderer:draw(status, resources)
       -- Two nameplate columns of five: the plate frame is the decoded
       -- 112x32 cell, the author name prints through the 8x2-tile window
       -- at plate + (32, 8), beside the stationery icon.
-      local input = nameplateInput(row, status.page)
-      local plateX = NAMEPLATE_COLUMN_X[input % 2] or NAMEPLATE_COLUMN_X[0]
+      local input = row.input
+      assert(
+        type(input) == "number" and input % 1 == 0 and input >= 0 and input <= 9,
+        "mailbox rows carry their retail grid input"
+      )
+      local plateX = assert(NAMEPLATE_COLUMN_X[input % 2], "mailbox rows use the two nameplate columns")
       local plateY = math.floor(input / 2) * NAMEPLATE_CELL_HEIGHT
       if row.selected then
         -- The selected row draws through the selected-nameplate path

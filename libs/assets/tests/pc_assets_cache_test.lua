@@ -14,7 +14,7 @@ local T = {}
 -- family ready without reverse-engineering a valid manifest from production.
 local function incompletePcManifest()
   return {
-    schema = "g4-pc-v2",
+    schema = "g4-pc-v3",
     storage = { wallpapers = {} },
     mailbox = {},
     mail = { stationery = {} },
@@ -99,6 +99,48 @@ function T.readiness_accepts_generic_provenance_without_source_archive_knowledge
   local malformedOk, malformedReady = pcall(PcCache.isReady, cache, marker)
   Assert.isTrue(malformedOk, "malformed provenance is a readiness refusal, not an exception")
   Assert.isFalse(malformedReady, "malformed generic provenance is not ready")
+end
+
+local function copyValue(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local out = {}
+  for key, child in pairs(value) do
+    out[key] = copyValue(child)
+  end
+  return out
+end
+
+local function mailboxAnimationFrame(animId)
+  return {
+    image = "assets/generated/pc/test-mailbox-animation-" .. animId .. "-0.png",
+    width = 16,
+    height = 16,
+    anchorX = 0,
+    anchorY = 0,
+    duration = 1,
+  }
+end
+
+function T.mailbox_sprite_roles_are_required_for_publication()
+  local manifest = PcPresentationFixture.manifest()
+  manifest.mailbox.ui = { animations = {} }
+  for _, animId in ipairs({ 0, 1, 2, 4, 5 }) do
+    manifest.mailbox.ui.animations[animId] = { frames = { mailboxAnimationFrame(animId) } }
+  end
+  Assert.isTrue(PcAssetSchema.isValidManifest(manifest), "the complete mailbox sprite roles validate")
+  for _, missing in ipairs({ 0, 1, 2, 4, 5 }) do
+    local without = copyValue(manifest)
+    without.mailbox.ui.animations[missing] = nil
+    Assert.isFalse(
+      PcAssetSchema.isValidManifest(without),
+      "a manifest without mailbox role " .. missing .. " is rejected"
+    )
+  end
+  local emptied = copyValue(manifest)
+  emptied.mailbox.ui.animations[5] = { frames = {} }
+  Assert.isFalse(PcAssetSchema.isValidManifest(emptied), "a mailbox role with no rendered frames is rejected")
 end
 
 return { tests = T }

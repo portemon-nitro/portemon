@@ -178,7 +178,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     pc = {
       cacheFormat = "pc-cache-v1",
-      schema = "g4-pc-v2",
+      schema = "g4-pc-v3",
     },
     pokegear = {
       cacheFormat = "pokegear-cache-v1",

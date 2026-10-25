@@ -94,6 +94,24 @@ function PcPresentationFixture.manifest()
       frames = { { image = "assets/generated/pc/photo-animation.png", width = 8, height = 8, anchorX = 0, anchorY = 0, duration = 1 } },
     }
   end
+  -- The drawn Mailbox sprite roles every consumer draws: previous arrow
+  -- 0, next arrow 1, static close 2, CLOSE cursor 4, row cursor 5, plus
+  -- the compiled-but-undrawn role 3 the producer retains.
+  local mailboxAnimations = {}
+  for _, animationId in ipairs({ 0, 1, 2, 3, 4, 5 }) do
+    mailboxAnimations[animationId] = {
+      frames = {
+        {
+          image = "assets/generated/pc/test-mailbox-animation-" .. animationId .. ".png",
+          width = 16,
+          height = 16,
+          anchorX = 0,
+          anchorY = 0,
+          duration = 1,
+        },
+      },
+    }
+  end
   return {
     schema = PcCache.SCHEMA,
     storage = {
@@ -126,7 +144,7 @@ function PcPresentationFixture.manifest()
     },
     mailbox = {
       background = { main = visual("mailbox-background") },
-      ui = {},
+      ui = { animations = mailboxAnimations },
       geometry = { visibleLetters = 10 },
       pageSize = 10,
     },

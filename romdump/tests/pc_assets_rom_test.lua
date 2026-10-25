@@ -372,11 +372,17 @@ function T.real_source_compiles_party_mail_bank_and_sprite_roles(romFs, _)
     "mailbox sprite roles pin the decomp cursor/page-arrow animation ids"
   )
   local animations = assert(manifest.mailbox.ui.animations, "mailbox UI animations are compiled")
-  for _, animId in ipairs({ 0, 1, 4, 5 }) do
+  for _, animId in ipairs({ 0, 1, 2, 4, 5 }) do
     local entry = assert(animations[animId], "the sprite role animation is compiled: " .. animId)
     Assert.equal(#entry.frames, 1, "the role animation carries its single source frame: " .. animId)
   end
-  for _, key in ipairs({ "mailbox.animation.0", "mailbox.animation.1", "mailbox.animation.4", "mailbox.animation.5" }) do
+  for _, key in ipairs({
+    "mailbox.animation.0",
+    "mailbox.animation.1",
+    "mailbox.animation.2",
+    "mailbox.animation.4",
+    "mailbox.animation.5",
+  }) do
     local sequence = assert(manifest.sequences[key], "the sprite role sequence resolves: " .. key)
     Assert.equal(#sequence.frames, 1, "the role sequence carries its single source frame: " .. key)
   end

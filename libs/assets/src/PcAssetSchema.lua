@@ -464,6 +464,29 @@ function PcAssetSchema.assertManifest(manifest)
   exactKeys(mailbox, { background = true, ui = true, geometry = true, pageSize = true }, "mailbox")
   checkVisualMap(mailbox.background, "mailbox.background", 1)
   checkVisualMap(mailbox.ui, "mailbox.ui")
+  local mailboxUi = mailbox.ui --[[@as table<string, unknown>]]
+  local mailboxAnimations = mailboxUi.animations
+  if type(mailboxAnimations) ~= "table" then
+    fail("mailbox.ui.animations must be a record")
+  end
+  for animationId in pairs(mailboxAnimations) do
+    if type(animationId) ~= "number" or animationId % 1 ~= 0 or animationId < 0 then
+      fail("mailbox.ui.animations has a nonnumeric source animation key")
+    end
+  end
+  -- The drawn Mailbox sprite roles: previous arrow 0, next arrow 1,
+  -- static close 2, CLOSE cursor 4, row cursor 5. Each carries at least
+  -- one rendered frame; further produced entries stay permitted without
+  -- pinning an exact total count.
+  for _, animationId in ipairs({ 0, 1, 2, 4, 5 }) do
+    local animation = mailboxAnimations[animationId]
+    if type(animation) ~= "table" or type(animation.frames) ~= "table" or #animation.frames == 0 then
+      fail("mailbox.ui.animations." .. animationId .. " must contain rendered frames")
+    end
+    for index, frame in ipairs(animation.frames) do
+      checkRenderedFrame(frame, "mailbox.ui.animations." .. animationId .. ".frames[" .. index .. "]", true)
+    end
+  end
   exactKeys(mailbox.geometry, { visibleLetters = true }, "mailbox.geometry")
   if mailbox.pageSize ~= 10 or mailbox.geometry.visibleLetters ~= 10 then
     fail("mailbox page size must retain ten source-visible records")

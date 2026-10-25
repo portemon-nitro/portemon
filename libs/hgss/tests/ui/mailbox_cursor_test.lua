@@ -74,10 +74,11 @@ local function display()
   return { width = 256, height = 192, topology = {}, pixelRatio = 1 }
 end
 
-local function row(slot, selected)
+local function row(slot, selected, input, stationeryType)
   return {
     slot = slot,
-    letter = { type = 0, author = { name = "MISTY" } },
+    input = input,
+    letter = { type = stationeryType or 0, author = { name = "MISTY" } },
     selected = selected,
     itemIconKey = "icon-mail-0",
   }
@@ -116,7 +117,7 @@ local function seed(pool, path)
   return marker
 end
 
-local function harness()
+local function harness(customManifest)
   local pool = SharedImagePoolFake.new()
   for _, path in pairs(PATHS) do
     if path ~= PATHS.deadAnim then
@@ -124,7 +125,7 @@ local function harness()
     end
   end
   local lg = FakeGraphics.new({})
-  local renderer = MailboxRenderer.new({ manifest = manifest(), graphics = lg, imagePool = pool })
+  local renderer = MailboxRenderer.new({ manifest = customManifest or manifest(), graphics = lg, imagePool = pool })
   return pool, lg, renderer
 end
 
@@ -191,7 +192,7 @@ end
 
 function T.row_selection_uses_the_cell_anim_in_list_phase()
   local _, lg, renderer = harness()
-  local status = listStatus({ rows = { row(0, true) }, selectedSlot = 0, visibleSlots = { 0 } })
+  local status = listStatus({ rows = { row(0, true, 0) }, selectedSlot = 0, cursorInput = 0, visibleSlots = { 0 } })
   prepare(renderer, status)
   renderer:draw(status, resources({}))
   local cell = drawsWith(lg, PATHS.cursorCell)
@@ -204,7 +205,7 @@ end
 function T.second_column_rows_anchor_the_right_cells_with_a_nameplate_highlight()
   local _, lg, renderer = harness()
   local status = listStatus({
-    rows = { row(0, false), row(1, true) },
+    rows = { row(0, false, 0), row(1, true, 1) },
     selectedSlot = 1,
     cursorInput = 1,
     visibleSlots = { 0, 1 },
@@ -233,7 +234,7 @@ end
 function T.bottom_row_selection_anchors_the_last_nameplate_cell()
   local _, lg, renderer = harness()
   local status = listStatus({
-    rows = { row(9, true) },
+    rows = { row(9, true, 9) },
     selectedSlot = 9,
     cursorInput = 9,
     visibleSlots = { 9 },
@@ -258,7 +259,7 @@ end
 function T.close_focus_parks_the_cursor_with_the_close_anim()
   local _, lg, renderer = harness()
   local status = listStatus({
-    rows = { row(8, false) },
+    rows = { row(8, false, 8) },
     selectedSlot = nil,
     cursorInput = 10,
     visibleSlots = { 8 },
@@ -275,7 +276,7 @@ end
 function T.close_flash_blinks_the_static_close_target()
   local _, lg, renderer = harness()
   local status = listStatus({
-    rows = { row(8, false) },
+    rows = { row(8, false, 8) },
     selectedSlot = nil,
     cursorInput = 10,
     visibleSlots = { 8 },
@@ -288,7 +289,7 @@ function T.close_flash_blinks_the_static_close_target()
 
   local _, lit, relit = harness()
   local open = listStatus({
-    rows = { row(8, false) },
+    rows = { row(8, false, 8) },
     selectedSlot = nil,
     cursorInput = 10,
     visibleSlots = { 8 },
@@ -304,8 +305,9 @@ function T.row_selection_keeps_the_cell_anim_with_the_action_menu_open()
   local _, lg, renderer = harness()
   local status = listStatus({
     phase = "action",
-    rows = { row(0, true) },
+    rows = { row(0, true, 0) },
     selectedSlot = 0,
+    cursorInput = 0,
     visibleSlots = { 0 },
     menuActions = { "read", "cancel" },
     actionIndex = 1,
@@ -319,7 +321,7 @@ end
 
 function T.empty_list_parks_the_cursor_on_close_with_the_close_anim()
   local _, lg, renderer = harness()
-  local status = listStatus({ rows = {}, selectedSlot = nil, visibleSlots = {} })
+  local status = listStatus({ rows = {}, selectedSlot = nil, cursorInput = 10, visibleSlots = {} })
   prepare(renderer, status)
   renderer:draw(status, resources({}))
   local parked = drawsWith(lg, PATHS.cursorClose)
@@ -331,7 +333,7 @@ end
 
 function T.static_close_target_draws_on_every_list_frame()
   local _, lg, renderer = harness()
-  local status = listStatus({ rows = { row(0, true) }, selectedSlot = 0, visibleSlots = { 0 } })
+  local status = listStatus({ rows = { row(0, true, 0) }, selectedSlot = 0, cursorInput = 0, visibleSlots = { 0 } })
   prepare(renderer, status)
   renderer:draw(status, resources({}))
   local close = drawsWith(lg, PATHS.closeStatic)
@@ -344,10 +346,10 @@ end
 
 function T.dead_anim_stays_compiled_but_undrawn()
   local pool, lg, renderer = harness()
-  local listed = listStatus({ rows = { row(4, true) }, selectedSlot = 4, visibleSlots = { 4 } })
+  local listed = listStatus({ rows = { row(4, true, 4) }, selectedSlot = 4, cursorInput = 4, visibleSlots = { 4 } })
   prepare(renderer, listed)
   renderer:draw(listed, resources({}))
-  local empty = listStatus({ rows = {}, selectedSlot = nil, visibleSlots = {} })
+  local empty = listStatus({ rows = {}, selectedSlot = nil, cursorInput = 10, visibleSlots = {} })
   prepare(renderer, empty)
   renderer:draw(empty, resources({}))
   Assert.equal(#drawsWith(lg, PATHS.deadAnim), 0, "anim 3 never draws on rows or CLOSE")
@@ -358,8 +360,8 @@ end
 
 function T.page_arrows_hide_per_side_at_the_page_ends()
   local _, first, renderer = harness()
-  prepare(renderer, listStatus({ lastPage = 1, page = 0 }))
-  renderer:draw(listStatus({ lastPage = 1, page = 0 }), resources({}))
+  prepare(renderer, listStatus({ lastPage = 1, page = 0, cursorInput = 10 }))
+  renderer:draw(listStatus({ lastPage = 1, page = 0, cursorInput = 10 }), resources({}))
   local nextDraws = drawsWith(first, PATHS.arrowNext)
   Assert.equal(#nextDraws, 1, "the next arrow draws on the first page")
   Assert.deepEqual({ nextDraws[1].x, nextDraws[1].y }, { 56, 176 }, "the next arrow centers on its retail anchor")
@@ -367,8 +369,8 @@ function T.page_arrows_hide_per_side_at_the_page_ends()
   renderer:release()
 
   local _, second, paged = harness()
-  prepare(paged, listStatus({ lastPage = 1, page = 1 }))
-  paged:draw(listStatus({ lastPage = 1, page = 1 }), resources({}))
+  prepare(paged, listStatus({ lastPage = 1, page = 1, cursorInput = 10 }))
+  paged:draw(listStatus({ lastPage = 1, page = 1, cursorInput = 10 }), resources({}))
   local previousDraws = drawsWith(second, PATHS.arrowPrevious)
   Assert.equal(#previousDraws, 1, "the previous arrow draws on the last page")
   Assert.deepEqual(
@@ -412,6 +414,153 @@ function T.producer_roles_carry_the_cursor_grid_and_static_close()
   Assert.deepEqual(grid.cells[1], { x = 64, y = 16 }, "input 0 anchors the first mail cell")
   Assert.deepEqual(grid.cells[11], { x = 224, y = 176 }, "input 10 anchors CLOSE")
   Assert.deepEqual(roles.sprite3, { animation = 2, x = 224, y = 176 }, "sprite 3 is the static close target")
+end
+
+function T.absent_source_frame_raises_instead_of_painting_a_polygon()
+  local missing = manifest()
+  missing.mailbox.ui.animations[1] = nil
+  local _, lg, renderer = harness(missing)
+  local status = listStatus({ lastPage = 1, page = 0, cursorInput = 10, visibleSlots = {} })
+  local ok, failure = pcall(function()
+    prepare(renderer, status)
+    renderer:draw(status, resources({}))
+  end)
+  Assert.isFalse(ok, "a missing page-arrow frame raises instead of drawing: " .. tostring(failure))
+  Assert.equal(#lg.primitives, 0, "no polygon fallback is painted for a missing source frame")
+  renderer:release()
+
+  local emptied = manifest()
+  emptied.mailbox.ui.animations[5] = { frames = {} }
+  local cursorRenderer = select(3, harness(emptied))
+  local rowStatus = listStatus({
+    rows = { row(0, true, 0) },
+    selectedSlot = 0,
+    cursorInput = 0,
+    visibleSlots = { 0 },
+  })
+  local cursorOk, cursorFailure = pcall(function()
+    prepare(cursorRenderer, rowStatus)
+    cursorRenderer:draw(rowStatus, resources({}))
+  end)
+  Assert.isFalse(
+    cursorOk,
+    "an animation with no rendered frames raises instead of skipping: " .. tostring(cursorFailure)
+  )
+  cursorRenderer:release()
+end
+
+function T.malformed_cursor_geometry_raises_instead_of_using_a_legacy_path()
+  local outOfRange = select(3, harness())
+  local ranged = listStatus({
+    rows = { row(0, true, 0) },
+    selectedSlot = 0,
+    cursorInput = 99,
+    visibleSlots = { 0 },
+  })
+  local rangedOk, rangedFailure = pcall(function()
+    prepare(outOfRange, ranged)
+    outOfRange:draw(ranged, resources({}))
+  end)
+  Assert.isFalse(rangedOk, "an out-of-range cursor input raises instead of painting: " .. tostring(rangedFailure))
+  outOfRange:release()
+
+  local gridless = select(3, harness())
+  local planar = listStatus({
+    rows = { row(0, true, 0) },
+    selectedSlot = 0,
+    cursorInput = 0,
+    visibleSlots = { 0 },
+  })
+  planar.presentation = { pageControls = planar.presentation.pageControls }
+  local gridOk, gridFailure = pcall(function()
+    prepare(gridless, planar)
+    gridless:draw(planar, resources({}))
+  end)
+  Assert.isFalse(gridOk, "a status without the cursor grid raises instead of legacy-marking: " .. tostring(gridFailure))
+  gridless:release()
+
+  local rowless = select(3, harness())
+  local derived = listStatus({
+    rows = {
+      {
+        slot = 0,
+        letter = { type = 0, author = { name = "MISTY" } },
+        selected = true,
+        itemIconKey = "icon-mail-0",
+      },
+    },
+    selectedSlot = 0,
+    cursorInput = 0,
+    visibleSlots = { 0 },
+  })
+  local rowOk, rowFailure = pcall(function()
+    prepare(rowless, derived)
+    rowless:draw(derived, resources({}))
+  end)
+  Assert.isFalse(rowOk, "a row without an explicit grid input raises instead of deriving one: " .. tostring(rowFailure))
+  rowless:release()
+end
+
+function T.bounded_preparation_borrows_outside_draw_and_releases_each_lease_once()
+  local full = manifest()
+  for stationeryType = 1, 5 do
+    full.mail.stationery[stationeryType] = {
+      background = {
+        image = "mailbox-cursor-test/stationery-" .. stationeryType,
+        anchorX = 0,
+        anchorY = 0,
+      },
+    }
+  end
+  local rows = {}
+  local visible = {}
+  for slot = 0, 5 do
+    rows[#rows + 1] = row(slot, slot == 0, slot, slot)
+    visible[#visible + 1] = slot
+  end
+  local status = listStatus({
+    rows = rows,
+    selectedSlot = 0,
+    cursorInput = 0,
+    visibleSlots = visible,
+    lastPage = 1,
+    page = 0,
+  })
+  local pool, _, renderer = harness(full)
+  local acquisitions = 0
+  local acquire = pool.acquire
+  pool.acquire = function(self, token)
+    acquisitions = acquisitions + 1
+    return acquire(self, token)
+  end
+  local perCall = {}
+  local ready, failure = nil, nil
+  while not ready do
+    local before = acquisitions
+    ready, failure = renderer:prepare(status)
+    Assert.isNil(failure, "paginated preparation reports no missing visual: " .. tostring(failure))
+    perCall[#perCall + 1] = acquisitions - before
+    Assert.isTrue(#perCall < 20, "paginated preparation converges instead of stalling")
+  end
+  Assert.isTrue(#perCall > 1, "several stationery backgrounds need several bounded updates")
+  for _, count in ipairs(perCall) do
+    Assert.isTrue(count <= 4, "no single update borrows more than four shared images")
+  end
+  Assert.equal(acquisitions, 10, "every drawn path is borrowed exactly once")
+  local drawnAcquisitions = acquisitions
+  renderer:draw(status, resources({}))
+  Assert.equal(acquisitions, drawnAcquisitions, "drawing never borrows from the shared image owner")
+  local releases = 0
+  local release = pool.release
+  pool.release = function(self, lease)
+    releases = releases + 1
+    return release(self, lease)
+  end
+  renderer:release()
+  Assert.equal(releases, 10, "each installed lease returns exactly once")
+  Assert.equal(pool:stats().outstandingLeases, 0, "no borrowed image stays outstanding after release")
+  renderer:release()
+  Assert.equal(releases, 10, "a second release returns nothing twice")
 end
 
 return { tests = T }
