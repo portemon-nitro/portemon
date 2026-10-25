@@ -578,6 +578,7 @@ local OPENING_OPS = {
   setWindowSecondary = true,
   setWindowVisible = true,
   circleWipe = true,
+  shutterFade = true,
   setSpriteClip = true,
   spriteVisible = true,
   setModelClip = true,
@@ -627,7 +628,8 @@ end
 
 -- Effect-starting ops: an `effect` identity on one of these starts the waitable
 -- effect the step graph binds waits against.
-local EFFECT_START_OPS = { setBlend = true, setScroll = true, setFade = true, circleWipe = true, window = true }
+local EFFECT_START_OPS =
+  { setBlend = true, setScroll = true, setFade = true, circleWipe = true, shutterFade = true, window = true }
 
 local function isOpeningSceneRoot(path, sceneNumber)
   if type(path) ~= "string" then
@@ -852,6 +854,35 @@ local function validateOpeningEventOperands(event, sceneNumber)
     if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
       return nil, "opening scene wipe start names no effect"
     end
+  elseif op == "shutterFade" then
+    -- The scene 5 sequential line shutter is one opening-specific event:
+    -- both engines start together, main advances center-out before sub
+    -- rises bottom-up, through black, one frame per step. No numeric
+    -- retail fade type crosses the producer boundary.
+    if sceneNumber ~= 5 then
+      return nil, "only opening scene 5 carries its sequential line shutter"
+    end
+    if event.order ~= "main-then-sub" then
+      return nil, "opening scene shutter carries no source engine order"
+    end
+    if event.mainPattern ~= "center-out" then
+      return nil, "opening scene shutter carries no source main shape"
+    end
+    if event.subPattern ~= "bottom-up" then
+      return nil, "opening scene shutter carries no source sub shape"
+    end
+    if event.color ~= "black" then
+      return nil, "opening scene shutter carries no source color"
+    end
+    if event.steps ~= 18 then
+      return nil, "opening scene shutter carries no source step count"
+    end
+    if event.framesPerStep ~= 1 then
+      return nil, "opening scene shutter carries no source frame cadence"
+    end
+    if event.effect ~= "scene5-shutter" then
+      return nil, "opening scene shutter start names no effect"
+    end
   elseif op == "setLayer" then
     if OPENING_ENGINES[event.engine] ~= true then
       return nil, "opening scene layer names no source engine"
@@ -1024,6 +1055,15 @@ local OPENING_EVENT_KEYS = {
     bgSlot = true,
   },
   circleWipe = { engine = true, kind = true, ticks = true, effect = true },
+  shutterFade = {
+    order = true,
+    mainPattern = true,
+    subPattern = true,
+    color = true,
+    steps = true,
+    framesPerStep = true,
+    effect = true,
+  },
   setLayer = { engine = true, bgSlot = true, image = true, visible = true, priority = true },
   window = {
     engine = true,
@@ -1206,7 +1246,7 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
 end
 
 -- One independently staged opening-movie scene: strict source-independent
--- g4-startup-opening-scene-v4 package with numbered scene, edition, 30Hz
+-- g4-startup-opening-scene-v5 package with numbered scene, edition, 30Hz
 -- duration, per-engine BG slots with priority and alternate tilemaps, sprite
 -- clips with frame offsets, model descriptors and animations where used,
 -- starter emitter records where used, and the closed step-clocked event
