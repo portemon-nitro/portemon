@@ -922,4 +922,288 @@ function T.mail_compose_draws_short_letters_without_asserting()
   compose:dispose()
 end
 
+-- Focused browser paint is verified through the same text/window renderer
+-- seam the composer draws with: the selected entry and its cursor must
+-- appear inside the browser box, and no more than one page of rows may
+-- be painted per frame.
+local function recordingResources(record)
+  return {
+    textRenderer = {
+      fontDef = { lineHeight = 16, charmap = {} },
+      windowBackgroundColor = function()
+        return { 1, 1, 1, 1 }
+      end,
+      drawText = function(_, text, x, y)
+        record.texts[#record.texts + 1] = { value = text, x = x, y = y }
+      end,
+      drawLine = function(_, row, x, y)
+        record.lines[#record.lines + 1] = { row = row, x = x, y = y }
+      end,
+    },
+    windowRenderer = {
+      drawWindow = function(_, rect)
+        record.windows[#record.windows + 1] = rect
+      end,
+    },
+    applicationFrameIndex = 1,
+  }
+end
+
+local function freshRecord()
+  return { texts = {}, lines = {}, windows = {} }
+end
+
+local function drawnMarker(record)
+  for _, entry in ipairs(record.texts) do
+    if entry.value == ">" then
+      return entry
+    end
+  end
+  return nil
+end
+
+local function drawnLabel(record, label, entryX)
+  for _, entry in ipairs(record.texts) do
+    if entry.value == label and entry.x == entryX then
+      return entry
+    end
+  end
+  return nil
+end
+
+local function wordRowDrawn(record, wordValue, entryX)
+  for _, drawn in ipairs(record.lines) do
+    if drawn.x == entryX then
+      for _, token in ipairs(drawn.row) do
+        if token.value == wordValue then
+          return drawn
+        end
+      end
+    end
+  end
+  return nil
+end
+
+function T.mail_compose_keeps_the_focused_bank_inside_the_browser_window()
+  local composed = manifest()
+  composed.mail.wordDictionary = {
+    ["0"] = { { kind = "text", value = "word0" } },
+    ["1"] = { { kind = "text", value = "word1" } },
+    ["496"] = { { kind = "text", value = "word496" } },
+    ["964"] = { { kind = "text", value = "word964" } },
+  }
+  local compose = MailComposeState.new({
+    manifest = composed,
+    stationeryType = 0,
+    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
+    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
+    measureDisplay = measurement,
+    audio = { play = function() end },
+  })
+  Assert.deepEqual(
+    compose:status().banks,
+    { { bank = 0, count = 2 }, { bank = 1, count = 1 }, { bank = 2, count = 1 } },
+    "the fixture exposes three browsable banks"
+  )
+  compose:updateFixed({ { type = "confirm" } })
+  compose:updateFixed({ { type = "navigate", direction = "down" }, { type = "navigate", direction = "down" } })
+  Assert.equal(compose:status().bankIndex, 3, "navigation reaches the third bank")
+
+  local browser = compose:status().presentation.browser
+  local entryX, firstRowY = browser.x + 12, browser.y + 8
+  local lastRowY = browser.y + browser.height - browser.rowHeight
+  local record = freshRecord()
+  compose:draw(recordingResources(record))
+  Assert.deepEqual(record.windows[#record.windows], browser, "the bank browser paints its box")
+  local label = drawnLabel(record, "2", entryX)
+  Assert.notNil(label, "the focused third bank paints its label")
+  Assert.isTrue(label.y >= firstRowY and label.y <= lastRowY, "the focused bank stays inside the box")
+  local marker = drawnMarker(record)
+  Assert.notNil(marker, "the focused bank paints its cursor")
+  Assert.equal(marker.y, label.y, "the cursor sits on the focused bank row")
+  local rows = 0
+  for _, entry in ipairs(record.texts) do
+    if entry.x == entryX and entry.y >= firstRowY and entry.y <= lastRowY then
+      rows = rows + 1
+    end
+  end
+  Assert.isTrue(rows <= 2, "at most one page of bank rows paints per frame")
+
+  compose:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(compose:status().bankIndex, 2, "navigation steps back to the second bank")
+  local back = freshRecord()
+  compose:draw(recordingResources(back))
+  local backLabel = drawnLabel(back, "1", entryX)
+  Assert.notNil(backLabel, "the second bank paints its label after stepping back")
+  local backMarker = drawnMarker(back)
+  Assert.notNil(backMarker, "the cursor follows the step back")
+  Assert.equal(backMarker.y, backLabel.y, "the cursor sits on the second bank row")
+  Assert.isTrue(backLabel.y >= firstRowY and backLabel.y <= lastRowY, "the previous page stays inside the box")
+  compose:dispose()
+end
+
+function T.mail_compose_selects_the_word_shown_under_the_cursor()
+  local composed = manifest()
+  composed.mail.wordDictionary = {
+    ["0"] = { { kind = "text", value = "word0" } },
+    ["1"] = { { kind = "text", value = "word1" } },
+    ["2"] = { { kind = "text", value = "word2" } },
+    ["3"] = { { kind = "text", value = "word3" } },
+  }
+  local compose = MailComposeState.new({
+    manifest = composed,
+    stationeryType = 0,
+    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
+    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
+    measureDisplay = measurement,
+    audio = { play = function() end },
+  })
+  compose:updateFixed({ { type = "confirm" } })
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.equal(compose:status().phase, "word")
+  compose:updateFixed({
+    { type = "navigate", direction = "down" },
+    { type = "navigate", direction = "down" },
+    { type = "navigate", direction = "down" },
+  })
+  Assert.equal(compose:status().wordIndex, 4, "navigation reaches the fourth word")
+
+  local browser = compose:status().presentation.browser
+  local entryX, firstRowY = browser.x + 12, browser.y + 8
+  local lastRowY = browser.y + browser.height - browser.rowHeight
+  local record = freshRecord()
+  compose:draw(recordingResources(record))
+  local wordRow = wordRowDrawn(record, "word3", entryX)
+  Assert.notNil(wordRow, "the focused late word paints its entry")
+  Assert.isTrue(wordRow.y >= firstRowY and wordRow.y <= lastRowY, "the focused word stays inside the box")
+  local marker = drawnMarker(record)
+  Assert.notNil(marker, "the focused word paints its cursor")
+  Assert.equal(marker.y, wordRow.y, "the cursor sits on the focused word row")
+  local rows = 0
+  for _, drawn in ipairs(record.lines) do
+    if drawn.x == entryX and drawn.y >= firstRowY and drawn.y <= lastRowY then
+      rows = rows + 1
+    end
+  end
+  Assert.isTrue(rows <= 2, "at most one page of word rows paints per frame")
+
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.equal(compose:status().phase, "edit", "confirming the word returns to the slots")
+  Assert.equal(compose:letter().lines[1].words[1], "3", "the committed word matches the focused entry")
+
+  compose:updateFixed({ { type = "confirm" } })
+  compose:updateFixed({ { type = "confirm" } })
+  compose:updateFixed({
+    { type = "navigate", direction = "down" },
+    { type = "navigate", direction = "down" },
+    { type = "navigate", direction = "down" },
+    { type = "navigate", direction = "up" },
+    { type = "navigate", direction = "up" },
+  })
+  Assert.equal(compose:status().wordIndex, 2, "navigation steps back across the page boundary")
+  local back = freshRecord()
+  compose:draw(recordingResources(back))
+  local backRow = wordRowDrawn(back, "word1", entryX)
+  Assert.notNil(backRow, "the earlier page paints its word after stepping back")
+  local backMarker = drawnMarker(back)
+  Assert.notNil(backMarker, "the cursor follows the step back across pages")
+  Assert.equal(backMarker.y, backRow.y, "the cursor sits on the earlier word row")
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(compose:letter().lines[1].words, { "3", "1" }, "the second committed word matches its focused entry")
+  compose:dispose()
+end
+
+-- Short bank lists never reach past the compiled dictionary: empty bank
+-- ranges are skipped while browsing, and one-entry banks still paint
+-- their label, word, and cursor inside the browser box.
+function T.mail_compose_short_banks_stay_inside_the_dictionary()
+  local composed = manifest()
+  composed.mail.wordDictionary = {
+    ["0"] = { { kind = "text", value = "word0" } },
+    ["964"] = { { kind = "text", value = "word964" } },
+  }
+  local compose = MailComposeState.new({
+    manifest = composed,
+    stationeryType = 0,
+    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
+    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
+    measureDisplay = measurement,
+    audio = { play = function() end },
+  })
+  Assert.deepEqual(
+    compose:status().banks,
+    { { bank = 0, count = 1 }, { bank = 2, count = 1 } },
+    "empty bank ranges never appear while browsing"
+  )
+  Assert.isFalse(compose:status().submitReady, "empty slots cannot submit")
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.equal(compose:status().phase, "bank")
+
+  local browser = compose:status().presentation.browser
+  local entryX, firstRowY = browser.x + 12, browser.y + 8
+  local lastRowY = browser.y + browser.height - browser.rowHeight
+  local first = freshRecord()
+  compose:draw(recordingResources(first))
+  local firstLabel = drawnLabel(first, "0", entryX)
+  Assert.notNil(firstLabel, "the single-entry first bank paints its label")
+  Assert.equal(drawnMarker(first).y, firstLabel.y, "the cursor sits on the single-entry bank row")
+
+  compose:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(compose:status().bankIndex, 2, "navigation reaches the second listed bank")
+  local second = freshRecord()
+  compose:draw(recordingResources(second))
+  local secondLabel = drawnLabel(second, "2", entryX)
+  Assert.notNil(secondLabel, "the single-entry second bank paints its label")
+  Assert.isTrue(secondLabel.y >= firstRowY and secondLabel.y <= lastRowY, "the bank stays inside the box")
+  Assert.equal(drawnMarker(second).y, secondLabel.y, "the cursor sits on the second bank row")
+
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.equal(compose:status().phase, "word")
+  Assert.deepEqual(compose:status().words, { "964" }, "the word list holds the single compiled key")
+  local words = freshRecord()
+  compose:draw(recordingResources(words))
+  local wordRow = wordRowDrawn(words, "word964", entryX)
+  Assert.notNil(wordRow, "the single word paints its entry")
+  Assert.equal(drawnMarker(words).y, wordRow.y, "the cursor sits on the single word row")
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.equal(compose:status().phase, "edit", "confirming the word returns to the slots")
+  Assert.equal(compose:letter().lines[1].words[1], "964", "the committed word matches the single entry")
+  Assert.isFalse(compose:status().submitReady, "remaining empty slots still block submission")
+  compose:dispose()
+end
+
+-- Backing out of the word list returns to its bank, and backing out of
+-- the banks returns to the slots; only backing out of the slots closes.
+function T.mail_compose_word_cancel_returns_through_the_bank_browser()
+  local compose = MailComposeState.new({
+    manifest = manifest(),
+    stationeryType = 0,
+    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
+    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
+    measureDisplay = measurement,
+    audio = { play = function() end },
+  })
+  compose:updateFixed({ { type = "confirm" } })
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.equal(compose:status().phase, "word")
+  Assert.isTrue(#compose:status().words == 3, "the word list shows its bank entries")
+  compose:updateFixed({ { type = "cancel" } })
+  local banked = compose:status()
+  Assert.equal(banked.phase, "bank", "cancelling the word list returns to its bank")
+  Assert.isNil(banked.words, "the word list hides once its bank returns")
+  Assert.equal(banked.bankIndex, 1, "the bank keeps its focus")
+  compose:updateFixed({ { type = "navigate", direction = "down" } })
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(compose:status().words, { "496", "497" }, "the second bank lists its own compiled keys")
+  compose:updateFixed({ { type = "cancel" } })
+  Assert.equal(compose:status().phase, "bank", "cancelling the second word list returns to the banks")
+  compose:updateFixed({ { type = "cancel" } })
+  Assert.equal(compose:status().phase, "edit", "cancelling the banks returns to the slots")
+  Assert.isFalse(compose:status().submitReady, "unedited slots still block submission")
+  compose:updateFixed({ { type = "cancel" } })
+  Assert.deepEqual(compose:takeResult(), { kind = "cancelled" }, "cancelling the slots closes without a letter")
+  Assert.isNil(compose:takeResult(), "composition results are taken exactly once")
+  compose:dispose()
+end
+
 return { tests = T }

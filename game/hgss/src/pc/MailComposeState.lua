@@ -6,6 +6,7 @@
 -- slot starts empty. Submitted letters satisfy the same template/word
 -- contract the Mailbox renderer expands.
 local Mail = require("libs.mons.src.gen4.Mail")
+local MailboxInterface = require("game.hgss.src.pc.MailboxInterface")
 
 local MailComposeState = {}
 MailComposeState.__index = MailComposeState
@@ -28,15 +29,10 @@ local WORD_BANK_RANGES = {
   { firstWordId = 1472, wordCount = 23 },
 }
 
+-- The composed letter shares the Mailbox read-view anchors; both records
+-- carry the same numbers, so the shared table is reused rather than copied.
 MailComposeState.defaults = {
-  letter = {
-    author = { x = 32, y = 8 },
-    lines = {
-      { x = 24, y = 24, width = 208, height = 32 },
-      { x = 24, y = 64, width = 208, height = 32 },
-      { x = 24, y = 104, width = 208, height = 32 },
-    },
-  },
+  letter = MailboxInterface.defaults.letter,
   browser = { x = 16, y = 136, width = 224, height = 48, rowHeight = 16 },
 }
 
@@ -442,18 +438,24 @@ function MailComposeState:draw(resources, status)
       entries = assert(value.words, "word browsing lists its bank entries")
     end
     local focused = value.phase == "bank" and value.bankIndex or value.wordIndex
-    for index, entry in ipairs(entries) do
-      local rowY = browser.y + 8 + (index - 1) * browser.rowHeight
-      if rowY + browser.rowHeight <= browser.y + browser.height then
-        if index == focused then
-          text:drawText(">", browser.x + 4, rowY)
-        end
-        if value.phase == "word" then
-          local tokens = assert(self.manifest.mail.wordDictionary[entry], "browsed words stay compiled")
-          text:drawLine(tokens, browser.x + 12, rowY)
-        else
-          text:drawText(entry, browser.x + 12, rowY)
-        end
+    -- The browser box fits only part of a long bank/word list, so the
+    -- focused entry keeps its containing page in view: page bounds derive
+    -- from the current box geometry and focus each frame and no page
+    -- offset is stored. Selection still uses the absolute entry index.
+    local visibleCount = math.max(1, math.floor((browser.height - 8) / browser.rowHeight))
+    local firstVisible = math.floor((focused - 1) / visibleCount) * visibleCount + 1
+    local lastVisible = math.min(#entries, firstVisible + visibleCount - 1)
+    for index = firstVisible, lastVisible do
+      local entry = entries[index]
+      local rowY = browser.y + 8 + (index - firstVisible) * browser.rowHeight
+      if index == focused then
+        text:drawText(">", browser.x + 4, rowY)
+      end
+      if value.phase == "word" then
+        local tokens = assert(self.manifest.mail.wordDictionary[entry], "browsed words stay compiled")
+        text:drawLine(tokens, browser.x + 12, rowY)
+      else
+        text:drawText(entry, browser.x + 12, rowY)
       end
     end
   end
