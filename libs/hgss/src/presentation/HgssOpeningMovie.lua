@@ -2726,9 +2726,10 @@ end
 
 -- Samples the 256x192 engine viewport out of the full native BG texture
 -- at the signed source offsets with Euclidean wrap. Positive offsets
--- sample farther into the source map (content moves left), so the viewport
--- splits at the wrap seams into as many as four partial quads drawn at
--- exact source positions; no shifted single blit and no uncovered strips.
+-- sample farther into the source map (content moves left), so the full
+-- native image is drawn translated with wrapped copies only where the
+-- first copy leaves the viewport uncovered; at most four copies cover
+-- any viewport because each native map is at least 256x192.
 ---@param self HgssOpeningMovie
 ---@param image love.Image staged native BG texture
 ---@param background table<string, unknown> live BG slot with width, height, scrollX, scrollY
@@ -2736,22 +2737,21 @@ local function drawWrappedBackground(self, image, background)
   local graphics = self.graphics
   local width = background.width --[[@as integer]]
   local height = background.height --[[@as integer]]
-  local offsetX = ((background.scrollX % width) + width) % width
-  local offsetY = ((background.scrollY % height) + height) % height
-  local firstW = math.min(width - offsetX, SOURCE_WIDTH)
-  local firstH = math.min(height - offsetY, SOURCE_HEIGHT)
-  local columns = { { sx = offsetX, dx = 0, w = firstW } }
-  if firstW < SOURCE_WIDTH then
-    columns[#columns + 1] = { sx = 0, dx = firstW, w = SOURCE_WIDTH - firstW }
+  local sx = ((background.scrollX % width) + width) % width
+  local sy = ((background.scrollY % height) + height) % height
+  local x0, y0 = -sx, -sy
+  local x1, y1 = width - sx, height - sy
+  graphics.draw(image, x0, y0)
+  local wrapX = x0 + width < SOURCE_WIDTH
+  local wrapY = y0 + height < SOURCE_HEIGHT
+  if wrapX then
+    graphics.draw(image, x1, y0)
   end
-  local rows = { { sy = offsetY, dy = 0, h = firstH } }
-  if firstH < SOURCE_HEIGHT then
-    rows[#rows + 1] = { sy = 0, dy = firstH, h = SOURCE_HEIGHT - firstH }
+  if wrapY then
+    graphics.draw(image, x0, y1)
   end
-  for _, column in ipairs(columns) do
-    for _, row in ipairs(rows) do
-      graphics.draw(image, graphics.newQuad(column.sx, row.sy, column.w, row.h, width, height), column.dx, row.dy)
-    end
+  if wrapX and wrapY then
+    graphics.draw(image, x1, y1)
   end
 end
 

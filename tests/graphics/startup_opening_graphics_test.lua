@@ -5280,6 +5280,342 @@ local function heartgold_scene_five_shutter_is_blocked_without_a_dump(scope, con
   Assert.equal(circles, 0, "HeartGold scene 5 carries no circle wipe")
 end
 
+-- Counts real love.graphics.newQuad calls so background allocation shows up
+-- on actual GPU draws; the wrapper is restored through the scope so later
+-- suites keep the real constructor.
+---@param scope table test scope owning the restoration
+---@return table counter with a mutable calls field
+local function countingQuads(scope)
+  local realNewQuad = love.graphics.newQuad
+  local counter = { calls = 0 }
+  love.graphics.newQuad = function(...)
+    counter.calls = counter.calls + 1
+    return realNewQuad(...)
+  end
+  scope:own({
+    release = function()
+      love.graphics.newQuad = realNewQuad
+    end,
+  })
+  return counter
+end
+
+-- Records real love.graphics.intersectScissor calls with the bound target
+-- so window slicing shows up as several scissor regions on one engine
+-- canvas; restored through the scope.
+---@param scope table test scope owning the restoration
+---@return table log with a mutable regions field
+local function countingScissors(scope)
+  local realIntersect = love.graphics.intersectScissor
+  local log = { regions = {} }
+  love.graphics.intersectScissor = function(x, y, w, h)
+    log.regions[#log.regions + 1] = { canvas = love.graphics.getCanvas(), x = x, y = y, w = w, h = h }
+    return realIntersect(x, y, w, h)
+  end
+  scope:own({
+    release = function()
+      love.graphics.intersectScissor = realIntersect
+    end,
+  })
+  return log
+end
+
+-- Four-quadrant chart with a fully transparent bottom-left quadrant so the
+-- backing plane shows through; every other quadrant stays opaque.
+---@param size integer chart edge in pixels
+---@param topLeft integer[] RGB corner colors
+---@param topRight integer[] RGB corner colors
+---@param bottomRight integer[] RGB corner colors
+---@return string png bytes of the chart with one transparent quadrant
+local function transparentQuadrantsPng(size, topLeft, topRight, bottomRight)
+  local half = math.floor(size / 2)
+  local rows = {}
+  for y = 0, size - 1 do
+    local cells = {}
+    for x = 0, size - 1 do
+      local corner = nil
+      if y < half then
+        corner = (x < half) and topLeft or topRight
+      elseif x >= half then
+        corner = bottomRight
+      end
+      if corner == nil then
+        cells[#cells + 1] = string.char(0, 0, 0, 0)
+      else
+        cells[#cells + 1] = string.char(corner[1], corner[2], corner[3], 255)
+      end
+    end
+    rows[#rows + 1] = table.concat(cells)
+  end
+  return PngWriter.encode(size, size, table.concat(rows))
+end
+
+-- Vertical bands alternating opaque color and fully transparent columns so
+-- a backing plane shows through every other stripe.
+---@param width integer chart width in pixels
+---@param height integer chart height in pixels
+---@param color integer[] RGB opaque band color
+---@return string png bytes of the striped chart
+local function transparentBandsPng(width, height, color)
+  local cells = {}
+  for _ = 1, height do
+    for x = 0, width - 1 do
+      if math.floor(x / 32) % 2 == 0 then
+        cells[#cells + 1] = string.char(color[1], color[2], color[3], 255)
+      else
+        cells[#cells + 1] = string.char(0, 0, 0, 0)
+      end
+    end
+  end
+  return PngWriter.encode(width, height, table.concat(cells))
+end
+
+-- Wrapped backgrounds sample the independent modulo oracle across native
+-- extents with transparency, and repeated draws at one source tick
+-- allocate no GPU quads on the sprite-free scene.
+local function wrapped_backgrounds_match_the_modulo_oracle_without_per_draw_quads(scope)
+  local root = sceneArtRoot(1)
+  local chartImage = root .. "layers/wrap-chart.png"
+  local magentaImage = root .. "layers/wrap-magenta.png"
+  local bandsImage = root .. "layers/wrap-bands.png"
+  local deepImage = root .. "layers/wrap-deep.png"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local art = {
+    [chartImage] = transparentQuadrantsPng(512, { 255, 0, 0 }, { 0, 255, 0 }, { 255, 255, 0 }),
+    [magentaImage] = solidPng(256, 192, 255, 0, 255),
+    [bandsImage] = transparentBandsPng(256, 512, { 0, 255, 255 }),
+    [deepImage] = solidPng(512, 192, 255, 255, 0),
+  }
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      {
+        compositeLayer(0, chartImage, 512, 512, true, 0),
+        compositeLayer(1, magentaImage, 256, 192, true, 1),
+      },
+      {
+        compositeLayer(0, bandsImage, 256, 512, true, 0),
+        compositeLayer(1, deepImage, 512, 192, true, 1),
+      },
+      {},
+      { seed = 0, emitters = {} },
+      { { id = "show", events = { 1, 2, 3, 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        { op = "setScroll", stepId = "show", atStepTick = 0, engine = "main", bgSlot = 0, dx = -1, dy = -1, ticks = 0 },
+        { op = "setScroll", stepId = "show", atStepTick = 0, engine = "main", bgSlot = 1, dx = 255, dy = 191, ticks = 0 },
+        { op = "setScroll", stepId = "show", atStepTick = 0, engine = "sub", bgSlot = 0, dx = 0, dy = 0, ticks = 0 },
+        { op = "setScroll", stepId = "show", atStepTick = 0, engine = "sub", bgSlot = 1, dx = 100000, dy = -100001, ticks = 0 },
+        { op = "enableSkip", stepId = "show", atStepTick = 10 },
+        { op = "waitTicks", stepId = "show", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "show", atStepTick = 40 },
+      }
+    ),
+    art,
+    gray16
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  advance(movie, 5)
+  movie:draw()
+  -- The oracle recomputes every texel from the staged native bytes under
+  -- modular arithmetic: negative one wraps to the last texel, width or
+  -- height minus one samples the far edge, and the huge offsets land on
+  -- their modular residues, with transparency falling through to backing.
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[1], "main", "chart wrap", {
+    [0] = { -1, -1 },
+    [1] = { 255, 191 },
+  }, {})
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[1], "sub", "band wrap", {
+    [0] = { 0, 0 },
+    [1] = { 100000, -100001 },
+  }, {})
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local scrollX, scrollY = slot.backgrounds.main[0].scrollX, slot.backgrounds.main[0].scrollY
+  local counter = countingQuads(scope)
+  movie:draw()
+  local startMain = sourceBytes(scope, movie.mainCanvas)
+  local startSub = sourceBytes(scope, movie.subCanvas)
+  local baseline = counter.calls
+  for _ = 1, 5 do
+    movie:draw()
+  end
+  Assert.equal(counter.calls, baseline, "repeated draws at one source tick create no background quads")
+  Assert.equal(slot.backgrounds.main[0].scrollX, scrollX, "repeated host draws never resample the clock")
+  Assert.equal(slot.backgrounds.main[0].scrollY, scrollY, "repeated host draws never resample the clock")
+  Assert.equal(sourceBytes(scope, movie.mainCanvas), startMain, "repeated draws paint identical main pixels")
+  Assert.equal(sourceBytes(scope, movie.subCanvas), startSub, "repeated draws paint identical sub pixels")
+end
+
+-- An alternate-size swap keeps sampling the newly selected extents while a
+-- window-sliced pan advances, and neither allocates GPU quads per draw.
+local function swapped_alternates_and_window_sliced_pans_keep_wrap_pixels_without_per_draw_quads(scope)
+  local root = sceneArtRoot(1)
+  local chartImage = root .. "layers/slice-chart.png"
+  local bandsImage = root .. "layers/slice-bands.png"
+  local altImage = root .. "layers/slice-alt.png"
+  local groundImage = root .. "layers/slice-ground.png"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local art = {
+    [chartImage] = quadrantPng(512, { 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 }, { 255, 255, 0 }),
+    [bandsImage] = halvesPng(256, 512, { 0, 255, 255 }, { 255, 255, 0 }),
+    [altImage] = halvesPng(256, 192, { 255, 0, 255 }, { 0, 255, 255 }),
+    [groundImage] = solidPng(256, 192, 40, 40, 40),
+  }
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      { compositeLayer(0, chartImage, 512, 512, true, 0) },
+      {
+        {
+          bgSlot = 0,
+          priority = 0,
+          image = bandsImage,
+          variants = { { image = altImage, width = 256, height = 192 } },
+          width = 256,
+          height = 512,
+          sourceHash = string.rep("c", 40),
+          initialVisible = true,
+        },
+      },
+      {},
+      { seed = 0, emitters = {} },
+      { { id = "show", events = { 1, 2, 3, 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      {
+        { op = "setScroll", stepId = "show", atStepTick = 0, engine = "main", bgSlot = 0, dx = -512, dy = 0, ticks = 8 },
+        {
+          op = "window",
+          stepId = "show",
+          atStepTick = 0,
+          engine = "main",
+          from = { x1 = 0, y1 = 0, x2 = 127, y2 = 191 },
+          to = { x1 = 128, y1 = 0, x2 = 255, y2 = 191 },
+          ticks = 40,
+          insideMask = 19,
+          outsideMask = 19,
+        },
+        { op = "setScroll", stepId = "show", atStepTick = 0, engine = "sub", bgSlot = 0, dx = 0, dy = 0, ticks = 0 },
+        { op = "setLayer", stepId = "show", atStepTick = 20, engine = "sub", bgSlot = 0, image = altImage, visible = true, priority = 0 },
+        { op = "enableSkip", stepId = "show", atStepTick = 10 },
+        { op = "waitTicks", stepId = "show", atStepTick = 0, ticks = 40 },
+        { op = "finish", stepId = "show", atStepTick = 40 },
+      }
+    ),
+    art,
+    gray16
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  advance(movie, 5)
+  movie:draw()
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[1], "sub", "pre-swap bands", {
+    [0] = { 0, 0 },
+  }, {})
+  local counter = countingQuads(scope)
+  local scissors = countingScissors(scope)
+  movie:draw()
+  local scissorBaseline = #scissors.regions
+  movie:draw()
+  local mainRegions = {}
+  for index = scissorBaseline + 1, #scissors.regions do
+    local region = scissors.regions[index]
+    if region.canvas == movie.mainCanvas then
+      mainRegions[#mainRegions + 1] = region
+    end
+  end
+  Assert.isTrue(#mainRegions >= 2, "the active window slices the panning plane into several scissor regions")
+  local quadBaseline = counter.calls
+  for _ = 1, 20 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.equal(counter.calls, quadBaseline, "the window-sliced pan and the alternate swap create no quads")
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(slot.backgrounds.sub[0].image, altImage, "the swap lands on its authored tick")
+  movie:draw()
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[1], "sub", "post-swap alternate", {
+    [0] = { 0, 0 },
+  }, {})
+  local startMain = sourceBytes(scope, movie.mainCanvas)
+  movie:draw()
+  movie:draw()
+  Assert.equal(sourceBytes(scope, movie.mainCanvas), startMain, "repeated windowed draws paint identical pixels")
+end
+
+-- Reads the live signed offsets of every visible panel on one engine so
+-- the wrap comparison needs no hardcoded edition numbers.
+---@param movie table running opening movie
+---@return table<integer, integer[]> authored offsets by bg slot
+local function liveEngineOffsets(movie, engine)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local expected = {}
+  for bgSlot, background in pairs(slot.backgrounds[engine]) do
+    if background.visible then
+      expected[bgSlot] = { math.floor(background.scrollX), math.floor(background.scrollY) }
+    end
+  end
+  return expected
+end
+
+-- Real-edition scene 2 and scene 5 wrap stays pixel-exact under the
+-- modular oracle while repeated renders at one source tick allocate no
+-- GPU quads; the pan still moves source pixels between the samples.
+local function sourced_wrap_stays_bounded_without_per_draw_quads(scope, versionId)
+  local scenes, cacheFs = loadRomPackWithFillers(versionId, { 3, 4 })
+  local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
+  advanceToSceneStep(movie, 2, "flyin", 20000)
+  advance(movie, 5)
+  movie:draw()
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "main", "scene 2 flyin wrap", liveEngineOffsets(movie, "main"), {})
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "sub", "scene 2 flyin wrap", liveEngineOffsets(movie, "sub"), {})
+  local counter = countingQuads(scope)
+  movie:draw()
+  local startMain = sourceBytes(scope, movie.mainCanvas)
+  local quadBaseline = counter.calls
+  for _ = 1, 5 do
+    movie:draw()
+  end
+  Assert.equal(quadBaseline, counter.calls, "repeated scene 2 draws at one source tick create no new quads")
+  Assert.equal(sourceBytes(scope, movie.mainCanvas), startMain, "repeated scene 2 draws paint identical pixels")
+  for _ = 1, 30 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.isTrue(sourceBytes(scope, movie.mainCanvas) ~= startMain, "the scene 2 pan still moves source pixels")
+  movie:draw()
+  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "main", "scene 2 mid-pan wrap", liveEngineOffsets(movie, "main"), {})
+  movie:dispose()
+  local lateScenes, lateCache = loadRomPackWithFillers(versionId, { 3, 4 })
+  local late = openMovieWithCache(scope, lateScenes, lateCache, versionId, 512, 384, "single")
+  advanceToSceneStep(late, 5, "scroll", 20000)
+  advance(late, 70)
+  late:draw()
+  assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "main", "scene 5 late wrap", liveEngineOffsets(late, "main"), {})
+  assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "sub", "scene 5 late wrap", liveEngineOffsets(late, "sub"), {})
+  local lateCounter = countingQuads(scope)
+  late:draw()
+  local lateStart = sourceBytes(scope, late.mainCanvas)
+  local lateBaseline = lateCounter.calls
+  for _ = 1, 5 do
+    late:draw()
+  end
+  Assert.equal(lateBaseline, lateCounter.calls, "repeated scene 5 draws at one source tick create no new quads")
+  Assert.equal(sourceBytes(scope, late.mainCanvas), lateStart, "repeated scene 5 draws paint identical pixels")
+  late:dispose()
+end
+
+local function soulsilver_scene_two_and_five_wrap_stays_bounded_without_per_draw_quads(scope, context)
+  sourced_wrap_stays_bounded_without_per_draw_quads(scope, selectedVersionId(context))
+end
+
+local function heartgold_scene_two_and_five_wrap_is_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold scene 2 and 5 wrap needs a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the sourced wrap and quad legs "
+        .. "cannot run for HeartGold and are never faked"
+    )
+  end
+  sourced_wrap_stays_bounded_without_per_draw_quads(scope, "heartgold")
+end
+
 local T = GraphicsSmoke.suite({
   ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
@@ -5291,6 +5627,10 @@ local T = GraphicsSmoke.suite({
   ["soulsilver town camera uses the sourced angle and lens"] = soulsilver_town_camera_uses_the_sourced_angle_and_lens,
   ["composite layers pan independently with true blending"] = composite_layers_pan_independently_with_true_blending,
   ["native viewports wrap across source extents"] = native_viewports_wrap_across_source_extents,
+  ["wrapped backgrounds match the modulo oracle without per-draw quads"] = wrapped_backgrounds_match_the_modulo_oracle_without_per_draw_quads,
+  ["swapped alternates and window-sliced pans keep wrap pixels without per-draw quads"] = swapped_alternates_and_window_sliced_pans_keep_wrap_pixels_without_per_draw_quads,
+  ["soulsilver scene two and five wrap stays bounded without per-draw quads"] = soulsilver_scene_two_and_five_wrap_stays_bounded_without_per_draw_quads,
+  ["heartgold scene two and five wrap is blocked without a dump"] = heartgold_scene_two_and_five_wrap_is_blocked_without_a_dump,
   ["swapped viewports follow the active image extents"] = swapped_viewports_follow_the_active_image_extents,
   ["sourced scroll offsets follow absolute source ticks"] = sourced_scroll_offsets_for_edition,
   ["heartgold scroll offsets are blocked without a dump"] = heartgold_scroll_offsets_are_blocked_without_a_dump,
