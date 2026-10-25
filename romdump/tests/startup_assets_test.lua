@@ -1282,7 +1282,7 @@ end
 -- fixtures build on the current contract instead.
 local OPENING_SCHEMA = "g4-startup-opening-scene-v3"
 
-local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v4"
+local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v5"
 
 local function openingLayer(engine, bgSlot, image)
   return {
@@ -1481,13 +1481,22 @@ local function validCurrentOpeningManifest(sceneNumber, versionId)
     }
   elseif sceneNumber == 5 then
     manifest.timeline.events[2] = {
-      op = "circleWipe",
+      op = "shutterFade",
       stepId = "wipe",
       atStepTick = 0,
-      engine = "main",
-      kind = 0,
-      ticks = 18,
-      effect = "wipe-in",
+      order = "main-then-sub",
+      mainPattern = "center-out",
+      subPattern = "bottom-up",
+      color = "black",
+      steps = 18,
+      framesPerStep = 1,
+      effect = "scene5-shutter",
+    }
+    manifest.timeline.events[3] = {
+      op = "waitEffects",
+      stepId = "scroll",
+      atStepTick = 0,
+      effects = { "scene5-shutter" },
     }
     manifest.timeline.events[4].direction = nil
   end
@@ -1625,6 +1634,72 @@ function T.opening_scene_reader_enforces_the_strict_versioned_contract()
   local badRole, badRoleErr = StartupAssetCache.loadOpeningScene(openingCacheFs(badMapping, nil), 1, "heartgold")
   Assert.isNil(badRole, "a scene with a bad physical role never validates")
   Assert.notNil(badRoleErr, "the bad physical role reports its cause")
+end
+
+-- The scene 5 line shutter is one opening-specific strict event: exact
+-- main-then-sub order, center-out/bottom-up shapes, black ink, 18 steps
+-- at one frame per step, and scene 5 only. Wrong shapes never validate.
+function T.opening_scene_reader_accepts_only_the_scene5_shutter_shape()
+  local manifest = validCurrentOpeningManifest(5, "heartgold")
+  local loaded, err = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 5, "heartgold")
+  Assert.notNil(loaded, "the scene 5 line shutter reads ready: " .. tostring(err))
+  local shutters = {}
+  for _, event in ipairs(loaded.timeline.events) do
+    if event.op == "shutterFade" then
+      shutters[#shutters + 1] = event
+    elseif event.op == "circleWipe" then
+      Assert.isTrue(false, "scene 5 carries no circle wipe beside its shutter")
+    end
+  end
+  Assert.equal(#shutters, 1, "scene 5 carries exactly its single line shutter")
+  local shutter = shutters[1]
+  Assert.equal(shutter.order, "main-then-sub", "the shutter steps the main engine before the sub engine")
+  Assert.equal(shutter.mainPattern, "center-out", "the main shutter opens center-out")
+  Assert.equal(shutter.subPattern, "bottom-up", "the sub shutter rises bottom-up")
+  Assert.equal(shutter.color, "black", "the shutter fades through black")
+  Assert.equal(shutter.steps, 18, "the shutter runs its eighteen source steps")
+  Assert.equal(shutter.framesPerStep, 1, "the shutter advances one frame per step")
+  Assert.equal(shutter.effect, "scene5-shutter", "the shutter completes under its named effect")
+  Assert.equal(shutter.stepId, "wipe", "the shutter starts at its source step")
+  local staleV4 = deepCopy(manifest)
+  staleV4.schema = "g4-startup-opening-scene-v4"
+  local staleRead, staleErr = StartupAssetCache.loadOpeningScene(openingCacheFs(staleV4, nil), 5, "heartgold")
+  Assert.isNil(staleRead, "the previous v4 scene record never validates as current")
+  Assert.notNil(staleErr, "the stale v4 schema reports its cause")
+  local cases = {}
+  local wrongScene = deepCopy(validCurrentOpeningManifest(1, "heartgold"))
+  wrongScene.timeline.events[4] = deepCopy(shutter)
+  wrongScene.timeline.events[4].stepId = "fades"
+  cases[#cases + 1] = { manifest = wrongScene, scene = 1, label = "a shutter outside scene 5" }
+  local badOrder = deepCopy(manifest)
+  badOrder.timeline.events[2].order = "sub-then-main"
+  cases[#cases + 1] = { manifest = badOrder, scene = 5, label = "a reversed engine order" }
+  local badMain = deepCopy(manifest)
+  badMain.timeline.events[2].mainPattern = "bottom-up"
+  cases[#cases + 1] = { manifest = badMain, scene = 5, label = "a wrong main shape" }
+  local badSub = deepCopy(manifest)
+  badSub.timeline.events[2].subPattern = "center-out"
+  cases[#cases + 1] = { manifest = badSub, scene = 5, label = "a wrong sub shape" }
+  local badColor = deepCopy(manifest)
+  badColor.timeline.events[2].color = "white"
+  cases[#cases + 1] = { manifest = badColor, scene = 5, label = "a wrong shutter color" }
+  local badSteps = deepCopy(manifest)
+  badSteps.timeline.events[2].steps = 0
+  cases[#cases + 1] = { manifest = badSteps, scene = 5, label = "a non-positive step count" }
+  local badFrames = deepCopy(manifest)
+  badFrames.timeline.events[2].framesPerStep = 2
+  cases[#cases + 1] = { manifest = badFrames, scene = 5, label = "a wrong frames-per-step" }
+  local badEffect = deepCopy(manifest)
+  badEffect.timeline.events[2].effect = "wipe-in"
+  cases[#cases + 1] = { manifest = badEffect, scene = 5, label = "a shutter under the wrong effect identity" }
+  local extraKey = deepCopy(manifest)
+  extraKey.timeline.events[2].fadeType = 9
+  cases[#cases + 1] = { manifest = extraKey, scene = 5, label = "a shutter carrying a numeric fade type" }
+  for _, case in ipairs(cases) do
+    local rejected, reason = StartupAssetCache.loadOpeningScene(openingCacheFs(case.manifest, nil), case.scene, "heartgold")
+    Assert.isNil(rejected, case.label .. " never validates")
+    Assert.notNil(reason, case.label .. " reports its cause")
+  end
 end
 
 -- Staging one opening scene owns only its manifest and scene directory,
@@ -1828,7 +1903,7 @@ end
 -- engine-local window records with plane masks, a town-stage stop limited to
 -- the town scene, and manual window overrides. These synthetic fixtures pin
 -- the strict reader contract without touching a ROM.
-local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v4"
+local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v5"
 
 local function openingLayerV3(engine, bgSlot, image, visible)
   return {
@@ -2064,7 +2139,7 @@ end
 -- The generated opening scene identity the producer and the strict reader
 -- agree on: full native surfaces with per-image extents, instant and
 -- continuous scroll modes, and per-engine blend and wipe operands.
-local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v4"
+local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v5"
 
 local function typedOpeningManifest()
   local manifest = validOpeningManifest(1, "heartgold")

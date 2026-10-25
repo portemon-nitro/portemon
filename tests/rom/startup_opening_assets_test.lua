@@ -6,7 +6,7 @@ local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v4"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v5"
 local SOURCE_TICK_RATE = 30
 
 local CLOSED_OPS = {
@@ -18,6 +18,7 @@ local CLOSED_OPS = {
   setWindowSecondary = true,
   setWindowVisible = true,
   circleWipe = true,
+  shutterFade = true,
   setSpriteClip = true,
   spriteVisible = true,
   setModelClip = true,
@@ -378,9 +379,12 @@ local function sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate(romF
   local fifth = checkSceneBundle(compileScene(romFs, versionId, 5), versionId, 5)
   local fifthEvents = opsInOrder(fifth, timelineEvents(fifth, 5))
   local wipeAt, scrollAt, waitAt, fadeAt = nil, nil, nil, nil
+  local circleWipes = 0
   for _, event in ipairs(fifthEvents) do
-    if event.op == "circleWipe" and eventMentions(event, 18) and wipeAt == nil then
+    if event.op == "shutterFade" and event.steps == 18 and wipeAt == nil then
       wipeAt = stepPosition(fifth, event.stepId)
+    elseif event.op == "circleWipe" then
+      circleWipes = circleWipes + 1
     elseif event.op == "setScroll" and eventMentions(event, 73) and scrollAt == nil then
       scrollAt = stepPosition(fifth, event.stepId)
     elseif event.op == "waitTicks" and eventMentions(event, 20) and waitAt == nil then
@@ -389,7 +393,8 @@ local function sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate(romF
       fadeAt = stepPosition(fifth, event.stepId)
     end
   end
-  Assert.notNil(wipeAt, "scene 5 keeps its 18-tick wipe")
+  Assert.notNil(wipeAt, "scene 5 keeps its 18-step sequential line shutter")
+  Assert.equal(circleWipes, 0, "scene 5 carries no circle wipe")
   Assert.notNil(scrollAt, "scene 5 keeps its 73-tick parallel scroll")
   Assert.notNil(waitAt, "scene 5 keeps its 20-tick wait")
   Assert.notNil(fadeAt, "scene 5 keeps its closing 50-tick white fade")
@@ -483,7 +488,7 @@ end
 -- below reads the exact compiled bundles and fails until the producer
 -- emits that contract and the central reader enforces it.
 
-local STRICT_SCHEMA = "g4-startup-opening-scene-v4"
+local STRICT_SCHEMA = "g4-startup-opening-scene-v5"
 
 local function strictManifest(bundle, versionId, sceneNumber)
   local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
@@ -548,7 +553,7 @@ local function checkStepClock(events, sceneNumber)
   end
 end
 
-local STARTING_OPS = { setBlend = true, setScroll = true, setFade = true, circleWipe = true, window = true }
+local STARTING_OPS = { setBlend = true, setScroll = true, setFade = true, circleWipe = true, shutterFade = true, window = true }
 
 local function startedEffectIds(events)
   local started = {}
@@ -1598,9 +1603,10 @@ local function engineBlendsAndWipesCarrySourceOperands(romFs, versionId)
   end
   Assert.isTrue(sawBlend, "at least one compiled scene carries an engine blend")
   Assert.isTrue(sawWipe, "at least one compiled scene carries an engine wipe")
-  for _, sceneNumber in ipairs({ 2, 3, 5 }) do
+  for _, sceneNumber in ipairs({ 2, 3 }) do
     Assert.isTrue(wipesByScene[sceneNumber] == true, "scene " .. sceneNumber .. " keeps its source wipe")
   end
+  Assert.isNil(wipesByScene[5], "scene 5 carries its sequential line shutter instead of a circle wipe")
   local fades = {}
   for _, event in ipairs(compiled[1].timeline.events) do
     if event.op == "setBlend" and event.stepId == "fades" then
@@ -1629,13 +1635,18 @@ local function engineBlendsAndWipesCarrySourceOperands(romFs, versionId)
   Assert.equal(mainBlend.firstMask, 1, "scene 1 main copyright blend selects its source planes")
   Assert.equal(mainBlend.secondMask, 32, "scene 1 main copyright blend selects its backdrop plane")
   Assert.isTrue(fades[1].effect ~= fades[2].effect, "scene 1 copyright blends complete independently per engine")
+  local sawShutter18 = false
   local sawWipe18 = false
   for _, event in ipairs(compiled[5].timeline.events) do
-    if event.op == "circleWipe" and event.ticks == 18 then
+    if event.op == "shutterFade" and event.steps == 18 then
+      sawShutter18 = true
+    end
+    if event.op == "circleWipe" then
       sawWipe18 = true
     end
   end
-  Assert.isTrue(sawWipe18, "scene 5 keeps its source wipe duration")
+  Assert.isTrue(sawShutter18, "scene 5 keeps its 18-step sequential line shutter")
+  Assert.isFalse(sawWipe18, "scene 5 carries no circle wipe")
 end
 
 -- Pinned SS native extents transcribed from the compiled bundles produced
@@ -1870,7 +1881,82 @@ end
 local SCROLL_KEYS = { "atStepTick", "engine", "bgSlot", "dx", "dy", "ticks", "effect" }
 local BLEND_KEYS = { "atStepTick", "engine", "firstMask", "secondMask", "direction", "ticks", "effect" }
 local WIPE_KEYS = { "atStepTick", "engine", "kind", "ticks", "effect" }
+local SHUTTER_KEYS =
+  { "atStepTick", "order", "mainPattern", "subPattern", "color", "steps", "framesPerStep", "effect" }
 local FADE_KEYS = { "atStepTick", "kind", "ticks", "effect" }
+
+-- Independently transcribed source call table: scene 1 main (first 1,
+-- second 0x1E) and sub (first 2, second 0x1E); scene 2 final main kind 1
+-- ticks 8; scene 3 seven main/main/main/main/main/main/sub wipes at
+-- 8 ticks each; scene 5 sequential line shutter. Never derived from
+-- compiler output.
+local EXPECTED_SCENE3_WIPES = {
+  "engine=main kind=0 ticks=8",
+  "engine=main kind=3 ticks=8",
+  "engine=main kind=2 ticks=8",
+  "engine=main kind=3 ticks=8",
+  "engine=main kind=2 ticks=8",
+  "engine=main kind=3 ticks=8",
+  "engine=sub kind=2 ticks=8",
+}
+
+local function orderedWipeSignature(manifest)
+  local ordered = opsInOrder(manifest, manifest.timeline.events)
+  local signatures = {}
+  for _, event in ipairs(ordered) do
+    if event.op == "circleWipe" then
+      signatures[#signatures + 1] = serializeEvent(event, { "engine", "kind", "ticks" })
+    end
+  end
+  return signatures, ordered
+end
+
+local function checkScene3SevenWipesWithGates(manifest)
+  local signatures, ordered = orderedWipeSignature(manifest)
+  Assert.deepEqual(signatures, EXPECTED_SCENE3_WIPES, "scene 3 keeps its seven source circle wipes in order")
+  local effects = {}
+  for _, event in ipairs(ordered) do
+    if event.op == "circleWipe" then
+      Assert.isTrue(type(event.effect) == "string" and event.effect ~= "", "scene 3 names each wipe effect")
+      Assert.isNil(effects[event.effect], "scene 3 gives each wipe its own completion identity")
+      effects[event.effect] = event
+    end
+  end
+  local waited = {}
+  for _, event in ipairs(ordered) do
+    if event.op == "waitEffects" and type(event.effects) == "table" then
+      for _, name in ipairs(event.effects) do
+        waited[name] = true
+      end
+    end
+  end
+  local wipeCount = 0
+  for _, event in ipairs(ordered) do
+    if event.op == "circleWipe" then
+      wipeCount = wipeCount + 1
+      if wipeCount > 1 then
+        Assert.isTrue(waited[event.effect] ~= true or wipeCount == 7, "scene 3 gates each close before the next wipe")
+      end
+    end
+  end
+  local lastMainCloseAt, retireAt, rivalAt = nil, nil, nil
+  for _, event in ipairs(ordered) do
+    if event.op == "circleWipe" and event.engine == "main" and event.kind == 3 then
+      lastMainCloseAt = stepPosition(manifest, event.stepId)
+    elseif event.op == "setModelVisible" and event.visible == false then
+      retireAt = stepPosition(manifest, event.stepId)
+    elseif event.op == "circleWipe" and event.engine == "sub" then
+      rivalAt = stepPosition(manifest, event.stepId)
+    end
+  end
+  Assert.notNil(lastMainCloseAt, "scene 3 keeps its final main close")
+  Assert.notNil(retireAt, "scene 3 retires its town drawing")
+  Assert.notNil(rivalAt, "scene 3 keeps its rival reveal wipe")
+  Assert.isTrue(
+    (lastMainCloseAt or 0) <= (retireAt or 0) and (retireAt or 0) <= (rivalAt or 0),
+    "scene 3 retires town drawing after the final close and before the rival reveal"
+  )
+end
 
 -- Every scene 1/2/4/5 scroll offset, continuous job, and timed delta, plus
 -- each engine alpha mask/direction/duration and wipe kind/engine/duration
@@ -1896,8 +1982,8 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=0 engine=sub firstMask=1 secondMask=32 direction=1 ticks=60 effect=blend-copyright-sub",
   })
   assertExactEvents(first, 1, "setBlend", "scroll", BLEND_KEYS, {
-    "atStepTick=0 engine=main firstMask=30 secondMask=0 direction=1 ticks=80 effect=scroll-sunrise-main",
-    "atStepTick=0 engine=sub firstMask=30 secondMask=0 direction=1 ticks=80 effect=scroll-sunrise-sub",
+    "atStepTick=0 engine=main firstMask=1 secondMask=30 direction=1 ticks=80 effect=scroll-sunrise-main",
+    "atStepTick=0 engine=sub firstMask=2 secondMask=30 direction=1 ticks=80 effect=scroll-sunrise-sub",
   })
   assertExactEvents(first, 1, "setFade", "run", FADE_KEYS, {
     "atStepTick=90 kind=white ticks=65 effect=fade-white",
@@ -1931,7 +2017,7 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=56 kind=black-out ticks=8 effect=nil",
   })
   assertExactEvents(second, 2, "circleWipe", "wipe", WIPE_KEYS, {
-    "atStepTick=0 engine=main kind=1 ticks=10 effect=wipe-circle",
+    "atStepTick=0 engine=main kind=1 ticks=8 effect=wipe-circle",
   })
   assertExactEvents(fourth, 4, "setScroll", "fade-in", SCROLL_KEYS, {
     "atStepTick=0 engine=main bgSlot=1 dx=192 dy=0 ticks=0 effect=nil",
@@ -1962,25 +2048,31 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=0 engine=sub bgSlot=1 dx=0 dy=" .. pairedDy .. " ticks=73 effect=scroll-panorama",
     "atStepTick=0 engine=sub bgSlot=2 dx=0 dy=" .. pairedDy .. " ticks=73 effect=scroll-panorama",
   })
-  assertExactEvents(fifth, 5, "circleWipe", "wipe", WIPE_KEYS, {
-    "atStepTick=0 engine=main kind=0 ticks=18 effect=wipe-in",
+  assertExactEvents(fifth, 5, "shutterFade", "wipe", SHUTTER_KEYS, {
+    "atStepTick=0 order=main-then-sub mainPattern=center-out subPattern=bottom-up color=black steps=18 framesPerStep=1 effect=scene5-shutter",
   })
+  Assert.equal(#collectEvents(fifth, "circleWipe", nil), 0, "scene 5 carries no circle wipe")
   assertExactEvents(fifth, 5, "setFade", "wait", FADE_KEYS, {
     "atStepTick=20 kind=white ticks=50 effect=fade-white",
   })
   local third = manifests[3]
-  assertExactEvents(third, 3, "circleWipe", "show-new-bark-town", WIPE_KEYS, {
-    "atStepTick=0 engine=sub kind=0 ticks=10 effect=wipe-circle",
-  })
-  assertExactEvents(third, 3, "circleWipe", "show-goldenrod-city", WIPE_KEYS, {
-    "atStepTick=0 engine=sub kind=0 ticks=10 effect=wipe-circle",
-  })
-  assertExactEvents(third, 3, "circleWipe", "show-ecruteak-city", WIPE_KEYS, {
-    "atStepTick=0 engine=sub kind=0 ticks=10 effect=wipe-circle",
-  })
-  assertExactEvents(third, 3, "circleWipe", "rival", WIPE_KEYS, {
-    "atStepTick=0 engine=sub kind=1 ticks=10 effect=wipe-circle",
-  })
+  checkScene3SevenWipesWithGates(third)
+end
+
+-- The retail overlay steps at one source tick per two VBlanks: every
+-- opening bundle keeps the 30 Hz source tick rate and an 8-tick wipe
+-- still costs exactly 8 source updates. No 60 Hz clock change.
+local function movieTickRateRemainsRetail30Hz(romFs, versionId)
+  for sceneNumber = 1, 5 do
+    local bundle = compileScene(romFs, versionId, sceneNumber)
+    local manifest = strictManifest(bundle, versionId, sceneNumber)
+    Assert.equal(manifest.schema, "g4-startup-opening-scene-v5", "scene " .. sceneNumber .. " carries the v5 schema")
+    Assert.equal(manifest.sourceTickRate, 30, "scene " .. sceneNumber .. " runs at the retail 30 Hz tick rate")
+  end
+  local second = strictManifest(compileScene(romFs, versionId, 2), versionId, 2)
+  local wipes = collectEvents(second, "circleWipe", "wipe")
+  Assert.equal(#wipes, 1, "scene 2 keeps its single final wipe")
+  Assert.equal(wipes[1].ticks, 8, "the 8-tick wipe costs 8 source updates")
 end
 
 return RomSuite.fromFacts({
@@ -2002,4 +2094,5 @@ return RomSuite.fromFacts({
   ["engine blends and wipes carry their source operands per stage engine"] = engineBlendsAndWipesCarrySourceOperands,
   ["pinned native extents reproduce decoded art with pinned wrap edges"] = pinnedNativeExtentsAndWrapEdgeTopology,
   ["pinned scroll blend wipe and fade operands match retail calls"] = pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls,
+  ["movie tick rate remains the retail 30 Hz source cadence"] = movieTickRateRemainsRetail30Hz,
 })

@@ -1014,8 +1014,8 @@ local function scene1Program(clips, layers)
   scroll[#scroll + 1] = nextIndex(events)
   events[#events + 1] = event("setBlend", "scroll", 0, {
     engine = "main",
-    firstMask = 30,
-    secondMask = 0,
+    firstMask = 1,
+    secondMask = 30,
     direction = 1,
     ticks = 80,
     effect = "scroll-sunrise-main",
@@ -1023,8 +1023,8 @@ local function scene1Program(clips, layers)
   scroll[#scroll + 1] = nextIndex(events)
   events[#events + 1] = event("setBlend", "scroll", 0, {
     engine = "sub",
-    firstMask = 30,
-    secondMask = 0,
+    firstMask = 2,
+    secondMask = 30,
     direction = 1,
     ticks = 80,
     effect = "scroll-sunrise-sub",
@@ -1244,8 +1244,7 @@ local function scene2Program(clips)
   step(steps, "lyra-exit", exit, { kind = "effect", effect = "scroll-lyra-exit" })
   local wipe = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitEffects", "wipe", 0, { effects = { "scroll-lyra-exit" } })
-  events[#events + 1] =
-    event("circleWipe", "wipe", 0, { engine = "main", kind = 1, ticks = 10, effect = "wipe-circle" })
+  events[#events + 1] = event("circleWipe", "wipe", 0, { engine = "main", kind = 1, ticks = 8, effect = "wipe-circle" })
   step(steps, "wipe", wipe, { kind = "effect", effect = "wipe-circle" })
   local done = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitEffects", "done", 0, { effects = { "wipe-circle" } })
@@ -1303,25 +1302,43 @@ local function scene3Program(clips, layers)
       event("setCamera", "show-" .. towns[town], 0, { distance = 410.922119140625, angle = "sCameraParam" })
     show[#show + 1] = nextIndex(events)
     events[#events + 1] = event("setLighting", "show-" .. towns[town], 0, { map = town - 1, town = towns[town] })
+    -- Each town rises on the main engine: the first town opens with
+    -- kind 0, later towns with kind 2, eight source ticks each. Step
+    -- order gates the close below on the finished open.
+    local openKind = town == 1 and 0 or 2
     show[#show + 1] = nextIndex(events)
-    events[#events + 1] =
-      event("circleWipe", "show-" .. towns[town], 0, { engine = "sub", kind = 0, ticks = 10, effect = "wipe-circle" })
+    events[#events + 1] = event("circleWipe", "show-" .. towns[town], 0, {
+      engine = "main",
+      kind = openKind,
+      ticks = 8,
+      effect = "wipe-" .. towns[town] .. "-open",
+    })
     show[#show + 1] = nextIndex(events)
     events[#events + 1] = event("waitTicks", "show-" .. towns[town], holds[town] + 1, { ticks = holds[town] })
     step(steps, "show-" .. towns[town], show, { kind = "duration", ticks = holds[town] + 1 })
+    -- The town closes on the main engine with kind 3 over eight source
+    -- ticks; the close step completes only when the close finishes, so
+    -- the next town beat starts after its wipe.
+    local close = { nextIndex(events) }
+    events[#events + 1] = event("circleWipe", "close-" .. towns[town], 0, {
+      engine = "main",
+      kind = 3,
+      ticks = 8,
+      effect = "wipe-" .. towns[town] .. "-close",
+    })
+    step(steps, "close-" .. towns[town], close, { kind = "effect", effect = "wipe-" .. towns[town] .. "-close" })
   end
-  -- The retail end-of-3D boundary sets whichMap=0xFFFF once the town wipe
-  -- finishes, before any rival-only output: town pixels stop while the
-  -- staged town resources stay owned by the slot.
+  -- The retail end-of-3D boundary sets whichMap=0xFFFF once the final
+  -- town close finishes, before any rival-only output: town pixels stop
+  -- while the staged town resources stay owned by the slot. Step order
+  -- gates the reveal on the finished close.
   local rival = { nextIndex(events), nextIndex(events) + 1 }
-  events[#events + 1] = event("waitEffects", "rival", 0, { effects = { "wipe-circle" } })
-  events[#events + 1] =
-    event("circleWipe", "rival", 0, { engine = "sub", kind = 1, ticks = 10, effect = "wipe-circle" })
+  events[#events + 1] = event("circleWipe", "rival", 0, { engine = "sub", kind = 2, ticks = 8, effect = "wipe-rival" })
   rival[#rival + 1] = nextIndex(events)
   events[#events + 1] = event("setModelVisible", "rival", 0, { visible = false })
-  step(steps, "rival", rival, { kind = "effect", effect = "wipe-circle" })
+  step(steps, "rival", rival, { kind = "effect", effect = "wipe-rival" })
   local panelsStep = { nextIndex(events) }
-  events[#events + 1] = event("waitEffects", "panels", 0, { effects = { "wipe-circle" } })
+  events[#events + 1] = event("waitEffects", "panels", 0, { effects = { "wipe-rival" } })
   for index, delay in ipairs({ 56, 73, 92 }) do
     panelsStep[#panelsStep + 1] = showPanel("panels", delay, "rival-section-" .. index)
   end
@@ -1667,11 +1684,19 @@ local function scene5Program(versionId)
   wipe[#wipe + 1] = nextIndex(events)
   events[#events + 1] = event("setScroll", "wipe", 0, { engine = "sub", bgSlot = 2, dx = 0, dy = 160, ticks = 0 })
   wipe[#wipe + 1] = nextIndex(events)
-  events[#events + 1] = event("circleWipe", "wipe", 0, { engine = "main", kind = 0, ticks = 18, effect = "wipe-in" })
+  events[#events + 1] = event("shutterFade", "wipe", 0, {
+    order = "main-then-sub",
+    mainPattern = "center-out",
+    subPattern = "bottom-up",
+    color = "black",
+    steps = 18,
+    framesPerStep = 1,
+    effect = "scene5-shutter",
+  })
   step(steps, "wipe", wipe, { kind = "duration", ticks = 18 })
   local scroll = {}
   scroll[#scroll + 1] = nextIndex(events)
-  events[#events + 1] = event("waitEffects", "scroll", 0, { effects = { "wipe-in" } })
+  events[#events + 1] = event("waitEffects", "scroll", 0, { effects = { "scene5-shutter" } })
   scroll[#scroll + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
