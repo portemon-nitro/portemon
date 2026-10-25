@@ -141,6 +141,7 @@ function App._launchMenuWithProvisioner(versionId)
   host.requestMilestone("new-game-intro", "near")
   host.requestMilestone("field-planning", "near")
   host.requestMilestone("field-runtime", "near")
+  host.requestBattlePresentation("near")
   provisioner:startBackgroundWarmup()
 end
 

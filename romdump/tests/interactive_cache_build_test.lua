@@ -1075,6 +1075,22 @@ function T.repeated_requests_submit_only_once()
   shutdownEnv(env)
 end
 
+-- A wild encounter on an attested cache demands its battle scene with no
+-- milestone or sweep pulling source discovery: the scene's global
+-- prerequisite must schedule the source plan itself instead of waiting for
+-- an adoption nothing will start.
+function T.lone_battle_scene_demand_schedules_source_discovery()
+  local pool = recordingPool()
+  local session, _ = isolatedSession("lone-battle-scene-generation", pool, FakeCache.new())
+  local ready, failure = session:requestJob("battle-scene", "general/grass/day", "required")
+  Assert.isFalse(ready, "the cold scene stays pending")
+  Assert.isNil(failure, "no failure is reported while the scene waits")
+  for _ = 1, 8 do
+    session:update()
+  end
+  Assert.equal(submissionCount(pool, "source-plan:global"), 1, "the scene closure submits source discovery once")
+end
+
 function T.promotion_while_executing_keeps_single_execution()
   local env = openLiveSession({ generation = "dependency-executing-generation", bankIds = { 3, 5 } })
   local first, firstFailure = requestJob(env, "message-bank", "3", "near")

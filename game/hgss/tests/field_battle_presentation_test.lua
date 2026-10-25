@@ -122,7 +122,14 @@ end
 
 local function runtimeOptions()
   local Fixture = require("tests.support.FieldStatePresentationFixture")
-  return { presentation = false, derivedAssets = Fixture.iconHost().derivedAssets }
+  local LocalClock = require("game.src.LocalClock")
+  return {
+    presentation = false,
+    derivedAssets = Fixture.iconHost().derivedAssets,
+    localClock = LocalClock.new(function()
+      return { year = 2024, month = 6, day = 1, hour = 12, minute = 0, second = 0 }
+    end),
+  }
 end
 
 ---@param versionId string
@@ -319,7 +326,7 @@ function T.presented_launch_captures_semantic_transition_context_before_mutation
       alternateTransition = false,
       playerGender = "male",
       wildSetupFallback = false,
-      terrain = "building",
+      terrain = "plain",
       timeOfDay = "day",
     })
   end, debug.traceback)

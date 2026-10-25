@@ -186,4 +186,59 @@ function T.effect_host_keys_validate_and_never_alias_scenes()
   service:shutdown()
 end
 
+-- The work every battle shares (the global presentation catalog with its
+-- music and voice banks) is one selector-free demand: repeated host calls
+-- coalesce into one controller request carrying urgency alone, a stray
+-- selector never rides it, and the controller dispatches the single
+-- registered global job.
+function T.shared_battle_presentation_demand_is_selector_free_and_global()
+  local Service = cacheService()
+  local Provisioner = provisionerModule()
+  local service = assert(Service.new({ thread = newChannelHost() }))
+  local provisioner = Provisioner.new({ versionId = "heartgold", service = service })
+  local gameHost = provisioner:gameHost()
+  local pending, pendingErr = gameHost.requestBattlePresentation("near")
+  Assert.isNil(pending, "the unstaged catalog observes no readiness")
+  Assert.isNil(pendingErr, "the unstaged catalog observes no failure")
+  gameHost.requestBattlePresentation("near")
+  service:update()
+  local commands = {}
+  local command = service._command:pop()
+  while command ~= nil do
+    if command.op == "request" then
+      commands[#commands + 1] = command
+    end
+    command = service._command:pop()
+  end
+  Assert.equal(#commands, 1, "repeated shared demands coalesce into one worker request")
+  Assert.equal(commands[1].requestKind, "battle-presentation", "the demand names the shared battle catalog")
+  Assert.equal(commands[1].urgency, "near", "the demand carries its urgency")
+  Assert.isNil(commands[1].sceneKey, "the shared demand carries no scene selector")
+  Assert.isNil(commands[1].effectKey, "the shared demand carries no effect selector")
+  local strayOk = pcall(service.request, service, provisioner.epoch, {
+    requestKind = "battle-presentation",
+    urgency = "near",
+    sceneKey = "general/grass/day",
+  })
+  Assert.isFalse(strayOk, "a scene selector never rides the shared battle demand")
+  provisioner:dispose()
+  service:shutdown()
+
+  local Worker = require("romdump.src.build.CacheControllerWorker").Worker
+  local worker = Worker.new({
+    pop = function()
+      return nil
+    end,
+  }, { push = function() end })
+  local calls = {}
+  worker.session = {
+    requestJob = function(_, kind, key, urgency)
+      calls[#calls + 1] = kind .. ":" .. key .. "@" .. urgency
+      return false, nil
+    end,
+  }
+  worker:_invoke({ requestKind = "battle-presentation", urgency = "near" })
+  Assert.deepEqual(calls, { "battle-presentation:global@near" }, "the controller dispatches the global job")
+end
+
 return { tests = T }

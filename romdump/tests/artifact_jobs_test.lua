@@ -86,6 +86,87 @@ function T.mart_is_registered_for_field_runtime_and_uses_existing_catalog_depend
   Assert.isTrue(dependencySet["audio-catalog:global"] == true, "mart cues depend on the shared audio catalog")
 end
 
+-- An incomplete plan waits for source adoption, and a session discovers the
+-- source only through scope intent or a declared edge. A lone on-demand
+-- request (a battle scene during a wild encounter on an attested cache)
+-- carries no scope intent, so every family whose plan stays incomplete
+-- before adoption must reach the source plan through its own edges, or it
+-- waits forever.
+function T.incomplete_plans_reach_the_source_plan_through_declared_edges()
+  local function reachesSource(kind, key, seen)
+    if kind == "source-plan" then
+      return true
+    end
+    local jobKey = kind .. ":" .. key
+    if seen[jobKey] then
+      return false
+    end
+    seen[jobKey] = true
+    local dependencies = ArtifactJobs.dependencies(kind, key, {})
+    for _, dependency in ipairs(dependencies) do
+      if reachesSource(dependency.kind, dependency.key, seen) then
+        return true
+      end
+    end
+    return false
+  end
+  local keys = { ["battle-scene"] = "general/grass/day", ["battle-effect"] = "fixture" }
+  for kind, key in pairs(CANONICAL_KEYS) do
+    keys[kind] = keys[kind] or key
+  end
+  for kind in pairs(ArtifactState.KINDS) do
+    local key = keys[kind] or "global"
+    -- Summaries over adopted member lists are requested only after
+    -- adoption and refuse planning without their members.
+    local planned, _, complete = pcall(ArtifactJobs.dependencies, kind, key, {})
+    if planned and not complete then
+      Assert.isTrue(reachesSource(kind, key, {}), kind .. " waits for adoption without an edge to the source plan")
+    end
+  end
+end
+
+-- Effect voices play from the shared audio cache, so the global battle
+-- catalog every effect stages on carries the banks holding battle animation
+-- sequences beside the battle music; the bank identities come from the
+-- adopted audio index.
+function T.battle_presentation_carries_the_shared_effect_sound_banks()
+  local AnimationSources = require("romdump.src.config.BattleAnimationSources")
+  local bankBySymbol = {}
+  for index, bankSymbol in ipairs(AnimationSources.EFFECT_SOUND_BANKS) do
+    bankBySymbol[bankSymbol] = 750 + index
+  end
+  -- Every battle music reference resolves onto one music bank.
+  local sequenceBySymbol = setmetatable({}, {
+    __index = function()
+      return 1
+    end,
+  })
+  local index = {
+    version = "heartgold",
+    bankBySymbol = bankBySymbol,
+    sequenceBySymbol = sequenceBySymbol,
+    sequences = { [1] = { bankId = 720 } },
+  }
+  local dependencies, complete =
+    ArtifactJobs.dependencies("battle-presentation", "global", { audioPlan = { index = index, bankPlans = {} } })
+  Assert.isTrue(complete, "the adopted audio index completes the global plan")
+  local dependencySet = {}
+  for _, dependency in ipairs(dependencies) do
+    dependencySet[dependency.kind .. ":" .. dependency.key] = true
+  end
+  Assert.isTrue(dependencySet["audio-bank:720"] == true, "the global carries its battle music bank")
+  for bankSymbol, bankId in pairs(bankBySymbol) do
+    Assert.isTrue(dependencySet["audio-bank:" .. bankId] == true, "the global carries " .. bankSymbol)
+  end
+  local effectDependencies, effectComplete = ArtifactJobs.dependencies("battle-effect", "TACKLE", {})
+  Assert.isTrue(effectComplete, "an effect plans on top of the global catalog alone")
+  Assert.deepEqual(
+    effectDependencies,
+    { { kind = "battle-presentation", key = "global" } },
+    "effects reach the shared banks through the global catalog"
+  )
+end
+
 function T.unknown_kinds_are_rejected_before_planning()
   for _, kind in ipairs({ "world", "field-map-data", "portrait", "maps", "", "MAP" }) do
     local ok = pcall(ArtifactState.path, kind, "global")

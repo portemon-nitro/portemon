@@ -650,7 +650,9 @@ end
 -- wild/trainer/rival tracks, the special-species and class tracks, the
 -- Kanto regional variants, and the wild/trainer victory fanfares.
 -- Resolved against the adopted normalized audio index; resolved bank
--- ids are never spelled here.
+-- ids are never spelled here. The global catalog also carries the banks
+-- every battle animation voices, so the whole closure every battle shares
+-- sits behind this one job.
 local BATTLE_MUSIC_SEQUENCES = {
   "SEQ_GS_VS_NORAPOKE",
   "SEQ_GS_VS_TRAINER",
@@ -677,7 +679,7 @@ local BATTLE_MUSIC_SEQUENCES = {
 ---@return { kind: string, key: string }[], boolean
 local function dependenciesBattlePresentation(key, plans)
   assert(key == "global", "battle presentation family only has the global job")
-  local jobs = {}
+  local jobs = { { kind = "audio-catalog", key = "global" } }
   local audioPlan = plans.audioPlan
   if audioPlan == nil then
     return sortedJobs(jobs), false
@@ -697,6 +699,19 @@ local function dependenciesBattlePresentation(key, plans)
       error("battle music reference has no adopted sequence: " .. tostring(reference), 0)
     end
     local bankId = assert(entry.bankId, "battle music sequence has no bank")
+    local bankKey = tostring(bankId)
+    if not seen[bankKey] then
+      seen[bankKey] = true
+      jobs[#jobs + 1] = { kind = "audio-bank", key = bankKey }
+    end
+  end
+  local AnimationSources = require("romdump.src.config.BattleAnimationSources")
+  assert(type(index.bankBySymbol) == "table", "battle voice membership requires the adopted bank symbols")
+  for _, bankSymbol in ipairs(AnimationSources.EFFECT_SOUND_BANKS) do
+    local bankId = index.bankBySymbol[bankSymbol]
+    if bankId == nil then
+      error("battle voice bank has no adopted bank: " .. bankSymbol, 0)
+    end
     local bankKey = tostring(bankId)
     if not seen[bankKey] then
       seen[bankKey] = true

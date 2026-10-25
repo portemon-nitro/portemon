@@ -37,6 +37,7 @@ local function runtimeWithNoBattle(fields)
     shouldPumpFromHost = function()
       return false
     end,
+    prefetchEncounterScene = function() end,
   }
   return runtime
 end

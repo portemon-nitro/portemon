@@ -1775,39 +1775,45 @@ function T.readiness_probes_create_no_images()
   owned:dispose()
 end
 
--- A source-only effect with sound but no texture is ready without dummy
--- pixels: the sound descriptor arrives as an immutable lease, never an
--- invented image.
-function T.sound_only_effect_readies_without_texture()
+-- An effect whose only dependency is decoded data (a particle palette) is
+-- ready without dummy pixels: the descriptor arrives as an immutable lease,
+-- never an invented image.
+function T.data_only_effect_readies_without_texture()
   local EffectStagingFixture = require("tests.support.EffectStagingFixture")
   local Hashing = require("romdump.src.digest.Hashing")
-  local staging = EffectStagingFixture.new({ launchId = "probe-audio-only" })
-  local cryIdentity = Hashing.sha1hex("probe-effect-cry")
+  local staging = EffectStagingFixture.new({ launchId = "probe-data-only" })
+  local paletteIdentity = Hashing.sha1hex("probe-effect-palette")
+  local colors = { { 0, 0, 0, 0 }, { 255, 255, 255, 255 } }
   staging:stageEffect(
     "GROWL",
     EffectStagingFixture.effectRecord("GROWL", {
-      { key = "probe-cry", kind = "sound", payload = "effects/probe-cry.lua", contentIdentity = cryIdentity },
+      {
+        key = "probe-palette",
+        kind = "palette",
+        payload = "effects/probe-palette.lua",
+        contentIdentity = paletteIdentity,
+      },
     }),
-    { ["effects/probe-cry.lua"] = { format = "probe-sequence", steps = {} } }
+    { ["effects/probe-palette.lua"] = { colors = colors } }
   )
   local owned = BattlePresentationAssets.new({
     assets = staging.services,
-    launchId = "probe-audio-only",
+    launchId = "probe-data-only",
     sceneKey = "probe/plain/day",
     shadowRegions = SHADOW_REGIONS,
   })
-  Assert.equal(owned:demandEffect("GROWL"), true, "the audio-only closure reads ready")
+  Assert.equal(owned:demandEffect("GROWL"), true, "the data-only closure reads ready")
   local effect = owned:loadEffect("GROWL")
-  Assert.notNil(effect, "the audio-only effect loads")
-  local lease = owned:resolveEffectResource(effect, "probe-cry")
-  Assert.notNil(lease, "the sound dependency resolves")
-  Assert.equal(lease.kind, "sound", "the sound lease keeps its kind")
-  Assert.equal(lease.payloadPath, "effects/probe-cry.lua", "the runtime lease names its staged path separately")
+  Assert.notNil(effect, "the data-only effect loads")
+  local lease = owned:resolveEffectResource(effect, "probe-palette")
+  Assert.notNil(lease, "the palette dependency resolves")
+  Assert.equal(lease.kind, "palette", "the palette lease keeps its kind")
+  Assert.equal(lease.payloadPath, "effects/probe-palette.lua", "the runtime lease names its staged path separately")
   Assert.isNil(lease.payload, "the runtime lease never conflates the path field with decoded content")
-  Assert.deepEqual(lease.data, { format = "probe-sequence", steps = {} }, "the sound lease carries its decoded record")
-  Assert.isNil(lease.rgba8888, "the sound lease carries no pixels")
-  Assert.equal(staging.uploads, 0, "no dummy texture is invented for an audio-only effect")
-  Assert.isNil(owned:drawable("probe-cry"), "sound dependencies never resolve to a drawable")
+  Assert.deepEqual(lease.data, { colors = colors }, "the palette lease carries its decoded record")
+  Assert.isNil(lease.rgba8888, "the palette lease carries no pixels")
+  Assert.equal(staging.uploads, 0, "no dummy texture is invented for a data-only effect")
+  Assert.isNil(owned:drawable("probe-palette"), "data dependencies never resolve to a drawable")
   owned:dispose()
 end
 

@@ -192,7 +192,7 @@ local function manifest()
     end
   end
   local old = {
-    schema = "g4-battle-presentation-v4",
+    schema = "g4-battle-presentation-v5",
     version = { id = "soulsilver", language = "en" },
     scenes = {
       { key = "general/grass/day", background = "general", terrain = "grass", time = "day" },
@@ -286,14 +286,6 @@ local function manifest()
             { next = 0, duration = 0, xOffset = 0, auxiliary = 0 },
           },
         },
-      },
-    },
-    programs = {
-      ["synthetic-effect-probe"] = {
-        entry = "main",
-        taskKinds = { "synthetic-particle" },
-        dependencies = { "trainer-message-index/pairs" },
-        requiredContext = { actors = { type = "battle-actors" } },
       },
     },
     resources = {
@@ -407,13 +399,6 @@ local function manifest()
       },
     },
     coverage = {
-      ["synthetic-effect-probe"] = {
-        kind = "animation-program",
-        program = "synthetic-effect-probe",
-        closureIdentity = string.rep("a", 40),
-        resources = { "trainer-message-index/pairs" },
-        operations = { "wait-ticks" },
-      },
       command = {
         kind = "menu-route",
         route = "command",
@@ -969,7 +954,6 @@ local function manifest()
       },
     },
     audioRoles = old.audioRoles,
-    programs = old.programs,
     resources = old.resources,
     coverage = old.coverage,
   }

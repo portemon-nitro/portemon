@@ -953,23 +953,14 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
   for _, versionId in ipairs(readyVersions()) do
     local roles = stagedRoleSymbols(versionId)
     local selectSymbol = roles.select
-    -- Native program voices arrive behind staged closure keys: only symbols
-    -- no staged index resolves (bare or closure-prefixed) still count as
-    -- unknown, exactly like the quiet journey below.
+    -- Native program voices name shared sequence symbols: only symbols no
+    -- staged index resolves still count as unknown, exactly like the quiet
+    -- journey below.
     local stagedProvider = AudioAssetProvider.new(CacheFs.forVersion(versionId))
     local function stagedSymbol(symbol)
-      local ok = pcall(function()
+      return (pcall(function()
         return stagedProvider:sequence(symbol)
-      end)
-      if not ok and type(symbol) == "string" then
-        local bare = symbol:match("^audio/sequence/(.+)$")
-        if bare ~= nil then
-          ok = pcall(function()
-            return stagedProvider:sequence(bare)
-          end)
-        end
-      end
-      return ok
+      end))
     end
     do
       local sound, player = composeCaseEngine(selectSymbol)
@@ -1609,18 +1600,9 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
     -- count as unknown.
     local stagedProvider = AudioAssetProvider.new(CacheFs.forVersion(versionId))
     local function stagedSymbol(symbol)
-      local ok = pcall(function()
+      return (pcall(function()
         return stagedProvider:sequence(symbol)
-      end)
-      if not ok and type(symbol) == "string" then
-        local bare = symbol:match("^audio/sequence/(.+)$")
-        if bare ~= nil then
-          ok = pcall(function()
-            return stagedProvider:sequence(bare)
-          end)
-        end
-      end
-      return ok
+      end))
     end
     for _, journey in ipairs(journeys) do
       local runtime = bootRuntime(versionId)

@@ -139,7 +139,7 @@ function T.nested_task_closure_stages_before_ready_while_unrelated_effects_stay_
   local cache = CacheFs.forVersion("heartgold", backend)
   local closedDemand = {
     key = "synthetic-parent",
-    resources = { "synthetic-sound", "synthetic-model", "synthetic-texture" },
+    resources = { "synthetic-palette", "synthetic-model", "synthetic-texture" },
   }
   Assert.isFalse(Cache.isEffectReady(cache, closedDemand), "an unstaged transitive closure never reads ready")
 
@@ -155,10 +155,10 @@ function T.nested_task_closure_stages_before_ready_while_unrelated_effects_stay_
     },
     dependencies = closedDemand.resources,
     resources = {
-      ["synthetic-sound"] = {
-        kind = "sound",
+      ["synthetic-palette"] = {
+        kind = "palette",
         contentIdentity = string.rep("a", 40),
-        payload = "effects/sound.sseq",
+        payload = "effects/palette.lua",
       },
       ["synthetic-model"] = {
         kind = "model",
@@ -203,7 +203,7 @@ function T.nested_task_closure_stages_before_ready_while_unrelated_effects_stay_
   )
   local expandedDemand = {
     key = closedDemand.key,
-    resources = { "synthetic-sound", "synthetic-model", "synthetic-texture", "synthetic-extra" },
+    resources = { "synthetic-palette", "synthetic-model", "synthetic-texture", "synthetic-extra" },
   }
   Assert.isFalse(Cache.isEffectReady(cache, expandedDemand), "a requested closure cannot exceed the published record")
   local missingDependency = {
@@ -211,7 +211,7 @@ function T.nested_task_closure_stages_before_ready_while_unrelated_effects_stay_
     key = record.key,
     catalogIdentity = record.catalogIdentity,
     program = record.program,
-    dependencies = { "synthetic-sound", "synthetic-model" },
+    dependencies = { "synthetic-palette", "synthetic-model" },
     resources = record.resources,
     requiredContext = record.requiredContext,
   }

@@ -179,6 +179,11 @@ function DerivedAssetProvisioner.new(options)
       )
       return ask("battle-effect", urgency, { effectKey = effectKey })
     end,
+    -- The work every battle shares: the global battle catalog with its
+    -- music and voice banks, behind one selector-free demand.
+    requestBattlePresentation = function(urgency)
+      return ask("battle-presentation", urgency)
+    end,
     milestoneStatus = function(name)
       assert(type(name) == "string" and name ~= "", "milestone progress requires its name")
       local active = guard()

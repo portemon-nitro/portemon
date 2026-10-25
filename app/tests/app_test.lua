@@ -1210,7 +1210,8 @@ function T.unknown_generation_waits_without_demands_then_transfers_on_validation
       { requestKind = "milestone", name = "new-game-intro", urgency = "near" },
       { requestKind = "milestone", name = "field-planning", urgency = "near" },
       { requestKind = "milestone", name = "field-runtime", urgency = "near" },
-    }, "menu installation requests its intro prefetch and both field closures")
+      { requestKind = "battle-presentation", urgency = "near" },
+    }, "menu installation requests its intro prefetch, both field closures, and the shared battle catalog")
     Assert.deepEqual(
       result.firstPlayPublished,
       { { versionId = "heartgold", generationId = "test-generation" } },

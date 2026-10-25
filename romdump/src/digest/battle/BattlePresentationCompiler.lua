@@ -3322,113 +3322,10 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       }
     end
 
-    local programs = {}
-    local programFailures = {}
-    local programFailureDiagnostics = { total = 0, categories = {} }
-    local AnimationSources = require("romdump.src.config.BattleAnimationSources")
-    local animationRoots = AnimationSources.listSemanticRoots()
+    local rootFailures = {}
     local audioCompiler = require("romdump.src.digest.audio.AudioCompiler")
     local audioPlan, audioPlanError = audioCompiler.planSource(romFs)
     local introMusic = compileIntroMusic(romFs, audioPlan, audioPlanError)
-    for _, root in ipairs(animationRoots) do
-      local effect, effectErr = BattlePresentationCompiler.compileEffect(
-        romFs,
-        { versionId = versionId, audioPlan = audioPlan, audioPlanError = audioPlanError },
-        root.key
-      )
-      if effect == nil then
-        local sourceError = nil ---@type Errors.Error?
-        if Errors.is(effectErr) then
-          ---@cast effectErr Errors.Error
-          sourceError = effectErr
-        end
-        local errorCode = sourceError and sourceError.code or "UNSTRUCTURED"
-        local errorMessage = sourceError and sourceError.message or tostring(effectErr)
-        programFailures[#programFailures + 1] = root.key .. ": " .. tostring(effectErr)
-        programFailureDiagnostics.total = programFailureDiagnostics.total + 1
-        local category = "source-resource-or-context"
-        if errorMessage:find("unknown dispatch opcode", 1, true) ~= nil then
-          category = "unimplemented-dispatch-opcode"
-        elseif errorMessage:find("operand", 1, true) ~= nil or errorMessage:find("truncated", 1, true) ~= nil then
-          category = "framing-or-operand"
-        elseif errorMessage:find("route", 1, true) ~= nil or errorMessage:find("semantic root", 1, true) ~= nil then
-          category = "source-route-resolution"
-        end
-        local diagnosticKey = errorCode .. "/" .. category
-        local diagnostic = programFailureDiagnostics.categories[diagnosticKey]
-        if diagnostic == nil then
-          diagnostic = { count = 0, examples = {} }
-          programFailureDiagnostics.categories[diagnosticKey] = diagnostic
-        end
-        diagnostic.count = diagnostic.count + 1
-        if #diagnostic.examples < 3 then
-          diagnostic.examples[#diagnostic.examples + 1] = {
-            key = root.key,
-            offset = sourceError and sourceError.context.offset or nil,
-            message = errorMessage,
-          }
-        end
-      else
-        for resourceKey, descriptor in pairs(effect.resources) do
-          local prior = resourceCatalog[resourceKey]
-          if
-            prior ~= nil and (prior.kind ~= descriptor.kind or prior.contentIdentity ~= descriptor.contentIdentity)
-          then
-            error(
-              Errors.new(
-                "BATTLE_EFFECT_RESOURCE_IDENTITY_CONFLICT",
-                "semantic effect resource has conflicting content",
-                {
-                  resourceKey = resourceKey,
-                  effectKey = root.key,
-                }
-              ),
-              0
-            )
-          end
-          if prior == nil then
-            local payload = effect.resourcePayloads[descriptor.payload]
-            local format = "battle-effect-resource-v1"
-            local geometry = {}
-            if descriptor.kind == "particle" then
-              format = "nitro-spl-aps-v1"
-              geometry = { emitterCount = #payload.emitters, resourceCount = #payload.resources }
-            elseif descriptor.kind == "texture" or descriptor.kind == "palette" then
-              local bytes = payload.bytes
-              if type(bytes) == "string" then
-                format = descriptor.kind == "texture" and "nitro-spl-texture-data-v1" or "nitro-spl-palette-data-v1"
-                geometry = { byteCount = #bytes }
-              end
-            end
-            resourceCatalog[resourceKey] = {
-              kind = descriptor.kind,
-              contentIdentity = descriptor.contentIdentity,
-              format = format,
-              geometry = geometry,
-              path = descriptor.payload,
-            }
-          end
-        end
-        local identityParts = { "animation-program", root.key, Hashing.hashLua(effect.program) }
-        for _, dependency in ipairs(effect.dependencies) do
-          identityParts[#identityParts + 1] = dependency .. "=" .. effect.resources[dependency].contentIdentity
-        end
-        identityParts[#identityParts + 1] = Hashing.hashLua(effect.requiredContext)
-        programs[root.key] = {
-          entry = effect.program.entry,
-          taskKinds = effect.program.taskKinds,
-          dependencies = effect.dependencies,
-          requiredContext = effect.requiredContext,
-        }
-        transitionCoverage[root.key] = {
-          kind = "animation-program",
-          program = root.key,
-          closureIdentity = Hashing.sha1hex(table.concat(identityParts, "\n")),
-          resources = effect.dependencies,
-          operations = #effect.program.taskKinds > 0 and effect.program.taskKinds or { "animation-stream" },
-        }
-      end
-    end
 
     local semanticRoots = Sources.listSemanticRoots()
     local function collectSemanticResources(value, selected)
@@ -3564,7 +3461,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           end
         end
         if routeValue == nil then
-          programFailures[#programFailures + 1] = root.key .. ": source semantic route is not normalized"
+          rootFailures[#rootFailures + 1] = root.key .. ": source semantic route is not normalized"
         else
           local resourceKeys = {}
           for resourceKey in pairs(selectedResources) do
@@ -3770,7 +3667,6 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         cries = "species",
         introMusic = introMusic,
       },
-      programs = programs,
       resources = resourceCatalog,
       coverage = transitionCoverage,
     }
@@ -3798,18 +3694,13 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       menuLayerIndices[layer.key] = layer.index
     end
     local blockers = {}
-    if #programFailures > 0 then
-      blockers[#blockers + 1] = "programs: " .. #programFailures .. " source semantic roots did not close"
-      for _, failure in ipairs(programFailures) do
-        blockers[#blockers + 1] = "programs: " .. failure
+    if #rootFailures > 0 then
+      blockers[#blockers + 1] = "roots: " .. #rootFailures .. " source semantic roots did not close"
+      for _, failure in ipairs(rootFailures) do
+        blockers[#blockers + 1] = "roots: " .. failure
       end
     end
     local uncoveredRoots = 0
-    for _, root in ipairs(animationRoots) do
-      if transitionCoverage[root.key] == nil then
-        uncoveredRoots = uncoveredRoots + 1
-      end
-    end
     for _, root in ipairs(semanticRoots) do
       if transitionCoverage[root.key] == nil then
         uncoveredRoots = uncoveredRoots + 1
@@ -3867,7 +3758,6 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       resourcePayloads = resourcePayloads,
       provenance = provenance,
       blockers = blockers,
-      sourceClosureDiagnostics = programFailureDiagnostics,
     }
   end)
   if not ok then
@@ -3880,7 +3770,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     return nil,
       Errors.new(
         "BATTLE_MANIFEST_INCOMPLETE",
-        "source-backed battle presentation sections are available, but executable program and coverage closure remains unresolved",
+        "source-backed battle presentation sections are available, but semantic root coverage closure remains unresolved",
         {
           version = versionId,
           blockers = bundle.blockers,
@@ -3888,7 +3778,6 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           images = bundle.images,
           resourcePayloads = bundle.resourcePayloads,
           provenance = bundle.provenance,
-          sourceClosureDiagnostics = bundle.sourceClosureDiagnostics,
         }
       )
   end
@@ -4295,7 +4184,7 @@ end
 -- typed context. Source selection follows asm/overlay_07.s ov07_0221C01C
 -- (pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36).
 ---@param romFs RomFs
----@param opts? { versionId?: string, audioPlan?: { plan: { bankPlans: { bankId: integer, sequenceIds: integer[] }[], index: table<string, unknown> }, identity: { romSha1: string, sdatSha1: string, sdatFileId: integer } }, audioPlanError?: Errors.Error }
+---@param opts? { versionId?: string }
 ---@param effectKey string flat semantic effect key
 ---@return BattlePresentationEffect|nil effect artifact
 ---@return unknown|nil reason
@@ -5288,20 +5177,23 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
   local audioProvenance, particleProvenance = {}, {}
   if next(soundSymbols) ~= nil then
     local audioCompiler = require("romdump.src.digest.audio.AudioCompiler")
-    local audioPlan, audioPlanErr = opts.audioPlan, opts.audioPlanError
-    if audioPlan == nil and audioPlanErr == nil then
-      audioPlan, audioPlanErr = audioCompiler.planSource(romFs)
-    end
+    local audioPlan, audioPlanErr = audioCompiler.planSource(romFs)
     if audioPlan == nil then
       return nil, audioPlanErr
     end
+    local index = audioPlan.plan.index
+    local plannedBanks = {}
+    for _, bankSymbol in ipairs(animationSources.EFFECT_SOUND_BANKS) do
+      local bankId = index.bankBySymbol[bankSymbol]
+      assert(bankId ~= nil, "effect sound bank is source-indexed: " .. bankSymbol)
+      plannedBanks[bankId] = true
+    end
     local sequencesByBank = {}
-    local sequenceKeys = {}
     for _, instruction in ipairs(effectProgram.instructions) do
       local sequenceSymbol = instruction.sound
       if sequenceSymbol ~= nil then
-        local sequenceId = audioPlan.plan.index.sequenceBySymbol[sequenceSymbol]
-        local sequenceRecord = sequenceId ~= nil and audioPlan.plan.index.sequences[sequenceId] or nil
+        local sequenceId = index.sequenceBySymbol[sequenceSymbol]
+        local sequenceRecord = sequenceId ~= nil and index.sequences[sequenceId] or nil
         if sequenceRecord == nil then
           return nil,
             Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "effect sound has no source-indexed sequence", {
@@ -5310,10 +5202,17 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
             })
         end
         local bankId = sequenceRecord.bankId
+        if not plannedBanks[bankId] then
+          local bankRecord = index.banks[bankId]
+          return nil,
+            Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "effect sound lives outside the effect sound banks", {
+              effectKey = effectKey,
+              sequenceSymbol = sequenceSymbol,
+              bankSymbol = bankRecord ~= nil and bankRecord.symbol or nil,
+            })
+        end
         sequencesByBank[bankId] = sequencesByBank[bankId] or {}
-        sequencesByBank[bankId][sequenceId] = sequenceSymbol
-        sequenceKeys[sequenceSymbol] = sequenceId
-        instruction.sound = "audio/sequence/" .. sequenceSymbol
+        sequencesByBank[bankId][sequenceId] = true
       end
     end
     local bankIds = {}
@@ -5322,44 +5221,12 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
     end
     table.sort(bankIds)
     for _, bankId in ipairs(bankIds) do
-      local bankRecord = audioPlan.plan.index.banks[bankId]
-      if bankRecord == nil or type(bankRecord.symbol) ~= "string" then
-        return nil,
-          Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "effect sound bank has no source symbol", {
-            effectKey = effectKey,
-            bankId = bankId,
-          })
-      end
       local sequenceIds = {}
       for sequenceId in pairs(sequencesByBank[bankId]) do
         sequenceIds[#sequenceIds + 1] = sequenceId
       end
       table.sort(sequenceIds)
-      local samples = {}
-      local bundle, bankErr = audioCompiler.compileBank(
-        romFs,
-        { bankId = bankId, sequenceIds = sequenceIds },
-        function(sampleKey, metadata, pcm16le)
-          samples[sampleKey] = { metadata = metadata, pcm16le = pcm16le }
-        end
-      )
-      if bundle == nil then
-        return nil, bankErr
-      end
-      local bankKey = "audio/bank/" .. bankRecord.symbol
-      addEffectResource(bankKey, "sound", Hashing.hashLua(bundle.bank), bundle.bank)
       audioProvenance[#audioProvenance + 1] = { bankId = bankId, sequenceIds = sequenceIds }
-      for _, sequenceId in ipairs(sequenceIds) do
-        local symbol = sequencesByBank[bankId][sequenceId]
-        local sequence = bundle.sequences[sequenceId]
-        assert(sequence ~= nil, "audio bank compilation returns every selected sequence")
-        local soundKey = "audio/sequence/" .. symbol
-        addEffectResource(soundKey, "sound", Hashing.hashLua(sequence), sequence)
-        assert(sequenceKeys[symbol] == sequenceId, "sequence symbol maps to its selected source record")
-      end
-      for sampleKey, samplePayload in pairs(samples) do
-        addEffectResource("audio/sample/" .. sampleKey, "sound", Hashing.hashLua(samplePayload), samplePayload)
-      end
     end
   end
 

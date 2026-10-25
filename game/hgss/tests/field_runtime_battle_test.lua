@@ -1050,7 +1050,7 @@ function T.disposed_field_ignores_retained_battle_callbacks()
   runtime.input = { clearAll = function() end }
   runtime.menuComposer = { releaseModalHosts = function() end }
   runtime.battleCoordinator._captureLaunchEnvironment = function()
-    return {}
+    return { terrain = "plain", time = "day", hour = 12 }
   end
   runtime.battleCoordinator._battleMusicRole = function()
     return nil
@@ -1216,6 +1216,41 @@ local function standingMap(background, behavior)
     },
     fieldData = { battleBackground = background },
   }
+end
+
+-- The next encounter's battle scene stages ahead of time: with a presented
+-- battle bound, a field update queues the scene the player's committed tile
+-- would launch at near urgency, so the shared battle catalog behind it
+-- builds before any encounter holds the field. An unchanged tile asks
+-- nothing new; a tile that changes the scene asks again.
+function T.field_updates_prefetch_the_encounter_scene_at_near_urgency()
+  local requests = {}
+  local runtime = environmentRuntime({
+    derivedAssets = {
+      requestBattleScene = function(sceneKey, urgency)
+        requests[#requests + 1] = sceneKey .. "@" .. urgency
+        return false
+      end,
+    },
+  })
+  local coordinator = runtime.battleCoordinator
+  coordinator:prefetchEncounterScene()
+  Assert.deepEqual(requests, {}, "a headless field without a presented battle prefetches nothing")
+  runtime:bindBattlePresentation(function(_)
+    error("no launch is admitted by a prefetch", 0)
+  end)
+  coordinator:prefetchEncounterScene()
+  coordinator:prefetchEncounterScene()
+  Assert.deepEqual(requests, { "general/plain/day@near" }, "the committed tile queues its scene once")
+  runtime.session = { currentMap = standingMap("general", 2) }
+  runtime.player = { fieldX = 6, fieldZ = 6, surfaceId = 0 }
+  coordinator:prefetchEncounterScene()
+  Assert.deepEqual(
+    requests,
+    { "general/plain/day@near", "general/grass/day@near" },
+    "stepping into tall grass queues the grass scene"
+  )
+  Assert.isNil(coordinator:activeBattle(), "prefetching never launches a battle")
 end
 
 function T.standing_tile_behavior_selects_terrain_before_background_default()

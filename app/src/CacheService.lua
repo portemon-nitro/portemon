@@ -21,6 +21,7 @@ local VALID_KINDS = {
   ["audio-bank"] = true,
   pokedex = true,
   ["battle-effect"] = true,
+  ["battle-presentation"] = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
@@ -153,6 +154,11 @@ local function selectorKey(selector)
       "battle-effect request requires its flat effectKey"
     )
     return "battle-effect:" .. selector.effectKey
+  elseif kind == "battle-presentation" then
+    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId", "effectKey" }) do
+      assert(selector[field] == nil, "battle-presentation request carries no " .. field .. " selector")
+    end
+    return "battle-presentation"
   else
     assert(
       type(selector.pageId) == "number" and selector.pageId % 1 == 0 and selector.pageId >= 0,
@@ -265,6 +271,8 @@ function CacheService:request(epoch, selector)
     -- map identity: the dispatched packet names its kind and urgency only.
   elseif selector.requestKind == "battle-effect" then
     command.effectKey = selector.effectKey
+  elseif selector.requestKind == "battle-presentation" then
+    -- The selector-free shared battle demand names its kind and urgency only.
   else
     command.pageId = selector.pageId
   end

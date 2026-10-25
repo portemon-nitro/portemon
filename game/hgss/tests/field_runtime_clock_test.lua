@@ -92,6 +92,7 @@ function T.tests.apricorn_day_is_sampled_before_each_fixed_tick_and_only_advance
       shouldPumpFromHost = function()
         return false
       end,
+      prefetchEncounterScene = function() end,
     }
     runtime.martService = {
       processApricornDate = function(_, date)

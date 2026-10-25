@@ -17,7 +17,7 @@ end
 
 local function baseEffect()
   return {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "synthetic-lower-probe",
     catalogIdentity = "synthetic-catalog",
     program = {
@@ -33,12 +33,12 @@ local function baseEffect()
       subprograms = {},
       taskKinds = { "battle-background-blend-transition" },
     },
-    dependencies = { "synthetic-sound" },
+    dependencies = { "synthetic-palette" },
     resources = {
-      ["synthetic-sound"] = {
-        kind = "sound",
+      ["synthetic-palette"] = {
+        kind = "palette",
         contentIdentity = string.rep("a", 40),
-        payload = "synthetic-sound-path",
+        payload = "synthetic-palette-path",
       },
     },
     requiredContext = {

@@ -30,7 +30,7 @@ local function capture(trainerClass, trainerId)
   })
   return owner:_captureTransitionContext(
     { kind = "trainer", payload = { trainer = trainerId or 7 } },
-    { time = "day", terrain = "plain" }
+    { time = "day", terrain = "plain", hour = 12 }
   )
 end
 

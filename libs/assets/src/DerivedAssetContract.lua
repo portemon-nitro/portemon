@@ -413,12 +413,15 @@ DerivedAssetContract.trainerCatalog = {
 -- UI: the shared menu/HUD definitions with their staged slices, lazily
 -- compiled persistent scene variants, and the exact per-launch demand
 -- (portrait pages resolve through the mon class). The global manifest
--- stages apart from scenes; one scene stages per demanded key.
+-- stages apart from scenes; one scene stages per demanded key, and one
+-- effect stages per demanded animation key (manifest v5 carries no
+-- per-effect program catalog; effect v3 voices name shared audio sequence
+-- symbols instead of staging private sound payloads).
 DerivedAssetContract.battlePresentation = {
   cacheFormat = "battle-presentation-cache-v3",
-  schema = "g4-battle-presentation-v4",
+  schema = "g4-battle-presentation-v5",
   sceneSchema = "g4-battle-scene-v2",
-  effectSchema = "g4-battle-effect-v2",
+  effectSchema = "g4-battle-effect-v3",
 }
 
 DerivedAssetContract.encounterCatalog = {

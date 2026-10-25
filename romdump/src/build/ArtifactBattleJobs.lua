@@ -192,6 +192,8 @@ local function executeBattleSceneJob(artifact, context, job)
   )
 end
 
+-- Effect voices play from the shared audio cache through the banks the
+-- global catalog already carries.
 ---@param key string semantic effect key without slashes
 ---@param plans ArtifactJobs.Plans
 ---@return { kind: string, key: string }[], boolean

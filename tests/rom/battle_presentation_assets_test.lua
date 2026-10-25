@@ -1,10 +1,7 @@
 -- Targeted dump-backed smokes for battle presentation: narrow reads of
 -- the handful of source members behind the menu/HUD and scene contracts,
--- decoded through the production G2D and scene paths. The whole-catalog
--- compileGlobal (every species picture, audio bank, message bank,
--- transition, and effect) costs minutes per version, so these tests
--- deliberately avoid it; the full compile stays exercised by production
--- provisioning. Assertions are semantic keys, canvas geometry, and
+-- decoded through the production G2D and scene paths, plus one global
+-- catalog compile. Assertions are semantic keys, canvas geometry, and
 -- readiness relationships, never catalog snapshots or committed
 -- commercial payloads.
 
@@ -252,9 +249,7 @@ end
 
 -- Admission is a static contract, not a decode result: the global bundle
 -- publishes BattlePresentationCache.sceneInventory() verbatim, so this
--- test checks that inventory plus the production rejection path without
--- paying for a full dump compile (compileGlobal decodes the whole
--- presentation catalog and is covered by the dump-backed tests above).
+-- test checks that inventory plus the production rejection path.
 function T.effect_backgrounds_are_not_admitted_as_persistent_scenes(romFs, versionId)
   local compiler, cache = presentationBoundary(romFs, versionId)
   Assert.isTrue(type(cache.sceneInventory) == "function", versionId .. ": the cache exposes its scene inventory")
@@ -306,6 +301,33 @@ function T.effect_backgrounds_are_not_admitted_as_persistent_scenes(romFs, versi
   local scene, err = compiler.compileScene(romFs, { versionId = versionId }, "effect/flash/day")
   Assert.isNil(scene, versionId .. ": an effect background must not compile as a persistent scene")
   Assert.notNil(err, versionId .. ": the rejected effect background explains itself")
+end
+
+-- The global catalog sits on the first encounter's critical path, so it
+-- closes over the shared menu/HUD/transition/message sections only: each
+-- move or battle animation compiles in its own on-demand effect job, never
+-- inside the global compile.
+function T.global_catalog_compiles_without_per_effect_closures(romFs, versionId)
+  local compiler = presentationBoundary(romFs, versionId)
+  local Schema = requireBoundary(
+    "libs.assets.src.battle.BattlePresentationSchema",
+    versionId .. ": no battle presentation schema validates the staged manifest"
+  )
+  local compileEffect = compiler.compileEffect
+  local effectCompiles = 0
+  compiler.compileEffect = function(...)
+    effectCompiles = effectCompiles + 1
+    return compileEffect(...)
+  end
+  local ok, bundle, compileErr = pcall(compiler.compileGlobal, romFs, { versionId = versionId })
+  compiler.compileEffect = compileEffect
+  if not ok then
+    error(bundle, 0)
+  end
+  Assert.equal(effectCompiles, 0, versionId .. ": the global catalog compiles no per-effect closure")
+  Assert.notNil(bundle, versionId .. ": the global catalog compiles from the dump (" .. tostring(compileErr) .. ")")
+  local valid, schemaErr = Schema.isValidManifest(bundle.manifest)
+  Assert.isTrue(valid, versionId .. ": the global manifest validates (" .. tostring(schemaErr) .. ")")
 end
 
 return RomSuite.fromFacts(T)

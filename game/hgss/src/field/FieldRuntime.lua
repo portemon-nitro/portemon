@@ -2124,6 +2124,7 @@ function FieldRuntime:update(dt)
   if self.battleCoordinator:shouldPumpFromHost() then
     self.battleCoordinator:updateBattle()
   end
+  self.battleCoordinator:prefetchEncounterScene()
   -- Lifetimes may have settled or released during pumping, so reconcile
   -- the gate again before the next update observes it.
   self:_reconcileBattleGate()

@@ -12,7 +12,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattleAnimationSchema
 local BattleAnimationSchema = {}
 
-BattleAnimationSchema.EFFECT_SCHEMA = "g4-battle-effect-v2"
+BattleAnimationSchema.EFFECT_SCHEMA = "g4-battle-effect-v3"
 
 local CODE_EFFECT = "BATTLE_EFFECT_INVALID"
 
@@ -20,7 +20,6 @@ local CODE_EFFECT = "BATTLE_EFFECT_INVALID"
 local MAX_PARTICLE_CONTINUATION_SLOT = 0x46
 
 local RESOURCE_KINDS = {
-  sound = true,
   map = true,
   texture = true,
   model = true,
@@ -1916,8 +1915,14 @@ local function checkProgramResourceClosure(program, dependencies, resources, con
   end
   for index, instruction in ipairs(program.instructions) do
     local refs = {}
-    if instruction.sound ~= nil then
-      refs[#refs + 1] = instruction.sound
+    -- Voices play through the shared audio cache by sequence symbol; the
+    -- effect stages no private sound payload for them.
+    if instruction.sound ~= nil and not tostring(instruction.sound):match("^SEQ_[%w_]+$") then
+      fail(
+        code,
+        "instruction " .. index .. " names no shared sequence symbol: " .. tostring(instruction.sound),
+        context
+      )
     end
     if instruction.resource ~= nil then
       refs[#refs + 1] = instruction.resource

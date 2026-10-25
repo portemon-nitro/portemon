@@ -871,16 +871,20 @@ function FieldBattleCoordinator:_captureTransitionContext(request, environment)
     return value
   end
 
-  local timeOfDay = environment.time
-  if timeOfDay == "evening" or timeOfDay == "night" then
-    timeOfDay = "late"
+  -- Source EncounterEffect_GetDefaultEffect: water and cave keep their own
+  -- fallback and every other battle terrain uses plain; only the NITE and
+  -- LATE RTC times are late, whatever band the battle scene shows.
+  local terrain = environment.terrain
+  if terrain ~= "water" and terrain ~= "cave" then
+    terrain = "plain"
   end
+  local timeOfDay = TimeOfDayProps.rtcCodeForHour(environment.hour) >= 3 and "late" or "day"
   local context = {
     kind = request.kind,
     doubleBattle = sourceFlag("doubleBattle") or payload.format == "double" or payload.format == "wild-double",
     specialBattle = sourceFlag("specialBattle"),
     alternateTransition = sourceFlag("alternateTransition"),
-    terrain = environment.terrain,
+    terrain = terrain,
     timeOfDay = timeOfDay,
   }
   local profileGender = assert(fieldRuntime(self).playerData.profile.gender, "player profile carries its gender")
@@ -952,6 +956,24 @@ end
 ---@return table<string, unknown> detached launch environment
 function FieldBattleCoordinator:_captureLaunchEnvironment(request, method)
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local environment = self:_fieldBattleEnvironment()
+  if BattlePresentationCache.parseSceneKey(environment.sceneKey) == nil then
+    error("presented battle resolved an unknown scene context: " .. environment.sceneKey, 0)
+  end
+  local explicit = nil
+  local payload = request.payload
+  if type(payload) == "table" and type(payload.environment) == "table" then
+    explicit = payload.environment
+  end
+  environment.method = method
+  environment.sourceEnvironment = explicit
+  return environment
+end
+
+-- The battle environment the player's committed tile would launch now; the
+-- scene key may name an unknown context, which launch capture rejects.
+---@return table<string, unknown> detached field battle environment
+function FieldBattleCoordinator:_fieldBattleEnvironment()
   local session = fieldRuntime(self).session
   local map = nil
   if session ~= nil then
@@ -998,7 +1020,9 @@ function FieldBattleCoordinator:_captureLaunchEnvironment(request, method)
   end
   local band = "day"
   local hourInt = math.floor(hour)
-  if hourInt >= 0 and hourInt < 24 then
+  if hourInt < 0 or hourInt >= 24 then
+    hourInt = 12
+  else
     local okBand, bandName = pcall(TimeOfDayProps.bandForHour, hourInt)
     if okBand and bandName == "eve" then
       band = "evening"
@@ -1014,15 +1038,6 @@ function FieldBattleCoordinator:_captureLaunchEnvironment(request, method)
   if standingTerrain ~= nil then
     terrain = standingTerrain
   end
-  local sceneKey = background .. "/" .. terrain .. "/" .. band
-  if BattlePresentationCache.parseSceneKey(sceneKey) == nil then
-    error("presented battle resolved an unknown scene context: " .. sceneKey, 0)
-  end
-  local explicit = nil
-  local payload = request.payload
-  if type(payload) == "table" and type(payload.environment) == "table" then
-    explicit = payload.environment
-  end
   return {
     mapId = (type(map) == "table" and map.mapId) or nil,
     fieldX = fieldX,
@@ -1030,13 +1045,47 @@ function FieldBattleCoordinator:_captureLaunchEnvironment(request, method)
     surfaceId = surfaceId,
     behavior = behavior,
     movementMode = movementMode,
-    method = method,
     background = background,
     terrain = terrain,
     time = band,
-    sceneKey = sceneKey,
-    sourceEnvironment = explicit,
+    hour = hourInt,
+    sceneKey = background .. "/" .. terrain .. "/" .. band,
   }
+end
+
+-- Queues the battle scene the next encounter at the committed tile would
+-- launch at near urgency, so the shared battle catalog behind every scene
+-- builds before an encounter holds the field. Only presented battles need
+-- scenes; the environment resolves again only when the committed tile
+-- changes, and an unresolvable context is left to the launch to reject.
+function FieldBattleCoordinator:prefetchEncounterScene()
+  if self._disposed or self._battlePresentationFactory == nil or self._battleLaunch ~= nil then
+    return
+  end
+  local runtime = fieldRuntime(self)
+  local host = runtime.derivedAssets
+  local session = runtime.session
+  local player = runtime.player
+  if host == nil or host.requestBattleScene == nil or session == nil or session.currentMap == nil or player == nil then
+    return
+  end
+  local map = session.currentMap
+  if
+    self._prefetchMap == map
+    and self._prefetchX == player.fieldX
+    and self._prefetchZ == player.fieldZ
+    and self._prefetchSurface == player.surfaceId
+  then
+    return
+  end
+  self._prefetchMap, self._prefetchX, self._prefetchZ = map, player.fieldX, player.fieldZ
+  self._prefetchSurface = player.surfaceId
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local sceneKey = self:_fieldBattleEnvironment().sceneKey
+  if sceneKey ~= self._prefetchSceneKey and BattlePresentationCache.parseSceneKey(sceneKey) ~= nil then
+    self._prefetchSceneKey = sceneKey
+    host.requestBattleScene(sceneKey, "near")
+  end
 end
 
 -- Chooses the source-defined battle music track for one launch: the

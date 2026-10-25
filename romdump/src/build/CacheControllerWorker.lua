@@ -79,6 +79,7 @@ local VALID_KINDS = {
   ["audio-bank"] = true,
   pokedex = true,
   ["battle-effect"] = true,
+  ["battle-presentation"] = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 
@@ -341,6 +342,13 @@ local function validateSelectors(params)
     if type(params.effectKey) ~= "string" or params.effectKey == "" or params.effectKey:find("/", 1, true) ~= nil then
       return "battle-effect request needs its flat effectKey"
     end
+  elseif kind == "battle-presentation" then
+    -- The shared battle catalog is one global job: urgency alone rides it.
+    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId", "effectKey" }) do
+      if params[field] ~= nil then
+        return "battle-presentation request carries no " .. field .. " selector"
+      end
+    end
   end
   return nil
 end
@@ -371,6 +379,8 @@ function Worker:_invoke(params)
     return session:requestJob("battle-scene", params.sceneKey, urgency)
   elseif kind == "battle-effect" then
     return session:requestJob("battle-effect", params.effectKey, urgency)
+  elseif kind == "battle-presentation" then
+    return session:requestJob("battle-presentation", "global", urgency)
   end
   error("unknown cache request kind: " .. tostring(kind), 0)
 end

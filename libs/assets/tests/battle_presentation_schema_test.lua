@@ -151,10 +151,6 @@ function T.coverage_closes_each_transition_route_with_semantic_resources()
   incomplete.coverage["transition/trainer/red"].closureIdentity = "not-a-content-identity"
   Assert.isFalse(Schema.isValidManifest(incomplete), "transition admission requires a closure identity")
 
-  local wrongKind = manifest()
-  wrongKind.coverage["transition/trainer/red"].program = "synthetic-effect-probe"
-  Assert.isFalse(Schema.isValidManifest(wrongKind), "transition callback routes are not animation stream programs")
-
   local genericOperation = manifest()
   genericOperation.coverage["transition/trainer/red"].operations = { "transition-route" }
   Assert.isFalse(
@@ -163,11 +159,7 @@ function T.coverage_closes_each_transition_route_with_semantic_resources()
   )
 end
 
-function T.coverage_requires_typed_program_and_semantic_menu_message_roots()
-  local missingContext = manifest()
-  missingContext.programs["synthetic-effect-probe"].requiredContext = nil
-  Assert.isFalse(Schema.isValidManifest(missingContext), "program coverage requires typed runtime context")
-
+function T.coverage_requires_semantic_menu_message_roots()
   local missingMenu = manifest()
   missingMenu.coverage.command = nil
   Assert.isFalse(Schema.isValidManifest(missingMenu), "every menu route requires an admission closure")
@@ -175,67 +167,6 @@ function T.coverage_requires_typed_program_and_semantic_menu_message_roots()
   local missingMessage = manifest()
   missingMessage.coverage["battle/script-message"] = nil
   Assert.isFalse(Schema.isValidManifest(missingMessage), "every semantic message route requires an admission closure")
-end
-
-function T.programs_and_coverage_reject_unavailable_status_records()
-  local waived = manifest()
-  waived.version.id = "heartgold"
-  local key = "CHARGE"
-  local failure = { kind = "missing-selected-member", detail = "selected source dependency is absent" }
-  waived.programs[key] = { status = "unavailable", failure = failure }
-  waived.coverage[key] = {
-    kind = "animation-program",
-    program = key,
-    status = "unavailable",
-    failure = failure,
-    resources = {},
-    operations = { "unavailable" },
-  }
-  Assert.isFalse(
-    Schema.isValidManifest(waived),
-    "a waiver status is not a complete published program or coverage entry"
-  )
-
-  local available = manifest()
-  available.version.id = "heartgold"
-  available.programs[key] = available.programs["synthetic-effect-probe"]
-  available.coverage[key] = available.coverage["synthetic-effect-probe"]
-  available.coverage[key].program = key
-  available.programs[key].status = "unavailable"
-  Assert.isFalse(
-    Schema.isValidManifest(available),
-    "an unavailable program cannot retain executable content and claim a complete closure"
-  )
-
-  local causeMismatch = waived
-  causeMismatch.coverage[key].failure = { kind = failure.kind, detail = "different source cause" }
-  Assert.isFalse(Schema.isValidManifest(causeMismatch), "program and coverage causes must agree")
-
-  local sourceIdentity = manifest()
-  sourceIdentity.version.id = "heartgold"
-  sourceIdentity.programs[key] = { status = "unavailable", failure = failure, memberId = 1970 }
-  sourceIdentity.coverage[key] = {
-    kind = "animation-program",
-    program = key,
-    status = "unavailable",
-    failure = failure,
-    resources = {},
-    operations = { "unavailable" },
-  }
-  Assert.isFalse(Schema.isValidManifest(sourceIdentity), "unavailable runtime records contain no physical source ID")
-
-  local unapprovedCause = manifest()
-  unapprovedCause.version.id = "heartgold"
-  unapprovedCause.programs[key] = { status = "unavailable", failure = { kind = "other", detail = "source failure" } }
-  unapprovedCause.coverage[key] = {
-    kind = "animation-program",
-    program = key,
-    status = "unavailable",
-    failure = { kind = "other", detail = "source failure" },
-    resources = {},
-    operations = { "unavailable" },
-  }
-  Assert.isFalse(Schema.isValidManifest(unapprovedCause), "only the approved source cause kinds validate")
 end
 
 function T.dynamic_menu_asset_roles_require_a_semantic_catalog_binding()
@@ -435,13 +366,6 @@ end
 function T.staged_manifests_validate()
   local valid, failure = Schema.isValidManifest(manifest())
   Assert.isTrue(valid, "a complete staged manifest validates: " .. tostring(failure))
-end
-
-function T.animation_roots_require_complete_programs()
-  local incomplete = manifest()
-  local programKey = "synthetic-effect-probe"
-  incomplete.programs[programKey].status = "unavailable"
-  Assert.isFalse(Schema.isValidManifest(incomplete), "a catalog cannot mark an unavailable animation root as complete")
 end
 
 function T.text_roles_reject_native_font_ids()

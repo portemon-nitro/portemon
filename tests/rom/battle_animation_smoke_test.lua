@@ -5,7 +5,7 @@
 -- roots keep their own selected members, and one particle move proves its
 -- emitters normalize with exact drawable textures. The component compiler
 -- tests pin framing rules, this pins end-to-end ROM closure; the
--- exhaustive root-by-root audit lives in the opt-in census suite.
+-- exhaustive root-by-root audit lives in battle_effect_closure_census_test.
 
 local Assert = require("tests.support.Assert")
 local GameVersion = require("romdump.src.source.GameVersion")

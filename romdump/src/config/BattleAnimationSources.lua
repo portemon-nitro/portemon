@@ -28,6 +28,11 @@ BattleAnimationSources.LOWER_NARC = "NARC_a_0_0_7"
 BattleAnimationSources.SCENE_NARC = "NARC_a_0_0_8"
 BattleAnimationSources.TRANSITION_NARC = "NARC_a_1_0_9"
 BattleAnimationSources.MOVE_NARC = "NARC_a_0_1_0"
+-- Audio banks that hold every sequence a battle animation voices. Effect
+-- voices play from the shared audio cache, so the global battle catalog
+-- every effect stages on depends on these banks; a voice outside them fails
+-- its effect closure.
+BattleAnimationSources.EFFECT_SOUND_BANKS = { "BANK_BASIC", "BANK_SE_BATTLE" }
 BattleAnimationSources.SUPPORTING_OVERLAYS = { 114, 115, 116, 117, 118, 119, 120 }
 
 -- Named script categories from include/constants/battle_subscript.h. NONE is

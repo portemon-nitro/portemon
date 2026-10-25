@@ -29,7 +29,7 @@ end
 
 local function effectArtifact()
   return {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "synthetic-effect-probe",
     catalogIdentity = "synthetic-catalog",
     program = {
@@ -41,11 +41,11 @@ local function effectArtifact()
       subprograms = {},
       taskKinds = { "battle-background-blend-transition" },
     },
-    dependencies = { "synthetic-sound", "synthetic-texture" },
+    dependencies = { "synthetic-palette", "synthetic-texture" },
     resources = {
-      ["synthetic-sound"] = {
-        kind = "sound",
-        payload = "synthetic-sound-path",
+      ["synthetic-palette"] = {
+        kind = "palette",
+        payload = "synthetic-palette-path",
         contentIdentity = string.rep("a", 40),
       },
       ["synthetic-texture"] = {
@@ -76,7 +76,7 @@ function T.effect_artifacts_carry_closed_programs_and_typed_context()
   untyped.requiredContext = { battle = {} }
   Assert.isFalse(Schema.isValidEffect(untyped), "effect context never reaches arbitrary battle or field objects")
   local unknownKind = effectArtifact()
-  unknownKind.resources["synthetic-sound"] = { kind = "mystery" }
+  unknownKind.resources["synthetic-palette"] = { kind = "mystery" }
   Assert.isFalse(Schema.isValidEffect(unknownKind), "unknown resource kinds never validate")
 end
 
@@ -102,7 +102,7 @@ function T.contract_identities_version_the_new_catalog_shapes()
   local Contract = assetContract()
   Assert.equal(
     Contract.battlePresentation.schema,
-    "g4-battle-presentation-v4",
+    "g4-battle-presentation-v5",
     "the shared contract versions the normalized global catalog"
   )
   Assert.equal(
@@ -122,13 +122,13 @@ function T.effect_schema_versions_the_normalized_particle_contract()
   assert(Schema ~= nil, "the effect schema is available")
   Assert.equal(
     Schema.EFFECT_SCHEMA,
-    "g4-battle-effect-v2",
+    "g4-battle-effect-v3",
     "the effect schema carries the normalized particle contract identity"
   )
   local Contract = assetContract()
   Assert.equal(
     Contract.battlePresentation.effectSchema,
-    "g4-battle-effect-v2",
+    "g4-battle-effect-v3",
     "the generated contract mirrors the normalized effect schema"
   )
   Assert.equal(

@@ -148,7 +148,7 @@ function T.move_power_picture_transition_requires_a_typed_event_input_and_fixed_
     },
   }
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "move-power-picture-transition",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -358,7 +358,7 @@ function T.sprite_priority_appearance_requires_topology_and_registered_sprite_co
     },
   }
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "sprite-priority-appearance-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -376,7 +376,7 @@ end
 
 function T.cyclic_picture_position_transition_requires_battler_topology()
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "cyclic-picture-position-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -427,7 +427,7 @@ function T.battler_blend_alpha_callback_has_typed_sprite_and_coefficient_fields(
 
   instruction.parameters.oamModeSpriteSlots = { "sprite-context-slot-0" }
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "blend-alpha-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -453,7 +453,7 @@ function T.selected_picture_pair_callback_requires_a_closed_topology_context()
   Assert.isFalse(pcall(schema().assertProgram, program(instruction)))
   instruction.parameters.pictureSets = { "active-battler" }
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "selected-picture-pair-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -468,7 +468,7 @@ end
 
 function T.picture_affine_blend_callback_requires_registered_sprite_context()
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "picture-affine-blend-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -1180,15 +1180,15 @@ end
 
 function T.effect_resources_require_semantic_payload_identity()
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "synthetic-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({ op = "set-parameter", values = { 0, 1 } }),
-    dependencies = { "battle/sound/test", "battle/background/test/map", "battle/particle/test" },
+    dependencies = { "battle/palette/test", "battle/background/test/map", "battle/particle/test" },
     resources = {
-      ["battle/sound/test"] = {
-        kind = "sound",
-        payload = "battle/sound/test.sseq",
+      ["battle/palette/test"] = {
+        kind = "palette",
+        payload = "battle/palette/test.lua",
         contentIdentity = string.rep("a", 40),
       },
       ["battle/background/test/map"] = {
@@ -1205,26 +1205,31 @@ function T.effect_resources_require_semantic_payload_identity()
     requiredContext = {},
   }
   Assert.isTrue(schema().assertEffect(effect), "typed payload with a SHA-1 content identity validates")
-  effect.resources["battle/sound/test"].contentIdentity = nil
+  effect.resources["battle/palette/test"].contentIdentity = nil
   local ok = pcall(schema().assertEffect, effect)
   Assert.isFalse(ok, "resource descriptors without a content identity are rejected")
-  effect.resources["battle/sound/test"].contentIdentity = "short"
+  effect.resources["battle/palette/test"].contentIdentity = "short"
   ok = pcall(schema().assertEffect, effect)
   Assert.isFalse(ok, "resource content identities must be SHA-1 shaped")
 end
 
 function T.effect_context_is_a_closed_typed_layout_and_resources_cover_instruction_keys()
-  local resourceKey = "audio/sequence/SEQ_SE_DP_050"
+  local resourceKey = "battle/particle/test"
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "typed-context-effect",
     catalogIdentity = "synthetic-catalog",
-    program = program({ op = "play-sound", sound = resourceKey }),
+    program = program({
+      op = "create-battler-effect",
+      resource = resourceKey,
+      emitterPosition = "solo-enemy",
+      taskKind = "battler-effect-continuation",
+    }),
     dependencies = { resourceKey },
     resources = {
       [resourceKey] = {
-        kind = "sound",
-        payload = "data/generated/battle/resources/audio/sequence/SEQ_SE_DP_050.lua",
+        kind = "particle",
+        payload = "data/generated/battle/resources/effect/content/test.lua",
         contentIdentity = string.rep("c", 40),
       },
     },
@@ -1239,6 +1244,35 @@ function T.effect_context_is_a_closed_typed_layout_and_resources_cover_instructi
   effect.dependencies = {}
   ok = pcall(schema().assertEffect, effect)
   Assert.isFalse(ok, "every instruction resource key is part of the declared resource closure")
+end
+
+-- Effect voices play through the shared audio cache by sequence symbol,
+-- exactly like every other HGSS sound effect: the effect stages no copy of
+-- the bank, sequence, or samples, and a closure-prefixed key the audio
+-- provider cannot resolve never validates.
+function T.effect_sounds_name_shared_sequence_symbols_without_staged_payloads()
+  local effect = {
+    schema = "g4-battle-effect-v3",
+    key = "voiced-effect",
+    catalogIdentity = "synthetic-catalog",
+    program = program({ op = "play-sound", sound = "SEQ_SE_DP_050" }),
+    dependencies = {},
+    resources = {},
+    requiredContext = {},
+  }
+  Assert.isTrue(schema().assertEffect(effect), "a shared sequence symbol needs no staged effect resource")
+  effect.program = program({ op = "play-sound", sound = "audio/sequence/SEQ_SE_DP_050" })
+  Assert.isFalse(pcall(schema().assertEffect, effect), "a closure-prefixed voice key is not a sequence symbol")
+  effect.program = program({ op = "play-sound", sound = "SEQ_SE_DP_050" })
+  effect.dependencies = { "audio/sequence/SEQ_SE_DP_050" }
+  effect.resources = {
+    ["audio/sequence/SEQ_SE_DP_050"] = {
+      kind = "sound",
+      payload = "data/generated/battle/resources/effect/content/sound.lua",
+      contentIdentity = string.rep("d", 40),
+    },
+  }
+  Assert.isFalse(pcall(schema().assertEffect, effect), "effects stage no private sound payloads")
 end
 
 function T.position_pair_particle_resources_are_closed_over_staged_emitters()
@@ -1259,7 +1293,7 @@ function T.position_pair_particle_resources_are_closed_over_staged_emitters()
   end
   resourceCases["solo-player/solo-enemy"] = resourceKey
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "particle-emitter-closure",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -1293,7 +1327,7 @@ end
 
 function T.vanished_picture_operation_requires_source_battler_topology()
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "vanished-picture-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -1316,7 +1350,7 @@ end
 
 function T.position_offset_callback_declares_its_battler_topology()
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "position-offset-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -1357,7 +1391,7 @@ function T.interpolated_picture_effect_declares_its_sprite_context_table()
     },
   }
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "sprite-context-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -1376,7 +1410,7 @@ end
 
 function T.effect_resource_descriptors_accept_typed_multicell_formats()
   local effect = {
-    schema = "g4-battle-effect-v2",
+    schema = "g4-battle-effect-v3",
     key = "synthetic-multicell-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({ op = "set-parameter", values = { 0, 1 } }),

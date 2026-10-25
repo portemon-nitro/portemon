@@ -10,7 +10,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattlePresentationSchema
 local BattlePresentationSchema = {}
 
-BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v4"
+BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v5"
 BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v2"
 
 local fail = SchemaCheck.fail
@@ -147,7 +147,6 @@ local function checkNoNativeKeys(value, context, code, field)
 end
 
 local RESOURCE_KINDS = {
-  sound = true,
   map = true,
   texture = true,
   model = true,
@@ -167,48 +166,6 @@ local function checkCatalogTable(value, context, code, field)
   end
   if next(value) == nil then
     fail(code, field .. " must carry source-backed entries", context)
-  end
-end
-
-local function checkPrograms(programs, resources, context, code, field)
-  checkCatalogTable(programs, context, code, field)
-  for key, entry in pairs(programs) do
-    checkString(key, context, code, field .. " key")
-    local record = field .. "[" .. tostring(key) .. "]"
-    SchemaCheck.checkRecord(
-      entry,
-      { entry = true, taskKinds = true, dependencies = true, requiredContext = true },
-      context,
-      code,
-      record
-    )
-    checkString(entry.entry, context, code, record .. ".entry")
-    if not Validate.isArray(entry.taskKinds) then
-      fail(code, record .. " must carry its task kinds in order", context)
-    end
-    for index, kind in ipairs(entry.taskKinds) do
-      checkString(kind, context, code, record .. ".taskKinds[" .. index .. "]")
-    end
-    if not Validate.isArray(entry.dependencies) then
-      fail(code, record .. ".dependencies must list the complete resource closure", context)
-    end
-    local seen = {}
-    for index, dependency in ipairs(entry.dependencies) do
-      checkString(dependency, context, code, record .. ".dependencies[" .. index .. "]")
-      if resources[dependency] == nil or seen[dependency] then
-        fail(code, record .. ".dependencies contains an unstaged or repeated resource", context)
-      end
-      seen[dependency] = true
-    end
-    if type(entry.requiredContext) ~= "table" then
-      fail(code, record .. ".requiredContext must declare typed runtime inputs", context)
-    end
-    for contextKey, descriptor in pairs(entry.requiredContext) do
-      checkString(contextKey, context, code, record .. ".requiredContext key")
-      if type(descriptor) ~= "table" or type(descriptor.type) ~= "string" or descriptor.type == "" then
-        fail(code, record .. ".requiredContext entries must carry semantic types", context)
-      end
-    end
   end
 end
 
@@ -586,14 +543,13 @@ local function checkBattleMessageProgramContext(
   end
 end
 
-local function checkCoverage(coverage, programs, transitions, menus, messages, resources, context, code, field)
+local function checkCoverage(coverage, transitions, menus, messages, resources, context, code, field)
   checkCatalogTable(coverage, context, code, field)
   for key, entry in pairs(coverage) do
     checkString(key, context, code, field .. " key")
     local record = field .. "[" .. tostring(key) .. "]"
     SchemaCheck.checkRecord(entry, {
       kind = true,
-      program = true,
       route = true,
       closureIdentity = true,
       resources = true,
@@ -606,33 +562,17 @@ local function checkCoverage(coverage, programs, transitions, menus, messages, r
       requiredContext = true,
       programContext = true,
     }, context, code, record)
-    if entry.kind == "animation-program" then
-      checkString(entry.program, context, code, record .. ".program")
-      if programs[entry.program] == nil or entry.route ~= nil then
-        fail(code, record .. " references an unknown program or mixes route coverage", context)
-        return
-      end
-      local program = programs[entry.program]
-      local programDependencies = program.dependencies
-      if not Validate.isArray(programDependencies) or #programDependencies ~= #entry.resources then
-        fail(code, record .. ".resources must exactly match its program dependency closure", context)
-      end
-      for index, dependency in ipairs(programDependencies) do
-        if entry.resources[index] ~= dependency then
-          fail(code, record .. ".resources must follow the program's ordered dependency receipt", context)
-        end
-      end
-    elseif entry.kind == "transition-route" then
+    if entry.kind == "transition-route" then
       checkString(entry.route, context, code, record .. ".route")
-      if transitions.routes[entry.route] == nil or entry.program ~= nil then
-        fail(code, record .. " references an unknown transition route or mixes program coverage", context)
+      if transitions.routes[entry.route] == nil then
+        fail(code, record .. " references an unknown transition route", context)
         return
       end
     elseif entry.kind == "menu-route" then
       checkString(entry.route, context, code, record .. ".route")
       local menuRoute = menus.routes[entry.route]
-      if menus.selectors[entry.route] == nil or menuRoute == nil or entry.program ~= nil then
-        fail(code, record .. " references an unknown menu route or mixes program coverage", context)
+      if menus.selectors[entry.route] == nil or menuRoute == nil then
+        fail(code, record .. " references an unknown menu route", context)
         return
       end
       for _, fieldName in ipairs({ "messageEntries", "messageRoutes", "fontRoles", "assetRoles", "requiredContext" }) do
@@ -827,12 +767,8 @@ local function checkCoverage(coverage, programs, transitions, menus, messages, r
     end
     if entry.kind == "transition-route" then
       local route = transitions.routes[entry.route]
-      if #entry.operations ~= 1 or entry.operations[1] ~= route.role or entry.program ~= nil then
-        fail(
-          code,
-          record .. " must identify its source callback operation without inventing an animation program",
-          context
-        )
+      if #entry.operations ~= 1 or entry.operations[1] ~= route.role then
+        fail(code, record .. " must identify its source callback operation", context)
       end
       local routeResources = {}
       for _, resourceKey in ipairs(route.resources) do
@@ -863,13 +799,6 @@ local function checkCoverage(coverage, programs, transitions, menus, messages, r
     local entry = coverage[coverageKey]
     if entry == nil or entry.kind ~= "transition-route" or entry.route ~= routeKey then
       fail(code, field .. " omits transition route admission closure " .. routeKey, context)
-    end
-  end
-  for programKey in pairs(programs) do
-    local entry = coverage[programKey]
-    local covered = entry ~= nil and entry.kind == "animation-program" and entry.program == programKey
-    if not covered then
-      fail(code, field .. " omits source program admission closure " .. programKey, context)
     end
   end
   for routeKey in pairs(menus.selectors) do
@@ -2633,7 +2562,6 @@ function BattlePresentationSchema.assertManifest(manifest)
     messages = true,
     transitions = true,
     audioRoles = true,
-    programs = true,
     resources = true,
     coverage = true,
   }, context, CODE_MANIFEST, "manifest")
@@ -3335,7 +3263,6 @@ function BattlePresentationSchema.assertManifest(manifest)
     end
   end
   checkAudioRoles(manifest.audioRoles, context, CODE_MANIFEST, "manifest audioRoles")
-  checkPrograms(manifest.programs, manifest.resources, context, CODE_MANIFEST, "manifest programs")
   checkCatalogResources(manifest.resources, context, CODE_MANIFEST, "manifest resources")
   for _, menuName in ipairs({ "command", "moves", "target", "twoOption" }) do
     for index, screen in ipairs(manifest.menus[menuName].screens) do
@@ -3351,7 +3278,6 @@ function BattlePresentationSchema.assertManifest(manifest)
   end
   checkCoverage(
     manifest.coverage,
-    manifest.programs,
     manifest.transitions,
     manifest.menus,
     manifest.messages,
