@@ -3267,8 +3267,12 @@ local function wipe_kinds_finish_with_their_own_brightness_and_release_their_eng
   movie:draw()
   movie:resize(512, 384)
   movie:draw()
+  movie:dispose()
+end
+
+local function soulsilver_source_wipe_slopes_with_the_scanline_without_spilling(scope, context)
   if not RomImporter.isReady("soulsilver") then
-    return
+    context:skip("SoulSilver source wipe needs a user-owned SoulSilver ROM")
   end
   local versionId = "soulsilver"
   local romScenes = loadScenes(versionId)
@@ -3324,7 +3328,6 @@ local function wipe_kinds_finish_with_their_own_brightness_and_release_their_eng
   )
   Assert.equal(blackPixels(romSubMid), 0, "the sourced wipe never spills onto the other engine")
   romMovie:dispose()
-  movie:dispose()
 end
 
 -- Source-frame pixel conformance: every expected texel below is recomputed
@@ -4097,6 +4100,7 @@ local T = GraphicsSmoke.suite({
   ["every scene paints its authored beat on both engines"] = every_scene_paints_its_authored_beat_on_both_engines,
   ["single-screen stages show the authored active engine"] = single_screen_stages_show_the_authored_active_engine,
   ["wipe kinds finish with their own brightness and release their engine"] = wipe_kinds_finish_with_their_own_brightness_and_release_their_engine,
+  ["soulsilver source wipe slopes with the scanline without spilling"] = soulsilver_source_wipe_slopes_with_the_scanline_without_spilling,
   ["heartgold wipe kinds are blocked without a dump"] = heartgold_wipe_kinds_are_blocked_without_a_dump,
 })
 T.metadata.capabilities = { "graphics", "rom_dump" }
