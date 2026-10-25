@@ -1088,6 +1088,218 @@ function T.phone_page_scroll_chains_six_singles(_scope)
   controller:dispose()
 end
 
+-- Both menus select through the same press window: a tap on a menu row
+-- runs the row's action once, a stray release without a press runs
+-- nothing, and keys reach the same sorts as taps.
+function T.main_and_sort_menus_share_tap_selection(_scope)
+  local contacts, order = sortingFixture()
+  local controller, state = openPhone(fixtureManifest(contacts, order), 0)
+  tap(controller, 100, rowBandCenter(3))
+  local menu = assert(controller:status().view, "the tapped row exports its view").contextMenu
+  Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "the row menu keeps its source options")
+  tap(controller, 110, 112)
+  local submenu = assert(controller:status().view, "the sort state exports its view").contextMenu
+  Assert.deepEqual(
+    submenu.options,
+    { "Title", "Alphabet", "Location", "Move", "Quit" },
+    "tapping the Sort row opens the sort menu"
+  )
+  tap(controller, 110, 88)
+  Assert.isNil(controller:status().view.contextMenu, "choosing a sort returns to the list")
+  local touched = visibleKeys(listView(controller))
+  local full = expectedStableOrder(contacts, 3)
+  Assert.deepEqual(
+    touched,
+    { full[1], full[2], full[3], full[4], full[5], full[6] },
+    "tapping the Location row sorts the same stable way as keys"
+  )
+  Assert.deepEqual(
+    state:readPhone().contactOrder,
+    order,
+    "automatic sorting leaves the saved order alone"
+  )
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 88 } })
+  Assert.isNil(controller:status().view.contextMenu, "a release without a press opens nothing")
+  local keyboard = openPhone(fixtureManifest(contacts, order), 0)
+  sortBy(keyboard, 3)
+  Assert.deepEqual(
+    visibleKeys(listView(keyboard)),
+    touched,
+    "keys choose the same sort as taps"
+  )
+  keyboard:dispose()
+  tap(controller, 100, rowBandCenter(1))
+  tap(controller, 110, 112)
+  tap(controller, 110, 136)
+  local back = assert(controller:status().view, "the quit state exports its view").contextMenu
+  Assert.deepEqual(back.options, { "Call", "Sort", "Quit" }, "tapping the sort Quit row returns to the menu")
+  controller:dispose()
+end
+
+-- Press identity and the 8px window apply in both menus: a release from
+-- another pointer, a drag past the window, or a release off the text
+-- rows runs nothing, while a press moved exactly 8px still runs its
+-- row. Clearing the press and the semantic cancel keys keep their
+-- established exits.
+function T.menu_pointer_gestures_reject_invalid_releases(_scope)
+  local contacts, order = sortingFixture()
+  local function openMain()
+    local controller = openPhone(fixtureManifest(contacts, order), 0)
+    tap(controller, 100, rowBandCenter(1))
+    Assert.notNil(controller:status().view.contextMenu, "a row tap opens the menu")
+    return controller
+  end
+  local function openSort(controller)
+    tap(controller, 110, 112)
+    local submenu = assert(controller:status().view, "the sort state exports its view").contextMenu
+    Assert.deepEqual(
+      submenu.options,
+      { "Title", "Alphabet", "Location", "Move", "Quit" },
+      "tapping the Sort row opens the sort menu"
+    )
+  end
+  do
+    local controller = openMain()
+    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 136 } })
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:9", x = 110, y = 136 } })
+    local menu = assert(controller:status().view, "the menu state persists").contextMenu
+    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "a release from another pointer runs nothing")
+    Assert.isNil(controller:status().view.call, "the foreign release starts no call")
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 136 } })
+    menu = assert(controller:status().view, "the menu state persists").contextMenu
+    Assert.deepEqual(
+      menu.options,
+      { "Call", "Sort", "Quit" },
+      "the rejected release clears the press"
+    )
+    controller:dispose()
+  end
+  do
+    local controller = openMain()
+    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 136 } })
+    controller:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = 119, y = 136 } })
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 119, y = 136 } })
+    local menu = assert(controller:status().view, "the menu state persists").contextMenu
+    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "a drag past 8px runs nothing")
+    Assert.isNil(controller:status().view.call, "the dragged release starts no call")
+    controller:dispose()
+  end
+  do
+    local controller = openMain()
+    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 136 } })
+    controller:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = 118, y = 136 } })
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 118, y = 136 } })
+    Assert.isNil(controller:status().view.contextMenu, "a press moved exactly 8px still runs its row")
+    Assert.isNil(controller:status().view.call, "quitting starts no call")
+    controller:dispose()
+  end
+  do
+    local controller = openMain()
+    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 136 } })
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 100 } })
+    local menu = assert(controller:status().view, "the menu state persists").contextMenu
+    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "a release between text rows runs nothing")
+    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 88 } })
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 50, y = 88 } })
+    menu = assert(controller:status().view, "the menu state persists").contextMenu
+    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "a release outside the frame runs nothing")
+    Assert.isNil(controller:status().view.call, "off-row releases start no call")
+    controller:updateFixed({ { type = "pointer_cancel", pointerId = "touch:1" } })
+    Assert.isNil(controller:status().view.contextMenu, "the pointer cancel key leaves the menu")
+    controller:dispose()
+  end
+  do
+    local controller = openMain()
+    controller:updateFixed({ { type = "cancel" } })
+    Assert.isNil(controller:status().view.contextMenu, "the cancel key leaves the menu")
+    controller:dispose()
+  end
+  do
+    local controller = openPhone(fixtureManifest(contacts, order), 0)
+    tap(controller, 100, rowBandCenter(1))
+    openSort(controller)
+    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 88 } })
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:9", x = 110, y = 88 } })
+    local submenu = assert(controller:status().view, "the sort state persists").contextMenu
+    Assert.deepEqual(
+      submenu.options,
+      { "Title", "Alphabet", "Location", "Move", "Quit" },
+      "a release from another pointer runs no sort"
+    )
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 88 } })
+    submenu = assert(controller:status().view, "the sort state persists").contextMenu
+    Assert.deepEqual(
+      submenu.options,
+      { "Title", "Alphabet", "Location", "Move", "Quit" },
+      "the rejected release clears the press"
+    )
+    controller:dispose()
+  end
+  do
+    local controller = openPhone(fixtureManifest(contacts, order), 0)
+    tap(controller, 100, rowBandCenter(1))
+    openSort(controller)
+    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 84 } })
+    controller:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = 110, y = 93 } })
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 93 } })
+    local submenu = assert(controller:status().view, "the sort state persists").contextMenu
+    Assert.deepEqual(
+      submenu.options,
+      { "Title", "Alphabet", "Location", "Move", "Quit" },
+      "a vertical drag past 8px runs no sort"
+    )
+    controller:dispose()
+  end
+  do
+    local controller = openPhone(fixtureManifest(contacts, order), 0)
+    tap(controller, 100, rowBandCenter(1))
+    openSort(controller)
+    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 84 } })
+    controller:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = 110, y = 92 } })
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 92 } })
+    Assert.isNil(controller:status().view.contextMenu, "a press moved exactly 8px still runs its sort row")
+    local full = expectedStableOrder(contacts, 3)
+    Assert.deepEqual(
+      visibleKeys(listView(controller)),
+      { full[1], full[2], full[3], full[4], full[5], full[6] },
+      "the kept press sorts the same stable way"
+    )
+    controller:dispose()
+  end
+  do
+    local controller = openPhone(fixtureManifest(contacts, order), 0)
+    tap(controller, 100, rowBandCenter(1))
+    openSort(controller)
+    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 88 } })
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 100 } })
+    local submenu = assert(controller:status().view, "the sort state persists").contextMenu
+    Assert.deepEqual(
+      submenu.options,
+      { "Title", "Alphabet", "Location", "Move", "Quit" },
+      "a release between sort rows runs no sort"
+    )
+    Assert.deepEqual(
+      visibleKeys(listView(controller)),
+      { order[1], order[2], order[3], order[4], order[5], order[6] },
+      "the rejected sort leaves the visible order alone"
+    )
+    controller:updateFixed({ { type = "pointer_cancel", pointerId = "touch:1" } })
+    local menu = assert(controller:status().view, "the menu state persists").contextMenu
+    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "the pointer cancel key backs out to the menu")
+    controller:dispose()
+  end
+  do
+    local controller = openPhone(fixtureManifest(contacts, order), 0)
+    tap(controller, 100, rowBandCenter(1))
+    openSort(controller)
+    controller:updateFixed({ { type = "cancel" } })
+    local menu = assert(controller:status().view, "the menu state persists").contextMenu
+    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "the cancel key backs out to the menu")
+    Assert.equal(menu.cursor, 1, "backing out keeps the Sort cursor")
+    controller:dispose()
+  end
+end
+
 -- Menu taps choose options at their source rows: tapping Quit closes
 -- without calling, tapping Call starts the conversation on the row.
 function T.menu_taps_choose_options(_scope)

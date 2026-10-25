@@ -717,6 +717,60 @@ local function menuRowAt(frame, x, y)
   return slot
 end
 
+-- The shared menu press window: captures the press, drops it when
+-- either axis travels past 8px, and resolves a release to its menu row.
+-- Clearing happens before the caller runs its choice, so a choice that
+-- changes mode never fires a stale release. Never chooses actions.
+---@param self PhoneController
+---@param event table<string, unknown>
+---@param kind string "menu" or "sort"
+---@param count integer option count
+---@return integer? zero-based option row
+local function menuPointerRow(self, event, kind, count)
+  if event.type == "pointer_down" then
+    if type(event.x) == "number" and type(event.y) == "number" then
+      self._held = { id = event.pointerId, x = event.x, y = event.y }
+    end
+    return nil
+  end
+  if event.type == "pointer_move" then
+    local held = self._held
+    if
+      held ~= nil
+      and held.id == event.pointerId
+      and type(event.x) == "number"
+      and type(event.y) == "number"
+      and (
+        math.abs(event.x - held.x --[[@as number]]) > 8 or math.abs(event.y - held.y --[[@as number]]) > 8
+      )
+    then
+      self._held = nil
+    end
+    return nil
+  end
+  if event.type == "pointer_up" then
+    local held = self._held
+    self._held = nil
+    if held == nil or held.id ~= event.pointerId then
+      return nil
+    end
+    if type(event.x) ~= "number" or type(event.y) ~= "number" then
+      return nil
+    end
+    if
+      math.abs(event.x - held.x --[[@as number]]) > 8 or math.abs(event.y - held.y --[[@as number]]) > 8
+    then
+      return nil
+    end
+    local row = menuRowAt(menuFrame(kind), event.x, event.y)
+    if row == nil or row < 0 or row >= count then
+      return nil
+    end
+    return row
+  end
+  return nil
+end
+
 ---@param event table<string, unknown>
 function PhoneController:_handleMenu(event)
   if event.type == "navigate" and type(event.direction) == "string" then
@@ -736,38 +790,12 @@ function PhoneController:_handleMenu(event)
   elseif event.type == "pointer_cancel" then
     self._mode = "list"
     self._held = nil
-  elseif event.type == "pointer_down" then
-    if type(event.x) == "number" and type(event.y) == "number" then
-      self._held = { id = event.pointerId, x = event.x, y = event.y }
-    end
+  elseif event.type == "pointer_down" or event.type == "pointer_move" then
+    menuPointerRow(self, event, "menu", #MENU_OPTIONS)
   elseif event.type == "pointer_up" then
-    local held = self._held
-    self._held = nil
-    if
-      held ~= nil
-      and held.id == event.pointerId
-      and type(event.x) == "number"
-      and type(event.y) == "number"
-      and math.abs(event.x - held.x --[[@as number]]) <= 8
-      and math.abs(event.y - held.y --[[@as number]]) <= 8
-    then
-      local row = menuRowAt(menuFrame("menu"), event.x, event.y)
-      if row ~= nil and row < #MENU_OPTIONS then
-        self:_chooseMain(row)
-      end
-    end
-  elseif event.type == "pointer_move" then
-    local held = self._held
-    if
-      held ~= nil
-      and held.id == event.pointerId
-      and type(event.x) == "number"
-      and type(event.y) == "number"
-      and (
-        math.abs(event.x - held.x --[[@as number]]) > 8 or math.abs(event.y - held.y --[[@as number]]) > 8
-      )
-    then
-      self._held = nil
+    local row = menuPointerRow(self, event, "menu", #MENU_OPTIONS)
+    if row ~= nil then
+      self:_chooseMain(row)
     end
   end
 end
@@ -810,38 +838,12 @@ function PhoneController:_handleSort(event)
     self._mode = "menu"
     self._menuCursor = 1
     self._held = nil
-  elseif event.type == "pointer_down" then
-    if type(event.x) == "number" and type(event.y) == "number" then
-      self._held = { id = event.pointerId, x = event.x, y = event.y }
-    end
+  elseif event.type == "pointer_down" or event.type == "pointer_move" then
+    menuPointerRow(self, event, "sort", #SORT_OPTIONS)
   elseif event.type == "pointer_up" then
-    local held = self._held
-    self._held = nil
-    if
-      held ~= nil
-      and held.id == event.pointerId
-      and type(event.x) == "number"
-      and type(event.y) == "number"
-      and math.abs(event.x - held.x --[[@as number]]) <= 8
-      and math.abs(event.y - held.y --[[@as number]]) <= 8
-    then
-      local row = menuRowAt(menuFrame("sort"), event.x, event.y)
-      if row ~= nil and row < #SORT_OPTIONS then
-        self:_chooseSort(row)
-      end
-    end
-  elseif event.type == "pointer_move" then
-    local held = self._held
-    if
-      held ~= nil
-      and held.id == event.pointerId
-      and type(event.x) == "number"
-      and type(event.y) == "number"
-      and (
-        math.abs(event.x - held.x --[[@as number]]) > 8 or math.abs(event.y - held.y --[[@as number]]) > 8
-      )
-    then
-      self._held = nil
+    local row = menuPointerRow(self, event, "sort", #SORT_OPTIONS)
+    if row ~= nil then
+      self:_chooseSort(row)
     end
   end
 end
@@ -1081,11 +1083,19 @@ end
 ---@return table<string, unknown>? the detached menu projection, if open
 function PhoneController:_menuView()
   if self._mode == "menu" then
-    return { options = { "Call", "Sort", "Quit" }, cursor = self._menuCursor, frame = menuFrame("menu") }
+    local options = {}
+    for index, option in ipairs(MENU_OPTIONS) do
+      options[index] = option
+    end
+    return { options = options, cursor = self._menuCursor, frame = menuFrame("menu") }
   end
   if self._mode == "sort" then
+    local options = {}
+    for index, option in ipairs(SORT_OPTIONS) do
+      options[index] = option
+    end
     return {
-      options = { "Title", "Alphabet", "Location", "Move", "Quit" },
+      options = options,
       cursor = self._menuCursor,
       frame = menuFrame("sort"),
     }
