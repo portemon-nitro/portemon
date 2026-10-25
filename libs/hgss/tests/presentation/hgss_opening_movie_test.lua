@@ -1018,8 +1018,9 @@ function T.simultaneous_layers_keep_their_own_scroll_in_source_order()
   -- blits alongside the source-space layer draws, and construction
   -- preflights every scene through the same frame path: only staged
   -- layer images drawn by this frame prove the per-engine compositor.
-  -- Every viewport sample draws through wrapped quads at exact source
-  -- positions, never as a shifted whole texture.
+  -- Every viewport sample draws as plain translated image copies at exact
+  -- source positions under the active scissor, never as a shifted whole
+  -- texture and never through a per-draw viewport quad.
   local stagedImages = {}
   for _, image in ipairs(graphics.images) do
     stagedImages[image] = true
@@ -1037,7 +1038,7 @@ function T.simultaneous_layers_keep_their_own_scroll_in_source_order()
   Assert.notNil(drawOf[slotImages.top], "the top layer is drawn")
   Assert.notNil(drawOf[slotImages.ground], "the lower-role layer is drawn")
   for name, image in pairs(slotImages) do
-    Assert.notNil(drawOf[image].quad, "the " .. name .. " layer samples through a wrapped viewport quad")
+    Assert.isTrue(drawOf[image].quad == nil, "the " .. name .. " layer samples without a per-draw viewport quad")
   end
   movie:dispose()
 end
@@ -1361,7 +1362,7 @@ function T.full_native_extents_swap_atomically_and_tick_without_draws()
     local draw = graphics.draws[index]
     if draw.image == altHandle then
       sampled = true
-      Assert.notNil(draw.quad, "the swapped viewport still samples through quads")
+      Assert.isTrue(draw.quad == nil, "the swapped viewport still samples without a per-draw quad")
     end
   end
   Assert.isTrue(sampled, "the swapped alternate image draws after its tick")
@@ -1418,7 +1419,7 @@ end
 local function spriteDraws(graphics, clipImage, baseline)
   local found = {}
   for index = (baseline or 0) + 1, #graphics.draws do
-    -- Background viewports sample through wrapped quads too, so sprite
+    -- Background viewports paint without per-draw quads, so sprite
     -- draws are told apart by their staged clip image, never by the
     -- presence of a quad.
     if graphics.draws[index].image == clipImage then
@@ -4513,6 +4514,168 @@ function T.masked_pairs_keep_raw_under_planes_with_sprites_and_windows()
   )
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the masked movie releases every handle")
+end
+
+---@param graphics table fake graphics namespace
+---@param movie table player owning the current slot
+---@param spriteImages table<string, boolean> staged sprite clip images to exclude
+---@param baseline integer only draws after this draw index
+---@return table[] draws carrying a viewport quad on a non-sprite image
+local function backgroundQuadDraws(graphics, movie, spriteImages, baseline)
+  local found = {}
+  for index = (baseline or 0) + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if draw.quad ~= nil and not spriteImages[draw.image] then
+      found[#found + 1] = draw
+    end
+  end
+  return found
+end
+
+-- Wrapped backgrounds paint as plain translated image copies under the
+-- active window scissor: repeated draws at one source tick and pans across
+-- signed offsets (width-minus-one, negative one, huge, continuous drift,
+-- and an alternate-size swap) allocate no background quads, while the
+-- sprite atlas keeps its cached first-frame quads and the source clock
+-- keeps its authored length.
+function T.background_wrap_draws_issue_no_new_quads_across_repeats_and_pans()
+  local root = sceneRoot(2)
+  local baseImage = root .. "layers/quad-base.png"
+  local altImage = root .. "layers/quad-alt.png"
+  local tallImage = root .. "layers/quad-tall.png"
+  local groundImage = root .. "layers/quad-ground.png"
+  local heroClip = root .. "sprites/quad-hero.g4sprite"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      2,
+      {
+        {
+          bgSlot = 0,
+          priority = 0,
+          image = baseImage,
+          variants = { { image = altImage, width = 256, height = 192 } },
+          width = 512,
+          height = 512,
+          sourceHash = string.rep("c", 40),
+          initialVisible = true,
+        },
+        layer(1, tallImage, 256, 192),
+        layer(2, groundImage, 256, 512),
+      },
+      { layer(0, groundImage, 256, 192) },
+      { spriteClip(heroClip, { stillFrame() }) },
+      { { id = "pan", events = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 }, ["until"] = { kind = "duration", ticks = 60 } } },
+      {
+        { op = "setScroll", stepId = "pan", atStepTick = 0, engine = "main", bgSlot = 0, dx = -511, dy = -1, ticks = 0 },
+        { op = "setScroll", stepId = "pan", atStepTick = 0, engine = "main", bgSlot = 1, dx = 255, dy = 191, ticks = 0 },
+        { op = "setScroll", stepId = "pan", atStepTick = 0, engine = "main", bgSlot = 2, dx = 100000, dy = -100001, ticks = 0 },
+        { op = "setScroll", stepId = "pan", atStepTick = 0, engine = "sub", bgSlot = 0, dx = 0, dy = -32, ticks = -1 },
+        windowEvent("pan", 0, "main", windowRect(0, 0, 127, 191), windowRect(128, 0, 255, 191), 60, 19, 19),
+        {
+          op = "setSpriteClip",
+          stepId = "pan",
+          atStepTick = 0,
+          instanceId = "hero",
+          engine = "main",
+          x = 32,
+          y = 64,
+          drawOrder = 1,
+          clipId = heroClip,
+        },
+        {
+          op = "spriteVisible",
+          stepId = "pan",
+          atStepTick = 0,
+          instanceId = "hero",
+          engine = "main",
+          x = 32,
+          y = 64,
+          drawOrder = 1,
+          visible = true,
+        },
+        {
+          op = "setLayer",
+          stepId = "pan",
+          atStepTick = 30,
+          engine = "main",
+          bgSlot = 0,
+          image = altImage,
+          visible = true,
+          priority = 0,
+        },
+        { op = "waitTicks", stepId = "pan", atStepTick = 0, ticks = 60 },
+        { op = "finish", stepId = "pan", atStepTick = 0 },
+      }
+    ),
+    2
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  while movie:sceneNumber() < 2 do
+    movie:updateFixed()
+  end
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(slot.backgrounds.main[0].scrollX, -511, "the base layer lands on its width-minus-one offset")
+  Assert.equal(slot.backgrounds.main[0].scrollY, -1, "the base layer lands on its negative-one offset")
+  Assert.equal(slot.backgrounds.main[1].scrollX, 255, "the tall layer lands on its width-minus-one offset")
+  Assert.equal(slot.backgrounds.main[1].scrollY, 191, "the tall layer lands on its height-minus-one offset")
+  Assert.equal(slot.backgrounds.main[2].scrollX, 100000, "the ground layer lands on its huge offset")
+  Assert.equal(slot.backgrounds.main[2].scrollY, -100001, "the ground layer lands on its huge negative offset")
+  Assert.equal(slot.backgrounds.sub[0].scrollX, 0, "the sub drift starts at its origin")
+  local spriteImages = {}
+  for _, clip in ipairs(scenes[2].spriteClips) do
+    spriteImages[slot.imageByPath[clip.id]] = true
+  end
+  -- The warm draw caches the sprite atlas frame; sprite quads stay
+  -- legitimate, background quads never are.
+  movie:draw()
+  local spriteQuads = 0
+  for _, draw in ipairs(graphics.draws) do
+    if draw.quad ~= nil and spriteImages[draw.image] then
+      spriteQuads = spriteQuads + 1
+    end
+  end
+  Assert.isTrue(spriteQuads > 0, "the first frame still caches its sprite atlas quad")
+  local baseline = #graphics.draws
+  for _ = 1, 5 do
+    movie:draw()
+  end
+  Assert.equal(
+    #backgroundQuadDraws(graphics, movie, spriteImages, baseline),
+    0,
+    "repeated draws at one source tick create no background quads"
+  )
+  Assert.equal(slot.backgrounds.main[0].scrollX, -511, "repeated host draws never resample the clock")
+  Assert.equal(slot.backgrounds.sub[0].scrollX, 0, "repeated host draws never advance the drift")
+  -- Background layers still paint on every repeated draw, only without quads.
+  local painted = 0
+  for index = baseline + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if slot.imageByPath[baseImage] == draw.image or slot.imageByPath[tallImage] == draw.image then
+      painted = painted + 1
+      Assert.isTrue(draw.quad == nil, "each repeated background draw carries no viewport quad")
+    end
+  end
+  Assert.isTrue(painted > 0, "repeated draws still paint the wrapped backgrounds")
+  -- Pans, the alternate-size swap, and the window slices cross many
+  -- scissor regions without allocating.
+  for _ = 1, 35 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.equal(
+    #backgroundQuadDraws(graphics, movie, spriteImages, baseline),
+    0,
+    "pans, the alternate swap, and window slices create no background quads"
+  )
+  local swapped = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(swapped.backgrounds.main[0].width, 256, "the sampled extent follows the newly selected image")
+  Assert.equal(swapped.backgrounds.main[0].height, 192, "the sampled extent follows the newly selected image")
+  Assert.equal(movie:sceneNumber(), 2, "the pan step still holds its authored duration")
+  Assert.isFalse(movie:isFinished(), "the pan step never finishes the movie early")
+  playthrough(movie, graphics, 5000)
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the wrapped movie releases every handle")
 end
 
 return { tests = T }
