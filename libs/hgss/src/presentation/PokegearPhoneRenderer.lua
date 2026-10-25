@@ -199,9 +199,40 @@ local function drawPaletteText(text, palette, line, x, y, foreground, shadow, ba
   })
 end
 
+-- Returns the signed screen displacement of the running slide, or zero
+-- when the viewport rests on a row boundary.
+---@param list table<string, unknown>
+---@return integer
+local function slidePixels(list)
+  local slide = list.slide
+  if
+    type(slide) == "table" and type((slide --[[@as table<string, unknown>]]).pixels) == "number"
+  then
+    return (slide --[[@as table<string, unknown>]]).pixels --[[@as integer]]
+  end
+  return 0
+end
+
+-- Returns the visual first-contact offset the arrows follow: the slide's
+-- intermediate first row while animating, otherwise the settled scroll.
+---@param list table<string, unknown>
+---@param scrollOffset integer
+---@return integer
+local function visualFirst(list, scrollOffset)
+  local slide = list.slide
+  if
+    type(slide) == "table" and type((slide --[[@as table<string, unknown>]]).first) == "number"
+  then
+    return (slide --[[@as table<string, unknown>]]).first --[[@as integer]]
+  end
+  return scrollOffset
+end
+
 -- Draws the four compiled corner sprites framing the selected row at
 -- the source sprite positions, and the compiled scroll arrows above and
--- below the list while paging is available.
+-- below the list while paging is available. Corners track the actual
+-- visible transient row; arrows track the visual first row, never the
+-- logical destination jump.
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
 ---@param list table<string, unknown>
@@ -212,28 +243,116 @@ local function drawListChrome(graphics, images, list, sprites)
   local total = list.total --[[@as integer?]]
   graphics.setColor(1, 1, 1, 1)
   if list.cursorVisible == true then
-    local slot = selected - scrollOffset
-    local top = slot * ROW_HEIGHT + 8
-    local corners = { { 16, top }, { 16, top + 22 }, { 224, top }, { 224, top + 22 } }
-    for index, point in ipairs(corners) do
-      drawSprite(graphics, images, sprites, PHONE_SET, CORNER_SEQUENCES[index], 1, point[1], point[2])
+    local rows = list.rows --[[@as table[] ]]
+    local pixels = slidePixels(list)
+    local found = nil
+    if type(rows) == "table" then
+      for _, node in ipairs(rows) do
+        local entry = node --[[@as table<string, unknown>]]
+        if entry.absolute == selected and type(entry.slot) == "number" then
+          found = entry
+          break
+        end
+      end
+    end
+    if found ~= nil then
+      local top = (found --[[@as table<string, unknown>]]).slot --[[@as integer]] * ROW_HEIGHT + 8 + pixels
+      local corners = { { 16, top }, { 16, top + 22 }, { 224, top }, { 224, top + 22 } }
+      for index, point in ipairs(corners) do
+        drawSprite(graphics, images, sprites, PHONE_SET, CORNER_SEQUENCES[index], 1, point[1], point[2])
+      end
     end
   end
-  if scrollOffset > 0 then
+  local first = visualFirst(list, scrollOffset)
+  if first > 0 then
     drawSprite(graphics, images, sprites, PHONE_SET, SCROLL_UP_SEQUENCE, 1, 124, 8)
   end
-  if type(total) == "number" and scrollOffset + VISIBLE_ROWS < total then
+  if type(total) == "number" and first + VISIBLE_ROWS < total then
     drawSprite(graphics, images, sprites, PHONE_SET, SCROLL_DOWN_SEQUENCE, 1, 124, 156)
   end
   graphics.setColor(1, 1, 1, 1)
+end
+
+-- Draws one contact row at its shifted viewport position: the band
+-- fill, the name and class cells, the marker dots, then the name and
+-- class text. Colors follow the absolute contact index so the
+-- alternating pattern travels with the contacts, not the destination.
+---@param graphics love.graphics
+---@param images table<string, unknown>
+---@param text table<string, unknown>?
+---@param entry table<string, unknown>
+---@param absolute integer
+---@param top number
+---@param selected integer
+---@param manual boolean
+---@param sprites table<string, unknown>
+---@param palette table<integer, table<string, number>>
+local function drawRow(graphics, images, text, entry, absolute, top, selected, manual, sprites, palette)
+  local colors = ROW_COLORS[(absolute % 2) + 1]
+  fillPalette(graphics, palette, colors.fill1, LIST_X, top, ROW_WIDTH, ROW_HEIGHT)
+  fillPalette(graphics, palette, colors.bg1, LIST_X + NAME_CELL_X, top, NAME_CELL_WIDTH, CELL_HEIGHT)
+  fillPalette(graphics, palette, colors.bg2, LIST_X + CLASS_CELL_X, top, CLASS_CELL_WIDTH, CELL_HEIGHT)
+  fillPalette(graphics, palette, colors.fill2, LIST_X + 1, top + 1, 2, 2)
+  fillPalette(graphics, palette, colors.fill1, LIST_X + 8, top, 2, 7)
+  for _, dotY in ipairs({ 9, 13, 17 }) do
+    fillPalette(graphics, palette, colors.fill1, LIST_X + 9, top + dotY, 2, 2)
+  end
+  local isSelected = absolute == selected
+  drawPaletteText(
+    text,
+    palette,
+    tostring(entry.label or entry.contact),
+    LIST_X + NAME_TEXT_X,
+    top + 2,
+    isSelected and colors.nameSelectedFg or colors.nameFg,
+    isSelected and colors.nameSelectedSh or colors.nameSh,
+    colors.bg1
+  )
+  local class = entry.class
+  if type(class) == "string" and class ~= "" then
+    drawPaletteText(
+      text,
+      palette,
+      class,
+      LIST_X + CLASS_TEXT_X,
+      top + 2,
+      isSelected and colors.classSelectedFg or colors.classFg,
+      isSelected and colors.classSelectedSh or colors.classSh,
+      colors.bg2
+    )
+  end
+  if manual then
+    graphics.setColor(1, 1, 1, 1)
+    local sequence = isSelected and MOVE_SELECTED_SEQUENCE or MOVE_SEQUENCE
+    drawSprite(graphics, images, sprites, PHONE_SET, sequence, 1, 12, top + 12)
+  end
+end
+
+-- Draws an empty band at a settled slot with the absolute parity the
+-- missing contact would carry.
+---@param graphics love.graphics
+---@param absolute integer
+---@param top number
+---@param palette table<integer, table<string, number>>
+local function drawEmptyBand(graphics, absolute, top, palette)
+  local colors = ROW_COLORS[(absolute % 2) + 1]
+  fillPalette(graphics, palette, colors.fill1, LIST_X, top, ROW_WIDTH, ROW_HEIGHT)
+  fillPalette(graphics, palette, colors.bg1, LIST_X + NAME_CELL_X, top, NAME_CELL_WIDTH, CELL_HEIGHT)
+  fillPalette(graphics, palette, colors.bg2, LIST_X + CLASS_CELL_X, top, CLASS_CELL_WIDTH, CELL_HEIGHT)
+  fillPalette(graphics, palette, colors.fill2, LIST_X + 1, top + 1, 2, 2)
+  fillPalette(graphics, palette, colors.fill1, LIST_X + 8, top, 2, 7)
+  for _, dotY in ipairs({ 9, 13, 17 }) do
+    fillPalette(graphics, palette, colors.fill1, LIST_X + 9, top + dotY, 2, 2)
+  end
 end
 
 -- Draws the six-row viewport the way the source prints its window bitmap:
 -- per row the band fill, the name and class cells, the marker dots, then
 -- the name and class text in the selected or deselected palette colors.
 -- Manual move mode swaps the corner frame for per-row move chevrons. A
--- running slide displaces every row band by the view's pixel offset while
--- the alternating colors follow the settled viewport's first color.
+-- running slide paints the transient seven-row strip at its per-row
+-- displacement under a viewport clip; the alternating colors follow the
+-- absolute contact index.
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
 ---@param text table<string, unknown>?
@@ -248,59 +367,67 @@ local function drawList(graphics, images, text, list, sprites, palette)
   assert(type(rows) == "table", "the list projection carries its rows")
   assert(type(selected) == "number", "the list projection carries its selection")
   assert(type(scrollOffset) == "number", "the list projection carries its scroll offset")
-  local offset = list.scrollPixels
-  if type(offset) ~= "number" then
-    offset = 0
-  end
-  local firstBg = list.firstBgColor
-  if type(firstBg) ~= "number" then
-    firstBg = scrollOffset % 2
-  end
-  for slot = 0, VISIBLE_ROWS - 1 do
-    local row = rows[slot + 1]
-    local absolute = scrollOffset + slot
-    local colors = ROW_COLORS[((firstBg + slot) % 2) + 1]
-    local top = LIST_Y + slot * ROW_HEIGHT + offset
-    fillPalette(graphics, palette, colors.fill1, LIST_X, top, ROW_WIDTH, ROW_HEIGHT)
-    fillPalette(graphics, palette, colors.bg1, LIST_X + NAME_CELL_X, top, NAME_CELL_WIDTH, CELL_HEIGHT)
-    fillPalette(graphics, palette, colors.bg2, LIST_X + CLASS_CELL_X, top, CLASS_CELL_WIDTH, CELL_HEIGHT)
-    fillPalette(graphics, palette, colors.fill2, LIST_X + 1, top + 1, 2, 2)
-    fillPalette(graphics, palette, colors.fill1, LIST_X + 8, top, 2, 7)
-    for _, dotY in ipairs({ 9, 13, 17 }) do
-      fillPalette(graphics, palette, colors.fill1, LIST_X + 9, top + dotY, 2, 2)
-    end
-    if row ~= nil then
-      local entry = row --[[@as table<string, unknown>]]
-      local isSelected = absolute == selected
-      drawPaletteText(
-        text,
-        palette,
-        tostring(entry.label or entry.contact),
-        LIST_X + NAME_TEXT_X,
-        top + 2,
-        isSelected and colors.nameSelectedFg or colors.nameFg,
-        isSelected and colors.nameSelectedSh or colors.nameSh,
-        colors.bg1
-      )
-      local class = entry.class
-      if type(class) == "string" and class ~= "" then
-        drawPaletteText(
+  local pixels = slidePixels(list)
+  local slideActive = type(list.slide) == "table"
+  local outerX, outerY, outerW, outerH = graphics.getScissor()
+  local function paintRows()
+    if slideActive then
+      for _, node in ipairs(rows) do
+        local entry = node --[[@as table<string, unknown>]]
+        local absolute = entry.absolute --[[@as integer]]
+        local slot = entry.slot --[[@as integer]]
+        assert(type(absolute) == "number", "the sliding strip carries absolute contact indices")
+        assert(type(slot) == "number", "the sliding strip carries relative slots")
+        drawRow(
+          graphics,
+          images,
           text,
-          palette,
-          class,
-          LIST_X + CLASS_TEXT_X,
-          top + 2,
-          isSelected and colors.classSelectedFg or colors.classFg,
-          isSelected and colors.classSelectedSh or colors.classSh,
-          colors.bg2
+          entry,
+          absolute,
+          LIST_Y + slot * ROW_HEIGHT + pixels,
+          selected,
+          manual,
+          sprites,
+          palette
         )
       end
-      if manual then
-        graphics.setColor(1, 1, 1, 1)
-        local sequence = isSelected and MOVE_SELECTED_SEQUENCE or MOVE_SEQUENCE
-        drawSprite(graphics, images, sprites, PHONE_SET, sequence, 1, 12, top + 12)
+    else
+      local bySlot = {}
+      for _, node in ipairs(rows) do
+        local entry = node --[[@as table<string, unknown>]]
+        if type(entry.slot) == "number" then
+          bySlot[
+            entry.slot --[[@as integer]]
+          ] = entry
+        end
+      end
+      for slot = 0, VISIBLE_ROWS - 1 do
+        local absolute = scrollOffset + slot
+        local entry = bySlot[slot]
+        local top = LIST_Y + slot * ROW_HEIGHT
+        if entry ~= nil then
+          local resolved = assert(
+            (entry --[[@as table<string, unknown>]]).absolute,
+            "the settled strip carries absolute contact indices"
+          ) --[[@as integer]]
+          drawRow(graphics, images, text, entry, resolved, top, selected, manual, sprites, palette)
+        else
+          drawEmptyBand(graphics, absolute, top, palette)
+        end
       end
     end
+  end
+  local ok, fault = pcall(function()
+    graphics.setScissor(LIST_X, LIST_Y, ROW_WIDTH, VISIBLE_ROWS * ROW_HEIGHT)
+    paintRows()
+  end)
+  if outerX == nil then
+    graphics.setScissor()
+  else
+    graphics.setScissor(outerX, outerY, outerW, outerH)
+  end
+  if not ok then
+    error(fault, 0)
   end
   graphics.setColor(1, 1, 1, 1)
   drawListChrome(graphics, images, list, sprites)

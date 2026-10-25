@@ -327,7 +327,7 @@ end
 ---@param controller table
 local function settleScroll(controller)
   for _ = 1, 64 do
-    if listView(controller).scrollPixels == 0 then
+    if listView(controller).slide == nil then
       return
     end
     controller:updateFixed({})
@@ -506,22 +506,29 @@ function T.contact_list_sorts_scrolls_and_separates_manual_move_input(_scope)
     }, "sort way " .. sortIndex .. " matches the independent stable source order")
     Assert.equal(list.scrollOffset, 0, "every completed sort resets to the top")
     -- Scroll down one step: the seventh contact enters and the offset
-    -- stays inside its single-step bound.
+    -- stays inside its single-step bound. The move tick opens a
+    -- seven-row strip; settling lands on the last six.
     for _ = 1, 6 do
       controller:updateFixed({ { type = "navigate", direction = "down" } })
     end
     list = listView(controller)
     Assert.equal(list.scrollOffset, 1, "seven contacts scroll exactly one step")
-    local scrolled = visibleKeys(list)
     local full = expectedStableOrder(contacts, sortIndex)
+    Assert.equal(#list.rows, 7, "the sliding strip keeps the outgoing row")
     Assert.deepEqual(
-      scrolled,
-      { full[2], full[3], full[4], full[5], full[6], full[7] },
-      "the scrolled viewport shows the last six"
+      visibleKeys(list),
+      { full[1], full[2], full[3], full[4], full[5], full[6], full[7] },
+      "the sliding strip shows outgoing plus incoming"
     )
     -- Gated scroll steps eat following presses: the descent settles
     -- first so all six steps of the climb back stay effective.
     settleScroll(controller)
+    list = listView(controller)
+    Assert.deepEqual(
+      visibleKeys(list),
+      { full[2], full[3], full[4], full[5], full[6], full[7] },
+      "the scrolled viewport shows the last six"
+    )
     for _ = 1, 6 do
       controller:updateFixed({ { type = "navigate", direction = "up" } })
       settleScroll(controller)
@@ -614,12 +621,14 @@ function T.contact_list_sorts_scrolls_and_separates_manual_move_input(_scope)
     for _ = 1, 600 do
       book:updateFixed({ { type = "navigate", direction = "down" } })
     end
+    settleScroll(book)
     local bottom = listView(book)
     Assert.equal(bottom.scrollOffset, 69, "seventy-five contacts scroll to the bounded bottom offset")
     Assert.equal(#bottom.rows, 6, "the bottom viewport still clips to six rows")
     for _ = 1, 600 do
       book:updateFixed({ { type = "navigate", direction = "up" } })
     end
+    settleScroll(book)
     Assert.equal(listView(book).scrollOffset, 0, "scrolling back up returns to the top bound")
     book:dispose()
   end
@@ -1004,9 +1013,9 @@ function T.selection_frame_and_scroll_arrows_draw_in_pixels(scope)
 end
 
 -- A single-row scroll slides over three ticks: the end state lands at
--- once while the pixel offset decays 8px per tick, input gates
--- mid-slide, and the first background color alternates with the new
--- viewport. Pixels prove the slide moves bands and repaints colors.
+-- once while each row advances 8px per tick, input gates mid-slide,
+-- and the first background color alternates with the new viewport.
+-- Pixels prove the slide moves bands and repaints colors.
 function T.phone_single_scroll_animates_over_three_ticks_and_gates_input(scope)
   local contacts, order = sortingFixture()
   local manifest = fixtureManifest(contacts, order)
@@ -1019,22 +1028,24 @@ function T.phone_single_scroll_animates_over_three_ticks_and_gates_input(scope)
   local before = listView(controller)
   Assert.equal(before.selected, 5, "five steps reach the last in-viewport row")
   Assert.equal(before.scrollOffset, 0, "in-viewport motion never scrolls")
-  Assert.equal(before.scrollPixels, 0, "in-viewport motion animates nothing")
-  Assert.equal(before.firstBgColor, 0, "the top viewport starts on the first background color")
+  Assert.isNil(before.slide, "in-viewport motion animates nothing")
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   local sliding = listView(controller)
   Assert.equal(sliding.selected, 6, "the sixth step selects the seventh contact")
   Assert.equal(sliding.scrollOffset, 1, "the scrolled end state lands at once")
-  Assert.equal(sliding.scrollPixels, 16, "the move tick steps the first eight pixels")
-  Assert.equal(sliding.firstBgColor, 1, "the scrolled viewport alternates its first background color")
+  Assert.notNil(sliding.slide, "the move tick opens the row slide")
+  Assert.equal(sliding.slide.first, 0, "the first tick still starts from the outgoing viewport")
+  Assert.equal(sliding.slide.direction, 1, "the slide moves down one row")
+  Assert.equal(sliding.slide.pixels, -8, "the move tick steps the first eight pixels")
   local mid = drawPhone(scope, controller, resources)
   controller:updateFixed({ { type = "navigate", direction = "up" } })
   Assert.equal(listView(controller).selected, 6, "input mid-slide is ignored")
   Assert.equal(listView(controller).scrollOffset, 1, "the gated press moves no viewport")
-  Assert.equal(listView(controller).scrollPixels, 8, "the slide decays eight pixels per tick")
+  Assert.equal(listView(controller).slide.pixels, -16, "the second tick advances another eight pixels")
+  Assert.equal(listView(controller).slide.first, 0, "the second tick stays inside the same row")
   controller:updateFixed({})
   local settled = listView(controller)
-  Assert.equal(settled.scrollPixels, 0, "three ticks settle the single scroll")
+  Assert.isNil(settled.slide, "three ticks settle the single scroll")
   Assert.equal(settled.selected, 6, "the settled selection keeps its end state")
   Assert.equal(settled.scrollOffset, 1, "the settled viewport keeps its end state")
   local band = { x = 8, y = 16, width = 216, height = 24 }
@@ -1047,7 +1058,8 @@ function T.phone_single_scroll_animates_over_three_ticks_and_gates_input(scope)
 end
 
 -- A six-row page chains six singles: eighteen ticks gate input while
--- the offset decays, ending exactly on the instant-jump viewport.
+-- each row steps every three ticks, ending exactly on the instant-jump
+-- viewport.
 function T.phone_page_scroll_chains_six_singles(_scope)
   local contacts, order = {}, {}
   for index = 1, 13 do
@@ -1058,18 +1070,21 @@ function T.phone_page_scroll_chains_six_singles(_scope)
   local controller = openPhone(fixtureManifest(contacts, order), 0)
   controller:updateFixed({ { type = "navigate", direction = "right" } })
   Assert.equal(listView(controller).selected, 6, "paging right jumps one viewport")
-  Assert.equal(listView(controller).scrollPixels, 16, "the first page steps its first eight pixels")
+  Assert.equal(listView(controller).slide.pixels, -8, "the first page steps its first eight pixels")
+  Assert.equal(listView(controller).slide.first, 0, "the first page starts from the outgoing viewport")
   settleScroll(controller)
   controller:updateFixed({ { type = "navigate", direction = "right" } })
   Assert.equal(listView(controller).selected, 12, "paging right again reaches the last contact")
   Assert.equal(listView(controller).scrollOffset, 7, "the page end state lands at once")
-  Assert.equal(listView(controller).scrollPixels, 136, "six rows chain six singles behind the move tick")
+  Assert.equal(listView(controller).slide.first, 1, "the chained page starts from its outgoing viewport")
+  Assert.equal(listView(controller).slide.pixels, -8, "six rows chain six singles behind the move tick")
   for tick = 1, 17 do
-    Assert.equal(
-      listView(controller).scrollPixels,
-      136 - (tick - 1) * 8,
-      "the chained slide decays eight pixels per tick"
-    )
+    local seen = listView(controller)
+    local elapsed = tick
+    local expectedFirst = 1 + math.floor(elapsed / 3)
+    local expectedPixels = -(elapsed % 3) * 8
+    Assert.equal(seen.slide.first, expectedFirst, "tick " .. tick .. " starts from the stepped viewport")
+    Assert.equal(seen.slide.pixels, expectedPixels, "tick " .. tick .. " advances eight pixels inside its row")
     if tick == 6 then
       controller:updateFixed({ { type = "navigate", direction = "up" } })
       Assert.equal(listView(controller).selected, 12, "input mid-page is ignored")
@@ -1078,7 +1093,7 @@ function T.phone_page_scroll_chains_six_singles(_scope)
     end
   end
   local settled = listView(controller)
-  Assert.equal(settled.scrollPixels, 0, "eighteen ticks settle the chained page")
+  Assert.isNil(settled.slide, "eighteen ticks settle the chained page")
   Assert.equal(settled.scrollOffset, 7, "the settled viewport keeps its end state")
   Assert.deepEqual(
     visibleKeys(settled),
@@ -1314,6 +1329,330 @@ function T.menu_taps_choose_options(_scope)
   tap(controller, 110, 88)
   Assert.notNil(controller:status().view.call, "tapping the Call row starts the conversation")
   controller:dispose()
+end
+
+-- A single step down keeps the outgoing row on screen while the next row
+-- enters from the lower edge. Seven contacts open with the cursor on the
+-- last in-viewport row; one step down slides three ticks at eight pixels
+-- per tick, gates input mid-slide, then settles on the last six contacts.
+function T.phone_single_step_keeps_the_outgoing_row_on_screen(scope)
+  local contacts, order = sortingFixture()
+  local manifest = fixtureManifest(contacts, order)
+  local resources = renderResources(scope, manifest)
+  local controller = openPhone(manifest, 0)
+  for _ = 1, 5 do
+    controller:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  local before = listView(controller)
+  Assert.equal(before.selected, 5, "five steps reach the last in-viewport row")
+  Assert.equal(before.scrollOffset, 0, "in-viewport motion never scrolls")
+  Assert.equal(#before.rows, 6, "seven contacts clip to six rows before the slide")
+  local beforeImage = drawPhone(scope, controller, resources)
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  local sliding = listView(controller)
+  Assert.equal(sliding.selected, 6, "the sixth step selects the seventh contact")
+  Assert.equal(sliding.scrollOffset, 1, "the scrolled end state lands at once")
+  local keys = visibleKeys(sliding)
+  Assert.equal(#keys, 7, "the sliding strip shows seven rows while inside a row")
+  Assert.equal(keys[1], order[1], "the outgoing contact stays in the strip")
+  Assert.equal(keys[7], order[7], "the incoming contact enters the strip")
+  local viewport = { x = 8, y = 16, width = 216, height = 144 }
+  local firstTick = drawPhone(scope, controller, resources)
+  Assert.isTrue(changedPixels(beforeImage, firstTick, viewport) > 0, "the slide repaints the viewport")
+  local beforeR, beforeG, beforeB = surfaceBytes(beforeImage, 12, 28)
+  local tickR, tickG, tickB = surfaceBytes(firstTick, 12, 28)
+  Assert.deepEqual(
+    { tickR, tickG, tickB },
+    { beforeR, beforeG, beforeB },
+    "the outgoing band still paints the top after one tick"
+  )
+  local bottomOutside = { x = 40, y = 160, width = 60, height = 8 }
+  Assert.equal(
+    changedPixels(beforeImage, firstTick, bottomOutside),
+    0,
+    "the entering row never paints below the viewport"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(listView(controller).selected, 6, "input mid-slide is ignored")
+  Assert.equal(listView(controller).scrollOffset, 1, "the gated press moves no viewport")
+  local secondTick = drawPhone(scope, controller, resources)
+  Assert.isTrue(
+    changedPixels(firstTick, secondTick, viewport) > 0,
+    "the second tick moves the bands another eight pixels"
+  )
+  local beforeLowR, beforeLowG, beforeLowB = surfaceBytes(beforeImage, 12, 20)
+  local tick2R, tick2G, tick2B = surfaceBytes(secondTick, 12, 20)
+  Assert.deepEqual(
+    { tick2R, tick2G, tick2B },
+    { beforeLowR, beforeLowG, beforeLowB },
+    "the outgoing band still paints after two ticks"
+  )
+  controller:updateFixed({})
+  local settled = listView(controller)
+  Assert.equal(settled.selected, 6, "the settled selection keeps its end state")
+  Assert.equal(settled.scrollOffset, 1, "the settled viewport keeps its end state")
+  Assert.equal(#settled.rows, 6, "the settled viewport clips back to six rows")
+  Assert.deepEqual(visibleKeys(settled), {
+    order[2],
+    order[3],
+    order[4],
+    order[5],
+    order[6],
+    order[7],
+  }, "the settled page shows the last six contacts")
+  local settledImage = drawPhone(scope, controller, resources)
+  Assert.isTrue(changedPixels(secondTick, settledImage, viewport) > 0, "the third tick settles onto the new viewport")
+  Assert.equal(
+    changedPixels(settledImage, drawPhone(scope, controller, resources), viewport),
+    0,
+    "redrawing a settled list without a tick changes no pixel"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(listView(controller).selected, 5, "input works again after three ticks")
+  controller:dispose()
+  do
+    local empty = openPhone(fixtureManifest({}, {}), 0)
+    Assert.equal(#listView(empty).rows, 0, "no contacts show no rows")
+    empty:updateFixed({ { type = "navigate", direction = "down" } })
+    Assert.equal(#listView(empty).rows, 0, "an empty list never animates")
+    empty:dispose()
+  end
+  do
+    local one = { { key = "custom.mom", family = "mother", sortWeights = { 10, 20, 30, 40 } } }
+    local single = openPhone(fixtureManifest(one, { "custom.mom" }), 0)
+    single:updateFixed({ { type = "navigate", direction = "down" } })
+    Assert.equal(#listView(single).rows, 1, "one contact never animates")
+    single:dispose()
+  end
+end
+
+-- A six-row page advances one row every three ticks across eighteen ticks.
+-- Thirteen contacts page twice; the second page is the six-row chain.
+-- Intermediate strips name a new adjacent contact every three ticks while
+-- input stays gated, ending on the last six contacts.
+function T.phone_page_step_advances_one_row_every_three_ticks(scope)
+  local contacts, order = {}, {}
+  for index = 1, 13 do
+    local key = string.format("custom.page-%02d", index)
+    contacts[#contacts + 1] = { key = key }
+    order[#order + 1] = key
+  end
+  local manifest = fixtureManifest(contacts, order)
+  local resources = renderResources(scope, manifest)
+  local controller = openPhone(manifest, 0)
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  settleScroll(controller)
+  Assert.equal(listView(controller).scrollOffset, 1, "the first page reaches the next viewport")
+  local pageStartImage = drawPhone(scope, controller, resources)
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(listView(controller).selected, 12, "paging right jumps one viewport")
+  Assert.equal(listView(controller).scrollOffset, 7, "the page end state lands at once")
+  local viewport = { x = 8, y = 16, width = 216, height = 144 }
+  local keys1 = visibleKeys(listView(controller))
+  Assert.equal(#keys1, 7, "the first page tick shows seven rows")
+  Assert.equal(keys1[1], order[2], "the page keeps its outgoing contact on the first tick")
+  Assert.equal(keys1[7], order[8], "the first new contact enters on the first tick")
+  local tick1 = drawPhone(scope, controller, resources)
+  local startR, startG, startB = surfaceBytes(pageStartImage, 12, 28)
+  local tick1R, tick1G, tick1B = surfaceBytes(tick1, 12, 28)
+  Assert.deepEqual(
+    { tick1R, tick1G, tick1B },
+    { startR, startG, startB },
+    "the outgoing page band still paints after one tick"
+  )
+  Assert.deepEqual(
+    { surfaceBytes(tick1, 124, 160) },
+    { leaseBytes(scope, resources.images, "assets/generated/pokegear/phone-sprite-phone-2-1.png") },
+    "the lower chevron stays visible while rows remain below the visual step"
+  )
+  Assert.isTrue(
+    (function()
+      local cornerR, cornerG, cornerB = surfaceBytes(tick1, 19, 129)
+      local leaseR, leaseG, leaseB =
+        leaseBytes(scope, resources.images, "assets/generated/pokegear/phone-sprite-phone-3-1.png")
+      return cornerR ~= leaseR or cornerG ~= leaseG or cornerB ~= leaseB
+    end)(),
+    "the settled corner does not paint early while the selection is off screen"
+  )
+  controller:updateFixed({})
+  controller:updateFixed({})
+  local keys3 = visibleKeys(listView(controller))
+  Assert.equal(#keys3, 6, "the third tick rests on a row boundary")
+  Assert.equal(keys3[1], order[3], "the second row steps in after three ticks")
+  Assert.equal(keys3[6], order[8], "the boundary shows six stepped rows")
+  local tick3 = drawPhone(scope, controller, resources)
+  local row3R, row3G, row3B = surfaceBytes(pageStartImage, 12, 52)
+  local tick3R, tick3G, tick3B = surfaceBytes(tick3, 12, 28)
+  Assert.deepEqual(
+    { tick3R, tick3G, tick3B },
+    { row3R, row3G, row3B },
+    "the stepped row paints the top after three ticks"
+  )
+  controller:updateFixed({})
+  local keys4 = visibleKeys(listView(controller))
+  Assert.equal(#keys4, 7, "the fourth tick opens the next row")
+  Assert.equal(keys4[1], order[3], "the stepped row stays while the next row opens")
+  Assert.equal(keys4[7], order[9], "the next contact enters after the boundary")
+  local tick4 = drawPhone(scope, controller, resources)
+  Assert.isTrue(changedPixels(tick3, tick4, viewport) > 0, "the row after the boundary moves another eight pixels")
+  controller:updateFixed({})
+  controller:updateFixed({})
+  local keys6 = visibleKeys(listView(controller))
+  Assert.equal(keys6[1], order[4], "the third row steps in after six ticks")
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(listView(controller).selected, 12, "input mid-page is ignored")
+  Assert.equal(listView(controller).scrollOffset, 7, "the gated press moves no page")
+  for _ = 1, 5 do
+    controller:updateFixed({})
+  end
+  local keys12 = visibleKeys(listView(controller))
+  Assert.equal(keys12[1], order[6], "the fifth row steps in after twelve ticks")
+  for _ = 1, 6 do
+    controller:updateFixed({})
+  end
+  local settled = listView(controller)
+  Assert.equal(#settled.rows, 6, "the settled page clips back to six rows")
+  Assert.equal(settled.selected, 12, "the settled selection keeps its end state")
+  Assert.equal(settled.scrollOffset, 7, "the settled page keeps its end state")
+  Assert.deepEqual(visibleKeys(settled), {
+    order[8],
+    order[9],
+    order[10],
+    order[11],
+    order[12],
+    order[13],
+  }, "the settled page shows the last six contacts")
+  local settledImage = drawPhone(scope, controller, resources)
+  Assert.equal(
+    changedPixels(settledImage, drawPhone(scope, controller, resources), viewport),
+    0,
+    "redrawing a settled page without a tick changes no pixel"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(listView(controller).selected, 11, "input works again after eighteen ticks")
+  controller:dispose()
+end
+
+-- Upward motion slides the previous row in from the top without painting
+-- outside the six-row viewport. Seven contacts sit at the bottom, then
+-- step back up; thirteen contacts page back up across six rows. Chrome
+-- follows the visual step and the incoming scissor returns untouched.
+function T.phone_upward_step_clips_to_the_viewport_and_keeps_chrome(scope)
+  local contacts, order = sortingFixture()
+  local manifest = fixtureManifest(contacts, order)
+  local resources = renderResources(scope, manifest)
+  local controller = openPhone(manifest, 0)
+  for _ = 1, 6 do
+    controller:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  settleScroll(controller)
+  Assert.equal(listView(controller).scrollOffset, 1, "seven contacts rest at the bottom")
+  for _ = 1, 5 do
+    controller:updateFixed({ { type = "navigate", direction = "up" } })
+  end
+  Assert.equal(listView(controller).selected, 1, "five steps climb inside the viewport")
+  local preUpImage = drawPhone(scope, controller, resources)
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(listView(controller).selected, 0, "the last step selects the first contact")
+  Assert.equal(listView(controller).scrollOffset, 0, "the upward end state lands at once")
+  local keys = visibleKeys(listView(controller))
+  Assert.equal(#keys, 7, "the upward strip shows seven rows while inside a row")
+  Assert.equal(keys[1], order[1], "the previous contact enters from the top")
+  Assert.equal(keys[7], order[7], "the outgoing bottom contact stays in the strip")
+  local tick1 = drawPhone(scope, controller, resources)
+  local viewport = { x = 8, y = 16, width = 216, height = 144 }
+  Assert.isTrue(changedPixels(preUpImage, tick1, viewport) > 0, "the upward slide repaints the viewport")
+  local preR, preG, preB = surfaceBytes(preUpImage, 12, 156)
+  local tickR, tickG, tickB = surfaceBytes(tick1, 12, 156)
+  Assert.deepEqual(
+    { tickR, tickG, tickB },
+    { preR, preG, preB },
+    "the outgoing bottom band still paints after one upward tick"
+  )
+  local topOutside = { x = 40, y = 8, width = 60, height = 8 }
+  Assert.equal(changedPixels(preUpImage, tick1, topOutside), 0, "the entering top row never paints above the viewport")
+  love.graphics.setScissor(10, 10, 50, 50)
+  drawPhone(scope, controller, resources)
+  local sx, sy, sw, sh = love.graphics.getScissor()
+  Assert.deepEqual({ sx, sy, sw, sh }, { 10, 10, 50, 50 }, "the clipped list restores the incoming scissor")
+  love.graphics.setScissor()
+  Assert.deepEqual(
+    { surfaceBytes(tick1, 124, 12) },
+    { leaseBytes(scope, resources.images, "assets/generated/pokegear/phone-sprite-phone-1-1.png") },
+    "the upper chevron stays visible while rows remain above the visual step"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(listView(controller).selected, 0, "downward input mid-slide is ignored")
+  controller:updateFixed({})
+  local settled = listView(controller)
+  Assert.equal(#settled.rows, 6, "the settled top viewport clips back to six rows")
+  Assert.deepEqual(visibleKeys(settled), {
+    order[1],
+    order[2],
+    order[3],
+    order[4],
+    order[5],
+    order[6],
+  }, "the settled top shows the first six contacts")
+  controller:dispose()
+  do
+    local many, manyOrder = {}, {}
+    for index = 1, 13 do
+      local key = string.format("custom.page-%02d", index)
+      many[#many + 1] = { key = key }
+      manyOrder[#manyOrder + 1] = key
+    end
+    local bigManifest = fixtureManifest(many, manyOrder)
+    local bigResources = renderResources(scope, bigManifest)
+    local book = openPhone(bigManifest, 0)
+    for _ = 1, 120 do
+      book:updateFixed({ { type = "navigate", direction = "down" } })
+    end
+    settleScroll(book)
+    Assert.equal(listView(book).scrollOffset, 7, "thirteen contacts rest at the bottom")
+    book:updateFixed({ { type = "navigate", direction = "left" } })
+    settleScroll(book)
+    Assert.equal(listView(book).scrollOffset, 6, "paging back once reaches the prior viewport")
+    book:updateFixed({ { type = "navigate", direction = "left" } })
+    Assert.equal(listView(book).selected, 0, "paging back again selects the first contact")
+    Assert.equal(listView(book).scrollOffset, 0, "the upward page end state lands at once")
+    local pageKeys = visibleKeys(listView(book))
+    Assert.equal(#pageKeys, 7, "the upward page shows seven rows on its first tick")
+    Assert.equal(pageKeys[1], manyOrder[6], "the upward page keeps its outgoing contact")
+    local pageTick = drawPhone(scope, book, bigResources)
+    Assert.deepEqual(
+      { surfaceBytes(pageTick, 124, 12) },
+      { leaseBytes(scope, bigResources.images, "assets/generated/pokegear/phone-sprite-phone-1-1.png") },
+      "the upward page keeps its upper chevron on the first tick"
+    )
+    Assert.isTrue(
+      (function()
+        local cornerR, cornerG, cornerB = surfaceBytes(pageTick, 19, 9)
+        local leaseR, leaseG, leaseB =
+          leaseBytes(scope, bigResources.images, "assets/generated/pokegear/phone-sprite-phone-3-1.png")
+        return cornerR ~= leaseR or cornerG ~= leaseG or cornerB ~= leaseB
+      end)(),
+      "the settled corner does not paint early on the upward page"
+    )
+    for _ = 1, 17 do
+      book:updateFixed({})
+    end
+    local pageSettled = listView(book)
+    Assert.deepEqual(visibleKeys(pageSettled), {
+      manyOrder[1],
+      manyOrder[2],
+      manyOrder[3],
+      manyOrder[4],
+      manyOrder[5],
+      manyOrder[6],
+    }, "the settled upward page shows the first six contacts")
+    Assert.deepEqual(
+      { surfaceBytes(drawPhone(scope, book, bigResources), 19, 9) },
+      { leaseBytes(scope, bigResources.images, "assets/generated/pokegear/phone-sprite-phone-3-1.png") },
+      "the settled top shows its corner frame"
+    )
+    book:dispose()
+  end
 end
 
 return GraphicsSmoke.suite(T, { tags = { "pokegear" } })

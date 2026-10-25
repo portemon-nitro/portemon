@@ -31,7 +31,7 @@ local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhoneP
 ---@field _records table<string, table<string, unknown>> catalog contact records by key
 ---@field _selected integer zero-based absolute selection
 ---@field _scroll integer zero-based top offset into the order
----@field _scrollAnim { remaining: integer, from: integer, to: integer }? the running viewport slide
+---@field _scrollAnim { from: integer, to: integer, elapsed: integer }? the running viewport slide
 ---@field _mode string list, menu, sort, manual, or call
 ---@field _entryOwner string menu or host, fixed by the initial entry path
 ---@field _menuCursor integer zero-based menu cursor
@@ -389,7 +389,7 @@ function PhoneController:_moveSelection(selected)
   end
   self._scroll = math.min(math.max(self._scroll, 0), self:_maxScroll())
   if self._scroll ~= from then
-    self._scrollAnim = { remaining = 3 * math.abs(self._scroll - from), from = from, to = self._scroll }
+    self._scrollAnim = { from = from, to = self._scroll, elapsed = 0 }
   end
 end
 
@@ -1036,8 +1036,8 @@ function PhoneController:updateFixed(uiInput)
   end
   local anim = self._scrollAnim
   if anim ~= nil then
-    anim.remaining = anim.remaining - 1
-    if anim.remaining <= 0 then
+    anim.elapsed = anim.elapsed + 1
+    if anim.elapsed >= 3 * math.abs(anim.to - anim.from) then
       self._scrollAnim = nil
     end
   end
@@ -1045,37 +1045,87 @@ end
 
 ---@return table<string, unknown> the detached contact list projection
 function PhoneController:_listView()
+  local count = #self._order
+  local anim = self._scrollAnim
+  if anim == nil then
+    local rows = {}
+    for slot = 0, VISIBLE_ROWS - 1 do
+      local absolute = self._scroll + slot
+      local key = self._order[absolute + 1]
+      if key ~= nil then
+        rows[#rows + 1] = {
+          absolute = absolute,
+          slot = slot,
+          contact = key,
+          label = self._labels[key],
+          class = self._classes[key],
+          y = ROW_HEIGHT * slot + 2,
+        }
+      end
+    end
+    return {
+      rows = rows,
+      selected = self._selected,
+      scrollOffset = self._scroll,
+      manual = self._mode == "manual",
+      total = count,
+      -- The source frames the selected row with four corner sprites and
+      -- shows the scroll arrows only while the plain list owns the card:
+      -- menus hide the corners, manual mode swaps them for move arrows.
+      cursorVisible = self._mode == "list",
+    }
+  end
+  -- One row at a time: each 24-pixel row takes three eight-pixel ticks.
+  -- At a row boundary six settled rows start at the intermediate first
+  -- offset; inside a row seven rows overlap while the outgoing row
+  -- scrolls out and the incoming row scrolls in.
+  local from, to, elapsed = anim.from, anim.to, anim.elapsed
+  local direction = to > from and 1 or -1
+  local completed = math.floor(elapsed / 3)
+  local partial = elapsed % 3
+  local first = from + direction * completed
   local rows = {}
-  for slot = 0, VISIBLE_ROWS - 1 do
-    local key = self._order[self._scroll + slot + 1]
-    if key ~= nil then
-      rows[#rows + 1] = {
-        contact = key,
-        label = self._labels[key],
-        class = self._classes[key],
-        y = ROW_HEIGHT * slot + 2,
-      }
+  -- The signed screen displacement applied to every transient row:
+  -- upward for a downward scroll, downward for an upward scroll, and
+  -- zero exactly on a row boundary.
+  local pixels = -direction * partial * 8
+  -- Inside a row the strip carries one extra overlapping record: the
+  -- incoming row below for a downward scroll, above for an upward one.
+  local firstSlot, lastSlot = 0, VISIBLE_ROWS - 1
+  if partial > 0 then
+    if direction == 1 then
+      lastSlot = VISIBLE_ROWS
+    else
+      firstSlot = -1
     end
   end
-  -- The running slide offset in pixels: the full row count times
-  -- twenty-four at the start, decaying eight pixels per tick to the
-  -- settled viewport. Positive slides the rows down, negative up.
-  local pixels = 0
-  local anim = self._scrollAnim
-  if anim ~= nil then
-    pixels = (anim.to > anim.from and 1 or -1) * anim.remaining * 8
+  for slot = firstSlot, lastSlot do
+    local absolute = first + slot
+    if absolute >= 0 and absolute < count then
+      local key = self._order[absolute + 1]
+      if key ~= nil then
+        rows[#rows + 1] = {
+          absolute = absolute,
+          slot = slot,
+          contact = key,
+          label = self._labels[key],
+          class = self._classes[key],
+          y = ROW_HEIGHT * slot + 2,
+        }
+      end
+    end
+  end
+  local slide = nil
+  if elapsed < 3 * math.abs(to - from) then
+    slide = { first = first, direction = direction, pixels = pixels }
   end
   return {
     rows = rows,
     selected = self._selected,
     scrollOffset = self._scroll,
-    scrollPixels = pixels,
-    firstBgColor = self._scroll % 2,
+    slide = slide,
     manual = self._mode == "manual",
-    total = #self._order,
-    -- The source frames the selected row with four corner sprites and
-    -- shows the scroll arrows only while the plain list owns the card:
-    -- menus hide the corners, manual mode swaps them for move arrows.
+    total = count,
     cursorVisible = self._mode == "list",
   }
 end
@@ -1271,6 +1321,7 @@ function PhoneController:dispose()
   self._disposed = true
   self._held = nil
   self._panelTicks = nil
+  self._scrollAnim = nil
   local handle = self._callHandle
   self._callHandle = nil
   if handle ~= nil then
