@@ -987,6 +987,180 @@ function T.tests.radio_facts_resolve_reception_sets_without_a_location_record()
   )
 end
 
+-- The shared fly information pane over the composed bundle: the synthetic
+-- region map stands the cursor on its first location so the selected map
+-- matches the compiled phonebook entry, and the injected world keeps every
+-- other real owner while answering marker queries with the case under test.
+---@return table the synthetic compiled asset family with one mapped contact
+local function flyMarkerFamily()
+  local Fixture = require("tests.support.PokegearMapFixture")
+  local family = Fixture.manifest()
+  family.catalog.contacts = {
+    { key = "test.caller.falkner", sortWeight = 10, map = 10 },
+  }
+  family.catalog.contactOrder = { "test.caller.falkner" }
+  family.catalog.locations[1].flypoint = "test.fly.a"
+  family.catalog.flypoints = { { key = "test.fly.a" } }
+  return family
+end
+
+---@param markerImpl fun(self: table<string, unknown>, location: string, phone: table<string, unknown>, places: table<string, string>): table
+---@return table bundle, table controller, table handle the composed bundle with its open fly selector
+local function openComposedFly(markerImpl)
+  local Fixture = require("tests.support.PokegearMapFixture")
+  local family = flyMarkerFamily()
+  local catalog = family.catalog
+  local state = PokegearState.new({ seed = 4177 }, { catalog = catalog })
+  local random = PokegearRandom.new(4177)
+  local calendar = PokegearCalendar.new(state)
+  local runtime = {
+    pokegearState = state,
+    pokegearRandom = random,
+    pokegearCalendar = calendar,
+    pokegearCatalog = catalog,
+    session = {
+      currentMap = {
+        mapSymbol = "MAP_A",
+        mapSectionNativeId = 10,
+        fieldData = { transitionEnvironment = "outdoors" },
+      },
+    },
+    eventState = {
+      isFlagSet = function()
+        return false
+      end,
+    },
+    messageProvider = {
+      acquireBank = function()
+        return {}
+      end,
+      releaseBank = function() end,
+      get = function(_, bank, entry)
+        return { text = "text " .. bank .. ":" .. entry }
+      end,
+    },
+    scripts = {
+      worldState = {
+        isFlagSet = function()
+          return false
+        end,
+      },
+    },
+    presentationDisplay = {
+      width = 256,
+      height = 192,
+      topology = ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = 256, height = 192 },
+        role = "world",
+        touch = false,
+      }),
+      pixelRatio = 1,
+      signature = "pokegear-fly-marker-test",
+    },
+    localClock = {
+      nowLocal = function()
+        return { year = 2000, month = 1, day = 1, hour = 12, minute = 0, second = 0 }
+      end,
+    },
+    radioMusicIs = function(_, _)
+      return false
+    end,
+  }
+  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
+  local world = PhoneWorldContext.new({
+    state = state,
+    runtime = runtime,
+    flags = runtime.eventState,
+    catalog = catalog,
+  })
+  world.locationMarkers = markerImpl
+  local bundle = PokegearComposition.compose(runtime, {
+    state = state,
+    catalog = catalog,
+    assets = family,
+    clock = runtime.localClock,
+    audio = nil,
+    messages = { greeting = "test.greeting.ref" },
+    world = world,
+  })
+  runtime.pokegear = bundle
+  local host = bundle.scriptHost --[[@as table<string, unknown>]]
+  local open = host.open --[[@as fun(self: table<string, unknown>, args: table<string, unknown>): table<string, unknown>]]
+  local handle = open(host, {
+    mode = "fly",
+    parentOwner = "script:test",
+    selection = {
+      slot = 0,
+      mapContext = Fixture.context(),
+      destinations = { "test.fly.a" },
+    },
+  })
+  local active = (host --[[@as table<string, unknown>]])._active --[[@as table<string, unknown>]]
+  local controller = (active --[[@as table<string, unknown>]]).controller --[[@as table<string, unknown>]]
+  return bundle, controller, handle
+end
+
+-- A broken marker provider must stay visible through the composed fly
+-- entry: the selected panel read raises the original fault instead of
+-- settling on a successful-looking empty icon.
+function T.tests.composed_fly_panel_propagates_marker_failures()
+  local bundle, controller, handle = openComposedFly(function()
+    error("marker fault", 0)
+  end)
+  local statusOf = controller.status --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
+  local ok, err = pcall(statusOf, controller)
+  Assert.isFalse(ok, "a broken marker query never settles the fly panel")
+  Assert.notNil(tostring(err):find("marker fault", 1, true), "the panel read raises the original fault")
+  local host = bundle.scriptHost --[[@as table<string, unknown>]]
+  local close = host.close --[[@as fun(self: table<string, unknown>, handle: table<string, unknown>)]]
+  close(host, handle)
+  bundle:dispose()
+end
+
+-- Valid marker answers keep their icon meaning through the same composed
+-- entry: an empty list draws no icon while a ready rematch or a pending
+-- gift each draw one.
+function T.tests.composed_fly_panel_keeps_empty_and_ready_marker_meaning()
+  local cases = {
+    {
+      markers = function()
+        return {}
+      end,
+      icon = false,
+      why = "an empty marker list draws no battle icon",
+    },
+    {
+      markers = function()
+        return { { contact = "test.caller.falkner", ready = true } }
+      end,
+      icon = true,
+      why = "a ready rematch draws the battle icon",
+    },
+    {
+      markers = function()
+        return { { contact = "test.caller.falkner", gift = "custom.item-34" } }
+      end,
+      icon = true,
+      why = "a pending gift draws the battle icon",
+    },
+  }
+  for _, case in ipairs(cases) do
+    local bundle, controller, handle = openComposedFly(case.markers)
+    local statusOf = controller.status --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
+    local ok, view = pcall(statusOf, controller)
+    Assert.isTrue(ok, "a valid marker query settles the fly panel: " .. case.why)
+    assert(ok, "valid marker query settled above")
+    local panel = (view --[[@as table<string, unknown>]]).view --[[@as table<string, unknown>]]
+    local info = (panel --[[@as table<string, unknown>]]).panel --[[@as table<string, unknown>]]
+    Assert.equal((info --[[@as table<string, unknown>]]).battleIcon, case.icon, case.why)
+    local host = bundle.scriptHost --[[@as table<string, unknown>]]
+    local close = host.close --[[@as fun(self: table<string, unknown>, handle: table<string, unknown>)]]
+    close(host, handle)
+    bundle:dispose()
+  end
+end
+
 function T.tests.radio_facts_reach_every_reception_table_in_production_resolution()
   local RadioReception = require("game.hgss.src.pokegear.RadioReception")
   local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")

@@ -651,12 +651,11 @@ function PokegearComposition.compose(runtime, owners)
     local places = contactPlaces(catalog)
     for _, record in ipairs(catalog.locations) do
       if type(record) == "table" and record.mapRef == mapId and type(record.key) == "string" then
-        local ok, found = pcall(markers, world, record.key, panelPhoneEngine(), places)
-        if ok and type(found) == "table" then
-          for _, marker in ipairs(found) do
-            if type(marker) == "table" and (marker.ready == true or marker.gift ~= nil) then
-              return true
-            end
+        local found = markers(world, record.key, panelPhoneEngine(), places)
+        assert(type(found) == "table", "contact markers resolve through the shared phone projection")
+        for _, marker in ipairs(found) do
+          if type(marker) == "table" and (marker.ready == true or marker.gift ~= nil) then
+            return true
           end
         end
       end
