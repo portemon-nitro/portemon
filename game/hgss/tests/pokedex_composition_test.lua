@@ -310,6 +310,57 @@ local function stubLease()
   return lease
 end
 
+-- Opens a real composed Pokedex screen over a synthetic owning runtime
+-- with a recording audio owner: the factory, controller, lease, and
+-- music sink are production code, while maps, saves, and derived caches
+-- stay detached fixtures at the documented owner boundaries.
+---@param current string? starting current sequence behind the recording audio owner
+---@return table runtime synthetic owning runtime behind the factory
+---@return table audio recording audio owner with its move log
+---@return table lease counting preparation lease behind the binding seam
+local function syntheticRuntimeWithAudio(current)
+  local PresentationFixture = require("tests.support.PokedexPresentationFixture")
+  local monCatalog, catalog = PresentationFixture.catalogs()
+  local owner = PresentationFixture.ownerWithHistory(monCatalog, catalog)
+  local audio = { current = current, moves = {} }
+  function audio:currentMusic()
+    return self.current
+  end
+  function audio:moveSequenceVolume(sequence, volume, frames)
+    self.moves[#self.moves + 1] = { sequence = sequence, volume = volume, frames = frames }
+  end
+  function audio:play(sequence)
+  end
+  local lease = { prepared = {}, released = 0 }
+  function lease:prepare(demand)
+    assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
+    self.prepared[#self.prepared + 1] = demand
+    return { kind = "pending" }
+  end
+  function lease:release()
+    self.released = self.released + 1
+  end
+  local runtime = {
+    dexKnowledge = owner,
+    pokedexCatalog = catalog,
+    monCatalog = monCatalog,
+    playerData = { profile = { name = "GOLD", gender = 0 } },
+    pokegear = {
+      mapContext = function()
+        return { explicitX = 3, explicitY = 5 }
+      end,
+    },
+    _pokedexPreparation = {
+      acquire = function(_)
+        return lease
+      end,
+    },
+    presentationDisplay = { width = 256, height = 192, layout = "compact" },
+    audio = audio,
+  }
+  return runtime, audio, lease
+end
+
 local function findPokedexDescriptor(runtime)
   local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
   local descriptors = Coordinator.new(runtime):applicationDescriptors()
@@ -452,6 +503,67 @@ function T.heartgold_factory_legs_stay_blocked_without_a_dump(context)
   end
   requireComposition("blocked-version factory reporting")
   withUnlockedRuntime("heartgold", function() end)
+end
+
+-- The composed screen ducks the starting sequence on its first update,
+-- and the normal close plus teardown share exactly one restore of that
+-- same sequence.
+function T.composed_close_restores_the_ducked_sequence_only_once()
+  local Composition = requireComposition("ducked sequence balance")
+  local runtime, audio, lease = syntheticRuntimeWithAudio("SEQ_FIELD_BGM")
+  local screen = Composition.open(runtime)
+  screen:updateFixed({})
+  Assert.deepEqual(audio.moves, {
+    { sequence = "SEQ_FIELD_BGM", volume = 42, frames = 1 },
+  }, "the first update ducks the starting sequence")
+  for _ = 1, 40 do
+    screen:updateFixed({ { type = "cancel" } })
+    if screen:takeResult() ~= nil then
+      break
+    end
+  end
+  screen:dispose()
+  screen:dispose()
+  Assert.deepEqual(audio.moves, {
+    { sequence = "SEQ_FIELD_BGM", volume = 42, frames = 1 },
+    { sequence = "SEQ_FIELD_BGM", volume = 127, frames = 1 },
+  }, "the normal close and teardown share one restore of the ducked sequence")
+  Assert.equal(lease.released, 1, "the composed teardown releases its acquired lease exactly once")
+end
+
+-- Replacing the current sequence after the acknowledged duck must not
+-- retarget the balancing restore: teardown moves no replacement track.
+function T.composed_dispose_leaves_a_replaced_sequence_alone()
+  local Composition = requireComposition("replaced sequence guard")
+  local runtime, audio, lease = syntheticRuntimeWithAudio("SEQ_FIELD_BGM")
+  local screen = Composition.open(runtime)
+  screen:updateFixed({})
+  Assert.deepEqual(audio.moves, {
+    { sequence = "SEQ_FIELD_BGM", volume = 42, frames = 1 },
+  }, "the first update ducks the starting sequence")
+  audio.current = "SEQ_OTHER_BGM"
+  screen:dispose()
+  for _, move in ipairs(audio.moves) do
+    Assert.isTrue(move.sequence ~= "SEQ_OTHER_BGM", "teardown never moves the replacement sequence")
+  end
+  Assert.equal(#audio.moves, 1, "teardown after a replacement performs no restore move")
+  screen:dispose()
+  Assert.equal(#audio.moves, 1, "a repeated disposal performs no further move")
+  Assert.equal(lease.released, 1, "the guarded teardown still releases its acquired lease exactly once")
+end
+
+-- An open with no active music moves nothing, and music that starts
+-- after the silent open is never claimed by the later teardown.
+function T.composed_silence_at_open_records_no_music_claim()
+  local Composition = requireComposition("silent open guard")
+  local runtime, audio, lease = syntheticRuntimeWithAudio(nil)
+  local screen = Composition.open(runtime)
+  screen:updateFixed({})
+  Assert.deepEqual(audio.moves, {}, "an open with no active music moves nothing")
+  audio.current = "SEQ_LATER_BGM"
+  screen:dispose()
+  Assert.deepEqual(audio.moves, {}, "teardown never restores music that started after the silent open")
+  Assert.equal(lease.released, 1, "the silent teardown still releases its acquired lease exactly once")
 end
 
 return {

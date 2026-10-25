@@ -114,24 +114,40 @@ function PokedexComposition.open(runtime)
   -- GF_SndHandleSetPlayerVolume). The facade has no secondary-scene or
   -- player-volume spelling, so the closest sink moves the still-current
   -- BGM through the unified fader for a single frame; silence or a
-  -- headless music service skips the move.
+  -- headless music service skips the move. The sink reports whether it
+  -- moved a sequence and remembers the ducked sequence so the matching
+  -- restore never retargets a replacement track.
+  local duckedSequence = nil
   local function duckOrRestoreMusic(action)
     local audio = runtime.audio
     if audio == nil then
-      return
+      return false
     end
     if type(audio.currentMusic) ~= "function" or type(audio.moveSequenceVolume) ~= "function" then
-      return
-    end
-    local current = audio:currentMusic()
-    if current == nil then
-      return
+      return false
     end
     if action == "duck" then
+      local current = audio:currentMusic()
+      if current == nil then
+        return false
+      end
       audio:moveSequenceVolume(current, 42, 1)
+      duckedSequence = current
+      return true
     elseif action == "restore" then
-      audio:moveSequenceVolume(current, 127, 1)
+      if duckedSequence == nil then
+        return false
+      end
+      local current = audio:currentMusic()
+      if current ~= duckedSequence then
+        duckedSequence = nil
+        return false
+      end
+      audio:moveSequenceVolume(duckedSequence, 127, 1)
+      duckedSequence = nil
+      return true
     end
+    return false
   end
   local overrides = runtime.presentationOverrides
   local pokedexOverrides = nil

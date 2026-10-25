@@ -17,6 +17,7 @@ local PokedexInterface = require("game.hgss.src.pokedex.PokedexInterface")
 ---@field _playCry fun(species: string, pattern: integer, form: integer) borrowed cry sink
 ---@field _commitResume fun(resume: table<string, unknown>): boolean composed one-use resume publication
 ---@field _music fun(action: string)? borrowed optional field-music duck/restore sink
+---@field _musicDucked boolean true after an actually applied duck until its balancing restore
 ---@field _session table<string, unknown> owned presentation session
 ---@field _readyKey integer? last matching resource generation behind admitted motion
 ---@field _view table<string, unknown> latest detached projection from the model
@@ -436,6 +437,45 @@ local function advanceLease(self, demand, measurement)
 end
 
 ---@param self PokedexScreenState
+---@param action string dispatched music request behind the controller effect
+local function applyMusic(self, action)
+  if action == "duck" then
+    if self._music == nil then
+      return
+    end
+    local applied = self._music("duck")
+    if applied == true then
+      self._musicDucked = true
+    end
+  elseif action == "restore" then
+    if not self._musicDucked then
+      return
+    end
+    if self._music == nil then
+      self._musicDucked = false
+      return
+    end
+    self._music("restore")
+    self._musicDucked = false
+  end
+end
+
+-- Balances one acknowledged duck outside the effect stream: clears the
+-- claim before the sink runs so a throwing restore still releases
+-- exactly once.
+---@param self PokedexScreenState
+local function restoreIfDucked(self)
+  if not self._musicDucked then
+    return
+  end
+  self._musicDucked = false
+  if self._music == nil then
+    return
+  end
+  self._music("restore")
+end
+
+---@param self PokedexScreenState
 local function dispatchEffects(self)
   local drain = self._controller.drainEffects
   if type(drain) ~= "function" then
@@ -449,9 +489,7 @@ local function dispatchEffects(self)
     if type(effect) == "table" and effect.kind == "sound" then
       self._effect(effect.role)
     elseif type(effect) == "table" and effect.kind == "music" then
-      if self._music ~= nil then
-        self._music(effect.action)
-      end
+      applyMusic(self, effect.action)
     elseif type(effect) == "table" and effect.kind == "cry" then
       self._playCry(effect.species, effect.mode or 0, effect.form or 0)
     elseif type(effect) == "table" and effect.kind == "resume" then
@@ -512,6 +550,7 @@ function PokedexScreenState.new(args)
     _lastInputKey = nil,
     _terminal = nil,
     _disposed = false,
+    _musicDucked = false,
   }, PokedexScreenState)
   self.page = self._view.page
   self.view = self._view
@@ -635,9 +674,10 @@ function PokedexScreenState:cancelPointerCapture()
   self._controller:cancelPointerCapture()
 end
 
--- Idempotent release of the per-open lifetime: the session, the
--- controller, and the acquired lease release exactly once and a pending
--- terminal result is discarded.
+-- Idempotent release of the per-open lifetime: balances one actually
+-- applied duck, then the session, the controller, and the acquired
+-- lease release exactly once. A throwing restore still releases every
+-- owned resource; the first observed failure propagates.
 function PokedexScreenState:dispose()
   if self._disposed then
     return
@@ -646,9 +686,28 @@ function PokedexScreenState:dispose()
   self._terminal = nil
   self._pointerHeld = false
   self._activeDragTarget = nil
-  self._session:dispose()
-  self._controller:dispose()
-  self._lease:release()
+  local firstFailure = nil
+  if self._musicDucked then
+    local okRestore, restoreFailure = pcall(restoreIfDucked, self)
+    if not okRestore and firstFailure == nil then
+      firstFailure = restoreFailure
+    end
+  end
+  local okSession, sessionFailure = pcall(self._session.dispose, self._session)
+  if not okSession and firstFailure == nil then
+    firstFailure = sessionFailure
+  end
+  local okController, controllerFailure = pcall(self._controller.dispose, self._controller)
+  if not okController and firstFailure == nil then
+    firstFailure = controllerFailure
+  end
+  local okLease, leaseFailure = pcall(self._lease.release, self._lease)
+  if not okLease and firstFailure == nil then
+    firstFailure = leaseFailure
+  end
+  if firstFailure ~= nil then
+    error(firstFailure, 0)
+  end
 end
 
 return PokedexScreenState

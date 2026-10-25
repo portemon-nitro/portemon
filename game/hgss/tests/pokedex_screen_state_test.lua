@@ -130,6 +130,55 @@ local function stubLease()
   return lease
 end
 
+-- Records the music actions the screen dispatches while simulating the
+-- sink acknowledgment: "applied" reports an actual volume move, "left"
+-- reports a no-op sink, and "failing" raises on the balancing restore.
+---@param log string[] dispatched music actions in drain order
+---@param behavior string simulated sink acknowledgment behind the call
+---@return fun(action: string): boolean simulated optional field-music sink
+local function recordingMusic(log, behavior)
+  return function(action)
+    log[#log + 1] = action
+    if behavior == "left" then
+      return false
+    end
+    if behavior == "failing" and action == "restore" then
+      error("injected restore failure")
+    end
+    return true
+  end
+end
+
+-- Wraps a live browser controller while recording exactly how often its
+-- owned teardown runs: every other fixed update still reaches the real
+-- policy owner.
+---@param controller table live browser controller under test
+---@return table wrapper delegating controller, table record teardown counts
+local function disposeRecordingController(controller)
+  local record = { disposed = 0 }
+  local wrapped = {}
+  function wrapped:updateFixed(events, preparation)
+    return controller:updateFixed(events, preparation)
+  end
+  function wrapped:view()
+    return controller:view()
+  end
+  function wrapped:drainEffects()
+    return controller:drainEffects()
+  end
+  function wrapped:takeResult()
+    return controller:takeResult()
+  end
+  function wrapped:cancelPointerCapture()
+    return controller:cancelPointerCapture()
+  end
+  function wrapped:dispose()
+    record.disposed = record.disposed + 1
+    return controller:dispose()
+  end
+  return wrapped, record
+end
+
 ---@param overrides table? per-open closures the screen calls
 ---@return table args screen construction arguments over a live controller
 local function screenArgs(overrides)
@@ -1172,6 +1221,158 @@ function T.forms_and_compare_demands_stage_their_variant_icon_keys()
     Assert.isTrue(#demand.iconKeys <= 30, "variant icons share the bounded icon demand")
   end
   screen:dispose()
+end
+
+-- A ducked screen cannot leave the field music lowered when its host
+-- tears it down: the first update drains the queued duck, and a forced
+-- disposal balances exactly the acknowledged move, exactly once.
+function T.forced_dispose_restores_an_applied_duck_exactly_once()
+  local ScreenState = requirePresent("per-open music balance")
+  local gate = { open = true }
+  local template = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
+  local monCatalog, catalog = Fixture.catalogs()
+  local owner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local controller = Fixture.openController(owner, monCatalog, catalog)
+  local calls = {}
+  local lease = gateableLease(gate, template)
+  local screen = ScreenState.new({
+    controller = controller,
+    lease = lease,
+    measureDisplay = function()
+      return compactMeasurement()
+    end,
+    effect = function()
+    end,
+    playCry = function()
+    end,
+    commitResume = function()
+      return true
+    end,
+    music = recordingMusic(calls, "applied"),
+  })
+  Assert.deepEqual(calls, {}, "construction alone dispatches no music request")
+  screen:updateFixed({})
+  Assert.deepEqual(calls, { "duck" }, "the first update drains the queued duck")
+  screen:dispose()
+  Assert.deepEqual(calls, { "duck", "restore" }, "forced disposal balances the applied duck")
+  screen:dispose()
+  Assert.deepEqual(calls, { "duck", "restore" }, "a repeated disposal restores nothing twice")
+  Assert.equal(lease.released, 1, "teardown releases its acquired lease exactly once")
+end
+
+-- The normal close already drains the balancing restore, so the later
+-- teardown must not dispatch a second one: close and disposal share one
+-- balance.
+function T.normal_close_and_dispose_share_a_single_restore()
+  local ScreenState = requirePresent("shared close balance")
+  local gate = { open = true }
+  local template = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
+  local monCatalog, catalog = Fixture.catalogs()
+  local owner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local controller = Fixture.openController(owner, monCatalog, catalog)
+  local calls = {}
+  local lease = gateableLease(gate, template)
+  local screen = ScreenState.new({
+    controller = controller,
+    lease = lease,
+    measureDisplay = function()
+      return compactMeasurement()
+    end,
+    effect = function()
+    end,
+    playCry = function()
+    end,
+    commitResume = function()
+      return true
+    end,
+    music = recordingMusic(calls, "applied"),
+  })
+  screen:updateFixed({})
+  Assert.deepEqual(calls, { "duck" }, "the first update drains the queued duck")
+  for _ = 1, 40 do
+    screen:updateFixed({ { type = "cancel" } })
+    if screen:takeResult() ~= nil then
+      break
+    end
+  end
+  Assert.deepEqual(calls, { "duck", "restore" }, "the normal close drains the single balancing restore")
+  screen:dispose()
+  Assert.deepEqual(calls, { "duck", "restore" }, "disposal after a normal close restores nothing twice")
+  screen:dispose()
+  Assert.deepEqual(calls, { "duck", "restore" }, "a repeated disposal restores nothing twice")
+  Assert.equal(lease.released, 1, "teardown releases its acquired lease exactly once")
+end
+
+-- Disposal before the first update dispatched nothing, so it must claim
+-- no music effect and still release the acquired lease.
+function T.dispose_before_first_update_makes_no_music_call()
+  local ScreenState = requirePresent("pre-dispatch disposal")
+  local calls = {}
+  local args = screenArgs({ music = recordingMusic(calls, "applied") })
+  local screen = ScreenState.new(args)
+  screen:dispose()
+  Assert.deepEqual(calls, {}, "disposal before the first dispatch claims no music effect")
+  Assert.equal(args.lease.released, 1, "early disposal still releases its acquired lease")
+end
+
+-- A sink that reports no applied move leaves ownership unset, and a
+-- screen without a sink stays silent: neither dispatches a restore on
+-- teardown.
+function T.unacknowledged_duck_claims_no_restore_on_dispose()
+  local ScreenState = requirePresent("unapplied duck ownership")
+  local calls = {}
+  local args = screenArgs({ music = recordingMusic(calls, "left") })
+  local screen = ScreenState.new(args)
+  screen:updateFixed({})
+  screen:dispose()
+  Assert.deepEqual(calls, { "duck" }, "the unapplied duck dispatches but claims no ownership")
+  Assert.equal(args.lease.released, 1, "the unowned teardown still releases its acquired lease")
+  local plain = screenArgs()
+  local quiet = ScreenState.new(plain)
+  quiet:updateFixed({})
+  quiet:dispose()
+  Assert.equal(plain.lease.released, 1, "a screen without a music sink still releases its lease")
+end
+
+-- A restore failure propagates instead of closing cleanly, but only
+-- after every acquired resource is released.
+function T.failing_restore_still_releases_owned_resources()
+  local ScreenState = requirePresent("failing teardown balance")
+  local calls = {}
+  local monCatalog, catalog = Fixture.catalogs()
+  local owner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local live = Fixture.openController(owner, monCatalog, catalog)
+  local controller, record = disposeRecordingController(live)
+  local lease = stubLease()
+  local screen = ScreenState.new({
+    controller = controller,
+    lease = lease,
+    measureDisplay = function()
+      return { width = 512, height = 384, layout = "dual" }
+    end,
+    effect = function()
+    end,
+    playCry = function()
+    end,
+    commitResume = function()
+      return true
+    end,
+    music = recordingMusic(calls, "failing"),
+  })
+  screen:updateFixed({})
+  Assert.deepEqual(calls, { "duck" }, "the first update drains the queued duck")
+  local failure = Assert.throws(function()
+    screen:dispose()
+  end, "a failing restore propagates instead of closing cleanly")
+  Assert.isTrue(
+    string.find(tostring(failure), "injected restore failure", 1, true) ~= nil,
+    "the propagated failure is the restore cause: " .. tostring(failure)
+  )
+  Assert.deepEqual(calls, { "duck", "restore" }, "teardown attempts the balancing restore before releasing")
+  Assert.equal(lease.released, 1, "a failed restore still releases the acquired lease")
+  Assert.equal(record.disposed, 1, "a failed restore still disposes the borrowed controller")
+  screen:dispose()
+  Assert.equal(lease.released, 1, "a repeated disposal after failure releases nothing twice")
 end
 
 return { tests = T }
