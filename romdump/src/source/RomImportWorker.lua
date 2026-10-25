@@ -254,6 +254,26 @@ function RomImportWorker.run(inbox, outbox)
       return CacheFs.forVersion(versionId, staging)
     end
 
+    -- Cooperative cancellation polled at safe boundaries only. It discards
+    -- a matching cancel packet without ever consuming a matching commit,
+    -- which stays queued for registerGate's blocking demand.
+    local committed = false
+    local function cancelRequested()
+      local ok, packet = pcall(function()
+        return inbox:pop()
+      end)
+      if not ok or packet == nil then
+        return false
+      end
+      if type(packet) == "table" and packet.id == id and packet.op == "cancel" then
+        return true
+      end
+      pcall(function()
+        inbox:push(packet)
+      end)
+      return false
+    end
+
     -- The registration gate: after canonical verification and the reopen
     -- proof, and directly before the binding write, the worker announces
     -- the validated version and waits for the game thread's explicit
@@ -264,6 +284,7 @@ function RomImportWorker.run(inbox, outbox)
       answer({ kind = "validated" })
       local reply = inbox:demand()
       if type(reply) == "table" and reply.id == id and reply.op == "commit" then
+        committed = true
         return
       end
       Errors.raise("IMPORT_CANCELED", "the import was superseded before registration", { id = id })
@@ -276,6 +297,13 @@ function RomImportWorker.run(inbox, outbox)
       expectedVersionId = request.expectedVersionId,
       registerGate = registerGate,
     })
+
+    -- A cancel already queued before the expensive source open ends the
+    -- worker before any file read, so a retired session never prolongs
+    -- its physical read.
+    if cancelRequested() then
+      return
+    end
 
     -- The game thread observes this before the source opens: while the
     -- worker is stalled inside its first read, the receipt card above must
@@ -310,6 +338,11 @@ function RomImportWorker.run(inbox, outbox)
       end
       return
     end
+    -- A cancel that arrived during the blocking open stops the worker
+    -- before further verification without publishing anything.
+    if not committed and cancelRequested() then
+      return
+    end
 
     local lastState, lastProgress = nil, nil
     local function reportStatus(force)
@@ -331,6 +364,9 @@ function RomImportWorker.run(inbox, outbox)
 
     reportStatus(true)
     while importer.state ~= RomImporter.STATES.COMPLETE and importer.state ~= RomImporter.STATES.ERROR do
+      if not committed and cancelRequested() then
+        return
+      end
       importer:update()
       reportStatus(false)
       workerSleep(0)

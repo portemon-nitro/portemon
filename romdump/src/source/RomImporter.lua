@@ -39,6 +39,7 @@ local Errors = require("libs.errors.src.Errors")
 ---@field private _queueSeq integer background session counter guarding late packets
 ---@field private _queueCanceled boolean whether the queued session was retired
 ---@field private _queueRequest table<string, unknown>? restartable worker input for one retry
+---@field private _pendingStart table<string, unknown>? deferred worker input while the process lease is occupied
 ---@field private _queueAttempts integer background starts for the live request
 ---@field private _commitSent boolean whether the live session authorized registration
 local RomImporter = {}
@@ -59,6 +60,69 @@ local IMPORT_ERROR_CODES = {
   BUSY = "IMPORT_BUSY",
   NOT_NDS = "IMPORT_NOT_NDS",
 }
+
+-- Single process-local background reader lease across all importer instances.
+-- At most one queued worker thread is physically live at a time. A retired
+-- session keeps occupying the lease until its thread actually exits and its
+-- outbox is drained; a newcomer waits as a pending starter without spawning
+-- a second thread. Reserved and released only on the main thread.
+local activeWorkerLease = nil
+
+-- Nonblocking pop working for both LÖVE channels and table fakes.
+---@param channel table<string, function>|userdata
+---@return table<string, unknown>?
+local function channelPop(channel)
+  local ok, packet = pcall(function()
+    return channel:pop()
+  end)
+  if not ok then
+    return nil
+  end
+  return packet
+end
+
+---@param thread table<string, function>|userdata|nil
+---@return boolean alive
+local function leaseThreadAlive(thread)
+  if thread == nil then
+    return false
+  end
+  local ok, running = pcall(function()
+    return thread:isRunning()
+  end)
+  return ok and running == true
+end
+
+-- Drain a retired worker's outbox without interpreting it, then release the
+-- lease once the thread has exited and nothing remains queued. Stale terminal
+-- packets (including large shared buffers) are discarded, never published.
+local function serviceRetiredLease()
+  local lease = activeWorkerLease
+  if lease == nil or not lease.retired then
+    return
+  end
+  local outbox = lease.outbox
+  if outbox ~= nil then
+    for _ = 1, 64 do
+      if channelPop(outbox) == nil then
+        break
+      end
+    end
+  end
+  if not leaseThreadAlive(lease.thread) then
+    if outbox ~= nil then
+      for _ = 1, 64 do
+        if channelPop(outbox) == nil then
+          break
+        end
+      end
+      if channelPop(outbox) ~= nil then
+        return
+      end
+    end
+    activeWorkerLease = nil
+  end
+end
 
 -- `versions` lets the importer verify readiness against an injected catalog in
 -- tests; production callers (boot flow, batch CLI, test runner) use the
@@ -489,6 +553,24 @@ function RomImporter:_startQueued(request, requestId, attempts)
   self.progress = 0
   self._queueSeq = (self._queueSeq or 0) + 1
   local id = requestId == nil and self._queueSeq or requestId
+  serviceRetiredLease()
+  if activeWorkerLease ~= nil then
+    self._queued = nil
+    self._pendingStart = {
+      kind = request.kind,
+      path = request.path,
+      file = request.file,
+      bytes = request.bytes,
+      name = request.name,
+      id = id,
+      attempts = self._queueAttempts,
+    }
+    self._stage = "waiting"
+    self._stageLabel = "Waiting for previous import"
+    self._detail = nil
+    self.state = RomImporter.STATES.READING
+    return
+  end
   local host = love ~= nil and love.thread or nil
   if type(host) ~= "table" or type(host.newChannel) ~= "function" or type(host.newThread) ~= "function" then
     return self:_fail(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import needs love.thread", {}))
@@ -512,7 +594,9 @@ function RomImporter:_startQueued(request, requestId, attempts)
   if not pcall(thread.start, thread, package.path, inbox, outbox) then
     return self:_fail(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import thread failed to start", {}))
   end
+  activeWorkerLease = { thread = thread, inbox = inbox, outbox = outbox, id = id, retired = false }
   self._queued = { id = id, thread = thread, inbox = inbox, outbox = outbox }
+  self._pendingStart = nil
   self.state = RomImporter.STATES.READING
 end
 
@@ -575,18 +659,37 @@ end
 
 -- Retire the queued background session without blocking: the worker is told
 -- to abandon its registration gate, late packets are invalidated, and the
--- session returns to idle. A direct (non-queued) import is untouched.
+-- session returns to idle. The physical lease is retained until the retired
+-- thread actually exits and its outbox is drained. A direct (non-queued)
+-- import is untouched.
 function RomImporter:cancelQueued()
   local queued = self._queued
-  if queued == nil then
+  local pending = self._pendingStart
+  if queued == nil and pending == nil then
     return
   end
-  self._queued = nil
-  self._queueCanceled = true
   self._queueSeq = (self._queueSeq or 0) + 1
-  local inbox = queued.inbox --[[@as table<string, function>]]
-  if type(inbox) == "table" or type(inbox) == "userdata" then
-    pcall(inbox.push, inbox, { id = queued.id, op = "cancel" })
+  self._queueCanceled = true
+  if pending ~= nil then
+    self._pendingStart = nil
+  end
+  if queued ~= nil then
+    self._queued = nil
+    if activeWorkerLease ~= nil and activeWorkerLease.id == queued.id then
+      activeWorkerLease.retired = true
+    elseif activeWorkerLease == nil then
+      activeWorkerLease = {
+        thread = queued.thread,
+        inbox = queued.inbox,
+        outbox = queued.outbox,
+        id = queued.id,
+        retired = true,
+      }
+    end
+    local inbox = queued.inbox --[[@as table<string, function>]]
+    if type(inbox) == "table" or type(inbox) == "userdata" then
+      pcall(inbox.push, inbox, { id = queued.id, op = "cancel" })
+    end
   end
   self._verified = nil
   if self.state ~= RomImporter.STATES.COMPLETE and self.state ~= RomImporter.STATES.ERROR then
@@ -634,7 +737,12 @@ end
 ---@param packet table<string, unknown>
 ---@return nil
 function RomImporter:_acceptWorkerResult(packet)
+  local sessionId = packet.id
   self._queued = nil
+  self._pendingStart = nil
+  if activeWorkerLease ~= nil and activeWorkerLease.id == sessionId then
+    activeWorkerLease.retired = true
+  end
   local cache = (self._cacheFactory --[[@as fun(versionId: string): table]])(packet.versionId)
   local published, publishErr = pcall(function()
     cache:writeLua(RomBinding.STAGE_PATH, packet.binding)
@@ -656,7 +764,12 @@ end
 ---@param packet table<string, unknown>
 ---@return nil
 function RomImporter:_failWorker(packet)
+  local queued = self._queued
   self._queued = nil
+  self._pendingStart = nil
+  if queued ~= nil and activeWorkerLease ~= nil and activeWorkerLease.id == queued.id then
+    activeWorkerLease.retired = true
+  end
   self._queueRequest = nil
   self._verified = nil
   self:_fail(
@@ -704,7 +817,7 @@ end
 function RomImporter:_pollQueued(queued)
   local outbox = queued.outbox --[[@as table<string, function>]]
   for _ = 1, 64 do
-    local packet = outbox:pop()
+    local packet = channelPop(outbox)
     if packet == nil then
       break
     end
@@ -722,18 +835,44 @@ function RomImporter:_pollQueued(queued)
   end
   if self._queued ~= nil then
     local thread = queued.thread --[[@as table<string, function>]]
-    local ok, running = pcall(thread.isRunning, thread)
+    local ok, running = pcall(function()
+      return thread:isRunning()
+    end)
     if ok and running == false then
-      local _, threadError = pcall(thread.getError, thread)
-      local context = {}
-      if type(threadError) == "string" and threadError ~= "" then
-        context.threadError = threadError
+      for _ = 1, 64 do
+        local packet = channelPop(outbox)
+        if packet == nil then
+          break
+        end
+        if type(packet) == "table" and packet.id == queued.id then
+          if packet.kind == "status" then
+            self:_applyWorkerStatus(packet)
+          elseif packet.kind == "validated" then
+            self:_answerValidationGate(queued)
+          elseif packet.kind == "complete" then
+            return self:_acceptWorkerResult(packet)
+          elseif packet.kind == "error" then
+            return self:_failOrRetryWorker(packet)
+          end
+        end
       end
-      self:_failOrRetryWorker({
-        errorCode = "IMPORT_WORKER_LOST",
-        message = "background import ended without a result",
-        context = context,
-      })
+    end
+    if self._queued ~= nil then
+      local okStill, runningStill = pcall(function()
+        return thread:isRunning()
+      end)
+      if okStill and runningStill == false then
+        local _, threadError = pcall(thread.getError, thread)
+        local context = {}
+        if type(threadError) == "string" and threadError ~= "" then
+          context.threadError = threadError
+        end
+        self:_failOrRetryWorker({
+          errorCode = "IMPORT_WORKER_LOST",
+          message = "background import ended without a result",
+          context = context,
+        })
+      end
     end
   end
 end
@@ -751,9 +890,21 @@ function RomImporter:update()
       self:_fail(err)
     end
   end
+  serviceRetiredLease()
   local queued = self._queued
   if queued ~= nil then
     self:_pollQueued(queued)
+  end
+  local pending = self._pendingStart
+  if pending ~= nil and activeWorkerLease == nil and self._queued == nil then
+    self._pendingStart = nil
+    self:_startQueued({
+      kind = pending.kind,
+      path = pending.path,
+      file = pending.file,
+      bytes = pending.bytes,
+      name = pending.name,
+    }, pending.id, pending.attempts)
   end
   if self.state == RomImporter.STATES.COMPLETE and not self._completeFired then
     self._completeFired = true
