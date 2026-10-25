@@ -2187,8 +2187,10 @@ function BattleScreenState:_openCompletionEvolution()
   end
   self._completionChild = child
   completion.stage = "sequence"
-  -- Edges that arrived before composition replay exactly once in order:
-  -- a cancel sent during the opening beat still meets its window.
+  -- Edges that arrived before composition replay exactly once in order.
+  -- Replay still meets only its own window: a cancel replayed into the
+  -- entry beat decides nothing, so the holder presses again once the
+  -- transformation beat opens.
   local pending = completion.pendingInput
   completion.pendingInput = nil
   if type(pending) == "table" then

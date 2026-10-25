@@ -590,6 +590,7 @@ end
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
 ---@field pokedexCatalog table<string, unknown>? the borrowed generated dex catalog behind knowledge (nil after teardown)
 ---@field dexKnowledge table<string, unknown>? the owned dex knowledge
+---@field gameStats table<string, unknown>? the owned game-stats owner
 ---@field pokegearState table<string, unknown> the owned companion state, calendar checkpoint, and persisted draw seeds
 ---@field pokegearRandom table<string, unknown>? the live companion draw pair (nil after teardown)
 ---@field pokegearCalendar table<string, unknown>? the companion-local civil calendar adapter (nil after teardown)
@@ -1468,6 +1469,7 @@ function FieldRuntime:_composeFieldServices(boot)
     assert(boot.monRoot, "mon catalog root is required for dex knowledge"),
     boot.cacheFs
   )
+  self:_composeGameStats(boot.loadedGame, assert(boot.monRoot, "mon catalog root is required for game stats"))
   self.monService = HgssMonService.new({
     catalog = self.monCatalog,
     bucket = monBucket,
@@ -1478,6 +1480,7 @@ function FieldRuntime:_composeFieldServices(boot)
     mapSection = monMetMapSection,
     date = monMetDate,
     dex = assert(self.dexKnowledge, "field runtime composes dex knowledge before the mon service"),
+    stats = assert(self.gameStats, "field runtime composes game stats before the mon service"),
   })
   self.mailbox = Mailbox.new(boot.loadedGame and boot.loadedGame.mailbox or nil)
   self.photoAlbum = PhotoAlbum.new(boot.loadedGame and boot.loadedGame.photoAlbum or nil)
@@ -2595,6 +2598,27 @@ function FieldRuntime:_composePokedex(loadedGame, monRoot, cacheFs)
     self.dexKnowledge = PokedexKnowledge.new(refs)
   end
   self.playerData.profile.nationalDex = self.dexKnowledge:hasNationalDex()
+end
+
+-- Composes the one authoritative game-stats owner beside dex knowledge:
+-- Continue restores the nested bucket (even when absent, through the
+-- bucket's nil->initial migration) while a new game starts empty. A
+-- failed construction or migration fails the boot instead of leaving
+-- the runtime without its live stats owner.
+---@param loadedGame table<string, unknown>?
+---@param monRoot table<string, unknown>
+function FieldRuntime:_composeGameStats(loadedGame, monRoot)
+  local GameStats = require("libs.hgss.src.mons.GameStats")
+  local speciesRefs = {}
+  for key in pairs(assert(monRoot.species, "mon catalog root carries its species")) do
+    speciesRefs[key] = true
+  end
+  local refs = { species = speciesRefs }
+  if loadedGame ~= nil then
+    self.gameStats = GameStats.restore(loadedGame.gameStats, refs)
+  else
+    self.gameStats = GameStats.new(refs)
+  end
 end
 
 -- Composes the battle-era persistent owners: roamer and encounter state,
@@ -4088,7 +4112,7 @@ function FieldRuntime:_releaseAll()
   self.playerAvatar = nil
   self.windowStyles, self.uiManifest, self.fontDef, self.weatherCatalog = nil, nil, nil, nil
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
-  self.pokedexCatalog, self.dexKnowledge = nil, nil
+  self.pokedexCatalog, self.dexKnowledge, self.gameStats = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
   self.mailbox, self.photoAlbum = nil, nil

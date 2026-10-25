@@ -50,6 +50,7 @@ local Executor = require("libs.battle.src.gen4.HgssSessionExecutor")
 local BattleErrors = require("libs.battle.src.errors")
 local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
 local HgssBattleCommitter = require("libs.hgss.src.battle.HgssBattleCommitter")
+local GameStats = require("libs.hgss.src.mons.GameStats")
 local HgssBattleRewards = require("libs.hgss.src.battle.HgssBattleRewards")
 local HgssOpponentControllers = require("libs.hgss.src.battle.HgssOpponentControllers")
 local PhoneRewards = require("game.hgss.src.pokegear.PhoneRewards")
@@ -82,6 +83,7 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@field bag table<string, unknown>? live bag owner flushing planned consumption
 ---@field bagDeltas table<integer, table<string, unknown>>? planned take/add deltas the committer applies
 ---@field dex table<string, unknown>? live dex knowledge staging sightings and catches
+---@field stats table<string, unknown>? live game stats staging unique registrations and score
 ---@field roamer table<string, unknown>? roamer battle record with its owner, key, and revision
 ---@field player table<string, unknown>? player money facts with their validation context
 ---@field pokegear table<string, unknown>? companion savings owner with its state, borrowed for Mom settlement
@@ -96,6 +98,7 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@field _bag table<string, unknown>?
 ---@field _bagDeltas table<integer, table<string, unknown>>?
 ---@field _dex table<string, unknown>?
+---@field _stats table<string, unknown>?
 ---@field _roamer table<string, unknown>?
 ---@field _player table<string, unknown>?
 ---@field _pokegear table<string, unknown>?
@@ -298,6 +301,10 @@ local function checkConsequenceInputs(args)
     assert(type(args.dex) == "table", "battle dex staging needs its live knowledge owner")
     assert(type(args.dex.prepareChanges) == "function", "the dex owner stages knowledge changes")
   end
+  if args.stats ~= nil then
+    assert(type(args.stats) == "table", "battle stats staging needs its live game-stats owner")
+    assert(type(args.stats.prepareChanges) == "function", "the stats owner stages game-stats changes")
+  end
   if args.roamer ~= nil then
     assert(type(args.roamer) == "table", "roamer outcomes name their owning state")
     assert(type(args.roamer.owner) == "table", "roamer outcomes commit through their owner")
@@ -439,6 +446,7 @@ function BattleRuntime.new(args)
     _bag = args.bag,
     _bagDeltas = args.bagDeltas ~= nil and copyValue(args.bagDeltas) or nil,
     _dex = args.dex,
+    _stats = args.stats,
     _roamer = args.roamer,
     _player = args.player,
     _pokegear = args.pokegear,
@@ -1426,6 +1434,89 @@ function BattleRuntime:_describeDexMon(combatantId, mon)
   return specimen --[[@as table<string, unknown>]]
 end
 
+-- Describes one trusted mon through the live game-stats owner.
+-- Description failures are attributed here so the resolution fails
+-- explicitly instead of publishing partial counts.
+---@param slotOrId integer party slot or capture identity under description
+---@param mon table<string, unknown> trusted mon record under description
+---@return table<string, unknown> detached registration record
+function BattleRuntime:_describeStatsMon(slotOrId, mon)
+  local stats = assert(self._stats, "stats facts describe through the live game-stats owner")
+  local describe = stats.describe --[[@as fun(self: table<string, unknown>, mon: table<string, unknown>): table<string, unknown>]]
+  local ok, described = pcall(describe, stats, mon)
+  if not ok then
+    error("battle stats description failed for slot " .. tostring(slotOrId) .. ": " .. tostring(described), 0)
+  end
+  if type(described) ~= "table" then
+    error("battle stats description failed for slot " .. tostring(slotOrId), 0)
+  end
+  return described --[[@as table<string, unknown>]]
+end
+
+-- Stages the register score for a newly registered specimen, plus the
+-- once-per-species unique count at evolution publish only. Retail
+-- (tmp/refs/pokeheartgold/src/update_dex_received.c,
+-- src/game_stats.c GameStats_IncSpeciesCaught, src/evolution_scene.c
+-- EVO_STATE_REGISTER + shed side product): receipt paths (captures,
+-- gifts, trades, hatches) score iff the species is not yet dex-caught
+-- and never touch the unique counter, which advances blindly at every
+-- evolution publish, including re-registrations. Already-staged species
+-- in this batch
+-- stage nothing twice; eggs never record. Freshness reads the live dex
+-- caught flag first, the same authority retail checks; without a dex
+-- owner the stats counted set stands in.
+---@param mon table<string, unknown> trusted mon record under registration
+---@param slotOrId integer party slot or capture identity under attribution
+---@param observations table<integer, table<string, unknown>> staged stats observations under appending
+---@param pending table<string, boolean> species already staged new in this batch
+---@param countUnique boolean true at evolution publish (the retail unique sites), false on receipt paths
+function BattleRuntime:_noteStatsRegistration(mon, slotOrId, observations, pending, countUnique)
+  if type(mon) ~= "table" then
+    error("battle stats registrations carry their mon record", 0)
+  end
+  local described = self:_describeStatsMon(slotOrId, mon)
+  if described.isEgg == true then
+    return
+  end
+  local species = described.species --[[@as string]]
+  if pending[species] == true then
+    return
+  end
+  local stats = assert(self._stats, "stats registrations read through the live game-stats owner")
+  if countUnique ~= true then
+    local dex = self._dex --[[@as table<string, unknown>?]]
+    local fresh = nil
+    if dex ~= nil and type(dex.isCaught) == "function" then
+      local isCaught = dex.isCaught --[[@as fun(self: table<string, unknown>, key: string): boolean]]
+      local ok, caught = pcall(isCaught, dex, species)
+      if ok then
+        fresh = caught ~= true
+      end
+    end
+    if fresh == nil then
+      local isCounted = stats.isCounted --[[@as fun(self: table<string, unknown>, key: string): boolean]]
+      local ok, counted = pcall(isCounted, stats, species)
+      if not ok then
+        error("battle stats eligibility failed for " .. tostring(species) .. ": " .. tostring(counted), 0)
+      end
+      fresh = counted ~= true
+    end
+    if fresh ~= true then
+      return
+    end
+  end
+  pending[species] = true
+  if countUnique == true then
+    observations[#observations + 1] = { kind = "unique_caught", species = species }
+  end
+  observations[#observations + 1] = {
+    kind = "score",
+    species = species,
+    event = GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT,
+    points = GameStats.SCORE_POINTS[GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT],
+  }
+end
+
 -- Arrival facts pin one actual appearance to its event time: the
 -- combatant identity, the activation token issued at entry, the visible
 -- physical form, the battle side, and the immutable combatant mon. Both
@@ -2151,6 +2242,36 @@ function BattleRuntime:_prepareCommit()
       args.dex = candidate
     end
   end
+  if self._stats ~= nil then
+    -- Retail scores a received species iff it is not yet dex-caught
+    -- (GameStats_IncSpeciesCaught) and never counts it unique here;
+    -- the single committer publication lands captures and scores
+    -- together. Already-caught species stage nothing; eggs never
+    -- record.
+    local observations = {} ---@type table<integer, table<string, unknown>>
+    local pending = {} ---@type table<string, boolean>
+    for _, entry in ipairs(captures) do
+      local record = entry --[[@as table<string, unknown>]]
+      if record.success == true then
+        self:_noteStatsRegistration(
+          record.mon --[[@as table<string, unknown>]],
+          record.captureId --[[@as integer]] or -1,
+          observations,
+          pending,
+          false
+        )
+      end
+    end
+    if #observations > 0 then
+      local stats = self._stats --[[@as table<string, unknown>]]
+      local stage = stats.prepareChanges --[[@as fun(self: table<string, unknown>, changes: table<string, unknown>): table<string, unknown>]]
+      local okStage, candidate = pcall(stage, stats, { observations = observations })
+      if not okStage then
+        error(tostring(candidate), 0)
+      end
+      args.stats = candidate
+    end
+  end
   -- Native session consumption reaches the live bag exactly once: player
   -- inventory ledger entries become take deltas staged against the
   -- construction-time revision, trainer stock stays battle-local, and any
@@ -2361,10 +2482,13 @@ end
 -- slots of the same species whose experience and derived level both
 -- rose in this particular battle enter eligibility; every other slot —
 -- including already-eligible members that gained nothing — never opens
--- any UI. Without a frozen launch context, a party derivation seam, or
--- a fact catalog the queue stays empty instead of guessing.
+-- any UI. Wins, captures, and flights all queue: retail checks
+-- evolution after PLAYER_FLED as well as victories and captures, so the
+-- fled word joins the gate beside wins and captures. Without a frozen
+-- launch context, a party derivation seam, or a fact catalog the queue
+-- stays empty instead of guessing.
 function BattleRuntime:_buildEvolutions()
-  if self._result ~= "win" and self._result ~= "capture" then
+  if self._result ~= "win" and self._result ~= "capture" and self._result ~= "flee" then
     return
   end
   local party = self._party --[[@as BattlePartyOwner?]]
@@ -2439,7 +2563,10 @@ end
 -- identity-bound progression record: the evolved mon replaces its exact
 -- committed party slot, permitted side products ride as uniquely
 -- identified captures through the existing party-or-box routing, and
--- inventory deltas stage against the pinned bag revision. The original
+-- inventory deltas stage against the pinned bag revision. The evolved mon
+-- and every side product register as caught dex knowledge in the same
+-- atomic publication, mirroring retail registration of the evolved mon
+-- and the shed side product. The original
 -- battle receipt is never touched: no rewards, money, or EXP republish.
 -- A stale owner or a moved subject fails before anything publishes.
 ---@param completion table<string, unknown> open evolution completion carrying its receipt placement
@@ -2508,6 +2635,63 @@ function BattleRuntime:_applyEvolution(completion, staged)
   end
   if current.bagRevision ~= pins.bagRevision then
     error("the evolution staging went stale", 0)
+  end
+  if self._dex ~= nil then
+    -- Retail registers the evolved mon as caught on publication and does
+    -- the same for the shed side product: both stage as caught
+    -- observations through the live knowledge owner so the single
+    -- committer publication lands party, side products, and dex history
+    -- together. Eggs never record; a stale or declined evolution never
+    -- reaches this staging.
+    local observations = {} ---@type table<integer, table<string, unknown>>
+    local slot = completion.partySlot --[[@as integer]]
+    local evolved = self:_describeDexMon(slot, staged.mon)
+    if evolved.isEgg ~= true then
+      observations[#observations + 1] = { kind = "caught", specimen = copyValue(evolved) }
+    end
+    for _, extra in ipairs(staged.additionalMons or {}) do
+      local side = self:_describeDexMon(slot, extra)
+      if side.isEgg ~= true then
+        observations[#observations + 1] = { kind = "caught", specimen = copyValue(side) }
+      end
+    end
+    if #observations > 0 then
+      local dex = self._dex --[[@as table<string, unknown>]]
+      local stage = dex.prepareChanges --[[@as fun(self: table<string, unknown>, changes: table<string, unknown>): table<string, unknown>]]
+      local okStage, candidate = pcall(stage, dex, { observations = observations })
+      if not okStage then
+        error(tostring(candidate), 0)
+      end
+      args.dex = candidate
+    end
+  end
+  if self._stats ~= nil then
+    -- Retail counts the evolved mon unique on publication and does the
+    -- same for the shed side product, each with its register score
+    -- (EVO_STATE_REGISTER + shed side product, unconditionally there):
+    -- both stage through the live game-stats owner so the single
+    -- committer publication lands party, side products, and counts
+    -- together. Eggs never record; a stale or declined evolution never
+    -- reaches this staging.
+    local observations = {} ---@type table<integer, table<string, unknown>>
+    local pending = {} ---@type table<string, boolean>
+    local slot = completion.partySlot --[[@as integer]]
+    self:_noteStatsRegistration(staged.mon --[[@as table<string, unknown>]], slot, observations, pending, true)
+    for _, extra in ipairs(staged.additionalMons or {}) do
+      if type(extra) ~= "table" then
+        error("evolution side products arrive as records", 0)
+      end
+      self:_noteStatsRegistration(extra, slot, observations, pending, true)
+    end
+    if #observations > 0 then
+      local stats = self._stats --[[@as table<string, unknown>]]
+      local stage = stats.prepareChanges --[[@as fun(self: table<string, unknown>, changes: table<string, unknown>): table<string, unknown>]]
+      local okStage, candidate = pcall(stage, stats, { observations = observations })
+      if not okStage then
+        error(tostring(candidate), 0)
+      end
+      args.stats = candidate
+    end
   end
   local prepared = HgssBattleCommitter.prepare(args)
   local evoReceipt = HgssBattleCommitter.commit(prepared)

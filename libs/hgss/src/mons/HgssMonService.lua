@@ -18,6 +18,7 @@ local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Errors = require("libs.errors.src.Errors")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
+local GameStats = require("libs.hgss.src.mons.GameStats")
 
 ---@class HgssMonService
 ---@field private _catalog MonCatalog
@@ -32,6 +33,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field private _mapSection integer|fun(): integer|nil
 ---@field private _date MonDate|(fun(): MonDate)|nil
 ---@field private _dex table<string, unknown>|nil borrowed authoritative dex knowledge behind receipt and form registration (nil on headless seams; receipt and registration operations fail without it)
+---@field private _stats table<string, unknown>|nil borrowed live game-stats owner behind receipt counts (nil on headless seams; receipt skips counts without it)
 local HgssMonService = {}
 HgssMonService.__index = HgssMonService
 
@@ -153,6 +155,7 @@ end
 ---@field date? MonDate|(fun(): MonDate)|nil
 ---@field dateProvider? (fun(): MonDate)|nil
 ---@field dex? table<string, unknown> borrowed authoritative dex knowledge behind receipt and form registration (required in production; absent only on headless seams)
+---@field stats? table<string, unknown> borrowed live game-stats owner behind receipt counts (absent only until the field composes its stats owner)
 ---@param opts HgssMonServiceOptions
 ---@return HgssMonService
 function HgssMonService.new(opts)
@@ -199,6 +202,13 @@ function HgssMonService.new(opts)
     assert(type(dex.prepareChanges) == "function", "mon service dex must stage history changes")
     assert(type(dex.isSeen) == "function", "mon service dex must answer sightings")
   end
+  local stats = opts.stats
+  if stats ~= nil then
+    assert(type(stats) == "table", "mon service stats must be the game-stats owner")
+    assert(type(stats.describe) == "function", "mon service stats must describe admitted mons")
+    assert(type(stats.prepareChanges) == "function", "mon service stats must stage count changes")
+    assert(type(stats.isCounted) == "function", "mon service stats must answer counted species")
+  end
   local service = setmetatable({
     _catalog = opts.catalog,
     _context = context,
@@ -212,6 +222,7 @@ function HgssMonService.new(opts)
     _mapSection = opts.mapSection,
     _date = opts.date ~= nil and opts.date or opts.dateProvider,
     _dex = dex,
+    _stats = stats,
   }, HgssMonService)
   return service
 end
@@ -635,30 +646,92 @@ function HgssMonService:_dexOwner()
 end
 
 -- Publishes one staged party preparation together with its staged dex
--- preparation after rechecking both currencies. The checks and the
--- stores run synchronously with no yield between them, so a stale
--- candidate on either side publishes neither party nor history. This is
+-- and game-stats preparations after rechecking every currency. The checks
+-- and the stores run synchronously with no yield between them, so a stale
+-- candidate on any side publishes neither party nor history. This is
 -- a private staging helper, not a public transaction abstraction.
 ---@param partyPrep PartyPreparation
 ---@param dexPrep table<string, unknown>|nil staged dex candidate, or nil when the change carries no history
-local function publishStaged(partyPrep, dexPrep)
+---@param statsPrep table<string, unknown>|nil staged stats candidate, or nil when the change carries no counts
+local function publishStaged(partyPrep, dexPrep, statsPrep)
   assert(partyPrep.isCurrent(), "party changed during staged publication")
   if dexPrep ~= nil then
     assert(dexPrep.isCurrent(), "dex changed during staged publication")
+  end
+  if statsPrep ~= nil then
+    assert(statsPrep.isCurrent(), "stats changed during staged publication")
   end
   partyPrep.publish()
   if dexPrep ~= nil then
     dexPrep.publish()
   end
+  if statsPrep ~= nil then
+    statsPrep.publish()
+  end
+end
+
+-- Stages one registration pair for an uncounted non-egg admission: the
+-- once-per-species unique count plus its register score at the retail
+-- point value, mirroring GameStats_IncSpeciesCaught behind
+-- UpdatePokedexWithReceivedSpecies and the battle evolution staging.
+-- Already-counted species stage nothing here, and the owner
+-- independently stages nothing for them; eggs and unwired seams record
+-- the register score only, never a unique count: receipt paths score
+-- iff the species is not yet dex-caught
+-- (tmp/refs/pokeheartgold/src/update_dex_received.c
+-- GameStats_IncSpeciesCaught) while the unique counter advances only at
+-- evolution publish. Returns nil when the admission carries no stats
+-- facts.
+---@param mon table<string, unknown> already-validated record the factory admitted
+---@return table<integer, table<string, unknown>>|nil staged stats observations, or nil when nothing is new
+function HgssMonService:_statsObservations(mon)
+  local stats = self._stats
+  if type(stats) ~= "table" then
+    return nil
+  end
+  if mon.isEgg == true then
+    return nil
+  end
+  local described = stats:describe(mon)
+  if described.isEgg == true then
+    return nil
+  end
+  -- Freshness reads the live dex caught flag first, the same authority
+  -- retail checks; without a dex owner the stats counted set stands in.
+  local dex = self._dex
+  local fresh = nil
+  if type(dex) == "table" and type(dex.isCaught) == "function" then
+    local ok, caught = pcall(dex.isCaught, dex, described.species)
+    if ok then
+      fresh = caught ~= true
+    end
+  end
+  if fresh == nil then
+    fresh = stats:isCounted(described.species) ~= true
+  end
+  if fresh ~= true then
+    return nil
+  end
+  return {
+    {
+      kind = "score",
+      species = described.species,
+      event = GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT,
+      points = GameStats.SCORE_POINTS[GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT],
+    },
+  }
 end
 
 -- Explicit successful receipt of one factory-admitted record: refuses a
--- full party without touching either owner, and otherwise publishes the
--- exact party append together with one non-egg caught observation in a
--- single synchronous step. Skips validation because the factory already
+-- full party without touching any owner, and otherwise publishes the
+-- exact party append together with one non-egg caught observation plus
+-- the matching register-score observation (receipt paths never count
+-- unique) in a single synchronous step. Skips validation because the
+-- factory already
 -- admitted the record; public receiveMon validates arbitrary input.
 -- Headless seams without a wired dex owner keep the legacy party-only
--- behavior so existing structural tests stay independent of history.
+-- behavior so existing structural tests stay independent of history;
+-- seams without a wired stats owner likewise skip counts.
 ---@param mon table<string, unknown> already-validated record the factory admitted
 ---@return boolean false on a full party, without publication
 function HgssMonService:_receiveAdmitted(mon)
@@ -674,21 +747,30 @@ function HgssMonService:_receiveAdmitted(mon)
       observations = { { kind = "caught", specimen = dex:describe(mon) } },
     })
   end
+  local statsPrep = nil
+  local statsObservations = self:_statsObservations(mon)
+  if statsObservations ~= nil then
+    local stats = self._stats
+    assert(type(stats) == "table", "mon service stats is the game-stats owner")
+    statsPrep = stats:prepareChanges({ observations = statsObservations })
+  end
   local partyPrep, stale = self:preparePartyBatch(partyRevision, {}, { mon })
   if partyPrep == nil then
     assert(stale == "stale", "party preparation reports its staleness")
     MonsErrors.raise(MonsErrors.SAVE_INVALID, "party changed during explicit receipt", {})
   end
   assert(partyPrep ~= nil, "explicit receipt stages its party append")
-  publishStaged(partyPrep, dexPrep)
+  publishStaged(partyPrep, dexPrep, statsPrep)
   return true
 end
 
 -- Explicit successful receipt: validates the admitted record, returns
--- false on a full party with neither party nor dex publication, and
--- otherwise publishes the exact party append plus one non-egg caught
--- observation together. Receipt itself draws nothing. Requires the wired
--- dex owner; eggs and previews never reach this operation.
+-- false on a full party with neither party nor dex nor stats publication,
+-- and otherwise publishes the exact party append plus one non-egg caught
+-- observation and the matching register-score observation together.
+-- Receipt itself draws nothing. Requires the wired
+-- dex owner; eggs and previews never reach this operation. Stats publish
+-- only while a stats owner is wired.
 ---@param mon table<string, unknown>
 ---@return boolean
 function HgssMonService:receiveMon(mon)

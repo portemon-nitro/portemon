@@ -1,12 +1,18 @@
 -- Concrete typed evolution flow over the pure mon planning owner. The flow
 -- stages exactly one candidate result: it opens on the source-permitted
--- confirmation, works the ordered evolution learning through the shared
--- progression owner (free move slots fill silently while a full set pauses
--- for an explicit replace-or-decline decision, mirroring battle learning),
--- and publishes the whole result at once on capture. Driving the flow never
--- touches the live mon; cancelling stages nothing and stays retryable.
--- Post-battle eligibility rechecks final roster state behind the terminal
--- result instead of serving stale mid-battle snapshots.
+-- confirmation, works the ordered post-evolution learning with retail
+-- cursor semantics (pokemon.c MonTryLearnMoveOnLevelUp as driven by
+-- evolution_scene.c EVO_STATE_TRY_LEARN_MOVE: only the staged species'
+-- learnset entries whose level equals the current level are offered, in
+-- learnset order with already-known moves passing silently; free move
+-- slots fill silently while a full set pauses for an explicit
+-- replace-or-decline decision, retail msg_0197_01193), and publishes the
+-- whole result at once on capture. The full-set choice stays on the
+-- learn_move prompt; the PokemonSummary mode-2 replacement screen is a
+-- separate app owner. Driving the flow never touches the live mon;
+-- cancelling stages nothing and stays retryable. Post-battle eligibility
+-- rechecks final roster state behind the terminal result instead of
+-- serving stale mid-battle snapshots.
 
 local Evolution = require("libs.mons.src.gen4.Evolution")
 local LevelProgression = require("libs.mons.src.gen4.LevelProgression")
@@ -80,6 +86,8 @@ function EvolutionFlow.start(mon, context, catalog)
   end
   local staged = copyValue(plan.monAfter)
   assert(type(staged) == "table", "evolution flows copy the staged mon")
+  -- The shared planning owner stages the retail current-level-only set.
+  plan.learningOpportunities = Evolution.learningOpportunities(staged, catalog)
   return {
     _plan = plan,
     _catalog = catalog,

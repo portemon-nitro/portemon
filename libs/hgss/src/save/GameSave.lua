@@ -36,6 +36,7 @@ local TOP_LEVEL_FIELDS = {
   pokegear = true,
   fieldX = true,
   fieldZ = true,
+  gameStats = true,
   mapId = true,
   mart = true,
   mailbox = true,

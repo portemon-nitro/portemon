@@ -11,6 +11,7 @@ local ApricornTreePresentation = require("game.hgss.src.apricorn.ApricornTreePre
 local KurtConversions = require("game.hgss.src.apricorn.KurtConversions")
 local CelebiTimeTravelScene = require("libs.hgss.src.field.CelebiTimeTravelScene")
 local HoOhAppearanceScene = require("libs.hgss.src.field.HoOhAppearanceScene")
+local GameStats = require("libs.hgss.src.mons.GameStats")
 
 ---@class FieldScriptCompositionResult
 ---@field scripts FieldScripts
@@ -506,18 +507,46 @@ function FieldScriptComposition.compose(runtime, options)
     profile = assert(runtime.playerData.profile, "field scripts require the player profile"),
     eventState = assert(runtime.eventState, "field scripts require the field event state"),
   })
-  -- The Spiky-Ear Pichu gift couples two already-live owners: the party
+  -- The Spiky-Ear Pichu gift couples three already-live owners: the party
   -- service inserts the event mon and Pokedex knowledge records the
-  -- received species. The catch stages before insertion and publishes
-  -- only on success, so a full party leaves both owners untouched.
+  -- received species, and game stats score the first receipt (receipt
+  -- paths never count unique). The catch and the score stage before
+  -- insertion and publish only on success, so a full party leaves every
+  -- owner untouched. An unwired stats owner skips scores; an
+  -- already-caught species stages nothing.
   local specialMonGifts = {}
   function specialMonGifts:giveSpikyEarPichu()
-    local caught = assert(runtime.dexKnowledge, "script gifts require Pokedex knowledge"):capture("PICHU")
+    local dex = assert(runtime.dexKnowledge, "script gifts require Pokedex knowledge")
+    local caught = dex:capture("PICHU")
+    local counted = nil
+    local statsOwner = runtime.gameStats
+    if statsOwner ~= nil then
+      assert(type(statsOwner) == "table", "script gifts require the game-stats owner")
+      -- Receipt scores iff the species is not yet dex-caught
+      -- (GameStats_IncSpeciesCaught); the live pre-state is the
+      -- authority since the catch above is still staged.
+      if dex:isCaught("PICHU") ~= true then
+        counted = statsOwner:prepareChanges({
+          observations = {
+            {
+              kind = "score",
+              species = "PICHU",
+              event = GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT,
+              points = GameStats.SCORE_POINTS[GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT],
+            },
+          },
+        })
+      end
+    end
     if not options.mons:giveSpikyEarPichu() then
       return false
     end
     assert(caught.isCurrent(), "gift Pokedex candidate became stale")
     caught.publish()
+    if counted ~= nil then
+      assert(counted.isCurrent(), "gift game-stats candidate became stale")
+      counted.publish()
+    end
     return true
   end
   local scripts = FieldScripts.new({

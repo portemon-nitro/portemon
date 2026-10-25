@@ -20,6 +20,7 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+local GameStats = require("libs.hgss.src.mons.GameStats")
 
 local T = {}
 
@@ -33,7 +34,7 @@ local function openOwner()
   return owner, monCatalog
 end
 
-local function openService(monCatalog, seed, owner)
+local function openService(monCatalog, seed, owner, stats)
   return HgssMonService.new({
     catalog = monCatalog,
     bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture()),
@@ -48,7 +49,20 @@ local function openService(monCatalog, seed, owner)
     mapSection = 7,
     date = CatalogFixture.metDate(),
     dex = owner,
+    stats = stats,
   })
+end
+
+local function openStats(monCatalog)
+  local allowed = {}
+  for _, key in ipairs(monCatalog:speciesKeys()) do
+    allowed[key] = true
+  end
+  return GameStats.new({ species = allowed })
+end
+
+local function registerPoints()
+  return GameStats.SCORE_POINTS[GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT]
 end
 
 local function openServiceFromBucket(monCatalog, bucket, owner)
@@ -343,6 +357,143 @@ function T.invalid_receipt_inputs_fail_before_publication()
   Assert.equal(service:partyCount(), 0, "an invalid receipt appends nothing")
   Assert.equal(service:partyRevision(), partyRevision, "an invalid receipt publishes no party mutation")
   Assert.equal(owner:revision(), dexRevision, "an invalid receipt publishes no history")
+end
+
+function T.first_receipt_scores_without_counting_unique()
+  local owner, monCatalog = openOwner()
+  local stats = openStats(monCatalog)
+  local service = openService(monCatalog, 0xC0FFEE01, owner, stats)
+  requireReceipt(service)
+
+  local factory = CatalogFixture.makeFactory(0xC0FFEE02, monCatalog)
+  local admitted = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", personality = 0 }))
+  Assert.isTrue(service:receiveMon(admitted), "a valid non-egg receipt succeeds")
+  Assert.isTrue(owner:isCaught("CHIKORITA"), "receipt records the caught fact")
+  Assert.isTrue(stats:isCounted("CHIKORITA"), "first receipt registers the species")
+  Assert.equal(stats:uniqueCount(), 0, "first receipt advances no unique count")
+  Assert.equal(stats:score(), registerPoints(), "first receipt awards one register score")
+end
+
+-- A dex-caught but stats-uncounted species (e.g. after a meteorite form
+-- change, which registers the dex flag without scoring) scores nothing
+-- on receipt: retail scores iff the species is not yet dex-caught.
+function T.dex_caught_but_uncounted_receipt_scores_nothing()
+  local owner, monCatalog = openOwner()
+  local stats = openStats(monCatalog)
+  local service = openService(monCatalog, 0xC0FFEE0B, owner, stats)
+  requireReceipt(service)
+  owner:capture("CHIKORITA"):publish()
+  Assert.isTrue(owner:isCaught("CHIKORITA"), "setup registers the dex flag without scoring")
+
+  local factory = CatalogFixture.makeFactory(0xC0FFEE0C, monCatalog)
+  local admitted = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", personality = 0 }))
+  Assert.isTrue(service:receiveMon(admitted), "a valid non-egg receipt succeeds")
+  Assert.equal(stats:uniqueCount(), 0, "the caught species counts nothing unique")
+  Assert.equal(stats:score(), 0, "the caught species awards no register score")
+end
+
+function T.duplicate_species_receipt_counts_nothing()
+  local owner, monCatalog = openOwner()
+  local stats = openStats(monCatalog)
+  local service = openService(monCatalog, 0xC0FFEE03, owner, stats)
+  requireReceipt(service)
+  local factory = CatalogFixture.makeFactory(0xC0FFEE04, monCatalog)
+  Assert.isTrue(
+    service:receiveMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", personality = 0 })))
+    , "setup receives the fresh species"
+  )
+  local revision = stats:revision()
+  Assert.isTrue(
+    service:receiveMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", personality = 1 })))
+    , "a duplicate-species receipt still enters the party"
+  )
+  Assert.equal(service:partyCount(), 2, "the duplicate receipt is appended")
+  Assert.equal(stats:uniqueCount(), 0, "the duplicate receipt advances no unique count")
+  Assert.equal(stats:score(), registerPoints(), "the duplicate receipt awards no further points")
+  Assert.equal(stats:revision(), revision, "the duplicate receipt stages no stats candidate")
+end
+
+function T.egg_receipt_counts_nothing()
+  local owner, monCatalog = openOwner()
+  local stats = openStats(monCatalog)
+  local service = openService(monCatalog, 0xC0FFEE05, owner, stats)
+  requireReceipt(service)
+
+  local egg = PokedexDexFixture.makeMon(monCatalog, { species = "CHIKORITA", personality = 0, isEgg = true })
+  Assert.isTrue(service:receiveMon(egg), "an egg receipt still enters the party")
+  Assert.equal(stats:uniqueCount(), 0, "an egg counts no species")
+  Assert.equal(stats:score(), 0, "an egg awards no points")
+end
+
+function T.unwired_stats_seam_keeps_party_and_dex_only()
+  local owner, monCatalog = openOwner()
+  local service = openService(monCatalog, 0xC0FFEE06, owner)
+  requireReceipt(service)
+  local factory = CatalogFixture.makeFactory(0xC0FFEE07, monCatalog)
+  local admitted = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", personality = 0 }))
+  Assert.isTrue(service:receiveMon(admitted), "receipt without a stats owner still succeeds")
+  Assert.isTrue(owner:isCaught("CHIKORITA"), "receipt without a stats owner still records the caught fact")
+end
+
+function T.gift_first_receipt_scores_without_counting_unique()
+  local owner, monCatalog = openOwner()
+  local stats = openStats(monCatalog)
+  local service = openService(monCatalog, 0xC0FFEE08, owner, stats)
+
+  Assert.isTrue(service:giveMon(giftRequest("TOTODILE")), "a roomy-party gift succeeds")
+  Assert.isTrue(owner:isCaught("TOTODILE"), "the gift records the caught fact")
+  Assert.isTrue(stats:isCounted("TOTODILE"), "the first gift registers the species")
+  Assert.equal(stats:uniqueCount(), 0, "the first gift advances no unique count")
+  Assert.equal(stats:score(), registerPoints(), "the first gift awards one register score")
+end
+
+function T.gift_duplicate_species_counts_nothing()
+  local owner, monCatalog = openOwner()
+  local stats = openStats(monCatalog)
+  local service = openService(monCatalog, 0xC0FFEE09, owner, stats)
+  Assert.isTrue(service:giveMon(giftRequest("TOTODILE")), "setup gifts the fresh species")
+  local revision = stats:revision()
+
+  Assert.isTrue(service:giveMon(giftRequest("TOTODILE")), "a duplicate-species gift still enters the party")
+  Assert.equal(stats:uniqueCount(), 0, "the duplicate gift advances no unique count")
+  Assert.equal(stats:score(), registerPoints(), "the duplicate gift awards no further points")
+  Assert.equal(stats:revision(), revision, "the duplicate gift stages no stats candidate")
+end
+
+function T.full_party_gift_publishes_no_counts()
+  local owner, monCatalog = openOwner()
+  local stats = openStats(monCatalog)
+  local service = openService(monCatalog, 0xC0FFEE0A, owner, stats)
+  for _ = 1, Party.MAX do
+    Assert.isTrue(service:giveMon(giftRequest("CHIKORITA")), "setup gifts fill the party")
+  end
+  Assert.equal(stats:uniqueCount(), 0, "setup counts nothing unique")
+  Assert.equal(stats:score(), registerPoints(), "setup awards one register score")
+  local revision = stats:revision()
+
+  Assert.isFalse(service:giveMon(giftRequest("TOTODILE")), "the seventh gift reports the source failure result")
+  Assert.equal(stats:uniqueCount(), 0, "the discarded gift counts nothing")
+  Assert.equal(stats:score(), registerPoints(), "the discarded gift awards no points")
+  Assert.equal(stats:revision(), revision, "the discarded gift stages no stats candidate")
+end
+
+function T.starter_first_receipt_scores_without_counting_unique()
+  local owner, monCatalog = openOwner()
+  local stats = openStats(monCatalog)
+  local service = openService(monCatalog, 0xC0FFEE0D, owner, stats)
+  local metContext = { location = 7, date = CatalogFixture.metDate() }
+
+  service:createStarter("CHIKORITA", metContext)
+  Assert.isTrue(owner:isCaught("CHIKORITA"), "the starter records the caught fact")
+  Assert.isTrue(stats:isCounted("CHIKORITA"), "the first starter registers the species")
+  Assert.equal(stats:uniqueCount(), 0, "the first starter advances no unique count")
+  Assert.equal(stats:score(), registerPoints(), "the first starter awards one register score")
+
+  local revision = stats:revision()
+  service:createStarter("CHIKORITA", metContext)
+  Assert.equal(stats:uniqueCount(), 0, "a duplicate-species starter advances no unique count")
+  Assert.equal(stats:score(), registerPoints(), "a duplicate-species starter awards no further points")
+  Assert.equal(stats:revision(), revision, "a duplicate-species starter stages no stats candidate")
 end
 
 return { tests = T }

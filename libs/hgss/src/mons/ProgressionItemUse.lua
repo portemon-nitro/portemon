@@ -72,7 +72,24 @@ function ProgressionItemUse.planLevelItem(mon, itemKey, context)
     return { applied = false, consumed = 0 }
   end
   local shared = LevelProgression.award(mon, Experience.expFor(curve, oldLevel + 1) - mon.experience, catalog)
-  local slot = Evolution.check(shared.mon, evolutionContext(context, { kind = "level" }), catalog)
+  -- Retail learns level-up moves before the evolution check
+  -- (party_menu_items.c LevelUpLearnMovesLoop state 3 learns, state 6
+  -- checks GetMonEvolution): silently fill free slots on a probe copy the
+  -- way TryAppendMonMove auto-learns, prompting only on full sets, then
+  -- run the check on the post-learning probe so a has_move slot qualified
+  -- by a move taught at this same level-up opens. The probe never escapes:
+  -- staging keeps the shared record with its full chances, and a full set
+  -- leaves the chance pending for the host confirmation instead of
+  -- guessing the replace-or-decline choice.
+  local probe = shared.mon
+  for _, opportunity in ipairs(shared.learningOpportunities) do
+    local filled = LevelProgression.learn(probe, opportunity.move, catalog)
+    if not filled.applied then
+      break
+    end
+    probe = filled.mon
+  end
+  local slot = Evolution.check(probe, evolutionContext(context, { kind = "level" }), catalog)
   local evolution = nil
   if slot ~= nil then
     evolution = slot.target

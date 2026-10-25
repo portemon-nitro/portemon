@@ -164,6 +164,7 @@ function FieldSaveCoordinator:capture(allowMenu)
     photoAlbum = assert(runtime.photoAlbum, "field runtime has no photo album"):capture(),
     encounters = EncounterSave.capture(assert(runtime.roamerState, "field runtime has no roamer state")),
     pokedex = assert(runtime.dexKnowledge, "field runtime has no dex knowledge"):bucket(),
+    gameStats = assert(runtime.gameStats, "field runtime has no game stats"):bucket(),
   }
   -- The runtime-owned companion bucket rides alongside the existing
   -- domains. The owner is required: capture never manufactures a default

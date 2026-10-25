@@ -496,6 +496,81 @@ function T.deferred_stones_stage_confirmable_plans()
   Assert.equal(wrong.kind, "no_effect", "an empty pocket reports no effect")
 end
 
+-- The deferred sweet surfaces the probe evolution while keeping the
+-- decision behind confirmation: a free-slot has_move slot qualified by
+-- the just-learned move stages the evolution in the candidate instead of
+-- missing it.
+function T.deferred_sweets_surface_probe_evolutions_behind_confirmation()
+  local root = CatalogFixture.buildAssetRoot()
+  root.species.CHIKORITA.forms[0].evolutions = {
+    { method = "has_move", move = "SYNTHESIS", target = "TOTODILE", form = 0 },
+  }
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local asset = ItemFixture.buildAssetRoot()
+  local sweet = asset.items.ITEM_43
+  assert(sweet ~= nil, "the item fixture carries placeholder ITEM_43")
+  asset.items.ITEM_43 = nil
+  asset.items.RARE_CANDY = sweet
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local catalog = MonCatalog.new(root, ItemCatalog.new(asset))
+  local target = progressionMon(catalog, 877, 11)
+  target.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+  }
+  local plan = PartyItemEffects.plan(
+    target,
+    deferredDefinition("level_up"),
+    nil,
+    progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 }),
+    liveDerived(catalog, target)
+  )
+  Assert.equal(plan.kind, "needs_confirmation", "the earned evolution waits on confirmation")
+  Assert.equal(plan.candidate.evolution, "TOTODILE", "the just-learned move qualifies the has_move slot")
+  Assert.deepEqual(
+    plan.candidate.learningOpportunities,
+    { { level = 12, move = "SYNTHESIS" } },
+    "the chance is still staged"
+  )
+end
+
+-- A full set never reports a silent evolution: the probe cannot learn
+-- the undecided move, so the sweet waits on confirmation with the chance
+-- staged and no evolution claimed.
+function T.deferred_sweets_hold_full_set_learning_for_confirmation()
+  local root = CatalogFixture.buildAssetRoot()
+  root.species.CHIKORITA.forms[0].evolutions = {
+    { method = "has_move", move = "SYNTHESIS", target = "TOTODILE", form = 0 },
+  }
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local asset = ItemFixture.buildAssetRoot()
+  local sweet = asset.items.ITEM_43
+  assert(sweet ~= nil, "the item fixture carries placeholder ITEM_43")
+  asset.items.ITEM_43 = nil
+  asset.items.RARE_CANDY = sweet
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local catalog = MonCatalog.new(root, ItemCatalog.new(asset))
+  local target = progressionMon(catalog, 883, 11)
+  target.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+    { move = "POISONPOWDER", pp = 35, ppUps = 0 },
+  }
+  local plan = PartyItemEffects.plan(
+    target,
+    deferredDefinition("level_up"),
+    nil,
+    progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 }),
+    liveDerived(catalog, target)
+  )
+  Assert.equal(plan.kind, "needs_confirmation", "pending learning waits on confirmation")
+  Assert.isTrue(#plan.candidate.learningOpportunities > 0, "the candidate carries the chances")
+  Assert.isTrue(plan.candidate.evolution == nil, "the undecided move stages no silent evolution")
+end
+
 function T.deferred_items_without_identified_facts_stay_deferred()
   local catalog = progressionCatalog()
   local target = progressionMon(catalog, 853, 9)

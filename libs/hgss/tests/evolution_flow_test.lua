@@ -139,6 +139,26 @@ local function vectorCatalog()
   return MonCatalog.new(root, testItemCatalog())
 end
 
+-- Learning vectors need current-level target entries: retail only offers
+-- the staged species' learnset entries whose level equals the current
+-- level, and the base TOTODILE learnset carries nothing at the level-16
+-- evolution vector. The learning catalog stages two level-16 entries in
+-- learnset order so the corrected set stays provable without touching the
+-- shared fixture.
+---@return table mon catalog carrying current-level learning entries
+local function learningCatalog()
+  local root = CatalogFixture.buildAssetRoot()
+  addLineSlots(root)
+  root.species.TOTODILE.forms[0].levelUpMoves = {
+    { level = 1, move = "SCRATCH" },
+    { level = 1, move = "LEER" },
+    { level = 6, move = "WATER_GUN" },
+    { level = 16, move = "QUICK_ATTACK" },
+    { level = 16, move = "SAND_ATTACK" },
+  }
+  return MonCatalog.new(root, testItemCatalog())
+end
+
 ---@param catalog table mon catalog under test
 ---@param seed integer fixed generator state for this roster member
 ---@param overrides table<string, unknown>|nil generation request overrides
@@ -181,8 +201,8 @@ local function vectorContext(overrides)
 end
 
 -- Moves covering the target learnset so the confirmation flow carries no
--- pending learning: every target entry at or below the vector level is
--- already known.
+-- pending learning: the vector level holds no current-level target
+-- entries, so retail cursor semantics offer nothing either way.
 ---@param mon table mon record under test
 ---@return table the same mon knowing the full low-level target set
 local function teachTargetSet(mon)
@@ -366,12 +386,15 @@ function T.post_battle_eligibility_uses_final_state_and_terminal_results()
   )
 end
 
--- A full move set pauses learning for explicit decisions: already-known
--- chances pass silently, replacements land in the named slot, declines keep
--- the set, and the capture carries every decision at once.
+-- A full move set pauses learning for explicit decisions on the corrected
+-- set: only the staged target's current-level entries are offered, in
+-- learnset order; the unknown lower-level entries never surface even
+-- though LEER and WATER_GUN stay unlearned. Replacements land in the
+-- named slot, declines keep the set, and the capture carries every
+-- decision at once.
 function T.full_sets_pause_learning_for_explicit_decisions()
   local Flow = requirePresent("libs.hgss.src.mons.EvolutionFlow", "concrete evolution flow owns staging")
-  local catalog = vectorCatalog()
+  local catalog = learningCatalog()
   local mon = pinLevel(makeMon(catalog, 701, {}), catalog, 16)
   mon.moves = {
     { move = "SCRATCH", pp = 35, ppUps = 0 },
@@ -385,8 +408,9 @@ function T.full_sets_pause_learning_for_explicit_decisions()
   Assert.equal(Flow.step(flow).prompt, "confirm_evolution", "the flow opens on confirmation")
   Flow.respond(flow, { choice = "accept" })
   local first = Flow.step(flow)
-  Assert.equal(first.prompt, "learn_move", "a full set pauses on the first unknown chance")
-  Assert.equal(first.move, "LEER", "already-known chances pass silently")
+  Assert.equal(first.prompt, "learn_move", "a full set pauses on the first unknown current-level chance")
+  Assert.equal(first.move, "QUICK_ATTACK", "only current-level entries surface, in learnset order")
+  Assert.equal(first.level, 16, "the prompt names the current level")
   Assert.deepEqual(
     first.currentMoves,
     { "SCRATCH", "GROWL", "RAZOR_LEAF", "POISONPOWDER" },
@@ -395,15 +419,99 @@ function T.full_sets_pause_learning_for_explicit_decisions()
   Flow.respond(flow, { choice = "replace", slot = 3 })
   local second = Flow.step(flow)
   Assert.equal(second.prompt, "learn_move", "the next unknown chance pauses as well")
-  Assert.equal(second.move, "WATER_GUN", "learning follows learnset order")
+  Assert.equal(second.move, "SAND_ATTACK", "learning follows learnset order")
+  Assert.equal(second.level, 16, "lower-level entries never surface")
   Flow.respond(flow, { choice = "decline" })
   Assert.equal(Flow.step(flow).prompt, "complete", "answered chances resolve the flow")
   local result = Flow.capture(flow)
   Assert.notNil(result, "the decided flow captures")
-  Assert.equal(result.mon.moves[4].move, "LEER", "the replacement lands in the named slot")
+  Assert.equal(result.mon.moves[4].move, "QUICK_ATTACK", "the replacement lands in the named slot")
   Assert.equal(result.mon.moves[4].pp, 30, "replacements reset to base power points")
   Assert.equal(#result.mon.moves, 4, "declines keep the set size")
   Assert.deepEqual(mon, before, "deciding never touches the live mon")
+end
+
+-- Lower-level target moves are never offered after evolution: a mon with
+-- free slots that knows none of the target set still completes at once
+-- with its move set untouched, even though every target entry sits at or
+-- below the current level.
+function T.evolution_learning_ignores_lower_level_target_moves()
+  local Flow = requirePresent("libs.hgss.src.mons.EvolutionFlow", "concrete evolution flow owns staging")
+  local catalog = vectorCatalog()
+  local mon = pinLevel(makeMon(catalog, 709, {}), catalog, 16)
+  mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+  }
+  local before = copy(mon)
+  local flow = Flow.start(mon, vectorContext(), catalog)
+  Assert.notNil(flow, "an eligible mon opens a flow")
+  Assert.equal(Flow.step(flow).prompt, "confirm_evolution", "the flow opens on confirmation")
+  Flow.respond(flow, { choice = "accept" })
+  Assert.equal(Flow.step(flow).prompt, "complete", "lower-level entries never pause the flow")
+  local result = Flow.capture(flow)
+  Assert.notNil(result, "the untouched flow captures")
+  Assert.deepEqual(result.mon.moves, before.moves, "lower-level entries never fill free slots")
+  Assert.deepEqual(mon, before, "driving the flow never touches the live mon")
+end
+
+-- Current-level target moves fill free slots silently: with room in the
+-- set, every unknown current-level entry lands in learnset order without
+-- pausing, and the flow completes at once.
+function T.current_level_moves_fill_free_slots_silently()
+  local Flow = requirePresent("libs.hgss.src.mons.EvolutionFlow", "concrete evolution flow owns staging")
+  local catalog = learningCatalog()
+  local mon = pinLevel(makeMon(catalog, 703, {}), catalog, 16)
+  mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+  }
+  local before = copy(mon)
+  local flow = Flow.start(mon, vectorContext(), catalog)
+  Assert.notNil(flow, "an eligible mon opens a flow")
+  Assert.equal(Flow.step(flow).prompt, "confirm_evolution", "the flow opens on confirmation")
+  Flow.respond(flow, { choice = "accept" })
+  Assert.equal(Flow.step(flow).prompt, "complete", "free slots fill without pausing")
+  local result = Flow.capture(flow)
+  Assert.notNil(result, "the silent flow captures")
+  Assert.deepEqual(
+    result.mon.moves,
+    {
+      { move = "TACKLE", pp = 35, ppUps = 0 },
+      { move = "GROWL", pp = 40, ppUps = 0 },
+      { move = "QUICK_ATTACK", pp = 30, ppUps = 0 },
+      { move = "SAND_ATTACK", pp = 15, ppUps = 0 },
+    },
+    "current-level entries fill free slots in learnset order"
+  )
+  Assert.deepEqual(mon, before, "filling never touches the live mon")
+end
+
+-- Already-known current-level moves pass silently: a full set holding one
+-- of the current-level entries pauses only for the unknown one.
+function T.known_current_level_moves_pass_silently()
+  local Flow = requirePresent("libs.hgss.src.mons.EvolutionFlow", "concrete evolution flow owns staging")
+  local catalog = learningCatalog()
+  local mon = pinLevel(makeMon(catalog, 727, {}), catalog, 16)
+  mon.moves = {
+    { move = "QUICK_ATTACK", pp = 30, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+    { move = "POISONPOWDER", pp = 35, ppUps = 0 },
+  }
+  local flow = Flow.start(mon, vectorContext(), catalog)
+  Assert.notNil(flow, "an eligible mon opens a flow")
+  Assert.equal(Flow.step(flow).prompt, "confirm_evolution", "the flow opens on confirmation")
+  Flow.respond(flow, { choice = "accept" })
+  local prompt = Flow.step(flow)
+  Assert.equal(prompt.prompt, "learn_move", "the unknown chance still pauses")
+  Assert.equal(prompt.move, "SAND_ATTACK", "the known current-level entry passes silently")
+  Flow.respond(flow, { choice = "decline" })
+  Assert.equal(Flow.step(flow).prompt, "complete", "the declined chance resolves the flow")
+  local result = Flow.capture(flow)
+  Assert.notNil(result, "the decided flow captures")
+  Assert.equal(result.mon.moves[1].move, "QUICK_ATTACK", "declines keep the held set")
+  Assert.equal(#result.mon.moves, 4, "declines keep the set size")
 end
 
 -- Rejected answers fail without moving state: a cancelled trade refuses to
@@ -450,6 +558,195 @@ function T.invalid_flow_answers_fail_without_moving_state()
     Flow.eligibleAfterBattle({ trader }, "draw", vectorContext(), tradeCatalog),
     {},
     "an unknown terminal result stages nothing"
+  )
+end
+
+-- Trade triggers stage both native trade slots at the flow level: the
+-- unconditional slot answers barehanded while the held-item slot answers
+-- only while holding its named item, level triggers never open trade
+-- slots, and every trade flow opens non-cancellable.
+function T.trade_triggers_stage_plain_and_held_item_trade_evolutions()
+  local Flow = requirePresent("libs.hgss.src.mons.EvolutionFlow", "concrete evolution flow owns staging")
+  local root = CatalogFixture.buildAssetRoot()
+  root.species.CHIKORITA.forms[0].evolutions = {
+    { method = "trade_item", item = "KINGS_ROCK", target = "EEVEE", form = 0 },
+    { method = "trade", target = "TOTODILE", form = 0 },
+  }
+  local catalog = MonCatalog.new(root, testItemCatalog())
+  local function tradeContext()
+    return vectorContext({ trigger = { kind = "trade" } })
+  end
+  local bare = pinLevel(makeMon(catalog, 811, {}), catalog, 12)
+  local bareFlow = Flow.start(bare, tradeContext(), catalog)
+  Assert.notNil(bareFlow, "a bare mon opens a trade flow")
+  local bareFirst = Flow.step(bareFlow)
+  Assert.equal(bareFirst.prompt, "confirm_evolution", "the trade flow opens on confirmation")
+  Assert.equal(bareFirst.species, "TOTODILE", "the bare trade slot stages its own target")
+  Assert.isFalse(bareFirst.canCancel, "trade results are not cancellable")
+  acceptAll(Flow, bareFlow)
+  local bareResult = Flow.capture(bareFlow)
+  Assert.notNil(bareResult, "the accepted trade captures")
+  Assert.equal(bareResult.mon.species, "TOTODILE", "the capture carries the trade target")
+  local holder = pinLevel(makeMon(catalog, 823, {}), catalog, 12)
+  holder.heldItem = "KINGS_ROCK"
+  local heldFlow = Flow.start(holder, tradeContext(), catalog)
+  Assert.notNil(heldFlow, "a holder opens a trade flow")
+  local heldFirst = Flow.step(heldFlow)
+  Assert.equal(heldFirst.prompt, "confirm_evolution", "the held flow opens on confirmation")
+  Assert.equal(heldFirst.species, "EEVEE", "the first matching held slot wins in source order")
+  Assert.isFalse(heldFirst.canCancel, "held trade results are not cancellable")
+  local itemOnly = CatalogFixture.buildAssetRoot()
+  itemOnly.species.CHIKORITA.forms[0].evolutions = {
+    { method = "trade_item", item = "KINGS_ROCK", target = "EEVEE", form = 0 },
+  }
+  local itemCatalog = MonCatalog.new(itemOnly, testItemCatalog())
+  local emptyHanded = pinLevel(makeMon(itemCatalog, 829, {}), itemCatalog, 12)
+  Assert.isTrue(
+    Flow.start(emptyHanded, vectorContext({ trigger = { kind = "trade" } }), itemCatalog) == nil,
+    "trade without the held item stages nothing"
+  )
+  Assert.isTrue(
+    Flow.start(pinLevel(makeMon(catalog, 839, {}), catalog, 16), vectorContext(), catalog) == nil,
+    "level triggers never open trade slots"
+  )
+end
+
+-- Trade flows reject cancellation and consume held trade items on
+-- capture: cancelling either the plain or the held-item flow fails, the
+-- staged mon arrives barehanded with no bag spend, and the live mon keeps
+-- its item until publication.
+function T.trade_flows_reject_cancel_and_consume_held_trade_items()
+  local Flow = requirePresent("libs.hgss.src.mons.EvolutionFlow", "concrete evolution flow owns staging")
+  local root = CatalogFixture.buildAssetRoot()
+  root.species.CHIKORITA.forms[0].evolutions = {
+    { method = "trade", target = "TOTODILE", form = 0 },
+  }
+  local catalog = MonCatalog.new(root, testItemCatalog())
+  local plain = pinLevel(makeMon(catalog, 853, {}), catalog, 12)
+  local plainFlow = Flow.start(plain, vectorContext({ trigger = { kind = "trade" } }), catalog)
+  Assert.notNil(plainFlow, "a traded mon opens a flow")
+  Assert.throws(function()
+    Flow.respond(plainFlow, { choice = "cancel" })
+  end, "cancelling a plain trade fails")
+  local heldRoot = CatalogFixture.buildAssetRoot()
+  heldRoot.species.CHIKORITA.forms[0].evolutions = {
+    { method = "trade_item", item = "KINGS_ROCK", target = "EEVEE", form = 0 },
+  }
+  local heldCatalog = MonCatalog.new(heldRoot, testItemCatalog())
+  local holder = pinLevel(makeMon(heldCatalog, 859, {}), heldCatalog, 12)
+  holder.heldItem = "KINGS_ROCK"
+  local before = copy(holder)
+  local heldFlow = Flow.start(holder, vectorContext({ trigger = { kind = "trade" } }), heldCatalog)
+  Assert.notNil(heldFlow, "a holder opens a flow")
+  Assert.throws(function()
+    Flow.respond(heldFlow, { choice = "cancel" })
+  end, "cancelling a held trade fails")
+  Assert.equal(Flow.step(heldFlow).prompt, "confirm_evolution", "rejected cancels leave the confirmation waiting")
+  Flow.respond(heldFlow, { choice = "accept" })
+  Assert.equal(Flow.step(heldFlow).prompt, "complete", "a fully-known set completes at once")
+  local result = Flow.capture(heldFlow)
+  Assert.notNil(result, "the accepted held trade captures")
+  Assert.equal(result.mon.species, "EEVEE", "the capture carries the held trade target")
+  Assert.equal(result.mon.heldItem, "NONE", "the held trade item is consumed")
+  Assert.deepEqual(result.inventoryDeltas, {}, "held consumption stages no bag spend")
+  Assert.deepEqual(holder, before, "driving the flow never touches the live mon")
+end
+
+-- The held blocker still stops trade checks at the flow level, with the
+-- single source-named exemption: an Everstone holder stages nothing on
+-- the trade trigger while KADABRA holding one still evolves.
+function T.everstone_blocks_trade_evolutions_except_for_kadabra()
+  local Flow = requirePresent("libs.hgss.src.mons.EvolutionFlow", "concrete evolution flow owns staging")
+  local root = CatalogFixture.buildAssetRoot()
+  root.species.CHIKORITA.forms[0].evolutions = {
+    { method = "trade", target = "TOTODILE", form = 0 },
+  }
+  root.species.KADABRA = {
+    nativeId = 64,
+    name = "KADABRA",
+    growthCurve = "medium_slow",
+    baseFriendship = 70,
+    genderRatio = 31,
+    eggCycles = 20,
+    eggGroups = { "monster", "monster" },
+    catchRate = 100,
+    baseExpYield = 105,
+    evYield = { hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 2, specialDefense = 0 },
+    heldItems = {
+      common = { item = "NONE", nativeId = 0 },
+      rare = { item = "NONE", nativeId = 0 },
+    },
+    color = 3,
+    flip = false,
+    forms = {
+      [0] = {
+        baseStats = { hp = 40, attack = 35, defense = 30, speed = 105, specialAttack = 120, specialDefense = 70 },
+        types = { "psychic" },
+        abilities = { "STATIC" },
+        tmhm = {},
+        levelUpMoves = {
+          { level = 1, move = "TACKLE" },
+        },
+        evolutions = {
+          { method = "trade", target = "TOTODILE", form = 0 },
+        },
+        icon = "KADABRA/f0",
+        portrait = "KADABRA/f0/male/plain",
+      },
+    },
+  }
+  local catalog = MonCatalog.new(root, testItemCatalog())
+  local blocked = pinLevel(makeMon(catalog, 877, {}), catalog, 12)
+  blocked.heldItem = "EVERSTONE"
+  Assert.isTrue(
+    Flow.start(blocked, vectorContext({ trigger = { kind = "trade" } }), catalog) == nil,
+    "the held blocker stops the trade trigger"
+  )
+  local exempt = pinLevel(makeMon(catalog, 883, { species = "KADABRA" }), catalog, 12)
+  exempt.heldItem = "EVERSTONE"
+  exempt.moves = {
+    { move = "SCRATCH", pp = 35, ppUps = 0 },
+    { move = "LEER", pp = 30, ppUps = 0 },
+    { move = "WATER_GUN", pp = 25, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  }
+  local exemptFlow = Flow.start(exempt, vectorContext({ trigger = { kind = "trade" } }), catalog)
+  Assert.notNil(exemptFlow, "the exempt species opens a trade flow while holding the blocker")
+  Assert.isFalse(Flow.step(exemptFlow).canCancel, "the exempt trade stays non-cancellable")
+  acceptAll(Flow, exemptFlow)
+  local result = Flow.capture(exemptFlow)
+  Assert.notNil(result, "the exempt trade captures")
+  Assert.equal(result.mon.species, "TOTODILE", "the exempt capture carries the trade target")
+end
+
+-- Post-battle eligibility never fires trade evolutions: a mon carrying
+-- only a trade slot stages nothing behind any terminal result, even
+-- though the same mon evolves on the trade trigger itself.
+function T.post_battle_level_rechecks_never_stage_trade_evolutions()
+  local Flow = requirePresent("libs.hgss.src.mons.EvolutionFlow", "concrete evolution flow owns staging")
+  Assert.isTrue(type(Flow.eligibleAfterBattle) == "function", "the flow owner rechecks eligibility after battles")
+  local root = CatalogFixture.buildAssetRoot()
+  root.species.CHIKORITA.forms[0].evolutions = {
+    { method = "trade", target = "TOTODILE", form = 0 },
+  }
+  local catalog = MonCatalog.new(root, testItemCatalog())
+  local trader = pinLevel(makeMon(catalog, 907, {}), catalog, 16)
+  Assert.notNil(
+    Flow.start(trader, vectorContext({ trigger = { kind = "trade" } }), catalog),
+    "the vector mon evolves on the trade trigger"
+  )
+  local context = vectorContext()
+  for _, outcome in ipairs({ "win", "caught", "fled" }) do
+    Assert.deepEqual(
+      Flow.eligibleAfterBattle({ trader }, outcome, context, catalog),
+      {},
+      "the level recheck stages no trade evolution after " .. outcome
+    )
+  end
+  Assert.deepEqual(
+    Flow.eligibleAfterBattle({ trader }, "loss", context, catalog),
+    {},
+    "a loss stages nothing either"
   )
 end
 

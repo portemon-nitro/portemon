@@ -678,8 +678,9 @@ end
 
 -- Staged results recalculate through the shared owners: experience is
 -- untouched, health follows the shared maximum adjustment, ability
--- follows the personality slot of the new form, associated learning is
--- listed in learnset order, and malformed calls fail loudly.
+-- follows the personality slot of the new form, associated learning lists
+-- only unknown current-level target entries in learnset order, and
+-- malformed calls fail loudly.
 function T.planned_results_recalculate_through_the_shared_owners()
   local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
   local catalog = buildCatalog(function(root)
@@ -688,8 +689,11 @@ function T.planned_results_recalculate_through_the_shared_owners()
     forms[0].evolutions = {
       { method = "level", level = 10, target = "EEVEE", form = 0 },
     }
+    -- The vector target shares the source growth curve so the pinned level
+    -- survives evolution unchanged.
+    species.EEVEE.growthCurve = "medium_slow"
   end)
-  local mon = pinLevel(makeMon(catalog, 263, {}), catalog, 12)
+  local mon = pinLevel(makeMon(catalog, 263, {}), catalog, 15)
   mon.condition.currentHp = MonStats.derive(mon, catalog).maxHp - 5
   local before = copy(mon)
   local staged = Evolution.plan(mon, vectorContext(), catalog)
@@ -721,8 +725,8 @@ function T.planned_results_recalculate_through_the_shared_owners()
   Assert.equal(staged.monAfter.ability, expectedAbility, "ability follows the personality slot of the new form")
   Assert.deepEqual(
     staged.learningOpportunities,
-    { { level = 1, move = "TAIL_WHIP" }, { level = 8, move = "SAND_ATTACK" } },
-    "associated learning lists unlearned entries in learnset order"
+    { { level = 15, move = "QUICK_ATTACK" } },
+    "associated learning lists only unknown current-level target entries in learnset order"
   )
   Mon.validate(staged.monAfter, CatalogFixture.domainContext(catalog))
   local trade = buildCatalog(function(root)
@@ -743,6 +747,80 @@ function T.planned_results_recalculate_through_the_shared_owners()
   Assert.throws(function()
     Evolution.check(mon, nil, catalog)
   end, "a missing context fails")
+end
+
+-- Planned learning follows the retail current-level-only rule: lower-level
+-- target entries stay unoffered even when unknown, current-level entries
+-- arrive in learnset order without repeats, future entries wait, and the
+-- staged set matches the shared implementation directly.
+function T.planned_learning_offers_only_current_level_target_moves()
+  local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
+  Assert.isTrue(type(Evolution.learningOpportunities) == "function", "the evolution owner shares its learning set")
+  local catalog = buildCatalog(function(root)
+    local species = root.species --[[@as table<string, table<string, unknown>>]]
+    local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+    forms[0].evolutions = {
+      { method = "level", level = 10, target = "EEVEE", form = 0 },
+    }
+    -- The vector target shares the source growth curve so the pinned level
+    -- survives evolution unchanged.
+    species.EEVEE.growthCurve = "medium_slow"
+    species.EEVEE.forms[0].levelUpMoves = {
+      { level = 1, move = "TACKLE" },
+      { level = 5, move = "TAIL_WHIP" },
+      { level = 12, move = "SAND_ATTACK" },
+      { level = 12, move = "QUICK_ATTACK" },
+      { level = 12, move = "SAND_ATTACK" },
+      { level = 18, move = "TOXIC" },
+    }
+  end)
+  local mon = pinLevel(makeMon(catalog, 277, {}), catalog, 12)
+  local staged = Evolution.plan(mon, vectorContext(), catalog)
+  Assert.notNil(staged, "a matching mon stages a plan")
+  Assert.deepEqual(
+    staged.learningOpportunities,
+    { { level = 12, move = "SAND_ATTACK" }, { level = 12, move = "QUICK_ATTACK" } },
+    "only unknown current-level target entries stage, in learnset order without repeats"
+  )
+  Assert.deepEqual(
+    staged.learningOpportunities,
+    Evolution.learningOpportunities(staged.monAfter, catalog),
+    "planning derives its set from the shared implementation"
+  )
+end
+
+-- Already-known current-level target moves pass silently: a mon that knows
+-- every current-level entry stages an empty learning set while its
+-- lower-level gaps still stay unoffered.
+function T.planned_learning_skips_known_current_level_moves()
+  local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
+  local catalog = buildCatalog(function(root)
+    local species = root.species --[[@as table<string, table<string, unknown>>]]
+    local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+    forms[0].evolutions = {
+      { method = "level", level = 10, target = "EEVEE", form = 0 },
+    }
+    -- The vector target shares the source growth curve so the pinned level
+    -- survives evolution unchanged.
+    species.EEVEE.growthCurve = "medium_slow"
+    species.EEVEE.forms[0].levelUpMoves = {
+      { level = 1, move = "TACKLE" },
+      { level = 5, move = "TAIL_WHIP" },
+      { level = 12, move = "SAND_ATTACK" },
+      { level = 12, move = "QUICK_ATTACK" },
+      { level = 18, move = "TOXIC" },
+    }
+  end)
+  local mon = pinLevel(makeMon(catalog, 281, {}), catalog, 12)
+  mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "SAND_ATTACK", pp = 15, ppUps = 0 },
+    { move = "QUICK_ATTACK", pp = 30, ppUps = 0 },
+  }
+  local staged = Evolution.plan(mon, vectorContext(), catalog)
+  Assert.notNil(staged, "a matching mon stages a plan")
+  Assert.deepEqual(staged.learningOpportunities, {}, "known current-level moves stage nothing")
 end
 
 -- Day/night items also answer a level-up while held: the same slot a bag
@@ -818,6 +896,42 @@ function T.held_trade_items_are_consumed_by_the_plan()
   Assert.equal(staged.monAfter.heldItem, "NONE", "the held item is consumed")
   Assert.deepEqual(staged.inventoryDeltas, {}, "held consumption stages no bag spend")
   Assert.equal(holder.heldItem, "FIRE_STONE", "planning keeps the input held item")
+end
+
+-- Held day/night items are consumed by the staged result alone, matching
+-- the held trade item: the evolved mon arrives barehanded while the input
+-- keeps its item, and a stone used from the bag leaves the held item
+-- untouched.
+function T.held_day_night_items_are_consumed_by_the_plan()
+  local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
+  local catalog = buildCatalog(function(root)
+    local species = root.species --[[@as table<string, table<string, unknown>>]]
+    local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+    forms[0].evolutions = {
+      { method = "item_day", item = "SUN_STONE", target = "TOTODILE", form = 0 },
+      { method = "item_night", item = "MOON_STONE", target = "EEVEE", form = 0 },
+      { method = "stone", item = "FIRE_STONE", target = "SHEDINJA", form = 0 },
+    }
+  end)
+  local holder = pinLevel(makeMon(catalog, 547, {}), catalog, 12)
+  holder.heldItem = "SUN_STONE"
+  local day = Evolution.plan(holder, vectorContext({ timeOfDay = "day" }), catalog)
+  Assert.notNil(day, "a held day item stages a plan by day")
+  Assert.equal(day.monAfter.species, "TOTODILE", "the day slot stages its own target")
+  Assert.equal(day.monAfter.heldItem, "NONE", "the held day item is consumed")
+  Assert.equal(holder.heldItem, "SUN_STONE", "planning keeps the input held item")
+  holder.heldItem = "MOON_STONE"
+  local night = Evolution.plan(holder, vectorContext({ timeOfDay = "night" }), catalog)
+  Assert.notNil(night, "a held night item stages a plan by night")
+  Assert.equal(night.monAfter.species, "EEVEE", "the night slot stages its own target")
+  Assert.equal(night.monAfter.heldItem, "NONE", "the held night item is consumed")
+  Assert.equal(holder.heldItem, "MOON_STONE", "planning keeps the input held item")
+  local stoned =
+    Evolution.plan(holder, vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }), catalog)
+  Assert.notNil(stoned, "a bag stone stages a plan")
+  Assert.equal(stoned.monAfter.species, "SHEDINJA", "the stone slot stages its own target")
+  Assert.equal(stoned.monAfter.heldItem, "MOON_STONE", "a bag stone leaves the held item untouched")
+  Assert.equal(holder.heldItem, "MOON_STONE", "planning keeps the input held item")
 end
 
 -- The shed slot never matches on its own and a lone line slot stages no

@@ -146,6 +146,10 @@ end
 ---@param mon table<string, unknown>
 ---@return integer
 local function pidHighHalf(mon)
+  -- Retail compares pid_hi % 10 against 5 with
+  -- pid_hi = (pid >> 16) & 0xFFFF. Personalities stay below 2^32, so the
+  -- shift already fits in 16 bits and the mask is an identity; the
+  -- division below matches the retail half-word exactly.
   return math.floor(mon.personality / U32.HALF_BASE) % 10
 end
 
@@ -218,15 +222,21 @@ local function matchesLevel(slot, mon, context, catalog, level)
   elseif method == "other_party_mon" then
     return partyHas(context, slot.species)
   elseif method == "coronet" or method == "eterna" or method == "route217" then
+    -- Retail opens these only when the caller passes the slot method back
+    -- as the map evolution method; HGSS map headers always yield EVO_NONE,
+    -- so they stay shut in both games.
     return false
   end
   checkKnownMethod(method)
   return false
 end
 
--- Bag-item use answers the native EVOCTX_ITEM_USE family: plain and
--- gendered stones plus the day/night-gated items, each requiring its own
--- item. Level, trade, and world slots never answer here.
+-- Bag-item use answers the native item family: retail handles
+-- EVOCTX_ITEM_CHECK and EVOCTX_ITEM_USE in one shared case, so a single
+-- item trigger kind covers both. Plain and gendered stones plus the
+-- day/night-gated items each require their own item; retail reports an
+-- internal method_ret of 0 on this path, so the staged reason stays
+-- method-keyed. Level, trade, and world slots never answer here.
 ---@param slot table<string, unknown>
 ---@param mon table<string, unknown>
 ---@param context table<string, unknown>
@@ -269,7 +279,11 @@ end
 -- Validates the shared trigger context and resolves the ordered form slots
 -- with the trigger facts the matchers need. blockers (the marked baby
 -- form, the held blocker outside bag-item use) resolve here so every
--- entry point answers them identically.
+-- entry point answers them identically. Retail keys the held gate off the
+-- held item's hold-no-evolve effect identity; the item catalog carries no
+-- such identity for the blocker, so the check stays keyed on the
+-- source-named item, with the single source-named trade-evolving species
+-- exempt, in this one place.
 ---@param mon table<string, unknown>
 ---@param context table<string, unknown>
 ---@param catalog table<string, unknown>
@@ -400,23 +414,36 @@ function Evolution.applyNamePolicy(monAfter, monBefore)
   return staged
 end
 
--- Collects the target learnset entries at or below the pre-evolution level
--- that the mon does not know yet, in learnset order without repeats.
----@param monBefore table<string, unknown>
----@param targetForm table<string, unknown>
----@param level integer
+-- Computes the post-evolution learning set with retail cursor semantics
+-- (pokemon.c MonTryLearnMoveOnLevelUp as driven by evolution_scene.c
+-- EVO_STATE_TRY_LEARN_MOVE with its cursor starting at 0): only the
+-- staged target form's learnset entries whose level equals the current
+-- level are offered, in learnset order, without repeats. Lower-level
+-- entries are never revisited after evolution, even when still unknown.
+-- The level derives from the staged experience through the target
+-- species' growth curve; planning never changes experience, so this is
+-- the unchanged current level. This is the single shared implementation:
+-- the visual flow calls back into it instead of keeping its own copy.
+---@param staged table<string, unknown>
+---@param catalog table<string, unknown>
 ---@return table<integer, table<string, unknown>>
-local function evolutionLearning(monBefore, targetForm, level)
+function Evolution.learningOpportunities(staged, catalog)
+  assert(type(staged) == "table", "evolution learning reads the staged mon")
+  assert(type(staged.species) == "string", "evolution learning reads the staged species")
+  assert(type(staged.form) == "number", "evolution learning reads the staged form")
+  assert(type(staged.experience) == "number", "evolution learning reads staged experience")
+  assert(type(staged.moves) == "table", "evolution learning reads the staged move set")
+  assert(catalog ~= nil, "evolution learning reads a catalog")
+  local species = catalog:species(staged.species)
+  local level = Experience.level(catalog:growthCurve(species.growthCurve), staged.experience)
+  local targetForm = catalog:form(staged.species, staged.form)
   local learnset = assert(targetForm.levelUpMoves, "evolution learning reads the target learnset")
   assert(type(learnset) == "table", "target learnsets form an array")
   local opportunities = {}
   local queued = {}
   for _, entry in ipairs(learnset) do
     assert(type(entry) == "table", "learnset entries are records")
-    if entry.level > level then
-      break
-    end
-    if not knowsMove(monBefore, entry.move) and not queued[entry.move] then
+    if entry.level == level and not knowsMove(staged, entry.move) and not queued[entry.move] then
       queued[entry.move] = true
       opportunities[#opportunities + 1] = { level = entry.level, move = entry.move }
     end
@@ -472,8 +499,9 @@ end
 
 -- Stages the full candidate result for one authoritative slot. Experience
 -- is untouched, health follows the shared maximum adjustment, ability
--- follows the personality slot of the new form, and held trade items are
--- consumed. The input is never mutated.
+-- follows the personality slot of the new form, and consumed held items
+-- (trade, day-gated, night-gated) clear to barehanded. The input is never
+-- mutated.
 ---@param mon table<string, unknown>
 ---@param slot table<string, unknown>
 ---@param context table<string, unknown>
@@ -498,7 +526,9 @@ local function stageSlot(mon, slot, context, catalog)
   assert(type(beforeCondition) == "table", "planning reads the pre-evolution condition")
   condition.currentHp = MonStats.adjustHpForMaxChange(beforeFacts.maxHp, afterFacts.maxHp, beforeCondition.currentHp)
   local monAfter = Evolution.applyNamePolicy(staged, monBefore)
-  if slot.method == "trade_item" then
+  -- Retail clears the held item for held-item trade plus the day- and
+  -- night-gated evolutions; stone evolutions via bag use leave it alone.
+  if slot.method == "trade_item" or slot.method == "item_day" or slot.method == "item_night" then
     monAfter.heldItem = "NONE"
   end
   local additionalMons = {}
@@ -515,7 +545,7 @@ local function stageSlot(mon, slot, context, catalog)
     monAfter = monAfter,
     additionalMons = additionalMons,
     inventoryDeltas = inventoryDeltas,
-    learningOpportunities = evolutionLearning(monBefore, targetForm, monLevel(monBefore, catalog)),
+    learningOpportunities = Evolution.learningOpportunities(monAfter, catalog),
     canCancel = slot.method ~= "trade" and slot.method ~= "trade_item",
     reason = slot.method,
   }

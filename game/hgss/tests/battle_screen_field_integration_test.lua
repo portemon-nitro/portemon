@@ -1940,10 +1940,11 @@ function T.tests.evolution_completion_runs_its_exclusive_lane_to_terminal_restor
     end
   end
   Assert.isTrue(secondOffered, "the terminal still holds the second decision")
-  screen:input({ { type = "cancel" } })
-  screen:updateFixed(TICK)
+  -- Retail honors cancel on the transformation beat alone, so the exit
+  -- keeps pressing until the window opens; earlier edges decide nothing.
   local cancelled = nil
   for _ = 1, 60 do
+    screen:input({ { type = "cancel" } })
     screen:updateFixed(TICK)
     cancelled = port.takeCompletion()
     if cancelled ~= nil then

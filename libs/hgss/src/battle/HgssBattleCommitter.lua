@@ -167,7 +167,7 @@ end
 -- Stages every affected owner and validates the detached records without
 -- publishing anything. The returned preparation is committed once through
 -- commit; repeating commit reuses the recorded receipt.
----@param args { outcome: { id: string, result: string }, party: table<string, unknown>?, bag: table<string, unknown>?, dex: table<string, unknown>?, partyOwner: table<string, unknown>?, partyUpdates: { slot: integer, mon: table<string, unknown> }[]?, captures: table<string, unknown>[]?, rewards: table<string, unknown>?, scriptFlags: table<string, unknown>?, player: { record: table<string, unknown>, context: table<string, unknown>, moneyDelta: integer? }?, pokegear: { isCurrent: fun(): boolean, publish: fun(): table<string, unknown> }?, roamer: { owner: table<string, unknown>, key: string, outcome: string, expectedRevision: integer, details: table<string, unknown> }?, stale: boolean? }
+---@param args { outcome: { id: string, result: string }, party: table<string, unknown>?, bag: table<string, unknown>?, dex: table<string, unknown>?, stats: table<string, unknown>?, partyOwner: table<string, unknown>?, partyUpdates: { slot: integer, mon: table<string, unknown> }[]?, captures: table<string, unknown>[]?, rewards: table<string, unknown>?, scriptFlags: table<string, unknown>?, player: { record: table<string, unknown>, context: table<string, unknown>, moneyDelta: integer? }?, pokegear: { isCurrent: fun(): boolean, publish: fun(): table<string, unknown> }?, roamer: { owner: table<string, unknown>, key: string, outcome: string, expectedRevision: integer, details: table<string, unknown> }?, stale: boolean? }
 ---@return table<string, unknown>
 function HgssBattleCommitter.prepare(args)
   if type(args) ~= "table" then
@@ -185,6 +185,9 @@ function HgssBattleCommitter.prepare(args)
   end
   if args.dex ~= nil then
     checkPreparation(args.dex, "dex candidate")
+  end
+  if args.stats ~= nil then
+    checkPreparation(args.stats, "stats candidate")
   end
   local updates = args.partyUpdates or {}
   if type(updates) ~= "table" then
@@ -334,6 +337,7 @@ function HgssBattleCommitter.prepare(args)
     args.party == nil
     and args.bag == nil
     and args.dex == nil
+    and args.stats == nil
     and ownerBatch == nil
     and attempts == 0
     and args.rewards == nil
@@ -349,6 +353,7 @@ function HgssBattleCommitter.prepare(args)
     party = args.party,
     bag = args.bag,
     dex = args.dex,
+    stats = args.stats,
     pokegear = pokegearCandidate,
     owner = owner,
     ownerBatch = ownerBatch,
@@ -369,6 +374,7 @@ end
 ---@field party { isCurrent: fun(): boolean, publish: fun() }?
 ---@field bag { isCurrent: fun(): boolean, publish: fun() }?
 ---@field dex { isCurrent: fun(): boolean, publish: fun() }?
+---@field stats { isCurrent: fun(): boolean, publish: fun() }?
 ---@field pokegear { isCurrent: fun(): boolean, publish: fun(): table<string, unknown> }?
 ---@field owner HgssMonService?
 ---@field ownerBatch { isCurrent: fun(): boolean, publish: fun() }?
@@ -409,6 +415,7 @@ function HgssBattleCommitter.commit(prepared)
   local publishParty = checkedPublish(staged.party, "party candidate")
   local publishBag = checkedPublish(staged.bag, "bag candidate")
   local publishDex = checkedPublish(staged.dex, "dex candidate")
+  local publishStats = checkedPublish(staged.stats, "stats candidate")
   local publishBatch = checkedPublish(staged.ownerBatch, "party batch")
   local publishPc = checkedPublish(staged.ownerPc, "party and box candidate")
   if publishBatch ~= nil and publishPc ~= nil then
@@ -444,6 +451,9 @@ function HgssBattleCommitter.commit(prepared)
   end
   if publishDex ~= nil then
     publishDex()
+  end
+  if publishStats ~= nil then
+    publishStats()
   end
   if publishBatch ~= nil then
     publishBatch()

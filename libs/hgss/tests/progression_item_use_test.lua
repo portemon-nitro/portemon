@@ -259,6 +259,94 @@ function T.final_sweets_land_exactly_on_the_cap()
   Assert.equal(result.consumed, 1, "the final sweet spends exactly one")
 end
 
+-- Retail learns level-up moves before the evolution check: a has_move
+-- slot qualified by the move taught at this same level-up opens, because
+-- the check runs on the post-learning probe while staging stays pure.
+function T.sweets_learn_before_checking_has_move_slots()
+  local ItemUse = requirePresent("libs.hgss.src.mons.ProgressionItemUse", "reusable progression item use owns planning")
+  local root = CatalogFixture.buildAssetRoot()
+  root.species.CHIKORITA.forms[0].evolutions = {
+    { method = "has_move", move = "SYNTHESIS", target = "TOTODILE", form = 0 },
+  }
+  local catalog = MonCatalog.new(root, testItemCatalog())
+  local mon = pinLevel(makeMon(catalog, 601, {}), catalog, 11)
+  mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+  }
+  local before = copy(mon)
+  local result = ItemUse.planLevelItem(mon, "RARE_CANDY", vectorContext(catalog, { RARE_CANDY = 1 }))
+  Assert.isTrue(result.applied, "the sweet applies")
+  Assert.deepEqual(result.crossedLevels, { 12 }, "exactly twelve is crossed")
+  Assert.deepEqual(
+    result.learningOpportunities,
+    { { level = 12, move = "SYNTHESIS" } },
+    "the chance is still staged"
+  )
+  Assert.equal(result.evolution, "TOTODILE", "the just-learned move qualifies the has_move slot")
+  Assert.equal(result.consumed, 1, "the qualifying sweet still spends exactly one")
+  Assert.deepEqual(mon, before, "planning never mutates its input")
+end
+
+-- Silent probe fills invent no evolution: learning into free slots while
+-- the has_move slot wants an unlearned move reports no evolution, keeps
+-- the single spend, and leaves the input untouched.
+function T.free_slot_probe_fills_stay_silent_without_a_match()
+  local ItemUse = requirePresent("libs.hgss.src.mons.ProgressionItemUse", "reusable progression item use owns planning")
+  local root = CatalogFixture.buildAssetRoot()
+  root.species.CHIKORITA.forms[0].evolutions = {
+    { method = "has_move", move = "CUT", target = "TOTODILE", form = 0 },
+  }
+  local catalog = MonCatalog.new(root, testItemCatalog())
+  local mon = pinLevel(makeMon(catalog, 617, {}), catalog, 11)
+  mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+  }
+  local before = copy(mon)
+  local result = ItemUse.planLevelItem(mon, "RARE_CANDY", vectorContext(catalog, { RARE_CANDY = 1 }))
+  Assert.isTrue(result.applied, "the sweet applies")
+  Assert.deepEqual(
+    result.learningOpportunities,
+    { { level = 12, move = "SYNTHESIS" } },
+    "the chance is still staged"
+  )
+  Assert.isTrue(result.evolution == nil, "an unlearned has_move slot reports no evolution")
+  Assert.equal(result.consumed, 1, "the silent fill still spends exactly one")
+  Assert.deepEqual(mon, before, "planning never mutates its input")
+end
+
+-- A full set never guesses the pending choice: the probe cannot learn
+-- into a full set, so a has_move slot qualified only by the undecided
+-- move stays unreported while the chance remains staged for the host
+-- confirmation.
+function T.full_sets_never_guess_the_pending_learning_choice()
+  local ItemUse = requirePresent("libs.hgss.src.mons.ProgressionItemUse", "reusable progression item use owns planning")
+  local root = CatalogFixture.buildAssetRoot()
+  root.species.CHIKORITA.forms[0].evolutions = {
+    { method = "has_move", move = "SYNTHESIS", target = "TOTODILE", form = 0 },
+  }
+  local catalog = MonCatalog.new(root, testItemCatalog())
+  local mon = pinLevel(makeMon(catalog, 631, {}), catalog, 11)
+  mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+    { move = "POISONPOWDER", pp = 35, ppUps = 0 },
+  }
+  local before = copy(mon)
+  local result = ItemUse.planLevelItem(mon, "RARE_CANDY", vectorContext(catalog, { RARE_CANDY = 1 }))
+  Assert.isTrue(result.applied, "the sweet applies")
+  Assert.deepEqual(
+    result.learningOpportunities,
+    { { level = 12, move = "SYNTHESIS" } },
+    "the undecided chance is still staged"
+  )
+  Assert.isTrue(result.evolution == nil, "the undecided move stages no silent evolution")
+  Assert.equal(result.consumed, 1, "the pending sweet still spends exactly one")
+  Assert.deepEqual(mon, before, "planning never mutates its input")
+end
+
 -- A missing sweet identity fails before staging anything.
 function T.missing_sweet_identities_fail()
   local ItemUse = requirePresent("libs.hgss.src.mons.ProgressionItemUse", "reusable progression item use owns planning")

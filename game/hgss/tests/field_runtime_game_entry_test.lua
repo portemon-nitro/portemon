@@ -2,7 +2,10 @@
 -- fresh-session policy, demo manifests, or save-store loading.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local GameSave = require("libs.hgss.src.save.GameSave")
+local GameStats = require("libs.hgss.src.mons.GameStats")
+local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
@@ -235,6 +238,7 @@ local function captureRuntime(overrides)
       maps = {},
     }),
     dexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge").new(PokedexDexFixture.refsForSpecies({ "CHIKORITA" })),
+    gameStats = require("libs.hgss.src.mons.GameStats").new({ species = { CHIKORITA = true } }),
     pokegearState = require("libs.hgss.src.save.PokegearState").new({ seed = 1 }, { catalog = { contacts = {}, locations = {} } }),
   }, FieldRuntime)
   for key, value in pairs(overrides or {}) do
@@ -284,6 +288,7 @@ function T.captureGameSave_returns_an_owner_produced_snapshot_without_storage_io
   Assert.equal(valid.fashionCase.counts[1], 1, "every save captures Fashion Case quantities")
   Assert.equal(valid.encounters.schema, "hgss-encounter-v1", "every save captures the encounter bucket")
   Assert.equal(valid.pokedex.schema, "hgss-pokedex-v2", "every save captures the dex bucket")
+  Assert.equal(valid.gameStats.schema, "hgss-stats-v1", "every save captures the stats bucket")
   Assert.equal(valid.pokegear.schema, "hgss-pokegear-v1", "every save captures the companion bucket")
   Assert.equal(scriptCaptureCalls, 1)
 end
@@ -779,6 +784,100 @@ function T.modal_hosts_compose_identically_with_and_without_presentation()
   Coordinator.new(presented):composeModalHosts(modalBoot(), modalCallbacks(rebuildAudio, { current = nil }))
   Assert.equal(rebuildAudio.count, 1, "recomposition rebuilds audio")
   Assert.isTrue(presented.dialogue ~= firstDialogue, "recomposition builds fresh hosts instead of retaining them")
+end
+
+local function statsMonRoot()
+  return { species = { CHIKORITA = true, TOTODILE = true, PICHU = true } }
+end
+
+local function statsBucket(uniqueCaught, uniqueTotal, score)
+  return {
+    schema = GameStatsSave.SCHEMA,
+    stateVersion = GameStatsSave.STATE_VERSION,
+    uniqueCaught = uniqueCaught,
+    uniqueTotal = uniqueTotal,
+    score = score,
+  }
+end
+
+function T.field_boot_restores_game_stats_from_the_save_bucket()
+  local runtime = setmetatable({}, FieldRuntime)
+  runtime:_composeGameStats({
+    gameStats = statsBucket(
+      { "CHIKORITA", "TOTODILE" },
+      2,
+      GameStats.SCORE_POINTS.register_species_caught * 2
+    ),
+  }, statsMonRoot())
+  local owner = assert(runtime.gameStats, "field boot must own live game stats")
+  Assert.isTrue(owner:isCounted("CHIKORITA"))
+  Assert.isTrue(owner:isCounted("TOTODILE"))
+  Assert.isFalse(owner:isCounted("PICHU"))
+  Assert.equal(owner:uniqueCount(), 2)
+  Assert.equal(owner:score(), GameStats.SCORE_POINTS.register_species_caught * 2)
+  Assert.equal(owner:revision(), 0, "a fresh restore stages against its initial revision")
+end
+
+function T.field_boot_starts_empty_game_stats_for_a_new_game()
+  local runtime = setmetatable({}, FieldRuntime)
+  runtime:_composeGameStats(nil, statsMonRoot())
+  local owner = assert(runtime.gameStats, "a new game must still own live game stats")
+  Assert.equal(owner:uniqueCount(), 0)
+  Assert.equal(owner:score(), 0)
+  Assert.equal(owner:revision(), 0)
+  Assert.isFalse(owner:isCounted("CHIKORITA"))
+end
+
+function T.field_boot_starts_empty_game_stats_for_a_save_without_the_bucket()
+  local runtime = setmetatable({}, FieldRuntime)
+  runtime:_composeGameStats({}, statsMonRoot())
+  local owner = assert(runtime.gameStats, "a missing bucket must migrate to initial state, never defaults")
+  Assert.equal(owner:uniqueCount(), 0)
+  Assert.equal(owner:score(), 0)
+  Assert.equal(owner:revision(), 0)
+end
+
+function T.field_boot_fails_loudly_on_an_invalid_game_stats_bucket()
+  local runtime = setmetatable({}, FieldRuntime)
+  local ok, err = pcall(runtime._composeGameStats, runtime, {
+    gameStats = { schema = "bogus", stateVersion = 1, uniqueCaught = {}, score = 0 },
+  }, statsMonRoot())
+  Assert.isFalse(ok, "an invalid stats bucket must fail the boot")
+  assert(Errors.is(err), "the failure must stay structured")
+  Assert.equal(err.code, "GAME_STATS_INVALID")
+  Assert.isNil(runtime.gameStats, "a failed restore must leave no half-composed owner")
+end
+
+function T.restored_game_stats_survive_stage_publish_and_rerestore()
+  local runtime = setmetatable({}, FieldRuntime)
+  runtime:_composeGameStats({
+    gameStats = statsBucket({ "CHIKORITA" }, 1, GameStats.SCORE_POINTS.register_species_caught),
+  }, statsMonRoot())
+  local owner = assert(runtime.gameStats, "field boot must own live game stats")
+  local candidate = owner:prepareChanges({
+    observations = {
+      { kind = "unique_caught", species = "TOTODILE" },
+      {
+        kind = "score",
+        species = "TOTODILE",
+        event = GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT,
+        points = GameStats.SCORE_POINTS[GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT],
+      },
+    },
+  })
+  Assert.isTrue(candidate.changed, "a new species must stage a change against the restored revision")
+  Assert.isTrue(candidate.isCurrent(), "the candidate must pin the restored revision")
+  candidate.publish()
+  Assert.equal(owner:revision(), 1)
+  local rerun = setmetatable({}, FieldRuntime)
+  rerun:_composeGameStats({ gameStats = owner:bucket() }, statsMonRoot())
+  local restored = assert(rerun.gameStats, "re-restore must own live game stats")
+  Assert.equal(restored:uniqueCount(), 2)
+  Assert.equal(restored:score(), GameStats.SCORE_POINTS.register_species_caught * 2)
+  local replay = restored:prepareChanges({ observations = { { kind = "unique_caught", species = "CHIKORITA" } } })
+  Assert.isTrue(replay.changed, "a re-registration stages a blind increment after the round trip")
+  replay.publish()
+  Assert.equal(restored:uniqueCount(), 3, "the blind re-registration increments the restored total")
 end
 
 return {

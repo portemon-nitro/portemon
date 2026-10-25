@@ -299,6 +299,73 @@ local function makeStockedBag(itemCatalog, stock)
   return bag
 end
 
+-- Builds the live dex knowledge owner over the rig mon catalog: the
+-- generated catalog gains ordinary policies for grafted species the
+-- shared dex fixture never knew, while display and completion sets filter
+-- to exactly the rig species so construction sees the admitted set.
+---@param catalog table mon catalog under test preparation
+---@return table live dex knowledge owner with an empty history
+local function dexOwnerFor(catalog)
+  local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+  local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+  local pokedexCatalog = PokedexDexFixture.buildPokedexCatalog()
+  for _, key in ipairs(catalog:speciesKeys()) do
+    if pokedexCatalog.species[key] == nil then
+      pokedexCatalog.species[key] = {
+        formPolicy = {
+          kind = "ordinary",
+          variants = { { id = 0, form = 0 } },
+          defaultVariant = 0,
+          rememberCaughtVariants = false,
+          rememberFirstPersonality = false,
+        },
+      }
+    end
+  end
+  local keep = {}
+  for _, key in ipairs(catalog:speciesKeys()) do
+    keep[key] = true
+  end
+  local function filter(list)
+    local kept = {}
+    for _, key in ipairs(list) do
+      if keep[key] == true then
+        kept[#kept + 1] = key
+      end
+    end
+    return kept
+  end
+  pokedexCatalog.dexOrders = {
+    johto = filter(pokedexCatalog.dexOrders.johto),
+    national = filter(pokedexCatalog.dexOrders.national),
+  }
+  pokedexCatalog.completionSets = {
+    johto = filter(pokedexCatalog.completionSets.johto),
+    national = filter(pokedexCatalog.completionSets.national),
+  }
+  return PokedexKnowledge.new(PokedexDexFixture.refs(catalog, pokedexCatalog))
+end
+
+-- Builds the live game-stats owner over the rig mon catalog with
+-- nothing counted. The allow-set admits exactly the rig species so
+-- registration validation sees the same references production composes.
+---@param catalog table mon catalog under test preparation
+---@return table live game-stats owner with a zero score
+local function statsOwnerFor(catalog)
+  local GameStats = require("libs.hgss.src.mons.GameStats")
+  local allowed = {}
+  for _, key in ipairs(catalog:speciesKeys()) do
+    allowed[key] = true
+  end
+  return GameStats.new({ species = allowed })
+end
+
+---@return integer the authoritative register points per fresh registration
+local function registerPoints()
+  local GameStats = require("libs.hgss.src.mons.GameStats")
+  return GameStats.SCORE_POINTS[GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT]
+end
+
 ---@param opts table rig options under test preparation
 ---@return table live rig with the runtime, the real screen, and its port
 local function openEvolutionRig(opts)
@@ -393,6 +460,15 @@ local function openEvolutionRig(opts)
   }
   if bag ~= nil then
     args.bag = bag
+  end
+  if opts.dex ~= nil then
+    args.dex = opts.dex
+  end
+  if opts.stats ~= nil then
+    args.stats = opts.stats
+  end
+  if opts.captures ~= nil then
+    args.captures = opts.captures
   end
   holder.battle = BattleRuntime.new(args)
   rig.battle = holder.battle
@@ -682,6 +758,76 @@ function T.shed_side_product_publishes_with_its_ball_spent()
   rig.screen:dispose()
 end
 
+-- Retail registers the evolved mon as caught on publication, and the shed
+-- side product with it: one atomic commit lands the evolved primary, the
+-- extra, and both caught flags while the abandoned pre-evolution species
+-- stays uncaught.
+function T.evolution_registers_the_evolved_mon_and_its_side_product_as_caught()
+  local catalog, items = evolutionCatalogs(graftNincadaLine, false)
+  local dex = dexOwnerFor(catalog)
+  local rig = openEvolutionRig({
+    launchId = "launch-evolution-registers-caught",
+    catalog = catalog,
+    itemCatalog = items,
+    partySpecs = {
+      { species = "NINCADA", level = 19, below = true, moves = singleTackle() },
+    },
+    bag = makeStockedBag(items, { { key = "POKE_BALL", quantity = 3 } }),
+    evolutionContext = { timeOfDay = "day", mapId = 7 },
+    dex = dex,
+  })
+  Assert.isFalse(dex:isCaught("NINJASK"), "setup: the evolved species starts uncaught")
+  Assert.isFalse(dex:isCaught("SHEDINJA"), "setup: the side product starts uncaught")
+  driveToCommitted(rig, 1500)
+  driveToEvolution(rig, 1200)
+  runEvolutionHandsFree(rig, 1500)
+  Assert.equal(rig.battle:status().phase, "complete", "the registered evolution still returns to the field")
+  Assert.equal(rig.party:partyMon(0).species, "NINJASK", "the primary stages its evolved species")
+  Assert.equal(rig.party:partyCount(), 2, "the permitted extra joins the party exactly once")
+  Assert.isTrue(dex:isCaught("NINJASK"), "publication registers the evolved mon as caught")
+  Assert.isTrue(dex:isCaught("SHEDINJA"), "publication registers the shed side product as caught")
+  Assert.isFalse(
+    dex:isCaught("NINCADA"),
+    "publication registers only the evolved mon and its side product"
+  )
+  rig.battle:dispose()
+  rig.screen:dispose()
+end
+
+-- A fled outcome still queues the leveled member: retail checks evolution
+-- after flights as well as wins and captures, so the fled word passes the
+-- same eligibility gate over the committed party.
+function T.fled_outcome_queues_the_leveled_member()
+  local catalog = evolutionCatalogs(graftLevelSlot, false)
+  local rig = openEvolutionRig({
+    launchId = "launch-fled-queues-evolution",
+    catalog = catalog,
+    itemCatalog = ItemFixture.makeCatalog(),
+    partySpecs = {
+      { species = "EEVEE", level = 9, below = true, moves = singleTackle() },
+    },
+    evolutionContext = { timeOfDay = "day", mapId = 7 },
+  })
+  local live = rig.party:partyMon(0)
+  local species = catalog:species(live.species)
+  local curve = catalog:growthCurve(species.growthCurve)
+  local staged = deepCopy(live)
+  staged.experience = Experience.expFor(curve, 10)
+  local prep, reason = rig.party:preparePartyChanges(rig.party:partyRevision(), { { slot = 0, mon = staged } })
+  Assert.notNil(prep, "the level gain stages: " .. tostring(reason))
+  assert(prep ~= nil, "the level gain stages")
+  Assert.isTrue(prep.isCurrent(), "the level gain stays current")
+  prep.publish()
+  rig.battle._result = "flee"
+  rig.battle:_buildEvolutions()
+  local queued = rig.battle._completions
+  Assert.equal(#queued, 1, "the fled outcome queues exactly one evolution")
+  Assert.equal(queued[1].kind, "evolution", "the queued completion names the evolution decision")
+  Assert.equal(queued[1].partySlot, 0, "the queued completion names the leveled slot")
+  rig.battle:dispose()
+  rig.screen:dispose()
+end
+
 -- A stale owner between commit and publication changes nothing live: the
 -- evolved record never lands, the concurrent bag change survives, the
 -- committed receipt still stands, and the lifetime still returns safely.
@@ -705,6 +851,38 @@ function T.stale_evolution_staging_changes_no_live_owner()
   Assert.equal(rig.party:partyMon(0).species, "NINCADA", "the stale evolution never lands its record")
   Assert.equal(rig.party:partyCount(), 1, "the stale evolution stages no side product")
   Assert.equal(rig.bag:quantity("POKE_BALL"), 4, "the concurrent bag change survives untouched")
+  Assert.deepEqual(rig.battle:status().outcomeReceipt, receipt, "the refused pass never republishes rewards")
+  Assert.notNil(rig.battle:status().completionError, "the refused staging stays visible on the status")
+  rig.battle:dispose()
+  rig.screen:dispose()
+end
+
+-- A stale evolution changes no live owner, dex included: the evolved
+-- record never lands, the concurrent bag change survives, and neither
+-- caught flag is set.
+function T.stale_evolution_registers_no_caught_flags()
+  local catalog, items = evolutionCatalogs(graftNincadaLine, false)
+  local dex = dexOwnerFor(catalog)
+  local rig = openEvolutionRig({
+    launchId = "launch-stale-evolution-registers-nothing",
+    catalog = catalog,
+    itemCatalog = items,
+    partySpecs = {
+      { species = "NINCADA", level = 19, below = true, moves = singleTackle() },
+    },
+    bag = makeStockedBag(items, { { key = "POKE_BALL", quantity = 3 } }),
+    evolutionContext = { timeOfDay = "day", mapId = 7 },
+    dex = dex,
+  })
+  local committed = driveToCommitted(rig, 1500)
+  local receipt = assert(committed.outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(rig.bag:add("POKE_BALL", 1), "setup: a concurrent live change moves the bag owner")
+  runEvolutionHandsFree(rig, 1500)
+  Assert.equal(rig.battle:status().phase, "complete", "the refused evolution still returns to the field")
+  Assert.equal(rig.party:partyMon(0).species, "NINCADA", "the stale evolution never lands its record")
+  Assert.equal(rig.party:partyCount(), 1, "the stale evolution stages no side product")
+  Assert.isFalse(dex:isCaught("NINJASK"), "the refused evolution registers no primary flag")
+  Assert.isFalse(dex:isCaught("SHEDINJA"), "the refused evolution registers no side-product flag")
   Assert.deepEqual(rig.battle:status().outcomeReceipt, receipt, "the refused pass never republishes rewards")
   Assert.notNil(rig.battle:status().completionError, "the refused staging stays visible on the status")
   rig.battle:dispose()
@@ -788,14 +966,21 @@ function T.cancelled_first_member_yields_to_the_second()
     end
   end
   Assert.notNil(rig.battle:status().outcomeReceipt, "the swapped bout publishes its commit receipt")
-  driveToEvolution(rig, 1200)
-  rig.screen:input({ { type = "cancel" } })
+  local first = driveToEvolution(rig, 1200)
+  local firstId = assert(first.completionId, "the offered evolution carries its completion identity")
+  -- Retail honors cancel only during the transformation beat and drops
+  -- earlier presses, so mash B while the first completion stays open: the
+  -- press landing on the transformation beat declines it and yields.
   local secondOffered = false
   for _ = 1, 1500 do
+    local open = rig.screen:status().completion
+    if type(open) == "table" and open.kind == "evolution" and open.completionId == firstId then
+      rig.screen:input({ { type = "cancel" } })
+    end
     rig.pump(1)
     ackNarration(rig)
     local completion = rig.screen:status().completion
-    if type(completion) == "table" and completion.kind == "evolution" then
+    if type(completion) == "table" and completion.kind == "evolution" and completion.completionId ~= firstId then
       secondOffered = true
       break
     end
@@ -808,6 +993,256 @@ function T.cancelled_first_member_yields_to_the_second()
   Assert.equal(rig.battle:status().phase, "complete", "the yielded sequence still returns to the field")
   Assert.equal(rig.party:partyMon(0).species, "EEVEE", "the declined member publishes nothing")
   Assert.equal(rig.party:partyMon(1).species, "TOTODILE", "the second member still receives its opportunity")
+  rig.battle:dispose()
+  rig.screen:dispose()
+end
+
+-- A declined evolution publishes nothing, dex included: the member keeps
+-- its species and the evolved flag stays unset.
+function T.declined_evolution_registers_no_caught_flag()
+  local catalog = evolutionCatalogs(graftLevelSlot, false)
+  local dex = dexOwnerFor(catalog)
+  local rig = openEvolutionRig({
+    launchId = "launch-decline-registers-nothing",
+    catalog = catalog,
+    itemCatalog = ItemFixture.makeCatalog(),
+    partySpecs = {
+      { species = "EEVEE", level = 9, below = true, moves = singleTackle() },
+    },
+    evolutionContext = { timeOfDay = "day", mapId = 7 },
+    dex = dex,
+  })
+  driveToCommitted(rig, 1500)
+  local offered = driveToEvolution(rig, 1200)
+  local offeredId = assert(offered.completionId, "the offered evolution carries its completion identity")
+  -- Retail honors cancel only during the transformation beat and drops
+  -- earlier presses, so mash B while the single completion stays open the
+  -- same way the yielded-sequence test declines its first member.
+  for _ = 1, 1500 do
+    local open = rig.screen:status().completion
+    if type(open) == "table" and open.kind == "evolution" and open.completionId == offeredId then
+      rig.screen:input({ { type = "cancel" } })
+    end
+    rig.pump(1)
+    ackNarration(rig)
+    if rig.battle:status().phase == "complete" then
+      break
+    end
+    if rig.battle:status().phase == "failed" then
+      error("the declined evolution failed: " .. tostring(rig.battle:status().error), 0)
+    end
+  end
+  Assert.equal(rig.battle:status().phase, "complete", "the declined evolution still returns to the field")
+  Assert.equal(rig.party:partyMon(0).species, "EEVEE", "the declined member publishes nothing")
+  Assert.isFalse(dex:isCaught("TOTODILE"), "the declined evolution registers no caught flag")
+  rig.battle:dispose()
+  rig.screen:dispose()
+end
+
+-- Counts one fresh species per registered mon through the live owner.
+---@param owner table live game-stats owner under preparation
+---@param speciesList string[] admitted species keys under counting
+local function countSpecies(owner, speciesList)
+  local GameStats = require("libs.hgss.src.mons.GameStats")
+  local observations = {}
+  for _, key in ipairs(speciesList) do
+    observations[#observations + 1] = { kind = "unique_caught", species = key }
+    observations[#observations + 1] = {
+      kind = "score",
+      species = key,
+      event = GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT,
+      points = GameStats.SCORE_POINTS[GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT],
+    }
+  end
+  owner:prepareChanges({ observations = observations }):publish()
+end
+
+-- Evolution publication is the first stats producer: one atomic commit
+-- lands the evolved primary, the shed side product, both dex caught
+-- flags, both unique counts, and both register scores, while the
+-- abandoned pre-evolution species stays uncounted.
+function T.evolution_publish_counts_unique_and_scores_once_with_dex()
+  local catalog, items = evolutionCatalogs(graftNincadaLine, false)
+  local dex = dexOwnerFor(catalog)
+  local stats = statsOwnerFor(catalog)
+  local rig = openEvolutionRig({
+    launchId = "launch-evolution-counts-stats",
+    catalog = catalog,
+    itemCatalog = items,
+    partySpecs = {
+      { species = "NINCADA", level = 19, below = true, moves = singleTackle() },
+    },
+    bag = makeStockedBag(items, { { key = "POKE_BALL", quantity = 3 } }),
+    evolutionContext = { timeOfDay = "day", mapId = 7 },
+    dex = dex,
+    stats = stats,
+  })
+  Assert.equal(stats:uniqueCount(), 0, "setup: nothing is counted before publication")
+  Assert.equal(stats:score(), 0, "setup: the score starts at zero")
+  driveToCommitted(rig, 1500)
+  driveToEvolution(rig, 1200)
+  runEvolutionHandsFree(rig, 1500)
+  Assert.equal(rig.battle:status().phase, "complete", "the counted evolution still returns to the field")
+  Assert.equal(rig.party:partyMon(0).species, "NINJASK", "the primary stages its evolved species")
+  Assert.isTrue(dex:isCaught("NINJASK"), "the joint publication registers the evolved dex flag")
+  Assert.isTrue(dex:isCaught("SHEDINJA"), "the joint publication registers the side-product dex flag")
+  Assert.isTrue(stats:isCounted("NINJASK"), "publication counts the evolved mon once")
+  Assert.isTrue(stats:isCounted("SHEDINJA"), "publication counts the shed side product once")
+  Assert.isFalse(stats:isCounted("NINCADA"), "publication counts only the evolved mon and its side product")
+  Assert.equal(stats:uniqueCount(), 2, "publication counts exactly the two fresh species")
+  Assert.equal(stats:score(), registerPoints() * 2, "publication awards one register score per fresh species")
+  rig.battle:dispose()
+  rig.screen:dispose()
+end
+
+-- A re-publish of already-counted species recounts blindly like retail:
+-- every completed evolution re-runs its register increment and score
+-- (EVO_STATE_REGISTER + shed side product, unconditional). The joint
+-- publication still lands party and dex history; the unique total
+-- increments again and the score awards again per subject.
+function T.duplicate_species_republish_counts_again_blindly()
+  local catalog, items = evolutionCatalogs(graftNincadaLine, false)
+  local stats = statsOwnerFor(catalog)
+  countSpecies(stats, { "NINJASK", "SHEDINJA" })
+  local rig = openEvolutionRig({
+    launchId = "launch-evolution-duplicate-scores-again",
+    catalog = catalog,
+    itemCatalog = items,
+    partySpecs = {
+      { species = "NINCADA", level = 19, below = true, moves = singleTackle() },
+    },
+    bag = makeStockedBag(items, { { key = "POKE_BALL", quantity = 3 } }),
+    evolutionContext = { timeOfDay = "day", mapId = 7 },
+    stats = stats,
+  })
+  driveToCommitted(rig, 1500)
+  driveToEvolution(rig, 1200)
+  runEvolutionHandsFree(rig, 1500)
+  Assert.equal(rig.battle:status().phase, "complete", "the duplicate evolution still returns to the field")
+  Assert.equal(rig.party:partyMon(0).species, "NINJASK", "the duplicate evolution still lands its record")
+  Assert.equal(stats:uniqueCount(), 4, "the re-publish increments the blind total again")
+  Assert.equal(stats:score(), registerPoints() * 4, "the re-publish awards its register points again")
+  rig.battle:dispose()
+  rig.screen:dispose()
+end
+
+-- A declined evolution publishes nothing, counts included: the member
+-- keeps its species and the score stays at zero.
+function T.declined_evolution_counts_nothing()
+  local catalog = evolutionCatalogs(graftLevelSlot, false)
+  local stats = statsOwnerFor(catalog)
+  local rig = openEvolutionRig({
+    launchId = "launch-decline-counts-nothing",
+    catalog = catalog,
+    itemCatalog = ItemFixture.makeCatalog(),
+    partySpecs = {
+      { species = "EEVEE", level = 9, below = true, moves = singleTackle() },
+    },
+    evolutionContext = { timeOfDay = "day", mapId = 7 },
+    stats = stats,
+  })
+  driveToCommitted(rig, 1500)
+  local offered = driveToEvolution(rig, 1200)
+  local offeredId = assert(offered.completionId, "the offered evolution carries its completion identity")
+  for _ = 1, 1500 do
+    local open = rig.screen:status().completion
+    if type(open) == "table" and open.kind == "evolution" and open.completionId == offeredId then
+      rig.screen:input({ { type = "cancel" } })
+    end
+    rig.pump(1)
+    ackNarration(rig)
+    if rig.battle:status().phase == "complete" then
+      break
+    end
+    if rig.battle:status().phase == "failed" then
+      error("the declined evolution failed: " .. tostring(rig.battle:status().error), 0)
+    end
+  end
+  Assert.equal(rig.battle:status().phase, "complete", "the declined evolution still returns to the field")
+  Assert.equal(rig.party:partyMon(0).species, "EEVEE", "the declined member publishes nothing")
+  Assert.equal(stats:uniqueCount(), 0, "the declined evolution counts nothing")
+  Assert.equal(stats:score(), 0, "the declined evolution awards no points")
+  rig.battle:dispose()
+  rig.screen:dispose()
+end
+
+-- A stale evolution changes no live owner, counts included: the evolved
+-- record never lands, the concurrent bag change survives, and neither
+-- the unique count nor the score moves.
+function T.stale_evolution_counts_nothing()
+  local catalog, items = evolutionCatalogs(graftNincadaLine, false)
+  local stats = statsOwnerFor(catalog)
+  local rig = openEvolutionRig({
+    launchId = "launch-stale-evolution-counts-nothing",
+    catalog = catalog,
+    itemCatalog = items,
+    partySpecs = {
+      { species = "NINCADA", level = 19, below = true, moves = singleTackle() },
+    },
+    bag = makeStockedBag(items, { { key = "POKE_BALL", quantity = 3 } }),
+    evolutionContext = { timeOfDay = "day", mapId = 7 },
+    stats = stats,
+  })
+  local committed = driveToCommitted(rig, 1500)
+  local receipt = assert(committed.outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(rig.bag:add("POKE_BALL", 1), "setup: a concurrent live change moves the bag owner")
+  runEvolutionHandsFree(rig, 1500)
+  Assert.equal(rig.battle:status().phase, "complete", "the refused evolution still returns to the field")
+  Assert.equal(rig.party:partyMon(0).species, "NINCADA", "the stale evolution never lands its record")
+  Assert.equal(stats:uniqueCount(), 0, "the refused evolution counts nothing")
+  Assert.equal(stats:score(), 0, "the refused evolution awards no points")
+  Assert.deepEqual(rig.battle:status().outcomeReceipt, receipt, "the refused pass never republishes rewards")
+  Assert.notNil(rig.battle:status().completionError, "the refused staging stays visible on the status")
+  rig.battle:dispose()
+  rig.screen:dispose()
+end
+
+-- The battle-capture lane scores its fresh species exactly once and never
+-- counts it unique: one committed capture lands one register score while
+-- the unique counter stays put (retail receipt paths never advance it).
+function T.battle_capture_publish_scores_without_counting_unique()
+  local catalog = evolutionCatalogs(graftLevelSlot, false)
+  local stats = statsOwnerFor(catalog)
+  local rig = openEvolutionRig({
+    launchId = "launch-capture-scores-stats",
+    catalog = catalog,
+    itemCatalog = ItemFixture.makeCatalog(),
+    partySpecs = {
+      { species = "EEVEE", level = 9, below = true, moves = singleTackle() },
+    },
+    evolutionContext = { timeOfDay = "day", mapId = 7 },
+    stats = stats,
+    captures = { { captureId = "stats-catch-1", success = true, mon = makeFoe(catalog, "EEVEE", 3) } },
+  })
+  local committed = driveToCommitted(rig, 1500)
+  Assert.equal(committed.result, "win", "the capture bout still settles as a win")
+  Assert.isTrue(stats:isCounted("EEVEE"), "the capture publication registers the scored species")
+  Assert.equal(stats:uniqueCount(), 0, "the capture publication advances no unique count")
+  Assert.equal(stats:score(), registerPoints(), "the capture publication awards one register score")
+  rig.battle:dispose()
+  rig.screen:dispose()
+end
+
+-- A capture of an already-counted species stages nothing: the commit
+-- still retains the caught mon while unique counts and score stay put.
+function T.duplicate_capture_counts_nothing()
+  local catalog = evolutionCatalogs(graftLevelSlot, false)
+  local stats = statsOwnerFor(catalog)
+  countSpecies(stats, { "EEVEE" })
+  local rig = openEvolutionRig({
+    launchId = "launch-duplicate-capture-counts-nothing",
+    catalog = catalog,
+    itemCatalog = ItemFixture.makeCatalog(),
+    partySpecs = {
+      { species = "EEVEE", level = 9, below = true, moves = singleTackle() },
+    },
+    evolutionContext = { timeOfDay = "day", mapId = 7 },
+    stats = stats,
+    captures = { { captureId = "stats-catch-2", success = true, mon = makeFoe(catalog, "EEVEE", 3) } },
+  })
+  driveToCommitted(rig, 1500)
+  Assert.equal(stats:uniqueCount(), 1, "the duplicate capture counts nothing twice")
+  Assert.equal(stats:score(), registerPoints(), "the duplicate capture awards no further points")
   rig.battle:dispose()
   rig.screen:dispose()
 end
