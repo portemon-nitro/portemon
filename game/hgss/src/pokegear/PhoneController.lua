@@ -33,6 +33,7 @@ local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhoneP
 ---@field _scroll integer zero-based top offset into the order
 ---@field _scrollAnim { from: integer, to: integer, elapsed: integer }? the running viewport slide
 ---@field _mode string list, menu, sort, manual, or call
+---@field _tooltips string[]? the owned context labels for normal browse entry
 ---@field _entryOwner string menu or host, fixed by the initial entry path
 ---@field _menuCursor integer zero-based menu cursor
 ---@field _grab integer? the grabbed absolute index while moving
@@ -71,19 +72,6 @@ local MENU_FRAMES = {
 local MENU_ROW_PITCH = 24
 local MENU_TEXT_TOP = 8
 local MENU_TEXT_HEIGHT = 16
-
--- Source tooltip lines (msg_0271 entries 20-27): the bottom bar names
--- the open menu's first prompt, and the sort menu tracks its cursor.
-local TOOLTIPS = {
-  "Please select the next search.",
-  "Select where you wish to move.",
-  "What will you do?",
-  "Sort by Trainer type",
-  "Sort by alphabet",
-  "Sort by location",
-  "Manual sort",
-  "Finish sorting",
-}
 
 -- Source UI tones on the phone card: cursor motion, list decisions and
 -- scrolling, and cancellation.
@@ -193,6 +181,7 @@ end
 ---@field random table<string, unknown>? the companion streams
 ---@field assets table<string, unknown>? the compiled asset family
 ---@field request { id: string, contact: string, direction: string, kind: string }? direct call entry
+---@field tooltips string[]? the eight context labels for normal browse entry
 
 ---@param opts PhoneController.Options
 ---@return PhoneController
@@ -215,6 +204,22 @@ function PhoneController.new(opts)
   assert(opts.audio == nil or type(opts.audio) == "table", "the phone card uses the audio boundary as a record")
   assert(opts.random == nil or type(opts.random) == "table", "the phone card draws through the companion streams")
   assert(opts.assets == nil or type(opts.assets) == "table", "the phone card borrows its asset family as a record")
+  -- Normal browse entry carries its eight context labels from the
+  -- composition; direct call entry never reaches the menus and omits
+  -- them. The stored array is a detached copy, never the caller's.
+  local tooltips = nil
+  if opts.request == nil then
+    local given = opts.tooltips
+    assert(type(given) == "table", "the phone card reads its context labels through the composition")
+    assert(#given == 8, "the phone card reads its eight context labels")
+    local copy = {}
+    for index = 1, 8 do
+      local text = given[index]
+      assert(type(text) == "string" and text ~= "", "the phone card reads its eight context labels")
+      copy[index] = text
+    end
+    tooltips = copy
+  end
   -- UI tones ride the shared one-shot effect boundary when the audio
   -- owner plays named sequences; toneless fakes simply stay silent.
   local effect = nil
@@ -252,6 +257,7 @@ function PhoneController.new(opts)
     _scrollAnim = nil,
     _mode = "list",
     _entryOwner = opts.request == nil and "menu" or "host",
+    _tooltips = tooltips,
     _menuCursor = 0,
     _grab = nil,
     _callHandle = nil,
@@ -1193,14 +1199,16 @@ function PhoneController:view()
   if panel ~= nil then
     transition = { kind = "panel" }
   end
-  -- The bottom bar names the open menu's prompt: the first tooltip
-  -- behind the Call menu, the cursor-tracking sort tooltip behind the
+  -- The bottom bar names the open menu's prompt: the first label
+  -- behind the Call menu, the cursor-tracking sort label behind the
   -- sort menu. The bar stays empty everywhere else.
   local tooltip = nil
   if self._mode == "menu" then
-    tooltip = TOOLTIPS[1]
+    local labels = assert(self._tooltips, "the menu prompt reads the composed context labels")
+    tooltip = labels[1]
   elseif self._mode == "sort" then
-    tooltip = TOOLTIPS[4 + self._menuCursor]
+    local labels = assert(self._tooltips, "the sort prompt reads the composed context labels")
+    tooltip = labels[4 + self._menuCursor]
   end
   return {
     list = self:_listView(),

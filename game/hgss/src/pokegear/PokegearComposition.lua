@@ -436,6 +436,34 @@ local function cardFactories(runtime, shared)
   local clock = shared.clock --[[@as table<string, unknown>]]
   local function phone(_)
     local PhoneController = require("game.hgss.src.pokegear.PhoneController")
+    -- The Call/Sort context labels resolve through message bank 271,
+    -- following the setup-menu bank pattern: entries 20 through 27 in
+    -- order. The bank is held only while the eight labels are copied;
+    -- the controller owns plain strings afterwards, and a failed read
+    -- releases the bank while keeping its original failure.
+    local provider = checkOwner(runtime.messageProvider, "the live message provider")
+    local acquire = provider.acquireBank --[[@as fun(self: table<string, unknown>, bank: integer): table<string, unknown>?, Errors.Error?]]
+    local getMessage = provider.get --[[@as fun(self: table<string, unknown>, bank: integer, id: integer): table<string, unknown>?]]
+    local release = provider.releaseBank --[[@as fun(self: table<string, unknown>, bank: integer)]]
+    assert(acquire(provider, 271), "the phone context menu text bank is available")
+    ---@type string[]
+    local tooltips = {}
+    local readOk, readErr = pcall(function()
+      for entry = 20, 27 do
+        local record = getMessage(provider, 271, entry)
+        assert(
+          type(record) == "table"
+            and type((record --[[@as table<string, unknown>]]).text) == "string"
+            and (record --[[@as table<string, unknown>]]).text ~= "",
+          "the phone context menu reads its label " .. entry
+        )
+        tooltips[#tooltips + 1] = (record --[[@as table<string, unknown>]]).text --[[@as string]]
+      end
+    end)
+    release(provider, 271)
+    if not readOk then
+      error(readErr, 0)
+    end
     return PhoneController.new({
       state = state,
       catalog = catalog,
@@ -444,6 +472,7 @@ local function cardFactories(runtime, shared)
       audio = audio,
       random = random,
       assets = assets,
+      tooltips = tooltips,
     })
   end
   local function map(context)

@@ -234,6 +234,23 @@ end
 -- Opens the real card controller on a fresh companion state with every
 -- catalogued contact registered. The controller borrows the validated
 -- record and the world fixture; rendering resources stay outside it.
+-- Recognizable browse-mode context labels hung on the direct controller:
+-- synthetic non-English strings keep the tooltip assertions off any fixed
+-- language while pinning the source selection order.
+---@return string[]
+local function fixtureTooltips()
+  return {
+    "fixture-tip-α-20",
+    "fixture-tip-α-21",
+    "fixture-tip-α-22",
+    "fixture-tip-α-23",
+    "fixture-tip-α-24",
+    "fixture-tip-α-25",
+    "fixture-tip-α-26",
+    "fixture-tip-α-27",
+  }
+end
+
 ---@param manifest table
 ---@param skin integer
 ---@param audio table? optional audio boundary, defaulting to the instant fake
@@ -265,6 +282,7 @@ local function openPhone(manifest, skin, audio)
     world = { flags = {}, rematchReady = {} },
     audio = audio or instantAudio(),
     random = PokegearRandom.new(2024),
+    tooltips = fixtureTooltips(),
   })
   return controller, state, record
 end
@@ -877,7 +895,7 @@ function T.row_taps_open_the_menu_and_page_keys_walk_viewports(_scope)
   )
   Assert.equal(
     controller:status().view.tooltip,
-    "Please select the next search.",
+    fixtureTooltips()[1],
     "the call menu prints its source tooltip"
   )
   controller:updateFixed({ { type = "cancel" } })
@@ -905,7 +923,7 @@ function T.row_taps_open_the_menu_and_page_keys_walk_viewports(_scope)
   )
   Assert.equal(
     controller:status().view.tooltip,
-    "Sort by Trainer type",
+    fixtureTooltips()[4],
     "the sort menu tracks its cursor tooltip"
   )
   controller:dispose()

@@ -108,6 +108,18 @@ local function composeGear(friends)
     radioMusicIs = function(_, _)
       return false
     end,
+    -- The normal phone card reads its context labels through the live
+    -- message provider at open; the default bank serves every entry
+    -- with a distinct string so composed browse entry stays usable.
+    messageProvider = {
+      acquireBank = function()
+        return {}
+      end,
+      releaseBank = function() end,
+      get = function(_, bank, entry)
+        return { text = "text " .. bank .. ":" .. entry }
+      end,
+    },
   }
   local bundle = PokegearComposition.compose(runtime, {
     state = friends.state,

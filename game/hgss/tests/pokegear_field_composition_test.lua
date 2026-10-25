@@ -137,6 +137,18 @@ local function composeGear(friends, latch)
     radioMusicIs = function(_, effect)
       return latch == effect
     end,
+    -- The normal phone card reads its context labels through the live
+    -- message provider at open; the default bank serves every entry
+    -- with a distinct string so composed browse entry stays usable.
+    messageProvider = {
+      acquireBank = function()
+        return {}
+      end,
+      releaseBank = function() end,
+      get = function(_, bank, entry)
+        return { text = "text " .. bank .. ":" .. entry }
+      end,
+    },
     itemCatalog = {
       itemKeyByNativeId = function(_, nativeId)
         return "custom.item-" .. tostring(nativeId)
@@ -1209,6 +1221,161 @@ function T.tests.radio_facts_reach_every_reception_table_in_production_resolutio
   end
   for _, key in ipairs({ "none", "alph", "kanto", "kanto-expn", "mahogany", "rocket", "johto" }) do
     Assert.isTrue(seen[key] == true, "production resolution reaches the " .. key .. " table")
+  end
+end
+
+-- Synthetic context-label bank behind the normal phone card: eight unique
+-- non-English entries starting at entry 20, with acquisition counters so
+-- the tests observe the composed resource discipline directly.
+---@return table<integer, unknown> texts by entry
+---@return table counters
+---@return table provider
+local function tooltipProvider()
+  local texts = {}
+  for entry = 20, 27 do
+    texts[entry] = "sagashi-tip-α-" .. entry
+  end
+  local counters = { acquire = 0, release = 0, reads = 0 }
+  local provider = {
+    acquireBank = function(_, bank)
+      counters.acquire = counters.acquire + 1
+      assert(bank == 271, "the phone context labels read their own bank")
+      return {}
+    end,
+    get = function(_, bank, entry)
+      counters.reads = counters.reads + 1
+      assert(bank == 271, "the phone context labels read their own bank")
+      local text = texts[entry]
+      if text == nil then
+        return nil
+      end
+      return { text = text }
+    end,
+    releaseBank = function(_, bank)
+      counters.release = counters.release + 1
+      assert(bank == 271, "the phone context labels release their own bank")
+    end,
+  }
+  return texts, counters, provider
+end
+
+---@param screen table the composed gear screen
+---@return unknown the phone card tooltip, when one is published
+local function composedTooltip(screen)
+  local status = screen:status()
+  local child = assert(status.child, "the composed screen publishes its phone child") --[[@as table]]
+  local view =
+    assert((child --[[@as table<string, unknown>]]).view, "the phone child publishes its view") --[[@as table]]
+  return (view --[[@as table<string, unknown>]]).tooltip
+end
+
+-- The normal phone card shows the composed source labels and balances its
+-- bank: one acquisition and one release per card construction, one read
+-- per label, and no re-reads on later draws. The main menu names the
+-- first label; each sort focus names its own label in turn.
+function T.tests.composed_phone_card_shows_provider_tooltips_and_balances_its_bank()
+  local friends = companion()
+  friends.state:registerContact(NEIGHBOR_KEY)
+  local texts, counters, provider = tooltipProvider()
+  local bundle, runtime = composeGear(friends)
+  runtime.messageProvider = provider
+  local screen = bundle.screenFactory({ kind = "browse" })
+  Assert.equal(counters.acquire, 1, "opening the normal phone card acquires its label bank once")
+  Assert.equal(counters.release, 1, "opening the normal phone card releases its label bank once")
+  Assert.equal(counters.reads, 8, "opening the normal phone card reads its eight labels once")
+  Assert.isNil(composedTooltip(screen), "the contact list shows no context tooltip")
+  local readsAfterOpen = counters.reads
+  for _ = 1, 3 do
+    screen:status()
+  end
+  Assert.equal(counters.reads, readsAfterOpen, "later draws never re-read the label bank")
+  screen:updateFixed({ { type = "confirm" } })
+  Assert.equal(composedTooltip(screen), texts[20], "the main menu names its own source label")
+  screen:updateFixed({ { type = "navigate", direction = "down" } })
+  screen:updateFixed({ { type = "confirm" } })
+  for cursor = 0, 4 do
+    if cursor > 0 then
+      screen:updateFixed({ { type = "navigate", direction = "down" } })
+    end
+    Assert.equal(
+      composedTooltip(screen),
+      texts[23 + cursor],
+      "sort focus " .. cursor .. " names its own source label"
+    )
+  end
+  screen:dispose()
+end
+
+-- A broken label bank never opens the normal phone card silently: a
+-- missing entry, an empty entry, a non-string entry, and a read that
+-- throws after acquisition each fail while still releasing the acquired
+-- bank exactly once. A failed acquisition itself releases nothing.
+function T.tests.composed_phone_card_failure_releases_its_label_bank()
+  local cases = {
+    {
+      name = "missing entry",
+      mutate = function(texts)
+        texts[24] = nil
+      end,
+    },
+    {
+      name = "empty entry",
+      mutate = function(texts)
+        texts[25] = ""
+      end,
+    },
+    {
+      name = "non-string entry",
+      mutate = function(texts)
+        texts[26] = 42
+      end,
+    },
+  }
+  for _, case in ipairs(cases) do
+    local friends = companion()
+    friends.state:registerContact(NEIGHBOR_KEY)
+    local texts, counters, provider = tooltipProvider()
+    case.mutate(texts)
+    local bundle, runtime = composeGear(friends)
+    runtime.messageProvider = provider
+    local ok = pcall(bundle.screenFactory, { kind = "browse" })
+    Assert.isFalse(ok, "a " .. case.name .. " never opens the normal phone card silently")
+    Assert.equal(counters.acquire, 1, "a " .. case.name .. " still acquires its label bank once")
+    Assert.equal(counters.release, 1, "a " .. case.name .. " still releases its label bank once")
+    bundle:dispose()
+  end
+  do
+    local friends = companion()
+    friends.state:registerContact(NEIGHBOR_KEY)
+    local _, counters, provider = tooltipProvider()
+    provider.get = function()
+      counters.reads = counters.reads + 1
+      error("tooltip fault", 0)
+    end
+    local bundle, runtime = composeGear(friends)
+    runtime.messageProvider = provider
+    local ok, err = pcall(bundle.screenFactory, { kind = "browse" })
+    Assert.isFalse(ok, "a throwing label read never opens the normal phone card silently")
+    Assert.notNil(tostring(err):find("tooltip fault", 1, true), "the throwing read keeps its original fault")
+    Assert.equal(counters.acquire, 1, "a throwing read still acquires its label bank once")
+    Assert.equal(counters.release, 1, "a throwing read still releases its label bank once")
+    bundle:dispose()
+  end
+  do
+    local friends = companion()
+    friends.state:registerContact(NEIGHBOR_KEY)
+    local _, counters, provider = tooltipProvider()
+    provider.acquireBank = function()
+      counters.acquire = counters.acquire + 1
+      return nil
+    end
+    local bundle, runtime = composeGear(friends)
+    runtime.messageProvider = provider
+    local ok = pcall(bundle.screenFactory, { kind = "browse" })
+    Assert.isFalse(ok, "a failed label acquisition never opens the normal phone card silently")
+    Assert.equal(counters.acquire, 1, "a failed acquisition attempts its label bank once")
+    Assert.equal(counters.release, 0, "a failed acquisition releases no label bank it never held")
+    bundle:dispose()
   end
 end
 

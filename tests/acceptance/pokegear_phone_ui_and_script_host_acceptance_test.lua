@@ -270,6 +270,16 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
     world = menuWorld,
     audio = instantAudio(),
     random = PokegearRandom.new(2024),
+    tooltips = {
+      "menu-tip-α-20",
+      "menu-tip-α-21",
+      "menu-tip-α-22",
+      "menu-tip-α-23",
+      "menu-tip-α-24",
+      "menu-tip-α-25",
+      "menu-tip-α-26",
+      "menu-tip-α-27",
+    },
   })
   -- The menu path walks the real list UI: the single contact opens
   -- selected, confirming opens its action menu, and confirming the

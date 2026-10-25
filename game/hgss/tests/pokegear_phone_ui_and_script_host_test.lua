@@ -17,6 +17,23 @@ local T = {
   tests = {},
 }
 
+-- Recognizable browse-mode context labels: the normal card carries its
+-- eight labels as injected values, while direct call entry omits them.
+-- Synthetic non-English strings keep the assertions off any fixed language.
+---@return string[]
+local function browseTooltips()
+  return {
+    "browse-tip-α-20",
+    "browse-tip-α-21",
+    "browse-tip-α-22",
+    "browse-tip-α-23",
+    "browse-tip-α-24",
+    "browse-tip-α-25",
+    "browse-tip-α-26",
+    "browse-tip-α-27",
+  }
+end
+
 -- Loads a phone module that does not exist yet at this baseline. The
 -- failure names the missing behaviour instead of surfacing as a suite
 -- load error, so the pre-implementation red stays attributable.
@@ -522,6 +539,7 @@ function T.tests.menu_calls_return_to_list_while_host_calls_retain_their_result(
     world = worldFixture(),
     audio = audio,
     random = PokegearRandom.new(77),
+    tooltips = browseTooltips(),
   })
 
   local function dialSelected()
@@ -588,6 +606,7 @@ function T.tests.call_cancellation_is_terminal_at_each_stage_and_disposal_releas
     world = world,
     audio = audio,
     random = PokegearRandom.new(99),
+    tooltips = browseTooltips(),
   })
 
   -- List cancellation selects nothing and opens nothing.
@@ -689,6 +708,7 @@ function T.tests.phone_uses_saved_contact_order_and_keeps_automatic_sort_tempora
       messages = { greeting = "custom.greeting" },
       world = worldFixture(),
       random = PokegearRandom.new(99),
+      tooltips = browseTooltips(),
     })
   end
 
@@ -932,6 +952,41 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
   }, { services = { pokegearApplications = host } })
   Assert.isFalse(flyOk, "fly task construction waits for its field-move selection")
   Assert.equal(flyErr.code, "FEATURE_UNAVAILABLE", "the failure names its missing selection")
+end
+
+-- Direct call entry never reaches menu text: a scripted request opens
+-- without injected context labels, starts its conversation at once,
+-- and disposes cleanly.
+function T.tests.direct_call_entry_opens_without_context_labels()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: direct entry cannot open without menu text"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  state:registerContact("custom.trainer-plain")
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = { greeting = "custom.greeting" },
+    world = worldFixture(),
+    audio = countingAudio(),
+    random = PokegearRandom.new(4242),
+    request = {
+      id = "direct-1",
+      contact = "custom.trainer-plain",
+      direction = "outgoing",
+      kind = "ordinary",
+    },
+  })
+  Assert.notNil(controller:status().view.call, "direct entry starts its conversation without menu labels")
+  Assert.isNil(controller:status().view.tooltip, "direct entry shows no context tooltip")
+  controller:dispose()
 end
 
 return T
