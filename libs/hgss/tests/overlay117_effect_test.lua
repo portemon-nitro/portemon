@@ -33,7 +33,8 @@ local function introRoute()
         animation = "grunt-animation",
       },
     },
-  }, resources
+  },
+    resources
 end
 
 local function workerRoute()
@@ -59,7 +60,8 @@ local function workerRoute()
         maps = { "rocket-bg-map-one", "rocket-bg-map-two" },
       },
     },
-  }, resources
+  },
+    resources
 end
 
 local function startEffect(route, resources)
@@ -168,7 +170,8 @@ end
 
 function T.tasked_trainer_routes_and_unknown_shapes_fail_closed()
   local intro, introResources = introRoute()
-  local tasked = { role = "trainer-transition", task = { kind = "overlay115-gym-rival-intro" }, assetGroups = intro.assetGroups }
+  local tasked =
+    { role = "trainer-transition", task = { kind = "overlay115-gym-rival-intro" }, assetGroups = intro.assetGroups }
   local ok = pcall(function()
     return Overlay117Effect.new(tasked, introResources)
   end)

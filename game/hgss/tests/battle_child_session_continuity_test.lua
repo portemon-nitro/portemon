@@ -217,10 +217,7 @@ function T.native_learning_seals_once_through_confirmation()
   Assert.notNil(rejected:status().childView.confirmation, "the confirmation stages")
   step(rejected, { { type = "cancel" } })
   Assert.isNil(rejected:takeResult(), "rejecting the confirmation seals no reply")
-  Assert.isNil(
-    rejected:status().childView.confirmation,
-    "rejecting the confirmation returns to the list"
-  )
+  Assert.isNil(rejected:status().childView.confirmation, "rejecting the confirmation returns to the list")
   Assert.equal(focusId(rejected), "learn:0", "the returned list keeps its opening focus")
   step(rejected, { { type = "confirm" } })
   step(rejected, { { type = "confirm" } })

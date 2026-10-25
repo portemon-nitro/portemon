@@ -30,10 +30,7 @@ function T.summary_build_edges_bind_catalog_and_layout_only()
   Assert.isTrue(set["mon-catalog:global"] == true, "summary planning keeps its catalog edge")
   Assert.isTrue(set["mon-layout:global"] == true, "summary planning keeps its layout edge")
   for key in pairs(set) do
-    Assert.isNil(
-      key:match("^mon%-portrait%-page:"),
-      "summary planning must not demand portrait pages: " .. key
-    )
+    Assert.isNil(key:match("^mon%-portrait%-page:"), "summary planning must not demand portrait pages: " .. key)
     Assert.isNil(key:match("^mon%-icon%-page:"), "summary planning must not demand icon pages: " .. key)
   end
 end

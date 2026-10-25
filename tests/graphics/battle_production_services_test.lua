@@ -41,8 +41,7 @@ local function readyVersions()
 end
 
 local function compactMeasurement()
-  
-return {
+  return {
     width = 256,
     height = 192,
     topology = ScreenTopology.oneDisplay({
@@ -144,7 +143,8 @@ end
 ---@return table text services
 ---@return table window services
 local function productionDrawServices(scope, cacheFs, versionId)
-  local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()), versionId .. " loads its field-UI manifest")
+  local uiManifest =
+    assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()), versionId .. " loads its field-UI manifest")
   Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), versionId .. " carries a valid field-UI manifest")
   local textRenderer = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs }))
   local windowRenderer = scope:own(FieldWindowRenderer.new({ cacheFs = cacheFs, manifest = uiManifest }))
@@ -270,10 +270,8 @@ end
 ---@param facing string "back" for own sprites, "front" for foes
 ---@return string exact canonical portrait selector with a ready staged page
 local function stagedPortraitSelector(cacheFs, species, facing)
-  local portraits = assert(
-    cacheFs:loadLua(MonCache.portraitManifestPath()),
-    "the staged cache carries its portrait manifest"
-  )
+  local portraits =
+    assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the staged cache carries its portrait manifest")
   local entries = assert(portraits.entries, "the staged cache plans its portrait entries")
   local markers =
     assert(cacheFs:loadLua(MonCache.indexPath()), "the staged cache carries its mon page markers").portraitPages
@@ -395,8 +393,12 @@ local function driveToEnter(envelope, port, launchId, versionId)
   local screen = envelope:liveScreen()
   local status = screen ~= nil and screen:status() or nil
   error(
-    versionId .. " enters its staged launch (mode=" .. tostring(status ~= nil and status.mode)
-      .. " err=" .. tostring(status ~= nil and status.error) .. ")",
+    versionId
+      .. " enters its staged launch (mode="
+      .. tostring(status ~= nil and status.mode)
+      .. " err="
+      .. tostring(status ~= nil and status.error)
+      .. ")",
     0
   )
 end
@@ -558,7 +560,6 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
     end
     local firstPixels = render()
     local secondPixels = render()
-
 
     Assert.equal(
       imageDataDigest(firstPixels),
@@ -794,10 +795,7 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
     context:skip("the production battle coverage needs a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = hidingCacheFs(
-      CacheFs.forVersion(versionId),
-      BattlePresentationCache.sceneImagePath(SAD_SCENE_KEY)
-    )
+    local cacheFs = hidingCacheFs(CacheFs.forVersion(versionId), BattlePresentationCache.sceneImagePath(SAD_SCENE_KEY))
     local envelope = FieldBattlePresentation.new({
       cacheFs = cacheFs,
       graphics = love.graphics,
@@ -884,12 +882,6 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
   end
 end
 
-
-
-
-
-
-
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {
@@ -900,7 +892,5 @@ suite.metadata.derivedAssets = {
   "mon-portrait-page:34",
   "mon-portrait-page:164",
 }
-
-
 
 return suite

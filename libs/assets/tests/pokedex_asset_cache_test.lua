@@ -627,16 +627,10 @@ function T.strict_catalog_accepts_only_complete_second_revision_payloads()
   local PokedexAssetSchema = assert(require("libs.assets.src.PokedexAssetSchema"))
   local valid = secondRevisionCatalog()
   Assert.equal(#valid.sliderSteps, 153, "the strict payload keeps every physical slider row")
-  Assert.notNil(
-    PokedexAssetSchema.validateCatalog(valid, nil),
-    "a complete second-revision catalog validates"
-  )
+  Assert.notNil(PokedexAssetSchema.validateCatalog(valid, nil), "a complete second-revision catalog validates")
   local stale = secondRevisionCatalog()
   stale.schema = "g4-pokedex-catalog-v1"
-  Assert.isNil(
-    PokedexAssetSchema.validateCatalog(stale, nil),
-    "a stale first-revision catalog must not validate"
-  )
+  Assert.isNil(PokedexAssetSchema.validateCatalog(stale, nil), "a stale first-revision catalog must not validate")
   local missingTemplates = secondRevisionCatalog()
   missingTemplates.searchText.measureTemplates = nil
   Assert.isNil(
@@ -654,19 +648,13 @@ function T.strict_catalog_accepts_only_complete_second_revision_payloads()
   for index = 3, 18 do
     reordered.criteria.typeOptionOrder[index] = SOURCE_TYPE_OPTION_ORDER[index]
   end
-  Assert.isNil(
-    PokedexAssetSchema.validateCatalog(reordered, nil),
-    "a reordered type option array must not validate"
-  )
+  Assert.isNil(PokedexAssetSchema.validateCatalog(reordered, nil), "a reordered type option array must not validate")
   local duplicated = secondRevisionCatalog()
   duplicated.criteria.typeOptionOrder = { "normal" }
   for _ = 2, 18 do
     duplicated.criteria.typeOptionOrder[#duplicated.criteria.typeOptionOrder + 1] = "normal"
   end
-  Assert.isNil(
-    PokedexAssetSchema.validateCatalog(duplicated, nil),
-    "a duplicated type option array must not validate"
-  )
+  Assert.isNil(PokedexAssetSchema.validateCatalog(duplicated, nil), "a duplicated type option array must not validate")
   local missingOptions = secondRevisionCatalog()
   missingOptions.criteria.shapeOptionOrder = nil
   Assert.isNil(
@@ -675,10 +663,7 @@ function T.strict_catalog_accepts_only_complete_second_revision_payloads()
   )
   local fractionalShape = secondRevisionCatalog()
   fractionalShape.areaGeometry["custom.dark-cave"].markerShape = 6.5
-  Assert.isNil(
-    PokedexAssetSchema.validateCatalog(fractionalShape, nil),
-    "a fractional marker shape must not validate"
-  )
+  Assert.isNil(PokedexAssetSchema.validateCatalog(fractionalShape, nil), "a fractional marker shape must not validate")
   local outOfRangeShape = secondRevisionCatalog()
   outOfRangeShape.areaGeometry["custom.dark-cave"].markerShape = 12
   Assert.isNil(

@@ -137,10 +137,7 @@ function T.action_buttons_are_edges_while_held_facts_come_only_on_request()
   Assert.equal(edges, 1, "the start press reports its edge")
   local held = snapshotWith(input, 20, pokedexProfile())
   for _, event in ipairs(held) do
-    Assert.isFalse(
-      event.type == "button" and event.button == "start",
-      "held start never repeats as an edge"
-    )
+    Assert.isFalse(event.type == "button" and event.button == "start", "held start never repeats as an edge")
   end
   input:releaseUiButton("start", "keyboard")
   input:clearUi()

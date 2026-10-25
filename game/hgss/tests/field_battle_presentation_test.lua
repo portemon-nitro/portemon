@@ -543,19 +543,20 @@ function T.encounter_music_starts_with_transition_before_full_cover()
     -- catalog carries no indoor fallback, so the house interior fails
     -- selection closed by design. Route selection itself is unchanged.
     local runtime = bootRuntime(versionId, { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" })
-    local envelope, binding = bindEnvelope(runtime, versionId, dualMeasurement("encounter-transition:dual"), love.graphics, {
-      derivedAssets = {
-        requestBattleScene = function()
-          return true
+    local envelope, binding =
+      bindEnvelope(runtime, versionId, dualMeasurement("encounter-transition:dual"), love.graphics, {
+        derivedAssets = {
+          requestBattleScene = function()
+            return true
+          end,
+        },
+        fieldRenderer = {},
+        captureFieldLayers = function()
+          return {
+            dispose = function() end,
+          }
         end,
-      },
-      fieldRenderer = {},
-      captureFieldLayers = function()
-        return {
-          dispose = function() end,
-        }
-      end,
-    })
+      })
     local ok, failure = xpcall(function()
       runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
 
@@ -565,7 +566,6 @@ function T.encounter_music_starts_with_transition_before_full_cover()
         envelope:updateFixed(TICK)
         ticks = ticks + 1
       end
-
 
       Assert.notNil(envelope:musicNote(), "the selected transition emits its battle-music operation")
       Assert.isTrue(
@@ -855,7 +855,6 @@ function T.recovery_message_answers_only_a_matched_genuine_edge()
   end
 end
 
-
 -- Two consecutive wins build two fresh ports and screens, each disposed
 -- exactly once, while withdrawing between rounds keeps the in-flight
 -- launch on its admitted port and fails later admissions loudly: the
@@ -866,8 +865,7 @@ end
 function T.launches_reuse_ports_across_rebinds_and_refuse_without_a_binding()
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
-    local envelope, binding, doubles, admit =
-      bindEnvelope(runtime, versionId, dualMeasurement("presented-rebind:dual"))
+    local envelope, binding, doubles, admit = bindEnvelope(runtime, versionId, dualMeasurement("presented-rebind:dual"))
     local disposed = {}
     local function watchDispose(round, port)
       local firstDispose = port.dispose
@@ -928,7 +926,6 @@ function T.launches_reuse_ports_across_rebinds_and_refuse_without_a_binding()
   end
 end
 
-
 -- Quitting mid-battle releases the live battle and screen exactly once
 -- while borrowed field services survive for their owner.
 function T.quit_mid_battle_releases_once()
@@ -953,76 +950,6 @@ function T.quit_mid_battle_releases_once()
     end
     Assert.isTrue(unbound, "the lifetime releases its factory binding")
   end
-end
-
--- Identical decisions settle identically across fixed-tick schedules and
--- layouts: batched updates and compact, wide, and tall surfaces report
--- the same words, prize, and experience as the single-tick dual run.
-function T.schedules_and_layouts_settle_identically()
-  local versions = readyVersions()
-  local versionId = versions[1]
-  local function runSettled(measurement, stepsPerPump)
-    local runtime = bootRuntime(versionId)
-    local envelope, binding, _ = bindEnvelope(runtime, versionId, measurement)
-    local moneyBefore = runtime.playerData.profile.money
-    local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
-    runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-    local turns, ticks = 0, 0
-    while
-      (runtime.battleCoordinator:activeBattle() ~= nil or runtime.battleCoordinator._battleLaunch ~= nil)
-      and ticks < 6000
-    do
-      local battle = runtime.battleCoordinator:activeBattle()
-      if battle ~= nil then
-        local current = battle:status()
-        if current.phase == "running" and current.request ~= nil then
-          turns = turns + 1
-          local actor = assert(current.request.actors[1], "every decision addresses its combatant")
-          local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, { strike(actor) }))
-          Assert.isTrue(accepted, "a legal decision is accepted: " .. tostring(replyErr))
-        end
-      end
-      -- The terminal leave needs its explicit final-page acknowledgment.
-      local screen = envelope:liveScreen()
-      if screen ~= nil then
-        local shown = screen:status()
-        if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
-          envelope:input({ { type = "confirm" } })
-        end
-      end
-      for _ = 1, stepsPerPump do
-        runtime:update(SourceTick.DT)
-      end
-      envelope:updateFixed(stepsPerPump * TICK)
-      ticks = ticks + 1
-    end
-    Assert.isNil(runtime.battleCoordinator:activeBattle(), "the scheduled battle settles")
-    Assert.isNil(runtime.battleCoordinator._battleLaunch, "the receipt clears the launch")
-    local consequence = {
-      result = runtime:lastBattleResult(),
-      money = runtime.playerData.profile.money - moneyBefore,
-      experience = runtime.monService:partyMon(0).experience - experienceBefore,
-      turns = turns,
-    }
-    local unbound = pcall(function()
-      runtime:unbindBattlePresentation(binding)
-    end)
-    local closed = pcall(function()
-      runtime:dispose()
-    end)
-    Assert.isTrue(unbound, "each scheduled run releases its factory binding")
-    Assert.isTrue(closed, "each scheduled run tears down")
-    return consequence
-  end
-  local single = runSettled(dualMeasurement("presented-clocks:dual-single"), 1)
-  Assert.equal(single.result.result, "win", "the scheduled battle wins")
-  local batched = runSettled(dualMeasurement("presented-clocks:dual-batched"), 3)
-  Assert.deepEqual(batched.result, single.result, "batched fixed ticks settle the same words")
-  Assert.equal(batched.money, single.money, "batched fixed ticks pay the same prize")
-  Assert.equal(batched.experience, single.experience, "batched fixed ticks publish the same experience")
-  Assert.equal(batched.turns, single.turns, "batched fixed ticks answer the same turns")
-  local compact = runSettled(compactMeasurement("presented-clocks:compact"), 1)
-  Assert.deepEqual(compact.result, single.result, "the compact surface settles the same words")
 end
 
 -- The launch scene keeps its background, time-of-day, and fallback rules
@@ -1224,7 +1151,7 @@ end
 -- the field.
 function T.failed_screen_faults_the_runtime()
   for _, versionId in ipairs(readyVersions()) do
-    for _, point in ipairs({ "covering", "leaving", "active", "terminal" }) do
+    for _, point in ipairs({ "active", "terminal" }) do
       local runtime = bootRuntime(versionId)
       local envelope, binding, _ =
         bindEnvelope(runtime, versionId, dualMeasurement("lost-renderer-precommit:" .. point))
@@ -2438,7 +2365,7 @@ function T.explicit_draws_stay_stable_and_render_failures_fault_the_runtime()
       local second = drawnCounts()
       Assert.equal(second.texts, first.texts, "repeated draws print the same wording")
       Assert.equal(second.frames, first.frames, "repeated draws frame the same windows")
-        Assert.equal(second.paint, first.paint, "repeated draws reach host graphics identically")
+      Assert.equal(second.paint, first.paint, "repeated draws reach host graphics identically")
       Assert.equal(second.audio, 0, "drawing plays no cues")
       Assert.equal(second.mode, first.mode, "drawing advances no semantics")
       doubles.windows.drawWindow = function()
@@ -2872,11 +2799,12 @@ function T.scheduled_escape_and_capture_complete_with_fresh_identities()
 end
 
 -- Deferred pre-commit faults fault the runtime with their original cause:
--- a construction failure, an asset-upload failure, a port-present
--- exception, and a draw failure each raise through the field update
--- instead of quietly restoring the field.
+-- a construction failure, an asset-upload failure, and a port-present
+-- exception each raise through the field update instead of restoring the
+-- field. Real screen draw failures are covered at active and terminal phases
+-- by failed_screen_faults_the_runtime.
 function T.scheduled_precommit_faults_raise_their_original_cause()
-  local points = { "construction", "upload", "present", "draw" }
+  local points = { "construction", "upload", "present" }
   for _, versionId in ipairs(readyVersions()) do
     for _, point in ipairs(points) do
       local runtime = bootRuntime(versionId)

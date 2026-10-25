@@ -208,18 +208,10 @@ function T.numeric_trainer_classes_resolve_to_their_precise_source_routes()
   Assert.equal(rocket.routeKey, "trainer/team-rocket", "the numeric grunt keeps its precise route")
   Assert.equal(rocket.musicRole, "rocket", "the numeric grunt keeps its precise music role")
   local youngster = selectTrainer(2)
-  Assert.equal(
-    youngster.routeKey,
-    "fallback/plain/day/trainer",
-    "ordinary numeric classes keep the unknown path"
-  )
+  Assert.equal(youngster.routeKey, "fallback/plain/day/trainer", "ordinary numeric classes keep the unknown path")
   Assert.equal(youngster.musicRole, "trainer", "ordinary numeric classes keep the unknown music role")
   local absent = selectTrainer(129)
-  Assert.equal(
-    absent.routeKey,
-    "fallback/plain/day/trainer",
-    "absent numeric classes keep the unknown path"
-  )
+  Assert.equal(absent.routeKey, "fallback/plain/day/trainer", "absent numeric classes keep the unknown path")
   Assert.equal(absent.musicRole, "trainer", "absent numeric classes keep the unknown music role")
   Assert.throws(function()
     selectTrainer(nil)

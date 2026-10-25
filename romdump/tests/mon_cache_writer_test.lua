@@ -21,7 +21,7 @@ local function catalog()
     zeroCurve[level] = 0
   end
   return {
-    schema = "g4-mon-catalog-v4",
+    schema = "g4-mon-catalog-v5",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},

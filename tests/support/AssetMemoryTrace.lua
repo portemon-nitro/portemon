@@ -19,8 +19,7 @@ AssetMemoryTrace.__index = AssetMemoryTrace
 -- captures the subset its setup can reach (a fresh save has no party, so
 -- summary/pc/battle legs need stocked saves owned by later traces) and the
 -- trace asserts the captured labels follow this order.
-AssetMemoryTrace.CHECKPOINTS =
-  { "field-entry", "travel", "bag", "summary", "pc", "battle", "return-to-field" }
+AssetMemoryTrace.CHECKPOINTS = { "field-entry", "travel", "bag", "summary", "pc", "battle", "return-to-field" }
 
 -- Bounded observer storage: at most 64 snapshots and 32 five-millisecond
 -- buckets (0-160ms, overflow clamps into the last bucket and is counted).
@@ -111,10 +110,8 @@ function AssetMemoryTrace.baselineFileName(sourceSha, rendererName)
   if shortSha == "" then
     shortSha = "unknown-source"
   end
-  local slug = type(rendererName) == "string" and rendererName:lower():gsub("[^a-z0-9]+", "-"):gsub(
-    "^%-+",
-    ""
-  ):gsub("%-+$", "")
+  local slug = type(rendererName) == "string"
+    and rendererName:lower():gsub("[^a-z0-9]+", "-"):gsub("^%-+", ""):gsub("%-+$", "")
   if type(slug) ~= "string" or slug == "" then
     slug = "unknown-renderer"
   end
@@ -363,13 +360,8 @@ function Tracer:toCsv()
     end
     table.sort(keys)
     for _, key in ipairs(keys) do
-      lines[#lines + 1] = string.format(
-        "%d,%s,%s,%s",
-        record.seq,
-        tostring(record.label),
-        tostring(key),
-        tostring(record.facts[key])
-      )
+      lines[#lines + 1] =
+        string.format("%d,%s,%s,%s", record.seq, tostring(record.label), tostring(key), tostring(record.facts[key]))
     end
   end
   return table.concat(lines, "\n") .. "\n"

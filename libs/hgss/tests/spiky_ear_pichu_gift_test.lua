@@ -42,14 +42,17 @@ function T.full_party_reports_false_without_consuming_draws_or_changing_state()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0x77777777)
   for _ = 1, Party.MAX do
-    Assert.isTrue(service:giveMon({
-      species = "CHIKORITA",
-      level = 5,
-      heldItem = "NONE",
-      form = 0,
-      location = 7,
-      date = CatalogFixture.metDate(),
-    }), "setup gifts fill the party")
+    Assert.isTrue(
+      service:giveMon({
+        species = "CHIKORITA",
+        level = 5,
+        heldItem = "NONE",
+        form = 0,
+        location = 7,
+        date = CatalogFixture.metDate(),
+      }),
+      "setup gifts fill the party"
+    )
   end
   Assert.equal(service:partyCount(), 6, "the party holds six mons")
   local revisionBefore = service:partyRevision()

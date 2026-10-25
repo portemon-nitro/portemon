@@ -119,7 +119,11 @@ function T.tests.bell_tower_coordinate_runs_ho_oh_opening_without_script_fault()
     Assert.notNil(legendFirstY, "the legend object is drawn during the approach")
     Assert.isTrue(
       legendFirstY >= legendLastY + 7,
-      "the legend object first appears at its descent height, never lowered (first " .. legendFirstY .. ", landed " .. legendLastY .. ")"
+      "the legend object first appears at its descent height, never lowered (first "
+        .. legendFirstY
+        .. ", landed "
+        .. legendLastY
+        .. ")"
     )
     Assert.isTrue(legendFlapped == true, "the legend object plays its flap sequence")
     Assert.isTrue(descentAnimationAdvanced == true, "the legend idle animation advances while it descends")

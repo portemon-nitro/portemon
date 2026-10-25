@@ -972,21 +972,13 @@ function T.hp_fields_hold_slash_and_max_steady_across_current_values(scope)
     local number = assert(manifest.panels[1].hp.number, versionId .. " carries the HP number subrect")
     local function renderCurrent(current)
       local status = contextPresentation({ cursorNode = 5 })
-      status.view.slots[1] =
-        slot(0, { currentHp = current, maxHp = 180, hpFraction = current / 180 })
+      status.view.slots[1] = slot(0, { currentHp = current, maxHp = 180, hpFraction = current / 180 })
       local image, _ = renderPane(scope, cacheFs, manifest, status)
       return image
     end
     local narrow = renderCurrent(5)
     local wide = renderCurrent(150)
-    local steady = differingPixels(
-      narrow,
-      wide,
-      number.x + 24,
-      number.y,
-      number.width - 24,
-      number.height
-    )
+    local steady = differingPixels(narrow, wide, number.x + 24, number.y, number.width - 24, number.height)
     Assert.equal(steady, 0, versionId .. " keeps the slash and max fields fixed while current varies")
   end
 end
@@ -1061,8 +1053,7 @@ function T.context_brightens_content_below_unbrightened_menu_buttons(scope)
     local rect = assert(first.frameRect, versionId .. " carries entry frame rectangles")
     local frames = assert(manifest.contextMenu.frames, versionId .. " carries menu frames")
     local group = assert(frames[first.frameShape], versionId .. " carries the entry frame")
-    local selected =
-      visualPixels(scope, cacheFs, assert(group.selected, versionId .. " carries the selected frame"))
+    local selected = visualPixels(scope, cacheFs, assert(group.selected, versionId .. " carries the selected frame"))
     local matches, opaque = matchingOpaquePixels(openedImage, selected, 0, 0, rect.x, rect.y, rect.width, rect.height)
     Assert.isTrue(opaque > 100, versionId .. " compiles visible selected-frame pixels")
     Assert.equal(matches, opaque, versionId .. " keeps menu button pixels at source ink under brightness")
@@ -1091,8 +1082,7 @@ function T.switch_selection_paints_generated_bank_seven_chrome(scope)
       local source = visualPixels(scope, cacheFs, chrome)
       -- The proven top strip stays clear of icons, balls, and text, so
       -- every opaque chrome pixel there must match exactly.
-      local matches, opaque =
-        matchingOpaquePixels(image, source, 64, 0, panel.origin.x + 64, panel.origin.y, 40, 8)
+      local matches, opaque = matchingOpaquePixels(image, source, 64, 0, panel.origin.x + 64, panel.origin.y, 40, 8)
       Assert.isTrue(opaque > 50, versionId .. " compiles visible switch-selection pixels")
       Assert.equal(matches, opaque, versionId .. " paints generated switch chrome without tint")
     end
@@ -1133,14 +1123,18 @@ function T.switch_animation_exits_outward_and_empties_panels_at_full_exit(scope)
       -- covers the middle third under whole-slot motion, while the outer
       -- band still proves chrome identity (it differs fully between normal
       -- and switch-selection art at this band).
-      local matches, opaque =
-        matchingOpaquePixels(moved, source, 64 - direction * 32, 0, panel.origin.x + 64 + (direction == 1 and 32 or 0), panel.origin.y, 32, 8)
-      Assert.isTrue(opaque > 0, versionId .. " compiles chrome pixels for slot " .. slot0)
-      Assert.equal(
-        matches,
-        opaque,
-        versionId .. " slot " .. slot0 .. " shifts its chrome outward by column"
+      local matches, opaque = matchingOpaquePixels(
+        moved,
+        source,
+        64 - direction * 32,
+        0,
+        panel.origin.x + 64 + (direction == 1 and 32 or 0),
+        panel.origin.y,
+        32,
+        8
       )
+      Assert.isTrue(opaque > 0, versionId .. " compiles chrome pixels for slot " .. slot0)
+      Assert.equal(matches, opaque, versionId .. " slot " .. slot0 .. " shifts its chrome outward by column")
     end
     local emptied = presentation({
       cursorNode = "cancel",
@@ -1220,16 +1214,12 @@ function T.context_brightness_reaches_below_panels_without_touching_menu_frames(
       versionId .. " keeps the lower probe clear of Cancel"
     )
     local brightened = differingPixels(browsingImage, openedImage, probeX, probeY, probeW, probeH)
-    Assert.isTrue(
-      brightened > 10,
-      versionId .. " brightens the backdrop strip below the panels with the menu open"
-    )
+    Assert.isTrue(brightened > 10, versionId .. " brightens the backdrop strip below the panels with the menu open")
     local first = assert(generated[1], versionId .. " carries its first entry")
     local rect = assert(first.frameRect, versionId .. " carries entry frame rectangles")
     local frames = assert(manifest.contextMenu.frames, versionId .. " carries menu frames")
     local group = assert(frames[first.frameShape], versionId .. " carries the entry frame")
-    local selected =
-      visualPixels(scope, cacheFs, assert(group.selected, versionId .. " carries the selected frame"))
+    local selected = visualPixels(scope, cacheFs, assert(group.selected, versionId .. " carries the selected frame"))
     local matches, opaque = matchingOpaquePixels(openedImage, selected, 0, 0, rect.x, rect.y, rect.width, rect.height)
     Assert.isTrue(opaque > 100, versionId .. " compiles visible selected-frame pixels")
     Assert.equal(matches, opaque, versionId .. " keeps menu button pixels at source ink under brightness")

@@ -169,11 +169,7 @@ function T.tests.controller_and_touch_toggle_the_persisted_lock_that_runs_withou
 
     toggleMenu(game, "opens")
     tapShoes(game)
-    Assert.deepEqual(
-      menuStatus(game).runningShoes,
-      { locked = false, focused = true },
-      "a second touch unlocks"
-    )
+    Assert.deepEqual(menuStatus(game).runningShoes, { locked = false, focused = true }, "a second touch unlocks")
     toggleMenu(game, "closes")
     Assert.equal(ticksPerTile(game), 8, "the unlocked player walks again")
   end)

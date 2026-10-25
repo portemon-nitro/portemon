@@ -219,11 +219,7 @@ function T.reimport_reregisters_the_source_binding()
   runToTerminal(again)
   Assert.equal(again.state, "complete")
   Assert.notNil(again:status().report, "a fresh registration always completes")
-  Assert.deepEqual(
-    cache:loadLua("rom-source.lua"),
-    first,
-    "re-registering the same ROM keeps its binding"
-  )
+  Assert.deepEqual(cache:loadLua("rom-source.lua"), first, "re-registering the same ROM keeps its binding")
   for path in pairs(h.backend.files) do
     Assert.isFalse(
       path:find(HG .. "romfs/", 1, true) == 1 or path:find(HG .. "system/", 1, true) == 1,

@@ -312,8 +312,7 @@ function T.evolution_child_wraps_the_native_presentation_state()
     request = { requestId = 17, epoch = 7, controller = "player", kind = "evolution" },
     options = { requestId = 17, epoch = 7, controller = "player", kind = "evolution", actors = {} },
   }
-  local timeless, timelessErr =
-    BattleChildApplications.open(clockless, { monCatalog = catalog })
+  local timeless, timelessErr = BattleChildApplications.open(clockless, { monCatalog = catalog })
   Assert.isNil(timeless, "evolution without its frozen clock composes nothing")
   Assert.isTrue(type(timelessErr) == "string" and timelessErr ~= "", "the boundary names the clock")
   child:dispose()
@@ -533,11 +532,7 @@ function T.native_bag_focus_and_target_continuation()
   Assert.equal(flows:status().kind, "target", "staging opens target selection")
   step({ { type = "cancel" } })
   Assert.equal(flows:status().kind, "bag", "target cancel reactivates the bag")
-  Assert.equal(
-    flows:status().childView.currentPocket,
-    "medicine",
-    "target cancel keeps the resting pocket"
-  )
+  Assert.equal(flows:status().childView.currentPocket, "medicine", "target cancel keeps the resting pocket")
   Assert.equal(focusId(), "bag:0", "target cancel keeps the serving focus")
   Assert.isNil(flows:takeResult(), "target cancel seals no reply")
   step({ { type = "cancel" } })
@@ -578,11 +573,7 @@ function T.native_bag_focus_and_target_continuation()
   thrown:tick()
   thrown:update({ { type = "navigate", direction = "down" } })
   thrown:tick()
-  Assert.equal(
-    thrown:status().childView.currentPocket,
-    "balls",
-    "keys reach the ball pocket"
-  )
+  Assert.equal(thrown:status().childView.currentPocket, "balls", "keys reach the ball pocket")
   thrown:update({ { type = "confirm" } })
   thrown:tick()
   local ballResult = thrown:takeResult()

@@ -1010,7 +1010,8 @@ function T.actual_topology_replaces_fabricated_screens_with_usable_machine_pane(
     local adapted = openProductionChoice(versionId, cacheFs, nil, measure)
     local adaptedPlan = planOf(adapted, versionId, "nativeLike")
     Assert.equal(#adaptedPlan.panes, 1, versionId .. " nativeLike is one complete interface")
-    local adaptedPlacement = assert(adaptedPlan.panes[1].placement, versionId .. " nativeLike pane carries its placement")
+    local adaptedPlacement =
+      assert(adaptedPlan.panes[1].placement, versionId .. " nativeLike pane carries its placement")
     Assert.equal(adaptedPlacement.logicalWidth, 256, versionId .. " nativeLike keeps native logical width")
     Assert.equal(adaptedPlacement.logicalHeight, 192, versionId .. " nativeLike keeps native logical height")
     local backend = prepareHost(adapted, cacheFs, scope)
@@ -1201,6 +1202,7 @@ end
 
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
-suite.metadata.derivedAssets = { "starter-choice:global", "field-ui:global", "mon-catalog:global", "items:global", "mon-summary:global" }
+suite.metadata.derivedAssets =
+  { "starter-choice:global", "field-ui:global", "mon-catalog:global", "items:global", "mon-summary:global" }
 
 return suite

@@ -65,7 +65,10 @@ function T.the_black_cover_falls_to_zero_over_the_source_fade_in()
   Assert.equal(settled.stage, "hold", "the cover ends when it is fully transparent")
   Assert.equal(settled.blackAlpha, 0, "no black is left over the committed destination")
   Assert.equal(settled.imageAlpha, 1, "the image stays opaque while the cover clears")
-  Assert.isTrue(frames >= 7 and frames <= 9, "the cover spans the source's sixteen display frames as eight ticks (" .. frames .. ")")
+  Assert.isTrue(
+    frames >= 7 and frames <= 9,
+    "the cover spans the source's sixteen display frames as eight ticks (" .. frames .. ")"
+  )
 end
 
 function T.the_hold_outlasts_the_skip_window_at_two_display_frames_per_tick()
@@ -102,8 +105,14 @@ function T.the_image_alpha_reveals_the_committed_world_in_sixteen_alpha_steps()
   end
   Assert.isTrue(instance:isComplete(), "the blend completes")
   local final = instance:status()
-  Assert.isTrue(final == nil or final.imageAlpha == 0 or final.stage == "complete", "a complete preview reveals the world")
-  Assert.isTrue(frames >= 15 and frames <= 17, "the blend spans thirty-two display frames as sixteen ticks (" .. frames .. ")")
+  Assert.isTrue(
+    final == nil or final.imageAlpha == 0 or final.stage == "complete",
+    "a complete preview reveals the world"
+  )
+  Assert.isTrue(
+    frames >= 15 and frames <= 17,
+    "the blend spans thirty-two display frames as sixteen ticks (" .. frames .. ")"
+  )
 end
 
 function T.skip_shortens_only_the_hold_and_never_the_cover_or_blend()

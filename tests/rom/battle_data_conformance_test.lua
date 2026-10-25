@@ -28,7 +28,8 @@ end
 local function compileTrainers(romFs, versionId)
   if compiledTrainersByVersion[versionId] == nil then
     local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
-    compiledTrainersByVersion[versionId] = assert(TrainerCatalogCompiler.compileFromDump(romFs, { versionId = versionId }))
+    compiledTrainersByVersion[versionId] =
+      assert(TrainerCatalogCompiler.compileFromDump(romFs, { versionId = versionId }))
   end
   return compiledTrainersByVersion[versionId]
 end
@@ -62,6 +63,7 @@ function T.every_usable_move_carries_exactly_one_behavior_binding(romFs, version
     Assert.isTrue(type(facts.behavior.key) == "string" and facts.behavior.key ~= "", key .. " needs a behavior key")
     Assert.isTrue(type(facts.moveType) == "string", key .. " keeps its lower-case type key")
     Assert.isTrue(type(facts.basePp) == "number" and facts.basePp >= 0, key .. " keeps its source PP")
+    Assert.equal(type(facts.flags.contact), "boolean", key .. " projects the native contact flag")
   end
   Assert.isNil(seen["NONE"], "the NONE sentinel is not a usable combat move")
   local nativeCount = 0
@@ -82,8 +84,14 @@ function T.trainer_parties_keep_ordered_templates_and_named_policies(romFs, vers
   for trainerIndex, record in pairs(compiled.trainers) do
     Assert.isTrue(type(record.party) == "table" and #record.party > 0, "trainer " .. trainerIndex .. " keeps a party")
     for slotIndex, template in ipairs(record.party) do
-      Assert.isTrue(type(template.species) == "string", "trainer " .. trainerIndex .. " slot " .. slotIndex .. " resolves")
-      Assert.isTrue(type(template.level) == "number", "trainer " .. trainerIndex .. " slot " .. slotIndex .. " keeps a level")
+      Assert.isTrue(
+        type(template.species) == "string",
+        "trainer " .. trainerIndex .. " slot " .. slotIndex .. " resolves"
+      )
+      Assert.isTrue(
+        type(template.level) == "number",
+        "trainer " .. trainerIndex .. " slot " .. slotIndex .. " keeps a level"
+      )
       if template.moves ~= nil then
         for _, moveKey in ipairs(template.moves) do
           Assert.isTrue(type(moveKey) == "string", "custom moves stay semantic keys")
@@ -165,11 +173,7 @@ function T.mon_weights_follow_the_species_weight_table(romFs, versionId)
   Assert.isTrue(narc:memberCount() > pin.memberId, "the pinned weight member must exist")
   local member = assert(narc:readMember(pin.memberId))
   Assert.equal(#member % 4, 0, "the weight member must size as an s32 table")
-  Assert.equal(
-    #member / 4,
-    MonSources.MAX_SPECIES + 1,
-    "the weight table spans exactly the species range"
-  )
+  Assert.equal(#member / 4, MonSources.MAX_SPECIES + 1, "the weight table spans exactly the species range")
   local expected = {}
   for speciesId = 0, MonSources.MAX_SPECIES do
     local weight = s32le(member, speciesId * 4)
@@ -221,10 +225,7 @@ function T.item_throw_facts_follow_the_source_bytes(romFs, versionId)
     Assert.equal(record.naturalGift.typeId, giftType, key .. " keeps its source natural-gift type bits")
     local typeKey = MonSources.typeKeys[giftType]
     if typeKey == nil then
-      Assert.isNil(
-        record.naturalGift.type,
-        key .. " names no gift type outside the source type range"
-      )
+      Assert.isNil(record.naturalGift.type, key .. " names no gift type outside the source type range")
     else
       Assert.equal(record.naturalGift.type, typeKey, key .. " resolves its gift type key")
     end

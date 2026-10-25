@@ -67,7 +67,11 @@ function T.v4_migration_adds_pc_state_without_changing_existing_values()
   local v6 = GameSave.migrateV6(GameSave.migrateV5(v5))
   Assert.equal(v6.schema, GameSave.LEGACY_V7_SCHEMA)
   local v8 = GameSave.migrateV7(v6)
-  Assert.equal(v8.schema, GameSave.LEGACY_V8_SCHEMA, "v7 migration stops at the v8 envelope; the companion step is explicit")
+  Assert.equal(
+    v8.schema,
+    GameSave.LEGACY_V8_SCHEMA,
+    "v7 migration stops at the v8 envelope; the companion step is explicit"
+  )
   local migrated = GameSave.migrateV8(v8)
 
   Assert.equal(v4.schema, "g4-game-save-v4", "migration does not mutate the input")

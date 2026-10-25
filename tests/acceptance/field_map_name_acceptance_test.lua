@@ -129,10 +129,7 @@ function T.tests.area_name_banners_follow_eligible_arrivals_on_the_live_field()
       type(townBanner.title) == "string" and #townBanner.title > 0,
       "the return resolves a native section label"
     )
-    Assert.isTrue(
-      townBanner.title ~= routeBanner.title,
-      "distinct map sections resolve distinct native labels"
-    )
+    Assert.isTrue(townBanner.title ~= routeBanner.title, "distinct map sections resolve distinct native labels")
 
     -- A real interior door warp from the same journey: the destination header
     -- carries no compiled style, so the arrival announces no area name.
@@ -147,10 +144,7 @@ function T.tests.area_name_banners_follow_eligible_arrivals_on_the_live_field()
       return snapshot.transition.phase == "idle" and snapshot.mapId ~= facts.newBark.mapId
     end, 120)
     Assert.isTrue(interior.mapId ~= facts.newBark.mapId, "the door warp lands inside the building")
-    Assert.isNil(
-      bannerStatus(game),
-      "a building whose header has no compiled style shows no area-name banner"
-    )
+    Assert.isNil(bannerStatus(game), "a building whose header has no compiled style shows no area-name banner")
   end)
 end
 

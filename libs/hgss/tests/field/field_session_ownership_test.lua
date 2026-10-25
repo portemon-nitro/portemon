@@ -84,11 +84,14 @@ local function makeSession(opts)
   local player = (opts.player or basePlayer()) --[[@as FieldPlayer]]
   local camera = (opts.camera or { updateFixed = function() end }) --[[@as FieldCamera]]
   local actors = (
-    opts.actors or {
+    opts.actors
+    or {
       beginFixedStep = function() end,
       step = function() end,
       syncEventStateChanges = opts.syncFn,
-      cameraTargetId = function() return nil end,
+      cameraTargetId = function()
+        return nil
+      end,
     }
   ) --[[@as FieldActorManager]]
   local scheduler = opts.scheduler

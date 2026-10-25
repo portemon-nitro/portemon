@@ -103,10 +103,7 @@ function T.tests.script_queries_and_standard_mart_share_the_live_field_host()
     local vars = game.runtime.scripts.worldState
     Assert.equal(vars:getVar(ATHLETE_AVAILABLE), 1, "the source athlete query observes seeded Saturday stock")
     Assert.equal(vars:getVar(CARD_PREFIX), 0, "the source card query observes the empty-card save")
-    Assert.isTrue(
-      vars:getVar(CONTINUATION) ~= 7,
-      "the foreground source script waits for the modal child"
-    )
+    Assert.isTrue(vars:getVar(CONTINUATION) ~= 7, "the foreground source script waits for the modal child")
 
     local host = assert(game.runtime.martHost)
     local status = assert(host:status(), "the production mart host exposes the standard child")

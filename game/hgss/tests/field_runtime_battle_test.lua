@@ -222,7 +222,8 @@ function T.startBattle_commits_trick_held_item_exchange_to_the_party()
     { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
   )
   local portRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
-  local battle = runtime:startBattle({ request = request, scenario = scenario, presentation = headlessPort(portRecord) })
+  local battle =
+    runtime:startBattle({ request = request, scenario = scenario, presentation = headlessPort(portRecord) })
 
   local finished = driveToSettled(runtime, battle, 0, 1)
 
@@ -308,7 +309,32 @@ function T.startBattle_rejects_a_second_launch_and_failed_battles_fault()
 end
 
 function T.host_launch_issues_unique_identities_and_reports_status()
-  local runtime = fakeRuntime()
+  local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local ScriptRng = require("libs.hgss.src.script.ScriptRng")
+  local runtime = fakeRuntime({
+    monService = newPartyOwner(),
+    versionId = "heartgold",
+    monLanguage = "english",
+    monCatalog = CatalogFixture.makeCatalog(),
+    itemCatalog = ItemFixture.makeCatalog(),
+    cacheFs = {
+      loadLua = function(_)
+        return { schema = FieldFontCache.SCHEMA, charmap = CatalogFixture.CHARMAP }
+      end,
+    },
+    playerData = { profile = CatalogFixture.profile() },
+    session = {
+      setBattleActive = function() end,
+      currentMap = { mapId = 16, mapSectionNativeId = 77 },
+    },
+    scripts = { worldState = { rng = ScriptRng.new(1234) } },
+    localClock = {
+      nowLocal = function()
+        return { year = 2026, month = 10, day = 9, hour = 12 }
+      end,
+    },
+  })
   local first = runtime:launchBattle({ kind = "wild", details = { species = "TOTODILE", level = 4 } })
   local secondLaunchFails = not pcall(runtime.launchBattle, runtime, {
     kind = "wild",

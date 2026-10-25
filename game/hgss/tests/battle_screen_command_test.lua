@@ -3222,11 +3222,7 @@ function T.doubled_player_health_box_switches_between_native_gauge_and_number_ce
     end
   end
   table.sort(partnerTiles)
-  Assert.deepEqual(
-    partnerTiles,
-    { 10, 10, 10, 10, 10, 10 },
-    "the unrelated partner remains in native gauge mode"
-  )
+  Assert.deepEqual(partnerTiles, { 10, 10, 10, 10, 10, 10 }, "the unrelated partner remains in native gauge mode")
 end
 
 function T.doubled_enemy_caught_markers_follow_wild_and_trainer_visibility()

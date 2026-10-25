@@ -100,7 +100,13 @@ local function sessionOptions(overrides)
     },
     camera = { updateFixed = function() end },
     transition = idleTransition(),
-    actors = { beginFixedStep = function() end, step = function() end, cameraTargetId = function() return nil end },
+    actors = {
+      beginFixedStep = function() end,
+      step = function() end,
+      cameraTargetId = function()
+        return nil
+      end,
+    },
     input = idleInput(),
     dialogue = {
       isModal = function()

@@ -167,10 +167,7 @@ function T.lugia_reveal_ops_route_through_the_legend_cutscene()
   Assert.equal(run.blockTaskId.type, "wait_ticks")
   Assert.equal(run.blockTaskId.spec.ticks, 61)
   Assert.equal(commands[1].op, "legend_cutscene_lugia_eye_glimmer")
-  Assert.equal(
-    Runtime.executeNode({ op = "legend_cutscene_lugia_arrives_begin" }, run),
-    Runtime.OUTCOME_CONTINUE
-  )
+  Assert.equal(Runtime.executeNode({ op = "legend_cutscene_lugia_arrives_begin" }, run), Runtime.OUTCOME_CONTINUE)
   Assert.equal(commands[2].op, "legend_cutscene_lugia_arrives_begin")
 end
 

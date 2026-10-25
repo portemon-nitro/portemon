@@ -50,8 +50,14 @@ function T.wait_message_has_white_surround_and_keeps_its_window(scope)
 
   local windowRed, windowGreen, windowBlue = image:getPixel(35, 43)
   Assert.isTrue(math.abs(quantize(windowRed) - quantize(windowColor[1])) <= 1, "source window red must remain visible")
-  Assert.isTrue(math.abs(quantize(windowGreen) - quantize(windowColor[2])) <= 1, "source window green must remain visible")
-  Assert.isTrue(math.abs(quantize(windowBlue) - quantize(windowColor[3])) <= 1, "source window blue must remain visible")
+  Assert.isTrue(
+    math.abs(quantize(windowGreen) - quantize(windowColor[2])) <= 1,
+    "source window green must remain visible"
+  )
+  Assert.isTrue(
+    math.abs(quantize(windowBlue) - quantize(windowColor[3])) <= 1,
+    "source window blue must remain visible"
+  )
 end
 
 return GraphicsSmoke.suite(T)

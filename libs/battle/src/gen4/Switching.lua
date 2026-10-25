@@ -9,6 +9,8 @@
 
 local BattleErrors = require("libs.battle.src.errors")
 local BattleProtocol = require("libs.battle.src.BattleProtocol")
+local BattleState = require("libs.battle.src.BattleState")
+local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 
 ---@class SwitchOutgoingRef
 ---@field combatant integer departing roster identity
@@ -28,6 +30,58 @@ local BattleProtocol = require("libs.battle.src.BattleProtocol")
 
 ---@class Switching
 local Switching = {}
+
+---@param state table<string, unknown> live battle state under the trap read
+---@param combatantId integer combatant whose departure is considered
+---@param types string[] semantic types of the departing combatant
+---@return table<string, boolean>? held marker for an opposing trapping ability
+function Switching.abilityTrapOf(state, combatantId, types)
+  local target = BattleState.combatant(state, combatantId)
+  local bridge = NativePassiveBridge.wrap(state)
+  local targetAbility = bridge:abilityOf(combatantId)
+  local steel = false
+  local flying = false
+  for _, typeKey in ipairs(types) do
+    steel = steel or typeKey == "steel"
+    flying = flying or typeKey == "flying"
+  end
+  local gravity = false
+  for _, effect in ipairs(state.effectBag:capture()) do
+    if effect.key == "gravity" and effect.scope.kind == "field" then
+      gravity = true
+      break
+    end
+  end
+  local grounded = gravity
+    or (
+      not flying
+      and targetAbility ~= "LEVITATE"
+      and bridge:effectiveHeldItem(combatantId) ~= "AIR_BALLOON"
+      and not bridge:hasVolatile(combatantId, "magnetrise")
+    )
+  local targetSide = BattleState.participant(state, target.participant --[[@as integer]]).side
+  for _, otherId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local other = BattleState.combatant(state, otherId)
+    if otherId ~= combatantId and other.active ~= nil and other.hp > 0 then
+      local otherSide = BattleState.participant(state, other.participant --[[@as integer]]).side
+      if otherSide ~= targetSide then
+        local ability = bridge:abilityOf(otherId)
+        if ability == "SHADOW_TAG" and targetAbility ~= "SHADOW_TAG" then
+          return { held = true }
+        end
+        if ability == "ARENA_TRAP" and grounded then
+          return { held = true }
+        end
+        if ability == "MAGNET_PULL" and steel then
+          return { held = true }
+        end
+      end
+    end
+  end
+  return nil
+end
 
 if not BattleProtocol.isDecisionKind("shift") then
   BattleProtocol.registerDecisionKind("shift", { "switch" })

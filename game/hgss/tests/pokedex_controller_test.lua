@@ -761,7 +761,18 @@ function T.entry_key_tabs_follow_the_retail_per_screen_map()
   seenOnly:dispose()
 end
 
-local TEXT_KINDS = { ui = true, species_name = true, category = true, flavor = true, height = true, weight = true, numeric = true, area_name = true, named_ui = true, player_name = true }
+local TEXT_KINDS = {
+  ui = true,
+  species_name = true,
+  category = true,
+  flavor = true,
+  height = true,
+  weight = true,
+  numeric = true,
+  area_name = true,
+  named_ui = true,
+  player_name = true,
+}
 
 ---@param view table detached browser projection
 local function checkTextSlots(view)
@@ -775,7 +786,10 @@ local function checkTextSlots(view)
     if slot.kind == "ui" then
       Assert.isTrue(type(slot.messageId) == "number", "interface slots reference their source message")
     elseif slot.kind == "numeric" then
-      Assert.isTrue(type(slot.value) == "string" and slot.value:find("^%d+$") ~= nil, "count slots carry formatted digits")
+      Assert.isTrue(
+        type(slot.value) == "string" and slot.value:find("^%d+$") ~= nil,
+        "count slots carry formatted digits"
+      )
     elseif slot.kind == "area_name" then
       Assert.isTrue(type(slot.bankId) == "number", "area slots name their source bank")
       Assert.isTrue(type(slot.messageId) == "number", "area slots name their source entry")
@@ -1056,11 +1070,7 @@ function T.search_pointer_and_keyboard_choose_the_same_published_option()
   -- A keyboard step from that staged choice stages the next published type.
   press(controller, { { type = "activate", action = "criterion", value = "type" } })
   press(controller, { { type = "navigate", direction = "down" } })
-  Assert.equal(
-    controller:view().search.editor.focus,
-    "fighting",
-    "the keyboard step reaches the second published type"
-  )
+  Assert.equal(controller:view().search.editor.focus, "fighting", "the keyboard step reaches the second published type")
   press(controller, { { type = "confirm" } })
   press(controller, { { type = "activate", action = "editor-ok" } })
   local staged = controller:view().search.criteria
@@ -1228,11 +1238,7 @@ function T.search_option_editors_list_their_source_choices()
   press(controller, { { type = "y" } })
   local function openEditor(kind)
     press(controller, { { type = "activate", action = "criterion", value = kind } })
-    Assert.equal(
-      controller:view().search.editor.criterion,
-      kind,
-      "the " .. kind .. " editor opens"
-    )
+    Assert.equal(controller:view().search.editor.criterion, kind, "the " .. kind .. " editor opens")
     local slots = {}
     for _, slot in ipairs(controller:view().text) do
       slots[slot.role] = slot
@@ -1267,21 +1273,13 @@ function T.search_option_editors_list_their_source_choices()
   closeEditor()
   local kind = openEditor("type")
   Assert.equal(kind["search.option-type-normal"].messageId, 58, "the normal type keeps its source entry")
-  Assert.equal(
-    kind["search.option-type-unrestricted"].messageId,
-    64,
-    "the type empty mark keeps its source entry"
-  )
+  Assert.equal(kind["search.option-type-unrestricted"].messageId, 64, "the type empty mark keeps its source entry")
   closeEditor()
   local area = openEditor("area")
   Assert.equal(area["search.option-area-johto"].messageId, 65, "the johto scope keeps its source entry")
   Assert.equal(area["search.option-area-kanto"].messageId, 66, "the kanto scope keeps its source entry")
   Assert.equal(area["search.option-area-unknown"].messageId, 67, "the unknown scope keeps its source entry")
-  Assert.equal(
-    area["search.option-area-unrestricted"].messageId,
-    68,
-    "the area empty mark keeps its source entry"
-  )
+  Assert.equal(area["search.option-area-unrestricted"].messageId, 68, "the area empty mark keeps its source entry")
   closeEditor()
   local height = openEditor("height")
   Assert.equal(height["search.current-height-min"].kind, "ui", "the height floor rides the native bank")
@@ -1404,11 +1402,7 @@ function T.entry_area_reports_its_daypart_region_and_return_actions()
   for _, slot in ipairs(controller:view().text) do
     scrolled[slot.role] = slot
   end
-  Assert.equal(
-    scrolled["area.location"].messageId,
-    134,
-    "the scrolled region row keeps its source entry"
-  )
+  Assert.equal(scrolled["area.location"].messageId, 134, "the scrolled region row keeps its source entry")
   press(controller, { { type = "activate", action = "area-time", value = 2 } })
   local night = {}
   for _, slot in ipairs(controller:view().text) do
@@ -2078,7 +2072,11 @@ function T.area_list_names_the_same_habitat_the_cursor_selects()
   checkCursor(1)
   press(controller, { { type = "navigate", direction = "down" } })
   checkCursor(2)
-  Assert.equal(slotsByRole(controller:view())["area.location"].kind, "area_name", "the last window location names its habitat")
+  Assert.equal(
+    slotsByRole(controller:view())["area.location"].kind,
+    "area_name",
+    "the last window location names its habitat"
+  )
   press(controller, { { type = "activate", action = "area-row", value = 0 } })
   checkCursor(0)
   controller:dispose()
@@ -2200,8 +2198,20 @@ function T.slider_windows_show_physical_quantities_through_source_templates()
   press(controller, { { type = "navigate", direction = "left" } })
   press(controller, { { type = "navigate", direction = "left" } })
   local recap = slots()
-  checkPhysical(assert(recap["search.summary-value-height-min"], "recap carries its height floor"), 175, "3", "03", "recap height floor")
-  checkPhysical(assert(recap["search.summary-value-weight-min"], "recap carries its weight floor"), 38, "2", "2", "recap weight floor")
+  checkPhysical(
+    assert(recap["search.summary-value-height-min"], "recap carries its height floor"),
+    175,
+    "3",
+    "03",
+    "recap height floor"
+  )
+  checkPhysical(
+    assert(recap["search.summary-value-weight-min"], "recap carries its weight floor"),
+    38,
+    "2",
+    "2",
+    "recap weight floor"
+  )
   controller:dispose()
 end
 
@@ -2231,13 +2241,41 @@ function T.slider_digits_keep_trailing_positions_when_leading_slots_hide()
   end
   local height = intents()
   Assert.isNil(height["digit-min-1"], "a short height hides its foot tens")
-  Assert.equal(assert(height["digit-min-2"], "a short height keeps its foot units").choice, "d0", "the foot units spell zero")
-  Assert.equal(assert(height["digit-min-3"], "a short height keeps its inch tens").choice, "d0", "the inch tens spell zero")
-  Assert.equal(assert(height["digit-min-4"], "a short height keeps its inch units").choice, "d0", "the inch units spell zero")
-  Assert.equal(assert(height["digit-max-1"], "the ceiling spells its foot tens").choice, "d9", "the sentinel foot tens spell nine")
-  Assert.equal(assert(height["digit-max-2"], "the ceiling spells its foot units").choice, "d9", "the sentinel foot units spell nine")
-  Assert.equal(assert(height["digit-max-3"], "the ceiling spells its inch tens").choice, "d0", "the sentinel inch tens spell zero")
-  Assert.equal(assert(height["digit-max-4"], "the ceiling spells its inch units").choice, "d0", "the sentinel inch units spell zero")
+  Assert.equal(
+    assert(height["digit-min-2"], "a short height keeps its foot units").choice,
+    "d0",
+    "the foot units spell zero"
+  )
+  Assert.equal(
+    assert(height["digit-min-3"], "a short height keeps its inch tens").choice,
+    "d0",
+    "the inch tens spell zero"
+  )
+  Assert.equal(
+    assert(height["digit-min-4"], "a short height keeps its inch units").choice,
+    "d0",
+    "the inch units spell zero"
+  )
+  Assert.equal(
+    assert(height["digit-max-1"], "the ceiling spells its foot tens").choice,
+    "d9",
+    "the sentinel foot tens spell nine"
+  )
+  Assert.equal(
+    assert(height["digit-max-2"], "the ceiling spells its foot units").choice,
+    "d9",
+    "the sentinel foot units spell nine"
+  )
+  Assert.equal(
+    assert(height["digit-max-3"], "the ceiling spells its inch tens").choice,
+    "d0",
+    "the sentinel inch tens spell zero"
+  )
+  Assert.equal(
+    assert(height["digit-max-4"], "the ceiling spells its inch units").choice,
+    "d0",
+    "the sentinel inch units spell zero"
+  )
   press(controller, { { type = "cancel" } })
   press(controller, { { type = "activate", action = "criterion", value = "weight" } })
   local weight = intents()
@@ -2246,8 +2284,16 @@ function T.slider_digits_keep_trailing_positions_when_leading_slots_hide()
   Assert.isNil(weight["digit-min-3"], "a tiny weight hides its tens when the value stays zero")
   Assert.equal(assert(weight["digit-min-4"], "a tiny weight keeps its ones").choice, "d0", "the ones spell zero")
   Assert.equal(assert(weight["digit-min-5"], "a tiny weight keeps its tenths").choice, "d0", "the tenths spell zero")
-  Assert.equal(assert(weight["digit-max-1"], "the ceiling spells its thousands").choice, "d9", "the sentinel thousands spell nine")
-  Assert.equal(assert(weight["digit-max-5"], "the ceiling spells its tenths").choice, "d0", "the sentinel tenths spell zero")
+  Assert.equal(
+    assert(weight["digit-max-1"], "the ceiling spells its thousands").choice,
+    "d9",
+    "the sentinel thousands spell nine"
+  )
+  Assert.equal(
+    assert(weight["digit-max-5"], "the ceiling spells its tenths").choice,
+    "d0",
+    "the sentinel tenths spell zero"
+  )
   controller:dispose()
 end
 
@@ -2333,7 +2379,8 @@ function T.trainer_inside_state_follows_the_painted_dungeon_marker()
   }
   local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
   observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
-  local inside = PokedexController.new(baseArgs(owner, monCatalog, catalog, { playerPosition = { mapX = 11, mapY = 7 } }))
+  local inside =
+    PokedexController.new(baseArgs(owner, monCatalog, catalog, { playerPosition = { mapX = 11, mapY = 7 } }))
   openGrid(inside)
   openEntry(inside, "EEVEE")
   local view = inside:view()
@@ -2360,7 +2407,8 @@ function T.trainer_inside_state_follows_the_painted_dungeon_marker()
   Assert.equal(player.x, 156, "the inside pin keeps its column")
   Assert.equal(player.y, 100, "the inside pin keeps its row")
   inside:dispose()
-  local outside = PokedexController.new(baseArgs(owner, monCatalog, catalog, { playerPosition = { mapX = 11, mapY = 8 } }))
+  local outside =
+    PokedexController.new(baseArgs(owner, monCatalog, catalog, { playerPosition = { mapX = 11, mapY = 8 } }))
   openGrid(outside)
   openEntry(outside, "EEVEE")
   local farView = outside:view()

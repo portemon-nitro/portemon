@@ -140,7 +140,9 @@ end
 ---@return integer, integer, integer, integer pixel bytes
 local function pixel(pixels, x, y)
   local base = (y * 512 + x) * 4
-  return string.byte(pixels, base + 1), string.byte(pixels, base + 2), string.byte(pixels, base + 3),
+  return string.byte(pixels, base + 1),
+    string.byte(pixels, base + 2),
+    string.byte(pixels, base + 3),
     string.byte(pixels, base + 4)
 end
 
@@ -205,7 +207,11 @@ end
 function T.persistent_scene_payload_preserves_8bpp_tile_geometry()
   local scene = assert(compile(sceneRomFs(0, {}, {})))
   Assert.equal(scene.layers[1].characters.format, "indexed8", "the persistent plane declares its byte-indexed pixels")
-  Assert.equal(#scene.layerPayloads[1].characters, 65536, "the decoded backing characters preserve their 64-byte tile stride")
+  Assert.equal(
+    #scene.layerPayloads[1].characters,
+    65536,
+    "the decoded backing characters preserve their 64-byte tile stride"
+  )
   Assert.equal(#scene.layerPayloads[1].palette.colors, 256, "the native 8bpp plane keeps one 256-color palette")
 end
 

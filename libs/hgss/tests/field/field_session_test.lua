@@ -747,7 +747,12 @@ function T.session_requires_player_presentation_state()
     player = playerWithoutPresentation,
     camera = { updateFixed = function() end },
     transition = { phase = "idle", locked = false, updateFixed = function() end, start = function() end },
-    actors = { step = function() end, cameraTargetId = function() return nil end },
+    actors = {
+      step = function() end,
+      cameraTargetId = function()
+        return nil
+      end,
+    },
     input = {
       snapshot = function()
         return {}
@@ -1937,7 +1942,12 @@ local function interactionSession(opts)
     collapseRenderInterpolation = function() end,
   }
   local camera = { updateFixed = function() end }
-  local actors = { step = function() end, cameraTargetId = function() return nil end }
+  local actors = {
+    step = function() end,
+    cameraTargetId = function()
+      return nil
+    end,
+  }
   local transition = {
     phase = "idle",
     locked = false,
@@ -2091,7 +2101,12 @@ function T.catch_up_ticks_do_not_replay_one_action_edge()
     end,
   }
   local camera = { updateFixed = function() end }
-  local actors = { step = function() end, cameraTargetId = function() return nil end }
+  local actors = {
+    step = function() end,
+    cameraTargetId = function()
+      return nil
+    end,
+  }
   local transition = {
     phase = "idle",
     locked = false,
@@ -5598,10 +5613,7 @@ function T.focus_camera_target_tracks_fractional_world_between_commits()
   local travel = full.x - rest.x
   Assert.isTrue(travel ~= 0, "an east walk must displace the camera target")
   local progress = (mid.x - rest.x) / travel
-  Assert.isTrue(
-    progress > 0 and progress < 1,
-    "the camera target pans strictly between its endpoints mid-motion"
-  )
+  Assert.isTrue(progress > 0 and progress < 1, "the camera target pans strictly between its endpoints mid-motion")
   Assert.isTrue(mid.ref == rest.ref, "the session reuses its camera target record")
   mgr:commitScriptedAction(id)
   session:updateFixed({})
@@ -5661,8 +5673,7 @@ function T.absent_camera_target_sample_follows_the_player()
   }
   local player = defaultPlayer()
   player.worldX, player.worldY, player.worldZ = 1.25, 2.5, 3.75
-  local session =
-    FieldSession.new(baseOptions({ currentMap = map, actors = actors, camera = camera, player = player }))
+  local session = FieldSession.new(baseOptions({ currentMap = map, actors = actors, camera = camera, player = player }))
   session:updateFixed({})
   Assert.deepEqual(recorded[1], { x = 1.25, y = 2.5, z = 3.75 }, "no sample falls back to the player")
 end
@@ -5683,9 +5694,8 @@ function T.half_fractional_pair_is_rejected_not_projected()
         return position
       end,
     }
-    local session = FieldSession.new(
-      baseOptions({ currentMap = map, actors = actors, camera = { updateFixed = function() end } })
-    )
+    local session =
+      FieldSession.new(baseOptions({ currentMap = map, actors = actors, camera = { updateFixed = function() end } }))
     local ok = pcall(function()
       session:updateFixed({})
     end)

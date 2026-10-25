@@ -177,10 +177,7 @@ function T.status_shapes_lower_distinctly_from_damage_shapes()
     "wait-for-battler-effects",
     "reset-battle-presentation",
   }, "the restoration shape addresses its picture instead of spawning task work")
-  Assert.isNil(
-    restorationShape.instructions[2].taskKind,
-    "the plain picture reveal schedules no animation task"
-  )
+  Assert.isNil(restorationShape.instructions[2].taskKind, "the plain picture reveal schedules no animation task")
 
   local veilShape = lowered("status-veil-shape", { 8, 4, 12, 9, 4 })
   Assert.deepEqual(opsOf(veilShape), {
@@ -555,10 +552,7 @@ local function checkStatusTurn(events, packetId, key, displayName, dependentWord
   Assert.equal(alphaUsed.move.executed, key, key .. " visualizes the executed move")
   for _, event in ipairs(events) do
     if event.kind == "struck" then
-      Assert.isTrue(
-        event.actionId ~= alphaUsed.actionId,
-        key .. " succeeds with zero strikes on its own action"
-      )
+      Assert.isTrue(event.actionId ~= alphaUsed.actionId, key .. " succeeds with zero strikes on its own action")
     end
   end
   local view = statusTimelineView()
@@ -633,20 +627,13 @@ local function checkStatusTurn(events, packetId, key, displayName, dependentWord
     end
     if firstCompletionTick == nil then
       for _, entry in ipairs(timeline:battlers()) do
-        Assert.equal(
-          entry.hp,
-          initialHp[entry.combatant],
-          "no checkpoint health moves ahead of the unfinished visual"
-        )
+        Assert.equal(entry.hp, initialHp[entry.combatant], "no checkpoint health moves ahead of the unfinished visual")
       end
     end
   end
   Assert.notNil(announcementTick, key .. " attack announcement becomes readable")
   Assert.notNil(startTick, key .. " visual starts exactly once")
-  Assert.isTrue(
-    announcementTick < startTick,
-    key .. " announcement reads before its visual starts"
-  )
+  Assert.isTrue(announcementTick < startTick, key .. " announcement reads before its visual starts")
   local startsForKey = 0
   for _, record in ipairs(started) do
     if record.effectKey == key then
@@ -658,10 +645,7 @@ local function checkStatusTurn(events, packetId, key, displayName, dependentWord
     type(startMessage) == "string" and startMessage:find(displayName, 1, true) ~= nil,
     key .. " visual starts behind its own attack announcement"
   )
-  Assert.isFalse(
-    dependentBeforeVisual,
-    key .. " dependent narration waits for the visual boundary"
-  )
+  Assert.isFalse(dependentBeforeVisual, key .. " dependent narration waits for the visual boundary")
   Assert.isTrue(timeline:busy(), "the unfinished visual still holds the cue player")
   for _, handle in ipairs(handles) do
     handle.phase = "complete"
@@ -678,10 +662,7 @@ local function checkStatusTurn(events, packetId, key, displayName, dependentWord
     end
   end
   Assert.isTrue(timeline:settled(), key .. " turn drains fully once its visuals complete")
-  Assert.isTrue(
-    dependentAfterVisual,
-    key .. " dependent narration follows the completed visual"
-  )
+  Assert.isTrue(dependentAfterVisual, key .. " dependent narration follows the completed visual")
   local finalStarts = 0
   for _, record in ipairs(started) do
     if record.effectKey == key then

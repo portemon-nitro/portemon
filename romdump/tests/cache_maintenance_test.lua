@@ -24,11 +24,7 @@ local HEARTGOLD_SHA1 = GameVersion.VERSIONS.heartgold.sha1
 local RECEIPT_SCHEMA = "g4-derived-receipt-v1"
 local function requireMaintenance()
   local ok, maintenance = pcall(require, "romdump.src.build.CacheMaintenance")
-  Assert.isTrue(
-    ok,
-    "shared-collection owner is missing: "
-      .. "no version-scoped maintenance collects proven orphans"
-  )
+  Assert.isTrue(ok, "shared-collection owner is missing: " .. "no version-scoped maintenance collects proven orphans")
   return assert(maintenance)
 end
 
@@ -524,10 +520,7 @@ function T.current_generation_cleanup_write_fault_leaves_no_memo()
 
   local result = collectProven(maintenance, setup, true)
   Assert.equal(result.status, "collected", "the retry converges once the fault clears")
-  Assert.deepEqual(
-    setup.cache:loadLua(maintenance.RETENTION_MARKER),
-    { schema = 1, generationId = setup.generation }
-  )
+  Assert.deepEqual(setup.cache:loadLua(maintenance.RETENTION_MARKER), { schema = 1, generationId = setup.generation })
 end
 
 function T.current_generation_cleanup_requires_quiescence_identity_and_capability()

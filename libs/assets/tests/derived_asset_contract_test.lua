@@ -126,14 +126,14 @@ function T.contract_pins_the_current_asset_identities()
     },
     mons = {
       cacheFormat = "mon-cache-v2",
-      catalogSchema = "g4-mon-catalog-v4",
+      catalogSchema = "g4-mon-catalog-v5",
       indexSchema = "g4-mon-index-v2",
       iconManifestSchema = "g4-mon-icon-manifest-v2",
       portraitManifestSchema = "g4-mon-portrait-manifest-v2",
     },
     battleData = {
-      cacheFormat = "battle-data-cache-v2",
-      schema = "g4-battle-data-v2",
+      cacheFormat = "battle-data-cache-v3",
+      schema = "g4-battle-data-v3",
     },
     trainerCatalog = {
       cacheFormat = "trainer-catalog-cache-v2",
@@ -286,7 +286,7 @@ function T.summary_family_carries_the_v4_manifest_schema()
   )
   Assert.equal(
     DerivedAssetContract.mons.catalogSchema,
-    "g4-mon-catalog-v4",
+    "g4-mon-catalog-v5",
     "the mon sibling identity survives the summary schema change"
   )
   Assert.equal(

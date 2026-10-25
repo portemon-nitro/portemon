@@ -152,8 +152,9 @@ end
 ---@param mon MonStatusView canonical mon record owning its persistent condition
 ---@param stream table<string, unknown> labeled battle stream for rolled gates
 ---@param cause table<string, unknown> semantic reason ordering the gate
+---@param earlyBird boolean? whether the holder halves sleep duration
 ---@return StatusGateResult action permission with its gate event
-function Status.beforeAction(mon, stream, cause)
+function Status.beforeAction(mon, stream, cause, earlyBird)
   local checked = checkMon(mon)
   assert(type(cause) == "table", "status gates carry their semantic cause")
   local current = checked.condition.effects[1]
@@ -167,7 +168,7 @@ function Status.beforeAction(mon, stream, cause)
       error(BattleErrors.invalidState("sleep carries its remaining turns", {}))
     end
     assert(type(state) == "table", "sleep state validated above")
-    local remaining = state.turns - 1
+    local remaining = state.turns - (earlyBird == true and 2 or 1)
     if remaining <= 0 then
       checked.condition.effects = {}
       return { acts = true, event = { key = "sleep", outcome = "woke" } }

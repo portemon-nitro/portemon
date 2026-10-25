@@ -559,7 +559,11 @@ function T.cancelled_preparations_return_their_tickets_without_touching_live_ref
   Assert.isTrue(provider:cancelPreparation(0), "cancelling the pending ticket drops it")
   Assert.isFalse(provider:cancelPreparation(0), "cancelling twice reports nothing left to drop")
   Assert.isTrue(provider:cancelPreparation(29), "cancelling the ready ticket returns it")
-  Assert.equal(pool.cancels, 2, "each dropped live ticket reaches the image owner exactly once; the false repeat forwards nothing")
+  Assert.equal(
+    pool.cancels,
+    2,
+    "each dropped live ticket reaches the image owner exactly once; the false repeat forwards nothing"
+  )
   pool:holdNextRequest()
   Assert.isFalse(provider:prepare(0), "re-expressing interest after cancel starts one fresh ticket")
   Assert.equal(pool.requests, 4, "the fresh interest is exactly one new request")

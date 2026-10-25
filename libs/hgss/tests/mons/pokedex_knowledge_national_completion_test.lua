@@ -29,9 +29,8 @@ function T.national_completion_excludes_all_nine_mythicals_at_the_484_species_bo
     extra[#extra + 1] = key
   end
 
-  local knowledge = PokedexKnowledge.new(
-    PokedexDexFixture.refsWithExtraSpecies(extra, { johto = {}, national = required })
-  )
+  local knowledge =
+    PokedexKnowledge.new(PokedexDexFixture.refsWithExtraSpecies(extra, { johto = {}, national = required }))
   local caught = {}
   for _, key in ipairs(mythicals) do
     caught[#caught + 1] = key

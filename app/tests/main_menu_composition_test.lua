@@ -68,7 +68,11 @@ local function withCompositionStubs(fn)
     return state
   end
 
-  package.loaded["libs.storage.src.SaveFs"] = { global = function() return "global save root" end }
+  package.loaded["libs.storage.src.SaveFs"] = {
+    global = function()
+      return "global save root"
+    end,
+  }
   package.loaded["libs.storage.src.CacheFs"] = {
     forVersion = function(versionId)
       return { versionId = versionId }

@@ -115,7 +115,12 @@ local function shimmer(sequence)
     bellVisible = false,
     shimmerFrame = 0,
     shimmerClearBellOnly = false,
-    cornerOffsets = { { 12.5, -4.5625, 9 }, { -12.375, -4.5625, 9 }, { 12.5, -4.5625, -16.875 }, { -12.375, -4.5625, -16.875 } },
+    cornerOffsets = {
+      { 12.5, -4.5625, 9 },
+      { -12.375, -4.5625, 9 },
+      { 12.5, -4.5625, -16.875 },
+      { -12.375, -4.5625, -16.875 },
+    },
   })
 end
 
@@ -202,9 +207,13 @@ local function testDrawBeforePreparationMatchesPreparedOutput(scope, context)
   local prepared = newRenderer(scope)
   prepareFully(prepared, 1)
   local direct = newRenderer(scope)
-  for index, make in ipairs({ shimmer, bird, function(sequence)
-    return cinematic(sequence, "first", 1)
-  end }) do
+  for index, make in ipairs({
+    shimmer,
+    bird,
+    function(sequence)
+      return cinematic(sequence, "first", 1)
+    end,
+  }) do
     local expected = prepared:drawItems(make(index))
     local actual = direct:drawItems(make(index))
     Assert.equal(roles(actual), roles(expected), "phase " .. index .. " draws the same items")

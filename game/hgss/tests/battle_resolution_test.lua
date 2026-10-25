@@ -717,11 +717,7 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
   local fullReceipt = assert(fullBattle:status().outcomeReceipt, "completion carries its commit receipt")
   Assert.isTrue(fullReceipt.committed, "the spillover batch commits")
   Assert.equal(#fullReceipt.placements, 1, "the spillover reports its single placement")
-  Assert.equal(
-    fullReceipt.placements[1].destination,
-    "box",
-    "a full party spills the catch into storage"
-  )
+  Assert.equal(fullReceipt.placements[1].destination, "box", "a full party spills the catch into storage")
   local spilled = assert(
     fullParty:boxMon(fullReceipt.placements[1].box, fullReceipt.placements[1].slot),
     "the spilled catch is readable in its box slot"

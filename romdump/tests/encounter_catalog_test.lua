@@ -147,7 +147,11 @@ function T.version_tables_keep_their_own_replacement_slots()
   Assert.equal(goldTable.replacements.landSwarm.species, "PIKACHU", "the heartgold swarm keeps its species")
   Assert.equal(silverTable.replacements.landSwarm.species, "PIDGEY", "the soulsilver swarm keeps its own species")
   Assert.equal(goldTable.replacements.nightFish.species, "MAGIKARP", "the heartgold night catch keeps its species")
-  Assert.equal(silverTable.replacements.nightFish.species, "TENTACOOL", "the soulsilver night catch keeps its own species")
+  Assert.equal(
+    silverTable.replacements.nightFish.species,
+    "TENTACOOL",
+    "the soulsilver night catch keeps its own species"
+  )
   Assert.deepEqual(goldTable.replacements.landSwarm.game, "heartgold", "replacements name their supported game")
   Assert.deepEqual(silverTable.replacements.landSwarm.game, "soulsilver", "replacements name their supported game")
   Assert.equal(#goldTable.land.morning, LAND_SLOTS, "the morning array keeps all twelve slots")
@@ -233,9 +237,8 @@ function T.tables_round_trip_through_the_owned_cache_paths()
   local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
   local CacheFs = require("libs.storage.src.CacheFs")
   local FakeCache = require("tests.support.FakeCache")
-  local compiled = assert(
-    EncounterCatalogCompiler.compile(nativeInput("heartgold", { [7] = encounterMember(baseFields()) }))
-  )
+  local compiled =
+    assert(EncounterCatalogCompiler.compile(nativeInput("heartgold", { [7] = encounterMember(baseFields()) })))
   assert(BattleDataSchema.assertEncounterCatalog(compiled) ~= false, "the catalog passes the semantic schema")
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   local paths = BattleDataCache.paths()
@@ -306,8 +309,9 @@ end
 
 function T.unknown_replacement_species_fail()
   local EncounterCatalogCompiler = require("romdump.src.digest.encounters.EncounterCatalogCompiler")
-  local compiled, err =
-    EncounterCatalogCompiler.compile(nativeInput("heartgold", { [7] = encounterMember(baseFields({ landSwarm = 600 })) }))
+  local compiled, err = EncounterCatalogCompiler.compile(
+    nativeInput("heartgold", { [7] = encounterMember(baseFields({ landSwarm = 600 })) })
+  )
   Assert.isNil(compiled, "an unknown swarm species must not compile")
   Assert.isTrue(
     tostring(assert(err, "an unknown swarm must report a typed error").message):find("7", 1, true) ~= nil,
@@ -318,7 +322,8 @@ end
 function T.high_rates_survive_without_import_clamping()
   local EncounterCatalogCompiler = require("romdump.src.digest.encounters.EncounterCatalogCompiler")
   local fields = baseFields({ walkRate = 200, surfRate = 255 })
-  local compiled = assert(EncounterCatalogCompiler.compile(nativeInput("soulsilver", { [7] = encounterMember(fields) })))
+  local compiled =
+    assert(EncounterCatalogCompiler.compile(nativeInput("soulsilver", { [7] = encounterMember(fields) })))
   local mapTable = assert(compiled.tables[7], "map member 7 must survive projection")
   Assert.equal(mapTable.rates.walking, 200, "the walking rate survives verbatim for runtime clamping")
   Assert.equal(mapTable.rates.surfing, 255, "the surfing rate survives verbatim for runtime clamping")
@@ -381,13 +386,16 @@ function T.successful_encounter_job_stages_publishes_and_reads_ready()
     jobKey = "encounters:global",
     stageName = stageName,
   })
-  Assert.isTrue(staged:publish({
-    generationId = generationId,
-    epoch = 1,
-    kind = "encounters",
-    key = "global",
-    jobKey = "encounters:global",
-  }), "the staged generation publishes")
+  Assert.isTrue(
+    staged:publish({
+      generationId = generationId,
+      epoch = 1,
+      kind = "encounters",
+      key = "global",
+      jobKey = "encounters:global",
+    }),
+    "the staged generation publishes"
+  )
   Assert.isTrue(
     ArtifactJobs.validate(cacheFs, generationId, "encounters", "global", {}, nil),
     "the published stage reads ready"

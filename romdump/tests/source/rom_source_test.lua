@@ -966,10 +966,13 @@ function T.implicit_registered_archive_serves_the_recorded_member_regardless_of_
     withTestVersion(versionId, { sha1 = shaB, gameCode = gameCode, expectedSize = #bytesB }, function()
       local backend = FakeCache.new()
       local zipPath = root .. "/game.zip"
-      writeHostFile(zipPath, ZipBuilder.build({
-        { name = "a_first.nds", data = bytesA },
-        { name = "z_second.nds", data = bytesB },
-      }))
+      writeHostFile(
+        zipPath,
+        ZipBuilder.build({
+          { name = "a_first.nds", data = bytesA },
+          { name = "z_second.nds", data = bytesB },
+        })
+      )
       recordTestBinding(versionId, backend, bytesB, {
         kind = "zip",
         path = zipPath,
@@ -985,10 +988,13 @@ function T.implicit_registered_archive_serves_the_recorded_member_regardless_of_
           Assert.equal(source:sha1(), shaB, "the recorded member must win over archive order")
           romFs:close()
           source:release()
-          writeHostFile(zipPath, ZipBuilder.build({
-            { name = "z_second.nds", data = bytesB },
-            { name = "a_first.nds", data = bytesA },
-          }))
+          writeHostFile(
+            zipPath,
+            ZipBuilder.build({
+              { name = "z_second.nds", data = bytesB },
+              { name = "a_first.nds", data = bytesA },
+            })
+          )
           local reorderedFs, reorderedSource = RomSourcePath.openReader(versionId)
           Assert.notNil(reorderedFs, "reordering must not change the member: " .. tostring(reorderedSource))
           assert(reorderedFs)
@@ -1079,10 +1085,13 @@ function T.removed_bound_member_fails_without_serving_a_different_entry()
     withTestVersion(versionId, { sha1 = shaB, gameCode = gameCode, expectedSize = #bytesB }, function()
       local backend = FakeCache.new()
       local zipPath = root .. "/game.zip"
-      writeHostFile(zipPath, ZipBuilder.build({
-        { name = "a_first.nds", data = bytesA },
-        { name = "z_second.nds", data = bytesB },
-      }))
+      writeHostFile(
+        zipPath,
+        ZipBuilder.build({
+          { name = "a_first.nds", data = bytesA },
+          { name = "z_second.nds", data = bytesB },
+        })
+      )
       recordTestBinding(versionId, backend, bytesB, {
         kind = "zip",
         path = zipPath,
@@ -1097,16 +1106,16 @@ function T.removed_bound_member_fails_without_serving_a_different_entry()
           assert(source)
           romFs:close()
           source:release()
-          writeHostFile(zipPath, ZipBuilder.build({
-            { name = "a_first.nds", data = bytesA },
-          }))
+          writeHostFile(
+            zipPath,
+            ZipBuilder.build({
+              { name = "a_first.nds", data = bytesA },
+            })
+          )
           local goneFs, goneErr = RomSourcePath.openReader(versionId)
           Assert.isNil(goneFs, "a removed member must not fall back to another entry")
           Assert.notNil(goneErr, "a removed member must report its cause")
-          Assert.isNil(
-            love.filesystem.getInfo(MOUNT_POINT),
-            "no archive mount may leak after a removed member"
-          )
+          Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no archive mount may leak after a removed member")
         end)
       end)
     end)
@@ -1120,26 +1129,30 @@ function T.unreopenable_and_missing_registrations_fail_with_version_context()
   local ephemeralCode = "IXD5"
   local ephemeralData = synthCartridgeBytes(ephemeralCode, "OVERLAY0-DATAA")
   local ephemeralSha = RomSource.fromString(ephemeralData):sha1()
-  withTestVersion(ephemeralId, { sha1 = ephemeralSha, gameCode = ephemeralCode, expectedSize = #ephemeralData }, function()
-    local backend = FakeCache.new()
-    recordTestBinding(ephemeralId, backend, ephemeralData, {
-      kind = "nds",
-      path = false,
-      displayName = "dropped.nds",
-      zipEntry = false,
-    })
-    withRoutedVersionCache(ephemeralId, backend, function()
-      withArgValue({}, function()
-        local romFs, cause = RomSourcePath.openReader(ephemeralId)
-        Assert.isNil(romFs, "an unreopenable drop must not open after restart")
-        Assert.notNil(cause, "an unreopenable drop must report its cause")
-        Assert.isTrue(
-          mentionsVersion(cause, ephemeralId),
-          "the cause must name the requested version, got: " .. tostring(cause)
-        )
+  withTestVersion(
+    ephemeralId,
+    { sha1 = ephemeralSha, gameCode = ephemeralCode, expectedSize = #ephemeralData },
+    function()
+      local backend = FakeCache.new()
+      recordTestBinding(ephemeralId, backend, ephemeralData, {
+        kind = "nds",
+        path = false,
+        displayName = "dropped.nds",
+        zipEntry = false,
+      })
+      withRoutedVersionCache(ephemeralId, backend, function()
+        withArgValue({}, function()
+          local romFs, cause = RomSourcePath.openReader(ephemeralId)
+          Assert.isNil(romFs, "an unreopenable drop must not open after restart")
+          Assert.notNil(cause, "an unreopenable drop must report its cause")
+          Assert.isTrue(
+            mentionsVersion(cause, ephemeralId),
+            "the cause must name the requested version, got: " .. tostring(cause)
+          )
+        end)
       end)
-    end)
-  end)
+    end
+  )
   local missingId = "synthseeded06"
   local missingCode = "IXD6"
   local missingData = synthCartridgeBytes(missingCode, "OVERLAY0-DATAA")

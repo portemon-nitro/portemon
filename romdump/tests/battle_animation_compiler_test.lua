@@ -991,11 +991,7 @@ function T.battler_motion_callbacks_lower_to_their_native_tasks()
     },
   })
   local linearAttacker = Sources.resolveBattleAnimationCallback({ 61, 2, 2, 20 })
-  Assert.equal(
-    linearAttacker.parameters.pictureTarget,
-    "attacker",
-    "attacker roles slide their own side too"
-  )
+  Assert.equal(linearAttacker.parameters.pictureTarget, "attacker", "attacker roles slide their own side too")
   -- ResetBattlerPosition (WHIRLWIND, ROAR) snaps the role home at once:
   -- a validated marker with no timing boundary.
   local reset = Sources.resolveBattleAnimationCallback({ 62, 1, 8 })
@@ -1020,7 +1016,8 @@ function T.battler_motion_callbacks_lower_to_their_native_tasks()
   Assert.isNil(badReset, "reset reads exactly its role word")
 end
 
-function T.battle_sprite_panel_callbacks_lower_to_typed_offsets()  local Sources = require("romdump.src.config.BattleAnimationSources")
+function T.battle_sprite_panel_callbacks_lower_to_typed_offsets()
+  local Sources = require("romdump.src.config.BattleAnimationSources")
   local cases = {
     { selector = 80, callback = "battle-sprite-panel-slide-down", offsetY = 3 },
     { selector = 81, callback = "battle-sprite-panel-slide-up", offsetY = -3 },
@@ -3000,11 +2997,7 @@ function T.clear_background_plane_with_trailing_45_keeps_cursor_aligned()
   local program = assert(compiler().compile({ key = "clear-plane-trailing-45", stream = table.concat(words) }))
   Assert.equal(#program.instructions, 3, "every word lands on an instruction boundary")
   Assert.equal(program.instructions[1].op, "clear-background-plane", "the plane word keeps its operation")
-  Assert.equal(
-    program.instructions[2].op,
-    "branch-on-interpreter-state",
-    "the following branch decodes in place"
-  )
+  Assert.equal(program.instructions[2].op, "branch-on-interpreter-state", "the following branch decodes in place")
   Assert.equal(
     program.instructions[3].op,
     "reset-battle-presentation",
@@ -3097,11 +3090,7 @@ function T.assert_only_dispatch_preserves_its_nonadvancing_source_handler()
   }))
   Assert.equal(#program.instructions, 1, "the nonadvancing source handler makes following words unreachable")
   Assert.equal(program.instructions[1].op, "source-assertion", "dispatch 55 remains an explicit diagnostic operation")
-  Assert.equal(
-    program.instructions[1].target,
-    2,
-    "a tripped assertion service terminates past the stream end"
-  )
+  Assert.equal(program.instructions[1].target, 2, "a tripped assertion service terminates past the stream end")
   Assert.equal(
     program.instructions[1].cursorRule,
     "invoke-assert-service; redispatch-current-word-if-it-returns",
@@ -3979,12 +3968,15 @@ function T.computed_callback_durations_pass_the_normalized_callback_schema()
   local Sources = require("romdump.src.config.BattleAnimationSources")
   local Schema = require("libs.assets.src.battle.BattleAnimationSchema")
   local function assertSchema(program, key)
-    Assert.isTrue(Schema.assertProgram({
-      entry = program.entry,
-      instructions = program.instructions,
-      subprograms = program.subprograms,
-      taskKinds = program.taskKinds,
-    }), key .. " with computed durationTicks passes the normalized callback schema")
+    Assert.isTrue(
+      Schema.assertProgram({
+        entry = program.entry,
+        instructions = program.instructions,
+        subprograms = program.subprograms,
+        taskKinds = program.taskKinds,
+      }),
+      key .. " with computed durationTicks passes the normalized callback schema"
+    )
   end
   local mosaic = assert(compiler().compile({
     key = "mosaic-with-computed-duration",

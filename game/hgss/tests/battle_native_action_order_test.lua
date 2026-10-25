@@ -392,8 +392,7 @@ function T.strike_announcement_precedes_visual_and_checkpoint()
   local timeline = nil
   local effects = {
     start = function(cue)
-      started[#started + 1] =
-        { effectKey = cue.effectKey, actionId = cue.actionId, message = timeline:message() }
+      started[#started + 1] = { effectKey = cue.effectKey, actionId = cue.actionId, message = timeline:message() }
       local handle = { actionId = cue.actionId, phase = "pending" }
       handles[#handles + 1] = handle
       return handle
@@ -408,8 +407,12 @@ function T.strike_announcement_precedes_visual_and_checkpoint()
   }
   timeline = BattleTimeline.new({ effects = effects })
   timeline:reset(view)
-  local packet =
-    BattlePresentationModel.packet(view, { events = events }, view, { launchId = "strike-order-probe", packetId = 1 })
+  local packet = BattlePresentationModel.packet(
+    view,
+    { events = events },
+    view,
+    { launchId = "strike-order-probe", packetId = 1 }
+  )
   Assert.isTrue(timeline:present(packet), "the genuine strike packet is accepted")
   local announcedAt = {}
   local startedAt = {}
@@ -479,11 +482,7 @@ function T.strike_announcement_precedes_visual_and_checkpoint()
     end
     for _, entry in ipairs(timeline:battlers()) do
       if entry.combatant ~= targetOf[firstAction] then
-        Assert.equal(
-          entry.hp,
-          initialHp[entry.combatant],
-          "the still-pending strike holds its own checkpoint"
-        )
+        Assert.equal(entry.hp, initialHp[entry.combatant], "the still-pending strike holds its own checkpoint")
       end
     end
   end
@@ -747,10 +746,7 @@ function T.malformed_action_identity_is_rejected_without_assigning_the_visual()
     end
   end
   Assert.isTrue(diagnosed, "the rejection is diagnosed instead of silent")
-  Assert.isTrue(
-    timeline:message():find("used Tackle", 1, true) ~= nil,
-    "the outcome still narrates without its visual"
-  )
+  Assert.isTrue(timeline:message():find("used Tackle", 1, true) ~= nil, "the outcome still narrates without its visual")
 end
 
 return { tests = T }

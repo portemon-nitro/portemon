@@ -83,12 +83,16 @@ end
 function T.side_door_up_clip_carries_the_escalator_role()
   -- Interior members 11/12 (and 168/169) reference build_anim resource 62,
   -- stair_pc_u01u: the single one-shot the side-door exit/enter plays.
-  local result = MapPropAnimCompiler.compile(sideDoorRecord({ 62 }), resNarc({
-    [62] = AnimationFixture.patNamed("stair_pc_u01u"),
-  }), {
-    archiveAlias = "interior_build_anim_list",
-    memberId = 11,
-  })
+  local result = MapPropAnimCompiler.compile(
+    sideDoorRecord({ 62 }),
+    resNarc({
+      [62] = AnimationFixture.patNamed("stair_pc_u01u"),
+    }),
+    {
+      archiveAlias = "interior_build_anim_list",
+      memberId = 11,
+    }
+  )
   Assert.equal(#result.clips, 1)
   Assert.equal(result.clips[1].name, "stair_pc_u01u")
   Assert.deepEqual(result.clips[1].semanticNames, { "escalator" }, "the up one-shot is addressable as escalator")
@@ -102,12 +106,16 @@ end
 function T.side_door_down_clip_carries_the_escalator_role()
   -- Interior members 13/14 (and 170/171) reference build_anim resource 63,
   -- stair_pc_u01d: the down-direction one-shot.
-  local result = MapPropAnimCompiler.compile(sideDoorRecord({ 63 }), resNarc({
-    [63] = AnimationFixture.patNamed("stair_pc_u01d"),
-  }), {
-    archiveAlias = "interior_build_anim_list",
-    memberId = 13,
-  })
+  local result = MapPropAnimCompiler.compile(
+    sideDoorRecord({ 63 }),
+    resNarc({
+      [63] = AnimationFixture.patNamed("stair_pc_u01d"),
+    }),
+    {
+      archiveAlias = "interior_build_anim_list",
+      memberId = 13,
+    }
+  )
   Assert.equal(#result.clips, 1)
   Assert.equal(result.clips[1].name, "stair_pc_u01d")
   Assert.deepEqual(result.clips[1].semanticNames, { "escalator" }, "the down one-shot is addressable as escalator")

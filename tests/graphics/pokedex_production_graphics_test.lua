@@ -1345,8 +1345,11 @@ function T.compact_single_display_paints_fifteen_icons_portrait_and_footer(scope
       -- now cover the button center, so coverage asserts opacity rather
       -- than blank chrome. Distinct marks stay with the dedicated
       -- compact action legs.
-      local _, _, _, centerAlpha =
-        pixel(data, controls.origin.x + button.x + math.floor(button.width / 2), controls.origin.y + math.floor(button.height / 2))
+      local _, _, _, centerAlpha = pixel(
+        data,
+        controls.origin.x + button.x + math.floor(button.width / 2),
+        controls.origin.y + math.floor(button.height / 2)
+      )
       Assert.equal(centerAlpha, 255, "the compact footer button " .. button.id .. " paints its action body")
       local _, _, _, cornerAlpha = pixel(data, controls.origin.x + button.x, controls.origin.y + button.y)
       Assert.equal(cornerAlpha, 255, "the compact footer button " .. button.id .. " paints its action corner")
@@ -1397,25 +1400,25 @@ function T.all_layouts_resolve_prepared_browser_pixels(scope)
       -- background bytes at source scale.
       if class == "nativeLike" then
         local data = drawPlan(scope, plan, resources, preparedView, measurement.width, measurement.height)
-      -- Every layout carries the same authored background bytes at
-      -- source scale; only the placement origin moves.
-      local infoBd = Renderer.backdropOf(rig.manifest, "grid", "information")
-      local er, eg, eb = expectedBackground(
-        bgLayersFor(rig.cacheFs, rig.manifest, "grid", "information"),
-        Renderer.layerPrioritiesOf(rig.manifest, "grid", "information"),
-        infoBd,
-        2,
-        2
-      )
-      assertPixel(
-        data,
-        math.min(info.origin.x + 2, measurement.width - 1),
-        math.min(info.origin.y + 2, measurement.height - 1),
-        er,
-        eg,
-        eb,
-        class .. " information carries its authored background"
-      )
+        -- Every layout carries the same authored background bytes at
+        -- source scale; only the placement origin moves.
+        local infoBd = Renderer.backdropOf(rig.manifest, "grid", "information")
+        local er, eg, eb = expectedBackground(
+          bgLayersFor(rig.cacheFs, rig.manifest, "grid", "information"),
+          Renderer.layerPrioritiesOf(rig.manifest, "grid", "information"),
+          infoBd,
+          2,
+          2
+        )
+        assertPixel(
+          data,
+          math.min(info.origin.x + 2, measurement.width - 1),
+          math.min(info.origin.y + 2, measurement.height - 1),
+          er,
+          eg,
+          eb,
+          class .. " information carries its authored background"
+        )
       end
     end
     -- Below the 256x192 minimum the plan is unavailable and the draw
@@ -4011,18 +4014,27 @@ function T.native_search_and_entry_text_paints_source_glyphs(scope)
       local view = controller:view()
       Assert.equal(view.page, "search", "the grid opens its search criteria")
       local assets = drawCurrent("search.criteria")
-      for _, key in ipairs({ "search.caption-order", "search.caption-letter", "search.value-order", "search.button-run", "search.button-reset", "search.button-back" }) do
-        Assert.isTrue(
-          (assets.messages[key] or "") ~= "",
-          "the criteria bundle carries its real string " .. key
-        )
+      for _, key in ipairs({
+        "search.caption-order",
+        "search.caption-letter",
+        "search.value-order",
+        "search.button-run",
+        "search.button-reset",
+        "search.button-back",
+      }) do
+        Assert.isTrue((assets.messages[key] or "") ~= "", "the criteria bundle carries its real string " .. key)
       end
     end
     press(controller, { { type = "activate", action = "criterion", value = "order" } })
     idle(controller, 2)
     do
       local assets = drawCurrent("search.order")
-      for _, key in ipairs({ "search.title-order", "search.current-order", "search.option-order-numerical", "search.button-ok" }) do
+      for _, key in ipairs({
+        "search.title-order",
+        "search.current-order",
+        "search.option-order-numerical",
+        "search.button-ok",
+      }) do
         Assert.isTrue((assets.messages[key] or "") ~= "", "the order bundle carries its real string " .. key)
       end
     end
@@ -4128,11 +4140,7 @@ function T.compact_inspector_paints_eligible_details_above_its_matte(scope)
     local closeInk = countNonMatte(data, toggle, info.origin.x, info.origin.y, info.scale, 88, 140, 196)
     Assert.isTrue(closeInk >= 4, "the close affordance paints its mark above its chrome")
     local again = drawPlan(scope, plan, resources, showing, 256, 192)
-    Assert.equal(
-      byteSum(again, 256, 192),
-      byteSum(data, 256, 192),
-      "repeated inspector draws settle identical pixels"
-    )
+    Assert.equal(byteSum(again, 256, 192), byteSum(data, 256, 192), "repeated inspector draws settle identical pixels")
     lease:release()
     controller:dispose()
     rig.owner:release()
@@ -4177,11 +4185,8 @@ function T.compact_footer_and_rows_show_distinct_marks_without_new_realizations(
       local varied = 0
       for y = button.y, button.y + button.height - 1 do
         for x = button.x, button.x + button.width - 1 do
-          local pr, pg, pb, _ = pixel(
-            data,
-            controls.origin.x + x * controls.scale,
-            controls.origin.y + y * controls.scale
-          )
+          local pr, pg, pb, _ =
+            pixel(data, controls.origin.x + x * controls.scale, controls.origin.y + y * controls.scale)
           if pr ~= 88 or pg ~= 140 or pb ~= 196 then
             varied = varied + 1
           end
@@ -4288,8 +4293,7 @@ function T.caught_results_paint_their_prepared_mark(scope)
       "the results mark binds its shown choice"
     )
     local sprite = assert(rig.manifest.sprites[binding.sprite], "the mark resolves its sprite role")
-    local animation =
-      assert(rig.manifest.animations[sprite.animation], "the mark resolves its animation")
+    local animation = assert(rig.manifest.animations[sprite.animation], "the mark resolves its animation")
     local cell = assert(rig.manifest.cells[animation.frames[1].cell], "the mark resolves its resting cell")
     local part = assert(cell.parts[1], "the mark carries its first part")
     local chromeEntry = assert(rig.manifest.chrome[part.chrome], "the manifest stages " .. part.chrome)
@@ -4404,7 +4408,11 @@ function T.entry_rows_and_slider_values_paint_their_prepared_source_content(scop
       Assert.isNil(found["digit-min-1"], "a short height hides its foot tens on the production rig")
       Assert.notNil(found["digit-min-2"], "a short height keeps its foot units on the production rig")
       Assert.notNil(found["digit-min-4"], "a short height keeps its inch units on the production rig")
-      Assert.equal(assert(found["digit-max-1"], "the ceiling keeps its foot tens").choice, "d9", "the sentinel spells nine")
+      Assert.equal(
+        assert(found["digit-max-1"], "the ceiling keeps its foot tens").choice,
+        "d9",
+        "the sentinel spells nine"
+      )
     end
     press(controller, { { type = "cancel" } })
     idle(controller, 2)
@@ -4435,7 +4443,11 @@ function T.entry_rows_and_slider_values_paint_their_prepared_source_content(scop
       local compactPlan = resolvePlan(Interface.browser(), measurementFor("nativeLike"), planViewOf(view))
       local compact = assert(compactPlan.content.pokedexCompact, "the area plan publishes its compact rows")
       for _, row in ipairs(assert(compact.rows, "the compact record carries its rows")) do
-        if type(row) == "table" and type(row.labelRole) == "string" and row.labelRole:find("^area%.row%-", 1) ~= nil then
+        if
+          type(row) == "table"
+          and type(row.labelRole) == "string"
+          and row.labelRole:find("^area%.row%-", 1) ~= nil
+        then
           Assert.notNil(assets.messages[row.labelRole], "the compact row paints " .. row.labelRole)
         end
       end

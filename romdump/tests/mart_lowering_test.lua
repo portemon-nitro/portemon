@@ -120,8 +120,14 @@ function T.nine_mart_commands_lower_with_read_and_write_semantics()
     Assert.equal(node.kind, expected.kind)
     Assert.deepEqual(node.selector, expected.selector, "selectors are read values, never output refs")
   end
-  Assert.deepEqual(items[8], { op = "mart_query", kind = "athlete_available", result = sourceVar(0x8007), provenance = items[8].provenance })
-  Assert.deepEqual(items[9], { op = "mart_query", kind = "card_prefix", result = sourceVar(0x8008), provenance = items[9].provenance })
+  Assert.deepEqual(
+    items[8],
+    { op = "mart_query", kind = "athlete_available", result = sourceVar(0x8007), provenance = items[8].provenance }
+  )
+  Assert.deepEqual(
+    items[9],
+    { op = "mart_query", kind = "card_prefix", result = sourceVar(0x8008), provenance = items[9].provenance }
+  )
   Assert.equal(items[10].op, "set_var", "the trailing assignment remains executable after all queries")
   Assert.deepEqual(items[10].variable, sourceVar(0x8009))
   Assert.equal(items[10].value, 0x1234)

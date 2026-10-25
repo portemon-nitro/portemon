@@ -42,9 +42,7 @@ end
 ---@return table<string, unknown> compiled resourceless native program completing in three source ticks
 local function optionProbeProgram()
   local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
-  return assert(
-    BattleAnimationCompiler.compile({ key = "TACKLE", stream = optionStreamOf({ 29, 50, 4 }) })
-  )
+  return assert(BattleAnimationCompiler.compile({ key = "TACKLE", stream = optionStreamOf({ 29, 50, 4 }) }))
 end
 
 ---@param program table<string, unknown> exact compiled program the collaborator admits
@@ -266,7 +264,9 @@ function T.effect_execution_runs_through_the_animation_player()
   local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
   local BattleScene = require("libs.hgss.src.presentation.BattleScene")
   local program = optionProbeProgram()
-  for _, kind in ipairs(program.taskKinds --[[@as table<integer, string>]]) do
+  for _, kind in
+    ipairs(program.taskKinds --[[@as table<integer, string>]])
+  do
     Assert.isTrue(Factory.supportsKind(kind), "the live run admits only real factory bodies: " .. tostring(kind))
   end
   local scene = BattleScene.new()
@@ -304,11 +304,7 @@ function T.effect_execution_runs_through_the_animation_player()
   player:stepSourceTick({ tick = 1 })
   local held = player:status(handle)
   Assert.isTrue(held ~= "complete" and held ~= "failed", "the source-timed run stays alive past its first tick")
-  Assert.equal(
-    #scene:effectViews(),
-    0,
-    "state-only visual work publishes no drawable picture while running"
-  )
+  Assert.equal(#scene:effectViews(), 0, "state-only visual work publishes no drawable picture while running")
   for _ = 1, 120 do
     if player:status(handle) == "complete" then
       break
@@ -316,10 +312,7 @@ function T.effect_execution_runs_through_the_animation_player()
     player:stepSourceTick({ tick = 1 })
   end
   Assert.equal(player:status(handle), "complete", "the native run reaches its own completion")
-  Assert.isTrue(
-    #audio.played > 0,
-    "the completed run played its source-timed voice instead of staying silent"
-  )
+  Assert.isTrue(#audio.played > 0, "the completed run played its source-timed voice instead of staying silent")
   -- The wiring half routes an effect-keyed strike through the cue player
   -- into that same real run: the start carries the accepted key with no
   -- duplicate generic impact voice, and the checkpoint waits for

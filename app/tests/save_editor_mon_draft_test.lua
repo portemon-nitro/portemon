@@ -443,10 +443,7 @@ function T.move_replacement_resets_allowance_and_pp_up_clamps_current_pp()
   local boostedMax = Moves.maxPp(catalog:move(first.move).basePp, 3)
   Assert.isTrue(draft:setMove(0, "ppUps", 3))
   Assert.isTrue(draft:setMove(0, "pp", boostedMax))
-  Assert.isFalse(
-    draft:setMove(0, "pp", boostedMax + 1),
-    "power points above the current maximum never enter the draft"
-  )
+  Assert.isFalse(draft:setMove(0, "pp", boostedMax + 1), "power points above the current maximum never enter the draft")
   Assert.equal(draft:record().moves[1].pp, boostedMax, "a rejected PP edit leaves the slot unchanged")
   Assert.isTrue(draft:setMove(0, "ppUps", 0))
   local clampedMax = Moves.maxPp(catalog:move(first.move).basePp, 0)
@@ -481,10 +478,7 @@ function T.direct_experience_edit_refreshes_current_health()
   Assert.equal(draft:record().experience, target)
   Assert.equal(draft:projection().level, 12)
   local newMaxHp = assert(draft:projection().stats).hp
-  Assert.equal(
-    draft:record().condition.currentHp,
-    HgssMonService.adjustHpForMaxChange(maxHp, newMaxHp, maxHp - 3)
-  )
+  Assert.equal(draft:record().condition.currentHp, HgssMonService.adjustHpForMaxChange(maxHp, newMaxHp, maxHp - 3))
   local valid, validError = draft:validate()
   Assert.isNil(validError)
   Assert.notNil(valid)

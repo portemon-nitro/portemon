@@ -441,7 +441,11 @@ function T.dungeon_markers_apply_their_own_shape_and_pixel_shift_in_both_regions
     choices[#choices + 1] = marker.choice
     Assert.equal(marker.pane, "information", "markers paint on the upper pane")
   end
-  Assert.deepEqual(choices, { "shape3", "shape6", "shape0", "shape0", "shape6" }, "each marker paints its own silhouette")
+  Assert.deepEqual(
+    choices,
+    { "shape3", "shape6", "shape0", "shape0", "shape6" },
+    "each marker paints its own silhouette"
+  )
   for index, want in ipairs(expectedJohto) do
     Assert.equal(markers[index].x, want.x, "painted marker " .. index .. " matches its projected column")
     Assert.equal(markers[index].y, want.y, "painted marker " .. index .. " matches its projected row")

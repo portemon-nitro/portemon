@@ -444,10 +444,7 @@ function T.saved_subject_atlas_borrows_the_shared_image_owner()
     pool:findPhysical(FieldActorCache.atlasPath(AVATAR_SPRITE), sampler) ~= nil,
     "the saved subject atlas resolves through the borrowed image owner instead of a private upload"
   )
-  Assert.isTrue(
-    pool:stats().outstandingLeases >= 1,
-    "the ready viewer holds its subject atlas as a pool lease"
-  )
+  Assert.isTrue(pool:stats().outstandingLeases >= 1, "the ready viewer holds its subject atlas as a pool lease")
   local view = scene:takeReady()
   Assert.isTrue(#view.subjects >= 1, "the ready view carries the saved player subject")
 
@@ -683,10 +680,7 @@ function T.pending_subject_atlases_keep_advance_responsive_until_ready()
   scene:advance(16)
   local mid = scene:status()
   Assert.equal(mid.phase, "pending", "staged subjects publish over bounded advances after readiness")
-  Assert.isTrue(
-    #scene.spriteIds >= 1 and #scene.spriteIds <= 2,
-    "one advance materializes at most two new subjects"
-  )
+  Assert.isTrue(#scene.spriteIds >= 1 and #scene.spriteIds <= 2, "one advance materializes at most two new subjects")
   for _ = 1, 8 do
     if scene:status().phase ~= "pending" then
       break

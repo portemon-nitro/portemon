@@ -1166,10 +1166,7 @@ end
 function T.focus_shake_compiles_translation_tracks_from_the_shared_banks()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
-  local shake = assert(
-    bundle.manifest.startMenu.focusShake,
-    "the manifest must carry the focus shake record"
-  )
+  local shake = assert(bundle.manifest.startMenu.focusShake, "the manifest must carry the focus shake record")
   Assert.deepEqual(shake, {
     horizontal = {
       frames = {
@@ -1198,8 +1195,7 @@ end
 function T.confirm_hop_compiles_the_upward_hop_track_from_the_shared_banks()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
-  local hop =
-    assert(bundle.manifest.startMenu.confirmHop, "the manifest must carry the confirm hop record")
+  local hop = assert(bundle.manifest.startMenu.confirmHop, "the manifest must carry the confirm hop record")
   Assert.deepEqual(hop, {
     frames = {
       { dx = 0, dy = -6, duration = 1 },

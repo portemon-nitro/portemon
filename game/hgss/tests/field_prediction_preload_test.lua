@@ -998,11 +998,7 @@ function T.tests.image_idle_budget_trims_oldest_first_and_reuse_shields_the_pred
   local fourth = warm("trim-d")
   Assert.isTrue(pool:release(fourth), "the newest lease returns its borrow")
   reuse("trim-b", sampler)
-  Assert.equal(
-    pool:prune(),
-    1,
-    "reuse shields the oldest entry and trims the historical idle tail first"
-  )
+  Assert.equal(pool:prune(), 1, "reuse shields the oldest entry and trims the historical idle tail first")
   Assert.isTrue(third.image.released, "the non-reused tail leaves before reused entries")
   Assert.isFalse(second.image.released, "the reused oldest entry survives its own trim round")
   Assert.isFalse(fourth.image.released, "the newest image survives the reuse-shielded trim")
@@ -1145,10 +1141,7 @@ local function predictionDriverOf(runtime)
 end
 
 local function assertHoldMarker(fingerprint, marker, message)
-  Assert.isTrue(
-    fingerprint:find("|" .. marker .. "|", 1, true) ~= nil,
-    message .. " (got " .. fingerprint .. ")"
-  )
+  Assert.isTrue(fingerprint:find("|" .. marker .. "|", 1, true) ~= nil, message .. " (got " .. fingerprint .. ")")
 end
 
 -- The predicted working-set fingerprint records the actual hold state:
@@ -1242,11 +1235,7 @@ function T.tests.steady_hold_preserves_other_prediction_signals()
   end
   runtime:_refreshPrediction()
   Assert.equal(driver.epoch, epoch + 1, "a music change under a steady hold still commits")
-  Assert.equal(
-    driver.fingerprint:match("|(h%d)|"),
-    before,
-    "a music change leaves the steady hold marker untouched"
-  )
+  Assert.equal(driver.fingerprint:match("|(h%d)|"), before, "a music change leaves the steady hold marker untouched")
 
   runtime.session = nil
   local ok, err = pcall(function()

@@ -108,7 +108,6 @@ local function hostTap(plan, paneId, eventType, lx, ly, pointerId)
   }
 end
 
-
 ---@param view table<string, unknown> detached browser projection
 ---@return table<string, unknown> production-shaped session view with the private compact record
 local function sessionView(view)
@@ -178,10 +177,7 @@ function T.compact_layout_keeps_every_grid_cell_and_selection_reachable()
       { hostTap(plan, "information", "pointer_down", rect.x + 16, rect.y + 16, 100) },
       sessionView(view)
     )
-    session:mapInput(
-      { hostTap(plan, "information", "pointer_up", rect.x + 16, rect.y + 16, 100) },
-      sessionView(view)
-    )
+    session:mapInput({ hostTap(plan, "information", "pointer_up", rect.x + 16, rect.y + 16, 100) }, sessionView(view))
     Assert.equal(#tapped, 1, "compact icon " .. index .. " maps to exactly one command")
     Assert.equal(tapped[1].type, "activate", "compact icon " .. index .. " activates")
     Assert.equal(tapped[1].action, "grid-slot", "compact icon " .. index .. " selects its slot")
@@ -230,10 +226,8 @@ function T.below_minimum_has_no_active_controls()
     signature = "pokedex-interface-test:tiny",
   }, sessionView(stubView()))
   if plan ~= nil then
-    local mapped = session:mapInput(
-      { { type = "pointer_down", x = 100, y = 80, pointerId = 1 } },
-      sessionView(stubView())
-    )
+    local mapped =
+      session:mapInput({ { type = "pointer_down", x = 100, y = 80, pointerId = 1 } }, sessionView(stubView()))
     Assert.equal(#mapped, 0, "a below-minimum plan exposes no active controls")
   else
     Assert.isNil(plan, "a below-minimum display resolves no browser plan")
@@ -247,10 +241,7 @@ function T.layout_or_pointer_identity_changes_cancel_captured_input()
   session:resolve(measurementFor("compact"), sessionView(stubView()))
   session:mapInput({ { type = "pointer_down", x = 8, y = 20, pointerId = 7 } }, sessionView(stubView()))
   session:cancelPointers()
-  local mapped = session:mapInput(
-    { { type = "pointer_up", x = 8, y = 20, pointerId = 7 } },
-    sessionView(stubView())
-  )
+  local mapped = session:mapInput({ { type = "pointer_up", x = 8, y = 20, pointerId = 7 } }, sessionView(stubView()))
   Assert.equal(#mapped, 1, "a release after cancellation emits only the queued cancellation")
   Assert.equal(mapped[1].type, "pointer_cancel", "the queued event cancels the held press")
   Assert.equal(mapped[1].pointerId, 7, "cancellation names the captured pointer")
@@ -295,14 +286,9 @@ function T.native_fifth_column_selects_through_translated_host_coordinates()
     Assert.notNil(plan, class .. " resolves a paired browser plan")
     Assert.isNil(plan.content.pokedexCompact, class .. " keeps native geometry without a compact record")
     for _, cell in ipairs(cells) do
-      local mapped = session:mapInput(
-        { hostTap(plan, "controls", "pointer_down", cell.lx, cell.ly, 10) },
-        sessionView(view)
-      )
-      session:mapInput(
-        { hostTap(plan, "controls", "pointer_up", cell.lx, cell.ly, 10) },
-        sessionView(view)
-      )
+      local mapped =
+        session:mapInput({ hostTap(plan, "controls", "pointer_down", cell.lx, cell.ly, 10) }, sessionView(view))
+      session:mapInput({ hostTap(plan, "controls", "pointer_up", cell.lx, cell.ly, 10) }, sessionView(view))
       Assert.equal(#mapped, 1, class .. " maps cell " .. cell.slot .. " to exactly one command")
       Assert.equal(mapped[1].type, "activate", class .. " cell " .. cell.slot .. " activates")
       Assert.equal(mapped[1].action, "grid-slot", class .. " cell " .. cell.slot .. " selects")
@@ -319,10 +305,8 @@ function T.information_pane_taps_never_actuate_controls()
     local view = stubView()
     local plan = session:resolve(measurementFor(class), sessionView(view))
     for _, point in ipairs({ { 30, 40 }, { 200, 20 }, { 100, 100 } }) do
-      local mapped = session:mapInput(
-        { hostTap(plan, "information", "pointer_down", point[1], point[2], 20) },
-        sessionView(view)
-      )
+      local mapped =
+        session:mapInput({ hostTap(plan, "information", "pointer_down", point[1], point[2], 20) }, sessionView(view))
       Assert.equal(
         #mapped,
         0,
@@ -399,11 +383,7 @@ function T.native_search_menu_hitboxes_follow_source_order_and_edges()
       Assert.equal(edge[1].value, box.value, "the inclusive corner keeps the " .. box.value .. " criterion")
     end
     Assert.equal(#tapDown(box.left - 1, centerY), 0, "the pixel left of " .. box.value .. " opens no criterion")
-    Assert.equal(
-      #tapDown(centerX, box.bottom + 1),
-      0,
-      "the pixel below " .. box.value .. " opens no criterion"
-    )
+    Assert.equal(#tapDown(centerX, box.bottom + 1), 0, "the pixel below " .. box.value .. " opens no criterion")
   end
   Assert.equal(#tapDown(120, 15), 0, "the gap left of the order box opens no criterion")
   Assert.equal(#tapDown(100, 150), 0, "the gap between the area row and the bottom band stays inert")
@@ -449,10 +429,8 @@ function T.native_grid_arrows_and_footer_follow_their_source_bands()
   local nextPointer = 100
   local function gridTap(lx, ly)
     nextPointer = nextPointer + 1
-    local mapped = session:mapInput(
-      { hostTap(gridPlan, "controls", "pointer_down", lx, ly, nextPointer) },
-      sessionView(grid)
-    )
+    local mapped =
+      session:mapInput({ hostTap(gridPlan, "controls", "pointer_down", lx, ly, nextPointer) }, sessionView(grid))
     session:mapInput({ hostTap(gridPlan, "controls", "pointer_up", lx, ly, nextPointer) }, sessionView(grid))
     return mapped
   end
@@ -511,8 +489,7 @@ function T.native_entry_tabs_use_narrow_source_bands()
   local view = viewOn(stubView(), "area")
   local plan = session:resolve(measurementFor("wide"), sessionView(view))
   local function tapDown(lx, ly, pointerId)
-    local mapped =
-      session:mapInput({ hostTap(plan, "controls", "pointer_down", lx, ly, pointerId) }, sessionView(view))
+    local mapped = session:mapInput({ hostTap(plan, "controls", "pointer_down", lx, ly, pointerId) }, sessionView(view))
     session:mapInput({ hostTap(plan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(view))
     return mapped
   end
@@ -551,10 +528,8 @@ function T.native_area_circles_and_letter_cells_match_source_selection()
   local area = viewOn(stubView(), "area")
   local areaPlan = session:resolve(measurementFor("wide"), sessionView(area))
   local function areaTap(lx, ly, pointerId)
-    local mapped = session:mapInput(
-      { hostTap(areaPlan, "controls", "pointer_down", lx, ly, pointerId) },
-      sessionView(area)
-    )
+    local mapped =
+      session:mapInput({ hostTap(areaPlan, "controls", "pointer_down", lx, ly, pointerId) }, sessionView(area))
     session:mapInput({ hostTap(areaPlan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(area))
     return mapped
   end
@@ -567,11 +542,7 @@ function T.native_area_circles_and_letter_cells_match_source_selection()
     local edge = areaTap(circle.cx + 13, 33, 61)
     Assert.equal(#edge, 1, "the inclusive circle edge still selects its time")
     Assert.equal(edge[1].value, circle.value, "the circle edge keeps its own time")
-    Assert.equal(
-      #areaTap(circle.cx, 33 + 13, 62),
-      1,
-      "the inclusive circle bottom still selects its own time"
-    )
+    Assert.equal(#areaTap(circle.cx, 33 + 13, 62), 1, "the inclusive circle bottom still selects its own time")
   end
   Assert.equal(#areaTap(77 + 14, 33, 63), 0, "the pixel past the circle radius selects no time")
   Assert.equal(#areaTap(77, 33 + 14, 64), 0, "the pixel below the circle radius selects no time")
@@ -584,10 +555,8 @@ function T.native_area_circles_and_letter_cells_match_source_selection()
   }
   local editorPlan = session:resolve(measurementFor("wide"), sessionView(editor))
   local function editorTap(lx, ly, pointerId)
-    local mapped = session:mapInput(
-      { hostTap(editorPlan, "controls", "pointer_down", lx, ly, pointerId) },
-      sessionView(editor)
-    )
+    local mapped =
+      session:mapInput({ hostTap(editorPlan, "controls", "pointer_down", lx, ly, pointerId) }, sessionView(editor))
     session:mapInput({ hostTap(editorPlan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(editor))
     return mapped
   end
@@ -647,10 +616,8 @@ function T.native_option_editors_map_their_own_source_boxes()
     }
     local plan = session:resolve(measurementFor("wide"), sessionView(view))
     nextPointer = nextPointer + 1
-    local mapped = session:mapInput(
-      { hostTap(plan, "controls", "pointer_down", lx, ly, nextPointer) },
-      sessionView(view)
-    )
+    local mapped =
+      session:mapInput({ hostTap(plan, "controls", "pointer_down", lx, ly, nextPointer) }, sessionView(view))
     session:mapInput({ hostTap(plan, "controls", "pointer_up", lx, ly, nextPointer) }, sessionView(view))
     return mapped
   end
@@ -759,10 +726,7 @@ function T.captured_slider_target_survives_moves_outside_its_band()
   slider.capturedSliderTarget = "height-min"
   local plan = session:resolve(measurementFor("wide"), sessionView(slider))
   local function send(eventType, lx, ly, pointerId)
-    return session:mapInput(
-      { hostTap(plan, "controls", eventType, lx, ly, pointerId) },
-      sessionView(slider)
-    )
+    return session:mapInput({ hostTap(plan, "controls", eventType, lx, ly, pointerId) }, sessionView(slider))
   end
   local begin = send("pointer_down", 100, 131, 80)
   Assert.equal(#begin, 1, "the press on the minimum track begins exactly one gesture")
@@ -782,10 +746,7 @@ function T.captured_slider_target_survives_moves_outside_its_band()
   local fresh = viewOn(stubView(), "search")
   fresh.search = slider.search
   local freshPlan = session:resolve(measurementFor("wide"), sessionView(fresh))
-  local stray = session:mapInput(
-    { hostTap(freshPlan, "controls", "pointer_up", 100, 120, 81) },
-    sessionView(fresh)
-  )
+  local stray = session:mapInput({ hostTap(freshPlan, "controls", "pointer_up", 100, 120, 81) }, sessionView(fresh))
   Assert.equal(#stray, 0, "a release with no capture maps to nothing")
 end
 
@@ -804,10 +765,7 @@ function T.native_slider_tracks_convert_from_the_handle_origin_and_keep_their_en
   local nextPointer = 200
   local function send(eventType, lx, ly)
     nextPointer = nextPointer + 1
-    local mapped = session:mapInput(
-      { hostTap(plan, "controls", eventType, lx, ly, nextPointer) },
-      sessionView(slider)
-    )
+    local mapped = session:mapInput({ hostTap(plan, "controls", eventType, lx, ly, nextPointer) }, sessionView(slider))
     -- Each press completes like a real tap: the shared session holds a
     -- single content capture, so a release follows every down before the
     -- next press begins. The release itself maps to nothing.
@@ -865,10 +823,8 @@ function T.native_slider_tracks_convert_from_the_handle_origin_and_keep_their_en
   held.capturedSliderTarget = "height-min"
   local heldPlan = session:resolve(measurementFor("wide"), sessionView(held))
   nextPointer = nextPointer + 1
-  local move = session:mapInput(
-    { hostTap(heldPlan, "controls", "pointer_move", 204, 60, nextPointer) },
-    sessionView(held)
-  )
+  local move =
+    session:mapInput({ hostTap(heldPlan, "controls", "pointer_move", 204, 60, nextPointer) }, sessionView(held))
   Assert.equal(#move, 1, "a captured move over the other track reports exactly one gesture")
   Assert.equal(move[1].target, "height-min", "the captured move keeps the minimum endpoint")
   Assert.equal(move[1].phase, "move", "the captured move keeps the move phase")
@@ -918,10 +874,8 @@ function T.compact_letter_choices_leave_the_confirmation_row_reachable()
   local nextPointer = 300
   local function tapInformation(lx, ly)
     nextPointer = nextPointer + 1
-    local mapped = session:mapInput(
-      { hostTap(plan, "information", "pointer_down", lx, ly, nextPointer) },
-      sessionView(editor)
-    )
+    local mapped =
+      session:mapInput({ hostTap(plan, "information", "pointer_down", lx, ly, nextPointer) }, sessionView(editor))
     session:mapInput({ hostTap(plan, "information", "pointer_up", lx, ly, nextPointer) }, sessionView(editor))
     return mapped
   end
@@ -932,10 +886,7 @@ function T.compact_letter_choices_leave_the_confirmation_row_reachable()
     Assert.equal(row.rect.y, 8 + gridRow * 16, "choice " .. index .. " keeps its row")
     Assert.equal(row.rect.width, 38, "choice " .. index .. " keeps its width")
     Assert.equal(row.rect.height, 16, "choice " .. index .. " keeps its height")
-    Assert.isTrue(
-      row.rect.y + row.rect.height <= 120,
-      "choice " .. index .. " stays above the dialog row"
-    )
+    Assert.isTrue(row.rect.y + row.rect.height <= 120, "choice " .. index .. " stays above the dialog row")
     Assert.isTrue(row.enabled ~= false, "choice " .. index .. " stays selectable")
     local mapped = tapInformation(row.rect.x + 19, row.rect.y + 8)
     Assert.equal(#mapped, 1, "choice " .. index .. " maps to exactly one command")
@@ -1025,11 +976,7 @@ function T.compact_parent_centers_at_the_largest_integer_scale()
   Assert.equal(fillingInfo.frame.height, 336, "a filling 2x information pane keeps 168 logical rows")
   Assert.equal(fillingControls.scale, 2, "the footer shares the parent integer scale")
   Assert.equal(fillingControls.frame.x, 0, "the footer shares the parent horizontal offset")
-  Assert.equal(
-    fillingControls.frame.y,
-    336,
-    "the footer starts exactly below the information pane"
-  )
+  Assert.equal(fillingControls.frame.y, 336, "the footer starts exactly below the information pane")
   Assert.equal(fillingControls.frame.height, 48, "the footer keeps 24 logical rows")
   local letterboxed = session:resolve(fittedMeasurement(640, 480), view)
   local boxedInfo = placementOf(letterboxed, "information")
@@ -1040,10 +987,7 @@ function T.compact_parent_centers_at_the_largest_integer_scale()
   Assert.equal(boxedControls.scale, 2, "the letterboxed footer shares the parent scale")
   Assert.equal(boxedControls.frame.x, 64, "the letterboxed footer shares the parent offset")
   Assert.equal(boxedControls.frame.y, 48 + 336, "the letterboxed footer stays below information")
-  local compact = assert(
-    letterboxed.content.pokedexCompact,
-    "the fitted plan publishes its one shared geometry record"
-  )
+  local compact = assert(letterboxed.content.pokedexCompact, "the fitted plan publishes its one shared geometry record")
   local footer = assert(compact.footer, "the compact record carries its footer")
   local middle = nil
   for _, button in ipairs(footer.buttons) do
@@ -1085,10 +1029,7 @@ function T.compact_parent_honors_safe_area_and_unfit_selects_no_controls()
   Assert.equal(#mapped, 0, "an unfit display exposes no active controls")
   for _, class in ipairs({ "dual", "wide", "tall" }) do
     local native = session:resolve(measurementFor(class), sessionView(gridFixture()))
-    Assert.isNil(
-      native.content.pokedexCompact,
-      class .. " keeps native geometry without a compact record"
-    )
+    Assert.isNil(native.content.pokedexCompact, class .. " keeps native geometry without a compact record")
     Assert.notNil(native.panes, class .. " keeps its paired panes")
     Assert.equal(#native.panes, 2, class .. " keeps both native panes")
   end
@@ -1112,14 +1053,9 @@ function T.compact_footer_buttons_carry_one_shared_visible_record()
     )
     Assert.isTrue(seenIds[button.id] == nil, "footer action " .. button.id .. " appears once")
     seenIds[button.id] = true
-    local tapped = session:mapInput(
-      { hostTap(plan, "controls", "pointer_down", button.x + 1, button.y + 1, 400) },
-      view
-    )
-    session:mapInput(
-      { hostTap(plan, "controls", "pointer_up", button.x + 1, button.y + 1, 400) },
-      view
-    )
+    local tapped =
+      session:mapInput({ hostTap(plan, "controls", "pointer_down", button.x + 1, button.y + 1, 400) }, view)
+    session:mapInput({ hostTap(plan, "controls", "pointer_up", button.x + 1, button.y + 1, 400) }, view)
     if button.enabled == true then
       Assert.equal(#tapped, 1, "enabled footer action " .. button.id .. " maps at its drawn rectangle")
     else
@@ -1141,10 +1077,7 @@ function T.compact_footer_buttons_carry_one_shared_visible_record()
     { hostTap(firstPlan, "controls", "pointer_down", prevButton.x + 1, prevButton.y + 1, 401) },
     firstPage
   )
-  session:mapInput(
-    { hostTap(firstPlan, "controls", "pointer_up", prevButton.x + 1, prevButton.y + 1, 401) },
-    firstPage
-  )
+  session:mapInput({ hostTap(firstPlan, "controls", "pointer_up", prevButton.x + 1, prevButton.y + 1, 401) }, firstPage)
   Assert.equal(#prevTap, 0, "the disabled previous-page action stays semantically inert")
 end
 
@@ -1160,27 +1093,14 @@ function T.compact_rows_stay_inside_the_information_pane()
   Assert.isTrue(#compact.rows >= 7, "the search plan exposes every criterion row")
   for _, row in ipairs(compact.rows) do
     Assert.isTrue(row.enabled ~= nil, "search row declares its enablement")
-    Assert.isTrue(
-      row.rect.y + row.rect.height <= 168,
-      "search row stays inside the 168px information pane"
-    )
+    Assert.isTrue(row.rect.y + row.rect.height <= 168, "search row stays inside the 168px information pane")
     Assert.isTrue(
       row.labelRole ~= nil or row.iconRole ~= nil or row.valueRole ~= nil,
       "search row names its visible content"
     )
-    local tapped = session:mapInput(
-      {
-        hostTap(
-          plan,
-          "information",
-          "pointer_down",
-          row.rect.x + 1,
-          row.rect.y + 1,
-          500
-        ),
-      },
-      sessionView(search)
-    )
+    local tapped = session:mapInput({
+      hostTap(plan, "information", "pointer_down", row.rect.x + 1, row.rect.y + 1, 500),
+    }, sessionView(search))
     session:mapInput(
       { hostTap(plan, "information", "pointer_up", row.rect.x + 1, row.rect.y + 1, 500) },
       sessionView(search)
@@ -1191,10 +1111,7 @@ function T.compact_rows_stay_inside_the_information_pane()
       Assert.equal(#tapped, 0, "a disabled search row maps to no command")
     end
   end
-  local below = session:mapInput(
-    { hostTap(plan, "information", "pointer_down", 20, 165, 501) },
-    sessionView(search)
-  )
+  local below = session:mapInput({ hostTap(plan, "information", "pointer_down", 20, 165, 501) }, sessionView(search))
   session:mapInput({ hostTap(plan, "information", "pointer_up", 20, 165, 501) }, sessionView(search))
   local covered = false
   for _, row in ipairs(compact.rows) do

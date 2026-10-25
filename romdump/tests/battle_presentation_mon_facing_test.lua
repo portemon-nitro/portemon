@@ -25,13 +25,7 @@ end
 
 local function container(magic, blocks)
   local body = table.concat(blocks)
-  return magic
-    .. string.char(0xFF, 0xFE)
-    .. u16(0x0100)
-    .. u32(0x10 + #body)
-    .. u16(0x10)
-    .. u16(#blocks)
-    .. body
+  return magic .. string.char(0xFF, 0xFE) .. u16(0x0100) .. u32(0x10 + #body) .. u16(0x10) .. u16(#blocks) .. body
 end
 
 local function block(magic, payload)
@@ -171,14 +165,10 @@ end
 
 function T.plan_enumerates_back_selectors_apart_from_front_selectors()
   local planned = assert(MonPresentationCompiler.plan(romFs(), catalog()))
-  local front = assert(
-    planned.portraits.entries["CHIKORITA/f0/male/plain"],
-    "the established front selector stays planned"
-  )
-  local back = assert(
-    planned.portraits.entries["CHIKORITA/f0/male/plain/back"],
-    "the back selector plans through the same owner"
-  )
+  local front =
+    assert(planned.portraits.entries["CHIKORITA/f0/male/plain"], "the established front selector stays planned")
+  local back =
+    assert(planned.portraits.entries["CHIKORITA/f0/male/plain/back"], "the back selector plans through the same owner")
   Assert.isTrue(
     front.pageId ~= back.pageId or front.x ~= back.x or front.y ~= back.y,
     "distinct front/back source tuples keep distinct page slots"

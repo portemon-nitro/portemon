@@ -55,13 +55,12 @@ local function freshProgram(seed, opts)
     dex = Fixture.newDexReader(opts.nationalDex == true),
     bag = Fixture.newBagReader(opts.blueCard == true and { BLUE_CARD = true } or {}),
   })
-  local civil = Fixture.newCivilCell(opts.moment or { year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 })
+  local civil =
+    Fixture.newCivilCell(opts.moment or { year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 })
   local audio = Fixture.newAudioStandIn()
   local messages = Fixture.newMessageLog()
-  local RadioProgram = Fixture.requireFeature(
-    "game.hgss.src.pokegear.RadioProgram",
-    "broadcast programs have no dispatcher yet"
-  )
+  local RadioProgram =
+    Fixture.requireFeature("game.hgss.src.pokegear.RadioProgram", "broadcast programs have no dispatcher yet")
   local program = RadioProgram.new({
     catalog = record.catalog,
     world = world,
@@ -169,11 +168,7 @@ function T.tests.weekday_music_gates_follow_dex_and_card_facts()
   local lullabyTuesday = startMusicLatch(2, false, false, 303)
   Assert.equal(startMusicLatch(6, false, false, 304), lullabyTuesday, "Tuesday and Saturday share the Lullaby track")
   Assert.equal(startMusicLatch(3, false, false, 305), marchMonday, "Wednesday without the dex falls back to March")
-  Assert.equal(
-    startMusicLatch(4, false, false, 306),
-    lullabyTuesday,
-    "Thursday without the dex falls back to Lullaby"
-  )
+  Assert.equal(startMusicLatch(4, false, false, 306), lullabyTuesday, "Thursday without the dex falls back to Lullaby")
   Assert.equal(startMusicLatch(7, false, false, 307), marchMonday, "Sunday without the card falls back to March")
   Assert.isTrue(
     startMusicLatch(3, true, false, 308) ~= marchMonday,
@@ -297,10 +292,8 @@ local function talkTune(seed)
   })
   local civil = Fixture.newCivilCell({ year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 })
   local messages = Fixture.newMessageLog()
-  local RadioProgram = Fixture.requireFeature(
-    "game.hgss.src.pokegear.RadioProgram",
-    "broadcast programs have no dispatcher yet"
-  )
+  local RadioProgram =
+    Fixture.requireFeature("game.hgss.src.pokegear.RadioProgram", "broadcast programs have no dispatcher yet")
   local program = RadioProgram.new({
     catalog = record.catalog,
     world = world,

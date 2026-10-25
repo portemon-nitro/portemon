@@ -410,11 +410,7 @@ function T.full_corpus_flag_runs_only_corpus_suites_and_listing_marks_them()
 
   Assert.equal(#listing, 1, "--list --full-corpus-census exposes only the corpus suite")
   Assert.isTrue(listing[1].fullCorpus == true, "the corpus suite is listed and flagged")
-  contains(
-    table.concat(Report.listingLines(listing), "\n"),
-    "full-corpus",
-    "listing output marks the corpus suite"
-  )
+  contains(table.concat(Report.listingLines(listing), "\n"), "full-corpus", "listing output marks the corpus suite")
 
   local regular = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load })
 
@@ -763,11 +759,7 @@ function T.runner_only_flag_parses_as_an_exclusive_mode()
       return true
     end,
   }
-  contains(
-    rejects({ "--self-test", "--rom-source", "/roms/hg.nds" }, existing),
-    "--rom-source",
-    "source conflict"
-  )
+  contains(rejects({ "--self-test", "--rom-source", "/roms/hg.nds" }, existing), "--rom-source", "source conflict")
   contains(
     rejects({ "--self-test", "--rom-source", "/roms/hg.nds", "--fresh" }, existing),
     "--fresh",
@@ -791,7 +783,7 @@ end
 -- every listed module lives beneath it, and the listing exits zero without
 -- preparing a product fixture.
 function T.self_test_list_mode_lists_only_the_runner_subtree()
-  local handle = assert(io.popen("scripts/test.sh --self-test --list 2>&1; echo \"__exit=$?\""))
+  local handle = assert(io.popen('scripts/test.sh --self-test --list 2>&1; echo "__exit=$?"'))
   local output = handle:read("*a")
   handle:close()
 

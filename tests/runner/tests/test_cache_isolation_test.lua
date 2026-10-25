@@ -581,11 +581,7 @@ function T.a_cache_backed_focus_prepares_only_its_declared_closure()
     Assert.equal(prepare, "assets", "a cache-backed focus prepares its declared scope; " .. planEvidence)
     local expected = { "field-font:global", "message-bank:542", "message-bank:543" }
     table.sort(requires)
-    Assert.deepEqual(
-      requires,
-      expected,
-      "a cache-backed focus names exactly its declared closure; " .. planEvidence
-    )
+    Assert.deepEqual(requires, expected, "a cache-backed focus names exactly its declared closure; " .. planEvidence)
     for _, requirement in ipairs(requires) do
       Assert.isTrue(
         requirement ~= nil and requirement ~= "" and requirement ~= "complete",
@@ -597,8 +593,7 @@ function T.a_cache_backed_focus_prepares_only_its_declared_closure()
       "the plan still answers a positive worker count, got: " .. tostring(jobs)
     )
 
-    local narrowStatus, narrowOutput =
-      runPlanChild(root, "narrow-plan", "--plan --filter app_is_the_interactive_root")
+    local narrowStatus, narrowOutput = runPlanChild(root, "narrow-plan", "--plan --filter app_is_the_interactive_root")
     Assert.equal(narrowStatus, "0", "the requirement-free plan child must exit zero, got: " .. narrowOutput)
     local narrowPrepare, _, narrowRequires = parsePlanFields(narrowOutput)
     Assert.equal(narrowPrepare, "none", "a requirement-free focus prepares nothing")
@@ -1022,7 +1017,6 @@ function T.a_failed_scoped_preparation_keeps_the_previous_selection()
       published,
       "a failed scope must not replace the previous successful selection"
     )
-
   end)
 end
 

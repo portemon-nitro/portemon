@@ -837,18 +837,25 @@ local function closeHarness(options)
     height = 192,
     renderer = {
       metrics = function()
-        return { lineHeight = 14, measure = function(text)
-          return #text * 7
-        end }
+        return {
+          lineHeight = 14,
+          measure = function(text)
+            return #text * 7
+          end,
+        }
       end,
     },
-    displayContext = { measure = function()
-      return {}
-    end },
-    presentation = { resolve = function(_, _, view)
-      local metrics = view.textMetrics
-      return { content = { layout = Layout.compute(view, 256, 192, metrics) } }
-    end },
+    displayContext = {
+      measure = function()
+        return {}
+      end,
+    },
+    presentation = {
+      resolve = function(_, _, view)
+        local metrics = view.textMetrics
+        return { content = { layout = Layout.compute(view, 256, 192, metrics) } }
+      end,
+    },
     valueEditor = options.valueEditor,
     valuePurpose = options.valuePurpose,
     valueReturnFocus = options.valueReturnFocus,
@@ -1107,11 +1114,7 @@ function T.number_place_keys_adjust_digits_and_disabled_confirm_keeps_the_editor
   choice.state:textinput("no matching choice")
   choice.editor:update(256)
   choice.state:update(0)
-  Assert.equal(
-    #choice.buildLayout().lists["value:choice"].rowTargets,
-    0,
-    "the disabled-confirm setup leaves zero rows"
-  )
+  Assert.equal(#choice.buildLayout().lists["value:choice"].rowTargets, 0, "the disabled-confirm setup leaves zero rows")
   choice.controller:setFocus("confirm")
   choice.state:keypressed("return")
   choice.state:keyreleased("return")

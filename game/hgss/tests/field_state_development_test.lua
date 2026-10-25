@@ -371,7 +371,12 @@ function T.dev_mode_overlay_lists_failed_asset_needs()
   Assert.equal(#spy.texts, 5, "the overlay adds one line for the failed need")
   local listed = false
   for _, line in ipairs(spy.texts) do
-    listed = listed or (line:find("asset need failed", 1, true) ~= nil and line:find("probe:x", 1, true) ~= nil and line:find("boom", 1, true) ~= nil)
+    listed = listed
+      or (
+        line:find("asset need failed", 1, true) ~= nil
+        and line:find("probe:x", 1, true) ~= nil
+        and line:find("boom", 1, true) ~= nil
+      )
   end
   Assert.isTrue(listed, "the line names the need and its failure")
 end

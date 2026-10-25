@@ -180,19 +180,13 @@ local function brokenBundle()
   bundle.index.sequences[BROKEN_SEQUENCE_ID] =
     { id = BROKEN_SEQUENCE_ID, symbol = BROKEN_SEQUENCE_SYMBOL, bankId = MISSING_BANK_ID, playerId = 1 }
   bundle.index.sequenceBySymbol[BROKEN_SEQUENCE_SYMBOL] = BROKEN_SEQUENCE_ID
-  bundle.sequences[BROKEN_SEQUENCE_ID] = AudioFixture.sequence(
-    BROKEN_SEQUENCE_ID,
-    BROKEN_SEQUENCE_SYMBOL,
-    MISSING_BANK_ID,
-    1,
-    loopingProgram(),
-    {
+  bundle.sequences[BROKEN_SEQUENCE_ID] =
+    AudioFixture.sequence(BROKEN_SEQUENCE_ID, BROKEN_SEQUENCE_SYMBOL, MISSING_BANK_ID, 1, loopingProgram(), {
       id = 1,
       initialVolume = 127,
       playerPriority = 64,
       channelPriority = 64,
-    }
-  )
+    })
   return bundle
 end
 
@@ -209,12 +203,9 @@ function T.radio_start_with_a_missing_bank_fails_without_changing_playback()
   sound:playMusic(RADIO_SEQUENCE_SYMBOL)
   player:render(120)
 
-  Assert.throws(
-    function()
-      sound:playRadio(BROKEN_SEQUENCE_SYMBOL)
-    end,
-    "a missing radio bank is an attributed failure"
-  )
+  Assert.throws(function()
+    sound:playRadio(BROKEN_SEQUENCE_SYMBOL)
+  end, "a missing radio bank is an attributed failure")
   Assert.isNil(sound:currentRadioSequence(), "a failed radio start latches nothing")
   Assert.isFalse(sound:radioIsPlaying(), "a failed radio start plays nothing")
   Assert.isFalse(player:isPlayerPlaying(RADIO_PLAYER_ID), "a failed radio start attaches no radio instance")
@@ -269,10 +260,7 @@ function T.radio_stop_tail_completes_on_the_semantic_timeline_without_output()
   for _ = 1, 4 do
     sound:updateSoundFrame()
   end
-  Assert.isFalse(
-    player:isPlayerPlaying(RADIO_PLAYER_ID),
-    "the tail retires the instance on sound frames alone"
-  )
+  Assert.isFalse(player:isPlayerPlaying(RADIO_PLAYER_ID), "the tail retires the instance on sound frames alone")
   Assert.isFalse(sound:radioIsPlaying(), "radio is silent once the tail finishes")
 end
 

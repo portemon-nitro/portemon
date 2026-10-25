@@ -155,7 +155,11 @@ function T.picture_state_restores_only_the_changed_activation_snapshot()
     shadowTint = { r = 0.5, g = 0.75, b = 1, a = 1 },
     shadowVisible = true,
   }, "restore returns the activation's saved presentation")
-  Assert.deepEqual(scene:pictureState(changed), restored, "the renderer sees the restored base without stale transform fields")
+  Assert.deepEqual(
+    scene:pictureState(changed),
+    restored,
+    "the renderer sees the restored base without stale transform fields"
+  )
   scene:remove(changed.combatant, changed.activation)
   Assert.equal(scene:pictureState(unrelated), nil, "removal leaves unrelated activation state unchanged")
 end
@@ -666,7 +670,11 @@ function T.native_hud_icon_maps_all_status_and_gender_variants()
   for _, gender in ipairs(genders) do
     local patches = BattleScene.hudIconPatchTiles(patchSpans, 0, nil, gender.key, nil)
     for index = 1, 4 do
-      Assert.equal(patches[index + 3].sourceTile, gender.tiles[index], "native gender selector uses its source component")
+      Assert.equal(
+        patches[index + 3].sourceTile,
+        gender.tiles[index],
+        "native gender selector uses its source component"
+      )
     end
   end
 end
@@ -683,25 +691,17 @@ function T.double_player_health_box_mode_is_activation_scoped_and_uses_source_ti
   scene:setHealthBoxMode(first, 2, "numbers")
   Assert.equal(scene:healthBoxMode(first), "numbers", "mode updates only the selected activation")
   Assert.equal(scene:healthBoxMode(second), "gauge", "the partner keeps its own source mode")
-  Assert.deepEqual(
-    BattleScene.healthBoxModePatchTiles(patchSpans, 2, "numbers"),
-    {
-      { tile = 39, sourceTile = 70 },
-      { tile = 103, sourceTile = 71 },
-      { tile = 99, sourceTile = 69 },
-    },
-    "number mode installs the pinned current/max number character cells"
-  )
-  Assert.deepEqual(
-    BattleScene.healthBoxModePatchTiles(patchSpans, 4, "gauge"),
-    {
-      { tile = 38, sourceTile = 66 },
-      { tile = 39, sourceTile = 67 },
-      { tile = 102, sourceTile = 68 },
-      { tile = 103, sourceTile = 38 },
-    },
-    "gauge mode restores the pinned double-player gauge character cells"
-  )
+  Assert.deepEqual(BattleScene.healthBoxModePatchTiles(patchSpans, 2, "numbers"), {
+    { tile = 39, sourceTile = 70 },
+    { tile = 103, sourceTile = 71 },
+    { tile = 99, sourceTile = 69 },
+  }, "number mode installs the pinned current/max number character cells")
+  Assert.deepEqual(BattleScene.healthBoxModePatchTiles(patchSpans, 4, "gauge"), {
+    { tile = 38, sourceTile = 66 },
+    { tile = 39, sourceTile = 67 },
+    { tile = 102, sourceTile = 68 },
+    { tile = 103, sourceTile = 38 },
+  }, "gauge mode restores the pinned double-player gauge character cells")
 
   scene:remove(first.combatant, first.activation)
   Assert.equal(scene:healthBoxMode(second), "gauge", "removal keeps the unrelated activation mode")

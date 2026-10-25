@@ -99,7 +99,9 @@ local function testBellTowerPreloadsInTheBackground(scope, context)
     local variant = assert(state.runtime.hoOhAppearanceScene):currentVariant()
     local expected = { ["first" .. variant] = 1, ["second" .. variant] = 1 }
     local function prepared()
-      return counts.core == 1 and counts.cinematic["first" .. variant] == 1 and counts.cinematic["second" .. variant] == 1
+      return counts.core == 1
+        and counts.cinematic["first" .. variant] == 1
+        and counts.cinematic["second" .. variant] == 1
     end
     for _ = 1, 600 do
       if prepared() then

@@ -639,6 +639,10 @@ function BattleContext:consumeHeldItem(combatantId)
     return nil
   end
   mon.heldItem = "NONE"
+  local active = combatant.active
+  if type(active) == "table" then
+    active.canUnburden = true
+  end
   local recycleItems = self._state.recycleItems --[[@as table<integer, string>]]
   recycleItems[combatantId] = held
   return held --[[@as string]]
@@ -677,6 +681,9 @@ function BattleContext:setHeldItem(combatantId, item)
   assert(item == nil or (type(item) == "string" and item ~= "" and item ~= "NONE"), "held-item writes carry a key")
   local combatant = BattleState.combatant(self._state, combatantId)
   local mon = combatant.mon --[[@as table<string, unknown>]]
+  if item == nil and self:heldItemOf(combatantId) ~= nil and type(combatant.active) == "table" then
+    (combatant.active --[[@as table<string, unknown>]]).canUnburden = true
+  end
   mon.heldItem = item or "NONE"
 end
 

@@ -483,7 +483,8 @@ end
 -- (info 2/6, skills 8/10, performance 5/3) plus one ordered memo branch:
 -- picture-shape tests need a schema-valid envelope so rejections
 -- attribute to the picture track under test.
-local GROUP_ROLE_CENSUS = { info = { main = 2, sub = 6 }, skills = { main = 8, sub = 10 }, performance = { main = 5, sub = 3 } }
+local GROUP_ROLE_CENSUS =
+  { info = { main = 2, sub = 6 }, skills = { main = 8, sub = 10 }, performance = { main = 5, sub = 3 } }
 
 local function semanticRole(pane, seed)
   return {

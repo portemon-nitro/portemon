@@ -496,11 +496,7 @@ local function assertMenuComposition(scope, width, height, safeRect)
     )
     local resolvedScale = runtime.fieldPixelScale:resolvedScale()
     local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, resolvedScale)
-    Assert.equal(
-      attachedInputs.preferredScale,
-      dialogueScale,
-      "dialogue-attached choice keeps the dialogue scale"
-    )
+    Assert.equal(attachedInputs.preferredScale, dialogueScale, "dialogue-attached choice keeps the dialogue scale")
     local expectedScale = resolvedYesNoLayout.placement.scale
     Assert.isTrue(expectedScale > 0 and expectedScale <= dialogueScale, "choice scale fits above the dialogue")
     Assert.isTrue(menuPixels.x >= bounds.x, "every changed menu pixel stays inside field UI bounds")

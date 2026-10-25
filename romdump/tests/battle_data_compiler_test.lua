@@ -114,18 +114,19 @@ function T.move_facts_keep_identity_numbers_and_carry_typed_execution_metadata()
   local BattleDataCompiler = require("romdump.src.digest.battle.BattleDataCompiler")
   local BattleSources = require("romdump.src.config.BattleSources")
   local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
-  local compiled = assert(
-    BattleDataCompiler.compile(nativeInput({ [33] = tackleEntry(), [14] = swordsDanceEntry() }), {
-      inventory = BattleSources,
-    })
-  )
+  local compiled = assert(BattleDataCompiler.compile(nativeInput({ [33] = tackleEntry(), [14] = swordsDanceEntry() }), {
+    inventory = BattleSources,
+  }))
   local tackle = assert(compiled.moves["TACKLE"], "move 33 must resolve to TACKLE")
   Assert.equal(tackle.power, 35, "TACKLE keeps its source power")
   Assert.equal(tackle.accuracy, 95, "TACKLE keeps its source accuracy")
   Assert.equal(tackle.basePp, 35, "TACKLE keeps its source PP under the retained field name")
   Assert.equal(tackle.moveType, "normal", "type id 0 resolves to the lower-case source key")
   Assert.equal(tackle.priority, 0, "TACKLE keeps its source priority")
-  Assert.isTrue(type(tackle.behavior.key) == "string" and tackle.behavior.key ~= "", "TACKLE needs a bound behavior key")
+  Assert.isTrue(
+    type(tackle.behavior.key) == "string" and tackle.behavior.key ~= "",
+    "TACKLE needs a bound behavior key"
+  )
   Assert.isTrue(type(tackle.behavior.params) == "table", "TACKLE needs behavior parameters")
   Assert.isTrue(type(tackle.target) == "string" and tackle.target ~= "", "TACKLE needs a named target")
   assertNamedFlags(tackle.flags, "TACKLE")
@@ -157,13 +158,14 @@ function T.reflect_snatch_and_mirror_flags_come_from_the_native_move_flags_byte(
     moveType = 0,
     accuracy = 95,
     pp = 35,
-    flags = 0x1C,
+    flags = 0x1D,
   })
   local compiled = assert(BattleDataCompiler.compile(nativeInput({ [33] = entry }), { inventory = BattleSources }))
   local tackle = assert(compiled.moves.TACKLE, "the fixture resolves to TACKLE")
   Assert.isTrue(tackle.flags.reflectable, "native bit 2 marks Magic Coat eligibility")
   Assert.isTrue(tackle.flags.snatchable, "native bit 3 marks Snatch eligibility")
   Assert.isTrue(tackle.flags.mirrorable, "native bit 4 marks Mirror Move eligibility")
+  Assert.isTrue(tackle.flags.contact, "native bit 0 marks contact moves")
 end
 
 function T.truncated_entries_and_unknown_references_fail_before_publication()
@@ -248,11 +250,9 @@ function T.loading_needs_neither_a_native_decoder_nor_the_dump()
   local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
   local CacheFs = require("libs.storage.src.CacheFs")
   local FakeCache = require("tests.support.FakeCache")
-  local compiled = assert(
-    BattleDataCompiler.compile(nativeInput({ [33] = tackleEntry(), [14] = swordsDanceEntry() }), {
-      inventory = BattleSources,
-    })
-  )
+  local compiled = assert(BattleDataCompiler.compile(nativeInput({ [33] = tackleEntry(), [14] = swordsDanceEntry() }), {
+    inventory = BattleSources,
+  }))
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   local paths = BattleDataCache.paths()
   cacheFs:writeLua(assert(paths.battleData, "the cache must publish a battle-data path"), compiled)
@@ -288,13 +288,9 @@ end
 function T.move_id_bounds_reject_sentinels_and_overflow()
   local BattleDataCompiler = require("romdump.src.digest.battle.BattleDataCompiler")
   local BattleSources = require("romdump.src.config.BattleSources")
-  local first = assert(
-    BattleDataCompiler.compile(nativeInput({ [1] = tackleEntry() }), { inventory = BattleSources })
-  )
+  local first = assert(BattleDataCompiler.compile(nativeInput({ [1] = tackleEntry() }), { inventory = BattleSources }))
   Assert.notNil(first.moves["POUND"], "move 1 resolves to POUND")
-  local last = assert(
-    BattleDataCompiler.compile(nativeInput({ [467] = tackleEntry() }), { inventory = BattleSources })
-  )
+  local last = assert(BattleDataCompiler.compile(nativeInput({ [467] = tackleEntry() }), { inventory = BattleSources }))
   Assert.notNil(last.moves["SHADOW_FORCE"], "move 467 resolves to SHADOW_FORCE")
   local sentinel, sentinelErr = BattleDataCompiler.compile(nativeInput({ [0] = tackleEntry() }), {
     inventory = BattleSources,
@@ -329,9 +325,7 @@ function T.extreme_values_survive_projection_exactly()
     range = 65535,
     priority = -128,
   })
-  local compiled = assert(
-    BattleDataCompiler.compile(nativeInput({ [53] = entry }), { inventory = BattleSources })
-  )
+  local compiled = assert(BattleDataCompiler.compile(nativeInput({ [53] = entry }), { inventory = BattleSources }))
   local facts = assert(compiled.moves["FLAMETHROWER"], "move 53 resolves to FLAMETHROWER")
   Assert.equal(facts.power, 255, "maximum power survives")
   Assert.equal(facts.accuracy, 100, "maximum accuracy survives")
@@ -341,17 +335,20 @@ function T.extreme_values_survive_projection_exactly()
   Assert.equal(facts.effect, 65535, "maximum effect id survives")
   Assert.equal(facts.range, 65535, "maximum range survives")
   Assert.equal(facts.effectChance, 100, "maximum effect chance survives")
-  local wrapped = assert(
-    BattleDataCompiler.compile(nativeInput({ [33] = moveEntry({
-      effect = 0,
-      category = 0,
-      power = 35,
-      moveType = 0,
-      accuracy = 95,
-      pp = 35,
-      priority = 255,
-    }) }), { inventory = BattleSources })
-  )
+  local wrapped = assert(BattleDataCompiler.compile(
+    nativeInput({
+      [33] = moveEntry({
+        effect = 0,
+        category = 0,
+        power = 35,
+        moveType = 0,
+        accuracy = 95,
+        pp = 35,
+        priority = 255,
+      }),
+    }),
+    { inventory = BattleSources }
+  ))
   Assert.equal(wrapped.moves["TACKLE"].priority, -1, "priority byte 255 wraps to -1")
   assert(BattleDataSchema.assertBattleData(compiled) ~= false, "extreme facts pass the semantic schema")
 end
@@ -411,9 +408,7 @@ function T.species_weights_decode_as_species_indexed_hectograms()
   local MonSources = require("romdump.src.config.MonSources")
   local member = weightTableWith({ [0] = 69, [1] = 69, [2] = 130 })
   Assert.equal(#member, (MonSources.MAX_SPECIES + 1) * 4, "the fixture spans one s32 per species")
-  local weights = assert(
-    MonCatalogCompiler.decodeWeightTable(member, { archive = "zukan_data", memberId = 1 })
-  )
+  local weights = assert(MonCatalogCompiler.decodeWeightTable(member, { archive = "zukan_data", memberId = 1 }))
   Assert.equal(weights[0], 69, "species 0 keeps its source weight")
   Assert.equal(weights[1], 69, "species 1 keeps its source weight")
   Assert.equal(weights[2], 130, "species 2 keeps its source weight")
@@ -439,11 +434,10 @@ function T.species_weight_tables_reject_truncation_and_negative_weights()
   Assert.isNil(truncated, "a truncated weight table must not decode")
   local typedSize = assert(sizeErr, "a truncated table must report a typed error")
   Assert.equal(typedSize.code, "MON_WEIGHT_BAD_SIZE")
-  local ragged, raggedErr =
-    MonCatalogCompiler.decodeWeightTable(weightTableWith({}) .. "\0", {
-      archive = "zukan_data",
-      memberId = 1,
-    })
+  local ragged, raggedErr = MonCatalogCompiler.decodeWeightTable(weightTableWith({}) .. "\0", {
+    archive = "zukan_data",
+    memberId = 1,
+  })
   Assert.isNil(ragged, "a table with a trailing byte must not decode")
   Assert.equal(assert(raggedErr, "ragged input must report a typed error").code, "MON_WEIGHT_BAD_SIZE")
   local corrupt = weightTableWith({ [5] = -1 })
@@ -469,26 +463,10 @@ function T.item_fling_and_natural_gift_decode_from_source_bytes()
   local giftType = 10
   local fieldPocket = 4
   local word = giftType + fieldPocket * 128
-  local member = string.char(
-      100,
-      0,
-      0,
-      0,
-      1,
-      2,
-      30,
-      60,
-      word % 256,
-      math.floor(word / 256) % 256,
-      0,
-      0,
-      0,
-      0
-    ) .. string.rep("\0", 20)
+  local member = string.char(100, 0, 0, 0, 1, 2, 30, 60, word % 256, math.floor(word / 256) % 256, 0, 0, 0, 0)
+    .. string.rep("\0", 20)
   Assert.equal(#member, 34, "the fixture spans one full item_data row")
-  local decoded = assert(
-    ItemCatalogCompiler.decodeItemData(member, { archive = "item_data", memberId = 149 })
-  )
+  local decoded = assert(ItemCatalogCompiler.decodeItemData(member, { archive = "item_data", memberId = 149 }))
   Assert.equal(decoded.flingEffect, 2, "flingEffect decodes from offset 5")
   Assert.equal(decoded.flingPower, 30, "flingPower decodes from offset 6")
   Assert.equal(decoded.naturalGiftPower, 60, "naturalGiftPower decodes from offset 7")

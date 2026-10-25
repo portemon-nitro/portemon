@@ -55,13 +55,7 @@ local function container(magic, blocks)
     body[#body + 1] = blk
     size = size + #blk
   end
-  return magic
-    .. string.char(0xFF, 0xFE)
-    .. u16(0x0100)
-    .. u32(size)
-    .. u16(0x10)
-    .. u16(#blocks)
-    .. table.concat(body)
+  return magic .. string.char(0xFF, 0xFE) .. u16(0x0100) .. u32(size) .. u16(0x10) .. u16(#blocks) .. table.concat(body)
 end
 
 local function block(magic, payload)
@@ -284,9 +278,11 @@ end
 -- The expected banner pixels and decoded text-role palette for one skin,
 -- computed independently from the source members.
 local function expectedBanner(romFs, style)
-  local char = assert(G2dDecoder.decodeChar(memberBytes(romFs, AREA_WINDOWS_ALIAS, style * 2), { label = "banner char" }))
-  local pal =
-    assert(G2dDecoder.decodePalette(memberBytes(romFs, AREA_WINDOWS_ALIAS, style * 2 + 1), { label = "banner palette" }))
+  local char =
+    assert(G2dDecoder.decodeChar(memberBytes(romFs, AREA_WINDOWS_ALIAS, style * 2), { label = "banner char" }))
+  local pal = assert(
+    G2dDecoder.decodePalette(memberBytes(romFs, AREA_WINDOWS_ALIAS, style * 2 + 1), { label = "banner palette" })
+  )
   local image = G2dRasterizer.renderScreen(char, { colors = pal.colors }, bannerEntries(), {
     asset = "banner expectation",
   })
@@ -372,7 +368,8 @@ function T.pinned_preview_inventory_matches_the_source_triples()
   local destinationCount = 0
   for _, destination in ipairs(FieldEntryFixture.DESTINATIONS) do
     local mapId = assert(MapCatalog.idForSymbol(destination.symbol), destination.symbol)
-    local slots = assert(bundle.manifest.previewByMapId[mapId], "destination " .. destination.symbol .. " carries slots")
+    local slots =
+      assert(bundle.manifest.previewByMapId[mapId], "destination " .. destination.symbol .. " carries slots")
     destinationCount = destinationCount + 1
     for slot = 0, 3 do
       local key = assert(slots[slot], destination.symbol .. " slot " .. slot)

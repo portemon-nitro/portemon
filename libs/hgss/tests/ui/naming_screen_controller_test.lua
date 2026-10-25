@@ -284,7 +284,11 @@ function T.tests.entry_slot_clock_restarts_only_when_text_moves_the_selected_slo
   controller:activateControl("ok")
   local frozen = assert(controller:snapshot().presentation)
   controller:updateFixed(2)
-  Assert.deepEqual(withoutOkPress(controller:snapshot().presentation), withoutOkPress(frozen), "submission freezes every presentation clock")
+  Assert.deepEqual(
+    withoutOkPress(controller:snapshot().presentation),
+    withoutOkPress(frozen),
+    "submission freezes every presentation clock"
+  )
 end
 
 -- Two presentation ticks model one 30 Hz source tick driving the 60 Hz

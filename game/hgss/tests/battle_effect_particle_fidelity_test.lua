@@ -1148,7 +1148,11 @@ function T.production_particle_lease_decodes_staged_records_and_completes()
   Assert.equal(#scene:effectViews(), 0, "retirement releases every owned sprite record")
   player:dispose()
   assertJournalBalanced(journal, "the settled production run")
-  Assert.deepEqual(probe.host.asks, { { key = "TACKLE", urgency = "required" } }, "only the selected effect is demanded")
+  Assert.deepEqual(
+    probe.host.asks,
+    { { key = "TACKLE", urgency = "required" } },
+    "only the selected effect is demanded"
+  )
   owned:dispose()
   owned:dispose()
   local stale, staleErr = owned:resolveEffectResource(effect, PROBE_ARCHIVE_KEY)
@@ -1178,10 +1182,7 @@ function T.production_resolver_names_effect_key_and_path_for_broken_payloads()
   Assert.isTrue(type(failure) == "string" and failure ~= "", "the undecodable archive carries its reason")
   local reason = failure --[[@as string]]
   Assert.isTrue(reason:find("TACKLE", 1, true) ~= nil, "the failure names its effect: " .. reason)
-  Assert.isTrue(
-    reason:find(PROBE_ARCHIVE_KEY, 1, true) ~= nil,
-    "the failure names its resource: " .. reason
-  )
+  Assert.isTrue(reason:find(PROBE_ARCHIVE_KEY, 1, true) ~= nil, "the failure names its resource: " .. reason)
   Assert.isTrue(reason:find(PROBE_ARCHIVE_PATH, 1, true) ~= nil, "the failure names its path: " .. reason)
   owned:dispose()
   envelope:dispose()
@@ -1196,7 +1197,8 @@ function T.particle_continuation_rejects_non_particle_leases_with_provenance()
   local scene = sceneWithPair()
   local context = occurrenceContext(4242)
   local journal = { acquired = {}, released = {} }
-  local services = { scene = scene, audio = {}, resources = journaledHolderServices(probe.owned, probe.effect, journal) }
+  local services =
+    { scene = scene, audio = {}, resources = journaledHolderServices(probe.owned, probe.effect, journal) }
   local built, failure = pcall(Factory.create, "battler-effect-continuation", {
     resource = PROBE_TEXTURE_KEY,
     emitterPosition = "solo-enemy",
@@ -1222,11 +1224,15 @@ function T.cancelled_production_emission_releases_every_lease_exactly_once()
   local scene = sceneWithPair()
   local context = occurrenceContext(4242)
   local journal = { acquired = {}, released = {} }
-  local services = { scene = scene, audio = {}, resources = journaledHolderServices(probe.owned, probe.effect, journal) }
-  local task = assert(Factory.create("battler-effect-continuation", {
-    resource = PROBE_ARCHIVE_KEY,
-    emitterPosition = "solo-enemy",
-  }, context, services), "the factory constructs the production-fed emitter")
+  local services =
+    { scene = scene, audio = {}, resources = journaledHolderServices(probe.owned, probe.effect, journal) }
+  local task = assert(
+    Factory.create("battler-effect-continuation", {
+      resource = PROBE_ARCHIVE_KEY,
+      emitterPosition = "solo-enemy",
+    }, context, services),
+    "the factory constructs the production-fed emitter"
+  )
   local maxLive = 0
   for tick = 1, 10 do
     task:stepSourceTick({ tick = tick })
@@ -1372,10 +1378,7 @@ local function runPairCase(attackerSlot, targetSlot, expectEmitter, expectTextur
   cache:writeLua("effects/probe-lone-emitter.lua", customEmitter({ textureKey = PAIR_LONE_TEXTURE }))
   cache:writeLua("effects/probe-partner-emitter.lua", customEmitter({ textureKey = PAIR_PARTNER_TEXTURE }))
   cache:writeLua("effects/probe-lone-texture.lua", { width = 8, height = 8, rgba8888 = loneTextureBytes })
-  cache:writeLua(
-    "effects/probe-partner-texture.lua",
-    { width = 4, height = 4, rgba8888 = partnerTextureBytes }
-  )
+  cache:writeLua("effects/probe-partner-texture.lua", { width = 4, height = 4, rgba8888 = partnerTextureBytes })
   local host = recordingProductionHost()
   host.answers[PAIR_EFFECT_KEY] = true
   local envelope = productionEnvelope(cache, host)
@@ -1440,21 +1443,18 @@ local function runPairCase(attackerSlot, targetSlot, expectEmitter, expectTextur
   -- The occurrence journals one emitter lease while the spawned task
   -- stages its own emitter and texture leases: exactly these three
   -- acquisitions, nothing sibling-wide.
-  Assert.deepEqual(acquired, { expectEmitter, expectEmitter, expectTexture }, "the pair leases only its own emitter and texture")
+  Assert.deepEqual(
+    acquired,
+    { expectEmitter, expectEmitter, expectTexture },
+    "the pair leases only its own emitter and texture"
+  )
   owned:dispose()
   envelope:dispose()
 end
 
 function T.runtime_selected_emitters_resolve_typed_leases_for_solo_and_paired_slots()
   runPairCase("solo-player", "solo-enemy", PAIR_LONE_KEY, PAIR_LONE_TEXTURE, 8, "probe-pair-solo")
-  runPairCase(
-    "player-side-slot-1",
-    "enemy-side-slot-1",
-    PAIR_PARTNER_KEY,
-    PAIR_PARTNER_TEXTURE,
-    4,
-    "probe-pair-double"
-  )
+  runPairCase("player-side-slot-1", "enemy-side-slot-1", PAIR_PARTNER_KEY, PAIR_PARTNER_TEXTURE, 4, "probe-pair-double")
 end
 
 return { tests = T }

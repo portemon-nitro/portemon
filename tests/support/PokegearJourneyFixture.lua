@@ -20,8 +20,7 @@ local LocalClock = require("game.src.LocalClock")
 local Fixture = {}
 
 ---@param _ unknown
-local function void(_)
-end
+local function void(_) end
 
 Fixture.TOWN = "MAP_NEW_BARK"
 Fixture.HOUSE_1F = "MAP_NEW_BARK_PLAYER_HOUSE_1F"
@@ -136,7 +135,14 @@ function Fixture.bootVariant(options)
     fieldOptions = {
       recordingScriptHosts = true,
       localClock = LocalClock.new(function()
-        return { year = sample.year, month = sample.month, day = sample.day, hour = sample.hour, minute = sample.minute, second = sample.second }
+        return {
+          year = sample.year,
+          month = sample.month,
+          day = sample.day,
+          hour = sample.hour,
+          minute = sample.minute,
+          second = sample.second,
+        }
       end),
     },
   })
@@ -364,7 +370,8 @@ end
 ---@param actorId string
 function Fixture.talkTo(game, actorId)
   for _ = 1, 3 do
-    local live = assert(game.runtime.actors:getById(actorId), "the target actor must be live before talking: " .. actorId)
+    local live =
+      assert(game.runtime.actors:getById(actorId), "the target actor must be live before talking: " .. actorId)
     local committed = live:getFieldPosition()
     local ax = assert(committed.fieldX, "live actors carry their field column: " .. actorId)
     local az = assert(committed.fieldZ, "live actors carry their field row: " .. actorId)
@@ -401,7 +408,8 @@ end
 function Fixture.takeWarpTo(game, targetSymbol)
   local origin = assert(game:snapshot().mapSymbol, "warp search needs the current map symbol")
   Fixture.settleArrival(game, origin)
-  local warps = assert(game.runtime.runtimeMap.fieldData.events.warps, "warp search needs production warp data on " .. origin)
+  local warps =
+    assert(game.runtime.runtimeMap.fieldData.events.warps, "warp search needs production warp data on " .. origin)
   local deltas = {
     { dx = 1, dz = 0, direction = "east" },
     { dx = -1, dz = 0, direction = "west" },
@@ -520,7 +528,10 @@ function Fixture.takeWarpTo(game, targetSymbol)
       local reached = reach(neighbor)
       if reached and game:snapshot().mapSymbol == origin then
         if game:snapshot().dialogue.modal then
-          Assert.isTrue(Fixture.drainField(game, 240), "a warp-side scene must settle before bumping " .. step.direction)
+          Assert.isTrue(
+            Fixture.drainField(game, 240),
+            "a warp-side scene must settle before bumping " .. step.direction
+          )
         elseif pressDirection(step.direction) then
           return true
         elseif onTile() then
@@ -566,7 +577,11 @@ function Fixture.takeWarpTo(game, targetSymbol)
       end
     end
   end
-  Assert.equal(game:snapshot().mapSymbol, targetSymbol, "some live door on " .. origin .. " must reach " .. targetSymbol)
+  Assert.equal(
+    game:snapshot().mapSymbol,
+    targetSymbol,
+    "some live door on " .. origin .. " must reach " .. targetSymbol
+  )
 end
 
 -- Whether any tile adjacent to `actorId` is reachable through production
@@ -779,9 +794,11 @@ function Fixture.saveAndReload(game)
       and not snapshot.fieldLocked
   end, 240)
   local saveId = game.runtime.saveId
-  local persisted = assert(game.runtime.saveStore:load(saveId), "the actual save store must reload the published record")
+  local persisted =
+    assert(game.runtime.saveStore:load(saveId), "the actual save store must reload the published record")
   game:_disposeRuntime()
-  local runtime = game.harness:_newRuntime(persisted, game.saveNamespace, game.faults, game.lifecycle, game.fieldOptions, false)
+  local runtime =
+    game.harness:_newRuntime(persisted, game.saveNamespace, game.faults, game.lifecycle, game.fieldOptions, false)
   game.runtime = runtime
   game.hosts = runtime.scriptHosts or {}
   game.runtimeDisposed = false
@@ -799,7 +816,8 @@ end
 -- Ends on the played lab frontier with the field owned.
 ---@param game table
 function Fixture.playOpeningToLabFrontier(game)
-  local world = assert(game.runtime.scripts and game.runtime.scripts.worldState, "the opening journey needs live world state")
+  local world =
+    assert(game.runtime.scripts and game.runtime.scripts.worldState, "the opening journey needs live world state")
   Assert.isFalse(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_POKEGEAR), "a genuine New Game starts without the gear")
   game:moveTo(Fixture.TOWN_HOUSE_DOOR_APPROACH)
   game:step({ direction = "north" })

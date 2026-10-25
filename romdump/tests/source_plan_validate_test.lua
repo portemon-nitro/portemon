@@ -53,10 +53,7 @@ local function expectRejected(mutate, needle)
   local ok, reason = SourcePlan.validate(plan, identity())
   Assert.isNil(ok, "the mutated inventory must not validate")
   Assert.notNil(reason, "a rejected inventory names a reason")
-  Assert.isTrue(
-    tostring(reason):find(needle, 1, true) ~= nil,
-    "unexpected rejection reason: " .. tostring(reason)
-  )
+  Assert.isTrue(tostring(reason):find(needle, 1, true) ~= nil, "unexpected rejection reason: " .. tostring(reason))
 end
 
 function T.well_formed_plan_validates()

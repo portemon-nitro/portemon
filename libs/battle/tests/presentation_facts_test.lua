@@ -122,10 +122,7 @@ end
 -- stream: the same identity always answers the same seed.
 function T.visual_seeds_stay_deterministic_without_stream_draws()
   Assert.equal(PresentationFacts.visualSeedFor(1), PresentationFacts.visualSeedFor(1), "one identity replays one seed")
-  Assert.isTrue(
-    type(PresentationFacts.visualSeedFor(1)) == "number",
-    "visual seeds stay numeric particle facts"
-  )
+  Assert.isTrue(type(PresentationFacts.visualSeedFor(1)) == "number", "visual seeds stay numeric particle facts")
   Assert.isTrue(
     PresentationFacts.visualSeedFor(1) ~= PresentationFacts.visualSeedFor(2),
     "distinct identities vary their particles"
@@ -216,7 +213,12 @@ function T.replacements_name_arrival_and_departure_apart()
   local state = twoUpState()
   state.combatants[2] = { participant = 2, hp = 0, maxHp = 22, active = nil }
   state.combatants[4] = { participant = 2, hp = 20, maxHp = 20, active = { position = 2, activation = 11 } }
-  local event = bareEvent("switch", { kind = "faint", combatant = 2, activation = 9 }, { position = 2, from = 2, to = 4 }, 30)
+  local event = bareEvent(
+    "switch",
+    { kind = "faint", combatant = 2, activation = 9 },
+    { position = 2, from = 2, to = 4 },
+    30
+  )
   PresentationFacts.decorate(state, event, nil)
   Assert.equal(#event.actors, 1, "the replacement names its arrival")
   Assert.equal(event.actors[1].combatant, 4, "the arrival is the incoming battler")

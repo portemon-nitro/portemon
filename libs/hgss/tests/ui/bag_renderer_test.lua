@@ -1419,7 +1419,8 @@ function T.selection_entry_suppresses_static_focus_and_animates_generated_frames
   })
   local function entryImageAt(elapsed, x, y)
     local mark = #graphics.draws
-    admitted(draw, 
+    admitted(
+      draw,
       status({ state = "item_select", itemSelectElapsed = elapsed, itemSelectTotal = entry.totalTicks }),
       plan(true),
       { icons = icons() }
@@ -1666,7 +1667,8 @@ function T.quantity_state_acquires_six_controls_and_no_text_surrogates()
     heroRenderer = heroSpy(nil),
     imagePool = observingPool(requested),
   })
-  admitted(draw, 
+  admitted(
+    draw,
     status({ state = "toss_quantity", quantity = 2, quantityMax = 25, quantityPressedControl = 3 }),
     plan(true),
     {
@@ -1783,7 +1785,8 @@ function T.quantity_cancel_feedback_uses_its_own_face()
     heroRenderer = heroSpy(nil),
     imagePool = observingPool(requested),
   })
-  admitted(draw, 
+  admitted(
+    draw,
     status({ state = "toss_quantity", quantity = 2, quantityMax = 5, feedback = { kind = "quantityCancel" } }),
     plan(true),
     { icons = icons() }
@@ -2594,7 +2597,8 @@ function T.item_focus_draws_the_generated_visual_at_the_visible_target()
   for index = 1, 6 do
     cells[index] = slot("ITEM_" .. index, 1)
   end
-  admitted(draw, 
+  admitted(
+    draw,
     status({
       pocket = "items",
       focus = "items",
@@ -3460,7 +3464,8 @@ function T.move_select_keeps_cells_but_hides_browse_chrome()
     heroRenderer = heroSpy(nil),
     imagePool = SharedImagePoolFake.new(),
   })
-  admitted(tabDraw, 
+  admitted(
+    tabDraw,
     status({
       state = "move_select",
       focus = "tabs",
@@ -3487,7 +3492,8 @@ function T.move_select_keeps_cells_but_hides_browse_chrome()
     heroRenderer = heroSpy(nil),
     imagePool = SharedImagePoolFake.new(),
   })
-  admitted(cancelDraw, 
+  admitted(
+    cancelDraw,
     status({ state = "move_select", focus = "cancel", visibleStart = 0, moveTarget = 0, moveOrigin = 0 }),
     plan(true),
     { icons = icons() }
@@ -3905,10 +3911,7 @@ function T.state_visuals_follow_demand_through_churn_without_blank_stale_or_leak
   admitted(draw, browseBalls, plan(true), { icons = icons() })
   Assert.deepEqual(drawDigest(graphics, true), digestBrowse, "redraws reuse the retained handles exactly")
   Assert.equal(gate.requests, enrolledFirst, "redraws enroll no new demand")
-  Assert.isTrue(
-    inner.uploads <= uploadsAfterBrowse + 2,
-    "redraws upload at most the settling predicted pair"
-  )
+  Assert.isTrue(inner.uploads <= uploadsAfterBrowse + 2, "redraws upload at most the settling predicted pair")
   clearDraws(graphics)
 
   -- The selection animation advances through its generated frames from the
@@ -3977,7 +3980,10 @@ function T.state_visuals_follow_demand_through_churn_without_blank_stale_or_leak
   Assert.isTrue(#freshGraphics.draws > 0, "the superseding state draws its composition")
   -- Re-demanding the abandoned pocket uploads its visuals for the first
   -- time now, proving the stale interest never resolved them earlier.
-  Assert.isTrue(fresh:prepare(staleStatus), "the abandoned pocket reuses retained chrome and resolves its new visuals at once")
+  Assert.isTrue(
+    fresh:prepare(staleStatus),
+    "the abandoned pocket reuses retained chrome and resolves its new visuals at once"
+  )
   Assert.isTrue(pumpReady(fresh, staleStatus), "the abandoned pocket resolves on re-demand")
   Assert.isTrue(
     freshInner.uploads > uploadsForQuantity,
@@ -4002,10 +4008,7 @@ function T.state_visuals_follow_demand_through_churn_without_blank_stale_or_leak
   Assert.equal(#graphics.draws, 0, "a closed presentation draws no images")
   Assert.isTrue(pumpReady(draw, browseItems), "the live demand stays ready across the close")
   Assert.equal(gate.requests, requestsBeforeClose, "the close drops no lease and enrolls nothing anew")
-  Assert.isTrue(
-    inner.uploads <= uploadsAfterItems + 2,
-    "the close uploads at most the settling predicted pair"
-  )
+  Assert.isTrue(inner.uploads <= uploadsAfterItems + 2, "the close uploads at most the settling predicted pair")
   admitted(draw, browseItems, plan(true), { icons = icons() })
   Assert.deepEqual(drawDigest(graphics, true), digestItems, "the live state survives the close byte-identically")
   clearDraws(graphics)
@@ -4189,10 +4192,7 @@ function T.current_browse_admits_while_the_predicted_pocket_stalls()
     counts.acquires - acquiredBeforePrepare <= 8,
     "one preparation round acquires at most eight required leases"
   )
-  Assert.isTrue(
-    prepareBounded(draw, browse, 20),
-    "the current pocket admits without waiting on the predicted pocket"
-  )
+  Assert.isTrue(prepareBounded(draw, browse, 20), "the current pocket admits without waiting on the predicted pocket")
   assertAcquiredOnlyDemand(counts)
   clearDraws(graphics)
   draw:draw(browse, plan(true), { icons = icons() })
@@ -4252,10 +4252,7 @@ function T.predicted_pocket_failure_never_blocks_the_current_state()
   end
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = demandRenderer(graphics, pool)
-  Assert.isTrue(
-    prepareBounded(draw, status(), 20),
-    "the current pocket admits despite the predicted worker failure"
-  )
+  Assert.isTrue(prepareBounded(draw, status(), 20), "the current pocket admits despite the predicted worker failure")
   draw:draw(status(), plan(true), { icons = icons() })
   Assert.isTrue(#graphics.draws > 0, "the admitted state draws after its predicted work failed")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
@@ -4571,10 +4568,8 @@ function T.revisiting_an_admitted_menu_keeps_common_art_and_draws_at_once()
   draw:draw(browse, plan(true), { icons = icons() })
   Assert.isTrue(#graphics.draws > 0, "the admitted browsing menu draws its composition")
   local browseDigest = drawDigest(graphics, true)
-  local browseBackground = assert(
-    draw._images["background:browse:balls:2"],
-    "the browsing menu binds its pocket background"
-  )
+  local browseBackground =
+    assert(draw._images["background:browse:balls:2"], "the browsing menu binds its pocket background")
   local stripInstalled = assert(draw._images["strip:balls"], "the browsing menu binds its pocket strip")
   local uploadsBefore = state.inner.uploads
   local held = pool:stats().outstandingLeases
@@ -4592,10 +4587,7 @@ function T.revisiting_an_admitted_menu_keeps_common_art_and_draws_at_once()
     #newDemand <= 2,
     "the revisit enrolls at most its genuinely new visuals as demand (" .. #newDemand .. ")"
   )
-  Assert.isTrue(
-    state.acquires - acquiresBefore <= 2,
-    "the revisit acquires at most its genuinely new visuals"
-  )
+  Assert.isTrue(state.acquires - acquiresBefore <= 2, "the revisit acquires at most its genuinely new visuals")
   Assert.equal(state.inner.uploads, uploadsBefore, "the revisit uploads no common art again")
   Assert.isTrue(
     draw._images["strip:balls"] == stripInstalled,
@@ -4608,14 +4600,8 @@ function T.revisiting_an_admitted_menu_keeps_common_art_and_draws_at_once()
     wasDrawn(graphics, draw._images["background:action:balls:2"]),
     "the revisited menu draws its new-state background"
   )
-  Assert.isFalse(
-    wasDrawn(graphics, browseBackground),
-    "the revisited menu no longer draws the previous background"
-  )
-  Assert.isTrue(
-    directlyBuiltCount(graphics, graphics.draws) == 0,
-    "the revisited composition borrows every visual"
-  )
+  Assert.isFalse(wasDrawn(graphics, browseBackground), "the revisited menu no longer draws the previous background")
+  Assert.isTrue(directlyBuiltCount(graphics, graphics.draws) == 0, "the revisited composition borrows every visual")
   Assert.isTrue(
     state.requests - requestsBefore < 8,
     "the revisit stays far below a full re-enrollment (" .. (state.requests - requestsBefore) .. ")"
@@ -4630,11 +4616,7 @@ function T.revisiting_an_admitted_menu_keeps_common_art_and_draws_at_once()
     browseDigest,
     "returning redraws the browsing composition with the same borrowed handles"
   )
-  Assert.equal(
-    pool:stats().outstandingLeases,
-    held,
-    "the round trip holds exactly its installed leases"
-  )
+  Assert.equal(pool:stats().outstandingLeases, held, "the round trip holds exactly its installed leases")
   draw:release()
   Assert.equal(pool:stats().outstandingLeases, 0, "release returns every borrowed handle exactly once")
 end
@@ -4658,10 +4640,7 @@ function T.stalled_superseded_and_failed_new_art_leaves_the_admitted_view_untouc
   state.holdUnseenDemand = true
 
   local action = actionStatus()
-  Assert.isFalse(
-    draw:prepare(action),
-    "the action menu stays pending while its new background stalls"
-  )
+  Assert.isFalse(draw:prepare(action), "the action menu stays pending while its new background stalls")
   clearDraws(graphics)
   draw:draw(action, plan(true), { icons = icons() })
   Assert.equal(#graphics.draws, 0, "the pending replacement draws nothing")
@@ -4701,10 +4680,7 @@ function T.stalled_superseded_and_failed_new_art_leaves_the_admitted_view_untouc
     held,
     "the failed install returns its staged leases and keeps the installed set"
   )
-  Assert.isTrue(
-    draw._images["strip:balls"] == stripInstalled,
-    "the failure keeps the installed strip lease"
-  )
+  Assert.isTrue(draw._images["strip:balls"] == stripInstalled, "the failure keeps the installed strip lease")
   clearDraws(graphics)
   draw:draw(medicineBrowse, plan(true), { icons = icons() })
   Assert.equal(#graphics.draws, 0, "the failed state draws nothing")
@@ -4714,10 +4690,7 @@ function T.stalled_superseded_and_failed_new_art_leaves_the_admitted_view_untouc
 
   state.failedPaths = {}
   state.holdUnseenDemand = false
-  Assert.isTrue(
-    draw:prepare(action),
-    "the valid revisit resolves in one update once its art unsticks"
-  )
+  Assert.isTrue(draw:prepare(action), "the valid revisit resolves in one update once its art unsticks")
   Assert.isTrue(
     draw._images["strip:balls"] == stripInstalled,
     "the recovery keeps the installed strip lease instead of churning it"
@@ -4797,15 +4770,8 @@ function T.shared_chrome_survives_alias_sale_pocket_and_dispose_transitions()
           saleTotal = 2,
         })
         Assert.isTrue(draw:prepare(sale), "the sale state publishes without re-enrolling chrome")
-        Assert.equal(
-          state.requests,
-          requestsBefore,
-          "the background-free sale state enrolls no new demand"
-        )
-        Assert.isNil(
-          draw._images["background:browse:balls:2"],
-          "the sale state drops the obsolete background"
-        )
+        Assert.equal(state.requests, requestsBefore, "the background-free sale state enrolls no new demand")
+        Assert.isNil(draw._images["background:browse:balls:2"], "the sale state drops the obsolete background")
         Assert.equal(
           pool:stats().outstandingLeases,
           held - 1,
@@ -4814,10 +4780,7 @@ function T.shared_chrome_survives_alias_sale_pocket_and_dispose_transitions()
         clearDraws(graphics)
         draw:draw(sale, plan(true), { icons = icons() })
         Assert.isTrue(#graphics.draws > 0, "the sale state draws its chrome")
-        Assert.isTrue(
-          wasDrawn(graphics, draw._images.saleQuantityBackground),
-          "the sale state draws its own surface"
-        )
+        Assert.isTrue(wasDrawn(graphics, draw._images.saleQuantityBackground), "the sale state draws its own surface")
         draw:release()
         Assert.equal(pool:stats().outstandingLeases, 0, "release returns every borrowed handle")
       end,
@@ -4829,23 +4792,14 @@ function T.shared_chrome_survives_alias_sale_pocket_and_dispose_transitions()
         local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
         local draw = censusRenderer(graphics, pool)
         Assert.isTrue(pumpReady(draw, status()), "the browsing menu resolves")
-        local focusInstalled = assert(
-          draw._images["focus:tabs"],
-          "the browsing menu binds its shared tab focus"
-        )
+        local focusInstalled = assert(draw._images["focus:tabs"], "the browsing menu binds its shared tab focus")
         local itemsBrowse = status({ pocket = "items", tabFocusPocket = "items" })
         Assert.isTrue(pumpReady(draw, itemsBrowse), "the overlapping pocket resolves")
-        Assert.isTrue(
-          draw._images["focus:tabs"] == focusInstalled,
-          "the pocket swap keeps the shared focus lease"
-        )
+        Assert.isTrue(draw._images["focus:tabs"] == focusInstalled, "the pocket swap keeps the shared focus lease")
         clearDraws(graphics)
         draw:draw(itemsBrowse, plan(true), { icons = icons() })
         Assert.isTrue(#graphics.draws > 0, "the swapped pocket draws")
-        Assert.isTrue(
-          wasDrawn(graphics, draw._images["strip:items"]),
-          "the swapped pocket draws its own strip"
-        )
+        Assert.isTrue(wasDrawn(graphics, draw._images["strip:items"]), "the swapped pocket draws its own strip")
         draw:release()
         Assert.equal(pool:stats().outstandingLeases, 0, "release returns every borrowed handle")
       end,
@@ -4859,10 +4813,7 @@ function T.shared_chrome_survives_alias_sale_pocket_and_dispose_transitions()
         Assert.isTrue(pumpReady(draw, status()), "the browsing menu resolves")
         markSeen()
         state.holdUnseenDemand = true
-        Assert.isFalse(
-          draw:prepare(actionStatus()),
-          "the stalled replacement starts pending"
-        )
+        Assert.isFalse(draw:prepare(actionStatus()), "the stalled replacement starts pending")
         draw:release()
         Assert.equal(pool:stats().outstandingLeases, 0, "dispose after pending returns every handle")
         draw:release()

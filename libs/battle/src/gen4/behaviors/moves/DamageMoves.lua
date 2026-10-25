@@ -648,6 +648,11 @@ local function targetFactsFor(frame, defender)
   return entry --[[@as table<string, unknown>]]
 end
 
+---@type fun(frame: table<string, unknown>, defender: integer?): table<string, unknown>
+local abilitiesOf
+---@type fun(ability: unknown): string?
+local liveAbility
+
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer? defender combatant selecting per-target facts
 ---@return table<string, integer> staged combat inputs for the arithmetic owner
@@ -656,9 +661,11 @@ local function combatOf(frame, defender)
   local key = record.executingMove --[[@as string]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local facts = locals.combat
+  local partnerAbilities = nil
   if defender ~= nil then
     local perTarget = targetFactsFor(frame, defender)
     if perTarget ~= nil and type(perTarget.combat) == "table" then
+      partnerAbilities = (perTarget.combat --[[@as table<string, unknown>]]).partnerAbilities
       facts = perTarget.combat
       local combatByCategory = perTarget.combatByCategory
       local move = locals.move
@@ -700,6 +707,7 @@ local function combatOf(frame, defender)
     rawDefense = combat.rawDefense --[[@as integer]],
     attackStage = combat.attackStage --[[@as integer]],
     defenseStage = combat.defenseStage --[[@as integer]],
+    partnerAbilities = partnerAbilities or combat.partnerAbilities,
   }
 end
 
@@ -742,6 +750,9 @@ local function strikeLawOf(frame, moveTypeOverride)
   local moveType = move.moveType
   if moveTypeOverride ~= nil then
     moveType = moveTypeOverride
+  end
+  if abilitiesOf(frame).user == "NORMALIZE" then
+    moveType = "normal"
   end
   if type(moveType) ~= "string" or moveType == "" then
     error(BattleErrors.missingBehavior("damage reads its immutable move facts", { key = key, fact = "moveType" }))
@@ -913,6 +924,24 @@ local function secondariesAllowed(ctx, frame, defender)
   if ctx:hasBattleEffect(defender, "substitute") then
     return false
   end
+  local abilities = abilitiesOf(frame, defender)
+  if abilities.user ~= "MOLD_BREAKER" then
+    local dust = NativePassiveBridge.invokeFacts(
+      { combatant = defender, ability = liveAbility(abilities.foe) },
+      "beforeHit",
+      {
+        secondary = true,
+        hit = { attackerAbility = liveAbility(abilities.user) },
+      }
+    )
+    for _, event in ipairs(dust.events) do
+      if
+        (event --[[@as table<string, unknown>]]).blocked == true
+      then
+        return false
+      end
+    end
+  end
   return true
 end
 
@@ -928,6 +957,34 @@ local function statusTypeImmune(defenderTypes, status)
       return true
     end
     if (status == "poison" or status == "toxic") and (defenderType == "poison" or defenderType == "steel") then
+      return true
+    end
+  end
+  return false
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer condition holder under inspection
+---@param status string condition prevented by a native ability
+---@return boolean true when the holder blocks the secondary condition
+local function secondaryConditionPrevented(frame, defender, status)
+  local abilities = abilitiesOf(frame, defender)
+  if abilities.user == "MOLD_BREAKER" then
+    return false
+  end
+  local foeAbility = liveAbility(abilities.foe)
+  if foeAbility == nil then
+    return false
+  end
+  local outcome = NativePassiveBridge.invokeFacts({ combatant = defender, ability = foeAbility }, "beforeHit", {
+    statusAttempt = status,
+    secondary = true,
+    hit = { attackerAbility = liveAbility(abilities.user) },
+  })
+  for _, event in ipairs(outcome.events) do
+    if
+      (event --[[@as table<string, unknown>]]).prevented == true
+    then
       return true
     end
   end
@@ -1059,7 +1116,7 @@ end
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer? defender combatant selecting per-target facts
 ---@return table<string, unknown> user and defender ability identities under the strike
-local function abilitiesOf(frame, defender)
+local function abilitiesOfFacts(frame, defender)
   local record = frame --[[@as table<string, unknown>]]
   local key = record.executingMove --[[@as string]]
   local locals = record.locals --[[@as table<string, unknown>]]
@@ -1075,6 +1132,7 @@ local function abilitiesOf(frame, defender)
   end
   return abilities --[[@as table<string, unknown>]]
 end
+abilitiesOf = abilitiesOfFacts
 
 ---@param frame table<string, unknown> move frame under execution
 ---@return string? holder item key under the strike, nil when empty-handed
@@ -1095,12 +1153,13 @@ end
 
 ---@param ability unknown battle ability key carried by the strike facts
 ---@return string? ability key answering live checkpoints, absent for the sentinel
-local function liveAbility(ability)
+local function liveAbilityKey(ability)
   if type(ability) ~= "string" or ability == "" or ability == "NONE" then
     return nil
   end
   return ability
 end
+liveAbility = liveAbilityKey
 
 ---@param frame table<string, unknown> move frame under execution
 ---@return string? user species carried by the strike facts, absent for older frames
@@ -1331,15 +1390,17 @@ end
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the condition
 ---@param status string native major condition under application
+---@return boolean true when the condition was applied
 local function applySecondaryStatus(ctx, frame, defender, status)
   if safeguarded(ctx, defender) then
-    return
+    return false
   end
   local record = frame --[[@as table<string, unknown>]]
   -- Prevention answers before application through the defender
   -- ability, while reflection answers only an inflicted status
   -- through the same holder afterwards.
-  local foeAbility = liveAbility(abilitiesOf(frame, defender).foe)
+  local abilityPair = abilitiesOf(frame, defender)
+  local foeAbility = liveAbility(defender == userOf(frame) and abilityPair.user or abilityPair.foe)
   if foeAbility ~= nil then
     local ward = NativePassiveBridge.invokeFacts({
       combatant = defender,
@@ -1350,7 +1411,7 @@ local function applySecondaryStatus(ctx, frame, defender, status)
       if
         (event --[[@as table<string, unknown>]]).prevented == true
       then
-        return
+        return false
       end
     end
   end
@@ -1362,7 +1423,7 @@ local function applySecondaryStatus(ctx, frame, defender, status)
     state = { counter = 0 }
   end
   if not ctx:applyStatus(defender, status, state, causeFor(record)) then
-    return
+    return false
   end
   if foeAbility ~= nil then
     local mirror = NativePassiveBridge.invokeFacts({
@@ -1378,6 +1439,7 @@ local function applySecondaryStatus(ctx, frame, defender, status)
       end
     end
   end
+  return true
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -1392,14 +1454,35 @@ local function secondaryScope(ctx, combatant)
 end
 
 ---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame carrying secondary effect facts
 ---@param defender integer defender combatant under the volatile
-local function markSecondaryFlinch(ctx, defender)
+local function markSecondaryFlinch(ctx, frame, defender)
+  if secondaryConditionPrevented(frame, defender, "flinch") then
+    return
+  end
   ctx:addBattleEffect(
     NativeEffectHandlers.definitionFor("flinch"),
     secondaryScope(ctx, defender),
     { kind = "move", combatant = defender },
     { version = 1, turns = 1 }
   )
+  local abilities = abilitiesOf(frame, defender)
+  local outcome = NativePassiveBridge.invokeFacts({
+    combatant = defender,
+    activation = activationOf(ctx, defender),
+    ability = liveAbility(abilities.foe),
+  }, "afterHit", { flinched = true })
+  for _, event in ipairs(outcome.events) do
+    local answer = event --[[@as table<string, unknown>]]
+    if
+      answer.key == "STEADFAST"
+      and answer.combatant == defender
+      and answer.stat == "speed"
+      and ctx:entryOf(defender).stages.speed < 6
+    then
+      ctx:changeStage(defender, "speed", 1, causeFor(frame))
+    end
+  end
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -1407,6 +1490,9 @@ end
 ---@param defender integer defender combatant under the volatile
 local function markSecondaryConfusion(ctx, frame, defender)
   if ctx:hasBattleEffect(defender, "confusion") then
+    return
+  end
+  if secondaryConditionPrevented(frame, defender, "confusion") then
     return
   end
   if safeguarded(ctx, defender) then
@@ -1445,13 +1531,42 @@ end
 ---@param changes table<integer, table<integer, unknown>> stat/delta pairs under the change
 local function applySecondaryStages(ctx, frame, target, changes)
   local current = ctx:entryOf(target).stages --[[@as table<string, integer>]]
+  local abilities = abilitiesOf(frame, target)
+  local targetIsUser = target == userOf(frame)
+  local targetAbility = liveAbility(targetIsUser and abilities.user or abilities.foe)
+  local attackerAbility = liveAbility(abilities.user)
   for _, change in ipairs(changes) do
     local stat = change[1] --[[@as string]]
     local delta = change[2] --[[@as integer]]
-    local next = StatStages.change(current[stat] --[[@as integer]], delta)
-    if next ~= current[stat] then
-      ctx:changeStage(target, stat, next, causeFor(frame))
-      current[stat] = next
+    local prevented = false
+    if delta < 0 and not targetIsUser and attackerAbility ~= "MOLD_BREAKER" then
+      local foeAbility = liveAbility(abilities.foe)
+      if foeAbility == "SHIELD_DUST" then
+        prevented = true
+      elseif foeAbility ~= nil then
+        local blocked = NativePassiveBridge.invokeFacts(
+          { combatant = target, ability = foeAbility },
+          "modifyStat",
+          { statDrop = true, stat = stat, accuracyDrop = stat == "accuracy" }
+        )
+        for _, event in ipairs(blocked.events) do
+          if
+            (event --[[@as table<string, unknown>]]).prevented == true
+          then
+            prevented = true
+          end
+        end
+      end
+    end
+    if not prevented then
+      if targetAbility == "SIMPLE" then
+        delta = delta * 2
+      end
+      local next = StatStages.change(current[stat] --[[@as integer]], delta)
+      if next ~= current[stat] then
+        ctx:changeStage(target, stat, next, causeFor(frame))
+        current[stat] = next
+      end
     end
   end
 end
@@ -1466,6 +1581,9 @@ local function applySecondary(ctx, frame, defender, spec)
   local chance = spec.chance
   if type(chance) ~= "number" then
     chance = secondaryChanceOf(frame)
+  end
+  if abilitiesOf(frame, defender).user == "SERENE_GRACE" then
+    chance = math.min(100, chance * 2)
   end
   local stream = checkSecondaryStream(frame.stream)
   if
@@ -1504,7 +1622,7 @@ local function applySecondary(ctx, frame, defender, spec)
     return
   end
   if spec.volatile == "flinch" then
-    markSecondaryFlinch(ctx, defender)
+    markSecondaryFlinch(ctx, frame, defender)
     return
   end
   if spec.volatile == "confusion" then
@@ -1651,6 +1769,7 @@ end
 ---@param effectiveness table<string, unknown> exact effectiveness rational for the strike
 ---@return boolean true when the strike is warded off
 local function strikeWarded(ctx, frame, defender, power, moveType, effectiveness)
+  local record = frame --[[@as table<string, unknown>]]
   local foeAbility = liveAbility(abilitiesOf(frame, defender).foe)
   if foeAbility == nil then
     return false
@@ -1683,6 +1802,54 @@ local function strikeWarded(ctx, frame, defender, power, moveType, effectiveness
     }
   )
   for _, event in ipairs(outcome.events) do
+    local answer = event --[[@as table<string, unknown>]]
+    if answer.combatant == defender and answer.absorbed == true then
+      local locals = (frame --[[@as table<string, unknown>]]).locals --[[@as table<string, unknown>]]
+      local move = locals.move --[[@as table<string, unknown>]]
+      local charging = locals.chargeTurn == true
+      local selfTarget = userOf(frame) == defender
+      local movePower = move.power --[[@as integer]]
+      if (foeAbility == "VOLT_ABSORB" or foeAbility == "MOTOR_DRIVE") and selfTarget then
+        return false
+      end
+      if (foeAbility == "WATER_ABSORB" or foeAbility == "DRY_SKIN") and (movePower <= 0 or charging) then
+        return false
+      end
+      if
+        foeAbility == "FLASH_FIRE"
+        and (
+          charging
+          or ctx:statusOf(defender) == "freeze"
+          or (movePower <= 0 and record.executingMove ~= "WILL_O_WISP")
+        )
+      then
+        return false
+      end
+      if foeAbility == "WATER_ABSORB" or foeAbility == "VOLT_ABSORB" or foeAbility == "DRY_SKIN" then
+        local maximum = ctx:entryOf(defender).maxHp
+        if type(maximum) == "number" then
+          local restored = ctx:heal(defender, math.floor(maximum / 4), causeFor(frame))
+          ctx:emit("healed", causeFor(frame), { target = defender, restored = restored.after - restored.before })
+        end
+      elseif foeAbility == "MOTOR_DRIVE" then
+        local stat = "speed"
+        local stages = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
+        local before = stages[stat] --[[@as integer]]
+        if before < 6 then
+          ctx:changeStage(defender, stat, before + 1, causeFor(frame))
+        end
+      elseif foeAbility == "FLASH_FIRE" then
+        if moveType == "fire" then
+          ctx:addBattleEffect(
+            NativeEffectHandlers.definitionFor("flashfire"),
+            { kind = "active", combatant = defender, activation = activationOf(ctx, defender) },
+            { kind = "ability", key = "FLASH_FIRE", combatant = defender },
+            { version = 1 }
+          )
+        end
+      end
+      return true
+    end
     if bareImmunity(event, defender) then
       return true
     end
@@ -1690,17 +1857,91 @@ local function strikeWarded(ctx, frame, defender, power, moveType, effectiveness
   return false
 end
 
+---@param ctx BattleContext battle context under the active strike
+---@param frame table<string, unknown> strike frame carrying immutable move facts
+---@param defender integer live defender receiving this strike
+---@param power integer move power after charge and called-move adjustments
+---@param moveType string computed strike type
+---@return integer move power after native ability modifiers
+local function abilityPower(ctx, frame, defender, power, moveType)
+  local abilities = abilitiesOf(frame, defender)
+  local user = liveAbility(abilities.user)
+  local foe = liveAbility(abilities.foe)
+  local locals = (frame --[[@as table<string, unknown>]]).locals --[[@as table<string, unknown>]]
+  local move = locals.move --[[@as table<string, unknown>]]
+  local userIgnores = user == "MOLD_BREAKER"
+  local function scale(numerator, denominator)
+    power = math.floor(power * numerator / denominator)
+  end
+  if locals.helpingHand == true then
+    scale(15, 10)
+  end
+  if user == "TECHNICIAN" and frame.executingMove ~= "STRUGGLE" and power <= 60 then
+    scale(15, 10)
+  end
+  local genders = locals.genders
+  if user == "RIVALRY" and type(genders) == "table" then
+    local pair = genders --[[@as table<integer, string>]]
+    local userGender, foeGender = pair[userOf(frame)], pair[defender]
+    if userGender ~= nil and foeGender ~= nil and userGender ~= "genderless" and foeGender ~= "genderless" then
+      if userGender == foeGender then
+        scale(125, 100)
+      else
+        scale(75, 100)
+      end
+    end
+  end
+  local flags = type(move.flags) == "table" and move.flags or nil --[[@as table<string, unknown>?]]
+  if user == "IRON_FIST" and (move.punchMove == true or (flags ~= nil and flags.punchMove == true)) then
+    scale(12, 10)
+  end
+  local striker = STRIKERS[
+    frame.executingMove --[[@as string]]
+  ]
+  if
+    user == "RECKLESS"
+    and (
+      (move.recoilMove == true)
+      or (flags ~= nil and flags.recoilMove == true)
+      or (striker ~= nil and (striker.recoil ~= nil or striker.crash == true))
+    )
+  then
+    scale(12, 10)
+  end
+  if not userIgnores then
+    if
+      (foe == "THICK_FAT" and (moveType == "fire" or moveType == "ice")) or (foe == "HEATPROOF" and moveType == "fire")
+    then
+      scale(1, 2)
+    end
+    if foe == "DRY_SKIN" and moveType == "fire" then
+      scale(5, 4)
+    end
+  end
+  local pinchType = ({ OVERGROW = "grass", BLAZE = "fire", TORRENT = "water", SWARM = "bug" })[
+    user --[[@as string]]
+  ]
+  if pinchType == moveType then
+    local userEntry = ctx:entryOf(userOf(frame))
+    local hp = ctx:damage(userOf(frame), 0, causeFor(frame)).before
+    local maximum = userEntry.maxHp
+    if type(maximum) == "number" and hp <= math.floor(maximum / 3) then
+      scale(15, 10)
+    end
+  end
+  return power
+end
+
 -- Live resistance piercing behind the striking ability: a resisted hit
 -- whose ability answers doubles its staged power.
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param user integer user combatant owning the strike
----@param power integer curated move power under the staged arithmetic
----@return integer staged power with the piercing answer applied
-local function tintedPower(ctx, frame, user, power)
+---@return boolean true when Tinted Lens answers a resisted strike
+local function tintedDamage(ctx, frame, user)
   local userAbility = liveAbility(abilitiesOf(frame).user)
   if userAbility == nil then
-    return power
+    return false
   end
   local outcome = NativePassiveBridge.invokeFacts({
     combatant = user,
@@ -1711,10 +1952,10 @@ local function tintedPower(ctx, frame, user, power)
     if
       (event --[[@as table<string, unknown>]]).power == "boosted"
     then
-      return power * 2
+      return true
     end
   end
-  return power
+  return false
 end
 
 -- Live strike recovery behind the effective holding: a ringing holder
@@ -1743,6 +1984,155 @@ local function applyShellBell(ctx, frame, user, dealt)
       if gain > 0 then
         local healed = ctx:heal(user, gain, causeFor(frame))
         ctx:emit("healed", causeFor(frame), { target = user, restored = healed.after - healed.before })
+      end
+    end
+  end
+end
+
+---@param ctx BattleContext battle context after the resolved hit
+---@param frame table<string, unknown> strike frame carrying move and ability facts
+---@param defender integer defender owning the post-hit ability
+---@param dealt integer bodily damage inflicted by the strike
+---@param critical boolean whether the strike was critical
+---@param power integer move power at the post-hit ability checkpoint
+---@param moveType string computed strike type
+---@param contactFaint boolean whether this contact strike fainted its defender
+local function applyAfterHitAbilities(ctx, frame, defender, dealt, critical, power, moveType, contactFaint)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local move = locals.move --[[@as table<string, unknown>]]
+  local contact = move.contact == true and record.executingMove ~= "U_TURN"
+  local flags = type(move.flags) == "table" and move.flags or nil --[[@as table<string, unknown>?]]
+  contact = contact or (flags ~= nil and flags.contact == true and record.executingMove ~= "U_TURN")
+  local abilities = abilitiesOf(frame, defender)
+  local outcome = NativePassiveBridge.invokeFacts(
+    {
+      combatant = defender,
+      activation = activationOf(ctx, defender),
+      ability = liveAbility(abilities.foe),
+    },
+    "afterHit",
+    {
+      contact = contact,
+      contactFaint = contactFaint,
+      criticalHit = critical,
+      flinched = ctx:hasBattleEffect(defender, "flinch"),
+      moveType = moveType,
+      movePower = power,
+      dealtDamage = dealt > 0,
+    }
+  )
+  local stream = checkSecondaryStream(frame.stream)
+  local user = userOf(frame)
+  local userAbility = liveAbility(abilities.user)
+  local function announceAbility(key)
+    ctx:emit("ability", { kind = "ability", key = key, combatant = defender }, {
+      key = key,
+      combatant = defender,
+    })
+  end
+  for _, event in ipairs(outcome.events) do
+    local answer = event --[[@as table<string, unknown>]]
+    if
+      answer.key == "ANGER_POINT"
+      and answer.combatant == defender
+      and answer.stat == "attack"
+      and ctx:damage(defender, 0, causeFor(frame)).after > 0
+      and ctx:entryOf(defender).stages.attack < 6
+    then
+      ctx:changeStage(defender, "attack", 6 - ctx:entryOf(defender).stages.attack, causeFor(frame))
+      announceAbility(answer.key --[[@as string]])
+    elseif answer.key == "ROUGH_SKIN" and answer.combatant == defender and userAbility ~= "MAGIC_GUARD" then
+      local maximum = ctx:entryOf(defender).maxHp
+      if type(maximum) == "number" and ctx:damage(user, 0, causeFor(frame)).before > 0 then
+        ctx:damage(user, math.max(1, math.floor(maximum / 8)), causeFor(frame))
+        announceAbility(answer.key)
+      end
+    elseif answer.key == "AFTERMATH" and answer.combatant == defender and userAbility ~= "MAGIC_GUARD" then
+      local damp = false
+      local partners = combatOf(frame, defender).partnerAbilities --[[@as table<string, string[]>?]]
+      if abilities.user == "DAMP" or abilities.foe == "DAMP" then
+        damp = true
+      elseif type(partners) == "table" then
+        for _, side in ipairs({ "user", "foe" }) do
+          for _, ability in ipairs(partners[side] or {}) do
+            if ability == "DAMP" then
+              damp = true
+            end
+          end
+        end
+      end
+      local maximum = ctx:entryOf(defender).maxHp
+      if not damp and type(maximum) == "number" and ctx:damage(user, 0, causeFor(frame)).before > 0 then
+        ctx:damage(user, math.max(1, math.floor(maximum / 4)), causeFor(frame))
+        announceAbility(answer.key)
+      end
+    elseif
+      answer.key == "COLOR_CHANGE"
+      and type(answer.becomeType) == "string"
+      and power > 0
+      and record.executingMove ~= "STRUGGLE"
+      and record.executingMove ~= "U_TURN"
+      and ctx:damage(defender, 0, causeFor(frame)).after > 0
+    then
+      local defenders = locals.defenderTypes --[[@as table<integer, unknown>]]
+      local types = (defenders --[[@as table<integer, string[]>]])[defender]
+      local alreadyHasType = false
+      for _, key in ipairs(types) do
+        if key == answer.becomeType then
+          alreadyHasType = true
+        end
+      end
+      if not alreadyHasType then
+        ctx:addBattleEffect(
+          NativeEffectHandlers.definitionFor("colorchange"),
+          { kind = "active", combatant = defender, activation = activationOf(ctx, defender) },
+          { kind = "ability", key = "COLOR_CHANGE", combatant = defender },
+          { version = 1, type = answer.becomeType }
+        )
+        announceAbility(answer.key)
+      end
+    elseif contact and answer.combatant == defender and ctx:damage(user, 0, causeFor(frame)).before > 0 then
+      if answer.key == "CUTE_CHARM" then
+        local genders = locals.genders --[[@as table<integer, string>?]]
+        if
+          ctx:damage(defender, 0, causeFor(frame)).after > 0
+          and genders ~= nil
+          and genders[user] ~= nil
+          and genders[defender] ~= nil
+          and genders[user] ~= genders[defender]
+          and genders[user] ~= "genderless"
+          and genders[defender] ~= "genderless"
+          and not ctx:hasBattleEffect(user, "infatuation")
+          and userAbility ~= "OBLIVIOUS"
+          and stream:nextU16("contact_chance", causeFor(frame)) % 10 < 3
+        then
+          ctx:addBattleEffect(
+            NativeEffectHandlers.definitionFor("infatuation"),
+            { kind = "active", combatant = user, activation = activationOf(ctx, user) },
+            { kind = "move", combatant = defender },
+            { version = 1 }
+          )
+          announceAbility(answer.key)
+        end
+      else
+        local statuses = { STATIC = "paralysis", POISON_POINT = "poison", FLAME_BODY = "burn" }
+        local status = statuses[
+          answer.key --[[@as string]]
+        ] --[[@as string?]]
+        if answer.key == "EFFECT_SPORE" then
+          if stream:nextU16("contact_chance", causeFor(frame)) % 10 < 3 then
+            local choices = { "poison", "paralysis", "sleep" }
+            status = choices[(stream:nextU16("contact_status", causeFor(frame)) % #choices) + 1]
+          end
+        elseif status ~= nil and stream:nextU16("contact_chance", causeFor(frame)) % 10 >= 3 then
+          status = nil
+        end
+        if status ~= nil then
+          if applySecondaryStatus(ctx, frame, user, status) then
+            announceAbility(answer.key --[[@as string]])
+          end
+        end
       end
     end
   end
@@ -1812,17 +2202,82 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   local screenApplies, screenReduction, removesScreens = screenLawOf(ctx, frame, defender, category)
   local record = frame --[[@as table<string, unknown>]]
   local locals = record.locals --[[@as table<string, unknown>]]
+  local moveFacts = locals.move --[[@as table<string, unknown>]]
+  local moveFlags = type(moveFacts.flags) == "table" and moveFacts.flags or nil --[[@as table<string, unknown>?]]
+  local contact = moveFacts.contact == true or (moveFlags ~= nil and moveFlags.contact == true)
   local stab, effectiveness = StagedTypeModifiers.forStrike(frame, defender, {
     airborne = ctx:hasBattleEffect(defender, "magnetrise"),
     foresight = ctx:hasBattleEffect(defender, "foresight"),
     miracleEye = ctx:hasBattleEffect(defender, "miracleeye"),
     gravity = locals.gravity == true,
-  }, controls.moveType)
+  }, moveType)
+  local abilityPair = abilitiesOf(frame, defender)
+  local attack, rawAttack = combat.attack, combat.rawAttack
+  local defense, rawDefense = combat.defense, combat.rawDefense
+  local attackStage, defenseStage = combat.attackStage, combat.defenseStage
+  local attackStat = category == "physical" and "attack" or "specialAttack"
+  local defenseStat = category == "physical" and "defense" or "specialDefense"
+  if abilityPair.foe == "UNAWARE" and abilityPair.user ~= "MOLD_BREAKER" then
+    attackStage = 0
+    attack = StatStages.effective(rawAttack, attackStage, attackStat)
+  end
+  if abilityPair.user == "UNAWARE" then
+    defenseStage = 0
+    defense = StatStages.effective(rawDefense, defenseStage, defenseStat)
+  end
+  local partnerAbilities = combat.partnerAbilities --[[@as table<string, string[]>?]]
+  local function partnerHas(side, key)
+    if type(partnerAbilities) ~= "table" then
+      return false
+    end
+    for _, ability in ipairs(partnerAbilities[side] or {}) do
+      if ability == key then
+        return true
+      end
+    end
+    return false
+  end
+  if category == "special" and (abilityPair.user == "PLUS" or abilityPair.user == "MINUS") then
+    local counterpart = abilityPair.user == "PLUS" and "MINUS" or "PLUS"
+    rawAttack = math.floor(rawAttack * 3 / 2)
+    attack = StatStages.effective(rawAttack, attackStage, "specialAttack")
+    if not partnerHas("user", counterpart) then
+      rawAttack = combat.rawAttack
+      attack = StatStages.effective(rawAttack, attackStage, "specialAttack")
+    end
+  end
+  if category == "special" and abilityPair.user == "SOLAR_POWER" and weather == "sun" and not weatherSuppressed then
+    rawAttack = math.floor(rawAttack * 3 / 2)
+    attack = StatStages.effective(rawAttack, attackStage, "specialAttack")
+  end
+  if
+    category == "physical"
+    and (abilityPair.user == "FLOWER_GIFT" or partnerHas("user", "FLOWER_GIFT"))
+    and weather == "sun"
+    and not weatherSuppressed
+  then
+    rawAttack = math.floor(rawAttack * 3 / 2)
+    attack = StatStages.effective(rawAttack, attackStage, "attack")
+  elseif
+    category == "special"
+    and (abilityPair.foe == "FLOWER_GIFT" or partnerHas("foe", "FLOWER_GIFT"))
+    and weather == "sun"
+    and not weatherSuppressed
+    and abilityPair.user ~= "MOLD_BREAKER"
+  then
+    rawDefense = math.floor(rawDefense * 3 / 2)
+    defense = StatStages.effective(rawDefense, defenseStage, "specialDefense")
+  end
+  if abilityPair.user == "ADAPTABILITY" and stab.numerator > stab.denominator then
+    stab = { numerator = 2, denominator = 1 }
+  end
   -- Wards stop the hit before any roll; a resisted hit pierces
   -- through the striking ability before the same rolls.
   if strikeWarded(ctx, frame, defender, power, moveType, effectiveness) then
     return 0
   end
+  power = abilityPower(ctx, frame, defender, power, moveType)
+  local effectivenessModifier = { numerator = 1, denominator = 1 }
   local numerator = effectiveness.numerator
   local denominator = effectiveness.denominator
   if
@@ -1833,7 +2288,15 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
     and numerator --[[@as integer]]
       < denominator --[[@as integer]]
   then
-    power = tintedPower(ctx, frame, userOf(frame), power)
+    if tintedDamage(ctx, frame, userOf(frame)) then
+      effectivenessModifier = { numerator = 2, denominator = 1 }
+    end
+  elseif
+    numerator > denominator
+    and abilityPair.user ~= "MOLD_BREAKER"
+    and (abilityPair.foe == "FILTER" or abilityPair.foe == "SOLID_ROCK")
+  then
+    effectivenessModifier = { numerator = 3, denominator = 4 }
   end
   -- Multi-hit sequences share one critical roll across every hit: the
   -- native scripts roll CalcCrit once per move, then loop CalcDamage.
@@ -1851,12 +2314,12 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   local result = Damage.calculate({
     level = combat.level,
     power = power,
-    attack = combat.attack,
-    defense = combat.defense,
-    rawAttack = combat.rawAttack,
-    rawDefense = combat.rawDefense,
-    attackStage = combat.attackStage,
-    defenseStage = combat.defenseStage,
+    attack = attack,
+    defense = defense,
+    rawAttack = rawAttack,
+    rawDefense = rawDefense,
+    attackStage = attackStage,
+    defenseStage = defenseStage,
     criticalMultiplier = critical.multiplier,
     category = category,
     burned = burned,
@@ -1864,12 +2327,14 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
     stab = stab,
     effectiveness = { numerator = effectiveness.numerator, denominator = effectiveness.denominator },
     effectivenessFactors = effectiveness.factors,
+    effectivenessModifier = effectivenessModifier,
     targetCount = targetCount,
     weather = weather,
     weatherSuppressed = weatherSuppressed,
     moveType = moveType,
     solarBeam = solarBeam,
     meFirst = record.calledBy == "ME_FIRST",
+    flashFireBoost = ctx:hasBattleEffect(userOf(frame), "flashfire"),
     screenApplies = screenApplies,
     screenReduction = screenReduction,
     removesScreens = removesScreens,
@@ -1893,6 +2358,16 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   local dealt = applyHit(ctx, frame, defender, amount)
   emitStruck(ctx, frame, defender, hitIndex, dealt)
   noteStrikeDamage(ctx, frame, defender, dealt)
+  applyAfterHitAbilities(
+    ctx,
+    frame,
+    defender,
+    dealt,
+    critical.multiplier > 1,
+    power,
+    moveType,
+    contact and record.executingMove ~= "U_TURN" and dealt > 0 and ctx:damage(defender, 0, causeFor(frame)).after == 0
+  )
   -- Strike recovery answers the inflicted amount behind the effective
   -- holding once the hit lands.
   applyShellBell(ctx, frame, userOf(frame), dealt)
@@ -1931,10 +2406,26 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
   then
     evasionStage = 0
   end
-  local stages = {
-    accuracyStage = userStages.accuracy,
-    evasionStage = evasionStage,
-  }
+  local abilities = abilitiesOf(frame, defender)
+  local userAbility = liveAbility(abilities.user)
+  local foeAbility = liveAbility(abilities.foe)
+  local accuracyStage = userStages.accuracy
+  if userAbility == "SIMPLE" then
+    accuracyStage = math.max(-6, math.min(6, accuracyStage * 2))
+  end
+  if userAbility == "UNAWARE" then
+    evasionStage = 0
+  elseif userAbility ~= "MOLD_BREAKER" and foeAbility == "SIMPLE" then
+    evasionStage = math.max(-6, math.min(6, evasionStage * 2))
+  end
+  if userAbility ~= "MOLD_BREAKER" and foeAbility == "UNAWARE" then
+    accuracyStage = 0
+  end
+  if accuracy ~= nil and accuracy > 0 then
+    local effectiveStage = math.max(-6, math.min(6, accuracyStage - evasionStage))
+    local ratio = StatStages.multiplier(effectiveStage, "accuracy")
+    accuracy = math.floor(accuracy * ratio.numerator / ratio.denominator)
+  end
   if ctx:hasBattleEffect(defender, "lockon") then
     accuracy = 0
   end
@@ -1943,8 +2434,58 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
   if locals.gravity == true and type(accuracy) == "number" and accuracy > 0 then
     accuracy = math.floor(accuracy --[[@as integer]] * 10 / 6)
   end
+  local move = locals.move --[[@as table<string, unknown>]]
+  local weather = locals.weather --[[@as string]]
+  local weatherSuppressed = locals.weatherSuppressed == true
+  local forceHit = ctx:hasBattleEffect(defender, "lockon") or userAbility == "NO_GUARD" or foeAbility == "NO_GUARD"
+  -- Gen IV applies these multipliers after the ordinary stage ratio, in
+  -- this order, truncating after every multiplication.
+  if accuracy ~= nil and accuracy > 0 then
+    if userAbility == "COMPOUNDEYES" then
+      accuracy = math.floor(accuracy * 130 / 100)
+    end
+    if not weatherSuppressed then
+      if
+        not weatherSuppressed
+        and userAbility ~= "MOLD_BREAKER"
+        and weather == "sand"
+        and foeAbility == "SAND_VEIL"
+      then
+        accuracy = math.floor(accuracy * 80 / 100)
+      elseif
+        not weatherSuppressed
+        and userAbility ~= "MOLD_BREAKER"
+        and weather == "hail"
+        and foeAbility == "SNOW_CLOAK"
+      then
+        accuracy = math.floor(accuracy * 80 / 100)
+      end
+      if not weatherSuppressed and weather == "fog" then
+        accuracy = math.floor(accuracy * 6 / 10)
+      end
+      if weather == "sun" and record.executingMove == "THUNDER" then
+        accuracy = math.floor(accuracy / 2)
+      elseif
+        (weather == "rain" and record.executingMove == "THUNDER")
+        or (weather == "hail" and record.executingMove == "BLIZZARD")
+      then
+        forceHit = true
+      end
+    end
+    if userAbility == "HUSTLE" and move.category == "physical" then
+      accuracy = math.floor(accuracy * 80 / 100)
+    end
+    if
+      userAbility ~= "MOLD_BREAKER"
+      and foeAbility == "TANGLED_FEET"
+      and ctx:hasBattleEffect(defender, "confusion")
+    then
+      accuracy = math.floor(accuracy / 2)
+    end
+  end
+  local skipCheck = accuracy == nil or accuracy == 0
   local resolution
-  if accuracy == nil or accuracy == 0 then
+  if skipCheck then
     resolution = Accuracy.resolve({
       target = { kind = "combatant" },
       cause = causeFor(frame),
@@ -1957,11 +2498,11 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
       target = { kind = "combatant" },
       cause = causeFor(frame),
       protected = protected,
-      accuracyStage = stages.accuracyStage,
-      evasionStage = stages.evasionStage,
+      accuracyStage = 0,
+      evasionStage = 0,
     }, stream)
   end
-  if resolution.kind == "hit" then
+  if resolution.kind == "hit" or (forceHit and resolution.kind ~= "protected") then
     return true
   end
   if resolution.kind == "protected" then
@@ -2000,10 +2541,17 @@ end
 
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant checked for Liquid Ooze
 ---@param dealt integer total damage dealt by the strike
-local function applyDrain(ctx, frame, dealt)
+local function applyDrain(ctx, frame, defender, dealt)
   local restored = math.floor(dealt / 2)
   if restored < 1 then
+    return
+  end
+  if abilitiesOf(frame, defender).foe == "LIQUID_OOZE" then
+    if abilitiesOf(frame).user ~= "MAGIC_GUARD" then
+      ctx:damage(userOf(frame), restored, causeFor(frame))
+    end
     return
   end
   ctx:heal(userOf(frame), restored, causeFor(frame))
@@ -2113,7 +2661,7 @@ local function runStriker(ctx, frame, params)
   -- across every recipient, not once per target: fainting the first
   -- defender still leaves the remaining recipients their strikes.
   if owned.drain == true and dealtTotal > 0 then
-    applyDrain(ctx, frame, dealtTotal)
+    applyDrain(ctx, frame, targetOf(targets[1]), dealtTotal)
   end
   if owned.recoil ~= nil and dealtTotal > 0 then
     applyRecoil(ctx, frame, dealtTotal, owned.recoil --[[@as string]])
@@ -2831,7 +3379,7 @@ local function stepOhko(ctx, frame)
       key = record.executingMove --[[@as string]],
     }))
   end
-  if foeAbility == "STURDY" then
+  if foeAbility == "STURDY" and abilitiesOf(record).user ~= "MOLD_BREAKER" then
     return { kind = "complete", result = "failed" }
   end
   if combat.level < foeLevel then
@@ -3587,7 +4135,7 @@ local function applyFlingEffectImpl(ctx, frame, target, effect, effectId, item)
   elseif effect == "cure-infatuation" then
     ctx:removeBattleEffect(target, "infatuation")
   elseif effect == "flinch" and secondariesAllowed(ctx, record, target) then
-    markSecondaryFlinch(ctx, target)
+    markSecondaryFlinch(ctx, record, target)
   end
 end
 

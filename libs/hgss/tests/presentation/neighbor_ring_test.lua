@@ -243,10 +243,10 @@ function T.staged_begin_yields_on_cold_images_without_consuming_work()
   local geometryPath = "assets/generated/maps/geometry/neighbor-quad.g4mesh"
   local backend = FakeCache.new()
   backend:write(geometryPath, MeshWriter.encode(quad()))
-  local descriptors =
-    { cell(32, 1, 0, groundMaterial("neighbor-ground.png"), geometryPath), cell(-32, 1, 0, groundMaterial(
-      "neighbor-ground.png"
-    ), geometryPath) }
+  local descriptors = {
+    cell(32, 1, 0, groundMaterial("neighbor-ground.png"), geometryPath),
+    cell(-32, 1, 0, groundMaterial("neighbor-ground.png"), geometryPath),
+  }
   local images = controllableImageOwner()
   local task = begin(backend, descriptors, stagedNeighborOptions(images))
   Assert.equal(task:advance(0), 0, "a zero budget does no work")
@@ -256,10 +256,7 @@ function T.staged_begin_yields_on_cold_images_without_consuming_work()
   Assert.equal(images.uploads, 0, "no GPU image is staged while the worker is withheld")
   images:publish()
   local consumed = task:advance(8)
-  Assert.isTrue(
-    consumed >= 0 and consumed <= 8 and consumed % 1 == 0,
-    "the completing advance stays within its budget"
-  )
+  Assert.isTrue(consumed >= 0 and consumed <= 8 and consumed % 1 == 0, "the completing advance stays within its budget")
   Assert.isTrue(task:isReady(), "the ring completes once the worker replies")
   local ring = task:takeResult()
   Assert.equal(#ring.draws, 2, "both neighbor cells draw after staged completion")
@@ -316,10 +313,7 @@ function T.staged_begin_failure_releases_partial_borrows_and_publishes_nothing()
   local task = begin(backend, descriptors, stagedNeighborOptions(images))
   local ok, err = pcall(task.advance, task, 8)
   Assert.isFalse(ok, "a failed texture fails the staged advance")
-  Assert.isTrue(
-    tostring(err):find("injected neighbor texture failure", 1, true) ~= nil,
-    "the texture cause propagates"
-  )
+  Assert.isTrue(tostring(err):find("injected neighbor texture failure", 1, true) ~= nil, "the texture cause propagates")
   Assert.isFalse(task:isReady(), "a failed stage is never ready")
   Assert.equal(images:outstandingLeases(), 0, "partial borrows return exactly once")
   local okAgain, errAgain = pcall(task.advance, task, 1)

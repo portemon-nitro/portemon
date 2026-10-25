@@ -83,16 +83,64 @@ function T.tests.route_and_battle_frontier_prefixes_share_only_their_explicit_gr
     { mapId = 10, symbol = "MAP_ROUTE_29", section = "Route 29", mapSectionNativeId = 3, displayName = "ROUTE 29" },
     { mapId = 11, symbol = "MAP_ROUTE_30", section = "Route 30", mapSectionNativeId = 4, displayName = "ROUTE 30" },
     { mapId = 12, symbol = "MAP_BATTLE_FRONTIER_GATE", section = "Gate", mapSectionNativeId = 7, displayName = "GATE" },
-    { mapId = 13, symbol = "MAP_BATTLE_FRONTIER_PLAZA", section = "Plaza", mapSectionNativeId = 8, displayName = "PLAZA" },
-    { mapId = 14, symbol = "MAP_ROUTEHOUSE", section = "Route House", mapSectionNativeId = 12, displayName = "ROUTE HOUSE" },
+    {
+      mapId = 13,
+      symbol = "MAP_BATTLE_FRONTIER_PLAZA",
+      section = "Plaza",
+      mapSectionNativeId = 8,
+      displayName = "PLAZA",
+    },
+    {
+      mapId = 14,
+      symbol = "MAP_ROUTEHOUSE",
+      section = "Route House",
+      mapSectionNativeId = 12,
+      displayName = "ROUTE HOUSE",
+    },
     { mapId = 15, symbol = "MAP_ORDINARY", section = "Ordinary", mapSectionNativeId = 9, displayName = "ORDINARY" },
-    { mapId = 16, symbol = "MAP_BATTLE_FRONTIER", section = "Frontier", mapSectionNativeId = 13, displayName = "FRONTIER" },
-    { mapId = 17, symbol = "MAP_BATTLE_FRONTIERS", section = "Frontiers", mapSectionNativeId = 14, displayName = "FRONTIERS" },
-    { mapId = 18, symbol = "MAP_KANTO_ROUTE_1", section = "Kanto Route 1", mapSectionNativeId = 15, displayName = "KANTO ROUTE 1" },
-    { mapId = 19, symbol = "MAP_EAST_ROUTE_2", section = "East Route 2", mapSectionNativeId = 16, displayName = "EAST ROUTE 2" },
-    { mapId = 20, symbol = "MAP_SEVII_ROUTE_3", section = "Sevii Route 3", mapSectionNativeId = 17, displayName = "SEVII ROUTE 3" },
+    {
+      mapId = 16,
+      symbol = "MAP_BATTLE_FRONTIER",
+      section = "Frontier",
+      mapSectionNativeId = 13,
+      displayName = "FRONTIER",
+    },
+    {
+      mapId = 17,
+      symbol = "MAP_BATTLE_FRONTIERS",
+      section = "Frontiers",
+      mapSectionNativeId = 14,
+      displayName = "FRONTIERS",
+    },
+    {
+      mapId = 18,
+      symbol = "MAP_KANTO_ROUTE_1",
+      section = "Kanto Route 1",
+      mapSectionNativeId = 15,
+      displayName = "KANTO ROUTE 1",
+    },
+    {
+      mapId = 19,
+      symbol = "MAP_EAST_ROUTE_2",
+      section = "East Route 2",
+      mapSectionNativeId = 16,
+      displayName = "EAST ROUTE 2",
+    },
+    {
+      mapId = 20,
+      symbol = "MAP_SEVII_ROUTE_3",
+      section = "Sevii Route 3",
+      mapSectionNativeId = 17,
+      displayName = "SEVII ROUTE 3",
+    },
     { mapId = 21, symbol = "MAP_ROUTER", section = "Router", mapSectionNativeId = 18, displayName = "ROUTER" },
-    { mapId = 22, symbol = "MAP_SOMETHING_ROUTEHOUSE", section = "Routehouse", mapSectionNativeId = 19, displayName = "ROUTEHOUSE" },
+    {
+      mapId = 22,
+      symbol = "MAP_SOMETHING_ROUTEHOUSE",
+      section = "Routehouse",
+      mapSectionNativeId = 19,
+      displayName = "ROUTEHOUSE",
+    },
   }
   local task = Catalog.newTask(summaries)
   local complete = false
@@ -126,7 +174,11 @@ function T.tests.route_and_battle_frontier_prefixes_share_only_their_explicit_gr
     for _, leaf in ipairs(leaves) do
       occurrences[leaf.row.mapId] = (occurrences[leaf.row.mapId] or 0) + 1
       Assert.equal(catalog:groupForMap(leaf.row.mapId), entry.id, "group lookup follows each leaf identity")
-      Assert.equal(entry.id, expectedGroupByMap[leaf.row.mapId], "only the declared source-symbol prefixes override grouping")
+      Assert.equal(
+        entry.id,
+        expectedGroupByMap[leaf.row.mapId],
+        "only the declared source-symbol prefixes override grouping"
+      )
     end
   end
   Assert.equal(#groups, 7, "synthetic categories coexist with every native fallback group")
@@ -143,7 +195,13 @@ function T.tests.route_and_battle_frontier_prefixes_share_only_their_explicit_gr
   local nestedRouteMatches = projectedRows(catalog:maps("location:group:routes", "route"))
   Assert.equal(#nestedRouteMatches, 5, "every accepted route symbol remains available through the group filter")
   Assert.deepEqual(
-    { nestedRouteMatches[1].row.mapId, nestedRouteMatches[2].row.mapId, nestedRouteMatches[3].row.mapId, nestedRouteMatches[4].row.mapId, nestedRouteMatches[5].row.mapId },
+    {
+      nestedRouteMatches[1].row.mapId,
+      nestedRouteMatches[2].row.mapId,
+      nestedRouteMatches[3].row.mapId,
+      nestedRouteMatches[4].row.mapId,
+      nestedRouteMatches[5].row.mapId,
+    },
     { 19, 18, 10, 11, 20 },
     "route filtering returns each matching source leaf in deterministic display order"
   )

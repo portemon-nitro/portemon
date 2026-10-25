@@ -41,6 +41,24 @@ local function emptyState(version)
   return validateEmpty
 end
 
+---@param state unknown candidate Color Change state
+---@return table<string, unknown> validated type override state
+local function colorChangeState(state)
+  if type(state) ~= "table" then
+    error("Color Change stores its replacement type")
+  end
+  local checked = state --[[@as table<string, unknown>]]
+  if checked.version ~= 1 or type(checked.type) ~= "string" or checked.type == "" then
+    error("Color Change stores a versioned semantic type")
+  end
+  for key in pairs(checked) do
+    if key ~= "version" and key ~= "type" then
+      error("Color Change stores no extra state")
+    end
+  end
+  return { version = 1, type = checked.type }
+end
+
 ---@param version integer
 ---@param minimum integer
 ---@param maximum integer
@@ -464,6 +482,20 @@ local DEFINITIONS = {
     stateVersion = 1,
     validateState = emptyState(1),
     timings = { binding("leave", "miracleeye", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "colorchange",
+    stateVersion = 1,
+    validateState = colorChangeState,
+    timings = { binding("leave", "colorchange", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "flashfire",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("leave", "flashfire", "affliction") },
     lifecycle = lifecycle("replace", "clear"),
   },
   -- Magnetic levitation grounds nothing for five turns.

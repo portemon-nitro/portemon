@@ -30,10 +30,12 @@ return RomSuite.fromFacts({
       "the physical cell at the requested global coordinates belongs to Ilex Forest"
     )
     local memberId = matrixCell.landDataMemberId
-    local landData = assert(LandData.decode(
-      assert(romFs:openNarc("land_data")):readMember(memberId),
-      { mapId = resolved.map.id, alias = "land_data", memberId = memberId }
-    ))
+    local landData = assert(
+      LandData.decode(
+        assert(romFs:openNarc("land_data")):readMember(memberId),
+        { mapId = resolved.map.id, alias = "land_data", memberId = memberId }
+      )
+    )
     local collisionGrid = CollisionGrid.new(landData.collision)
     local collision = collisionGrid:getLocal(fieldX % 32, fieldZ % 32)
     local label = diagnostic(memberId, collision)
@@ -51,7 +53,10 @@ return RomSuite.fromFacts({
       -- This source-only assertion supplies no evidence about physical surfaces.
       surface = { surfaceId = 0, worldY = 0, terrainDependencyHash = "policy-only" },
     })
-    Assert.isTrue(result.selectable, label .. "; terrain policy refused the real source cell as " .. tostring(result.reason))
+    Assert.isTrue(
+      result.selectable,
+      label .. "; terrain policy refused the real source cell as " .. tostring(result.reason)
+    )
     Assert.isNil(
       SaveEditorLocationPolicy.terrainRejection(collision),
       label .. "; the normalized source cell must pass the shared terrain gate"

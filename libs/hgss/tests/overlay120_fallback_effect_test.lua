@@ -143,15 +143,11 @@ function T.unknown_roles_and_missing_background_sets_fail_closed()
   end)
   Assert.equal(ok, false, "routes without a background set fail closed")
   local badKey = pcall(function()
-    return Overlay120FallbackEffect.new(
-      {
-        key = "fallback/plain/morning/wild",
-        role = "plain-wild-fallback",
-        assetGroups = routeFor("plain-wild-fallback", "day").assetGroups,
-      },
-      resources,
-      { kind = "wild", terrain = "plain", timeOfDay = "morning" }
-    )
+    return Overlay120FallbackEffect.new({
+      key = "fallback/plain/morning/wild",
+      role = "plain-wild-fallback",
+      assetGroups = routeFor("plain-wild-fallback", "day").assetGroups,
+    }, resources, { kind = "wild", terrain = "plain", timeOfDay = "morning" })
   end)
   Assert.equal(badKey, false, "routes without a source time of day fail closed")
 end

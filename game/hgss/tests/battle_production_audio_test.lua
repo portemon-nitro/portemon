@@ -863,7 +863,10 @@ local function driveMusicToOutcome(rig, word, packetId)
     if rig.screen:status().mode == "outcome" then
       return
     end
-    Assert.isTrue(rig.screen:status().mode ~= "failed", "the presented screen never fails: " .. tostring(rig.screen:status().error))
+    Assert.isTrue(
+      rig.screen:status().mode ~= "failed",
+      "the presented screen never fails: " .. tostring(rig.screen:status().error)
+    )
   end
   error("the presented screen never reached its outcome for " .. tostring(word), 0)
 end

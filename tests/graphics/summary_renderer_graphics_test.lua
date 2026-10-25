@@ -341,10 +341,7 @@ function T.summary_chrome_uses_only_manifest_sprite_roles(scope)
       paneDifference(main, sub) > 1000,
       versionId .. " draws distinct main and sub surfaces through sprite roles alone"
     )
-    Assert.isTrue(
-      countLit(main, 168, 64, 248, 144) > 200,
-      versionId .. " centers the large picture on the main pane"
-    )
+    Assert.isTrue(countLit(main, 168, 64, 248, 144) > 200, versionId .. " centers the large picture on the main pane")
     local again = drawReadyPane(renderer, scope, {}, nativeStatus(facts, "info"), "sub", bundle)
     Assert.equal(paneDifference(sub, again), 0, versionId .. " repeats its sub pane identically")
     realText:release()
@@ -1053,11 +1050,7 @@ local function assertWindowPlaced(versionId, manifest, calls, pane, skipped)
         for _, want in pairs(textRoles) do
           inked = inked or drawnRoleMatches(call.palette, want)
         end
-        if
-          inked
-          and call.y >= rect.y
-          and call.y < rect.y + rect.height
-        then
+        if inked and call.y >= rect.y and call.y < rect.y + rect.height then
           -- Windows print at their corner or a fixed source inset.
           placed = call.x >= rect.x and call.x < rect.x + rect.width
           if placed then
@@ -1186,17 +1179,17 @@ function T.generated_memo_controls_draw_on_consecutive_baselines(scope)
     local context = SummaryAcceptanceFixture.displayContext(summaryManifest, service:partyCount())
     local facts = SummaryModel.build(service, 0, context, summaryManifest)
     local branch = nil
-    for _, candidate in
-      ipairs(assert(summaryManifest.memo.conditions, versionId .. " carries ordered memo rules"))
-    do
+    for _, candidate in ipairs(assert(summaryManifest.memo.conditions, versionId .. " carries ordered memo rules")) do
       if candidate.key == facts.memo.condition then
         branch = candidate
       end
     end
     Assert.notNil(branch, versionId .. " carries the selected branch " .. tostring(facts.memo.condition))
     assert(branch ~= nil, "branches select above")
-    local segments =
-      assert(assert(branch.dateTemplate, versionId .. " carries its date template").segments, versionId .. " carries segments")
+    local segments = assert(
+      assert(branch.dateTemplate, versionId .. " carries its date template").segments,
+      versionId .. " carries segments"
+    )
     local breaks, colors = 0, 0
     for _, segment in ipairs(segments) do
       if segment.kind == "lineBreak" then
@@ -1209,14 +1202,8 @@ function T.generated_memo_controls_draw_on_consecutive_baselines(scope)
     Assert.isTrue(colors >= 1, versionId .. " exercises generated color controls")
     for _, block in ipairs(assert(facts.memo.blocks, versionId .. " carries memo blocks")) do
       for _, run in ipairs(assert(block.runs, versionId .. " carries memo runs")) do
-        Assert.isTrue(
-          type(run.text) == "string" and #run.text > 0,
-          versionId .. " publishes non-empty run text"
-        )
-        Assert.isTrue(
-          run.text:find("\n", 1, true) == nil,
-          versionId .. " keeps line breaks out of run text"
-        )
+        Assert.isTrue(type(run.text) == "string" and #run.text > 0, versionId .. " publishes non-empty run text")
+        Assert.isTrue(run.text:find("\n", 1, true) == nil, versionId .. " keeps line breaks out of run text")
       end
     end
     local base = assert(branch.lines.date, versionId .. " places its date line")
@@ -1233,8 +1220,10 @@ function T.generated_memo_controls_draw_on_consecutive_baselines(scope)
     local renderer = SummaryRenderer.new({ text = text })
     local bundle = readyLikeBundle(scope, cacheFs, summaryManifest, text, portraits, pictureShader(scope), {})
     drawNativePane(renderer, scope, textCalls, nativeStatus(facts, "info"), "main", bundle)
-    local info =
-      assert(assert(summaryManifest.windows, versionId .. " carries windows").groups, versionId .. " carries groups").info
+    local info = assert(
+      assert(summaryManifest.windows, versionId .. " carries windows").groups,
+      versionId .. " carries groups"
+    ).info
     local rect = assert(
       assert(assert(info, versionId .. " carries info").main, versionId .. " carries main roles").memoBody,
       versionId .. " carries its memo body"
@@ -1378,6 +1367,12 @@ end
 
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
-suite.metadata.derivedAssets =
-  { "move-icons:global", "summary:global", "mon-catalog:global", "mon-summary:global", "field-font:global", "party:global" }
+suite.metadata.derivedAssets = {
+  "move-icons:global",
+  "summary:global",
+  "mon-catalog:global",
+  "mon-summary:global",
+  "field-font:global",
+  "party:global",
+}
 return suite

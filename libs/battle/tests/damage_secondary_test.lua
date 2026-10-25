@@ -140,7 +140,7 @@ local function runStrike(moveKey, facts, seed, extra)
     guts = false,
     weather = "none",
     weatherSuppressed = false,
-    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "normal" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -208,7 +208,9 @@ function T.psycho_boost_lowers_its_users_special_attack_after_a_hit()
   Assert.equal(
     probe.ctx:entryOf(1).stages.specialAttack,
     -2,
-    "Psycho Boost drops Special Attack two stages (actual " .. tostring(probe.ctx:entryOf(1).stages.specialAttack) .. ")"
+    "Psycho Boost drops Special Attack two stages (actual "
+      .. tostring(probe.ctx:entryOf(1).stages.specialAttack)
+      .. ")"
   )
 end
 
@@ -259,7 +261,10 @@ function T.trump_card_uses_remaining_pp_power_table()
     moves = { { move = "TRUMP_CARD", pp = 1, ppUps = 0 } },
     combat = probeCombat(5, 16, 16),
   })
-  Assert.isTrue(lowPp.dealt --[[@as integer]] > spent.dealt --[[@as integer]], "lower remaining PP increases Trump Card power")
+  Assert.isTrue(
+    lowPp.dealt --[[@as integer]] > spent.dealt --[[@as integer]],
+    "lower remaining PP increases Trump Card power"
+  )
 end
 
 function T.psywave_uses_the_source_random_level_damage_range()
@@ -283,7 +288,10 @@ function T.judgment_takes_its_element_from_the_held_plate()
     heldItem = "FLAME_PLATE",
     defenderTypes = { [2] = { "grass" } },
   })
-  Assert.isTrue(plated.dealt --[[@as integer]] > normal.dealt --[[@as integer]], "the Flame Plate makes Judgment fire type")
+  Assert.isTrue(
+    plated.dealt --[[@as integer]] > normal.dealt --[[@as integer]],
+    "the Flame Plate makes Judgment fire type"
+  )
 end
 
 function T.punishment_scales_with_all_positive_defender_stages()
@@ -327,7 +335,11 @@ function T.metal_burst_returns_one_and_a_half_times_last_any_damage()
       followMeTarget = false,
     },
   })
-  Assert.equal((empty.outcome --[[@as table<string, unknown>]]).result, "failed", "Metal Burst fails without prior damage")
+  Assert.equal(
+    (empty.outcome --[[@as table<string, unknown>]]).result,
+    "failed",
+    "Metal Burst fails without prior damage"
+  )
 end
 
 function T.sky_uppercut_bypasses_fly_and_bounce_inaccuracy_state()
@@ -339,7 +351,11 @@ function T.sky_uppercut_bypasses_fly_and_bounce_inaccuracy_state()
   local probe = runStrike("SKY_UPPERCUT", moveFacts("SKY_UPPERCUT", { power = 40 }), FIXED_SEED, {
     targetFacts = targetFacts,
   })
-  Assert.equal((ordinary.outcome --[[@as table<string, unknown>]]).result, "missed", "ordinary strikes miss a flying target")
+  Assert.equal(
+    (ordinary.outcome --[[@as table<string, unknown>]]).result,
+    "missed",
+    "ordinary strikes miss a flying target"
+  )
   Assert.equal((probe.outcome --[[@as table<string, unknown>]]).result, "hit", "Sky Uppercut hits a flying target")
 end
 
@@ -362,7 +378,9 @@ function T.bide_starts_its_damage_storage_turn()
   Assert.equal((probe.outcome --[[@as table<string, unknown>]]).result, "hit", "Bide starts")
   Assert.isTrue(probe.ctx:hasBattleEffect(1, "bide"), "Bide records its active storage state")
   local uses = 0
-  for _, event in ipairs(probe.state.outbox --[[@as table<integer, unknown>]]) do
+  for _, event in
+    ipairs(probe.state.outbox --[[@as table<integer, unknown>]])
+  do
     local record = event --[[@as table<string, unknown>]]
     local cause = record.cause --[[@as table<string, unknown>]]
     if record.kind == "move-used" and cause.key == "BIDE" then
@@ -404,7 +422,9 @@ function T.new_status_and_stage_secondaries_match_their_native_effects()
       Assert.equal(probe.ctx:statusOf(2), case.status, case.key .. " applies its status")
     else
       Assert.equal(
-        probe.ctx:entryOf(2).stages[case.stat --[[@as string]]],
+        probe.ctx:entryOf(2).stages[
+          case.stat --[[@as string]]
+        ],
         case.delta,
         case.key .. " applies its native stage change"
       )
@@ -481,7 +501,7 @@ function T.draining_strikes_restore_half_the_damage_dealt()
     guts = false,
     weather = "none",
     weatherSuppressed = false,
-    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "grass" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -731,7 +751,7 @@ function T.brick_break_drops_the_defender_screens()
     guts = false,
     weather = "none",
     weatherSuppressed = false,
-    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "fighting" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -789,7 +809,7 @@ function T.item_taking_strikes_record_their_intent()
       guts = false,
       weather = "none",
       weatherSuppressed = false,
-      abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+      abilities = { user = "NONE", foe = "NONE" },
       attackerTypes = { "normal" },
       defenderTypes = { [2] = { "normal" } },
       typeChart = chart(),
@@ -861,7 +881,7 @@ function T.weather_strikes_follow_their_sky_law()
       guts = false,
       weather = "none",
       weatherSuppressed = false,
-      abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+      abilities = { user = "NONE", foe = "NONE" },
       attackerTypes = { "electric" },
       defenderTypes = { [2] = { "normal" } },
       typeChart = chart(),
@@ -1021,7 +1041,7 @@ function T.sport_markers_halve_the_weakened_type_power()
     guts = false,
     weather = "none",
     weatherSuppressed = false,
-    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "electric" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -1103,7 +1123,7 @@ function T.focus_energy_raises_later_strikes_by_two_stages()
       guts = false,
       weather = "none",
       weatherSuppressed = false,
-      abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+      abilities = { user = "NONE", foe = "NONE" },
       attackerTypes = { "normal" },
       defenderTypes = { [2] = { "normal" } },
       typeChart = chart(),
@@ -1169,7 +1189,7 @@ function T.lucky_chant_shields_its_side_from_critical_strikes()
     guts = false,
     weather = "none",
     weatherSuppressed = false,
-    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "normal" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -1221,7 +1241,7 @@ function T.flame_wheel_thaws_its_frozen_user()
     guts = false,
     weather = "none",
     weatherSuppressed = false,
-    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "fire" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -1288,7 +1308,7 @@ function T.secondaries_respect_immunities_and_substitutes()
       guts = false,
       weather = "none",
       weatherSuppressed = false,
-      abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+      abilities = { user = "NONE", foe = "NONE" },
       attackerTypes = { "fire" },
       defenderTypes = defenderTypes,
       typeChart = chart(),
@@ -1350,7 +1370,7 @@ function T.feint_needs_protection_to_break()
     guts = false,
     weather = "none",
     weatherSuppressed = false,
-    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "normal" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -1400,7 +1420,7 @@ local function runPreparedStrike(moveKey, facts, seed, extra, setup)
     guts = false,
     weather = "none",
     weatherSuppressed = false,
-    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "normal" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = chart(),
@@ -1513,7 +1533,7 @@ function T.repeated_strikes_drain_the_doll_across_hits()
       guts = false,
       weather = "none",
       weatherSuppressed = false,
-      abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+      abilities = { user = "NONE", foe = "NONE" },
       attackerTypes = { "normal" },
       defenderTypes = { [2] = { "normal" } },
       typeChart = chart(),

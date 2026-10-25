@@ -173,8 +173,7 @@ local function controllableAudio()
     audio.played[#audio.played + 1] = name
     return name
   end
-  function audio.stop(_name)
-  end
+  function audio.stop(_name) end
   function audio.isFinished(_name)
     return audio.finished
   end
@@ -212,16 +211,11 @@ local function deriveNonparticleInventory()
   end
   for selector, fixture in pairs(CALLBACK_FIXTURES) do
     local resolved, reason = BattleAnimationSources.resolveBattleAnimationCallback(fixture)
-    Assert.notNil(
-      resolved,
-      "callback selector " .. selector .. " resolves through the producer: " .. tostring(reason)
-    )
+    Assert.notNil(resolved, "callback selector " .. selector .. " resolves through the producer: " .. tostring(reason))
     assert(resolved ~= nil, "the callback plan stays available for the inventory")
     if resolved.taskKind ~= nil then
       local parameters = resolved.parameters or {}
-      local targeted = resolved.battlerTarget ~= nil
-        or parameters.pictureTarget ~= nil
-        or parameters.pictureSets ~= nil
+      local targeted = resolved.battlerTarget ~= nil or parameters.pictureTarget ~= nil or parameters.pictureSets ~= nil
       consider(resolved.taskKind, {
         callback = resolved.callback,
         taskContext = resolved.context,
@@ -396,8 +390,9 @@ function T.every_derived_nonparticle_kind_runs_to_its_own_completion()
         local repeatScene = sceneWithPair()
         local repeatJournal = { acquired = {}, released = {} }
         local repeatAudio = controllableAudio()
-        local repeatTask =
-          assert(Factory.create(kind, args, occurrenceContext(), factoryServices(repeatScene, repeatJournal, repeatAudio)))
+        local repeatTask = assert(
+          Factory.create(kind, args, occurrenceContext(), factoryServices(repeatScene, repeatJournal, repeatAudio))
+        )
         local repeatTicks = 0
         while repeatTask:status() ~= "complete" and repeatTicks < 600 do
           repeatTask:stepSourceTick({ tick = 1 })

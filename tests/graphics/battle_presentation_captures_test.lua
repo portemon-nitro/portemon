@@ -304,12 +304,8 @@ local function captureServices(scope, cacheFs, versionId)
     if type(menuSection) == "table" and type(menuSection.screens) == "table" then
       for index, menuScreen in ipairs(menuSection.screens) do
         if type(menuScreen.image) == "string" then
-          images["menu:" .. layout .. ":screen:" .. tostring(index)] = stagedImage(
-            scope,
-            cacheFs,
-            menuScreen.image,
-            versionId .. " " .. layout .. " screen " .. tostring(index)
-          )
+          images["menu:" .. layout .. ":screen:" .. tostring(index)] =
+            stagedImage(scope, cacheFs, menuScreen.image, versionId .. " " .. layout .. " screen " .. tostring(index))
         end
         if type(menuScreen.feedback) == "table" then
           for controlId, states in pairs(menuScreen.feedback) do
@@ -335,11 +331,10 @@ local function captureServices(scope, cacheFs, versionId)
     assert(manifest.hud.arrow, versionId .. " carries the arrow").image,
     versionId .. " arrow"
   )
-  local shadow = assert(
-    manifest.pictures ~= nil and manifest.pictures.shadow,
-    versionId .. " carries its staged shadow"
-  )
-  images["shadow"] = stagedImage(scope, cacheFs, assert(shadow.image, versionId .. " carries shadow art"), versionId .. " shadow")
+  local shadow =
+    assert(manifest.pictures ~= nil and manifest.pictures.shadow, versionId .. " carries its staged shadow")
+  images["shadow"] =
+    stagedImage(scope, cacheFs, assert(shadow.image, versionId .. " carries shadow art"), versionId .. " shadow")
   -- Party gauges resolve per side through the staged families, exactly
   -- like production: player gauges ride the second family, enemy
   -- gauges the first.
@@ -1064,9 +1059,7 @@ local function scaledCellLookup(strip, section, box, patchSpans, sideType)
           local columns = math.floor(object.width / 8)
           local tileCol = math.floor(lx / 8)
           local tileRow = math.floor(ly / 8)
-          return object.tile + tileRow * columns + tileCol,
-            math.floor(lx - tileCol * 8),
-            math.floor(ly - tileRow * 8)
+          return object.tile + tileRow * columns + tileCol, math.floor(lx - tileCol * 8), math.floor(ly - tileRow * 8)
         end
       end
     end
@@ -1390,7 +1383,14 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
       Assert.equal(
         violations,
         0,
-        versionId .. " paints no extra glyphs outside its published " .. side.label .. " regions (" .. tostring(violations) .. " at " .. table.concat(violationSample, " ") .. ")"
+        versionId
+          .. " paints no extra glyphs outside its published "
+          .. side.label
+          .. " regions ("
+          .. tostring(violations)
+          .. " at "
+          .. table.concat(violationSample, " ")
+          .. ")"
       )
       Assert.isTrue(
         stripOccupied > 500,
@@ -1398,7 +1398,14 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
       )
       Assert.isTrue(
         stripMatches / stripOccupied > 0.8,
-        versionId .. " composites the staged " .. side.label .. " artwork (" .. tostring(stripMatches) .. "/" .. tostring(stripOccupied) .. ")"
+        versionId
+          .. " composites the staged "
+          .. side.label
+          .. " artwork ("
+          .. tostring(stripMatches)
+          .. "/"
+          .. tostring(stripOccupied)
+          .. ")"
       )
     end
     local expText = nil
@@ -1407,11 +1414,7 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
         expText = region.text
       end
     end
-    Assert.equal(
-      expText,
-      "",
-      versionId .. " prints no numeric experience total; the gauge tiles carry the progress"
-    )
+    Assert.equal(expText, "", versionId .. " prints no numeric experience total; the gauge tiles carry the progress")
 
     -- Battler pictures draw top-left at the plan image centers, clipped to
     -- the scene viewport: the enemy picture overhangs the pane edge while
@@ -1763,7 +1766,6 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
   end
 end
 
-
 -- The compact Fight view prints its move facts through the staged font:
 -- named move labels in their grid cells, the type and PP rows in the
 -- information panel, and the Back label, all ringed by the dock frames.
@@ -1979,7 +1981,10 @@ function T.native_command_view_composes_real_scene_menu_and_narration(scope, con
       for _, patch in ipairs(BattleScene.hudIconPatchTiles(stagedPatchSpans, sideType, nil, nil, nil)) do
         tiles[patch.tile] = true
       end
-      for _, group in ipairs({ BattleScene.hpNumberPatchTiles(stagedPatchSpans, sideType).current, BattleScene.hpNumberPatchTiles(stagedPatchSpans, sideType).maximum }) do
+      for _, group in ipairs({
+        BattleScene.hpNumberPatchTiles(stagedPatchSpans, sideType).current,
+        BattleScene.hpNumberPatchTiles(stagedPatchSpans, sideType).maximum,
+      }) do
         for _, patch in ipairs(group) do
           tiles[patch.tile] = true
         end
@@ -2008,11 +2013,27 @@ function T.native_command_view_composes_real_scene_menu_and_narration(scope, con
       versionId .. " player HUD source"
     )
     for _, band in ipairs({
-      { strip = enemyStrip, section = stagedManifest.hud.enemy, sideType = 1, origin = { x = 58, y = 36 }, label = "enemy" },
-      { strip = playerStrip, section = stagedManifest.hud.player, sideType = 0, origin = { x = 192, y = 116 }, label = "player" },
+      {
+        strip = enemyStrip,
+        section = stagedManifest.hud.enemy,
+        sideType = 1,
+        origin = { x = 58, y = 36 },
+        label = "enemy",
+      },
+      {
+        strip = playerStrip,
+        section = stagedManifest.hud.player,
+        sideType = 0,
+        origin = { x = 192, y = 116 },
+        label = "player",
+      },
     }) do
-      local masked =
-        sourcePatchMask(band.section, dynamicTileSpans(band.sideType, band.sideType == 0), detailFrame.x + band.origin.x, detailFrame.y + band.origin.y)
+      local masked = sourcePatchMask(
+        band.section,
+        dynamicTileSpans(band.sideType, band.sideType == 0),
+        detailFrame.x + band.origin.x,
+        detailFrame.y + band.origin.y
+      )
       local bandMatches, bandOccupied = countHudCellMatches(
         first,
         band.strip,
@@ -2458,7 +2479,10 @@ function T.drawable_keys_resolve_to_their_staged_source_images(scope, context)
       { key = "menu:moves", path = assert(manifest.menus.moves, versionId .. " carries move art").image },
       { key = "menu:target", path = assert(manifest.menus.target, versionId .. " carries target art").image },
       { key = "arrow", path = assert(manifest.hud.arrow, versionId .. " carries the arrow").image },
-      { key = "gauges:player", path = assert(manifest.hud.partyGauges[2], versionId .. " carries player gauges").image },
+      {
+        key = "gauges:player",
+        path = assert(manifest.hud.partyGauges[2], versionId .. " carries player gauges").image,
+      },
       { key = "gauges:enemy", path = assert(manifest.hud.partyGauges[1], versionId .. " carries enemy gauges").image },
     }) do
       local source = decodeData(scope, cacheFs, entry.path, versionId .. " " .. entry.key .. " source")
@@ -2643,8 +2667,6 @@ function T.compact_active_lead_draws_its_exact_canonical_portrait(scope, context
     )
   end
 end
-
-
 
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }

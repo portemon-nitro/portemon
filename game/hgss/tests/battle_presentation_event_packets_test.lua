@@ -173,7 +173,8 @@ function T.spread_move_in_doubles_names_each_target_with_stable_activation()
     { species = "EEVEE", level = 30, seed = 0x22222222 },
   })
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
-  local launch = { id = "launch-packet-spread-doubles", kind = "trainer", payload = { trainer = "rival-packet-spread" } }
+  local launch =
+    { id = "launch-packet-spread-doubles", kind = "trainer", payload = { trainer = "rival-packet-spread" } }
   local scenario = ScenarioFactory.fromTrainer({
     id = "packet-spread-doubles",
     trainers = {
@@ -188,7 +189,16 @@ function T.spread_move_in_doubles_names_each_target_with_stable_activation()
       },
     },
   }, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
-  local record = { ready = true, enters = 0, packets = {}, enterPlans = {}, readyCalls = 0, leaves = 0, leavePlans = {}, disposed = 0 }
+  local record = {
+    ready = true,
+    enters = 0,
+    packets = {},
+    enterPlans = {},
+    readyCalls = 0,
+    leaves = 0,
+    leavePlans = {},
+    disposed = 0,
+  }
   local battle = startBattle(launch, scenario, party, bag, recordingPort(record), 0x1234ABCD)
   local opening = driveToDecision(battle, 400)
   Assert.equal(opening.phase, "running", "the doubled battle asks for its opening decision")
@@ -271,12 +281,32 @@ function T.duplicate_packets_execute_once_and_stale_activations_never_unblock()
     { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
   })
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
-  local launch = { id = "launch-packet-duplicate", kind = "wild", payload = { attemptId = "dup-attempt", species = "EEVEE", form = 0, level = 4, personality = 1, ability = "RUN_AWAY" } }
+  local launch = {
+    id = "launch-packet-duplicate",
+    kind = "wild",
+    payload = {
+      attemptId = "dup-attempt",
+      species = "EEVEE",
+      form = 0,
+      level = 4,
+      personality = 1,
+      ability = "RUN_AWAY",
+    },
+  }
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foeRecord("EEVEE", 4, 0x5EED0042) },
     { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
   )
-  local record = { ready = true, enters = 0, packets = {}, enterPlans = {}, readyCalls = 0, leaves = 0, leavePlans = {}, disposed = 0 }
+  local record = {
+    ready = true,
+    enters = 0,
+    packets = {},
+    enterPlans = {},
+    readyCalls = 0,
+    leaves = 0,
+    leavePlans = {},
+    disposed = 0,
+  }
   local battle = startBattle(launch, scenario, party, bag, recordingPort(record), 0x00D9A001)
   local opening = driveToDecision(battle, 400)
   local request = assert(opening.request, "the duplicate battle asks for its opening decision")
@@ -320,12 +350,14 @@ function T.duplicate_packets_execute_once_and_stale_activations_never_unblock()
   for key, value in pairs(source) do
     replay[key] = value
   end
-  replay.packetId = (source.packetId --[[@as integer]]) + 1000
+  replay.packetId = source.packetId --[[@as integer]]
+    + 1000
   Assert.isTrue(player:present(replay) == false, "the same event identity delivered again executes once")
   Assert.equal(cueCount(), firstCues, "the replayed delivery queues no further visible cues")
   local stale = {
     launchId = launch.id,
-    packetId = (source.packetId --[[@as integer]]) + 1001,
+    packetId = source.packetId --[[@as integer]]
+      + 1001,
     events = {
       {
         sequence = 9999,
@@ -356,12 +388,32 @@ function T.identical_seeds_keep_mechanics_identical_across_presentation_pacing_w
     })
     local twinBag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
     local foe = foeRecord("TOTODILE", 4, 0x5EED0099)
-    local launch = { id = launchId, kind = "wild", payload = { attemptId = launchId .. "-attempt", species = "TOTODILE", form = 0, level = 4, personality = 1, ability = "TORRENT" } }
+    local launch = {
+      id = launchId,
+      kind = "wild",
+      payload = {
+        attemptId = launchId .. "-attempt",
+        species = "TOTODILE",
+        form = 0,
+        level = 4,
+        personality = 1,
+        ability = "TORRENT",
+      },
+    }
     local twinScenario = ScenarioFactory.fromEncounter(
       { attemptId = launch.id .. "-attempt", mon = foe },
       { party = twinParty, bag = twinBag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
     )
-    local held = { ready = not delayed, enters = 0, packets = {}, enterPlans = {}, readyCalls = 0, leaves = 0, leavePlans = {}, disposed = 0 }
+    local held = {
+      ready = not delayed,
+      enters = 0,
+      packets = {},
+      enterPlans = {},
+      readyCalls = 0,
+      leaves = 0,
+      leavePlans = {},
+      disposed = 0,
+    }
     local battle = startBattle(launch, twinScenario, twinParty, twinBag, recordingPort(held), seed)
     if delayed then
       for _ = 1, 25 do
@@ -462,7 +514,16 @@ function T.trainer_payloads_expose_only_visible_battler_facts()
       },
     },
   }, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
-  local record = { ready = true, enters = 0, packets = {}, enterPlans = {}, readyCalls = 0, leaves = 0, leavePlans = {}, disposed = 0 }
+  local record = {
+    ready = true,
+    enters = 0,
+    packets = {},
+    enterPlans = {},
+    readyCalls = 0,
+    leaves = 0,
+    leavePlans = {},
+    disposed = 0,
+  }
   local battle = startBattle(launch, scenario, party, bag, recordingPort(record), 0x0EED1234)
   local opening = driveToDecision(battle, 400)
   local request = assert(opening.request, "the trainer battle asks for its opening decision")
@@ -490,9 +551,13 @@ function T.trainer_payloads_expose_only_visible_battler_facts()
   local visibleFoes = {}
   for _, packet in ipairs(record.packets) do
     local afterView = (packet --[[@as table<string, unknown>]]).after --[[@as table<string, unknown>]]
-    for _, foe in ipairs(afterView.foes --[[@as table<integer, unknown>]]) do
+    for _, foe in
+      ipairs(afterView.foes --[[@as table<integer, unknown>]])
+    do
       local entry = foe --[[@as table<string, unknown>]]
-      visibleFoes[entry.combatant --[[@as integer]]] = true
+      visibleFoes[
+        entry.combatant --[[@as integer]]
+      ] = true
     end
   end
   local hiddenReserve = nil
@@ -693,10 +758,7 @@ local function runBranch(name, events)
   Assert.notNil(announcementTick, name .. " narrates its branch outcome")
   Assert.isTrue(announcementTick < firstStartTick, name .. " narrates before its visual starts")
   for _, record in ipairs(started) do
-    Assert.isTrue(
-      record.message ~= "",
-      name .. " visual starts behind readable narration"
-    )
+    Assert.isTrue(record.message ~= "", name .. " visual starts behind readable narration")
   end
   Assert.isTrue(timeline:settled(), name .. " drains fully once its visual completes")
   return started, texts

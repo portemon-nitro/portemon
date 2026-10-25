@@ -223,11 +223,7 @@ function T.effect_runs_over_each_layer_class_restore_the_clean_scene_exactly()
   local pristine = sceneWithPair()
   pristine:installBackground(baseBackground())
   local cleanRaster = pristine:backgroundRaster()
-  Assert.deepEqual(
-    pristine:backgroundRaster(),
-    cleanRaster,
-    "repeated raster reads agree without advancing anything"
-  )
+  Assert.deepEqual(pristine:backgroundRaster(), cleanRaster, "repeated raster reads agree without advancing anything")
   local poisoned = sceneWithPair()
   poisoned:installBackground(baseBackground())
   poisoned:patchBackgroundPalette(0, { r = 255, g = 255, b = 255 })
@@ -284,11 +280,7 @@ function T.effect_runs_over_each_layer_class_restore_the_clean_scene_exactly()
   Assert.equal(#poisoned:effectViews(), 0, "no transient picture survives the effect runs")
   poisoned:patchBackgroundPalette(0, { r = 8, g = 16, b = 24 })
   poisoned:patchBackgroundPalette(1, { r = 8, g = 16, b = 24 })
-  Assert.deepEqual(
-    poisoned:backgroundRaster(),
-    cleanRaster,
-    "the restored scene matches the clean raster exactly"
-  )
+  Assert.deepEqual(poisoned:backgroundRaster(), cleanRaster, "the restored scene matches the clean raster exactly")
   Assert.deepEqual(poisoned:background(), pristine:background(), "no poisoned color survives restoration")
 end
 
@@ -356,10 +348,7 @@ function T.callback_program_mutates_scene_and_completes_at_its_source_boundary()
   local handle = assert(player:start(packet, program))
   player:stepSourceTick({ tick = 1 })
   local held = player:status(handle)
-  Assert.isTrue(
-    held ~= "complete" and held ~= "failed",
-    "the source-timed picture run stays alive past its first tick"
-  )
+  Assert.isTrue(held ~= "complete" and held ~= "failed", "the source-timed picture run stays alive past its first tick")
   Assert.equal(#scene:effectViews(), 0, "spawning the callback publishes no drawable picture")
   player:stepSourceTick({ tick = 2 })
   local mutated = scene:pictureState({ combatant = 1, activation = 1 }) ~= nil
@@ -376,10 +365,7 @@ function T.callback_program_mutates_scene_and_completes_at_its_source_boundary()
   Assert.equal(player:status(handle), "complete", "the callback run reaches its own completion")
   Assert.isTrue(ticks >= 10, "the run honors its compiled duration instead of an early fixed budget")
   Assert.isTrue(ticks <= 14, "the run completes at its source boundary instead of stalling")
-  Assert.isNil(
-    scene:pictureState({ combatant = 1, activation = 1 }),
-    "completion restores the activation it moved"
-  )
+  Assert.isNil(scene:pictureState({ combatant = 1, activation = 1 }), "completion restores the activation it moved")
   Assert.equal(#scene:effectViews(), 0, "no transient picture survives the callback run")
   player:dispose()
 end
@@ -480,10 +466,13 @@ local function probePaintStaging(launchId)
   local textureBytes = EffectStagingFixture.rgba(4, 4)
   local textureIdentity = Hashing.sha1hex(textureBytes)
   local cache = CacheFs.forVersion("probe-layer-production", FakeCache.new())
-  cache:writeLua(BattlePresentationCache.effectPath(PROBE_PAINT_EFFECT), EffectStagingFixture.effectRecord(
-    PROBE_PAINT_EFFECT,
-    { { key = PROBE_PAINT_TEXTURE, kind = "texture", payload = PROBE_PAINT_PATH, contentIdentity = textureIdentity } }
-  ))
+  cache:writeLua(
+    BattlePresentationCache.effectPath(PROBE_PAINT_EFFECT),
+    EffectStagingFixture.effectRecord(
+      PROBE_PAINT_EFFECT,
+      { { key = PROBE_PAINT_TEXTURE, kind = "texture", payload = PROBE_PAINT_PATH, contentIdentity = textureIdentity } }
+    )
+  )
   cache:write(BattlePresentationCache.effectMarkerPath(PROBE_PAINT_EFFECT), "probe-marker")
   cache:writeLua(PROBE_PAINT_PATH, { width = 4, height = 4, rgba8888 = textureBytes })
   local host = { asks = {}, answers = { [PROBE_PAINT_EFFECT] = true } }
@@ -588,10 +577,7 @@ function T.corrupt_production_texture_payload_fails_closed_with_provenance()
   Assert.isTrue(type(failure) == "string" and failure ~= "", "the undecodable texture carries its reason")
   local reason = failure --[[@as string]]
   Assert.isTrue(reason:find(PROBE_PAINT_EFFECT, 1, true) ~= nil, "the failure names its effect: " .. reason)
-  Assert.isTrue(
-    reason:find(PROBE_PAINT_TEXTURE, 1, true) ~= nil,
-    "the failure names its resource: " .. reason
-  )
+  Assert.isTrue(reason:find(PROBE_PAINT_TEXTURE, 1, true) ~= nil, "the failure names its resource: " .. reason)
   Assert.isTrue(reason:find(PROBE_PAINT_PATH, 1, true) ~= nil, "the failure names its path: " .. reason)
   probe.owned:dispose()
   probe.envelope:dispose()

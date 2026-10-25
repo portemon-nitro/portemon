@@ -159,6 +159,23 @@ function NativePassiveBridge:abilityOf(combatantId)
   if self:hasVolatile(combatantId, "GASTRO_ACID") then
     return nil
   end
+  local bag = self._state.effectBag
+  if type(combatant.active) == "table" and type(bag) == "table" then
+    for _, effect in ipairs(bag:capture()) do
+      local scope = effect.scope --[[@as table<string, unknown>]]
+      if
+        effect.key == "traceability"
+        and scope.kind == "active"
+        and scope.combatant == combatantId
+        and scope.activation == (combatant.active --[[@as table<string, unknown>]]).activation
+      then
+        local instance = bag:get(effect.id --[[@as integer]])
+        local state = instance.state --[[@as table<string, unknown>]]
+        assert(type(state.ability) == "string", "Trace overrides carry a copied ability")
+        return state.ability --[[@as string]]
+      end
+    end
+  end
   return readAbility(combatant)
 end
 
@@ -396,6 +413,7 @@ end
 ---@field last boolean true when a late-order answer holds the holder last
 ---@field stall boolean true when the stalling ability holds the holder last
 ---@field consume boolean true when the ordering answer spends the holding
+---@field loafing boolean true when Truant denies this action
 
 -- Answers the sorter facts behind one action candidate from the current
 -- holder: early-order holdings read the pre-turn order sample with no
@@ -419,7 +437,7 @@ function NativePassiveBridge:orderFacts(combatantId, context)
     species = nil
   end
   local shared = holderContext(self._state, combatant, combatantId, context)
-  local facts = { first = false, last = false, stall = false, consume = false } ---@type OrderFacts
+  local facts = { first = false, last = false, stall = false, consume = false, loafing = false } ---@type OrderFacts
   if ability ~= nil then
     local outcome = NativePassiveBridge.invokeFacts({
       combatant = combatantId,
@@ -432,6 +450,11 @@ function NativePassiveBridge:orderFacts(combatantId, context)
         (event --[[@as table<string, unknown>]]).order == "last"
       then
         facts.stall = true
+      end
+      if
+        (event --[[@as table<string, unknown>]]).loafing == true
+      then
+        facts.loafing = true
       end
     end
   end

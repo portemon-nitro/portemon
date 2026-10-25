@@ -41,9 +41,441 @@ local FieldEffects = require("libs.battle.src.gen4.behaviors.effects.FieldEffect
 local VolatileEffects = require("libs.battle.src.gen4.behaviors.effects.VolatileEffects")
 local BattleErrors = require("libs.battle.src.errors")
 local TypeEffectiveness = require("libs.battle.src.gen4.TypeEffectiveness")
+local BattleContext = require("libs.battle.src.BattleContext")
+local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
+local BattleState = require("libs.battle.src.BattleState")
+local StatStages = require("libs.battle.src.gen4.StatStages")
+local PLATE_TYPES = {
+  FLAME_PLATE = "fire",
+  SPLASH_PLATE = "water",
+  ZAP_PLATE = "electric",
+  MEADOW_PLATE = "grass",
+  ICICLE_PLATE = "ice",
+  FIST_PLATE = "fighting",
+  TOXIC_PLATE = "poison",
+  EARTH_PLATE = "ground",
+  SKY_PLATE = "flying",
+  MIND_PLATE = "psychic",
+  INSECT_PLATE = "bug",
+  STONE_PLATE = "rock",
+  SPOOKY_PLATE = "ghost",
+  DRACO_PLATE = "dragon",
+  DREAD_PLATE = "dark",
+  IRON_PLATE = "steel",
+}
 
 ---@class NativeEffectHandlers
 local NativeEffectHandlers = {}
+
+---@param state table<string, unknown> live battle state under the ability timing
+---@param timing string ability timing under invocation
+---@param target integer combatant owning the ability
+---@param pending table<string, unknown>? pending strike facts
+---@param stats table<integer, table<string, integer>>? sampled entry stats
+---@param moveFacts table<string, table<string, unknown>>? immutable native move facts
+---@param chart table<string, unknown>? session type chart
+---@param types table<integer, string[]>? active combatant types
+---@return string? blocking ability key
+function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending, stats, moveFacts, chart, types)
+  local foes = {} ---@type integer[]
+  local weatherIsSuppressed = false
+  local bridge = NativePassiveBridge.wrap(state)
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, combatantId)
+    local ability = bridge:abilityOf(combatantId)
+    if combatant.active ~= nil and combatant.hp > 0 and (ability == "CLOUD_NINE" or ability == "AIR_LOCK") then
+      weatherIsSuppressed = true
+      break
+    end
+  end
+  if timing == "entry" then
+    local targetSide =
+      BattleState.participant(state, BattleState.combatant(state, target).participant --[[@as integer]]).side
+    for _, positionId in
+      ipairs(state.positionOrder --[[@as table<integer, integer>]])
+    do
+      local occupant = BattleState.position(state, positionId).occupant
+      if occupant ~= nil then
+        local candidate = BattleState.combatant(state, occupant --[[@as integer]])
+        if
+          candidate.hp > 0
+          and BattleState.participant(state, candidate.participant --[[@as integer]]).side ~= targetSide
+        then
+          foes[#foes + 1] = occupant --[[@as integer]]
+        end
+      end
+    end
+  end
+  local outcome = NativePassiveBridge.wrap(state):invoke(timing, target, {
+    actionCheck = timing == "beforeAction",
+    foes = foes,
+    explosion = type(pending) == "table"
+      and (
+        (pending --[[@as table<string, unknown>]]).move == "SELF_DESTRUCT"
+        or (pending --[[@as table<string, unknown>]]).move == "EXPLOSION"
+      ),
+  })
+  local context = BattleContext.wrap(state)
+  for _, event in ipairs(outcome.events) do
+    local answer = event --[[@as table<string, unknown>]]
+    local suppressTrigger = false
+    if timing == "entry" and (answer.key == "FORECAST" or answer.key == "MULTITYPE") then
+      suppressTrigger = true
+      local holder = BattleState.combatant(state, target)
+      local mon = holder.mon --[[@as table<string, unknown>]]
+      local typeKey = nil
+      if answer.key == "FORECAST" and mon.species == "CASTFORM" then
+        local weather = "none"
+        if not weatherIsSuppressed then
+          if context:fieldEffect("raindance") ~= nil then
+            weather = "rain"
+          elseif context:fieldEffect("sunnyday") ~= nil then
+            weather = "sun"
+          elseif context:fieldEffect("hail") ~= nil then
+            weather = "hail"
+          end
+        end
+        typeKey = weather == "rain" and "water"
+          or weather == "sun" and "fire"
+          or weather == "hail" and "ice"
+          or "normal"
+      elseif answer.key == "MULTITYPE" and mon.species == "ARCEUS" then
+        typeKey = PLATE_TYPES[
+          mon.heldItem --[[@as string?]] or ""
+        ]
+      end
+      if typeKey ~= nil then
+        local baseType = "normal"
+        if typeKey ~= baseType then
+          context:emit("ability", { kind = "ability", key = answer.key, combatant = target }, {
+            key = answer.key,
+            type = typeKey,
+          })
+        end
+      end
+    end
+    if timing == "entry" and type(answer.weather) == "string" then
+      local weatherKeys = { rain = "raindance", sun = "sunnyday", sand = "sandstorm", hail = "hail" }
+      local weatherKey = weatherKeys[answer.weather]
+      if weatherKey ~= nil then
+        local current = context:fieldEffect(weatherKey)
+        local permanent = type(current) == "table"
+          and type(current.source) == "table"
+          and (current.source --[[@as table<string, unknown>]]).kind == "innate"
+        if permanent then
+          suppressTrigger = true
+        else
+          for _, key in pairs(weatherKeys) do
+            context:removeFieldEffect(key)
+          end
+          context:addBattleEffect(
+            NativeEffectHandlers.definitionFor(weatherKey),
+            { kind = "field" },
+            { kind = "innate", combatant = target },
+            { version = 1, turns = 0 }
+          )
+        end
+      end
+    end
+    if timing == "entry" and answer.key == "INTIMIDATE" then
+      bridge = NativePassiveBridge.wrap(state)
+      for _, foe in ipairs(foes) do
+        local ability = bridge:abilityOf(foe)
+        if ability ~= "CLEAR_BODY" and ability ~= "HYPER_CUTTER" and ability ~= "WHITE_SMOKE" then
+          local entry = context:entryOf(foe)
+          local stages = entry.stages --[[@as table<string, integer>]]
+          local amount = ability == "SIMPLE" and 2 or 1
+          if stages.attack > StatStages.MIN then
+            local after = stages.attack - amount
+            if after < StatStages.MIN then
+              after = StatStages.MIN
+            end
+            context:changeStage(foe, "attack", after, {
+              kind = "ability",
+              key = "INTIMIDATE",
+              combatant = target,
+            })
+          end
+        end
+      end
+    end
+    if timing == "entry" and answer.key == "TRACE" then
+      local candidates = {} ---@type integer[]
+      local holder = BattleState.combatant(state, target)
+      local holderMon = holder.mon --[[@as table<string, unknown>]]
+      local holderActivation = (holder.active --[[@as table<string, unknown>]]).activation
+      for _, foe in ipairs(foes) do
+        local ability = bridge:abilityOf(foe)
+        if
+          holderMon.heldItem ~= "GRISEOUS_ORB"
+          and ability ~= "TRACE"
+          and ability ~= "FORECAST"
+          and ability ~= "MULTITYPE"
+        then
+          candidates[#candidates + 1] = foe
+        end
+      end
+      if #candidates > 0 then
+        local selected = 1
+        if #candidates > 1 then
+          local random = state.rng --[[@as table<string, unknown>]]
+          assert(type(random.nextU16) == "function", "Trace draws from the battle stream")
+          local draw = (
+            random.nextU16 --[[@as fun(self: table<string, unknown>, label: string, cause: table<string, unknown>): integer]]
+          )(random, "trace", { combatant = target })
+          selected = (draw % #candidates) + 1
+        end
+        local copied = bridge:abilityOf(candidates[selected])
+        if copied ~= nil then
+          local function validateTraceState(candidate)
+            assert(
+              type(candidate) == "table" and type(candidate.ability) == "string",
+              "Trace state carries its ability"
+            )
+            return { version = 1, ability = candidate.ability }
+          end
+          local definition = {
+            key = "traceability",
+            stateVersion = 1,
+            validateState = validateTraceState,
+            timings = { { timing = "beforeAction", handler = "traceability", orderClass = "affliction" } },
+            lifecycle = { stacking = "replace", transfer = "clear" },
+          }
+          context:addBattleEffect(
+            definition,
+            { kind = "active", combatant = target, activation = holderActivation },
+            { kind = "innate", combatant = target },
+            { version = 1, ability = copied }
+          )
+          context:emit("ability", { kind = "ability", key = "TRACE", combatant = target }, {
+            key = "TRACE",
+            copiedAbility = copied,
+            combatant = target,
+          })
+        end
+      end
+    elseif timing == "entry" and answer.key == "FRISK" then
+      local itemFoes = {} ---@type table<integer, { target: integer, item: string }>
+      for _, foe in ipairs(foes) do
+        local heldItem = (BattleState.combatant(state, foe).mon --[[@as table<string, unknown>]]).heldItem
+        if type(heldItem) == "string" and heldItem ~= "NONE" and heldItem ~= "" then
+          itemFoes[#itemFoes + 1] = { target = foe, item = heldItem }
+        end
+      end
+      if #itemFoes > 0 then
+        local selected = 1
+        if #itemFoes > 1 then
+          local random = state.rng --[[@as table<string, unknown>]]
+          assert(type(random.nextU16) == "function", "Frisk draws from the battle stream")
+          local draw = (
+            random.nextU16 --[[@as fun(self: table<string, unknown>, label: string, cause: table<string, unknown>): integer]]
+          )(random, "frisk", { combatant = target })
+          selected = (draw % #itemFoes) + 1
+        end
+        local revealed = itemFoes[selected]
+        context:emit("ability", { kind = "ability", key = "FRISK", combatant = target }, {
+          key = "FRISK",
+          combatant = target,
+          target = revealed.target,
+          item = revealed.item,
+        })
+      end
+    elseif timing == "entry" and answer.key == "DOWNLOAD" and type(stats) == "table" then
+      local defense, specialDefense = 0, 0
+      for _, foe in ipairs(foes) do
+        if not context:hasBattleEffect(foe, "substitute") then
+          local foeStats = stats[foe]
+          if type(foeStats) == "table" then
+            defense = defense + foeStats.defense
+            specialDefense = specialDefense + foeStats.specialDefense
+          end
+        end
+      end
+      if defense + specialDefense > 0 then
+        local stat = defense >= specialDefense and "attack" or "specialAttack"
+        local stages = context:entryOf(target).stages --[[@as table<string, integer>]]
+        if stages[stat] < StatStages.MAX then
+          local amount = NativePassiveBridge.wrap(state):abilityOf(target) == "SIMPLE" and 2 or 1
+          local after = stages[stat] + amount
+          if after > StatStages.MAX then
+            after = StatStages.MAX
+          end
+          context:changeStage(target, stat, after, { kind = "ability", key = "DOWNLOAD", combatant = target })
+        end
+      end
+    end
+    if timing == "entry" and (answer.key == "ANTICIPATION" or answer.key == "FOREWARN") then
+      local selectedMove = nil
+      local selectedPower = -1
+      local threatens = false
+      for _, foe in ipairs(foes) do
+        local foeMon = BattleState.combatant(state, foe).mon --[[@as table<string, unknown>]]
+        for _, slot in
+          ipairs(foeMon.moves --[[@as table<integer, table<string, unknown>>]])
+        do
+          local moveName = slot.move
+          local move = type(moveFacts) == "table" and type(moveName) == "string" and moveFacts[moveName] or nil
+          if type(move) == "table" then
+            local power = move.power
+            local effect = move.effect
+            if answer.key == "ANTICIPATION" and type(power) == "number" then
+              local fixedEffects = {
+                fixed_damage = true,
+                damage_40 = true,
+                level_damage = true,
+                random_damage = true,
+                counter = true,
+                mirror_coat = true,
+                metal_burst = true,
+              }
+              local oneHitKo = effect == "one_hit_ko" or effect == "ohko" or move.oneHitKo == true
+              local holderLevel = type(stats) == "table" and type(stats[target]) == "table" and stats[target].level
+                or nil
+              local foeStats = type(stats) == "table" and stats[foe] or nil
+              local foeLevel = type(foeStats) == "table" and foeStats.level or nil
+              if
+                oneHitKo
+                and type(holderLevel) == "number"
+                and type(foeLevel) == "number"
+                and holderLevel <= foeLevel
+              then
+                threatens = true
+              elseif
+                power > 0
+                and not fixedEffects[
+                  effect --[[@as string?]] or ""
+                ]
+                and move.fixedDamage ~= true
+                and type(move.moveType) == "string"
+                and type(chart) == "table"
+                and type(types) == "table"
+              then
+                local effectiveness = TypeEffectiveness.resolve(chart, move.moveType, types[target] or {}, {})
+                if effectiveness.numerator > effectiveness.denominator then
+                  threatens = true
+                end
+              end
+            elseif answer.key == "FOREWARN" and type(power) == "number" then
+              local score = power
+              if power == 1 then
+                score = (effect == "one_hit_ko" or effect == "ohko" or move.oneHitKo == true) and 150
+                  or (effect == "counter" or effect == "mirror_coat" or effect == "metal_burst") and 120
+                  or 80
+              end
+              if score > 0 and score > selectedPower then
+                selectedPower = score
+                selectedMove = moveName
+              elseif score > 0 and score == selectedPower then
+                local random = state.rng --[[@as table<string, unknown>]]
+                assert(type(random.nextU16) == "function", "Forewarn ties draw from the battle stream")
+                if random.nextU16(random, "forewarn", { combatant = target }) % 2 == 1 then
+                  selectedMove = moveName
+                end
+              end
+            end
+          end
+        end
+      end
+      if answer.key == "FOREWARN" and selectedMove == nil then
+        local candidates = {} ---@type table<integer, { combatant: integer, moves: table<integer, table<string, unknown>> }>
+        for _, foe in ipairs(foes) do
+          local foeMon = BattleState.combatant(state, foe).mon --[[@as table<string, unknown>]]
+          local moves = foeMon.moves --[[@as table<integer, table<string, unknown>>]]
+          if #moves > 0 then
+            candidates[#candidates + 1] = { combatant = foe, moves = moves }
+          end
+        end
+        if #candidates > 0 then
+          local random = state.rng --[[@as table<string, unknown>]]
+          assert(type(random.nextU16) == "function", "Forewarn fallback draws from the battle stream")
+          local foeDraw = random.nextU16(random, "forewarn_target", { combatant = target })
+          local candidate = candidates[(foeDraw % #candidates) + 1]
+          local moveDraw = random.nextU16(random, "forewarn_move", { combatant = target, foe = candidate.combatant })
+          selectedMove = candidate.moves[(moveDraw % #candidate.moves) + 1].move --[[@as string]]
+        end
+      end
+      if answer.key == "ANTICIPATION" then
+        if threatens then
+          context:emit("ability", { kind = "ability", key = answer.key, combatant = target }, answer)
+        end
+      elseif selectedMove ~= nil then
+        context:emit("ability", { kind = "ability", key = answer.key, combatant = target }, {
+          key = answer.key,
+          combatant = target,
+          move = selectedMove,
+        })
+      end
+    end
+    if
+      answer.kind == "trigger"
+      and not suppressTrigger
+      and answer.key ~= "TRACE"
+      and answer.key ~= "FRISK"
+      and answer.key ~= "ANTICIPATION"
+      and answer.key ~= "FOREWARN"
+    then
+      context:emit("ability", { kind = "ability", key = answer.key, combatant = target }, answer)
+    end
+    if answer.loafing == true or answer.prevented == true then
+      return answer.key --[[@as string]]
+    end
+  end
+  if timing == "beforeAction" and type(pending) == "table" then
+    local move = (pending --[[@as table<string, unknown>]]).move
+    if move == "SELF_DESTRUCT" or move == "EXPLOSION" then
+      bridge = NativePassiveBridge.wrap(state)
+      for _, combatantId in
+        ipairs(state.combatantOrder --[[@as integer[] ]])
+      do
+        local combatant = BattleState.combatant(state, combatantId)
+        if combatant.active ~= nil and combatant.hp > 0 then
+          local damp = bridge:invoke("beforeAction", combatantId, { actionCheck = true, explosion = true })
+          for _, event in ipairs(damp.events) do
+            local answer = event --[[@as table<string, unknown>]]
+            if answer.prevented == true then
+              context:emit("ability", { kind = "ability", key = "DAMP", combatant = combatantId }, answer)
+              return "DAMP"
+            end
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+---@param state table<string, unknown> live battle state under PP accounting
+---@param user integer combatant using the move
+---@param targets integer[] distinct targeted combatants
+---@return integer extra PP charged by Pressure
+function NativeEffectHandlers.pressureCost(state, user, targets)
+  local bridge = NativePassiveBridge.wrap(state)
+  local seen = {} ---@type table<integer, boolean>
+  local extra = 0
+  for _, target in ipairs(targets) do
+    if not seen[target] then
+      seen[target] = true
+      local outcome = bridge:invoke("beforeAction", target, { moveUse = { user = user, targets = { target } } })
+      for _, event in ipairs(outcome.events) do
+        if
+          (event --[[@as table<string, unknown>]]).extraPp == 1
+        then
+          extra = extra + 1
+        end
+      end
+    end
+  end
+  return extra
+end
+
+---@param state table<string, unknown> live battle state under the sleep gate
+---@param combatantId integer holder under the sleep gate
+---@return boolean true when Early Bird halves this holder's sleep duration
+function NativeEffectHandlers.earlyBird(state, combatantId)
+  return NativePassiveBridge.wrap(state):abilityOf(combatantId) == "EARLY_BIRD"
+end
 
 ---@class NativeTimingFacts
 ---@field maxHp table<integer, integer> battle maximum health per combatant
@@ -59,6 +491,9 @@ local NativeEffectHandlers = {}
 ---@field slept table<integer, boolean>? sleeping combatants under nightmare watch
 ---@field sleeping table<integer, boolean>? active sleeping combatants under Uproar
 ---@field soundproof table<integer, boolean>? active Soundproof answers under Uproar
+---@field magicGuard table<integer, boolean>? active Magic Guard holders
+---@field abilities table<integer, string>? active effective abilities
+---@field weatherSuppressed boolean? true when Cloud Nine or Air Lock suppresses weather
 
 ---@type table<string, table<string, unknown>>? native definitions by key, captured once
 local cachedDefinitions = nil
@@ -227,6 +662,9 @@ end
 local function makeWeather(facts, immune, key)
   local function tickWeather(_, context)
     local health = context.health --[[@as table<integer, integer>]]
+    if facts.weatherSuppressed == true then
+      return {}
+    end
     local speeds = context.speeds --[[@as table<integer, integer>?]]
     local order = {}
     for combatant in pairs(health) do
@@ -250,7 +688,10 @@ local function makeWeather(facts, immune, key)
     end)
     local events = {}
     for _, combatant in ipairs(order) do
-      if healthOf(health, combatant) > 0 and not weatherImmune(typesOf(facts, combatant), immune) then
+      local magicGuard = facts.magicGuard
+      local protected = type(magicGuard) == "table"
+        and (magicGuard --[[@as table<integer, boolean>]])[combatant] == true
+      if healthOf(health, combatant) > 0 and not protected and not weatherImmune(typesOf(facts, combatant), immune) then
         local damage = dealFraction(facts, health, combatant, 16)
         events[#events + 1] = { kind = "tick", key = key, combatant = combatant, amount = damage }
       end
@@ -361,12 +802,35 @@ local function buildResidualHandlers(facts)
     if not anchored(health, victim) then
       return nil
     end
+    local magicGuard = facts.magicGuard
+    if
+      type(magicGuard) == "table" and (magicGuard --[[@as table<integer, boolean>]])[victim] == true
+    then
+      return nil
+    end
     local damage = dealFraction(facts, health, victim, 8)
     local source = instance
       .source --[[@as table<string, unknown>]]
       .combatant
     if type(source) == "number" and type(health[source]) == "number" and health[source] > 0 then
-      healFraction(facts, health, source --[[@as integer]], 8)
+      local abilities = facts.abilities
+      if type(abilities) == "table" and abilities[victim] == "LIQUID_OOZE" then
+        magicGuard = facts.magicGuard
+        if type(magicGuard) ~= "table" or magicGuard[source] ~= true then
+          health[source] = health[source] - damage
+          return {
+            { kind = "tick", key = "leechseed", combatant = victim, amount = damage },
+            { kind = "tick", key = "liquid-ooze", combatant = source, amount = damage },
+          }
+        end
+      else
+        local ceiling = maxHpOf(facts, source)
+        local missing = ceiling - healthOf(health, source)
+        if missing > 0 then
+          local restored = math.min(damage, missing)
+          health[source] = healthOf(health, source) + restored
+        end
+      end
     end
     return { kind = "tick", key = "leechseed", combatant = victim, amount = damage }
   end
@@ -381,6 +845,12 @@ local function buildResidualHandlers(facts)
       .scope --[[@as table<string, unknown>]]
       .combatant --[[@as integer]]
     if not anchored(health, victim) then
+      return nil
+    end
+    local magicGuard = facts.magicGuard
+    if
+      type(magicGuard) == "table" and (magicGuard --[[@as table<integer, boolean>]])[victim] == true
+    then
       return nil
     end
     local damage = dealFraction(facts, health, victim, 4)
@@ -501,6 +971,12 @@ local function buildResidualHandlers(facts)
     if not anchored(health, victim) then
       return nil
     end
+    local magicGuard = facts.magicGuard
+    if
+      type(magicGuard) == "table" and (magicGuard --[[@as table<integer, boolean>]])[victim] == true
+    then
+      return nil
+    end
     if
       (slept --[[@as table<integer, boolean>]])[victim] ~= true
     then
@@ -534,6 +1010,12 @@ local function buildResidualHandlers(facts)
     end
     if countDown(instance) <= 0 then
       return expireEvent(instance)
+    end
+    local magicGuard = facts.magicGuard
+    if
+      type(magicGuard) == "table" and (magicGuard --[[@as table<integer, boolean>]])[victim] == true
+    then
+      return nil
     end
     local damage = math.floor(maxHpOf(facts, victim) / 16)
     health[victim] = healthOf(health, victim) - damage
@@ -575,7 +1057,19 @@ local function buildResidualHandlers(facts)
     "healblock",
     "magnetrise",
   }) do
-    handlers[key] = makeExpiry()
+    local expire = makeExpiry()
+    if key == "raindance" or key == "sunnyday" then
+      local function expireWeatherUnlessInnate(instance, context)
+        local source = instance.source
+        if type(source) == "table" and source.kind == "innate" then
+          return nil
+        end
+        return expire(instance, context)
+      end
+      handlers[key] = expireWeatherUnlessInnate
+    else
+      handlers[key] = expire
+    end
   end
 
   -- Uproar wakes each active sleeper that lacks Soundproof before it
@@ -735,6 +1229,12 @@ local function buildEntryHandlers(facts)
   ---@return unknown tick event, or nil when the hazard spares the entrant
   local function stealthrock(instance, context)
     local entrant = facts.entrant --[[@as integer]]
+    local magicGuard = facts.magicGuard
+    if
+      type(magicGuard) == "table" and (magicGuard --[[@as table<integer, boolean>]])[entrant] == true
+    then
+      return nil
+    end
     local sides = facts.sides --[[@as table<integer, integer>]]
     if sides[entrant] ~= scopeSide(instance) then
       return nil
@@ -769,6 +1269,12 @@ local function buildEntryHandlers(facts)
   ---@return unknown hazard event, or nil when the layers spare the entrant
   local function spikes(instance, context)
     local entrant = facts.entrant --[[@as integer]]
+    local magicGuard = facts.magicGuard
+    if
+      type(magicGuard) == "table" and (magicGuard --[[@as table<integer, boolean>]])[entrant] == true
+    then
+      return nil
+    end
     local sides = facts.sides --[[@as table<integer, integer>]]
     if sides[entrant] ~= scopeSide(instance) then
       return nil
@@ -874,6 +1380,14 @@ end
 local function buildBeforeActionHandlers(facts)
   checkBaseFacts(facts)
   local handlers = {}
+
+  -- Trace overrides are read by the passive bridge; their binding exists
+  -- only to keep the entry-scoped state inside the typed effect bag.
+  ---@return nil no event is emitted
+  local function traceability()
+    return nil
+  end
+  handlers.traceability = traceability
 
   ---@param instance table<string, unknown> live flinch marker under the gate
   ---@param context table<string, unknown> before-action pass context under mutation

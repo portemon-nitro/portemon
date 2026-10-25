@@ -43,11 +43,7 @@ end
 -- explicit parameter wins over both derivations.
 function T.music_derivation_keeps_its_source_precedence()
   local legendary = BattleMusicSelection.select({ kind = "wild", species = "LUGIA" })
-  Assert.equal(
-    legendary.param,
-    BattleMusicSelection.SPECIAL_SPECIES.LUGIA,
-    "special wild species keep their parameter"
-  )
+  Assert.equal(legendary.param, BattleMusicSelection.SPECIAL_SPECIES.LUGIA, "special wild species keep their parameter")
   local rivalNamed = BattleMusicSelection.select({ kind = "trainer", trainerClass = "LEADER_FALKNER", rivalName = "X" })
   Assert.equal(
     rivalNamed.param,
@@ -61,11 +57,7 @@ function T.music_derivation_keeps_its_source_precedence()
     "gym classes keep their own parameter without a rival override"
   )
   local passerby = BattleMusicSelection.select({ kind = "trainer", trainerClass = "PASSERBY" })
-  Assert.equal(
-    passerby.music,
-    rivalNamed.music,
-    "passerby encounters share the rival track"
-  )
+  Assert.equal(passerby.music, rivalNamed.music, "passerby encounters share the rival track")
   local explicit = BattleMusicSelection.select({ kind = "wild", species = "LUGIA", setupParam = 0 })
   Assert.equal(explicit.param, 0, "an explicit parameter wins over the species derivation")
 end
@@ -97,15 +89,8 @@ function T.transition_fallback_formula_covers_its_axes_without_guessing()
   Assert.equal(Sources.transitionFallbackSelector("water", "day", false), 2, "water shifts the selector by two")
   Assert.equal(Sources.transitionFallbackSelector("cave", "night", false), 5, "cave at night keeps selector 5")
   Assert.equal(Sources.transitionFallbackSelector("plain", "day", true), 6, "trainers shift the selector by six")
-  Assert.equal(
-    Sources.transitionFallbackSelector("cave", "night", true),
-    11,
-    "cave night trainers keep selector 11"
-  )
-  Assert.isNil(
-    Sources.transitionFallbackSelector("no-such-terrain", "day", false),
-    "unknown terrain never selects"
-  )
+  Assert.equal(Sources.transitionFallbackSelector("cave", "night", true), 11, "cave night trainers keep selector 11")
+  Assert.isNil(Sources.transitionFallbackSelector("no-such-terrain", "day", false), "unknown terrain never selects")
   Assert.isNil(Sources.transitionFallbackSelector("plain", "dawn", false), "unknown time never selects")
   Assert.isNil(Sources.transitionFallbackSelector("plain", "day", nil), "an untyped trainer bit never selects")
 end
@@ -161,17 +146,11 @@ function T.ordinary_terrain_inventory_holds_eighteen_complete_ordinals()
   local count = 0
   for _, record in pairs(Sources.TERRAIN) do
     count = count + 1
-    Assert.isTrue(
-      type(record.ordinal) == "number" and record.ordinal % 1 == 0,
-      "terrain ordinals stay integral"
-    )
+    Assert.isTrue(type(record.ordinal) == "number" and record.ordinal % 1 == 0, "terrain ordinals stay integral")
     Assert.isNil(seen[record.ordinal], "terrain ordinals never repeat")
     seen[record.ordinal] = true
     for _, field in ipairs({ "type0", "type1", "day", "evening", "night" }) do
-      Assert.isTrue(
-        type(record[field]) == "number" and record[field] >= 0,
-        "terrain members stay non-negative"
-      )
+      Assert.isTrue(type(record[field]) == "number" and record[field] >= 0, "terrain members stay non-negative")
     end
   end
   Assert.equal(count, 24, "the terrain inventory holds twenty-four families")

@@ -94,11 +94,11 @@ local function testMember85Alpha(romFs)
   end
   for textureKey, texture in pairs(bundle.textures) do
     if not overlayFrames[textureKey] then
-    Assert.notNil(texture.alphaUsage, "compiled effect texture must classify decoded alpha")
-    if texture.alphaUsage.hasZero then
-      transparentOutput = true
-      Assert.isTrue(hasZeroAlpha(texture), "compiled zero-alpha usage must have alpha-zero pixels")
-    end
+      Assert.notNil(texture.alphaUsage, "compiled effect texture must classify decoded alpha")
+      if texture.alphaUsage.hasZero then
+        transparentOutput = true
+        Assert.isTrue(hasZeroAlpha(texture), "compiled zero-alpha usage must have alpha-zero pixels")
+      end
     end
   end
   Assert.isTrue(transparentOutput, "member 85 transparent coverage must survive compilation")

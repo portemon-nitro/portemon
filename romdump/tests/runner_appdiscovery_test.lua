@@ -205,7 +205,11 @@ function T.discover_app_prints_the_output_path_on_success()
         }
       end,
     }
-    Runner.load({ command = "discover-app", romPath = "fake-rom/hg.nds", discoveryTarget = { kind = "arm9-overlay", overlayId = 15 } })
+    Runner.load({
+      command = "discover-app",
+      romPath = "fake-rom/hg.nds",
+      discoveryTarget = { kind = "arm9-overlay", overlayId = 15 },
+    })
   end)
   restore()
   if not ok then

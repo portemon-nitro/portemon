@@ -225,8 +225,7 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
       suppression = { missed = true },
     }),
   }, "topology-probe", 1)
-  local singlePlayback =
-    BattlePresentationFlow.animationPlayback(singlePacket, singlePacket.events[1], geometry)
+  local singlePlayback = BattlePresentationFlow.animationPlayback(singlePacket, singlePacket.events[1], geometry)
   Assert.equal(singlePlayback.launchId, "topology-probe", "the playback carries its launch identity")
   Assert.equal(singlePlayback.packetId, 1, "the playback carries its packet identity")
   Assert.equal(singlePlayback.event.sequence, 4, "the playback carries its event sequence")
@@ -234,11 +233,7 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
   Assert.equal(singlePlayback.event.hitIndex, 1, "the playback carries its hit ordinal")
   Assert.equal(singlePlayback.event.effectKey, "tackle-strike", "the playback carries its effect key")
   Assert.equal(singlePlayback.visualSeed, 4242, "the playback carries its deterministic visual seed")
-  Assert.deepEqual(
-    singlePlayback.event.suppression,
-    { missed = true },
-    "the playback carries its suppression facts"
-  )
+  Assert.deepEqual(singlePlayback.event.suppression, { missed = true }, "the playback carries its suppression facts")
   local singleAttacker = singlePlayback.topology.attacker
   Assert.equal(singleAttacker.combatant, 1, "the single attacker keeps its combatant")
   Assert.equal(singleAttacker.activation, 7, "the single attacker keeps its activation")
@@ -267,8 +262,7 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
       { combatant = 4, activation = 10, side = 2, position = 4 },
     }, { actionId = 3, hitIndex = 1, effectKey = "spread-strike", visualSeed = 5150 }),
   }, "topology-probe", 2)
-  local doublePlayback =
-    BattlePresentationFlow.animationPlayback(doublePacket, doublePacket.events[1], geometry)
+  local doublePlayback = BattlePresentationFlow.animationPlayback(doublePacket, doublePacket.events[1], geometry)
   local spreadAttacker = doublePlayback.topology.attacker
   Assert.equal(spreadAttacker.slot, "player-side-slot-1", "the first sorted ally takes its double slot")
   Assert.equal(spreadAttacker.sideType, 2, "the first sorted ally takes the left double side type")
@@ -285,11 +279,7 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
     "the second spread target takes its double slot"
   )
   Assert.equal(doublePlayback.topology.targets[2].sideType, 5, "the second spread target takes its side type")
-  Assert.equal(
-    doublePlayback.topology.targets[2].activation,
-    10,
-    "the second spread target keeps its own activation"
-  )
+  Assert.equal(doublePlayback.topology.targets[2].activation, 10, "the second spread target keeps its own activation")
 
   local replacedPacket = packetFor({
     own = { { combatant = 1, activation = 7, side = 1, position = 1 } },
@@ -302,25 +292,16 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
       { combatant = 2, activation = 9, side = 2, position = 2 },
     }, { actionId = 4, hitIndex = 1, effectKey = "late-hit", visualSeed = 99 }),
   }, "topology-probe", 3)
-  local replacedPlayback =
-    BattlePresentationFlow.animationPlayback(replacedPacket, replacedPacket.events[1], geometry)
+  local replacedPlayback = BattlePresentationFlow.animationPlayback(replacedPacket, replacedPacket.events[1], geometry)
   Assert.equal(
     replacedPlayback.topology.targets[1].activation,
     9,
     "a hit against a departed target keeps its pre-event activation"
   )
-  Assert.equal(
-    replacedPlayback.topology.targets[1].slot,
-    "solo-enemy",
-    "the departed target keeps its event-time slot"
-  )
+  Assert.equal(replacedPlayback.topology.targets[1].slot, "solo-enemy", "the departed target keeps its event-time slot")
 
   singlePacket.before.foes[1].activation = 999
-  Assert.equal(
-    singlePlayback.topology.targets[1].activation,
-    9,
-    "the admitted topology never follows later view edits"
-  )
+  Assert.equal(singlePlayback.topology.targets[1].activation, 9, "the admitted topology never follows later view edits")
   local replayPacket = packetFor({
     own = { { combatant = 1, activation = 7, side = 1, position = 1 } },
     foes = { { combatant = 2, activation = 12, side = 2, position = 2 } },
@@ -332,8 +313,7 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
       { combatant = 2, activation = 12, side = 2, position = 2 },
     }, { actionId = 9, hitIndex = 2, effectKey = "late-hit", visualSeed = 100 }),
   }, "topology-probe", 4)
-  local replayPlayback =
-    BattlePresentationFlow.animationPlayback(replayPacket, replayPacket.events[1], geometry)
+  local replayPlayback = BattlePresentationFlow.animationPlayback(replayPacket, replayPacket.events[1], geometry)
   Assert.equal(
     replayPlayback.topology.targets[1].activation,
     12,
@@ -413,11 +393,7 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
     "solo-enemy",
     "factory context carries the admitted target slot"
   )
-  Assert.equal(
-    captured[1].context.event.sequence,
-    4,
-    "factory context carries the admitted event identity"
-  )
+  Assert.equal(captured[1].context.event.sequence, 4, "factory context carries the admitted event identity")
   local replayBound = assert(player:start(replayPlayback, {
     entry = "main",
     instructions = {
@@ -583,20 +559,11 @@ function T.fainted_target_missing_from_after_view_keeps_event_slot_without_reser
       { combatant = 2, activation = 9, side = 2, position = 2 },
     }, { actionId = 5, hitIndex = 1, effectKey = "faint-strike", visualSeed = 31337 }),
   }, "faint-probe", 9)
-  local playback =
-    BattlePresentationFlow.animationPlayback(packet, packet.events[1], geometry)
+  local playback = BattlePresentationFlow.animationPlayback(packet, packet.events[1], geometry)
   Assert.equal(playback.topology.attacker.activation, 7, "the switched attacker keeps its striking activation")
   Assert.equal(playback.topology.attacker.slot, "solo-player", "the switched attacker keeps its event slot")
-  Assert.equal(
-    playback.topology.targets[1].activation,
-    9,
-    "the fainted target keeps its pre-event activation"
-  )
-  Assert.equal(
-    playback.topology.targets[1].slot,
-    "solo-enemy",
-    "the missing target keeps its event-time slot"
-  )
+  Assert.equal(playback.topology.targets[1].activation, 9, "the fainted target keeps its pre-event activation")
+  Assert.equal(playback.topology.targets[1].slot, "solo-enemy", "the missing target keeps its event-time slot")
   for _, field in ipairs({ "party", "inventory", "reserves", "kernel", "narcId", "memberId" }) do
     Assert.isNil(playback[field], "the admitted playback leaks no " .. field)
     Assert.isNil(playback.event[field], "the admitted event leaks no " .. field)
@@ -655,12 +622,17 @@ function T.fainted_target_missing_from_after_view_keeps_event_slot_without_reser
   Assert.equal(player:status(bound), "complete", "the fainted-target occurrence runs with its frozen slot")
   Assert.equal(#captured, 1, "the fainted-target occurrence exposes its factory context once")
   local context = captured[1].context
-  Assert.equal(
-    context.topology.targets[1].activation,
-    9,
-    "factory context carries the event-time target activation"
-  )
-  for _, field in ipairs({ "before", "after", "party", "inventory", "reserves", "kernel", "combatants", "combatantOrder" }) do
+  Assert.equal(context.topology.targets[1].activation, 9, "factory context carries the event-time target activation")
+  for _, field in ipairs({
+    "before",
+    "after",
+    "party",
+    "inventory",
+    "reserves",
+    "kernel",
+    "combatants",
+    "combatantOrder",
+  }) do
     Assert.isNil(context[field], "factory context leaks no " .. field)
   end
 end
@@ -717,22 +689,14 @@ function T.event_time_sides_select_the_side_branches()
     }, { actionId = 11, hitIndex = 1, effectKey = "side-branch-strike", visualSeed = 77 }),
   }, "side-branch-probe", 12)
   local outwardPlayback = BattlePresentationFlow.animationPlayback(outward, outward.events[1], geometry)
-  Assert.equal(
-    outwardPlayback.topology.attacker.slot,
-    "solo-player",
-    "the outward strike keeps its player-side user"
-  )
+  Assert.equal(outwardPlayback.topology.attacker.slot, "solo-player", "the outward strike keeps its player-side user")
   local inward = packetFor(views, views, {
     strikeEvent(13, { { combatant = 2, activation = 9, side = 2, position = 2 } }, {
       { combatant = 1, activation = 7, side = 1, position = 1 },
     }, { actionId = 12, hitIndex = 1, effectKey = "side-branch-reply", visualSeed = 78 }),
   }, "side-branch-probe", 13)
   local inwardPlayback = BattlePresentationFlow.animationPlayback(inward, inward.events[1], geometry)
-  Assert.equal(
-    inwardPlayback.topology.attacker.slot,
-    "solo-enemy",
-    "the reply strike keeps its foe-side user"
-  )
+  Assert.equal(inwardPlayback.topology.attacker.slot, "solo-enemy", "the reply strike keeps its foe-side user")
   local doubleViews = {
     own = {
       { combatant = 1, activation = 7, side = 1, position = 1 },
@@ -749,11 +713,7 @@ function T.event_time_sides_select_the_side_branches()
     }, { actionId = 13, hitIndex = 1, effectKey = "side-branch-aid", visualSeed = 79 }),
   }, "side-branch-probe", 14)
   local allyPlayback = BattlePresentationFlow.animationPlayback(allyAid, allyAid.events[1], geometry)
-  Assert.equal(
-    allyPlayback.topology.targets[1].slot,
-    "player-side-slot-2",
-    "the ally aid keeps its same-side target"
-  )
+  Assert.equal(allyPlayback.topology.targets[1].slot, "player-side-slot-2", "the ally aid keeps its same-side target")
 
   local Player = playerModule()
   local scene = sceneWithPair()

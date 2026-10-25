@@ -304,7 +304,11 @@ function T.source_modes_keep_distinct_storage_geometry_and_live_hit_regions(scop
       }
       if mode == 0 then
         local idle = session:resolve(measurement("nativeLike"), view)
-        Assert.equal(#idle.content.hitRegions.boxSlots, 0, "deposit mode hit-tests only the party tray until it asks where")
+        Assert.equal(
+          #idle.content.hitRegions.boxSlots,
+          0,
+          "deposit mode hit-tests only the party tray until it asks where"
+        )
         view.carry = { kind = "mon", action = "deposit" }
       end
       local plan = session:resolve(measurement("nativeLike"), view)

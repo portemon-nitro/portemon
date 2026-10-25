@@ -161,8 +161,7 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
       drawable = function(key)
         return stagedDrawable(key)
       end,
-      release = function(_, _)
-      end,
+      release = function(_, _) end,
     },
     text = scopeText,
     windows = scopeWindows,
@@ -285,10 +284,17 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   end
   Assert.isTrue(#trajectory >= 1, "the switched arrival becomes visible after its switch packet")
   local settledArrivalX = nominalOrigin(DOUBLES_SETTLED[4], 0)
-  Assert.equal(trajectory[#trajectory], settledArrivalX, "the switched arrival settles exactly on its slot settled edge")
+  Assert.equal(
+    trajectory[#trajectory],
+    settledArrivalX,
+    "the switched arrival settles exactly on its slot settled edge"
+  )
   local displaced = false
   for _, x in ipairs(trajectory) do
-    if x --[[@as number]] < settledArrivalX - 4 then
+    if
+      x --[[@as number]]
+      < settledArrivalX - 4
+    then
       displaced = true
       break
     end

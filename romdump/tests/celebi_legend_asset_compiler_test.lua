@@ -105,7 +105,11 @@ T.tests["compiles the original legend model with all ordered animation roles"] =
   Assert.isTrue(ok, tostring(compiled))
   Assert.equal(compiled.definition.model.key, "field-effect:celebi-time-travel")
   Assert.deepEqual(
-    { compiled.definition.model.animations[1].id, compiled.definition.model.animations[2].id, compiled.definition.model.animations[3].id },
+    {
+      compiled.definition.model.animations[1].id,
+      compiled.definition.model.animations[2].id,
+      compiled.definition.model.animations[3].id,
+    },
     { "celebi.joint", "celebi.pattern", "celebi.srt" }
   )
   for _, clip in ipairs(compiled.definition.model.animations) do

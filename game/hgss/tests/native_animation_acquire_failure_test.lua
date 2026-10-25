@@ -174,11 +174,7 @@ function T.construction_failure_releases_every_acquisition_once_and_stays_silent
   player:dispose()
   player:dispose()
   Assert.equal(#log.failed, 1, "repeated cancel and release cause no further construction")
-  Assert.equal(
-    #log.released,
-    #log.resolved,
-    "repeated cancel and release cause no further releases"
-  )
+  Assert.equal(#log.released, #log.resolved, "repeated cancel and release cause no further releases")
   local followup = sceneWithPair()
   Assert.notNil(followup, "the scene boundary stays usable after the failure")
 end

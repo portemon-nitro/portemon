@@ -237,9 +237,14 @@ local function captureRuntime(overrides)
       species = {},
       maps = {},
     }),
-    dexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge").new(PokedexDexFixture.refsForSpecies({ "CHIKORITA" })),
+    dexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge").new(
+      PokedexDexFixture.refsForSpecies({ "CHIKORITA" })
+    ),
     gameStats = require("libs.hgss.src.mons.GameStats").new({ species = { CHIKORITA = true } }),
-    pokegearState = require("libs.hgss.src.save.PokegearState").new({ seed = 1 }, { catalog = { contacts = {}, locations = {} } }),
+    pokegearState = require("libs.hgss.src.save.PokegearState").new(
+      { seed = 1 },
+      { catalog = { contacts = {}, locations = {} } }
+    ),
   }, FieldRuntime)
   for key, value in pairs(overrides or {}) do
     runtime[key] = value

@@ -91,7 +91,16 @@ function PcPresentationFixture.manifest()
   local photoAnimations = {}
   for animationId = 0, 9 do
     photoAnimations[animationId] = {
-      frames = { { image = "assets/generated/pc/photo-animation.png", width = 8, height = 8, anchorX = 0, anchorY = 0, duration = 1 } },
+      frames = {
+        {
+          image = "assets/generated/pc/photo-animation.png",
+          width = 8,
+          height = 8,
+          anchorX = 0,
+          anchorY = 0,
+          duration = 1,
+        },
+      },
     }
   end
   -- The drawn Mailbox sprite roles every consumer draws: previous arrow
@@ -164,7 +173,10 @@ function PcPresentationFixture.manifest()
     text = { banks = textBanks },
     sequences = {},
     terminal = {
-      slots = { [0] = { role = "terminal.on", playMode = "forward" }, [1] = { role = "terminal.off", playMode = "forward" } },
+      slots = {
+        [0] = { role = "terminal.on", playMode = "forward" },
+        [1] = { role = "terminal.off", playMode = "forward" },
+      },
     },
   }
 end

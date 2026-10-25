@@ -168,10 +168,7 @@ end
 
 local function bagFocus(view)
   local focus = view.focus
-  Assert.isTrue(
-    focus == "items" or focus == "tabs" or focus == "cancel",
-    "the bag status must expose its focus region"
-  )
+  Assert.isTrue(focus == "items" or focus == "tabs" or focus == "cancel", "the bag status must expose its focus region")
   return focus
 end
 
@@ -313,18 +310,10 @@ function T.tests.stacked_toss_keeps_selection_types_messages_and_mutates_once()
     local menu = openActionMenu(game, state)
     local message = assert(menu.lowerMessage, "the action menu publishes its lower message")
     Assert.equal(#message.visibleText, #message.fullText, "the action message reveals instantly")
-    Assert.equal(
-      (menu.selected or {}).item,
-      STACK_KEY,
-      "the action menu keeps the selected item context"
-    )
+    Assert.equal((menu.selected or {}).item, STACK_KEY, "the action menu keeps the selected item context")
 
     local latched = chooseAction(game, state, "toss")
-    Assert.equal(
-      latched.state,
-      "action_menu",
-      "activating toss latches feedback instead of dispatching immediately"
-    )
+    Assert.equal(latched.state, "action_menu", "activating toss latches feedback instead of dispatching immediately")
     game:advanceUntil("quantity picker owns the tick", function()
       return bagView(game).state == "toss_quantity"
     end, 240)

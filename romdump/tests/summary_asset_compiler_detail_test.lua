@@ -155,8 +155,7 @@ local function collectWindowRows(value, out, seen)
     and type(value.width) == "number"
     and type(value.height) == "number"
   then
-    out[#out + 1] = value.bg
-      .. ":" .. value.x .. "," .. value.y .. "," .. value.width .. "x" .. value.height
+    out[#out + 1] = value.bg .. ":" .. value.x .. "," .. value.y .. "," .. value.width .. "x" .. value.height
   end
   for _, child in pairs(value) do
     collectWindowRows(child, out, seen)
@@ -184,11 +183,7 @@ function T.source_inventory_counts_normal_group_windows_per_group()
       groups[expectation.name],
       "the source catalog carries the " .. expectation.name .. " group window inventory"
     )
-    Assert.equal(
-      #inventory,
-      expectation.rows,
-      "the " .. expectation.name .. " group keeps its source window census"
-    )
+    Assert.equal(#inventory, expectation.rows, "the " .. expectation.name .. " group keeps its source window census")
   end
 end
 

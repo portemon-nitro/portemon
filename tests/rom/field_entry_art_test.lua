@@ -52,8 +52,9 @@ end
 local function expectedBanner(romFs, style)
   local char =
     assert(G2dDecoder.decodeChar(memberBytes(romFs, AREA_WINDOWS_ALIAS, style * 2), { label = "banner char" }))
-  local palette =
-    assert(G2dDecoder.decodePalette(memberBytes(romFs, AREA_WINDOWS_ALIAS, style * 2 + 1), { label = "banner palette" }))
+  local palette = assert(
+    G2dDecoder.decodePalette(memberBytes(romFs, AREA_WINDOWS_ALIAS, style * 2 + 1), { label = "banner palette" })
+  )
   local image = G2dRasterizer.renderScreen(char, { colors = palette.colors }, bannerScreen(), {
     asset = "banner expectation",
   })
@@ -134,9 +135,21 @@ function T.banner_skins_match_the_selected_source_members(romFs, _)
     seen[rgba] = true
 
     local roles = assert(bundle.manifest.bannerTextPalettes[style])
-    Assert.deepEqual(roles.foreground, { r = colors[2].r, g = colors[2].g, b = colors[2].b }, "style " .. style .. " foreground")
-    Assert.deepEqual(roles.shadow, { r = colors[3].r, g = colors[3].g, b = colors[3].b }, "style " .. style .. " shadow")
-    Assert.deepEqual(roles.background, { r = colors[1].r, g = colors[1].g, b = colors[1].b }, "style " .. style .. " background")
+    Assert.deepEqual(
+      roles.foreground,
+      { r = colors[2].r, g = colors[2].g, b = colors[2].b },
+      "style " .. style .. " foreground"
+    )
+    Assert.deepEqual(
+      roles.shadow,
+      { r = colors[3].r, g = colors[3].g, b = colors[3].b },
+      "style " .. style .. " shadow"
+    )
+    Assert.deepEqual(
+      roles.background,
+      { r = colors[1].r, g = colors[1].g, b = colors[1].b },
+      "style " .. style .. " background"
+    )
   end
 end
 

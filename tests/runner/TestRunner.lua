@@ -62,7 +62,10 @@ end
 local function collect(config)
   local items = {}
   for _, entry in ipairs(Discovery.suites(config.fs, config.roots)) do
-    if (config.layer == nil or entry.layer == config.layer) and (config.shard == nil or Parallel.owns(entry, config.shard)) then
+    if
+      (config.layer == nil or entry.layer == config.layer)
+      and (config.shard == nil or Parallel.owns(entry, config.shard))
+    then
       local ok, loaded = pcall(config.load, entry.module)
       if not ok then
         items[#items + 1] = { failure = loadFailure(entry, "module load failed: " .. tostring(loaded)) }

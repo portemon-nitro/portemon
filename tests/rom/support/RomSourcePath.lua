@@ -56,8 +56,7 @@ function RomSourcePath.openReader(versionId)
   local info = GameVersion.info(versionId)
   if info == nil or type(info.sha1) ~= "string" then
     local Errors = require("libs.errors.src.Errors")
-    return nil,
-      Errors.new("ROM_SOURCE_MISMATCH", "no known version " .. tostring(versionId), { versionId = versionId })
+    return nil, Errors.new("ROM_SOURCE_MISMATCH", "no known version " .. tostring(versionId), { versionId = versionId })
   end
   local explicit = RomSourcePath.find()
   if explicit ~= nil then

@@ -197,8 +197,12 @@ local function semanticEntry(item, itemFacts)
       and key ~= "naturalGift"
       and key ~= "fling"
       and key ~= "lowHpOnly"
+      and key ~= "pocket"
     then
-      error(BattleErrors.missingBehavior("battle item facts carry only their generated facts", { item = item }))
+      error(BattleErrors.missingBehavior("battle item facts carry only their generated facts", {
+        item = item,
+        fact = tostring(key),
+      }))
     end
   end
   return entry --[[@as table<string, unknown>]]

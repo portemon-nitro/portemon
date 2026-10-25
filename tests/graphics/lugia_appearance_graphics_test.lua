@@ -101,7 +101,10 @@ local function runVersion(scope)
   for y = 0, pixels:getHeight() - 1 do
     for x = 0, pixels:getWidth() - 1 do
       local red, green, blue = pixels:getPixel(x, y)
-      if math.abs(red - cinematicClear[1]) + math.abs(green - cinematicClear[2]) + math.abs(blue - cinematicClear[3]) > 0.05 then
+      if
+        math.abs(red - cinematicClear[1]) + math.abs(green - cinematicClear[2]) + math.abs(blue - cinematicClear[3])
+        > 0.05
+      then
         visiblePixels = visiblePixels + 1
       end
     end

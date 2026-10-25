@@ -570,10 +570,7 @@ function T.scene_selector_dispatches_the_registered_scene_job()
   Assert.equal(#settled, 4, "each malformed scene key fails its own request")
   for index = 2, 4 do
     Assert.equal(settled[index].state, "failed", "a malformed key reports failure")
-    Assert.isTrue(
-      tostring(settled[index].errorMessage) ~= "",
-      "a malformed key carries its cause"
-    )
+    Assert.isTrue(tostring(settled[index].errorMessage) ~= "", "a malformed key carries its cause")
   end
   Assert.isTrue(worker.lifecycle ~= "failed", "a malformed selector never kills the controller")
 end
@@ -747,16 +744,9 @@ function T.quiesce_preserves_source_trees_and_user_data()
     "superseded source metadata survives quiescence"
   )
   Assert.equal(cache:read("rom-dump.complete"), "raw", "the source marker survives quiescence")
-  Assert.isFalse(
-    cache:exists("data/generated/storage-migrated.lua"),
-    "quiescence writes no marker of its own"
-  )
+  Assert.isFalse(cache:exists("data/generated/storage-migrated.lua"), "quiescence writes no marker of its own")
   Assert.equal(cache:read("mods/mymod/info.lua"), modLogical, "user mods stay byte-identical")
-  Assert.equal(
-    cache:read("staging/leftover/scratch.lua"),
-    stageLogical,
-    "staging debris is never entered"
-  )
+  Assert.equal(cache:read("staging/leftover/scratch.lua"), stageLogical, "staging debris is never entered")
   Assert.equal(sibling:read("data/generated/maps/61.lua"), siblingLogical, "a sibling version is never entered")
   Assert.equal(cache:read("data/generated/maps/61.lua"), generated)
 end
@@ -931,9 +921,8 @@ function T.current_full_marker_boots_without_source_io()
   Assert.equal(opens, 0, "a current full marker performs zero source opens")
   Assert.isFalse(held, "a fast boot retains no source buffer")
   local staleBackend = FakeCache.new()
-  local stale = DerivedCacheState.currentForSelection(
-    { versionId = "heartgold", romSha1 = info.sha1, producerId = "r6" }
-  )
+  local stale =
+    DerivedCacheState.currentForSelection({ versionId = "heartgold", romSha1 = info.sha1, producerId = "r6" })
   DerivedCacheState.publish(CacheFs.forVersion("heartgold", staleBackend), stale)
   local staleStatus, staleDetail, staleOpens, _ = driveBootGate(staleBackend)
   Assert.equal(staleStatus, "source-required", "a stale full marker cannot skip the source")
@@ -1226,11 +1215,7 @@ function T.failed_completion_marker_write_releases_boot_source_and_keeps_assets(
   Assert.isNil(pool.sharedSource, "the borrower-free buffer unpins at once")
   Assert.isNil(worker.attestedFor, "a failed write never records a trusted marker")
   Assert.notNil(worker.attestationNote, "the failed write records its diagnostic")
-  Assert.equal(
-    worker.attestationNote.generationId,
-    generationId,
-    "the diagnostic names the completed generation"
-  )
+  Assert.equal(worker.attestationNote.generationId, generationId, "the diagnostic names the completed generation")
   Assert.isTrue(
     type(worker.attestationNote.error) == "string" and worker.attestationNote.error ~= "",
     "the diagnostic keeps its failure text"
@@ -1429,8 +1414,7 @@ local function sourcelessPool()
   function pool:prepareBootSource(epoch, needsSource)
     pool.calls[#pool.calls + 1] = needsSource
     if needsSource then
-      return false,
-        { code = "ROM_SOURCE_REQUIRED", message = "the original source is unavailable", context = {} }
+      return false, { code = "ROM_SOURCE_REQUIRED", message = "the original source is unavailable", context = {} }
     end
     return true
   end
@@ -1650,21 +1634,10 @@ function T.eligible_shutdown_reclaims_proven_orphans_and_memoizes_the_pass()
     "operator note",
     "unknown names are preserved, not scavenged"
   )
-  Assert.equal(
-    setup.cache:read("mods/mymod/info.lua"),
-    "return { name = 'kept' }\n",
-    "user mods stay byte-identical"
-  )
-  Assert.equal(
-    setup.cache:read("staging/leftover/scratch.lua"),
-    "staged bytes",
-    "staging debris is never entered"
-  )
+  Assert.equal(setup.cache:read("mods/mymod/info.lua"), "return { name = 'kept' }\n", "user mods stay byte-identical")
+  Assert.equal(setup.cache:read("staging/leftover/scratch.lua"), "staged bytes", "staging debris is never entered")
   Assert.equal(sibling:read("data/generated/maps/61.lua"), "sibling bytes", "a sibling version is never entered")
-  Assert.deepEqual(
-    setup.cache:loadLua(CLEANUP_MEMO_PATH),
-    { schema = 1, generationId = setup.identity.generationId }
-  )
+  Assert.deepEqual(setup.cache:loadLua(CLEANUP_MEMO_PATH), { schema = 1, generationId = setup.identity.generationId })
 
   local listings = 0
   local realItems = setup.backend.getDirectoryItems
@@ -1875,10 +1848,7 @@ function T.failed_marker_write_still_requires_source_on_next_boot()
     type(answer.detail) == "table" and answer.detail.code == "ROM_SOURCE_REQUIRED",
     "the missing source names its cause"
   )
-  Assert.isNil(
-    freshCache:loadLua(DerivedCacheState.path),
-    "the next boot still finds no full-generation marker"
-  )
+  Assert.isNil(freshCache:loadLua(DerivedCacheState.path), "the next boot still finds no full-generation marker")
   Assert.equal(
     faultBackend:read("heartgold/data/generated/maps/61.lua"),
     "current bytes",

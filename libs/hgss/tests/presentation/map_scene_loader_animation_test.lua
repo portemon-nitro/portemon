@@ -1391,11 +1391,7 @@ function T.same_named_ambient_clips_both_autoplay_at_load()
     { meshBuilder = fakeMeshBuilder }
   )
   local instance = runtime.animatedInstances[1]
-  Assert.equal(
-    #instance.animationState:attachments("material"),
-    2,
-    "both same-named ambient clips autoplay"
-  )
+  Assert.equal(#instance.animationState:attachments("material"), 2, "both same-named ambient clips autoplay")
   runtime:release()
 end
 
@@ -1774,7 +1770,11 @@ function T.terrain_frame_and_matrix_mutate_in_place_without_rebuilding_draws()
   Assert.equal(draws[2].material, water)
   Assert.equal(draws[1].mesh, meshes[1], "the mesh identity is unchanged")
   Assert.equal(draws[2].mesh, meshes[2])
-  Assert.equal(flower.image, images:findPhysical("b.png", REPEAT_SAMPLER), "the step image switched to step 2 at tick 19")
+  Assert.equal(
+    flower.image,
+    images:findPhysical("b.png", REPEAT_SAMPLER),
+    "the step image switched to step 2 at tick 19"
+  )
   Assert.isFalse(flower.image == flowerImage0, "the switched image is a different shared image")
   Assert.equal(flower.texMatrix, flowerMatrix0, "an untargeted matrix keeps its table identity")
   Assert.near(water.texMatrix[7], -3, 1e-9, "the SRT sample advanced to frame 3 (0x3000 scroll)")

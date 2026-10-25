@@ -233,10 +233,7 @@ function T.tests.field_battle_returns_to_the_live_field_after_commit()
       "the committed battle publishes bag changes through the live owner"
     )
     local returned = battle:status()
-    Assert.isTrue(
-      returned.phase == "complete",
-      "postbattle work drains before the runtime reports completion"
-    )
+    Assert.isTrue(returned.phase == "complete", "postbattle work drains before the runtime reports completion")
     battle:dispose()
     Assert.equal(portRecord.disposed, 1, "teardown releases presentation resources exactly once")
 
@@ -245,10 +242,7 @@ function T.tests.field_battle_returns_to_the_live_field_after_commit()
     Assert.isNil(game.runtime.errorText, "the round trip runs without a runtime fault")
     game:waitForFieldReady()
     Assert.equal(game:snapshot().mapSymbol, MAP, "the battle returns to the map it launched from")
-    Assert.isTrue(
-      game.runtime.monService:partyCount() >= 1,
-      "the live party survives the round trip"
-    )
+    Assert.isTrue(game.runtime.monService:partyCount() >= 1, "the live party survives the round trip")
     local taskResult = BattleTask.result({ launchId = launch.id }, { services = { battle = battle } })
     Assert.isTrue(taskResult.committed, "the script continuation resumes on the committed result")
     Assert.equal(game:renderAttempts(), 0, "the journey must stop before GPU rendering")

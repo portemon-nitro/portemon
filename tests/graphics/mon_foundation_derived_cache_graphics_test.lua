@@ -348,5 +348,17 @@ end
 
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
-suite.metadata.derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:702", "audio-bank:709", "mon-summary:global", "map-data:31", "map-data:33", "map-data:47", "map-data:48", "map-data:60", "map:60" }
+suite.metadata.derivedAssets = {
+  "field-runtime",
+  "audio-bank:700",
+  "audio-bank:702",
+  "audio-bank:709",
+  "mon-summary:global",
+  "map-data:31",
+  "map-data:33",
+  "map-data:47",
+  "map-data:48",
+  "map-data:60",
+  "map:60",
+}
 return suite

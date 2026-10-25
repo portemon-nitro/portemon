@@ -631,11 +631,10 @@ function T.photo_owner_prepares_source_view_and_private_coverage_before_render(s
     local albumPool = PreparedMonIcons.scopedImagePool(scope, versionCache)
     local albumRenderer =
       scope:own(PhotoAlbumRenderer.new({ cacheFs = versionCache, manifest = albumManifest, imagePool = albumPool }))
-    local icons = scope:own(
-      PreparedMonIcons.seededProvider(scope, iconCache(versionId, catalog:iconSelection(photo.party[1])), {
+    local icons =
+      scope:own(PreparedMonIcons.seededProvider(scope, iconCache(versionId, catalog:iconSelection(photo.party[1])), {
         catalog:iconSelection(photo.party[1]),
-      })
-    )
+      }))
     local albumResources = {
       photoAlbumRenderer = albumRenderer,
       fieldRenderer = fieldRenderer,
@@ -799,10 +798,7 @@ function T.photo_owner_prepares_source_view_and_private_coverage_before_render(s
             table.concat(albumResources.textRenderer.plain, " "):find("PHOTO ", 1, true) == nil,
             "viewer flavor text comes from the source message templates"
           )
-          Assert.isTrue(
-            renderedExit,
-            "viewer exit label uses source message bank zero"
-          )
+          Assert.isTrue(renderedExit, "viewer exit label uses source message bank zero")
           if screen.viewer.phase == "ready" then
             local readyFlavor = assert(renderedFlavor, "a ready viewer draws its source flavor message")
             Assert.equal(#calls, fieldCallsBeforeDraw + 1, "a ready viewer renders its saved field once")
@@ -1154,10 +1150,7 @@ function T.production_album_viewer_borrows_the_live_loader_and_its_image_owner(s
       child:advance(16)
     end
     Assert.equal(child.viewer:status().phase, "ready", "reopening reuses the live loader for the same photo")
-    Assert.isTrue(
-      pool:stats().outstandingLeases >= 3,
-      "the reopened viewer borrows the same shared atlas identities"
-    )
+    Assert.isTrue(pool:stats().outstandingLeases >= 3, "the reopened viewer borrows the same shared atlas identities")
     Assert.equal(pool.uploads, 0, "reopening introduces no duplicate atlas upload")
     child:dispose()
     composition.dispose()
@@ -1300,10 +1293,7 @@ function T.slow_subject_atlases_keep_viewer_responsive_then_draw_source_scene(sc
     pool:releasePaths()
     scene:advance(16)
     Assert.equal(scene:status().phase, "pending", "staged subjects publish over bounded advances after readiness")
-    Assert.isTrue(
-      #scene.spriteIds >= 1 and #scene.spriteIds <= 2,
-      "one advance materializes at most two new subjects"
-    )
+    Assert.isTrue(#scene.spriteIds >= 1 and #scene.spriteIds <= 2, "one advance materializes at most two new subjects")
     for _ = 1, 8 do
       if scene:status().phase ~= "pending" then
         break
@@ -1312,10 +1302,7 @@ function T.slow_subject_atlases_keep_viewer_responsive_then_draw_source_scene(sc
     end
     Assert.equal(scene:status().phase, "ready", "staged subjects reach a ready view")
     Assert.isNil(scene:status().failure, "successful preparation carries no failure")
-    Assert.isTrue(
-      pool:stats().outstandingLeases >= 3,
-      "the ready viewer holds its subject atlases as pool leases"
-    )
+    Assert.isTrue(pool:stats().outstandingLeases >= 3, "the ready viewer holds its subject atlases as pool leases")
     Assert.equal(pool:uploadCount(), 0, "borrowed atlas identities resolve without a new upload")
     local view = scene:takeReady()
     Assert.isTrue(#view.subjects >= 3, "the snapshot carries the saved player, NPC subject and its Pokemon")

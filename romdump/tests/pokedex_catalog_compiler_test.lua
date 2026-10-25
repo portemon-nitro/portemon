@@ -615,11 +615,7 @@ function T.compiled_catalog_projects_source_measurement_templates_with_full_slid
       { height = 175, weight = 38 },
       versionId .. " projects the source height/weight message templates"
     )
-    Assert.equal(
-      catalog.textBindings.ui.bankId,
-      802,
-      versionId .. " keeps the templates under the existing UI bank"
-    )
+    Assert.equal(catalog.textBindings.ui.bankId, 802, versionId .. " keeps the templates under the existing UI bank")
     Assert.equal(#catalog.sliderSteps, 153, versionId .. " keeps every physical slider row")
     Assert.deepEqual(
       catalog.sliderSteps[153],
@@ -649,11 +645,7 @@ function T.dungeon_records_carry_source_marker_shapes_and_offsets_without_shifti
       end
       local shape, offset = expectedMarker(nativeMapId)
       Assert.equal(record.markerShape, shape, versionId .. " " .. key .. " carries its source marker shape")
-      Assert.deepEqual(
-        record.markerOffsetPx,
-        offset,
-        versionId .. " " .. key .. " carries its source marker offset"
-      )
+      Assert.deepEqual(record.markerOffsetPx, offset, versionId .. " " .. key .. " carries its source marker offset")
     end
   end
 end

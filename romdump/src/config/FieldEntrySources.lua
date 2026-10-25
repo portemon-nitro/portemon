@@ -99,10 +99,7 @@ end
 local function validate()
   local seenSymbols = {}
   for _, destination in ipairs(FieldEntrySources.DESTINATIONS) do
-    assert(
-      not seenSymbols[destination.symbol],
-      "duplicate field-entry destination: " .. destination.symbol
-    )
+    assert(not seenSymbols[destination.symbol], "duplicate field-entry destination: " .. destination.symbol)
     seenSymbols[destination.symbol] = true
     MapCatalog.require(destination.symbol)
     assert(

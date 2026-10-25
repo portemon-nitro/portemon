@@ -64,10 +64,7 @@ function T.effect_requests_follow_the_scene_closure_convention()
   local service, provisioner = selectGame()
   local epoch = assert(provisioner.epoch, "selection borrows an epoch")
   local gameHost = provisioner:gameHost()
-  Assert.isTrue(
-    type(gameHost.requestBattleEffect) == "function",
-    "the selected-game host demands lazy battle effects"
-  )
+  Assert.isTrue(type(gameHost.requestBattleEffect) == "function", "the selected-game host demands lazy battle effects")
   local first, firstErr = gameHost.requestBattleEffect("synthetic-probe", "required")
   Assert.isNil(first, "an unstaged effect observes no readiness")
   Assert.isNil(firstErr, "an unstaged effect observes no failure")
@@ -98,10 +95,7 @@ function T.effect_failures_carry_their_cause_and_keep_good_scenes_usable()
   local service, provisioner = selectGame()
   local epoch = assert(provisioner.epoch, "selection borrows an epoch")
   local gameHost = provisioner:gameHost()
-  Assert.isTrue(
-    type(gameHost.requestBattleEffect) == "function",
-    "the selected-game host demands lazy battle effects"
-  )
+  Assert.isTrue(type(gameHost.requestBattleEffect) == "function", "the selected-game host demands lazy battle effects")
   local pending, pendingErr = gameHost.requestBattleEffect("synthetic-broken", "required")
   Assert.isNil(pending, "a broken effect starts pending")
   Assert.isNil(pendingErr, "a broken effect starts without failure")
@@ -147,10 +141,7 @@ function T.nested_task_closure_stages_before_ready_while_unrelated_effects_stay_
     key = "synthetic-parent",
     resources = { "synthetic-sound", "synthetic-model", "synthetic-texture" },
   }
-  Assert.isFalse(
-    Cache.isEffectReady(cache, closedDemand),
-    "an unstaged transitive closure never reads ready"
-  )
+  Assert.isFalse(Cache.isEffectReady(cache, closedDemand), "an unstaged transitive closure never reads ready")
 
   local record = {
     schema = AnimationSchema.EFFECT_SCHEMA,

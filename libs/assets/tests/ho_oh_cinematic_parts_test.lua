@@ -20,7 +20,10 @@ local function descriptor(variant)
         name = "m0",
         texture = "assets/tex" .. variant,
         wrap = { x = "repeat", y = "clamp" },
-        variants = { { texture = "assets/alt" .. variant, frame = 1 }, { texture = "assets/alt" .. variant .. "b", frame = 2 } },
+        variants = {
+          { texture = "assets/alt" .. variant, frame = 1 },
+          { texture = "assets/alt" .. variant .. "b", frame = 2 },
+        },
       },
       { id = 1, name = "m1" },
     },
@@ -68,7 +71,11 @@ function T.split_then_merge_reproduces_every_variant_descriptor()
   local shared, overlays = HoOhCinematicParts.split("first", models)
   Assert.equal(#overlays, 3)
   for variant = 0, 2 do
-    Assert.deepEqual(HoOhCinematicParts.merge(shared, overlays[variant + 1]), models[variant + 1], "variant " .. variant)
+    Assert.deepEqual(
+      HoOhCinematicParts.merge(shared, overlays[variant + 1]),
+      models[variant + 1],
+      "variant " .. variant
+    )
   end
 end
 

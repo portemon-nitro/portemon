@@ -15,10 +15,14 @@ function T.renders_packed_tiles_with_map_flips_palette_banks_and_patches()
   end
   local bg = NitroBg3.new({
     characters = chars,
-    map = { width = 16, height = 8, entries = {
-      { tile = 0, flipH = false, flipV = false, palette = 0 },
-      { tile = 0, flipH = true, flipV = false, palette = 1 },
-    } },
+    map = {
+      width = 16,
+      height = 8,
+      entries = {
+        { tile = 0, flipH = false, flipV = false, palette = 0 },
+        { tile = 0, flipH = true, flipV = false, palette = 1 },
+      },
+    },
     palette = { colors = colors },
     colorMode = "4bpp",
     transparentZero = false,

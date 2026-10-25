@@ -170,7 +170,8 @@ function Fixture.new(opts)
     end
     local ok, schemaErr = pcall(BattleAnimationSchema.assertEffect, entry.record)
     if not ok then
-      return nil, "battle effect " .. tostring(key) .. " failed for launch " .. self.launchId .. ": " .. tostring(schemaErr)
+      return nil,
+        "battle effect " .. tostring(key) .. " failed for launch " .. self.launchId .. ": " .. tostring(schemaErr)
     end
     if entry.record.key ~= key then
       return nil, "staged battle effect names " .. tostring(entry.record.key) .. ", not " .. tostring(key)
@@ -206,12 +207,13 @@ function Fixture.new(opts)
     end
     local descriptor = entry.record.resources[resourceKey]
     if type(descriptor) ~= "table" then
-      return nil, "unknown battle effect resource "
-        .. tostring(resourceKey)
-        .. " for effect "
-        .. tostring(effect.key)
-        .. " for launch "
-        .. self.launchId
+      return nil,
+        "unknown battle effect resource "
+          .. tostring(resourceKey)
+          .. " for effect "
+          .. tostring(effect.key)
+          .. " for launch "
+          .. self.launchId
     end
     if self.failUpload[resourceKey] ~= nil then
       self.failed = "battle effect image "

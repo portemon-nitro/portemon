@@ -133,9 +133,11 @@ local function newComposition()
     outputRate = SAMPLE_RATE,
   })
   local sound, player = runtime.sound, runtime.renderer
-  local eventState = { isFlagSet = function()
-    return false
-  end }
+  local eventState = {
+    isFlagSet = function()
+      return false
+    end,
+  }
   local controller = FieldAudioController.new({
     sound = sound,
     provider = AudioAssetProvider.new(cacheFs),

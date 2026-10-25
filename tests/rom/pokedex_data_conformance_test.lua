@@ -259,10 +259,7 @@ function T.search_text_bindings_resolve_through_the_native_ui_bank(romFs, versio
   local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
   local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
   local charmap = require("romdump.src.catalog.hgss.charmap")
-  local searchText = assert(
-    PokedexSources.searchText,
-    versionId .. " publishes its search text bindings"
-  )()
+  local searchText = assert(PokedexSources.searchText, versionId .. " publishes its search text bindings")()
   assert(type(searchText) == "table", "the search text bindings stay records")
   local groups = {
     criteria = searchText.criteria,
@@ -931,11 +928,7 @@ function T.presentation_results_share_the_grid_caught_mark_binding(romFs, versio
   end
   local _, gridAnimation = markBinding("grid")
   local _, resultsAnimation = markBinding("results")
-  Assert.equal(
-    resultsAnimation,
-    gridAnimation,
-    versionId .. " shares one caught-mark animation across list pages"
-  )
+  Assert.equal(resultsAnimation, gridAnimation, versionId .. " shares one caught-mark animation across list pages")
 end
 
 -- Type and trainer art: every source type class and both trainer
@@ -1072,11 +1065,7 @@ function T.compiled_catalog_carries_source_editor_orders_templates_and_dungeon_m
     { height = 175, weight = 38 },
     versionId .. " projects the source height/weight message templates"
   )
-  Assert.equal(
-    catalog.textBindings.ui.bankId,
-    802,
-    versionId .. " keeps the templates under the existing UI bank"
-  )
+  Assert.equal(catalog.textBindings.ui.bankId, 802, versionId .. " keeps the templates under the existing UI bank")
   Assert.deepEqual(
     catalog.criteria.typeOptionOrder,
     SOURCE_TYPE_OPTION_ORDER,
@@ -1112,11 +1101,7 @@ function T.compiled_catalog_carries_source_editor_orders_templates_and_dungeon_m
       shape, offset = 0, { x = 4, y = 4 }
     end
     Assert.equal(record.markerShape, shape, versionId .. " " .. key .. " carries its source marker shape")
-    Assert.deepEqual(
-      record.markerOffsetPx,
-      offset,
-      versionId .. " " .. key .. " carries its source marker offset"
-    )
+    Assert.deepEqual(record.markerOffsetPx, offset, versionId .. " " .. key .. " carries its source marker offset")
   end
 end
 

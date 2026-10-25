@@ -793,14 +793,7 @@ end
 function T.script_generation_with_unsorted_member_asset_needs_is_not_ready()
   local c = cache()
   local resources = { { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) } }
-  writeGenerationIndex(
-    c,
-    SCRIPT_GENERATION,
-    "m",
-    resources,
-    nil,
-    { ["1"] = { "field-effect:b", "field-effect:a" } }
-  )
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources, nil, { ["1"] = { "field-effect:b", "field-effect:a" } })
   writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
   Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"), "unsorted needs can never attest a member")
 end

@@ -102,11 +102,7 @@ function T.tests.tuned_stations_follow_executable_hour_schedules_and_hold_mid_br
     for station = 0, 7 do
       local show = tuneSettled(program, station, "clear")
       if fixed[station] ~= nil then
-        Assert.equal(
-          show,
-          fixed[station],
-          "station " .. station .. " keeps its fixed show at hour " .. hour
-        )
+        Assert.equal(show, fixed[station], "station " .. station .. " keeps its fixed show at hour " .. hour)
       elseif station == 2 then
         alternating[hour] = show
       elseif station == 3 then
@@ -173,11 +169,7 @@ function T.tests.tuned_stations_follow_executable_hour_schedules_and_hold_mid_br
   for _ = 1, 60 do
     program:updateFixed()
   end
-  Assert.equal(
-    program:status().show,
-    before,
-    "a half-printed show never switches merely because the host hour changed"
-  )
+  Assert.equal(program:status().show, before, "a half-printed show never switches merely because the host hour changed")
   program:endProgram()
   local after = tuneSettled(program, 3, "clear")
   Assert.equal(after, cycling[3], "retuning after the boundary follows the new hour schedule")
@@ -225,10 +217,7 @@ function T.tests.retained_lines_survive_repeated_reads_and_weak_signal_without_n
   -- Weak reception corrupts only the retained display copy.
   program:setSignal("weak")
   local weakBody = program:status().body
-  Assert.isTrue(
-    #weakBody == #clearBody,
-    "weak reception keeps the line count while corrupting the display copy"
-  )
+  Assert.isTrue(#weakBody == #clearBody, "weak reception keeps the line count while corrupting the display copy")
   local differs = false
   for index, line in ipairs(weakBody) do
     if line ~= clearBody[index] then

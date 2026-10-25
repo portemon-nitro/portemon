@@ -124,14 +124,9 @@ function T.tests.raid_runs_five_active_combatants_with_an_explicit_boss_budget()
   Assert.isTrue(ok, "missing public battle facade (gen4.battle)")
   assert(Battle ~= nil, "the battle facade loads")
   requireExtensionSurface(Battle, "asymmetric raid formats")
-  local NativeFormats = requireOwner(
-    FORMATS_MODULE,
-    "concrete raid topology, budget, and victory policies own format validation"
-  )
-  local Topology = requireOwner(
-    TOPOLOGY_MODULE,
-    "validated deterministic membership changes own raid assembly"
-  )
+  local NativeFormats =
+    requireOwner(FORMATS_MODULE, "concrete raid topology, budget, and victory policies own format validation")
+  local Topology = requireOwner(TOPOLOGY_MODULE, "validated deterministic membership changes own raid assembly")
   Assert.equal(type(Topology.prepareJoin), "function", "raid assembly stages through prepareJoin")
   Assert.equal(type(Topology.applyJoin), "function", "raid assembly publishes through applyJoin")
   Assert.equal(type(Topology.validateOwnership), "function", "raid assembly checks validateOwnership")
@@ -167,10 +162,7 @@ function T.tests.sos_join_enters_mid_battle_through_the_normal_decision_path()
   Assert.isTrue(ok, "missing public battle facade (gen4.battle)")
   assert(Battle ~= nil, "the battle facade loads")
   requireExtensionSurface(Battle, "mid-battle joins")
-  local Topology = requireOwner(
-    TOPOLOGY_MODULE,
-    "validated deterministic membership changes own mid-battle joins"
-  )
+  local Topology = requireOwner(TOPOLOGY_MODULE, "validated deterministic membership changes own mid-battle joins")
   local contracts = SessionFixture.sessionContracts()
   local parts = {
     sides = {
@@ -284,10 +276,8 @@ function T.tests.overworld_presenter_reuses_the_same_session_events_without_rend
   Assert.isTrue(ok, "missing public battle facade (gen4.battle)")
   assert(Battle ~= nil, "the battle facade loads")
   requireExtensionSurface(Battle, "overworld presentation")
-  local NativeFormats = requireOwner(
-    FORMATS_MODULE,
-    "concrete native topology policies own the presented battle layout"
-  )
+  local NativeFormats =
+    requireOwner(FORMATS_MODULE, "concrete native topology policies own the presented battle layout")
   local contracts = SessionFixture.sessionContracts()
   local parts = {
     sides = {

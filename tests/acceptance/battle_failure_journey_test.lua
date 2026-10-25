@@ -214,7 +214,8 @@ function T.tests.duplicate_completion_reuses_the_receipt_without_republishing()
     assert(bag:prepareInventoryChanges(bagRevision, { { op = "take", item = "POKE_BALL", quantity = 1 } }))
 
   local Committer = requirePresent(COMMITTER_MODULE, "cross-owner result publication")
-  local prepared = Committer.prepare({ outcome = { id = "outcome-duplicate-once", result = "win" }, party = partyPrep, bag = bagPrep })
+  local prepared =
+    Committer.prepare({ outcome = { id = "outcome-duplicate-once", result = "win" }, party = partyPrep, bag = bagPrep })
   local receipt = Committer.commit(prepared)
   Assert.isTrue(receipt.committed, "the first commit publishes the staged owners")
   local repeatReceipt = Committer.commit(prepared)

@@ -827,6 +827,27 @@ function T.packets_deliver_once_in_order_with_back_pressure()
   local firstPacket = held.packets[1] --[[@as table<string, unknown>]]
   firstPacket.packetId = -1
   firstPacket.events = {}
+  local claimed = {} ---@type table<integer, boolean>
+  local function answerRequest(targetBattle, pending, targetScenario)
+    local actor = assert(pending.actors[1], "every later decision addresses its combatant")
+    local kinds = assert(pending.legalChoices, "every decision carries its admitted vocabulary").kinds
+    local switchOnly = #kinds == 1 and kinds[1] == "switch"
+    if switchOnly then
+      for _, seed in ipairs(targetScenario.participants[1].roster) do
+        local candidate = (seed --[[@as table<string, unknown>]]).id --[[@as integer]]
+        if candidate ~= actor.combatant and claimed[candidate] ~= true then
+          claimed[candidate] = true
+          return targetBattle:submit(SessionFixture.replyFor(pending, {
+            SessionFixture.switchChoice(actor, candidate),
+          }))
+        end
+      end
+      error("the fainted player lead has an eligible replacement")
+    end
+    return targetBattle:submit(SessionFixture.replyFor(pending, {
+      SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2)),
+    }))
+  end
   for _ = 1, 1200 do
     battle:update()
     local current = battle:status()
@@ -834,14 +855,20 @@ function T.packets_deliver_once_in_order_with_back_pressure()
       break
     end
     if current.phase == "running" and current.request ~= nil then
-      local pending = current.request
-      local addressed = assert(pending.actors[1], "every later decision addresses its combatant")
-      battle:submit(SessionFixture.replyFor(pending, {
-        SessionFixture.attackChoice(addressed, 0, SessionFixture.positionTarget(2)),
-      }))
+      answerRequest(battle, current.request, scenario)
     end
   end
-  Assert.equal(battle:status().phase, "complete", "mutating a packet never disturbs the kernel lifetime")
+  local finalStatus = battle:status()
+  Assert.equal(
+    finalStatus.phase,
+    "complete",
+    "mutating a packet never disturbs the kernel lifetime: phase="
+      .. tostring(finalStatus.phase)
+      .. " request="
+      .. tostring(finalStatus.request and finalStatus.request.requestId)
+      .. " error="
+      .. tostring(finalStatus.error)
+  )
   Assert.isTrue(#held.packets > beforeCount, "later packets arrive intact after an earlier mutation")
   local outcomes = 0
   for _, packet in ipairs(held.packets) do
@@ -888,6 +915,7 @@ function T.packets_deliver_once_in_order_with_back_pressure()
       record.ready = true
     end
     local answered = nil
+    local twinClaimed = {} ---@type table<integer, boolean>
     for _ = 1, 1200 do
       twin:update()
       local current = twin:status()
@@ -897,9 +925,27 @@ function T.packets_deliver_once_in_order_with_back_pressure()
       if current.phase == "running" and current.request ~= nil and current.request.requestId ~= answered then
         answered = current.request.requestId
         local addressed = assert(current.request.actors[1], "every twin decision addresses its combatant")
-        twin:submit(SessionFixture.replyFor(current.request, {
-          SessionFixture.attackChoice(addressed, 0, SessionFixture.positionTarget(2)),
-        }))
+        local kinds = assert(current.request.legalChoices, "every twin decision carries its admitted vocabulary").kinds
+        local switchOnly = #kinds == 1 and kinds[1] == "switch"
+        if switchOnly then
+          local switched = false
+          for _, seed in ipairs(twinScenario.participants[1].roster) do
+            local candidate = (seed --[[@as table<string, unknown>]]).id --[[@as integer]]
+            if candidate ~= addressed.combatant and twinClaimed[candidate] ~= true then
+              twinClaimed[candidate] = true
+              twin:submit(SessionFixture.replyFor(current.request, {
+                SessionFixture.switchChoice(addressed, candidate),
+              }))
+              switched = true
+              break
+            end
+          end
+          assert(switched, "the fainted twin lead has an eligible replacement")
+        else
+          twin:submit(SessionFixture.replyFor(current.request, {
+            SessionFixture.attackChoice(addressed, 0, SessionFixture.positionTarget(2)),
+          }))
+        end
       end
     end
     Assert.equal(twin:status().phase, "complete", "both twins settle")

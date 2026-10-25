@@ -149,37 +149,31 @@ function T.factory_routes_fallback_and_rocket_and_red_roles_through_their_source
   Assert.equal(wild:frame().polarity, 0x10, "day fallback routes carry the opening polarity")
   wild:dispose()
 
-  local trainerWipe = TransitionFamilyFactory.new(
-    {
-      key = "fallback/plain/day/trainer",
-      role = "water-trainer-fallback",
-      assetGroups = {
-        sprite = {
-          palette = "wipe-palette",
-          character = "wipe-character",
-          cell = "wipe-cell",
-          animation = "wipe-animation",
+  local trainerWipe = TransitionFamilyFactory.new({
+    key = "fallback/plain/day/trainer",
+    role = "water-trainer-fallback",
+    assetGroups = {
+      sprite = {
+        palette = "wipe-palette",
+        character = "wipe-character",
+        cell = "wipe-cell",
+        animation = "wipe-animation",
+      },
+    },
+  }, {
+    ["wipe-palette"] = { colors = { { r = 0, g = 0, b = 0 }, { r = 240, g = 220, b = 40 } } },
+    ["wipe-character"] = { depth = 3, tiles = string.rep(string.char(0x11), 32) },
+    ["wipe-cell"] = {
+      cells = { { objs = { { tile = 0, width = 8, height = 8, x = -4, y = -4, palette = 0 } } } },
+    },
+    ["wipe-animation"] = {
+      anims = {
+        {
+          frames = { { cell = 0, duration = 1, translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 } },
         },
       },
     },
-    {
-      ["wipe-palette"] = { colors = { { r = 0, g = 0, b = 0 }, { r = 240, g = 220, b = 40 } } },
-      ["wipe-character"] = { depth = 3, tiles = string.rep(string.char(0x11), 32) },
-      ["wipe-cell"] = {
-        cells = { { objs = { { tile = 0, width = 8, height = 8, x = -4, y = -4, palette = 0 } } } },
-      },
-      ["wipe-animation"] = {
-        anims = {
-          {
-            frames = { { cell = 0, duration = 1, translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 } },
-          },
-        },
-      },
-    },
-    love.graphics,
-    {},
-    {}
-  )
+  }, love.graphics, {}, {})
   trainerWipe:start()
   trainerWipe:stepSourceTick()
   Assert.equal(trainerWipe:frame().family, "trainer-fallback", "trainer fallback routes run the affine worker")
@@ -198,52 +192,42 @@ function T.factory_routes_rocket_kimono_and_red_roles_through_their_source_famil
       ["grunt-animation"] = {
         anims = {
           {
-            frames = { { cell = 0, duration = 1, translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 } },
+            frames = {
+              { cell = 0, duration = 1, translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 },
+            },
           },
         },
       },
     }
   end
-  local intro = TransitionFamilyFactory.new(
-    {
-      key = "trainer/team-rocket",
-      role = "trainer-transition",
-      assetGroups = {
-        sprite = {
-          palette = "grunt-palette",
-          character = "grunt-character",
-          cell = "grunt-cell",
-          animation = "grunt-animation",
-        },
+  local intro = TransitionFamilyFactory.new({
+    key = "trainer/team-rocket",
+    role = "trainer-transition",
+    assetGroups = {
+      sprite = {
+        palette = "grunt-palette",
+        character = "grunt-character",
+        cell = "grunt-cell",
+        animation = "grunt-animation",
       },
     },
-    gruntSet(),
-    love.graphics,
-    {},
-    {}
-  )
+  }, gruntSet(), love.graphics, {}, {})
   intro:start()
   intro:stepSourceTick()
   Assert.equal(intro:frame().shape, "intro", "sprite-only trainer routes run the rocket intro")
   intro:dispose()
 
-  local kimono = TransitionFamilyFactory.new(
-    {
-      key = "trainer/kimono-girl",
-      role = "background-transition",
-      assetGroups = {
-        background = { palette = "kimono-palette", character = "kimono-character", map = "kimono-map" },
-      },
+  local kimono = TransitionFamilyFactory.new({
+    key = "trainer/kimono-girl",
+    role = "background-transition",
+    assetGroups = {
+      background = { palette = "kimono-palette", character = "kimono-character", map = "kimono-map" },
     },
-    {
-      ["kimono-palette"] = { colors = {} },
-      ["kimono-character"] = { tiles = "" },
-      ["kimono-map"] = { tiles = {} },
-    },
-    love.graphics,
-    {},
-    {}
-  )
+  }, {
+    ["kimono-palette"] = { colors = {} },
+    ["kimono-character"] = { tiles = "" },
+    ["kimono-map"] = { tiles = {} },
+  }, love.graphics, {}, {})
   kimono:start()
   kimono:stepSourceTick()
   Assert.equal(kimono:frame().family, "kimono", "background routes run the pure scroll worker")

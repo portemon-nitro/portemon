@@ -494,8 +494,7 @@ function T.worker_source_plan_context_shares_one_base_projection()
   Assert.deepEqual(repairedBase.mapIds, { 7 }, "the repair projects the current record")
   local rotatedCache = warmSourceCache("projection-memo-next", producerId)
   fresh.cacheFs = rotatedCache
-  local rotatedIdentifier =
-    { versionId = "heartgold", generationId = "projection-memo-next", producerId = producerId }
+  local rotatedIdentifier = { versionId = "heartgold", generationId = "projection-memo-next", producerId = producerId }
   local rotated, _, rotatedBase = ArtifactJobs.sourcePlanForContext(fresh, rotatedIdentifier)
   Assert.notNil(rotated, "a replaced generation reads its own record")
   Assert.isTrue(rotated ~= repaired, "an identity change never borrows the previous record")
@@ -785,27 +784,13 @@ function T.unusable_receipts_remain_cache_misses()
   local receiptPath = ArtifactState.path("field-camera", "global")
   local fullReceiptPath = cache:resolve(receiptPath)
 
-  local missingOk, missingReady = pcall(
-    ArtifactJobs.validate,
-    cache,
-    generationId,
-    "field-camera",
-    "global",
-    {}
-  )
+  local missingOk, missingReady = pcall(ArtifactJobs.validate, cache, generationId, "field-camera", "global", {})
   Assert.isTrue(missingOk, "an absent receipt is a normal readiness result")
   Assert.isFalse(missingReady, "an absent receipt is not ready")
   Assert.isNil(backend.files[fullReceiptPath], "auditing an absent receipt does not publish it")
 
   cache:write(receiptPath, "not a lua receipt{{{")
-  local corruptOk, corruptReady = pcall(
-    ArtifactJobs.validate,
-    cache,
-    generationId,
-    "field-camera",
-    "global",
-    {}
-  )
+  local corruptOk, corruptReady = pcall(ArtifactJobs.validate, cache, generationId, "field-camera", "global", {})
   Assert.isTrue(corruptOk, "an invalid receipt is a normal readiness result")
   Assert.isFalse(corruptReady, "an invalid receipt is not ready")
   Assert.equal(backend.files[fullReceiptPath], "not a lua receipt{{{", "auditing does not rewrite the receipt")
@@ -838,14 +823,7 @@ function T.cache_read_faults_escape_artifact_and_child_readiness()
       return nil, fault
     end,
   }
-  local directOk, directFailure = pcall(
-    ArtifactJobs.validate,
-    directCache,
-    generationId,
-    "field-camera",
-    "global",
-    {}
-  )
+  local directOk, directFailure = pcall(ArtifactJobs.validate, directCache, generationId, "field-camera", "global", {})
   local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
   local summaryMarker = "message-summary-marker"
   local summaryReceiptPath = ArtifactState.path("message-summary", "global")
@@ -880,14 +858,8 @@ function T.cache_read_faults_escape_artifact_and_child_readiness()
       error("unexpected message-summary read: " .. path)
     end,
   }
-  local childOk, childFailure = pcall(
-    ArtifactJobs.validate,
-    childCache,
-    generationId,
-    "message-summary",
-    "global",
-    { messageBankIds = { 219 } }
-  )
+  local childOk, childFailure =
+    pcall(ArtifactJobs.validate, childCache, generationId, "message-summary", "global", { messageBankIds = { 219 } })
   Assert.isTrue(
     not directOk
       and Errors.is(directFailure)
@@ -932,14 +904,7 @@ function T.unexpected_family_validator_fault_escapes_without_mutation()
     end,
   }
 
-  local ok, failure = pcall(
-    ArtifactJobs.validate,
-    cache,
-    generationId,
-    "field-camera",
-    "global",
-    {}
-  )
+  local ok, failure = pcall(ArtifactJobs.validate, cache, generationId, "field-camera", "global", {})
   Assert.isFalse(ok, "a family validator fault is terminal")
   Assert.equal(failure, fault, "the original family validator fault escapes")
   Assert.equal(readCount, 1, "the family validator is called once")
@@ -957,10 +922,7 @@ function T.pokegear_word_entry_registers_a_bounded_global_family()
     "data/generated/jobs/pokegear-word-entry/global.lua",
     "the word-entry family resolves to its receipt path"
   )
-  Assert.isFalse(
-    pcall(ArtifactState.path, "pokegear-word-entry", "1"),
-    "the word-entry family carries no paged keys"
-  )
+  Assert.isFalse(pcall(ArtifactState.path, "pokegear-word-entry", "1"), "the word-entry family carries no paged keys")
   local classes = { normal = true, heavy = true, jumbo = true }
   Assert.isTrue(
     classes[ArtifactJobs.sizeClass("pokegear-word-entry")] == true,
@@ -972,10 +934,7 @@ function T.pokegear_word_entry_registers_a_bounded_global_family()
   for _, job in ipairs(dependencies) do
     dependencySet[job.kind .. ":" .. job.key] = true
   end
-  Assert.isTrue(
-    dependencySet["pc:global"] == true,
-    "the word-entry closure declares its dictionary dependency"
-  )
+  Assert.isTrue(dependencySet["pc:global"] == true, "the word-entry closure declares its dictionary dependency")
 end
 
 return { metadata = { capabilities = {} }, tests = T }

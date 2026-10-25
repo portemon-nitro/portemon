@@ -12,6 +12,7 @@ local Accuracy = require("libs.battle.src.gen4.Accuracy")
 local BattleErrors = require("libs.battle.src.errors")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 local StatStages = require("libs.battle.src.gen4.StatStages")
 local TypeEffectiveness = require("libs.battle.src.gen4.TypeEffectiveness")
 
@@ -189,6 +190,79 @@ local function activeScope(ctx, combatant)
   return { kind = "active", combatant = combatant, activation = entry.activation }
 end
 
+---@param frame table<string, unknown> move frame under execution
+---@param role "user"|"foe" ability holder selected from the move facts
+---@return string? ability the holder's ability, when supplied by this execution
+local function abilityOf(frame, role)
+  local locals = frame.locals --[[@as table<string, unknown>]]
+  local abilities = locals.abilities
+  if type(abilities) ~= "table" then
+    return nil
+  end
+  local ability = (abilities --[[@as table<string, unknown>]])[role]
+  return type(ability) == "string" and ability or nil
+end
+
+---@param holder integer ability holder answering the checkpoint
+---@param ability string? ability identity under the checkpoint
+---@param timing string passive checkpoint under invocation
+---@param facts table<string, unknown> checkpoint facts for the ability
+---@return boolean true when the passive explicitly prevents the effect
+local function abilityPrevents(_, holder, ability, timing, facts)
+  if ability == nil then
+    return false
+  end
+  local outcome = NativePassiveBridge.invokeFacts({ combatant = holder, ability = ability }, timing, facts)
+  for _, event in ipairs(outcome.events) do
+    if event.prevented == true then
+      return true
+    end
+  end
+  return false
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param target integer combatant receiving a stage delta
+---@param stat string native stage being changed
+---@param delta integer signed stage delta before ability modifiers
+---@return boolean true when the stage moved
+local function changeStage(ctx, frame, target, stat, delta)
+  local attacker = userOf(frame)
+  local role = target == attacker and "user" or "foe"
+  if delta < 0 and target ~= attacker and abilityOf(frame, "user") ~= "MOLD_BREAKER" then
+    local prevented = abilityPrevents(frame, target, abilityOf(frame, "foe"), "modifyStat", {
+      statDrop = true,
+      stat = stat,
+      accuracyDrop = stat == "accuracy",
+    })
+    if prevented then
+      return false
+    end
+  end
+  local ability = abilityOf(frame, role)
+  if ability ~= nil then
+    local outcome = NativePassiveBridge.invokeFacts(
+      { combatant = target, ability = ability },
+      "modifyStat",
+      { statStage = true }
+    )
+    for _, event in ipairs(outcome.events) do
+      if event.stages == "doubled" then
+        delta = delta * 2
+        break
+      end
+    end
+  end
+  local current = ctx:entryOf(target).stages --[[@as table<string, integer>]]
+  local next = StatStages.change(current[stat] --[[@as integer]], delta)
+  if next == current[stat] then
+    return false
+  end
+  ctx:changeStage(target, stat, next, causeFor(frame))
+  return true
+end
+
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 local function emitUsed(ctx, frame)
@@ -218,7 +292,7 @@ local function foeAccuracy(ctx, frame, defender)
   local locals = record.locals --[[@as table<string, unknown>]]
   local move = locals.move --[[@as table<string, unknown>?]]
   local accuracy = type(move) == "table" and move.accuracy or nil
-  if type(accuracy) ~= "number" or accuracy % 1 ~= 0 then
+  if type(move) ~= "table" or type(accuracy) ~= "number" or accuracy % 1 ~= 0 then
     error(BattleErrors.missingBehavior("foe-targeted condition moves read their compiled accuracy", {
       key = record.executingMove --[[@as string]],
     }))
@@ -227,15 +301,81 @@ local function foeAccuracy(ctx, frame, defender)
   local userStages = ctx:entryOf(userOf(record)).stages --[[@as table<string, integer>]]
   local targetStages = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
   local protected = ctx:hasBattleEffect(defender, "protect") or ctx:hasBattleEffect(defender, "detect")
+  local userAbility = abilityOf(frame, "user")
+  local foeAbility = abilityOf(frame, "foe")
+  local accuracyStage = userStages.accuracy
+  local evasionStage = targetStages.evasion
+  if
+    evasionStage < 0 and (ctx:hasBattleEffect(defender, "foresight") or ctx:hasBattleEffect(defender, "miracleeye"))
+  then
+    evasionStage = 0
+  end
+  if userAbility == "SIMPLE" then
+    accuracyStage = math.max(-6, math.min(6, accuracyStage * 2))
+  end
+  if userAbility == "UNAWARE" then
+    evasionStage = 0
+  elseif userAbility ~= "MOLD_BREAKER" and foeAbility == "SIMPLE" then
+    evasionStage = math.max(-6, math.min(6, evasionStage * 2))
+  end
+  if userAbility ~= "MOLD_BREAKER" and foeAbility == "UNAWARE" then
+    accuracyStage = 0
+  end
+  local effectiveAccuracy = accuracy --[[@as integer]]
+  if effectiveAccuracy > 0 then
+    local effectiveStage = math.max(-6, math.min(6, accuracyStage - evasionStage))
+    local ratio = StatStages.multiplier(effectiveStage, "accuracy")
+    effectiveAccuracy = math.floor(effectiveAccuracy * ratio.numerator / ratio.denominator)
+    if userAbility == "COMPOUNDEYES" then
+      effectiveAccuracy = math.floor(effectiveAccuracy * 130 / 100)
+    end
+    local weather = locals.weather
+    local weatherSuppressed = locals.weatherSuppressed == true
+    if not weatherSuppressed then
+      if userAbility ~= "MOLD_BREAKER" and weather == "sand" and foeAbility == "SAND_VEIL" then
+        effectiveAccuracy = math.floor(effectiveAccuracy * 80 / 100)
+      elseif userAbility ~= "MOLD_BREAKER" and weather == "hail" and foeAbility == "SNOW_CLOAK" then
+        effectiveAccuracy = math.floor(effectiveAccuracy * 80 / 100)
+      end
+      if weather == "fog" then
+        effectiveAccuracy = math.floor(effectiveAccuracy * 6 / 10)
+      end
+      if weather == "sun" and record.executingMove == "THUNDER" then
+        effectiveAccuracy = math.floor(effectiveAccuracy / 2)
+      end
+    end
+    if userAbility == "HUSTLE" and move.category == "physical" then
+      effectiveAccuracy = math.floor(effectiveAccuracy * 80 / 100)
+    end
+    if
+      not weatherSuppressed
+      and (
+        (weather == "rain" and record.executingMove == "THUNDER")
+        or (weather == "hail" and record.executingMove == "BLIZZARD")
+      )
+    then
+      effectiveAccuracy = 0
+    end
+    if
+      userAbility ~= "MOLD_BREAKER"
+      and foeAbility == "TANGLED_FEET"
+      and ctx:hasBattleEffect(defender, "confusion")
+    then
+      effectiveAccuracy = math.floor(effectiveAccuracy / 2)
+    end
+  end
+  local forceHit = userAbility == "NO_GUARD" or foeAbility == "NO_GUARD"
+  local skipCheck = effectiveAccuracy == 0
   local resolution = Accuracy.resolve({
-    accuracy = accuracy --[[@as integer]],
+    accuracy = effectiveAccuracy,
     target = { kind = "combatant" },
     cause = causeFor(record),
     protected = protected,
-    accuracyStage = userStages.accuracy,
-    evasionStage = targetStages.evasion,
+    accuracyStage = 0,
+    evasionStage = 0,
+    skipCheck = skipCheck,
   }, stream)
-  if resolution.kind == "hit" then
+  if resolution.kind == "hit" or (forceHit and resolution.kind ~= "protected") then
     return true
   end
   if resolution.kind == "protected" then
@@ -244,6 +384,31 @@ local function foeAccuracy(ctx, frame, defender)
     ctx:emit("missed", causeFor(record), { target = defender })
   end
   return false
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param holder integer combatant receiving the status
+---@param status string major condition applied by the move
+local function synchronize(ctx, frame, holder, status)
+  local ability = abilityOf(frame, holder == userOf(frame) and "user" or "foe")
+  if ability == nil then
+    return
+  end
+  local entry = ctx:entryOf(holder)
+  if entry.activation == nil then
+    error(BattleErrors.invalidState("status reflection scopes to a live holder", { combatant = holder }))
+  end
+  local outcome = NativePassiveBridge.invokeFacts(
+    { combatant = holder, activation = entry.activation, ability = ability },
+    "afterHit",
+    { inflictedStatus = status }
+  )
+  for _, event in ipairs(outcome.events) do
+    if type(event.reflected) == "string" then
+      ctx:applyStatus(userOf(frame), event.reflected, {}, causeFor(frame))
+    end
+  end
 end
 
 ---@class StageSpec
@@ -313,14 +478,11 @@ local function makeStage(spec)
         return { kind = "complete", result = "missed" }
       end
     end
-    local current = ctx:entryOf(target).stages --[[@as table<string, integer>]]
     local moved = false
     for _, change in ipairs(spec.changes) do
       local stat = change[1] --[[@as string]]
       local delta = change[2] --[[@as integer]]
-      local next = StatStages.change(current[stat] --[[@as integer]], delta)
-      if next ~= current[stat] then
-        ctx:changeStage(target, stat, next, causeFor(record))
+      if changeStage(ctx, record, target, stat, delta) then
         moved = true
       end
     end
@@ -378,6 +540,36 @@ local POISON_ABSORBED = {
   POISON_POWDER = true,
   POISONPOWDER = true,
 }
+
+local STATUS_ABILITY_KEY = {
+  paralysis = "paralysis",
+  poison = "poison",
+  toxic = "poison",
+  sleep = "sleep",
+  burn = "burn",
+  freeze = "freeze",
+  confusion = "confusion",
+  infatuation = "infatuation",
+}
+
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the status gate
+---@param status string major status identity under application
+---@return boolean true when a non-ignored ability prevents the status
+local function statusAbilityImmune(frame, defender, status)
+  if abilityOf(frame, "user") == "MOLD_BREAKER" then
+    return false
+  end
+  local statusAttempt = STATUS_ABILITY_KEY[status]
+  if statusAttempt == nil then
+    return false
+  end
+  local locals = frame.locals --[[@as table<string, unknown>]]
+  return abilityPrevents(frame, defender, abilityOf(frame, "foe"), "beforeHit", {
+    statusAttempt = statusAttempt,
+    weather = locals.weatherSuppressed == true and "none" or locals.weather,
+  })
+end
 
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the immunity check
@@ -453,6 +645,8 @@ local function makeStatus(status)
       local defender = targetOf(entry)
       if statusImmune(record, defender) then
         -- Absorbed targets contribute a failure, never a miss draw.
+      elseif statusAbilityImmune(record, defender, status) then
+        -- A matching ability prevents the persistent condition.
       elseif status == "sleep" and uproarActive(ctx) then
         -- Uproar prevents sleep across the field while its source turn
         -- counter remains active.
@@ -471,6 +665,7 @@ local function makeStatus(status)
         end
         if ctx:applyStatus(defender, status, state, causeFor(record)) then
           applied = true
+          synchronize(ctx, record, defender, status)
         end
       end
     end
@@ -551,12 +746,8 @@ local function stepMemento(ctx, frame)
   if not foeAccuracy(ctx, record, defender) then
     return { kind = "complete", result = "missed" }
   end
-  local current = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
   for _, stat in ipairs({ "attack", "specialAttack" }) do
-    local next = StatStages.change(current[stat] --[[@as integer]], -2)
-    if next ~= current[stat] then
-      ctx:changeStage(defender, stat, next, causeFor(record))
-    end
+    changeStage(ctx, record, defender, stat, -2)
   end
   emitUsed(ctx, record)
   ctx:damage(userOf(record), 999999, causeFor(record))
@@ -612,13 +803,12 @@ local function stepCurse(ctx, frame)
     end
   end
   if not ghost then
-    local current = ctx:entryOf(user).stages --[[@as table<string, integer>]]
     local moved = false
     for _, change in ipairs({ { "speed", -1 }, { "attack", 1 }, { "defense", 1 } }) do
       local stat = change[1] --[[@as string]]
-      local next = StatStages.change(current[stat] --[[@as integer]], change[2] --[[@as integer]])
-      if next ~= current[stat] then
-        ctx:changeStage(user, stat, next, causeFor(record))
+      if
+        changeStage(ctx, record, user, stat, change[2] --[[@as integer]])
+      then
         moved = true
       end
     end
@@ -1007,6 +1197,9 @@ local function applyConfusion(ctx, frame, defender)
     return false
   end
   local record = frame --[[@as table<string, unknown>]]
+  if statusAbilityImmune(record, defender, "confusion") then
+    return false
+  end
   local stream = checkStream(record.stream)
   local turns = 2 + (stream:nextU16("confusion_turns", causeFor(record)) % 4)
   ctx:addBattleEffect(
@@ -1059,6 +1252,9 @@ local function stepAttract(ctx, frame)
     return { kind = "complete", result = "failed" }
   end
   if ctx:hasBattleEffect(defender, "infatuation") then
+    return { kind = "complete", result = "failed" }
+  end
+  if statusAbilityImmune(record, defender, "infatuation") then
     return { kind = "complete", result = "failed" }
   end
   ctx:addBattleEffect(
@@ -1328,13 +1524,7 @@ local function stepAcupressure(ctx, frame)
   end
   local stream = checkStream(record.stream)
   local picked = raisable[(stream:nextU16("acupressure_stat", causeFor(record)) % #raisable) + 1]
-  local next = StatStages.change(
-    current[
-      picked --[[@as string]]
-    ] --[[@as integer]],
-    2
-  )
-  ctx:changeStage(user, picked --[[@as string]], next, causeFor(record))
+  changeStage(ctx, record, user, picked --[[@as string]], 2)
   emitUsed(ctx, record)
   return { kind = "complete", result = "hit" }
 end
@@ -1596,12 +1786,9 @@ local function stepCaptivate(ctx, frame)
   if misted(ctx, defender) then
     return { kind = "complete", result = "failed" }
   end
-  local current = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
-  local next = StatStages.change(current.specialAttack --[[@as integer]], -2)
-  if next == current.specialAttack then
+  if not changeStage(ctx, record, defender, "specialAttack", -2) then
     return { kind = "complete", result = "failed" }
   end
-  ctx:changeStage(defender, "specialAttack", next, causeFor(record))
   emitUsed(ctx, record)
   return { kind = "complete", result = "hit" }
 end
@@ -1629,13 +1816,8 @@ local function swaggerLike(spec)
     end
     local climbed = false
     if spec.stat ~= nil then
-      local current = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
       local stat = spec.stat --[[@as string]]
-      local next = StatStages.change(current[stat] --[[@as integer]], spec.delta --[[@as integer]])
-      if next ~= current[stat] then
-        ctx:changeStage(defender, stat, next, causeFor(record))
-        climbed = true
-      end
+      climbed = changeStage(ctx, record, defender, stat, spec.delta --[[@as integer]])
     end
     local danced = applyConfusion(ctx, record, defender)
     if not climbed and not danced then
@@ -1831,12 +2013,7 @@ local function stepDefog(ctx, frame)
     return { kind = "complete", result = "missed" }
   end
   local entry = ctx:entryOf(defender)
-  local evasion = entry.stages.evasion --[[@as integer]]
-  local nextEvasion = StatStages.change(evasion, -1)
-  local changed = nextEvasion ~= evasion
-  if changed then
-    ctx:changeStage(defender, "evasion", nextEvasion, causeFor(record))
-  end
+  local changed = changeStage(ctx, record, defender, "evasion", -1)
   for _, key in ipairs(DEFOG_SIDE_EFFECTS) do
     if ctx:sideEffect(entry.side, key) ~= nil then
       ctx:removeBattleEffect(defender, key)

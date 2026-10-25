@@ -61,7 +61,6 @@ function T.source_geometry_matches_the_strict_validation_rules(romFs, _)
   assertChar(signposts.alias, signposts.wayfinding[0].memberBase, "signpost wayfinding char", 3, 24)
 end
 
-
 function T.compiled_ui_assets_are_ready_and_stable(romFs, version)
   local cache = CacheFs.forVersion(version)
   local bundle = assert(FieldUiCompiler.compile(romFs))

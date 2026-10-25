@@ -64,18 +64,10 @@ function T.single_word_selector_resources_close_against_source_evidence(romFs, v
   local readOverlay = assert(romFs.readOverlay, "the dump reader exposes overlays")
   local bytes, info = readOverlay(romFs, "arm9", OVERLAY_ID)
   Assert.notNil(bytes, versionId .. " must expose overlay 102")
-  Assert.equal(
-    #assert(bytes),
-    OVERLAY_DECODED_SIZE,
-    versionId .. " overlay 102 decodes to its gated image size"
-  )
+  Assert.equal(#assert(bytes), OVERLAY_DECODED_SIZE, versionId .. " overlay 102 decodes to its gated image size")
   local reader = assert(romFs.read, "the dump reader exposes raw files")
   local raw = reader(romFs, assert(info).fileId)
-  Assert.equal(
-    #assert(raw),
-    OVERLAY_RAW_SIZE,
-    versionId .. " overlay 102 carries its gated compressed size"
-  )
+  Assert.equal(#assert(raw), OVERLAY_RAW_SIZE, versionId .. " overlay 102 carries its gated compressed size")
 
   local graphics = openArchive(romFs, GRAPHICS_PATH)
   Assert.equal(
@@ -102,17 +94,12 @@ function T.single_word_selector_resources_close_against_source_evidence(romFs, v
 
   local messages = openArchive(romFs, MESSAGE_PATH)
   for _, bank in ipairs(INTERFACE_BANKS) do
-    local member = assert(
-      messages:readMember(bank),
-      versionId .. " interface bank " .. bank .. " must exist in the dump"
-    )
+    local member =
+      assert(messages:readMember(bank), versionId .. " interface bank " .. bank .. " must exist in the dump")
     Assert.isTrue(#member > 0, versionId .. " interface bank " .. bank .. " is non-empty")
   end
   for _, bank in ipairs(WORD_BANKS) do
-    local member = assert(
-      messages:readMember(bank),
-      versionId .. " word bank " .. bank .. " must exist in the dump"
-    )
+    local member = assert(messages:readMember(bank), versionId .. " word bank " .. bank .. " must exist in the dump")
     Assert.isTrue(#member > 0, versionId .. " word bank " .. bank .. " is non-empty")
   end
 
@@ -121,18 +108,12 @@ function T.single_word_selector_resources_close_against_source_evidence(romFs, v
   -- minting new ones. The oracle is the checked-in PC source table, never
   -- the compiler under test.
   local PcSources = require("romdump.src.config.PcSources")
-  local wordBanks = assert(
-    PcSources.mailText ~= nil and PcSources.mailText.wordBanks,
-    "the PC dictionary publishes its word banks"
-  )
+  local wordBanks =
+    assert(PcSources.mailText ~= nil and PcSources.mailText.wordBanks, "the PC dictionary publishes its word banks")
   Assert.equal(#wordBanks, #WORD_BANKS, "the dictionary carries eleven word banks")
   local total = 0
   for index, entry in ipairs(wordBanks) do
-    Assert.equal(
-      entry.messageBank,
-      WORD_BANKS[index],
-      "dictionary bank " .. index .. " keeps its source bank identity"
-    )
+    Assert.equal(entry.messageBank, WORD_BANKS[index], "dictionary bank " .. index .. " keeps its source bank identity")
     Assert.isTrue(entry.wordCount > 0, "dictionary bank " .. WORD_BANKS[index] .. " is non-empty")
     total = total + entry.wordCount
   end
@@ -144,18 +125,15 @@ function T.single_word_selector_resources_close_against_source_evidence(romFs, v
   -- red; the dump facts above already hold.
   local Sources = requireFeature(
     "romdump.src.config.PokegearWordEntrySources",
-    versionId .. " has no single-word entry source owner yet: "
+    versionId
+      .. " has no single-word entry source owner yet: "
       .. "the closed selector resource set cannot compile into a validated family"
   )
   local published = Sources.wordBanks
   Assert.notNil(published, "the word-entry sources publish their word banks")
   Assert.equal(#published, #WORD_BANKS, "the word-entry family keeps all eleven word banks")
   for index, entry in ipairs(published) do
-    Assert.equal(
-      entry.messageBank,
-      WORD_BANKS[index],
-      "word-entry bank " .. index .. " keeps its source bank identity"
-    )
+    Assert.equal(entry.messageBank, WORD_BANKS[index], "word-entry bank " .. index .. " keeps its source bank identity")
   end
 end
 
@@ -173,10 +151,7 @@ local function gateCatalog(romFs, versionId)
   local messages = openArchive(romFs, MESSAGE_PATH)
   local catalog = { groups = {} }
   for index, bank in ipairs(WORD_BANKS) do
-    Assert.notNil(
-      messages:readMember(bank),
-      versionId .. " word bank " .. bank .. " backs group " .. (index - 1)
-    )
+    Assert.notNil(messages:readMember(bank), versionId .. " word bank " .. bank .. " backs group " .. (index - 1))
     catalog.groups[index] = { group = index - 1, bank = bank, count = GROUP_COUNTS[index] }
   end
   return catalog
@@ -191,8 +166,7 @@ function T.word_availability_follows_source_groups_without_save_gating(romFs, ve
   -- bank facts above already hold.
   local WordEntryScreenState = requireFeature(
     "game.hgss.src.pokegear.WordEntryScreenState",
-    versionId .. " has no single-word selector owner yet: "
-      .. "words cannot be offered in source group order"
+    versionId .. " has no single-word selector owner yet: " .. "words cannot be offered in source group order"
   )
   assert(WordEntryScreenState ~= nil, "the selector owner loads above")
 
@@ -220,11 +194,7 @@ function T.word_availability_follows_source_groups_without_save_gating(romFs, ve
 
   -- The null word renders empty and unknown identities fail loudly
   -- instead of resolving to a plausible neighbour.
-  Assert.equal(
-    WordEntryScreenState.wordKey(NULL_WORD),
-    nil,
-    "the null word carries no selectable identity"
-  )
+  Assert.equal(WordEntryScreenState.wordKey(NULL_WORD), nil, "the null word carries no selectable identity")
   local ok = pcall(WordEntryScreenState.wordsInGroup, catalog, 11, {})
   Assert.isFalse(ok, "an eleventh group index past the source groups fails")
 end

@@ -661,10 +661,7 @@ function T.v8_migration_reconstructs_only_the_proven_radio_card()
   local source = v8record({ world = { flags = { [138] = true }, variables = {} } })
   local migrated = GameSave.migrateV8(source)
   Assert.equal(migrated.schema, GameSave.LEGACY_V9_SCHEMA)
-  Assert.isTrue(
-    migrated.pokegear.registeredCards.radio == true,
-    "the radio acquisition flag proves the radio card"
-  )
+  Assert.isTrue(migrated.pokegear.registeredCards.radio == true, "the radio acquisition flag proves the radio card")
   Assert.isTrue(migrated.pokegear.registeredCards.phone == true, "the base companion card stays acquired")
   Assert.isNil(migrated.pokegear.registeredCards.map, "no flag proves a map card")
   local gear = PokegearState.restore(migrated.pokegear, companionRefs())

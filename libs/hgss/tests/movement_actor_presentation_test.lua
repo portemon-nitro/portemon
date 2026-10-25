@@ -566,7 +566,11 @@ end
 
 function T.locked_presentation_allowance_advances_only_one_unpaused_actor()
   local h = harness({ visual = followerVisual(), secondActor = true })
-  local resource = S.script({ api = 1, id = "test.cutscene_idle", steps = { S.lockAll(), S.waitTicks({ ticks = 8 }), S.releaseAll(), S.stop() } })
+  local resource = S.script({
+    api = 1,
+    id = "test.cutscene_idle",
+    steps = { S.lockAll(), S.waitTicks({ ticks = 8 }), S.releaseAll(), S.stop() },
+  })
   startForeground(h, resource, 100)
   local actor = assert(h.mgr:getById(ACTOR_ID))
   local sibling = assert(h.mgr:getById(SECOND_ACTOR_ID))

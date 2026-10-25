@@ -12,12 +12,7 @@ local function compiler()
 end
 
 local function performanceMember()
-  return string.char(
-    3, 4, 5, 6, 7,
-    0, 0, 0, 0,
-    2, 4, 3, 5, 1, 5, 4, 6, 6, 7,
-    0
-  )
+  return string.char(3, 4, 5, 6, 7, 0, 0, 0, 0, 2, 4, 3, 5, 1, 5, 4, 6, 6, 7, 0)
 end
 
 function T.decodes_performance_source_order_to_named_stats()

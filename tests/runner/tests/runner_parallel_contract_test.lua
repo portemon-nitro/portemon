@@ -181,7 +181,11 @@ function T.automatic_policy_bounds_full_runs_and_keeps_focused_runs_serial()
   Assert.equal(Parallel.effectiveJobs(plan(), 20, 2), 2)
   Assert.equal(Parallel.effectiveJobs(plan(), 20, 1), 1)
   Assert.equal(Parallel.effectiveJobs(plan(), 0, 16), 1)
-  Assert.equal(Parallel.effectiveJobs(plan({ fullCorpus = true }), 20, 16), 4, "corpus alone stays an automatic full run")
+  Assert.equal(
+    Parallel.effectiveJobs(plan({ fullCorpus = true }), 20, 16),
+    4,
+    "corpus alone stays an automatic full run"
+  )
   Assert.equal(Parallel.effectiveJobs(plan({ filter = "runner" }), 20, 16), 1)
   Assert.equal(Parallel.effectiveJobs(plan({ tag = "door" }), 20, 16), 1)
   Assert.equal(Parallel.effectiveJobs(plan({ layer = "unit" }), 20, 16), 1)

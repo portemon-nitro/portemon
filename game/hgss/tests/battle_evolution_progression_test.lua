@@ -528,8 +528,9 @@ local function driveToCommitted(rig, budget)
       local request = current.request --[[@as table<string, unknown>]]
       if request.kind == "learn_move" then
         local actor = assert(request.actors[1], "learning answers its combatant")
-        local accepted, replyErr =
-          rig.battle:submit(SessionFixture.replyFor(request, { { actor = actor, kind = "confirm", payload = { decision = "decline" } } }))
+        local accepted, replyErr = rig.battle:submit(
+          SessionFixture.replyFor(request, { { actor = actor, kind = "confirm", payload = { decision = "decline" } } })
+        )
         Assert.isTrue(accepted, "mid-battle learning declines: " .. tostring(replyErr))
       else
         local fragment = attackFragment(rig, request)
@@ -607,10 +608,7 @@ function T.newly_leveled_mon_evolves_once_while_unleveled_eligible_mon_stays()
   Assert.equal(committed.result, "win", "the lead settles the bout as a win")
   local receipt = assert(committed.outcomeReceipt, "completion carries its commit receipt")
   Assert.isTrue(receipt.committed, "the battle receipt commits before any evolution")
-  Assert.isTrue(
-    (committed.completionPending or 0) >= 1,
-    "the committed win queues its leveled member for evolution"
-  )
+  Assert.isTrue((committed.completionPending or 0) >= 1, "the committed win queues its leveled member for evolution")
   local offered = driveToEvolution(rig, 1200)
   Assert.equal(offered.kind, "evolution", "the offered completion names the evolution decision")
   runEvolutionHandsFree(rig, 1500)

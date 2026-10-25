@@ -196,12 +196,18 @@ local function manifest()
       selectionEntry = clip("selection-entry", 24),
       increment = {
         playback = "once",
-        frames = { { visual = visual("increment-pressed"), ticks = 2 }, { visual = visual("increment-idle"), ticks = 1 } },
+        frames = {
+          { visual = visual("increment-pressed"), ticks = 2 },
+          { visual = visual("increment-idle"), ticks = 1 },
+        },
         totalTicks = 3,
       },
       decrement = {
         playback = "once",
-        frames = { { visual = visual("decrement-pressed"), ticks = 2 }, { visual = visual("decrement-idle"), ticks = 1 } },
+        frames = {
+          { visual = visual("decrement-pressed"), ticks = 2 },
+          { visual = visual("decrement-idle"), ticks = 1 },
+        },
         totalTicks = 3,
       },
     },

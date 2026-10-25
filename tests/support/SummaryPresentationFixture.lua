@@ -84,18 +84,78 @@ function SummaryPresentationFixture.chromeVisuals()
     stamp71 = { image = "assets/generated/summary/syn-stamp-71.png", width = 80, height = 32 },
     stamp71Pressed = { image = "assets/generated/summary/syn-stamp-71-pressed.png", width = 80, height = 32 },
     levelPrefix = { image = "assets/generated/summary/syn-level-prefix.png", width = 16, height = 8 },
-    marking1Unset = { image = "assets/generated/summary/syn-marking-1-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
-    marking1Set = { image = "assets/generated/summary/syn-marking-1-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
-    marking2Unset = { image = "assets/generated/summary/syn-marking-2-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
-    marking2Set = { image = "assets/generated/summary/syn-marking-2-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
-    marking3Unset = { image = "assets/generated/summary/syn-marking-3-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
-    marking3Set = { image = "assets/generated/summary/syn-marking-3-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
-    marking4Unset = { image = "assets/generated/summary/syn-marking-4-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
-    marking4Set = { image = "assets/generated/summary/syn-marking-4-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
-    marking5Unset = { image = "assets/generated/summary/syn-marking-5-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
-    marking5Set = { image = "assets/generated/summary/syn-marking-5-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
-    marking6Unset = { image = "assets/generated/summary/syn-marking-6-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
-    marking6Set = { image = "assets/generated/summary/syn-marking-6-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking1Unset = {
+      image = "assets/generated/summary/syn-marking-1-unset.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
+    marking1Set = {
+      image = "assets/generated/summary/syn-marking-1-set.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
+    marking2Unset = {
+      image = "assets/generated/summary/syn-marking-2-unset.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
+    marking2Set = {
+      image = "assets/generated/summary/syn-marking-2-set.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
+    marking3Unset = {
+      image = "assets/generated/summary/syn-marking-3-unset.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
+    marking3Set = {
+      image = "assets/generated/summary/syn-marking-3-set.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
+    marking4Unset = {
+      image = "assets/generated/summary/syn-marking-4-unset.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
+    marking4Set = {
+      image = "assets/generated/summary/syn-marking-4-set.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
+    marking5Unset = {
+      image = "assets/generated/summary/syn-marking-5-unset.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
+    marking5Set = {
+      image = "assets/generated/summary/syn-marking-5-set.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
+    marking6Unset = {
+      image = "assets/generated/summary/syn-marking-6-unset.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
+    marking6Set = {
+      image = "assets/generated/summary/syn-marking-6-set.png",
+      width = 8,
+      height = 8,
+      offset = { x = -4, y = -4 },
+    },
     ["ballIcon_SYN-BALL"] = {
       image = "assets/generated/summary/syn-ball.png",
       width = 16,
@@ -104,8 +164,7 @@ function SummaryPresentationFixture.chromeVisuals()
     },
   }
   for _, name in ipairs(CHROME_ANIMATIONS) do
-    visuals["syn-" .. name] =
-      { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
+    visuals["syn-" .. name] = { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
   end
   return visuals
 end
@@ -113,7 +172,8 @@ end
 function SummaryPresentationFixture.chromeSprites()
   local animations = {}
   for _, name in ipairs(CHROME_ANIMATIONS) do
-    animations[name] = { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
+    animations[name] =
+      { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
   end
 
   local primaryAnchors, iconAnchors = {}, {}
@@ -181,7 +241,10 @@ function SummaryPresentationFixture.chromeSprites()
       category = { x = 232, y = 40 },
       detailTypes = { { x = 200, y = 24 }, { x = 234, y = 24 } },
     },
-    moveDetail = { monIcon = { x = 160, y = 16 }, switchTab = { visual = "stamp71", pressedVisual = "stamp71Pressed", origin = { x = 8, y = 128 } } },
+    moveDetail = {
+      monIcon = { x = 160, y = 16 },
+      switchTab = { visual = "stamp71", pressedVisual = "stamp71Pressed", origin = { x = 8, y = 128 } },
+    },
     leaves = { anchors = leafAnchors, crownAnchor = { x = 8, y = 16 }, leaf = "leaf", crown = "crown" },
     ribbons = {
       origin = { x = 32, y = 24 },
@@ -478,30 +541,141 @@ end
 -- gift-location closure entry travels with the rules but never
 -- selects, exactly like its generated counterpart.
 local MEMO_BRANCHES = {
-  { key = "migrated", match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "palPark" }, lines = { 1, 2, 6, 7, 0 }, template = migratedSegments },
-  { key = "fatefulEncounter", match = { isEgg = false, fateful = true, mine = true, eggLocation = "none", metLocation = "notPalPark" }, lines = { 1, 2, 7, 8, 0 }, template = metSegments },
-  { key = "fatefulEncounterTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "none", metLocation = "notPalPark" }, lines = { 1, 2, 7, 8, 0 }, template = metSegments },
-  { key = "wildGift", match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "linkTrade" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
-  { key = "wildGiftTraded", selectable = false, match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "linkTrade" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
-  { key = "wildEncounter", match = { isEgg = false, fateful = false, mine = true, eggLocation = "none", metLocation = "wild" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
-  { key = "wildEncounterTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "wild" }, lines = { 1, 2, 6, 7, 0 }, template = function()
-    return metSegments("SYN traded ")
-  end },
-  { key = "fatefulEggHatchedGift", match = { isEgg = false, fateful = true, mine = true, eggLocation = "linkTrade2" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "fatefulEggHatchedGiftTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "linkTrade2" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "fatefulEggHatchedArrived", match = { isEgg = false, fateful = true, mine = true, eggLocation = "ranger" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "fatefulEggHatchedArrivedTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "ranger" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "fatefulEggHatched", match = { isEgg = false, fateful = true, mine = true, eggLocation = "hatched" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "fatefulEggHatchedTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "hatched" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "eggHatchedGift", match = { isEgg = false, fateful = false, mine = true, eggLocation = "giftSet" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
-  { key = "eggHatchedGiftTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "giftSet" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
-  { key = "eggHatched", match = { isEgg = false, fateful = false, mine = true, eggLocation = "hatched" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
-  { key = "eggHatchedTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "hatched" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
-  { key = "fatefulEggArrived", match = { isEgg = true, fateful = true, mine = true, eggLocation = "ranger" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
-  { key = "fatefulEgg", match = { isEgg = true, fateful = true, mine = true, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
-  { key = "fatefulEggTraded", match = { isEgg = true, fateful = true, mine = false, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
-  { key = "egg", match = { isEgg = true, fateful = false, mine = true, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
-  { key = "eggTraded", match = { isEgg = true, fateful = false, mine = false, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
+  {
+    key = "migrated",
+    match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "palPark" },
+    lines = { 1, 2, 6, 7, 0 },
+    template = migratedSegments,
+  },
+  {
+    key = "fatefulEncounter",
+    match = { isEgg = false, fateful = true, mine = true, eggLocation = "none", metLocation = "notPalPark" },
+    lines = { 1, 2, 7, 8, 0 },
+    template = metSegments,
+  },
+  {
+    key = "fatefulEncounterTraded",
+    match = { isEgg = false, fateful = true, mine = false, eggLocation = "none", metLocation = "notPalPark" },
+    lines = { 1, 2, 7, 8, 0 },
+    template = metSegments,
+  },
+  {
+    key = "wildGift",
+    match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "linkTrade" },
+    lines = { 1, 2, 6, 7, 0 },
+    template = metSegments,
+  },
+  {
+    key = "wildGiftTraded",
+    selectable = false,
+    match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "linkTrade" },
+    lines = { 1, 2, 6, 7, 0 },
+    template = metSegments,
+  },
+  {
+    key = "wildEncounter",
+    match = { isEgg = false, fateful = false, mine = true, eggLocation = "none", metLocation = "wild" },
+    lines = { 1, 2, 6, 7, 0 },
+    template = metSegments,
+  },
+  {
+    key = "wildEncounterTraded",
+    match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "wild" },
+    lines = { 1, 2, 6, 7, 0 },
+    template = function()
+      return metSegments("SYN traded ")
+    end,
+  },
+  {
+    key = "fatefulEggHatchedGift",
+    match = { isEgg = false, fateful = true, mine = true, eggLocation = "linkTrade2" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggHatchedGiftTraded",
+    match = { isEgg = false, fateful = true, mine = false, eggLocation = "linkTrade2" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggHatchedArrived",
+    match = { isEgg = false, fateful = true, mine = true, eggLocation = "ranger" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggHatchedArrivedTraded",
+    match = { isEgg = false, fateful = true, mine = false, eggLocation = "ranger" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggHatched",
+    match = { isEgg = false, fateful = true, mine = true, eggLocation = "hatched" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggHatchedTraded",
+    match = { isEgg = false, fateful = true, mine = false, eggLocation = "hatched" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "eggHatchedGift",
+    match = { isEgg = false, fateful = false, mine = true, eggLocation = "giftSet" },
+    lines = { 1, 2, 8, 9, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "eggHatchedGiftTraded",
+    match = { isEgg = false, fateful = false, mine = false, eggLocation = "giftSet" },
+    lines = { 1, 2, 8, 9, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "eggHatched",
+    match = { isEgg = false, fateful = false, mine = true, eggLocation = "hatched" },
+    lines = { 1, 2, 8, 9, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "eggHatchedTraded",
+    match = { isEgg = false, fateful = false, mine = false, eggLocation = "hatched" },
+    lines = { 1, 2, 8, 9, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggArrived",
+    match = { isEgg = true, fateful = true, mine = true, eggLocation = "ranger" },
+    lines = { 0, 1, 0, 0, 6 },
+    template = eggSegments,
+  },
+  {
+    key = "fatefulEgg",
+    match = { isEgg = true, fateful = true, mine = true, eggLocation = "egg" },
+    lines = { 0, 1, 0, 0, 6 },
+    template = eggSegments,
+  },
+  {
+    key = "fatefulEggTraded",
+    match = { isEgg = true, fateful = true, mine = false, eggLocation = "egg" },
+    lines = { 0, 1, 0, 0, 6 },
+    template = eggSegments,
+  },
+  {
+    key = "egg",
+    match = { isEgg = true, fateful = false, mine = true, eggLocation = "egg" },
+    lines = { 0, 1, 0, 0, 6 },
+    template = eggSegments,
+  },
+  {
+    key = "eggTraded",
+    match = { isEgg = true, fateful = false, mine = false, eggLocation = "egg" },
+    lines = { 0, 1, 0, 0, 6 },
+    template = eggSegments,
+  },
 }
 
 local function memoSection()

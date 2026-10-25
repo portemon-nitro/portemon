@@ -256,10 +256,21 @@ end
 
 function T.compiled_focus_and_control_variants_preserve_their_source_roles(romFs)
   local manifest = compile(romFs).manifest
-  Assert.isTrue(type(manifest.lower.focus) == "table", "compiled mart manifest exposes the independent lower focus family")
+  Assert.isTrue(
+    type(manifest.lower.focus) == "table",
+    "compiled mart manifest exposes the independent lower focus family"
+  )
   local focus = manifest.lower.focus
-  Assert.deepEqual({ focus.item.width, focus.item.height }, { 128, 48 }, "item focus retains its source cell dimensions")
-  Assert.deepEqual({ focus.cancel.width, focus.cancel.height }, { 64, 32 }, "Cancel focus retains its source cell dimensions")
+  Assert.deepEqual(
+    { focus.item.width, focus.item.height },
+    { 128, 48 },
+    "item focus retains its source cell dimensions"
+  )
+  Assert.deepEqual(
+    { focus.cancel.width, focus.cancel.height },
+    { 64, 32 },
+    "Cancel focus retains its source cell dimensions"
+  )
   Assert.isNil(focus.page, "compiled focus contains only persistent item and Cancel visuals")
 
   for _, control in ipairs({
@@ -276,7 +287,10 @@ function T.compiled_focus_and_control_variants_preserve_their_source_roles(romFs
       { normal.width, normal.height, normal.offsetX, normal.offsetY },
       control.normalVisualKey .. " palette variants retain identical geometry"
     )
-    Assert.isFalse(normal.image == selected.image, control.normalVisualKey .. " variants retain distinct rendered palette assets")
+    Assert.isFalse(
+      normal.image == selected.image,
+      control.normalVisualKey .. " variants retain distinct rendered palette assets"
+    )
   end
 
   Assert.isFalse(
@@ -339,8 +353,12 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
         weekday = 0,
         dayOrdinal = 1,
         cardPrefix = 0,
-        readFlag = function(flag) return flag == 0x09A and flag09A end,
-        readVariable = function() return 0 end,
+        readFlag = function(flag)
+          return flag == 0x09A and flag09A
+        end,
+        readVariable = function()
+          return 0
+        end,
       })
       local expected = {}
       for _, row in ipairs(bundle.catalog.specialStocks[selector + 1]) do
@@ -365,8 +383,12 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
       weekday = 0,
       dayOrdinal = 1,
       cardPrefix = 0,
-      readFlag = function() return false end,
-      readVariable = function() return 0 end,
+      readFlag = function()
+        return false
+      end,
+      readVariable = function()
+        return 0
+      end,
     })
     Assert.equal(#seals.entries, #rows, "Seal stock preserves its compiled source list")
     for index, _ in ipairs(rows) do

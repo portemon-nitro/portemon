@@ -406,10 +406,7 @@ function T.preparation_requests_only_the_pages_behind_the_given_keys()
   Assert.equal(#requested, 2, "only demanded pages reach image enrollment")
   Assert.isTrue(ready == true or ready == false, "preparation reports its readiness")
   Assert.isNil(failure, "no failure while demanded pages prepare: " .. tostring(failure))
-  Assert.isTrue(
-    inner.uploads - uploadsBefore <= 1,
-    "one preparation update adopts at most one new page lease"
-  )
+  Assert.isTrue(inner.uploads - uploadsBefore <= 1, "one preparation update adopts at most one new page lease")
   provider:release()
 end
 

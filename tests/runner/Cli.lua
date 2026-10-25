@@ -416,7 +416,12 @@ function Cli.outcome(plan, capabilities, run)
   -- A runner-only selection excluded the product graphics suites on purpose,
   -- so the counter does not apply to it.
   local focused = plan.filter ~= nil or plan.tag ~= nil
-  if plan.graphicsStrict and plan.selfTest ~= true and (plan.layer == nil or plan.layer == "graphics") and not focused then
+  if
+    plan.graphicsStrict
+    and plan.selfTest ~= true
+    and (plan.layer == nil or plan.layer == "graphics")
+    and not focused
+  then
     local graphics = run.byLayer.graphics
     if graphics == nil or graphics.passed + graphics.failed == 0 then
       return {

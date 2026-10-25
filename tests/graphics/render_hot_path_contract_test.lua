@@ -260,7 +260,9 @@ function T.menu_buttons_reuse_resolved_geometry_across_frames()
     end
     Assert.isTrue(
       counts[1] <= 1,
-      "geometry resolves on layout change, not once per paint (resolved " .. counts[1] .. " times for 4 identical frames)"
+      "geometry resolves on layout change, not once per paint (resolved "
+        .. counts[1]
+        .. " times for 4 identical frames)"
     )
   end)
 end

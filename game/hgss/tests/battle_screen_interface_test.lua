@@ -192,18 +192,10 @@ function T.learn_confirmation_uses_the_native_two_option_scope_and_hit_regions()
   }
   local plan = session:resolve(dualMeasurement(), childView)
   Assert.equal(plan.content.layout, "two-option", "a staged learning confirmation selects its source menu")
-  local top = plan.mapInput(
-    { type = "pointer_down", pointerId = "learn-confirm", x = 8, y = 40 },
-    childView,
-    plan
-  )
+  local top = plan.mapInput({ type = "pointer_down", pointerId = "learn-confirm", x = 8, y = 40 }, childView, plan)
   Assert.equal(top.type, "child_press", "the top source option retains child activation semantics")
   Assert.equal(top.control.id, "confirm", "the top Forget/Yes option confirms the staged learning action")
-  local bottom = plan.mapInput(
-    { type = "pointer_down", pointerId = "learn-back", x = 8, y = 112 },
-    childView,
-    plan
-  )
+  local bottom = plan.mapInput({ type = "pointer_down", pointerId = "learn-back", x = 8, y = 112 }, childView, plan)
   Assert.equal(bottom.type, "child_press", "the bottom source option retains child activation semantics")
   Assert.equal(bottom.control.id, "back", "the bottom Keep/No option returns to the learning list")
 end

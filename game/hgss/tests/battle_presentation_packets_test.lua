@@ -239,7 +239,14 @@ function T.production_deliveries_replay_exactly_once_end_to_end()
   local launch = {
     id = "launch-packets-once",
     kind = "wild",
-    payload = { attemptId = "once-attempt", species = "TOTODILE", form = 0, level = 4, personality = 1, ability = "TORRENT" },
+    payload = {
+      attemptId = "once-attempt",
+      species = "TOTODILE",
+      form = 0,
+      level = 4,
+      personality = 1,
+      ability = "TORRENT",
+    },
   }
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
@@ -261,7 +268,14 @@ function T.production_deliveries_replay_exactly_once_end_to_end()
     end,
     dispose = function() end,
   }
-  local battle = BattleRuntime.new({ request = launch, scenario = scenario, party = party, bag = bag, presentation = port, seed = 0x00D9A001 })
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    bag = bag,
+    presentation = port,
+    seed = 0x00D9A001,
+  })
   local opening = nil
   for _ = 1, 400 do
     battle:update()
@@ -323,7 +337,8 @@ function T.production_deliveries_replay_exactly_once_end_to_end()
       for key, value in pairs(packet) do
         replay[key] = value
       end
-      replay.packetId = (packet.packetId --[[@as integer]]) + 5000
+      replay.packetId = packet.packetId --[[@as integer]]
+        + 5000
       Assert.isTrue(player:present(replay) == false, "a replay under a new packet identity queues nothing more")
     end
   end

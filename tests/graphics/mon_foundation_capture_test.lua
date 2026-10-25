@@ -271,7 +271,14 @@ local function foundationCache()
     stub("test/" .. path .. ".png", 256, 256, 20, 20, 20)
   end
   stub("test/aux-panel.png", 128, 48, 40, 40, 56)
-  for _, path in ipairs({ "status-faint", "status-sleep", "status-poison", "status-burn", "status-freeze", "status-paralysis" }) do
+  for _, path in ipairs({
+    "status-faint",
+    "status-sleep",
+    "status-poison",
+    "status-burn",
+    "status-freeze",
+    "status-paralysis",
+  }) do
     stub("test/" .. path .. ".png", 24, 8, 230, 230, 230)
   end
   stub("test/hp-green.png", 48, 4, 40, 220, 40)

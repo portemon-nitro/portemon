@@ -3380,8 +3380,15 @@ function T.full_low_health_servings_answer_below_quarter_health()
       }
     )
   )
-  local faintedAnswer = faintedSession:answerTrainer(openRequest(faintedSession, "trainer:1"))
-  Assert.equal(faintedAnswer.choices[1].kind, "attack", "a fainted holder never serves")
+  local faintedCapture = faintedSession:capture()
+  Assert.equal(
+    faintedCapture.inventories["trainer-stock"].quantities.FULL_RESTORE,
+    1,
+    "a fainted holder leaves its stock untouched"
+  )
+  Assert.throws(function()
+    openRequest(faintedSession, "trainer:1")
+  end, "a fainted holder receives no trainer turn")
   faintedSession:dispose()
 end
 
@@ -3639,37 +3646,35 @@ function T.unknown_opposing_ability_fails_the_exchange_closed()
   end, "the exchange needs its opposing ability")
   Assert.isTrue(
     string.find(string.lower(tostring(failure)), "ability", 1, true) ~= nil,
-    "the failure names the missing ability fact"
+    "the failure names the missing ability fact: " .. tostring(failure)
   )
   session:dispose()
 end
 
--- Modded holder abilities fail the strike closed: an ability outside the
--- native identity table passes the switch and item gates untouched, then
--- attack evaluation raises naming the ability instead of guessing a move.
+-- Modded holder abilities fail closed at the first native passive read:
+-- battle ordering needs effective Speed before the trainer can choose a
+-- move, so an unsupported identity cannot enter a live session.
 function T.modded_holder_ability_fails_the_strike_closed()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(51, 23, "EEVEE", 10);
   (holder.mon --[[@as table<string, unknown>]]).ability = "MODDED_GUARD"
   local foe = leveledCombatant(52, 41, "TOTODILE", 10)
-  local session = waitingSession(
-    contracts,
-    trainerStockScenario(
-      SessionFixture.inventory("trainer-stock", { 2 }, {}),
-      { holder },
-      { foe },
-      { "TACKLE" },
-      { passes = {} }
-    )
-  )
   local failure = Assert.throws(function()
-    session:answerTrainer(openRequest(session, "trainer:1"))
-  end, "the strike needs its holder ability identity")
+    waitingSession(
+      contracts,
+      trainerStockScenario(
+        SessionFixture.inventory("trainer-stock", { 2 }, {}),
+        { holder },
+        { foe },
+        { "TACKLE" },
+        { passes = {} }
+      )
+    )
+  end, "native Speed projection needs the holder ability identity")
   Assert.isTrue(
     string.find(string.lower(tostring(failure)), "ability", 1, true) ~= nil,
-    "the failure names the missing ability fact"
+    "the failure names the missing ability fact: " .. tostring(failure)
   )
-  session:dispose()
 end
 
 -- natural cure and no hit history, the opening coin exchanges for the

@@ -452,7 +452,11 @@ function T.tests.nurse_joy_heals_through_the_blocking_common_script_flow()
     for index = 1, 2 do
       Assert.equal(#ballSnapshots[index], index, "each spawn snapshot retains the ordered source prefix")
       Assert.equal(#ballSnapshots[index + 1], index + 1, "each spawn adds one temporary ball")
-      Assert.equal(spawnTicks[index + 1] - spawnTicks[index], 14, "successive balls are separated by the full delay and transition sequence")
+      Assert.equal(
+        spawnTicks[index + 1] - spawnTicks[index],
+        14,
+        "successive balls are separated by the full delay and transition sequence"
+      )
     end
     Assert.isTrue(sawBothAnimations, "the machine and balls animate together after spawning")
     Assert.isTrue(sawFanfare, "the healing-machine fanfare begins while the common script is blocked")
@@ -475,7 +479,11 @@ function T.tests.nurse_joy_heals_through_the_blocking_common_script_flow()
     Assert.isTrue(firstNurseMoveTick < spawnTicks[1], "Nurse Joy's source movement precedes the machine sequence")
     Assert.notNil(bothAnimationsTick, "the source machine and temporary-ball animations start together")
     Assert.notNil(fanfareTick, "the machine starts its source healing fanfare")
-    Assert.equal(bothAnimationsTick - spawnTicks[3], 14, "the machine waits for the same post-ball delay sequence after the final ball")
+    Assert.equal(
+      bothAnimationsTick - spawnTicks[3],
+      14,
+      "the machine waits for the same post-ball delay sequence after the final ball"
+    )
     Assert.isTrue(bothAnimationsTick <= fanfareTick, "the healing fanfare starts with the paired animations")
     Assert.isTrue(fanfareTick < flowCompleteTick, "the flow waits for its fanfare before completing")
     Assert.isTrue(flowCompleteTick < firstReceiveTick, "player receive starts after the blocking machine flow")

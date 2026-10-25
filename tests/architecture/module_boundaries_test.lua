@@ -388,7 +388,10 @@ local function packageViolationsFor(files, packageName)
           and module:sub(1, #"app.src.saveeditor.") ~= "app.src.saveeditor."
           and module ~= "app.src.ui.ProductMenuSkin"
         if editorAppViolation then
-          violations[#violations + 1] = file .. " requires " .. module .. " (saveeditor may import only its own subtree)"
+          violations[#violations + 1] = file
+            .. " requires "
+            .. module
+            .. " (saveeditor may import only its own subtree)"
         elseif reason ~= nil then
           violations[#violations + 1] = file .. " requires " .. module .. " (" .. packageName .. " -> " .. reason .. ")"
         elseif targetPackage ~= nil and allowed[targetPackage] ~= true then
@@ -531,10 +534,7 @@ function T.saveeditor_imports_stay_inside_the_declared_neutral_boundary()
       mismatches[#mismatches + 1] = fixture.module .. " expected allowed=" .. tostring(fixture.allowed)
     end
   end
-  Assert.isTrue(
-    #mismatches == 0,
-    violationMessage("saveeditor import policy mismatches:\n", mismatches)
-  )
+  Assert.isTrue(#mismatches == 0, violationMessage("saveeditor import policy mismatches:\n", mismatches))
 end
 
 function T.neutral_modules_resolve_without_loading_retail_code()

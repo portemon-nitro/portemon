@@ -61,7 +61,8 @@ function T.generated_bundle_includes_depleted_tree_and_fruit_sprites(romFs)
   Assert.notNil(depletedVisual.gestures.apricorn_tree_expel)
   Assert.isTrue(compiled[depletedTreeSpriteId], "generated field actor bundle lists the depleted tree sprite")
   Assert.notNil(bundle.atlases[depletedTreeSpriteId], "generated field actor bundle publishes the depleted tree atlas")
-  local runtimeApricorn = assert(bundle.index.runtime.apricorn, "actor index publishes runtime Apricorn sprite identities")
+  local runtimeApricorn =
+    assert(bundle.index.runtime.apricorn, "actor index publishes runtime Apricorn sprite identities")
   Assert.equal(runtimeApricorn.depletedTreeSpriteId, depletedTreeSpriteId)
 
   for index, apricornKey in ipairs(APRICORN_KEYS) do

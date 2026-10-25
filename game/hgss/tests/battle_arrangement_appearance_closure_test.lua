@@ -303,14 +303,8 @@ function T.form_gender_and_facing_ride_the_displayed_record()
     "the displayed foe keeps its exact picture selector"
   )
   local lead = battler(timeline:battlers(), 1)
-  Assert.isTrue(
-    tostring(lead.portraitSelector):sub(-5) == "/back",
-    "the own picture selector keeps its back facing"
-  )
-  Assert.isTrue(
-    tostring(shown.portraitSelector):sub(-6) == "/front",
-    "the foe picture selector keeps its front facing"
-  )
+  Assert.isTrue(tostring(lead.portraitSelector):sub(-5) == "/back", "the own picture selector keeps its back facing")
+  Assert.isTrue(tostring(shown.portraitSelector):sub(-6) == "/front", "the foe picture selector keeps its front facing")
 end
 
 -- The screen grows its exact portrait demand when one combatant's
@@ -403,10 +397,22 @@ function T.screen_grows_exact_demand_when_an_appearance_changes()
     screen:updateFixed(SCREEN_TICK)
   end
   Assert.isTrue(port.enter({ launchId = launchId, kind = "wild" }), "setup: the appearance launch enters")
-  port.present({ launchId = launchId, packetId = 1, events = {}, before = viewWith(beforeSelector), after = viewWith(beforeSelector) })
+  port.present({
+    launchId = launchId,
+    packetId = 1,
+    events = {},
+    before = viewWith(beforeSelector),
+    after = viewWith(beforeSelector),
+  })
   pump(400)
   Assert.isTrue(hasPage(beforeSelector), "setup: the opening demands the initial appearance selector")
-  port.present({ launchId = launchId, packetId = 2, events = {}, before = viewWith(beforeSelector), after = viewWith(afterSelector) })
+  port.present({
+    launchId = launchId,
+    packetId = 2,
+    events = {},
+    before = viewWith(beforeSelector),
+    after = viewWith(afterSelector),
+  })
   pump(400)
   Assert.isTrue(hasPage(afterSelector), "the changed appearance grows the exact demand")
   screen:dispose()
@@ -563,10 +569,7 @@ function T.shiny_variants_resolve_distinct_picture_resources()
   pump(400)
   Assert.isTrue(hasEeveePage(pages()), "setup: the shared selector is demanded")
   Assert.isTrue(hasPage(pages(), "RATTATA/0/male/plain/front"), "setup: the foe selector is demanded")
-  Assert.isTrue(
-    countEeveePages(pages()) >= 2,
-    "the plain and shiny battlers never share one picture demand"
-  )
+  Assert.isTrue(countEeveePages(pages()) >= 2, "the plain and shiny battlers never share one picture demand")
   screen:dispose()
 end
 
@@ -580,10 +583,7 @@ function T.corrupt_appearance_facts_fail_diagnostically()
   local bad = singlesView()
   bad.foes[1].gender = "unknown-gender"
   bad.foes[1].form = -1
-  Assert.isFalse(
-    pcall(timeline.reset, timeline, bad),
-    "corrupt appearance facts never reset silently"
-  )
+  Assert.isFalse(pcall(timeline.reset, timeline, bad), "corrupt appearance facts never reset silently")
 end
 
 return { tests = T }

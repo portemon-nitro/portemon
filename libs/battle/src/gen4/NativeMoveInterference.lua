@@ -10,6 +10,20 @@ local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 ---@class NativeMoveInterference
 local NativeMoveInterference = {}
 
+---@param entries table<integer, table<string, integer>> living active battlers with sampled Speed
+---@param trickRoom boolean current speed dimension
+---@param stream table<string, unknown> battle random stream for speed ties
+---@return integer[] battler identities in native speed order
+local function orderedSpeedIds(entries, trickRoom, stream)
+  local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
+  local ordered = TurnOrder.orderEntryEffects(entries, { trickRoom = trickRoom }, stream)
+  local ids = {} ---@type integer[]
+  for _, entry in ipairs(ordered) do
+    ids[#ids + 1] = entry.id
+  end
+  return ids
+end
+
 ---@param state table<string, unknown> live battle state under interception
 ---@return boolean true when the field topology has more than one slot per side
 local function hasPartners(state)
@@ -172,11 +186,12 @@ function NativeMoveInterference.dynamicMoveType(state, actor, move, moveFacts, i
     return HIDDEN_POWER_TYPES[raw <= 8 and raw or raw - 1]
   elseif move == "WEATHER_BALL" then
     local suppressed = false
+    local bridge = NativePassiveBridge.wrap(state)
     for _, combatantId in
       ipairs(state.combatantOrder --[[@as integer[] ]])
     do
       local holder = BattleState.combatant(state, combatantId)
-      local ability = (holder.mon --[[@as table<string, unknown>]]).ability
+      local ability = bridge:abilityOf(combatantId)
       if
         holder.active ~= nil
         and holder.hp --[[@as integer]]
@@ -208,8 +223,22 @@ end
 ---@param move string incoming move identity
 ---@param moveFacts table<string, unknown> immutable incoming move facts
 ---@param itemFacts table<string, table<string, unknown>> immutable item facts
+---@param speedEntries table<integer, table<string, integer>> current living battlers' sampled Speed
+---@param trickRoom boolean current speed dimension
+---@param stream table<string, unknown> battle random stream for speed ties
 ---@return table<string, unknown> recipient and optional ability redirect
-function NativeMoveInterference.magicCoatRecipient(state, coatUser, originalUser, move, moveFacts, itemFacts)
+function NativeMoveInterference.magicCoatRecipient(
+  state,
+  coatUser,
+  originalUser,
+  move,
+  moveFacts,
+  itemFacts,
+  speedEntries,
+  trickRoom,
+  stream
+)
+  local bridge = NativePassiveBridge.wrap(state)
   local followMe = followMeForSide(state, sideOf(state, coatUser))
   if followMe ~= nil then
     return { combatant = followMe }
@@ -222,20 +251,16 @@ function NativeMoveInterference.magicCoatRecipient(state, coatUser, originalUser
   local moveType = NativeMoveInterference.dynamicMoveType(state, coatUser, move, moveFacts, itemFacts)
   local redirectAbility = moveType == "electric" and "LIGHTNINGROD" or moveType == "water" and "STORM_DRAIN" or nil
   if range == 0 or range == 2 then
-    local coatCombatant = BattleState.combatant(state, coatUser)
-    local coatAbility = (coatCombatant.mon --[[@as table<string, unknown>]]).ability
+    local coatAbility = bridge:abilityOf(coatUser)
     if coatAbility ~= "MOLD_BREAKER" and coatAbility ~= "NORMALIZE" and redirectAbility ~= nil then
-      local queue = state.queue --[[@as table<integer, table<string, unknown>>?]]
-      for _, action in ipairs(queue or {}) do
-        local queuedActor = action.actor --[[@as table<string, unknown>?]]
-        local candidate = type(queuedActor) == "table" and queuedActor.combatant or nil
-        if type(candidate) == "number" and candidate ~= coatUser then
-          local combatant = BattleState.combatant(state, candidate --[[@as integer]])
+      for _, candidate in ipairs(orderedSpeedIds(speedEntries, trickRoom, stream)) do
+        if candidate ~= coatUser then
+          local combatant = BattleState.combatant(state, candidate)
           if
             combatant.hp --[[@as integer]]
               > 0
             and combatant.active ~= nil
-            and (combatant.mon --[[@as table<string, unknown>]]).ability == redirectAbility
+            and bridge:abilityOf(candidate) == redirectAbility
           then
             return { combatant = candidate, ability = redirectAbility, moveType = moveType }
           end
@@ -246,6 +271,87 @@ function NativeMoveInterference.magicCoatRecipient(state, coatUser, originalUser
   return { combatant = originalUser }
 end
 
+---@param state table<string, unknown> live battle state under recipient selection
+---@param actor integer current move user
+---@param move string executing move identity
+---@param moveFacts table<string, unknown> immutable move facts
+---@param itemFacts table<string, table<string, unknown>> immutable item facts
+---@param chargeTurn boolean whether the move is resolving its stored charge turn
+---@param targets integer[] current sampled recipients
+---@param speedEntries table<integer, table<string, integer>> sampled living battler speeds
+---@param trickRoom boolean whether Trick Room reverses speed order
+---@param stream table<string, unknown> battle random stream for speed ties
+---@return table<string, unknown>? redirected ability holder and move type
+function NativeMoveInterference.redirectRecipient(
+  state,
+  actor,
+  move,
+  moveFacts,
+  itemFacts,
+  chargeTurn,
+  targets,
+  speedEntries,
+  trickRoom,
+  stream
+)
+  local range = moveFacts.range
+  if (range ~= 0 and range ~= 2) or chargeTurn then
+    return nil
+  end
+  local bridge = NativePassiveBridge.wrap(state)
+  local attackerAbility = bridge:abilityOf(actor)
+  if attackerAbility == "NORMALIZE" or attackerAbility == "MOLD_BREAKER" then
+    return nil
+  end
+  local userSide = sideOf(state, actor)
+  local opposingSide = nil
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, combatantId)
+    if
+      combatant.active ~= nil
+      and BattleState.participant(state, combatant.participant --[[@as integer]]).side ~= userSide
+    then
+      opposingSide = BattleState.participant(state, combatant.participant --[[@as integer]]).side
+      break
+    end
+  end
+  if opposingSide ~= nil and followMeForSide(state, opposingSide) ~= nil then
+    return nil
+  end
+  local moveType = NativeMoveInterference.dynamicMoveType(state, actor, move, moveFacts, itemFacts)
+  local ability = moveType == "electric" and "LIGHTNINGROD" or moveType == "water" and "STORM_DRAIN" or nil
+  if ability == nil then
+    return nil
+  end
+  local order = {} ---@type integer[]
+  if #speedEntries > 0 then
+    order = orderedSpeedIds(speedEntries, trickRoom, stream)
+  else
+    for _, combatantId in
+      ipairs(state.combatantOrder --[[@as integer[] ]])
+    do
+      order[#order + 1] = combatantId
+    end
+  end
+  for _, combatantId in ipairs(order) do
+    local combatant = BattleState.combatant(state, combatantId)
+    if
+      combatantId ~= actor
+      and combatant.active ~= nil
+      and combatant.hp > 0
+      and bridge:abilityOf(combatantId) == ability
+    then
+      if targets[1] == combatantId then
+        return nil
+      end
+      return { combatant = combatantId, ability = ability, moveType = moveType }
+    end
+  end
+  return nil
+end
+
 ---@param state table<string, unknown> live battle state under ability response
 ---@param context table<string, unknown> battle context emitting the response
 ---@param combatant integer redirected ability holder
@@ -253,7 +359,7 @@ end
 ---@param move string reflected move identity
 ---@param moveType string dynamically resolved move type
 ---@param attackerAbility string? reflected move user's live ability
----@return boolean true when the source ability absorbs the move
+---@return boolean false because source Lightning Rod and Storm Drain redirect without absorbing
 function NativeMoveInterference.applyAbilityResponse(
   state,
   context,
@@ -263,40 +369,15 @@ function NativeMoveInterference.applyAbilityResponse(
   moveType,
   attackerAbility
 )
-  local holder = BattleState.combatant(state, combatant)
-  local active = assert(holder.active, "redirected abilities belong to active combatants")
-  assert(
-    (holder.mon --[[@as table<string, unknown>]]).ability == ability,
-    "ability redirection resolves its live owner"
-  )
-  local outcome = NativePassiveBridge.invokeFacts(
-    {
-      combatant = combatant,
-      activation = active.activation --[[@as integer]],
-      ability = ability,
-    },
-    "beforeHit",
-    {
-      moveType = moveType,
-      hit = { attackerAbility = attackerAbility },
-    }
-  )
-  for _, event in ipairs(outcome.events) do
-    local answer = event --[[@as table<string, unknown>]]
-    if answer.absorbed == true then
-      context:emit("ability", {
-        kind = "ability",
-        key = ability,
-        combatant = combatant,
-      }, {
-        combatant = combatant,
-        ability = ability,
-        move = move,
-        absorbed = true,
-      })
-      return true
-    end
-  end
+  assert(BattleState.combatant(state, combatant).active ~= nil, "redirected abilities belong to active combatants")
+  context:emit("ability", { kind = "ability", key = ability, combatant = combatant }, {
+    combatant = combatant,
+    ability = ability,
+    move = move,
+    moveType = moveType,
+    attackerAbility = attackerAbility,
+    redirected = true,
+  })
   return false
 end
 

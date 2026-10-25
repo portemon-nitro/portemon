@@ -2143,7 +2143,11 @@ function T.an_unlisted_destination_keeps_the_ordinary_enter_fade()
   })
   startPreviewWarp(transition, ctx.source)
   advanceTo(transition, FieldTransition.PHASES.fade_in, 64)
-  Assert.equal(transition.phase, FieldTransition.PHASES.fade_in, "an unlisted destination keeps the ordinary enter fade")
+  Assert.equal(
+    transition.phase,
+    FieldTransition.PHASES.fade_in,
+    "an unlisted destination keeps the ordinary enter fade"
+  )
   Assert.equal(consulted, 1, "the selector is consulted exactly once per committed warp")
   Assert.isNil(transition:presentationStatus().preview, "an ineligible warp publishes no preview")
   Assert.notNil(transition.fade, "the ordinary arrival owns its own fade")
@@ -2338,7 +2342,11 @@ function T.a_profile8_preview_owns_its_arrival_without_the_generic_destination_r
   Assert.equal(transition.phase, "idle", "the profile8 preview completes")
   Assert.notNil(observed.verticalReturn, "the preview arrival descends through the player-owned vertical return")
   Assert.equal(observed.verticalReturn.anchorY, 10, "the return targets the pre-offset destination anchor")
-  Assert.equal(observed.verticalReturn.durationTicks, 8, "the source's sixteen 60Hz increments become eight fixed ticks")
+  Assert.equal(
+    observed.verticalReturn.durationTicks,
+    8,
+    "the source's sixteen 60Hz increments become eight fixed ticks"
+  )
   Assert.equal(observed.stageAtReturn, "blend_out", "the vertical return runs during the reveal blend")
   Assert.equal(observed.turn, "south", "the arrival faces south")
   Assert.isNil(observed.step, "the preview branch must not append the generic destination step")

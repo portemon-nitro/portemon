@@ -230,7 +230,10 @@ function T.opening_and_switch_appearances_replace_unused_roster_sightings()
   local opener = foeRecord("TOTODILE", 4, 0xAAAA0011)
   local enteringReserve = foeRecord("EEVEE", 30, 0xAAAA0012)
   local untouchedReserve = foeRecord("CHIKORITA", 4, 0xAAAA0013)
-  local party = makeParty({ species = "EEVEE", level = 5, seed = 0x33333333 }, { species = "EEVEE", level = 5, seed = 0x44444444 })
+  local party = makeParty(
+    { species = "EEVEE", level = 5, seed = 0x33333333 },
+    { species = "EEVEE", level = 5, seed = 0x44444444 }
+  )
   local dex = newDexOwner({ "TOTODILE", "EEVEE", "CHIKORITA" })
   local trainers = {
     {
@@ -243,11 +246,10 @@ function T.opening_and_switch_appearances_replace_unused_roster_sightings()
       aiPasses = {},
     },
   }
-  local scenario =
-    ScenarioFactory.fromTrainer({ id = "launch-appearance", trainers = trainers }, {
-      party = party,
-      player = { trainerId = 99, trainerName = "MINT", language = "french" },
-    })
+  local scenario = ScenarioFactory.fromTrainer({ id = "launch-appearance", trainers = trainers }, {
+    party = party,
+    player = { trainerId = 99, trainerName = "MINT", language = "french" },
+  })
   local portRecord = newPortRecord()
   local battle = BattleRuntime.new({
     request = { id = "launch-appearance", kind = "trainer", payload = { trainer = "rival-early" } },
@@ -324,9 +326,8 @@ function T.opening_and_switch_appearances_replace_unused_roster_sightings()
     end
     if current.phase == "running" and current.request ~= nil then
       local actor = assert(current.request.actors[1], "the repeat battle addresses its lead")
-      local accepted, replyErr = repeatBattle:submit(
-        SessionFixture.replyFor(current.request, { { actor = actor, kind = "run", payload = {} } })
-      )
+      local accepted, replyErr =
+        repeatBattle:submit(SessionFixture.replyFor(current.request, { { actor = actor, kind = "run", payload = {} } }))
       Assert.isTrue(accepted, "the repeat escape is accepted: " .. tostring(replyErr))
     end
   end
@@ -337,10 +338,7 @@ function T.opening_and_switch_appearances_replace_unused_roster_sightings()
     { firstGender, expectedGender(monCatalog, "EEVEE", repeatFoe.personality) },
     "a repeat observation appends its gender after first history"
   )
-  Assert.isNil(
-    dex:firstPersonality("EEVEE"),
-    "repeats never reorder the first observed personality"
-  )
+  Assert.isNil(dex:firstPersonality("EEVEE"), "repeats never reorder the first observed personality")
   repeatBattle:dispose()
   battle:dispose()
 end
@@ -369,7 +367,10 @@ function T.first_capture_freezes_a_detached_identity_and_waits_for_readiness()
 
   local foe = wildFoe(0xC0FFEE01)
   local monCatalog = CatalogFixture.makeCatalog()
-  local party = makeParty({ species = "EEVEE", level = 20, seed = 0x33333333 }, { species = "EEVEE", level = 5, seed = 0x44444444 })
+  local party = makeParty(
+    { species = "EEVEE", level = 20, seed = 0x33333333 },
+    { species = "EEVEE", level = 5, seed = 0x44444444 }
+  )
   local bag = masterBallBag(2)
   local dex = newDexOwner({ "CHIKORITA", "TOTODILE" })
   local launch = {
@@ -416,7 +417,11 @@ function T.first_capture_freezes_a_detached_identity_and_waits_for_readiness()
       if current.phase == "running" and current.request ~= nil and not thrown then
         local actor = assert(current.request.actors[1], "the capture battle addresses its lead")
         local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, {
-          { actor = actor, kind = "item", payload = { item = "MASTER_BALL", target = { kind = "combatant", combatant = party:partyCount() + 1 } } },
+          {
+            actor = actor,
+            kind = "item",
+            payload = { item = "MASTER_BALL", target = { kind = "combatant", combatant = party:partyCount() + 1 } },
+          },
         }))
         Assert.isTrue(accepted, "the guaranteed throw is accepted: " .. tostring(replyErr))
         thrown = true
@@ -426,7 +431,10 @@ function T.first_capture_freezes_a_detached_identity_and_waits_for_readiness()
   terminal = assert(terminal, "the capture ships its terminal result before publication")
   local registration = terminal.result.registration
   Assert.notNil(registration, "the terminal result carries the frozen first-catch facts")
-  Assert.isTrue(type(registration.mode) == "string" and registration.mode ~= "", "eligibility freezes the actual capture mode")
+  Assert.isTrue(
+    type(registration.mode) == "string" and registration.mode ~= "",
+    "eligibility freezes the actual capture mode"
+  )
   Assert.equal(registration.dexMode, "johto", "the card numbers in the live national mode")
   Assert.equal(registration.displayName, Mon.displayName(foe, monCatalog), "the announcement names the actual capture")
   Assert.deepEqual(registration.specimen, dex:describe(foe), "the card carries the exact captured specimen")
@@ -513,7 +521,11 @@ local function captureWild(species, foeSeed, battleSeed, party, bag, dex)
     if terminal == nil and current.phase == "running" and current.request ~= nil and not thrown then
       local actor = assert(current.request.actors[1], "the capture battle addresses its lead")
       local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, {
-        { actor = actor, kind = "item", payload = { item = "MASTER_BALL", target = { kind = "combatant", combatant = party:partyCount() + 1 } } },
+        {
+          actor = actor,
+          kind = "item",
+          payload = { item = "MASTER_BALL", target = { kind = "combatant", combatant = party:partyCount() + 1 } },
+        },
       }))
       Assert.isTrue(accepted, "the guaranteed throw is accepted: " .. tostring(replyErr))
       thrown = true
@@ -542,7 +554,10 @@ function T.repeat_and_failed_captures_extend_history_without_replaying_the_card(
   -- A failed ordinary throw at full health breaks free and the knockout
   -- that follows wins without any caught observation or card.
   do
-    local party = makeParty({ species = "EEVEE", level = 20, seed = 0x33333333 }, { species = "EEVEE", level = 5, seed = 0x44444444 })
+    local party = makeParty(
+      { species = "EEVEE", level = 20, seed = 0x33333333 },
+      { species = "EEVEE", level = 5, seed = 0x44444444 }
+    )
     local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
     Assert.isTrue(bag:add("POKE_BALL", 2))
     local foe = wildFoe(0x5EED0002)
@@ -590,7 +605,11 @@ function T.repeat_and_failed_captures_extend_history_without_replaying_the_card(
         local actor = assert(current.request.actors[1], "the failed-throw battle addresses its lead")
         local choice
         if not thrown then
-          choice = { actor = actor, kind = "item", payload = { item = "POKE_BALL", target = { kind = "combatant", combatant = party:partyCount() + 1 } } }
+          choice = {
+            actor = actor,
+            kind = "item",
+            payload = { item = "POKE_BALL", target = { kind = "combatant", combatant = party:partyCount() + 1 } },
+          }
           thrown = true
         else
           choice = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
@@ -609,7 +628,10 @@ function T.repeat_and_failed_captures_extend_history_without_replaying_the_card(
   end
 
   -- The first success records its observed gender as rich history.
-  local firstParty = makeParty({ species = "EEVEE", level = 20, seed = 0x77777777 }, { species = "EEVEE", level = 5, seed = 0x88888888 })
+  local firstParty = makeParty(
+    { species = "EEVEE", level = 20, seed = 0x77777777 },
+    { species = "EEVEE", level = 5, seed = 0x88888888 }
+  )
   captureWild("TOTODILE", 0xC0FFEE01, 0x12345678, firstParty, masterBallBag(1), dex)
   local firstFoePersonality = nil
   do
@@ -640,7 +662,10 @@ function T.repeat_and_failed_captures_extend_history_without_replaying_the_card(
     end
   end
   Assert.notNil(secondSeed, "the repeat leg needs a differing observed gender")
-  local secondParty = makeParty({ species = "EEVEE", level = 20, seed = 0x99999999 }, { species = "EEVEE", level = 5, seed = 0xAAAAAAAA })
+  local secondParty = makeParty(
+    { species = "EEVEE", level = 20, seed = 0x99999999 },
+    { species = "EEVEE", level = 5, seed = 0xAAAAAAAA }
+  )
   local secondTerminal = captureWild("TOTODILE", assert(secondSeed), 0x12345678, secondParty, masterBallBag(1), dex)
   Assert.isNil(secondTerminal.result.registration, "a repeat capture of known species presents no second card")
   Assert.deepEqual(
@@ -662,7 +687,10 @@ function T.stale_dex_revision_between_eligibility_and_preparation_fails_without_
   local SessionFixture = require("libs.battle.tests.session_fixture")
 
   local foe = wildFoe(0xC0FFEE01)
-  local party = makeParty({ species = "EEVEE", level = 20, seed = 0x33333333 }, { species = "EEVEE", level = 5, seed = 0x44444444 })
+  local party = makeParty(
+    { species = "EEVEE", level = 20, seed = 0x33333333 },
+    { species = "EEVEE", level = 5, seed = 0x44444444 }
+  )
   local bag = masterBallBag(1)
   local dex = newDexOwner({ "CHIKORITA", "TOTODILE" })
   local launch = {
@@ -705,7 +733,11 @@ function T.stale_dex_revision_between_eligibility_and_preparation_fails_without_
       if current.phase == "running" and current.request ~= nil and not thrown then
         local actor = assert(current.request.actors[1], "the capture battle addresses its lead")
         local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, {
-          { actor = actor, kind = "item", payload = { item = "MASTER_BALL", target = { kind = "combatant", combatant = party:partyCount() + 1 } } },
+          {
+            actor = actor,
+            kind = "item",
+            payload = { item = "MASTER_BALL", target = { kind = "combatant", combatant = party:partyCount() + 1 } },
+          },
         }))
         Assert.isTrue(accepted, "the guaranteed throw is accepted: " .. tostring(replyErr))
         thrown = true
@@ -740,7 +772,10 @@ function T.stale_dex_revision_between_eligibility_and_preparation_fails_without_
   -- no lost mon.
   do
     local HgssBagService = require("libs.hgss.src.items.HgssBagService")
-    local fullParty = makeParty({ species = "EEVEE", level = 5, seed = 0xAAAA0001 }, { species = "EEVEE", level = 5, seed = 0xAAAA0002 })
+    local fullParty = makeParty(
+      { species = "EEVEE", level = 5, seed = 0xAAAA0001 },
+      { species = "EEVEE", level = 5, seed = 0xAAAA0002 }
+    )
     do
       local catalog = CatalogFixture.makeCatalog()
       local factory = CatalogFixture.makeFactory(0xAAAA0010, catalog)

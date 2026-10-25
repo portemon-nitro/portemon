@@ -89,7 +89,14 @@ function MapRomFixture.gridMatrix(opts)
   assert(not opts.altitudes or #opts.altitudes == width * height, "gridMatrix altitudes cover every cell")
   assert(not opts.modelIds or #opts.modelIds == width * height, "gridMatrix model ids cover every cell")
   local name = "m_labo01_"
-  local out = { NB.u8(width), NB.u8(height), NB.u8(opts.headers and 1 or 0), NB.u8(opts.altitudes and 1 or 0), NB.u8(#name), name }
+  local out = {
+    NB.u8(width),
+    NB.u8(height),
+    NB.u8(opts.headers and 1 or 0),
+    NB.u8(opts.altitudes and 1 or 0),
+    NB.u8(#name),
+    name,
+  }
   if opts.headers then
     for _, header in ipairs(opts.headers) do
       out[#out + 1] = NB.u16(header)

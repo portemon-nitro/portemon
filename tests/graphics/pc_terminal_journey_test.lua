@@ -172,12 +172,7 @@ local function pixelMonService()
   local catalog = CatalogFixture.makeCatalog()
   local service = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(
-      Party.new():capture(),
-      Lcrng.new(0x12345678):capture(),
-      nil,
-      nil
-    ),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x12345678):capture(), nil, nil),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -390,8 +385,7 @@ function T.pending_wallpaper_replacement_repaints_the_admitted_pixels(scope)
     local function tick(events)
       host:step(handle, events or {})
       local status = assert(host:status(), "the open child publishes its status")
-      local ready, failure =
-        FieldPresentationResources.preparePcApplication(preparation, status, { monCatalog = {} })
+      local ready, failure = FieldPresentationResources.preparePcApplication(preparation, status, { monCatalog = {} })
       host:setPresentationReady(handle, ready)
       return ready, failure
     end

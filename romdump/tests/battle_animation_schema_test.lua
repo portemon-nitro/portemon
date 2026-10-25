@@ -56,7 +56,10 @@ function T.interpreter_counter_wait_requires_both_source_cursor_paths()
   Assert.isFalse(pcall(schema().assertProgram, sourceWait), "the pending path remains explicit in the cursor rule")
   instructions[1].cursorRule = "pending-redispatch-current-opcode; zero-advances-past-current-opcode"
   instructions[1].branchTarget = 5
-  Assert.isFalse(pcall(schema().assertProgram, sourceWait), "pending self-loop target must remain within the instruction boundary")
+  Assert.isFalse(
+    pcall(schema().assertProgram, sourceWait),
+    "pending self-loop target must remain within the instruction boundary"
+  )
 end
 
 function T.subprogram_call_schema_keeps_stack_saturation_as_a_cursor_rule()
@@ -673,7 +676,10 @@ function T.animation_callback_schema_accepts_source_traced_picture_tasks()
       taskContext = "pokemon-picture",
       parameters = {},
     }
-    Assert.isTrue(schema().assertProgram(program(instruction)), "source-traced picture callback has a closed task contract")
+    Assert.isTrue(
+      schema().assertProgram(program(instruction)),
+      "source-traced picture callback has a closed task contract"
+    )
   end
 end
 
@@ -729,14 +735,17 @@ function T.picture_sinusoidal_callback_schema_closes_battler_and_partner_modes()
     { callback = "pokemon-picture-sinusoidal-position-target", target = "target" },
     { callback = "pokemon-picture-sinusoidal-position-target-pair", target = "target" },
   }) do
-    Assert.isTrue(schema().assertProgram(program({
-      op = "invoke-battle-animation-callback",
-      callback = case.callback,
-      taskKind = "pokemon-picture-sinusoidal-position-motion",
-      taskContext = "pokemon-picture",
-      battlerTarget = case.target,
-      parameters = { oscillationCycles = 7, durationTicks = 10 },
-    })), "source mode has a named semantic contract")
+    Assert.isTrue(
+      schema().assertProgram(program({
+        op = "invoke-battle-animation-callback",
+        callback = case.callback,
+        taskKind = "pokemon-picture-sinusoidal-position-motion",
+        taskContext = "pokemon-picture",
+        battlerTarget = case.target,
+        parameters = { oscillationCycles = 7, durationTicks = 10 },
+      })),
+      "source mode has a named semantic contract"
+    )
   end
 end
 
@@ -748,18 +757,21 @@ function T.picture_affine_sprite_entry_schema_has_a_closed_empty_parameter_shape
     taskContext = "pokemon-picture",
     parameters = {},
   })))
-  local ok = pcall(schema().assertProgram, program({
-    op = "invoke-battle-animation-callback",
-    callback = "pokemon-picture-affine-sprite-entry-transition",
-    taskKind = "pokemon-picture-affine-sprite-entry-transition",
-    taskContext = "pokemon-picture",
-    parameters = { selector = 49 },
-  }))
+  local ok = pcall(
+    schema().assertProgram,
+    program({
+      op = "invoke-battle-animation-callback",
+      callback = "pokemon-picture-affine-sprite-entry-transition",
+      taskKind = "pokemon-picture-affine-sprite-entry-transition",
+      taskContext = "pokemon-picture",
+      parameters = { selector = 49 },
+    })
+  )
   Assert.isFalse(ok, "native selector is not an executable task parameter")
 end
 
 function T.animation_callback_schema_keeps_randomized_motion_target_typed()
-    for _, target in ipairs({ "attacker", "target" }) do
+  for _, target in ipairs({ "attacker", "target" }) do
     local instruction = {
       op = "invoke-battle-animation-callback",
       callback = "pokemon-picture-randomized-position-motion-" .. target,
@@ -799,33 +811,42 @@ function T.animation_callback_schema_closes_panel_slide_profiles_and_offsets()
 end
 
 function T.animation_callback_schema_accepts_double_sprite_scale_settle()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "pokemon-picture-double-sprite-scale-settle",
-    taskKind = "pokemon-picture-double-sprite-scale-settle",
-    taskContext = "pokemon-picture",
-    parameters = {},
-  })), "the source callback has a named task contract")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "pokemon-picture-double-sprite-scale-settle",
+      taskKind = "pokemon-picture-double-sprite-scale-settle",
+      taskContext = "pokemon-picture",
+      parameters = {},
+    })),
+    "the source callback has a named task contract"
+  )
 end
 
 function T.animation_callback_schema_accepts_battler_pair_scale_transition()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "pokemon-picture-battler-pair-scale-transition",
-    taskKind = "pokemon-picture-battler-pair-scale-transition",
-    taskContext = "pokemon-picture",
-    parameters = {},
-  })), "the battler-pair picture transition has a closed task contract")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "pokemon-picture-battler-pair-scale-transition",
+      taskKind = "pokemon-picture-battler-pair-scale-transition",
+      taskContext = "pokemon-picture",
+      parameters = {},
+    })),
+    "the battler-pair picture transition has a closed task contract"
+  )
 end
 
 function T.animation_callback_schema_accepts_background_picture_slide()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "battle-background-pokepic-slide",
-    taskKind = "battle-background-pokepic-slide",
-    taskContext = "battle-display",
-    parameters = {},
-  })), "the background and picture transition has a named task contract")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "battle-background-pokepic-slide",
+      taskKind = "battle-background-pokepic-slide",
+      taskContext = "battle-display",
+      parameters = {},
+    })),
+    "the background and picture transition has a named task contract"
+  )
 end
 
 function T.animation_callback_schema_accepts_picture_pulse_and_table_motion()
@@ -833,117 +854,150 @@ function T.animation_callback_schema_accepts_picture_pulse_and_table_motion()
     "pokemon-picture-palette-pulse-position-transition",
     "pokemon-picture-table-driven-position-transition",
   }) do
-    Assert.isTrue(schema().assertProgram(program({
-      op = "invoke-battle-animation-callback",
-      callback = callback,
-      taskKind = callback,
-      taskContext = "pokemon-picture",
-      parameters = {},
-    })), "picture callback resolves to a closed task profile")
+    Assert.isTrue(
+      schema().assertProgram(program({
+        op = "invoke-battle-animation-callback",
+        callback = callback,
+        taskKind = callback,
+        taskContext = "pokemon-picture",
+        parameters = {},
+      })),
+      "picture callback resolves to a closed task profile"
+    )
   end
 end
 
 function T.animation_callback_schema_accepts_battle_picture_palette_fade_cycle()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "pokemon-picture-battle-palette-fade-cycle",
-    taskKind = "pokemon-picture-battle-palette-fade-cycle",
-    taskContext = "battle-palette",
-    parameters = {},
-  })), "the callback owns both battle palette and picture fade state")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "pokemon-picture-battle-palette-fade-cycle",
+      taskKind = "pokemon-picture-battle-palette-fade-cycle",
+      taskContext = "battle-palette",
+      parameters = {},
+    })),
+    "the callback owns both battle palette and picture fade state"
+  )
 end
 
 function T.animation_callback_schema_accepts_sprite_affine_scale_and_blend()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "sprite-affine-scale-and-blend-transition",
-    taskKind = "sprite-affine-scale-and-blend-transition",
-    taskContext = "battle-sprite",
-    parameters = {},
-  })), "the sprite affine callback has a closed task profile")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "sprite-affine-scale-and-blend-transition",
+      taskKind = "sprite-affine-scale-and-blend-transition",
+      taskContext = "battle-sprite",
+      parameters = {},
+    })),
+    "the sprite affine callback has a closed task profile"
+  )
 end
 
 function T.animation_callback_schema_accepts_repeated_picture_scale_motion()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "pokemon-picture-repeated-scale-position-transition",
-    taskKind = "pokemon-picture-repeated-scale-position-transition",
-    taskContext = "pokemon-picture",
-    parameters = {},
-  })), "the picture scale and position transition has a closed task profile")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "pokemon-picture-repeated-scale-position-transition",
+      taskKind = "pokemon-picture-repeated-scale-position-transition",
+      taskContext = "pokemon-picture",
+      parameters = {},
+    })),
+    "the picture scale and position transition has a closed task profile"
+  )
 end
 
 function T.animation_callback_schema_accepts_background_picture_wipe()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "battle-background-picture-wipe-transition",
-    taskKind = "battle-background-picture-wipe-transition",
-    taskContext = "battle-display",
-    parameters = {},
-  })), "the battle picture wipe has a closed task profile")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "battle-background-picture-wipe-transition",
+      taskKind = "battle-background-picture-wipe-transition",
+      taskContext = "battle-display",
+      parameters = {},
+    })),
+    "the battle picture wipe has a closed task profile"
+  )
 end
 
 function T.animation_callback_schema_accepts_three_sprite_affine_picture_transition()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "pokemon-picture-three-sprite-affine-transition",
-    taskKind = "pokemon-picture-three-sprite-affine-transition",
-    taskContext = "pokemon-picture",
-    parameters = {},
-  })), "the three-sprite affine picture action has a closed task profile")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "pokemon-picture-three-sprite-affine-transition",
+      taskKind = "pokemon-picture-three-sprite-affine-transition",
+      taskContext = "pokemon-picture",
+      parameters = {},
+    })),
+    "the three-sprite affine picture action has a closed task profile"
+  )
 end
 
 function T.animation_callback_schema_accepts_background_picture_palette_scroll()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "battle-background-picture-palette-scroll",
-    taskKind = "battle-background-picture-palette-scroll",
-    taskContext = "battle-display",
-    parameters = {},
-  })), "the background picture palette scroll has a closed task profile")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "battle-background-picture-palette-scroll",
+      taskKind = "battle-background-picture-palette-scroll",
+      taskContext = "battle-display",
+      parameters = {},
+    })),
+    "the background picture palette scroll has a closed task profile"
+  )
 end
 
 function T.animation_callback_schema_types_the_pokepic_entry_battler()
   for _, target in ipairs({ "attacker", "target" }) do
-    Assert.isTrue(schema().assertProgram(program({
-      op = "invoke-battle-animation-callback",
-      callback = "pokemon-picture-entry-offset-" .. target,
-      taskKind = "pokemon-picture-entry-offset-transition",
-      taskContext = "pokemon-picture",
-      battlerTarget = target,
-      parameters = {},
-    })), "the source selector is normalized to an attacker or target role")
+    Assert.isTrue(
+      schema().assertProgram(program({
+        op = "invoke-battle-animation-callback",
+        callback = "pokemon-picture-entry-offset-" .. target,
+        taskKind = "pokemon-picture-entry-offset-transition",
+        taskContext = "pokemon-picture",
+        battlerTarget = target,
+        parameters = {},
+      })),
+      "the source selector is normalized to an attacker or target role"
+    )
   end
 end
 
 function T.animation_callback_schema_accepts_oscillating_picture_axis_motion()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "pokemon-picture-oscillating-axis-motion",
-    taskKind = "pokemon-picture-oscillating-axis-motion",
-    taskContext = "pokemon-picture",
-    parameters = {},
-  })), "the oscillating picture motion has a closed semantic task")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "pokemon-picture-oscillating-axis-motion",
+      taskKind = "pokemon-picture-oscillating-axis-motion",
+      taskContext = "pokemon-picture",
+      parameters = {},
+    })),
+    "the oscillating picture motion has a closed semantic task"
+  )
 end
 
 function T.animation_callback_schema_accepts_two_battler_picture_crossing_motion()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "pokemon-picture-two-battler-crossing-motion",
-    taskKind = "pokemon-picture-two-battler-crossing-motion",
-    taskContext = "pokemon-picture",
-    parameters = {},
-  })), "the two-battler picture movement has a closed task profile")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "pokemon-picture-two-battler-crossing-motion",
+      taskKind = "pokemon-picture-two-battler-crossing-motion",
+      taskContext = "pokemon-picture",
+      parameters = {},
+    })),
+    "the two-battler picture movement has a closed task profile"
+  )
 end
 
 function T.animation_callback_schema_accepts_picture_two_phase_entry_motion()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "pokemon-picture-two-phase-entry-motion",
-    taskKind = "pokemon-picture-two-phase-entry-motion",
-    taskContext = "pokemon-picture",
-    parameters = {},
-  })), "the picture entry motion has a closed task profile")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "pokemon-picture-two-phase-entry-motion",
+      taskKind = "pokemon-picture-two-phase-entry-motion",
+      taskContext = "pokemon-picture",
+      parameters = {},
+    })),
+    "the picture entry motion has a closed task profile"
+  )
 end
 
 function T.particle_effect_schema_closes_emitter_resources_and_every_position_pair()
@@ -961,39 +1015,51 @@ function T.particle_effect_schema_closes_emitter_resources_and_every_position_pa
       resourceCases[attacker .. "/" .. target] = "battle/particle-emitter/test"
     end
   end
-  Assert.isTrue(schema().assertProgram(program({
-    op = "create-parameterized-battler-effect",
-    taskKind = "battler-effect-continuation",
-    actionProfile = "particle-emitter-default",
-    emitterPosition = "solo-player",
-    resource = "battle/particle-emitter/test",
-  })), "direct particle callbacks use a staged emitter resource")
-  Assert.isTrue(schema().assertProgram(program({
-    op = "create-parameterized-battler-effect",
-    taskKind = "battler-effect-continuation",
-    actionProfile = "particle-emitter-target-battler-relative",
-    emitterPosition = "solo-player",
-    resourceCases = resourceCases,
-    runtimeSelection = "battler-particle-position-pair",
-  })), "dynamic dispatch preserves each semantic emitter resource pair")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-default",
+      emitterPosition = "solo-player",
+      resource = "battle/particle-emitter/test",
+    })),
+    "direct particle callbacks use a staged emitter resource"
+  )
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-target-battler-relative",
+      emitterPosition = "solo-player",
+      resourceCases = resourceCases,
+      runtimeSelection = "battler-particle-position-pair",
+    })),
+    "dynamic dispatch preserves each semantic emitter resource pair"
+  )
   resourceCases["solo-player/solo-enemy"] = "source-assert"
-  Assert.isTrue(schema().assertProgram(program({
-    op = "create-parameterized-battler-effect",
-    taskKind = "battler-effect-continuation",
-    actionProfile = "particle-emitter-target-battler-relative",
-    emitterPosition = "solo-player",
-    resourceCases = resourceCases,
-    runtimeSelection = "battler-particle-position-pair",
-  })), "source assertion cells remain explicit and closed")
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-target-battler-relative",
+      emitterPosition = "solo-player",
+      resourceCases = resourceCases,
+      runtimeSelection = "battler-particle-position-pair",
+    })),
+    "source assertion cells remain explicit and closed"
+  )
   resourceCases["solo-player/solo-enemy"] = "native-selector-4"
-  local ok = pcall(schema().assertProgram, program({
-    op = "create-parameterized-battler-effect",
-    taskKind = "battler-effect-continuation",
-    actionProfile = "particle-emitter-target-battler-relative",
-    emitterPosition = "solo-player",
-    resourceCases = resourceCases,
-    runtimeSelection = "battler-particle-position-pair",
-  }))
+  local ok = pcall(
+    schema().assertProgram,
+    program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-target-battler-relative",
+      emitterPosition = "solo-player",
+      resourceCases = resourceCases,
+      runtimeSelection = "battler-particle-position-pair",
+    })
+  )
   Assert.isFalse(ok, "native resource selectors cannot enter runtime resource cases")
 end
 

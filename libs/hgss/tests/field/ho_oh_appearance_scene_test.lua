@@ -45,7 +45,8 @@ local function newAudio()
     self.cues[#self.cues + 1] = { kind = "bgm", symbol = symbol }
   end
   function audio:playCry(species, pattern)
-    self.cues[#self.cues + 1] = { kind = "cry", symbol = tostring(species) .. ":" .. tostring(pattern), tick = self.tick }
+    self.cues[#self.cues + 1] =
+      { kind = "cry", symbol = tostring(species) .. ":" .. tostring(pattern), tick = self.tick }
   end
   function audio:stop(symbol)
     self.cues[#self.cues + 1] = { kind = "stop", symbol = symbol }
@@ -174,7 +175,10 @@ function T.tests.camera_pan_takes_the_short_arc_from_a_signed_profile_pitch()
   end
   for _, angleX in ipairs(pitches) do
     local signed = (angleX + 0x8000) % 0x10000 - 0x8000
-    Assert.isTrue(signed >= -0x0A00 - 0x400 and signed <= -0x0A00 + 0x400, "pitch " .. angleX .. " stays on the short arc")
+    Assert.isTrue(
+      signed >= -0x0A00 - 0x400 and signed <= -0x0A00 + 0x400,
+      "pitch " .. angleX .. " stays on the short arc"
+    )
   end
 end
 

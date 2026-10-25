@@ -504,7 +504,9 @@ local function fixture(scope, width, height, topology, section, variant, version
     view.focus = variant == "number-modal-too-small" and "cancel" or "confirm"
     local tenDigit = variant == "number-modal-ten-digit"
     local digitCount = tenDigit and 10 or 3
-    local arrowSize = variant == "number-modal-too-small" and 512 or variant == "number-modal-source-arrows" and 32 or 12
+    local arrowSize = variant == "number-modal-too-small" and 512
+      or variant == "number-modal-source-arrows" and 32
+      or 12
     local numberControls = {}
     for index = 1, digitCount do
       local placeValue = 10 ^ (digitCount - index)
@@ -541,8 +543,7 @@ local function fixture(scope, width, height, topology, section, variant, version
       maximum = tenDigit and 0xFFFFFFFF or 999,
       base = "decimal",
       digitCount = digitCount,
-      digits = tenDigit and { "0", "0", "0", "0", "0", "0", "0", "0", "0", "1" }
-        or { "1", "2", "3" },
+      digits = tenDigit and { "0", "0", "0", "0", "0", "0", "0", "0", "0", "1" } or { "1", "2", "3" },
       selectedPlace = 0,
     }
     view.scope = { id = "value:integer:money", epoch = 2, kind = "value", focusId = view.focus }
@@ -907,7 +908,11 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   end
   Assert.isTrue(changed > 20, name .. " must render visible editor chrome")
   local renderedText = table.concat(drawnText, " ")
-  if section == "Player" and variant ~= "leave" and variant ~= "choice-list" and variant ~= "number-modal"
+  if
+    section == "Player"
+    and variant ~= "leave"
+    and variant ~= "choice-list"
+    and variant ~= "number-modal"
     and variant ~= "number-modal-source-arrows"
   then
     Assert.isTrue(renderedText:find("PLAYER"), name .. " shows the player identity")
@@ -1744,7 +1749,7 @@ function T.party_member_icons_stay_native_and_center_distinct_ink_in_the_strip(s
       quads[icon] = scope:own(love.graphics.newQuad(0, 0, 32, 32, 32, 32))
     end
     local function render(name, removeIcons)
-        local data, _, layout, _, _, _, _, drawOrder, _, plan = draw(
+      local data, _, layout, _, _, _, _, drawOrder, _, plan = draw(
         scope,
         width,
         height,
@@ -1753,7 +1758,7 @@ function T.party_member_icons_stay_native_and_center_distinct_ink_in_the_strip(s
         "Party",
         "Stats",
         nil,
-          function(renderer, view, currentPlan)
+        function(renderer, view, currentPlan)
           for _, key in ipairs({ "party/chikorita", "party/totodile" }) do
             renderer._icons[key] = {
               image = images[key],
@@ -1781,7 +1786,10 @@ function T.party_member_icons_stay_native_and_center_distinct_ink_in_the_strip(s
         seen[entry.path] = entry
         local slotIndex = entry.path == "icon:party/chikorita" and 1 or 2
         local slot = assert(layout.partyStrip.slots[slotIndex])
-        Assert.isTrue(slot.iconRect.width >= 32 and slot.iconRect.height >= 32, "the native quad fits inside its icon slot")
+        Assert.isTrue(
+          slot.iconRect.width >= 32 and slot.iconRect.height >= 32,
+          "the native quad fits inside its icon slot"
+        )
         local dimensions = entry.sourceDimensions
         Assert.equal(entry.args[5], 1, "prepared Party icon stays at native horizontal scale")
         Assert.equal(entry.args[6], 1, "prepared Party icon stays at native vertical scale")
@@ -1854,12 +1862,7 @@ function T.party_validation_warning_pixels_stay_inside_the_scrolled_body_clip(sc
       local red, green, blue = pixelAtLogical(partial, partialPlan, x, y)
       local oldRed, oldGreen, oldBlue = pixelAtLogical(plain, plainPlan, x, y)
       local changed = math.abs(red - oldRed) + math.abs(green - oldGreen) + math.abs(blue - oldBlue) > 0.05
-      if
-        y >= clip.y
-        and y < clip.y + clip.height
-        and x >= target.rect.x
-        and x < target.rect.x + target.rect.width
-      then
+      if y >= clip.y and y < clip.y + clip.height and x >= target.rect.x and x < target.rect.x + target.rect.width then
         visibleInk = visibleInk or changed
       else
         Assert.isFalse(changed, "warning-derived pixels remain inside the Party viewport")
@@ -1944,8 +1947,14 @@ function T.save_editor_sprites_keep_integer_scale_and_logical_anchors(scope)
     local seen = {}
     for _, record in ipairs(records) do
       local geometry = spriteDrawGeometry(record)
-      Assert.isTrue(geometry.scaleX > 0 and geometry.scaleX % 1 == 0, case.name .. " keeps integer horizontal sprite scale")
-      Assert.isTrue(geometry.scaleY > 0 and geometry.scaleY % 1 == 0, case.name .. " keeps integer vertical sprite scale")
+      Assert.isTrue(
+        geometry.scaleX > 0 and geometry.scaleX % 1 == 0,
+        case.name .. " keeps integer horizontal sprite scale"
+      )
+      Assert.isTrue(
+        geometry.scaleY > 0 and geometry.scaleY % 1 == 0,
+        case.name .. " keeps integer vertical sprite scale"
+      )
       Assert.equal(geometry.x, math.floor(geometry.x + 0.5), case.name .. " snaps sprite x to a logical pixel")
       Assert.equal(geometry.y, math.floor(geometry.y + 0.5), case.name .. " snaps sprite y to a logical pixel")
       if geometry.quad ~= nil then
@@ -1965,7 +1974,10 @@ function T.save_editor_sprites_keep_integer_scale_and_logical_anchors(scope)
       Assert.isTrue(seen["bag/dec-normal"] and seen["bag/inc-normal"], case.name .. " paints numeric arrow sprites")
     else
       Assert.isTrue(layout.numberTooSmall, case.name .. " publishes explicit fallback instead of minifying arrows")
-      Assert.isFalse(seen["bag/dec-normal"] or seen["bag/inc-normal"], case.name .. " omits unavailable numeric sprites")
+      Assert.isFalse(
+        seen["bag/dec-normal"] or seen["bag/inc-normal"],
+        case.name .. " omits unavailable numeric sprites"
+      )
     end
   end
 end
@@ -2915,8 +2927,10 @@ function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scop
   end
   Assert.notNil(fittedHint, "the focused map list renders its inline filter hint")
   local hintRect = assert(focusedLayout.lists["location:group:1"].hintRect, "the map list reserves its hint line")
-    Assert.isTrue(focusedView.textMetrics.measure(fittedHint) <= hintRect.width + 0.01,
-      "hint text fits the reserved line at native size")
+  Assert.isTrue(
+    focusedView.textMetrics.measure(fittedHint) <= hintRect.width + 0.01,
+    "hint text fits the reserved line at native size"
+  )
   Assert.isNil(focusedText:find(longQuery, 1, true), "the full query is not emitted")
   local unfocusedHint
   for _, value in ipairs(normalDrawnText) do
@@ -2926,8 +2940,10 @@ function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scop
   end
   Assert.notNil(unfocusedHint, "the unfocused map list renders its inline filter hint")
   local normalHintRect = assert(normalLayout.lists["location:group:1"].hintRect)
-    Assert.isTrue(normalView.textMetrics.measure(unfocusedHint) <= normalHintRect.width + 0.01,
-      "unfocused hint text also fits at native size")
+  Assert.isTrue(
+    normalView.textMetrics.measure(unfocusedHint) <= normalHintRect.width + 0.01,
+    "unfocused hint text also fits at native size"
+  )
 end
 
 function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scope)
@@ -3441,7 +3457,10 @@ function T.decision_action_pixels_survive_the_frame_at_compact_and_wide_sizes(sc
         1,
         scenario.variant .. " centers its final action inside padded modal content"
       )
-      Assert.isTrue(renderedText:find(scenario.label, 1, true) ~= nil, scenario.variant .. " paints its complete final label")
+      Assert.isTrue(
+        renderedText:find(scenario.label, 1, true) ~= nil,
+        scenario.variant .. " paints its complete final label"
+      )
       Assert.isTrue(
         row.width >= math.max(56, metrics.measure(scenario.label) + 24),
         scenario.variant .. " reserves native label width and button insets"
@@ -3680,24 +3699,26 @@ function T.map_flags_and_choice_lists_use_local_markers_with_distinct_focus_colo
 
     local rememberedData, rememberedLayout, rememberedPlan
     local rememberedCalls = recordRectangles(function()
-      local output = { draw(
-        scope,
-        640,
-        480,
-        topology,
-        "remembered-list-marker-" .. scenario.section,
-        scenario.section,
-        scenario.variant,
-        nil,
-        function(_, view)
-          view.focus = scenario.listId
-          view.focusVisible = true
-          local cursorKey = scenario.section == "Location" and "location:group:1"
-            or scenario.section == "Progress" and "flags"
-            or "value:choice"
-          view.listCursors = { [cursorKey] = scenario.rowId }
-        end
-      ) }
+      local output = {
+        draw(
+          scope,
+          640,
+          480,
+          topology,
+          "remembered-list-marker-" .. scenario.section,
+          scenario.section,
+          scenario.variant,
+          nil,
+          function(_, view)
+            view.focus = scenario.listId
+            view.focusVisible = true
+            local cursorKey = scenario.section == "Location" and "location:group:1"
+              or scenario.section == "Progress" and "flags"
+              or "value:choice"
+            view.listCursors = { [cursorKey] = scenario.rowId }
+          end
+        ),
+      }
       rememberedData, rememberedLayout, rememberedPlan = output[1], output[3], output[10]
     end)
     local rememberedClip = assert(rememberedLayout.viewports[scenario.viewportId]).clip
@@ -3722,7 +3743,10 @@ function T.map_flags_and_choice_lists_use_local_markers_with_distinct_focus_colo
       colorMismatches[#colorMismatches + 1] = scenario.section
     end
   end
-  Assert.isTrue(#colorMismatches == 0, "remembered markers match the disabled button palette: " .. table.concat(colorMismatches, ", "))
+  Assert.isTrue(
+    #colorMismatches == 0,
+    "remembered markers match the disabled button palette: " .. table.concat(colorMismatches, ", ")
+  )
 end
 
 function T.wide_lists_render_fitting_long_labels_and_ellipsize_only_when_needed(scope)
@@ -3796,7 +3820,10 @@ function T.wide_lists_render_fitting_long_labels_and_ellipsize_only_when_needed(
     local list = assert(layout.lists[scenario.listId], scenario.section .. " publishes its wide list")
     Assert.equal(list.surfaceRect.width, layout.content.width, scenario.section .. " uses the full available width")
     local fittingRow = assert(layout.targets[scenario.rowId], scenario.section .. " exposes the later fitting label")
-    Assert.isTrue(fittingRow.rect.width <= list.surfaceRect.width, scenario.section .. " keeps row bounds in the surface")
+    Assert.isTrue(
+      fittingRow.rect.width <= list.surfaceRect.width,
+      scenario.section .. " keeps row bounds in the surface"
+    )
     local sawFitting, sawEllipsis = false, false
     for _, text in ipairs(drawnText) do
       sawFitting = sawFitting or text == fittingLabel
@@ -4751,10 +4778,7 @@ function T.party_move_dialog_retains_and_composites_the_page(scope)
   local pane = assert(basePlan.panes[1])
   for y = 2, pane.placement.logicalHeight - 2, 3 do
     for x = 2, pane.placement.logicalWidth - 2, 3 do
-      local outsideModal = x < modal.x
-        or x >= modal.x + modal.width
-        or y < modal.y
-        or y >= modal.y + modal.height
+      local outsideModal = x < modal.x or x >= modal.x + modal.width or y < modal.y or y >= modal.y + modal.height
       if outsideModal then
         local baseR, baseG, baseB = pixelAtLogical(baseData, basePlan, x, y)
         local modalR, modalG, modalB = pixelAtLogical(data, plan, x, y)
@@ -5150,7 +5174,8 @@ function T.choice_footer_actions_fit_native_labels_and_keep_focus_in_pending_sta
       Assert.equal(#ringsSurrounding(calls, rect, 3), 1, label .. " focus ring follows its published target")
       Assert.isTrue(
         rect.x >= layout.content.x and rect.x + rect.width <= layout.content.x + layout.content.width,
-        label .. " remains inside the framed content")
+        label .. " remains inside the framed content"
+      )
       Assert.isTrue(data ~= nil and plan ~= nil, label .. " renders through the graphics composition")
     end
   end
@@ -5168,7 +5193,8 @@ function T.choice_footer_actions_fit_native_labels_and_keep_focus_in_pending_sta
     Assert.equal(#ringsSurrounding(calls, back, 3), 1, state .. " choices keep Back visibly focused")
     Assert.isTrue(
       back.width >= math.max(40, math.ceil(metrics.measure("Back") + 24)),
-      state .. " Back retains a usable native-sized target")
+      state .. " Back retains a usable native-sized target"
+    )
   end
 end
 
@@ -5216,10 +5242,20 @@ function T.native_number_actions_draw_focus_rings_on_confirm_and_back(scope)
     local calls, restore = recordOutlinedRectangles()
     local layout
     local ok, failure = xpcall(function()
-      _, _, layout = draw(scope, 256, 192, topology, "number-modal-" .. targetId .. "-focus", "Player", "number-modal", nil, function(_, view)
-        view.focus = targetId
-        view.focusVisible = true
-      end)
+      _, _, layout = draw(
+        scope,
+        256,
+        192,
+        topology,
+        "number-modal-" .. targetId .. "-focus",
+        "Player",
+        "number-modal",
+        nil,
+        function(_, view)
+          view.focus = targetId
+          view.focusVisible = true
+        end
+      )
     end, debug.traceback)
     restore()
     if not ok then

@@ -258,7 +258,8 @@ end
 
 function T.mimic_replaces_its_slot_for_the_entry_and_restores_it_on_leave()
   local Execution = executionOwner("the shared move continuation owns Mimic execution")
-  local State = SessionFixture.requirePresent("libs.battle.src.BattleState", "private battle data owns move restoration")
+  local State =
+    SessionFixture.requirePresent("libs.battle.src.BattleState", "private battle data owns move restoration")
   local state = liveState()
   local user = combatantOf(state, 1)
   local mon = user.mon --[[@as table<string, unknown>]]

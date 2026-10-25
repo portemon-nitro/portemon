@@ -559,10 +559,7 @@ function T.failed_worker_join_forbids_successful_shutdown()
   local firstOk, firstResult = pcall(function()
     return pool:shutdown()
   end)
-  Assert.isFalse(
-    firstOk and firstResult == true,
-    "an unproved join never reports successful shutdown"
-  )
+  Assert.isFalse(firstOk and firstResult == true, "an unproved join never reports successful shutdown")
   Assert.isFalse(pool.workers[1].joined, "a failed wait never marks its worker joined")
   Assert.equal(host.threads[2].waits, 1, "shutdown still joins every other worker")
   failing.wait = realWait
@@ -1989,11 +1986,9 @@ function T.source_release_waits_for_every_borrower_close_then_reacquires_on_dema
           return { driveOk = driveOk, driveErr = driveErr }
         end
         local firstSupply = assertSharedSupply(findSupply(drainMessages(host, 1)), selection.data, "the first borrower")
-        local secondSupply = assertSharedSupply(findSupply(drainMessages(host, 2)), selection.data, "the second borrower")
-        Assert.isTrue(
-          firstSupply.romByteData == secondSupply.romByteData,
-          "both borrowers share one backing"
-        )
+        local secondSupply =
+          assertSharedSupply(findSupply(drainMessages(host, 2)), selection.data, "the second borrower")
+        Assert.isTrue(firstSupply.romByteData == secondSupply.romByteData, "both borrowers share one backing")
         local sharedBuffer = firstSupply.romByteData
         -- Both jobs settle with the sweep exhausted and no further
         -- interest: the pool must now ask every borrower to close.
@@ -2069,33 +2064,20 @@ function T.source_release_waits_for_every_borrower_close_then_reacquires_on_dema
           newStatus = newStatus,
         }
       end)
-      Assert.isTrue(
-        outcome.driveOk,
-        "the pool lends one buffer to both borrowers: " .. tostring(outcome.driveErr)
-      )
+      Assert.isTrue(outcome.driveOk, "the pool lends one buffer to both borrowers: " .. tostring(outcome.driveErr))
       Assert.isTrue(
         outcome.retainOk,
         "one outstanding close keeps the buffer without a new acquisition: " .. tostring(outcome.retainErr)
       )
-      local retained = assertSharedSupply(
-        outcome.retainedSupply,
-        selection.data,
-        "the retained buffer"
-      )
+      local retained = assertSharedSupply(outcome.retainedSupply, selection.data, "the retained buffer")
       Assert.isTrue(
         retained.romByteData == outcome.sharedBuffer,
         "the later miss reuses the retained buffer instead of acquiring again"
       )
-      Assert.isTrue(
-        outcome.reacquireOk,
-        "the miss after the last close reacquires: " .. tostring(outcome.reacquireErr)
-      )
+      Assert.isTrue(outcome.reacquireOk, "the miss after the last close reacquires: " .. tostring(outcome.reacquireErr))
       assertSharedSupply(outcome.reacquiredSupply, selection.data, "the post-release miss")
       Assert.equal(fromPathCalls, 2, "exactly one acquisition before release and one after")
-      Assert.isTrue(
-        outcome.staleOk,
-        "a stale epoch request never breaks the pool: " .. tostring(outcome.staleErr)
-      )
+      Assert.isTrue(outcome.staleOk, "a stale epoch request never breaks the pool: " .. tostring(outcome.staleErr))
       Assert.isNil(findSupply(outcome.staleReplies), "a stale request earns no supply")
       Assert.isTrue(
         outcome.newStatus == "queued" or outcome.newStatus == "running",
@@ -2201,10 +2183,7 @@ function T.duplicate_and_unknown_source_requests_acquire_nothing_extra()
           followup = followup,
         }
       end)
-      Assert.isTrue(
-        outcome.driveOk,
-        "the first miss acquires its buffer: " .. tostring(outcome.driveErr)
-      )
+      Assert.isTrue(outcome.driveOk, "the first miss acquires its buffer: " .. tostring(outcome.driveErr))
       Assert.isTrue(
         outcome.duplicateOk,
         "a duplicate live request never breaks the pool: " .. tostring(outcome.duplicateErr)
@@ -2214,10 +2193,7 @@ function T.duplicate_and_unknown_source_requests_acquire_nothing_extra()
         second.romByteData == outcome.firstSupply.romByteData,
         "the duplicate borrows the identical retained buffer"
       )
-      Assert.isTrue(
-        outcome.strangerOk,
-        "an unknown worker never breaks the pool: " .. tostring(outcome.strangerErr)
-      )
+      Assert.isTrue(outcome.strangerOk, "an unknown worker never breaks the pool: " .. tostring(outcome.strangerErr))
       Assert.equal(#outcome.strangerSupplies, 0, "an unknown worker earns no supply")
       Assert.equal(fromPathCalls, 1, "duplicates and strangers acquire nothing extra")
       Assert.isTrue(

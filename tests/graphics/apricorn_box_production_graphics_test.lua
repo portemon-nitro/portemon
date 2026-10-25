@@ -353,11 +353,7 @@ function T.box_renderer_releases_prompt_and_source_images_once(_, context)
     })
     renderer:release()
     renderer:release()
-    Assert.equal(
-      inner:stats().outstandingLeases,
-      0,
-      "successful construction returns every Box borrow exactly once"
-    )
+    Assert.equal(inner:stats().outstandingLeases, 0, "successful construction returns every Box borrow exactly once")
     Assert.equal(
       inner.uploads,
       #ApricornBoxAssetCache.referencedPaths(manifest),
@@ -368,7 +364,11 @@ function T.box_renderer_releases_prompt_and_source_images_once(_, context)
     for _, image in ipairs(seen) do
       Assert.equal(image.releaseCount, 1, "successful construction frees every Box image once")
     end
-    Assert.equal(successCalls.released, successCalls.created, "successful construction releases every prompt image once")
+    Assert.equal(
+      successCalls.released,
+      successCalls.created,
+      "successful construction releases every prompt image once"
+    )
 
     local boxAssetCount = #ApricornBoxAssetCache.referencedPaths(manifest)
     local failureGraphics, failureCalls = trackingGraphics(1)
@@ -409,16 +409,8 @@ function T.box_renderer_releases_prompt_and_source_images_once(_, context)
     Assert.isFalse(promptFilterOk, "a prompt image filter failure propagates")
     Assert.isTrue(tostring(promptFilterErr):find("injected Box image filter failure", 1, true) ~= nil)
     Assert.equal(promptFilterCalls.created, 1, "prompt filter failure follows prompt image acquisition")
-    Assert.equal(
-      promptFilterCalls.released,
-      1,
-      "prompt filter failure releases the acquired prompt image once"
-    )
-    Assert.equal(
-      promptInner:stats().outstandingLeases,
-      0,
-      "prompt filter failure unwinds every Box borrow"
-    )
+    Assert.equal(promptFilterCalls.released, 1, "prompt filter failure releases the acquired prompt image once")
+    Assert.equal(promptInner:stats().outstandingLeases, 0, "prompt filter failure unwinds every Box borrow")
     local promptTrimmed = promptPool:prune()
     Assert.equal(promptTrimmed, boxAssetCount, "prompt filter failure unwinds every source Box image once")
     for _, image in ipairs(promptSeen) do
@@ -437,11 +429,7 @@ function T.box_renderer_releases_prompt_and_source_images_once(_, context)
     })
     Assert.isFalse(leaseOk, "a Box lease acquisition failure propagates")
     Assert.isTrue(tostring(leaseErr):find("injected Box lease acquisition failure", 1, true) ~= nil)
-    Assert.equal(
-      leaseInner:stats().outstandingLeases,
-      0,
-      "lease failure unwinds every installed Box borrow"
-    )
+    Assert.equal(leaseInner:stats().outstandingLeases, 0, "lease failure unwinds every installed Box borrow")
     local leaseTrimmed = leasePool:prune()
     Assert.equal(leaseTrimmed, boxAssetCount - 1, "lease failure unwinds every installed Box image once")
     for _, image in ipairs(leaseSeen) do

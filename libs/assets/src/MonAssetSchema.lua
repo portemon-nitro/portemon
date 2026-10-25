@@ -510,8 +510,8 @@ function MonAssetSchema.assertCatalog(catalog)
     abilities = true,
     growthCurves = true,
   }, context, "MON_CATALOG_INVALID", "catalog")
-  if catalog.schema ~= "g4-mon-catalog-v4" then
-    fail("MON_CATALOG_INVALID", "catalog schema must be g4-mon-catalog-v4", context)
+  if catalog.schema ~= "g4-mon-catalog-v5" then
+    fail("MON_CATALOG_INVALID", "catalog schema must be g4-mon-catalog-v5", context)
   end
   checkRecord(catalog.version, { id = true, language = true }, context, "MON_CATALOG_INVALID", "catalog version")
   checkNonEmptyString(catalog.version.id, context, "MON_CATALOG_INVALID", "catalog version id")

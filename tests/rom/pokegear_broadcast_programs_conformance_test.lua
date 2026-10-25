@@ -39,10 +39,7 @@ local BUENA_REPLY_WITHOUT_CARD = 5
 ---@return table<string, unknown>
 local function compileCatalog(romFs, versionId)
   local loaded, PokegearAssetCompiler = pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
-  Assert.isTrue(
-    loaded,
-    "the pokegear family compiler must be published before the broadcast closure can be proven"
-  )
+  Assert.isTrue(loaded, "the pokegear family compiler must be published before the broadcast closure can be proven")
   assert(type(PokegearAssetCompiler) == "table", "the family compiler loads above")
   local bundle = PokegearAssetCompiler.compile(romFs, versionId)
   local compiled = assert(bundle, versionId .. " must compile the pokegear family")
@@ -189,11 +186,7 @@ local function startMusic(catalog, dayOffset, nationalDex, blueCard, seed)
   for _ = 1, 200 do
     program:updateFixed()
   end
-  Assert.equal(
-    audio:playCallCount(),
-    1,
-    "the music start waits on jingle completion instead of a hardcoded duration"
-  )
+  Assert.equal(audio:playCallCount(), 1, "the music start waits on jingle completion instead of a hardcoded duration")
   audio:complete()
   pollPlayCalls(program, audio, 2, 800, "the first actual music start")
   local latch = audio:currentRadioSequence()
@@ -306,11 +299,7 @@ local function deepVector(catalog, station, hour, opts, seed)
     for _ = 1, 600 do
       program:updateFixed()
     end
-    Assert.equal(
-      messages:requestCount(),
-      first,
-      "the " .. show .. " vector completes instead of printing forever"
-    )
+    Assert.equal(messages:requestCount(), first, "the " .. show .. " vector completes instead of printing forever")
   end
   local title = program:status().title
   local refs = {}
@@ -412,17 +401,13 @@ function T.every_native_show_runs_a_real_program_vector_and_returns_from_commerc
           same = false
         end
       end
-      Assert.isTrue(
-        not same,
-        "shows " .. shows[i] .. " and " .. shows[j] .. " run distinct message vectors"
-      )
+      Assert.isTrue(not same, "shows " .. shows[i] .. " and " .. shows[j] .. " run distinct message vectors")
     end
   end
 
   -- Talk announces an outbreak only when one is active: the same seed and
   -- hour request strictly more, strictly covering references while active.
-  local activeRefs, activeTitle, activeShow =
-    deepVector(catalog, 1, 10, { swarmActive = true }, 112)
+  local activeRefs, activeTitle, activeShow = deepVector(catalog, 1, 10, { swarmActive = true }, 112)
   local idleRefs, _, idleShow = deepVector(catalog, 1, 10, {}, 112)
   Assert.equal(activeShow, "radio.talk", "the outbreak run tunes the talk show")
   Assert.equal(idleShow, "radio.talk", "the quiet run tunes the talk show")
@@ -489,10 +474,7 @@ function T.every_native_show_runs_a_real_program_vector_and_returns_from_commerc
   buenaProgram:dispose()
   local plainRefs, _, _ = deepVector(catalog, 3, buenaHour, { passwordVar = 47 }, 114)
   local plainReply = "bank " .. BUENA_REPLY_BANK .. " entry " .. BUENA_REPLY_WITHOUT_CARD
-  Assert.isTrue(
-    refSet(plainRefs)[plainReply] == true,
-    "the cardless reply voices bank 411 entry 5"
-  )
+  Assert.isTrue(refSet(plainRefs)[plainReply] == true, "the cardless reply voices bank 411 entry 5")
 
   -- Commercials preempt once and return to the tuned station with its
   -- episode intact; rapid retuning never leaves two programs advancing.
@@ -531,11 +513,7 @@ function T.every_native_show_runs_a_real_program_vector_and_returns_from_commerc
             end
             Assert.isTrue(returned, "a queued commercial returns to the tuned station")
             if preTitle ~= nil then
-              Assert.equal(
-                hunt:status().title,
-                preTitle,
-                "the commercial return resumes the same episode"
-              )
+              Assert.equal(hunt:status().title, preTitle, "the commercial return resumes the same episode")
             end
             local encore = false
             for _ = 1, 400 do
@@ -552,10 +530,7 @@ function T.every_native_show_runs_a_real_program_vector_and_returns_from_commerc
       end
     end
   end
-  Assert.isTrue(
-    hunted or commercialSightings > 0,
-    "scheduled commercials appear across the station and hour sweep"
-  )
+  Assert.isTrue(hunted or commercialSightings > 0, "scheduled commercials appear across the station and hour sweep")
 
   local retune, _, _, _, _, _ = freshProgram(catalog, { seed = 999 })
   retune:begin(0, "clear")
@@ -582,10 +557,7 @@ function T.every_native_show_runs_a_real_program_vector_and_returns_from_commerc
   musicAudio:complete()
   pollPlayCalls(musicProgram, musicAudio, 2, 800, "the latched teardown music")
   musicProgram:endProgram()
-  Assert.isTrue(
-    musicAudio:radioIsPlaying(),
-    "ending a music program leaves its surviving sequence playing"
-  )
+  Assert.isTrue(musicAudio:radioIsPlaying(), "ending a music program leaves its surviving sequence playing")
   Assert.notNil(musicAudio:currentRadioSequence(), "ending a music program keeps its sequence latch")
   musicAudio:stopRadio()
   musicProgram:dispose()

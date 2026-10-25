@@ -482,11 +482,7 @@ function T.dawn_healing_scales_with_the_field_sky()
   local entry = liveContext(liveState()):entryOf(1)
   local ceiling = entry.maxHp --[[@as integer]]
   Assert.equal(clear, math.floor(ceiling / 2), "a clear sky restores half")
-  Assert.equal(
-    healUnder(nil, "MORNING_SUN"),
-    math.floor(ceiling / 2),
-    "Morning Sun restores half under a clear sky"
-  )
+  Assert.equal(healUnder(nil, "MORNING_SUN"), math.floor(ceiling / 2), "Morning Sun restores half under a clear sky")
   local sun = healUnder("sunnyday")
   Assert.equal(sun, math.floor(ceiling * 20 / 30), "harsh sun restores two thirds")
   Assert.equal(
@@ -557,12 +553,7 @@ function T.healing_wish_and_lunar_dance_faint_the_user_with_a_side_marker()
     { move = "LUNAR_DANCE", mode = "lunar" },
   }) do
     local move = case --[[@as table<string, string>]]
-    local probe = runCondition(
-      move.move,
-      moveFacts(move.move),
-      FIXED_SEED,
-      { hasLivingReserve = true }
-    )
+    local probe = runCondition(move.move, moveFacts(move.move), FIXED_SEED, { hasLivingReserve = true })
     local outcome = probe.outcome --[[@as table<string, unknown>]]
     Assert.equal(outcome.result, "hit", move.move .. " succeeds with a living reserve")
     Assert.equal(probe.ctx:entryOf(1).hp, 0, move.move .. " faints its user")
@@ -596,12 +587,7 @@ function T.defog_lowers_target_evasion_and_clears_its_supported_side_conditions(
   local state = liveState()
   local ctx = liveContext(state)
   local source = { kind = "move", combatant = 1 }
-  ctx:addBattleEffect(
-    NativeEffectHandlers.definitionFor("fog"),
-    { kind = "field" },
-    source,
-    { version = 1 }
-  )
+  ctx:addBattleEffect(NativeEffectHandlers.definitionFor("fog"), { kind = "field" }, source, { version = 1 })
   for _, key in ipairs({ "reflect", "lightscreen", "mist", "safeguard", "spikes", "toxicspikes", "stealthrock" }) do
     local stateData = { version = 1 }
     if key == "spikes" or key == "toxicspikes" then
@@ -609,12 +595,7 @@ function T.defog_lowers_target_evasion_and_clears_its_supported_side_conditions(
     elseif key == "reflect" or key == "lightscreen" or key == "mist" or key == "safeguard" then
       stateData.turns = 5
     end
-    ctx:addBattleEffect(
-      NativeEffectHandlers.definitionFor(key),
-      { kind = "side", side = 2 },
-      source,
-      stateData
-    )
+    ctx:addBattleEffect(NativeEffectHandlers.definitionFor(key), { kind = "side", side = 2 }, source, stateData)
   end
   local node = Execution.start({
     actionId = 1008,
@@ -757,7 +738,10 @@ function T.lock_on_and_foresight_shape_later_strikes()
   local miracleOutcome = miracleEye.outcome --[[@as table<string, unknown>]]
   Assert.equal(miracleOutcome.result, "hit", "Miracle Eye connects")
   Assert.isTrue(miracleEye.ctx:hasBattleEffect(2, "miracleeye"), "Miracle Eye marks its target distinctly")
-  Assert.isFalse(miracleEye.ctx:hasBattleEffect(2, "foresight"), "Miracle Eye does not reuse Foresight's narrower marker")
+  Assert.isFalse(
+    miracleEye.ctx:hasBattleEffect(2, "foresight"),
+    "Miracle Eye does not reuse Foresight's narrower marker"
+  )
 end
 
 -- Magnet Rise levitates for five turns and refuses the grounded-already

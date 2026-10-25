@@ -119,6 +119,7 @@ function BattleDataCompiler.projectFacts(moveId, moveKey, decoded, binding)
     flags = {
       dealsDamage = power > 0,
       checksAccuracy = accuracy > 0,
+      contact = decoded.flags % 2 == 1,
       reflectable = decoded.flags % 8 >= 4,
       snatchable = decoded.flags % 16 >= 8,
       -- Native move flag 0x10 gates moveNoCopied in

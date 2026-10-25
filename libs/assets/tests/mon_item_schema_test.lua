@@ -34,7 +34,7 @@ end
 
 local function catalogRoot()
   return {
-    schema = "g4-mon-catalog-v4",
+    schema = "g4-mon-catalog-v5",
     version = { id = "heartgold", language = "english" },
     species = {
       CHIKORITA = {

@@ -182,11 +182,7 @@ function T.initial_base_image_is_left_in_place_and_no_tick_is_consumed()
     assertResolved(calls, step.texture, "repeat", "repeat")
   end
   Assert.equal(runtime.image, images[base .. "@repeat|repeat"].image, "the runtime material keeps the base image")
-  Assert.equal(
-    runtime.palette,
-    images[base .. "@repeat|repeat"].palette,
-    "the base bind carries the handle's palette"
-  )
+  Assert.equal(runtime.palette, images[base .. "@repeat|repeat"].palette, "the base bind carries the handle's palette")
   Assert.isTrue(runtime.indexed, "the base bind carries the handle's indexed flag")
   animator:updateFixed()
   Assert.equal(

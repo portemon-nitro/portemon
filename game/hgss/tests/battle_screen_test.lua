@@ -1313,11 +1313,7 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
   sounding.battle:dispose()
   local muted = narratedOutcome(recordingAudio(true))
   Assert.equal(muted.battle:status().phase, "complete", "muted playback never deadlocks a cue")
-  Assert.equal(
-    muted.screen:view().message,
-    soundingMessage,
-    "muted playback narrates the same terminal result"
-  )
+  Assert.equal(muted.screen:view().message, soundingMessage, "muted playback narrates the same terminal result")
   muted.screen:dispose()
   muted.battle:dispose()
 
@@ -1601,9 +1597,8 @@ local function stagedTackle(launchId)
   local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
   local staging = EffectStagingFixture.new({ launchId = launchId })
   local record = EffectStagingFixture.effectRecord("TACKLE", {})
-  local program = assert(
-    BattleAnimationCompiler.compile({ key = "TACKLE", stream = nativeStreamOf({ 34, 1, 2, 3, 29, 50, 4 }) })
-  )
+  local program =
+    assert(BattleAnimationCompiler.compile({ key = "TACKLE", stream = nativeStreamOf({ 34, 1, 2, 3, 29, 50, 4 }) }))
   record.program = {
     entry = program.entry,
     instructions = program.instructions,

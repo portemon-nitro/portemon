@@ -119,10 +119,7 @@ function T.shared_source_triples_alias_and_distinct_triples_do_not(romFs, _)
   local route45 = slotsOf(m, "MAP_DARK_CAVE_ROUTE_45_SIDE")
   local route31 = slotsOf(m, "MAP_DARK_CAVE_ROUTE_31_SIDE")
   for slot = 0, FieldEntryAssetCache.PREVIEW_SLOTS - 1 do
-    Assert.isTrue(
-      route45[slot] ~= route31[slot],
-      "the two Dark Cave sides render different images in slot " .. slot
-    )
+    Assert.isTrue(route45[slot] ~= route31[slot], "the two Dark Cave sides render different images in slot " .. slot)
   end
 end
 
@@ -145,10 +142,7 @@ function T.preview_membership_is_independent_of_the_destination_map_type(romFs, 
     Assert.notNil(m.previewByMapId[mapId], symbol .. " is still an eligible preview destination")
   end
 
-  Assert.isNil(
-    m.previewByMapId[destinationMapId("MAP_ROUTE_46")],
-    "Route 46 is not a preview destination"
-  )
+  Assert.isNil(m.previewByMapId[destinationMapId("MAP_ROUTE_46")], "Route 46 is not a preview destination")
 end
 
 return require("tests.rom.support.RomSuite").fromFacts(T)

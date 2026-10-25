@@ -58,10 +58,8 @@ local function independentHashes(romFs)
   for _, archive in ipairs(EXPECTED_ARCHIVES) do
     local opened = openArchive(romFs, archive.path)
     for memberId = archive.firstMember, archive.lastMember do
-      local bytes = assert(
-        opened:readMember(memberId),
-        archive.role .. " member " .. memberId .. " must exist in the dump"
-      )
+      local bytes =
+        assert(opened:readMember(memberId), archive.role .. " member " .. memberId .. " must exist in the dump")
       hashes[archive.path .. ":member:" .. memberId] = Hashing.sha1hex(bytes)
       count = count + 1
     end
@@ -104,12 +102,8 @@ local function publishedSelection(bundle)
 end
 
 function T.pokegear_family_accounts_for_the_full_selected_resource_closure(romFs, versionId)
-  local loaded, PokegearAssetCompiler =
-    pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
-  Assert.isTrue(
-    loaded,
-    "the pokegear family compiler must be published before the selected closure can be proven"
-  )
+  local loaded, PokegearAssetCompiler = pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
+  Assert.isTrue(loaded, "the pokegear family compiler must be published before the selected closure can be proven")
   local bundle = PokegearAssetCompiler.compile(romFs, versionId)
   local compiled = assert(bundle, "the pokegear family must compile from the owned dump")
 

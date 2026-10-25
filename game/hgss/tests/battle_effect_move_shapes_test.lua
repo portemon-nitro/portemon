@@ -162,7 +162,11 @@ function T.multi_picture_loop_called_and_visibility_shapes_keep_their_boundaries
     "the two pictures keep distinct battler selectors"
   )
   Assert.equal(multi.instructions[2].op, "show-pokemon-picture", "both pictures share the closing wait")
-  Assert.equal(multi.instructions[#multi.instructions].op, "reset-battle-presentation", "the pair closes its presentation")
+  Assert.equal(
+    multi.instructions[#multi.instructions].op,
+    "reset-battle-presentation",
+    "the pair closes its presentation"
+  )
 
   local looped = lowered("shape-charge-release", { 2, 2, 1, 5, 1, 3, 4 })
   Assert.deepEqual(opsOf(looped), {
@@ -177,16 +181,16 @@ function T.multi_picture_loop_called_and_visibility_shapes_keep_their_boundaries
   local called = lowered("shape-called-move", { 30, 0, 7, 16, 5, 1, 4 })
   Assert.equal(called.instructions[1].op, "branch-on-parameter", "the called shape selects on its parameter")
   Assert.equal(called.instructions[2].op, "play-sound", "the selected arm keeps its voice")
-  Assert.equal(
-    called.instructions[1].branchTarget,
-    2,
-    "the parameter branch lands on its own instruction boundary"
-  )
+  Assert.equal(called.instructions[1].branchTarget, 2, "the parameter branch lands on its own instruction boundary")
 
   local vanished = lowered("shape-transformation", { 45, 9, 0, 4 }, {
     resolveSourceInput = vanishedResolver(),
   })
-  Assert.equal(vanished.instructions[1].op, "set-pokemon-picture-vanished", "the visibility word keeps its own operation")
+  Assert.equal(
+    vanished.instructions[1].op,
+    "set-pokemon-picture-vanished",
+    "the visibility word keeps its own operation"
+  )
   Assert.isTrue(vanished.instructions[1].vanished, "the visibility word records its picture state")
 end
 
@@ -393,11 +397,7 @@ function T.position_pair_selects_only_its_matching_emitter_resource()
     assert(player:start(pairPlayback(1, "solo-player", 0, "solo-enemy", 1), pairProgram("pair-selection-first")))
   runToCompletion(player, first)
   Assert.equal(player:status(first), "complete", "the matching pair case runs to its own completion")
-  Assert.deepEqual(
-    leased,
-    { "battle/particle-emitter/candidate-1" },
-    "only the selected pair resource is leased"
-  )
+  Assert.deepEqual(leased, { "battle/particle-emitter/candidate-1" }, "only the selected pair resource is leased")
   Assert.equal(#spawned, 1, "the selected pair spawns exactly once across parked ticks")
   Assert.equal(
     spawned[1].resource,

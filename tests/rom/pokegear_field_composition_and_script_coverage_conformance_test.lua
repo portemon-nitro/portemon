@@ -29,14 +29,32 @@ local INVENTORY = {
   { opcode = 142, name = "ScrCmd_GetPhoneBookRematch", widths = { [1] = 2, [2] = 2 }, blocks = false, result = true },
   { opcode = 145, name = "ScrCmd_RegisterPokegearCard", widths = { [1] = 1 }, blocks = false, result = false },
   { opcode = 146, name = "ScrCmd_RegisterGearNumber", widths = { [1] = 2 }, blocks = false, result = false },
-  { opcode = 147, name = "ScrCmd_CheckRegisteredPhoneNumber", widths = { [1] = 2, [2] = 2 }, blocks = false, result = true },
+  {
+    opcode = 147,
+    name = "ScrCmd_CheckRegisteredPhoneNumber",
+    widths = { [1] = 2, [2] = 2 },
+    blocks = false,
+    result = true,
+  },
   { opcode = 148, name = "ScrCmd_148", widths = { [1] = 1, [2] = 1 }, blocks = false, result = false },
   { opcode = 149, name = "UnsetPhoneCallTrigger", widths = { [1] = 1 }, blocks = false, result = false },
   { opcode = 157, name = "ScrCmd_TownMap", widths = {}, blocks = true, result = false },
-  { opcode = 430, name = "ScrCmd_SetPhoneCall", widths = { [1] = 2, [2] = 2, [3] = 2 }, blocks = false, result = false },
+  {
+    opcode = 430,
+    name = "ScrCmd_SetPhoneCall",
+    widths = { [1] = 2, [2] = 2, [3] = 2 },
+    blocks = false,
+    result = false,
+  },
   { opcode = 431, name = "ScrCmd_RunPhoneCall", widths = {}, blocks = true, result = false },
   { opcode = 460, name = "ScrCmd_LoadPhoneDat", widths = { [1] = 2, [2] = 2 }, blocks = false, result = true },
-  { opcode = 461, name = "ScrCmd_GetPhoneContactMsgIds", widths = { [1] = 1, [2] = 2, [3] = 2 }, blocks = false, result = false },
+  {
+    opcode = 461,
+    name = "ScrCmd_GetPhoneContactMsgIds",
+    widths = { [1] = 1, [2] = 2, [3] = 2 },
+    blocks = false,
+    result = false,
+  },
   { opcode = 613, name = "ScrCmd_GetPhoneContactRandomGiftBerry", widths = { [1] = 2 }, blocks = false, result = true },
   { opcode = 614, name = "ScrCmd_GetPhoneContactGiftItem", widths = { [1] = 2 }, blocks = false, result = true },
   { opcode = 779, name = "ScrCmd_RadioMusicIsPlaying", widths = { [1] = 2, [2] = 2 }, blocks = false, result = true },
@@ -92,11 +110,7 @@ local function checkStaticRow(row)
   local widthCount = 0
   for index, width in pairs(widths) do
     widthCount = widthCount + 1
-    Assert.equal(
-      width,
-      row.widths[index],
-      "opcode " .. row.opcode .. " operand " .. index .. " keeps its native width"
-    )
+    Assert.equal(width, row.widths[index], "opcode " .. row.opcode .. " operand " .. index .. " keeps its native width")
   end
   local expectedCount = 0
   for _ in pairs(row.widths) do
@@ -151,7 +165,11 @@ local function checkLoweredItem(item, inventorySet, hits)
       hits[opcode] = (hits[opcode] or 0) + 1
       Assert.isTrue(
         item.op ~= "unsupported",
-        "opcode " .. opcode .. " must lower to a typed gear operation, got unsupported (" .. tostring(item.reason) .. ")"
+        "opcode "
+          .. opcode
+          .. " must lower to a typed gear operation, got unsupported ("
+          .. tostring(item.reason)
+          .. ")"
       )
     end
   end
@@ -260,7 +278,11 @@ function T.every_source_gear_command_row_is_executable(romFs)
     end
   end
   Assert.isTrue(scriptsWithGearUse > 0, "real scripts must actually use the inventoried gear rows")
-  Assert.equal(#verifierProblems, 0, "the verifier must agree on every gear row: " .. table.concat(verifierProblems, "; "))
+  Assert.equal(
+    #verifierProblems,
+    0,
+    "the verifier must agree on every gear row: " .. table.concat(verifierProblems, "; ")
+  )
   local useSummary = {}
   for _, row in ipairs(INVENTORY) do
     useSummary[#useSummary + 1] = row.opcode .. "=" .. (hits[row.opcode] or 0)

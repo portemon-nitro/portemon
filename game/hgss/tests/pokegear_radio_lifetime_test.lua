@@ -63,12 +63,19 @@ local function engineBundle()
       playerPriority = 64,
       channelPriority = 64,
     }),
-    [RADIO_SEQUENCE_ID] = AudioFixture.sequence(RADIO_SEQUENCE_ID, RADIO_SEQUENCE_SYMBOL, BANK_ID, 1, loopingProgram(4), {
-      id = 1,
-      initialVolume = 127,
-      playerPriority = 64,
-      channelPriority = 64,
-    }),
+    [RADIO_SEQUENCE_ID] = AudioFixture.sequence(
+      RADIO_SEQUENCE_ID,
+      RADIO_SEQUENCE_SYMBOL,
+      BANK_ID,
+      1,
+      loopingProgram(4),
+      {
+        id = 1,
+        initialVolume = 127,
+        playerPriority = 64,
+        channelPriority = 64,
+      }
+    ),
   }
   bundle.index.sequences = {
     [MAP_MUSIC_ID] = { id = MAP_MUSIC_ID, symbol = MAP_MUSIC_SYMBOL, bankId = BANK_ID, playerId = 1 },
@@ -109,9 +116,11 @@ local function newComposition()
     provider = provider,
   })
   local sound = GameSound.new({ provider = provider, player = player })
-  local eventState = { isFlagSet = function()
-    return false
-  end }
+  local eventState = {
+    isFlagSet = function()
+      return false
+    end,
+  }
   local controller = FieldAudioController.new({
     sound = sound,
     provider = provider,

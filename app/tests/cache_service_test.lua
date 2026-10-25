@@ -440,7 +440,10 @@ function T.logical_field_emergency_ensure_raises_when_the_controller_never_answe
   local ok, err = pcall(host.ensureLogicalField, 48)
   love.timer.sleep = realSleep
   Assert.isFalse(ok, "an unanswered emergency ensure raises")
-  Assert.isTrue(tostring(err):find("logical field 48", 1, true) ~= nil, "the failure names the stalled field: " .. tostring(err))
+  Assert.isTrue(
+    tostring(err):find("logical field 48", 1, true) ~= nil,
+    "the failure names the stalled field: " .. tostring(err)
+  )
 end
 
 function T.provisioner_exposes_the_selection_generation_without_scanning()
@@ -711,10 +714,7 @@ function T.scene_demands_dedupe_by_key_and_epoch_with_urgency_promotion()
   local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
   local epoch = assert(provisioner.epoch, "selection borrows an epoch")
   local gameHost = provisioner:gameHost()
-  Assert.isTrue(
-    type(gameHost.requestBattleScene) == "function",
-    "the selected-game host demands its battle scene"
-  )
+  Assert.isTrue(type(gameHost.requestBattleScene) == "function", "the selected-game host demands its battle scene")
   local day = "general/grass/day"
   local night = "general/grass/night"
   local pending, pendingErr = gameHost.requestBattleScene(day, "near")
@@ -738,10 +738,7 @@ function T.scene_demands_dedupe_by_key_and_epoch_with_urgency_promotion()
         if command.sceneKey == day then
           dayUrgency = command.urgency
         end
-        Assert.isTrue(
-          command.pageId == nil,
-          "a scene command carries no portrait page: " .. tostring(command.sceneKey)
-        )
+        Assert.isTrue(command.pageId == nil, "a scene command carries no portrait page: " .. tostring(command.sceneKey))
       elseif command.requestKind == "portrait" then
         portraitCommands = portraitCommands + 1
       end
@@ -751,10 +748,8 @@ function T.scene_demands_dedupe_by_key_and_epoch_with_urgency_promotion()
   Assert.equal(sceneCommands, 2, "day and night leave exactly one worker request each")
   Assert.equal(dayUrgency, "required", "the stronger urgency promotes the shared day request")
   Assert.equal(portraitCommands, 1, "the portrait page keeps its own request identity")
-  local dayId = assert(
-    service._byKey[tostring(epoch) .. ":battle-scene:" .. day],
-    "the day demand registers its selector identity"
-  )
+  local dayId =
+    assert(service._byKey[tostring(epoch) .. ":battle-scene:" .. day], "the day demand registers its selector identity")
   local nightId = assert(
     service._byKey[tostring(epoch) .. ":battle-scene:" .. night],
     "the night demand registers its selector identity"
@@ -789,16 +784,12 @@ function T.scene_failure_and_stale_epoch_never_read_ready()
   local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
   local firstEpoch = assert(provisioner.epoch, "selection borrows an epoch")
   local gameHost = provisioner:gameHost()
-  Assert.isTrue(
-    type(gameHost.requestBattleScene) == "function",
-    "the selected-game host demands its battle scene"
-  )
+  Assert.isTrue(type(gameHost.requestBattleScene) == "function", "the selected-game host demands its battle scene")
   local key = "city/sand/night"
   local pending, pendingErr = gameHost.requestBattleScene(key, "required")
   Assert.isNil(pending, "an unbuilt scene observes no readiness")
   Assert.isNil(pendingErr, "an unbuilt scene observes no failure")
-  local id =
-    assert(service._byKey[tostring(firstEpoch) .. ":battle-scene:" .. key], "the scene demand registers")
+  local id = assert(service._byKey[tostring(firstEpoch) .. ":battle-scene:" .. key], "the scene demand registers")
   service:update()
   service:injectReply({
     op = "request-result",
@@ -882,10 +873,7 @@ function T.validated_source_offer_reaches_the_controller_once_for_the_live_epoch
   service:update()
   local retired = service._command:pop()
   while retired ~= nil do
-    Assert.isFalse(
-      type(retired) == "table" and retired.byteData == buffer,
-      "no source offer queues after retirement"
-    )
+    Assert.isFalse(type(retired) == "table" and retired.byteData == buffer, "no source offer queues after retirement")
     retired = service._command:pop()
   end
   service:shutdown()
@@ -1004,11 +992,7 @@ function T.ordered_import_offer_and_boot_gate_share_one_control_stream()
   local nextEpoch = assert(service:select({ versionId = "heartgold" }))
   service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
   service:update()
-  Assert.equal(
-    service:bootSourceStatus(nextEpoch),
-    "pending",
-    "a late retired answer never satisfies a new selection"
-  )
+  Assert.equal(service:bootSourceStatus(nextEpoch), "pending", "a late retired answer never satisfies a new selection")
   service:shutdown()
   pcall(function()
     if worker.pool ~= nil then

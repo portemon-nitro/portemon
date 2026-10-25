@@ -149,7 +149,11 @@ local function selectMenuValue(game, value)
     task = assert(activeMenuTask(game), "the source menu stays active while navigating")
   end
   Assert.equal(task.state.selectedIndex, targetIndex, "field input focuses the requested source menu entry")
-  Assert.equal(task.state.menuDefinition.items[targetIndex + 1].value, value, "the focused source menu entry carries the requested result")
+  Assert.equal(
+    task.state.menuDefinition.items[targetIndex + 1].value,
+    value,
+    "the focused source menu entry carries the requested result"
+  )
   pressAction(game)
   local messageId = selectedItem.message.id
   if
@@ -455,7 +459,11 @@ function T.tests.mailbox_actions_follow_party_presence_at_open()
     host:step(emptyHandle, { { type = "confirm" } })
     local emptyActions = host:status()
     Assert.equal(emptyActions.phase, "action", "selecting the seeded letter opens its action menu")
-    Assert.deepEqual(emptyActions.menuActions, { "read", "cancel" }, "empty Party exposes only the source READ and CANCEL actions")
+    Assert.deepEqual(
+      emptyActions.menuActions,
+      { "read", "cancel" },
+      "empty Party exposes only the source READ and CANCEL actions"
+    )
     host:step(emptyHandle, { { type = "navigate", direction = "down" } })
     Assert.equal(host:status().action, "cancel", "empty Party navigation reaches CANCEL as its last action")
     host:step(emptyHandle, { { type = "navigate", direction = "down" } })
@@ -475,7 +483,10 @@ function T.tests.mailbox_actions_follow_party_presence_at_open()
     host:close(emptyHandle)
     Assert.isFalse(host:isActive(), "the field host closes the completed child")
 
-    Assert.isTrue(mons:giveMon({ species = "CHIKORITA", level = 5 }), "a live Party member is added for the second open")
+    Assert.isTrue(
+      mons:giveMon({ species = "CHIKORITA", level = 5 }),
+      "a live Party member is added for the second open"
+    )
     Assert.equal(mons:partyCount(), 1, "the next Mailbox open sees the nonempty Party")
     local fullHandle = host:open({ app = "mailbox" })
     host:setPresentationReady(fullHandle, true)
@@ -585,7 +596,11 @@ function T.tests.generated_pc_shell_uses_bill_photo_and_hall_of_fame_source_gate
     local afterBillSnapshot = openSourcePc(game)
     Assert.isTrue(afterBillSnapshot.fieldLocked, "the generated shell owns input after opening")
     root = assert(activeMenuTask(game), "the post-Bill source menu is active")
-    Assert.equal(root.state.menuDefinition.items[1].message.id, 62, "after Bill the PC entry uses the changed source label")
+    Assert.equal(
+      root.state.menuDefinition.items[1].message.id,
+      62,
+      "after Bill the PC entry uses the changed source label"
+    )
     Assert.deepEqual(menuItemValues(root), { 0, 1, 2, 3 }, "the cleared source shell adds its Hall of Fame entry")
 
     local previous = root

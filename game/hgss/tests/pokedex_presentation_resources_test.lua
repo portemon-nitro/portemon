@@ -476,10 +476,7 @@ function T.failed_replacement_preserves_the_committed_bundle()
   end
   Assert.isNil(published, "a generation with an unready image never publishes")
   Assert.notNil(failed, "the replacement reports its attributed failure")
-  Assert.isTrue(
-    type(failed.error) == "string" and failed.error ~= "",
-    "the failure carries its original cause"
-  )
+  Assert.isTrue(type(failed.error) == "string" and failed.error ~= "", "the failure carries its original cause")
   Assert.deepEqual(
     chromeRoles(first.assets.chrome),
     { "grid.bg", "grid.cell.art" },
@@ -560,10 +557,7 @@ function T.browser_text_resolves_through_borrowed_banks_once_per_bank()
       ready = outcome
       break
     end
-    Assert.isTrue(
-      outcome.kind ~= "failed",
-      "sourced text never fails its banks: " .. tostring(outcome.error)
-    )
+    Assert.isTrue(outcome.kind ~= "failed", "sourced text never fails its banks: " .. tostring(outcome.error))
   end
   Assert.notNil(ready, "sourced text converges on a complete bundle")
   Assert.deepEqual(ready.assets.messages, {
@@ -583,10 +577,7 @@ function T.browser_text_resolves_through_borrowed_banks_once_per_bank()
       second = outcome
       break
     end
-    Assert.isTrue(
-      outcome.kind ~= "failed",
-      "the textless replacement never fails: " .. tostring(outcome.error)
-    )
+    Assert.isTrue(outcome.kind ~= "failed", "the textless replacement never fails: " .. tostring(outcome.error))
   end
   Assert.notNil(second, "the textless replacement converges on a complete bundle")
   Assert.deepEqual(second.assets.messages, {}, "a demand without slots publishes no messages")
@@ -697,10 +688,7 @@ function T.ui_text_expands_strvar_markers_from_demand_fields()
       ready = outcome
       break
     end
-    Assert.isTrue(
-      outcome.kind ~= "failed",
-      "sourced text never fails its banks: " .. tostring(outcome.error)
-    )
+    Assert.isTrue(outcome.kind ~= "failed", "sourced text never fails its banks: " .. tostring(outcome.error))
   end
   Assert.notNil(ready, "field-bound text converges on a complete bundle")
   Assert.equal(ready.assets.messages["search.feedback"], "RESULTS 007", "the marker expands from its demand field")
@@ -772,10 +760,7 @@ function T.registration_announcement_substitutes_the_capture_name()
       ready = outcome
       break
     end
-    Assert.isTrue(
-      outcome.kind ~= "failed",
-      "the announcement never fails its bank: " .. tostring(outcome.error)
-    )
+    Assert.isTrue(outcome.kind ~= "failed", "the announcement never fails its bank: " .. tostring(outcome.error))
   end
   Assert.notNil(ready, "the announcement converges on a complete bundle")
   Assert.equal(
@@ -824,10 +809,7 @@ function T.registration_slots_resolve_through_the_borrowed_banks()
       ready = outcome
       break
     end
-    Assert.isTrue(
-      outcome.kind ~= "failed",
-      "sourced card text never fails its banks: " .. tostring(outcome.error)
-    )
+    Assert.isTrue(outcome.kind ~= "failed", "sourced card text never fails its banks: " .. tostring(outcome.error))
   end
   Assert.notNil(ready, "the card slots converge on a complete bundle")
   Assert.deepEqual(ready.assets.messages, {
@@ -1326,10 +1308,7 @@ local function pumpReady(lease, demand)
       ready = outcome
       break
     end
-    Assert.isTrue(
-      outcome.kind == "pending",
-      "preparation never fails a sourced demand: " .. tostring(outcome.error)
-    )
+    Assert.isTrue(outcome.kind == "pending", "preparation never fails a sourced demand: " .. tostring(outcome.error))
   end
   Assert.notNil(ready, "bounded preparation converges on the sourced bundle")
   assert(ready ~= nil, "bounded preparation converges")
@@ -1585,9 +1564,17 @@ function T.staged_slider_quantities_expand_through_their_borrowed_templates()
   }
   local ready = pumpReady(lease, demand)
   Assert.equal(ready.assets.messages["search.value-height-min"], "HT 0ft 00in", "the floor expands both height fields")
-  Assert.equal(ready.assets.messages["search.value-height-max"], "HT 99ft 00in", "the ceiling expands its sentinel fields")
+  Assert.equal(
+    ready.assets.messages["search.value-height-max"],
+    "HT 99ft 00in",
+    "the ceiling expands its sentinel fields"
+  )
   Assert.equal(ready.assets.messages["search.value-weight-min"], "WT 0.0lbs", "the floor expands both weight fields")
-  Assert.equal(ready.assets.messages["search.value-weight-max"], "WT 9999.0lbs", "the ceiling expands its sentinel fields")
+  Assert.equal(
+    ready.assets.messages["search.value-weight-max"],
+    "WT 9999.0lbs",
+    "the ceiling expands its sentinel fields"
+  )
   for _, role in ipairs({ "search.value-height-min", "search.value-weight-min" }) do
     local prepared = assert(ready.assets.messages[role], "the prepared window exists")
     Assert.isTrue(prepared:find("{STRVAR", 1, true) == nil, "no raw marker survives preparation")

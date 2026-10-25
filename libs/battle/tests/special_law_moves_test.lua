@@ -177,7 +177,7 @@ local function runStrike(moveKey, extra, setup, foeHp, foeTypes, seed)
     guts = false,
     weather = "none",
     weatherSuppressed = false,
-    abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" },
+    abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "normal" },
     defenderTypes = { [2] = foeTypes or { "normal" } },
     typeChart = nativeChart(content),
@@ -612,7 +612,7 @@ function T.ordinary_recoil_yields_to_rock_head_and_magic_guard()
   ---@param ability string|nil attacker ability under the probe
   ---@return integer recoil paid after the connecting take-down
   local function recoilAfter(ability)
-    local probe = runStrike("TAKE_DOWN", { abilities = { user = ability, foe = "ADAPTABILITY" } }, function(live, _)
+    local probe = runStrike("TAKE_DOWN", { abilities = { user = ability, foe = "NONE" } }, function(live, _)
       seedHealth(live, 1, 200, 200)
     end)
     local outcome = probe.outcome --[[@as table<string, unknown>]]
@@ -620,7 +620,7 @@ function T.ordinary_recoil_yields_to_rock_head_and_magic_guard()
     Assert.isTrue(probe.dealt > 0, "the take-down deals damage")
     return 200 - probe.ctx:damage(1, 0, { kind = "probe" }).before
   end
-  Assert.isTrue(recoilAfter("ADAPTABILITY") > 0, "unguarded recoil is paid")
+  Assert.isTrue(recoilAfter("NONE") > 0, "unguarded recoil is paid")
   Assert.equal(recoilAfter("ROCK_HEAD"), 0, "rock head suppresses ordinary recoil")
   Assert.equal(recoilAfter("MAGIC_GUARD"), 0, "magic guard suppresses ordinary recoil")
 end
@@ -628,13 +628,9 @@ end
 -- Unguarded ordinary recoil keeps its dealt-derived fraction: a quarter
 -- of the inflicted damage with a minimum of one.
 function T.unguarded_recoil_keeps_quarter_dealt_minimum_one()
-  local probe = runStrike(
-    "TAKE_DOWN",
-    { abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" } },
-    function(live, _)
-      seedHealth(live, 1, 200, 200)
-    end
-  )
+  local probe = runStrike("TAKE_DOWN", { abilities = { user = "NONE", foe = "NONE" } }, function(live, _)
+    seedHealth(live, 1, 200, 200)
+  end)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the take-down connects")
   local expected = math.floor(probe.dealt / 4)
@@ -652,13 +648,9 @@ end
 -- script 0198), unlike Take Down's quarter-recoil subscript (effect script
 -- 0048).
 function T.double_edge_recoil_uses_one_third_of_damage_dealt()
-  local probe = runStrike(
-    "DOUBLE_EDGE",
-    { abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" } },
-    function(live, _)
-      seedHealth(live, 1, 200, 200)
-    end
-  )
+  local probe = runStrike("DOUBLE_EDGE", { abilities = { user = "NONE", foe = "NONE" } }, function(live, _)
+    seedHealth(live, 1, 200, 200)
+  end)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "Double-Edge connects")
   local expected = math.floor(probe.dealt / 3)
@@ -678,7 +670,7 @@ function T.struggle_recoil_ignores_rock_head_and_magic_guard()
   ---@param ability string attacker ability under the probe
   ---@return integer recoil paid after the successful struggle
   local function recoilAfter(ability)
-    local probe = runStrike("STRUGGLE", { abilities = { user = ability, foe = "ADAPTABILITY" } }, function(live, _)
+    local probe = runStrike("STRUGGLE", { abilities = { user = ability, foe = "NONE" } }, function(live, _)
       seedHealth(live, 1, 100, 100)
     end)
     local outcome = probe.outcome --[[@as table<string, unknown>]]

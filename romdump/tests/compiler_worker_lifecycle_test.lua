@@ -421,10 +421,7 @@ function T.mismatched_pool_reply_is_rejected_until_the_matching_supply_arrives()
   Assert.equal(received[1].status, "source-needed", "the miss emits its typed pool request")
   Assert.equal(received[2].status, "prepared", "the matching supply continues through staging")
   Assert.equal(#openedSources, 1, "only the matching supply opens the source")
-  Assert.isTrue(
-    openedSources[1]:byteData() == buffer,
-    "the compile borrows the identical buffer object, never a copy"
-  )
+  Assert.isTrue(openedSources[1]:byteData() == buffer, "the compile borrows the identical buffer object, never a copy")
 end
 
 -- A pool-reported source failure settles the suspended job as failed with
@@ -683,8 +680,7 @@ function T.receipt_miss_asks_the_pool_for_source_and_suspends_the_job()
     Assert.equal(only.first, versionId, "the source open names its version")
     Assert.equal(type(only.second), "table", "the miss opens a direct source, never the dump")
     Assert.equal(
-      type(only.second) == "table" and type(only.second.read) == "function"
-        and type(only.second.sha1) == "function",
+      type(only.second) == "table" and type(only.second.read) == "function" and type(only.second.sha1) == "function",
       true,
       "the direct open carries a readable source view"
     )

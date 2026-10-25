@@ -278,22 +278,14 @@ function T.panel_text_background_stays_transparent_over_panel_chrome(romFs, _)
     end
     Assert.equal(role.foreground.a, 255, "the " .. name .. " foreground stays opaque")
     Assert.equal(role.shadow.a, 255, "the " .. name .. " shadow stays opaque")
-    Assert.equal(
-      role.background.a,
-      0,
-      "the " .. name .. " background class stays transparent over panel chrome"
-    )
+    Assert.equal(role.background.a, 0, "the " .. name .. " background class stays transparent over panel chrome")
   end
   local menuRoles =
     assert(bundle.manifest.contextMenu and bundle.manifest.contextMenu.textRoles, "context buttons keep their roles")
   for _, name in ipairs({ "command", "field", "cancel" }) do
     for _, state in ipairs({ "raised", "depressed" }) do
       local triple = assert(menuRoles[name][state], "the " .. name .. " " .. state .. " triple resolves")
-      Assert.equal(
-        triple.background.a,
-        255,
-        "the " .. name .. " " .. state .. " button background stays opaque"
-      )
+      Assert.equal(triple.background.a, 255, "the " .. name .. " " .. state .. " button background stays opaque")
     end
   end
 end

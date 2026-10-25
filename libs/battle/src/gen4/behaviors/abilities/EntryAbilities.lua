@@ -51,7 +51,7 @@ local ENTRY_SUPPRESS_WEATHER = {
 ---@return table<string, unknown> entry announcement carrying the source identity
 local function announceEntry(instance, context)
   assert(type(context) == "table", "entry handlers read their pass context")
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance) }
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), foes = context.foes }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling

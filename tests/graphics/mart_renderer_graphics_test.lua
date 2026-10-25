@@ -270,7 +270,10 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = MartCache.loadManifest(cacheFs)
-    Assert.isTrue(type(manifest.lower.focus) == "table", versionId .. " generated mart manifest exposes the independent focus family")
+    Assert.isTrue(
+      type(manifest.lower.focus) == "table",
+      versionId .. " generated mart manifest exposes the independent focus family"
+    )
     local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()))
     local text = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs }))
     local icons = scope:own(ItemIconAssetProvider.new(cacheFs))
@@ -315,7 +318,15 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     local legacyBackground = decode(scope, cacheFs, manifest.upper.backgrounds.legacy.image)
     for y = 0, 191 do
       for x = 0, 255 do
-        assertSamePixel(legacy, legacyBackground, x, y, x, y, versionId .. " legacy source background at " .. x .. "," .. y)
+        assertSamePixel(
+          legacy,
+          legacyBackground,
+          x,
+          y,
+          x,
+          y,
+          versionId .. " legacy source background at " .. x .. "," .. y
+        )
       end
     end
 
@@ -346,7 +357,11 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
           priceVisible = true,
           priceTokens = glyph,
         },
-        {}, {}, {}, {}, {},
+        {},
+        {},
+        {},
+        {},
+        {},
       },
       selection = -1,
       currentEntry = entry,
@@ -357,10 +372,19 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     }
     local withEntry = draw(scope, renderer, icons, occupied)
     local iconAtlas = decode(scope, cacheFs, ItemCache.iconImagePath())
-    local _, iconX, iconY = opaqueImageEntry(scope, cacheFs, ItemCache.iconImagePath(), icon.x, icon.y, icon.width, icon.height)
+    local _, iconX, iconY =
+      opaqueImageEntry(scope, cacheFs, ItemCache.iconImagePath(), icon.x, icon.y, icon.width, icon.height)
     local sampleX = manifest.upper.itemAnchor.x - math.floor(icon.width / 2) + iconX - icon.x
     local sampleY = manifest.upper.itemAnchor.y - math.floor(icon.height / 2) + iconY - icon.y
-    assertSamePixel(withEntry, iconAtlas, sampleX, sampleY, iconX, iconY, versionId .. " selected icon uses the generated source crop and anchor")
+    assertSamePixel(
+      withEntry,
+      iconAtlas,
+      sampleX,
+      sampleY,
+      iconX,
+      iconY,
+      versionId .. " selected icon uses the generated source crop and anchor"
+    )
     local noIconEntry = {
       open = true,
       state = "browse",
@@ -429,7 +453,11 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     local itemBounds = manifest.lower.slots[1].labelBox
     local stockForeground = expectedPaletteColor(text.fontDef, 1)
     Assert.isTrue(
-      countPalette(withEntry, { x = itemBounds.x + 256, y = itemBounds.y, width = itemBounds.width, height = 16 }, stockForeground) > 0,
+      countPalette(
+        withEntry,
+        { x = itemBounds.x + 256, y = itemBounds.y, width = itemBounds.width, height = 16 },
+        stockForeground
+      ) > 0,
       versionId .. " stock labels use the generated stock foreground palette slot"
     )
     local price = manifest.lower.slots[1].priceAt
@@ -440,34 +468,28 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     local descriptionBox = manifest.upper.description.items
     local systemForeground = expectedPaletteColor(text.fontDef, 15)
     Assert.isTrue(
-      countPalette(withEntry, { x = descriptionBox.x, y = descriptionBox.y, width = descriptionBox.width, height = 16 }, systemForeground) > 0,
+      countPalette(
+        withEntry,
+        { x = descriptionBox.x, y = descriptionBox.y, width = descriptionBox.width, height = 16 },
+        systemForeground
+      ) > 0,
       versionId .. " item descriptions use the generated system foreground palette slot"
     )
     local cancelLabel = assert(manifest.text.labels.cancelLabel)
     Assert.isTrue(cancelLabel ~= "", versionId .. " carries the sourced cancel label")
     local cancelWidth = text:textWidth(cancelLabel)
     local cancelBox = manifest.lower.cancelLabelBox
-    Assert.isTrue(
-      countPalette(withEntry, {
-        x = cancelBox.x + 256,
-        y = cancelBox.y,
-        width = math.min(cancelWidth, cancelBox.width),
-        height = cancelBox.height,
-      }, systemForeground) > 0,
-      versionId .. " cancel label uses its generated text box and system palette"
-    )
+    Assert.isTrue(countPalette(withEntry, {
+      x = cancelBox.x + 256,
+      y = cancelBox.y,
+      width = math.min(cancelWidth, cancelBox.width),
+      height = cancelBox.height,
+    }, systemForeground) > 0, versionId .. " cancel label uses its generated text box and system palette")
 
     local cancelControl = manifest.lower.cancel
     local cancelVisual = manifest.controls[cancelControl.normalVisualKey].normal
-    local cancelSource, cancelSourceX, cancelSourceY = opaqueImageEntry(
-      scope,
-      cacheFs,
-      cancelVisual.image,
-      0,
-      0,
-      cancelVisual.width,
-      cancelVisual.height
-    )
+    local cancelSource, cancelSourceX, cancelSourceY =
+      opaqueImageEntry(scope, cacheFs, cancelVisual.image, 0, 0, cancelVisual.width, cancelVisual.height)
     assertSamePixel(
       withEntry,
       cancelSource,
@@ -487,18 +509,18 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     local focusedCancel = draw(scope, renderer, icons, focusStatus)
     local withoutBrowseFocus = draw(scope, renderer, icons, occupied)
     Assert.isTrue(
-      pixelDiff(focusedCancel, withoutBrowseFocus, 256 + cancelControl.anchor.x - 64, cancelControl.anchor.y - 32, 96, 48) > 0,
+      pixelDiff(
+        focusedCancel,
+        withoutBrowseFocus,
+        256 + cancelControl.anchor.x - 64,
+        cancelControl.anchor.y - 32,
+        96,
+        48
+      ) > 0,
       versionId .. " logical Cancel selection draws its independent focus layer"
     )
-    local focusData, focusX, focusY = imageEntry(
-      scope,
-      cacheFs,
-      cancelFocus.image,
-      0,
-      0,
-      cancelFocus.width,
-      cancelFocus.height
-    )
+    local focusData, focusX, focusY =
+      imageEntry(scope, cacheFs, cancelFocus.image, 0, 0, cancelFocus.width, cancelFocus.height)
     assertCompositePixel(
       focusedCancel,
       withoutBrowseFocus,
@@ -532,15 +554,8 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     releaseStatus.controlFeedback = { key = "pageNext", phase = "release" }
     local releasePage = draw(scope, renderer, icons, releaseStatus)
     local pageSelectedVisual = manifest.controls[pageControl.selectedVisualKey].selected
-    local selectedData, selectedX, selectedY = imageEntry(
-      scope,
-      cacheFs,
-      pageSelectedVisual.image,
-      0,
-      0,
-      pageSelectedVisual.width,
-      pageSelectedVisual.height
-    )
+    local selectedData, selectedX, selectedY =
+      imageEntry(scope, cacheFs, pageSelectedVisual.image, 0, 0, pageSelectedVisual.width, pageSelectedVisual.height)
     assertCompositePixel(
       selectedPage,
       decode(scope, cacheFs, manifest.lower.backgrounds.browse[0].image),
@@ -644,18 +659,19 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     }
     local quantityPaint = draw(scope, renderer, icons, quantity)
     local quantityBackground = decode(scope, cacheFs, manifest.lower.backgrounds.quantity.image)
-    assertSamePixel(quantityPaint, quantityBackground, 256, 0, 0, 0, versionId .. " quantity state uses the source quantity backdrop")
+    assertSamePixel(
+      quantityPaint,
+      quantityBackground,
+      256,
+      0,
+      0,
+      0,
+      versionId .. " quantity state uses the source quantity backdrop"
+    )
     local increment = manifest.lower.quantity.increment1
     local incrementVisual = manifest.controls[increment.normalVisualKey].normal
-    local incrementSource, incrementX, incrementY = imageEntry(
-      scope,
-      cacheFs,
-      incrementVisual.image,
-      0,
-      0,
-      incrementVisual.width,
-      incrementVisual.height
-    )
+    local incrementSource, incrementX, incrementY =
+      imageEntry(scope, cacheFs, incrementVisual.image, 0, 0, incrementVisual.width, incrementVisual.height)
     assertCompositePixel(
       quantityPaint,
       quantityBackground,
@@ -676,7 +692,8 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     animatedQuantity.amountAnimations = { increment1 = { family = "increment", frame = 1 } }
     local amountPaint = draw(scope, renderer, icons, animatedQuantity)
     local amountFrame = manifest.animations.increment.frames[1].visual
-    local amountData, amountX, amountY = imageEntry(scope, cacheFs, amountFrame.image, 0, 0, amountFrame.width, amountFrame.height)
+    local amountData, amountX, amountY =
+      imageEntry(scope, cacheFs, amountFrame.image, 0, 0, amountFrame.width, amountFrame.height)
     assertCompositePixel(
       amountPaint,
       quantityBackground,
@@ -717,7 +734,15 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     }
     local confirmation = draw(scope, renderer, icons, confirming)
     local confirmBackground = decode(scope, cacheFs, manifest.lower.backgrounds.confirm.image)
-    assertSamePixel(confirmation, confirmBackground, 256, 0, 0, 0, versionId .. " confirmation uses the source confirm backdrop")
+    assertSamePixel(
+      confirmation,
+      confirmBackground,
+      256,
+      0,
+      0,
+      0,
+      versionId .. " confirmation uses the source confirm backdrop"
+    )
     local promptVisual = uiManifest.yesNoPrompt.shapes.compact.yes.selected
     local promptAsset = assert(uiManifest.assets[promptVisual.asset])
     local promptData, promptX, promptY = opaqueImageEntry(
@@ -815,18 +840,25 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     }
     for _, layoutCase in ipairs(layouts) do
       local actualPlan = sourceLayout(layoutCase.measured)
-      Assert.equal(#actualPlan.panes, layoutCase.expectedPanes, versionId .. " " .. layoutCase.name .. " uses its actual mart plan")
-      local capture = draw(
-        scope,
-        renderer,
-        icons,
-        occupied,
-        actualPlan,
-        layoutCase.measured.width,
-        layoutCase.measured.height
+      Assert.equal(
+        #actualPlan.panes,
+        layoutCase.expectedPanes,
+        versionId .. " " .. layoutCase.name .. " uses its actual mart plan"
       )
+      local capture =
+        draw(scope, renderer, icons, occupied, actualPlan, layoutCase.measured.width, layoutCase.measured.height)
       saveCapture(capture, versionId .. "-layout-" .. layoutCase.name)
-      Assert.isTrue(pixelDiff(capture, scope:own(love.image.newImageData(layoutCase.measured.width, layoutCase.measured.height)), 0, 0, layoutCase.measured.width, layoutCase.measured.height) > 0, versionId .. " " .. layoutCase.name .. " paints the production mart plan")
+      Assert.isTrue(
+        pixelDiff(
+          capture,
+          scope:own(love.image.newImageData(layoutCase.measured.width, layoutCase.measured.height)),
+          0,
+          0,
+          layoutCase.measured.width,
+          layoutCase.measured.height
+        ) > 0,
+        versionId .. " " .. layoutCase.name .. " paints the production mart plan"
+      )
     end
 
     local martReads = 0

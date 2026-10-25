@@ -169,4 +169,13 @@ function T.knockout_fails_against_sturdy()
   Assert.isTrue(probe.foeAfter > 0, "the sturdy foe keeps its health")
 end
 
+function T.mold_breaker_bypasses_sturdy_for_an_ohko()
+  local probe = runStrike("FISSURE", {
+    foeLevel = 50,
+    abilities = { user = "MOLD_BREAKER", foe = "STURDY" },
+  })
+  Assert.equal(probe.outcome.result, "hit", "Mold Breaker bypasses Sturdy's OHKO immunity")
+  Assert.equal(probe.foeAfter, 0, "the OHKO removes the sturdy foe's health")
+end
+
 return { tests = T }

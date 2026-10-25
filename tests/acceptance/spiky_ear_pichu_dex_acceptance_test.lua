@@ -147,11 +147,7 @@ function T.tests.gift_registers_pichu_in_party_and_persistent_pokedex()
     Assert.equal(gifted.form, 1, "the gift publishes the Spiky-Ear form")
     Assert.isTrue(dex:isSeen("PICHU"), "the successful gift registers the sighting")
     Assert.isTrue(dex:isCaught("PICHU"), "the successful gift registers the catch")
-    Assert.equal(
-      dex:revision(),
-      dexRevisionBefore + 1,
-      "the successful gift publishes its staged catch exactly once"
-    )
+    Assert.equal(dex:revision(), dexRevisionBefore + 1, "the successful gift publishes its staged catch exactly once")
     local saved = assert(game.runtime:captureGameSave(), "a stable field must provide a save record")
     local pokedexBucket = assert(saved.pokedex, "the save record carries the persisted dex bucket")
     Assert.isTrue(containsKey(pokedexBucket.caught, "PICHU"), "the save bucket persists the catch")
@@ -203,11 +199,7 @@ function T.tests.full_party_refuses_without_dex_rng_or_party_side_effects()
     runGiftToCompletion(game)
 
     Assert.equal(mons:partyCount(), 6, "the refused gift never overflows the full party")
-    Assert.equal(
-      mons:partyRevision(),
-      partyRevisionBefore,
-      "the refused gift bumps no party revision"
-    )
+    Assert.equal(mons:partyRevision(), partyRevisionBefore, "the refused gift bumps no party revision")
     Assert.deepEqual(mons:capture().rng, rngBefore, "the refused gift consumes no generator draws")
     Assert.isFalse(dex:isSeen("PICHU"), "the refused gift registers no sighting")
     Assert.isFalse(dex:isCaught("PICHU"), "the refused gift registers no catch")
@@ -228,11 +220,7 @@ function T.tests.full_party_refuses_without_dex_rng_or_party_side_effects()
     local repeated = mons:partyMon(5)
     Assert.equal(repeated.species, "PICHU", "the repeat gift publishes the event species")
     Assert.isTrue(dex:isCaught("PICHU"), "the repeat gift keeps the catch")
-    Assert.equal(
-      dex:revision(),
-      knownRevision,
-      "a repeat gift over known knowledge advances no dex revision"
-    )
+    Assert.equal(dex:revision(), knownRevision, "a repeat gift over known knowledge advances no dex revision")
   end)
 end
 

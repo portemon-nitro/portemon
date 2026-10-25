@@ -250,7 +250,17 @@ function T.completion_sets_exclude_exactly_the_event_mythicals()
   local catalog = compileCatalog()
   Assert.equal(#catalog.completionSets.national, 484, "national completion excludes nine mythicals")
   Assert.equal(#catalog.completionSets.johto, 254, "johto completion excludes mew and celebi")
-  local excluded = { MEW = true, CELEBI = true, JIRACHI = true, DEOXYS = true, PHIONE = true, MANAPHY = true, DARKRAI = true, SHAYMIN = true, ARCEUS = true }
+  local excluded = {
+    MEW = true,
+    CELEBI = true,
+    JIRACHI = true,
+    DEOXYS = true,
+    PHIONE = true,
+    MANAPHY = true,
+    DARKRAI = true,
+    SHAYMIN = true,
+    ARCEUS = true,
+  }
   local required = {}
   for _, key in ipairs(catalog.completionSets.national) do
     required[key] = true
@@ -283,7 +293,11 @@ end
 function T.message_bank_closure_covers_every_named_role()
   local PokedexSources = require("romdump.src.config.PokedexSources")
   local ids = PokedexSources.messageBankIds()
-  Assert.equal(#ids, 30, "the presentation closure names every fixed bank once: 28 pre-existing plus the landmarks name/fallback banks behind AREA location rows")
+  Assert.equal(
+    #ids,
+    30,
+    "the presentation closure names every fixed bank once: 28 pre-existing plus the landmarks name/fallback banks behind AREA location rows"
+  )
   local wanted = {
     [802] = true,
     [237] = true,
@@ -365,11 +379,7 @@ function T.editor_option_arrays_follow_source_declaration_order_with_unrestricte
     "the shape editor keeps the source declaration order"
   )
   Assert.equal(catalog.criteria.typeOptionOrder[1], "normal", "the type editor does not sort alphabetically")
-  Assert.equal(
-    catalog.criteria.shapeOptionOrder[1],
-    "quadruped",
-    "the shape editor does not sort alphabetically"
-  )
+  Assert.equal(catalog.criteria.shapeOptionOrder[1], "quadruped", "the shape editor does not sort alphabetically")
   for index = 1, 17 do
     Assert.notNil(
       catalog.criteria.types[SOURCE_TYPE_SEQUENCE[index]],
@@ -387,27 +397,15 @@ end
 function T.malformed_editor_option_arrays_fail_closed_validation()
   local monCatalog = fixtureMonCatalog()
   local catalog = compileCatalog()
-  Assert.notNil(
-    catalog.criteria.typeOptionOrder,
-    "the compiled catalog carries source-ordered type options"
-  )
-  Assert.notNil(
-    catalog.criteria.shapeOptionOrder,
-    "the compiled catalog carries source-ordered shape options"
-  )
+  Assert.notNil(catalog.criteria.typeOptionOrder, "the compiled catalog carries source-ordered type options")
+  Assert.notNil(catalog.criteria.shapeOptionOrder, "the compiled catalog carries source-ordered shape options")
   local fresh = compileCatalog()
   fresh.criteria.typeOptionOrder[1], fresh.criteria.typeOptionOrder[2] =
     fresh.criteria.typeOptionOrder[2], fresh.criteria.typeOptionOrder[1]
-  Assert.isNil(
-    PokedexAssetSchema.validateCatalog(fresh, monCatalog),
-    "a swapped type option order must not validate"
-  )
+  Assert.isNil(PokedexAssetSchema.validateCatalog(fresh, monCatalog), "a swapped type option order must not validate")
   local duplicated = compileCatalog()
   duplicated.criteria.typeOptionOrder[18] = duplicated.criteria.typeOptionOrder[1]
-  Assert.isNil(
-    PokedexAssetSchema.validateCatalog(duplicated, monCatalog),
-    "a duplicated type option must not validate"
-  )
+  Assert.isNil(PokedexAssetSchema.validateCatalog(duplicated, monCatalog), "a duplicated type option must not validate")
   local truncated = compileCatalog()
   truncated.criteria.shapeOptionOrder[15] = nil
   Assert.isNil(
@@ -416,10 +414,7 @@ function T.malformed_editor_option_arrays_fail_closed_validation()
   )
   local unknown = compileCatalog()
   unknown.criteria.shapeOptionOrder[15] = "mystery"
-  Assert.isNil(
-    PokedexAssetSchema.validateCatalog(unknown, monCatalog),
-    "an unknown shape option must not validate"
-  )
+  Assert.isNil(PokedexAssetSchema.validateCatalog(unknown, monCatalog), "an unknown shape option must not validate")
 end
 
 function T.closed_catalog_rejects_unknown_fields_and_holes()
@@ -427,10 +422,7 @@ function T.closed_catalog_rejects_unknown_fields_and_holes()
   local withExtra = mutateCatalog(function(catalog)
     catalog.extraField = true
   end)
-  Assert.isNil(
-    PokedexAssetSchema.validateCatalog(withExtra, monCatalog),
-    "an unknown catalog field must not validate"
-  )
+  Assert.isNil(PokedexAssetSchema.validateCatalog(withExtra, monCatalog), "an unknown catalog field must not validate")
   local withHole = mutateCatalog(function(catalog)
     catalog.dexOrders.national[5] = nil
   end)
@@ -452,10 +444,7 @@ function T.closed_catalog_rejects_unknown_fields_and_holes()
   local withBadBank = mutateCatalog(function(catalog)
     catalog.textBindings.ui.bankId = nil
   end)
-  Assert.isNil(
-    PokedexAssetSchema.validateCatalog(withBadBank, monCatalog),
-    "a missing UI bank must not validate"
-  )
+  Assert.isNil(PokedexAssetSchema.validateCatalog(withBadBank, monCatalog), "a missing UI bank must not validate")
 end
 
 return { tests = T }

@@ -89,7 +89,14 @@ local function walkProject(fs, path, out)
           for _, child in ipairs(fs.getDirectoryItems(childPath)) do
             local childInfo = fs.getInfo(childPath .. "/" .. child)
             if childInfo ~= nil and childInfo.type == "directory" then
-              walk(fs, childPath .. "/" .. child, prefix .. "." .. child, TEST_LAYERS[child] and child or "unit", out, true)
+              walk(
+                fs,
+                childPath .. "/" .. child,
+                prefix .. "." .. child,
+                TEST_LAYERS[child] and child or "unit",
+                out,
+                true
+              )
             end
           end
         else

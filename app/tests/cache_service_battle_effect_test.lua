@@ -139,10 +139,7 @@ function T.cancelled_generations_never_publish_into_later_ones()
   local Provisioner = provisionerModule()
   local provisioner = Provisioner.new({ versionId = "heartgold", service = service })
   local gameHost = provisioner:gameHost()
-  Assert.isTrue(
-    type(gameHost.requestBattleEffect) == "function",
-    "the selected-game host demands lazy battle effects"
-  )
+  Assert.isTrue(type(gameHost.requestBattleEffect) == "function", "the selected-game host demands lazy battle effects")
   provisioner:dispose()
   service:shutdown()
 end

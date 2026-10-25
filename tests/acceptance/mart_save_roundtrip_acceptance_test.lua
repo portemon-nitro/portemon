@@ -185,14 +185,8 @@ local function loadStoredRuntime(game)
   local saveId = game.runtime.saveId
   local persisted = assert(game.runtime.saveStore:load(saveId), "the actual save store reloads the published record")
   game:_disposeRuntime()
-  local runtime = game.harness:_newRuntime(
-    persisted,
-    game.saveNamespace,
-    game.faults,
-    game.lifecycle,
-    game.fieldOptions,
-    false
-  )
+  local runtime =
+    game.harness:_newRuntime(persisted, game.saveNamespace, game.faults, game.lifecycle, game.fieldOptions, false)
   game.runtime = runtime
   game.hosts = runtime.scriptHosts or {}
   game.runtimeDisposed = false

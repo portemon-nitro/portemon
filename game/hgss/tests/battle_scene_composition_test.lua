@@ -69,8 +69,38 @@ local function snapshot(overrides)
     section.cells = {
       {
         objs = {
-          { x = -64, y = y, tile = 0, width = 64, height = 64, palette = 0, priority = 0, affine = false, flipH = false, flipV = false, disabled = false, objMode = "normal", mosaic = false, colorMode = "16-color" },
-          { x = 0, y = y, tile = 64, width = 64, height = 64, palette = 0, priority = 0, affine = false, flipH = false, flipV = false, disabled = false, objMode = "normal", mosaic = false, colorMode = "16-color" },
+          {
+            x = -64,
+            y = y,
+            tile = 0,
+            width = 64,
+            height = 64,
+            palette = 0,
+            priority = 0,
+            affine = false,
+            flipH = false,
+            flipV = false,
+            disabled = false,
+            objMode = "normal",
+            mosaic = false,
+            colorMode = "16-color",
+          },
+          {
+            x = 0,
+            y = y,
+            tile = 64,
+            width = 64,
+            height = 64,
+            palette = 0,
+            priority = 0,
+            affine = false,
+            flipH = false,
+            flipV = false,
+            disabled = false,
+            objMode = "normal",
+            mosaic = false,
+            colorMode = "16-color",
+          },
         },
       },
     }
@@ -196,8 +226,7 @@ local function drawnDetail(view, opts)
       shadowRegion = function(_, size)
         return { size = size, x = 0, y = size * 16, width = 64, height = 16 }
       end,
-      release = function(_, _)
-      end,
+      release = function(_, _) end,
     },
     frameKey = "composition-frame",
     sceneImageKey = "scene:test",
@@ -228,7 +257,11 @@ function T.single_player_hp_numbers_follow_the_native_character_tile_spans()
       numberClips[#numberClips + 1] = { x = clip.requested[1], y = clip.requested[2] }
     end
   end
-  Assert.deepEqual(numberClips, { { x = 192, y = 124 }, { x = 224, y = 124 } }, "each numeral stays inside its native span")
+  Assert.deepEqual(
+    numberClips,
+    { { x = 192, y = 124 }, { x = 224, y = 124 } },
+    "each numeral stays inside its native span"
+  )
 end
 
 function T.source_gauge_task_tile_patches_override_the_static_hud_checkpoint()
@@ -255,7 +288,11 @@ function T.source_gauge_task_tile_patches_override_the_static_hud_checkpoint()
       end
     end
   end
-  Assert.deepEqual(sourceTiles, { 2, 2, 2, 2, 2, 2 }, "active health-task characters replace static HP tiles in the production HUD")
+  Assert.deepEqual(
+    sourceTiles,
+    { 2, 2, 2, 2, 2, 2 },
+    "active health-task characters replace static HP tiles in the production HUD"
+  )
 end
 
 function T.source_experience_task_tile_patches_override_the_level_snapshot()
@@ -304,8 +341,22 @@ function T.doubles_player_hp_numbers_follow_each_native_side_type_span()
         portraitSelector = "ALLY2/0/male/plain/back",
         healthBoxMode = "numbers",
       }),
-      battler({ combatant = 2, side = 2, position = 2, hp = 30, maxHp = 50, portraitSelector = "FOE/0/male/plain/front" }),
-      battler({ combatant = 4, side = 2, position = 3, hp = 40, maxHp = 50, portraitSelector = "FOE2/0/male/plain/front" }),
+      battler({
+        combatant = 2,
+        side = 2,
+        position = 2,
+        hp = 30,
+        maxHp = 50,
+        portraitSelector = "FOE/0/male/plain/front",
+      }),
+      battler({
+        combatant = 4,
+        side = 2,
+        position = 3,
+        hp = 40,
+        maxHp = 50,
+        portraitSelector = "FOE2/0/male/plain/front",
+      }),
     },
   })
   local opts = {}
@@ -386,8 +437,38 @@ function T.single_hud_tiles_follow_the_published_cell_object_coordinates()
     {
       objs = {
         cellObject,
-        { x = -64, y = -32, tile = 0, width = 64, height = 64, flipH = false, flipV = false, palette = 0, priority = 0, affine = false, disabled = false, mosaic = false, objMode = "normal", colorMode = "16-color" },
-        { x = 0, y = -32, tile = 64, width = 64, height = 64, flipH = false, flipV = false, palette = 0, priority = 0, affine = false, disabled = false, mosaic = false, objMode = "normal", colorMode = "16-color" },
+        {
+          x = -64,
+          y = -32,
+          tile = 0,
+          width = 64,
+          height = 64,
+          flipH = false,
+          flipV = false,
+          palette = 0,
+          priority = 0,
+          affine = false,
+          disabled = false,
+          mosaic = false,
+          objMode = "normal",
+          colorMode = "16-color",
+        },
+        {
+          x = 0,
+          y = -32,
+          tile = 64,
+          width = 64,
+          height = 64,
+          flipH = false,
+          flipV = false,
+          palette = 0,
+          priority = 0,
+          affine = false,
+          disabled = false,
+          mosaic = false,
+          objMode = "normal",
+          colorMode = "16-color",
+        },
       },
     },
   }
@@ -415,10 +496,78 @@ function T.doubles_hud_objects_draw_back_to_front_by_native_obj_priority()
   local manifest = ManifestFixture.manifest()
   local section = manifest.hud.doubles.playerLeft
   section.cells[1].objs = {
-    { x = 0, y = 0, tile = 2, flipH = false, flipV = false, palette = 0, shape = 0, size = 0, width = 8, height = 8, affine = false, disabled = false, objMode = "normal", mosaic = false, colorMode = "16-color", priority = 0 },
-    { x = 0, y = 0, tile = 1, flipH = false, flipV = false, palette = 0, shape = 0, size = 0, width = 8, height = 8, affine = false, disabled = false, objMode = "normal", mosaic = false, colorMode = "16-color", priority = 3 },
-    { x = -64, y = -32, tile = 0, width = 64, height = 64, affine = false, disabled = false, flipH = false, flipV = false, palette = 0, priority = 0, shape = 1, size = 3, objMode = "normal", mosaic = false, colorMode = "16-color" },
-    { x = 0, y = -32, tile = 64, width = 64, height = 64, affine = false, disabled = false, flipH = false, flipV = false, palette = 0, priority = 0, shape = 1, size = 3, objMode = "normal", mosaic = false, colorMode = "16-color" },
+    {
+      x = 0,
+      y = 0,
+      tile = 2,
+      flipH = false,
+      flipV = false,
+      palette = 0,
+      shape = 0,
+      size = 0,
+      width = 8,
+      height = 8,
+      affine = false,
+      disabled = false,
+      objMode = "normal",
+      mosaic = false,
+      colorMode = "16-color",
+      priority = 0,
+    },
+    {
+      x = 0,
+      y = 0,
+      tile = 1,
+      flipH = false,
+      flipV = false,
+      palette = 0,
+      shape = 0,
+      size = 0,
+      width = 8,
+      height = 8,
+      affine = false,
+      disabled = false,
+      objMode = "normal",
+      mosaic = false,
+      colorMode = "16-color",
+      priority = 3,
+    },
+    {
+      x = -64,
+      y = -32,
+      tile = 0,
+      width = 64,
+      height = 64,
+      affine = false,
+      disabled = false,
+      flipH = false,
+      flipV = false,
+      palette = 0,
+      priority = 0,
+      shape = 1,
+      size = 3,
+      objMode = "normal",
+      mosaic = false,
+      colorMode = "16-color",
+    },
+    {
+      x = 0,
+      y = -32,
+      tile = 64,
+      width = 64,
+      height = 64,
+      affine = false,
+      disabled = false,
+      flipH = false,
+      flipV = false,
+      palette = 0,
+      priority = 0,
+      shape = 1,
+      size = 3,
+      objMode = "normal",
+      mosaic = false,
+      colorMode = "16-color",
+    },
   }
   local view = snapshot({
     battlers = {
@@ -449,10 +598,18 @@ function T.doubles_hud_cells_follow_published_native_priorities()
   local manifest = ManifestFixture.manifest()
   local slots = manifest.battlefield.slots
   for _, row in ipairs(slots) do
-    if row.sideType == 2 then row.hudPriority = 28 end
-    if row.sideType == 4 then row.hudPriority = 26 end
-    if row.sideType == 3 then row.hudPriority = 25 end
-    if row.sideType == 5 then row.hudPriority = 27 end
+    if row.sideType == 2 then
+      row.hudPriority = 28
+    end
+    if row.sideType == 4 then
+      row.hudPriority = 26
+    end
+    if row.sideType == 3 then
+      row.hudPriority = 25
+    end
+    if row.sideType == 5 then
+      row.hudPriority = 27
+    end
   end
   local view = snapshot({
     slotGeometry = slots,
@@ -470,7 +627,10 @@ function T.doubles_hud_cells_follow_published_native_priorities()
   local order = {}
   for _, draw in ipairs(graphics.draws) do
     local handle = type(draw.image) == "table" and draw.image.handle or nil
-    if type(handle) == "string" and handle:match("^hud:.*%-left$") or type(handle) == "string" and handle:match("^hud:.*%-right$") then
+    if
+      type(handle) == "string" and handle:match("^hud:.*%-left$")
+      or type(handle) == "string" and handle:match("^hud:.*%-right$")
+    then
       if #order == 0 or order[#order] ~= handle then
         order[#order + 1] = handle
       end
@@ -579,18 +739,20 @@ end
 -- Cell objects sample the strip row-major from their base tile while
 -- bar tiles sample the color base plus their fill level.
 function T.quads_sample_the_strip_at_normalized_tile_origins()
-  local graphics = drawnDetail(snapshot({ battlers = {
-    battler({ combatant = 1, side = 1, hp = 13, maxHp = 52 }),
-    battler({
-      combatant = 2,
-      side = 2,
-      name = "FOE",
-      level = 5,
-      hp = 13,
-      maxHp = 52,
-      portraitSelector = "FOE/0/male/plain/front",
-    }),
-  } }))
+  local graphics = drawnDetail(snapshot({
+    battlers = {
+      battler({ combatant = 1, side = 1, hp = 13, maxHp = 52 }),
+      battler({
+        combatant = 2,
+        side = 2,
+        name = "FOE",
+        level = 5,
+        hp = 13,
+        maxHp = 52,
+        portraitSelector = "FOE/0/male/plain/front",
+      }),
+    },
+  }))
   local cells, tiles = {}, {}
   for _, entry in ipairs(graphics.draws) do
     if
@@ -652,11 +814,7 @@ function T.entry_travel_shifts_pictures_with_their_shadows()
   local travelingLead = positions(traveling, "mon:LEAD/0/male/plain/back")
   Assert.equal(#settledLead, 1, "the settled lead draws once")
   Assert.equal(#travelingLead, 1, "the traveling lead draws once")
-  Assert.equal(
-    travelingLead[1].x,
-    settledLead[1].x - 276,
-    "entry travel shifts the picture by its displacement"
-  )
+  Assert.equal(travelingLead[1].x, settledLead[1].x - 276, "entry travel shifts the picture by its displacement")
   Assert.equal(travelingLead[1].y, settledLead[1].y, "entry travel keeps the settled row")
   local settledShadow = positions(settled, "shadow")
   local travelingShadow = positions(traveling, "shadow")
@@ -674,18 +832,20 @@ function T.entry_travel_shifts_pictures_with_their_shadows()
 end
 
 function T.source_picture_height_shifts_the_nominal_origin()
-  local graphics = drawnDetail(snapshot({ battlers = {
-    battler({ combatant = 1, side = 1, sourceHeight = 17 }),
-    battler({
-      combatant = 2,
-      side = 2,
-      name = "FOE",
-      level = 5,
-      hp = 12,
-      maxHp = 12,
-      portraitSelector = "FOE/0/male/plain/front",
-    }),
-  } }))
+  local graphics = drawnDetail(snapshot({
+    battlers = {
+      battler({ combatant = 1, side = 1, sourceHeight = 17 }),
+      battler({
+        combatant = 2,
+        side = 2,
+        name = "FOE",
+        level = 5,
+        hp = 12,
+        maxHp = 12,
+        portraitSelector = "FOE/0/male/plain/front",
+      }),
+    },
+  }))
   for _, entry in ipairs(graphics.draws) do
     if type(entry.image) == "table" and entry.image.handle == "mon:LEAD/0/male/plain/back" then
       Assert.equal(entry.y, 112 - 40 - 17, "the source picture height displaces its center-based origin")
@@ -696,18 +856,20 @@ function T.source_picture_height_shifts_the_nominal_origin()
 end
 
 function T.authored_picture_offset_moves_the_picture_and_its_shadow()
-  local graphics = drawnDetail(snapshot({ battlers = {
-    battler({ combatant = 1, side = 1, pictureXOffset = -5 }),
-    battler({
-      combatant = 2,
-      side = 2,
-      name = "FOE",
-      level = 5,
-      hp = 12,
-      maxHp = 12,
-      portraitSelector = "FOE/0/male/plain/front",
-    }),
-  } }))
+  local graphics = drawnDetail(snapshot({
+    battlers = {
+      battler({ combatant = 1, side = 1, pictureXOffset = -5 }),
+      battler({
+        combatant = 2,
+        side = 2,
+        name = "FOE",
+        level = 5,
+        hp = 12,
+        maxHp = 12,
+        portraitSelector = "FOE/0/male/plain/front",
+      }),
+    },
+  }))
   local pictureX, shadowX
   for _, entry in ipairs(graphics.draws) do
     if type(entry.image) == "table" and entry.image.handle == "mon:LEAD/0/male/plain/back" then
@@ -721,18 +883,23 @@ function T.authored_picture_offset_moves_the_picture_and_its_shadow()
 end
 
 function T.authored_picture_frame_selects_its_matching_portrait_pixels()
-  local graphics = drawnDetail(snapshot({ battlers = {
-    battler({ combatant = 1, side = 1, pictureFrame = 1 }),
-    battler({
-      combatant = 2,
-      side = 2,
-      name = "FOE",
-      level = 5,
-      hp = 12,
-      maxHp = 12,
-      portraitSelector = "FOE/0/male/plain/front",
+  local graphics = drawnDetail(
+    snapshot({
+      battlers = {
+        battler({ combatant = 1, side = 1, pictureFrame = 1 }),
+        battler({
+          combatant = 2,
+          side = 2,
+          name = "FOE",
+          level = 5,
+          hp = 12,
+          maxHp = 12,
+          portraitSelector = "FOE/0/male/plain/front",
+        }),
+      },
     }),
-  } }), { pictureFrames = { stagedDrawable("lead-frame-0"), stagedDrawable("lead-frame-1") } })
+    { pictureFrames = { stagedDrawable("lead-frame-0"), stagedDrawable("lead-frame-1") } }
+  )
   local selectedFrame
   for _, picture in ipairs(graphics.pictureItems) do
     if picture.kind ~= "shadow" and picture.image.handle == "lead-frame-1" then
@@ -792,8 +959,7 @@ function T.compact_bars_declare_their_vertical_adaptation()
         return { size = size, x = 0, y = size * 16, width = 64, height = 16 }
       end,
       renderPictures = pictureRenderer(graphics),
-      release = function(_, _)
-      end,
+      release = function(_, _) end,
     },
     frameKey = "composition-frame",
     sceneImageKey = "scene:test",

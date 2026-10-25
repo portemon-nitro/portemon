@@ -362,16 +362,8 @@ function T.tests.music_never_reaches_fishing_or_rock_smash_rates()
     "libs.hgss.src.encounters.HgssEncounterRate",
     "the encounter opportunity has no transcribed rate-stage policy yet: method gates are unowned"
   )
-  Assert.equal(
-    Rate.compute({ baseRate = 40, radio = "march", method = "fish" }),
-    40,
-    "march never reaches fishing"
-  )
-  Assert.equal(
-    Rate.compute({ baseRate = 40, radio = "lullaby", method = "fish" }),
-    40,
-    "lullaby never reaches fishing"
-  )
+  Assert.equal(Rate.compute({ baseRate = 40, radio = "march", method = "fish" }), 40, "march never reaches fishing")
+  Assert.equal(Rate.compute({ baseRate = 40, radio = "lullaby", method = "fish" }), 40, "lullaby never reaches fishing")
   Assert.equal(
     Rate.compute({ baseRate = 40, radio = "march", method = "fish", reverseTurnSteps = 4 }),
     40,
@@ -506,10 +498,7 @@ function T.tests.diagonal_keys_move_x_first_with_independent_rim_gating()
 end
 
 function T.tests.presets_snap_through_the_fixed_table_on_short_tables()
-  requireFeature(
-    "game.hgss.src.pokegear.RadioController",
-    "radio tuning has no input owner yet: presets snap nothing"
-  )
+  requireFeature("game.hgss.src.pokegear.RadioController", "radio tuning has no input owner yet: presets snap nothing")
   local alph = openController(36, mapFacts({ alph = true }), worldFlags())
   alph.controller:updateFixed({ { type = "confirm" } })
   checkSelection(alph, 255, 0, 112, 76)

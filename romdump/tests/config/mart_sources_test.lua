@@ -36,8 +36,8 @@ function T.provenance_and_resources_use_semantic_aliases()
     },
   })
 
-  local main, lower, controls = MartSources.archive.resources.main, MartSources.archive.resources.lower,
-    MartSources.archive.resources.controls
+  local main, lower, controls =
+    MartSources.archive.resources.main, MartSources.archive.resources.lower, MartSources.archive.resources.controls
   Assert.deepEqual(main, {
     char = 0,
     palette = 1,
@@ -269,8 +269,20 @@ function T.count_patches_distinguish_every_visible_count_from_the_invisible_empt
   for count = 0, 6 do
     local parts = {}
     for _, patch in ipairs(patches[count]) do
-      parts[#parts + 1] = table.concat({ patch.kind, patch.sourceX or "-", patch.sourceY or "-", patch.x or "-", patch.y or "-",
-        patch.sourceY or "-", patch.destY or "-", patch.width, patch.height }, ":")
+      parts[#parts + 1] = table.concat(
+        {
+          patch.kind,
+          patch.sourceX or "-",
+          patch.sourceY or "-",
+          patch.x or "-",
+          patch.y or "-",
+          patch.sourceY or "-",
+          patch.destY or "-",
+          patch.width,
+          patch.height,
+        },
+        ":"
+      )
     end
     local signature = table.concat(parts, "|")
     Assert.isNil(signatures[signature], "count " .. count .. " must keep its own source patch state")

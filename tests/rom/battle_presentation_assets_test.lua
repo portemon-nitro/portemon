@@ -87,10 +87,8 @@ function T.shared_menu_and_hud_members_decode_from_the_dump(romFs, versionId)
     "romdump.src.digest.ui.G2dDecoder",
     versionId .. ": no G2D decoder proves the menu and HUD members decode"
   )
-  local Lz10 = requireBoundary(
-    "romdump.src.digest.Lz10",
-    versionId .. ": no LZ unwrapper opens compressed source members"
-  )
+  local Lz10 =
+    requireBoundary("romdump.src.digest.Lz10", versionId .. ": no LZ unwrapper opens compressed source members")
   local roles = assert(Sources.ROLES, versionId .. ": the source catalog carries its member roles")
   Assert.equal(#roles.commandScreens, 3, versionId .. ": the command menu keeps its three screens")
   for _, tripleName in ipairs({ "playerHud", "enemyHud" }) do
@@ -190,10 +188,8 @@ function T.persistent_scene_compiles_for_one_context(romFs, versionId)
     "romdump.src.config.BattlePresentationSources",
     versionId .. ": no battle presentation source catalog selects scene members"
   )
-  local Lz10 = requireBoundary(
-    "romdump.src.digest.Lz10",
-    versionId .. ": no LZ unwrapper opens compressed source members"
-  )
+  local Lz10 =
+    requireBoundary("romdump.src.digest.Lz10", versionId .. ": no LZ unwrapper opens compressed source members")
   Assert.notNil(cache.parseSceneKey("general/grass/day"), versionId .. ": general/grass/day parses as a scene")
   Assert.isTrue(
     Sources.paletteVariant("general", "evening") ~= Sources.paletteVariant("general", "day"),
@@ -230,8 +226,7 @@ function T.persistent_scene_compiles_for_one_context(romFs, versionId)
     eveningPalette ~= dayPalette,
     versionId .. ": evening palette selection changes the composed scene input"
   )
-  local generalChars =
-    readSource(lower, Sources.baseCharMember(generalId), "general base characters", versionId, Lz10)
+  local generalChars = readSource(lower, Sources.baseCharMember(generalId), "general base characters", versionId, Lz10)
   local caveChars = readSource(lower, Sources.baseCharMember(caveId), "cave_1 base characters", versionId, Lz10)
   Assert.isTrue(caveChars ~= generalChars, versionId .. ": a second background family bakes its own characters")
   local day = assert(
@@ -262,10 +257,7 @@ end
 -- presentation catalog and is covered by the dump-backed tests above).
 function T.effect_backgrounds_are_not_admitted_as_persistent_scenes(romFs, versionId)
   local compiler, cache = presentationBoundary(romFs, versionId)
-  Assert.isTrue(
-    type(cache.sceneInventory) == "function",
-    versionId .. ": the cache exposes its scene inventory"
-  )
+  Assert.isTrue(type(cache.sceneInventory) == "function", versionId .. ": the cache exposes its scene inventory")
   local inventory = cache.sceneInventory()
   Assert.isTrue(type(inventory) == "table", versionId .. ": the cache inventories its scene keys")
   local backgrounds = {}

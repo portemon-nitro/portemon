@@ -167,7 +167,13 @@ function T.field_player_traverses_new_bark_east_staircase(romFs)
     clearEdges = function() end,
   }
   ---@cast input FieldInput
-  local actors = { beginFixedStep = function() end, step = function() end, cameraTargetId = function() return nil end }
+  local actors = {
+    beginFixedStep = function() end,
+    step = function() end,
+    cameraTargetId = function()
+      return nil
+    end,
+  }
   ---@cast actors FieldActorManager
   local dialogue = {
     isModal = function()

@@ -525,17 +525,9 @@ function T.box_visuals_share_one_image_and_release_stale_boxes_on_change()
   local second = openStorage(graphics, cache, manifest, text, pool)
   present(second, 0)
   Assert.equal(inner.uploads, opened, "two opens of one box share one physical image per visual")
-  Assert.equal(
-    inner:stats().outstandingLeases,
-    2 * opened,
-    "each open holds its own borrow of the shared visuals"
-  )
+  Assert.equal(inner:stats().outstandingLeases, 2 * opened, "each open holds its own borrow of the shared visuals")
   second:release()
-  Assert.equal(
-    inner:stats().outstandingLeases,
-    opened,
-    "closing the second box returns only its own borrows"
-  )
+  Assert.equal(inner:stats().outstandingLeases, opened, "closing the second box returns only its own borrows")
   for wallpaperId = 1, 7 do
     present(first, wallpaperId)
     assertNoDrawAfterFree(graphics)
@@ -662,10 +654,7 @@ function T.admitted_storage_draw_performs_no_image_owner_calls()
   local pool, _, _ = storagePool()
   local tally = { request = 0, poll = 0, acquire = 0, release = 0 }
   local renderer, graphics, _ = rendererFixture(countingPool(pool, tally))
-  Assert.isTrue(
-    type(renderer.prepare) == "function",
-    "the renderer prepares its visuals outside drawing"
-  )
+  Assert.isTrue(type(renderer.prepare) == "function", "the renderer prepares its visuals outside drawing")
   local view = browseView(0)
   admit(renderer, view)
   tally.request, tally.poll, tally.acquire, tally.release = 0, 0, 0, 0
@@ -685,10 +674,7 @@ end
 function T.wallpaper_change_borrows_only_the_new_wallpaper()
   local pool, inner, _ = storagePool()
   local renderer, _, manifest = rendererFixture(pool)
-  Assert.isTrue(
-    type(renderer.prepare) == "function",
-    "the renderer prepares its visuals outside drawing"
-  )
+  Assert.isTrue(type(renderer.prepare) == "function", "the renderer prepares its visuals outside drawing")
   local requested = {}
   local baselineRequest = pool.request
   function pool:request(path, sampler, priority)
@@ -716,10 +702,7 @@ function T.superseded_pending_turnover_keeps_the_current_view_ready()
   local pool, _, _ = storagePool()
   local pendingPaths = {}
   local renderer, graphics, manifest = rendererFixture(delayingPool(pool, pendingPaths))
-  Assert.isTrue(
-    type(renderer.prepare) == "function",
-    "the renderer prepares its visuals outside drawing"
-  )
+  Assert.isTrue(type(renderer.prepare) == "function", "the renderer prepares its visuals outside drawing")
   local current = browseView(0)
   admit(renderer, current)
   pendingPaths[manifest.storage.wallpapers[1].image] = true
@@ -743,10 +726,7 @@ end
 function T.failed_wallpaper_keeps_the_previous_group_drawable()
   local pool, inner, _ = storagePool()
   local renderer, graphics, manifest = rendererFixture(pool)
-  Assert.isTrue(
-    type(renderer.prepare) == "function",
-    "the renderer prepares its visuals outside drawing"
-  )
+  Assert.isTrue(type(renderer.prepare) == "function", "the renderer prepares its visuals outside drawing")
   local first = browseView(0)
   admit(renderer, first)
   local opened = inner.uploads
@@ -762,10 +742,7 @@ function T.failed_wallpaper_keeps_the_previous_group_drawable()
       "the failure names its missing visual"
     )
   else
-    Assert.isTrue(
-      tostring(ready):find(missing, 1, true) ~= nil,
-      "the failure names its missing visual"
-    )
+    Assert.isTrue(tostring(ready):find(missing, 1, true) ~= nil, "the failure names its missing visual")
   end
   inner:clearFailure()
   local drawsBefore = #graphics.draws
@@ -780,10 +757,7 @@ end
 function T.repeated_dispose_returns_leases_once_and_stays_quiet()
   local pool, inner, _ = storagePool()
   local renderer, _, _ = rendererFixture(pool)
-  Assert.isTrue(
-    type(renderer.prepare) == "function",
-    "the renderer prepares its visuals outside drawing"
-  )
+  Assert.isTrue(type(renderer.prepare) == "function", "the renderer prepares its visuals outside drawing")
   admit(renderer, browseView(0))
   Assert.isTrue(inner:stats().outstandingLeases > 0, "admission holds its leases")
   renderer:dispose()
@@ -832,10 +806,7 @@ function T.staged_wallpaper_replacement_keeps_the_previous_group_drawable_until_
   Assert.isNil(failure, "staging reports no failure")
   drawsBefore = #graphics.draws
   renderer:drawPane(current, {}, "lower", placement())
-  Assert.isTrue(
-    drawsImageSince(drawsBefore, oldImage),
-    "preparation alone leaves the previous group drawable"
-  )
+  Assert.isTrue(drawsImageSince(drawsBefore, oldImage), "preparation alone leaves the previous group drawable")
   Assert.equal(
     inner:stats().outstandingLeases,
     installedBefore + 1,

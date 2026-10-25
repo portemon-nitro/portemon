@@ -165,10 +165,7 @@ function T.party_buffer_commands_keep_a_variable_slot_as_a_variable_reference()
   local speciesName = lowerSingle(193, { 1, 0x800C })
   Assert.equal(speciesName.op, "buffer_text")
   Assert.equal(speciesName.slot, 1)
-  Assert.deepEqual(
-    speciesName.value,
-    { text = "party_species_name", position = { value = "var", id = 0x800C } }
-  )
+  Assert.deepEqual(speciesName.value, { text = "party_species_name", position = { value = "var", id = 0x800C } })
 
   local nickname = lowerSingle(199, { 1, 0x800C })
   Assert.equal(nickname.op, "buffer_text")

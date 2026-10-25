@@ -124,10 +124,7 @@ function T.unknown_sequence_symbol_fails_loudly()
   local record = fieldRecord({ day = "SEQ_MISSING" }, nil)
   local ok, err = pcall(LogicalFieldPlan.members, MAP_ID, record, {}, audioIndex())
   Assert.isFalse(ok, "an unknown adopted symbol never closes silently")
-  Assert.isTrue(
-    tostring(err):find("SEQ_MISSING", 1, true) ~= nil,
-    "the failure names its symbol: " .. tostring(err)
-  )
+  Assert.isTrue(tostring(err):find("SEQ_MISSING", 1, true) ~= nil, "the failure names its symbol: " .. tostring(err))
   local numeric = fieldRecord({ day = 999 }, nil)
   local numericOk, numericErr = pcall(LogicalFieldPlan.members, MAP_ID, numeric, {}, audioIndex())
   Assert.isFalse(numericOk, "an unknown adopted sequence id never closes silently")
@@ -135,7 +132,8 @@ function T.unknown_sequence_symbol_fails_loudly()
     tostring(numericErr):find("999", 1, true) ~= nil,
     "the failure names its sequence: " .. tostring(numericErr)
   )
-  local scriptOk, scriptErr = pcall(LogicalFieldPlan.members, MAP_ID, fieldRecord(nil, nil), { "SEQ_MISSING" }, audioIndex())
+  local scriptOk, scriptErr =
+    pcall(LogicalFieldPlan.members, MAP_ID, fieldRecord(nil, nil), { "SEQ_MISSING" }, audioIndex())
   Assert.isFalse(scriptOk, "an unknown script sequence never closes silently")
   Assert.isTrue(
     tostring(scriptErr):find("SEQ_MISSING", 1, true) ~= nil,
@@ -167,10 +165,7 @@ function T.unresolvable_bank_target_fails_loudly()
   index.sequences[2] = { id = 2 }
   local ok, err = pcall(LogicalFieldPlan.members, MAP_ID, fieldRecord({ day = 2 }, nil), {}, index)
   Assert.isFalse(ok, "a sequence without a bank never closes silently")
-  Assert.isTrue(
-    tostring(err):find("no bank", 1, true) ~= nil,
-    "the failure names its missing bank: " .. tostring(err)
-  )
+  Assert.isTrue(tostring(err):find("no bank", 1, true) ~= nil, "the failure names its missing bank: " .. tostring(err))
 end
 
 function T.closure_returns_fresh_lists_without_retained_state()

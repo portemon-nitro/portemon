@@ -232,7 +232,11 @@ function T.cause_source_and_targets_name_the_true_origin_for_every_variant()
     local targets = first.targets --[[@as table<string, unknown>?]]
     Assert.isTrue(type(targets) == "table", "feedback variants share the same explicit target shape")
   end
-  Assert.deepEqual(session:capture().combatants[1].hp ~= nil, before.combatants[1].hp ~= nil, "reading facts leaves health untouched")
+  Assert.deepEqual(
+    session:capture().combatants[1].hp ~= nil,
+    before.combatants[1].hp ~= nil,
+    "reading facts leaves health untouched"
+  )
   session:dispose()
 end
 
@@ -244,10 +248,8 @@ function T.multi_hit_and_multi_level_gains_keep_every_checkpoint_in_order()
   local Executor = executorOwner()
   local first = tackleCombatant(1, 11)
   first.mon.moves = { { move = "BULLET_SEED", pp = 30, ppUps = 0 } }
-  local session = Executor.new(
-    duelScenario(NATIVE_FORMAT, { first }, { tackleCombatant(2, 23) }),
-    nativeContent({ NATIVE_FORMAT })
-  )
+  local session =
+    Executor.new(duelScenario(NATIVE_FORMAT, { first }, { tackleCombatant(2, 23) }), nativeContent({ NATIVE_FORMAT }))
   local frame = SessionFixture.driveUntilSettled(session)
   Assert.equal(frame.status, "waiting", "the multi-hit duel opens on its decisions")
   local alphaRequest = requestFor(frame, "alpha")
@@ -553,7 +555,9 @@ function T.miss_immunity_charge_substitute_and_transform_select_distinct_request
     if event.kind == "missed" or event.kind == "protected" then
       Assert.isTrue(type(suppression) == "table", "suppressed actions name their semantic suppression")
     end
-    seenFlow[flow --[[@as string]]] = true
+    seenFlow[
+      flow --[[@as string]]
+    ] = true
   end
   Assert.isTrue(next(seenFlow) ~= nil, "the variant turn selects at least one visual flow")
   local optionsFn = session.decisionOptions

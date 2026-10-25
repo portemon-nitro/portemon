@@ -265,7 +265,6 @@ local function drawForInspection(envelope, doubles)
   doubles.windows.calls = {}
   local inspectionGraphics = recordingGraphics()
   Assert.isTrue(envelope:drawBattle({ graphics = inspectionGraphics }), "the explicit draw reaches its live screen")
-
 end
 
 ---@param signature string stable measurement identity under test driving
@@ -278,57 +277,6 @@ local function dualMeasurement(signature)
       { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
       { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
     ),
-    pixelRatio = 1,
-    signature = signature,
-  }
-end
-
----@param signature string stable measurement identity under test driving
----@return table caller-owned single wide surface display facts
-local function wideMeasurement(signature)
-  return {
-    width = 512,
-    height = 192,
-    topology = ScreenTopology.oneDisplay({
-      id = "main",
-      rect = { x = 0, y = 0, width = 512, height = 192 },
-      touch = true,
-      role = "world",
-    }),
-    pixelRatio = 1,
-    signature = signature,
-  }
-end
-
----@param signature string stable measurement identity under test driving
----@return table caller-owned single tall surface display facts
-local function tallMeasurement(signature)
-  return {
-    width = 256,
-    height = 384,
-    topology = ScreenTopology.oneDisplay({
-      id = "main",
-      rect = { x = 0, y = 0, width = 256, height = 384 },
-      touch = true,
-      role = "world",
-    }),
-    pixelRatio = 1,
-    signature = signature,
-  }
-end
-
----@param signature string stable measurement identity under test driving
----@return table caller-owned single compact surface display facts
-local function compactMeasurement(signature)
-  return {
-    width = 256,
-    height = 192,
-    topology = ScreenTopology.oneDisplay({
-      id = "main",
-      rect = { x = 0, y = 0, width = 256, height = 192 },
-      touch = true,
-      role = "world",
-    }),
     pixelRatio = 1,
     signature = signature,
   }
@@ -801,8 +749,8 @@ end
 -- Script requests keep their own launch and result ownership: two runs of
 -- one site issue distinct identities and ports, each disposed once and
 -- each result observed once. Continuing scripts resume only after the
--- field is visually restored, while scripted loss reaches its authored
--- continuation while absent, with no extra automatic recovery.
+-- field is visually restored; the separate scheduled-loss test covers
+-- authored loss continuation without automatic recovery.
 function T.tests.scripted_launches_keep_their_result_ownership()
   local Presentation = requirePresentationOwner("script requests keep their own launch and result ownership")
   assert(Presentation ~= nil, "the envelope owner loads")
@@ -851,19 +799,6 @@ function T.tests.scripted_launches_keep_their_result_ownership()
       local following = BattleTask.poll(second, taskContext())
       Assert.isTrue(following.complete, "the second launch reports its own result once")
       Assert.equal(starts, 2, "two scripted launches construct two lifetimes")
-      -- Release the second launch the same way before the loss admission.
-      pump(game, envelope, 30)
-      -- A scripted loss stays absent for its authored continuation: no
-      -- ordinary return and no automatic recovery runs behind the script.
-      runtime.monService:giveMon({ species = "CHIKORITA", level = 3 })
-      local loss = BattleTask.start({ kind = "wild", details = { species = "EEVEE", level = 30 } }, taskContext())
-      settleBattle(game, envelope, function(request)
-        return fightElseSwitch(runtime, request)
-      end, SETTLE_BUDGET)
-      local lost = BattleTask.poll(loss, taskContext())
-      Assert.isTrue(lost.complete, "the scripted loss completes its task")
-      Assert.equal(lost.result, BattleTask.SOURCE_NOT_WON, "loss reads back not-won")
-      Assert.equal(runtime.overworld:phase(), "absent", "scripted defeat holds cover while absent")
       Assert.equal(game:renderAttempts(), 0, "the script route stops before GPU rendering")
     end, debug.traceback)
     coordinator.startBattle = realStart
@@ -947,7 +882,10 @@ function T.tests.covered_entry_waits_for_readiness_and_holds_music()
       -- Construction follows the full-cover leave by one accepted tick, and that
       -- tick performs the reveal's single cover step first, so the battle starts
       -- one step into the reveal beside its intro instead of under full cover.
-      Assert.isTrue(type(cover) == "table" and cover.coefficient == 14, "the battle starts one reveal step after full cover")
+      Assert.isTrue(
+        type(cover) == "table" and cover.coefficient == 14,
+        "the battle starts one reveal step after full cover"
+      )
       -- The wild role starts once and survives presentation pumping and
       -- a layout change without restarting.
       local function wildPlays()
@@ -1004,12 +942,10 @@ function T.tests.covered_entry_waits_for_readiness_and_holds_music()
   harness = nil
 end
 
--- Outcomes publish once and defeat recovers safely: win, flight, and
--- capture report their exact committed words with single effects and a
--- continuing return, while an automatic loss or draw runs the existing
--- recovery exactly once with no double money, healing, or publication.
--- The save gate stays closed through every transient phase and opens at
--- the safe field, and no shutdown save publishes a half-battle.
+-- Outcomes publish once and defeat recovers safely: a trainer win commits
+-- its reward once, and an automatic loss runs the existing recovery once.
+-- Focused resolution and capture suites cover flight and capture outcomes;
+-- this composed route owns the save gate and field recovery contract.
 function T.tests.outcomes_publish_once_and_defeat_recovers_safely()
   local Presentation = requirePresentationOwner("outcomes publish once and defeat recovers safely")
   assert(Presentation ~= nil, "the envelope owner loads")
@@ -1023,11 +959,6 @@ function T.tests.outcomes_publish_once_and_defeat_recovers_safely()
       return select(2, runtime.saveCoordinator:capture(false))
     end
     local ok, failure = xpcall(function()
-      Assert.isTrue(runtime.bagService:add("POTION", 3), "the outcome route stocks its supported healing")
-      -- Deterministic capture rides the guaranteed ball the subflow
-      -- suite proves: ordinary balls stay probabilistic, so a fixed seed
-      -- could never promise the single spent ball this leg asserts.
-      Assert.isTrue(runtime.bagService:add("MASTER_BALL", 1), "the outcome route stocks its thrown ball")
       local lead = assert(runtime.monService:partyMon(0), "the live lead is readable")
       local openingExperience = assert(lead.experience, "live mons carry their experience")
       -- Win: exact words, single commit, prize, experience, and a
@@ -1050,37 +981,10 @@ function T.tests.outcomes_publish_once_and_defeat_recovers_safely()
       Assert.equal(runtime.playerData.profile.money, paid, "settling pays no second prize")
       local grown = assert(runtime.monService:partyMon(0), "the live lead is readable after commit")
       Assert.isTrue(grown.experience > openingExperience, "the win publishes experience once")
-      -- Flight: the exact flee word with both sides standing and a return.
-      runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 4 } })
-      settleBattle(game, envelope, function(request)
-        local actor = assert(request.actors[1], "every player decision addresses its combatant")
-        if admits(request, "run") then
-          return { actor = actor, kind = "run", payload = {} }
-        end
-        return fightElseSwitch(runtime, request)
-      end, SETTLE_BUDGET)
-      pump(game, envelope, 60)
-      Assert.equal(runtime:lastBattleResult().result, "flee", "flight reports its exact word")
-      -- Capture: the exact capture word, one ball spent, one mon gained.
-      local ballsBefore = runtime.bagService:quantity("MASTER_BALL")
-      local partyBefore = runtime.monService:partyCount()
-      runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 3 } })
-      settleBattle(game, envelope, function(request)
-        if admits(request, "item") then
-          local fragment = enabledItemFragment(runtime, request, "MASTER_BALL")
-          if fragment ~= nil then
-            return fragment
-          end
-        end
-        return fightElseSwitch(runtime, request)
-      end, SETTLE_BUDGET)
-      pump(game, envelope, 60)
-      Assert.equal(runtime:lastBattleResult().result, "capture", "capture reports its exact word")
-      Assert.equal(runtime.bagService:quantity("MASTER_BALL"), ballsBefore - 1, "the capture spends one ball")
-      Assert.equal(runtime.monService:partyCount(), partyBefore + 1, "the capture publishes one mon")
       -- Automatic loss: no launching script exists, so the existing
       -- recovery runs exactly once to its message, destination, and
       -- follow-up, then returns safely.
+      runtime.monService:healParty()
       local blackout = assert(runtime.blackoutFlow, "the runtime composes its recovery flow")
       local recoveries = 0
       local realRecovery = blackout.start
@@ -1130,21 +1034,21 @@ function T.tests.outcomes_publish_once_and_defeat_recovers_safely()
 end
 
 -- Host lifetime and deterministic clocks: identical decisions settle
--- identically under different update/draw schedules and across compact,
--- wide, tall, and dual surfaces. Held input never leaks across the
--- envelope, blur/resize/quit at any phase release exactly once, and a
--- second battle runs without rebuilding the field.
+-- identically under single-tick and batched schedules on one live field.
+-- Held input never leaks across the envelope, and a second battle runs
+-- without rebuilding the field. Screen layout variants are covered by
+-- the focused battle-interface tests.
 function T.tests.host_lifetime_survives_schedules_and_second_launches()
   local Presentation = requirePresentationOwner("host lifetime survives schedules and second launches")
   assert(Presentation ~= nil, "the envelope owner loads")
   local versionId = AcceptanceHarness.defaultVersion()
-  ---@param measurement table display facts fixing the run layout
+  local harness, game = bootFieldGame(versionId, "MAP_NEW_BARK_ELMS_LAB_1F")
+  local runtime = game.runtime
+  local envelope, binding, _ = bindEnvelope(game, versionId, dualMeasurement("presented-clocks:dual"))
   ---@param stepsPerPump integer fixed ticks batched per pump iteration
   ---@return table settled observable battle consequences
-  local function runSettledBattle(measurement, stepsPerPump)
-    local harness, game = bootFieldGame(versionId, "MAP_NEW_BARK_ELMS_LAB_1F")
-    local runtime = game.runtime
-    local envelope, binding, _ = bindEnvelope(game, versionId, measurement)
+  local function runSettledBattle(stepsPerPump)
+    runtime.monService:healParty()
     local before = {
       money = runtime.playerData.profile.money,
       experience = assert(runtime.monService:partyMon(0), "the live lead is readable").experience,
@@ -1196,59 +1100,38 @@ function T.tests.host_lifetime_survives_schedules_and_second_launches()
     Assert.isNil(runtime.battleCoordinator:activeBattle(), "the scheduled battle settles")
     pump(game, envelope, 60)
     local consequence = {
-      result = runtime:lastBattleResult(),
+      result = runtime:lastBattleResult().result,
+      sourceResult = runtime:lastBattleResult().sourceResult,
       money = runtime.playerData.profile.money - before.money,
       experience = runtime.monService:partyMon(0).experience - before.experience,
       turns = turns,
     }
     Assert.equal(game:renderAttempts(), 0, "the scheduled route stops before GPU rendering")
-    local unbound = pcall(function()
-      runtime:unbindBattlePresentation(binding)
-    end)
-    game:close()
-    harness = nil
-    Assert.isTrue(unbound, "each scheduled run releases its factory binding")
     return consequence
   end
-  local single = runSettledBattle(dualMeasurement("presented-clocks:dual-single"), 1)
-  local batched = runSettledBattle(dualMeasurement("presented-clocks:dual-batched"), 3)
-  Assert.deepEqual(batched.result, single.result, "batched fixed ticks settle the same words")
-  Assert.equal(batched.money, single.money, "batched fixed ticks pay the same prize")
-  Assert.equal(batched.experience, single.experience, "batched fixed ticks publish the same experience")
-  local compact = runSettledBattle(compactMeasurement("presented-clocks:compact"), 1)
-  Assert.deepEqual(compact.result, single.result, "the compact surface settles the same words")
-  local wide = runSettledBattle(wideMeasurement("presented-clocks:wide"), 1)
-  Assert.deepEqual(wide.result, single.result, "the wide surface settles the same words")
-  local tall = runSettledBattle(tallMeasurement("presented-clocks:tall"), 1)
-  Assert.deepEqual(tall.result, single.result, "the tall surface settles the same words")
-  -- Held input never leaks across the envelope: a direction held through
-  -- entry and return moves nobody until it is released and pressed again.
-  local harness, game = bootFieldGame(versionId, "MAP_NEW_BARK_ELMS_LAB_1F")
-  local runtime = game.runtime
-  local envelope, binding, _ = bindEnvelope(game, versionId, compactMeasurement("presented-held:compact"))
   local ok, failure = xpcall(function()
-    local before = playerCell(game)
+    -- A held direction stays inside the first battle envelope and does not
+    -- move the borrowed field when control returns.
+    local beforeHeldInput = playerCell(game)
     runtime.input:press("north")
-    runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 4 } })
-    settleBattle(game, envelope, function(request)
-      return fightElseSwitch(runtime, request)
-    end, SETTLE_BUDGET)
-    pump(game, envelope, 60)
-    Assert.deepEqual(playerCell(game), before, "held input through the envelope moves nobody")
+    local firstField = runtime.session
+    local single = runSettledBattle(1)
+    Assert.deepEqual(playerCell(game), beforeHeldInput, "held input through the envelope moves nobody")
     runtime.input:release("north")
     pump(game, envelope, 5)
-    Assert.deepEqual(playerCell(game), before, "release alone issues no fresh press")
-    -- A second battle runs on the same field without any rebuild.
-    local firstField = runtime.session
-    runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 4 } })
-    settleBattle(game, envelope, function(request)
-      return fightElseSwitch(runtime, request)
-    end, SETTLE_BUDGET)
-    pump(game, envelope, 60)
+    Assert.deepEqual(playerCell(game), beforeHeldInput, "release alone issues no fresh press")
+
+    -- A second launch on the same field samples the same battle facts while
+    -- batching fixed ticks, so update cadence cannot alter the result.
+    local batched = runSettledBattle(3)
     Assert.isTrue(runtime.session == firstField, "the second battle reuses the live field session")
-    Assert.equal(runtime:lastBattleResult().result, "win", "the second battle reports its own win")
+    Assert.deepEqual(batched.result, single.result, "batched fixed ticks settle the same words")
+    Assert.equal(batched.sourceResult, single.sourceResult, "batched fixed ticks preserve the source result")
+    Assert.equal(batched.money, single.money, "batched fixed ticks pay the same prize")
+    Assert.equal(batched.experience, single.experience, "batched fixed ticks publish the same experience")
     -- Quitting mid-battle releases the live battle and screen exactly
     -- once while borrowed field services survive.
+    runtime.monService:healParty()
     runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 4 } })
     -- Covered entry constructs only after full cover and semantic leave:
     -- wait for the live battle instead of assuming a fixed pump count.
@@ -1275,11 +1158,9 @@ end
 
 -- The opening slice through normal composition: a supported opening
 -- continuation with the starter walks to a real route encounter, shows
--- native and compact command/move views, heals through the live bag,
+-- native command/move views, heals through the live bag,
 -- finishes with experience, then runs the opening rival trainer battle
 -- through its script/result path into the next field continuation.
--- Forced replacement, party-full capture storage, and full-move-set
--- learning ride the same production host through deterministic fixtures.
 function T.tests.opening_walk_reaches_playable_battles()
   local Presentation = requirePresentationOwner("the opening walk reaches playable battles")
   assert(Presentation ~= nil, "the envelope owner loads")
@@ -1371,9 +1252,6 @@ function T.tests.opening_walk_reaches_playable_battles()
     drawForInspection(envelope, doubles)
     Assert.isTrue(#doubles.text.draws > 0, "the move list draws legible text")
     local drawnTexts = #doubles.text.draws
-    -- The compact dock recomposes the same battle: question, command grid,
-    -- and move views stay legible through the recording text boundary.
-    local compact = compactMeasurement("presented-opening:compact")
     -- Wound, heal through the live bag, and finish with experience.
     local healed, finished = false, false
     local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
@@ -1401,7 +1279,7 @@ function T.tests.opening_walk_reaches_playable_battles()
     Assert.equal(runtime:lastBattleResult().result, "win", "the route encounter reports its win")
     local grown = assert(runtime.monService:partyMon(0), "the live lead is readable after the win")
     Assert.isTrue(grown.experience > experienceBefore, "the route win publishes experience")
-    Assert.isTrue(drawnTexts > 0, "command, move, and dock views draw legible text")
+    Assert.isTrue(drawnTexts > 0, "command and move views draw legible text")
     -- The opening rival trainer battle runs through its script/result
     -- path into the next field continuation.
     local key = weakestRivalKey(versionId)
@@ -1420,30 +1298,6 @@ function T.tests.opening_walk_reaches_playable_battles()
     Assert.isTrue(decided.complete, "the rival battle completes its script task")
     Assert.equal(decided.result, BattleTask.SOURCE_WON, "the rival win reads back won")
     Assert.equal(runtime.overworld:phase(), "present", "the rival win returns to the live field")
-    -- Forced replacement, party-full capture storage, and full-move-set
-    -- learning ride the same production host through deterministic
-    -- fixtures instead of pretending the opening reaches each state.
-    local replaced = false
-    runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 30 } })
-    settleBattle(game, envelope, function(request)
-      if request.kind == "learn_move" then
-        local actor = assert(request.actors[1], "learning prompts address their recipient")
-        return { actor = actor, kind = "confirm", payload = { decision = "decline" } }
-      end
-      local actor = assert(request.actors[1], "every player decision addresses its combatant")
-      if not admits(request, "attack") then
-        local fragment = enabledSwitchFragment(runtime, request)
-        if fragment ~= nil then
-          replaced = true
-          return fragment
-        end
-        replaced = true
-        return SessionFixture.switchChoice(actor, 2)
-      end
-      return strike(actor)
-    end, SETTLE_BUDGET)
-    Assert.isTrue(replaced, "fainting forces a replacement through the same host")
-    Assert.isTrue(compact.width == 256, "the compact dock keeps its logical canvas")
     Assert.equal(game:renderAttempts(), 0, "the opening slice stops before GPU rendering")
   end, debug.traceback)
   local unbound = pcall(function()
@@ -1666,20 +1520,26 @@ function T.tests.pending_facade_forwards_completion_through_the_live_screen()
   local catalog = CatalogFixture.makeCatalog()
   local factory = CatalogFixture.makeFactory(0xFA0E0001, catalog)
   local subject = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 4 }))
-  Assert.isTrue(port.openCompletion({
-    launchId = launchId,
-    completionId = "facade-1",
-    kind = "capture_nickname",
-    subject = subject,
-  }), "the facade forwards the decision to the live screen")
+  Assert.isTrue(
+    port.openCompletion({
+      launchId = launchId,
+      completionId = "facade-1",
+      kind = "capture_nickname",
+      subject = subject,
+    }),
+    "the facade forwards the decision to the live screen"
+  )
   Assert.isNil(port.takeCompletion(), "the facade forwards the unanswered decision as nothing")
   port.dispose()
-  Assert.isFalse(port.openCompletion({
-    launchId = launchId,
-    completionId = "facade-2",
-    kind = "capture_nickname",
-    subject = subject,
-  }), "the disposed facade refuses late decisions")
+  Assert.isFalse(
+    port.openCompletion({
+      launchId = launchId,
+      completionId = "facade-2",
+      kind = "capture_nickname",
+      subject = subject,
+    }),
+    "the disposed facade refuses late decisions"
+  )
   Assert.isNil(port.takeCompletion(), "the disposed facade seals nothing late")
   envelope:dispose()
   -- The deferred facade refuses the same operations safely while its
@@ -1721,20 +1581,26 @@ function T.tests.pending_facade_forwards_completion_through_the_live_screen()
   Assert.notNil(deferred, "the deferred admission owns its facade")
   assert(deferred ~= nil, "the deferred facade builds")
   Assert.isNil(deferredEnvelope:liveScreen(), "the deferred launch holds no screen while its scene builds")
-  Assert.isFalse(deferred.openCompletion({
-    launchId = deferredId,
-    completionId = "deferred-1",
-    kind = "capture_nickname",
-    subject = subject,
-  }), "the pending facade refuses decisions without a screen")
+  Assert.isFalse(
+    deferred.openCompletion({
+      launchId = deferredId,
+      completionId = "deferred-1",
+      kind = "capture_nickname",
+      subject = subject,
+    }),
+    "the pending facade refuses decisions without a screen"
+  )
   Assert.isNil(deferred.takeCompletion(), "the pending facade seals nothing without a screen")
   deferred.dispose()
-  Assert.isFalse(deferred.openCompletion({
-    launchId = deferredId,
-    completionId = "deferred-2",
-    kind = "capture_nickname",
-    subject = subject,
-  }), "the disposed deferred facade refuses late decisions")
+  Assert.isFalse(
+    deferred.openCompletion({
+      launchId = deferredId,
+      completionId = "deferred-2",
+      kind = "capture_nickname",
+      subject = subject,
+    }),
+    "the disposed deferred facade refuses late decisions"
+  )
   Assert.isNil(deferred.takeCompletion(), "the disposed deferred facade seals nothing late")
   Assert.equal(#deferredNotifies, 0, "safe refusals report no failure")
   deferredEnvelope:dispose()

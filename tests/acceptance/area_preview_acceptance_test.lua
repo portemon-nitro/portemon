@@ -169,15 +169,10 @@ function T.tests.an_outdoor_warp_holds_the_time_aware_preview_and_a_cave_warp_do
     local transition = assert(runtime.transition, "live transition required")
     local manifest = assert(runtime.fieldEntryManifest, "the field-entry manifest is required")
     local destinationId = assert(runtime.mapLoader:load(DARK_CAVE), DARK_CAVE .. " must load").mapId
-    local destinationSlots = assert(
-      manifest.previewByMapId[destinationId],
-      DARK_CAVE .. " must be a pinned preview destination"
-    )
+    local destinationSlots =
+      assert(manifest.previewByMapId[destinationId], DARK_CAVE .. " must be a pinned preview destination")
 
-    Assert.isNil(
-      transition:presentationStatus().preview,
-      "a freshly booted field owns no preview before any warp"
-    )
+    Assert.isNil(transition:presentationStatus().preview, "a freshly booted field owns no preview before any warp")
 
     local mouth = findWarpTile(game, ROUTE_46, DARK_CAVE)
     stepOnto(game, mouth)
@@ -299,10 +294,7 @@ function T.tests.a_held_preview_reveals_only_a_presentable_destination_with_the_
         end
         local follower = runtime.actors:partnerId()
         if follower ~= nil then
-          Assert.isFalse(
-            runtime.actors:isVisible(follower),
-            "the held preview never publishes a visible follower"
-          )
+          Assert.isFalse(runtime.actors:isVisible(follower), "the held preview never publishes a visible follower")
         end
         previousStage, previousTicks = controller.stage, controller.ticks
       end
@@ -329,10 +321,7 @@ function T.tests.a_held_preview_reveals_only_a_presentable_destination_with_the_
       sameTile(arrived.actors[before], playerTile(arrived)),
       "the rejoined follower stands on the committed player tile"
     )
-    Assert.isFalse(
-      runtime.actors:isVisible(before),
-      "the rejoined follower stays hidden until its first trail step"
-    )
+    Assert.isFalse(runtime.actors:isVisible(before), "the rejoined follower stays hidden until its first trail step")
   end)
 end
 

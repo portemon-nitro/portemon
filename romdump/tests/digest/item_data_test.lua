@@ -227,7 +227,22 @@ end
 -- inert member with its source-required pocket so the build stays valid.
 local function catalogBytes(word, partyUse, flags, params, price)
   price = price or 100
-  local bytes = { price % 256, math.floor(price / 256), 0, 0, 0, 0, 0, 0, word % 256, math.floor(word / 256) % 256, 0, 0, partyUse and 1 or 0, 0 }
+  local bytes = {
+    price % 256,
+    math.floor(price / 256),
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    word % 256,
+    math.floor(word / 256) % 256,
+    0,
+    0,
+    partyUse and 1 or 0,
+    0,
+  }
   for index = 1, 7 do
     bytes[#bytes + 1] = (flags and flags[index]) or 0
   end
@@ -351,7 +366,11 @@ function T.item_price_is_required_source_metadata_from_decode_through_catalog()
   local items = ItemCatalog.new(root)
   Assert.equal(items:item("POTION").price, 0)
   Assert.equal(items:item("ANTIDOTE").price, 301)
-  Assert.equal(math.floor(items:item("ANTIDOTE").price / 2), 150, "a consumer can derive the sale value from catalog metadata")
+  Assert.equal(
+    math.floor(items:item("ANTIDOTE").price / 2),
+    150,
+    "a consumer can derive the sale value from catalog metadata"
+  )
   Assert.equal(items:item("POTION").pocket, "medicine")
   Assert.equal(items:item("POTION").partyUse.kind, "medicine")
   Assert.equal(items:item("POTION").partyUse.restore.amount, 20)
@@ -417,8 +436,7 @@ function T.battle_only_items_carry_their_decoded_battle_use()
   })
   -- Dire-hit shape: only the critical-rate bits set.
   local direHit = catalogBytes(0, true, { 0, 0, 0, 0, 0x10, 0, 0 }, nil)
-  local catalogHit =
-    assert(compiler().compileCatalog(stubCatalogRom({ [56] = direHit }), { versionId = "heartgold" }))
+  local catalogHit = assert(compiler().compileCatalog(stubCatalogRom({ [56] = direHit }), { versionId = "heartgold" }))
   local hit = assert(catalogHit.items.DIRE_HIT, "DIRE_HIT must compile")
   Assert.equal(hit.partyUse.kind, "deferred")
   local hitUse = assert(hit.battleUse, "dire hit carries its battle use")

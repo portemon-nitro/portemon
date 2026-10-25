@@ -244,11 +244,7 @@ function T.field_release_invalidates_leases_and_keeps_borrowed_owners_alive()
     local invalidated = pcall(lease.prepare, lease, demandFor(service, context, manifest, "demand-release", 1))
     Assert.isFalse(invalidated, versionId .. " invalidates remaining leases on field release")
     local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
-    Assert.equal(
-      poolInner:stats().outstandingLeases,
-      0,
-      versionId .. " returns every borrow on field release"
-    )
+    Assert.equal(poolInner:stats().outstandingLeases, 0, versionId .. " returns every borrow on field release")
     local trimmed = poolInner:prune()
     Assert.isTrue(trimmed > 0, versionId .. " trims the returned physical images")
     Assert.equal(
@@ -551,11 +547,7 @@ function T.dynamic_frame_visuals_prepare_through_the_existing_owner()
     local assets = assert(outcome.assets, versionId .. " carries its bundle on readiness")
     for _, image in ipairs(frameImages) do
       Assert.notNil(assets.imageForPath(image), versionId .. " resolves frame " .. image)
-      Assert.equal(
-        counts[image],
-        1,
-        versionId .. " pins frame " .. image .. " once on first demand, not per open"
-      )
+      Assert.equal(counts[image], 1, versionId .. " pins frame " .. image .. " once on first demand, not per open")
     end
     local repinned = assert(lease:prepare(syntheticDemand("dynamic-chrome", 1)))
     Assert.equal(repinned.kind, "ready", versionId .. " keeps the pinned chrome drawable")
@@ -888,25 +880,14 @@ function T.last_lease_release_returns_pages_while_family_visuals_stay_pinned()
   local page = ready.assets.portraits:image(selector)
   local firstQuad = ready.assets.portraits:quadFor(selector, 1)
   local chromeSample = ready.assets.visualImage("detailBacking")
-  Assert.equal(
-    poolInner.uploads,
-    chromeCount + 1,
-    "the first demand pins chrome plus exactly the portrait page"
-  )
+  Assert.equal(poolInner.uploads, chromeCount + 1, "the first demand pins chrome plus exactly the portrait page")
   local shared = prepareToTerminal(second, demand)
   Assert.equal(shared.kind, "ready", "the second lease shares the demand")
-  Assert.equal(
-    poolInner.uploads,
-    chromeCount + 1,
-    "the shared demand borrows no duplicate physical image"
-  )
+  Assert.equal(poolInner.uploads, chromeCount + 1, "the shared demand borrows no duplicate physical image")
   first:release()
   local surviving = prepareToTerminal(second, demand)
   Assert.equal(surviving.kind, "ready", "the surviving lease stays usable after the old release")
-  Assert.isTrue(
-    surviving.assets.portraits:image(selector) == page,
-    "the surviving lease keeps its portrait page"
-  )
+  Assert.isTrue(surviving.assets.portraits:image(selector) == page, "the surviving lease keeps its portrait page")
   Assert.equal(page.releaseCount, 0, "the watched page stays borrowed while a live lease watches it")
   second:release()
   Assert.equal(
@@ -928,10 +909,7 @@ function T.last_lease_release_returns_pages_while_family_visuals_stay_pinned()
   Assert.equal(rebuilt.kind, "ready", "a later lease reacquires after the last release")
   Assert.equal(rebuilt.assets.shader, shader, "reacquisition reuses the resident picture shader")
   Assert.equal(poolInner.uploads, chromeCount + 2, "reacquisition borrows a fresh portrait page only")
-  Assert.isTrue(
-    rebuilt.assets.portraits:image(selector) ~= page,
-    "reacquisition never revives the trimmed handle"
-  )
+  Assert.isTrue(rebuilt.assets.portraits:image(selector) ~= page, "reacquisition never revives the trimmed handle")
   Assert.equal(page.releaseCount, 1, "reacquisition never touches trimmed handles")
   local rebuiltQuad = rebuilt.assets.portraits:quadFor(selector, 1)
   Assert.isTrue(rebuiltQuad ~= firstQuad, "the trimmed page rebuilds its quads instead of aliasing freed art")
@@ -1171,13 +1149,8 @@ function T.concurrent_picture_epochs_share_one_portrait_image_and_enroll_before_
   local settledPages = requestedIds(helper.calls.portraitPages)
   Assert.equal(settledPages[3], 1, "the shared page compiles once across overlapping leases")
   Assert.equal(settledPages[12], 1, "the second-only page compiles once")
-  Assert.equal(
-    poolInner.uploads - uploadsAfterA,
-    1,
-    "the overlapping picture borrows only its new second-only page"
-  )
-  local chromeCount = #SummaryCache.referencedPaths(family)
-    + #MoveIconCache.referencedPaths(MoveIconFixture.manifest())
+  Assert.equal(poolInner.uploads - uploadsAfterA, 1, "the overlapping picture borrows only its new second-only page")
+  local chromeCount = #SummaryCache.referencedPaths(family) + #MoveIconCache.referencedPaths(MoveIconFixture.manifest())
   Assert.equal(
     uploadsAfterA,
     chromeCount + 2,

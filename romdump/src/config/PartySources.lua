@@ -263,7 +263,7 @@ PartySources.textRoles = {
 -- Lower-message palette selection: party message windows print through
 -- font 1 over fill color 15, so their ink comes from the loaded font
 -- palette member 8 (LoadFontPal1 loads NARC_graphic_font
--- member 8; PartyMenu_PrintMessageOnWindowEx 
+-- member 8; PartyMenu_PrintMessageOnWindowEx
 -- fills with color index 15). Entries name { foreground, shadow,
 -- background } slots in that font palette member.
 PartySources.messageRole = { paletteMember = 8, foreground = 1, shadow = 2, background = 15 }

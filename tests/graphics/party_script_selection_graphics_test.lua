@@ -121,8 +121,7 @@ function T.open_selection_paints_native_chrome(scope)
     local status = assert(host:status(), "an open selection carries its status")
     Assert.notNil(status.presentation, "the open selection carries a visible plan")
     local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
-    local realProvider =
-      scope:own(preparedIcons(scope))
+    local realProvider = scope:own(preparedIcons(scope))
     local fixtureImage = realProvider:image("MON0/f0")
     -- The prepared page behind the scripted icon key: the stub stays
     -- key-agnostic like the image/quad/dimensions projections below, so

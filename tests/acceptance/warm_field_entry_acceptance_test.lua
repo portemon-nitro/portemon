@@ -694,10 +694,7 @@ function T.tests.later_new_game_enrolls_opening_closure_during_oak_before_handof
     )
     for _, call in ipairs(context.trace.calls) do
       if call.op == "requestMilestone" then
-        Assert.isTrue(
-          call.arguments[1] ~= "complete",
-          "the measured pass must never request whole-corpus work"
-        )
+        Assert.isTrue(call.arguments[1] ~= "complete", "the measured pass must never request whole-corpus work")
       end
     end
     local distinctMaps = distinctRequiredMapIds(context.trace.calls)
@@ -765,10 +762,7 @@ function T.tests.pending_planning_during_oak_still_transfers_through_required_pr
     )
     for _, call in ipairs(context.trace.calls) do
       if call.op == "requestMilestone" then
-        Assert.isTrue(
-          call.arguments[1] ~= "complete",
-          "the delayed pass must never request whole-corpus work"
-        )
+        Assert.isTrue(call.arguments[1] ~= "complete", "the delayed pass must never request whole-corpus work")
       end
     end
   end, debug.traceback)

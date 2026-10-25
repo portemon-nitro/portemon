@@ -47,11 +47,7 @@ function FieldMapDataFixture.build(opts)
   -- names its own area member; the shared 1x1 fixture serves the same bytes
   -- for any requested id so any map compiles, exactly like the zone-event
   -- and matrix members above.
-  local defaultArea = NB.u16(0)
-    .. NB.u16(0)
-    .. NB.u16(0xFFFF)
-    .. NB.u8(1)
-    .. NB.u8(0)
+  local defaultArea = NB.u16(0) .. NB.u16(0) .. NB.u16(0xFFFF) .. NB.u8(1) .. NB.u8(0)
   local areaBytes = opts.areaDataMember or defaultArea
   -- One valid field-light record block (CRLF): threshold, 4 light slots,
   -- 4 colours, then EOF. Served for any field-light source path the area

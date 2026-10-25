@@ -1210,10 +1210,7 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
   for index = 1, 2048 do
     sceneEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
   end
-  cache:writeLua(
-    BattlePresentationCache.sceneMapPath(sceneKey),
-    { width = 64, height = 32, entries = sceneEntries }
-  )
+  cache:writeLua(BattlePresentationCache.sceneMapPath(sceneKey), { width = 64, height = 32, entries = sceneEntries })
   local sceneColors = {}
   for index = 1, 256 do
     sceneColors[index] = { r = 0, g = 0, b = 0 }

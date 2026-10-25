@@ -89,7 +89,10 @@ local function findPasswordHour(first)
   local program = first.program
   local civil = first.civil
   for hour = 0, 23 do
-    Fixture.setCivil(civil.cell, { year = MONDAY.year, month = MONDAY.month, day = MONDAY.day, hour = hour, minute = 0, second = 0 })
+    Fixture.setCivil(
+      civil.cell,
+      { year = MONDAY.year, month = MONDAY.month, day = MONDAY.day, hour = hour, minute = 0, second = 0 }
+    )
     program:begin(3, "clear")
     for _ = 1, 800 do
       program:updateFixed()
@@ -116,7 +119,10 @@ local function listenUntilHeard(setupRecord, hour)
   local events = setupRecord.events
   local civil = setupRecord.civil
   local now = civil.cell.now
-  Fixture.setCivil(civil.cell, { year = now.year, month = now.month, day = now.day, hour = hour, minute = 0, second = 0 })
+  Fixture.setCivil(
+    civil.cell,
+    { year = now.year, month = now.month, day = now.day, hour = hour, minute = 0, second = 0 }
+  )
   program:begin(3, "clear")
   for _ = 1, 1200 do
     program:updateFixed()
@@ -257,11 +263,7 @@ function T.tests.daily_broadcast_and_field_answers_share_one_identity_across_sav
   Assert.equal(crossed.dayAdvance, 1, "crossing midnight advances exactly one daily identity")
   local stepped = state2:readDailyIdentity()
   Assert.isTrue(stepped.dailyGroupSeed ~= groupBefore, "the day boundary steps the shared group seed")
-  Assert.equal(
-    stepped.outbreakSeed,
-    stepped.dailyGroupSeed,
-    "the outbreak follows the stepped group seed"
-  )
+  Assert.equal(stepped.outbreakSeed, stepped.dailyGroupSeed, "the outbreak follows the stepped group seed")
   events2:setVar(FieldScriptSymbols.variablesByName.VAR_BUENAS_PASSWORD_SET, 48)
   Fixture.setCivil(second.civil.cell, { year = 2024, month = 1, day = 9, hour = 10, minute = 0, second = 0 })
   local password3 = listenUntilHeard(second, hour)

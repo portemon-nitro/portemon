@@ -257,10 +257,7 @@ function T.load_manifest_returns_the_validated_borrowed_manifest()
   local manifest = FieldEntryAssetCache.loadManifest(cache)
   Assert.equal(manifest.schema, FieldEntryAssetCache.SCHEMA)
   Assert.equal(#FieldEntryFixture.uniqueBases(), 76)
-  Assert.isTrue(
-    FieldEntryAssetCache.validateManifest(manifest),
-    "loadManifest returns a manifest that still validates"
-  )
+  Assert.isTrue(FieldEntryAssetCache.validateManifest(manifest), "loadManifest returns a manifest that still validates")
 end
 
 function T.load_manifest_raises_for_an_absent_or_invalid_manifest()

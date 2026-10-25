@@ -14,10 +14,8 @@ local T = {}
 local assertSelection
 
 function T.real_map_compilation_marks_pc_terminal_placements_by_semantic_role(romFs, _)
-  local bundle = assert(
-    MapAssetCompiler.compile(romFs, "MAP_CHERRYGROVE_POKECENTER_1F"),
-    "the source Pokecenter map compiles"
-  )
+  local bundle =
+    assert(MapAssetCompiler.compile(romFs, "MAP_CHERRYGROVE_POKECENTER_1F"), "the source Pokecenter map compiles")
   local matched = 0
   for _, placement in ipairs(bundle.scene.buildingInstances) do
     local descriptor = assert(bundle.models[placement.modelKey], "the placement model was compiled")
@@ -45,16 +43,12 @@ function T.real_source_compiles_all_wallpaper_and_stationery_variants(romFs, _)
   Assert.isTrue(loaded, "the PC presentation compiler is missing")
   local bundle = assert(PcAssetCompiler.compile(romFs), "the PC presentation bundle compiles")
   local manifest = assert(bundle.manifest, "the compiled family publishes its manifest")
-  Assert.deepEqual(
-    manifest.terminal,
-    {
-      slots = {
-        [0] = { role = "terminal.on", playMode = "forward" },
-        [1] = { role = "terminal.off", playMode = "forward" },
-      },
+  Assert.deepEqual(manifest.terminal, {
+    slots = {
+      [0] = { role = "terminal.on", playMode = "forward" },
+      [1] = { role = "terminal.off", playMode = "forward" },
     },
-    "terminal metadata retains the runtime slot policy"
-  )
+  }, "terminal metadata retains the runtime slot policy")
   local withoutTerminal = {}
   for key, value in pairs(manifest) do
     if key ~= "terminal" then
@@ -75,9 +69,8 @@ function T.real_source_compiles_all_wallpaper_and_stationery_variants(romFs, _)
   end
   Assert.equal(compiledMessageCount, #sourceBank279.messages, "every source message in bank 279 is compiled")
   for index, message in ipairs(sourceBank279.messages) do
-    local expectedTokens = assert(
-      FieldMessageTokenizer.tokenize(message.raw, charmap, { bankId = 279, messageId = index - 1 })
-    )
+    local expectedTokens =
+      assert(FieldMessageTokenizer.tokenize(message.raw, charmap, { bankId = 279, messageId = index - 1 }))
     Assert.deepEqual(bank279[index - 1], expectedTokens, "bank 279 source tokens are retained at index " .. (index - 1))
   end
   local withoutLandmarkText = {}

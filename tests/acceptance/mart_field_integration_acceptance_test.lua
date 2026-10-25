@@ -188,7 +188,13 @@ function T.tests.field_script_blocks_on_custom_mart_until_purchase_and_close()
     game:advanceUntil("the confirmation choice settles", function()
       return childStatus(game).state == "success_print"
     end, 120)
-    acknowledgeMartPrinter(game, "the purchase result finishes printing and commits", "success_print", "success_ack", 480)
+    acknowledgeMartPrinter(
+      game,
+      "the purchase result finishes printing and commits",
+      "success_print",
+      "success_ack",
+      480
+    )
     Assert.equal(game.runtime.playerData.profile.money, 2975, "the custom transaction charges its declared price")
     Assert.equal(game.runtime.bagService:quantity("POTION"), 1, "the confirmed transaction grants one Potion")
 

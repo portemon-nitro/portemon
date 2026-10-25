@@ -289,7 +289,10 @@ function T.tests.strict_placement_gates_keep_their_reasons_with_exact_occupancy(
     { facts = ground({ trigger = "warp" }), reason = "warp" },
     { facts = ground({ trigger = "coordinate_trigger" }), reason = "coordinate_trigger" },
     { facts = ground({ collision = { blocked = true, behavior = 0 } }), reason = "blocked" },
-    { facts = ground({ collision = { blocked = false, behavior = MetatileBehavior.BEHAVIOR.WATERFALL } }), reason = "special_terrain" },
+    {
+      facts = ground({ collision = { blocked = false, behavior = MetatileBehavior.BEHAVIOR.WATERFALL } }),
+      reason = "special_terrain",
+    },
     { facts = ground({ surface = { rejection = "ambiguous_surface" } }), reason = "ambiguous_surface" },
   }) do
     local result = LocationPolicy.classify(case.facts)

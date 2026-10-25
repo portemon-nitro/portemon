@@ -358,11 +358,7 @@ function T.bag_refused_rows_explain_themselves_without_sealing()
   local refusedRows = refusedView.rows --[[@as table<integer, table<string, unknown>>]]
   Assert.equal(refusedRows[1].id, "bag:0", "the refused cell still lists first")
   Assert.isFalse(refusedRows[1].enabled == true, "the refused cell stays disabled")
-  Assert.equal(
-    refusedRows[1].reason,
-    "the attendant blocks its use",
-    "the refused row names its kernel reason"
-  )
+  Assert.equal(refusedRows[1].reason, "the attendant blocks its use", "the refused row names its kernel reason")
   flows:dispose()
 end
 
@@ -862,11 +858,7 @@ function T.refused_throws_and_empty_bags_close_without_hidden_screens()
   Assert.equal(thrownView.focusId, "bag:0", "the refused cell keeps its focus")
   local thrownRows = thrownView.rows --[[@as table<integer, table<string, unknown>>]]
   Assert.isFalse(thrownRows[1].enabled == true, "the refused cell stays disabled")
-  Assert.equal(
-    thrownRows[1].reason,
-    "the attendant blocks its use",
-    "the refused row names its kernel reason"
-  )
+  Assert.equal(thrownRows[1].reason, "the attendant blocks its use", "the refused row names its kernel reason")
   flows:closeChild()
   flows:dispose()
   local empty = coordinator(catalog)

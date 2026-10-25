@@ -112,10 +112,7 @@ function Suite.normalize(mod, moduleName, defaultLayer)
     end
   end
   if wantsComplete then
-    assert(
-      fullCorpus,
-      moduleName .. ": a 'complete' requirement needs the explicit corpus tier (fullCorpus = true)"
-    )
+    assert(fullCorpus, moduleName .. ": a 'complete' requirement needs the explicit corpus tier (fullCorpus = true)")
   end
 
   if #derivedAssets > 0 then

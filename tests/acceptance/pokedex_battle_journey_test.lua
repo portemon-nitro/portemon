@@ -356,10 +356,14 @@ local function captureWild(game)
       return { actor = actor, kind = "confirm", payload = { decision = "decline" } }
     end
     local actor = assert(request.actors[1], "every player decision addresses its combatant")
-    return { actor = actor, kind = "item", payload = {
-      item = "MASTER_BALL",
-      target = { kind = "combatant", combatant = foeOf() },
-    } }
+    return {
+      actor = actor,
+      kind = "item",
+      payload = {
+        item = "MASTER_BALL",
+        target = { kind = "combatant", combatant = foeOf() },
+      },
+    }
   end)
   Assert.equal(battle:status().phase, "complete", "the capture battle owner settles")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
@@ -434,14 +438,8 @@ local function runCaptureJourney(versionId)
     )
     Assert.isTrue(dex:isCaught(species), "the committed capture registers caught knowledge")
     Assert.isTrue(dex:isSeen(species), "a caught mon counts as seen")
-    Assert.isTrue(
-      #dex:observedGenders(species) >= 1,
-      "the committed capture records its actual observed gender"
-    )
-    local lastResult = assert(
-      game.runtime:lastBattleResult(),
-      "the settled capture records its outcome words"
-    )
+    Assert.isTrue(#dex:observedGenders(species) >= 1, "the committed capture records its actual observed gender")
+    local lastResult = assert(game.runtime:lastBattleResult(), "the settled capture records its outcome words")
     Assert.equal(lastResult.result, "capture", "the committed capture reports its outcome word")
 
     -- The field resumes around the retained menu, and the browser shows
@@ -466,11 +464,7 @@ local function runCaptureJourney(versionId)
     game:waitForFieldEntry()
     local reloaded = assert(game.runtime.dexKnowledge, "continue restores the live dex knowledge")
     Assert.isTrue(reloaded:isCaught(species), "continue retains the captured species")
-    Assert.deepEqual(
-      reloaded:observedGenders(species),
-      gendersBefore,
-      "continue retains the observed gender history"
-    )
+    Assert.deepEqual(reloaded:observedGenders(species), gendersBefore, "continue retains the observed gender history")
     Assert.equal(
       reloaded:countCaught("johto") + reloaded:countCaught("national"),
       countBefore,
@@ -568,17 +562,18 @@ function T.repeat_capture_skips_the_card_but_extends_observed_history(context)
           return { actor = actor, kind = "confirm", payload = { decision = "decline" } }
         end
         local actor = assert(request.actors[1], "every player decision addresses its combatant")
-        return { actor = actor, kind = "item", payload = {
-          item = "MASTER_BALL",
-          target = { kind = "combatant", combatant = foeOf() },
-        } }
+        return {
+          actor = actor,
+          kind = "item",
+          payload = {
+            item = "MASTER_BALL",
+            target = { kind = "combatant", combatant = foeOf() },
+          },
+        }
       end)
       Assert.equal(#registrationTerminals(record.packets), 0, "a repeat catch presents no second card")
       Assert.isTrue(dex:isCaught(species), "the repeat catch keeps the species caught")
-      Assert.isNil(
-        dex:firstPersonality(species),
-        "the repeat catch never reorders first history"
-      )
+      Assert.isNil(dex:firstPersonality(species), "the repeat catch never reorders first history")
       local genders = dex:observedGenders(species)
       Assert.isTrue(#genders >= 1, "observed gender history survives the repeat catch")
     end)

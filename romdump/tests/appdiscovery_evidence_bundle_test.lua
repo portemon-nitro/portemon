@@ -676,7 +676,10 @@ end
 function T.main_bundle_rejects_a_template_address_that_disagrees_with_its_candidate()
   local collected = buildMainCollected()
   collected.application.target.templateAddress = MAIN_RAM + 4
-  assertBundleTargetInconsistent(collected, "a main target naming a different template than its candidate must be rejected")
+  assertBundleTargetInconsistent(
+    collected,
+    "a main target naming a different template than its candidate must be rejected"
+  )
 end
 
 -- Target and candidate agree here, so only the 4-byte alignment bound

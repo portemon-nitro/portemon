@@ -438,8 +438,15 @@ function T.generic_and_native_doubles_open_the_identical_batch_protocol()
   assert(rolls ~= nil, "the order samples are observed before assertions")
   Assert.equal(#rolls, 4, "the native batch stores one sample per battler slot")
   local stream = Lcrng.new(SHARED_NATIVE_SEED)
+  for _ = 1, nativeCallsBefore do
+    stream:nextU16()
+  end
   for position = 1, 4 do
-    Assert.equal(rolls[position], stream:nextU16(), "the native samples replay the stream head in canonical slot order")
+    Assert.equal(
+      rolls[position],
+      stream:nextU16(),
+      "the native samples replay from the batch-opening stream position in canonical slot order"
+    )
   end
   Assert.deepEqual(
     nativeSettled.pending.reserved,

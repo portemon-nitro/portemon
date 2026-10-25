@@ -312,8 +312,7 @@ local function sessionSpeciesFacts(bundle, seeds)
     if facts[species] == nil or facts[species][form] == nil then
       local speciesLookup = monCatalog.species --[[@as fun(self: table<string, unknown>, key: string)]]
       local formLookup = monCatalog.form --[[@as fun(self: table<string, unknown>, key: string, form: integer)]]
-      local curveLookup =
-        monCatalog.growthCurve --[[@as fun(self: table<string, unknown>, key: string)]]
+      local curveLookup = monCatalog.growthCurve --[[@as fun(self: table<string, unknown>, key: string)]]
       local okSpecies, speciesRecord = pcall(speciesLookup, monCatalog, species)
       if not okSpecies or type(speciesRecord) ~= "table" then
         error("species " .. tostring(species) .. " resolves no catalog facts", 0)
@@ -770,7 +769,7 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
           "trainer " .. trainerIndex .. " answers under its own controller"
         )
         Assert.equal(
-          #(answered.choices --[[@as table<integer, unknown>]]),
+          #answered.choices --[[@as table<integer, unknown>]],
           #wanted.actors,
           "trainer " .. trainerIndex .. " answers every addressed actor"
         )
@@ -809,11 +808,7 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
         )
       end
       local rerunSignature, rerunDelta = probeDecision(bundle, versionId, trainerIndex, passes, doubles)
-      Assert.deepEqual(
-        rerunSignature,
-        signature,
-        "trainer " .. trainerIndex .. " replays its coverage decision"
-      )
+      Assert.deepEqual(rerunSignature, signature, "trainer " .. trainerIndex .. " replays its coverage decision")
       Assert.equal(rerunDelta, delta, "trainer " .. trainerIndex .. " replays its coverage draw count")
       Assert.isTrue(delta > 0, "trainer " .. trainerIndex .. " coverage answer draws from the shared stream")
     end
@@ -857,9 +852,7 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
   end
   Assert.isTrue(
     doublesCovered,
-    "an executed doubles trainer answers attacks on both slots (unsupported pass lists: "
-      .. #unsupportedPasses
-      .. ")"
+    "an executed doubles trainer answers attacks on both slots (unsupported pass lists: " .. #unsupportedPasses .. ")"
   )
 end
 
@@ -897,10 +890,7 @@ function T.rejected_pass_lists_fail_the_corpus_gate_while_production_stays_close
   local gateFailure = Assert.throws(function()
     checkTrainerCorpusFitsSupport(unsupported, {})
   end, "an unsupported source pass list fails the corpus gate")
-  Assert.isTrue(
-    string.find(tostring(gateFailure), probe, 1, true) ~= nil,
-    "the gate failure names the rejected pass"
-  )
+  Assert.isTrue(string.find(tostring(gateFailure), probe, 1, true) ~= nil, "the gate failure names the rejected pass")
   local directFailure = Assert.throws(function()
     TrainerAi.parsePasses({ probe })
   end, "production still rejects the same arbitrary pass")
@@ -915,7 +905,9 @@ local function holderSlot(mons, moveKey)
     for _, entry in
       ipairs((mon --[[@as table<string, unknown>]]).moves --[[@as table<integer, unknown>]])
     do
-      if (entry --[[@as table<string, unknown>]]).move == moveKey then
+      if
+        (entry --[[@as table<string, unknown>]]).move == moveKey
+      then
         return slot
       end
     end
@@ -1010,17 +1002,13 @@ function T.materialized_trainer_moves_reach_concrete_runtime_behavior(romFs, ver
     local betaRequest = requestFor(opening, "beta")
     local alphaActor = assert(alphaRequest.actors[1], "the owning request addresses its lead")
     local betaActor = assert(betaRequest.actors[1], "the opposing request addresses its lead")
-    local storedAlpha, alphaErr = session:submit(
-      SessionFixture.replyFor(alphaRequest, {
-        SessionFixture.attackChoice(alphaActor, 0, SessionFixture.positionTarget(2)),
-      })
-    )
+    local storedAlpha, alphaErr = session:submit(SessionFixture.replyFor(alphaRequest, {
+      SessionFixture.attackChoice(alphaActor, 0, SessionFixture.positionTarget(2)),
+    }))
     Assert.isTrue(storedAlpha, "trainer move " .. moveKey .. " choice binds: " .. tostring(alphaErr))
-    local storedBeta, betaErr = session:submit(
-      SessionFixture.replyFor(betaRequest, {
-        SessionFixture.attackChoice(betaActor, 0, SessionFixture.positionTarget(1)),
-      })
-    )
+    local storedBeta, betaErr = session:submit(SessionFixture.replyFor(betaRequest, {
+      SessionFixture.attackChoice(betaActor, 0, SessionFixture.positionTarget(1)),
+    }))
     Assert.isTrue(storedBeta, "the opposing choice binds: " .. tostring(betaErr))
     local ok, turnErr = pcall(function()
       return session:advance(1024)
@@ -1135,8 +1123,14 @@ function T.carried_trainer_items_execute_from_session_stock(romFs, versionId)
       ipairs(built.items --[[@as table<integer, unknown>]])
     do
       -- Gap positions are not servings and never probe.
-      if key ~= "NONE" and representative[key --[[@as string]]] == nil then
-        representative[key --[[@as string]]] = trainerIndex
+      if
+        key ~= "NONE" and representative[
+          key --[[@as string]]
+        ] == nil
+      then
+        representative[
+          key --[[@as string]]
+        ] = trainerIndex
       end
     end
   end
@@ -1148,170 +1142,163 @@ function T.carried_trainer_items_execute_from_session_stock(romFs, versionId)
   local failures = {}
   for _, itemKey in ipairs(keys) do
     local probeOk, probeErr = pcall(function()
-    local trainerIndex = representative[itemKey]
-    local built = builtParty(bundle, versionId, trainerIndex)
-    local party = built.mons --[[@as table<integer, unknown>]]
-    Assert.isTrue(#party > 0, "trainer " .. trainerIndex .. " fields its item holder")
-    local partyUse = nil
-    do
-      local monCatalog = bundle.monCatalog --[[@as table<string, unknown>]]
-      local lookup = monCatalog.item --[[@as fun(self: table<string, unknown>, key: string)]]
-      local ok, definition = pcall(lookup, monCatalog, itemKey)
-      if ok and type(definition) == "table" and type(definition.partyUse) == "table" then
-        partyUse = definition.partyUse
+      local trainerIndex = representative[itemKey]
+      local built = builtParty(bundle, versionId, trainerIndex)
+      local party = built.mons --[[@as table<integer, unknown>]]
+      Assert.isTrue(#party > 0, "trainer " .. trainerIndex .. " fields its item holder")
+      local partyUse = nil
+      do
+        local monCatalog = bundle.monCatalog --[[@as table<string, unknown>]]
+        local lookup = monCatalog.item --[[@as fun(self: table<string, unknown>, key: string)]]
+        local ok, definition = pcall(lookup, monCatalog, itemKey)
+        if ok and type(definition) == "table" and type(definition.partyUse) == "table" then
+          partyUse = definition.partyUse
+        end
       end
-    end
-    local holder = copyValue(party[1]) --[[@as table<string, unknown>]]
-    local holderMon = holder --[[@as table<string, unknown>]]
-    local holderCondition = holderMon.condition --[[@as table<string, unknown>]]
-    holderCondition.currentHp = 1
-    holderCondition.effects = {}
-    local cures = enabledCures(partyUse)
-    if #cures > 0 then
-      local holderKey = holderConditionFor(cures[1])
-      holderCondition.effects = { { key = holderKey, version = 1, state = holderStateFor(holderKey) } }
-    end
-    local first = seedFor(1, copyValue(party[1]) --[[@as table<string, unknown>]])
-    local reserve = seedFor(3, copyValue(party[1]) --[[@as table<string, unknown>]])
-    local second = seedFor(2, holder)
-    local trainerSeeds = { first, reserve, second }
-    local moveFacts, speciesFacts, itemFacts = factsFor(bundle, trainerSeeds, keys)
-    local stock = SessionFixture.inventory(TRAINER_STOCK_ID, { 2 }, { [itemKey] = 2 })
-    local foe = SessionFixture.participant(1, 1, "alpha", { first, reserve })
-    foe.context = {}
-    local trainer = SessionFixture.participant(2, 2, "trainer:" .. trainerIndex, { second }, TRAINER_STOCK_ID)
-    withPasses(trainer, built.aiPasses --[[@as table<integer, unknown>]])
-    -- The probe stock holds two units of the single probed identity, so
-    -- the compact slots carry that identity twice in source multiplicity.
-    trainer.context.trainerItems = { itemKey, itemKey }
-    local session = Battle.newSession({
-      ruleset = Executor.RULESET,
-      format = "singles",
-      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
-      participants = { foe, trainer },
-      positions = {
-        SessionFixture.position(1, 1, { 1 }, 1),
-        SessionFixture.position(2, 2, { 2 }, 2),
-      },
-      inventories = { stock },
-      environment = { weather = "none" },
-      random = { seed = PROBE_SEED_BASE + trainerIndex },
-      formatState = {},
-      moveFacts = moveFacts,
-      speciesFacts = speciesFacts,
-      itemFacts = itemFacts,
-    }, bundle.content)
-    local opening = SessionFixture.driveUntilSettled(session)
-    Assert.equal(opening.status, "waiting", "trainer item " .. itemKey .. " reaches its opening decision")
-    local wanted = requestFor(opening, "trainer:" .. trainerIndex)
-    local ok, reply = pcall(function()
-      return session:answerTrainer(wanted)
-    end)
-    if not ok then
-      if isMissingBehavior(reply) then
-        error(
-          "trainer " .. trainerIndex .. " item " .. itemKey .. " has no executable behavior: " .. tostring(reply),
-          0
-        )
+      local holder = copyValue(party[1]) --[[@as table<string, unknown>]]
+      local holderMon = holder --[[@as table<string, unknown>]]
+      local holderCondition = holderMon.condition --[[@as table<string, unknown>]]
+      holderCondition.currentHp = 1
+      holderCondition.effects = {}
+      local cures = enabledCures(partyUse)
+      if #cures > 0 then
+        local holderKey = holderConditionFor(cures[1])
+        holderCondition.effects = { { key = holderKey, version = 1, state = holderStateFor(holderKey) } }
       end
-      error("trainer " .. trainerIndex .. " item " .. itemKey .. " consideration failed: " .. tostring(reply), 0)
-    end
-    local answered = reply --[[@as table<string, unknown>]]
-    local serving = servingChoice(answered, itemKey)
-    if serving == nil then
-      if CaptureContext.isBall(itemKey) then
-        session:dispose()
-      else
-        error(
-          "trainer "
-            .. trainerIndex
-            .. " item "
-            .. itemKey
-            .. " was refused selection in its eligible state, choices ["
-            .. describeChoices(answered.choices --[[@as table<integer, unknown>]])
-            .. "]",
-          0
-        )
-      end
-    else
-      local before = session:capture()
-      local hpBefore = before.combatants[2].hp --[[@as integer]]
-      local maxHp = before.combatants[2].maxHp --[[@as integer]]
-      Assert.isTrue(type(maxHp) == "number", "trainer item " .. itemKey .. " holder carries its health ceiling")
-      local ledgerBefore = #(before.ledger --[[@as table<integer, unknown>]])
-      local storedTrainer, trainerErr = session:submit(answered)
-      Assert.isTrue(storedTrainer, "trainer item " .. itemKey .. " serving binds: " .. tostring(trainerErr))
-      local foeRequest = requestFor(opening, "alpha")
-      local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
-      local storedFoe, foeErr = session:submit(
-        SessionFixture.replyFor(foeRequest, { SessionFixture.switchChoice(foeActor, 3) })
-      )
-      Assert.isTrue(storedFoe, "the opposing exchange binds: " .. tostring(foeErr))
-      local turnOk, turn = pcall(function()
-        return session:advance(1024)
+      local first = seedFor(1, copyValue(party[1]) --[[@as table<string, unknown>]])
+      local reserve = seedFor(3, copyValue(party[1]) --[[@as table<string, unknown>]])
+      local second = seedFor(2, holder)
+      local trainerSeeds = { first, reserve, second }
+      local moveFacts, speciesFacts, itemFacts = factsFor(bundle, trainerSeeds, keys)
+      local stock = SessionFixture.inventory(TRAINER_STOCK_ID, { 2 }, { [itemKey] = 2 })
+      local foe = SessionFixture.participant(1, 1, "alpha", { first, reserve })
+      foe.context = {}
+      local trainer = SessionFixture.participant(2, 2, "trainer:" .. trainerIndex, { second }, TRAINER_STOCK_ID)
+      withPasses(trainer, built.aiPasses --[[@as table<integer, unknown>]])
+      -- The probe stock holds two units of the single probed identity, so
+      -- the compact slots carry that identity twice in source multiplicity.
+      trainer.context.trainerItems = { itemKey, itemKey }
+      local session = Battle.newSession({
+        ruleset = Executor.RULESET,
+        format = "singles",
+        sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+        participants = { foe, trainer },
+        positions = {
+          SessionFixture.position(1, 1, { 1 }, 1),
+          SessionFixture.position(2, 2, { 2 }, 2),
+        },
+        inventories = { stock },
+        environment = { weather = "none" },
+        random = { seed = PROBE_SEED_BASE + trainerIndex },
+        formatState = {},
+        moveFacts = moveFacts,
+        speciesFacts = speciesFacts,
+        itemFacts = itemFacts,
+      }, bundle.content)
+      local opening = SessionFixture.driveUntilSettled(session)
+      Assert.equal(opening.status, "waiting", "trainer item " .. itemKey .. " reaches its opening decision")
+      local wanted = requestFor(opening, "trainer:" .. trainerIndex)
+      local ok, reply = pcall(function()
+        return session:answerTrainer(wanted)
       end)
-      if not turnOk then
-        if isMissingBehavior(turn) then
+      if not ok then
+        if isMissingBehavior(reply) then
           error(
-            "trainer " .. trainerIndex .. " item " .. itemKey .. " has no executable behavior: " .. tostring(turn),
+            "trainer " .. trainerIndex .. " item " .. itemKey .. " has no executable behavior: " .. tostring(reply),
             0
           )
         end
-        error("trainer " .. trainerIndex .. " item " .. itemKey .. " turn failed: " .. tostring(turn), 0)
+        error("trainer " .. trainerIndex .. " item " .. itemKey .. " consideration failed: " .. tostring(reply), 0)
       end
-      local served = nil
-      for _, event in
-        ipairs((turn --[[@as table<string, unknown>]]).events --[[@as table<integer, unknown>]])
-      do
-        local entry = event --[[@as table<string, unknown>]]
-        if entry.kind == "item" and type(entry.payload) == "table" then
-          local payload = entry.payload --[[@as table<string, unknown>]]
-          if payload.item == itemKey then
-            served = entry
+      local answered = reply --[[@as table<string, unknown>]]
+      local serving = servingChoice(answered, itemKey)
+      if serving == nil then
+        if CaptureContext.isBall(itemKey) then
+          session:dispose()
+        else
+          error(
+            "trainer "
+              .. trainerIndex
+              .. " item "
+              .. itemKey
+              .. " was refused selection in its eligible state, choices ["
+              .. describeChoices(answered.choices --[[@as table<integer, unknown>]])
+              .. "]",
+            0
+          )
+        end
+      else
+        local before = session:capture()
+        local hpBefore = before.combatants[2].hp --[[@as integer]]
+        local maxHp = before.combatants[2].maxHp --[[@as integer]]
+        Assert.isTrue(type(maxHp) == "number", "trainer item " .. itemKey .. " holder carries its health ceiling")
+        local ledgerBefore = #before.ledger --[[@as table<integer, unknown>]]
+        local storedTrainer, trainerErr = session:submit(answered)
+        Assert.isTrue(storedTrainer, "trainer item " .. itemKey .. " serving binds: " .. tostring(trainerErr))
+        local foeRequest = requestFor(opening, "alpha")
+        local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+        local storedFoe, foeErr =
+          session:submit(SessionFixture.replyFor(foeRequest, { SessionFixture.switchChoice(foeActor, 3) }))
+        Assert.isTrue(storedFoe, "the opposing exchange binds: " .. tostring(foeErr))
+        local turnOk, turn = pcall(function()
+          return session:advance(1024)
+        end)
+        if not turnOk then
+          if isMissingBehavior(turn) then
+            error(
+              "trainer " .. trainerIndex .. " item " .. itemKey .. " has no executable behavior: " .. tostring(turn),
+              0
+            )
+          end
+          error("trainer " .. trainerIndex .. " item " .. itemKey .. " turn failed: " .. tostring(turn), 0)
+        end
+        local served = nil
+        for _, event in
+          ipairs((turn --[[@as table<string, unknown>]]).events --[[@as table<integer, unknown>]])
+        do
+          local entry = event --[[@as table<string, unknown>]]
+          if entry.kind == "item" and type(entry.payload) == "table" then
+            local payload = entry.payload --[[@as table<string, unknown>]]
+            if payload.item == itemKey then
+              served = entry
+            end
           end
         end
-      end
-      Assert.notNil(served, "trainer " .. trainerIndex .. " item " .. itemKey .. " announces its serving")
-      local servedPayload = (served --[[@as table<string, unknown>]]).payload --[[@as table<string, unknown>]]
-      Assert.equal(servedPayload.inventory, TRAINER_STOCK_ID, "the serving names the trainer stock")
-      local settled = session:capture()
-      local stockAfter = settled.inventories[TRAINER_STOCK_ID] --[[@as table<string, unknown>]]
-      Assert.equal(
-        (stockAfter.quantities --[[@as table<string, integer>]])[itemKey],
-        1,
-        "trainer item " .. itemKey .. " consumes exactly one unit"
-      )
-      local ledgerAfter = settled.ledger --[[@as table<integer, unknown>]]
-      Assert.equal(
-        #ledgerAfter,
-        ledgerBefore + 1,
-        "trainer item " .. itemKey .. " writes exactly one ledger delta"
-      )
-      local delta = ledgerAfter[#ledgerAfter] --[[@as table<string, unknown>]]
-      Assert.equal(delta.item, itemKey, "the ledger delta names the served item")
-      Assert.equal(delta.delta, -1, "the ledger delta consumes exactly one unit")
-      local holderAfter = settled.combatants[2] --[[@as table<string, unknown>]]
-      if partyUse ~= nil and (partyUse --[[@as table<string, unknown>]]).restore ~= nil then
-        Assert.isTrue(
-          holderAfter.hp --[[@as integer]] > hpBefore,
-          "trainer item " .. itemKey .. " restores the holder"
+        Assert.notNil(served, "trainer " .. trainerIndex .. " item " .. itemKey .. " announces its serving")
+        local servedPayload = (served --[[@as table<string, unknown>]]).payload --[[@as table<string, unknown>]]
+        Assert.equal(servedPayload.inventory, TRAINER_STOCK_ID, "the serving names the trainer stock")
+        local settled = session:capture()
+        local stockAfter = settled.inventories[TRAINER_STOCK_ID] --[[@as table<string, unknown>]]
+        Assert.equal(
+          (stockAfter.quantities --[[@as table<string, integer>]])[itemKey],
+          1,
+          "trainer item " .. itemKey .. " consumes exactly one unit"
         )
-        Assert.isTrue(
-          holderAfter.hp --[[@as integer]] <= maxHp,
-          "trainer item " .. itemKey .. " respects the health ceiling"
-        )
+        local ledgerAfter = settled.ledger --[[@as table<integer, unknown>]]
+        Assert.equal(#ledgerAfter, ledgerBefore + 1, "trainer item " .. itemKey .. " writes exactly one ledger delta")
+        local delta = ledgerAfter[#ledgerAfter] --[[@as table<string, unknown>]]
+        Assert.equal(delta.item, itemKey, "the ledger delta names the served item")
+        Assert.equal(delta.delta, -1, "the ledger delta consumes exactly one unit")
+        local holderAfter = settled.combatants[2] --[[@as table<string, unknown>]]
+        if
+          partyUse ~= nil and (partyUse --[[@as table<string, unknown>]]).restore ~= nil
+        then
+          Assert.isTrue(
+            holderAfter.hp --[[@as integer]] > hpBefore,
+            "trainer item " .. itemKey .. " restores the holder"
+          )
+          Assert.isTrue(
+            holderAfter.hp --[[@as integer]] <= maxHp,
+            "trainer item " .. itemKey .. " respects the health ceiling"
+          )
+        end
+        if #cures > 0 then
+          local afterMon = holderAfter.mon --[[@as table<string, unknown>]]
+          local afterCondition = afterMon.condition --[[@as table<string, unknown>]]
+          Assert.deepEqual(afterCondition.effects, {}, "trainer item " .. itemKey .. " clears the holder condition")
+        end
+        session:dispose()
       end
-      if #cures > 0 then
-        local afterMon = holderAfter.mon --[[@as table<string, unknown>]]
-        local afterCondition = afterMon.condition --[[@as table<string, unknown>]]
-        Assert.deepEqual(
-          afterCondition.effects,
-          {},
-          "trainer item " .. itemKey .. " clears the holder condition"
-        )
-      end
-      session:dispose()
-    end
     end)
     if not probeOk then
       failures[#failures + 1] = tostring(probeErr)

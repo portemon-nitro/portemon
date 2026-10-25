@@ -140,7 +140,18 @@ end
 ---@param focusShake { position: integer, axis: string, age: integer }?
 ---@param confirmHop { position: integer, age: integer }?
 ---@return love.ImageData
-local function selectorRenderInto(scope, cacheFs, manifest, selectedPosition, placement, width, height, shoesState, focusShake, confirmHop)
+local function selectorRenderInto(
+  scope,
+  cacheFs,
+  manifest,
+  selectedPosition,
+  placement,
+  width,
+  height,
+  shoesState,
+  focusShake,
+  confirmHop
+)
   local lg = love.graphics
   local renderer = scope:own(StartMenuRenderer.new({ cacheFs = cacheFs, manifest = manifest, text = recordingText() }))
   local canvas = scope:own(lg.newCanvas(width, height))
@@ -588,11 +599,7 @@ function T.repeated_open_and_close_reuses_one_warm_start_menu(scope)
   local reopenedSelected = capture(1)
   assertPixelsEqual(firstUnselected, reopenedUnselected, "reopened unselected golden")
   assertPixelsEqual(firstSelected, reopenedSelected, "reopened selected golden")
-  Assert.equal(
-    love.graphics.getStats().images,
-    settledImages,
-    "repeated open and close cycles re-create no chrome"
-  )
+  Assert.equal(love.graphics.getStats().images, settledImages, "repeated open and close cycles re-create no chrome")
   renderer:release()
 end
 

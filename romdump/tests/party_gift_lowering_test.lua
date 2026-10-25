@@ -49,11 +49,7 @@ function T.give_spiky_ear_pichu_lowers_to_a_semantic_service_operation()
     { stdCatalog = SourceCatalog.catalog() }
   )
   Assert.equal(#lowered.items, 1, "the gift command lowers to exactly one semantic step")
-  Assert.deepEqual(
-    lowered.items[1].op,
-    "give_spiky_ear_pichu",
-    "the spiky-ear gift lowers to its semantic operation"
-  )
+  Assert.deepEqual(lowered.items[1].op, "give_spiky_ear_pichu", "the spiky-ear gift lowers to its semantic operation")
 end
 
 function T.give_mon_creates_adds_and_reports_in_source_order()

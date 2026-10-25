@@ -426,10 +426,7 @@ function T.changed_script_content_no_longer_gates_the_save_envelope()
     "an untouched script keeps its published content hash"
   )
 
-  Assert.isNil(
-    ScriptSave.validate(saveBucket(), {}),
-    "the quiescent save still validates under the edited registry"
-  )
+  Assert.isNil(ScriptSave.validate(saveBucket(), {}), "the quiescent save still validates under the edited registry")
 end
 
 -- A summary publication interrupted after ownership begins recovers through

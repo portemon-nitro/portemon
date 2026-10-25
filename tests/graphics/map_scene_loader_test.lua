@@ -540,10 +540,7 @@ function T.ready_prepared_resources_still_respect_the_per_call_work_budget()
   local runtime = task:finish()
   Assert.equal(runtime.stats.textureCount, 2, "both distinct-wrap textures are realized by completion")
   Assert.equal(images.uploads, 2, "both textures borrow through the shared owner")
-  Assert.isTrue(
-    #queue.requestLog >= 1,
-    "mesh preparation for the scene is still routed through the injected queue"
-  )
+  Assert.isTrue(#queue.requestLog >= 1, "mesh preparation for the scene is still routed through the injected queue")
   runtime:release()
 end
 
@@ -561,8 +558,7 @@ function T.synchronous_finish_propagates_preparation_wait_failure_and_releases_r
     waitFailureMessage = "injected preparation wait failure",
   })
   local images = SharedImagePoolFake.new()
-  local task =
-    MapSceneLoader.begin(cache, s, { graphics = graphics, assetPreparation = queue, imageAssets = images })
+  local task = MapSceneLoader.begin(cache, s, { graphics = graphics, assetPreparation = queue, imageAssets = images })
 
   Assert.equal(task:advance(1), 1, "the first work unit borrows the texture")
   Assert.isFalse(task:isReady(), "the scene is not ready while the mesh preparation is pending")

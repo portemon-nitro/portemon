@@ -459,7 +459,7 @@ function T.summary_dispatch_reads_published_results_without_recompiling()
     zeroCurve[level] = 0
   end
   local catalog = {
-    schema = "g4-mon-catalog-v4",
+    schema = "g4-mon-catalog-v5",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},

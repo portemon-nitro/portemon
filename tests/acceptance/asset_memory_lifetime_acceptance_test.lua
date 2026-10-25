@@ -64,7 +64,11 @@ function T.tests.snapshot_history_stays_bounded_under_repeated_checkpoints()
     "overwritten snapshots are counted, not lost silently"
   )
   local history = tracer:history()
-  Assert.equal(history[1].seq, total - AssetMemoryTrace.HISTORY_LIMIT + 1, "the oldest retained record follows the bound")
+  Assert.equal(
+    history[1].seq,
+    total - AssetMemoryTrace.HISTORY_LIMIT + 1,
+    "the oldest retained record follows the bound"
+  )
   Assert.equal(history[#history].seq, total, "the newest record is retained")
   Assert.equal(history[#history].facts.step, total, "stored facts keep their values")
 end
@@ -89,10 +93,7 @@ function T.tests.snapshots_keep_scalars_and_refuse_live_resources()
   local imageError = Assert.throws(function()
     tracer:snapshot("travel", { liveImage = {} })
   end, "live tables must be refused")
-  Assert.isTrue(
-    tostring(imageError):find("liveImage", 1, true) ~= nil,
-    "the refusal names the offending key"
-  )
+  Assert.isTrue(tostring(imageError):find("liveImage", 1, true) ~= nil, "the refusal names the offending key")
   Assert.throws(function()
     tracer:snapshot("travel", { callback = function() end })
   end, "functions must be refused")
@@ -183,16 +184,14 @@ function T.tests.graphics_and_rss_observations_stay_in_separate_fields()
   Assert.equal(renderer.vendor, "TestVendor", "renderer identity keeps the vendor")
 
   local tracer = AssetMemoryTrace.new()
-  local record = assert(
-    tracer:snapshot("field-entry", {
-      luaKb = 512,
-      audioRetainedBytesAvailable = false,
-      gpuImages = graphicsFacts.images,
-      gpuTextureBytes = graphicsFacts.textureBytes,
-      rssKbAvailable = false,
-      rendererName = renderer.name,
-    })
-  )
+  local record = assert(tracer:snapshot("field-entry", {
+    luaKb = 512,
+    audioRetainedBytesAvailable = false,
+    gpuImages = graphicsFacts.images,
+    gpuTextureBytes = graphicsFacts.textureBytes,
+    rssKbAvailable = false,
+    rendererName = renderer.name,
+  }))
   Assert.equal(record.facts.luaKb, 512, "the Lua-heap figure is stored as its own field")
   Assert.equal(record.facts.gpuTextureBytes, 4096, "the GPU figure is stored as its own field")
   Assert.equal(record.facts.audioRetainedBytesAvailable, false, "missing audio counters stay explicit")
@@ -207,17 +206,13 @@ function T.tests.graphics_and_rss_observations_stay_in_separate_fields()
     AssetMemoryTrace.readGraphicsStats({}).available,
     "a namespace without the query marks graphics unavailable"
   )
-  Assert.isFalse(
-    AssetMemoryTrace.rendererIdentity(nil).available,
-    "a headless run marks renderer identity unavailable"
-  )
+  Assert.isFalse(AssetMemoryTrace.rendererIdentity(nil).available, "a headless run marks renderer identity unavailable")
 end
 
 -- The pinned artifact name carries the source generation and the renderer
 -- so repeat runs with the same cache warmness stay comparable.
 function T.tests.baseline_artifact_names_carry_source_and_renderer_identity()
-  local nvidia =
-    AssetMemoryTrace.baselineFileName("abcdef1234567890", "OpenGL 4.6 (NVIDIA GeForce RTX 4060)")
+  local nvidia = AssetMemoryTrace.baselineFileName("abcdef1234567890", "OpenGL 4.6 (NVIDIA GeForce RTX 4060)")
   local software = AssetMemoryTrace.baselineFileName("abcdef1234567890", "llvmpipe (LLVM 15.0.7)")
   Assert.isTrue(nvidia ~= software, "distinct renderers produce distinct artifact names")
   Assert.isTrue(nvidia:find("abcdef1", 1, true) ~= nil, "the artifact name carries the short source SHA")
@@ -615,11 +610,7 @@ local function bagView(game)
     FieldApplicationHost.PHASES.application,
     "the bag application must own the tick while browsing"
   )
-  Assert.equal(
-    status.applicationId,
-    FieldApplicationIds.BAG,
-    "the launched application must be the bag"
-  )
+  Assert.equal(status.applicationId, FieldApplicationIds.BAG, "the launched application must be the bag")
   local flow = assert(status.application, "the bag application must expose its flow status")
   local view = assert(flow.child, "the bag flow must expose its live leaf status")
   assert(type(view) == "table", "the bag browse status must be a record")
@@ -840,7 +831,10 @@ function T.tests.paired_warm_and_cold_snapshots_keep_external_memory_explicit_fo
       straight = straight + 1
     end
     Assert.isFalse(record.facts.rssKbAvailable, "process RSS stays an explicit marker without an external sampler")
-    Assert.isFalse(record.facts.hwmKbAvailable, "process high-water stays an explicit marker without an external sampler")
+    Assert.isFalse(
+      record.facts.hwmKbAvailable,
+      "process high-water stays an explicit marker without an external sampler"
+    )
     Assert.isNil(record.facts.totalBytes, "no snapshot merges families into a combined total")
   end
   Assert.equal(compact, 3, "three warm passes run under the compact representation")
@@ -884,7 +878,11 @@ function T.tests.release_audio_comparison_reproduces_the_pinned_mix_on_a_second_
   local secondFanfare = renderFanfareToCompletion(secondSound, secondPlayer)
 
   Assert.equal(fingerprint16(firstBgm), 3603820576, "the music stream reproduces its pinned fingerprint")
-  Assert.equal(fingerprint16(firstFanfare), 3691276832, "the fanfare-over-music stream reproduces its pinned fingerprint")
+  Assert.equal(
+    fingerprint16(firstFanfare),
+    3691276832,
+    "the fanfare-over-music stream reproduces its pinned fingerprint"
+  )
   Assert.equal(
     fingerprint16(secondBgm),
     fingerprint16(firstBgm),

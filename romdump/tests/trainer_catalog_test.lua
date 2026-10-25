@@ -33,12 +33,7 @@ local function u16(v)
 end
 
 local function u32(v)
-  return string.char(
-    v % 256,
-    math.floor(v / 256) % 256,
-    math.floor(v / 65536) % 256,
-    math.floor(v / 16777216) % 256
-  )
+  return string.char(v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
 end
 
 -- 20-byte TRDATA: trainerType, class, unk_2, npoke, items[4] u16, aiFlags
@@ -223,11 +218,7 @@ function T.trainer_header_gaps_compact_before_catalog_publication()
   }
   local compiled = assert(TrainerCatalogCompiler.compile(nativeInput(records)))
   local trainer = assert(compiled.trainers[8], "trainer 8 must survive projection")
-  Assert.deepEqual(
-    trainer.items,
-    { "POTION", "SUPER_POTION" },
-    "empty source positions compact away in source order"
-  )
+  Assert.deepEqual(trainer.items, { "POTION", "SUPER_POTION" }, "empty source positions compact away in source order")
   local repeated = assert(compiled.trainers[9], "trainer 9 must survive projection")
   Assert.deepEqual(
     repeated.items,
@@ -310,11 +301,7 @@ function T.trainer_prize_and_message_selectors_survive_projection()
   Assert.equal(trainer.prizeMoney.trainerClass, CLASS_YOUNGSTER, "the prize record keeps its class")
   Assert.equal(trainer.prizeMoney.classRate, 4, "the prize record carries the pinned class rate")
   Assert.isTrue(type(trainer.messageSelectors) == "table", "message selectors survive projection")
-  Assert.deepEqual(
-    trainer.items,
-    { "POTION" },
-    "held trainer items resolve to item keys in source order without gaps"
-  )
+  Assert.deepEqual(trainer.items, { "POTION" }, "held trainer items resolve to item keys in source order without gaps")
 end
 
 function T.trainer_class_rates_cover_every_native_class_without_fallback()
@@ -496,8 +483,7 @@ function T.unknown_item_references_fail_with_attributed_errors()
   }))
   Assert.isNil(badMember, "an unknown held-item reference must not compile")
   Assert.isTrue(
-    tostring(assert(memberErr, "an unknown held item must report a typed error").message):find("5", 1, true)
-      ~= nil,
+    tostring(assert(memberErr, "an unknown held item must report a typed error").message):find("5", 1, true) ~= nil,
     "the held-item failure names the trainer index"
   )
   local badTrainerItem, trainerErr = TrainerCatalogCompiler.compile(nativeInput({
@@ -508,8 +494,7 @@ function T.unknown_item_references_fail_with_attributed_errors()
   }))
   Assert.isNil(badTrainerItem, "an unknown trainer-item reference must not compile")
   Assert.isTrue(
-    tostring(assert(trainerErr, "an unknown trainer item must report a typed error").message):find("8", 1, true)
-      ~= nil,
+    tostring(assert(trainerErr, "an unknown trainer item must report a typed error").message):find("8", 1, true) ~= nil,
     "the trainer-item failure names the trainer index"
   )
 end
@@ -590,13 +575,16 @@ function T.successful_trainer_job_stages_publishes_and_reads_ready()
     jobKey = "trainers:global",
     stageName = stageName,
   })
-  Assert.isTrue(staged:publish({
-    generationId = generationId,
-    epoch = 1,
-    kind = "trainers",
-    key = "global",
-    jobKey = "trainers:global",
-  }), "the staged generation publishes")
+  Assert.isTrue(
+    staged:publish({
+      generationId = generationId,
+      epoch = 1,
+      kind = "trainers",
+      key = "global",
+      jobKey = "trainers:global",
+    }),
+    "the staged generation publishes"
+  )
   Assert.isTrue(
     ArtifactJobs.validate(cacheFs, generationId, "trainers", "global", {}, nil),
     "the published stage reads ready"
@@ -650,14 +638,8 @@ function T.stale_trainer_family_markers_never_read_ready()
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   local paths = BattleDataCache.paths()
   cacheFs:writeLua(assert(paths.trainers, "the cache must publish a trainer-catalog path"), fresh)
-  cacheFs:write(
-    BattleDataCache.trainersMarkerPath(),
-    "trainer-catalog-cache-v1:" .. sha .. ":" .. dep
-  )
-  Assert.isFalse(
-    BattleDataCache.isTrainersReady(cacheFs, expected),
-    "the previous family marker never reads ready"
-  )
+  cacheFs:write(BattleDataCache.trainersMarkerPath(), "trainer-catalog-cache-v1:" .. sha .. ":" .. dep)
+  Assert.isFalse(BattleDataCache.isTrainersReady(cacheFs, expected), "the previous family marker never reads ready")
   Assert.deepEqual(BattleDataCache.loadTrainers(cacheFs), fresh, "the fresh catalog loads exactly")
 end
 

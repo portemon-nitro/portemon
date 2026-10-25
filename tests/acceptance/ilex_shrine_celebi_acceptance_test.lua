@@ -220,12 +220,7 @@ local function visibilityFailure(samples, taskId)
       elseif sample.phase == "beat" then
         beatClearRun = 0
       end
-      if
-        openingOpaque
-        and sample.phase == "swirl"
-        and sample.elapsed < 80
-        and sample.coefficient == 0
-      then
+      if openingOpaque and sample.phase == "swirl" and sample.elapsed < 80 and sample.coefficient == 0 then
         earlySwirlClearRun = earlySwirlClearRun + 1
       elseif sample.phase == "swirl" and sample.elapsed < 80 then
         earlySwirlClearRun = 0
@@ -334,31 +329,34 @@ local function driveUntilMap(game, mapSymbol, maxTicks, trace)
             trace.initialTarget = cameraSample.target
             trace.initialEye = cameraSample.eye
           end
-          if task.status == "active" and (task.state.phase == "opening_in" or task.state.phase == "beat" or task.state.phase == "swirl") then
-            local scene = assert(
-              game.runtime.celebiTimeTravelScene,
-              "the live Celebi task publishes its production scene owner"
-            )
+          if
+            task.status == "active"
+            and (task.state.phase == "opening_in" or task.state.phase == "beat" or task.state.phase == "swirl")
+          then
+            local scene =
+              assert(game.runtime.celebiTimeTravelScene, "the live Celebi task publishes its production scene owner")
             local status = scene:status()
             Assert.isTrue(status.active, "the source scene remains active through the visible task interval")
             Assert.isTrue(status.modelVisible, "the original model replaces the follower under the inbound fade")
             Assert.notNil(status.modelPosition, "the scene captures the follower's source world position")
             local followingMon = assert(game.runtime.followingMon, "the composed field owns its follower")
             local partnerId = assert(followingMon:partnerActorId(), "the staged lead has a follower actor")
-            local partner = assert(game.runtime.actors:getById(partnerId), "the source follower actor remains addressable")
+            local partner =
+              assert(game.runtime.actors:getById(partnerId), "the source follower actor remains addressable")
             local position = partner:getWorldPosition()
             Assert.equal(status.modelPosition.x, position.x, "the legend keeps the follower's source world X")
             Assert.equal(status.modelPosition.y, position.y, "the legend keeps the follower's source world Y")
             Assert.equal(status.modelPosition.z, position.z, "the legend keeps the follower's source world Z")
-            Assert.isFalse(game.runtime.actors:isVisible(partnerId), "the ordinary follower stays hidden under the legend")
+            Assert.isFalse(
+              game.runtime.actors:isVisible(partnerId),
+              "the ordinary follower stays hidden under the legend"
+            )
             if task.state.phase == "beat" or task.state.phase == "swirl" then
               trace.sceneFrames[#trace.sceneFrames + 1] = status.animationFrame
             end
           elseif task.status == "completed" then
-            local scene = assert(
-              game.runtime.celebiTimeTravelScene,
-              "the completed Celebi task retains its production scene owner"
-            )
+            local scene =
+              assert(game.runtime.celebiTimeTravelScene, "the completed Celebi task retains its production scene owner")
             local status = scene:status()
             Assert.isFalse(status.active, "the source model is released at the opaque task handoff")
             Assert.isFalse(status.modelVisible, "the source model is hidden before destination presentation")
@@ -516,9 +514,17 @@ function T.tests.celebi_branch_warps_to_route_22_with_progress_set()
     for _, sample in ipairs(trace.cinematicSamples) do
       if sample.phase == "swirl" and sample.scene and sample.scene.swirlFrame ~= nil then
         Assert.equal(sample.camera, trace.initialCamera, "camera ownership stays with the active map during the swirl")
-        Assert.equal(sample.rawPerspective, trace.initialRawPerspective, "camera perspective stays fixed during the roll")
+        Assert.equal(
+          sample.rawPerspective,
+          trace.initialRawPerspective,
+          "camera perspective stays fixed during the roll"
+        )
         Assert.equal(sample.zoom, trace.initialZoom, "camera zoom stays fixed during the roll")
-        Assert.equal(sample.projectionAspect, trace.initialProjectionAspect, "camera layout aspect stays fixed during the roll")
+        Assert.equal(
+          sample.projectionAspect,
+          trace.initialProjectionAspect,
+          "camera layout aspect stays fixed during the roll"
+        )
         Assert.deepEqual(sample.target, trace.initialTarget, "the roll leaves the camera target unchanged")
         Assert.deepEqual(sample.eye, trace.initialEye, "the roll leaves the camera eye unchanged")
         if sample.elapsed >= 110 and sample.coefficient == 16 and sample.screenScope == "both" then
@@ -541,10 +547,8 @@ function T.tests.celebi_branch_warps_to_route_22_with_progress_set()
     -- The acceptance harness stops before graphics. Source-camera motion and
     -- capture activation are semantic scene state; rendered pixels and GPU
     -- lifetime belong to graphics tests.
-    local scene = assert(
-      game.runtime.celebiTimeTravelScene,
-      "the production field runtime publishes the Celebi scene owner"
-    )
+    local scene =
+      assert(game.runtime.celebiTimeTravelScene, "the production field runtime publishes the Celebi scene owner")
     local inactive = scene:status()
     Assert.isFalse(inactive.active, "the covered map handoff releases the live Celebi scene")
     Assert.isFalse(inactive.modelVisible, "the legend model is hidden after the covered handoff")

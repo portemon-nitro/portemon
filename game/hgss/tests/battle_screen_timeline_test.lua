@@ -250,11 +250,7 @@ function T.duplicate_packets_are_rejected()
   Assert.isTrue(timeline:present(first), "the first delivery is accepted")
   advance(timeline, 10)
   local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
-  Assert.equal(
-    sounds.countEffect(BattleAudio.SINK_SOUNDS.impact),
-    1,
-    "a strike carries its impact voice exactly once"
-  )
+  Assert.equal(sounds.countEffect(BattleAudio.SINK_SOUNDS.impact), 1, "a strike carries its impact voice exactly once")
   Assert.equal(
     sounds.countEffect(BattleAudio.SINK_SOUNDS.effectiveness),
     1,
@@ -1583,9 +1579,7 @@ end
 ---@return table<string, unknown> compiled resourceless native program completing in three source ticks
 local function nativeProbeProgram()
   local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
-  return assert(
-    BattleAnimationCompiler.compile({ key = "TACKLE", stream = nativeStreamOf({ 29, 50, 4 }) })
-  )
+  return assert(BattleAnimationCompiler.compile({ key = "TACKLE", stream = nativeStreamOf({ 29, 50, 4 }) }))
 end
 
 ---@param program table<string, unknown> exact compiled program the collaborator admits
@@ -1622,7 +1616,9 @@ local function taskAwareEffects(program)
     rec.starts[#rec.starts + 1] = cue
     local occurrence = { sequence = cue.eventSequence, effectKey = cue.effectKey }
     if type(cue.event) == "table" then
-      for field, value in pairs(cue.event --[[@as table<string, unknown>]]) do
+      for field, value in
+        pairs(cue.event --[[@as table<string, unknown>]])
+      do
         if occurrence[field] == nil then
           occurrence[field] = value
         end
@@ -1725,11 +1721,7 @@ function T.native_effect_starts_its_selected_program_before_health_without_dupli
   Assert.equal(fx.starts[1].actionId, 21, "the start carries the accepted action identity")
   Assert.equal(battler(timeline:battlers(), 3).hp, 57, "health waits for native completion instead of leaking early")
   Assert.isFalse(timeline:settled(), "the running program holds the cue open")
-  Assert.equal(
-    #fx.scene:effectViews(),
-    0,
-    "state-only visual work publishes no drawable picture while running"
-  )
+  Assert.equal(#fx.scene:effectViews(), 0, "state-only visual work publishes no drawable picture while running")
   Assert.equal(
     sounds.countEffect(BattleAudio.SINK_SOUNDS.impact),
     0,
@@ -1748,10 +1740,7 @@ function T.native_effect_starts_its_selected_program_before_health_without_dupli
   end
   Assert.isTrue(timeline:settled(), "the native cue settles after real completion")
   Assert.equal(battler(timeline:battlers(), 3).hp, 43, "the exact checkpoint applies after native completion")
-  Assert.isTrue(
-    #fx.audio.played > 0,
-    "the completed program played its source-timed voice instead of staying silent"
-  )
+  Assert.isTrue(#fx.audio.played > 0, "the completed program played its source-timed voice instead of staying silent")
 end
 
 -- One accepted source tick reads the same on every host schedule while a
@@ -1804,11 +1793,7 @@ function T.native_effect_progress_agrees_across_host_partitions()
   Assert.equal(#secondFx.starts, 1, "the 60 Hz schedule starts the native program once")
   Assert.isTrue(first:settled(), "the 30 Hz schedule settles the native cue")
   Assert.isTrue(second:settled(), "the 60 Hz schedule settles the native cue")
-  Assert.equal(
-    battler(second:battlers(), 3).hp,
-    battler(first:battlers(), 3).hp,
-    "partitions land the same checkpoint"
-  )
+  Assert.equal(battler(second:battlers(), 3).hp, battler(first:battlers(), 3).hp, "partitions land the same checkpoint")
   Assert.deepEqual(secondSounds.played, firstSounds.played, "partitions drain the same voices")
   local firstBoundaries, secondBoundaries = {}, {}
   for _, count in ipairs(firstViews) do

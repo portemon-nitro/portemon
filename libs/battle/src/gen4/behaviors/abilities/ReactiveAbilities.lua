@@ -164,6 +164,12 @@ end
 ---@return table<string, unknown>? prevention announcement, or nil when inapplicable
 local function preventStatus(instance, context)
   local warded = STATUS_PREVENTION[instance.key]
+  if instance.key == "LEAF_GUARD" then
+    if context.weather ~= "sun" or context.statusAttempt == "confusion" or context.statusAttempt == "infatuation" then
+      return nil
+    end
+    return { kind = "trigger", key = instance.key, combatant = holderOf(instance), prevented = true }
+  end
   if warded == nil then
     return nil
   end
@@ -200,7 +206,7 @@ local function residualHeal(instance, context)
   local maxHp = (limits --[[@as table<integer, integer>]])[
     holder --[[@as integer]]
   ]
-  if type(hp) ~= "number" or type(maxHp) ~= "number" or hp <= 0 or hp >= maxHp then
+  if type(hp) ~= "number" or type(maxHp) ~= "number" or hp <= 0 then
     return nil
   end
   -- The announcement carries the exact restoration: an eighth of
@@ -210,8 +216,17 @@ local function residualHeal(instance, context)
   local divisor = 16
   local answersPoisonTick = false
   if instance.key == "POISON_HEAL" then
+    if hp >= maxHp then
+      -- The source checks Poison Heal before its full-health test, so the
+      -- ability still replaces poison damage when it restores zero HP.
+      if context.status ~= "poison" and context.status ~= "toxic" then
+        return nil
+      end
+    end
     divisor = 8
-    answersPoisonTick = context.status == "poison"
+    answersPoisonTick = context.status == "poison" or context.status == "toxic"
+  elseif hp >= maxHp then
+    return nil
   end
   return {
     kind = "trigger",
@@ -239,6 +254,13 @@ local function turnResponse(instance, context)
   end
   if instance.key == "SHED_SKIN" then
     if context.status == nil then
+      return nil
+    end
+    local stream = context.stream
+    if type(stream) ~= "table" or type(stream.nextU16) ~= "function" then
+      error(BattleErrors.missingBehavior("Shed Skin reads the battle random stream", {}))
+    end
+    if stream.nextU16(stream, "shed_skin", { combatant = holderOf(instance) }) % 10 >= 3 then
       return nil
     end
     return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = context.status }
@@ -437,8 +459,8 @@ function ReactiveAbilities.register(owned)
   owned.SHADOW_TAG = trapping
   owned.ARENA_TRAP = trapping
   owned.MAGNET_PULL = trapping
-  owned.SUCTION_CUPS = trapping
-  owned.STICKY_HOLD = trapping
+  owned.SUCTION_CUPS = noCheckpointEffect
+  owned.STICKY_HOLD = noCheckpointEffect
   for key in pairs(CONTACT_RESPONSE) do
     if owned[key] == nil then
       owned[key] = contactResponse
@@ -447,12 +469,17 @@ function ReactiveAbilities.register(owned)
   for key in pairs(STATUS_PREVENTION) do
     owned[key] = preventStatus
   end
+  owned.LEAF_GUARD = preventStatus
   for key in pairs(RESIDUAL_HEAL) do
     owned[key] = residualHeal
   end
   owned.PICKUP = noCheckpointEffect
   owned.HONEY_GATHER = noCheckpointEffect
   owned.ILLUMINATE = noCheckpointEffect
+  owned.STENCH = noCheckpointEffect
+  -- DamageMoves owns the live partner-gated offensive boost checkpoint.
+  owned.PLUS = noCheckpointEffect
+  owned.MINUS = noCheckpointEffect
 end
 
 return ReactiveAbilities

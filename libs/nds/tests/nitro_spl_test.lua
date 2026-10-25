@@ -27,8 +27,16 @@ function T.decodes_emitter_sections_and_embedded_payloads()
   local emitter = u32(emitterFlags) .. string.rep("E", 0x58 - 4) .. string.rep("G", 0x0c) .. string.rep("C", 8)
   local texture = "TEX!"
   local palette = "PAL!"
-  local resource = u32(0) .. u32(0) .. u32(#texture) .. u32(0x24) .. u32(#palette)
-    .. u32(0) .. u32(0) .. u32(0x24 + #palette) .. texture .. palette
+  local resource = u32(0)
+    .. u32(0)
+    .. u32(#texture)
+    .. u32(0x24)
+    .. u32(#palette)
+    .. u32(0)
+    .. u32(0)
+    .. u32(0x24 + #palette)
+    .. texture
+    .. palette
   local decoded = assert(Spl.decode(aps({ emitter }, { resource })))
 
   Assert.equal(decoded.format, "APS12_1")
@@ -45,8 +53,15 @@ function T.skips_the_source_flagged_child_emitter_section()
   local emitter = u32(emitterFlags) .. string.rep("E", 0x58 - 4)
   local childData = string.rep("C", 0x14)
   local texture = "TEX!"
-  local resource = u32(0) .. u32(0) .. u32(#texture) .. u32(0) .. u32(0)
-    .. u32(0) .. u32(0) .. u32(0x20 + #texture) .. texture
+  local resource = u32(0)
+    .. u32(0)
+    .. u32(#texture)
+    .. u32(0)
+    .. u32(0)
+    .. u32(0)
+    .. u32(0)
+    .. u32(0x20 + #texture)
+    .. texture
   local decoded = assert(Spl.decode(aps({ emitter .. childData }, { resource })))
 
   Assert.equal(decoded.resources[1].texture, texture)
@@ -62,8 +77,15 @@ end
 
 function T.rejects_embedded_payloads_that_escape_the_resource_record()
   local texture = "TEX!"
-  local tooShort = u32(0) .. u32(0) .. u32(#texture) .. u32(0) .. u32(0)
-    .. u32(0) .. u32(0) .. u32(0x20 + #texture - 1) .. texture
+  local tooShort = u32(0)
+    .. u32(0)
+    .. u32(#texture)
+    .. u32(0)
+    .. u32(0)
+    .. u32(0)
+    .. u32(0)
+    .. u32(0x20 + #texture - 1)
+    .. texture
   local decoded, err = Spl.decode(aps({}, { tooShort }))
 
   Assert.isNil(decoded)

@@ -21,28 +21,21 @@ function T.field_renderer_compiles_and_draws_an_empty_world(scope)
   loveGraphics.setCanvas(target)
   loveGraphics.clear(0, 0, 0, 1)
 
-  renderer:draw(
-    {
-      edgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 },
-      fog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = table32 },
-    },
-    {
-      zoom = 1,
-      view = function()
-        return identity
-      end,
-      projection = function()
-        return identity
-      end,
-      billboardProjection = function()
-        return identity
-      end,
-    },
-    {},
-    nil,
-    FieldViewport.new(64, 48, { mode = "strict" }),
-    0
-  )
+  renderer:draw({
+    edgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 },
+    fog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = table32 },
+  }, {
+    zoom = 1,
+    view = function()
+      return identity
+    end,
+    projection = function()
+      return identity
+    end,
+    billboardProjection = function()
+      return identity
+    end,
+  }, {}, nil, FieldViewport.new(64, 48, { mode = "strict" }), 0)
 
   Assert.notNil(renderer.gxRenderer.shader, "the field renderer compiles its production shader")
 end

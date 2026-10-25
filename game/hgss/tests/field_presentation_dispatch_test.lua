@@ -1951,12 +1951,7 @@ local function transitionMonService()
   local catalog = CatalogFixture.makeCatalog()
   local service = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(
-      Party.new():capture(),
-      Lcrng.new(0x12345678):capture(),
-      nil,
-      nil
-    ),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x12345678):capture(), nil, nil),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -2289,8 +2284,7 @@ end
 local function tickTransitionPc(host, handle, preparation, events)
   host:step(handle, events or {})
   local status = assert(host:status(), "the open child publishes its status")
-  local ready, failure =
-    FieldPresentationResources.preparePcApplication(preparation, status, { monCatalog = {} })
+  local ready, failure = FieldPresentationResources.preparePcApplication(preparation, status, { monCatalog = {} })
   host:setPresentationReady(handle, ready)
   return ready, failure, status
 end
@@ -2358,10 +2352,7 @@ function T.pending_wallpaper_replacement_keeps_drawing_the_admitted_view()
     local oldImage = assert(renderer._images[oldWallpaper], "admission installs its wallpaper")
     local drawsBefore = #graphics.draws
     host:draw(resources)
-    Assert.isTrue(
-      drawsImageSinceTransition(graphics, drawsBefore, oldImage),
-      "the admitted box paints its wallpaper"
-    )
+    Assert.isTrue(drawsImageSinceTransition(graphics, drawsBefore, oldImage), "the admitted box paints its wallpaper")
     local admittedPlan = host:presentationPlan()
     Assert.notNil(admittedPlan, "the admitted box publishes its plan")
 
@@ -2369,8 +2360,7 @@ function T.pending_wallpaper_replacement_keeps_drawing_the_admitted_view()
     local ready, failure = tickTransitionPc(host, handle, preparation, { { type = "action", action = "wallpaper" } })
     Assert.isTrue(ready, "opening the chooser keeps the admitted view ready")
     Assert.isNil(failure, "opening the chooser reports no failure")
-    ready, failure =
-      tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 2 } })
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 2 } })
     Assert.isTrue(ready, "highlighting a choice keeps the admitted view ready")
     Assert.isNil(failure, "highlighting a choice reports no failure")
     ready, failure = tickTransitionPc(host, handle, preparation, { { type = "submit" } })
@@ -2380,8 +2370,7 @@ function T.pending_wallpaper_replacement_keeps_drawing_the_admitted_view()
 
     for _ = 1, 3 do
       local focusBefore = child:status().focus
-      ready, failure =
-        tickTransitionPc(host, handle, preparation, { { type = "navigate", direction = "down" } })
+      ready, failure = tickTransitionPc(host, handle, preparation, { { type = "navigate", direction = "down" } })
       Assert.isFalse(ready, "the replacement stays pending")
       Assert.isNil(failure, "the replacement reports no failure")
       Assert.deepEqual(child:status().focus, focusBefore, "unadmitted input never reaches the child")
@@ -2406,16 +2395,10 @@ function T.pending_wallpaper_replacement_keeps_drawing_the_admitted_view()
       drawsImageSinceTransition(graphics, drawsBefore, newImage),
       "the admitted replacement paints its wallpaper"
     )
-    Assert.isFalse(
-      drawsImageSinceTransition(graphics, drawsBefore, oldImage),
-      "the retired wallpaper paints no longer"
-    )
+    Assert.isFalse(drawsImageSinceTransition(graphics, drawsBefore, oldImage), "the retired wallpaper paints no longer")
     local focusBefore = child:status().focus
     tickTransitionPc(host, handle, preparation, { { type = "navigate", direction = "down" } })
-    Assert.isTrue(
-      child:status().focus.slot ~= focusBefore.slot,
-      "admitted input reaches the child again"
-    )
+    Assert.isTrue(child:status().focus.slot ~= focusBefore.slot, "admitted input reaches the child again")
     host:close(handle)
     renderer:dispose()
     Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
@@ -2451,10 +2434,7 @@ function T.warm_wallpaper_replacement_commits_before_drawing_the_new_view()
     local oldImage = assert(renderer._images[oldWallpaper], "admission installs its wallpaper")
     local drawsBefore = #graphics.draws
     host:draw(resources)
-    Assert.isTrue(
-      drawsImageSinceTransition(graphics, drawsBefore, oldImage),
-      "the admitted box paints its wallpaper"
-    )
+    Assert.isTrue(drawsImageSinceTransition(graphics, drawsBefore, oldImage), "the admitted box paints its wallpaper")
 
     -- The replacement wallpaper stays unflagged, so every new path
     -- resolves in the same tick while the host is still ready.
@@ -2468,14 +2448,8 @@ function T.warm_wallpaper_replacement_commits_before_drawing_the_new_view()
     Assert.isTrue(ready, "a resident replacement admits without pending")
     Assert.isNil(failure, "a resident replacement reports no failure")
     local newWallpaper = manifest.storage.wallpapers[1].image
-    Assert.notNil(
-      renderer._images[newWallpaper],
-      "the warm cutover installs the new wallpaper before drawing"
-    )
-    Assert.isNil(
-      renderer._images[oldWallpaper],
-      "the warm cutover retires the superseded wallpaper at once"
-    )
+    Assert.notNil(renderer._images[newWallpaper], "the warm cutover installs the new wallpaper before drawing")
+    Assert.isNil(renderer._images[oldWallpaper], "the warm cutover retires the superseded wallpaper at once")
     local newImage = assert(renderer._images[newWallpaper], "the new wallpaper resolves its lease")
     drawsBefore = #graphics.draws
     host:draw(resources)
@@ -2483,10 +2457,7 @@ function T.warm_wallpaper_replacement_commits_before_drawing_the_new_view()
       drawsImageSinceTransition(graphics, drawsBefore, newImage),
       "the warm replacement paints its wallpaper"
     )
-    Assert.isFalse(
-      drawsImageSinceTransition(graphics, drawsBefore, oldImage),
-      "the retired wallpaper paints no longer"
-    )
+    Assert.isFalse(drawsImageSinceTransition(graphics, drawsBefore, oldImage), "the retired wallpaper paints no longer")
     local admittedPair = child:presentationPlan(false)
     Assert.notNil(admittedPair, "the warm cutover records its admitted pair")
 
@@ -2512,7 +2483,10 @@ function T.warm_wallpaper_replacement_commits_before_drawing_the_new_view()
       drawsImageSinceTransition(graphics, drawsBefore, oldImage),
       "pending frames never revive the retired wallpaper"
     )
-    Assert.isTrue(host:presentationPlan() == child:presentationPlan(false), "pending frames serve the recorded pair route")
+    Assert.isTrue(
+      host:presentationPlan() == child:presentationPlan(false),
+      "pending frames serve the recorded pair route"
+    )
     host:close(handle)
     renderer:dispose()
     Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
@@ -2563,8 +2537,7 @@ function T.delayed_icon_page_keeps_the_admitted_view_and_its_icons_until_admissi
     pendingPaths[manifest.storage.wallpapers[2].image] = true
     local ready, failure = tickTransitionPc(host, handle, preparation, { { type = "action", action = "wallpaper" } })
     Assert.isTrue(ready, "opening the chooser keeps the admitted view ready")
-    ready, failure =
-      tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 2 } })
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 2 } })
     Assert.isTrue(ready, "highlighting a choice keeps the admitted view ready")
     ready, failure = tickTransitionPc(host, handle, preparation, { { type = "submit" } })
     Assert.isFalse(ready, "a pending wallpaper keeps the host unready")
@@ -2612,10 +2585,8 @@ function T.delayed_icon_page_keeps_the_admitted_view_and_its_icons_until_admissi
     pendingPaths[manifest.storage.wallpapers[2].image] = nil
     admitTransitionBox(host, handle, preparation, "icon and wallpaper recovery")
     local uploadsAtAdmission = inner.uploads
-    local newImage = assert(
-      renderer._images[manifest.storage.wallpapers[2].image],
-      "admission installs the new wallpaper"
-    )
+    local newImage =
+      assert(renderer._images[manifest.storage.wallpapers[2].image], "admission installs the new wallpaper")
     local newPage = assert(icons:handleFor("TOTODILE/f0"), "admission borrows the new icon page")
     drawsBefore = #graphics.draws
     host:draw(resources)
@@ -2679,8 +2650,7 @@ function T.delayed_icon_page_behind_a_resolved_wallpaper_keeps_the_admitted_view
     pendingPaths[MonCache.iconPagePath(1)] = true
     local ready, failure = tickTransitionPc(host, handle, preparation, { { type = "action", action = "wallpaper" } })
     Assert.isTrue(ready, "opening the chooser keeps the admitted view ready")
-    ready, failure =
-      tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 1 } })
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 1 } })
     Assert.isTrue(ready, "highlighting a choice keeps the admitted view ready")
     local factory = CatalogFixture.makeFactory(0x33333333, mons:catalog())
     local partyTotodile = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
@@ -2716,10 +2686,8 @@ function T.delayed_icon_page_behind_a_resolved_wallpaper_keeps_the_admitted_view
 
     pendingPaths[MonCache.iconPagePath(1)] = nil
     admitTransitionBox(host, handle, preparation, "icon recovery")
-    local newImage = assert(
-      renderer._images[manifest.storage.wallpapers[1].image],
-      "admission installs the new wallpaper"
-    )
+    local newImage =
+      assert(renderer._images[manifest.storage.wallpapers[1].image], "admission installs the new wallpaper")
     local newPage = assert(icons:handleFor("TOTODILE/f0"), "admission borrows the new icon page")
     local drawsBefore = #graphics.draws
     host:draw(resources)
@@ -2801,25 +2769,18 @@ function T.pending_storage_replacement_reflows_its_admitted_frames_to_the_curren
     admitTransitionBox(host, handle, preparation, "first open")
     local oldWallpaper = manifest.storage.wallpapers[0].image
     local oldImage = assert(renderer._images[oldWallpaper], "admission installs its wallpaper")
-    local admittedView = assert(
-      child:status().admittedParentView,
-      "the first admission records its parent view"
-    )
+    local admittedView = assert(child:status().admittedParentView, "the first admission records its parent view")
     local widePlan = assert(host:presentationPlan(), "the admitted box publishes its plan")
     local drawsBefore = #graphics.draws
     host:draw(resources)
-    Assert.isTrue(
-      drawsImageSinceTransition(graphics, drawsBefore, oldImage),
-      "the admitted box paints its wallpaper"
-    )
+    Assert.isTrue(drawsImageSinceTransition(graphics, drawsBefore, oldImage), "the admitted box paints its wallpaper")
 
     -- Stage the replacement while its pixels stay held.
     pendingPaths[manifest.storage.wallpapers[2].image] = true
     local ready, failure = tickTransitionPc(host, handle, preparation, { { type = "action", action = "wallpaper" } })
     Assert.isTrue(ready, "opening the chooser keeps the admitted view ready")
     Assert.isNil(failure, "opening the chooser reports no failure")
-    ready, failure =
-      tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 2 } })
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 2 } })
     Assert.isTrue(ready, "highlighting a choice keeps the admitted view ready")
     Assert.isNil(failure, "highlighting a choice reports no failure")
     ready, failure = tickTransitionPc(host, handle, preparation, { { type = "submit" } })
@@ -2843,10 +2804,7 @@ function T.pending_storage_replacement_reflows_its_admitted_frames_to_the_curren
       )
       Assert.equal(inner.uploads, uploadsAtSubmit, "reflow uploads no new pixels")
       local fallback = assert(host:presentationPlan(), "pending frames keep a fallback plan")
-      Assert.isTrue(
-        fallback == child:presentationPlan(false),
-        "host frames and fallback panes share one reflowed plan"
-      )
+      Assert.isTrue(fallback == child:presentationPlan(false), "host frames and fallback panes share one reflowed plan")
       assertFollowsCurrentTopology(fallback, admittedView, tallMeasurement, "the stalled fallback")
       drawsBefore = #graphics.draws
       host:draw(resources)
@@ -2859,10 +2817,7 @@ function T.pending_storage_replacement_reflows_its_admitted_frames_to_the_curren
     ready, failure = tickTransitionPc(host, handle, preparation, {})
     Assert.isFalse(ready, "the replacement stays pending on an idle tall tick")
     Assert.isNil(failure, "the idle tall tick reports no failure")
-    Assert.isTrue(
-      host:presentationPlan() == tallPlan,
-      "a steady tall signature keeps the identical fallback plan"
-    )
+    Assert.isTrue(host:presentationPlan() == tallPlan, "a steady tall signature keeps the identical fallback plan")
 
     -- Releasing the held pixels admits the replacement under the current
     -- tall plan immediately.
@@ -2871,30 +2826,16 @@ function T.pending_storage_replacement_reflows_its_admitted_frames_to_the_curren
     local newWallpaper = manifest.storage.wallpapers[2].image
     local newImage = assert(renderer._images[newWallpaper], "admission installs the new wallpaper")
     local recoveredPlan = assert(host:presentationPlan(), "the recovery publishes its plan")
-    assertFollowsCurrentTopology(
-      recoveredPlan,
-      child:status().visualView,
-      tallMeasurement,
-      "the admitted replacement"
-    )
+    assertFollowsCurrentTopology(recoveredPlan, child:status().visualView, tallMeasurement, "the admitted replacement")
     drawsBefore = #graphics.draws
     host:draw(resources)
     Assert.isTrue(
       drawsImageSinceTransition(graphics, drawsBefore, newImage),
       "the admitted replacement paints its wallpaper"
     )
-    Assert.isFalse(
-      drawsImageSinceTransition(graphics, drawsBefore, oldImage),
-      "the retired wallpaper paints no longer"
-    )
-    local recoveredView = assert(
-      child:status().admittedParentView,
-      "the recovery records its newly admitted parent"
-    )
-    Assert.isTrue(
-      recoveredView ~= admittedView,
-      "the admitted parent tracks the latest cutover"
-    )
+    Assert.isFalse(drawsImageSinceTransition(graphics, drawsBefore, oldImage), "the retired wallpaper paints no longer")
+    local recoveredView = assert(child:status().admittedParentView, "the recovery records its newly admitted parent")
+    Assert.isTrue(recoveredView ~= admittedView, "the admitted parent tracks the latest cutover")
 
     -- Another stalled replacement falls back to the newly admitted view
     -- under the restored wide topology, never the retired one.
@@ -2911,10 +2852,7 @@ function T.pending_storage_replacement_reflows_its_admitted_frames_to_the_curren
     ready, failure = tickTransitionPc(host, handle, preparation, {})
     Assert.isFalse(ready, "the second replacement stays pending")
     Assert.isNil(failure, "the second replacement reports no failure")
-    Assert.isTrue(
-      child:status().admittedParentView == recoveredView,
-      "the second stall keeps the newly admitted view"
-    )
+    Assert.isTrue(child:status().admittedParentView == recoveredView, "the second stall keeps the newly admitted view")
     local secondFallback = assert(host:presentationPlan(), "the second stall keeps a fallback plan")
     assertFollowsCurrentTopology(secondFallback, recoveredView, wideMeasurement, "the second fallback")
     drawsBefore = #graphics.draws
@@ -2963,10 +2901,7 @@ function T.blocked_display_hides_the_admitted_parent_until_a_supported_topology_
     local oldWallpaper = manifest.storage.wallpapers[0].image
     local oldImage = assert(renderer._images[oldWallpaper], "admission installs its wallpaper")
     local oldPage = assert(icons:handleFor("CHIKORITA/f0"), "admission borrows the old icon page")
-    local admittedView = assert(
-      child:status().admittedParentView,
-      "the first admission records its parent view"
-    )
+    local admittedView = assert(child:status().admittedParentView, "the first admission records its parent view")
     Assert.notNil(host:presentationPlan(), "the admitted box publishes its plan")
 
     -- The replacement needs another icon page while the wallpaper it
@@ -2974,8 +2909,7 @@ function T.blocked_display_hides_the_admitted_parent_until_a_supported_topology_
     pendingPaths[MonCache.iconPagePath(1)] = true
     local ready, failure = tickTransitionPc(host, handle, preparation, { { type = "action", action = "wallpaper" } })
     Assert.isTrue(ready, "opening the chooser keeps the admitted view ready")
-    ready, failure =
-      tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 1 } })
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 1 } })
     Assert.isTrue(ready, "highlighting a choice keeps the admitted view ready")
     local factory = CatalogFixture.makeFactory(0x44444444, mons:catalog())
     local partyTotodile = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
@@ -3006,11 +2940,7 @@ function T.blocked_display_hides_the_admitted_parent_until_a_supported_topology_
       local fallback = assert(host:presentationPlan(), "the blocked wait keeps a fallback plan")
       Assert.equal(#fallback.panes, 0, "an unavailable display publishes no panes")
       Assert.equal(#fallback.frames, 0, "an unavailable display publishes no outer frames")
-      Assert.equal(
-        fallback.inputKey,
-        "pc-storage-inactive",
-        "an unavailable display publishes the inactive plan"
-      )
+      Assert.equal(fallback.inputKey, "pc-storage-inactive", "an unavailable display publishes the inactive plan")
       Assert.equal(inner.uploads, uploadsAtSubmit, "the blocked wait uploads no new pixels")
       local demandedNow = demanded[#demanded]
       local holdsOld = false
@@ -3036,16 +2966,10 @@ function T.blocked_display_hides_the_admitted_parent_until_a_supported_topology_
     ready, failure = tickTransitionPc(host, handle, preparation, {})
     Assert.isFalse(ready, "the replacement stays pending after the restore")
     Assert.isNil(failure, "the restore reports no failure")
-    Assert.isTrue(
-      child:status().admittedParentView == admittedView,
-      "the restore keeps the admitted semantic view"
-    )
+    Assert.isTrue(child:status().admittedParentView == admittedView, "the restore keeps the admitted semantic view")
     local restored = assert(host:presentationPlan(), "the restore publishes a fallback plan")
     Assert.isTrue(#restored.panes > 0, "the restored display places the admitted panes again")
-    Assert.isTrue(
-      restored.inputKey ~= "pc-storage-inactive",
-      "the restored display leaves the inactive plan"
-    )
+    Assert.isTrue(restored.inputKey ~= "pc-storage-inactive", "the restored display leaves the inactive plan")
     local drawsBefore = #graphics.draws
     host:draw(resources)
     Assert.isTrue(
@@ -3059,10 +2983,8 @@ function T.blocked_display_hides_the_admitted_parent_until_a_supported_topology_
 
     pendingPaths[MonCache.iconPagePath(1)] = nil
     admitTransitionBox(host, handle, preparation, "icon recovery")
-    local newImage = assert(
-      renderer._images[manifest.storage.wallpapers[1].image],
-      "admission installs the new wallpaper"
-    )
+    local newImage =
+      assert(renderer._images[manifest.storage.wallpapers[1].image], "admission installs the new wallpaper")
     local newPage = assert(icons:handleFor("TOTODILE/f0"), "admission borrows the new icon page")
     drawsBefore = #graphics.draws
     host:draw(resources)

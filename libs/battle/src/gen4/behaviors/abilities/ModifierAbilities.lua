@@ -72,8 +72,6 @@ local ABSORB_TYPE = {
   WATER_ABSORB = "water",
   FLASH_FIRE = "fire",
   MOTOR_DRIVE = "electric",
-  LIGHTNINGROD = "electric",
-  STORM_DRAIN = "water",
 }
 
 local HALVED_TYPE = {
@@ -101,8 +99,6 @@ local BOOST_STAT = {
   GUTS = { stats = { attack = true }, needsStatus = true, ratio = { numerator = 3, denominator = 2 } },
   MARVEL_SCALE = { stats = { defense = true }, needsStatus = true, ratio = { numerator = 3, denominator = 2 } },
   QUICK_FEET = { stats = { speed = true }, needsStatus = true, ratio = { numerator = 3, denominator = 2 } },
-  PLUS = { stats = { specialAttack = true }, ratio = { numerator = 3, denominator = 2 } },
-  MINUS = { stats = { specialAttack = true }, ratio = { numerator = 3, denominator = 2 } },
   HUSTLE = { stats = { attack = true }, split = "physical", ratio = { numerator = 3, denominator = 2 } },
   FLOWER_GIFT = {
     stats = { attack = true, specialDefense = true },
@@ -120,7 +116,6 @@ local POWER_FLAG = {
   SERENE_GRACE = "secondary",
   SKILL_LINK = "multiHit",
   TECHNICIAN = "weakMove",
-  STENCH = "damaging",
 }
 
 local ACCURACY_OUTCOME = {
@@ -183,6 +178,11 @@ local function absorbMove(instance, context)
     return nil
   end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), absorbed = true }
+end
+
+---@return nil always silent
+local function noCheckpointEffect()
+  return nil
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -555,6 +555,8 @@ function ModifierAbilities.register(owned)
   for key in pairs(ABSORB_TYPE) do
     owned[key] = absorbMove
   end
+  owned.LIGHTNINGROD = noCheckpointEffect
+  owned.STORM_DRAIN = noCheckpointEffect
   for key in pairs(HALVED_TYPE) do
     owned[key] = halveDamage
   end

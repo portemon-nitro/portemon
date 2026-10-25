@@ -197,8 +197,11 @@ end
 
 function T.sorts_translucent_neighbors_using_one_cell_transform()
   local cacheFs, geomPath, texPath, elevatedGeomPath = fakeCacheFs()
-  local ring =
-    NeighborRing.load(cacheFs, translucentDescriptors(geomPath, elevatedGeomPath, texPath), { imageAssets = SharedImagePoolFake.new() })
+  local ring = NeighborRing.load(
+    cacheFs,
+    translucentDescriptors(geomPath, elevatedGeomPath, texPath),
+    { imageAssets = SharedImagePoolFake.new() }
+  )
 
   -- The first mesh center is z=1 and lives in the +32 cell, so its world-space
   -- sort center is z=33. The second mesh center is z=49 in the origin cell.
@@ -300,8 +303,7 @@ function T.malformed_cell_descriptor_releases_earlier_cells_images()
   }
   local graphics = fakeGraphics()
   local images = SharedImagePoolFake.new()
-  local ok, err =
-    pcall(NeighborRing.load, cacheFs, { first, second }, { graphics = graphics, imageAssets = images })
+  local ok, err = pcall(NeighborRing.load, cacheFs, { first, second }, { graphics = graphics, imageAssets = images })
   Assert.isFalse(ok, "a descriptor without a batches array fails the load: " .. tostring(err))
   Assert.equal(images.uploads, 1, "the first cell's image was borrowed")
   Assert.equal(images:stats().outstandingLeases, 0, "a malformed descriptor returns the earlier cells' leases")
@@ -431,7 +433,11 @@ function T.neighbor_swap_frames_are_acquired_and_update_in_place()
       textureSrt = clip,
     }
   )
-  Assert.equal(ring.stats.textureCount, 5, "base, the three unique steps, and water are borrowed once across both cells")
+  Assert.equal(
+    ring.stats.textureCount,
+    5,
+    "base, the three unique steps, and water are borrowed once across both cells"
+  )
   Assert.equal(images.uploads, 5)
   local sampler = { wrapX = "repeat", wrapY = "repeat" }
 

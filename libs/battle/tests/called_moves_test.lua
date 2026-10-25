@@ -441,16 +441,28 @@ function T.copy_move_callers_apply_source_legality()
 
   Assert.equal(select("MIRROR_MOVE", "TACKLE").executingMove, "TACKLE", "Mirror Move accepts ordinary effects")
   Assert.equal(select("MIRROR_MOVE", "MIMIC").failed, "nothing-to-copy", "Mirror Move rejects Encore-banned effects")
-  Assert.equal(select("MIRROR_MOVE", "MIMIC_ALIAS").failed, "nothing-to-copy", "Mirror Move rejects matching effects by identity")
+  Assert.equal(
+    select("MIRROR_MOVE", "MIMIC_ALIAS").failed,
+    "nothing-to-copy",
+    "Mirror Move rejects matching effects by identity"
+  )
   Assert.equal(select("MIRROR_MOVE", "TRANSFORM").failed, "nothing-to-copy", "Mirror Move rejects Transform's effect")
   Assert.equal(select("COPYCAT", "TACKLE").executingMove, "TACKLE", "Copycat accepts an ordinary prior move")
   Assert.equal(select("COPYCAT", "METRONOME").failed, "nothing-to-copy", "Copycat rejects calling moves")
   Assert.equal(select("COPYCAT", "NONE").failed, "nothing-to-copy", "Copycat rejects the empty move identity")
-  Assert.equal(select("COPYCAT", "RECOVER", false, true).failed, "nothing-to-copy", "Copycat applies Heal Block legality")
+  Assert.equal(
+    select("COPYCAT", "RECOVER", false, true).failed,
+    "nothing-to-copy",
+    "Copycat applies Heal Block legality"
+  )
   Assert.equal(select("COPYCAT", "FLY", true, false).failed, "nothing-to-copy", "Copycat applies Gravity legality")
   Assert.equal(select("ME_FIRST", "TACKLE").executingMove, "TACKLE", "Me First accepts a powered move")
   Assert.equal(select("ME_FIRST", "COUNTER").failed, "nothing-to-copy", "Me First rejects Counter's effect")
-  Assert.equal(select("ME_FIRST", "COUNTER_ALIAS").failed, "nothing-to-copy", "Me First compares effects rather than identities")
+  Assert.equal(
+    select("ME_FIRST", "COUNTER_ALIAS").failed,
+    "nothing-to-copy",
+    "Me First compares effects rather than identities"
+  )
   Assert.equal(select("ME_FIRST", "RECOVER").failed, "nothing-to-copy", "Me First rejects zero-power moves")
 end
 

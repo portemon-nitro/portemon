@@ -560,12 +560,20 @@ function T.source_inventory_read_treats_only_unusable_loads_as_absent()
     Assert.notNil(reason, code .. " retains an explanatory absence")
   end
 
-  local noErrorCache = { loadLua = function() return nil end }
+  local noErrorCache = {
+    loadLua = function()
+      return nil
+    end,
+  }
   local noErrorRecord, noErrorReason = SourcePlan.read(noErrorCache, identity("nil-load-generation"))
   Assert.isNil(noErrorRecord, "a nil load without an error remains absent")
   Assert.notNil(noErrorReason, "a nil load without an error remains explanatory")
 
-  local nonTableCache = { loadLua = function() return "not a record" end }
+  local nonTableCache = {
+    loadLua = function()
+      return "not a record"
+    end,
+  }
   local nonTableRecord, nonTableReason = SourcePlan.read(nonTableCache, identity("non-table-load-generation"))
   Assert.isNil(nonTableRecord, "a non-table load is rejected as absent")
   Assert.notNil(nonTableReason, "a non-table load has an explanatory result")
@@ -590,11 +598,8 @@ function T.source_inventory_read_propagates_backend_faults_intact()
   Assert.equal(returnedFailure.code, StorageErrors.CACHE_READ_FAILED, "the returned fault keeps its code")
   Assert.equal(returnedFailure.context.path, SourcePlan.PATH, "the returned fault keeps its path context")
 
-  local unexpectedFault = Errors.new(
-    StorageErrors.CACHE_WRITE_FAILED,
-    "unexpected source inventory load error",
-    { path = SourcePlan.PATH }
-  )
+  local unexpectedFault =
+    Errors.new(StorageErrors.CACHE_WRITE_FAILED, "unexpected source inventory load error", { path = SourcePlan.PATH })
   local unexpectedFaultCache = {
     loadLua = function()
       return nil, unexpectedFault
@@ -924,7 +929,7 @@ local function minimalCatalog()
     return curve
   end
   return {
-    schema = "g4-mon-catalog-v4",
+    schema = "g4-mon-catalog-v5",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},
@@ -2177,11 +2182,7 @@ function T.validated_inventory_projects_scheduler_membership_from_one_owner()
   local consumerPlans = assert(published, "the consumer path publishes plans")
   local base = SourcePlan.project(reread)
   Assert.deepEqual(consumerPlans.messageBankIds, base.messageBankIds, "the consumer path shares the projected banks")
-  Assert.deepEqual(
-    consumerPlans.audioBankIds,
-    base.audioBankIds,
-    "the consumer path shares the projected audio banks"
-  )
+  Assert.deepEqual(consumerPlans.audioBankIds, base.audioBankIds, "the consumer path shares the projected audio banks")
   Assert.deepEqual(
     consumerPlans.scriptMemberIds,
     base.scriptMemberIds,
@@ -2190,11 +2191,7 @@ function T.validated_inventory_projects_scheduler_membership_from_one_owner()
   Assert.deepEqual(consumerPlans.mapDataIds, base.mapDataIds, "the consumer path shares the projected records")
   Assert.deepEqual(consumerPlans.mapIds, base.mapIds, "the consumer path shares the projected maps")
   Assert.deepEqual(consumerPlans.iconPageIds, { 0 }, "layout adoption augments the base view with icon pages")
-  Assert.deepEqual(
-    consumerPlans.portraitPageIds,
-    { 0 },
-    "layout adoption augments the base view with portrait pages"
-  )
+  Assert.deepEqual(consumerPlans.portraitPageIds, { 0 }, "layout adoption augments the base view with portrait pages")
 end
 
 return { tests = T }

@@ -32,6 +32,7 @@
 ---@field stab DamageRational
 ---@field effectiveness DamageRational aggregate immunity and classification pair
 ---@field effectivenessFactors DamageRational[] ordered per-type factors in declared defender order
+---@field effectivenessModifier DamageRational? post-chart resistance or super-effective ability ratio
 ---@field screenApplies boolean? whether the category-matching side screen guards the strike
 ---@field screenReduction string? half for a lone guard, two_thirds for a paired-battle guard
 ---@field removesScreens boolean? whether the strike shatters side screens instead of meeting them
@@ -40,6 +41,7 @@
 ---@field weatherSuppressed boolean? whether a live ability suppresses weather damage
 ---@field moveType string striking move type under weather law
 ---@field solarBeam boolean? whether the strike is the charging grass special case
+---@field flashFireBoost boolean? whether the attacker has absorbed fire and boosts fire damage
 ---@field meFirst boolean? whether the source Me First flag scales this damage instance
 ---@field randomPercent integer?
 
@@ -98,6 +100,9 @@ local function requireSpec(spec)
   assert(type(spec.effectivenessFactors) == "table", "strikes carry ordered type factors")
   for _, factor in ipairs(spec.effectivenessFactors) do
     requireRational(factor, "type factor")
+  end
+  if spec.effectivenessModifier ~= nil then
+    requireRational(spec.effectivenessModifier, "post-chart ability modifier")
   end
   -- Barrier facts validate before the damage draw: a guarded strike names
   -- its half or two-thirds reduction, while unguarded strikes never read
@@ -214,6 +219,12 @@ local function runStages(spec, stream, stages)
     end
   end
 
+  if spec.flashFireBoost == true and spec.moveType == "fire" then
+    local boosted = math.floor((current * 15) / 10)
+    recordStage(boosted, stages, "flash_fire", current, "floor(damage*15/10) after weather for Flash Fire")
+    current = boosted
+  end
+
   local bonused = current + 2
   recordStage(bonused, stages, "bonus", current, "damage+2 after the pre-bonus modifiers")
   current = bonused
@@ -261,6 +272,18 @@ local function runStages(spec, stream, stages)
       "floor(damage*effectNumerator/effectDenominator) per defending type"
     )
     current = typed
+  end
+
+  if spec.effectivenessModifier ~= nil then
+    local modifier = spec.effectivenessModifier --[[@as DamageRational]]
+    assert(modifier.numerator ~= nil and modifier.denominator ~= nil, "effectiveness modifiers carry a ratio")
+    local adjusted = math.floor(
+      (
+        current * modifier.numerator --[[@as integer]]
+      ) / modifier.denominator --[[@as integer]]
+    )
+    recordStage(adjusted, stages, "ability_effectiveness", current, "post-chart ability effectiveness ratio")
+    current = adjusted
   end
 
   if current < 1 then

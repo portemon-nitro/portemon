@@ -88,7 +88,7 @@ end
 
 local function catalogWith(species, moves, abilities, growthCurves)
   return {
-    schema = "g4-mon-catalog-v4",
+    schema = "g4-mon-catalog-v5",
     version = { id = "heartgold", language = "english" },
     species = species,
     moves = moves,

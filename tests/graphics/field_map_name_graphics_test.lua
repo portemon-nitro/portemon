@@ -168,8 +168,16 @@ local function drawableState(order, bannerStatus)
     startMenuRenderer = { draw = function() end },
     trainerCardRenderer = { draw = function() end },
     menuRenderer = { draw = function() end },
-    fieldEntranceIndicatorRenderer = { drawItems = function() return {} end },
-    fieldEmoteRenderer = { drawItems = function() return {} end },
+    fieldEntranceIndicatorRenderer = {
+      drawItems = function()
+        return {}
+      end,
+    },
+    fieldEmoteRenderer = {
+      drawItems = function()
+        return {}
+      end,
+    },
   }
   local runtime = {
     errorText = nil,
@@ -177,14 +185,28 @@ local function drawableState(order, bannerStatus)
     runtimeMap = {
       mapId = 33,
       mapSymbol = "MAP_ROUTE_29",
-      coverage = { worldParts = function() return {} end },
+      coverage = {
+        worldParts = function()
+          return {}
+        end,
+      },
       renderEnvironment = {},
       sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} },
     },
     player = { fieldX = 0, fieldZ = 0, worldY = 0, surfaceId = 0, facing = "east", motion = "idle" },
-    session = { renderAlpha = function() return 0.5 end },
-    overworld = { isPresent = function() return true end },
-    destinationWorldPresentable = function() return true end,
+    session = {
+      renderAlpha = function()
+        return 0.5
+      end,
+    },
+    overworld = {
+      isPresent = function()
+        return true
+      end,
+    },
+    destinationWorldPresentable = function()
+      return true
+    end,
     acknowledgeDestinationPresentation = function() end,
     viewport = {
       width = 512,
@@ -208,36 +230,93 @@ local function drawableState(order, bannerStatus)
     },
     screenTopology = topology,
     fieldPixelScale = {
-      resolvedScale = function() return 3 end,
+      resolvedScale = function()
+        return 3
+      end,
     },
-    fieldEntranceIndicator = { status = function() return { visible = false } end },
-    fieldTerrainEffectController = { status = function() return { instances = {} } end },
-    dialogue = { isModal = function() return false end },
-    scripts = { dialogueHost = { yesNoPresentation = function() return nil end } },
-    signpost = { isModal = function() return false end },
-    applicationHost = { isActive = function() return false end, status = function() return { fadeAlpha = 0 } end },
-    pcApplicationHost = { isActive = function() return false end },
-    menuHost = { presentation = function() return nil end },
+    fieldEntranceIndicator = {
+      status = function()
+        return { visible = false }
+      end,
+    },
+    fieldTerrainEffectController = {
+      status = function()
+        return { instances = {} }
+      end,
+    },
+    dialogue = {
+      isModal = function()
+        return false
+      end,
+    },
+    scripts = { dialogueHost = {
+      yesNoPresentation = function()
+        return nil
+      end,
+    } },
+    signpost = {
+      isModal = function()
+        return false
+      end,
+    },
+    applicationHost = {
+      isActive = function()
+        return false
+      end,
+      status = function()
+        return { fadeAlpha = 0 }
+      end,
+    },
+    pcApplicationHost = {
+      isActive = function()
+        return false
+      end,
+    },
+    menuHost = {
+      presentation = function()
+        return nil
+      end,
+    },
     yesNoHost = {
-      isModal = function() return false end,
-      layoutFor = function() error("no choice is active in this fixture", 0) end,
+      isModal = function()
+        return false
+      end,
+      layoutFor = function()
+        error("no choice is active in this fixture", 0)
+      end,
     },
-    contextChoiceProvider = { status = function() return nil end },
-    contextChoicePresentation = function() return nil end,
+    contextChoiceProvider = {
+      status = function()
+        return nil
+      end,
+    },
+    contextChoicePresentation = function()
+      return nil
+    end,
     resizePresentation = function() end,
-    mapNameBanner = { status = function() return bannerStatus end },
+    mapNameBanner = {
+      status = function()
+        return bannerStatus
+      end,
+    },
   }
   return setmetatable({
     _actorDesiredReady = true,
     runtime = runtime,
-    topologyProvider = function() return topology end,
+    topologyProvider = function()
+      return topology
+    end,
     worldParts = {},
     worldActorItems = {},
     spriteItems = {},
     presentationResources = resources,
     actorPresentation = {
-      drawItems = function() return {} end,
-      records = function() return {} end,
+      drawItems = function()
+        return {}
+      end,
+      records = function()
+        return {}
+      end,
     },
   }, FieldState)
 end
@@ -376,8 +455,7 @@ end
 function T.glyph_background_class_leaves_textured_skin_visible_through_the_real_shader(scope)
   local lg = love.graphics
   local manifest, cacheFs = bannerLeaseFixture()
-  local resources =
-    setmetatable({ cacheFs = cacheFs, fieldEntryManifest = manifest }, FieldPresentationResources)
+  local resources = setmetatable({ cacheFs = cacheFs, fieldEntryManifest = manifest }, FieldPresentationResources)
   local viewPalette = resources:_bannerSkinFor(4).palette
 
   local fontCache = FieldDialogueFixture.cacheWithFont()
@@ -447,10 +525,7 @@ function T.glyph_background_class_leaves_textured_skin_visible_through_the_real_
     255,
     "a background-class texel leaves the skin visible"
   )
-  Assert.isNil(
-    manifest.bannerTextPalettes[4].background.a,
-    "the generated palette carries no alpha of its own"
-  )
+  Assert.isNil(manifest.bannerTextPalettes[4].background.a, "the generated palette carries no alpha of its own")
   Assert.equal(viewPalette.background.a, 0, "the lease-local background role requests normalized zero alpha")
 end
 
@@ -462,8 +537,7 @@ end
 function T.a_failed_style_replacement_keeps_the_last_valid_skin_and_lease_palette(_scope)
   local manifest, cacheFs = bannerLeaseFixture()
   local style7png = cacheFs.files["banner/style-7.png"]
-  local resources =
-    setmetatable({ cacheFs = cacheFs, fieldEntryManifest = manifest }, FieldPresentationResources)
+  local resources = setmetatable({ cacheFs = cacheFs, fieldEntryManifest = manifest }, FieldPresentationResources)
 
   local created = {}
   local failSetFilter = false
@@ -501,10 +575,7 @@ function T.a_failed_style_replacement_keeps_the_last_valid_skin_and_lease_palett
     Assert.equal(skinA.palette.background.g, 112, "the lease keeps the source background green byte")
     Assert.equal(skinA.palette.background.b, 128, "the lease keeps the source background blue byte")
     Assert.equal(skinA.palette.background.a, 0, "the lease-local background role requests normalized zero alpha")
-    Assert.isNil(
-      manifest.bannerTextPalettes[4].background.a,
-      "presentation alpha never persists into the manifest"
-    )
+    Assert.isNil(manifest.bannerTextPalettes[4].background.a, "presentation alpha never persists into the manifest")
     Assert.isTrue(resources:_bannerSkinFor(4) == skinA, "a repeated style draw reuses the retained lease")
     Assert.equal(#created, 1, "a repeated style draw allocates nothing")
 

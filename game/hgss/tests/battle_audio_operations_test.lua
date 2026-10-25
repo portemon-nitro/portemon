@@ -421,7 +421,10 @@ end
 ---@param species string catalog species under lookup
 local function cryIdentity(catalog, species)
   local facts = catalog:species(species)
-  Assert.isTrue(type(facts) == "table" and type(facts.nativeId) == "number", "cries name a cataloged species: " .. species)
+  Assert.isTrue(
+    type(facts) == "table" and type(facts.nativeId) == "number",
+    "cries name a cataloged species: " .. species
+  )
   return facts.nativeId
 end
 
@@ -450,7 +453,6 @@ local function countCries(log, species)
   end
   return total
 end
-
 
 -- Wraps the live field audio service with counting recorders so music
 -- selection, starts, and policy transfers stay observable without
@@ -733,7 +735,8 @@ function T.cold_and_special_starts_raise_only_the_chosen_track_on_the_cover_tick
     for _, leg in ipairs(legs) do
       local runtime = bootRuntime(versionId)
       local log = {}
-      local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("cover-tick:" .. leg.name), richCueDouble(log))
+      local envelope, binding, _ =
+        bindEnvelope(runtime, versionId, dualMeasurement("cover-tick:" .. leg.name), richCueDouble(log))
       local trace = freshMusicTrace()
       watchMusic(runtime.audio, trace)
       local ok, legErr = xpcall(function()
@@ -761,16 +764,30 @@ function T.cold_and_special_starts_raise_only_the_chosen_track_on_the_cover_tick
         end
         Assert.notNil(runtime.battleCoordinator:activeBattle(), "the " .. leg.name .. " start constructs its battle")
         checkStartedNote(problems, envelope, leg.expected, versionId, leg.name .. " start")
-        check(problems, #trace.starts == 1, "the " .. leg.name .. " start raises its music exactly once on " .. versionId)
+        check(
+          problems,
+          #trace.starts == 1,
+          "the " .. leg.name .. " start raises its music exactly once on " .. versionId
+        )
         if trace.starts[1] ~= nil then
           check(
             problems,
             trace.starts[1].symbol == leg.expected,
-            "the " .. leg.name .. " start raises " .. tostring(leg.expected) .. ", not "
-              .. tostring(trace.starts[1].symbol) .. ", on " .. versionId
+            "the "
+              .. leg.name
+              .. " start raises "
+              .. tostring(leg.expected)
+              .. ", not "
+              .. tostring(trace.starts[1].symbol)
+              .. ", on "
+              .. versionId
           )
         else
-          check(problems, false, "the " .. leg.name .. " start raises " .. tostring(leg.expected) .. " on " .. versionId)
+          check(
+            problems,
+            false,
+            "the " .. leg.name .. " start raises " .. tostring(leg.expected) .. " on " .. versionId
+          )
         end
         check(problems, not earlyStart, "the " .. leg.name .. " music waits for full cover on " .. versionId)
         check(
@@ -810,8 +827,12 @@ function T.cold_and_special_starts_raise_only_the_chosen_track_on_the_cover_tick
         runtime:dispose()
       end)
       if not ok then
-        problems[#problems + 1] = "the " .. leg.name .. " start failed outside its contract on "
-          .. versionId .. ": " .. tostring(legErr)
+        problems[#problems + 1] = "the "
+          .. leg.name
+          .. " start failed outside its contract on "
+          .. versionId
+          .. ": "
+          .. tostring(legErr)
       end
     end
 
@@ -849,7 +870,10 @@ function T.cold_and_special_starts_raise_only_the_chosen_track_on_the_cover_tick
         runtime:dispose()
       end)
       if not ok then
-        problems[#problems + 1] = "the special start failed outside its contract on " .. versionId .. ": " .. tostring(legErr)
+        problems[#problems + 1] = "the special start failed outside its contract on "
+          .. versionId
+          .. ": "
+          .. tostring(legErr)
       end
     end
 
@@ -908,7 +932,10 @@ function T.cold_and_special_starts_raise_only_the_chosen_track_on_the_cover_tick
         envelope:dispose()
       end, debug.traceback)
       if not ok then
-        problems[#problems + 1] = "the cold start failed outside its contract on " .. versionId .. ": " .. tostring(legErr)
+        problems[#problems + 1] = "the cold start failed outside its contract on "
+          .. versionId
+          .. ": "
+          .. tostring(legErr)
       end
     end
   end
@@ -974,8 +1001,7 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
     do
       local runtime = bootRuntime(versionId)
       local log = {}
-      local envelope, binding, _ =
-        bindEnvelope(runtime, versionId, dualMeasurement("heard-cases"), richCueDouble(log))
+      local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("heard-cases"), richCueDouble(log))
       local trace = freshMusicTrace()
       watchMusic(runtime.audio, trace)
       local ok, legErr = xpcall(function()
@@ -995,23 +1021,11 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
           if entry.method == "play" and entry.symbol == selectSymbol then
             selects = selects + 1
           end
-          check(
-            problems,
-            entry.receiver ~= nil,
-            "every cue reaches its controller with its receiver on " .. versionId
-          )
+          check(problems, entry.receiver ~= nil, "every cue reaches its controller with its receiver on " .. versionId)
         end
         check(problems, selects >= 1, "the accepted menu reply plays its staged role on " .. versionId)
-        check(
-          problems,
-          countCries(log, leadCry) == 1,
-          "the lead send-out cries exactly once on " .. versionId
-        )
-        check(
-          problems,
-          countCries(log, foeCry) == 2,
-          "the wild foe cries at send-out and at faint on " .. versionId
-        )
+        check(problems, countCries(log, leadCry) == 1, "the lead send-out cries exactly once on " .. versionId)
+        check(problems, countCries(log, foeCry) == 2, "the wild foe cries at send-out and at faint on " .. versionId)
         local programVoices, unstagedVoices = 0, {}
         for _, entry in ipairs(log) do
           if entry.method == "play" and entry.symbol ~= selectSymbol then
@@ -1022,11 +1036,7 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
             end
           end
         end
-        check(
-          problems,
-          programVoices >= 1,
-          "damaging turns voice their staged native program on " .. versionId
-        )
+        check(problems, programVoices >= 1, "damaging turns voice their staged native program on " .. versionId)
         check(
           problems,
           #unstagedVoices == 0,
@@ -1047,7 +1057,10 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
         runtime:dispose()
       end)
       if not ok then
-        problems[#problems + 1] = "the heard journey failed outside its contract on " .. versionId .. ": " .. tostring(legErr)
+        problems[#problems + 1] = "the heard journey failed outside its contract on "
+          .. versionId
+          .. ": "
+          .. tostring(legErr)
       end
     end
 
@@ -1077,7 +1090,10 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
         runtime:dispose()
       end)
       if not ok then
-        problems[#problems + 1] = "the menu journey failed outside its contract on " .. versionId .. ": " .. tostring(legErr)
+        problems[#problems + 1] = "the menu journey failed outside its contract on "
+          .. versionId
+          .. ": "
+          .. tostring(legErr)
       end
     end
   end
@@ -1140,16 +1156,14 @@ function T.source_mix_parameters_and_overlapping_voices_keep_their_owned_timing(
         for _, entry in ipairs(leadOps) do
           check(
             problems,
-            entry.form ~= nil and entry.mode ~= nil and entry.pan ~= nil and entry.volume ~= nil
-              and entry.pitch ~= nil,
+            entry.form ~= nil and entry.mode ~= nil and entry.pan ~= nil and entry.volume ~= nil and entry.pitch ~= nil,
             "the lead cry carries its source mix parameters on " .. versionId
           )
         end
         for _, entry in ipairs(foeOps) do
           check(
             problems,
-            entry.form ~= nil and entry.mode ~= nil and entry.pan ~= nil and entry.volume ~= nil
-              and entry.pitch ~= nil,
+            entry.form ~= nil and entry.mode ~= nil and entry.pan ~= nil and entry.volume ~= nil and entry.pitch ~= nil,
             "the foe cry carries its source mix parameters on " .. versionId
           )
         end
@@ -1161,7 +1175,10 @@ function T.source_mix_parameters_and_overlapping_voices_keep_their_owned_timing(
         runtime:dispose()
       end)
       if not ok then
-        problems[#problems + 1] = "the mix journey failed outside its contract on " .. versionId .. ": " .. tostring(legErr)
+        problems[#problems + 1] = "the mix journey failed outside its contract on "
+          .. versionId
+          .. ": "
+          .. tostring(legErr)
       end
     end
   end
@@ -1185,24 +1202,20 @@ function T.repeated_delivery_and_old_voices_never_replay_or_steal_a_cue()
     )
     check(problems, #first:drainSounds() == 0, "duplicate deliveries queue no sounds")
     local stale = BattleTimeline.new({})
-    check(
-      problems,
-      stale:present({
-        launchId = "launch-stale-audio",
-        packetId = 7,
-        events = {
-          {
-            sequence = 9999,
-            kind = "acknowledge",
-            cause = { kind = "switch", combatant = 1 },
-            audience = "public",
-            payload = { activation = 1 },
-            after = { hp = {} },
-          },
+    check(problems, stale:present({
+      launchId = "launch-stale-audio",
+      packetId = 7,
+      events = {
+        {
+          sequence = 9999,
+          kind = "acknowledge",
+          cause = { kind = "switch", combatant = 1 },
+          audience = "public",
+          payload = { activation = 1 },
+          after = { hp = {} },
         },
-      }) == false,
-      "a stale entry completion never unblocks a newer request"
-    )
+      },
+    }) == false, "a stale entry completion never unblocks a newer request")
   end
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
@@ -1237,7 +1250,10 @@ function T.repeated_delivery_and_old_voices_never_replay_or_steal_a_cue()
       runtime:dispose()
     end)
     if not ok then
-      problems[#problems + 1] = "the exactly-once journey failed outside its contract on " .. versionId .. ": " .. tostring(legErr)
+      problems[#problems + 1] = "the exactly-once journey failed outside its contract on "
+        .. versionId
+        .. ": "
+        .. tostring(legErr)
     end
   end
   report(problems)
@@ -1299,11 +1315,7 @@ function T.missing_or_rejected_sounds_fail_the_launch_with_their_identity()
             "the cue failure names its cue role on " .. versionId .. ": " .. failureText
           )
         else
-          check(
-            problems,
-            false,
-            "the cue failure carries readable launch and role identity on " .. versionId
-          )
+          check(problems, false, "the cue failure carries readable launch and role identity on " .. versionId)
         end
         check(problems, #log >= 1, "the faulty cue was dispatched before failing on " .. versionId)
       end, debug.traceback)
@@ -1314,7 +1326,10 @@ function T.missing_or_rejected_sounds_fail_the_launch_with_their_identity()
         runtime:dispose()
       end)
       if not ok then
-        problems[#problems + 1] = "the unknown-cue journey failed outside its contract on " .. versionId .. ": " .. tostring(legErr)
+        problems[#problems + 1] = "the unknown-cue journey failed outside its contract on "
+          .. versionId
+          .. ": "
+          .. tostring(legErr)
       end
     end
 
@@ -1358,15 +1373,17 @@ function T.missing_or_rejected_sounds_fail_the_launch_with_their_identity()
         runtime:dispose()
       end)
       if not ok then
-        problems[#problems + 1] = "the flat-answer journey failed outside its contract on " .. versionId .. ": " .. tostring(legErr)
+        problems[#problems + 1] = "the flat-answer journey failed outside its contract on "
+          .. versionId
+          .. ": "
+          .. tostring(legErr)
       end
     end
 
     do
       local runtime = bootRuntime(versionId)
       local log = {}
-      local envelope, binding, _ =
-        bindEnvelope(runtime, versionId, dualMeasurement("missing-bank"), richCueDouble(log))
+      local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("missing-bank"), richCueDouble(log))
       local innerPlayMusic = runtime.audio.playMusic
       function runtime.audio:playMusic(_)
         error("unknown battle music sequence", 0)
@@ -1410,7 +1427,10 @@ function T.missing_or_rejected_sounds_fail_the_launch_with_their_identity()
         runtime:dispose()
       end)
       if not ok then
-        problems[#problems + 1] = "the missing-bank journey failed outside its contract on " .. versionId .. ": " .. tostring(legErr)
+        problems[#problems + 1] = "the missing-bank journey failed outside its contract on "
+          .. versionId
+          .. ": "
+          .. tostring(legErr)
       end
     end
   end
@@ -1450,11 +1470,7 @@ function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engi
         Assert.isTrue(turns > 0, "the win handoff answers decisions to its committed words")
         Assert.equal(runtime:lastBattleResult().result, "win", "the win handoff reports its exact word")
         check(problems, trace.suspends == 1, "the field policy suspends once at admission on " .. versionId)
-        check(
-          problems,
-          #trace.starts == 2,
-          "the battle track starts once and victory swaps once on " .. versionId
-        )
+        check(problems, #trace.starts == 2, "the battle track starts once and victory swaps once on " .. versionId)
         if trace.starts[1] ~= nil then
           check(
             problems,
@@ -1483,11 +1499,7 @@ function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engi
           lastWinStart ~= nil and lastWinStart.symbol == "SEQ_GS_WIN2",
           "victory swaps to the wild-win BGM on " .. versionId
         )
-        check(
-          problems,
-          trace.resumes == 1,
-          "the covered win return restores the field policy once on " .. versionId
-        )
+        check(problems, trace.resumes == 1, "the covered win return restores the field policy once on " .. versionId)
         check(
           problems,
           runtime.audio:currentMusic() == runtime.audio:effectiveMusic(),
@@ -1513,15 +1525,17 @@ function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engi
         runtime:dispose()
       end)
       if not ok then
-        problems[#problems + 1] = "the win handoff failed outside its contract on " .. versionId .. ": " .. tostring(legErr)
+        problems[#problems + 1] = "the win handoff failed outside its contract on "
+          .. versionId
+          .. ": "
+          .. tostring(legErr)
       end
     end
 
     do
       local runtime = bootRuntime(versionId)
       local log = {}
-      local envelope, binding, _ =
-        bindEnvelope(runtime, versionId, dualMeasurement("flee-handoff"), richCueDouble(log))
+      local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("flee-handoff"), richCueDouble(log))
       local trace = freshMusicTrace()
       watchMusic(runtime.audio, trace)
       local ok, legErr = xpcall(function()
@@ -1564,7 +1578,10 @@ function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engi
         runtime:dispose()
       end)
       if not ok then
-        problems[#problems + 1] = "the flee handoff failed outside its contract on " .. versionId .. ": " .. tostring(legErr)
+        problems[#problems + 1] = "the flee handoff failed outside its contract on "
+          .. versionId
+          .. ": "
+          .. tostring(legErr)
       end
     end
   end
@@ -1662,7 +1679,11 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
         check(
           problems,
           #observed.unknown == 0,
-          "the " .. journey.name .. " invents no substitute operations on " .. versionId .. ": "
+          "the "
+            .. journey.name
+            .. " invents no substitute operations on "
+            .. versionId
+            .. ": "
             .. table.concat(observed.unknown, ", ")
         )
         counts[journey.name] = observed

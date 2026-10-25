@@ -974,20 +974,15 @@ do
   PokedexSources.windows["search.summary-caption-letter"] = dexWindow("information", 1, 8, 32, 40, 16, 0, "center", 2)
   PokedexSources.windows["search.summary-caption-type"] = dexWindow("information", 1, 8, 56, 40, 16, 0, "center", 2)
   PokedexSources.windows["search.summary-caption-height"] = dexWindow("information", 1, 8, 80, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.summary-caption-weight"] =
-    dexWindow("information", 1, 8, 104, 40, 16, 0, "center", 2)
+  PokedexSources.windows["search.summary-caption-weight"] = dexWindow("information", 1, 8, 104, 40, 16, 0, "center", 2)
   PokedexSources.windows["search.summary-caption-area"] = dexWindow("information", 1, 8, 128, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.summary-caption-shape"] =
-    dexWindow("information", 1, 200, 32, 48, 16, 0, "center", 2)
+  PokedexSources.windows["search.summary-caption-shape"] = dexWindow("information", 1, 200, 32, 48, 16, 0, "center", 2)
   -- Return-slot summary values (templates 8-16; same content as the
   -- menu values, SUB BG1 rects).
   PokedexSources.windows["search.summary-value-order"] = dexWindow("information", 1, 128, 8, 88, 16, 4, "center", 2)
-  PokedexSources.windows["search.summary-value-letter"] =
-    dexWindow("information", 1, 56, 32, 72, 16, 4, "center", 2)
-  PokedexSources.windows["search.summary-value-type-1"] =
-    dexWindow("information", 1, 56, 56, 58, 16, 4, "center", 2)
-  PokedexSources.windows["search.summary-value-type-2"] =
-    dexWindow("information", 1, 120, 56, 58, 16, 4, "center", 2)
+  PokedexSources.windows["search.summary-value-letter"] = dexWindow("information", 1, 56, 32, 72, 16, 4, "center", 2)
+  PokedexSources.windows["search.summary-value-type-1"] = dexWindow("information", 1, 56, 56, 58, 16, 4, "center", 2)
+  PokedexSources.windows["search.summary-value-type-2"] = dexWindow("information", 1, 120, 56, 58, 16, 4, "center", 2)
   PokedexSources.windows["search.summary-value-height-min"] =
     dexWindow("information", 1, 56, 80, 48, 16, 4, "center", 2)
   PokedexSources.windows["search.summary-value-height-max"] =
@@ -996,8 +991,7 @@ do
     dexWindow("information", 1, 56, 104, 48, 16, 4, "center", 2)
   PokedexSources.windows["search.summary-value-weight-max"] =
     dexWindow("information", 1, 120, 104, 48, 16, 4, "center", 2)
-  PokedexSources.windows["search.summary-value-area"] =
-    dexWindow("information", 1, 56, 128, 56, 16, 4, "center", 2)
+  PokedexSources.windows["search.summary-value-area"] = dexWindow("information", 1, 56, 128, 56, 16, 4, "center", 2)
   -- Order editor: title 36, current value 37, six options 38-43.
   PokedexSources.windows["search.title-order"] = dexWindow("controls", 0, 24, 8, 88, 16, 0, "center", 2)
   PokedexSources.windows["search.current-order"] = dexWindow("controls", 0, 144, 8, 88, 16, 4, "center", 2)
@@ -1175,8 +1169,14 @@ for _, role in ipairs({
 }) do
   searchSummaryWindows[#searchSummaryWindows + 1] = role
 end
-local searchOrderWindows =
-  { "search.criteria", "search.feedback", "search.title-order", "search.current-order", "search.button-ok", "search.button-cancel" }
+local searchOrderWindows = {
+  "search.criteria",
+  "search.feedback",
+  "search.title-order",
+  "search.current-order",
+  "search.button-ok",
+  "search.button-cancel",
+}
 for _, name in ipairs({ "numerical", "alphabetical", "heaviest", "lightest", "tallest", "shortest" }) do
   searchOrderWindows[#searchOrderWindows + 1] = "search.option-order-" .. name
 end
@@ -1206,8 +1206,14 @@ local function searchSliderWindows(criterion)
     "search.button-cancel",
   }
 end
-local searchAreaWindows =
-  { "search.criteria", "search.feedback", "search.title-area", "search.current-area", "search.button-ok", "search.button-cancel" }
+local searchAreaWindows = {
+  "search.criteria",
+  "search.feedback",
+  "search.title-area",
+  "search.current-area",
+  "search.button-ok",
+  "search.button-cancel",
+}
 for _, name in ipairs({ "johto", "kanto", "unknown", "unrestricted" }) do
   searchAreaWindows[#searchAreaWindows + 1] = "search.option-area-" .. name
 end

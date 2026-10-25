@@ -112,8 +112,7 @@ function T.the_status_alphas_drive_the_cover_and_the_image_reveal()
   Assert.deepEqual(order, { "image", "cover" }, "the cover stays above the image while both are visible")
 
   local hidden, hiddenOrder = orderedGraphics()
-  local hiddenInstance =
-    (previewRenderer("area-preview hold", hidden, { ["preview.union.day"] = hidden.newImage() }))
+  local hiddenInstance = (previewRenderer("area-preview hold", hidden, { ["preview.union.day"] = hidden.newImage() }))
   hiddenInstance:draw(
     { imageKey = "preview.union.day", imageAlpha = 1, blackAlpha = 0, timeSlot = 1, stage = "hold" },
     referenceFrame(0, 0)
@@ -212,8 +211,16 @@ local function drawableState(order, previewStatus, presentable, ui)
     startMenuRenderer = { draw = function() end },
     trainerCardRenderer = { draw = function() end },
     menuRenderer = { draw = function() end },
-    fieldEntranceIndicatorRenderer = { drawItems = function() return {} end },
-    fieldEmoteRenderer = { drawItems = function() return {} end },
+    fieldEntranceIndicatorRenderer = {
+      drawItems = function()
+        return {}
+      end,
+    },
+    fieldEmoteRenderer = {
+      drawItems = function()
+        return {}
+      end,
+    },
   }
   local runtime = {
     errorText = nil,
@@ -225,14 +232,28 @@ local function drawableState(order, previewStatus, presentable, ui)
     runtimeMap = {
       mapId = 33,
       mapSymbol = "MAP_ROUTE_29",
-      coverage = { worldParts = function() return {} end },
+      coverage = {
+        worldParts = function()
+          return {}
+        end,
+      },
       renderEnvironment = {},
       sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} },
     },
     player = { fieldX = 0, fieldZ = 0, worldY = 0, surfaceId = 0, facing = "east", motion = "idle" },
-    session = { renderAlpha = function() return 0.5 end },
-    overworld = { isPresent = function() return true end },
-    destinationWorldPresentable = function() return presentable end,
+    session = {
+      renderAlpha = function()
+        return 0.5
+      end,
+    },
+    overworld = {
+      isPresent = function()
+        return true
+      end,
+    },
+    destinationWorldPresentable = function()
+      return presentable
+    end,
     acknowledgeDestinationPresentation = function() end,
     viewport = {
       width = 512,
@@ -259,20 +280,53 @@ local function drawableState(order, previewStatus, presentable, ui)
     },
     screenTopology = topology,
     fieldPixelScale = {
-      resolvedScale = function() return 3 end,
+      resolvedScale = function()
+        return 3
+      end,
     },
-    fieldEntranceIndicator = { status = function() return { visible = false } end },
-    fieldTerrainEffectController = { status = function() return { instances = {} } end },
+    fieldEntranceIndicator = {
+      status = function()
+        return { visible = false }
+      end,
+    },
+    fieldTerrainEffectController = {
+      status = function()
+        return { instances = {} }
+      end,
+    },
     dialogue = {
       isModal = function()
         return ui.dialogue == true
       end,
     },
-    scripts = { dialogueHost = { yesNoPresentation = function() return nil end } },
-    signpost = { isModal = function() return false end },
-    applicationHost = { isActive = function() return false end, status = function() return { fadeAlpha = 0 } end },
-    pcApplicationHost = { isActive = function() return false end },
-    menuHost = { presentation = function() return nil end },
+    scripts = { dialogueHost = {
+      yesNoPresentation = function()
+        return nil
+      end,
+    } },
+    signpost = {
+      isModal = function()
+        return false
+      end,
+    },
+    applicationHost = {
+      isActive = function()
+        return false
+      end,
+      status = function()
+        return { fadeAlpha = 0 }
+      end,
+    },
+    pcApplicationHost = {
+      isActive = function()
+        return false
+      end,
+    },
+    menuHost = {
+      presentation = function()
+        return nil
+      end,
+    },
     yesNoHost = {
       isModal = function()
         return ui.choice == true
@@ -280,13 +334,21 @@ local function drawableState(order, previewStatus, presentable, ui)
       presentation = function()
         return { status = { prompt = "covered choice" }, layout = { rows = 2 } }
       end,
-      layoutFor = function() error("no choice is active in this fixture", 0) end,
+      layoutFor = function()
+        error("no choice is active in this fixture", 0)
+      end,
     },
     contextChoiceProvider = {
-      status = function() return nil end,
-      isActive = function() return false end,
+      status = function()
+        return nil
+      end,
+      isActive = function()
+        return false
+      end,
     },
-    contextChoicePresentation = function() return nil end,
+    contextChoicePresentation = function()
+      return nil
+    end,
     resizePresentation = function() end,
     mapNameBanner = {
       status = function()
@@ -300,14 +362,20 @@ local function drawableState(order, previewStatus, presentable, ui)
   return setmetatable({
     _actorDesiredReady = true,
     runtime = runtime,
-    topologyProvider = function() return topology end,
+    topologyProvider = function()
+      return topology
+    end,
     worldParts = {},
     worldActorItems = {},
     spriteItems = {},
     presentationResources = resources,
     actorPresentation = {
-      drawItems = function() return {} end,
-      records = function() return {} end,
+      drawItems = function()
+        return {}
+      end,
+      records = function()
+        return {}
+      end,
     },
   }, FieldState)
 end
@@ -370,11 +438,7 @@ function T.a_hidden_destination_without_a_preview_still_shows_the_banner(scope)
   render(scope, idle, { imageKey = "preview.x", imageAlpha = 1, blackAlpha = 0, timeSlot = 1, stage = "hold" }, false, {
     banner = false,
   })
-  Assert.deepEqual(
-    idle,
-    { "preview", "scriptCover" },
-    "an ineligible banner paints nothing over the covered preview"
-  )
+  Assert.deepEqual(idle, { "preview", "scriptCover" }, "an ineligible banner paints nothing over the covered preview")
 end
 
 function T.a_presentable_blend_composites_the_preview_over_the_drawn_world(scope)

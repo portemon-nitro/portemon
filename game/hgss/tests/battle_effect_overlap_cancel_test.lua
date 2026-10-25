@@ -114,11 +114,7 @@ function T.picture_state_stays_keyed_by_activation_across_replacement()
   local outgoing = { combatant = 1, activation = 1 }
   local staying = { combatant = 3, activation = 3 }
   scene:applyPictureState(outgoing, { pictureXOffset2 = 40 })
-  Assert.equal(
-    scene:pictureState(outgoing).pictureXOffset2,
-    40,
-    "the outgoing activation carries its temporary change"
-  )
+  Assert.equal(scene:pictureState(outgoing).pictureXOffset2, 40, "the outgoing activation carries its temporary change")
   Assert.isNil(scene:pictureState(staying), "the untouched activation exposes no patched view")
   scene:remove(1, 1)
   Assert.isNil(scene:pictureState(outgoing), "the withdrawn activation leaves no patched view behind")

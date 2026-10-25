@@ -53,8 +53,10 @@ end
 function T.compiled_native_trainers_expose_every_party_shape(romFs, versionId)
   Assert.notNil(romFs, "the party-shape check runs with its ready dump open")
   Assert.isTrue(type(versionId) == "string" and versionId ~= "", "the party-shape check names its version")
-  local Catalog =
-    requirePresent("libs.hgss.src.battle.HgssTrainerCatalog", "immutable trainer templates resolve runtime content keys")
+  local Catalog = requirePresent(
+    "libs.hgss.src.battle.HgssTrainerCatalog",
+    "immutable trainer templates resolve runtime content keys"
+  )
   local Compiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
   local compiled = assert(Compiler.compileFromDump(romFs, { versionId = versionId }))
   local catalog = Catalog.new(compiled)
@@ -95,9 +97,12 @@ end
 function T.dump_backed_trainers_materialize_ordered_parties_matching_the_compiled_record(romFs, versionId)
   Assert.notNil(romFs, "trainer materialization runs with its ready dump open")
   Assert.isTrue(type(versionId) == "string" and versionId ~= "", "trainer materialization names its version")
-  local Catalog =
-    requirePresent("libs.hgss.src.battle.HgssTrainerCatalog", "immutable trainer templates resolve runtime content keys")
-  local Factory = requirePresent("libs.hgss.src.battle.HgssTrainerFactory", "source trainer generation builds native parties")
+  local Catalog = requirePresent(
+    "libs.hgss.src.battle.HgssTrainerCatalog",
+    "immutable trainer templates resolve runtime content keys"
+  )
+  local Factory =
+    requirePresent("libs.hgss.src.battle.HgssTrainerFactory", "source trainer generation builds native parties")
   local Mon = require("libs.mons.src.Mon")
   local MonStats = require("libs.mons.src.gen4.MonStats")
   local MonCatalog = require("libs.mons.src.MonCatalog")

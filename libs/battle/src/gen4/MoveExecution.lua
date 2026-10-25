@@ -72,7 +72,8 @@ end
 
 ---@param moves unknown power-point store under test
 ---@param slot integer zero-based power-point slot under spending
-local function spendPp(moves, slot)
+---@param amount integer total PP charge for this use
+local function spendPp(moves, slot, amount)
   if type(moves) ~= "table" then
     error(BattleErrors.invalidState("move execution spends from its power-point store", {}))
   end
@@ -85,7 +86,11 @@ local function spendPp(moves, slot)
   if type(record.pp) ~= "number" or record.pp % 1 ~= 0 or record.pp < 1 then
     error(BattleErrors.invalidState("move execution spends a remaining power point", { slot = slot }))
   end
-  record.pp = record.pp --[[@as integer]] - 1
+  local remaining = record.pp --[[@as integer]] - amount
+  if remaining < 0 then
+    remaining = 0
+  end
+  record.pp = remaining
 end
 
 ---@param inputs table<string, unknown> transition inputs under the action-to-move transition
@@ -116,6 +121,12 @@ local function checkTransitionInputs(inputs)
     if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 then
       error(BattleErrors.invalidState("move frames name a non-negative power-point owner", {}))
     end
+  end
+  local pressureExtraPp = inputs.pressureExtraPp
+  if
+    pressureExtraPp ~= nil and (type(pressureExtraPp) ~= "number" or pressureExtraPp % 1 ~= 0 or pressureExtraPp < 0)
+  then
+    error(BattleErrors.invalidState("Pressure carries a non-negative integer PP charge", {}))
   end
   if inputs.chargeBoost ~= nil and type(inputs.chargeBoost) ~= "boolean" then
     error(BattleErrors.invalidState("Charge power arrives as an explicit boolean fact", {}))
@@ -267,7 +278,8 @@ function MoveExecution.start(inputs)
       )
     end
     if plan.ppOwnerSlot ~= nil then
-      spendPp(plan.moves, plan.ppOwnerSlot --[[@as integer]])
+      local extra = inputs.pressureExtraPp or 0
+      spendPp(plan.moves, plan.ppOwnerSlot --[[@as integer]], 1 + extra --[[@as integer]])
     end
   end
   local actor = plan.actor --[[@as table<string, unknown>]]
@@ -330,10 +342,16 @@ function MoveExecution.start(inputs)
     "userSpecies",
     "userIvs",
     "itemFacts",
+    "weather",
+    "weatherSuppressed",
+    "combat",
+    "targetFacts",
+    "genders",
     "usedMoves",
     "foeWeightHg",
     "beatup",
     "chargeBoost",
+    "helpingHand",
     "itemTransferAllowed",
   }) do
     if plan[key] ~= nil then

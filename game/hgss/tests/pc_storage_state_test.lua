@@ -2411,10 +2411,7 @@ function T.pending_replacement_draws_the_admitted_parent_instead_of_the_current_
     drawsBefore = #graphics.draws
     state:draw(resources, true)
     local newImage = assert(renderer._images[newWallpaper], "admission installs the new wallpaper")
-    Assert.isTrue(
-      drawsStateImageSince(graphics, drawsBefore, newImage),
-      "an admitted draw paints the new wallpaper"
-    )
+    Assert.isTrue(drawsStateImageSince(graphics, drawsBefore, newImage), "an admitted draw paints the new wallpaper")
     Assert.isTrue(inner:stats().outstandingLeases > 0, "admission holds its leases")
     state:dispose()
     renderer:dispose()
@@ -2525,10 +2522,7 @@ function T.failed_replacement_surfaces_its_cause_and_keeps_the_admitted_parent()
     drawsBefore = #graphics.draws
     state:draw(resources, true)
     local newImage = assert(renderer._images[missing], "recovery installs the new wallpaper")
-    Assert.isTrue(
-      drawsStateImageSince(graphics, drawsBefore, newImage),
-      "recovery paints the new wallpaper"
-    )
+    Assert.isTrue(drawsStateImageSince(graphics, drawsBefore, newImage), "recovery paints the new wallpaper")
     state:dispose()
     renderer:dispose()
     Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
@@ -2581,14 +2575,9 @@ function T.superseded_replacement_keeps_the_admitted_parent_until_the_last_view_
     Assert.equal(inner.uploads, uploadsAfterFirst + 1, "only the last wallpaper uploads")
     drawsBefore = #graphics.draws
     state:draw(resources, true)
-    local newImage = assert(
-      renderer._images[manifest.storage.wallpapers[2].image],
-      "admission installs the last wallpaper"
-    )
-    Assert.isTrue(
-      drawsStateImageSince(graphics, drawsBefore, newImage),
-      "an admitted draw paints the last wallpaper"
-    )
+    local newImage =
+      assert(renderer._images[manifest.storage.wallpapers[2].image], "admission installs the last wallpaper")
+    Assert.isTrue(drawsStateImageSince(graphics, drawsBefore, newImage), "an admitted draw paints the last wallpaper")
     state:dispose()
     renderer:dispose()
     Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
@@ -2658,40 +2647,27 @@ function T.retained_parent_plan_reflows_to_the_current_display_without_moving_in
 
   state:status()
   recordAdmittedParent(state)
-  local admittedView =
-    assert(state:status().admittedParentView, "the first admission records its parent view")
+  local admittedView = assert(state:status().admittedParentView, "the first admission records its parent view")
   local widePlan = assert(state:presentationPlan(false), "admission publishes its parent plan")
 
   -- Desired state advances while the parent lags: the live snapshot moves
   -- on, the admitted pair stays behind.
   state:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.deepEqual(state:status().focus, { domain = "box", slot = 1 })
-  Assert.isTrue(
-    state:status().admittedParentView == admittedView,
-    "desired advances keep the admitted view"
-  )
+  Assert.isTrue(state:status().admittedParentView == admittedView, "desired advances keep the admitted view")
 
   -- A tall display reflows the retained parent geometry without touching
   -- the live input session or its content.
   current = measurement("tall")
   local advanced = state:status()
-  Assert.isTrue(
-    advanced.admittedParentView == admittedView,
-    "the resize keeps the admitted semantic view by identity"
-  )
+  Assert.isTrue(advanced.admittedParentView == admittedView, "the resize keeps the admitted semantic view by identity")
   Assert.deepEqual(advanced.focus, { domain = "box", slot = 1 }, "the resize keeps live focus")
   local tallPlan = assert(state:presentationPlan(false), "the resize keeps a parent plan")
   Assert.isTrue(tallPlan ~= widePlan, "the resize replaces the stale parent plan")
   assertFollowsCurrentTopology(tallPlan, admittedView, current, "the reflowed parent")
-  Assert.isTrue(
-    tallPlan ~= state._session:plan(),
-    "the parent plan stays separate from the live input plan"
-  )
+  Assert.isTrue(tallPlan ~= state._session:plan(), "the parent plan stays separate from the live input plan")
   local steady = state:status()
-  Assert.isTrue(
-    state:presentationPlan(false) == tallPlan,
-    "a steady tall signature keeps the identical parent plan"
-  )
+  Assert.isTrue(state:presentationPlan(false) == tallPlan, "a steady tall signature keeps the identical parent plan")
   Assert.isTrue(steady.visualView ~= admittedView, "the live snapshot stays ahead of admission")
 
   -- A held press keeps its existing cancellation rule: the stale release
@@ -2705,11 +2681,7 @@ function T.retained_parent_plan_reflows_to_the_current_display_without_moving_in
   local wideAgain = assert(state:presentationPlan(false), "the return keeps a parent plan")
   assertFollowsCurrentTopology(wideAgain, admittedView, current, "the returned parent")
   state:updateFixed({ { type = "pointer_up", pointerId = "held-press", x = x, y = y } })
-  Assert.deepEqual(
-    state:status().focus,
-    { domain = "box", slot = 2 },
-    "the stale release activates nothing"
-  )
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 2 }, "the stale release activates nothing")
 
   -- Fresh presses in the current topology still map through the live
   -- session to the correct target.
@@ -2726,17 +2698,11 @@ function T.retained_parent_plan_reflows_to_the_current_display_without_moving_in
   recordAdmittedParent(state)
   local cutoverView = assert(state:status().admittedParentView, "the cutover records its view")
   Assert.isTrue(cutoverView ~= admittedView, "the cutover advances past the older parent")
-  Assert.isTrue(
-    state:presentationPlan(false) == state._session:plan(),
-    "the cutover serves the current live plan"
-  )
+  Assert.isTrue(state:presentationPlan(false) == state._session:plan(), "the cutover serves the current live plan")
   state:updateFixed({ { type = "navigate", direction = "down" } })
   current = measurement("tall")
   state:status()
-  Assert.isTrue(
-    state:status().admittedParentView == cutoverView,
-    "the next stall keeps the newly admitted view"
-  )
+  Assert.isTrue(state:status().admittedParentView == cutoverView, "the next stall keeps the newly admitted view")
   assertFollowsCurrentTopology(
     assert(state:presentationPlan(false), "the next stall keeps a parent plan"),
     cutoverView,
@@ -2776,8 +2742,7 @@ function T.unavailable_display_hides_the_retained_parent_without_changing_conten
   local renderer, graphics, manifest = stateRenderer(pool)
   admitStateView(renderer, state:status().visualView)
   recordAdmittedParent(state)
-  local admittedView =
-    assert(state:status().admittedParentView, "the first admission records its parent view")
+  local admittedView = assert(state:status().admittedParentView, "the first admission records its parent view")
   local oldImage = assert(renderer._images[manifest.storage.wallpapers[0].image], "admission installs its wallpaper")
   local resources = stateResources(renderer)
   local savedLove = scopeStateLove(graphics)
@@ -2807,10 +2772,7 @@ function T.unavailable_display_hides_the_retained_parent_without_changing_conten
     }
     local blocked = state:status()
     Assert.equal(blocked.childKind, "heldItemPicker", "the blocked display keeps the pending picker")
-    Assert.isTrue(
-      blocked.admittedParentView == admittedView,
-      "the blocked display keeps the admitted semantic view"
-    )
+    Assert.isTrue(blocked.admittedParentView == admittedView, "the blocked display keeps the admitted semantic view")
     local inactive = assert(state:presentationPlan(false), "the blocked display keeps a parent plan")
     Assert.equal(#inactive.panes, 0, "an unavailable display publishes no panes")
     Assert.equal(#inactive.frames, 0, "an unavailable display publishes no outer frames")
@@ -2823,10 +2785,7 @@ function T.unavailable_display_hides_the_retained_parent_without_changing_conten
     -- placements; the transient picker never draws as the parent.
     current = measurement("tall")
     local restored = state:status()
-    Assert.isTrue(
-      restored.admittedParentView == admittedView,
-      "the restore keeps the admitted semantic view"
-    )
+    Assert.isTrue(restored.admittedParentView == admittedView, "the restore keeps the admitted semantic view")
     local tallPlan = assert(state:presentationPlan(false), "the restore publishes a parent plan")
     Assert.isTrue(#tallPlan.panes > 0, "the restored display places the admitted panes again")
     drawsBefore = #graphics.draws
@@ -2870,8 +2829,7 @@ function T.rejected_parent_reflow_keeps_the_last_valid_plan_and_recovers()
   local state = PcStorageState.new(options)
   state:status()
   recordAdmittedParent(state)
-  local admittedView =
-    assert(state:status().admittedParentView, "the first admission records its parent view")
+  local admittedView = assert(state:status().admittedParentView, "the first admission records its parent view")
   local widePlan = assert(state:presentationPlan(false), "admission publishes its parent plan")
 
   -- Desired state advances so only the retained parent hits the rejected
@@ -2887,20 +2845,11 @@ function T.rejected_parent_reflow_keeps_the_last_valid_plan_and_recovers()
     tostring(failure):find("admitted reflow rejected", 1, true) ~= nil,
     "the failure carries the reflow cause"
   )
-  Assert.isTrue(
-    state:presentationPlan(false) == widePlan,
-    "the failed reflow keeps the last valid plan"
-  )
+  Assert.isTrue(state:presentationPlan(false) == widePlan, "the failed reflow keeps the last valid plan")
   gate.throwFor = nil
   local recovered = state:status()
-  Assert.isTrue(
-    recovered.admittedParentView == admittedView,
-    "the failed reflow never replaces the admitted view"
-  )
-  Assert.isTrue(
-    state:presentationPlan(false) ~= widePlan,
-    "recovery replaces the stale parent plan"
-  )
+  Assert.isTrue(recovered.admittedParentView == admittedView, "the failed reflow never replaces the admitted view")
+  Assert.isTrue(state:presentationPlan(false) ~= widePlan, "recovery replaces the stale parent plan")
   local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
   local session = ApplicationPresentation.new(StorageInterface.defaults(manifest))
   local expected = session:resolve(current, admittedView)

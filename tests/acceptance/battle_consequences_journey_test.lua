@@ -270,7 +270,10 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
         kind = "wild",
         payload = { species = "TOTODILE", level = 4, mon = lossFoe },
       }
-      local lossScenario = ScenarioFactory.fromEncounter(lossLaunch.payload, { party = game.runtime.monService, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+      local lossScenario = ScenarioFactory.fromEncounter(
+        lossLaunch.payload,
+        { party = game.runtime.monService, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+      )
       local loss = BattleRuntime.new({
         request = lossLaunch,
         scenario = lossScenario,
@@ -333,8 +336,10 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     local wildFoe = tackleOnly(enemyRecord(liveCatalog, "TOTODILE", 4, 0xCA7C4001))
     local catchLaunch =
       { id = "launch-consequence-catch", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = wildFoe } }
-    local catchScenario =
-      ScenarioFactory.fromEncounter(catchLaunch.payload, { party = game.runtime.monService, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+    local catchScenario = ScenarioFactory.fromEncounter(
+      catchLaunch.payload,
+      { party = game.runtime.monService, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    )
     local wildMon = catchScenario.participants[2].roster[1].mon
     local capture = BattleRuntime.new({
       request = catchLaunch,
@@ -429,7 +434,14 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     local location = mapIdentity(versionId, MAP)
     local roamer = HgssRoamerState.new({
       records = {
-        { key = "roamer-eevee", stateVersion = 1, mon = roamerMon, location = location, lifecycle = "roaming", revision = 0 },
+        {
+          key = "roamer-eevee",
+          stateVersion = 1,
+          mon = roamerMon,
+          location = location,
+          lifecycle = "roaming",
+          revision = 0,
+        },
       },
       species = { EEVEE = true },
       maps = { [location] = true },
@@ -442,8 +454,10 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     -- fought since blackout recovery re-damaged the party, and the 1-HP
     -- stand-in settles the standing only when the party can land one hit.
     game.runtime.monService:healParty()
-    local roamerScenario =
-      ScenarioFactory.fromEncounter(roamerLaunch.payload, { party = game.runtime.monService, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+    local roamerScenario = ScenarioFactory.fromEncounter(
+      roamerLaunch.payload,
+      { party = game.runtime.monService, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    )
     local roamerBattle = BattleRuntime.new({
       request = roamerLaunch,
       scenario = roamerScenario,

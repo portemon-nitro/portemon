@@ -50,10 +50,7 @@ end
 -- native factory admits. Shared fallbacks would collapse distinct roots
 -- onto one member route, so the routed archive/member identity is pinned.
 local function assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, effectKey)
-  local route = assert(
-    sources.resolveSemanticRoute(effectKey),
-    effectKey .. " keeps its semantic source route"
-  )
+  local route = assert(sources.resolveSemanticRoute(effectKey), effectKey .. " keeps its semantic source route")
   local effect, err = compiler.compileEffect(romFs, { versionId = versionId }, effectKey)
   Assert.isNil(err, effectKey .. " closes without a source failure: " .. tostring(err))
   Assert.notNil(effect, effectKey .. " closes through its selected source member")
@@ -63,17 +60,10 @@ local function assertEffectClosesThroughItsSelectedMember(compiler, factory, sou
     route.archiveSymbol,
     effectKey .. " closure reads its own routed archive"
   )
-  Assert.equal(
-    effect.provenance.memberId,
-    route.memberId,
-    effectKey .. " closure reads its own routed member"
-  )
+  Assert.equal(effect.provenance.memberId, route.memberId, effectKey .. " closure reads its own routed member")
   Assert.isTrue(type(effect.program) == "table", effectKey .. " closure carries its program")
   Assert.isTrue(type(effect.resources) == "table", effectKey .. " closure carries its staged resources")
-  Assert.isTrue(
-    type(effect.requiredContext) == "table",
-    effectKey .. " closure declares its typed runtime inputs"
-  )
+  Assert.isTrue(type(effect.requiredContext) == "table", effectKey .. " closure declares its typed runtime inputs")
   Assert.isTrue(
     type(effect.program.taskKinds) == "table" and #effect.program.taskKinds >= 1,
     effectKey .. " closure stages at least one native task kind"
@@ -100,8 +90,7 @@ function T.previously_failing_effects_close_through_compile(romFs, versionId)
   for _, effectKey in ipairs(SMOKE_EFFECTS) do
     assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, effectKey)
   end
-  local whirlwind, whirlwindErr =
-    compiler.compileEffect(romFs, { versionId = versionId }, "WHIRLWIND")
+  local whirlwind, whirlwindErr = compiler.compileEffect(romFs, { versionId = versionId }, "WHIRLWIND")
   Assert.isNil(whirlwindErr, "WHIRLWIND closure carries no error for the task-kind probe")
   Assert.isTrue(
     hasTaskKind(whirlwind, "pokemon-picture-linear-offscreen-transition"),
@@ -111,8 +100,7 @@ function T.previously_failing_effects_close_through_compile(romFs, versionId)
     hasTaskKind(whirlwind, "pokemon-picture-reset-position-transition"),
     "WHIRLWIND stages its defender reset marker"
   )
-  local shadowPunch, shadowPunchErr =
-    compiler.compileEffect(romFs, { versionId = versionId }, "SHADOW_PUNCH")
+  local shadowPunch, shadowPunchErr = compiler.compileEffect(romFs, { versionId = versionId }, "SHADOW_PUNCH")
   Assert.isNil(shadowPunchErr, "SHADOW_PUNCH closure carries no error for the task-kind probe")
   Assert.isTrue(
     hasTaskKind(shadowPunch, "pokemon-picture-attacker-dash-afterimages"),
@@ -126,13 +114,9 @@ function T.independently_corrected_effects_keep_their_own_selected_members(romFs
   local sources = require("romdump.src.config.BattleAnimationSources")
   local seenMembers = {}
   for _, effectKey in ipairs(CORRECTED_EFFECTS) do
-    local effect =
-      assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, effectKey)
+    local effect = assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, effectKey)
     local memberId = effect.provenance.memberId
-    Assert.isNil(
-      seenMembers[memberId],
-      effectKey .. " does not share a fallback member with another corrected root"
-    )
+    Assert.isNil(seenMembers[memberId], effectKey .. " does not share a fallback member with another corrected root")
     seenMembers[memberId] = effectKey
   end
 end
@@ -144,8 +128,7 @@ function T.particle_effect_stages_decoded_emitters_and_one_exact_texture(romFs, 
   local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
   local factory = require("libs.hgss.src.presentation.BattleEffectTasks")
   local sources = require("romdump.src.config.BattleAnimationSources")
-  local effect =
-    assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "TACKLE")
+  local effect = assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "TACKLE")
   local resourceKey = "battle/particle/tackle"
   local descriptor = effect.resources[resourceKey]
   Assert.notNil(descriptor, "TACKLE stages its selected particle archive")
@@ -158,10 +141,7 @@ function T.particle_effect_stages_decoded_emitters_and_one_exact_texture(romFs, 
     Assert.isNil(emitter.baseRecord, "emitter " .. index .. " carries no opaque source base record")
     Assert.isNil(emitter.sections, "emitter " .. index .. " carries no opaque source sections")
     Assert.isNil(emitter.calculations, "emitter " .. index .. " carries no opaque source calculations")
-    Assert.isTrue(
-      type(emitter.flags) ~= "number",
-      "emitter " .. index .. " carries no raw source flag word"
-    )
+    Assert.isTrue(type(emitter.flags) ~= "number", "emitter " .. index .. " carries no raw source flag word")
   end
   local textureCount = 0
   for key, resource in pairs(effect.resources) do

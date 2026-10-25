@@ -200,7 +200,8 @@ function T.panel_palette_states_are_compiled_as_source_images(romFs, versionId)
     local chrome = panel.chrome
     for _, state in ipairs({ "normal", "selected", "fainted", "selectedFainted" }) do
       local visual = assert(chrome[state], "panel " .. slot .. " publishes " .. state .. " chrome")
-      local width, height = PngReader.rgba(assetBytes(assert(bundle.assets[visual.image], "panel chrome pixels resolve")))
+      local width, height =
+        PngReader.rgba(assetBytes(assert(bundle.assets[visual.image], "panel chrome pixels resolve")))
       Assert.equal(width, 128)
       Assert.equal(height, 48)
     end
@@ -220,15 +221,13 @@ function T.hp_strips_preserve_source_row_shape_and_cache_references(romFs, versi
   local colors = {}
   for _, color in ipairs({ "green", "yellow", "red" }) do
     local visual = assert(bars[color], color .. " strip exists")
-    local width, height, rgba = PngReader.rgba(assetBytes(assert(bundle.assets[visual.image], color .. " strip pixels resolve")))
+    local width, height, rgba =
+      PngReader.rgba(assetBytes(assert(bundle.assets[visual.image], color .. " strip pixels resolve")))
     Assert.equal(width, 48)
     Assert.equal(height, 4)
     Assert.equal(pixel(rgba, width, 0, 0), pixel(rgba, width, 0, 3), "edge rows use the source edge color")
     Assert.equal(pixel(rgba, width, 0, 1), pixel(rgba, width, 0, 2), "body rows use the source body color")
-    Assert.isFalse(
-      pixel(rgba, width, 0, 0) == pixel(rgba, width, 0, 1),
-      "edge and body rows remain distinct"
-    )
+    Assert.isFalse(pixel(rgba, width, 0, 0) == pixel(rgba, width, 0, 1), "edge and body rows remain distinct")
     colors[color] = pixel(rgba, width, 0, 1)
     for x = 1, width - 1 do
       for y = 0, height - 1 do
@@ -373,10 +372,7 @@ local function collectRgba(record)
       return
     end
     if type(value.r) == "number" and type(value.g) == "number" and type(value.b) == "number" then
-      Assert.isTrue(
-        value.r % 1 == 0 and value.g % 1 == 0 and value.b % 1 == 0,
-        "generated colors use integer channels"
-      )
+      Assert.isTrue(value.r % 1 == 0 and value.g % 1 == 0 and value.b % 1 == 0, "generated colors use integer channels")
       Assert.isTrue(
         value.r >= 0 and value.r <= 255 and value.g >= 0 and value.g <= 255 and value.b >= 0 and value.b <= 255,
         "generated colors stay inside the byte range"
@@ -560,9 +556,7 @@ function T.gender_labels_and_message_windows_come_from_source(romFs, versionId)
   local function displayText(index)
     local message = bank.messages[index + 1]
     Assert.notNil(message, "bank 300 carries message " .. index)
-    local tokens = assert(
-      FieldMessageTokenizer.tokenize(message.raw, charmap, { bankId = 300, messageId = index })
-    )
+    local tokens = assert(FieldMessageTokenizer.tokenize(message.raw, charmap, { bankId = 300, messageId = index }))
     local parts = {}
     for _, token in ipairs(tokens) do
       if token.kind == "eos" then
@@ -668,14 +662,8 @@ function T.menu_layouts_cover_every_supported_entry_count(romFs, versionId)
       end
     end
   end
-  Assert.isTrue(
-    (menu.topLevel[1] or menu.topLevel["1"]) == nil,
-    "unsupported top-level counts have no fallback layout"
-  )
-  Assert.isTrue(
-    (menu.topLevel[9] or menu.topLevel["9"]) == nil,
-    "unsupported top-level counts have no fallback layout"
-  )
+  Assert.isTrue((menu.topLevel[1] or menu.topLevel["1"]) == nil, "unsupported top-level counts have no fallback layout")
+  Assert.isTrue((menu.topLevel[9] or menu.topLevel["9"]) == nil, "unsupported top-level counts have no fallback layout")
   Assert.isTrue(
     (menu.subcontext[1] or menu.subcontext["1"]) == nil,
     "unsupported subcontext counts have no fallback layout"
@@ -778,8 +766,7 @@ function T.context_frames_keep_source_transparent_margins(romFs, versionId)
   local PartySources = require("romdump.src.config.PartySources")
   local bundle = bundleFor(romFs, versionId)
   local archive = assert(romFs:openNarc(PartySources.archive.symbol), "the party archive resolves")
-  local charData =
-    decodeArchiveMember(archive, PartySources.contextFrames.member, "decodeChar", "context frame tiles")
+  local charData = decodeArchiveMember(archive, PartySources.contextFrames.member, "decodeChar", "context frame tiles")
   local offsets = PartySources.contextFrames.tileOffsets
   local bases = PartySources.contextFrames.tileBases
   local sizes = {
@@ -843,8 +830,13 @@ function T.context_frames_keep_source_transparent_margins(romFs, versionId)
           end
         end
       end
-      Assert.equal(opaque, 0, where .. " keeps source index-zero pixels transparent"
-        .. (sample == nil and "" or ", first opaque margin pixel " .. sample))
+      Assert.equal(
+        opaque,
+        0,
+        where
+          .. " keeps source index-zero pixels transparent"
+          .. (sample == nil and "" or ", first opaque margin pixel " .. sample)
+      )
     end
   end
 end
@@ -909,7 +901,8 @@ function T.switch_selection_chrome_and_empty_take_template_come_from_source(romF
     Assert.equal(visual.width, 128, where .. " width")
     Assert.equal(visual.height, 48, where .. " height")
     local raw = assetBytes(assert(bundle.assets[visual.image], where .. " image resolves"))
-    local normalRaw = assetBytes(assert(bundle.assets[panel.chrome.normal.image], "panel " .. slot .. " normal resolves"))
+    local normalRaw =
+      assetBytes(assert(bundle.assets[panel.chrome.normal.image], "panel " .. slot .. " normal resolves"))
     Assert.isFalse(raw == normalRaw, where .. " is independently compiled")
     Assert.isTrue(referenced[visual.image], where .. " participates in cache readiness")
   end
@@ -921,8 +914,7 @@ function T.switch_selection_chrome_and_empty_take_template_come_from_source(romF
   local bank = assert(FieldMessageBank.decode(bankBytes, { label = "party-message-bank-300" }))
   local message = bank.messages[82 + 1]
   Assert.notNil(message, "bank 300 carries the empty-take message")
-  local tokens =
-    assert(FieldMessageTokenizer.tokenize(message.raw, charmap, { bankId = 300, messageId = 82 }))
+  local tokens = assert(FieldMessageTokenizer.tokenize(message.raw, charmap, { bankId = 300, messageId = 82 }))
   local expected, pending = {}, {}
   local function flush()
     if #pending > 0 then

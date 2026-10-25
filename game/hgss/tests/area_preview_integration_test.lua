@@ -81,9 +81,11 @@ end
 
 local function selector(manifest, clock)
   local runtime = {
-    mapLoader = { requestWarp = function()
-      return true
-    end },
+    mapLoader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     fieldEntryManifest = manifest,
     localClock = clock,
   }
@@ -165,9 +167,14 @@ function T.the_selection_snapshot_carries_the_profile_id_and_a_frozen_key()
   local manifest = previewManifest()
   local clock = clockAt(12)
   local select = selector(manifest, clock)
-  local selected = assert(select(mapAt(33, "outdoors"), mapAt(LISTED_CAVE, "cave"), 8), "the listed destination selects")
+  local selected =
+    assert(select(mapAt(33, "outdoors"), mapAt(LISTED_CAVE, "cave"), 8), "the listed destination selects")
   Assert.equal(selected.profileId, 8, "the selection carries the originating transition profile")
-  Assert.equal(selected.imageKey, assert(manifest.previewByMapId[LISTED_CAVE])[1], "the selection names the slot image key")
+  Assert.equal(
+    selected.imageKey,
+    assert(manifest.previewByMapId[LISTED_CAVE])[1],
+    "the selection names the slot image key"
+  )
   Assert.equal(selected.timeSlot, 1, "the selection names the sampled slot")
   Assert.keySet(selected, "imageKey,profileId,timeSlot", "the selection snapshot is only its frozen fields")
 end

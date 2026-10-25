@@ -650,10 +650,7 @@ function T.reopening_prepares_the_new_presentation_again()
   )
   Assert.isTrue(#queue.requests > firstRequests, "the reopened chooser requests its resources again")
   queue.ready = true
-  Assert.isTrue(
-    advanceToReady(host, queue, backend, images),
-    "the reopened chooser prepares through bounded steps"
-  )
+  Assert.isTrue(advanceToReady(host, queue, backend, images), "the reopened chooser prepares through bounded steps")
   host:close()
   host:dispose()
 end
@@ -729,10 +726,7 @@ function T.hidden_keyboard_release_clears_held_direction_before_visible_repeat()
   Assert.deepEqual(host:status(), before, "hidden preparation never moves starter selection")
 
   queue.ready = true
-  Assert.isTrue(
-    advanceToReady(host, queue, backend, images),
-    "the chooser prepares through bounded steps"
-  )
+  Assert.isTrue(advanceToReady(host, queue, backend, images), "the chooser prepares through bounded steps")
   state.runtime.session.tick = delay + 3
   state:update(SourceTick.DT)
   Assert.isFalse(input:isHeld("north"), "readiness does not resurrect the released source")
@@ -779,10 +773,7 @@ function T.hidden_stick_neutral_clears_stick_ownership_before_readiness()
   end
 
   queue.ready = true
-  Assert.isTrue(
-    advanceToReady(host, queue, backend, images),
-    "the chooser prepares through bounded steps"
-  )
+  Assert.isTrue(advanceToReady(host, queue, backend, images), "the chooser prepares through bounded steps")
   state.runtime.session.tick = delay + 3
   state:update(SourceTick.DT)
   Assert.isFalse(input:isHeld("west"), "readiness does not resurrect the neutralized stick")
@@ -1104,10 +1095,7 @@ function T.chooser_requests_only_the_pages_selected_by_its_candidates()
   queue.ready = true
   local backend = stubBackend()
   local images = SummaryAcceptanceFixture.sizedImagePool()
-  Assert.isTrue(
-    advanceToReady(host, queue, backend, images),
-    "the chooser prepares through bounded steps"
-  )
+  Assert.isTrue(advanceToReady(host, queue, backend, images), "the chooser prepares through bounded steps")
   Assert.isTrue(host:isPresentationReady(), "the chooser becomes drawable from its selected pages")
   local pagesByImage = {}
   for pageId, page in pairs(assert(portraits.pages, "the staged manifest carries its pages")) do
@@ -1180,7 +1168,8 @@ function T.actual_portrait_pages_are_required_before_their_image_paths()
   queue.ready = true
   local backend = stubBackend()
   local images = SummaryAcceptanceFixture.sizedImagePool()
-  local context = { assetPreparation = queue, gxRenderer = backend, derivedAssets = derivedAssets, imageAssets = images }
+  local context =
+    { assetPreparation = queue, gxRenderer = backend, derivedAssets = derivedAssets, imageAssets = images }
   for _ = 1, 64 do
     host:advancePresentationPreparation(context, 1)
   end

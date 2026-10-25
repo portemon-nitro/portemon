@@ -191,10 +191,8 @@ local function screenArgs(overrides)
     measureDisplay = function()
       return { width = 512, height = 384, layout = "dual" }
     end,
-    effect = function()
-    end,
-    playCry = function()
-    end,
+    effect = function() end,
+    playCry = function() end,
     commitResume = function()
       return true
     end,
@@ -235,10 +233,8 @@ function T.matching_readiness_admits_motion_while_stale_keys_retain_the_view()
     measureDisplay = function()
       return compactMeasurement()
     end,
-    effect = function()
-    end,
-    playCry = function()
-    end,
+    effect = function() end,
+    playCry = function() end,
     commitResume = function()
       return true
     end,
@@ -252,8 +248,7 @@ function T.matching_readiness_admits_motion_while_stale_keys_retain_the_view()
   local gridPlan = assert(committed.presentation, "the committed grid publishes its resolved plan")
   local gridInputKey = assert(gridPlan.inputKey, "the grid plan carries its input geometry identity")
   local gridFooter = footerIds(gridPlan)
-  local gridRows =
-    #(assert(gridPlan.content.pokedexCompact, "the grid plan carries its compact record").rows)
+  local gridRows = #assert(gridPlan.content.pokedexCompact, "the grid plan carries its compact record").rows
   -- The search demand stays pending behind the gate while the live
   -- browser already advanced: every pending tick must keep the
   -- displayed grid triplet together.
@@ -271,7 +266,7 @@ function T.matching_readiness_admits_motion_while_stale_keys_retain_the_view()
     Assert.equal(pendingPlan.inputKey, gridInputKey, "a pending search keeps the displayed grid geometry")
     Assert.deepEqual(footerIds(pendingPlan), gridFooter, "a pending search keeps the displayed footer")
     Assert.equal(
-      #(assert(pendingPlan.content.pokedexCompact, "the pending plan carries its compact record").rows),
+      #assert(pendingPlan.content.pokedexCompact, "the pending plan carries its compact record").rows,
       gridRows,
       "a pending search keeps the displayed rows"
     )
@@ -307,7 +302,7 @@ function T.matching_readiness_admits_motion_while_stale_keys_retain_the_view()
     "readiness publishes the search footer"
   )
   Assert.isTrue(
-    #(assert(searchPlan.content.pokedexCompact, "the search plan carries its compact record").rows) > gridRows,
+    #assert(searchPlan.content.pokedexCompact, "the search plan carries its compact record").rows > gridRows,
     "readiness publishes the search rows"
   )
   screen:dispose()
@@ -390,11 +385,7 @@ function T.compact_inspection_shields_source_state_and_closes_cleanly()
   screen:updateFixed({ { type = "inspect" } })
   local inspecting = screen:status()
   Assert.isTrue(inspecting.compact.inspect, "the inspect action opens the private expanded panel")
-  Assert.deepEqual(
-    inspecting.view.selection,
-    before.view.selection,
-    "inspection never mutates the browser selection"
-  )
+  Assert.deepEqual(inspecting.view.selection, before.view.selection, "inspection never mutates the browser selection")
   screen:updateFixed({ { type = "cancel" } })
   Assert.isFalse(screen:status().compact.inspect, "cancelling closes the private panel")
   Assert.isNil(screen:takeResult(), "closing inspection is not a screen close")
@@ -509,8 +500,7 @@ function T.search_editors_and_comparison_resolve_their_own_page_roles()
   function controller:takeResult()
     return nil
   end
-  function controller:dispose()
-  end
+  function controller:dispose() end
   local lease = { prepared = {}, released = 0 }
   function lease:prepare(demand)
     assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
@@ -533,17 +523,12 @@ function T.search_editors_and_comparison_resolve_their_own_page_roles()
   end
   Assert.equal(#lease.prepared, #views, "every projection prepares exactly one demand")
   for index, demand in ipairs(lease.prepared) do
-    Assert.equal(
-      demand.pageRole,
-      expected[index],
-      "projection " .. index .. " demands its own source page role"
-    )
+    Assert.equal(demand.pageRole, expected[index], "projection " .. index .. " demands its own source page role")
     Assert.equal(demand.language, "english", "the demand carries the selected language")
     Assert.equal(demand.profile, "base", "the demand carries its measurement profile")
   end
   screen:dispose()
 end
-
 
 ---@param status table<string, unknown> host-facing presentation snapshot
 ---@return table controls pane origin for host-space pointer events
@@ -599,10 +584,8 @@ function T.captured_slider_release_outside_bands_settles_under_pending_assets()
         signature = "slider-release-test:dual",
       }
     end,
-    effect = function()
-    end,
-    playCry = function()
-    end,
+    effect = function() end,
+    playCry = function() end,
     commitResume = function()
       return true
     end,
@@ -682,10 +665,8 @@ function T.display_reflow_cancels_the_active_drag_exactly_once()
       end
       return compactMeasurement()
     end,
-    effect = function()
-    end,
-    playCry = function()
-    end,
+    effect = function() end,
+    playCry = function() end,
     commitResume = function()
       return true
     end,
@@ -867,10 +848,8 @@ function T.held_input_cancels_once_across_a_display_reflow()
       end
       return compactMeasurement()
     end,
-    effect = function()
-    end,
-    playCry = function()
-    end,
+    effect = function() end,
+    playCry = function() end,
     commitResume = function()
       return true
     end,
@@ -896,10 +875,7 @@ function T.held_input_cancels_once_across_a_display_reflow()
     string.find(reflowPlan.inputKey, ":grid:", 1, true) ~= nil,
     "a reflow keeps the displayed grid geometry"
   )
-  Assert.isTrue(
-    string.find(reflowPlan.inputKey, ":search:", 1, true) == nil,
-    "a reflow publishes no search geometry"
-  )
+  Assert.isTrue(string.find(reflowPlan.inputKey, ":search:", 1, true) == nil, "a reflow publishes no search geometry")
   screen:updateFixed({})
   local cancels = 0
   for index = reflowStart + 1, #batches do
@@ -1007,10 +983,8 @@ function T.inspector_binds_only_eligible_details_and_closes_without_side_effects
     measureDisplay = function()
       return compactMeasurement()
     end,
-    effect = function()
-    end,
-    playCry = function()
-    end,
+    effect = function() end,
+    playCry = function() end,
     commitResume = function()
       return true
     end,
@@ -1064,10 +1038,8 @@ function T.inspector_close_maps_at_its_drawn_rectangle_without_click_through()
     measureDisplay = function()
       return compactMeasurement()
     end,
-    effect = function()
-    end,
-    playCry = function()
-    end,
+    effect = function() end,
+    playCry = function() end,
     commitResume = function()
       return true
     end,

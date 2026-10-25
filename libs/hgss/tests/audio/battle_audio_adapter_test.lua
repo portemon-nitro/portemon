@@ -211,7 +211,8 @@ function T.owned_stops_release_only_their_own_voice()
   local music = voice:startMusic("SEQ_GS_VS_NORAPOKE")
   Assert.isTrue(voice:stopVoice(music), "an owned music stop releases")
   Assert.equal(log[#log].op, "stopMusic", "music stops reach the sink music port")
-  local foreign = { launch = "another-launch", generation = "another-launch", sequence = 1, kind = "effect", detail = {} }
+  local foreign =
+    { launch = "another-launch", generation = "another-launch", sequence = 1, kind = "effect", detail = {} }
   local before = #log
   Assert.isFalse(voice:stopVoice(foreign), "a stale stop releases nothing")
   Assert.equal(#log, before, "stale stops never reach the sink")
@@ -348,11 +349,7 @@ function T.adapter_dispatch_voices_audible_samples_through_the_shared_engine()
     "synthetic-operation-silent-control",
   })
   voice:playEffect("synthetic-operation-silent-control")
-  Assert.equal(
-    peakAbs(leftChannel(player:render(4000), 4000)),
-    0,
-    "the legitimate silent control renders silence"
-  )
+  Assert.equal(peakAbs(leftChannel(player:render(4000), 4000)), 0, "the legitimate silent control renders silence")
   for _, symbol in ipairs({ "synthetic-operation-move", "synthetic-operation-impact" }) do
     local handle = voice:playEffect(symbol)
     local frames = player:render(4000)

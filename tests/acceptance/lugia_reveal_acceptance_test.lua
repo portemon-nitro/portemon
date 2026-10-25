@@ -125,7 +125,11 @@ function T.tests.whirl_islands_coordinate_runs_lugia_reveal_without_script_fault
     Assert.notNil(legendFirstY, "the legend object is drawn during the approach")
     Assert.isTrue(
       legendFirstY >= legendLastY + 7,
-      "the legend object first appears at its descent height, never lowered (first " .. legendFirstY .. ", landed " .. legendLastY .. ")"
+      "the legend object first appears at its descent height, never lowered (first "
+        .. legendFirstY
+        .. ", landed "
+        .. legendLastY
+        .. ")"
     )
     Assert.isFalse(stopBlockerShown, "the map's resume script hides the STOP blockers once the cinematic exits")
     Assert.isTrue(legendFlapped == true, "the legend object plays its flap sequence")

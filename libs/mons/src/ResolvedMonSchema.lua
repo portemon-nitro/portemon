@@ -491,8 +491,8 @@ function ResolvedMonSchema.assertCatalog(catalog)
     abilities = true,
     growthCurves = true,
   }, context, true)
-  if catalog.schema ~= "g4-mon-catalog-v4" then
-    fail("catalog schema must be g4-mon-catalog-v4", context)
+  if catalog.schema ~= "g4-mon-catalog-v5" then
+    fail("catalog schema must be g4-mon-catalog-v5", context)
   end
   if type(catalog.version) ~= "table" then
     fail("catalog version must be a record", context)

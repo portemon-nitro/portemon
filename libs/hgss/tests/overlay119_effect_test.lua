@@ -162,7 +162,10 @@ function T.unknown_roles_and_missing_sprite_groups_fail_closed()
   local resources = spriteResources()
   for _, role in ipairs({ "generic-trainer-transition", "trainer-transition", "plain-wild-fallback" }) do
     local ok = pcall(function()
-      return Overlay119Effect.new({ role = role, assetGroups = routeFor("plain-trainer-fallback").assetGroups }, resources)
+      return Overlay119Effect.new(
+        { role = role, assetGroups = routeFor("plain-trainer-fallback").assetGroups },
+        resources
+      )
     end)
     Assert.equal(ok, false, "role " .. role .. " has no affine-wipe fallback worker")
   end

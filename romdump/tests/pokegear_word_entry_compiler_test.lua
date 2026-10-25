@@ -57,7 +57,10 @@ end
 local function cellData()
   local meta = u16(1) .. u16(0) .. u32(0)
   local attr = u16(0) .. u16(0) .. u16(0)
-  return container("RECN", { block("CEBK", u16(1) .. u16(0) .. u32(0x18) .. u32(0) .. string.rep("\0", 12) .. meta .. attr) })
+  return container(
+    "RECN",
+    { block("CEBK", u16(1) .. u16(0) .. u32(0x18) .. u32(0) .. string.rep("\0", 12) .. meta .. attr) }
+  )
 end
 
 local function animData()
@@ -193,11 +196,7 @@ function T.closed_selector_set_matches_the_pc_dictionary_identities()
     local pcEntry = PcSources.mailText.wordBanks[index]
     Assert.equal(entry.messageBank, pcEntry.messageBank, "word-entry bank " .. index .. " reuses the dictionary bank")
     Assert.equal(entry.wordCount, pcEntry.wordCount, "word-entry bank " .. index .. " reuses the dictionary count")
-    Assert.equal(
-      entry.firstWordId,
-      pcEntry.firstWordId,
-      "word-entry bank " .. index .. " reuses the dictionary base"
-    )
+    Assert.equal(entry.firstWordId, pcEntry.firstWordId, "word-entry bank " .. index .. " reuses the dictionary base")
   end
   local total = 0
   for _, entry in ipairs(Sources.wordBanks) do
@@ -224,14 +223,8 @@ function T.synthetic_closed_set_compiles_to_a_valid_section_with_frames()
   Assert.equal(bundle.section.groups[1].firstWordId, 0, "the species group starts at the decimal group base")
   Assert.equal(bundle.section.groups[2].firstWordId, 496, "the move group starts where species ends")
   Assert.notNil(bundle.section.cursor, "the section carries its cursor sequences")
-  Assert.isTrue(
-    #bundle.section.cursor.sequences >= 1,
-    "the cursor keeps at least one source sequence"
-  )
-  Assert.isTrue(
-    #bundle.section.cursor.sequences[1].frames >= 1,
-    "the first cursor sequence stages at least one frame"
-  )
+  Assert.isTrue(#bundle.section.cursor.sequences >= 1, "the cursor keeps at least one source sequence")
+  Assert.isTrue(#bundle.section.cursor.sequences[1].frames >= 1, "the first cursor sequence stages at least one frame")
   local staged = 0
   for path in pairs(bundle.assets) do
     if path:find("word-entry-", 1, true) ~= nil then
@@ -252,11 +245,15 @@ function T.incomplete_or_mismatched_source_sets_fail_before_publication()
     short[memberId + 1] = "member-" .. memberId
   end
   Assert.isFalse(
-    pcall(Compiler.compile, stubRomFs({
-      readSourcePath = function()
-        return narc(short)
-      end,
-    }), "heartgold"),
+    pcall(
+      Compiler.compile,
+      stubRomFs({
+        readSourcePath = function()
+          return narc(short)
+        end,
+      }),
+      "heartgold"
+    ),
     "a truncated sprite archive never compiles the selector"
   )
   local wrongCounts = {}

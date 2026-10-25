@@ -68,10 +68,18 @@ return S.script({
 ]]
 local function martScript(id, kind, selector)
   local selectorStep = selector == nil and "" or (", selector = " .. tostring(selector))
-  return ('local S = require("gen4.script")\n\nreturn S.script({\n'
-    .. '  api = 1,\n  id = "' .. id .. '",\n  steps = {\n'
-    .. '    S.mart({ kind = "' .. kind .. '"' .. selectorStep .. ' }),\n'
-    .. '    S.stop(),\n  },\n})\n')
+  return (
+    'local S = require("gen4.script")\n\nreturn S.script({\n'
+    .. '  api = 1,\n  id = "'
+    .. id
+    .. '",\n  steps = {\n'
+    .. '    S.mart({ kind = "'
+    .. kind
+    .. '"'
+    .. selectorStep
+    .. " }),\n"
+    .. "    S.stop(),\n  },\n})\n"
+  )
 end
 scripts[BALLS_SCRIPT] = martScript(BALLS_SCRIPT, "standard")
 scripts[ATHLETE_SCRIPT] = martScript(ATHLETE_SCRIPT, "athlete")
@@ -322,7 +330,8 @@ local function reachRetailMart(game, scriptId)
       local selected = menuTask.state.menuDefinition.items[menuTask.state.selectedIndex + 1]
       Assert.equal(selected.value, 0, scriptId .. " starts the source clerk menu on mart value zero")
       game:pressAction()
-    elseif game.runtime.dialogue:status().state == "WAITING_BOUNDARY"
+    elseif
+      game.runtime.dialogue:status().state == "WAITING_BOUNDARY"
       or game.runtime.dialogue:status().state == "WAITING_CLOSE"
     then
       game:pressAction()
@@ -333,17 +342,17 @@ local function reachRetailMart(game, scriptId)
       break
     end
   end
-  Assert.isTrue(
-    game.runtime.martHost:isActive(),
-    scriptId .. " reaches the source mart command"
-  )
+  Assert.isTrue(game.runtime.martHost:isActive(), scriptId .. " reaches the source mart command")
   return hostStatus(game)
 end
 
 function T.tests.athlete_clerk_runs_the_zero_return_prelude_before_its_real_shop()
   withGame(function(game)
     local status = reachRetailMart(game, ATHLETE_CLERK)
-    Assert.isTrue(game.runtime.scripts.worldState:isFlagSet(ATHLETE_CLERK_READY), "the source greeting marks the Athlete clerk ready")
+    Assert.isTrue(
+      game.runtime.scripts.worldState:isFlagSet(ATHLETE_CLERK_READY),
+      "the source greeting marks the Athlete clerk ready"
+    )
     Assert.equal(status.presentationKind, "athlete_items", "opcode 771 opens the source Athlete stock")
     Assert.isTrue(
       game.runtime.scripts.worldState:getVar(CONTINUATION) ~= 7,
@@ -357,7 +366,10 @@ end
 function T.tests.data_card_clerk_runs_its_prefix_query_before_the_real_shop()
   withGame(function(game)
     local status = reachRetailMart(game, CARD_CLERK)
-    Assert.isTrue(game.runtime.scripts.worldState:isFlagSet(CARD_CLERK_READY), "the source greeting marks the Data Card clerk ready")
+    Assert.isTrue(
+      game.runtime.scripts.worldState:isFlagSet(CARD_CLERK_READY),
+      "the source greeting marks the Data Card clerk ready"
+    )
     Assert.equal(status.presentationKind, "athlete_cards", "opcode 772 opens the source Data Card stock")
     Assert.notNil(game:snapshot().foregroundScript, "the clerk script remains blocked by the child")
     pressCancel(game)
@@ -385,8 +397,16 @@ function T.tests.standard_stock_sells_ten_poke_balls_and_grants_one_acknowledged
       return hostStatus(game).state == "bonus_print"
     end, 120)
     advancePrinter(game, "bonus_print", "bonus_ack", "Premier Ball bonus", 480)
-    Assert.equal(game.runtime.bagService:quantity("PREMIER_BALL"), 1, "one acknowledged ten-ball purchase grants one Premier Ball")
-    Assert.equal(game.runtime.martService:capture().statistics.premierBallsEarned, 1, "the bonus statistic records exactly one grant")
+    Assert.equal(
+      game.runtime.bagService:quantity("PREMIER_BALL"),
+      1,
+      "one acknowledged ten-ball purchase grants one Premier Ball"
+    )
+    Assert.equal(
+      game.runtime.martService:capture().statistics.premierBallsEarned,
+      1,
+      "the bonus statistic records exactly one grant"
+    )
     game:pressAction()
     game:advanceUntil("bonus acknowledgement returns to browsing", function()
       return hostStatus(game).state == "browse"
@@ -411,28 +431,50 @@ function T.tests.athlete_shop_buys_apricorn_and_item_then_resets_daily_slots_aft
     Assert.isNil(catalog.apricorns[itemRow.subjectKey], "the second source row is a Bag item")
 
     selectEntry(game, apricornIndex - 1)
-    Assert.equal(hostStatus(game).currentEntry.displayItemKey, apricornRow.subjectKey, "the retail stock selection resolves its Apricorn")
+    Assert.equal(
+      hostStatus(game).currentEntry.displayItemKey,
+      apricornRow.subjectKey,
+      "the retail stock selection resolves its Apricorn"
+    )
     local pointsBefore = game.runtime.martService:capture().athletePoints
     purchaseSelected(game)
     acknowledgePurchase(game)
-    Assert.equal(game.runtime.martService:capture().apricorns[apricornRow.subjectKey], 1, "the purchase grants the selected Apricorn")
+    Assert.equal(
+      game.runtime.martService:capture().apricorns[apricornRow.subjectKey],
+      1,
+      "the purchase grants the selected Apricorn"
+    )
     Assert.isTrue(game.runtime.martService:capture().athletePoints < pointsBefore, "the Apricorn purchase spends AP")
 
     selectEntry(game, itemIndex - 1)
-    Assert.equal(hostStatus(game).currentEntry.displayItemKey, itemRow.subjectKey, "the same source stock exposes its second AP item")
+    Assert.equal(
+      hostStatus(game).currentEntry.displayItemKey,
+      itemRow.subjectKey,
+      "the same source stock exposes its second AP item"
+    )
     local itemPointsBefore = game.runtime.martService:capture().athletePoints
     purchaseSelected(game)
     acknowledgePurchase(game)
-    Assert.isTrue(game.runtime.bagService:quantity(itemRow.subjectKey) > 0, "the second AP purchase reaches the real Bag")
+    Assert.isTrue(
+      game.runtime.bagService:quantity(itemRow.subjectKey) > 0,
+      "the second AP purchase reaches the real Bag"
+    )
     Assert.isTrue(game.runtime.martService:capture().athletePoints < itemPointsBefore, "the second purchase spends AP")
-    Assert.isTrue(game.runtime.martService:capture().dailyPurchasedMask ~= 0, "both purchases reserve source daily slots")
+    Assert.isTrue(
+      game.runtime.martService:capture().dailyPurchasedMask ~= 0,
+      "both purchases reserve source daily slots"
+    )
     closeScriptMart(game)
 
     local priorDay = game.runtime.martService:capture().lastProcessedDay
     addOneDay(date)
     openScriptMart(game, ATHLETE_SCRIPT)
     local rolled = game.runtime.martService:capture()
-    Assert.equal(rolled.dailyPurchasedMask, 0, "opening on the next civil date clears the previous day's purchase slots")
+    Assert.equal(
+      rolled.dailyPurchasedMask,
+      0,
+      "opening on the next civil date clears the previous day's purchase slots"
+    )
     Assert.isTrue(rolled.lastProcessedDay > priorDay, "the date rollover advances the persisted processed-day ordinal")
     closeScriptMart(game)
   end, { date = date })
@@ -454,20 +496,36 @@ function T.tests.data_card_purchase_crosses_the_real_six_card_stock_group_bounda
 
     local before = openScriptMart(game, CARD_SCRIPTS[1])
     Assert.equal(before.presentationKind, "athlete_cards", "the Data Card opcode uses its source presentation")
-    Assert.equal(game.runtime.martHost:query("card_prefix"), 5, "five seeded cards leave the prefix at the final item in group zero")
+    Assert.equal(
+      game.runtime.martHost:query("card_prefix"),
+      5,
+      "five seeded cards leave the prefix at the final item in group zero"
+    )
     selectEntry(game, unownedIndex - 1)
     local cardKey = firstGroup[unownedIndex].subjectKey
-    Assert.equal(hostStatus(game).currentEntry.displayItemKey, cardKey, "the final group-zero card is selected from the generated stock")
+    Assert.equal(
+      hostStatus(game).currentEntry.displayItemKey,
+      cardKey,
+      "the final group-zero card is selected from the generated stock"
+    )
     purchaseSelected(game)
     acknowledgePurchase(game)
-    Assert.equal(game.runtime.martHost:query("card_prefix"), 6, "committing the sixth contiguous card advances the prefix")
+    Assert.equal(
+      game.runtime.martHost:query("card_prefix"),
+      6,
+      "committing the sixth contiguous card advances the prefix"
+    )
     closeScriptMart(game)
 
     local after = openScriptMart(game, CARD_SCRIPTS[2])
     local nextGroup = catalog.dataCardStocks[2]
     Assert.equal(after.entryCount, #nextGroup, "the next opening resolves the adjacent six-card stock group")
     for index, row in ipairs(nextGroup) do
-      Assert.equal(after.entries[index].displayItemKey, row.subjectKey, "the next stock group follows generated source order")
+      Assert.equal(
+        after.entries[index].displayItemKey,
+        row.subjectKey,
+        "the next stock group follows generated source order"
+      )
     end
     closeScriptMart(game)
   end, { ownedDataCardsMask = 31 })
@@ -499,12 +557,20 @@ function T.tests.seal_shop_grants_a_seal_while_legacy_decoration_stays_non_grant
       granted = granted + count - (beforeSeals[key] or 0)
     end
     Assert.equal(granted, 1, "the confirmed Seal purchase grants exactly one seal to the seal case")
-    Assert.equal(game.runtime.playerData.profile.money, moneyBeforeSeal - 100, "the Seal purchase deducts exactly 100 from player money")
+    Assert.equal(
+      game.runtime.playerData.profile.money,
+      moneyBeforeSeal - 100,
+      "the Seal purchase deducts exactly 100 from player money"
+    )
     closeScriptMart(game)
 
     local moneyBeforeDecoration = game.runtime.playerData.profile.money
     local decoration = openScriptMart(game, DECORATION_SCRIPT)
-    Assert.equal(decoration.presentationKind, "legacy_decorations", "the Decoration command retains its legacy presentation")
+    Assert.equal(
+      decoration.presentationKind,
+      "legacy_decorations",
+      "the Decoration command retains its legacy presentation"
+    )
     Assert.isTrue(decoration.entryCount > 0, "the generated legacy Decoration stock has an outcome to select")
     local displayItem = decoration.currentEntry.displayItemKey
     local itemCount = game.runtime.bagService:quantity(displayItem)
@@ -516,16 +582,36 @@ function T.tests.seal_shop_grants_a_seal_while_legacy_decoration_stays_non_grant
     end, 120)
     advancePrinter(game, "error_print", "error_ack", "legacy Decoration refusal", 480)
     local faults = game:recordsForScript(DECORATION_SCRIPT, "script.error")
-    Assert.equal(game.runtime.playerData.profile.money, moneyBeforeDecoration, "the unsupported Decoration outcome charges no money")
-    Assert.equal(game.runtime.bagService:quantity(displayItem), itemCount, "the unsupported Decoration outcome grants no Bag item")
-    Assert.equal(game.runtime.martService:capture().statistics.currencySpent, spentBeforeDecoration, "the failed legacy transaction records no spend")
-    Assert.equal(#faults, 0, "the legacy Decoration return has no script fault: " .. tostring(faults[1] and faults[1].payload.message))
+    Assert.equal(
+      game.runtime.playerData.profile.money,
+      moneyBeforeDecoration,
+      "the unsupported Decoration outcome charges no money"
+    )
+    Assert.equal(
+      game.runtime.bagService:quantity(displayItem),
+      itemCount,
+      "the unsupported Decoration outcome grants no Bag item"
+    )
+    Assert.equal(
+      game.runtime.martService:capture().statistics.currencySpent,
+      spentBeforeDecoration,
+      "the failed legacy transaction records no spend"
+    )
+    Assert.equal(
+      #faults,
+      0,
+      "the legacy Decoration return has no script fault: " .. tostring(faults[1] and faults[1].payload.message)
+    )
     game:pressAction()
     game:advanceUntil("the Decoration refusal returns to stock browsing", function()
       return hostStatus(game).state == "browse"
     end, 120)
     closeScriptMart(game)
-    Assert.equal(game.runtime.scripts.worldState:getVar(CONTINUATION), 8, "the caller resumes after the legacy Decoration outcome")
+    Assert.equal(
+      game.runtime.scripts.worldState:getVar(CONTINUATION),
+      8,
+      "the caller resumes after the legacy Decoration outcome"
+    )
     Assert.notNil(sealItem, "the generated Seal presentation supplied a semantic display item")
   end, { recordingScriptHosts = true })
 end
@@ -591,9 +677,12 @@ function T.tests.script_sell_child_commits_one_sale_before_returning_to_the_fiel
       "POTION",
       "Bag focus navigation selects the sale fixture; pocket="
         .. tostring(selection.pocket)
-        .. "; focus=" .. tostring(selection.focus)
-        .. "; absolute=" .. tostring(selection.focusedAbsoluteIndex)
-        .. "; slots=" .. table.concat(slots, ",")
+        .. "; focus="
+        .. tostring(selection.focus)
+        .. "; absolute="
+        .. tostring(selection.focusedAbsoluteIndex)
+        .. "; slots="
+        .. table.concat(slots, ",")
     )
     local startingMoney = game.runtime.playerData.profile.money
     game:pressAction()

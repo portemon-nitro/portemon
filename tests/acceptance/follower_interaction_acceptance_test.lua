@@ -133,8 +133,14 @@ function T.tests.compiled_following_mon_script_blocks_on_live_interaction_and_re
     local task = assert(game.runtime.scripts.scheduler:taskById(interactionTasks[1].payload.taskId))
     Assert.equal(task.taskType, "follower_interaction", "the registered task must own opcode 711")
     Assert.equal(task.status, "active", "the script must block while the interaction task is active")
-    Assert.isNil(game:recordsForScript(SCRIPT_ID, "script.ended")[1], "the script must not resume before the task completes")
-    Assert.isTrue(catalog.programs[task.state.programId] ~= nil, "selection must use a program from the supplied ROM catalog")
+    Assert.isNil(
+      game:recordsForScript(SCRIPT_ID, "script.ended")[1],
+      "the script must not resume before the task completes"
+    )
+    Assert.isTrue(
+      catalog.programs[task.state.programId] ~= nil,
+      "selection must use a program from the supplied ROM catalog"
+    )
     local selectedFromMap = false
     for _, rule in ipairs(sectionRules) do
       selectedFromMap = selectedFromMap or rule.interactionId == task.state.programId
@@ -159,9 +165,15 @@ function T.tests.compiled_following_mon_script_blocks_on_live_interaction_and_re
         .. ", scriptEnd="
         .. tostring(game:recordsForScript(SCRIPT_ID, "script.ended")[1] ~= nil)
         .. ", endReason="
-        .. tostring(game:recordsForScript(SCRIPT_ID, "script.ended")[1] and game:recordsForScript(SCRIPT_ID, "script.ended")[1].payload.reason)
+        .. tostring(
+          game:recordsForScript(SCRIPT_ID, "script.ended")[1]
+            and game:recordsForScript(SCRIPT_ID, "script.ended")[1].payload.reason
+        )
         .. ", error="
-        .. tostring(game:recordsForScript(SCRIPT_ID, "script.error")[1] and game:recordsForScript(SCRIPT_ID, "script.error")[1].payload.code)
+        .. tostring(
+          game:recordsForScript(SCRIPT_ID, "script.error")[1]
+            and game:recordsForScript(SCRIPT_ID, "script.error")[1].payload.code
+        )
     )
     local scriptEnds = game:recordsForScript(SCRIPT_ID, "script.ended")
     Assert.equal(#scriptEnds, 1, "the compiled script must resume and finish once")
@@ -188,16 +200,15 @@ function T.tests.facing_the_partner_starts_the_following_mon_script()
     game:advanceUntil("follower installation after interaction setup", function()
       return game.runtime.followingMon:partnerActorId() ~= nil
     end, 120)
-    local partnerId = assert(
-      game.runtime.followingMon:partnerActorId(),
-      "the partner must be discoverable before interaction"
-    )
+    local partnerId =
+      assert(game.runtime.followingMon:partnerActorId(), "the partner must be discoverable before interaction")
     Assert.equal(partnerId, "field:partner", "the follower keeps its stable actor identity")
     -- The controller births the partner behind the player, so the partner
     -- is usually already on an adjacent tile: face whichever adjacent tile
     -- carries it. Only when it is not adjacent (same tile, far tile) take
     -- one production-planned step so the follower trails onto a facing tile.
-    local deltas = { north = { x = 0, z = -1 }, south = { x = 0, z = 1 }, west = { x = -1, z = 0 }, east = { x = 1, z = 0 } }
+    local deltas =
+      { north = { x = 0, z = -1 }, south = { x = 0, z = 1 }, west = { x = -1, z = 0 }, east = { x = 1, z = 0 } }
     local function facingFor(player, partner)
       for _, direction in ipairs({ "north", "south", "west", "east" }) do
         local delta = deltas[direction]
@@ -245,11 +256,7 @@ function T.tests.facing_the_partner_starts_the_following_mon_script()
     game:advanceUntil("the faced script reaches its interaction command", function()
       return #taskRecordsFor(game, instanceId) == 1 or #game:recordsForScript(SCRIPT_ID, "script.ended") == 1
     end, 120)
-    Assert.equal(
-      #taskRecordsFor(game, instanceId),
-      1,
-      "the faced interaction must create its registered follower task"
-    )
+    Assert.equal(#taskRecordsFor(game, instanceId), 1, "the faced interaction must create its registered follower task")
     driveScriptToEnd(game)
     local scriptEnds = game:recordsForScript(SCRIPT_ID, "script.ended")
     Assert.equal(#scriptEnds, 1, "the faced script must resume and finish once")

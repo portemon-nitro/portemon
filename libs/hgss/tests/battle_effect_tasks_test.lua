@@ -713,13 +713,8 @@ function T.operand_less_visual_without_a_marker_citation_fails_closed()
   -- and stages nothing.
   local scene = sceneWithPair()
   local services, journal = journalServices(scene)
-  local ok, failure = pcall(
-    BattleEffectTasks.create,
-    "pokemon-picture-four-sprite-wave-transition",
-    {},
-    occurrenceContext(),
-    services
-  )
+  local ok, failure =
+    pcall(BattleEffectTasks.create, "pokemon-picture-four-sprite-wave-transition", {}, occurrenceContext(), services)
   Assert.isFalse(ok, "a timing-less spawn outside the marker set never yields a runnable task")
   Assert.isTrue(
     string.find(tostring(failure), "pokemon-picture-four-sprite-wave-transition", 1, true) ~= nil
@@ -1007,11 +1002,7 @@ function T.directed_offscreen_motion_exits_each_side_away_from_center()
     friendTask:stepSourceTick({ tick = 1 })
   end
   local midFriend = assert(scene:pictureState(friend), "the player-side run stages its own patch")
-  Assert.equal(
-    midFriend.pictureXOffset2,
-    (256 - 72) % 256,
-    "the player-side battler exits left"
-  )
+  Assert.equal(midFriend.pictureXOffset2, (256 - 72) % 256, "the player-side battler exits left")
   for _ = 1, 10 do
     friendTask:stepSourceTick({ tick = 1 })
   end
@@ -1040,10 +1031,7 @@ function T.directed_offscreen_motion_without_a_known_side_stays_loud()
   Assert.throws(function()
     BattleEffectTasks.create("pokemon-picture-linear-offscreen-transition", args, context, services)
   end, "an offscreen run with an unknown side type never constructs")
-  Assert.isNil(
-    scene:pictureState({ combatant = 3, activation = 3 }),
-    "the refused construction publishes nothing"
-  )
+  Assert.isNil(scene:pictureState({ combatant = 3, activation = 3 }), "the refused construction publishes nothing")
 end
 
 function T.battler_motion_holds_keep_source_timing_without_invented_motion()
@@ -1066,10 +1054,7 @@ function T.battler_motion_holds_keep_source_timing_without_invented_motion()
   end
   knockback:stepSourceTick({ tick = 1 })
   Assert.equal(knockback:status(), "complete", "the knockback completes at its native 29 ticks")
-  Assert.isNil(
-    scene:pictureState({ combatant = 3, activation = 3 }),
-    "the hold stages no patch"
-  )
+  Assert.isNil(scene:pictureState({ combatant = 3, activation = 3 }), "the hold stages no patch")
   knockback:dispose()
   local dash = assert(BattleEffectTasks.create("pokemon-picture-attacker-dash-afterimages", {
     battlerTarget = "attacker",
@@ -1238,10 +1223,7 @@ function T.move_power_profile_restores_both_pictures_on_completion()
     scene:pictureState({ combatant = 1, activation = 1 }),
     "completion restores the attacker picture exactly"
   )
-  Assert.isNil(
-    scene:pictureState({ combatant = 3, activation = 3 }),
-    "completion restores the target picture exactly"
-  )
+  Assert.isNil(scene:pictureState({ combatant = 3, activation = 3 }), "completion restores the target picture exactly")
   task:dispose()
   Assert.equal(#journal.released, #journal.acquired, "the profile run stages no leases")
 end
@@ -1261,14 +1243,8 @@ function T.move_power_profile_cancels_without_stranding_pictures()
   task:stepSourceTick({ tick = 1 })
   task:cancel("superseded")
   Assert.equal(task:status(), "cancelled", "cancellation lands on cancelled")
-  Assert.isNil(
-    scene:pictureState({ combatant = 1, activation = 1 }),
-    "cancellation restores the attacker picture"
-  )
-  Assert.isNil(
-    scene:pictureState({ combatant = 3, activation = 3 }),
-    "cancellation restores the target picture"
-  )
+  Assert.isNil(scene:pictureState({ combatant = 1, activation = 1 }), "cancellation restores the attacker picture")
+  Assert.isNil(scene:pictureState({ combatant = 3, activation = 3 }), "cancellation restores the target picture")
   task:dispose()
   Assert.equal(#journal.released, #journal.acquired, "cancellation stages no leases")
 end
@@ -1515,10 +1491,7 @@ function T.overlapping_background_sweeps_restore_only_owned_viewport()
   first:cancel("superseded")
   Assert.equal(first:status(), "cancelled", "cancellation lands on cancelled")
   local during = scene:scroll()
-  Assert.isTrue(
-    during.x ~= 0 or during.y ~= 0,
-    "cancelling the first sweep never restores away the live second sweep"
-  )
+  Assert.isTrue(during.x ~= 0 or during.y ~= 0, "cancelling the first sweep never restores away the live second sweep")
   for _ = 1, 10 do
     if second:status() == "complete" then
       break

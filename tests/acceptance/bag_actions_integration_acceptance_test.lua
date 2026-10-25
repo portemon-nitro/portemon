@@ -707,11 +707,7 @@ function T.tests.obtain_browse_mutate_save_reload_round_trip()
     end
     game:step()
     view = bagView(game)
-    Assert.equal(
-      view.state,
-      "toss_confirm",
-      "accepting YES starts the typed result before acknowledgement"
-    )
+    Assert.equal(view.state, "toss_confirm", "accepting YES starts the typed result before acknowledgement")
     for _ = 1, 240 do
       game:step()
       if bagView(game).state == "toss_ack" then
@@ -936,11 +932,7 @@ function T.tests.toss_rejection_and_delayed_commit_safety()
       Assert.equal(bag:revision(), revision, "the confirmation interval must bump no revision")
     end
     game:step()
-    Assert.equal(
-      bagView(game).state,
-      "toss_confirm",
-      "only the terminal prompt update starts the typed result"
-    )
+    Assert.equal(bagView(game).state, "toss_confirm", "only the terminal prompt update starts the typed result")
     Assert.equal(bag:quantity(GRANTED_KEY), 1, "starting the result must change no quantities")
     Assert.equal(bag:revision(), revision, "starting the result must bump no revision")
     for _ = 1, 240 do

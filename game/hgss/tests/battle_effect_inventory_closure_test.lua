@@ -92,11 +92,7 @@ end
 
 function T.dispatch_table_spans_the_full_native_extent()
   Assert.equal(BattleAnimationSources.handlerCount(), 88, "the dispatch holds every native handler")
-  Assert.equal(
-    BattleAnimationSources.DISPATCH_ENTRIES,
-    88,
-    "the pinned entry count matches the handler inventory"
-  )
+  Assert.equal(BattleAnimationSources.DISPATCH_ENTRIES, 88, "the pinned entry count matches the handler inventory")
   local first = BattleAnimationSources.handlerLabel(0)
   Assert.isTrue(type(first) == "string" and first ~= "", "the first dispatch word names its handler")
   local last = BattleAnimationSources.handlerLabel(87)
@@ -265,7 +261,10 @@ function T.timer_only_stand_in_for_an_unknown_kind_is_rejected()
   local scene = sceneWithPair()
   local services = { scene = scene, audio = {}, resources = {} }
   local ok, result = pcall(Factory.create, "no-such-native-kind", {}, {}, services)
-  Assert.isFalse(ok and type(result) == "table" and type(result.stepSourceTick) == "function", "an unknown kind never yields a runnable task")
+  Assert.isFalse(
+    ok and type(result) == "table" and type(result.stepSourceTick) == "function",
+    "an unknown kind never yields a runnable task"
+  )
   Assert.isTrue(not ok or result == nil, "the unknown kind fails instead of returning a silent timer")
 end
 

@@ -769,9 +769,16 @@ function BattleRuntime:_sessionMoveFacts(record)
   local source = catalog --[[@as table<string, unknown>]]
   local moveByName = source.move --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
   assert(type(moveByName) == "function", "move facts resolve through the mon catalog")
+  local function sessionMoveFacts(move)
+    local moveFacts = copyValue(move) --[[@as table<string, unknown>]]
+    local battle = moveFacts.battle --[[@as table<string, unknown>]]
+    assert(type(battle) == "table" and type(battle.flags) == "table", "catalog moves carry semantic battle flags")
+    moveFacts.flags = copyValue(battle.flags)
+    return moveFacts
+  end
   local moveKeys = referencedStaticKeys(record)
   for _, key in ipairs(moveKeys) do
-    facts[key] = copyValue(moveByName(source, key))
+    facts[key] = sessionMoveFacts(moveByName(source, key))
   end
   -- Knockout rewards learn through level-up learnsets, so every learnset
   -- move of a referenced form resolves beside the carried move sets.
@@ -786,13 +793,13 @@ function BattleRuntime:_sessionMoveFacts(record)
     do
       local move = chance.move --[[@as string]]
       if facts[move] == nil then
-        facts[move] = copyValue(moveByName(source, move))
+        facts[move] = sessionMoveFacts(moveByName(source, move))
       end
     end
   end
   local ok, fallback = pcall(moveByName, source, "STRUGGLE")
   if ok then
-    facts["STRUGGLE"] = copyValue(fallback)
+    facts["STRUGGLE"] = sessionMoveFacts(fallback)
   end
   return facts
 end

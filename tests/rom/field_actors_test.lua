@@ -547,10 +547,7 @@ function T.compiled_visuals_publish_semantic_gesture_clips(romFs)
   -- field draw faults when the reveal plays it.
   for _, spriteId in ipairs({ 425, 426 }) do
     local legend = assert(bundle.visuals[spriteId], "legend visual " .. spriteId .. " must be compiled")
-    local flap = assert(
-      legend.gestures.legend_flap,
-      "legend_flap must be present for " .. spriteId
-    )
+    local flap = assert(legend.gestures.legend_flap, "legend_flap must be present for " .. spriteId)
     Assert.equal(type(flap.pose), "table", "legend_flap pose for " .. spriteId)
     Assert.isTrue(flap.pose.durationTicks > 0, "legend_flap pose has duration for " .. spriteId)
     for _, seg in ipairs(flap.pose.frames) do

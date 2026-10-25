@@ -146,7 +146,13 @@ local function optionsWith(overrides)
         error("idle transition must never start a warp", 2)
       end,
     },
-    actors = { beginFixedStep = function() end, step = function() end, cameraTargetId = function() return nil end },
+    actors = {
+      beginFixedStep = function() end,
+      step = function() end,
+      cameraTargetId = function()
+        return nil
+      end,
+    },
     input = recordingInput(),
     dialogue = {
       isModal = function()

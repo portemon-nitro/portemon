@@ -519,6 +519,7 @@ function T.delivery_packets_are_detached_at_every_nested_record()
   )
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local foe = foeWithMoves("EEVEE", 20, 0x5EED0002, { { move = "TACKLE", pp = 35, ppUps = 0 } })
+  foe.condition.currentHp = 20
   local launch = wildLaunch("launch-writeback-detached")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
@@ -573,7 +574,17 @@ function T.delivery_packets_are_detached_at_every_nested_record()
       }))
     end
   end
-  Assert.equal(battle:status().phase, "complete", "mutating nested records never disturbs the kernel")
+  local finished = battle:status()
+  Assert.equal(
+    finished.phase,
+    "complete",
+    "mutating nested records never disturbs the kernel: phase="
+      .. tostring(finished.phase)
+      .. " error="
+      .. tostring(finished.error)
+      .. " request="
+      .. tostring(finished.request ~= nil)
+  )
   Assert.isTrue(#portRecord.packets > beforeCount, "later packets arrive intact after nested mutation")
   for index = 2, #portRecord.packets do
     local packet = portRecord.packets[index] --[[@as table<string, unknown>]]

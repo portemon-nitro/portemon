@@ -481,7 +481,11 @@ function T.slider_drag_restores_the_committed_bound_on_cancel_and_invalid_releas
   tick(controller, { { type = "drag", target = "height-min", phase = "move", value = 130 } })
   tick(controller, { { type = "drag", target = "height-min", phase = "end", value = 130 } })
   idle(controller, 5)
-  Assert.equal(controller:view().search.criteria.height.min, 12, "an invalid crossing release restores the committed bound")
+  Assert.equal(
+    controller:view().search.criteria.height.min,
+    12,
+    "an invalid crossing release restores the committed bound"
+  )
   tick(controller, { { type = "drag", target = "height-min", phase = "begin", value = 45 } })
   tick(controller, { { type = "drag", target = "height-min", phase = "move", value = 60 } })
   tick(controller, { { type = "drag", target = "height-min", phase = "end", value = 60 } })
@@ -489,11 +493,7 @@ function T.slider_drag_restores_the_committed_bound_on_cancel_and_invalid_releas
   Assert.equal(controller:view().search.criteria.height.min, 60, "a legal release commits its bound")
   tick(controller, { { type = "activate", action = "editor-cancel" } })
   idle(controller, 5)
-  Assert.equal(
-    controller:view().search.criteria.height.min,
-    0,
-    "cancelling the editor still rolls back both endpoints"
-  )
+  Assert.equal(controller:view().search.criteria.height.min, 0, "cancelling the editor still rolls back both endpoints")
   controller:dispose()
 end
 
@@ -542,11 +542,7 @@ function T.editor_option_lists_follow_the_published_option_order()
   Assert.deepEqual(types, expectedTypes, "the type options keep the published order with Any last")
   Assert.equal(#types, 18, "the type options stage every type plus the clearing choice")
   types[1] = "tampered"
-  Assert.equal(
-    search:editorOptions("type")[1],
-    "normal",
-    "the type options detach from the borrowed catalog"
-  )
+  Assert.equal(search:editorOptions("type")[1], "normal", "the type options detach from the borrowed catalog")
   local expectedShapes = {}
   for _, name in ipairs(PokedexSources.shapeOrder) do
     expectedShapes[#expectedShapes + 1] = name

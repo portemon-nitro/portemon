@@ -250,11 +250,7 @@ end
 
 function T.override_needs_hint_is_honored()
   local registry = Registry.new()
-  registry:installBase(
-    "a.b",
-    resource("a.b", { { op = "stop" } }, { { kind = "custom", id = "thing" } }),
-    "override"
-  )
+  registry:installBase("a.b", resource("a.b", { { op = "stop" } }, { { kind = "custom", id = "thing" } }), "override")
   Assert.deepEqual(registry:overrideAssetNeeds("a.b"), { "custom:thing" })
 end
 

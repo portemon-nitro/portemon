@@ -441,8 +441,9 @@ function T.caught_mon_keeps_typed_nickname_through_save_and_reload()
     end
   end
   Assert.notNil(fragment, "the opening decision offers the stocked ball")
-  local thrown, throwErr =
-    rig.battle:submit(SessionFixture.replyFor(request, { fragment --[[@as table<string, unknown>]] }))
+  local thrown, throwErr = rig.battle:submit(SessionFixture.replyFor(request, {
+    fragment --[[@as table<string, unknown>]],
+  }))
   Assert.isTrue(thrown, "the thrown ball is accepted: " .. tostring(throwErr))
   local committed = driveToCommitted(rig, 1200)
   Assert.equal(committed.result, "capture", "the thrown ball settles as a capture")
@@ -699,10 +700,7 @@ function T.declined_nickname_keeps_default_name_and_finished_battle()
   Assert.equal(#receipt.placements, 1, "the declined capture reports its placement")
   Assert.equal(receipt.placements[1].destination, "box", "a full party spills the declined catch into storage")
   local placement = receipt.placements[1]
-  local stored = assert(
-    party:boxMon(placement.box, placement.slot),
-    "the declined catch is readable in its box slot"
-  )
+  local stored = assert(party:boxMon(placement.box, placement.slot), "the declined catch is readable in its box slot")
   Assert.equal(stored.personality, caughtPersonality, "the boxed mon keeps its caught identity")
   local Mon = require("libs.mons.src.Mon")
   Assert.isNil(stored.nickname, "declining stages no explicit nickname")

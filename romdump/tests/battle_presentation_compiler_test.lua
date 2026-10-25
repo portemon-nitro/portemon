@@ -500,13 +500,7 @@ local function charBank(tileBytes)
     .. tileBytes
   local blockPayload = "RAHC" .. u32le(8 + #payload) .. payload
   local size = 0x10 + #blockPayload
-  return "RGCN"
-    .. string.char(0xff, 0xfe)
-    .. u16le(0x0100)
-    .. u32le(size)
-    .. u16le(0x10)
-    .. u16le(1)
-    .. blockPayload
+  return "RGCN" .. string.char(0xff, 0xfe) .. u16le(0x0100) .. u32le(size) .. u16le(0x10) .. u16le(1) .. blockPayload
 end
 
 -- A minimal NCLR container with caller-chosen RGB555 words, mirroring the
@@ -528,13 +522,7 @@ local function paletteBank(words)
     .. string.rep("\0", 8)
     .. colors
   local size = 0x10 + #ttlp
-  return "RLCN"
-    .. string.char(0xff, 0xfe)
-    .. u16le(0x0100)
-    .. u32le(size)
-    .. u16le(0x10)
-    .. u16le(1)
-    .. ttlp
+  return "RLCN" .. string.char(0xff, 0xfe) .. u16le(0x0100) .. u32le(size) .. u16le(0x10) .. u16le(1) .. ttlp
 end
 
 -- Compiles one effect whose command lowering is stubbed but whose source
@@ -879,8 +867,7 @@ end
 
 function T.zero_divisor_cyclic_picture_fails_closed()
   local sources = require("romdump.src.config.BattleAnimationSources")
-  local plan, reason =
-    sources.resolveBattleAnimationCallback({ 42, 8, 0x102, 0, 10, 0, 20, 0, 0, 5 })
+  local plan, reason = sources.resolveBattleAnimationCallback({ 42, 8, 0x102, 0, 10, 0, 20, 0, 0, 5 })
   Assert.isNil(plan, "a zero interpolation divisor stages no transition")
   Assert.isTrue(
     type(reason) == "string" and reason:find("divisor", 1, true) ~= nil,
@@ -893,8 +880,7 @@ end
 -- the same position-pair selection the producer consumes.
 function T.battler_particle_actions_select_position_pair_resources()
   local sources = require("romdump.src.config.BattleAnimationSources")
-  local wide =
-    assert(sources.resolveSourceSelection("battler-particle-action", { 0, 10, 11, 12, 13, 14, 15, 0 }))
+  local wide = assert(sources.resolveSourceSelection("battler-particle-action", { 0, 10, 11, 12, 13, 14, 15, 0 }))
   Assert.equal(
     wide.runtimeSelection,
     "battler-particle-position-pair",
@@ -902,8 +888,7 @@ function T.battler_particle_actions_select_position_pair_resources()
   )
   Assert.equal(wide.taskKind, "battler-effect-continuation", "the wide action feeds the particle task body")
   Assert.isTrue(
-    type(wide.sourceEmitterSelections) == "table"
-      and wide.sourceEmitterSelections["solo-player/solo-enemy"] ~= nil,
+    type(wide.sourceEmitterSelections) == "table" and wide.sourceEmitterSelections["solo-player/solo-enemy"] ~= nil,
     "the wide action maps every battler pair to an emitter selection"
   )
   local narrow = assert(sources.resolveSourceSelection("battler-particle-action", { 0, 20, 21, 22, 23, 0 }))

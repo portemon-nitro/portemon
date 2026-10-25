@@ -271,7 +271,10 @@ function T.native_hud_component_tiles_match_the_pinned_source_array()
   Assert.equal(components.source.revision, "9d8b7591f09b65804da2fb2dfd56f320633e0d36")
   Assert.equal(components.source.symbol, "gBattleHpBar_RawGraphicComponents")
   Assert.equal(components.tileCount, 78)
-  Assert.equal(require("romdump.src.digest.Hashing").sha1hex(table.concat(bytes)), "d4e734fd6a3ad2afdd13d5c09926eae173c506f8")
+  Assert.equal(
+    require("romdump.src.digest.Hashing").sha1hex(table.concat(bytes)),
+    "d4e734fd6a3ad2afdd13d5c09926eae173c506f8"
+  )
   Assert.isTrue(sources().validate(), "native health-box component tiles retain exact pinned bytes")
 end
 
@@ -321,12 +324,78 @@ end
 function T.native_picture_geometry_covers_every_source_side_type()
   local Sources = sources()
   Assert.deepEqual(Sources.SLOT_GEOMETRY, {
-    { sideType = 0, settledX = 64, settledY = 112, entryX = 336, entryY = 112, depth = -512, hudX = 192, hudY = 116, hudPriority = 23, hudBgPriority = 0 },
-    { sideType = 1, settledX = 192, settledY = 50, entryX = -80, entryY = 50, depth = -640, hudX = 58, hudY = 36, hudPriority = 24, hudBgPriority = 0 },
-    { sideType = 2, settledX = 40, settledY = 112, entryX = 316, entryY = 112, depth = -512, hudX = 192, hudY = 103, hudPriority = 28, hudBgPriority = 0 },
-    { sideType = 4, settledX = 80, settledY = 120, entryX = 356, entryY = 120, depth = 0, hudX = 198, hudY = 132, hudPriority = 26, hudBgPriority = 0 },
-    { sideType = 3, settledX = 216, settledY = 50, entryX = -60, entryY = 50, depth = -100, hudX = 64, hudY = 16, hudPriority = 25, hudBgPriority = 0 },
-    { sideType = 5, settledX = 176, settledY = 42, entryX = -100, entryY = 42, depth = -640, hudX = 58, hudY = 45, hudPriority = 27, hudBgPriority = 0 },
+    {
+      sideType = 0,
+      settledX = 64,
+      settledY = 112,
+      entryX = 336,
+      entryY = 112,
+      depth = -512,
+      hudX = 192,
+      hudY = 116,
+      hudPriority = 23,
+      hudBgPriority = 0,
+    },
+    {
+      sideType = 1,
+      settledX = 192,
+      settledY = 50,
+      entryX = -80,
+      entryY = 50,
+      depth = -640,
+      hudX = 58,
+      hudY = 36,
+      hudPriority = 24,
+      hudBgPriority = 0,
+    },
+    {
+      sideType = 2,
+      settledX = 40,
+      settledY = 112,
+      entryX = 316,
+      entryY = 112,
+      depth = -512,
+      hudX = 192,
+      hudY = 103,
+      hudPriority = 28,
+      hudBgPriority = 0,
+    },
+    {
+      sideType = 4,
+      settledX = 80,
+      settledY = 120,
+      entryX = 356,
+      entryY = 120,
+      depth = 0,
+      hudX = 198,
+      hudY = 132,
+      hudPriority = 26,
+      hudBgPriority = 0,
+    },
+    {
+      sideType = 3,
+      settledX = 216,
+      settledY = 50,
+      entryX = -60,
+      entryY = 50,
+      depth = -100,
+      hudX = 64,
+      hudY = 16,
+      hudPriority = 25,
+      hudBgPriority = 0,
+    },
+    {
+      sideType = 5,
+      settledX = 176,
+      settledY = 42,
+      entryX = -100,
+      entryY = 42,
+      depth = -640,
+      hudX = 58,
+      hudY = 45,
+      hudPriority = 27,
+      hudBgPriority = 0,
+    },
   }, "producer publishes all six semantic native geometry rows")
 end
 
@@ -600,7 +669,11 @@ function T.message_source_routes_bind_native_callers_to_typed_semantic_inputs()
       command = { file = "src/battle/battle_command.c", symbol = "BtlCmd_PrintGlobalMessage" },
       readOperands = { file = "src/battle/battle_command.c", symbol = "InitBattleMsgData" },
       resolveContext = { file = "src/battle/battle_command.c", symbol = "InitBattleMsg" },
-      scope = { file = "src/battle/battle_command.c", symbol = "BtlCmd_PrintGlobalMessage", semantic = "global-message" },
+      scope = {
+        file = "src/battle/battle_command.c",
+        symbol = "BtlCmd_PrintGlobalMessage",
+        semantic = "global-message",
+      },
     },
     banks = { "message-bank/battle-script-controller" },
     operands = { "messageRecordReference", "messageTagSymbol", "tagTypedParameters" },
@@ -1126,10 +1199,7 @@ function T.overlay_115_routes_publish_complete_semantic_sprite_and_bg_groups()
     Assert.deepEqual(route.particleMembers, { 151, 152 })
     Assert.deepEqual(route.fixedSprite, { palette = 0x3b, character = 0x3c, cell = 0x3d, animation = 0x3e })
     Assert.deepEqual(route.spriteVariants.male, { palette = 0xcf, character = 0xd0, cell = 0xd1, animation = 0xd2 })
-    Assert.deepEqual(
-      route.spriteVariants.female,
-      { palette = 0xd3, character = 0xd4, cell = 0xd5, animation = 0xd6 }
-    )
+    Assert.deepEqual(route.spriteVariants.female, { palette = 0xd3, character = 0xd4, cell = 0xd5, animation = 0xd6 })
   end
 end
 

@@ -75,44 +75,82 @@ end
 -- drives those scenarios and compares the recorded requests entry by
 -- entry, so unaudited wording can never read as proven fidelity.
 local AUDITED_TEXT = {
-  ["radio.music"] = { bank = 500, progressions = {
-    { name = "monday-march", day = 1, dex = false, card = false, entries = { 1, 2, 2, 10 } },
-    { name = "tuesday-lullaby", day = 2, dex = false, card = false, entries = { 1, 2, 2, 11 } },
-    { name = "wednesday-hoenn", day = 3, dex = true, card = false, entries = { 1, 2, 2, 12 } },
-    { name = "thursday-sinnoh", day = 4, dex = true, card = false, entries = { 1, 2, 2, 13 } },
-    { name = "sunday-card", day = 7, dex = false, card = true, entries = { 1, 2, 2, 14 } },
-    { name = "sunday-alternate", day = 7, dex = false, card = false, entries = { 1, 2, 2, 15 } },
-  } },
-  ["radio.talk"] = { bank = 501, progressions = {
-    { name = "quiet", swarm = false, entries = { 1, 2, 2 }, pairs = { 1, 2, 3, 4, 5 } },
-    { name = "outbreak", swarm = true, entries = { 1, 2, 2, 3, 5 }, pairs = { 1, 2, 3, 4, 5 } },
-  } },
-  ["radio.search-party"] = { bank = 503, progressions = {
-    { name = "lines", hour = 9, episode = 0, entries = { 1, 2, 2, 3, 4, 5 } },
-  } },
-  ["radio.serial-drama"] = { bank = 504, progressions = {
-    { name = "lines", hour = 10, episode = 2, entries = { 1, 2, 2, 3, 4, 5 } },
-  } },
-  ["radio.buena"] = { bank = 411, progressions = {
-    { name = "with-card", passwordVar = 47, card = true, entries = { 1, 2, 1, 2, 3, 4 }, token = { 66, 57 }, reply = 4 },
-    { name = "without-card", passwordVar = 47, card = false, entries = { 1, 2, 1, 2, 3, 5 }, token = { 66, 57 }, reply = 5 },
-  } },
-  ["radio.trainer-profiles"] = { bank = 505, progressions = {
-    { name = "lines", hour = 10, episode = 0, entries = { 1, 2, 2, 3, 4, 5 } },
-  } },
-  ["radio.town-people"] = { bank = 506, progressions = {
-    { name = "lines", hour = 11, episode = 0, entries = { 1, 2, 2, 3, 4, 5 } },
-  } },
+  ["radio.music"] = {
+    bank = 500,
+    progressions = {
+      { name = "monday-march", day = 1, dex = false, card = false, entries = { 1, 2, 2, 10 } },
+      { name = "tuesday-lullaby", day = 2, dex = false, card = false, entries = { 1, 2, 2, 11 } },
+      { name = "wednesday-hoenn", day = 3, dex = true, card = false, entries = { 1, 2, 2, 12 } },
+      { name = "thursday-sinnoh", day = 4, dex = true, card = false, entries = { 1, 2, 2, 13 } },
+      { name = "sunday-card", day = 7, dex = false, card = true, entries = { 1, 2, 2, 14 } },
+      { name = "sunday-alternate", day = 7, dex = false, card = false, entries = { 1, 2, 2, 15 } },
+    },
+  },
+  ["radio.talk"] = {
+    bank = 501,
+    progressions = {
+      { name = "quiet", swarm = false, entries = { 1, 2, 2 }, pairs = { 1, 2, 3, 4, 5 } },
+      { name = "outbreak", swarm = true, entries = { 1, 2, 2, 3, 5 }, pairs = { 1, 2, 3, 4, 5 } },
+    },
+  },
+  ["radio.search-party"] = {
+    bank = 503,
+    progressions = {
+      { name = "lines", hour = 9, episode = 0, entries = { 1, 2, 2, 3, 4, 5 } },
+    },
+  },
+  ["radio.serial-drama"] = {
+    bank = 504,
+    progressions = {
+      { name = "lines", hour = 10, episode = 2, entries = { 1, 2, 2, 3, 4, 5 } },
+    },
+  },
+  ["radio.buena"] = {
+    bank = 411,
+    progressions = {
+      {
+        name = "with-card",
+        passwordVar = 47,
+        card = true,
+        entries = { 1, 2, 1, 2, 3, 4 },
+        token = { 66, 57 },
+        reply = 4,
+      },
+      {
+        name = "without-card",
+        passwordVar = 47,
+        card = false,
+        entries = { 1, 2, 1, 2, 3, 5 },
+        token = { 66, 57 },
+        reply = 5,
+      },
+    },
+  },
+  ["radio.trainer-profiles"] = {
+    bank = 505,
+    progressions = {
+      { name = "lines", hour = 10, episode = 0, entries = { 1, 2, 2, 3, 4, 5 } },
+    },
+  },
+  ["radio.town-people"] = {
+    bank = 506,
+    progressions = {
+      { name = "lines", hour = 11, episode = 0, entries = { 1, 2, 2, 3, 4, 5 } },
+    },
+  },
   ["radio.poke-flute"] = { bank = 507, progressions = {
     { name = "lines", entries = { 1, 2, 3 } },
   } },
   ["radio.unown"] = { bank = 508, progressions = {
     { name = "lines", entries = { 1, 2, 3 } },
   } },
-  ["radio.rocket"] = { bank = 509, progressions = {
-    { name = "lines", takeover = false, entries = { 1, 2, 3 } },
-    { name = "takeover", takeover = true, entries = { 1, 4, 5 } },
-  } },
+  ["radio.rocket"] = {
+    bank = 509,
+    progressions = {
+      { name = "lines", takeover = false, entries = { 1, 2, 3 } },
+      { name = "takeover", takeover = true, entries = { 1, 4, 5 } },
+    },
+  },
   ["radio.mahogany"] = { bank = 510, progressions = {
     { name = "lines", entries = { 1, 2, 3 } },
   } },
@@ -172,9 +210,8 @@ local function freshBroadcast(opts)
     dex = BroadcastFixture.newDexReader(opts.dex == true),
     bag = BroadcastFixture.newBagReader(opts.card == true and { BLUE_CARD = true } or {}),
   })
-  local civil = BroadcastFixture.newCivilCell(
-    opts.moment or { year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 }
-  )
+  local civil =
+    BroadcastFixture.newCivilCell(opts.moment or { year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 })
   local audio = BroadcastFixture.newAudioStandIn()
   local messages = BroadcastFixture.newMessageLog()
   local RadioProgram = BroadcastFixture.requireFeature(
@@ -332,11 +369,7 @@ function T.tests.broadcast_wording_audit_covers_episodic_serial_lines()
     })
     tuneShow(program, case.station, case.key)
     local found = bankRequests(messages, row.bank)
-    Assert.deepEqual(
-      entriesOnly(found),
-      progression.entries,
-      case.key .. " voices its compiled entries"
-    )
+    Assert.deepEqual(entriesOnly(found), progression.entries, case.key .. " voices its compiled entries")
     for index, request in ipairs(found) do
       if index > 2 then
         local params = assert(request.params, case.key .. " body lines carry their episode token")
@@ -494,10 +527,7 @@ function T.tests.committed_verification_text_carries_no_temporary_references()
   end
   for _, path in ipairs(OWNED_SUITES) do
     local contents = readOwned(path)
-    Assert.notNil(
-      contents:find('"pokegear"', 1, true),
-      path .. " must keep its behavior tag for discovery"
-    )
+    Assert.notNil(contents:find('"pokegear"', 1, true), path .. " must keep its behavior tag for discovery")
   end
 end
 

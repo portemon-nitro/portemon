@@ -224,10 +224,7 @@ end
 -- while the specialized contexts below fail on their own contracts.
 function T.ordinary_command_surface_stays_available_through_the_fixture_route()
   local fixture = openScreen("special-context-ordinary")
-  Assert.isTrue(
-    fixture.port.enter({ launchId = fixture.launchId, kind = "wild" }),
-    "setup: the ordinary launch enters"
-  )
+  Assert.isTrue(fixture.port.enter({ launchId = fixture.launchId, kind = "wild" }), "setup: the ordinary launch enters")
   presentCommandPacket(fixture, ordinaryChoices())
   local status = driveToCommand(fixture, "ordinary")
   Assert.equal(status.mode, "command", "setup: the ordinary fixture rests on the command view")
@@ -241,19 +238,13 @@ end
 -- ball/bait/rock families with ball-count state and no run command.
 function T.safari_presentation_uses_its_own_controls()
   local fixture = openScreen("special-context-safari")
-  Assert.isTrue(
-    fixture.port.enter({ launchId = fixture.launchId, kind = "safari" }),
-    "setup: the safari launch enters"
-  )
+  Assert.isTrue(fixture.port.enter({ launchId = fixture.launchId, kind = "safari" }), "setup: the safari launch enters")
   presentCommandPacket(fixture, ordinaryChoices())
   local status = driveToCommand(fixture, "safari")
   Assert.equal(status.mode, "command", "setup: the safari fixture rests on the command view")
   Assert.isTrue(status.request ~= nil, "setup: the safari fixture exposes its decision request")
   local ids = commandIds(fixture.screen:view())
-  Assert.isFalse(
-    isOrdinarySurface(ids),
-    "the safari surface never shows the ordinary four-command set"
-  )
+  Assert.isFalse(isOrdinarySurface(ids), "the safari surface never shows the ordinary four-command set")
   fixture.screen:dispose()
 end
 
@@ -271,10 +262,7 @@ function T.pal_park_presentation_uses_its_own_controls()
   Assert.equal(status.mode, "command", "setup: the pal-park fixture rests on the command view")
   Assert.isTrue(status.request ~= nil, "setup: the pal-park fixture exposes its decision request")
   local ids = commandIds(fixture.screen:view())
-  Assert.isFalse(
-    isOrdinarySurface(ids),
-    "the pal-park surface never shows the ordinary four-command set"
-  )
+  Assert.isFalse(isOrdinarySurface(ids), "the pal-park surface never shows the ordinary four-command set")
   fixture.screen:dispose()
 end
 
@@ -291,10 +279,7 @@ function T.bug_contest_presentation_tracks_balls_and_the_caught_display()
   Assert.equal(status.mode, "command", "setup: the bug-contest fixture rests on the command view")
   Assert.isTrue(status.request ~= nil, "setup: the bug-contest fixture exposes its decision request")
   local ids = commandIds(fixture.screen:view())
-  Assert.isFalse(
-    isOrdinarySurface(ids),
-    "the bug-contest surface never shows the ordinary four-command set"
-  )
+  Assert.isFalse(isOrdinarySurface(ids), "the bug-contest surface never shows the ordinary four-command set")
   fixture.screen:dispose()
 end
 
@@ -311,10 +296,7 @@ function T.tutorial_presentation_restricts_its_command_family()
   Assert.equal(status.mode, "command", "setup: the tutorial fixture rests on the command view")
   Assert.isTrue(status.request ~= nil, "setup: the tutorial fixture exposes its decision request")
   local ids = commandIds(fixture.screen:view())
-  Assert.isFalse(
-    isOrdinarySurface(ids),
-    "the tutorial surface never shows the ordinary four-command set"
-  )
+  Assert.isFalse(isOrdinarySurface(ids), "the tutorial surface never shows the ordinary four-command set")
   fixture.screen:dispose()
 end
 
@@ -331,10 +313,7 @@ function T.frontier_facility_presentation_keeps_facility_restrictions()
   Assert.equal(status.mode, "command", "setup: the frontier fixture rests on the command view")
   Assert.isTrue(status.request ~= nil, "setup: the frontier fixture exposes its decision request")
   local ids = commandIds(fixture.screen:view())
-  Assert.isFalse(
-    isOrdinarySurface(ids),
-    "the frontier surface never shows the ordinary four-command set"
-  )
+  Assert.isFalse(isOrdinarySurface(ids), "the frontier surface never shows the ordinary four-command set")
   fixture.screen:dispose()
 end
 

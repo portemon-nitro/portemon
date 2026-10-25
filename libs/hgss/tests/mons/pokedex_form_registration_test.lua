@@ -248,10 +248,7 @@ function T.rotom_change_replaces_the_first_appliance_move()
   )
   Assert.deepEqual(moveOf(mon, 2), { move = "TACKLE", pp = 35, ppUps = 0 }, "ordinary moves survive the appliance swap")
   Assert.equal(mon.ability, "OVERGROW", "the mon selects the new form ability")
-  Assert.isTrue(
-    world.service:derive(mon).specialAttack ~= beforeSpecialAttack,
-    "the mon recalculates its stats"
-  )
+  Assert.isTrue(world.service:derive(mon).specialAttack ~= beforeSpecialAttack, "the mon recalculates its stats")
   Assert.isTrue(world.owner:isCaught("ROTOM"), "the specialized change registers the species")
 end
 

@@ -439,11 +439,7 @@ function T.missing_native_effect_request_fails_the_live_screen_with_provenance()
     tostring(status.error):find(launchId, 1, true) ~= nil,
     "the failure names its launch: " .. tostring(status.error)
   )
-  Assert.equal(
-    failingDisplayedFoeHp(screen:view()),
-    57,
-    "the failed cue applies no health early"
-  )
+  Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the failed cue applies no health early")
   Assert.isNil(status.request, "the failed screen exposes no new decision")
   Assert.isFalse(status.ready, "the failed screen reports unready, never settled")
   Assert.equal(#screen:view().effectInstances, 0, "no failed effect record lingers in the live scene")
@@ -513,7 +509,12 @@ function T.failed_effect_image_upload_releases_partial_leases_without_orphans()
   staging:stageEffect(
     "TACKLE",
     EffectStagingFixture.effectRecord("TACKLE", {
-      { key = "probe-spark", kind = "texture", payload = "effects/probe-spark.lua", contentIdentity = Hashing.sha1hex(textureBytes) },
+      {
+        key = "probe-spark",
+        kind = "texture",
+        payload = "effects/probe-spark.lua",
+        contentIdentity = Hashing.sha1hex(textureBytes),
+      },
     }),
     { ["effects/probe-spark.lua"] = { width = 4, height = 4, rgba8888 = textureBytes } }
   )
@@ -529,11 +530,7 @@ function T.failed_effect_image_upload_releases_partial_leases_without_orphans()
     tostring(status.error):find("probe-spark", 1, true) ~= nil,
     "the failure names its resource: " .. tostring(status.error)
   )
-  Assert.equal(
-    failingDisplayedFoeHp(screen:view()),
-    57,
-    "the failed closure applies no health early"
-  )
+  Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the failed closure applies no health early")
   Assert.isNil(status.request, "the failed screen exposes no new decision")
   Assert.equal(#screen:view().effectInstances, 0, "no failed effect record lingers in the live scene")
   screen:dispose()
@@ -750,7 +747,12 @@ function T.faulted_occurrences_keep_provenance_until_the_owner_releases_them()
       }, {
         entry = "main",
         instructions = {
-          { op = "schedule-battle-task", taskKind = "battle-background-blend-transition", taskInputRule = "raw-rule", values = { 1 } },
+          {
+            op = "schedule-battle-task",
+            taskKind = "battle-background-blend-transition",
+            taskInputRule = "raw-rule",
+            values = { 1 },
+          },
           { op = "interpreter-wait", values = { 5 } },
         },
         subprograms = {},

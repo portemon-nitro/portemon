@@ -2281,11 +2281,7 @@ function T.incomplete_cache_with_a_ready_first_play_closure_stays_in_the_boot_wa
       )
       Assert.equal(emittedRequestsSince(context, mark), 0, "no bounded-closure demand issues before the gate answers")
       local waiting = assert(App.state, "selection must wait visibly")
-      Assert.equal(
-        getmetatable(waiting).__index,
-        CachePreparationState,
-        "selection waits through preparation"
-      )
+      Assert.equal(getmetatable(waiting).__index, CachePreparationState, "selection waits through preparation")
       Assert.equal(
         waiting.kind,
         "boot-source",
@@ -2530,11 +2526,7 @@ function T.blocked_boot_refuses_a_wrong_version_and_ignores_stale_replies()
         "the blocked boot surfaces the version mismatch"
       )
       stillBlocked:keypressed("escape", nil, nil)
-      Assert.equal(
-        getmetatable(App.state).__index,
-        VersionSelectState,
-        "cancel returns to the version selector"
-      )
+      Assert.equal(getmetatable(App.state).__index, VersionSelectState, "cancel returns to the version selector")
       Assert.equal(#context.menus, 0, "cancel never installs a menu")
       Assert.equal(#context.games, 0, "cancel never starts retail")
       local mark = logMark(context)
@@ -2596,6 +2588,5 @@ function T.blocked_boot_refuses_a_wrong_version_and_ignores_stale_replies()
     end
   )
 end
-
 
 return { tests = T }

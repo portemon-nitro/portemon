@@ -2070,7 +2070,7 @@ local function sessionMinimalCatalog()
     return curve
   end
   return {
-    schema = "g4-mon-catalog-v4",
+    schema = "g4-mon-catalog-v5",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},
@@ -3047,37 +3047,19 @@ function T.completion_reports_source_settled_only_when_no_source_work_remains()
     return session, assert(session.completion, "the session owns its completion")
   end
   local idle, idleCompletion = freshCompletion("settled-idle-generation")
-  Assert.isTrue(
-    idleCompletion:sourceWorkSettled(),
-    "a session with no demand holds no future source work"
-  )
+  Assert.isTrue(idleCompletion:sourceWorkSettled(), "a session with no demand holds no future source work")
   local _, sweepCompletion = freshCompletion("settled-sweep-generation")
-  Assert.isTrue(
-    sweepCompletion:sourceWorkSettled(),
-    "an unauthorized sweep holds no future source work"
-  )
+  Assert.isTrue(sweepCompletion:sourceWorkSettled(), "an unauthorized sweep holds no future source work")
   idle:enableSweep()
-  Assert.isFalse(
-    idleCompletion:sourceWorkSettled(),
-    "an authorized sweep can still enroll source work"
-  )
+  Assert.isFalse(idleCompletion:sourceWorkSettled(), "an authorized sweep can still enroll source work")
   local demanded, demandCompletion = freshCompletion("settled-demand-generation")
   demanded:requestJob("map", "7", "required")
-  Assert.isFalse(
-    demandCompletion:sourceWorkSettled(),
-    "pending required work keeps the source alive"
-  )
+  Assert.isFalse(demandCompletion:sourceWorkSettled(), "pending required work keeps the source alive")
   local complete, completeCompletion = freshCompletion("settled-complete-generation")
   complete:requestComplete("required")
-  Assert.isFalse(
-    completeCompletion:sourceWorkSettled(),
-    "an open complete intent keeps the source alive"
-  )
+  Assert.isFalse(completeCompletion:sourceWorkSettled(), "an open complete intent keeps the source alive")
   demanded:retire()
-  Assert.isTrue(
-    demandCompletion:sourceWorkSettled(),
-    "a retired session owns no future source work"
-  )
+  Assert.isTrue(demandCompletion:sourceWorkSettled(), "a retired session owns no future source work")
 end
 
 -- Release selection identity for the composed sweep drive: the version,
@@ -3279,14 +3261,22 @@ function T.exhausted_successful_sweep_attests_its_exact_generation()
   Assert.equal(
     success.terminal,
     "exhausted",
-    "the successful sweep runs to exhaustion: state=" .. tostring(success.sweepState) .. " enumerated="
+    "the successful sweep runs to exhaustion: state="
+      .. tostring(success.sweepState)
+      .. " enumerated="
       .. tostring(success.enumerated)
-      .. " ready=" .. tostring(success.ready)
-      .. " queued=" .. tostring(success.queued)
-      .. " running=" .. tostring(success.running)
-      .. " failed=" .. tostring(success.failed)
-      .. " submitted=" .. tostring(success.submitted)
-      .. " failures=" .. tostring(success.failureKeys)
+      .. " ready="
+      .. tostring(success.ready)
+      .. " queued="
+      .. tostring(success.queued)
+      .. " running="
+      .. tostring(success.running)
+      .. " failed="
+      .. tostring(success.failed)
+      .. " submitted="
+      .. tostring(success.submitted)
+      .. " failures="
+      .. tostring(success.failureKeys)
   )
   Assert.isNil(success.sweepFailure, "the successful sweep records no failure")
   Assert.isTrue(

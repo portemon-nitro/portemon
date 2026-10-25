@@ -565,18 +565,10 @@ function T.tests.opening_reveal_discards_early_input_without_replay()
     Assert.equal(settled.cursorNode, cursorBefore, "reveal input never moves selection")
     Assert.equal(settled.state, "browse", "reveal activation never leaves browse")
     Assert.equal(service:partyRevision(), revision, "reveal input swaps nothing")
-    Assert.equal(
-      hostPhase(game),
-      FieldApplicationHost.PHASES.application,
-      "reveal dismissal never closes the screen"
-    )
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.application, "reveal dismissal never closes the screen")
 
     game:step()
-    Assert.equal(
-      partyView(game).state,
-      "browse",
-      "discarded input never replays on the first interactive tick"
-    )
+    Assert.equal(partyView(game).state, "browse", "discarded input never replays on the first interactive tick")
     pressKey(game, state, "s")
     Assert.equal(partyView(game).cursorNode, "cancel", "only post-reveal input moves selection")
   end)

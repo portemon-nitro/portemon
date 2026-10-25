@@ -9,6 +9,7 @@
 local BattleErrors = require("libs.battle.src.errors")
 local CalledMoves = require("libs.battle.src.gen4.behaviors.moves.CalledMoves")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 
 ---@class IdentityMoves
 local IdentityMoves = {}
@@ -259,17 +260,44 @@ local function stepPsychoShift(ctx, frame)
     end
   end
   local abilities = locals.abilities --[[@as table<string, unknown>]]
-  local abilityImmune = (key == "poison" or key == "toxic") and abilities.foe == "IMMUNITY"
-    or key == "burn" and abilities.foe == "WATER_VEIL"
-    or key == "freeze" and abilities.foe == "MAGMA_ARMOR"
-    or key == "paralysis" and abilities.foe == "LIMBER"
-    or key == "sleep" and (abilities.foe == "INSOMNIA" or abilities.foe == "VITAL_SPIRIT")
+  local abilityImmune = false
+  local statusAttempt = key == "toxic" and "poison" or key
+  local weather = locals.weatherSuppressed == true and "none" or locals.weather
+  if abilities.user ~= "MOLD_BREAKER" then
+    local outcome = NativePassiveBridge.invokeFacts({
+      combatant = target,
+      ability = abilities.foe --[[@as string?]],
+    }, "beforeHit", { statusAttempt = statusAttempt, weather = weather })
+    for _, event in ipairs(outcome.events) do
+      if event.prevented == true then
+        abilityImmune = true
+        break
+      end
+    end
+  end
   if typeImmune or abilityImmune or ctx:sideEffect(ctx:entryOf(target).side, "safeguard") ~= nil then
     return { kind = "complete", result = "failed" }
   end
   local state = status.state --[[@as table<string, unknown>]]
   if ctx:applyStatus(target, key, state, causeFor(record)) then
     ctx:cureStatus(user, key, causeFor(record))
+    local foeAbility = abilities.foe
+    if type(foeAbility) == "string" then
+      local entry = ctx:entryOf(target)
+      if entry.activation == nil then
+        error(BattleErrors.invalidState("Psycho Shift reflection scopes to a live target", { combatant = target }))
+      end
+      local reflected = NativePassiveBridge.invokeFacts(
+        { combatant = target, activation = entry.activation, ability = foeAbility },
+        "afterHit",
+        { inflictedStatus = key }
+      )
+      for _, event in ipairs(reflected.events) do
+        if type(event.reflected) == "string" then
+          ctx:applyStatus(user, event.reflected, state, causeFor(record))
+        end
+      end
+    end
     emitUsed(ctx, record)
     return { kind = "complete", result = "hit" }
   end

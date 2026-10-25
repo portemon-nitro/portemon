@@ -105,11 +105,9 @@ function T.entry_hold_and_exit_follow_the_source_display_frame_cadence()
   end, 30)
   Assert.notNil(statusOf(instance), "the banner still holds after thirty fixed ticks")
 
-  local total = entryTicks
-    + holdTicks
-    + tickUntil(instance, function()
-      return statusOf(instance) == nil
-    end, 25)
+  local total = entryTicks + holdTicks + tickUntil(instance, function()
+    return statusOf(instance) == nil
+  end, 25)
   Assert.isNil(statusOf(instance), "the banner clears after its hold and exit")
   Assert.isTrue(total >= 33, "the banner outlives a bare entry/exit (" .. tostring(total) .. " ticks)")
   Assert.isTrue(total <= 54, "the 60-frame hold is not copied as sixty 30 Hz ticks (" .. tostring(total) .. " ticks)")
@@ -128,7 +126,10 @@ function T.a_repeated_request_replaces_the_pending_art_with_the_latest_only()
 
   local outgoing = assert(statusOf(instance), "the departing banner stays visible")
   Assert.equal(outgoing.title, "NEW BARK TOWN", "the pending title does not replace the active art early")
-  Assert.isTrue(outgoing.scrollOffset > interrupting.scrollOffset, "the active art slides out from its current position")
+  Assert.isTrue(
+    outgoing.scrollOffset > interrupting.scrollOffset,
+    "the active art slides out from its current position"
+  )
 
   local appeared = tickUntil(instance, function()
     local status = statusOf(instance)

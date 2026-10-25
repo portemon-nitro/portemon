@@ -52,11 +52,7 @@ function T.heartgold_manifest_carries_its_versioned_identity(context)
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
   local cacheFs = CacheFs.forVersion("heartgold")
   local manifest = BattlePresentationCache.load(cacheFs)
-  Assert.equal(
-    manifest.schema,
-    BattlePresentationCache.MANIFEST_SCHEMA,
-    "heartgold stages the current catalog schema"
-  )
+  Assert.equal(manifest.schema, BattlePresentationCache.MANIFEST_SCHEMA, "heartgold stages the current catalog schema")
   Assert.equal(manifest.version.id, "heartgold", "the staged manifest names its own version")
 end
 
@@ -107,10 +103,7 @@ function T.heartgold_scenes_load_exactly_and_missing_keys_fail_closed(context)
   local record, loadErr = BattlePresentationCache.loadScene(cacheFs, "general/grass/day")
   Assert.notNil(record, "heartgold stages its ordinary grass scene: " .. tostring(loadErr))
   Assert.equal(record.key, "general/grass/day", "the staged scene names exactly its requested key")
-  Assert.notNil(
-    Sources.parseSceneKey(record.key),
-    "the staged scene key parses in the source namespaces"
-  )
+  Assert.notNil(Sources.parseSceneKey(record.key), "the staged scene key parses in the source namespaces")
   local missing, missingErr = BattlePresentationCache.loadScene(cacheFs, "general/grass/night")
   Assert.isNil(missing, "an unstaged scene never resolves")
   Assert.isTrue(

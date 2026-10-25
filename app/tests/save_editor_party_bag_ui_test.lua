@@ -546,11 +546,7 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
     error(err, 0)
   end
   Assert.equal(released, 1, "disposing the renderer releases its icon provider exactly once")
-  Assert.equal(
-    pool:stats().outstandingLeases,
-    0,
-    "disposing the renderer borrows nothing from the session owner"
-  )
+  Assert.equal(pool:stats().outstandingLeases, 0, "disposing the renderer borrows nothing from the session owner")
   Assert.equal(pool:stats().physicalImages, 0, "the borrowed session owner outlives the renderer")
 end
 function T.controller_cancel_clears_pending_removal()

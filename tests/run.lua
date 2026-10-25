@@ -118,7 +118,8 @@ local function main(argv)
       return 1
     end
     local roots = rootsFor(plan)
-    local listing = list({ roots = roots, layer = plan.layer, filter = plan.filter, tag = plan.tag, fullCorpus = plan.fullCorpus })
+    local listing =
+      list({ roots = roots, layer = plan.layer, filter = plan.filter, tag = plan.tag, fullCorpus = plan.fullCorpus })
     local processorCount = 1
     if love.system ~= nil and love.system.getProcessorCount ~= nil then
       processorCount = math.max(1, love.system.getProcessorCount())
@@ -201,13 +202,16 @@ local function main(argv)
   local capabilities, versions = detect()
 
   if plan.list then
-    print(table.concat(Report.listingLines(list({
-      roots = rootsFor(plan),
-      layer = plan.layer,
-      filter = plan.filter,
-      tag = plan.tag,
-      fullCorpus = plan.fullCorpus,
-    })), "\n"))
+    print(table.concat(
+      Report.listingLines(list({
+        roots = rootsFor(plan),
+        layer = plan.layer,
+        filter = plan.filter,
+        tag = plan.tag,
+        fullCorpus = plan.fullCorpus,
+      })),
+      "\n"
+    ))
     return 0
   end
 

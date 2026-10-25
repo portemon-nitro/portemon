@@ -1217,10 +1217,7 @@ function T.grown_selector_set_reopens_pending_without_losing_leased_handles()
   for _, path in ipairs(pool.paths) do
     shadowPathRead = shadowPathRead or path == BattlePresentationManifestFixture.manifest().pictures.shadow.image
   end
-  Assert.isTrue(
-    shadowPathRead,
-    "shadow lookup reads the exact image path published by the global catalog"
-  )
+  Assert.isTrue(shadowPathRead, "shadow lookup reads the exact image path published by the global catalog")
   local callsBeforeGrowth = prepareCalls
   owned:addSelectors({ reserveBack })
   Assert.equal(owned:state(), "pending", "the grown selector set reopens pending until its page builds")
@@ -1727,10 +1724,7 @@ function T.effect_upload_failure_releases_acquired_handles_and_stays_failed()
   local reason = failure --[[@as string]]
   Assert.isTrue(reason:find("probe-second", 1, true) ~= nil, "the failure names its resource: " .. reason)
   Assert.isTrue(reason:find("TACKLE", 1, true) ~= nil, "the failure names its effect: " .. reason)
-  Assert.isTrue(
-    reason:find("probe-upload-failure", 1, true) ~= nil,
-    "the failure names its launch: " .. reason
-  )
+  Assert.isTrue(reason:find("probe-upload-failure", 1, true) ~= nil, "the failure names its launch: " .. reason)
   Assert.equal(staging.drops["probe-first"], 1, "handles acquired before the failure release once")
   Assert.isNil(owned:drawable("probe-first"), "the rolled-back texture hands out nothing")
   local again, againErr = owned:demandEffect("TACKLE")

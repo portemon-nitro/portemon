@@ -230,11 +230,7 @@ function T.tests.live_broadcast_music_changes_land_encounters_until_stopped(cont
     end
     local silentMon = assert(silentResult.encounter, "silent trigger reads above").mons[1].mon
     local musicMon = assert(musicResult.encounter, effect .. " keeps the trigger on seed " .. seed).mons[1].mon
-    Assert.equal(
-      musicMon.met.level,
-      silentMon.met.level,
-      effect .. " keeps the drawn slot level on seed " .. seed
-    )
+    Assert.equal(musicMon.met.level, silentMon.met.level, effect .. " keeps the drawn slot level on seed " .. seed)
     if tostring(musicMon.species) == tostring(silentMon.species) then
       return
     end
@@ -242,7 +238,8 @@ function T.tests.live_broadcast_music_changes_land_encounters_until_stopped(cont
     for _, slot in ipairs({ 3, 4, 5, 6 }) do
       local musicSlot = musicDay[slot]
       local silentSlot = silentDay[slot]
-      if musicSlot.species == tostring(musicMon.species)
+      if
+        musicSlot.species == tostring(musicMon.species)
         and musicSlot.minLevel <= musicMon.met.level
         and musicMon.met.level <= musicSlot.maxLevel
         and silentSlot.minLevel <= silentMon.met.level
@@ -252,10 +249,7 @@ function T.tests.live_broadcast_music_changes_land_encounters_until_stopped(cont
         replaced = true
       end
     end
-    Assert.isTrue(
-      replaced,
-      effect .. " changes seed " .. seed .. " only to its replaced-slot species"
-    )
+    Assert.isTrue(replaced, effect .. " changes seed " .. seed .. " only to its replaced-slot species")
   end
   for _, seed in ipairs({ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 }) do
     local plain, plainDraws = attempt(host, 13, "grass", modifiers({ radio = "none" }), seed)
@@ -371,7 +365,13 @@ function T.tests.live_broadcast_music_changes_land_encounters_until_stopped(cont
     -- this version. Slot levels and weights always stay with the slots.
     local regional = {
       { effect = "hoenn", resolved = hoenn, first = hoennSpecies, alt = hoennAltRecord, altActive = hoennAltActive },
-      { effect = "sinnoh", resolved = sinnoh, first = sinnohSpecies, alt = sinnohAltRecord, altActive = sinnohAltActive },
+      {
+        effect = "sinnoh",
+        resolved = sinnoh,
+        first = sinnohSpecies,
+        alt = sinnohAltRecord,
+        altActive = sinnohAltActive,
+      },
     }
     for _, entry in ipairs(regional) do
       for _, slot in ipairs({ 3, 4 }) do

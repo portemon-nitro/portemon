@@ -21,7 +21,11 @@ local function checkSpiky(pid, trainerId)
   Assert.equal(Personality.nature(pid), NAUGHTY, "the forced pid keeps its nature")
   Assert.equal(Personality.gender(127, pid), "female", "the forced pid reads female at the Pichu ratio")
   Assert.isTrue(pid >= 0 and pid <= 4294967295, "the forced pid stays an unsigned 32-bit value")
-  Assert.equal(Personality.forcedNatureGenderAbility(trainerId, 127, NAUGHTY, "female", 0), pid, "forcing is deterministic")
+  Assert.equal(
+    Personality.forcedNatureGenderAbility(trainerId, 127, NAUGHTY, "female", 0),
+    pid,
+    "forcing is deterministic"
+  )
 end
 
 function T.spiky_ear_parameters_hold_across_trainer_ids()

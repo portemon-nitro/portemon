@@ -224,10 +224,7 @@ function T.enemy_composite_draws_unscaled_at_left_top_bounds()
   Assert.equal(composites[1].y, bounds.y, "the enemy composite starts at the bounds top")
   Assert.equal(composites[1].sx, 0.5625, "the enemy cell preserves its source aspect ratio")
   Assert.equal(composites[1].sy, 0.5625, "the enemy cell preserves its source aspect ratio")
-  Assert.notNil(
-    composites[1].quad,
-    "the enemy composite samples its source strip through quads, never a whole strip"
-  )
+  Assert.notNil(composites[1].quad, "the enemy composite samples its source strip through quads, never a whole strip")
 end
 
 -- The player composite samples its source artwork through quads with its
@@ -249,10 +246,7 @@ function T.player_composite_right_and_bottom_edges_hold_above_dock()
   Assert.equal(composites[1].y, bounds.y, "the player composite starts at the bounds top")
   Assert.equal(composites[1].sx, 0.75, "the player cell preserves its source aspect ratio")
   Assert.equal(composites[1].sy, 0.75, "the player cell preserves its source aspect ratio")
-  Assert.notNil(
-    composites[1].quad,
-    "the player composite samples its source strip through quads, never a whole strip"
-  )
+  Assert.notNil(composites[1].quad, "the player composite samples its source strip through quads, never a whole strip")
 end
 
 -- Every dynamic region resolves the snapshot values: names, levels,
@@ -385,11 +379,7 @@ function T.damaged_and_empty_bars_keep_paired_fractions_and_shades()
       { combatant = 3, side = 2, hp = 57, maxHp = 57, visible = true, name = "FOE", level = 20, shakeDx = 0 },
     },
   }))
-  Assert.deepEqual(
-    empty,
-    { 10, 10, 10, 10, 10, 10 },
-    "empty health draws no bar tiles while the full side stays green"
-  )
+  Assert.deepEqual(empty, { 10, 10, 10, 10, 10, 10 }, "empty health draws no bar tiles while the full side stays green")
   noSceneRectangles(emptyResult)
 end
 
@@ -456,10 +446,7 @@ function T.arrow_and_ball_strips_stay_hidden()
   end
   for _, entry in ipairs(result.graphics.draws) do
     local handle = type(entry.image) == "table" and entry.image.handle or ""
-    Assert.isTrue(
-      tostring(handle):sub(1, 6) ~= "arrow:",
-      "the compact scene never paints the arrow strip"
-    )
+    Assert.isTrue(tostring(handle):sub(1, 6) ~= "arrow:", "the compact scene never paints the arrow strip")
   end
 end
 

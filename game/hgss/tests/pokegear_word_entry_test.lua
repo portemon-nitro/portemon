@@ -138,9 +138,15 @@ end
 
 function T.tests.foreign_modes_and_flattened_catalogs_fail_at_construction()
   local WordEntryScreenState = requireState()
-  Assert.isFalse(pcall(WordEntryScreenState.new, options({
-    presentation = { layout = "dual", mode = "mail" },
-  })), "mail-mode geometry never opens as the single-word selector")
+  Assert.isFalse(
+    pcall(
+      WordEntryScreenState.new,
+      options({
+        presentation = { layout = "dual", mode = "mail" },
+      })
+    ),
+    "mail-mode geometry never opens as the single-word selector"
+  )
   Assert.isFalse(
     pcall(WordEntryScreenState.new, options({ wordCatalog = { groups = { { group = 0, bank = 237, count = 1495 } } } })),
     "a flattened word list never counts as the native selector"
@@ -231,9 +237,8 @@ end
 
 function T.tests.preselection_resolves_within_the_offered_order()
   local WordEntryScreenState = requireState()
-  local selector = WordEntryScreenState.new(
-    options({ selectedWord = "6", availability = { unavailable = { ["5"] = true } } })
-  )
+  local selector =
+    WordEntryScreenState.new(options({ selectedWord = "6", availability = { unavailable = { ["5"] = true } } }))
   local view = selector:status()
   Assert.equal(view.wordKey, "6", "a carried word past a hidden word still focuses its own identity")
   selector:updateFixed({ { type = "confirm" } })

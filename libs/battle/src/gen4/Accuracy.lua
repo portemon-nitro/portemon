@@ -41,8 +41,8 @@ local function requireQuery(query)
   assert(type(query.cause) == "table", "hit prevention carries its semantic cause")
   if query.accuracy ~= nil then
     assert(
-      type(query.accuracy) == "number" and query.accuracy % 1 == 0 and query.accuracy >= 0 and query.accuracy <= 100,
-      "accuracy names an integer percentage in 0..100"
+      type(query.accuracy) == "number" and query.accuracy % 1 == 0 and query.accuracy >= 0,
+      "accuracy names a non-negative integer percentage"
     )
   end
   if query.accuracyStage ~= nil then

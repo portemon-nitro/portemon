@@ -141,15 +141,12 @@ T.tests["compiles the eye glimmer and Lugia cinematic with their ordered roles"]
     { "eye.color", "eye.pattern", "eye.joint" }
   )
   Assert.equal(models[2].key, "field-effect:lugia-appearance:cinematic.lugia.0")
-  Assert.deepEqual(
-    {
-      models[2].animations[1].id,
-      models[2].animations[2].id,
-      models[2].animations[3].id,
-      models[2].animations[4].id,
-    },
-    { "lugia.joint", "lugia.color", "lugia.srt", "lugia.pattern" }
-  )
+  Assert.deepEqual({
+    models[2].animations[1].id,
+    models[2].animations[2].id,
+    models[2].animations[3].id,
+    models[2].animations[4].id,
+  }, { "lugia.joint", "lugia.color", "lugia.srt", "lugia.pattern" })
   Assert.equal(models[3].key, "field-effect:lugia-appearance:cinematic.lugia.1")
   Assert.equal(models[3].animations[1].id, "lugia.far.joint")
   for _, model in ipairs(models) do
@@ -165,7 +162,11 @@ T.tests["rejects a Lugia source member with the wrong Nitro animation format"] =
   members[30] = "lzjoint"
   local formats = lugiaFormats()
   formats.lzjoint = "NSBCA"
-  local ok, err = compileWith(members, { lzjoint = "NSBCA", lzcolor = "NSBMA", lzpattern = "NSBCA", lzsrt = "NSBTA" }, {})
+  local ok, err = compileWith(
+    members,
+    { lzjoint = "NSBCA", lzcolor = "NSBMA", lzpattern = "NSBCA", lzsrt = "NSBTA" },
+    {}
+  )
   Assert.isFalse(ok)
   Assert.isTrue(Errors.is(err))
   Assert.equal(err.code, "FIELD_EFFECT_SOURCE_INVALID")

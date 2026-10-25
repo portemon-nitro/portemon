@@ -1620,18 +1620,14 @@ function T.tests.browse_and_verification_share_terrain_admission_before_surface_
           "ordinary behavior " .. behavior .. " reaches real physical-surface sampling: " .. tostring(result.reason)
         )
         Assert.equal(result.state, "ready", "the ordinary step is selectable after verification")
-        Assert.deepEqual(
-          placement,
-          {
-            mapId = 11,
-            fieldX = 16,
-            fieldZ = 16,
-            surfaceId = 3,
-            worldY = 0,
-            terrainDependencyHash = "loading-fixture",
-          },
-          "placement carries the fixture's sampled surface and selected destination"
-        )
+        Assert.deepEqual(placement, {
+          mapId = 11,
+          fieldX = 16,
+          fieldZ = 16,
+          surfaceId = 3,
+          worldY = 0,
+          terrainDependencyHash = "loading-fixture",
+        }, "placement carries the fixture's sampled surface and selected destination")
         if purpose == "browse" then
           Assert.equal(tile.selectable, true, "the browsing grid agrees with direct resolution")
         end

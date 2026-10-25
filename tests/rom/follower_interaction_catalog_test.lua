@@ -60,8 +60,11 @@ function T.source_catalog_compiles_with_retail_order_and_semantic_references(rom
     for _, rule in ipairs(sectionTailRows) do
       expected[#expected + 1] = rule
     end
-    Assert.deepEqual(catalog.rulesByMapSection[sectionId], expected,
-      "compiled rules preserve common source-row boundaries for section " .. sectionId)
+    Assert.deepEqual(
+      catalog.rulesByMapSection[sectionId],
+      expected,
+      "compiled rules preserve common source-row boundaries for section " .. sectionId
+    )
   end
 
   local tailRowBytes
@@ -74,25 +77,36 @@ function T.source_catalog_compiles_with_retail_order_and_semantic_references(rom
     end
   end
   assert(tailRowBytes, "source corpus includes an active common tail row")
-  local syntheticCommonBytes = string.rep("\0", 12 * Sources.RULE_SIZE)
-    .. commonBytes:sub(12 * Sources.RULE_SIZE + 1)
+  local syntheticCommonBytes = string.rep("\0", 12 * Sources.RULE_SIZE) .. commonBytes:sub(12 * Sources.RULE_SIZE + 1)
   local sectionBytes = assert(ruleArchive:readMember(1))
   local syntheticSectionBytes = tailRowBytes .. sectionBytes:sub(Sources.RULE_SIZE + 1)
   local syntheticRulesArchive = {
-    memberCount = function() return ruleArchive:memberCount() end,
+    memberCount = function()
+      return ruleArchive:memberCount()
+    end,
     readMember = function(_, memberId)
-      if memberId == 0 then return syntheticCommonBytes end
-      if memberId == 1 then return syntheticSectionBytes end
+      if memberId == 0 then
+        return syntheticCommonBytes
+      end
+      if memberId == 1 then
+        return syntheticSectionBytes
+      end
       return ruleArchive:readMember(memberId)
     end,
   }
   local syntheticRomFs = {
     openNarc = function(_, alias)
-      if alias == Sources.ARCHIVES.rules then return syntheticRulesArchive end
+      if alias == Sources.ARCHIVES.rules then
+        return syntheticRulesArchive
+      end
       return romFs:openNarc(alias)
     end,
-    version = function() return versionId end,
-    metadata = function() return romFs:metadata() end,
+    version = function()
+      return versionId
+    end,
+    metadata = function()
+      return romFs:metadata()
+    end,
   }
   local syntheticCatalog = assert(Compiler.compile(syntheticRomFs)).catalog
   local expectedSyntheticRows = activeRows(Compiler, syntheticSectionBytes, Sources.SECTION_RULE_COUNT)
@@ -103,8 +117,11 @@ function T.source_catalog_compiles_with_retail_order_and_semantic_references(rom
       expectedSyntheticRows[#expectedSyntheticRows + 1] = rule
     end
   end
-  Assert.deepEqual(syntheticCatalog.rulesByMapSection[0], expectedSyntheticRows,
-    "inactive common prefix rows do not move tail rows ahead of section rows")
+  Assert.deepEqual(
+    syntheticCatalog.rulesByMapSection[0],
+    expectedSyntheticRows,
+    "inactive common prefix rows do not move tail rows ahead of section rows"
+  )
 
   local sectionCount = 0
   local exactMapIdRuleCount = 0

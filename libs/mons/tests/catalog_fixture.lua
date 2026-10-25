@@ -99,6 +99,15 @@ end
 -- real priority bracket name one; everything else stays at zero.
 ---@param priority integer? compiled priority bracket, zero when absent
 local function moveEntry(nativeId, name, description, category, power, moveType, accuracy, basePp, priority)
+  local contactMoves = {
+    [10] = true, -- Scratch
+    [15] = true, -- Cut
+    [33] = true, -- Tackle
+    [75] = true, -- Razor Leaf
+    [98] = true, -- Quick Attack
+    [165] = true, -- Struggle
+    [344] = true, -- Volt Tackle
+  }
   return {
     nativeId = nativeId,
     name = name,
@@ -115,6 +124,18 @@ local function moveEntry(nativeId, name, description, category, power, moveType,
     flags = 0,
     unknownC = 0,
     contestType = 0,
+    battle = {
+      behavior = { key = power > 0 and "damage" or "status", params = {} },
+      target = "range_0",
+      flags = {
+        dealsDamage = power > 0,
+        checksAccuracy = accuracy > 0,
+        contact = contactMoves[nativeId] == true,
+        reflectable = false,
+        snatchable = false,
+        mirrorable = false,
+      },
+    },
   }
 end
 
@@ -227,7 +248,7 @@ end
 
 function CatalogFixture.buildAssetRoot()
   local root = {
-    schema = "g4-mon-catalog-v4",
+    schema = "g4-mon-catalog-v5",
     version = { id = "heartgold", language = "english" },
     species = {
       CHIKORITA = speciesEntry({

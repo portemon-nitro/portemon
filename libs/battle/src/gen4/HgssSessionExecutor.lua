@@ -900,7 +900,8 @@ end
 ---@param mon unknown battle-local mon record carrying ability and condition
 ---@param category unknown executing move category selecting the split
 ---@param bridge NativePassiveBridge live passive composition for the holder
-local function statusAdjustedAttack(attacker, combatantId, mon, category, bridge)
+---@param state table<string, unknown> live battle state carrying entry timing
+local function statusAdjustedAttack(attacker, combatantId, mon, category, bridge, state)
   if category ~= "physical" then
     return
   end
@@ -908,6 +909,11 @@ local function statusAdjustedAttack(attacker, combatantId, mon, category, bridge
   local boost = bridge:statRatio(combatantId, "attack", conditionKey ~= nil, "physical")
   if boost ~= nil then
     attacker.attack = math.floor((attacker.attack * boost.numerator) / boost.denominator)
+  end
+  local active = BattleState.combatant(state, combatantId).active --[[@as table<string, unknown>]]
+  local entryTurn = active.entryTurn --[[@as integer]]
+  if bridge:abilityOf(combatantId) == "SLOW_START" and BattleState.nativeTurn(state) - entryTurn < 5 then
+    attacker.attack = math.floor(attacker.attack / 2)
   end
 end
 
@@ -983,10 +989,15 @@ local function itemAdjustedSpeed(speed, rawItem, effectiveItem, species)
   return speed
 end
 
+local fieldActive
+local activeWeather
+local weatherSuppressed
+
 ---@param combatant table<string, unknown> live combatant under fact sampling
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
+---@param state table<string, unknown>? live battle state carrying a temporary type override
 ---@return string[] detached semantic types for the entry
-local function combatantTypes(combatant, speciesFacts)
+local function combatantTypes(combatant, speciesFacts, state)
   local mon = combatant.mon
   if type(mon) ~= "table" then
     error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "mon" }))
@@ -1004,6 +1015,60 @@ local function combatantTypes(combatant, speciesFacts)
       error(BattleErrors.missingBehavior("damage reads its semantic type facts", { fact = "types" }))
     end
     types[#types + 1] = key
+  end
+  if state ~= nil then
+    local bag = state.effectBag --[[@as table<string, unknown>]]
+    assert(
+      type(bag) == "table" and type(bag.capture) == "function" and type(bag.get) == "function",
+      "live type projection reads the battle effect bag"
+    )
+    for _, effect in ipairs(bag:capture()) do
+      local scope = effect.scope --[[@as table<string, unknown>]]
+      if effect.key == "colorchange" and scope.kind == "active" and scope.combatant == combatant.id then
+        local effectState = bag:get(effect.id --[[@as integer]]) --[[@as table<string, unknown>]]
+        local override = effectState.state --[[@as table<string, unknown>]]
+        local typeKey = override.type
+        if type(typeKey) ~= "string" then
+          error(BattleErrors.invalidState("battle type overrides carry their semantic replacement type", {}))
+        end
+        return {
+          typeKey --[[@as string]],
+        }
+      end
+    end
+    local ability = NativePassiveBridge.wrap(state):abilityOf(combatant.id)
+    if ability == "FORECAST" then
+      local weather = weatherSuppressed(state) and "none" or activeWeather(state)
+      local weatherTypes = { rain = "water", sun = "fire", hail = "ice" }
+      local typeKey = weatherTypes[weather]
+      if typeKey ~= nil then
+        return { typeKey }
+      end
+    elseif ability == "MULTITYPE" then
+      local plateTypes = {
+        FLAME_PLATE = "fire",
+        SPLASH_PLATE = "water",
+        ZAP_PLATE = "electric",
+        MEADOW_PLATE = "grass",
+        ICICLE_PLATE = "ice",
+        FIST_PLATE = "fighting",
+        TOXIC_PLATE = "poison",
+        EARTH_PLATE = "ground",
+        SKY_PLATE = "flying",
+        MIND_PLATE = "psychic",
+        INSECT_PLATE = "bug",
+        STONE_PLATE = "rock",
+        SPOOKY_PLATE = "ghost",
+        DRACO_PLATE = "dragon",
+        DREAD_PLATE = "dark",
+        IRON_PLATE = "steel",
+      }
+      local rawItem = (mon --[[@as table<string, unknown>]]).heldItem
+      local typeKey = type(rawItem) == "string" and plateTypes[rawItem] or nil
+      if typeKey ~= nil then
+        return { typeKey }
+      end
+    end
   end
   return types
 end
@@ -1752,8 +1817,9 @@ end
 ---@param combatant table<string, unknown> live combatant under fact sampling
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
 ---@param bridge NativePassiveBridge live passive composition for the holder
+---@param state table<string, unknown> live battle state carrying temporary combat facts
 ---@return table<string, integer> live level and stage-effective battle stats for the entry
-local function projectCombatant(combatant, speciesFacts, bridge)
+local function projectCombatant(combatant, speciesFacts, bridge, state)
   local stats, stages = unstagedCombatant(combatant, speciesFacts)
   -- Battle maximum health travels with the projection so recovery
   -- handlers heal fractions of the true ceiling instead of guessing;
@@ -1790,6 +1856,24 @@ local function projectCombatant(combatant, speciesFacts, bridge)
     species
   )
   stats.speed = statusAdjustedSpeed(itemSpeed, combatant.id --[[@as integer]], combatant.mon, bridge)
+  local active = combatant.active --[[@as table<string, unknown>?]]
+  if active ~= nil then
+    local elapsed = BattleState.nativeTurn(state) - active.entryTurn --[[@as integer]]
+    local ability = bridge:abilityOf(combatant.id --[[@as integer]])
+    if ability == "SLOW_START" and elapsed < 5 then
+      stats.speed = math.floor(stats.speed / 2)
+    elseif
+      ability == "UNBURDEN"
+      and active.canUnburden == true
+      and bridge:rawHeldItem(combatant.id --[[@as integer]]) == nil
+    then
+      stats.speed = stats.speed * 2
+    end
+    local weather = weatherSuppressed(state) and "none" or activeWeather(state)
+    if (ability == "SWIFT_SWIM" and weather == "rain") or (ability == "CHLOROPHYLL" and weather == "sun") then
+      stats.speed = stats.speed * 2
+    end
+  end
   return stats
 end
 
@@ -1805,7 +1889,7 @@ local function ensureEntryHealth(live, speciesFacts)
   do
     local combatant = BattleState.combatant(live, combatantId)
     if combatant.maxHp == nil and type(speciesFacts) == "table" then
-      local ok, stats = pcall(projectCombatant, combatant, speciesFacts, NativePassiveBridge.wrap(live))
+      local ok, stats = pcall(projectCombatant, combatant, speciesFacts, NativePassiveBridge.wrap(live), live)
       if ok and type(stats) == "table" then
         combatant.maxHp = stats.hp
       end
@@ -1820,7 +1904,7 @@ end
 ---@return integer opposing entry effective speed
 local function stagedEscapeSpeeds(state, combatant, speciesFacts)
   local bridge = NativePassiveBridge.wrap(state)
-  local runner = projectCombatant(combatant, speciesFacts, bridge).speed
+  local runner = projectCombatant(combatant, speciesFacts, bridge, state).speed
   local runnerOwner = BattleState.participant(state, combatant.participant --[[@as integer]])
   for _, combatantId in
     ipairs(state.combatantOrder --[[@as integer[] ]])
@@ -1829,7 +1913,7 @@ local function stagedEscapeSpeeds(state, combatant, speciesFacts)
     if other.active ~= nil then
       local owner = BattleState.participant(state, other.participant --[[@as integer]])
       if owner.side ~= runnerOwner.side then
-        return runner, projectCombatant(other, speciesFacts, bridge).speed
+        return runner, projectCombatant(other, speciesFacts, bridge, state).speed
       end
     end
   end
@@ -1847,6 +1931,9 @@ end
 ---@field sides table<integer, integer> owning side per active combatant
 ---@field sleeping table<integer, boolean> active sleeping answer per combatant
 ---@field soundproof table<integer, boolean> active Soundproof answer per combatant
+---@field magicGuard table<integer, boolean> active holders protected from indirect damage
+---@field abilities table<integer, string> active effective abilities per combatant
+---@field weatherSuppressed boolean true when an active Cloud Nine or Air Lock holder suppresses weather
 
 -- Samples the per-entry facts every finite timing pass consumes over the
 -- same projections strikes use: stage-effective stats, semantic types,
@@ -1867,6 +1954,8 @@ local function sampleTimingState(state, speciesFacts)
   local sides = {} ---@type table<integer, integer>
   local sleeping = {} ---@type table<integer, boolean>
   local soundproof = {} ---@type table<integer, boolean>
+  local magicGuard = {} ---@type table<integer, boolean>
+  local abilities = {} ---@type table<integer, string>
   local view = BattleContext.wrap(state)
   local bridge = NativePassiveBridge.wrap(state)
   for _, combatantId in
@@ -1874,7 +1963,7 @@ local function sampleTimingState(state, speciesFacts)
   do
     local combatant = BattleState.combatant(state, combatantId)
     if combatant.active ~= nil then
-      local projected = projectCombatant(combatant, speciesFacts, bridge)
+      local projected = projectCombatant(combatant, speciesFacts, bridge, state)
       health[combatantId] = combatant.hp --[[@as integer]]
       speeds[combatantId] = projected.speed
       local ceiling = combatant.maxHp
@@ -1882,8 +1971,16 @@ local function sampleTimingState(state, speciesFacts)
         ceiling = combatant.entryHp
       end
       ceilings[combatantId] = ceiling --[[@as integer]]
-      typeMap[combatantId] = combatantTypes(combatant, speciesFacts)
-      stats[combatantId] = { level = projected.level, attack = projected.attack, defense = projected.defense }
+      typeMap[combatantId] = combatantTypes(combatant, speciesFacts, state)
+      magicGuard[combatantId] = bridge:abilityOf(combatantId) == "MAGIC_GUARD"
+      abilities[combatantId] = bridge:abilityOf(combatantId) --[[@as string]]
+      stats[combatantId] = {
+        level = projected.level,
+        attack = projected.attack,
+        defense = projected.defense,
+        specialAttack = projected.specialAttack,
+        specialDefense = projected.specialDefense,
+      }
       sides[combatantId] = BattleState.participant(state, combatant.participant --[[@as integer]]).side
       local mon = combatant.mon --[[@as table<string, unknown>]]
       local condition = mon.condition --[[@as table<string, unknown>]]
@@ -1919,6 +2016,9 @@ local function sampleTimingState(state, speciesFacts)
     sides = sides,
     sleeping = sleeping,
     soundproof = soundproof,
+    magicGuard = magicGuard,
+    abilities = abilities,
+    weatherSuppressed = weatherSuppressed(state),
   }
 end
 
@@ -1950,10 +2050,14 @@ local function sweepExpiredEffects(state)
   local bag = liveEffectBag(state)
   for _, record in ipairs(bag:capture()) do
     local instanceState = record.state --[[@as table<string, unknown>]]
+    local source = record.source --[[@as table<string, unknown>]]
+    local permanentWeather = source.kind == "innate"
+      and (record.key == "raindance" or record.key == "sunnyday" or record.key == "sandstorm" or record.key == "hail")
     if
       type(instanceState.turns) == "number"
       and instanceState.turns --[[@as integer]]
         <= 0
+      and not permanentWeather
     then
       bag:remove(record.id --[[@as integer]])
     end
@@ -2064,7 +2168,7 @@ end
 ---@param state table<string, unknown> live battle state under the effect read
 ---@param key string field definition identity under the query
 ---@return boolean true when a live field instance names the key
-local function fieldActive(state, key)
+local function fieldActiveForKey(state, key)
   local bag = liveEffectBag(state)
   for _, record in ipairs(bag:capture()) do
     local entry = record --[[@as table<string, unknown>]]
@@ -2075,6 +2179,7 @@ local function fieldActive(state, key)
   end
   return false
 end
+fieldActive = fieldActiveForKey
 
 -- Active field weather identity for strike damage: exactly one live
 -- field instance can name the sky, otherwise skies stay clear. The
@@ -2082,7 +2187,7 @@ end
 -- the damage law.
 ---@param state table<string, unknown> live battle state under the weather read
 ---@return string active weather identity for the strike facts
-local function activeWeather(state)
+local function activeWeatherOf(state)
   if fieldActive(state, "raindance") then
     return "rain"
   end
@@ -2095,15 +2200,20 @@ local function activeWeather(state)
   if fieldActive(state, "hail") then
     return "hail"
   end
+  local weather = (state.environment --[[@as table<string, unknown>]]).weather
+  if weather == "rain" or weather == "sun" or weather == "sand" or weather == "hail" then
+    return weather
+  end
   return "none"
 end
+activeWeather = activeWeatherOf
 
 -- Weather suppression samples living active holders: a conscious
 -- cloud-nine or air-lock entry neutralizes damage weather for the whole
 -- field without deleting the weather instance.
 ---@param state table<string, unknown> live battle state under the suppression read
 ---@return boolean true when a live ability suppresses weather damage
-local function weatherSuppressed(state)
+local function isWeatherSuppressed(state)
   for _, combatantId in
     ipairs(state.combatantOrder --[[@as integer[] ]])
   do
@@ -2122,6 +2232,7 @@ local function weatherSuppressed(state)
   end
   return false
 end
+weatherSuppressed = isWeatherSuppressed
 
 -- Single strike-facts projection for one executed strike: staged and raw
 -- stats with signed stages, ability reshaping of the staged attack, and
@@ -2137,16 +2248,16 @@ end
 ---@return table<string, unknown> strike-local combat and law facts for the move frame
 local function strikeCombatFacts(state, combatant, defender, speciesFacts, category, moveName)
   local bridge = NativePassiveBridge.wrap(state)
-  local attackerStats = projectCombatant(combatant, speciesFacts, bridge)
+  local attackerStats = projectCombatant(combatant, speciesFacts, bridge, state)
   local attackerRaw, attackerStages = unstagedCombatant(combatant, speciesFacts)
   if
     bridge:powerTrick(combatant.id --[[@as integer]])
   then
     attackerRaw.attack, attackerRaw.defense = attackerRaw.defense, attackerRaw.attack
   end
-  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "physical", bridge)
-  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "special", bridge)
-  local defenderStats = projectCombatant(defender, speciesFacts, bridge)
+  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "physical", bridge, state)
+  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "special", bridge, state)
+  local defenderStats = projectCombatant(defender, speciesFacts, bridge, state)
   local defenderRaw, defenderStages = unstagedCombatant(defender, speciesFacts)
   if
     bridge:powerTrick(defender.id --[[@as integer]])
@@ -2283,12 +2394,38 @@ local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, c
     local attackerStats = strike.attackerStats --[[@as table<string, integer>]]
     local foeMon = defender.mon --[[@as table<string, unknown>]]
     local foeGender = genderOf(foeMon, speciesFacts)
+    local partnerAbilities = { user = {}, foe = {} } ---@type table<string, string[]>
+    local userSide = BattleState.participant(state, combatant.participant --[[@as integer]]).side
+    local foeSide = BattleState.participant(state, defender.participant --[[@as integer]]).side
+    for _, positionId in
+      ipairs(state.positionOrder --[[@as table<integer, integer>]])
+    do
+      local partnerId = BattleState.position(state, positionId --[[@as integer]]).occupant
+      if partnerId ~= nil and partnerId ~= combatant.id and partnerId ~= defender.id then
+        local partner = BattleState.combatant(state, partnerId --[[@as integer]])
+        if partner.hp > 0 then
+          local partnerSide = BattleState.participant(state, partner.participant --[[@as integer]]).side
+          local partnerAbility = NativePassiveBridge.wrap(state):abilityOf(partnerId --[[@as integer]])
+          if partnerAbility ~= nil and partnerSide == userSide then
+            partnerAbilities.user[#partnerAbilities.user + 1] = partnerAbility
+          elseif partnerAbility ~= nil and partnerSide == foeSide then
+            partnerAbilities.foe[#partnerAbilities.foe + 1] = partnerAbility
+          end
+        end
+      end
+    end
+    local combatFacts = strike.facts --[[@as table<string, unknown>]]
+    combatFacts.userHp = combatant.hp
+    combatFacts.userMaxHp = combatant.maxHp
+    combatFacts.foeHp = defender.hp
+    combatFacts.foeMaxHp = defender.maxHp
+    combatFacts.partnerAbilities = partnerAbilities
     local semiInvulnerable = require("libs.battle.src.gen4.SequenceMoveState").semiInvulnerable(state, defenderId)
     if foeGender ~= nil then
       genders[defenderId] = foeGender
     end
     targetFacts[defenderId] = {
-      combat = strike.facts,
+      combat = combatFacts,
       combatByCategory = strike.factsByCategory,
       speeds = { user = attackerStats.speed, foe = defenderStats.speed },
       duel = StrikeFacts.duel(state, combatant.id --[[@as integer]], defenderId, moveFacts),
@@ -2300,8 +2437,10 @@ local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, c
       foeWeightHg = defenderStats.weightHg,
       beatup = StrikeFacts.beatup(state, combatant, defender, speciesFacts),
       semiInvulnerable = semiInvulnerable,
+      userGender = userGender,
+      foeGender = foeGender,
     }
-    defenderTypes[defenderId] = combatantTypes(defender, speciesFacts)
+    defenderTypes[defenderId] = combatantTypes(defender, speciesFacts, state)
     targets[#targets + 1] = { combatant = defenderId }
     if head == nil then
       head = defenderId
@@ -2330,6 +2469,7 @@ local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, c
     attackerCondition = sharedCondition,
     weather = sharedWeather,
     weatherSuppressed = sharedWeatherSuppressed,
+    terrain = (state.environment --[[@as table<string, unknown>]]).terrain or "plain",
   }
 end
 
@@ -2347,6 +2487,63 @@ local function sideActive(state, side, key)
     end
   end
   return false
+end
+
+---@param state table<string, unknown> live battle under speed ordering
+---@param speciesFacts table<string, SpeciesFormFacts> species projections for active battlers
+---@return table<integer, table<string, integer>> speed candidates for current living entries
+local function activeSpeedEntries(state, speciesFacts)
+  local entries = {} ---@type table<integer, table<string, integer>>
+  local bridge = NativePassiveBridge.wrap(state)
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, combatantId)
+    if combatant.active ~= nil and combatant.hp > 0 then
+      local speed = projectCombatant(combatant, speciesFacts, bridge, state).speed
+      local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+      if sideActive(state, participant.side, "tailwind") then
+        speed = speed * 2
+      end
+      entries[#entries + 1] = { id = combatantId, speed = speed }
+    end
+  end
+  return entries
+end
+
+---@param state table<string, unknown> live battle under recipient sampling
+---@param actor integer executing combatant
+---@param move string selected move identity
+---@param moveRecord table<string, unknown> selected move facts
+---@param itemFacts table<string, table<string, unknown>> held-item facts
+---@param chargeTurn boolean true when this is the move's charge action
+---@param targets integer[] selected living recipient identities
+---@param speedEntries table<integer, table<string, integer>> current living battlers' sampled Speed
+---@param stream table<string, unknown> battle random stream for speed ties
+---@return table<string, unknown>? redirected recipient and native ability facts
+local function redirectAbilityRecipient(
+  state,
+  actor,
+  move,
+  moveRecord,
+  itemFacts,
+  chargeTurn,
+  targets,
+  speedEntries,
+  stream
+)
+  return require("libs.battle.src.gen4.NativeMoveInterference").redirectRecipient(
+    state,
+    actor,
+    move,
+    moveRecord,
+    itemFacts,
+    chargeTurn,
+    targets,
+    speedEntries,
+    fieldActive(state, "trickroom"),
+    stream
+  )
 end
 
 -- Hazard entries strike only grounded arrivals: flying types and
@@ -2384,8 +2581,9 @@ end
 
 ---@param state table<string, unknown> live battle state under the trap read
 ---@param combatantId integer combatant identity under the trap read
+---@param speciesFacts table<string, SpeciesFormFacts>? static species facts for ability typing
 ---@return table<string, unknown>? held trap query when a volatile binds the entry
-local function volatileTrapOf(state, combatantId)
+local function volatileTrapOf(state, combatantId, speciesFacts)
   local bag = liveEffectBag(state)
   for _, record in ipairs(bag:capture()) do
     local entry = record --[[@as table<string, unknown>]]
@@ -2397,6 +2595,10 @@ local function volatileTrapOf(state, combatantId)
     then
       return { held = true }
     end
+  end
+  if speciesFacts ~= nil then
+    local combatant = BattleState.combatant(state, combatantId)
+    return Switching.abilityTrapOf(state, combatantId, combatantTypes(combatant, speciesFacts, state))
   end
   return nil
 end
@@ -2423,6 +2625,21 @@ local function innateFactsFor(state, context, health, ceilings, combatantId)
     species = nil
   end
   local typed = context --[[@as BattleContext]]
+  local sleepingFoes = {} ---@type integer[]
+  local holderSide = BattleState.participant(state, combatant.participant --[[@as integer]]).side
+  for _, foeId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local foe = BattleState.combatant(state, foeId)
+    if
+      foe.active ~= nil
+      and foe.hp > 0
+      and BattleState.participant(state, foe.participant --[[@as integer]]).side ~= holderSide
+      and typed:statusOf(foeId) == "sleep"
+    then
+      sleepingFoes[#sleepingFoes + 1] = foeId
+    end
+  end
   return {
     activation = entry.activation,
     species = species,
@@ -2432,8 +2649,12 @@ local function innateFactsFor(state, context, health, ceilings, combatantId)
       health = { [combatantId] = health[combatantId] },
       maxHealth = { [combatantId] = ceilings[combatantId] },
       status = typed:statusOf(combatantId),
-      weather = activeWeather(state),
+      weather = weatherSuppressed(state) and "none" or activeWeather(state),
+      residual = true,
+      stream = state.rng,
       ability = NativePassiveBridge.wrap(state):abilityOf(combatantId),
+      foeAsleep = #sleepingFoes > 0,
+      sleepingFoes = sleepingFoes,
     },
   }
 end
@@ -2464,9 +2685,10 @@ end
 ---@param health table<integer, integer> battle-local health under the pass
 ---@param ceilings table<integer, integer> battle maximum health per combatant
 ---@param answeredPoison table<integer, boolean> holders whose ability replaced their poison tick
+---@param badDreamsApplied table<integer, boolean> sleeping targets already damaged by Bad Dreams
 ---@param combatantId integer holder combatant under the checkpoint
 ---@return table<string, unknown>? work record with the phase events, nil when the holder carries no ability
-local function answerAbilityPhase(state, context, health, ceilings, answeredPoison, combatantId)
+local function answerAbilityPhase(state, context, health, ceilings, answeredPoison, badDreamsApplied, combatantId)
   local combatant = BattleState.combatant(state, combatantId)
   if combatant.active == nil then
     return nil
@@ -2485,6 +2707,51 @@ local function answerAbilityPhase(state, context, health, ceilings, answeredPois
   local events = {}
   for _, event in ipairs(outcome.events) do
     local answer = event --[[@as table<string, unknown>]]
+    if type(answer.cured) == "string" then
+      context:cureStatus(combatantId, answer.cured, { kind = "ability", key = answer.key, combatant = combatantId })
+      events[#events + 1] = {
+        origin = "innate",
+        kind = "ability",
+        key = answer.key,
+        target = combatantId,
+        cured = answer.cured,
+      }
+    elseif answer.stat == "speed" and answer.stages == "boosted" then
+      local stages = context:entryOf(combatantId).stages --[[@as table<string, integer>]]
+      if stages.speed < StatStages.MAX then
+        context:changeStage(combatantId, "speed", stages.speed + 1, {
+          kind = "ability",
+          key = answer.key,
+          combatant = combatantId,
+        })
+      end
+      events[#events + 1] = { origin = "innate", kind = "ability", key = answer.key, target = combatantId }
+    elseif answer.harmed == true then
+      local sleepingFoes = facts.checkpoint.sleepingFoes --[[@as table<integer, integer>]]
+      for _, foeId in ipairs(sleepingFoes) do
+        local hp = health[foeId] --[[@as integer?]]
+        local maxHp = ceilings[foeId] --[[@as integer?]]
+        if
+          hp ~= nil
+          and maxHp ~= nil
+          and hp > 0
+          and badDreamsApplied[foeId] ~= true
+          and NativePassiveBridge.wrap(state):abilityOf(foeId) ~= "MAGIC_GUARD"
+        then
+          local damage = math.floor(maxHp / 8)
+          if damage < 1 then
+            damage = 1
+          end
+          if damage >= hp then
+            damage = hp
+          end
+          health[foeId] = hp - damage
+          badDreamsApplied[foeId] = true
+          events[#events + 1] =
+            { origin = "innate", kind = "tick", key = "BAD_DREAMS", target = foeId, amount = damage }
+        end
+      end
+    end
     if type(answer.restored) == "number" and answer.recovered == true then
       local applied = applyInnateRestoration(health, ceilings, combatantId, answer.restored --[[@as integer]])
       events[#events + 1] = {
@@ -2620,6 +2887,9 @@ local function answerConditionPhase(state, health, ceilings, answeredPoison, com
     if answeredPoison[combatantId] == true then
       return nil
     end
+    if NativePassiveBridge.wrap(state):abilityOf(combatantId) == "MAGIC_GUARD" then
+      return nil
+    end
     local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 8)
     if damage < 1 then
       damage = 1
@@ -2631,6 +2901,9 @@ local function answerConditionPhase(state, health, ceilings, answeredPoison, com
       },
     }
   elseif key == "burn" then
+    if NativePassiveBridge.wrap(state):abilityOf(combatantId) == "MAGIC_GUARD" then
+      return nil
+    end
     local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 8)
     if damage < 1 then
       damage = 1
@@ -2647,6 +2920,9 @@ local function answerConditionPhase(state, health, ceilings, answeredPoison, com
       counter = 15
     end
     current.state = { counter = counter }
+    if NativePassiveBridge.wrap(state):abilityOf(combatantId) == "MAGIC_GUARD" then
+      return nil
+    end
     local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 16) * counter
     if damage < 1 then
       damage = 1
@@ -3417,7 +3693,7 @@ function StrikeFacts.redrawCalledTargets(state, combatant, actor, payload, strea
   local drawnFacts = started.moveFacts[drawn]
   local drawnTypes = nil
   if drawn == "CURSE" then
-    drawnTypes = combatantTypes(combatant, started.speciesFacts)
+    drawnTypes = combatantTypes(combatant, started.speciesFacts, state)
   end
   local drawnPolicy = rangePolicy(drawn, drawnFacts, drawnTypes)
   if drawnPolicy == nil then
@@ -3563,6 +3839,18 @@ function StrikeFacts.recordHistory(state, actor, node, settledTargets)
   entry[#entry + 1] = requestedMove
 end
 
+-- Reactive execution helpers share one dependency at the large turn
+-- binding seam so growing checkpoint coverage stays within LuaJIT's
+-- closure upvalue limit.
+local NativeAbilitySupport = {
+  projectCombatant = projectCombatant,
+  fieldActive = fieldActive,
+  combatantTypes = combatantTypes,
+  activeSpeedEntries = activeSpeedEntries,
+  redirectAbilityRecipient = redirectAbilityRecipient,
+  handlers = NativeEffectHandlers,
+}
+
 ---@param executor HgssSessionExecutor live native session owning the turn
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
@@ -3631,7 +3919,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         forcedMove = stagedMove.forcedMove
         priority = stagedMove.priority --[[@as integer]]
       end
-      local speed = projectCombatant(combatant, speciesFacts, bridge).speed
+      local speed = NativeAbilitySupport.projectCombatant(combatant, speciesFacts, bridge, state).speed
       -- Tailwind doubles its side sampled speed at order time.
       local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
       if
@@ -3701,7 +3989,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     end
     -- Trick Room reverses only the speed dimension while its field
     -- instance stands.
-    local ordered = TurnOrder.buildActions(candidates, { trickRoom = fieldActive(state, "trickroom") }, stream)
+    local ordered =
+      TurnOrder.buildActions(candidates, { trickRoom = NativeAbilitySupport.fieldActive(state, "trickroom") }, stream)
     local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
     for _, action in ipairs(ordered) do
       local staged = action --[[@as table<string, unknown>]]
@@ -3841,6 +4130,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   ---@param pending table<string, unknown>? pending strike identity and power for before-action gates
   ---@return string? blocking effect key when a before-action handler denied the action
   local function invokeTiming(state, timing, target, pending)
+    if timing == "entry" and BattleState.combatant(state, target).active == nil then
+      return nil
+    end
     local bag = liveEffectBag(state)
     local sample = sampleTimingState(state, speciesFacts)
     local view = BattleContext.wrap(state)
@@ -3871,11 +4163,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       context.clearHazard = clearHazard
       dispatchOwner = EffectDispatch.new(
         bag,
-        NativeEffectHandlers.handlersFor({
+        NativeAbilitySupport.handlers.handlersFor({
           maxHp = sample.ceilings,
           types = sample.typeMap,
           occupants = sample.occupants,
           sides = sample.sides,
+          magicGuard = sample.magicGuard,
+          abilities = sample.abilities,
           entrant = target,
           grounded = entrantGrounded(state, target, sample.typeMap[target]),
           chart = chart,
@@ -3907,11 +4201,14 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       context.suppressedIds = suppressed
       dispatchOwner = EffectDispatch.new(
         bag,
-        NativeEffectHandlers.handlersFor({
+        NativeAbilitySupport.handlers.handlersFor({
           maxHp = sample.ceilings,
           types = sample.typeMap,
           occupants = sample.occupants,
           stats = sample.stats,
+          magicGuard = sample.magicGuard,
+          abilities = sample.abilities,
+          weatherSuppressed = sample.weatherSuppressed,
         }, timing)
       )
     else
@@ -3931,6 +4228,17 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         view:emit(record.kind --[[@as string]], { kind = record.kind }, copyValue(record))
       end
     end
+    context.blockedBy = context.blockedBy
+      or NativeAbilitySupport.handlers.applyPassiveTiming(
+        state,
+        timing,
+        target,
+        pending,
+        sample.stats,
+        moveFacts,
+        chart,
+        sample.typeMap
+      )
     commitTimingHealth(state, sample.health, sample.ceilings)
     sweepExpiredEffects(state)
     sweepFaints(state)
@@ -4023,7 +4331,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local gate = Status.beforeAction(
       combatant.mon --[[@as table<string, unknown>]],
       stream --[[@as table<string, unknown>]],
-      { kind = "status-gate", combatant = actor.combatant }
+      { kind = "status-gate", combatant = actor.combatant },
+      NativeAbilitySupport.handlers.earlyBird(state, actor.combatant --[[@as integer]])
     )
     if gate.event ~= nil then
       context:emit("status-gate", { kind = "status-gate", combatant = actor.combatant }, {
@@ -4120,7 +4429,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local moveRecord = moveFacts[moveName]
     local attackerTypes = nil
     if moveName == "CURSE" then
-      attackerTypes = combatantTypes(combatant, speciesFacts)
+      attackerTypes = NativeAbilitySupport.combatantTypes(combatant, speciesFacts, state)
     end
     local policy = rangePolicy(moveName, moveRecord, attackerTypes)
     if policy == nil then
@@ -4143,6 +4452,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local executionActorId = actor.combatant --[[@as integer]]
     local selectedTarget = payload.target --[[@as table<string, unknown>]]
     local MoveInterference = require("libs.battle.src.gen4.NativeMoveInterference")
+    local redirectSpeedEntries = NativeAbilitySupport.activeSpeedEntries(state, speciesFacts)
+    local redirectTrickRoom = NativeAbilitySupport.fieldActive(state, "trickroom")
     local moveFlags = moveRecord.flags
     local interception = nil --[[@type table<string, unknown>?]]
     if type(moveFlags) == "table" then
@@ -4164,7 +4475,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           interception.target --[[@as integer]],
           moveName,
           moveRecord --[[@as table<string, unknown>]],
-          itemFacts
+          itemFacts,
+          redirectSpeedEntries,
+          redirectTrickRoom,
+          stream
         )
         local recipient = redirected.combatant --[[@as integer]]
         targetIds = { recipient }
@@ -4189,6 +4503,34 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       executionActor.activation = assert(effectiveCombatant.active, "intercepting actors remain active").activation
     end
     local sequenceState = require("libs.battle.src.gen4.SequenceMoveState").readLive(state, executionActorId)
+    if interception == nil or interception.kind ~= "magiccoat" then
+      local redirected = NativeAbilitySupport.redirectAbilityRecipient(
+        state,
+        executionActorId,
+        moveName,
+        moveRecord --[[@as table<string, unknown>]],
+        itemFacts,
+        sequenceState ~= nil and type(sequenceState.chargeMove) == "string",
+        targetIds,
+        redirectSpeedEntries,
+        stream
+      )
+      if redirected ~= nil then
+        local recipient = redirected.combatant --[[@as integer]]
+        targetIds = { recipient }
+        selectedTarget = { kind = "combatant", combatant = recipient }
+        if interception == nil then
+          interception = {
+            actor = executionActorId,
+            target = recipient,
+            kind = "ability-redirect",
+          }
+        end
+        interception.redirectAbility = redirected.ability
+        interception.redirectTarget = recipient
+        interception.redirectMoveType = redirected.moveType
+      end
+    end
     local chargeBoost = sequenceState ~= nil and sequenceState.electricBoost == true
     local category = type(moveRecord) == "table" and (moveRecord --[[@as table<string, unknown>]]).category or nil
     -- One strike-facts projection keeps the turn closure inside its
@@ -4198,6 +4540,15 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- single-target readers.
     local strike =
       recipientStrikeFacts(state, effectiveCombatant, targetIds, speciesFacts, category, moveName, moveFacts)
+    local pressureTargets = {} ---@type integer[]
+    for _, target in
+      ipairs(strike.targets --[[@as table<integer, table<string, unknown>>]])
+    do
+      local targetId = (target --[[@as table<string, unknown>]]).combatant
+      assert(type(targetId) == "number", "pressure targets carry combatant identities")
+      pressureTargets[#pressureTargets + 1] = targetId --[[@as integer]]
+    end
+    local pressureExtraPp = NativeAbilitySupport.handlers.pressureCost(state, executionActorId, pressureTargets)
     local facts = strike.facts
     local attackerAbility = strike.attackerAbility
     local attackerCondition = strike.attackerCondition
@@ -4283,11 +4634,14 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       actor = executionActor,
       requestedMove = moveName,
       executingMove = moveName,
+      move = moveFacts[moveName],
       ppOwnerSlot = ownerSlot,
+      pressureExtraPp = pressureExtraPp,
       calledBy = moveName == "ME_FIRST" and "ME_FIRST" or nil,
       selectedTarget = copyValue(selectedTarget),
       targets = strike.targets,
       targetFacts = strike.targetFacts,
+      genders = strike.genders,
       targetMoves = targetMoves,
       imprisonedMoves = imprisonedMoves,
       moves = ppOwnerMoves,
@@ -4297,7 +4651,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       guts = attackerAbility == "GUTS",
       weather = strike.weather,
       weatherSuppressed = strike.weatherSuppressed,
-      attackerTypes = combatantTypes(effectiveCombatant, speciesFacts),
+      terrain = strike.terrain,
+      attackerTypes = NativeAbilitySupport.combatantTypes(effectiveCombatant, speciesFacts, state),
       defenderTypes = defenderTypes,
       typeChart = chart,
       stream = stream,
@@ -4309,7 +4664,6 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       copiedMove = copiedMove,
       mirrorMoveCandidates = mirrorMoveCandidates,
       recentMoves = copyValue(recentMoves),
-      genders = strike.genders,
       userAsleep = asleepOf(userMon),
       duel = strike.duel,
       speeds = strike.speeds,
@@ -4327,6 +4681,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       foeWeightHg = strike.foeWeightHg,
       beatup = strike.beatup,
       chargeBoost = chargeBoost,
+      helpingHand = BattleContext.wrap(state):hasBattleEffect(executionActorId, "helpinghand"),
     }
     local node = MoveExecution.start(inputs)
     local executedFacts = type(node.executingMove) == "string" and moveFacts[node.executingMove] or nil
@@ -4366,7 +4721,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           nodeLocals.failed = "ability-redirected"
         end
       end
-      MoveInterference.consume(context, interception)
+      if type(interception.markerOwner) == "number" then
+        MoveInterference.consume(context, interception)
+      end
     end
     local settledTargets = strike.targets
     local startedFrame = type(node) == "table" and node.locals or nil
@@ -4471,7 +4828,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local fainted = faintedIds(state)
     local held = combatant.trap
     if held == nil then
-      held = volatileTrapOf(state, actor.combatant --[[@as integer]])
+      held = volatileTrapOf(state, actor.combatant --[[@as integer]], speciesFacts)
     end
     -- An effective shell slips trapping for the voluntary departure:
     -- the native shell bypasses the trap check while a suppressed one
@@ -4504,6 +4861,16 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     })
     local stepped = Switching.step({}, frame)
     assert(stepped.done == true, "voluntary exchanges settle without interception")
+    local outgoingStatus = context:statusOf(actor.combatant --[[@as integer]])
+    if
+      Bridge.wrap(state):abilityOf(actor.combatant --[[@as integer]]) == "NATURAL_CURE" and outgoingStatus ~= nil
+    then
+      context:cureStatus(actor.combatant --[[@as integer]], outgoingStatus, {
+        kind = "ability",
+        key = "NATURAL_CURE",
+        combatant = actor.combatant,
+      })
+    end
     BattleState.leave(state, slot)
     local activation = BattleState.enter(state, payload.replacement --[[@as integer]], slot)
     -- Entry cleanup resets both records; Baton Pass re-anchors its
@@ -4665,7 +5032,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- Binding and trapping volatiles hold like scenario-seeded traps.
     local trap = combatant.trap
     if trap == nil then
-      trap = volatileTrapOf(state, actor.combatant --[[@as integer]])
+      trap = volatileTrapOf(state, actor.combatant --[[@as integer]], speciesFacts)
     end
     -- Assured flight answers through the live passives before any trap
     -- or odds: an effective Smoke Ball or the running ability leaves
@@ -4915,7 +5282,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     end
     local turnOrder = {}
     for _, entry in
-      ipairs(TurnOrder.orderResiduals(turnEntries, { trickRoom = fieldActive(state, "trickroom") }, stream))
+      ipairs(
+        TurnOrder.orderResiduals(
+          turnEntries,
+          { trickRoom = NativeAbilitySupport.fieldActive(state, "trickroom") },
+          stream
+        )
+      )
     do
       turnOrder[#turnOrder + 1] = entry.id
     end
@@ -4925,13 +5298,16 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- the session adapts method calls to plain view functions.
     local dispatchOwner = EffectDispatch.new(
       bag,
-      NativeEffectHandlers.handlersFor({
+      NativeAbilitySupport.handlers.handlersFor({
         maxHp = ceilings,
         types = typeMap,
         occupants = occupants,
         slept = slept,
         sleeping = sample.sleeping,
         soundproof = sample.soundproof,
+        magicGuard = sample.magicGuard,
+        abilities = sample.abilities,
+        weatherSuppressed = sample.weatherSuppressed,
         entryTurns = sample.entryTurns,
         nativeTurn = BattleState.nativeTurn(state),
       }, "residual")
@@ -4951,8 +5327,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- the pass is already visible. Poison answers persist across steps
     -- of the same pass.
     local answeredPoison = {} ---@type table<integer, boolean>
+    local badDreamsApplied = {} ---@type table<integer, boolean>
     local function liveAbility(combatantId)
-      return ResidualAnswers.ability(state, context, health, ceilings, answeredPoison, combatantId)
+      return ResidualAnswers.ability(state, context, health, ceilings, answeredPoison, badDreamsApplied, combatantId)
     end
     local function liveHeldItem(combatantId)
       return ResidualAnswers.consumable(state, context, health, ceilings, combatantId)
@@ -4992,7 +5369,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         health = health,
         stream = stream,
         turnOrder = turnOrder,
-        trickRoom = fieldActive(state, "trickroom"),
+        trickRoom = NativeAbilitySupport.fieldActive(state, "trickroom"),
         nativeTurn = BattleState.nativeTurn(state),
         live = live,
         sleeping = sample.sleeping,
@@ -5006,11 +5383,15 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           -- Residual faint markers stay internal: committing health
           -- first lets faint settlement emit the single canonical
           -- faint per knockout.
-        elseif record.origin == "innate" then
+        elseif record.origin == "innate" and record.kind == "healed" then
           context:emit("healed", { kind = "residual", key = record.key }, {
             target = record.target,
             restored = record.restored,
           })
+        elseif record.origin == "innate" then
+          local payload = copyValue(record) --[[@as table<string, unknown>]]
+          payload.origin = nil
+          context:emit(record.kind --[[@as string]], { kind = "residual", key = record.key }, payload)
         elseif record.origin == "condition" then
           context:emit("tick", { kind = "residual", key = record.key }, {
             combatant = record.combatant,
@@ -5735,22 +6116,29 @@ function HgssSessionExecutor.new(scenarioRecord, content)
       TrainerAi.noteArrival(live, occupant --[[@as integer]])
     end
   end
-  -- Opening occupants receive their entry pass exactly once through the
-  -- same arrival helper as later reserves. Fresh sessions start with an
-  -- empty bag, so the pass is skipped until mechanics create instances;
-  -- construction never projects combatants it does not dispatch over.
-  local openingBag = liveEffectBag(live)
-  if #openingBag:capture() > 0 then
-    local settleOpening = executor._settleEntryTiming
-    assert(type(settleOpening) == "function", "opening entries run through the bound timing seam")
-    for _, positionId in
-      ipairs(live.positionOrder --[[@as integer[] ]])
-    do
-      local occupant = BattleState.position(live, positionId --[[@as integer]]).occupant
-      if occupant ~= nil then
-        settleOpening(live, occupant --[[@as integer]])
-      end
+  -- Opening abilities and effects run through the same entry timing as
+  -- later arrivals, including when the finite effect bag starts empty.
+  local settleOpening = executor._settleEntryTiming
+  assert(type(settleOpening) == "function", "opening entries run through the bound timing seam")
+  local openingSample = sampleTimingState(live, speciesFacts)
+  local openingEntries = {} ---@type table<integer, table<string, integer>>
+  for _, positionId in
+    ipairs(live.positionOrder --[[@as integer[] ]])
+  do
+    local occupant = BattleState.position(live, positionId --[[@as integer]]).occupant
+    if occupant ~= nil then
+      openingEntries[#openingEntries + 1] = {
+        id = occupant,
+        speed = openingSample.speeds[
+          occupant --[[@as integer]]
+        ],
+      }
     end
+  end
+  local orderedEntries =
+    TurnOrder.orderEntryEffects(openingEntries, { trickRoom = fieldActive(live, "trickroom") }, live.rng)
+  for _, entry in ipairs(orderedEntries) do
+    settleOpening(live, entry.id --[[@as integer]])
   end
   return executor
 end
@@ -6253,7 +6641,7 @@ local function checkChoiceBinding(state, choice, admitted, battleKind, staged, m
     local reserves = eligibleReserves(state, combatant.participant --[[@as integer]], {})
     local heldChoice = combatant.trap
     if heldChoice == nil then
-      heldChoice = volatileTrapOf(state, combatant.id --[[@as integer]])
+      heldChoice = volatileTrapOf(state, combatant.id --[[@as integer]], speciesFacts)
     end
     local switchReason = "voluntary"
     if openBatch ~= nil and openBatch.switchIntent ~= nil then
