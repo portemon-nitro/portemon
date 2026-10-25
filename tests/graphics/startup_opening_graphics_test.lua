@@ -587,6 +587,44 @@ local function compositePack(customFirst, art, defaultPng)
   return scenes, cacheFs
 end
 
+---@param custom table scene manifest under test
+---@param customIndex integer retail position of the custom scene
+---@param art table<string, string> staged png bytes by generated path
+---@param defaultPng string fallback png bytes for art the test never samples
+---@return table[] scenes, table cacheFs strict five-scene pack with the custom scene at its retail position
+local function compositePackAt(custom, customIndex, art, defaultPng)
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    if sceneNumber == customIndex then
+      raw[sceneNumber] = custom
+    else
+      raw[sceneNumber] = fillerScene(sceneNumber)
+    end
+  end
+  local byPath = {}
+  for sceneNumber, manifest in ipairs(raw) do
+    byPath[StartupAssetCache.openingScenePath(sceneNumber)] = manifest
+  end
+  local cacheFs = {
+    loadLua = function(_, path)
+      return byPath[path]
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      return art[path] or defaultPng
+    end,
+  }
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, "soulsilver")
+    Assert.notNil(loaded, "composite scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  return scenes, cacheFs
+end
+
 ---@param scope table
 ---@param scenes table[] validated scene bundles in retail order
 ---@param cacheFs table staged art backing the scenes
@@ -2359,24 +2397,24 @@ local function composited_town_pixels_stay_visible_and_animate_across_hold_ticks
   end
   local after = drawBytes(movie, scope, 512, 384)
   Assert.isTrue(before ~= after, "town pixels animate across non-wipe hold ticks")
-  -- The authored stop lands 167 ticks later and a wipe covers the
-  -- transition, so the test waits for the panels to return instead of
-  -- asserting a fixed post-stop tick.
-  advance(movie, 167)
-  local waited, panelsBack = 0, false
-  local stopped = before
-  while waited < 200 do
-    movie:updateFixed()
-    waited = waited + 1
-    if waited % 5 == 0 then
-      stopped = drawBytes(movie, scope, 512, 384)
-      if lowerLitCells(stopped) > 500 then
-        panelsBack = true
-        break
-      end
-    end
+  -- The v5 town section retires through its authored seven-wipe order with
+  -- effect-gated closes, so the stop is addressed by step identity: walking
+  -- to the panels beat proves every close wait completed, the final main
+  -- close holds black, and the sub reveal keeps the panels lit.
+  for _, stepId in ipairs({
+    "close-new-bark-town",
+    "show-goldenrod-city",
+    "close-goldenrod-city",
+    "show-ecruteak-city",
+    "close-ecruteak-city",
+    "rival",
+    "panels",
+  }) do
+    advanceToSceneStep(movie, 3, stepId, 20000)
   end
-  Assert.isTrue(panelsBack, "the sub panels persist past the town stop")
+  movie:draw()
+  local stopped = drawBytes(movie, scope, 512, 384)
+  Assert.isTrue(lowerLitCells(stopped) > 500, "the sub panels persist past the town stop")
   Assert.isTrue(paneLitCells(stopped, 0) < 50, "the authored stop clears the main-mapped upper pane")
   movie:dispose()
 end
@@ -2534,25 +2572,24 @@ local function soulsilver_town_stays_on_main_and_stops_at_the_rival_beat(scope, 
   advance(movie, 5)
   local laterBytes = drawBytes(movie, scope, 512, 384)
   Assert.isTrue(beatBytes ~= laterBytes, "town pixels animate across non-wipe hold ticks")
-  -- The authored stop lands at the 187th scene tick; playing past it must
-  -- neither raise nor hang the step graph. A wipe covers the transition,
-  -- so the test waits for the panels to return instead of asserting a
-  -- fixed post-stop tick.
-  advance(movie, 187 + 8 - 25)
-  local waited, panelsBack = 0, false
-  local stopBytes = beatBytes
-  while waited < 200 do
-    movie:updateFixed()
-    waited = waited + 1
-    if waited % 5 == 0 then
-      stopBytes = drawBytes(movie, scope, 512, 384)
-      if lowerLitCells(stopBytes) > 500 then
-        panelsBack = true
-        break
-      end
-    end
+  -- The v5 town section retires through its authored seven-wipe order with
+  -- effect-gated closes, so the stop is addressed by step identity: walking
+  -- to the panels beat proves every close wait completed, the final main
+  -- close holds black, and the sub reveal keeps the panels lit.
+  for _, stepId in ipairs({
+    "close-new-bark-town",
+    "show-goldenrod-city",
+    "close-goldenrod-city",
+    "show-ecruteak-city",
+    "close-ecruteak-city",
+    "rival",
+    "panels",
+  }) do
+    advanceToSceneStep(movie, 3, stepId, 20000)
   end
-  Assert.isTrue(panelsBack, "the sub panels return after the stop transition")
+  movie:draw()
+  local stopBytes = drawBytes(movie, scope, 512, 384)
+  Assert.isTrue(lowerLitCells(stopBytes) > 500, "the rival beat keeps the sub panels lit")
   Assert.isTrue(paneLitCells(stopBytes, 0) < 50, "the authored stop clears the main-mapped upper pane")
   local townPool = movie.current.pool
   Assert.isTrue(townPool.triangles > 0, "the live town stage keeps its geometry")
@@ -3181,6 +3218,11 @@ local function wipe_kinds_finish_with_their_own_brightness_and_release_their_eng
         effect = "wipe-" .. kind,
       }
     end
+    -- A duration hold step separates the kinds: the finished hold stays
+    -- observable instead of the next open kind resetting it in the same
+    -- source tick the effect completes.
+    steps[#steps + 1] = { id = "check" .. kind, events = { #events + 1 }, ["until"] = { kind = "duration", ticks = 4 } }
+    events[#events + 1] = { op = "waitTicks", stepId = "check" .. kind, atStepTick = 0, ticks = 4 }
   end
   steps[#steps + 1] = { id = "tail", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 10 } }
   events[#events + 1] = { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 10 }
@@ -3201,11 +3243,20 @@ local function wipe_kinds_finish_with_their_own_brightness_and_release_their_eng
     local bytes = sourceBytes(scope, canvas)
     return pixelOf(bytes, 256, x, y)
   end
-  local function firstDifferingX(y)
-    local br, bg, bb = enginePixel("main", 0, y)
+  -- Even kinds hide the left behind their backdrop, so the scanline edge
+  -- is where game red reappears; odd kinds hide the right, so the edge
+  -- is where red disappears. Sampling from the cover side keeps the edge
+  -- on the law for every kind instead of pinning even-kind left rows to red.
+  local function coverEdge(kind, y)
     local baseR, baseG, baseB = 1, 0, 0
-    if math.abs(br - baseR) > 0.1 or math.abs(bg - baseG) > 0.1 or math.abs(bb - baseB) > 0.1 then
-      return 0
+    if kind == 0 or kind == 2 then
+      for x = 0, 252, 4 do
+        local r, g, b = enginePixel("main", x, y)
+        if math.abs(r - baseR) <= 0.1 and math.abs(g - baseG) <= 0.1 and math.abs(b - baseB) <= 0.1 then
+          return x
+        end
+      end
+      return 255
     end
     for x = 4, 255, 4 do
       local r, g, b = enginePixel("main", x, y)
@@ -3221,8 +3272,8 @@ local function wipe_kinds_finish_with_their_own_brightness_and_release_their_eng
   for kind = 0, 3 do
     advance(movie, 3)
     movie:draw()
-    local lowEdge = firstDifferingX(48)
-    local highEdge = firstDifferingX(96)
+    local lowEdge = coverEdge(kind, 48)
+    local highEdge = coverEdge(kind, 96)
     Assert.isFalse(
       lowEdge == highEdge,
       "kind " .. kind .. " slopes with the scanline instead of a centered rectangle"
@@ -3248,20 +3299,25 @@ local function wipe_kinds_finish_with_their_own_brightness_and_release_their_eng
     finals[#finals + 1] = string.format("%.2f,%.2f,%.2f", r, g, b)
     local subAfter = sourceBytes(scope, movie.subCanvas)
     Assert.equal(subAfter, subBefore, "kind " .. kind .. " retires without touching the other engine")
+    -- Run out the hold step so the next wipe starts from its own source tick.
+    advance(movie, 4)
   end
-  local allSame = true
-  for index = 2, #finals do
-    if finals[index] ~= finals[1] then
-      allSame = false
-    end
+  -- Even kinds retire neutral so staged art shows while odd kinds keep
+  -- their own full hold: kind 1 stays white, kind 3 stays black.
+  local wants = { "1.00,0.00,0.00", "1.00,1.00,1.00", "1.00,0.00,0.00", "0.00,0.00,0.00" }
+  for kind = 0, 3 do
+    Assert.equal(
+      finals[kind + 1],
+      wants[kind + 1],
+      "kind " .. kind .. " finishes with its own source brightness"
+    )
   end
-  Assert.isFalse(allSame, "different wipe kinds finish with different brightness")
   advance(movie, 9)
   movie:draw()
   local tailR, tailG, tailB = enginePixel("main", 128, 96)
   Assert.isTrue(
-    math.abs(tailR - 1) < 0.1 and tailG < 0.1 and tailB < 0.1,
-    "subsequent artwork is revealed after the wipes retire"
+    tailR < 0.1 and tailG < 0.1 and tailB < 0.1,
+    "the final black hold survives the tail instead of revealing art"
   )
   movie:resize(600, 1000)
   movie:draw()
@@ -3779,11 +3835,12 @@ local function heartgold_copyright_blend_and_fade_are_blocked_without_a_dump(sco
   movie:dispose()
 end
 
--- The scene-3 town reveal wipes its sub engine with kind 0 over ten ticks.
--- The reveal cuts a scanline triangle out of the dark panels: the rightmost
--- lit texel of each spotlight row must ride the retail boundary law, and
--- the edge must travel with the source tick instead of sitting on static
--- art. Rows under the silver silhouette stay out via its live slot box.
+-- Shared retail scanline boundary law for the source circle wipes: callers
+-- pass the wipe's own elapsed and total ticks. The reveal cuts a scanline
+-- triangle out of the dark panels: the rightmost lit texel of each
+-- spotlight row must ride this boundary law, and the edge must travel with
+-- the source tick instead of sitting on static art. Rows under the silver
+-- silhouette stay out via the live slot box.
 local function wipeBoundaryRetail(elapsed, ticks, vcount)
   local theta = math.pi * elapsed / ticks
   local x, y = math.cos(theta), math.sin(theta)
@@ -3804,19 +3861,6 @@ local function wipeBoundaryRetail(elapsed, ticks, vcount)
   return math.max(0, math.min(255, 127 + trunc))
 end
 
----@param bytes string raw RGBA bytes of the sub engine target
----@param y integer scanline to scan
----@return integer rightmost lit column, or -1 when the row stays dark
-local function rightmostLitColumn(bytes, y)
-  for x = 255, 0, -1 do
-    local r, g, b = pixelOf(bytes, 256, x, y)
-    if r + g + b > 0.15 then
-      return x
-    end
-  end
-  return -1
-end
-
 local function soulsilver_source_town_wipe_slopes_with_the_scanline(scope, context)
   local versionId = selectedVersionId(context)
   local movie = openMovie(scope, versionId, 512, 384, "single")
@@ -3827,74 +3871,43 @@ local function soulsilver_source_town_wipe_slopes_with_the_scanline(scope, conte
   end
   Assert.equal(movie:sceneNumber(), 3, "playback reaches the town scenes")
   advanceToSceneStep(movie, 3, "show-new-bark-town", 20000)
-  local scenes = loadScenes(versionId)
-  local boxesAt = function()
-    return spriteExclusions(movie, scenes[3], 8)
+  advance(movie, 3)
+  movie:draw()
+  -- The v5 town opens run on the main engine: kind0 hides the left behind
+  -- white while the right shows the town, so the edge is read from the
+  -- known white cover side. Per-engine isolation means the sub target
+  -- never tracks the main wipe law, so no sub pixel is matched to it.
+  local function coverIsWhite(bytes, x, y)
+    local r, g, b = pixelOf(bytes, 256, x, y)
+    return r > 0.85 and g > 0.85 and b > 0.85
   end
-  -- Candidate rows carry lit spotlight art at the center while staying
-  -- clear of the silhouette: dark panel rows are legitimate source
-  -- content and stay out of the measurement.
-  local function candidateRows(bytes)
-    local boxes = boxesAt()
-    local rows = {}
-    for y = 0, 191, 4 do
-      local clear = true
-      for _, box in ipairs(boxes) do
-        if y >= box[3] and y <= box[4] then
-          clear = false
-          break
-        end
-      end
-      if clear then
-        local cr, cg, cb = pixelOf(bytes, 256, 128, y)
-        if cr + cg + cb > 0.15 then
-          local right = rightmostLitColumn(bytes, y)
-          if right >= 64 and right <= 250 then
-            rows[#rows + 1] = { y = y, right = right }
-          end
-        end
-      end
-    end
-    return rows
+  local early = sourceBytes(scope, movie.mainCanvas)
+  local earlySub = sourceBytes(scope, movie.subCanvas)
+  for _, y in ipairs({ 32, 48, 96, 144 }) do
+    local edge = wipeBoundaryRetail(3, 8, y)
+    local r, g, b = pixelOf(early, 256, edge - 12, y)
+    assertSameColor(r, g, b, 1, 1, 1, 0.12, ("town wipe row %d covers its left behind white"):format(y))
+  end
+  -- Column 156 sits right of row 48's edge but left of row 96's, so it is
+  -- town on one scanline and cover on the other: the edge differs by row.
+  Assert.isFalse(coverIsWhite(early, 156, 48), "row 48 already shows town right of its scanline edge")
+  do
+    local r, g, b = pixelOf(early, 256, 156, 96)
+    assertSameColor(r, g, b, 1, 1, 1, 0.12, "row 96 still covers the same column in white")
   end
   advance(movie, 3)
   movie:draw()
-  local early = sourceBytes(scope, movie.subCanvas)
-  local earlyRows = candidateRows(early)
-  if #earlyRows < 3 then
-    context:skip("the town spotlight covers too few rows at the sampled wipe tick, so no slope is measurable")
+  local late = sourceBytes(scope, movie.mainCanvas)
+  local lateSub = sourceBytes(scope, movie.subCanvas)
+  for _, y in ipairs({ 32, 48, 96 }) do
+    local edge = wipeBoundaryRetail(6, 8, y)
+    local r, g, b = pixelOf(late, 256, edge - 12, y)
+    assertSameColor(r, g, b, 1, 1, 1, 0.12, ("town wipe row %d travels with the source tick"):format(y))
   end
-  advance(movie, 3)
-  movie:draw()
-  local late = sourceBytes(scope, movie.subCanvas)
-  local measured = 0
-  local low, high = 255, 0
-  for _, row in ipairs(earlyRows) do
-    local wantEarly = wipeBoundaryRetail(3, 10, row.y)
-    Assert.isTrue(
-      math.abs(row.right + 1 - wantEarly) <= 12,
-      ("town wipe row %d reveals to its scanline law (rightmost %d, want %d)"):format(row.y, row.right, wantEarly)
-    )
-    -- The late edge rides the same row even where the shrinking reveal
-    -- covers the center: only fully dark rows drop out.
-    local lateRight = rightmostLitColumn(late, row.y)
-    if lateRight >= 0 then
-      local wantLate = wipeBoundaryRetail(6, 10, row.y)
-      Assert.isTrue(
-        math.abs(lateRight + 1 - wantLate) <= 12,
-        ("town wipe row %d travels with the source tick (rightmost %d, want %d)"):format(row.y, lateRight, wantLate)
-      )
-      measured = measured + 1
-    end
-    if row.right < low then
-      low = row.right
-    end
-    if row.right > high then
-      high = row.right
-    end
-  end
-  Assert.isTrue(measured >= 2, "the wipe travel is sampled on at least two spotlight rows")
-  Assert.isTrue(high - low >= 16, "the town wipe slopes with the scanline instead of a centered rectangle")
+  -- The late edge has passed column 156 on row 96, flipping that fixed
+  -- pixel from cover to town while the sub target sits byte-identical.
+  Assert.isFalse(coverIsWhite(late, 156, 96), "the cover edge travels with the source tick instead of freezing mid-wipe")
+  Assert.equal(earlySub, lateSub, "the town wipe never spills onto the other engine")
   movie:dispose()
 end
 
@@ -4060,6 +4073,667 @@ local function heartgold_wipe_kinds_are_blocked_without_a_dump(scope, context)
   Assert.isTrue(found, "the HeartGold second scene carries its wipe")
 end
 
+-- Every circle kind covers exactly one scanline span with its own source
+-- backdrop on the GPU: kinds 0 and 2 hide the left of the scanline edge
+-- behind white and black while the right shows game art; kinds 1 and 3
+-- show game art on the left and hide the right behind white and black.
+-- No kind paints a second mirrored stripe, and the idle engine is
+-- byte-identical before and after every kind.
+local function synthetic_wipe_kinds_paint_the_source_inside_outside_masks_and_backdrops(scope)
+  local root = sceneArtRoot(1)
+  local mainImage = root .. "layers/mask-main.png"
+  local subImage = root .. "layers/mask-sub.png"
+  local art = {
+    [mainImage] = solidPng(256, 192, 255, 0, 0),
+    [subImage] = solidPng(256, 192, 0, 255, 0),
+  }
+  local steps, events = {}, {}
+  for kind = 0, 3 do
+    local indexes = { #events + 1 }
+    events[#events + 1] = {
+      op = "circleWipe",
+      stepId = "wipe-" .. kind,
+      atStepTick = 0,
+      engine = "main",
+      kind = kind,
+      ticks = 12,
+      effect = "wipe-" .. kind,
+    }
+    if kind == 0 then
+      indexes[#indexes + 1] = #events + 1
+      events[#events + 1] = { op = "enableSkip", stepId = "wipe-0", atStepTick = 10 }
+    end
+    steps[#steps + 1] = { id = "wipe-" .. kind, events = indexes, ["until"] = { kind = "effect", effect = "wipe-" .. kind } }
+  end
+  steps[#steps + 1] = { id = "tail", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 10 } }
+  events[#events + 1] = { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 10 }
+  events[#events + 1] = { op = "finish", stepId = "tail", atStepTick = 0 }
+  local custom = compositeScene(
+    1,
+    { compositeLayer(0, mainImage, 256, 192) },
+    { compositeLayer(0, subImage, 256, 192) },
+    {},
+    { seed = 0, emitters = {} },
+    steps,
+    events
+  )
+  local scenes, cacheFs = compositePack(custom, art, solidPng(16, 16, 128, 128, 128))
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  movie:draw()
+  local subBefore = sourceBytes(scope, movie.subCanvas)
+  local wants = {
+    { left = { 1, 1, 1 }, right = { 1, 0, 0 } },
+    { left = { 1, 0, 0 }, right = { 1, 1, 1 } },
+    { left = { 0, 0, 0 }, right = { 1, 0, 0 } },
+    { left = { 1, 0, 0 }, right = { 0, 0, 0 } },
+  }
+  for kind = 0, 3 do
+    advance(movie, 3)
+    movie:draw()
+    local main = sourceBytes(scope, movie.mainCanvas)
+    for _, y in ipairs({ 32, 64, 96 }) do
+      local boundary = wipeBoundaryRetail(3, 12, y)
+      local lr, lg, lb = pixelOf(main, 256, boundary - 16, y)
+      local rr, rg, rb = pixelOf(main, 256, boundary + 16, y)
+      local wantLeft, wantRight = wants[kind + 1].left, wants[kind + 1].right
+      assertSameColor(lr, lg, lb, wantLeft[1], wantLeft[2], wantLeft[3], 0.08, "kind " .. kind .. " shows its source left at row " .. y)
+      assertSameColor(rr, rg, rb, wantRight[1], wantRight[2], wantRight[3], 0.08, "kind " .. kind .. " shows its source right at row " .. y)
+    end
+    Assert.equal(
+      sourceBytes(scope, movie.subCanvas),
+      subBefore,
+      "kind " .. kind .. " never spills onto the idle engine"
+    )
+    advance(movie, 9)
+  end
+  movie:dispose()
+end
+
+-- Only the retail completion colors survive on the GPU: kinds 1 and 3
+-- keep a full white and black hold on their own engine past completion
+-- and across the next step boundary, while kinds 0 and 2 retire neutral
+-- with staged art showing. A later open on the same engine resets a
+-- hold instead of stacking washes.
+local function synthetic_terminal_wipe_brightness_holds_only_for_the_retail_kinds(scope)
+  local root = sceneArtRoot(1)
+  local mainImage = root .. "layers/hold-main.png"
+  local subImage = root .. "layers/hold-sub.png"
+  local art = {
+    [mainImage] = solidPng(256, 192, 255, 0, 0),
+    [subImage] = solidPng(256, 192, 0, 255, 0),
+  }
+  local beats = { 1, 0, 3, 2 }
+  local wants = { [1] = { 1, 1, 1 }, [0] = { 1, 0, 0 }, [3] = { 0, 0, 0 }, [2] = { 1, 0, 0 } }
+  local steps, events = {}, {}
+  for position, kind in ipairs(beats) do
+    local indexes = { #events + 1 }
+    events[#events + 1] = {
+      op = "circleWipe",
+      stepId = "wipe-" .. kind,
+      atStepTick = 0,
+      engine = "main",
+      kind = kind,
+      ticks = 8,
+      effect = "wipe-" .. kind,
+    }
+    if position == 1 then
+      indexes[#indexes + 1] = #events + 1
+      events[#events + 1] = { op = "enableSkip", stepId = "wipe-1", atStepTick = 5 }
+    end
+    steps[#steps + 1] = { id = "wipe-" .. kind, events = indexes, ["until"] = { kind = "effect", effect = "wipe-" .. kind } }
+    steps[#steps + 1] = { id = "check-" .. kind, events = { #events + 1 }, ["until"] = { kind = "duration", ticks = 4 } }
+    events[#events + 1] = { op = "waitTicks", stepId = "check-" .. kind, atStepTick = 0, ticks = 4 }
+  end
+  steps[#steps + 1] = { id = "tail", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 5 } }
+  events[#events + 1] = { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 }
+  events[#events + 1] = { op = "finish", stepId = "tail", atStepTick = 0 }
+  local custom = compositeScene(
+    1,
+    { compositeLayer(0, mainImage, 256, 192) },
+    { compositeLayer(0, subImage, 256, 192) },
+    {},
+    { seed = 0, emitters = {} },
+    steps,
+    events
+  )
+  local scenes, cacheFs = compositePack(custom, art, solidPng(16, 16, 128, 128, 128))
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  movie:draw()
+  local subBefore = sourceBytes(scope, movie.subCanvas)
+  for _, kind in ipairs(beats) do
+    advance(movie, 8)
+    movie:draw()
+    local want = wants[kind]
+    local fr, fg, fb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
+    assertSameColor(fr, fg, fb, want[1], want[2], want[3], 0.08, "kind " .. kind .. " finishes with its own source brightness")
+    advance(movie, 2)
+    movie:draw()
+    local hr, hg, hb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
+    assertSameColor(hr, hg, hb, want[1], want[2], want[3], 0.08, "kind " .. kind .. " keeps its finish across the step boundary")
+    Assert.equal(
+      sourceBytes(scope, movie.subCanvas),
+      subBefore,
+      "kind " .. kind .. " never spills onto the idle engine"
+    )
+    advance(movie, 2)
+  end
+  movie:dispose()
+end
+
+-- One shutter event arms both engine row masks masked black with main
+-- active: main opens center-out toward the edges while sub stays black,
+-- and sub rises bottom-up only after main finishes. The named wait stays
+-- pending until both engine cleanups terminate, and host draws and
+-- resizes advance nothing on any stage size.
+local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bottom_up(scope)
+  local root = sceneArtRoot(5)
+  local mainImage = root .. "layers/shutter-main.png"
+  local subImage = root .. "layers/shutter-sub.png"
+  local art = {
+    [mainImage] = solidPng(256, 192, 255, 0, 0),
+    [subImage] = solidPng(256, 192, 0, 255, 0),
+  }
+  local steps = {
+    { id = "wipe", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 18 } },
+    { id = "scroll", events = { 3 }, ["until"] = { kind = "effect", effect = "scene5-shutter" } },
+    { id = "tail", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 5 } },
+  }
+  local events = {
+    { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "upper" },
+    {
+      op = "shutterFade",
+      stepId = "wipe",
+      atStepTick = 0,
+      order = "main-then-sub",
+      mainPattern = "center-out",
+      subPattern = "bottom-up",
+      color = "black",
+      steps = 18,
+      framesPerStep = 1,
+      effect = "scene5-shutter",
+    },
+    { op = "waitEffects", stepId = "scroll", atStepTick = 0, effects = { "scene5-shutter" } },
+    { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 },
+    { op = "finish", stepId = "tail", atStepTick = 0 },
+  }
+  local custom = compositeScene(
+    5,
+    { compositeLayer(0, mainImage, 256, 192) },
+    { compositeLayer(0, subImage, 256, 192) },
+    {},
+    { seed = 0, emitters = {} },
+    steps,
+    events
+  )
+  local function gridHasNonBlack(bytes, width, xs, ys)
+    for _, y in ipairs(ys) do
+      for _, x in ipairs(xs) do
+        local r, g, b = pixelOf(bytes, width, x, y)
+        if r + g + b > 0.08 then
+          return true
+        end
+      end
+    end
+    return false
+  end
+  local function gridAllBlack(bytes, width, xs, ys)
+    for _, y in ipairs(ys) do
+      for _, x in ipairs(xs) do
+        local r, g, b = pixelOf(bytes, width, x, y)
+        if r + g + b > 0.08 then
+          return false
+        end
+      end
+    end
+    return true
+  end
+  local columns = { 64, 128, 192 }
+  local scenes, cacheFs = compositePackAt(custom, 5, art, solidPng(16, 16, 128, 128, 128))
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  while movie:sceneNumber() < 5 do
+    movie:updateFixed()
+  end
+  movie:draw()
+  local mainShut = sourceBytes(scope, movie.mainCanvas)
+  local subShut = sourceBytes(scope, movie.subCanvas)
+  Assert.isTrue(
+    gridAllBlack(mainShut, 256, columns, { 8, 48, 96, 144, 180 }),
+    "the shutter starts with main fully masked black"
+  )
+  Assert.isTrue(
+    gridAllBlack(subShut, 256, columns, { 8, 48, 96, 144, 180 }),
+    "the shutter starts with sub fully masked black"
+  )
+  advance(movie, 9)
+  movie:draw()
+  local mainMid = sourceBytes(scope, movie.mainCanvas)
+  local subMid = sourceBytes(scope, movie.subCanvas)
+  Assert.isTrue(gridAllBlack(mainMid, 256, columns, { 8 }), "main still masks its top edge mid-shutter")
+  Assert.isFalse(gridHasNonBlack(mainMid, 256, columns, { 8 }), "no main art leaks through the masked top edge")
+  Assert.isTrue(gridHasNonBlack(mainMid, 256, columns, { 96 }), "main opens its center band first")
+  Assert.isTrue(gridAllBlack(mainMid, 256, columns, { 180 }), "main still masks its bottom edge mid-shutter")
+  Assert.isTrue(
+    gridAllBlack(subMid, 256, columns, { 8, 48, 96, 144, 180 }),
+    "sub stays fully masked while main runs"
+  )
+  local upperR, upperG, upperB = samplePixel(scope, movie, 512, 384, 256, 96)
+  assertSameColor(upperR, upperG, upperB, 1, 0, 0, 0.2, "the upper pane maps the already composed main engine")
+  local lowerR, lowerG, lowerB = samplePixel(scope, movie, 512, 384, 256, 288)
+  assertSameColor(lowerR, lowerG, lowerB, 0, 0, 0, 0.2, "the lower pane maps the still masked sub engine")
+  Assert.equal(subMid, subShut, "draws advance no sub row while main runs")
+  advance(movie, 9)
+  movie:draw()
+  local mainOpen = sourceBytes(scope, movie.mainCanvas)
+  local subWaiting = sourceBytes(scope, movie.subCanvas)
+  Assert.isTrue(gridHasNonBlack(mainOpen, 256, columns, { 8, 48, 96, 144, 180 }), "main is fully revealed at its finish")
+  Assert.equal(subWaiting, subShut, "sub still waits fully masked at the main finish")
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.isFalse(slot.effects["scene5-shutter"].done, "the shutter wait stays pending at the main finish")
+  Assert.equal(currentStepId(movie), "scroll", "the wipe step hands the gated scroll step its wait")
+  local beforeMain, beforeSub = mainOpen, subWaiting
+  movie:resize(600, 1000)
+  movie:draw()
+  movie:resize(512, 384)
+  movie:draw()
+  Assert.equal(sourceBytes(scope, movie.mainCanvas), beforeMain, "a resize and draw reveal no new main row")
+  Assert.equal(sourceBytes(scope, movie.subCanvas), beforeSub, "a resize and draw advance no sub row")
+  local handedOff = false
+  for _ = 1, 36 do
+    movie:updateFixed()
+    local live = assert(movie.current, "the running movie owns its current slot")
+    if live.shutter ~= nil and (live.shutter.sub.elapsed > 0 or live.shutter.active == "sub") then
+      handedOff = true
+      break
+    end
+  end
+  Assert.isTrue(handedOff, "the sub shutter starts after main completes")
+  local subActive = assert(movie.current, "the running movie owns its current slot")
+  for _ = 1, 200 do
+    if subActive.shutter ~= nil and subActive.shutter.sub.elapsed >= 9 then
+      break
+    end
+    movie:updateFixed()
+  end
+  Assert.isTrue(
+    subActive.shutter ~= nil and subActive.shutter.sub.elapsed >= 9,
+    "the sub shutter advances bottom-up once active"
+  )
+  Assert.isFalse(
+    assert(movie.current, "the running movie owns its current slot").effects["scene5-shutter"].done,
+    "the shutter wait stays pending mid-sub"
+  )
+  movie:draw()
+  local subMidUp = sourceBytes(scope, movie.subCanvas)
+  Assert.isTrue(gridHasNonBlack(subMidUp, 256, columns, { 180 }), "sub opens its bottom band first")
+  Assert.isTrue(gridAllBlack(subMidUp, 256, columns, { 8 }), "sub still masks its top edge mid-shutter")
+  local finished = false
+  for _ = 1, 120 do
+    movie:updateFixed()
+    if assert(movie.current, "the running movie owns its current slot").effects["scene5-shutter"].done then
+      finished = true
+      break
+    end
+  end
+  Assert.isTrue(finished, "both engine cleanups terminate the shutter wait")
+  local tailed = false
+  for _ = 1, 60 do
+    if currentStepId(movie) == "tail" then
+      tailed = true
+      break
+    end
+    movie:updateFixed()
+  end
+  Assert.isTrue(tailed, "the gated scroll step advances only after both cleanups")
+  movie:draw()
+  local endMain = sourceBytes(scope, movie.mainCanvas)
+  local endSub = sourceBytes(scope, movie.subCanvas)
+  Assert.isTrue(gridHasNonBlack(endMain, 256, columns, { 8, 96, 180 }), "main stays revealed after completion")
+  Assert.isTrue(gridHasNonBlack(endSub, 256, columns, { 8, 96, 180 }), "sub stays revealed after completion")
+  for _, layout in ipairs({
+    { kind = "dual", width = 512, height = 384 },
+    { kind = "single", width = 512, height = 384 },
+    { kind = "single", width = 600, height = 1000 },
+  }) do
+    local scenesForLayout, cacheForLayout = compositePackAt(custom, 5, art, solidPng(16, 16, 128, 128, 128))
+    local probe = openCompositeMovie(scope, scenesForLayout, cacheForLayout, layout.width, layout.height, layout.kind)
+    while probe:sceneNumber() < 5 do
+      probe:updateFixed()
+    end
+    advance(probe, 9)
+    probe:draw()
+    Assert.equal(
+      sourceBytes(scope, probe.mainCanvas),
+      mainMid,
+      ("the main shutter owns its engine on the %s stage"):format(layout.kind)
+    )
+    Assert.equal(
+      sourceBytes(scope, probe.subCanvas),
+      subMid,
+      ("the sub shutter owns its engine on the %s stage"):format(layout.kind)
+    )
+    probe:dispose()
+  end
+  movie:dispose()
+end
+
+---@param bytes string raw RGBA frame bytes
+---@param width integer frame width
+---@return integer near-black grid samples
+local function blackGridCount(bytes, width)
+  local found = 0
+  for y = 0, 191, 2 do
+    for x = 0, 255, 4 do
+      local r, g, b = pixelOf(bytes, width, x, y)
+      if r < 0.01 and g < 0.01 and b < 0.01 then
+        found = found + 1
+      end
+    end
+  end
+  return found
+end
+
+-- The sourced second scene carries exactly one main wipe with its retail
+-- kind and eight ticks: early, middle, and finished frames show game art
+-- on the left and the white backdrop on the right, the finished white
+-- holds past completion, and the idle engine stays clean on every
+-- stage layout.
+local function soulsilver_scene_two_final_wipe_keeps_its_source_kind_and_white_hold(scope, context)
+  if not RomImporter.isReady("soulsilver") then
+    context:skip("SoulSilver final wipe needs a user-owned SoulSilver ROM")
+  end
+  local scenes = loadScenes("soulsilver")
+  local wipes = {}
+  for _, event in ipairs(scenes[2].timeline.events) do
+    if event.op == "circleWipe" then
+      wipes[#wipes + 1] = event
+    end
+  end
+  Assert.equal(#wipes, 1, "the second scene carries its single final wipe")
+  Assert.equal(wipes[1].engine, "main", "the final wipe owns the main engine")
+  Assert.equal(wipes[1].kind, 1, "the final wipe keeps its source kind")
+  Assert.equal(wipes[1].ticks, 8, "the final wipe keeps its eight source ticks, never ten")
+  local midMain, midSub = nil, nil
+  for _, layout in ipairs({
+    { kind = "dual", width = 512, height = 384 },
+    { kind = "single", width = 512, height = 384 },
+    { kind = "single", width = 600, height = 1000 },
+  }) do
+    local movie = openMovie(scope, "soulsilver", layout.width, layout.height, layout.kind)
+    advanceToSceneStep(movie, 2, "wipe", 20000)
+    movie:draw()
+    local subBefore = sourceBytes(scope, movie.subCanvas)
+    Assert.equal(blackGridCount(subBefore, 256), 0, "the other engine art carries no black before the wipe")
+    advance(movie, 2)
+    movie:draw()
+    local main = sourceBytes(scope, movie.mainCanvas)
+    local sub = sourceBytes(scope, movie.subCanvas)
+    local edgeLow = wipeBoundaryRetail(2, 8, 48)
+    local edgeHigh = wipeBoundaryRetail(2, 8, 96)
+    for _, row in ipairs({ { y = 48, edge = edgeLow }, { y = 96, edge = edgeHigh } }) do
+      local r, g, b = pixelOf(main, 256, row.edge + 12, row.y)
+      assertSameColor(r, g, b, 1, 1, 1, 0.12, "the sourced wipe hides the right behind white")
+    end
+    Assert.equal(blackGridCount(sub, 256), 0, "the sourced wipe never spills black onto the other engine")
+    if midMain == nil then
+      midMain, midSub = main, sub
+    else
+      Assert.equal(main, midMain, ("the main wipe owns its engine on the %s stage"):format(layout.kind))
+      Assert.equal(sub, midSub, ("the idle engine matches on the %s stage"):format(layout.kind))
+    end
+    advance(movie, 6)
+    movie:draw()
+    local fr, fg, fb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
+    assertSameColor(fr, fg, fb, 1, 1, 1, 0.08, "the finished wipe holds full white")
+    advance(movie, 3)
+    movie:draw()
+    local hr, hg, hb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
+    assertSameColor(hr, hg, hb, 1, 1, 1, 0.08, "the white hold persists past completion")
+    movie:dispose()
+  end
+end
+
+-- The sourced third scene runs its seven town open and close wipes in
+-- order on their own engines with eight ticks each, retires town drawing
+-- after the final main close, and reveals the rival on the sub engine:
+-- the finished final close holds full black on main while the rival beat
+-- shows art inside its edge and black outside, identically on every
+-- stage layout.
+local function soulsilver_scene_three_closes_retire_town_drawing_before_the_rival_reveal(scope, context)
+  if not RomImporter.isReady("soulsilver") then
+    context:skip("SoulSilver town beats need a user-owned SoulSilver ROM")
+  end
+  local scenes = loadScenes("soulsilver")
+  local signatures = {}
+  for _, event in ipairs(scenes[3].timeline.events) do
+    if event.op == "circleWipe" then
+      signatures[#signatures + 1] = event.engine .. ":" .. event.kind .. ":" .. event.ticks
+    end
+  end
+  local expected = { "main:0:8", "main:3:8", "main:2:8", "main:3:8", "main:2:8", "main:3:8", "sub:2:8" }
+  Assert.deepEqual(signatures, expected, "scene 3 keeps its seven source circle wipes in order")
+  local firstMain, firstSub = nil, nil
+  for _, layout in ipairs({
+    { kind = "dual", width = 512, height = 384 },
+    { kind = "single", width = 512, height = 384 },
+  }) do
+    local movie = openMovie(scope, "soulsilver", layout.width, layout.height, layout.kind)
+    advanceToSceneStep(movie, 3, "rival", 20000)
+    advance(movie, 2)
+    movie:draw()
+    local main = sourceBytes(scope, movie.mainCanvas)
+    local sub = sourceBytes(scope, movie.subCanvas)
+    if layout.kind == "dual" then
+      firstMain, firstSub = main, sub
+    else
+      Assert.equal(main, firstMain, "the main close owns its engine on the single stage")
+      Assert.equal(sub, firstSub, "the rival reveal owns its engine on the single stage")
+    end
+    local mr, mg, mb = pixelOf(main, 256, 128, 96)
+    assertSameColor(mr, mg, mb, 0, 0, 0, 0.08, "the finished final close holds full black on main")
+    local edgeLow = wipeBoundaryRetail(2, 8, 48)
+    local edgeHigh = wipeBoundaryRetail(2, 8, 96)
+    for _, row in ipairs({ { y = 48, edge = edgeLow }, { y = 96, edge = edgeHigh } }) do
+      local r, g, b = pixelOf(sub, 256, row.edge + 12, row.y)
+      assertSameColor(r, g, b, 0, 0, 0, 0.12, "the rival reveal hides the right behind black")
+    end
+    local early = sourceBytes(scope, movie.subCanvas)
+    local late
+    do
+      advance(movie, 3)
+      movie:draw()
+      late = sourceBytes(scope, movie.subCanvas)
+    end
+    Assert.isFalse(early == late, "the rival wipe travels with the source tick")
+    local slot = assert(movie.current, "the running movie owns its current slot")
+    Assert.isFalse(slot.townVisible, "town drawing retires before the rival-only visuals")
+    movie:dispose()
+  end
+end
+
+-- The sourced fifth scene opens its main shutter center-out before its
+-- sub shutter rises bottom-up: both engines start fully masked, the main
+-- center band opens while sub stays black, the main finish still waits on
+-- the named shutter, and only both cleanups together release the scroll
+-- step, identically on every stage layout.
+local function soulsilver_scene_five_shutter_runs_main_then_sub_across_layouts(scope, context)
+  if not RomImporter.isReady("soulsilver") then
+    context:skip("SoulSilver line shutter needs a user-owned SoulSilver ROM")
+  end
+  local scenes = loadScenes("soulsilver")
+  local shutters, circles = 0, 0
+  for _, event in ipairs(scenes[5].timeline.events) do
+    if event.op == "shutterFade" then
+      shutters = shutters + 1
+      Assert.equal(event.order, "main-then-sub", "the shutter keeps its source engine order")
+      Assert.equal(event.mainPattern, "center-out", "the shutter keeps its source main shape")
+      Assert.equal(event.subPattern, "bottom-up", "the shutter keeps its source sub shape")
+      Assert.equal(event.color, "black", "the shutter keeps its source color")
+      Assert.equal(event.steps, 18, "the shutter keeps its eighteen source steps")
+      Assert.equal(event.framesPerStep, 1, "the shutter keeps its source frame cadence")
+      Assert.equal(event.effect, "scene5-shutter", "the shutter keeps its source wait identity")
+    elseif event.op == "circleWipe" then
+      circles = circles + 1
+    end
+  end
+  Assert.equal(shutters, 1, "scene 5 carries its single sequential line shutter")
+  Assert.equal(circles, 0, "scene 5 carries no circle wipe")
+  local columns = { 32, 96, 160, 224 }
+  local t0Main, t0Sub, midMain, midSub = nil, nil, nil, nil
+  for _, layout in ipairs({
+    { kind = "dual", width = 512, height = 384 },
+    { kind = "single", width = 512, height = 384 },
+    { kind = "single", width = 600, height = 1000 },
+  }) do
+    local movie = openMovie(scope, "soulsilver", layout.width, layout.height, layout.kind)
+    advanceToSceneStep(movie, 5, "wipe", 20000)
+    movie:draw()
+    local shutMain = sourceBytes(scope, movie.mainCanvas)
+    local shutSub = sourceBytes(scope, movie.subCanvas)
+    for _, y in ipairs({ 8, 48, 96, 144, 180 }) do
+      for _, x in ipairs(columns) do
+        local r, g, b = pixelOf(shutMain, 256, x, y)
+        assertSameColor(r, g, b, 0, 0, 0, 0.08, "the sourced shutter starts with main fully masked")
+        local sr, sg, sb = pixelOf(shutSub, 256, x, y)
+        assertSameColor(sr, sg, sb, 0, 0, 0, 0.08, "the sourced shutter starts with sub fully masked")
+      end
+    end
+    advance(movie, 9)
+    movie:draw()
+    local main = sourceBytes(scope, movie.mainCanvas)
+    local sub = sourceBytes(scope, movie.subCanvas)
+    Assert.isTrue(changeFraction(shutMain, main, 256, 192) > 0.05, "the main shutter opens its center band")
+    Assert.equal(changeFraction(shutSub, sub, 256, 192), 0, "the sub shutter waits fully masked while main runs")
+    for _, x in ipairs(columns) do
+      local tr, tg, tb = pixelOf(main, 256, x, 8)
+      assertSameColor(tr, tg, tb, 0, 0, 0, 0.12, "the sourced main shutter still masks its top edge")
+    end
+    Assert.isTrue(changeFraction(main, shutMain, 256, 192) > 0.05, "the opened center differs from the masked start")
+    if t0Main == nil then
+      t0Main, t0Sub, midMain, midSub = shutMain, shutSub, main, sub
+    else
+      Assert.equal(main, midMain, ("the main shutter owns its engine on the %s stage"):format(layout.kind))
+      Assert.equal(sub, midSub, ("the sub shutter owns its engine on the %s stage"):format(layout.kind))
+    end
+    advance(movie, 9)
+    movie:draw()
+    local slot = assert(movie.current, "the running movie owns its current slot")
+    Assert.isFalse(slot.effects["scene5-shutter"].done, "the sourced shutter waits past the main finish")
+    Assert.equal(changeFraction(shutSub, sourceBytes(scope, movie.subCanvas), 256, 192), 0, "sub still waits at the main finish")
+    local handedOff = false
+    for _ = 1, 36 do
+      movie:updateFixed()
+      -- Engine targets refresh only on draw, so each tick is composed
+      -- before sampling the sub target for the main-to-sub handoff.
+      movie:draw()
+      if changeFraction(shutSub, sourceBytes(scope, movie.subCanvas), 256, 192) > 0 then
+        handedOff = true
+        break
+      end
+    end
+    Assert.isTrue(handedOff, "the sourced sub shutter starts after main completes")
+    for _ = 1, 200 do
+      movie:updateFixed()
+      if changeFraction(shutSub, sourceBytes(scope, movie.subCanvas), 256, 192) > 0.02 then
+        break
+      end
+    end
+    movie:draw()
+    local subMid = sourceBytes(scope, movie.subCanvas)
+    local litBottom = false
+    for _, x in ipairs(columns) do
+      local r, g, b = pixelOf(subMid, 256, x, 180)
+      if r + g + b > 0.08 then
+        litBottom = true
+      end
+      local tr, tg, tb = pixelOf(subMid, 256, x, 8)
+      assertSameColor(tr, tg, tb, 0, 0, 0, 0.12, "the sourced sub shutter still masks its top edge")
+    end
+    Assert.isTrue(litBottom, "the sourced sub shutter opens its bottom band first")
+    local finished = false
+    for _ = 1, 200 do
+      movie:updateFixed()
+      if assert(movie.current, "the running movie owns its current slot").effects["scene5-shutter"].done then
+        finished = true
+        break
+      end
+    end
+    Assert.isTrue(finished, "both sourced engine cleanups terminate the shutter wait")
+    local waited = false
+    for _ = 1, 200 do
+      movie:updateFixed()
+      if currentStepId(movie) == "wait" then
+        waited = true
+        break
+      end
+    end
+    Assert.isTrue(waited, "the scroll step releases only after both cleanups")
+    movie:dispose()
+  end
+end
+
+local function heartgold_scene_two_wipe_is_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold final wipe needs a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the sourced kind and white-hold legs "
+        .. "cannot run for HeartGold and are never faked"
+    )
+  end
+  local scenes = loadScenes("heartgold")
+  local wipes = {}
+  for _, event in ipairs(scenes[2].timeline.events) do
+    if event.op == "circleWipe" then
+      wipes[#wipes + 1] = event
+    end
+  end
+  Assert.equal(#wipes, 1, "the HeartGold second scene carries its single final wipe")
+  Assert.equal(wipes[1].kind, 1, "the HeartGold final wipe keeps its source kind")
+  Assert.equal(wipes[1].ticks, 8, "the HeartGold final wipe keeps its eight source ticks")
+end
+
+local function heartgold_scene_three_beats_are_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold town beats need a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the sourced seven-wipe and rival legs "
+        .. "cannot run for HeartGold and are never faked"
+    )
+  end
+  local scenes = loadScenes("heartgold")
+  local signatures = {}
+  for _, event in ipairs(scenes[3].timeline.events) do
+    if event.op == "circleWipe" then
+      signatures[#signatures + 1] = event.engine .. ":" .. event.kind .. ":" .. event.ticks
+    end
+  end
+  Assert.deepEqual(
+    signatures,
+    { "main:0:8", "main:3:8", "main:2:8", "main:3:8", "main:2:8", "main:3:8", "sub:2:8" },
+    "HeartGold scene 3 keeps its seven source circle wipes in order"
+  )
+end
+
+local function heartgold_scene_five_shutter_is_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold line shutter needs a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the sourced shutter legs "
+        .. "cannot run for HeartGold and are never faked"
+    )
+  end
+  local scenes = loadScenes("heartgold")
+  local shutters, circles = 0, 0
+  for _, event in ipairs(scenes[5].timeline.events) do
+    if event.op == "shutterFade" then
+      shutters = shutters + 1
+    elseif event.op == "circleWipe" then
+      circles = circles + 1
+    end
+  end
+  Assert.equal(shutters, 1, "HeartGold scene 5 carries its single sequential line shutter")
+  Assert.equal(circles, 0, "HeartGold scene 5 carries no circle wipe")
+end
+
 local T = GraphicsSmoke.suite({
   ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
@@ -4101,6 +4775,15 @@ local T = GraphicsSmoke.suite({
   ["single-screen stages show the authored active engine"] = single_screen_stages_show_the_authored_active_engine,
   ["wipe kinds finish with their own brightness and release their engine"] = wipe_kinds_finish_with_their_own_brightness_and_release_their_engine,
   ["soulsilver source wipe slopes with the scanline without spilling"] = soulsilver_source_wipe_slopes_with_the_scanline_without_spilling,
+  ["synthetic wipe kinds paint the source inside outside masks and backdrops"] = synthetic_wipe_kinds_paint_the_source_inside_outside_masks_and_backdrops,
+  ["synthetic terminal wipe brightness holds only for the retail kinds"] = synthetic_terminal_wipe_brightness_holds_only_for_the_retail_kinds,
+  ["synthetic scene five shutter opens main center out before sub bottom up"] = synthetic_scene_five_shutter_opens_main_center_out_before_sub_bottom_up,
+  ["soulsilver scene two final wipe keeps its source kind and white hold"] = soulsilver_scene_two_final_wipe_keeps_its_source_kind_and_white_hold,
+  ["soulsilver scene three closes retire town drawing before the rival reveal"] = soulsilver_scene_three_closes_retire_town_drawing_before_the_rival_reveal,
+  ["soulsilver scene five shutter runs main then sub across layouts"] = soulsilver_scene_five_shutter_runs_main_then_sub_across_layouts,
+  ["heartgold scene two wipe is blocked without a dump"] = heartgold_scene_two_wipe_is_blocked_without_a_dump,
+  ["heartgold scene three beats are blocked without a dump"] = heartgold_scene_three_beats_are_blocked_without_a_dump,
+  ["heartgold scene five shutter is blocked without a dump"] = heartgold_scene_five_shutter_is_blocked_without_a_dump,
   ["heartgold wipe kinds are blocked without a dump"] = heartgold_wipe_kinds_are_blocked_without_a_dump,
 })
 T.metadata.capabilities = { "graphics", "rom_dump" }
