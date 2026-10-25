@@ -37,6 +37,14 @@ local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 ---@field mainCanvas love.Canvas? fixed main-engine source target (256x192)
 ---@field subCanvas love.Canvas? fixed sub-engine source target (256x192)
 ---@field townScratch love.Canvas? fixed town composite scratch (256x192), allocated only when a scene stages towns
+---@field planeCanvas love.Canvas? transparent per-plane raster scratch (256x192), owned only while some timeline blends
+---@field rawA love.Canvas? raw nearest-plane buffer, ping-pong half (256x192)
+---@field rawB love.Canvas? raw nearest-plane buffer, ping-pong half (256x192)
+---@field colorA love.Canvas? composed color buffer, ping-pong half (256x192)
+---@field colorB love.Canvas? composed color buffer, ping-pong half (256x192)
+---@field rawShader love.Shader? movie-private raw plane encoder
+---@field colorShader love.Shader? movie-private dual-coefficient mixer
+---@field compositorReady boolean true when some timeline blends and the movie owns the compositor buffers
 local HgssOpeningMovie = {}
 HgssOpeningMovie.__index = HgssOpeningMovie
 
@@ -1619,6 +1627,84 @@ function HgssOpeningMovie.loadValidatedScenes(cacheFs, versionId)
   return scenes, nil
 end
 
+-- A movie whose five timelines never start an alpha program keeps the two
+-- role targets only: the fixed compositor buffers exist solely to resolve
+-- per-pixel dual-coefficient pairs, so unrelated solid art never routes
+-- through a color transform.
+---@param scenes table[] validated scene manifests in retail order
+---@return boolean true when some timeline starts a setBlend program
+local function timelineHasBlend(scenes)
+  for _, manifest in ipairs(scenes) do
+    local timeline = type(manifest) == "table" and manifest.timeline or nil
+    local events = type(timeline) == "table" and timeline.events or nil
+    if type(events) == "table" then
+      for _, event in ipairs(events) do
+        if type(event) == "table" and event.op == "setBlend" then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+-- Movie-private dual-coefficient alpha shaders: the raw pass records the
+-- nearest visible plane color plus its numeric identity in alpha, the
+-- color pass mixes the current plane with the raw under pixel only when
+-- both plane masks select the pair. Both passes force opaque output; the
+-- identity channel never leaks into the composed color. Canvas writes
+-- scale stored rgb by the written alpha, so the identity rides on
+-- (planeId+1)/8 (BG0..OBJ map to 1/8..5/8, backdrop initializes 6/8,
+-- absent pixels keep the previous raw entry) and both passes divide the
+-- sampled rgb by the sampled alpha to recover the staged color; the
+-- division is exact for 5-bit channels and a no-op for opaque pixels.
+local COMPOSITOR_RAW_SHADER = [[
+extern Image oldRaw;
+extern float planeId;
+vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
+  vec4 top = Texel(texture, texture_coords) * color;
+  vec4 prev = Texel(oldRaw, texture_coords);
+  if (top.a > 0.002) {
+    return vec4(top.rgb / max(top.a, 0.00390625), (planeId + 1.0) / 8.0);
+  }
+  return prev;
+}
+]]
+
+local COMPOSITOR_COLOR_SHADER = [[
+extern Image underRaw;
+extern Image underColor;
+extern float planeId;
+extern float firstMask;
+extern float secondMask;
+extern float eva;
+extern float evb;
+float compositorBit(float mask, float bit) {
+  return mod(floor(mask / exp2(bit)), 2.0);
+}
+vec3 compositorFiveBit(vec3 channels) {
+  return floor(channels * 31.0 + 0.5) / 31.0;
+}
+vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
+  vec4 top = Texel(texture, texture_coords) * color;
+  vec4 raw = Texel(underRaw, texture_coords);
+  vec4 composed = Texel(underColor, texture_coords);
+  if (top.a <= 0.002) {
+    return vec4(composed.rgb, 1.0);
+  }
+  vec3 topRgb = top.rgb / max(top.a, 0.00390625);
+  vec3 rawRgb = raw.rgb / max(raw.a, 0.00390625);
+  float underId = floor(raw.a * 8.0 + 0.5) - 1.0;
+  float first = compositorBit(firstMask, planeId);
+  float second = compositorBit(secondMask, underId);
+  if (first > 0.5 && second > 0.5) {
+    vec3 mixed = (compositorFiveBit(topRgb) * eva + compositorFiveBit(rawRgb) * evb) / 16.0;
+    return vec4(min(mixed, vec3(1.0)), 1.0);
+  }
+  return vec4(topRgb, 1.0);
+}
+]]
+
 ---@param options { versionId: string, scenes: table<string, unknown>[], cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext }
 ---@return HgssOpeningMovie
 function HgssOpeningMovie.new(options)
@@ -1668,6 +1754,14 @@ function HgssOpeningMovie.new(options)
     mainCanvas = nil,
     subCanvas = nil,
     townScratch = nil,
+    planeCanvas = nil,
+    rawA = nil,
+    rawB = nil,
+    colorA = nil,
+    colorB = nil,
+    rawShader = nil,
+    colorShader = nil,
+    compositorReady = false,
   }, HgssOpeningMovie)
   -- Bounded readiness: the two fixed source-engine targets are the only
   -- movie canvases, and every scene is strictly acquired plus
@@ -1693,13 +1787,48 @@ function HgssOpeningMovie.new(options)
         canvas:setFilter("nearest", "nearest")
       end
     end
+    -- Movies whose program blends own the fixed dual-coefficient
+    -- compositor: two private shaders plus five 256x192 targets (one
+    -- raster scratch with raw/color ping-pong pairs). Timelines without a
+    -- blend program keep the two role targets only, so solid art never
+    -- routes through a color transform.
+    self.compositorReady = timelineHasBlend(scenes)
+    if self.compositorReady then
+      local rawShader = graphics.newShader(COMPOSITOR_RAW_SHADER)
+      if rawShader == nil then
+        error(invalid("opening scene compositor cannot acquire its raw plane shader", {}), 0)
+      end
+      self.rawShader = rawShader
+      local colorShader = graphics.newShader(COMPOSITOR_COLOR_SHADER)
+      if colorShader == nil then
+        error(invalid("opening scene compositor cannot acquire its color mix shader", {}), 0)
+      end
+      self.colorShader = colorShader
+      local function fixedTarget()
+        local target = graphics.newCanvas(SOURCE_WIDTH, SOURCE_HEIGHT, {
+          format = "rgba8",
+          readable = true,
+          dpiscale = 1,
+        })
+        if target.setFilter ~= nil then
+          target:setFilter("nearest", "nearest")
+        end
+        return target
+      end
+      self.planeCanvas = fixedTarget()
+      self.rawA = fixedTarget()
+      self.rawB = fixedTarget()
+      self.colorA = fixedTarget()
+      self.colorB = fixedTarget()
+    end
     -- The 3D town stage resolves through the shared field renderer,
     -- which presents with a replacing blit: compositing the town over
     -- the sub-engine panels needs a fixed intermediate target rather
     -- than wiping the panels or hiding the town beneath them. Standing
-    -- canvas budget is two 256x192 role targets plus this one fixed
-    -- 256x192 town scratch, 3*256*192*4 bytes peak, far under the
-    -- 1 GiB startup target; no canvas scales with host pixels.
+    -- canvas budget is two 256x192 role targets plus up to five fixed
+    -- 256x192 compositor targets plus this one fixed 256x192 town
+    -- scratch, 8*256*192*4 bytes peak, far under the 1 GiB startup
+    -- target; no canvas scales with host pixels.
     local stagesTowns = false
     for sceneNumber = 1, 5 do
       if type(scenes[sceneNumber].models) == "table" and #scenes[sceneNumber].models > 0 then
@@ -1889,30 +2018,22 @@ local function sortedBackgrounds(slot, engine)
   return collected
 end
 
--- Source step-clock first-target weight with hardware saturation: the raw
--- coefficient counts floor(elapsed*31/ticks) capped at 31, the direction
--- selects which end starts full, and each side saturates at sixteen.
+-- Source step-clock dual coefficients with independent hardware saturation:
+-- the raw count climbs floor(elapsed*31/ticks) capped at 31, the direction
+-- selects which end starts full, and each side saturates at sixteen
+-- instead of complementing the other.
 ---@param program table<string, unknown> engine alpha program
----@return number effective first-target weight
-local function blendFirstWeight(program)
+---@return integer effective first-target coefficient 0..16
+---@return integer effective second-target coefficient 0..16
+local function blendCoefficients(program)
   local ticks = program.ticks --[[@as integer]]
   assert(ticks > 0, "engine alpha program carries no source tick count")
   local elapsed = math.min(program.elapsed --[[@as integer]], ticks)
   local ev = math.min(31, math.floor(elapsed * 31 / ticks))
-  local raw = program.direction == 0 and ev or (31 - ev)
-  return math.min(raw, 16) / 16
-end
-
----@param slot OpeningMovieSlot scene slot
----@param engine string source engine owning the candidate output
----@return boolean true when a visible sprite instance owns the engine
-local function engineObjVisible(slot, engine)
-  for _, instance in pairs(slot.spriteInstances) do
-    if instance.engine == engine and instance.visible then
-      return true
-    end
+  if program.direction == 0 then
+    return math.min(ev, 16), math.min(31 - ev, 16)
   end
-  return false
+  return math.min(31 - ev, 16), math.min(ev, 16)
 end
 
 -- Semantic mapping only; placement remains owned by _render.
@@ -2065,61 +2186,6 @@ local function drawPlaneClipped(self, slot, engine, planeIndex, draw)
       error(failure, 0)
     end
   end
-end
-
--- A blend target masked off by the active engine windows paints nowhere,
--- so eligibility follows the same inside/outside plane selection the
--- window clipper uses.
----@param slot OpeningMovieSlot scene slot
----@param engine string source engine owning the window registers
----@param planeIndex integer background slot 0..3, or 4 for OBJ pixels
----@return boolean true when the plane paints somewhere under the current window state
-local function planeWindowEligible(slot, engine, planeIndex)
-  local spans = windowSpans(slot, engine)
-  if spans == nil then
-    return true
-  end
-  if maskAllows(spans.outside, planeIndex) then
-    return true
-  end
-  local win0 = spans.win0 --[[@as table<string, unknown>?]]
-  if
-    win0 ~= nil and maskAllows(win0.mask --[[@as integer]], planeIndex)
-  then
-    return true
-  end
-  local win1 = spans.win1 --[[@as table<string, unknown>?]]
-  if
-    win1 ~= nil and maskAllows(win1.mask --[[@as integer]], planeIndex)
-  then
-    return true
-  end
-  return false
-end
-
--- Frontmost eligible first-target plane on the engine: OBJ pixels outrank
--- every background while the backdrop has no draws of its own.
----@param slot OpeningMovieSlot scene slot
----@param engine string source engine owning the alpha program
----@return integer? frontmost eligible first-target background slot
----@return boolean true when OBJ pixels are the eligible first target
-local function blendFirstTarget(slot, engine)
-  local program = slot.blendPrograms[engine]
-  if program == nil then
-    return nil, false
-  end
-  local firstMask = program.firstMask --[[@as integer]]
-  if maskAllows(firstMask, 4) and engineObjVisible(slot, engine) and planeWindowEligible(slot, engine, 4) then
-    return nil, true
-  end
-  local planes = sortedBackgrounds(slot, engine)
-  for index = #planes, 1, -1 do
-    local background = planes[index]
-    if maskAllows(firstMask, background.bgSlot) and planeWindowEligible(slot, engine, background.bgSlot) then
-      return background.bgSlot, false
-    end
-  end
-  return nil, false
 end
 
 ---@param value unknown raw channel value in 0..1
@@ -2689,18 +2755,13 @@ local function drawWrappedBackground(self, image, background)
   end
 end
 
--- One ordered engine content pass: enabled 2D slots back-to-front, the
--- main BG0 3D stage at priority 0, starter particles, then OBJ sprites
--- above every BG. Only the eligible first-target blend plane carries the
--- source weight; every other selected or unselected plane paints opaque
--- and the host compositor blends the result.
+-- One ordered engine content pass without an alpha program: enabled 2D
+-- slots back-to-front, the main BG0 3D stage at priority 0, starter
+-- particles, then OBJ sprites above every BG, all opaque.
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
 ---@param engine string source engine owning the drawn planes
----@param targetBg integer? frontmost eligible first-target background slot
----@param targetIsObj boolean true when OBJ pixels are the eligible first target
----@param weight number effective first-target weight with hardware saturation
-local function drawEngineContent(self, slot, engine, targetBg, targetIsObj, weight)
+local function drawEngineContent(self, slot, engine)
   local graphics = self.graphics
   local planes = {}
   for _, background in ipairs(sortedBackgrounds(slot, engine)) do
@@ -2730,11 +2791,7 @@ local function drawEngineContent(self, slot, engine, targetBg, targetIsObj, weig
       local image = slot.imageByPath[background.image]
       if image ~= nil then
         drawPlaneClipped(self, slot, engine, background.bgSlot, function()
-          if targetBg == background.bgSlot then
-            graphics.setColor(1, 1, 1, weight)
-          else
-            graphics.setColor(1, 1, 1, 1)
-          end
+          graphics.setColor(1, 1, 1, 1)
           drawWrappedBackground(self, image, background)
         end)
       end
@@ -2756,12 +2813,145 @@ local function drawEngineContent(self, slot, engine, targetBg, targetIsObj, weig
   end
   graphics.setColor(1, 1, 1, 1)
   drawPlaneClipped(self, slot, engine, 4, function()
-    if targetIsObj then
-      graphics.setColor(1, 1, 1, weight)
-    end
+    graphics.setColor(1, 1, 1, 1)
     drawSprites(self, slot, engine)
   end)
   graphics.setColor(1, 1, 1, 1)
+end
+
+-- One ordered engine content pass with an active alpha program: every plane
+-- rasterizes into the transparent scratch under its window clip, then a
+-- color pass mixes the scratch against the previous raw under pixel and a
+-- raw pass records the new nearest visible plane. The ping-pong pairs never
+-- sample a canvas bound as the pass destination; the final color projects
+-- into the engine role target before the window/shutter overlays run.
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot
+---@param engine string source engine owning the drawn planes
+---@param program table<string, unknown> engine alpha program
+---@param canvas love.Canvas fixed role target receiving the engine output
+local function drawCompositedEngine(self, slot, engine, program, canvas)
+  local graphics = self.graphics
+  local eva, evb = blendCoefficients(program)
+  local firstMask = program.firstMask --[[@as integer]]
+  local secondMask = program.secondMask --[[@as integer]]
+  local planes = {}
+  for _, background in ipairs(sortedBackgrounds(slot, engine)) do
+    planes[#planes + 1] =
+      { priority = background.priority, bgSlot = background.bgSlot, kind = 0, background = background }
+  end
+  if engine == "main" then
+    if townDrawable(slot) then
+      planes[#planes + 1] = { priority = 0, bgSlot = 0, kind = 1 }
+    end
+    if particlesLive(slot) then
+      planes[#planes + 1] = { priority = 0, bgSlot = 0, kind = 2 }
+    end
+  end
+  table.sort(planes, function(a, b)
+    if a.priority ~= b.priority then
+      return a.priority > b.priority
+    end
+    if a.bgSlot ~= b.bgSlot then
+      return a.bgSlot < b.bgSlot
+    end
+    return a.kind < b.kind
+  end)
+  local planeCanvas = assert(self.planeCanvas, "movie compositor requires its raster scratch")
+  local colorShader = assert(self.colorShader, "movie compositor requires its color mix shader")
+  local rawShader = assert(self.rawShader, "movie compositor requires its raw plane shader")
+  local rawOld, rawNew =
+    assert(self.rawA, "movie compositor requires its raw buffers"),
+    assert(self.rawB, "movie compositor requires its raw buffers")
+  local colorOld, colorNew =
+    assert(self.colorA, "movie compositor requires its color buffers"),
+    assert(self.colorB, "movie compositor requires its color buffers")
+  -- Both accumulators start from the source backdrop: raw carries the
+  -- backdrop plane identity (6/8 decodes to plane 5) while color carries
+  -- its opaque pixels.
+  graphics.setCanvas(rawOld)
+  graphics.clear(0, 0, 0, 6 / 8)
+  graphics.setCanvas(colorOld)
+  graphics.clear(0, 0, 0, 1)
+  graphics.setScissor()
+  graphics.setBlendMode("alpha", "alphamultiply")
+  graphics.setColor(1, 1, 1, 1)
+  ---@param planeId integer numeric plane identity: background slot 0..3, or 4 for OBJ pixels
+  local function runColorPass(planeId)
+    graphics.setCanvas(colorNew)
+    graphics.setScissor()
+    graphics.setBlendMode("replace")
+    graphics.setColor(1, 1, 1, 1)
+    graphics.setShader(colorShader)
+    colorShader:send("underRaw", rawOld)
+    colorShader:send("underColor", colorOld)
+    colorShader:send("planeId", planeId)
+    colorShader:send("firstMask", firstMask)
+    colorShader:send("secondMask", secondMask)
+    colorShader:send("eva", eva)
+    colorShader:send("evb", evb)
+    graphics.draw(planeCanvas, 0, 0)
+  end
+  ---@param planeId integer numeric plane identity: background slot 0..3, or 4 for OBJ pixels
+  local function runRawPass(planeId)
+    graphics.setCanvas(rawNew)
+    graphics.setScissor()
+    graphics.setBlendMode("replace")
+    graphics.setColor(1, 1, 1, 1)
+    graphics.setShader(rawShader)
+    rawShader:send("oldRaw", rawOld)
+    rawShader:send("planeId", planeId)
+    graphics.draw(planeCanvas, 0, 0)
+  end
+  for _, plane in ipairs(planes) do
+    graphics.setCanvas(planeCanvas)
+    graphics.clear(0, 0, 0, 0)
+    graphics.setBlendMode("alpha", "alphamultiply")
+    graphics.setColor(1, 1, 1, 1)
+    graphics.setShader()
+    if plane.kind == 0 then
+      local background = plane.background
+      local image = slot.imageByPath[background.image]
+      if image ~= nil then
+        drawPlaneClipped(self, slot, engine, background.bgSlot, function()
+          drawWrappedBackground(self, image, background)
+        end)
+      end
+    elseif plane.kind == 1 then
+      drawPlaneClipped(self, slot, engine, 0, function()
+        local scratch = assert(self.townScratch, "town stage requires its composite scratch")
+        graphics.draw(scratch, 0, 0)
+      end)
+    else
+      -- Starter particles emit on the main 3D output alone; the physical
+      -- mapping below moves that whole target, never a second copy.
+      drawPlaneClipped(self, slot, engine, 0, function()
+        drawParticles(self, slot)
+      end)
+    end
+    runColorPass(plane.bgSlot)
+    runRawPass(plane.bgSlot)
+    rawOld, rawNew = rawNew, rawOld
+    colorOld, colorNew = colorNew, colorOld
+  end
+  graphics.setCanvas(planeCanvas)
+  graphics.clear(0, 0, 0, 0)
+  graphics.setBlendMode("alpha", "alphamultiply")
+  graphics.setColor(1, 1, 1, 1)
+  graphics.setShader()
+  drawPlaneClipped(self, slot, engine, 4, function()
+    drawSprites(self, slot, engine)
+  end)
+  runColorPass(4)
+  runRawPass(4)
+  rawOld, rawNew = rawNew, rawOld
+  colorOld, colorNew = colorNew, colorOld
+  graphics.setCanvas(canvas)
+  graphics.setScissor()
+  graphics.setBlendMode("alpha", "alphamultiply")
+  graphics.setColor(1, 1, 1, 1)
+  graphics.setShader()
+  graphics.draw(colorOld, 0, 0)
 end
 
 ---@param self HgssOpeningMovie
@@ -2782,13 +2972,29 @@ function HgssOpeningMovie:_renderEngine(slot, canvas, engine)
     drawTowns(slot, { x = 0, y = 0, width = SOURCE_WIDTH, height = SOURCE_HEIGHT })
     graphics.setCanvas(canvas)
   end
-  local targetBg, targetIsObj = blendFirstTarget(slot, engine)
-  local weight = 1
   local program = slot.blendPrograms[engine]
-  if program ~= nil and (targetBg ~= nil or targetIsObj) then
-    weight = blendFirstWeight(program)
+  if program ~= nil and self.compositorReady then
+    -- The compositor borrows the host scope for its ping-pong passes: any
+    -- failure restores the borrowed canvas, shader, color, and blend mode
+    -- and leaves no pushed scope behind, so playback can resume.
+    local previousShader = nil
+    if graphics.getShader ~= nil then
+      previousShader = graphics.getShader()
+    end
+    graphics.push("all")
+    local ok, failure = pcall(drawCompositedEngine, self, slot, engine, program, canvas)
+    graphics.setCanvas(canvas)
+    graphics.setShader(previousShader)
+    graphics.setColor(1, 1, 1, 1)
+    graphics.setBlendMode("alpha", "alphamultiply")
+    graphics.setScissor()
+    graphics.pop()
+    if not ok then
+      error(failure, 0)
+    end
+  else
+    drawEngineContent(self, slot, engine)
   end
-  drawEngineContent(self, slot, engine, targetBg, targetIsObj, weight)
   -- One scanline window per row hides the covered side behind the kind
   -- backdrop: open kinds hide the left [0, boundary) while the right
   -- shows game, close kinds show game on the left and hide the right
@@ -2957,9 +3163,22 @@ function HgssOpeningMovie:dispose()
     return
   end
   self.disposed = true
-  local current, nextSlot, mainCanvas, subCanvas, townScratch =
-    self.current, self.nextSlot, self.mainCanvas, self.subCanvas, self.townScratch
+  local current, nextSlot, mainCanvas, subCanvas, townScratch, planeCanvas, rawA, rawB, colorA, colorB, rawShader, colorShader =
+    self.current,
+    self.nextSlot,
+    self.mainCanvas,
+    self.subCanvas,
+    self.townScratch,
+    self.planeCanvas,
+    self.rawA,
+    self.rawB,
+    self.colorA,
+    self.colorB,
+    self.rawShader,
+    self.colorShader
   self.current, self.nextSlot, self.mainCanvas, self.subCanvas, self.townScratch = nil, nil, nil, nil, nil
+  self.planeCanvas, self.rawA, self.rawB, self.colorA, self.colorB = nil, nil, nil, nil, nil
+  self.rawShader, self.colorShader = nil, nil
   if current ~= nil then
     releaseSlot(current)
   end
@@ -2978,6 +3197,27 @@ function HgssOpeningMovie:dispose()
   end
   if townScratch ~= nil then
     townScratch:release()
+  end
+  if planeCanvas ~= nil then
+    planeCanvas:release()
+  end
+  if rawA ~= nil then
+    rawA:release()
+  end
+  if rawB ~= nil then
+    rawB:release()
+  end
+  if colorA ~= nil then
+    colorA:release()
+  end
+  if colorB ~= nil then
+    colorB:release()
+  end
+  if rawShader ~= nil then
+    rawShader:release()
+  end
+  if colorShader ~= nil then
+    colorShader:release()
   end
 end
 
