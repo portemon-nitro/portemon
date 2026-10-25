@@ -3354,4 +3354,82 @@ function T.search_feedback_gates_match_their_authored_animation_dwells()
   Assert.equal(PokedexController.FEED_TIMEOUT_TICKS, 60, "the empty timeout keeps its verifiable wait")
 end
 
+-- Held comparison gestures that move nothing stay silent: with two forms
+-- key cycling, touch cycling, and reselecting the active side change no
+-- index and drain no cursor or touch tone.
+function T.unmoved_comparison_gestures_stay_silent()
+  local PokedexController = requirePresent("quiet comparison gestures")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "PICHU", personality = 127, form = 0 }, "seen")
+  observe(owner, monCatalog, { species = "PICHU", personality = 0, form = 0 }, "seen")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "PICHU")
+  press(controller, { { type = "activate", action = "entry-tab", value = "forms" } })
+  Assert.equal(#controller:view().forms.variants, 2, "the pair list carries two seen forms")
+  press(controller, { { type = "activate", action = "compare" } })
+  Assert.notNil(controller:view().forms.comparison, "the touch compare opens the two-form comparison")
+  Assert.deepEqual(
+    controller:view().forms.comparison.indices,
+    { 0, 1 },
+    "the pair starts from the current row outward"
+  )
+  controller:drainEffects()
+  press(controller, { { type = "navigate", direction = "up" } })
+  Assert.deepEqual(drainSoundRoles(controller), {}, "key cycling a pair stays silent")
+  press(controller, { { type = "navigate", direction = "down" } })
+  Assert.deepEqual(drainSoundRoles(controller), {}, "key cycling a pair the other way stays silent")
+  press(controller, { { type = "activate", action = "compare-cycle", side = 0, delta = 1 } })
+  Assert.deepEqual(drainSoundRoles(controller), {}, "touch cycling a pair stays silent")
+  press(controller, { { type = "activate", action = "compare-side", value = 0 } })
+  Assert.deepEqual(drainSoundRoles(controller), {}, "reselecting the active side stays silent")
+  Assert.deepEqual(controller:view().forms.comparison.indices, { 0, 1 }, "the quiet gestures keep both indices")
+  Assert.equal(controller:view().forms.comparison.activeSide, 0, "the quiet gestures keep the active side")
+  controller:dispose()
+end
+
+-- Moved comparison gestures keep their tones: with three forms each key
+-- cycle and side switch plays one cursor tone and each touch cycle and
+-- side selection plays one touch tone, with the indices tracking them.
+function T.moved_comparison_gestures_keep_their_key_and_touch_tones()
+  local PokedexController = requirePresent("moved comparison gestures")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "PICHU", personality = 127, form = 0 }, "seen")
+  observe(owner, monCatalog, { species = "PICHU", personality = 0, form = 0 }, "seen")
+  observe(owner, monCatalog, { species = "PICHU", personality = 0, form = 1 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "PICHU")
+  press(controller, { { type = "activate", action = "entry-tab", value = "forms" } })
+  Assert.equal(#controller:view().forms.variants, 3, "the pichu list carries three seen forms")
+  press(controller, { { type = "confirm" } })
+  Assert.notNil(controller:view().forms.comparison, "confirming the list opens the comparison")
+  local startFirst = controller:view().forms.comparison.indices[1]
+  local startSecond = controller:view().forms.comparison.indices[2]
+  controller:drainEffects()
+  press(controller, { { type = "navigate", direction = "down" } })
+  Assert.deepEqual(drainSoundRoles(controller), { "SEQ_SE_GS_ZKN03" }, "a key cycle plays one cursor tone")
+  local stepped = controller:view().forms.comparison.indices
+  Assert.isTrue(
+    stepped[1] ~= startFirst or stepped[2] ~= startSecond,
+    "the key cycle moves an index"
+  )
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().forms.comparison.activeSide, 1, "the key switch moves the active side")
+  Assert.deepEqual(drainSoundRoles(controller), { "SEQ_SE_GS_ZKN03" }, "a key side switch plays one cursor tone")
+  press(controller, { { type = "activate", action = "compare-cycle", side = 1, delta = 1 } })
+  Assert.deepEqual(drainSoundRoles(controller), { "SEQ_SE_GS_ZKN04" }, "a touch cycle plays one touch tone")
+  local touched = controller:view().forms.comparison.indices
+  Assert.isTrue(
+    touched[1] ~= stepped[1] or touched[2] ~= stepped[2],
+    "the touch cycle moves an index"
+  )
+  press(controller, { { type = "activate", action = "compare-side", value = 0 } })
+  Assert.equal(controller:view().forms.comparison.activeSide, 0, "the touch selection moves the active side")
+  Assert.deepEqual(drainSoundRoles(controller), { "SEQ_SE_GS_ZKN04" }, "a touch side selection plays one touch tone")
+  controller:dispose()
+end
+
 return { tests = T }

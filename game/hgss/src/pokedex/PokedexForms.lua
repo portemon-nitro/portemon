@@ -295,7 +295,7 @@ function PokedexForms:comparison()
 end
 
 ---@param side integer 0 or 1 selecting side
----@return boolean whether the side was accepted
+---@return boolean whether the side changed
 function PokedexForms:setActiveSide(side)
   if self._comparison == nil then
     return false
@@ -303,13 +303,16 @@ function PokedexForms:setActiveSide(side)
   if side ~= 0 and side ~= 1 then
     fail("comparison sides are zero or one", { side = side })
   end
+  if self._comparison.activeSide == side then
+    return false
+  end
   self._comparison.activeSide = side
   return true
 end
 
 ---@param side integer 0 or 1 cycling side
 ---@param delta integer -1 or 1 cycle direction
----@return boolean whether the cycle was accepted
+---@return boolean whether the cycle changed an index
 function PokedexForms:cycle(side, delta)
   if self._comparison == nil then
     return false
@@ -321,7 +324,7 @@ function PokedexForms:cycle(side, delta)
     fail("comparison cycles move by signed direction", { delta = delta })
   end
   if #self._variants <= 2 then
-    return true
+    return false
   end
   local other = self._comparison.indices[side == 0 and 2 or 1]
   local next = self._comparison.indices[side + 1]
@@ -330,6 +333,9 @@ function PokedexForms:cycle(side, delta)
     if next ~= other then
       break
     end
+  end
+  if next == self._comparison.indices[side + 1] then
+    return false
   end
   self._comparison.indices[side + 1] = next
   return true

@@ -5,7 +5,9 @@
 -- stubbed. No renderer, GPU, audio device, ROM, or worker is touched.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+local PokedexForms = require("game.hgss.src.pokedex.PokedexForms")
 local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 
@@ -387,6 +389,70 @@ function T.single_variant_species_offer_no_comparison()
   Assert.isNil(controller:view().forms.comparison, "comparison needs at least two variants")
   Assert.equal(controller:view().page, "forms", "the rejected compare stays on the forms list")
   controller:dispose()
+end
+
+-- A comparison that cannot move reports no change: cycling a two-form
+-- pairing or reselecting the active side leaves the indices alone and
+-- answers false, and a closed comparison answers false as well.
+-- Out-of-range sides and steps still fail with the structured policy error.
+function T.two_form_comparison_reports_no_change_when_nothing_moves()
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  record(owner, monCatalog, "SHELLOS", 0, 0, "seen")
+  record(owner, monCatalog, "SHELLOS", 0, 1, "seen")
+  local forms = PokedexForms.new({ catalog = catalog, monCatalog = monCatalog, dex = owner, species = "SHELLOS" })
+  Assert.equal(forms:count(), 2, "the shellos entry carries two variants")
+  Assert.isTrue(forms:openComparison(), "the pair opens its comparison")
+  Assert.deepEqual(forms:comparison().indices, { 0, 1 }, "the pair starts from the current row outward")
+  Assert.equal(forms:comparison().activeSide, 0, "the comparison starts on side zero")
+  local badSide, sideErr = pcall(function()
+    forms:setActiveSide(2)
+  end)
+  Assert.isFalse(badSide, "an out-of-range side fails instead of selecting")
+  assert(Errors.is(sideErr), "the side failure carries its structured detail")
+  Assert.equal(sideErr.code, "POKEDEX_INVALID", "the side failure keeps its policy code")
+  local badCycleSide, cycleSideErr = pcall(function()
+    forms:cycle(2, 1)
+  end)
+  Assert.isFalse(badCycleSide, "cycling an out-of-range side fails instead of stepping")
+  assert(Errors.is(cycleSideErr), "the cycling side failure carries its structured detail")
+  Assert.equal(cycleSideErr.code, "POKEDEX_INVALID", "the cycling side failure keeps its policy code")
+  local badDelta, deltaErr = pcall(function()
+    forms:cycle(0, 0)
+  end)
+  Assert.isFalse(badDelta, "a zero step fails instead of cycling")
+  assert(Errors.is(deltaErr), "the step failure carries its structured detail")
+  Assert.equal(deltaErr.code, "POKEDEX_INVALID", "the step failure keeps its policy code")
+  Assert.isFalse(forms:cycle(0, 1), "cycling a two-form pairing changes nothing")
+  Assert.isFalse(forms:cycle(1, -1), "cycling the other two-form side changes nothing")
+  Assert.deepEqual(forms:comparison().indices, { 0, 1 }, "the quiet cycles keep both indices")
+  Assert.equal(forms:comparison().facing, "front", "the quiet cycles keep the facing")
+  Assert.isFalse(forms:setActiveSide(0), "reselecting the active side changes nothing")
+  Assert.equal(forms:comparison().activeSide, 0, "the quiet reselect keeps the active side")
+  forms:closeComparison()
+  Assert.isFalse(forms:cycle(0, 1), "cycling a closed comparison changes nothing")
+  Assert.isFalse(forms:setActiveSide(1), "selecting into a closed comparison changes nothing")
+end
+
+-- A comparison that actually moves reports its change: stepping a wide
+-- pairing past the other index or switching sides mutates the pairing
+-- and answers true.
+function T.wide_comparison_reports_each_real_change()
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  record(owner, monCatalog, "PICHU", 127, 0, "seen")
+  record(owner, monCatalog, "PICHU", 0, 0, "seen")
+  record(owner, monCatalog, "PICHU", 0, 1, "caught")
+  local forms = PokedexForms.new({ catalog = catalog, monCatalog = monCatalog, dex = owner, species = "PICHU" })
+  Assert.equal(forms:count(), 3, "the pichu entry carries three logical variants")
+  Assert.isTrue(forms:openComparison(), "the triple opens its comparison")
+  Assert.deepEqual(forms:comparison().indices, { 0, 1 }, "the comparison starts from the current row outward")
+  Assert.isTrue(forms:cycle(0, 1), "stepping a wide pairing reports its change")
+  Assert.deepEqual(forms:comparison().indices, { 2, 1 }, "the step advances past the other index")
+  Assert.isTrue(forms:setActiveSide(1), "switching sides reports its change")
+  Assert.equal(forms:comparison().activeSide, 1, "the switch moves the active side")
+  Assert.isTrue(forms:cycle(1, -1), "stepping the other side reports its change")
+  Assert.deepEqual(forms:comparison().indices, { 2, 0 }, "the other step advances past the first index")
 end
 
 return { tests = T }

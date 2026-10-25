@@ -2136,35 +2136,6 @@ function PokedexController:_handleForms(event)
   end
 end
 
--- Compares a detached comparison snapshot against the live comparison:
--- cycling with two or fewer variants and redundant side selects keep
--- their indices, so only a real change earns a tone.
----@param before { indices: integer[], activeSide: integer, facing: string }? detached snapshot before the gesture
----@return boolean whether the compared indices changed
-function PokedexController:_compareIndicesChanged(before)
-  if self._forms == nil or before == nil then
-    return false
-  end
-  local after = self._forms:comparison()
-  if after == nil then
-    return false
-  end
-  return after.indices[1] ~= before.indices[1] or after.indices[2] ~= before.indices[2]
-end
-
----@param before { indices: integer[], activeSide: integer, facing: string }? detached snapshot before the gesture
----@return boolean whether the active side changed
-function PokedexController:_compareSideChanged(before)
-  if self._forms == nil or before == nil then
-    return false
-  end
-  local after = self._forms:comparison()
-  if after == nil then
-    return false
-  end
-  return after.activeSide ~= before.activeSide
-end
-
 ---@param event table<string, unknown>
 function PokedexController:_handleComparison(event)
   if self._forms == nil then
@@ -2186,32 +2157,24 @@ function PokedexController:_handleComparison(event)
       active = 1
     end
     if event.direction == "up" then
-      local before = self._forms:comparison()
-      self._forms:cycle(active, -1)
-      if self:_compareIndicesChanged(before) then
+      if self._forms:cycle(active, -1) then
         self:_emitSound("SEQ_SE_GS_ZKN03")
       end
     elseif event.direction == "down" then
-      local before = self._forms:comparison()
-      self._forms:cycle(active, 1)
-      if self:_compareIndicesChanged(before) then
+      if self._forms:cycle(active, 1) then
         self:_emitSound("SEQ_SE_GS_ZKN03")
       end
     elseif event.direction == "left" then
       -- The retail compare keys only select their own side, gated on
       -- three or more seen forms; stepping stays with up and down.
       if self._forms:count() >= 3 then
-        local before = self._forms:comparison()
-        self._forms:setActiveSide(0)
-        if self:_compareSideChanged(before) then
+        if self._forms:setActiveSide(0) then
           self:_emitSound("SEQ_SE_GS_ZKN03")
         end
       end
     elseif event.direction == "right" then
       if self._forms:count() >= 3 then
-        local before = self._forms:comparison()
-        self._forms:setActiveSide(1)
-        if self:_compareSideChanged(before) then
+        if self._forms:setActiveSide(1) then
           self:_emitSound("SEQ_SE_GS_ZKN03")
         end
       end
@@ -2223,16 +2186,12 @@ function PokedexController:_handleComparison(event)
       self:_emitSound("SEQ_SE_GS_ZKN04")
       self:_bumpKey()
     elseif event.action == "compare-side" then
-      local before = self._forms:comparison()
-      self._forms:setActiveSide(event.value)
-      if self:_compareSideChanged(before) then
+      if self._forms:setActiveSide(event.value) then
         self:_emitSound("SEQ_SE_GS_ZKN04")
       end
       self:_bumpKey()
     elseif event.action == "compare-cycle" then
-      local before = self._forms:comparison()
-      self._forms:cycle(event.side, event.delta)
-      if self:_compareIndicesChanged(before) then
+      if self._forms:cycle(event.side, event.delta) then
         self:_emitSound("SEQ_SE_GS_ZKN04")
       end
       self:_bumpKey()
