@@ -95,7 +95,7 @@ local function sceneEvents(sceneNumber)
         ticks = 25,
       },
       { op = "waitTicks", stepId = "open", atStepTick = 0, ticks = 25 },
-      { op = "circleWipe", stepId = "close", atStepTick = 0, engine = "main", kind = 0, ticks = 10 },
+      { op = "circleWipe", stepId = "close", atStepTick = 0, engine = "main", kind = 1, ticks = 8 },
       { op = "waitTicks", stepId = "close", atStepTick = 0, ticks = 15 },
       { op = "finish", stepId = "close", atStepTick = 0 },
     }
@@ -129,8 +129,19 @@ local function sceneEvents(sceneNumber)
     }
   end
   return {
-    { op = "circleWipe", stepId = "wipe", atStepTick = 0, engine = "main", kind = 1, ticks = 18 },
     { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "upper" },
+    {
+      op = "shutterFade",
+      stepId = "wipe",
+      atStepTick = 0,
+      order = "main-then-sub",
+      mainPattern = "center-out",
+      subPattern = "bottom-up",
+      color = "black",
+      steps = 18,
+      framesPerStep = 1,
+      effect = "scene5-shutter",
+    },
     {
       op = "setScroll",
       stepId = "scroll",
@@ -297,6 +308,61 @@ local function validPack()
   local raw = {}
   for sceneNumber = 1, 5 do
     raw[sceneNumber] = manifestFor(sceneNumber)
+  end
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  return scenes, cacheFs
+end
+
+-- A scene-five filler that stages art and finishes on a bare duration:
+-- wipe and shutter isolation tests replace another scene and need a
+-- fifth scene that starts no effect of its own.
+---@return table strict synthetic scene-five manifest with no effect program
+local function neutralSceneFive()
+  local root = sceneRoot(5)
+  local upperImage = root .. "upper-bg.png"
+  local lowerImage = root .. "lower-bg.png"
+  return {
+    schema = Contract.startupOpeningScene.schema,
+    versionId = VERSION_ID,
+    generationId = "movie-test-generation",
+    sceneNumber = 5,
+    sourceTickRate = Contract.startupOpeningScene.tickRate,
+    layers = {
+      main = { layer(0, upperImage) },
+      sub = { layer(0, lowerImage) },
+    },
+    spriteClips = {},
+    models = {},
+    particles = { seed = 0, emitters = {} },
+    timeline = {
+      steps = { { id = "fill", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 10 } } },
+      events = {
+        { op = "waitTicks", stepId = "fill", atStepTick = 0, ticks = 10 },
+        { op = "finish", stepId = "fill", atStepTick = 0 },
+      },
+    },
+    assets = { [upperImage] = true, [lowerImage] = true },
+  }
+end
+
+---@param overrides table[] custom scene manifests keyed by scene number
+---@return table[] scenes, table cacheFs strict five-scene pack with a neutral fifth scene unless overridden
+local function packWithOverrides(overrides)
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    if overrides[sceneNumber] ~= nil then
+      raw[sceneNumber] = overrides[sceneNumber]
+    elseif sceneNumber == 5 then
+      raw[sceneNumber] = neutralSceneFive()
+    else
+      raw[sceneNumber] = manifestFor(sceneNumber)
+    end
   end
   local cacheFs = stubCache(raw)
   local scenes = {}
@@ -610,29 +676,43 @@ function T.started_wipe_effects_hold_the_close_step_for_their_authored_ticks()
   else
     Assert.isTrue(#probeLow > 0, "the wipe clips the upper probe row on its owning engine")
     Assert.isTrue(#probeHigh > 0, "the wipe clips the lower probe row on its owning engine")
-    local sortedLow, sortedHigh = {}, {}
+    -- Normative kind0 covers the left [0, boundary): every span starts at
+    -- the left edge, so the scanline slope rides on the span width.
     for _, edge in ipairs(probeLow) do
-      sortedLow[#sortedLow + 1] = edge
+      Assert.equal(edge, 0, "the kind0 cover starts at the left edge")
     end
     for _, edge in ipairs(probeHigh) do
-      sortedHigh[#sortedHigh + 1] = edge
+      Assert.equal(edge, 0, "the kind0 cover starts at the left edge on every row")
     end
-    table.sort(sortedLow)
-    table.sort(sortedHigh)
+    local function probeWidths(y)
+      local widths = {}
+      for index = probeBaseline + 1, #probeGraphics.scissorIntersections do
+        local entry = probeGraphics.scissorIntersections[index]
+        if probeGraphics.scissorCanvases[index].canvas == probeMovie.mainCanvas then
+          local requested = entry.requested
+          if y >= requested[2] and y < requested[2] + requested[4] then
+            widths[#widths + 1] = requested[3]
+          end
+        end
+      end
+      table.sort(widths)
+      return widths
+    end
+    local sortedLow, sortedHigh = probeWidths(48), probeWidths(96)
     Assert.isFalse(
       #sortedLow == #sortedHigh and sortedLow[1] == sortedHigh[1],
-      "the wipe edge slopes with the scanline instead of a centered rectangle"
+      "the wipe cover width slopes with the scanline instead of a centered rectangle"
     )
     local expectedLow = wipeBoundary(2, 10, 48)
     local expectedHigh = wipeBoundary(2, 10, 96)
     local foundLow, foundHigh = false, false
-    for _, edge in ipairs(sortedLow) do
-      if math.abs(edge - expectedLow) <= 1 then
+    for _, width in ipairs(sortedLow) do
+      if math.abs(width - expectedLow) <= 1 then
         foundLow = true
       end
     end
-    for _, edge in ipairs(sortedHigh) do
-      if math.abs(edge - expectedHigh) <= 1 then
+    for _, width in ipairs(sortedHigh) do
+      if math.abs(width - expectedHigh) <= 1 then
         foundHigh = true
       end
     end
@@ -981,6 +1061,305 @@ function T.later_scene_preflight_failure_releases_every_owner_and_stays_reusable
     movie:dispose()
     Assert.equal(liveHandles(graphics), 0, "the healthy rerun releases every handle")
   end
+end
+
+-- Only the retail completion colors survive: kinds 1 and 3 keep a full
+-- white and black hold on their own engine past completion, while kinds
+-- 0 and 2 retire neutral with no wash and no further row spans. A later
+-- open on the same engine resets a hold instead of stacking washes, and
+-- the idle engine never carries a span or a wash.
+function T.finished_wipe_brightness_holds_only_for_the_retail_kinds_until_the_next_open()
+  local root = sceneRoot(1)
+  local beats = { 1, 0, 3, 2 }
+  local steps, events = {}, {}
+  for position, kind in ipairs(beats) do
+    steps[#steps + 1] =
+      { id = "wipe-" .. kind, events = { #events + 1 }, ["until"] = { kind = "effect", effect = "wipe-" .. kind } }
+    events[#events + 1] = {
+      op = "circleWipe",
+      stepId = "wipe-" .. kind,
+      atStepTick = 0,
+      engine = "main",
+      kind = kind,
+      ticks = 8,
+      effect = "wipe-" .. kind,
+    }
+    local holdEvents = { #events + 1 }
+    events[#events + 1] = { op = "waitTicks", stepId = "hold-" .. kind, atStepTick = 0, ticks = 6 }
+    if position == 1 then
+      -- The opening scene carries its skip gate exactly once; later beats
+      -- need no second gate.
+      holdEvents[#holdEvents + 1] = #events + 1
+      events[#events + 1] = { op = "enableSkip", stepId = "hold-" .. kind, atStepTick = 5 }
+    end
+    steps[#steps + 1] = { id = "hold-" .. kind, events = holdEvents, ["until"] = { kind = "duration", ticks = 6 } }
+  end
+  steps[#steps + 1] = { id = "done", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 5 } }
+  events[#events + 1] = { op = "waitTicks", stepId = "done", atStepTick = 0, ticks = 5 }
+  events[#events + 1] = { op = "finish", stepId = "done", atStepTick = 0 }
+  local scenes, cacheFs = packWithOverrides({
+    [1] = {
+      schema = Contract.startupOpeningScene.schema,
+      versionId = VERSION_ID,
+      generationId = "movie-test-generation",
+      sceneNumber = 1,
+      sourceTickRate = Contract.startupOpeningScene.tickRate,
+      layers = {
+        main = { layer(0, root .. "layers/hold-upper.png") },
+        sub = { layer(0, root .. "layers/hold-lower.png") },
+      },
+      spriteClips = {},
+      models = {},
+      particles = { seed = 0, emitters = {} },
+      timeline = { steps = steps, events = events },
+      assets = { [root .. "layers/hold-upper.png"] = true, [root .. "layers/hold-lower.png"] = true },
+    },
+  })
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local function enterWipe(stepId)
+    for _ = 1, 5000 do
+      local slot = assert(movie.current, "the running movie owns its current slot")
+      local step = assert(slot.manifest.timeline.steps[slot.stepIndex], "the movie stays on a known step")
+      if slot.sceneNumber == 1 and step.id == stepId and slot.wipe ~= nil then
+        return slot
+      end
+      movie:updateFixed()
+      movie:draw()
+    end
+    error("the movie never reaches " .. tostring(stepId), 0)
+  end
+  local function fullCanvasWashes(baseline)
+    local found = {}
+    for index = baseline + 1, #graphics.rectangles do
+      local rect = graphics.rectangles[index]
+      if rect.mode == "fill" and rect.w == 256 and rect.h == 192 then
+        found[#found + 1] = rect.color
+      end
+    end
+    return found
+  end
+  local function mainRowSpans(baseline)
+    local count = 0
+    for index = baseline + 1, #graphics.scissorIntersections do
+      if graphics.scissorCanvases[index].canvas == movie.mainCanvas then
+        local requested = graphics.scissorIntersections[index].requested
+        if requested[4] == 1 and requested[3] < 256 then
+          count = count + 1
+        end
+      end
+    end
+    return count
+  end
+  local function subSpans(baseline)
+    local count = 0
+    for index = baseline + 1, #graphics.scissorIntersections do
+      if graphics.scissorCanvases[index].canvas == movie.subCanvas then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  local holds = {
+    [1] = { r = 1, g = 1, b = 1 },
+    [3] = { r = 0, g = 0, b = 0 },
+  }
+  for _, kind in ipairs(beats) do
+    local slot = enterWipe("wipe-" .. kind)
+    Assert.equal(slot.wipe.engine, "main", "kind " .. kind .. " owns the main engine")
+    Assert.equal(slot.wipe.kind, kind, "kind " .. kind .. " runs its own program")
+    do
+      local baseline = #graphics.scissorIntersections
+      movie:draw()
+      Assert.equal(subSpans(baseline), 0, "kind " .. kind .. " never clips the idle engine")
+    end
+    for _ = 1, 8 do
+      movie:updateFixed()
+    end
+    Assert.equal(slot.wipe.elapsed, 8, "kind " .. kind .. " reaches its final edge on its eighth tick")
+    local finishBaseline = #graphics.rectangles
+    local finishScissors = #graphics.scissorIntersections
+    movie:draw()
+    Assert.equal(movie.current.wipe.elapsed, 8, "a draw advances no source tick")
+    local finishes = fullCanvasWashes(finishBaseline)
+    local hold = holds[kind]
+    if hold ~= nil then
+      Assert.equal(#finishes, 1, "kind " .. kind .. " finishes with its own full hold")
+      Assert.equal(finishes[1][1], hold.r, "kind " .. kind .. " holds its source red channel")
+      Assert.equal(finishes[1][2], hold.g, "kind " .. kind .. " holds its source green channel")
+      Assert.equal(finishes[1][3], hold.b, "kind " .. kind .. " holds its source blue channel")
+    else
+      Assert.equal(#finishes, 0, "kind " .. kind .. " finishes neutral with no wash")
+    end
+    Assert.equal(mainRowSpans(finishScissors), 0, "the finished kind " .. kind .. " clips no further rows")
+    for _ = 1, 3 do
+      movie:updateFixed()
+    end
+    local holdBaseline = #graphics.rectangles
+    movie:draw()
+    local held = fullCanvasWashes(holdBaseline)
+    if hold ~= nil then
+      Assert.equal(#held, 1, "kind " .. kind .. " keeps its hold past completion")
+      Assert.equal(held[1][1], hold.r, "the kept hold keeps its source red channel")
+      Assert.equal(held[1][2], hold.g, "the kept hold keeps its source green channel")
+      Assert.equal(held[1][3], hold.b, "the kept hold keeps its source blue channel")
+    else
+      Assert.equal(#held, 0, "kind " .. kind .. " stays neutral past completion")
+    end
+  end
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the hold movie releases every handle")
+end
+
+-- The fifth-scene line shutter runs its two engine fades strictly in
+-- order: one event arms both row masks masked black with main active,
+-- main opens center-out while sub stays black, sub rises bottom-up only
+-- after main finishes, and the named wait stays pending until both engine
+-- cleanups terminate. Host draws and resizes never advance the shutters.
+function T.scene_five_shutter_opens_main_center_out_before_sub_bottom_up_and_waits_for_both_cleanups()
+  local root = sceneRoot(5)
+  local upperImage = root .. "upper-bg.png"
+  local lowerImage = root .. "lower-bg.png"
+  local scenes, cacheFs = packWithOverrides({
+    [5] = {
+      schema = Contract.startupOpeningScene.schema,
+      versionId = VERSION_ID,
+      generationId = "movie-test-generation",
+      sceneNumber = 5,
+      sourceTickRate = Contract.startupOpeningScene.tickRate,
+      layers = {
+        main = { layer(0, upperImage) },
+        sub = { layer(0, lowerImage) },
+      },
+      spriteClips = {},
+      models = {},
+      particles = { seed = 0, emitters = {} },
+      timeline = {
+        steps = {
+          { id = "wipe", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 18 } },
+          { id = "scroll", events = { 5 }, ["until"] = { kind = "effect", effect = "scene5-shutter" } },
+          { id = "tail", events = { 6, 7 }, ["until"] = { kind = "duration", ticks = 5 } },
+        },
+        events = {
+          { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "lower" },
+          { op = "setScroll", stepId = "wipe", atStepTick = 0, engine = "main", bgSlot = 0, dx = 0, dy = 160, ticks = 0 },
+          { op = "setScroll", stepId = "wipe", atStepTick = 0, engine = "sub", bgSlot = 0, dx = 0, dy = 160, ticks = 0 },
+          {
+            op = "shutterFade",
+            stepId = "wipe",
+            atStepTick = 0,
+            order = "main-then-sub",
+            mainPattern = "center-out",
+            subPattern = "bottom-up",
+            color = "black",
+            steps = 18,
+            framesPerStep = 1,
+            effect = "scene5-shutter",
+          },
+          { op = "waitEffects", stepId = "scroll", atStepTick = 0, effects = { "scene5-shutter" } },
+          { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 },
+          { op = "finish", stepId = "tail", atStepTick = 0 },
+        },
+      },
+      assets = { [upperImage] = true, [lowerImage] = true },
+    },
+  })
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local ticks = 0
+  while movie:sceneNumber() < 5 and ticks < 5000 do
+    movie:updateFixed()
+    movie:draw()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 5, "playback reaches the shutter scene")
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local step = assert(slot.manifest.timeline.steps[slot.stepIndex], "the movie stays on a known step")
+  Assert.equal(step.id, "wipe", "the shutter scene opens on its wipe step")
+  local shutter = assert(slot.shutter, "the wipe step arms the ordered line shutter")
+  Assert.equal(shutter.active, "main", "the shutter opens the main engine first")
+  Assert.equal(shutter.main.elapsed, 0, "the main shutter starts closed")
+  Assert.equal(shutter.sub.elapsed, 0, "the sub shutter starts closed")
+  Assert.isFalse(slot.effects["scene5-shutter"].done, "the shutter wait starts pending")
+  for _ = 1, 9 do
+    movie:updateFixed()
+  end
+  Assert.equal(shutter.main.elapsed, 9, "nine ticks open nine main steps")
+  Assert.equal(shutter.sub.elapsed, 0, "the sub shutter waits while main runs")
+  Assert.equal(shutter.active, "main", "main stays active halfway through")
+  Assert.isFalse(slot.effects["scene5-shutter"].done, "the shutter wait stays pending mid-main")
+  local function snapshot()
+    return {
+      main = shutter.main.elapsed,
+      sub = shutter.sub.elapsed,
+      active = shutter.active,
+      done = slot.effects["scene5-shutter"].done,
+    }
+  end
+  local function assertStill(snapshotBefore, message)
+    local now = snapshot()
+    Assert.deepEqual(now, snapshotBefore, message)
+  end
+  local frozen = snapshot()
+  movie:draw()
+  assertStill(frozen, "a host draw advances no shutter step")
+  movie:resize(600, 1000)
+  movie:draw()
+  assertStill(frozen, "a resize and draw advance no shutter step")
+  movie:resize(WIDTH, HEIGHT)
+  movie:draw()
+  assertStill(frozen, "restoring the stage advances no shutter step")
+  for _ = 1, 9 do
+    movie:updateFixed()
+  end
+  Assert.equal(shutter.sub.elapsed, 0, "the sub shutter stays masked through the main finish")
+  Assert.isFalse(slot.effects["scene5-shutter"].done, "the shutter wait stays pending at the main finish")
+  local handedOff = false
+  for _ = 1, 36 do
+    movie:updateFixed()
+    if shutter.sub.elapsed > 0 or shutter.active == "sub" then
+      handedOff = true
+      break
+    end
+  end
+  Assert.isTrue(handedOff, "the sub shutter starts after main completes")
+  Assert.isFalse(slot.effects["scene5-shutter"].done, "the handoff itself completes no wait")
+  for _ = 1, 200 do
+    if shutter.sub.elapsed >= 9 then
+      break
+    end
+    movie:updateFixed()
+  end
+  Assert.isTrue(shutter.sub.elapsed >= 9, "the sub shutter advances bottom-up once active")
+  Assert.isFalse(slot.effects["scene5-shutter"].done, "the shutter wait stays pending mid-sub")
+  frozen = snapshot()
+  movie:draw()
+  movie:resize(600, 1000)
+  movie:draw()
+  movie:resize(WIDTH, HEIGHT)
+  assertStill(frozen, "draws and resizes never advance the sub shutter either")
+  local finished = false
+  for _ = 1, 120 do
+    movie:updateFixed()
+    if slot.effects["scene5-shutter"].done then
+      finished = true
+      break
+    end
+  end
+  Assert.isTrue(finished, "both engine cleanups terminate the shutter wait")
+  local advanced = false
+  for _ = 1, 60 do
+    local current = assert(movie.current, "the running movie owns its current slot")
+    local currentStep = assert(current.manifest.timeline.steps[current.stepIndex], "the movie stays on a known step")
+    if currentStep.id == "tail" or current.sceneNumber ~= 5 then
+      advanced = true
+      break
+    end
+    movie:updateFixed()
+  end
+  Assert.isTrue(advanced, "the gated step advances only after both cleanups")
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the shutter movie releases every handle")
 end
 
 return { tests = T }

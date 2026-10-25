@@ -129,7 +129,7 @@ local function sceneEvents(sceneNumber)
         ticks = 25,
       },
       { op = "waitTicks", stepId = "open", atStepTick = 0, ticks = 25 },
-      { op = "circleWipe", stepId = "close", atStepTick = 0, engine = "main", kind = 0, ticks = 10 },
+      { op = "circleWipe", stepId = "close", atStepTick = 0, engine = "main", kind = 1, ticks = 8 },
       { op = "waitTicks", stepId = "close", atStepTick = 0, ticks = 15 },
       { op = "finish", stepId = "close", atStepTick = 0 },
     }
@@ -163,8 +163,19 @@ local function sceneEvents(sceneNumber)
     }
   end
   return {
-    { op = "circleWipe", stepId = "wipe", atStepTick = 0, engine = "main", kind = 1, ticks = 18 },
     { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "upper" },
+    {
+      op = "shutterFade",
+      stepId = "wipe",
+      atStepTick = 0,
+      order = "main-then-sub",
+      mainPattern = "center-out",
+      subPattern = "bottom-up",
+      color = "black",
+      steps = 18,
+      framesPerStep = 1,
+      effect = "scene5-shutter",
+    },
     {
       op = "setScroll",
       stepId = "scroll",
@@ -878,6 +889,48 @@ local function packWithSceneAt(custom, customIndex)
   for sceneNumber = 1, 5 do
     if sceneNumber == customIndex then
       raw[sceneNumber] = custom
+    else
+      raw[sceneNumber] = manifestFor(sceneNumber)
+    end
+  end
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  return scenes, cacheFs
+end
+
+-- A scene-five filler that stages art and finishes on a bare duration:
+-- wipe and shutter isolation tests replace another scene and need a
+-- fifth scene that starts no effect of its own.
+---@return table strict synthetic scene-five manifest with no effect program
+local function neutralSceneFive()
+  local root = sceneRoot(5)
+  return compositeManifest(
+    5,
+    { layer(0, root .. "layers/quiet-upper.png", 256, 192) },
+    { layer(0, root .. "layers/quiet-lower.png", 256, 192) },
+    {},
+    { { id = "fill", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 10 } } },
+    {
+      { op = "waitTicks", stepId = "fill", atStepTick = 0, ticks = 10 },
+      { op = "finish", stepId = "fill", atStepTick = 0 },
+    }
+  )
+end
+
+---@param overrides table[] custom scene manifests keyed by scene number
+---@return table[] scenes, table cacheFs strict five-scene pack with a neutral fifth scene unless overridden
+local function packWithOverrides(overrides)
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    if overrides[sceneNumber] ~= nil then
+      raw[sceneNumber] = overrides[sceneNumber]
+    elseif sceneNumber == 5 then
+      raw[sceneNumber] = neutralSceneFive()
     else
       raw[sceneNumber] = manifestFor(sceneNumber)
     end
@@ -3711,12 +3764,11 @@ function T.wipe_endpoints_retire_cleanly_without_arithmetic_faults()
       covered = covered + 1
       if requested[3] == 256 then
         widest = widest + 1
-        Assert.equal(requested[1], 0, "the opening frame covers each row from its left edge")
       end
     end
   end
-  Assert.equal(covered, 384, "the opening frame clips every row on its owning engine")
-  Assert.equal(widest, 192, "every row carries its full-width cover span")
+  Assert.equal(covered, 192, "the opening frame clips every row once on its owning engine")
+  Assert.equal(widest, 0, "no row carries a full-width mirror span")
   local function mainScissors()
     local count = 0
     for index = 1, #graphics.scissorIntersections do
@@ -3828,6 +3880,227 @@ function T.engine_effects_stay_local_across_a_physical_flip()
   end
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the flip movie releases every handle")
+end
+
+-- Every circle kind covers exactly one scanline span with its own source
+-- backdrop: kinds 0 and 2 hide the left of the scanline edge behind
+-- white and black while the right shows game art; kinds 1 and 3 show
+-- game art on the left and hide the right behind white and black. No
+-- kind paints a second mirrored stripe, and the idle engine stays clean.
+function T.circle_wipe_kinds_cover_the_source_inside_outside_spans_with_the_source_backdrops()
+  local kinds = {
+    { kind = 0, left = true, color = { 1, 1, 1, 1 } },
+    { kind = 1, left = false, color = { 1, 1, 1, 1 } },
+    { kind = 2, left = true, color = { 0, 0, 0, 1 } },
+    { kind = 3, left = false, color = { 0, 0, 0, 1 } },
+  }
+  local rows = { 32, 64, 96 }
+  local ticks = 12
+  local elapsed = 3
+  local function truncTowardZero(value)
+    if value >= 0 then
+      return math.floor(value)
+    end
+    return math.ceil(value)
+  end
+  local function wipeBoundary(n, total, vcount)
+    local theta = math.pi * n / total
+    local x, y = math.cos(theta), math.sin(theta)
+    if x == 1 then
+      return 255
+    end
+    if x == -1 then
+      return 0
+    end
+    if math.abs(y) < 1e-9 then
+      if x > 0 then
+        return 255
+      end
+      return 0
+    end
+    return math.max(0, math.min(255, 127 + truncTowardZero(vcount * x / y)))
+  end
+  for _, probe in ipairs(kinds) do
+    local root = sceneRoot(1)
+    local scenes, cacheFs = packWithOverrides({
+      [1] = compositeManifest(
+        1,
+        { layer(0, root .. "layers/mask-upper.png", 256, 192) },
+        { layer(0, root .. "layers/mask-lower.png", 256, 192) },
+        {},
+        { { id = "hold", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 40 } } },
+        {
+          {
+            op = "circleWipe",
+            stepId = "hold",
+            atStepTick = 0,
+            engine = "main",
+            kind = probe.kind,
+            ticks = ticks,
+            effect = "mask-kind",
+          },
+          { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+          { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
+        }
+      ),
+    })
+    local graphics = movieGraphics()
+    local movie = openMovie(scenes, cacheFs, graphics)
+    for _ = 1, elapsed do
+      movie:updateFixed()
+    end
+    local scissorBaseline = #graphics.scissorIntersections
+    local rectBaseline = #graphics.rectangles
+    movie:draw()
+    local spans = {}
+    local addedRects = {}
+    for index = rectBaseline + 1, #graphics.rectangles do
+      addedRects[#addedRects + 1] = graphics.rectangles[index]
+    end
+    local rectCursor = 0
+    for index = scissorBaseline + 1, #graphics.scissorIntersections do
+      local entry = graphics.scissorIntersections[index]
+      local canvas = graphics.scissorCanvases[index].canvas
+      if canvas == movie.mainCanvas then
+        local requested = entry.requested
+        if requested[4] == 1 and requested[3] < 256 then
+          rectCursor = rectCursor + 1
+          local fill = assert(addedRects[rectCursor], "every wipe scissor carries its cover fill")
+          Assert.equal(fill.x, requested[1], "the cover fill matches its clipped span")
+          Assert.equal(fill.y, requested[2], "the cover fill matches its clipped row")
+          Assert.equal(fill.w, requested[3], "the cover fill matches its clipped width")
+          spans[#spans + 1] = { x = requested[1], y = requested[2], w = requested[3], color = fill.color }
+        end
+      else
+        Assert.isFalse(
+          canvas == movie.subCanvas,
+          "kind " .. probe.kind .. " clips nothing on the idle engine"
+        )
+      end
+    end
+    Assert.equal(rectCursor, #addedRects, "every cover fill is accounted for by a wipe scissor")
+    for _, row in ipairs(rows) do
+      local boundary = wipeBoundary(elapsed, ticks, row)
+      local wantX, wantW
+      if probe.left then
+        wantX, wantW = 0, boundary
+      else
+        wantX, wantW = boundary, 256 - boundary
+      end
+      local rowSpans = {}
+      for _, span in ipairs(spans) do
+        if span.y == row then
+          rowSpans[#rowSpans + 1] = span
+        end
+      end
+      Assert.equal(#rowSpans, 1, "kind " .. probe.kind .. " covers row " .. row .. " with one span, never a mirror")
+      Assert.equal(rowSpans[1].x, wantX, "kind " .. probe.kind .. " anchors row " .. row .. " on the source side")
+      Assert.equal(rowSpans[1].w, wantW, "kind " .. probe.kind .. " spans row " .. row .. " to the scanline edge")
+      Assert.deepEqual(
+        rowSpans[1].color,
+        probe.color,
+        "kind " .. probe.kind .. " hides row " .. row .. " behind its own source backdrop"
+      )
+    end
+    movie:dispose()
+    Assert.equal(liveHandles(graphics), 0, "the kind " .. probe.kind .. " mask movie releases every handle")
+  end
+end
+
+-- The retail town open/close sequence runs its seven wipes in order on
+-- their own engines: three main opens interleaved with three main closes
+-- and one sub reveal, each holding its gate for exactly eight ticks with
+-- its own completion identity. The runtime executes the authored order
+-- without merging, reordering, or spilling beats across engines.
+function T.seven_source_wipes_play_in_order_with_their_own_engines_and_gates()
+  local beats = {
+    { engine = "main", kind = 0 },
+    { engine = "main", kind = 3 },
+    { engine = "main", kind = 2 },
+    { engine = "main", kind = 3 },
+    { engine = "main", kind = 2 },
+    { engine = "main", kind = 3 },
+    { engine = "sub", kind = 2 },
+  }
+  local steps, events = {}, {}
+  for index, beat in ipairs(beats) do
+    steps[#steps + 1] =
+      { id = "beat-" .. index, events = { index }, ["until"] = { kind = "effect", effect = "wipe-beat-" .. index } }
+    events[#events + 1] = {
+      op = "circleWipe",
+      stepId = "beat-" .. index,
+      atStepTick = 0,
+      engine = beat.engine,
+      kind = beat.kind,
+      ticks = 8,
+      effect = "wipe-beat-" .. index,
+    }
+  end
+  steps[#steps + 1] = { id = "done", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 5 } }
+  events[#events + 1] = { op = "waitTicks", stepId = "done", atStepTick = 0, ticks = 5 }
+  events[#events + 1] = { op = "finish", stepId = "done", atStepTick = 0 }
+  local root = sceneRoot(3)
+  local scenes, cacheFs = packWithOverrides({
+    [3] = compositeManifest(
+      3,
+      { layer(0, root .. "layers/beat-upper.png", 256, 192) },
+      { layer(0, root .. "layers/beat-lower.png", 256, 192) },
+      {},
+      steps,
+      events
+    ),
+  })
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local ticks = 0
+  while movie:sceneNumber() < 3 and ticks < 5000 do
+    movie:updateFixed()
+    movie:draw()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 3, "playback reaches the wipe sequence")
+  local observed, beatStartTicks, lastBeat, thirdSlot = {}, {}, nil, nil
+  -- Sample before ticking: the entry cascade already applied the first
+  -- beat, so sampling first keeps every gate at its authored eight ticks
+  -- instead of shorting the first observation by one.
+  local guard = 0
+  while movie:sceneNumber() == 3 and guard < 5000 do
+    guard = guard + 1
+    local slot = assert(movie.current, "the running movie owns its current slot")
+    if slot.sceneNumber == 3 then
+      thirdSlot = slot
+      local step = assert(slot.manifest.timeline.steps[slot.stepIndex], "the movie stays on a known step")
+      local id = assert(step.id, "the step carries its source identity")
+      if id ~= "done" and id ~= lastBeat and slot.wipe ~= nil then
+        lastBeat = id
+        observed[#observed + 1] = { engine = slot.wipe.engine, kind = slot.wipe.kind, ticks = slot.wipe.ticks }
+        beatStartTicks[#beatStartTicks + 1] = ticks
+      end
+    end
+    movie:updateFixed()
+    movie:draw()
+    ticks = ticks + 1
+  end
+  Assert.equal(#observed, 7, "all seven wipe beats play exactly once")
+  for index, beat in ipairs(beats) do
+    Assert.equal(observed[index].engine, beat.engine, "beat " .. index .. " owns the " .. beat.engine .. " engine")
+    Assert.equal(observed[index].kind, beat.kind, "beat " .. index .. " runs kind " .. beat.kind)
+    Assert.equal(observed[index].ticks, 8, "beat " .. index .. " holds its eight authored ticks")
+    if index > 1 then
+      Assert.equal(
+        beatStartTicks[index] - beatStartTicks[index - 1],
+        8,
+        "beat " .. index .. " starts exactly when beat " .. (index - 1) .. " completes"
+      )
+    end
+  end
+  local slot = assert(thirdSlot, "the wipe sequence ran its beats before retiring")
+  for index = 1, 7 do
+    local effect = assert(slot.effects["wipe-beat-" .. index], "beat " .. index .. " started its own completion")
+    Assert.isTrue(effect.done, "beat " .. index .. " completed on its own eighth tick")
+  end
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the seven-beat movie releases every handle")
 end
 
 return { tests = T }

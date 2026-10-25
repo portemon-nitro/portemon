@@ -71,6 +71,7 @@ local EFFECT_START_OPS = {
   setScroll = true,
   setFade = true,
   circleWipe = true,
+  shutterFade = true,
   window = true,
 }
 
@@ -140,6 +141,8 @@ end
 ---@field lightingMap number?
 ---@field fade table<string, unknown>?
 ---@field wipe table<string, unknown>? engine-local scanline wipe program
+---@field wipeHold table<string, unknown>? retained full-engine white/black hold by source engine
+---@field shutter table<string, unknown>? ordered main-then-sub line shutter program
 ---@field blendPrograms table<string, table<string, unknown>> engine-local alpha programs by source engine
 ---@field palette table<string, unknown>?
 ---@field windows table<string, OpeningMovieWindow> live engine-local window state by source engine
@@ -541,6 +544,8 @@ local function acquireSlot(self, manifest)
     lightingMap = nil,
     fade = nil,
     wipe = nil,
+    wipeHold = { main = nil, sub = nil },
+    shutter = nil,
     blendPrograms = {},
     palette = nil,
     windows = {
@@ -1108,9 +1113,32 @@ local function applyEvent(self, slot, event)
     -- One active scanline wipe program per slot carries its owning source
     -- engine, kind, and elapsed source ticks. A new start replaces the
     -- running program; the source programs never overlap two wipes, so a
-    -- single program plus its engine tag is the whole state.
+    -- single program plus its engine tag is the whole state. An opening
+    -- wipe resets its own engine to neutral at the source start, releasing
+    -- any white or black hold a close kind left behind.
     slot.wipe = { engine = event.engine, kind = event.kind, ticks = event.ticks, elapsed = 0 }
+    if event.kind == 0 or event.kind == 2 then
+      if slot.wipeHold == nil then
+        slot.wipeHold = { main = nil, sub = nil }
+      end
+      slot.wipeHold[event.engine] = nil
+    end
     startTimedEffect(slot, event.effect, event.ticks)
+  elseif op == "shutterFade" then
+    -- One ordered line shutter per slot: both engine row masks start
+    -- masked black with the main fade active; the source tick hands the
+    -- sub fade its first step only after the main reveal and cleanup.
+    -- The validated event pins the order, patterns, color, steps, and
+    -- cadence, so the runtime keeps no retail fade-type knowledge.
+    slot.shutter = {
+      active = "main",
+      effect = event.effect,
+      steps = event.steps,
+      framesPerStep = event.framesPerStep,
+      main = { elapsed = 0, clean = 0 },
+      sub = { elapsed = 0, clean = 0 },
+    }
+    slot.effects[event.effect] = { started = true, done = false }
   elseif op == "setSpriteClip" then
     local instance = slot.spriteInstances[event.instanceId]
     if instance == nil then
@@ -1232,6 +1260,28 @@ local function advanceWindowProgram(slot, engine)
   }
 end
 
+-- Retained full-engine brightness by kind: only the retail close kinds
+-- hold their backdrop past completion, white for kind 1 and black for
+-- kind 3. Open kinds retire neutral with staged art showing.
+---@param kind integer wipe kind 0..3
+---@return string? hold white/black hold surviving completion, or nil
+local function wipeHoldColor(kind)
+  if kind == 1 then
+    return "white"
+  end
+  if kind == 3 then
+    return "black"
+  end
+  return nil
+end
+
+-- Source termination frames each line-shutter engine idles fully revealed
+-- before the next engine starts or the named wait completes. The count is
+-- a local task-lifecycle constant: the validated event pins the eighteen
+-- reveal steps and the one-frame cadence, and this count covers
+-- these frames between the main finish and the sub handoff.
+local SHUTTER_CLEANUP_TICKS = 2
+
 ---@param slot OpeningMovieSlot scene slot
 local function advanceContinuous(slot)
   -- Absolute resampling from the staged origin: no incremental drift,
@@ -1271,13 +1321,46 @@ local function advanceContinuous(slot)
     end
   end
   if slot.wipe ~= nil then
-    -- A finished wipe retires instead of covering later art: the program
-    -- draws its kind finish on the completion frame, and the next source
-    -- tick retires it so staged art underneath shows again.
+    -- A finished wipe retires instead of covering later art: close kinds
+    -- keep their full-engine hold while open kinds return neutral, and
+    -- the next source tick retires the scanline program either way.
     if slot.wipe.elapsed < slot.wipe.ticks then
       slot.wipe.elapsed = slot.wipe.elapsed + 1
+      if slot.wipe.elapsed >= slot.wipe.ticks then
+        if slot.wipeHold == nil then
+          slot.wipeHold = { main = nil, sub = nil }
+        end
+        slot.wipeHold[slot.wipe.engine] = wipeHoldColor(slot.wipe.kind --[[@as integer]])
+      end
     else
       slot.wipe = nil
+    end
+  end
+  local shutter = slot.shutter
+  if shutter ~= nil and shutter.active ~= "done" then
+    -- One ordered line shutter: the main center-out reveal and its cleanup
+    -- finish before the sub bottom-up reveal starts, and only both engine
+    -- cleanups complete the named wait. Draws, resizes, and physical
+    -- screen flips never advance either engine mask.
+    local side = shutter.active == "sub" and shutter.sub or shutter.main
+    if side.elapsed < shutter.steps then
+      side.elapsed = side.elapsed + 1
+      if side.elapsed >= shutter.steps then
+        side.clean = SHUTTER_CLEANUP_TICKS
+      end
+    else
+      side.clean = (side.clean or 0) - 1
+      if side.clean <= 0 then
+        if shutter.active == "main" then
+          shutter.active = "sub"
+        else
+          shutter.active = "done"
+          local effect = slot.effects[shutter.effect]
+          if effect ~= nil then
+            effect.done = true
+          end
+        end
+      end
     end
   end
   -- Each engine program advances on the source tick alone; host draws,
@@ -2440,40 +2523,96 @@ local function wipeBoundary(elapsed, ticks, vcount)
   return math.max(0, math.min(255, 127 + truncTowardZero(vcount * x / y)))
 end
 
+-- Source backdrop color hiding one side of an active circle wipe: even
+-- kinds stage a reveal (white for kind 0, black for kind 2) while odd
+-- kinds stage a cover (white for kind 1, black for kind 3). The same color
+-- washes the owning engine while a close-kind hold survives.
 ---@param kind integer wipe kind 0..3
----@return boolean true when the kind covers toward the mirrored edge
-local function wipeMirrored(kind)
-  return kind % 2 == 1
+---@return number r backdrop red channel
+---@return number g backdrop green channel
+---@return number b backdrop blue channel
+local function wipeBackdropColor(kind)
+  if kind == 0 or kind == 1 then
+    return 1, 1, 1
+  end
+  return 0, 0, 0
 end
 
--- Kind finish wash shown on the completion frame: the retail-used kinds
--- end neutral so staged art shows, while the remaining kinds exercise
--- the kind-driven black and white finishes.
----@param kind integer wipe kind 0..3
----@return boolean wash true when the finish covers the engine target
----@return number r wash red channel
----@return number g wash green channel
----@return number b wash blue channel
-local function wipeFinishWash(kind)
-  if kind == 2 then
-    return true, 0, 0, 0
-  end
-  if kind == 3 then
-    return true, 1, 1, 1
-  end
-  return false, 1, 1, 1
+-- Main center-out reveal: rows open symmetrically around the source
+-- center row 96, stepping from fully masked to fully revealed.
+---@param elapsed integer completed main reveal steps
+---@param steps integer authored reveal steps
+---@param vcount integer scanline 0..191
+---@return boolean true when the scanline already shows game art
+local function shutterMainRevealed(elapsed, steps, vcount)
+  local half = elapsed * 96 / steps
+  return vcount >= 96 - half and vcount < 96 + half
 end
 
+-- Sub bottom-up reveal: rows open rising from the bottom edge, stepping
+-- from fully masked to fully revealed.
+---@param elapsed integer completed sub reveal steps
+---@param steps integer authored reveal steps
+---@param vcount integer scanline 0..191
+---@return boolean true when the scanline already shows game art
+local function shutterSubRevealed(elapsed, steps, vcount)
+  return vcount >= SOURCE_HEIGHT - elapsed * SOURCE_HEIGHT / steps
+end
+
+-- Covers the still-masked line-shutter rows in source black on the owning
+-- engine: main hides outside its center-out band, sub hides above its
+-- bottom-up rise. Fully revealed engines draw nothing.
 ---@param self HgssOpeningMovie
----@param kind integer wipe kind 0..3
-local function drawWipeFinish(self, kind)
-  local wash, r, g, b = wipeFinishWash(kind)
-  if not wash then
+---@param slot OpeningMovieSlot scene slot
+---@param engine string source engine owning the sampled row mask
+local function drawShutterMask(self, slot, engine)
+  local shutter = slot.shutter
+  if shutter == nil then
     return
   end
-  self.graphics.setColor(r, g, b, 1)
-  self.graphics.rectangle("fill", 0, 0, SOURCE_WIDTH, SOURCE_HEIGHT)
-  self.graphics.setColor(1, 1, 1, 1)
+  local side = (engine == "sub") and shutter.sub or shutter.main
+  if side == nil then
+    return
+  end
+  local elapsed = side.elapsed --[[@as integer]]
+  local steps = shutter.steps --[[@as integer]]
+  if elapsed >= steps then
+    return
+  end
+  local runs, runStart = {}, nil
+  for vcount = 0, SOURCE_HEIGHT - 1 do
+    local revealed
+    if engine == "sub" then
+      revealed = shutterSubRevealed(elapsed, steps, vcount)
+    else
+      revealed = shutterMainRevealed(elapsed, steps, vcount)
+    end
+    if not revealed then
+      if runStart == nil then
+        runStart = vcount
+      end
+    elseif runStart ~= nil then
+      runs[#runs + 1] = { runStart, vcount - runStart }
+      runStart = nil
+    end
+  end
+  if runStart ~= nil then
+    runs[#runs + 1] = { runStart, SOURCE_HEIGHT - runStart }
+  end
+  local graphics = self.graphics
+  for _, run in ipairs(runs) do
+    graphics.push("all")
+    local ok, failure = pcall(function()
+      graphics.setColor(0, 0, 0, 1)
+      graphics.intersectScissor(0, run[1], SOURCE_WIDTH, run[2])
+      graphics.rectangle("fill", 0, run[1], SOURCE_WIDTH, run[2])
+      graphics.setColor(1, 1, 1, 1)
+    end)
+    graphics.pop()
+    if not ok then
+      error(failure, 0)
+    end
+  end
 end
 
 ---@param self HgssOpeningMovie
@@ -2650,48 +2789,60 @@ function HgssOpeningMovie:_renderEngine(slot, canvas, engine)
     weight = blendFirstWeight(program)
   end
   drawEngineContent(self, slot, engine, targetBg, targetIsObj, weight)
+  -- One scanline window per row hides the covered side behind the kind
+  -- backdrop: open kinds hide the left [0, boundary) while the right
+  -- shows game, close kinds show game on the left and hide the right
+  -- [boundary, 256). No kind paints a second mirrored stripe.
   local wipe = slot.wipe
-  if wipe ~= nil and wipe.engine == engine then
-    if wipe.elapsed >= wipe.ticks then
-      drawWipeFinish(self, wipe.kind --[[@as integer]])
-    else
-      -- Every kind covers the revealed span through a per-scanline
-      -- window anchored at the scanline boundary. Odd kinds additionally
-      -- cover the mirrored span with the kind backdrop color, so their
-      -- edges sit on both sides of the scanline law.
-      local ticks = wipe.ticks --[[@as integer]]
-      local elapsed = wipe.elapsed --[[@as integer]]
-      local mirrored = wipeMirrored(wipe.kind --[[@as integer]])
-      for vcount = 0, SOURCE_HEIGHT - 1 do
-        local boundary = wipeBoundary(elapsed, ticks, vcount)
-        if boundary > 0 then
-          graphics.push("all")
-          local ok, failure = pcall(function()
-            graphics.setColor(0, 0, 0, 1)
-            graphics.intersectScissor(boundary, vcount, SOURCE_WIDTH - boundary, 1)
-            graphics.rectangle("fill", boundary, vcount, SOURCE_WIDTH - boundary, 1)
-          end)
-          graphics.pop()
-          if not ok then
-            error(failure, 0)
-          end
-          if mirrored then
-            graphics.push("all")
-            local mirrorOk, mirrorFailure = pcall(function()
-              graphics.setColor(1, 1, 1, 1)
-              graphics.intersectScissor(SOURCE_WIDTH - 1 - boundary, vcount, boundary + 1, 1)
-              graphics.rectangle("fill", SOURCE_WIDTH - 1 - boundary, vcount, boundary + 1, 1)
-            end)
-            graphics.pop()
-            if not mirrorOk then
-              error(mirrorFailure, 0)
-            end
-          end
+  if wipe ~= nil and wipe.engine == engine and wipe.elapsed < wipe.ticks then
+    local kind = wipe.kind --[[@as integer]]
+    local ticks = wipe.ticks --[[@as integer]]
+    local elapsed = wipe.elapsed --[[@as integer]]
+    local r, g, b = wipeBackdropColor(kind)
+    for vcount = 0, SOURCE_HEIGHT - 1 do
+      local boundary = wipeBoundary(elapsed, ticks, vcount)
+      local x, w
+      if kind == 0 or kind == 2 then
+        x, w = 0, boundary
+      else
+        x, w = boundary, SOURCE_WIDTH - boundary
+      end
+      if w > 0 then
+        graphics.push("all")
+        local ok, failure = pcall(function()
+          graphics.setColor(r, g, b, 1)
+          graphics.intersectScissor(x, vcount, w, 1)
+          graphics.rectangle("fill", x, vcount, w, 1)
+        end)
+        graphics.pop()
+        if not ok then
+          error(failure, 0)
         end
       end
+    end
+    graphics.setColor(1, 1, 1, 1)
+  end
+  -- A retained close-kind hold washes its owning engine until the next
+  -- open kind on that engine or the scene retires. Open kinds retire
+  -- neutral with staged art showing.
+  local hold = slot.wipeHold ~= nil and slot.wipeHold[engine] or nil
+  if hold ~= nil then
+    graphics.push("all")
+    local holdOk, holdFailure = pcall(function()
+      if hold == "white" then
+        graphics.setColor(1, 1, 1, 1)
+      else
+        graphics.setColor(0, 0, 0, 1)
+      end
+      graphics.rectangle("fill", 0, 0, SOURCE_WIDTH, SOURCE_HEIGHT)
       graphics.setColor(1, 1, 1, 1)
+    end)
+    graphics.pop()
+    if not holdOk then
+      error(holdFailure, 0)
     end
   end
+  drawShutterMask(self, slot, engine)
   drawFade(self, slot)
 end
 
