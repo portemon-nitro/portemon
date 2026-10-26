@@ -2303,6 +2303,83 @@ local function strictVisualPrimitivesRejectMalformedRecords(romFs, versionId)
   assertRejected(legacyKind, "unknown field", "a legacy kind-string fade never validates")
 end
 
+-- Scene 3 holds each beast panel through its exit slide and retires them
+-- together: the entei wait hides the first plane only in its completion,
+-- the rocket wait joins both exit slides and swaps all three beast panels
+-- before resetting every rocket origin to the absolute zero the new
+-- tilemaps are staged at, and the suicune/viewport tail keeps its own
+-- guards while the three 254-tick pans start on the viewport beat.
+local function scene3BeastExitsGuardTheRocketRetileAtAbsoluteOrigin(romFs, versionId)
+  local manifest = strictManifest(compileScene(romFs, versionId, 3), versionId, 3)
+  local _, events = strictTimeline(manifest, 3)
+  local function completionOf(step)
+    local done = {}
+    for _, index in ipairs(step.onCompleteEvents or {}) do
+      done[#done + 1] = events[index]
+    end
+    return done
+  end
+  local enteiExit = stepById(manifest, 3, "entei-exit")
+  Assert.deepEqual(enteiExit.events, {}, "the entei exit wait stages no entry mutation")
+  Assert.equal(enteiExit["until"].kind, "effect", "the entei exit waits on one slide")
+  Assert.equal(enteiExit["until"].effect, "scroll-sub1", "the entei exit waits on the first beast slide")
+  local enteiDone = completionOf(enteiExit)
+  Assert.isTrue(#enteiDone >= 1, "the entei exit hides its plane on completion")
+  local enteiHide = nil
+  for _, event in ipairs(enteiDone) do
+    if event.op == "setLayer" and event.engine == "sub" and event.bgSlot == 1 then
+      enteiHide = event
+    end
+  end
+  Assert.notNil(enteiHide, "the entei exit completion names the first beast plane")
+  Assert.isFalse(enteiHide.visible, "the entei exit completion hides the first beast plane")
+  local rockets = stepById(manifest, 3, "rockets")
+  Assert.deepEqual(rockets.events, {}, "the rocket retile stages no entry mutation")
+  Assert.equal(rockets["until"].kind, "effects", "the rocket retile waits on both beast slides")
+  Assert.deepEqual(
+    rockets["until"].effects,
+    { "scroll-sub1", "scroll-sub2" },
+    "the rocket retile names both exit slides"
+  )
+  local done = completionOf(rockets)
+  local ops = {}
+  for _, event in ipairs(done) do
+    ops[#ops + 1] = event.op
+  end
+  Assert.deepEqual(ops, {
+    "setLayer",
+    "window",
+    "setLayer",
+    "setLayer",
+    "setLayer",
+    "setScrollPosition",
+    "setScrollPosition",
+    "setScrollPosition",
+    "setLayer",
+    "setLayer",
+  }, "the rocket completion hides, swaps, zeroes, then re-enables in order")
+  Assert.isFalse(done[1].visible, "the rocket completion hides the second beast plane first")
+  Assert.equal(done[1].bgSlot, 2, "the rocket completion hides the second beast plane first")
+  local resets = { done[6], done[7], done[8] }
+  for position, reset in ipairs(resets) do
+    Assert.equal(reset.engine, "sub", "rocket reset " .. position .. " targets the sub engine")
+    Assert.equal(reset.bgSlot, position, "rocket reset " .. position .. " names its beast slot")
+    Assert.equal(reset.x, 0, "rocket reset " .. position .. " zeroes its horizontal origin")
+    Assert.equal(reset.y, 0, "rocket reset " .. position .. " zeroes its vertical origin")
+  end
+  Assert.isTrue(done[9].visible and done[10].visible, "the rocket completion re-enables its planes last")
+  local suicune = stepById(manifest, 3, "suicune")
+  Assert.equal(suicune["until"].kind, "duration", "the suicune beat keeps its duration guard")
+  Assert.equal(suicune["until"].ticks, 30, "the suicune beat keeps its thirty-tick hold")
+  local viewport = stepById(manifest, 3, "viewport")
+  Assert.deepEqual(viewport.events, {}, "the viewport beat stages no entry mutation")
+  Assert.equal(viewport["until"].kind, "effect", "the viewport beat waits on the suicune slide")
+  Assert.equal(viewport["until"].effect, "scroll-sub0", "the viewport beat waits on the suicune slide")
+  local viewportTail = stepById(manifest, 3, "viewport-tail")
+  Assert.equal(viewportTail["until"].kind, "effect", "the viewport tail keeps its own scroll guard")
+  Assert.equal(viewportTail["until"].effect, "scroll-sub3", "the viewport tail keeps its own scroll guard")
+end
+
 return RomSuite.fromFacts({
   ["source opening scenes compile to five independent versioned bundles"] = sourceOpeningScenesCompileToFiveIndependentVersionedBundles,
   ["source opening timeline keeps its five-scene transitions and skip gate"] = sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate,
@@ -2326,4 +2403,5 @@ return RomSuite.fromFacts({
   ["strict case guards reject invalid waits and accept eventless conjunctions"] = strictCaseGuardsRejectInvalidWaitsAndAcceptEventlessConjunctions,
   ["strict visual primitives reject malformed records"] = strictVisualPrimitivesRejectMalformedRecords,
   ["compiled scenes emit strict case guards without pseudo waits"] = compiledScenesEmitStrictCaseGuardsWithoutPseudoWaits,
+  ["scene 3 beast exits guard the rocket retile at the absolute origin"] = scene3BeastExitsGuardTheRocketRetileAtAbsoluteOrigin,
 })

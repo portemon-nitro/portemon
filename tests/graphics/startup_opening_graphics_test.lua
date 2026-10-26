@@ -6576,6 +6576,174 @@ local function physical_top_neutral_resets_only_the_mapped_engine(scope)
   movie:dispose()
 end
 
+-- Scene 3 holds each beast panel through its exit slide and swaps all
+-- three rocket tilemaps at the absolute origin: entei stays staged while
+-- its slide runs, the retile waits for both slides, the guarded
+-- completion lands new art with zeroed origins before re-enabling its
+-- planes, and the suicune/viewport tail keeps its own guards.
+local function snapshotBeastPanels(movie)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local panels = {}
+  for _, bgSlot in ipairs({ 1, 2, 3 }) do
+    local background = assert(slot.backgrounds.sub[bgSlot], "scene 3 stages sub plane " .. bgSlot)
+    panels[bgSlot] = {
+      image = background.image,
+      scrollX = background.scrollX,
+      scrollY = background.scrollY,
+      visible = background.visible,
+    }
+  end
+  return panels
+end
+
+local function beastExitEffectDone(movie, name)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local state = slot.effects[name]
+  return state ~= nil and state.done == true
+end
+
+local function beast_exits_guard_the_rocket_retile_at_the_absolute_origin(scope, versionId)
+  local scenes, cacheFs = loadRomPackWithFillers(versionId, {})
+  local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
+  advanceToSceneStep(movie, 3, "entei-exit", 20000)
+  local entryPanels = snapshotBeastPanels(movie)
+  local seen = {}
+  local phases = {}
+  local guard = 0
+  while guard < 800 and not movie:isFinished() do
+    local before = currentStepId(movie)
+    phases[before] = true
+    movie:updateFixed()
+    guard = guard + 1
+    local slot = assert(movie.current, "the running movie owns its current slot")
+    seen[#seen + 1] = {
+      before = before,
+      step = currentStepId(movie),
+      elapsed = slot.stepElapsed,
+      panels = snapshotBeastPanels(movie),
+      firstDone = beastExitEffectDone(movie, "scroll-sub1"),
+      secondDone = beastExitEffectDone(movie, "scroll-sub2"),
+      suicuneDone = beastExitEffectDone(movie, "scroll-sub0"),
+      bg0Visible = slot.backgrounds.sub[0].visible,
+      pan12 = slot.scrolls["sub:1"] ~= nil and slot.scrolls["sub:2"] ~= nil,
+      pan3 = slot.scrolls["sub:3"] ~= nil,
+    }
+    if before == "viewport-tail" then
+      break
+    end
+  end
+  for _, phase in ipairs({ "entei-exit", "rockets", "suicune", "viewport", "viewport-tail" }) do
+    Assert.isTrue(phases[phase] == true, "playback walks the scene 3 " .. phase .. " beat")
+  end
+  for _, observation in ipairs(seen) do
+    -- The guard-satisfied update already carries the hide while naming
+    -- the old case as its source, so only pending updates prove staging.
+    if observation.before == "entei-exit" and observation.step == "entei-exit" then
+      Assert.isTrue(
+        observation.panels[1].visible,
+        "entei stays staged while its exit slide runs"
+      )
+      Assert.equal(
+        observation.panels[1].image,
+        entryPanels[1].image,
+        "entei keeps its panel until the exit wait passes"
+      )
+    end
+  end
+  local enteiHideAt = nil
+  for index, observation in ipairs(seen) do
+    if observation.before == "entei-exit" and observation.step == "raikou" then
+      enteiHideAt = index
+      break
+    end
+  end
+  Assert.notNil(enteiHideAt, "the entei exit hands the raikou beat its hide")
+  Assert.isFalse(seen[enteiHideAt].panels[1].visible, "the entei hide lands on the guard-satisfied update")
+  local rocketEntry = nil
+  for _, observation in ipairs(seen) do
+    if observation.before == "rockets" then
+      rocketEntry = observation.panels
+      break
+    end
+  end
+  Assert.notNil(rocketEntry, "the rocket beat starts its guard")
+  local retileAt = nil
+  for index, observation in ipairs(seen) do
+    if observation.panels[1].image ~= rocketEntry[1].image then
+      retileAt = index
+      break
+    end
+  end
+  Assert.notNil(retileAt, "the rocket tilemaps land once both slides finish")
+  local retile = seen[retileAt]
+  Assert.equal(retile.before, "rockets", "the rocket retile fires inside its own case")
+  Assert.equal(retile.step, "suicune", "the rocket update selects the following beat")
+  Assert.equal(retile.elapsed, 0, "the following beat stays undispatched on the retile update")
+  Assert.isTrue(retile.firstDone, "the first slide finishes before the guarded retile")
+  Assert.isTrue(retile.secondDone, "the second slide finishes before the guarded retile")
+  local heldPartial = false
+  for index = 1, retileAt - 1 do
+    local observation = seen[index]
+    if observation.before == "rockets" and observation.firstDone and not observation.secondDone then
+      heldPartial = true
+      Assert.equal(
+        observation.panels[1].image,
+        rocketEntry[1].image,
+        "the retile stays absent while only the first slide has finished"
+      )
+      Assert.equal(
+        observation.panels[2].image,
+        rocketEntry[2].image,
+        "the second panel stays staged while its slide still runs"
+      )
+    end
+  end
+  Assert.isTrue(heldPartial, "the rocket guard observes a partial slide completion")
+  for _, bgSlot in ipairs({ 1, 2, 3 }) do
+    Assert.isTrue(
+      retile.panels[bgSlot].image ~= rocketEntry[bgSlot].image,
+      "the rocket completion swaps sub plane " .. bgSlot
+    )
+    Assert.equal(retile.panels[bgSlot].scrollX, 0, "the rocket completion zeroes sub plane " .. bgSlot .. " x")
+    Assert.equal(retile.panels[bgSlot].scrollY, 0, "the rocket completion zeroes sub plane " .. bgSlot .. " y")
+  end
+  Assert.isTrue(retile.panels[1].visible, "the rocket completion re-enables the first plane")
+  Assert.isTrue(retile.panels[2].visible, "the rocket completion re-enables the second plane")
+  local viewportPending = false
+  local viewportAt = nil
+  for index, observation in ipairs(seen) do
+    if observation.before == "viewport" then
+      if not observation.suicuneDone then
+        viewportPending = true
+      end
+      if observation.step == "viewport-tail" and viewportAt == nil then
+        viewportAt = index
+      end
+    end
+  end
+  Assert.isTrue(viewportPending, "the viewport beat waits out the suicune slide")
+  Assert.notNil(viewportAt, "the viewport beat hands the tail its pans")
+  Assert.isTrue(seen[viewportAt].suicuneDone, "the viewport completion fires on the suicune slide")
+  Assert.isFalse(seen[viewportAt].bg0Visible, "the viewport completion retires the rival plane")
+  Assert.isTrue(seen[viewportAt].pan12, "the viewport completion starts the first two pans")
+  Assert.equal(seen[viewportAt].elapsed, 0, "the viewport tail stays undispatched on the handoff update")
+  local tailEntryAt = nil
+  for index, observation in ipairs(seen) do
+    if observation.before == "viewport-tail" then
+      tailEntryAt = index
+      break
+    end
+  end
+  Assert.notNil(tailEntryAt, "the viewport tail dispatches on its own update")
+  Assert.isTrue(seen[tailEntryAt].pan3, "the viewport tail starts the third pan on its own beat")
+  movie:dispose()
+end
+
+local function sourced_beast_exits_guard_the_rocket_retile_for_edition(scope, context)
+  local versionId = selectedVersionId(context)
+  beast_exits_guard_the_rocket_retile_at_the_absolute_origin(scope, versionId)
+end
+
 local T = GraphicsSmoke.suite({
   ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
@@ -6593,6 +6761,7 @@ local T = GraphicsSmoke.suite({
   ["heartgold scene two and five wrap is blocked without a dump"] = heartgold_scene_two_and_five_wrap_is_blocked_without_a_dump,
   ["swapped viewports follow the active image extents"] = swapped_viewports_follow_the_active_image_extents,
   ["sourced scroll offsets follow absolute source ticks"] = sourced_scroll_offsets_for_edition,
+  ["sourced beast exits guard the rocket retile at the absolute origin"] = sourced_beast_exits_guard_the_rocket_retile_for_edition,
   ["heartgold scroll offsets are blocked without a dump"] = heartgold_scroll_offsets_are_blocked_without_a_dump,
   ["soulsilver source pan edges match wrapped native art"] = soulsilver_source_pan_edges_match_wrapped_native_art,
   ["heartgold pan edges are blocked without a dump"] = heartgold_pan_edges_are_blocked_without_a_dump,

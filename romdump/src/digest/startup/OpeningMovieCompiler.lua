@@ -1493,6 +1493,13 @@ local function scene3Program(clips, layers)
   for _, beast in ipairs({ "beast0", "beast1", "beast2" }) do
     rocketsDone[#rocketsDone + 1] = showPanel("rockets", 0, beast)
   end
+  -- The three rocket tilemaps are staged at the absolute origin: the
+  -- inherited exit-slide offsets die with the retile, before either
+  -- plane comes back on.
+  for _, bgSlot in ipairs({ 1, 2, 3 }) do
+    events[#events + 1] = event("setScrollPosition", "rockets", 0, { engine = "sub", bgSlot = bgSlot, x = 0, y = 0 })
+    rocketsDone[#rocketsDone + 1] = #events
+  end
   setPlaneVisible(events, planes, layers, "rockets", 0, "sub", 1, true)
   rocketsDone[#rocketsDone + 1] = #events
   setPlaneVisible(events, planes, layers, "rockets", 0, "sub", 2, true)
