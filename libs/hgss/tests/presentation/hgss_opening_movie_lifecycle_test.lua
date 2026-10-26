@@ -123,7 +123,6 @@ local function sceneEvents(sceneNumber)
       },
       { op = "waitTicks", stepId = "intro", atStepTick = 0, ticks = 10 },
       { op = "startEmitters", stepId = "starters", atStepTick = 0, group = "grass", emitters = { 6, 7, 8 } },
-      { op = "waitEffects", stepId = "starters", atStepTick = 0, effects = { "emitters-grass" } },
       { op = "waitTicks", stepId = "outro", atStepTick = 0, ticks = 10 },
       { op = "finish", stepId = "outro", atStepTick = 0 },
     }
@@ -207,8 +206,8 @@ local function sceneSteps(sceneNumber)
   elseif sceneNumber == 4 then
     return {
       { id = "intro", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 10 } },
-      { id = "starters", events = { 3, 4 }, ["until"] = { kind = "effect", effect = "emitters-grass" } },
-      { id = "outro", events = { 5, 6 }, ["until"] = { kind = "duration", ticks = 10 } },
+      { id = "starters", events = { 3 }, ["until"] = { kind = "effect", effect = "emitters-grass" } },
+      { id = "outro", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 10 } },
     }
   end
   return {
@@ -541,8 +540,9 @@ function T.rejects_malformed_event_operands_at_construction()
   local foreignSteps = { { id = "open", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 25 } } }
   strictLoadSceneTwo(withSceneTwo(foreignSkip, foreignSteps))
   local emptyWait = sceneEvents(2)
-  emptyWait[2] = { op = "waitEffects", stepId = "open", atStepTick = 0, effects = {} }
-  strictLoadSceneTwo(withSceneTwo(emptyWait))
+  local emptySteps = sceneSteps(2)
+  emptySteps[1]["until"] = { kind = "effects", effects = {} }
+  strictLoadSceneTwo(withSceneTwo(emptyWait, emptySteps))
   local danglingSteps = {
     { id = "open", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 25 } },
     { id = "close", events = { 3, 4 }, ["until"] = { kind = "duration", ticks = 15 } },
@@ -1173,7 +1173,13 @@ function T.finished_wipe_brightness_holds_only_for_the_retail_kinds_until_the_ne
       movie:draw()
       Assert.equal(subSpans(baseline), 0, "kind " .. kind .. " never clips the idle engine")
     end
+    -- A newly selected case arms its wipe on the following update, so the
+    -- first observation may already carry one elapsed tick: advance only
+    -- until the eighth edge instead of assuming a zero start.
     for _ = 1, 8 do
+      if assert(slot.wipe, "the wipe program stays live through its eighth tick").elapsed >= 8 then
+        break
+      end
       movie:updateFixed()
     end
     Assert.equal(slot.wipe.elapsed, 8, "kind " .. kind .. " reaches its final edge on its eighth tick")
@@ -1237,8 +1243,8 @@ function T.scene_five_shutter_opens_main_center_out_before_sub_bottom_up_and_wai
       timeline = {
         steps = {
           { id = "wipe", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 18 } },
-          { id = "scroll", events = { 5 }, ["until"] = { kind = "effect", effect = "scene5-shutter" } },
-          { id = "tail", events = { 6, 7 }, ["until"] = { kind = "duration", ticks = 5 } },
+          { id = "scroll", events = {}, ["until"] = { kind = "effect", effect = "scene5-shutter" } },
+          { id = "tail", events = { 5, 6 }, ["until"] = { kind = "duration", ticks = 5 } },
         },
         events = {
           { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "lower" },
@@ -1256,7 +1262,6 @@ function T.scene_five_shutter_opens_main_center_out_before_sub_bottom_up_and_wai
             framesPerStep = 1,
             effect = "scene5-shutter",
           },
-          { op = "waitEffects", stepId = "scroll", atStepTick = 0, effects = { "scene5-shutter" } },
           { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 },
           { op = "finish", stepId = "tail", atStepTick = 0 },
         },
@@ -1273,15 +1278,18 @@ function T.scene_five_shutter_opens_main_center_out_before_sub_bottom_up_and_wai
     ticks = ticks + 1
   end
   Assert.equal(movie:sceneNumber(), 5, "playback reaches the shutter scene")
+  -- The newly entered case first runs on the following update: its entry
+  -- arms the ordered line shutter there and opens the first main step.
+  movie:updateFixed()
   local slot = assert(movie.current, "the running movie owns its current slot")
   local step = assert(slot.manifest.timeline.steps[slot.stepIndex], "the movie stays on a known step")
   Assert.equal(step.id, "wipe", "the shutter scene opens on its wipe step")
   local shutter = assert(slot.shutter, "the wipe step arms the ordered line shutter")
   Assert.equal(shutter.active, "main", "the shutter opens the main engine first")
-  Assert.equal(shutter.main.elapsed, 0, "the main shutter starts closed")
+  Assert.equal(shutter.main.elapsed, 1, "the dispatch update opens the first main step")
   Assert.equal(shutter.sub.elapsed, 0, "the sub shutter starts closed")
   Assert.isFalse(slot.effects["scene5-shutter"].done, "the shutter wait starts pending")
-  for _ = 1, 9 do
+  for _ = 1, 8 do
     movie:updateFixed()
   end
   Assert.equal(shutter.main.elapsed, 9, "nine ticks open nine main steps")

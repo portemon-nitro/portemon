@@ -589,8 +589,11 @@ DerivedAssetContract.startupTitle = {
 -- and asset references under its own scene root. A bundle from another
 -- scene or edition never reads as ready. The v1 record could not represent
 -- engine planes or simultaneous slots, so it rebuilds instead of aliasing.
+-- The v6 record steps carry one source-case guard (a positive duration, a
+-- single named effect, or a conjunction of named effects) with optional
+-- same-case completion events; the v5 pseudo-wait marker is not accepted.
 DerivedAssetContract.startupOpeningScene = {
-  schema = "g4-startup-opening-scene-v5",
+  schema = "g4-startup-opening-scene-v6",
   tickRate = 30,
 }
 

@@ -43,7 +43,7 @@ function T.scene_sources_reject_bad_scenes_and_editions()
 end
 
 function T.scene_sources_keep_five_bounded_scenes_at_the_source_tick_rate()
-  Assert.equal(SceneSources.SCHEMA, "g4-startup-opening-scene-v5", "the scene schema is pinned")
+  Assert.equal(SceneSources.SCHEMA, "g4-startup-opening-scene-v6", "the scene schema is pinned")
   Assert.equal(SceneSources.TICK_RATE, 30, "the scenes run at the retail 30 Hz source frame rate")
   Assert.equal(SceneSources.PARTICLE_ARCHIVE, "NARC_a_0_5_9", "the particle archive is pinned")
   Assert.equal(SceneSources.PARTICLE_MEMBER, 4, "the starter particle member is pinned")
@@ -379,7 +379,7 @@ function T.scene_sources_alias_the_current_opening_scene_contract()
   )
   Assert.equal(
     SceneSources.SCHEMA,
-    "g4-startup-opening-scene-v5",
+    "g4-startup-opening-scene-v6",
     "the scene sources carry the current native scene shape"
   )
   Assert.equal(SceneSources.TICK_RATE, 30, "the scenes keep the retail 30 Hz source tick rate")

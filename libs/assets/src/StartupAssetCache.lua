@@ -589,7 +589,6 @@ local OPENING_OPS = {
   setScreenMapping = true,
   setFade = true,
   waitTicks = true,
-  waitEffects = true,
   enableSkip = true,
   finish = true,
 }
@@ -1014,15 +1013,6 @@ local function validateOpeningEventOperands(event, sceneNumber)
     if event.mainPhysical ~= "upper" and event.mainPhysical ~= "lower" then
       return nil, "opening scene screen mapping names no physical screen"
     end
-  elseif op == "waitEffects" then
-    if type(event.effects) ~= "table" or #event.effects == 0 then
-      return nil, "opening scene effect wait names no started effect"
-    end
-    for _, name in ipairs(event.effects) do
-      if type(name) ~= "string" or name == "" then
-        return nil, "opening scene effect wait names no started effect"
-      end
-    end
   elseif op == "enableSkip" then
     if sceneNumber ~= 1 then
       return nil, "only opening scene 1 opens the movie skip gate"
@@ -1085,7 +1075,6 @@ local OPENING_EVENT_KEYS = {
   startEmitters = { group = true, emitters = true },
   setScreenMapping = { mainPhysical = true },
   setPalette = { ticks = true },
-  waitEffects = { effects = true },
   enableSkip = {},
   finish = {},
 }
@@ -1099,7 +1088,7 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
   if #events == 0 then
     return nil, invalid("opening scene timeline carries no events", path)
   end
-  local started, defined, shown = {}, {}, {}
+  local defined, shown = {}, {}
   local skipCount = 0
   for _, event in ipairs(events) do
     if
@@ -1132,12 +1121,6 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
     local ok, reason = validateOpeningEventOperands(event, sceneNumber)
     if not ok then
       return nil, invalid(assert(reason, "event rejection names its cause"), path)
-    end
-    if EFFECT_START_OPS[event.op] and type(event.effect) == "string" then
-      started[event.effect] = true
-    end
-    if event.op == "startEmitters" then
-      started["emitters-" .. event.group] = true
     end
     if event.op == "setSpriteClip" then
       defined[event.instanceId] = true
@@ -1182,63 +1165,129 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
       return nil, invalid("opening scene shows an instance it never assigns", path)
     end
   end
-  local function effectResolves(name)
-    if started[name] == true or clipIds[name] == true then
-      return true
+  -- One source case owns its entry events plus the completion events it
+  -- fires when its guard passes. Every event belongs to exactly one owner:
+  -- an index named twice (or never) is a malformed step graph.
+  local covered = {}
+  local function claimEvent(step, index)
+    if type(index) ~= "number" or index % 1 ~= 0 or index < 1 or index > #events or events[index].stepId ~= step.id then
+      return nil, invalid("opening scene step references no owned event", path)
     end
-    return nil, invalid("opening scene effect wait has no started effect or compiled clip", path)
+    if covered[index] ~= nil then
+      return nil, invalid("opening scene event is owned twice", path)
+    end
+    covered[index] = step.id
+    return true
   end
-  for _, event in ipairs(events) do
-    if event.op == "waitEffects" then
-      for _, name in ipairs(event.effects) do
-        local ok, err = effectResolves(name)
-        if not ok then
-          return nil, err
+  -- Names a waitable the listed events start: a timed effect identity, an
+  -- emitter group identity, or a compiled clip assignment.
+  local function startsOf(indices)
+    local found, assigned = {}, {}
+    for _, index in ipairs(indices) do
+      local event = events[index]
+      if type(event) == "table" then
+        if EFFECT_START_OPS[event.op] == true and type(event.effect) == "string" then
+          found[event.effect] = true
+        elseif event.op == "startEmitters" and type(event.group) == "string" then
+          found["emitters-" .. event.group] = true
+        elseif event.op == "setSpriteClip" and type(event.clipId) == "string" then
+          assigned[event.clipId] = true
         end
       end
     end
+    return found, assigned
   end
-  local covered = {}
+  local startedSoFar, assignedSoFar = {}, {}
   for _, step in ipairs(timeline.steps) do
     if
       type(step) ~= "table"
       or type(step.id) ~= "string"
       or type(step.events) ~= "table"
-      or #step.events == 0
+      or (step.onCompleteEvents ~= nil and type(step.onCompleteEvents) ~= "table")
       or type(step["until"]) ~= "table"
     then
       return nil, invalid("opening scene step is malformed", path)
     end
-    if step["until"].kind == "duration" then
-      if not isPositiveInteger(step["until"].ticks) then
-        return nil, invalid("opening scene step carries no source duration", path)
-      end
-    elseif step["until"].kind == "effect" then
-      if type(step["until"].effect) ~= "string" or step["until"].effect == "" then
-        return nil, invalid("opening scene step waits on no named effect", path)
-      end
-      local ok, err = effectResolves(step["until"].effect)
+    local completion = step.onCompleteEvents or {}
+    for _, index in ipairs(step.events) do
+      local ok, err = claimEvent(step, index)
       if not ok then
         return nil, err
+      end
+    end
+    for _, index in ipairs(completion) do
+      local ok, err = claimEvent(step, index)
+      if not ok then
+        return nil, err
+      end
+    end
+    -- The current case may wait on its own entry starts: they fire on
+    -- dispatch before the guard is ever evaluated. Completion events fire
+    -- only after the guard passes, so they never satisfy their own case;
+    -- they join the started set for later cases only. A later step never
+    -- satisfies the current wait.
+    local entryFound, entryAssigned = startsOf(step.events)
+    for name in pairs(entryFound) do
+      startedSoFar[name] = true
+    end
+    for clipId in pairs(entryAssigned) do
+      assignedSoFar[clipId] = true
+    end
+    local function guardResolves(name)
+      if startedSoFar[name] == true then
+        return true
+      end
+      if clipIds[name] == true and assignedSoFar[name] == true then
+        return true
+      end
+      return nil, invalid("opening scene effect wait has no started effect or compiled clip", path)
+    end
+    local finish = step["until"]
+    if finish.kind == "duration" then
+      if not isPositiveInteger(finish.ticks) then
+        return nil, invalid("opening scene step carries no source duration", path)
+      end
+    elseif finish.kind == "effect" then
+      if type(finish.effect) ~= "string" or finish.effect == "" then
+        return nil, invalid("opening scene step waits on no named effect", path)
+      end
+      local ok, err = guardResolves(finish.effect)
+      if not ok then
+        return nil, err
+      end
+    elseif finish.kind == "effects" then
+      if type(finish.effects) ~= "table" or #finish.effects == 0 then
+        return nil, invalid("opening scene step waits on no named effect", path)
+      end
+      local distinct = {}
+      for _, name in ipairs(finish.effects) do
+        if type(name) ~= "string" or name == "" then
+          return nil, invalid("opening scene step waits on no named effect", path)
+        end
+        if distinct[name] == true then
+          return nil, invalid("opening scene step waits twice on one effect", path)
+        end
+        distinct[name] = true
+        local ok, err = guardResolves(name)
+        if not ok then
+          return nil, err
+        end
       end
     else
       return nil, invalid("opening scene step completion is malformed", path)
     end
-    for _, index in ipairs(step.events) do
-      if
-        type(index) ~= "number"
-        or index % 1 ~= 0
-        or index < 1
-        or index > #events
-        or events[index].stepId ~= step.id
-      then
-        return nil, invalid("opening scene step references no owned event", path)
-      end
-      covered[index] = true
+    -- Completion starts run with the guarded actions once the predicate
+    -- passes, so later cases may wait on them but the current case cannot.
+    local completionFound, completionAssigned = startsOf(completion)
+    for name in pairs(completionFound) do
+      startedSoFar[name] = true
+    end
+    for clipId in pairs(completionAssigned) do
+      assignedSoFar[clipId] = true
     end
   end
   for index = 1, #events do
-    if not covered[index] then
+    if covered[index] == nil then
       return nil, invalid("opening scene event is unreachable from its steps", path)
     end
   end
@@ -1246,7 +1295,7 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
 end
 
 -- One independently staged opening-movie scene: strict source-independent
--- g4-startup-opening-scene-v5 package with numbered scene, edition, 30Hz
+-- g4-startup-opening-scene-v6 package with numbered scene, edition, 30Hz
 -- duration, per-engine BG slots with priority and alternate tilemaps, sprite
 -- clips with frame offsets, model descriptors and animations where used,
 -- starter emitter records where used, and the closed step-clocked event

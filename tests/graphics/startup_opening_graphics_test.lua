@@ -3082,6 +3082,9 @@ local function every_scene_paints_its_authored_beat_on_both_engines(scope, conte
     return main
   end
   advanceToSceneStep(movie, 1, "sunrise", 20000)
+  -- The reached case first runs on the following update: dispatch the
+  -- sunrise entry before sampling its lit beat.
+  movie:updateFixed()
   sampleBeat("scene 1 sunrise")
   movie:draw()
   local firstDraw = sourceBytes(scope, movie.mainCanvas)
@@ -3106,7 +3109,9 @@ local function every_scene_paints_its_authored_beat_on_both_engines(scope, conte
   advanceToSceneStep(movie, 4, "starter-cyndaquil", 20000)
   advance(movie, 3)
   sampleBeat("scene 4 starter")
-  advanceToSceneStep(movie, 5, "scroll", 20000)
+  advanceToSceneStep(movie, 5, "wait", 20000)
+  -- The scrolled panorama starts once the ordered shutter and its cleanup
+  -- complete, so sample the running scroll programs on the wait beat.
   advance(movie, 5)
   movie:draw()
   local scrollBefore = sourceBytes(scope, movie.mainCanvas)
@@ -3222,17 +3227,20 @@ local function sourced_scroll_offsets_follow_absolute_source_ticks(scope, versio
   local scenes, cacheFs = loadRomPackWithFillers(versionId, { 3, 4, 5 })
   local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
   advanceToSceneStep(movie, 2, "flyin", 20000)
-  -- The sourced flyin opens with two immediate placements plus two
-  -- open-ended drifts: main BG0 sits 192 down, main BG1 320 down, and
-  -- both drifts add 64 every fixed tick.
+  -- The reached case first runs on the following update: displace the
+  -- entry programs there, then sample the dispatched frame.
+  movie:updateFixed()
+  -- The sourced flyin opens with two immediate placements plus one
+  -- open-ended drift tick: main BG0 sits 192 down, main BG1 320 down,
+  -- and both drifts add 64 every fixed tick.
   local entry = currentScrollOffsets(movie)
   Assert.equal(entry.main0, 192, "the immediate main BG0 placement lands on the first frame")
   Assert.equal(entry.main1, 320, "the immediate main BG1 placement lands on the first frame")
-  Assert.equal(entry.main2, 0, "the open-ended drift starts at its origin")
+  Assert.equal(entry.main2, 64, "the open-ended drift advances on its dispatch update")
   movie:draw()
   local drawn = currentScrollOffsets(movie)
   Assert.equal(drawn.main0, 192, "a host draw never resamples the immediate placement")
-  for _ = 1, 10 do
+  for _ = 1, 9 do
     movie:updateFixed()
     movie:draw()
   end
@@ -3492,6 +3500,9 @@ local function sunrise_blend_uses_both_source_masks(scope, versionId)
   local scenes, cacheFs = loadRomPackWithFillers(versionId, { 3, 4, 5 })
   local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
   advanceToSceneStep(movie, 1, "scroll", 20000)
+  -- The reached case first runs on the following update: dispatch the
+  -- scroll entry so the blend programs own their engines before sampling.
+  movie:updateFixed()
   local slot = assert(movie.current, "the running movie owns its current slot")
   local mainProgram = assert(slot.blendPrograms.main, "the sunrise step blends the main engine")
   local subProgram = assert(slot.blendPrograms.sub, "the sunrise step blends the sub engine")
@@ -3594,9 +3605,10 @@ local function sourced_panorama_pixels_match_wrapped_source_art(scope, versionId
   local scenes, cacheFs = loadRomPackWithFillers(versionId, { 3, 4 })
   local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
   advanceToSceneStep(movie, 5, "scroll", 20000)
-  -- The wipe-step cover retires a few ticks into the scroll beat, so the
-  -- lit baseline is sampled once the engine targets show the panorama.
-  for _ = 1, 10 do
+  -- The wipe-step programs retire with the ordered shutter, so the lit
+  -- baseline is sampled once the engine targets show the panorama and
+  -- before the concurrent white fade begins.
+  for _ = 1, 30 do
     movie:updateFixed()
     movie:draw()
   end
@@ -3606,8 +3618,9 @@ local function sourced_panorama_pixels_match_wrapped_source_art(scope, versionId
     regionLit(startMain, 256, 0, 255, 0, 191) > 0.2,
     "the scroll beat lights the main source target"
   )
-  -- The sourced panorama pans every voiced panel across 73 fixed ticks.
-  for _ = 1, 60 do
+  -- The sourced panorama pans every voiced panel across its run; sample
+  -- the moved frame while the scroll programs still own the targets.
+  for _ = 1, 10 do
     movie:updateFixed()
     movie:draw()
   end
@@ -4216,25 +4229,28 @@ local function soulsilver_source_pan_edges_match_wrapped_native_art(scope, conte
     [3] = { 0, 0 },
   }, {})
   movie:dispose()
-  -- Scene 5: the late panorama frame samples both tall maps near the end
-  -- of their 73-tick run. The scene carries no sprites.
+  -- Scene 5: the panorama frame samples both tall maps mid-run, before
+  -- the concurrent white fade begins at the twentieth scroll tick.
+  -- The scene carries no sprites.
   local lateScenes, lateCache = loadRomPackWithFillers(versionId, { 3, 4 })
   local late = openMovieWithCache(scope, lateScenes, lateCache, versionId, 512, 384, "single")
   advanceToSceneStep(late, 5, "scroll", 20000)
-  advance(late, 70)
+  -- The scroll programs start once the ordered shutter and its cleanup
+  -- complete; nineteen ticks later the run is still unfaded.
+  advance(late, 41)
   local lateSlot = assert(late.current, "the late movie owns its current slot")
-  Assert.equal(lateSlot.backgrounds.main[1].scrollY, -61, "the late main BG1 holds its upward run")
-  Assert.equal(lateSlot.backgrounds.main[2].scrollY, 221, "the late main BG2 holds 160 plus its downward run")
-  Assert.equal(lateSlot.backgrounds.sub[1].scrollY, 61, "the late sub BG1 holds its downward run")
-  Assert.equal(lateSlot.backgrounds.sub[2].scrollY, 221, "the late sub BG2 holds 160 plus its downward run")
+  Assert.equal(lateSlot.backgrounds.main[1].scrollY, -16, "the late main BG1 holds its upward run")
+  Assert.equal(lateSlot.backgrounds.main[2].scrollY, 176, "the late main BG2 holds 160 plus its downward run")
+  Assert.equal(lateSlot.backgrounds.sub[1].scrollY, 16, "the late sub BG1 holds its downward run")
+  Assert.equal(lateSlot.backgrounds.sub[2].scrollY, 176, "the late sub BG2 holds 160 plus its downward run")
   late:draw()
   assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "main", "scene 5 late", {
-    [1] = { 0, -61 },
-    [2] = { 0, 221 },
+    [1] = { 0, -16 },
+    [2] = { 0, 176 },
   }, {})
   assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "sub", "scene 5 late", {
-    [1] = { 0, 61 },
-    [2] = { 0, 61 + 160 },
+    [1] = { 0, 16 },
+    [2] = { 0, 16 + 160 },
   }, {})
   late:dispose()
 end
@@ -4781,8 +4797,8 @@ local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bot
   }
   local steps = {
     { id = "wipe", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 18 } },
-    { id = "scroll", events = { 3 }, ["until"] = { kind = "effect", effect = "scene5-shutter" } },
-    { id = "tail", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 5 } },
+    { id = "scroll", events = {}, ["until"] = { kind = "effect", effect = "scene5-shutter" } },
+    { id = "tail", events = { 3, 4 }, ["until"] = { kind = "duration", ticks = 5 } },
   }
   local events = {
     { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "upper" },
@@ -4798,7 +4814,6 @@ local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bot
       framesPerStep = 1,
       effect = "scene5-shutter",
     },
-    { op = "waitEffects", stepId = "scroll", atStepTick = 0, effects = { "scene5-shutter" } },
     { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 },
     { op = "finish", stepId = "tail", atStepTick = 0 },
   }
@@ -4839,18 +4854,25 @@ local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bot
   while movie:sceneNumber() < 5 do
     movie:updateFixed()
   end
+  -- The newly entered case first runs on the following update: the wipe
+  -- entry arms the shutter there and opens its first center step at once.
+  movie:updateFixed()
   movie:draw()
   local mainShut = sourceBytes(scope, movie.mainCanvas)
   local subShut = sourceBytes(scope, movie.subCanvas)
   Assert.isTrue(
-    gridAllBlack(mainShut, 256, columns, { 8, 48, 96, 144, 180 }),
-    "the shutter starts with main fully masked black"
+    gridAllBlack(mainShut, 256, columns, { 8, 48, 144, 180 }),
+    "the dispatched shutter still masks the outer rows"
+  )
+  Assert.isTrue(
+    gridHasNonBlack(mainShut, 256, columns, { 96 }),
+    "the first dispatched step opens the center band"
   )
   Assert.isTrue(
     gridAllBlack(subShut, 256, columns, { 8, 48, 96, 144, 180 }),
     "the shutter starts with sub fully masked black"
   )
-  advance(movie, 9)
+  advance(movie, 8)
   movie:draw()
   local mainMid = sourceBytes(scope, movie.mainCanvas)
   local subMid = sourceBytes(scope, movie.subCanvas)
@@ -5132,18 +5154,24 @@ local function soulsilver_scene_five_shutter_runs_main_then_sub_across_layouts(s
   }) do
     local movie = openMovie(scope, "soulsilver", layout.width, layout.height, layout.kind)
     advanceToSceneStep(movie, 5, "wipe", 20000)
+    -- The newly entered case first runs on the following update: the wipe
+    -- entry arms the shutter there and opens its first center step.
+    movie:updateFixed()
     movie:draw()
     local shutMain = sourceBytes(scope, movie.mainCanvas)
     local shutSub = sourceBytes(scope, movie.subCanvas)
-    for _, y in ipairs({ 8, 48, 96, 144, 180 }) do
+    -- The dispatched shutter still masks the outer rows on both engines;
+    -- the first center step is already open, so the middle row is not
+    -- pinned masked here (the midway sample below covers the opening).
+    for _, y in ipairs({ 8, 48, 144, 180 }) do
       for _, x in ipairs(columns) do
         local r, g, b = pixelOf(shutMain, 256, x, y)
-        assertSameColor(r, g, b, 0, 0, 0, 0.08, "the sourced shutter starts with main fully masked")
+        assertSameColor(r, g, b, 0, 0, 0, 0.08, "the sourced shutter starts with main masked")
         local sr, sg, sb = pixelOf(shutSub, 256, x, y)
-        assertSameColor(sr, sg, sb, 0, 0, 0, 0.08, "the sourced shutter starts with sub fully masked")
+        assertSameColor(sr, sg, sb, 0, 0, 0, 0.08, "the sourced shutter starts with sub masked")
       end
     end
-    advance(movie, 9)
+    advance(movie, 8)
     movie:draw()
     local main = sourceBytes(scope, movie.mainCanvas)
     local sub = sourceBytes(scope, movie.subCanvas)
@@ -5585,7 +5613,10 @@ local function sourced_wrap_stays_bounded_without_per_draw_quads(scope, versionI
   local lateScenes, lateCache = loadRomPackWithFillers(versionId, { 3, 4 })
   local late = openMovieWithCache(scope, lateScenes, lateCache, versionId, 512, 384, "single")
   advanceToSceneStep(late, 5, "scroll", 20000)
-  advance(late, 70)
+  -- The scroll programs start once the ordered shutter and its cleanup
+  -- complete; sample the running panorama before the concurrent white
+  -- fade at the twentieth scroll tick washes the comparison.
+  advance(late, 41)
   late:draw()
   assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "main", "scene 5 late wrap", liveEngineOffsets(late, "main"), {})
   assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "sub", "scene 5 late wrap", liveEngineOffsets(late, "sub"), {})
@@ -5798,6 +5829,286 @@ local function heartgold_title_placement_is_blocked_without_a_dump(scope, contex
   title_legend_carries_its_retail_placement(scope, "heartgold")
   title_sparkle_shares_the_retail_placement(scope, "heartgold")
 end
+-- One retail case per 30 Hz fixed update: four one-dispatch cases (appear,
+-- parallel scroll starts, an effect wait, and a screen flip carrying the
+-- movie finish) must each occupy their own update, and the next scene entry
+-- must not dispatch on the finishing update.
+local function source_cases_dispatch_one_per_fixed_update(scope)
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local root1 = sceneArtRoot(1)
+  local base1 = root1 .. "layers/case-base.png"
+  local sub1 = root1 .. "layers/case-sub.png"
+  local root2 = sceneArtRoot(2)
+  local base2 = root2 .. "layers/case-base.png"
+  local sub2 = root2 .. "layers/case-sub.png"
+  local first = compositeScene(
+    1,
+    { compositeLayer(0, base1, 256, 192) },
+    { compositeLayer(0, sub1, 256, 192) },
+    {},
+    { seed = 0, emitters = {} },
+    {
+      { id = "appear", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 1 } },
+      { id = "start", events = { 3, 4 }, ["until"] = { kind = "duration", ticks = 1 } },
+      { id = "wait", events = { 5 }, ["until"] = { kind = "effect", effect = "scroll-main" } },
+      { id = "flip", events = { 6, 7, 8, 9 }, ["until"] = { kind = "duration", ticks = 1 } },
+    },
+    {
+      {
+        op = "setLayer",
+        stepId = "appear",
+        atStepTick = 0,
+        engine = "main",
+        bgSlot = 0,
+        image = base1,
+        visible = true,
+        priority = 0,
+      },
+      { op = "waitTicks", stepId = "appear", atStepTick = 0, ticks = 1 },
+      {
+        op = "setScroll",
+        stepId = "start",
+        atStepTick = 0,
+        engine = "main",
+        bgSlot = 0,
+        dx = 8,
+        dy = 0,
+        ticks = 2,
+        effect = "scroll-main",
+      },
+      {
+        op = "setScroll",
+        stepId = "start",
+        atStepTick = 0,
+        engine = "sub",
+        bgSlot = 0,
+        dx = 8,
+        dy = 0,
+        ticks = 2,
+        effect = "scroll-sub",
+      },
+      { op = "waitTicks", stepId = "wait", atStepTick = 0, ticks = 5 },
+      { op = "setScreenMapping", stepId = "flip", atStepTick = 0, mainPhysical = "lower" },
+      { op = "waitTicks", stepId = "flip", atStepTick = 0, ticks = 1 },
+      { op = "finish", stepId = "flip", atStepTick = 0 },
+      { op = "enableSkip", stepId = "flip", atStepTick = 1 },
+    }
+  )
+  local second = compositeScene(
+    2,
+    { compositeLayer(0, base2, 256, 192) },
+    { compositeLayer(0, sub2, 256, 192) },
+    {},
+    { seed = 0, emitters = {} },
+    {
+      { id = "entry", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 3 } },
+    },
+    {
+      { op = "setScreenMapping", stepId = "entry", atStepTick = 0, mainPhysical = "lower" },
+      { op = "waitTicks", stepId = "entry", atStepTick = 0, ticks = 3 },
+    }
+  )
+  local raw = { first, second, fillerScene(3), fillerScene(4), fillerScene(5) }
+  local byPath = {}
+  for sceneNumber, manifest in ipairs(raw) do
+    byPath[StartupAssetCache.openingScenePath(sceneNumber)] = manifest
+  end
+  local art = {
+    [base1] = gray16,
+    [sub1] = gray16,
+    [base2] = gray16,
+    [sub2] = gray16,
+  }
+  local cacheFs = {
+    loadLua = function(_, path)
+      return byPath[path]
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      return art[path] or gray16
+    end,
+  }
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, "soulsilver")
+    Assert.notNil(loaded, "case scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "single")
+  local seen = {}
+  local function observe()
+    local slot = assert(movie.current, "the running movie owns its current slot")
+    seen[#seen + 1] = {
+      scene = movie:sceneNumber(),
+      step = currentStepId(movie),
+      mainScroll = slot.effects["scroll-main"] ~= nil,
+      subScroll = slot.effects["scroll-sub"] ~= nil,
+      mapping = slot.mainPhysical,
+    }
+  end
+  observe()
+  for _ = 1, 30 do
+    movie:updateFixed()
+    observe()
+    local last = seen[#seen]
+    if last.scene == 2 and last.mapping == "lower" then
+      break
+    end
+  end
+  Assert.equal(seen[1].scene, 1, "the movie opens on its first scene")
+  Assert.equal(seen[1].step, "appear", "the first case is current before the first update")
+  Assert.isFalse(seen[1].mainScroll, "no scroll starts before the first update")
+  local firstStart, firstWait, firstFlip, firstEntry = nil, nil, nil, nil
+  for _, observation in ipairs(seen) do
+    if observation.scene == 1 and observation.step == "start" and firstStart == nil then
+      firstStart = observation
+    elseif observation.scene == 1 and observation.step == "wait" and firstWait == nil then
+      firstWait = observation
+    elseif observation.scene == 1 and observation.step == "flip" and firstFlip == nil then
+      firstFlip = observation
+    elseif observation.scene == 2 and firstEntry == nil then
+      firstEntry = observation
+    end
+  end
+  Assert.notNil(firstStart, "the start case is current for its own update")
+  Assert.notNil(firstWait, "the wait case is current for its own update")
+  Assert.notNil(firstFlip, "the flip case is current for its own update")
+  Assert.notNil(firstEntry, "the next scene entry is current for its own update")
+  Assert.isFalse(
+    firstStart.mainScroll,
+    "the successor case starts undispatched on its selection update"
+  )
+  Assert.isTrue(firstWait.mainScroll, "the dispatched start case runs its scroll")
+  Assert.isTrue(firstWait.subScroll, "parallel starts within one case begin on the same update")
+  Assert.equal(firstFlip.mapping, "upper", "the flip case applies its mapping only on its own dispatch")
+  Assert.equal(firstEntry.step, "entry", "the finishing update hands off to the next scene entry")
+  Assert.equal(
+    firstEntry.mapping,
+    "upper",
+    "the next scene entry stays undispatched on the finishing update"
+  )
+  movie:dispose()
+end
+
+-- A conjunctive guard holds its mutation until every named effect finishes:
+-- two independent scrolls of 3 and 5 ticks gate one retile, the retile
+-- fires inside the guarded case, and the following case waits its own tick.
+local function conjunctive_effect_guard_holds_mutation_until_both_effects_finish(scope)
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local root = sceneArtRoot(1)
+  local base = root .. "layers/guard-base.png"
+  local rocket = root .. "layers/guard-rocket.png"
+  local sub = root .. "layers/guard-sub.png"
+  local mainLayer = compositeLayer(0, base, 256, 192)
+  mainLayer.variants = { { image = rocket, width = 256, height = 192 } }
+  local custom = compositeScene(
+    1,
+    { mainLayer },
+    { compositeLayer(0, sub, 256, 192) },
+    {},
+    { seed = 0, emitters = {} },
+    {
+      { id = "start-scrolls", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 1 } },
+      {
+        id = "guarded-retile",
+        events = {},
+        onCompleteEvents = { 3 },
+        ["until"] = { kind = "effects", effects = { "scroll-a", "scroll-b" } },
+      },
+      { id = "follow", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 2 } },
+    },
+    {
+      {
+        op = "setScroll",
+        stepId = "start-scrolls",
+        atStepTick = 0,
+        engine = "main",
+        bgSlot = 0,
+        dx = 8,
+        dy = 0,
+        ticks = 3,
+        effect = "scroll-a",
+      },
+      {
+        op = "setScroll",
+        stepId = "start-scrolls",
+        atStepTick = 0,
+        engine = "sub",
+        bgSlot = 0,
+        dx = 8,
+        dy = 0,
+        ticks = 5,
+        effect = "scroll-b",
+      },
+      {
+        op = "setLayer",
+        stepId = "guarded-retile",
+        atStepTick = 0,
+        engine = "main",
+        bgSlot = 0,
+        image = rocket,
+        visible = true,
+        priority = 0,
+      },
+      { op = "waitTicks", stepId = "follow", atStepTick = 0, ticks = 2 },
+      { op = "enableSkip", stepId = "follow", atStepTick = 1 },
+    }
+  )
+  local art = { [base] = gray16, [rocket] = solidPng(16, 16, 200, 40, 40), [sub] = gray16 }
+  local scenes, cacheFs = compositePackAt(custom, 1, art, gray16)
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "single")
+  -- The guarded mutation and the successor selection share one update by
+  -- design, so each observation records the case running at the update
+  -- start alongside the post-update state.
+  local seen = {}
+  for _ = 1, 20 do
+    local before = currentStepId(movie)
+    movie:updateFixed()
+    local slot = assert(movie.current, "the running movie owns its current slot")
+    local background = assert(slot.backgrounds.main[0], "the guarded main plane stays staged")
+    seen[#seen + 1] = {
+      before = before,
+      step = currentStepId(movie),
+      elapsed = slot.stepElapsed,
+      skip = movie:skipAllowed(),
+      aDone = slot.effects["scroll-a"] ~= nil and slot.effects["scroll-a"].done == true,
+      bDone = slot.effects["scroll-b"] ~= nil and slot.effects["scroll-b"].done == true,
+      image = background.image,
+    }
+    if currentStepId(movie) == "follow" and slot.stepElapsed >= 1 then
+      break
+    end
+  end
+  local retileAt = nil
+  for index, observation in ipairs(seen) do
+    if observation.image == rocket then
+      retileAt = index
+      break
+    end
+  end
+  Assert.notNil(retileAt, "the guarded retile fires once both scrolls finish")
+  local retile = seen[retileAt]
+  Assert.isTrue(retile.aDone, "the first scroll finishes before the guarded mutation")
+  Assert.isTrue(retile.bDone, "the second scroll finishes before the guarded mutation")
+  Assert.equal(retile.before, "guarded-retile", "the guarded mutation fires inside its own case")
+  for index = 1, retileAt - 1 do
+    local observation = seen[index]
+    if observation.aDone and not observation.bDone then
+      Assert.equal(
+        observation.image,
+        base,
+        "the retile stays absent while only the first scroll has finished"
+      )
+    end
+  end
+  Assert.equal(retile.step, "follow", "the guarded update selects the following case")
+  Assert.equal(retile.elapsed, 0, "the following case starts undispatched on its selection update")
+  Assert.isFalse(retile.skip, "the following case applies its entry only on its own update")
+  Assert.equal(seen[retileAt + 1].image, rocket, "the guarded retile survives into the following case")
+  movie:dispose()
+end
 
 local T = GraphicsSmoke.suite({
   ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
@@ -5850,6 +6161,8 @@ local T = GraphicsSmoke.suite({
   ["soulsilver source wipe slopes with the scanline without spilling"] = soulsilver_source_wipe_slopes_with_the_scanline_without_spilling,
   ["synthetic wipe kinds paint the source inside outside masks and backdrops"] = synthetic_wipe_kinds_paint_the_source_inside_outside_masks_and_backdrops,
   ["synthetic terminal wipe brightness holds only for the retail kinds"] = synthetic_terminal_wipe_brightness_holds_only_for_the_retail_kinds,
+  ["source cases dispatch one per fixed update"] = source_cases_dispatch_one_per_fixed_update,
+  ["conjunctive effect guard holds mutation until both effects finish"] = conjunctive_effect_guard_holds_mutation_until_both_effects_finish,
   ["synthetic scene five shutter opens main center out before sub bottom up"] = synthetic_scene_five_shutter_opens_main_center_out_before_sub_bottom_up,
   ["soulsilver scene two final wipe keeps its source kind and white hold"] = soulsilver_scene_two_final_wipe_keeps_its_source_kind_and_white_hold,
   ["soulsilver scene three closes retire town drawing before the rival reveal"] = soulsilver_scene_three_closes_retire_town_drawing_before_the_rival_reveal,
