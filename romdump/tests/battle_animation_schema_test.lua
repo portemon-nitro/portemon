@@ -1151,6 +1151,147 @@ function T.program_schema_rejects_wrong_fixed_operand_counts()
   Assert.isFalse(ok, "fixed-width operations reject extra operands")
 end
 
+function T.operation_fields_reject_values_outside_their_declared_kind()
+  local cases = {
+    {
+      valid = { op = "create-battler-effect", resource = "battle/particle/a", emitterPosition = "solo-player" },
+      field = "emitterPosition",
+      invalid = "native-position-3",
+      diagnostic = "emitterPosition is unknown",
+    },
+    {
+      valid = { op = "create-battler-effect", resource = "battle/particle/a", emitterPosition = "solo-player" },
+      field = "resource",
+      invalid = nil,
+      diagnostic = "requires a particle resource and emitter position",
+    },
+    {
+      valid = {
+        op = "update-battle-visual",
+        taskKind = "battle-palette-fade",
+        updateKind = "increase-x",
+        values = { 1, 2, 3 },
+      },
+      field = "updateKind",
+      invalid = "native-axis-2",
+      diagnostic = "updateKind is unknown",
+    },
+    {
+      valid = {
+        op = "start-sprite-effect",
+        values = { 0, 1 },
+        taskKind = "battle-palette-fade",
+        taskStartRule = "battle-helper-equals-one",
+        mode = "retain-source-draw-state",
+      },
+      field = "mode",
+      invalid = "native-mode-1",
+      diagnostic = "mode is unknown",
+    },
+    {
+      valid = {
+        op = "start-sprite-effect",
+        values = { 0, 1 },
+        taskKind = "battle-palette-fade",
+        taskStartRule = "battle-helper-equals-one",
+        mode = "retain-source-draw-state",
+      },
+      field = "taskStartRule",
+      invalid = "native-start-1",
+      diagnostic = "taskStartRule is unknown",
+    },
+    {
+      valid = {
+        op = "schedule-battle-task",
+        taskKind = "battle-palette-fade",
+        taskInputRule = "helper-equals-one-then-side-class-equals-three-else-first",
+        values = { 4 },
+      },
+      field = "taskInputRule",
+      invalid = "native-input-1",
+      diagnostic = "taskInputRule is unknown",
+    },
+    {
+      valid = {
+        op = "create-pokemon-sprite",
+        values = { 0 },
+        taskKind = "battle-palette-fade",
+        battlerTarget = "attacker",
+      },
+      field = "battlerTarget",
+      invalid = "native-battler-1",
+      diagnostic = "battlerTarget is unknown",
+    },
+    {
+      valid = {
+        op = "create-parameterized-battler-effect",
+        taskKind = "battler-effect-continuation",
+        actionProfile = "particle-emitter-default",
+        emitterPosition = "solo-player",
+        resource = "battle/particle-emitter/test",
+      },
+      field = "actionProfile",
+      invalid = "native-profile-1",
+      diagnostic = "actionProfile is unknown",
+    },
+    {
+      valid = {
+        op = "create-parameterized-battler-effect",
+        taskKind = "battler-effect-continuation",
+        actionProfile = "particle-emitter-default",
+        emitterPosition = "solo-player",
+        resource = "battle/particle-emitter/test",
+      },
+      field = "actionProfile",
+      invalid = nil,
+      diagnostic = "requires a semantic action profile and emitter position",
+    },
+    {
+      valid = { op = "branch-on-parameter", values = { 0, 1 }, branchTarget = 1 },
+      field = "branchTarget",
+      invalid = 0,
+      diagnostic = "branchTarget must be an integer at least 1",
+    },
+    {
+      valid = { op = "set-parameter", values = { 2, 4 } },
+      field = "values",
+      invalid = { 2, "four" },
+      diagnostic = "values[2] must be an integer",
+    },
+    {
+      valid = { op = "play-sound", sound = "SEQ_SE_DP_W025" },
+      field = "sound",
+      invalid = "",
+      diagnostic = "sound must be a non-empty string",
+    },
+    {
+      valid = {
+        op = "branch-on-side-mask",
+        branchCases = { { sideMask = 1, target = 1 }, { otherwise = true, target = 1 } },
+      },
+      field = "branchCases",
+      invalid = { { sideMask = 1, otherwise = true, target = 1 } },
+      diagnostic = "branchCases[1] must have one condition",
+    },
+    {
+      valid = {
+        op = "branch-on-side-mask",
+        branchCases = { { sideMask = 1, target = 1 }, { otherwise = true, target = 1 } },
+      },
+      field = "branchCases",
+      invalid = { { otherwise = false, target = 1 } },
+      diagnostic = "branchCases[1] must have one condition",
+    },
+  }
+  for _, case in ipairs(cases) do
+    Assert.isTrue(schema().assertProgram(program(case.valid)), case.valid.op .. " accepts its declared fields")
+    case.valid[case.field] = case.invalid
+    local ok, err = pcall(schema().assertProgram, program(case.valid))
+    Assert.isFalse(ok, case.valid.op .. " rejects an invalid " .. case.field)
+    Assert.isTrue(tostring(err):find(case.diagnostic, 1, true) ~= nil, "diagnostic names the rule: " .. tostring(err))
+  end
+end
+
 function T.program_schema_accepts_semantic_background_resources_and_closed_selection()
   Assert.isTrue(schema().assertProgram(program({
     op = "load-battle-background",

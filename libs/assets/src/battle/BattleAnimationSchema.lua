@@ -43,117 +43,6 @@ local REQUIRED_CONTEXT_FIELDS = {
   movePower = "battle-animation-move-power-u16",
 }
 
-local OPERATIONS = {
-  ["interpreter-wait"] = { values = 1 },
-  ["play-sound"] = { sound = true },
-  noop = {},
-  ["set-blend-alpha"] = { values = 2 },
-  ["reset-blend-alpha"] = {},
-  ["set-parameter"] = { values = 2 },
-  ["set-background-component"] = { values = 2 },
-  ["skip-words"] = { target = true },
-  ["clear-background-plane"] = { values = 1 },
-  ["stop-sound"] = { sound = true },
-  ["replace-parameters-and-call"] = { callback = true, values = true },
-  ["invoke-battle-animation-callback"] = {
-    callback = true,
-    taskKind = true,
-    taskContext = true,
-    battlerTarget = true,
-    parameters = true,
-    resourceKeys = true,
-    runtimeSelection = true,
-  },
-  ["copy-main-background-palette-to-fade-buffer"] = {},
-  ["grayscale-main-background-fade-buffer"] = {},
-  ["set-pokemon-picture-vanished"] = { pictureSets = true, vanished = true },
-  ["delete-managed-sprite"] = { values = 1 },
-  ["clear-parameters"] = {},
-  ["create-sprite-manager"] = { values = 8 },
-  ["dispose-sprite-manager"] = { values = 1 },
-  ["set-managed-sprite-draw-flag"] = { values = 2 },
-  ["clear-effect-slot"] = { values = 1 },
-  ["start-brightness-transition"] = { values = 1 },
-  ["wait-interpreter-counter"] = { cursorRule = true, branchTarget = true },
-  ["source-assertion"] = { target = true, cursorRule = true },
-  ["reserve-loop-slot"] = {
-    values = true,
-    branchTarget = true,
-    resumeTarget = true,
-    cursorRule = true,
-  },
-  ["advance-loop-slot"] = { cursorRule = true },
-  ["reset-battle-presentation"] = {},
-  ["call-subprogram"] = { branchTarget = true, cursorRule = true, returnTarget = true },
-  ["return-subprogram"] = { cursorRule = true },
-  ["branch-on-battle-field"] = { values = true, branchTarget = true },
-  ["branch-on-parameter"] = { values = true, branchTarget = true },
-  ["start-visual-task"] = { taskKind = true, values = true },
-  ["wait-for-battle-phase"] = { cursorRule = true, values = 1 },
-  ["load-battle-background"] = { resourceKeys = true, runtimeSelection = true },
-  ["play-positioned-sound"] = { sound = true, values = true },
-  ["stop-positioned-sound"] = { values = true },
-  ["submit-sound-action"] = { sound = true, taskKind = true, values = true },
-  ["submit-battle-action"] = { values = true, taskKind = true },
-  ["branch-on-interpreter-state"] = { values = true, branchTarget = true, alternateTarget = true },
-  ["show-pokemon-picture"] = { values = true, taskKind = true },
-  ["clear-pokemon-picture"] = { values = true },
-  ["schedule-battle-task"] = { taskKind = true, taskInputRule = true, values = true },
-  ["wait-for-sound"] = { cursorRule = true, values = 1 },
-  ["branch-on-picture-state"] = { values = true, branchTarget = true },
-  ["create-battler-effect"] = { emitterPosition = true, resource = true, taskKind = true },
-  ["create-parameterized-battler-effect"] = {
-    values = true,
-    taskKind = true,
-    actionProfile = true,
-    resource = true,
-    resourceCases = true,
-    runtimeSelection = true,
-    emitterPosition = true,
-    continuationSlot = true,
-  },
-  ["wait-for-battler-effects"] = { cursorRule = true },
-  ["start-battler-effect"] = { values = true, taskKind = true },
-  ["destroy-battler-effect"] = { values = true },
-  ["create-managed-sprite-manager"] = {},
-  ["load-managed-sprite-resources"] = { resourceKeys = true, runtimeSelection = true },
-  ["create-pokemon-sprite"] = {
-    values = 1,
-    taskKind = true,
-    taskStartRule = true,
-    runtimeSelection = true,
-    battlerTarget = true,
-  },
-  ["dispose-shared-sprite-manager"] = {},
-  ["destroy-effect-slot"] = { values = true },
-  ["set-battler-state-byte"] = { values = 2 },
-  ["set-battler-effect-byte"] = { values = 2 },
-  ["play-cry"] = { values = true },
-  ["wait-for-cry"] = { values = true, cursorRule = true, branchTarget = true, alternateTarget = true },
-  ["submit-presentation-layout"] = { values = true },
-  ["submit-presentation-update"] = { values = true },
-  ["branch-on-side-mask"] = { branchCases = true },
-  ["branch-on-side-predicate"] = { values = true, branchTarget = true, alternateTarget = true },
-  ["branch-on-side-equality"] = { values = true, branchTarget = true, alternateTarget = true },
-  ["load-sprite-character"] = { values = 1, resourceKeys = true },
-  ["load-sprite-palette"] = { values = 2, resourceKeys = true },
-  ["load-sprite-cell"] = { values = 1, resourceKeys = true },
-  ["load-sprite-animation"] = { values = 1, resourceKeys = true },
-  ["create-configured-sprite"] = {
-    parameters = true,
-    taskKind = true,
-    taskContext = true,
-    resourceKeys = true,
-  },
-  ["create-managed-sprite"] = { values = 2, resourceKeys = true },
-  ["set-sprite-draw-flag"] = { values = true },
-  ["start-sprite-effect"] = { values = 2, taskKind = true, taskStartRule = true, mode = true },
-  ["clear-sprite-slot"] = { values = true },
-  ["wait-for-confirm-input"] = { cursorRule = true, values = 1 },
-  ["update-battle-visual"] = { taskKind = true, updateKind = true, values = 3 },
-  ["branch-on-battle-flag"] = { values = true, branchTarget = true, alternateTarget = true },
-}
-
 local TASK_KINDS = {
   ["positioned-sound-motion"] = true,
   ["repeated-sound-playback"] = true,
@@ -431,6 +320,85 @@ local MOVE_POWER_PROFILE_MAP = {
   { movePower = 150, profile = 6 },
 }
 
+-- Callback parameter and profile shapes shared by several source callbacks.
+local RELATED_PICTURE_TARGETS = {
+  attacker = true,
+  target = true,
+  ["attacker-related-position-when-paired"] = true,
+  ["target-related-position-when-paired"] = true,
+}
+
+local BATTLER_PAIR_ORDERS = {
+  ["attacker-target"] = true,
+  ["target-attacker"] = true,
+}
+
+local BACKGROUND_SLIDE_RESOURCE_SLOTS =
+  { "character", "palette", "screenDefault", "screenBattlerClassFour", "screenContextFlag" }
+
+local BACKGROUND_SLIDE_PARAMETERS = {
+  backgroundLayer = { type = "enum", values = { ["battle-background-layer-2"] = true } },
+  initialScrollX = { min = -0x8000, max = 0x7FFF },
+  initialScrollY = { min = -0x8000, max = 0x7FFF },
+  horizontalStep = { min = -0x8000, max = 0x7FFF },
+  verticalStep = { min = -0x8000, max = 0x7FFF },
+  pairedPositionTransformEnabled = { type = "boolean" },
+  paletteTarget = { type = "enum", values = { ["battle-animation-palette-target"] = true } },
+  durationTicks = { min = -0x8000, max = 0x7FFF },
+}
+
+local SCALE_PULSE_PARAMETERS = {
+  spriteContextSlot = { min = 0, max = 4 },
+  blendCoefficient = { min = 0, max = 0xFFFFFFFF },
+  scaleStart = { min = -0x8000, max = 0x7FFF },
+  scaleDivisor = { min = -0x8000, max = 0x7FFF },
+  scaleEnd = { min = -0x8000, max = 0x7FFF },
+  repeatCount = { min = 0, max = 0xFFFFFFFF },
+  firstDurationTicks = { min = -0x8000, max = 0x7FFF },
+  returnDurationTicks = { min = 0, max = 0xFFFF },
+}
+
+local PAIRED_POSITION_PARAMETERS = {
+  spriteContextSlot = { min = 0, max = 9 },
+  reverseEndpoints = { type = "boolean" },
+  endpointX = { min = -0x8000, max = 0x7FFF },
+  endpointY = { min = -0x8000, max = 0x7FFF },
+  initialSteps = { min = 0, max = 0xFFFF },
+  stepIntervalTicks = { min = 0, max = 0xFFFF },
+}
+
+local Z_ROTATION_PARAMETERS = {
+  startAngle = { min = 0, max = 0xFFFF },
+  targetAngle = { min = 0, max = 0xFFFF },
+  durationTicks = { min = 0, max = 0xFFFFFFFF },
+  reverseDirection = { type = "boolean" },
+}
+
+local Z_ROTATION_EXPLICIT_PIVOT_PARAMETERS = {
+  pivotX = { min = -0x8000, max = 0x7FFF },
+  pivotY = { min = -0x8000, max = 0x7FFF },
+}
+for name, declaration in pairs(Z_ROTATION_PARAMETERS) do
+  Z_ROTATION_EXPLICIT_PIVOT_PARAMETERS[name] = declaration
+end
+
+local SINUSOIDAL_POSITION_PARAMETERS = {
+  oscillationCycles = { min = 0, max = 0xFFFFFFFF },
+  durationTicks = { min = 0, max = 0xFFFFFFFF },
+}
+
+local PANEL_SLIDE_PROFILE = {
+  taskKind = "battle-sprite-panel-slide",
+  taskContext = "sprite-system",
+  parameters = {
+    firstPanelOffsetX = { min = -0x8000, max = 0x7FFF },
+    firstPanelOffsetY = { min = -0x8000, max = 0x7FFF },
+    secondPanelOffsetX = { min = -0x8000, max = 0x7FFF },
+    secondPanelOffsetY = { min = -0x8000, max = 0x7FFF },
+    durationTicks = { min = 1, max = 0xFFFFFFFF },
+  },
+}
+
 local ANIMATION_CALLBACKS = {
   ["battle-display-window-palette-transition"] = {
     taskKind = "battle-display-window-palette-transition",
@@ -493,34 +461,16 @@ local ANIMATION_CALLBACKS = {
     taskContext = "battle-display",
     requiresBattlerTopology = true,
     runtimeSelection = "battle-background-three-way-screen-selection",
-    resourceSlots = { "character", "palette", "screenDefault", "screenBattlerClassFour", "screenContextFlag" },
-    parameters = {
-      backgroundLayer = { type = "enum", values = { ["battle-background-layer-2"] = true } },
-      initialScrollX = { min = -0x8000, max = 0x7FFF },
-      initialScrollY = { min = -0x8000, max = 0x7FFF },
-      horizontalStep = { min = -0x8000, max = 0x7FFF },
-      verticalStep = { min = -0x8000, max = 0x7FFF },
-      pairedPositionTransformEnabled = { type = "boolean" },
-      paletteTarget = { type = "enum", values = { ["battle-animation-palette-target"] = true } },
-      durationTicks = { min = -0x8000, max = 0x7FFF },
-    },
+    resourceSlots = BACKGROUND_SLIDE_RESOURCE_SLOTS,
+    parameters = BACKGROUND_SLIDE_PARAMETERS,
   },
   ["battle-background-sprite-slide-transition"] = {
     taskKind = "battle-background-sprite-slide-transition",
     taskContext = "battle-display",
     requiresBattlerTopology = true,
     runtimeSelection = "battle-background-three-way-screen-selection",
-    resourceSlots = { "character", "palette", "screenDefault", "screenBattlerClassFour", "screenContextFlag" },
-    parameters = {
-      backgroundLayer = { type = "enum", values = { ["battle-background-layer-2"] = true } },
-      initialScrollX = { min = -0x8000, max = 0x7FFF },
-      initialScrollY = { min = -0x8000, max = 0x7FFF },
-      horizontalStep = { min = -0x8000, max = 0x7FFF },
-      verticalStep = { min = -0x8000, max = 0x7FFF },
-      pairedPositionTransformEnabled = { type = "boolean" },
-      paletteTarget = { type = "enum", values = { ["battle-animation-palette-target"] = true } },
-      durationTicks = { min = -0x8000, max = 0x7FFF },
-    },
+    resourceSlots = BACKGROUND_SLIDE_RESOURCE_SLOTS,
+    parameters = BACKGROUND_SLIDE_PARAMETERS,
   },
   ["pokemon-picture-affine-blend-palette-transition"] = {
     taskKind = "pokemon-picture-affine-blend-palette-transition",
@@ -627,47 +577,21 @@ local ANIMATION_CALLBACKS = {
     taskContext = "battle-sprite",
     battlerTarget = "attacker",
     requiresSpriteContextTable = true,
-    parameters = {
-      spriteContextSlot = { min = 0, max = 4 },
-      blendCoefficient = { min = 0, max = 0xFFFFFFFF },
-      scaleStart = { min = -0x8000, max = 0x7FFF },
-      scaleDivisor = { min = -0x8000, max = 0x7FFF },
-      scaleEnd = { min = -0x8000, max = 0x7FFF },
-      repeatCount = { min = 0, max = 0xFFFFFFFF },
-      firstDurationTicks = { min = -0x8000, max = 0x7FFF },
-      returnDurationTicks = { min = 0, max = 0xFFFF },
-    },
+    parameters = SCALE_PULSE_PARAMETERS,
   },
   ["pokemon-picture-managed-sprite-scale-pulse-target"] = {
     taskKind = "pokemon-picture-managed-sprite-scale-pulse",
     taskContext = "battle-sprite",
     battlerTarget = "target",
     requiresSpriteContextTable = true,
-    parameters = {
-      spriteContextSlot = { min = 0, max = 4 },
-      blendCoefficient = { min = 0, max = 0xFFFFFFFF },
-      scaleStart = { min = -0x8000, max = 0x7FFF },
-      scaleDivisor = { min = -0x8000, max = 0x7FFF },
-      scaleEnd = { min = -0x8000, max = 0x7FFF },
-      repeatCount = { min = 0, max = 0xFFFFFFFF },
-      firstDurationTicks = { min = -0x8000, max = 0x7FFF },
-      returnDurationTicks = { min = 0, max = 0xFFFF },
-    },
+    parameters = SCALE_PULSE_PARAMETERS,
   },
   ["pokemon-picture-selected-position-transition"] = {
     taskKind = "pokemon-picture-selected-position-transition",
     taskContext = "pokemon-picture",
     requiresBattlerTopology = true,
     parameters = {
-      pictureTarget = {
-        type = "enum",
-        values = {
-          attacker = true,
-          ["attacker-related-position-when-paired"] = true,
-          target = true,
-          ["target-related-position-when-paired"] = true,
-        },
-      },
+      pictureTarget = { type = "enum", values = RELATED_PICTURE_TARGETS },
       positionBasis = {
         type = "enum",
         values = {
@@ -790,27 +714,13 @@ local ANIMATION_CALLBACKS = {
     taskKind = "pokemon-picture-paired-position-interpolation",
     taskContext = "pokemon-picture",
     battlerTarget = "attacker",
-    parameters = {
-      spriteContextSlot = { min = 0, max = 9 },
-      reverseEndpoints = { type = "boolean" },
-      endpointX = { min = -0x8000, max = 0x7FFF },
-      endpointY = { min = -0x8000, max = 0x7FFF },
-      initialSteps = { min = 0, max = 0xFFFF },
-      stepIntervalTicks = { min = 0, max = 0xFFFF },
-    },
+    parameters = PAIRED_POSITION_PARAMETERS,
   },
   ["pokemon-picture-paired-position-interpolation-target"] = {
     taskKind = "pokemon-picture-paired-position-interpolation",
     taskContext = "pokemon-picture",
     battlerTarget = "target",
-    parameters = {
-      spriteContextSlot = { min = 0, max = 9 },
-      reverseEndpoints = { type = "boolean" },
-      endpointX = { min = -0x8000, max = 0x7FFF },
-      endpointY = { min = -0x8000, max = 0x7FFF },
-      initialSteps = { min = 0, max = 0xFFFF },
-      stepIntervalTicks = { min = 0, max = 0xFFFF },
-    },
+    parameters = PAIRED_POSITION_PARAMETERS,
   },
   ["pokemon-picture-two-phase-entry-motion"] = {
     taskKind = "pokemon-picture-two-phase-entry-motion",
@@ -821,14 +731,7 @@ local ANIMATION_CALLBACKS = {
     taskKind = "pokemon-picture-paired-position-interpolation",
     taskContext = "pokemon-picture",
     battlerTarget = "target",
-    parameters = {
-      spriteContextSlot = { min = 0, max = 9 },
-      reverseEndpoints = { type = "boolean" },
-      endpointX = { min = -0x8000, max = 0x7FFF },
-      endpointY = { min = -0x8000, max = 0x7FFF },
-      initialSteps = { min = 0, max = 0xFFFF },
-      stepIntervalTicks = { min = 0, max = 0xFFFF },
-    },
+    parameters = PAIRED_POSITION_PARAMETERS,
   },
   ["pokemon-picture-double-sprite-scale-settle"] = {
     taskKind = "pokemon-picture-double-sprite-scale-settle",
@@ -936,49 +839,25 @@ local ANIMATION_CALLBACKS = {
     taskKind = "pokemon-picture-z-rotation-transition",
     taskContext = "pokemon-picture",
     battlerTarget = "target",
-    parameters = {
-      startAngle = { min = 0, max = 0xFFFF },
-      targetAngle = { min = 0, max = 0xFFFF },
-      durationTicks = { min = 0, max = 0xFFFFFFFF },
-      reverseDirection = { type = "boolean" },
-    },
+    parameters = Z_ROTATION_PARAMETERS,
   },
   ["pokemon-picture-z-rotation-target-explicit-pivot"] = {
     taskKind = "pokemon-picture-z-rotation-transition",
     taskContext = "pokemon-picture",
     battlerTarget = "target",
-    parameters = {
-      startAngle = { min = 0, max = 0xFFFF },
-      targetAngle = { min = 0, max = 0xFFFF },
-      durationTicks = { min = 0, max = 0xFFFFFFFF },
-      reverseDirection = { type = "boolean" },
-      pivotX = { min = -0x8000, max = 0x7FFF },
-      pivotY = { min = -0x8000, max = 0x7FFF },
-    },
+    parameters = Z_ROTATION_EXPLICIT_PIVOT_PARAMETERS,
   },
   ["pokemon-picture-z-rotation-attacker-derived-pivot"] = {
     taskKind = "pokemon-picture-z-rotation-transition",
     taskContext = "pokemon-picture",
     battlerTarget = "attacker",
-    parameters = {
-      startAngle = { min = 0, max = 0xFFFF },
-      targetAngle = { min = 0, max = 0xFFFF },
-      durationTicks = { min = 0, max = 0xFFFFFFFF },
-      reverseDirection = { type = "boolean" },
-    },
+    parameters = Z_ROTATION_PARAMETERS,
   },
   ["pokemon-picture-z-rotation-attacker-explicit-pivot"] = {
     taskKind = "pokemon-picture-z-rotation-transition",
     taskContext = "pokemon-picture",
     battlerTarget = "attacker",
-    parameters = {
-      startAngle = { min = 0, max = 0xFFFF },
-      targetAngle = { min = 0, max = 0xFFFF },
-      durationTicks = { min = 0, max = 0xFFFFFFFF },
-      reverseDirection = { type = "boolean" },
-      pivotX = { min = -0x8000, max = 0x7FFF },
-      pivotY = { min = -0x8000, max = 0x7FFF },
-    },
+    parameters = Z_ROTATION_EXPLICIT_PIVOT_PARAMETERS,
   },
   ["sprite-affine-scale-and-blend-transition"] = {
     taskKind = "sprite-affine-scale-and-blend-transition",
@@ -1033,39 +912,9 @@ local ANIMATION_CALLBACKS = {
     taskContext = "battle-display",
     parameters = {},
   },
-  ["battle-sprite-panel-slide-down"] = {
-    taskKind = "battle-sprite-panel-slide",
-    taskContext = "sprite-system",
-    parameters = {
-      firstPanelOffsetX = { min = -0x8000, max = 0x7FFF },
-      firstPanelOffsetY = { min = -0x8000, max = 0x7FFF },
-      secondPanelOffsetX = { min = -0x8000, max = 0x7FFF },
-      secondPanelOffsetY = { min = -0x8000, max = 0x7FFF },
-      durationTicks = { min = 1, max = 0xFFFFFFFF },
-    },
-  },
-  ["battle-sprite-panel-slide-up"] = {
-    taskKind = "battle-sprite-panel-slide",
-    taskContext = "sprite-system",
-    parameters = {
-      firstPanelOffsetX = { min = -0x8000, max = 0x7FFF },
-      firstPanelOffsetY = { min = -0x8000, max = 0x7FFF },
-      secondPanelOffsetX = { min = -0x8000, max = 0x7FFF },
-      secondPanelOffsetY = { min = -0x8000, max = 0x7FFF },
-      durationTicks = { min = 1, max = 0xFFFFFFFF },
-    },
-  },
-  ["battle-sprite-panel-slide-far-up"] = {
-    taskKind = "battle-sprite-panel-slide",
-    taskContext = "sprite-system",
-    parameters = {
-      firstPanelOffsetX = { min = -0x8000, max = 0x7FFF },
-      firstPanelOffsetY = { min = -0x8000, max = 0x7FFF },
-      secondPanelOffsetX = { min = -0x8000, max = 0x7FFF },
-      secondPanelOffsetY = { min = -0x8000, max = 0x7FFF },
-      durationTicks = { min = 1, max = 0xFFFFFFFF },
-    },
-  },
+  ["battle-sprite-panel-slide-down"] = PANEL_SLIDE_PROFILE,
+  ["battle-sprite-panel-slide-up"] = PANEL_SLIDE_PROFILE,
+  ["battle-sprite-panel-slide-far-up"] = PANEL_SLIDE_PROFILE,
   ["pokemon-picture-randomized-position-motion-attacker"] = {
     taskKind = "pokemon-picture-randomized-position-motion",
     taskContext = "pokemon-picture",
@@ -1097,37 +946,25 @@ local ANIMATION_CALLBACKS = {
     taskKind = "pokemon-picture-sinusoidal-position-motion",
     taskContext = "pokemon-picture",
     battlerTarget = "attacker",
-    parameters = {
-      oscillationCycles = { min = 0, max = 0xFFFFFFFF },
-      durationTicks = { min = 0, max = 0xFFFFFFFF },
-    },
+    parameters = SINUSOIDAL_POSITION_PARAMETERS,
   },
   ["pokemon-picture-sinusoidal-position-attacker-pair"] = {
     taskKind = "pokemon-picture-sinusoidal-position-motion",
     taskContext = "pokemon-picture",
     battlerTarget = "attacker",
-    parameters = {
-      oscillationCycles = { min = 0, max = 0xFFFFFFFF },
-      durationTicks = { min = 0, max = 0xFFFFFFFF },
-    },
+    parameters = SINUSOIDAL_POSITION_PARAMETERS,
   },
   ["pokemon-picture-sinusoidal-position-target"] = {
     taskKind = "pokemon-picture-sinusoidal-position-motion",
     taskContext = "pokemon-picture",
     battlerTarget = "target",
-    parameters = {
-      oscillationCycles = { min = 0, max = 0xFFFFFFFF },
-      durationTicks = { min = 0, max = 0xFFFFFFFF },
-    },
+    parameters = SINUSOIDAL_POSITION_PARAMETERS,
   },
   ["pokemon-picture-sinusoidal-position-target-pair"] = {
     taskKind = "pokemon-picture-sinusoidal-position-motion",
     taskContext = "pokemon-picture",
     battlerTarget = "target",
-    parameters = {
-      oscillationCycles = { min = 0, max = 0xFFFFFFFF },
-      durationTicks = { min = 0, max = 0xFFFFFFFF },
-    },
+    parameters = SINUSOIDAL_POSITION_PARAMETERS,
   },
   ["pokemon-picture-affine-sprite-entry-transition"] = {
     taskKind = "pokemon-picture-affine-sprite-entry-transition",
@@ -1163,30 +1000,14 @@ local ANIMATION_CALLBACKS = {
       durationTicks = { min = 0, max = 0xFFFF },
       offscreenDistance = { min = 1, max = 0x7FFF },
       exitOwnSide = { type = "boolean" },
-      pictureTarget = {
-        type = "enum",
-        values = {
-          attacker = true,
-          target = true,
-          ["attacker-related-position-when-paired"] = true,
-          ["target-related-position-when-paired"] = true,
-        },
-      },
+      pictureTarget = { type = "enum", values = RELATED_PICTURE_TARGETS },
     },
   },
   ["pokemon-picture-reset-position-transition"] = {
     taskKind = "pokemon-picture-reset-position-transition",
     taskContext = "pokemon-picture",
     parameters = {
-      pictureTarget = {
-        type = "enum",
-        values = {
-          attacker = true,
-          target = true,
-          ["attacker-related-position-when-paired"] = true,
-          ["target-related-position-when-paired"] = true,
-        },
-      },
+      pictureTarget = { type = "enum", values = RELATED_PICTURE_TARGETS },
     },
   },
   ["pokemon-picture-vanish-affine-transition"] = {
@@ -1279,13 +1100,7 @@ local ANIMATION_CALLBACKS = {
       leadingInterpolationSteps = { min = -0x8000, max = 0x7FFF },
       sinePeriodDivisor = { min = -0x8000, max = 0x7FFF },
       interpolationDurationTicks = { min = 0, max = 0xFFFF },
-      pairOrder = {
-        type = "enum",
-        values = {
-          ["attacker-target"] = true,
-          ["target-attacker"] = true,
-        },
-      },
+      pairOrder = { type = "enum", values = BATTLER_PAIR_ORDERS },
       initialInterpolationSteps = { min = 0, max = 0xFFFF },
       completionLimit = { min = 0, max = 0xFF },
       sinusoidalOffset = { type = "boolean" },
@@ -1301,13 +1116,7 @@ local ANIMATION_CALLBACKS = {
       durationTicks = { min = -0x8000, max = 0x7FFF },
       curveControl = { min = -0x8000, max = 0x7FFF },
       curveScale = { min = -0x80000000, max = 0x7FFFFFFF },
-      battlerOrder = {
-        type = "enum",
-        values = {
-          ["attacker-target"] = true,
-          ["target-attacker"] = true,
-        },
-      },
+      battlerOrder = { type = "enum", values = BATTLER_PAIR_ORDERS },
       initialInterpolationSteps = { min = 0, max = 0xFFFF },
       completionLimit = { min = 1, max = 0xFFFF },
       sinusoidalOffset = { type = "boolean" },
@@ -1330,22 +1139,6 @@ local RESOURCE_KEY_SLOTS = {
   template = true,
 }
 
-local RESOURCE_SLOTS_BY_OPERATION = {
-  ["load-battle-background"] = { "character", "palette", "screenDefault", "screenAlternate" },
-  ["load-managed-sprite-resources"] = { "character", "palette", "cell", "animation" },
-  ["load-sprite-character"] = { "character" },
-  ["load-sprite-palette"] = { "palette" },
-  ["load-sprite-cell"] = { "cell" },
-  ["load-sprite-animation"] = { "animation" },
-  ["create-managed-sprite"] = { "character", "palette", "cell", "animation" },
-  ["create-configured-sprite"] = { "character", "palette", "cell", "animation" },
-}
-
-local OPTIONAL_RESOURCE_SLOTS_BY_OPERATION = {
-  ["create-managed-sprite"] = { multiCell = true, multiAnimation = true },
-  ["create-configured-sprite"] = { multiCell = true, multiAnimation = true },
-}
-
 local SPRITE_EFFECT_MODES = {
   ["first-battler-class-priority-gate"] = true,
   ["second-battler-class-priority-forward"] = true,
@@ -1358,6 +1151,85 @@ local TASK_INPUT_RULES = {
   ["helper-equals-one-then-side-class-equals-three-else-first"] = true,
 }
 
+local COUNTER_WAIT_CURSOR_RULE = "pending-redispatch-current-opcode; zero-advances-past-current-opcode"
+local SUBPROGRAM_CALL_CURSOR_RULE = "call-first-free-subprogram-slot; all-slots-busy-redispatch-count-word"
+
+local CURSOR_RULES = {
+  [COUNTER_WAIT_CURSOR_RULE] = true,
+  ["advance-when-phase-matches"] = true,
+  ["advance-when-sound-finishes"] = true,
+  ["advance-when-effects-finish"] = true,
+  ["advance-when-confirm-input-matches"] = true,
+  ["invoke-assert-service; redispatch-current-word-if-it-returns"] = true,
+  ["leave-on-finished-cry; otherwise-consume-stop-word"] = true,
+  ["advance-to-body-when-loop-slot-free; otherwise-redispatch-count-word"] = true,
+  ["rewind-to-active-loop-body-until-count"] = true,
+  [SUBPROGRAM_CALL_CURSOR_RULE] = true,
+  ["return-to-active-subprogram-slot"] = true,
+}
+
+local PARTICLE_EMITTER_KEY_PATTERN = "^battle/particle%-emitter/[^/]+$"
+
+-- Every attacker/target position pair a position-pair emitter map covers.
+local POSITION_PAIRS = {}
+local POSITION_PAIR_SET = {}
+for _, attacker in ipairs(BATTLER_POSITION_KEYS) do
+  for _, target in ipairs(BATTLER_POSITION_KEYS) do
+    local pairKey = attacker .. "/" .. target
+    POSITION_PAIRS[#POSITION_PAIRS + 1] = pairKey
+    POSITION_PAIR_SET[pairKey] = true
+  end
+end
+
+-- Producer identities that never reach runtime records at any depth.
+local NATIVE_KEYS = {
+  memberId = true,
+  fileId = true,
+  narcId = true,
+  armAddress = true,
+  callbackAddress = true,
+  opcodeIndex = true,
+  nativeOpcode = true,
+}
+
+-- Instruction fields validate by kind wherever an operation declares them:
+-- one-based instruction targets, non-empty strings, and closed vocabularies.
+local TARGET_FIELDS = { "target", "branchTarget", "alternateTarget", "resumeTarget", "returnTarget" }
+
+local STRING_FIELDS = {
+  "callback",
+  "sound",
+  "taskKind",
+  "taskInputRule",
+  "taskStartRule",
+  "resource",
+  "emitterPosition",
+  "updateKind",
+  "mode",
+  "runtimeSelection",
+  "battlerTarget",
+  "actionProfile",
+  "taskContext",
+}
+
+local ENUM_FIELDS = {
+  { name = "emitterPosition", values = BATTLER_POSITION_SET },
+  { name = "cursorRule", values = CURSOR_RULES },
+  { name = "taskKind", values = TASK_KINDS },
+  { name = "taskContext", values = TASK_CONTEXTS },
+  { name = "updateKind", values = VISUAL_UPDATE_KINDS },
+  { name = "mode", values = SPRITE_EFFECT_MODES },
+  { name = "runtimeSelection", values = RUNTIME_SELECTIONS },
+  { name = "battlerTarget", values = BATTLER_TARGETS },
+  { name = "actionProfile", values = PARTICLE_ACTION_PROFILES },
+  { name = "taskInputRule", values = TASK_INPUT_RULES },
+  { name = "taskStartRule", values = TASK_START_RULES },
+}
+
+local SIDE_MASK_BRANCH_FIELDS = { sideMask = true, otherwise = true, target = true }
+local MOVE_POWER_PROFILE_FIELDS = { movePower = true, profile = true }
+local NO_PARAMETERS = {}
+
 local function checkInt(value, context, code, field)
   SchemaCheck.checkInteger(value, context, code, field, 0, nil)
 end
@@ -1368,22 +1240,13 @@ end
 
 local fail = SchemaCheck.fail
 
--- Producer identities never reach runtime records at any depth.
 local function checkNoNativeKeys(value, context, code, field)
   if type(value) ~= "table" then
     return
   end
   for key, nested in pairs(value) do
     local text = tostring(key)
-    if
-      text == "memberId"
-      or text == "fileId"
-      or text == "narcId"
-      or text == "armAddress"
-      or text == "callbackAddress"
-      or text == "opcodeIndex"
-      or text == "nativeOpcode"
-    then
+    if NATIVE_KEYS[text] then
       fail(code, field .. " leaks source detail '" .. text .. "'", context)
     end
     checkNoNativeKeys(nested, context, code, field .. "." .. text)
@@ -1399,6 +1262,453 @@ local function checkTaskKinds(taskKinds, context, code, field)
   end
 end
 
+local function checkEnumArray(value, values, context, code, path)
+  if not Validate.isArray(value) then
+    fail(code, path .. " must be an array", context)
+  end
+  for index, item in ipairs(value) do
+    if type(item) ~= "string" or values[item] ~= true then
+      fail(code, path .. "[" .. index .. "] is unknown", context)
+    end
+  end
+end
+
+-- `keys` carries exactly the `required` slots plus any `optional` ones.
+local function checkSlotClosure(keys, required, optional, noun, context, code, path)
+  local expected = {}
+  for _, slot in ipairs(required) do
+    expected[slot] = true
+  end
+  for slot in pairs(keys) do
+    if not expected[slot] and not (optional ~= nil and optional[slot]) then
+      fail(code, path .. " has an unexpected " .. noun, context)
+    end
+  end
+  for _, slot in ipairs(required) do
+    if keys[slot] == nil then
+      fail(code, path .. " is missing " .. noun .. " " .. slot, context)
+    end
+  end
+end
+
+local function checkMovePowerProfileMap(value, context, code, path)
+  if not Validate.isArray(value) or #value ~= #MOVE_POWER_PROFILE_MAP then
+    fail(code, path .. " must contain the six source move-power cases", context)
+  end
+  for index, expected in ipairs(MOVE_POWER_PROFILE_MAP) do
+    local case = value[index]
+    SchemaCheck.checkRecord(case, MOVE_POWER_PROFILE_FIELDS, context, code, path)
+    SchemaCheck.checkInteger(case.movePower, context, code, path .. "[" .. index .. "].movePower")
+    SchemaCheck.checkInteger(case.profile, context, code, path .. "[" .. index .. "].profile")
+    if case.movePower ~= expected.movePower or case.profile ~= expected.profile then
+      fail(code, path .. " does not match the source move-power profile table", context)
+    end
+  end
+end
+
+-- One named task parameter against its declaration: a typed value, or an
+-- integer within its source range when the declaration names no type.
+local function checkParameter(declaration, value, context, code, path)
+  local kind = declaration.type
+  if kind == "boolean" then
+    if type(value) ~= "boolean" then
+      fail(code, path .. " must be boolean", context)
+    end
+  elseif kind == "enum" then
+    if type(value) ~= "string" or declaration.values[value] ~= true then
+      fail(code, path .. " is unknown", context)
+    end
+  elseif kind == "enum-array" then
+    if Validate.isArray(value) and (#value < declaration.minLength or #value > declaration.maxLength) then
+      fail(code, path .. " has an invalid length", context)
+    end
+    checkEnumArray(value, declaration.values, context, code, path)
+  elseif kind == "move-power-profile-map" then
+    checkMovePowerProfileMap(value, context, code, path)
+  else
+    SchemaCheck.checkInteger(value, context, code, path)
+    if value < declaration.min or value > declaration.max then
+      fail(code, path .. " is outside its source range", context)
+    end
+  end
+end
+
+-- A closed parameter record: every declared parameter, and nothing else.
+local function checkParameters(parameters, declarations, context, code, field)
+  if type(parameters) ~= "table" then
+    fail(code, field .. ".parameters must be a record", context)
+    return
+  end
+  for name, value in pairs(parameters) do
+    local declaration = declarations[name]
+    if declaration == nil then
+      fail(code, field .. ".parameters has an unknown field " .. tostring(name), context)
+      return
+    end
+    checkParameter(declaration, value, context, code, field .. ".parameters." .. name)
+  end
+  for name in pairs(declarations) do
+    if parameters[name] == nil then
+      fail(code, field .. ".parameters omitted " .. name, context)
+    end
+  end
+end
+
+local function checkCallbackInvocation(instruction, context, code, field)
+  local profile = ANIMATION_CALLBACKS[instruction.callback]
+  if profile == nil then
+    fail(code, field .. ".callback is unknown", context)
+    return
+  end
+  if
+    instruction.taskKind ~= profile.taskKind
+    or instruction.taskContext ~= profile.taskContext
+    or instruction.battlerTarget ~= profile.battlerTarget
+  then
+    fail(code, field .. " has callback semantics that do not match its source profile", context)
+  end
+  if instruction.runtimeSelection ~= profile.runtimeSelection then
+    fail(code, field .. ".runtimeSelection does not match its source callback profile", context)
+  end
+  if profile.resourceSlots ~= nil then
+    if type(instruction.resourceKeys) ~= "table" then
+      fail(code, field .. ".resourceKeys must contain the callback's selected resources", context)
+      return
+    end
+    checkSlotClosure(
+      instruction.resourceKeys,
+      profile.resourceSlots,
+      nil,
+      "callback resource slot",
+      context,
+      code,
+      field .. ".resourceKeys"
+    )
+  elseif instruction.resourceKeys ~= nil then
+    fail(code, field .. ".resourceKeys are not declared by this callback profile", context)
+  end
+  checkParameters(instruction.parameters, profile.parameters, context, code, field)
+end
+
+local function checkCounterWait(instruction, context, code, field)
+  if instruction.cursorRule ~= COUNTER_WAIT_CURSOR_RULE then
+    fail(code, field .. ".cursorRule does not preserve both counter wait paths", context)
+  end
+  if instruction.branchTarget == nil then
+    fail(code, field .. ".branchTarget is required for the pending self-loop", context)
+  end
+end
+
+local function checkSubprogramCall(instruction, context, code, field)
+  if
+    instruction.cursorRule ~= SUBPROGRAM_CALL_CURSOR_RULE
+    or instruction.branchTarget == nil
+    or instruction.returnTarget == nil
+  then
+    fail(code, field .. ".call-subprogram must preserve call, return, and saturation cursor paths", context)
+  end
+end
+
+local function checkPictureVanished(instruction, context, code, field)
+  if type(instruction.vanished) ~= "boolean" then
+    fail(code, field .. ".vanished must be boolean", context)
+  end
+  checkEnumArray(instruction.pictureSets, PICTURE_SETS, context, code, field .. ".pictureSets")
+end
+
+local function checkConfiguredSprite(instruction, context, code, field)
+  local expectedContext = CONFIGURED_SPRITE_TASK_CONTEXTS[instruction.taskKind]
+  if expectedContext == nil or instruction.taskContext ~= expectedContext then
+    fail(code, field .. " has a task context that does not match its configured sprite task", context)
+  end
+  local declarations = CONFIGURED_SPRITE_TASK_PARAMETERS[instruction.taskKind] or NO_PARAMETERS
+  checkParameters(instruction.parameters, declarations, context, code, field)
+end
+
+local function checkBattlerEffect(instruction, context, code, field)
+  if instruction.resource == nil or instruction.emitterPosition == nil then
+    fail(code, field .. " requires a particle resource and emitter position", context)
+  end
+end
+
+local function checkResourceCases(resourceCases, context, code, field)
+  if type(resourceCases) ~= "table" then
+    fail(code, field .. ".resourceCases must be a record", context)
+  end
+  for pairKey, resourceKey in pairs(resourceCases) do
+    if
+      not POSITION_PAIR_SET[pairKey]
+      or type(resourceKey) ~= "string"
+      or (resourceKey ~= "source-assert" and resourceKey:match(PARTICLE_EMITTER_KEY_PATTERN) == nil)
+    then
+      fail(code, field .. ".resourceCases has an unknown position pair or invalid resource key", context)
+    end
+  end
+  for _, pairKey in ipairs(POSITION_PAIRS) do
+    if resourceCases[pairKey] == nil then
+      fail(code, field .. ".resourceCases is missing position pair " .. pairKey, context)
+    end
+  end
+end
+
+-- A parameterized emitter is either one fixed emitter resource or a closed
+-- position-pair resource map selected at runtime.
+local function checkParameterizedBattlerEffect(instruction, context, code, field)
+  local resource = instruction.resource
+  if resource ~= nil and resource:match(PARTICLE_EMITTER_KEY_PATTERN) == nil then
+    fail(code, field .. ".resource must be a semantic particle-emitter key", context)
+  end
+  local continuationSlot = instruction.continuationSlot
+  if continuationSlot ~= nil then
+    SchemaCheck.checkInteger(continuationSlot, context, code, field .. ".continuationSlot")
+    if continuationSlot < 0 or continuationSlot > MAX_PARTICLE_CONTINUATION_SLOT then
+      fail(code, field .. ".continuationSlot is outside the 71-slot particle continuation table", context)
+    end
+  end
+  if instruction.actionProfile == nil or instruction.emitterPosition == nil then
+    fail(code, field .. " requires a semantic action profile and emitter position", context)
+  end
+  if resource ~= nil then
+    if instruction.resourceCases ~= nil or instruction.runtimeSelection ~= nil then
+      fail(code, field .. " fixed emitter cannot carry position-pair resource cases", context)
+    end
+  elseif
+    instruction.resourceCases == nil
+    or instruction.runtimeSelection ~= "battler-particle-position-pair"
+    or continuationSlot ~= nil
+  then
+    fail(code, field .. " requires a fixed emitter or a position-pair resource map", context)
+  end
+  if instruction.resourceCases ~= nil then
+    checkResourceCases(instruction.resourceCases, context, code, field)
+  end
+end
+
+local function checkSideMaskBranches(instruction, context, code, field)
+  local branchCases = instruction.branchCases
+  if branchCases == nil then
+    return
+  end
+  if not Validate.isArray(branchCases) then
+    fail(code, field .. ".branchCases must be an array", context)
+  end
+  for index, branchCase in ipairs(branchCases) do
+    local branchField = field .. ".branchCases[" .. index .. "]"
+    SchemaCheck.checkRecord(branchCase, SIDE_MASK_BRANCH_FIELDS, context, code, branchField)
+    local hasMask = branchCase.sideMask ~= nil
+    local hasOtherwise = branchCase.otherwise == true
+    if hasMask == hasOtherwise then
+      fail(code, branchField .. " must have one condition", context)
+    end
+    if hasMask then
+      checkInt(branchCase.sideMask, context, code, branchField .. ".sideMask")
+    end
+    if branchCase.otherwise ~= nil and not hasOtherwise then
+      fail(code, branchField .. ".otherwise must be true", context)
+    end
+    checkInt(branchCase.target, context, code, branchField .. ".target")
+  end
+end
+
+---@alias BattleAnimationInstructionCheck fun(instruction: table<string, unknown>, context: table<string, unknown>, code: string, field: string)
+
+-- One closed operation. `values` is its required operand count, or true for
+-- any count; `fields` lists the optional fields it may carry; `resourceSlots`
+-- are the resource roles it requires, plus any `optionalResourceSlots`; and
+-- `check` holds rules spanning several of its fields.
+---@class BattleAnimationOperation
+---@field values integer|true|nil
+---@field fields string[]?
+---@field resourceSlots string[]?
+---@field optionalResourceSlots table<string, true>?
+---@field check BattleAnimationInstructionCheck?
+
+---@type table<string, BattleAnimationOperation>
+local OPERATIONS = {
+  ["interpreter-wait"] = { values = 1 },
+  ["play-sound"] = { fields = { "sound" } },
+  noop = {},
+  ["set-blend-alpha"] = { values = 2 },
+  ["reset-blend-alpha"] = {},
+  ["set-parameter"] = { values = 2 },
+  ["set-background-component"] = { values = 2 },
+  ["skip-words"] = { fields = { "target" } },
+  ["clear-background-plane"] = { values = 1 },
+  ["stop-sound"] = { fields = { "sound" } },
+  ["replace-parameters-and-call"] = { values = true, fields = { "callback" } },
+  ["invoke-battle-animation-callback"] = {
+    fields = {
+      "callback",
+      "taskKind",
+      "taskContext",
+      "battlerTarget",
+      "parameters",
+      "resourceKeys",
+      "runtimeSelection",
+    },
+    check = checkCallbackInvocation,
+  },
+  ["copy-main-background-palette-to-fade-buffer"] = {},
+  ["grayscale-main-background-fade-buffer"] = {},
+  ["set-pokemon-picture-vanished"] = { fields = { "pictureSets", "vanished" }, check = checkPictureVanished },
+  ["delete-managed-sprite"] = { values = 1 },
+  ["clear-parameters"] = {},
+  ["create-sprite-manager"] = { values = 8 },
+  ["dispose-sprite-manager"] = { values = 1 },
+  ["set-managed-sprite-draw-flag"] = { values = 2 },
+  ["clear-effect-slot"] = { values = 1 },
+  ["start-brightness-transition"] = { values = 1 },
+  ["wait-interpreter-counter"] = { fields = { "cursorRule", "branchTarget" }, check = checkCounterWait },
+  ["source-assertion"] = { fields = { "target", "cursorRule" } },
+  ["reserve-loop-slot"] = { values = true, fields = { "branchTarget", "resumeTarget", "cursorRule" } },
+  ["advance-loop-slot"] = { fields = { "cursorRule" } },
+  ["reset-battle-presentation"] = {},
+  ["call-subprogram"] = {
+    fields = { "branchTarget", "cursorRule", "returnTarget" },
+    check = checkSubprogramCall,
+  },
+  ["return-subprogram"] = { fields = { "cursorRule" } },
+  ["branch-on-battle-field"] = { values = true, fields = { "branchTarget" } },
+  ["branch-on-parameter"] = { values = true, fields = { "branchTarget" } },
+  ["start-visual-task"] = { values = true, fields = { "taskKind" } },
+  ["wait-for-battle-phase"] = { values = 1, fields = { "cursorRule" } },
+  ["load-battle-background"] = {
+    fields = { "runtimeSelection" },
+    resourceSlots = { "character", "palette", "screenDefault", "screenAlternate" },
+  },
+  ["play-positioned-sound"] = { values = true, fields = { "sound" } },
+  ["stop-positioned-sound"] = { values = true },
+  ["submit-sound-action"] = { values = true, fields = { "sound", "taskKind" } },
+  ["submit-battle-action"] = { values = true, fields = { "taskKind" } },
+  ["branch-on-interpreter-state"] = { values = true, fields = { "branchTarget", "alternateTarget" } },
+  ["show-pokemon-picture"] = { values = true, fields = { "taskKind" } },
+  ["clear-pokemon-picture"] = { values = true },
+  ["schedule-battle-task"] = { values = true, fields = { "taskKind", "taskInputRule" } },
+  ["wait-for-sound"] = { values = 1, fields = { "cursorRule" } },
+  ["branch-on-picture-state"] = { values = true, fields = { "branchTarget" } },
+  ["create-battler-effect"] = {
+    fields = { "emitterPosition", "resource", "taskKind" },
+    check = checkBattlerEffect,
+  },
+  ["create-parameterized-battler-effect"] = {
+    fields = {
+      "values",
+      "taskKind",
+      "actionProfile",
+      "resource",
+      "resourceCases",
+      "runtimeSelection",
+      "emitterPosition",
+      "continuationSlot",
+    },
+    check = checkParameterizedBattlerEffect,
+  },
+  ["wait-for-battler-effects"] = { fields = { "cursorRule" } },
+  ["start-battler-effect"] = { values = true, fields = { "taskKind" } },
+  ["destroy-battler-effect"] = { values = true },
+  ["create-managed-sprite-manager"] = {},
+  ["load-managed-sprite-resources"] = {
+    fields = { "runtimeSelection" },
+    resourceSlots = { "character", "palette", "cell", "animation" },
+  },
+  ["create-pokemon-sprite"] = {
+    values = 1,
+    fields = { "taskKind", "taskStartRule", "runtimeSelection", "battlerTarget" },
+  },
+  ["dispose-shared-sprite-manager"] = {},
+  ["destroy-effect-slot"] = { values = true },
+  ["set-battler-state-byte"] = { values = 2 },
+  ["set-battler-effect-byte"] = { values = 2 },
+  ["play-cry"] = { values = true },
+  ["wait-for-cry"] = { values = true, fields = { "cursorRule", "branchTarget", "alternateTarget" } },
+  ["submit-presentation-layout"] = { values = true },
+  ["submit-presentation-update"] = { values = true },
+  ["branch-on-side-mask"] = { fields = { "branchCases" }, check = checkSideMaskBranches },
+  ["branch-on-side-predicate"] = { values = true, fields = { "branchTarget", "alternateTarget" } },
+  ["branch-on-side-equality"] = { values = true, fields = { "branchTarget", "alternateTarget" } },
+  ["load-sprite-character"] = { values = 1, resourceSlots = { "character" } },
+  ["load-sprite-palette"] = { values = 2, resourceSlots = { "palette" } },
+  ["load-sprite-cell"] = { values = 1, resourceSlots = { "cell" } },
+  ["load-sprite-animation"] = { values = 1, resourceSlots = { "animation" } },
+  ["create-configured-sprite"] = {
+    fields = { "parameters", "taskKind", "taskContext" },
+    resourceSlots = { "character", "palette", "cell", "animation" },
+    optionalResourceSlots = { multiCell = true, multiAnimation = true },
+    check = checkConfiguredSprite,
+  },
+  ["create-managed-sprite"] = {
+    values = 2,
+    resourceSlots = { "character", "palette", "cell", "animation" },
+    optionalResourceSlots = { multiCell = true, multiAnimation = true },
+  },
+  ["set-sprite-draw-flag"] = { values = true },
+  ["start-sprite-effect"] = { values = 2, fields = { "taskKind", "taskStartRule", "mode" } },
+  ["clear-sprite-slot"] = { values = true },
+  ["wait-for-confirm-input"] = { values = 1, fields = { "cursorRule" } },
+  ["update-battle-visual"] = { values = 3, fields = { "taskKind", "updateKind" } },
+  ["branch-on-battle-flag"] = { values = true, fields = { "branchTarget", "alternateTarget" } },
+}
+
+-- Each operation's closed record shape, derived once from its declaration.
+---@type table<string, table<string, true>>
+local INSTRUCTION_FIELDS = {}
+for op, definition in pairs(OPERATIONS) do
+  local allowed = { op = true }
+  if definition.values ~= nil then
+    allowed.values = true
+  end
+  if definition.resourceSlots ~= nil then
+    allowed.resourceKeys = true
+  end
+  for _, name in ipairs(definition.fields or {}) do
+    allowed[name] = true
+  end
+  INSTRUCTION_FIELDS[op] = allowed
+end
+
+local function checkValues(values, count, context, code, path)
+  if not Validate.isArray(values) then
+    fail(code, path .. " must be an array", context)
+    return
+  end
+  if type(count) == "number" and #values ~= count then
+    fail(code, path .. " has the wrong number of operands", context)
+  end
+  for index, value in ipairs(values) do
+    SchemaCheck.checkInteger(value, context, code, path .. "[" .. index .. "]")
+  end
+end
+
+local function checkResourceKeys(instruction, definition, context, code, field)
+  local resourceKeys = instruction.resourceKeys
+  if resourceKeys == nil then
+    if definition.resourceSlots ~= nil then
+      fail(code, field .. ".resourceKeys is required for this operation", context)
+    end
+    return
+  end
+  if type(resourceKeys) ~= "table" then
+    fail(code, field .. ".resourceKeys must be a record", context)
+  end
+  for slot, resourceKey in pairs(resourceKeys) do
+    if not RESOURCE_KEY_SLOTS[slot] then
+      fail(code, field .. ".resourceKeys has an unknown slot", context)
+    end
+    checkString(resourceKey, context, code, field .. ".resourceKeys." .. slot)
+  end
+  if definition.resourceSlots ~= nil then
+    checkSlotClosure(
+      resourceKeys,
+      definition.resourceSlots,
+      definition.optionalResourceSlots,
+      "slot",
+      context,
+      code,
+      field .. ".resourceKeys"
+    )
+  end
+end
+
 local function checkInstruction(instruction, context, code, field)
   if type(instruction) ~= "table" then
     fail(code, field .. " must be a record", context)
@@ -1408,405 +1718,31 @@ local function checkInstruction(instruction, context, code, field)
     fail(code, field .. " carries an unknown operation: " .. tostring(instruction.op), context)
     return
   end
-  local allowed = { op = true }
-  for name in pairs(definition) do
-    allowed[name] = true
+  SchemaCheck.checkRecord(instruction, INSTRUCTION_FIELDS[instruction.op], context, code, field)
+  if definition.values ~= nil or instruction.values ~= nil then
+    checkValues(instruction.values, definition.values, context, code, field .. ".values")
   end
-  SchemaCheck.checkRecord(instruction, allowed, context, code, field)
-  if
-    definition.values ~= nil
-    and not (instruction.op == "create-parameterized-battler-effect" and instruction.values == nil)
-  then
-    local values = instruction.values
-    if not Validate.isArray(values) then
-      fail(code, field .. ".values must be an array", context)
-      return
-    end
-    if type(definition.values) == "number" and #values ~= definition.values then
-      fail(code, field .. ".values has the wrong number of operands", context)
-    end
-    for index, value in ipairs(values) do
-      SchemaCheck.checkInteger(value, context, code, field .. ".values[" .. index .. "]")
-    end
-  elseif instruction.values ~= nil then
-    fail(code, field .. ".values is not part of this operation", context)
-  end
-  for _, name in ipairs({ "target", "branchTarget", "alternateTarget", "resumeTarget", "returnTarget" }) do
+  for _, name in ipairs(TARGET_FIELDS) do
     if instruction[name] ~= nil then
       SchemaCheck.checkInteger(instruction[name], context, code, field .. "." .. name, 1)
     end
   end
-  for _, name in ipairs({
-    "callback",
-    "sound",
-    "taskKind",
-    "taskInputRule",
-    "taskStartRule",
-    "callKey",
-    "resource",
-    "emitterPosition",
-    "updateKind",
-    "mode",
-    "runtimeSelection",
-    "battlerTarget",
-    "actionProfile",
-    "taskContext",
-  }) do
+  for _, name in ipairs(STRING_FIELDS) do
     if instruction[name] ~= nil then
       checkString(instruction[name], context, code, field .. "." .. name)
     end
   end
-  if instruction.emitterPosition ~= nil and not BATTLER_POSITION_SET[instruction.emitterPosition] then
-    fail(code, field .. ".emitterPosition is unknown", context)
-  end
-  if
-    instruction.op == "create-battler-effect" and (instruction.resource == nil or instruction.emitterPosition == nil)
-  then
-    fail(code, field .. " requires a particle resource and emitter position", context)
-  end
-  if
-    instruction.op == "create-parameterized-battler-effect"
-    and instruction.resource ~= nil
-    and instruction.resource:match("^battle/particle%-emitter/[^/]+$") == nil
-  then
-    fail(code, field .. ".resource must be a semantic particle-emitter key", context)
-  end
-  if instruction.continuationSlot ~= nil then
-    SchemaCheck.checkInteger(instruction.continuationSlot, context, code, field .. ".continuationSlot")
-    if instruction.continuationSlot < 0 or instruction.continuationSlot > MAX_PARTICLE_CONTINUATION_SLOT then
-      fail(code, field .. ".continuationSlot is outside the 71-slot particle continuation table", context)
-    end
-  end
-  if instruction.cursorRule ~= nil then
-    local cursorRules = {
-      ["pending-redispatch-current-opcode; zero-advances-past-current-opcode"] = true,
-      ["advance-when-phase-matches"] = true,
-      ["advance-when-sound-finishes"] = true,
-      ["advance-when-effects-finish"] = true,
-      ["advance-when-confirm-input-matches"] = true,
-      ["invoke-assert-service; redispatch-current-word-if-it-returns"] = true,
-      ["leave-on-finished-cry; otherwise-consume-stop-word"] = true,
-      ["advance-to-body-when-loop-slot-free; otherwise-redispatch-count-word"] = true,
-      ["rewind-to-active-loop-body-until-count"] = true,
-      ["call-first-free-subprogram-slot; all-slots-busy-redispatch-count-word"] = true,
-      ["return-to-active-subprogram-slot"] = true,
-    }
-    if cursorRules[instruction.cursorRule] ~= true then
-      fail(code, field .. ".cursorRule is unknown", context)
-    end
-  end
-  if instruction.op == "wait-interpreter-counter" then
-    if instruction.cursorRule ~= "pending-redispatch-current-opcode; zero-advances-past-current-opcode" then
-      fail(code, field .. ".cursorRule does not preserve both counter wait paths", context)
-    end
-    if instruction.branchTarget == nil then
-      fail(code, field .. ".branchTarget is required for the pending self-loop", context)
-    end
-  end
-  if instruction.op == "call-subprogram" then
-    if
-      instruction.cursorRule ~= "call-first-free-subprogram-slot; all-slots-busy-redispatch-count-word"
-      or instruction.branchTarget == nil
-      or instruction.returnTarget == nil
-    then
-      fail(code, field .. ".call-subprogram must preserve call, return, and saturation cursor paths", context)
+  for _, enum in ipairs(ENUM_FIELDS) do
+    local value = instruction[enum.name]
+    if value ~= nil and not enum.values[value] then
+      fail(code, field .. "." .. enum.name .. " is unknown", context)
     end
   end
   checkNoNativeKeys(instruction, context, code, field)
-  if instruction.ticks ~= nil then
-    checkInt(instruction.ticks, context, code, field .. ".ticks")
+  if definition.check ~= nil then
+    definition.check(instruction, context, code, field)
   end
-  if instruction.durationTicks ~= nil then
-    checkInt(instruction.durationTicks, context, code, field .. ".durationTicks")
-  end
-  if instruction.taskKind ~= nil then
-    checkString(instruction.taskKind, context, code, field .. ".taskKind")
-    if not TASK_KINDS[instruction.taskKind] then
-      fail(code, field .. ".taskKind is unknown", context)
-    end
-  end
-  if instruction.taskContext ~= nil and not TASK_CONTEXTS[instruction.taskContext] then
-    fail(code, field .. ".taskContext is unknown", context)
-  end
-  if instruction.op == "invoke-battle-animation-callback" then
-    local callbackDefinition = ANIMATION_CALLBACKS[instruction.callback]
-    if callbackDefinition == nil then
-      fail(code, field .. ".callback is unknown", context)
-      return
-    end
-    if
-      instruction.taskKind ~= callbackDefinition.taskKind
-      or instruction.taskContext ~= callbackDefinition.taskContext
-      or instruction.battlerTarget ~= callbackDefinition.battlerTarget
-    then
-      fail(code, field .. " has callback semantics that do not match its source profile", context)
-    end
-    if instruction.runtimeSelection ~= callbackDefinition.runtimeSelection then
-      fail(code, field .. ".runtimeSelection does not match its source callback profile", context)
-    end
-    if callbackDefinition.resourceSlots ~= nil then
-      if type(instruction.resourceKeys) ~= "table" then
-        fail(code, field .. ".resourceKeys must contain the callback's selected resources", context)
-        return
-      end
-      local expectedSlots = {}
-      for _, slot in ipairs(callbackDefinition.resourceSlots) do
-        expectedSlots[slot] = true
-      end
-      for slot in pairs(instruction.resourceKeys) do
-        if not expectedSlots[slot] then
-          fail(code, field .. ".resourceKeys has an unexpected callback resource slot", context)
-        end
-        expectedSlots[slot] = nil
-      end
-      for slot in pairs(expectedSlots) do
-        fail(code, field .. ".resourceKeys is missing callback resource slot " .. slot, context)
-      end
-    elseif instruction.resourceKeys ~= nil then
-      fail(code, field .. ".resourceKeys are not declared by this callback profile", context)
-    end
-    local parameters = instruction.parameters
-    if type(parameters) ~= "table" then
-      fail(code, field .. ".parameters must be a record", context)
-      return
-    end
-    for name, value in pairs(parameters) do
-      local parameter = callbackDefinition.parameters[name]
-      if parameter == nil then
-        fail(code, field .. ".parameters has an unknown field " .. tostring(name), context)
-        return
-      elseif parameter.type == "boolean" then
-        if type(value) ~= "boolean" then
-          fail(code, field .. ".parameters." .. name .. " must be boolean", context)
-        end
-      elseif parameter.type == "enum" then
-        if type(value) ~= "string" or parameter.values[value] ~= true then
-          fail(code, field .. ".parameters." .. name .. " is unknown", context)
-        end
-      elseif parameter.type == "enum-array" then
-        if not Validate.isArray(value) then
-          fail(code, field .. ".parameters." .. name .. " must be an array", context)
-          return
-        end
-        if #value < parameter.minLength or #value > parameter.maxLength then
-          fail(code, field .. ".parameters." .. name .. " has an invalid length", context)
-        end
-        for index, item in ipairs(value) do
-          if type(item) ~= "string" or parameter.values[item] ~= true then
-            fail(code, field .. ".parameters." .. name .. "[" .. index .. "] is unknown", context)
-          end
-        end
-      elseif parameter.type == "move-power-profile-map" then
-        if not Validate.isArray(value) or #value ~= #MOVE_POWER_PROFILE_MAP then
-          fail(code, field .. ".parameters." .. name .. " must contain the six source move-power cases", context)
-        end
-        for index, expected in ipairs(MOVE_POWER_PROFILE_MAP) do
-          local case = value[index]
-          SchemaCheck.checkRecord(
-            case,
-            { movePower = true, profile = true },
-            context,
-            code,
-            field .. ".parameters." .. name
-          )
-          SchemaCheck.checkInteger(
-            case.movePower,
-            context,
-            code,
-            field .. ".parameters." .. name .. "[" .. index .. "].movePower"
-          )
-          SchemaCheck.checkInteger(
-            case.profile,
-            context,
-            code,
-            field .. ".parameters." .. name .. "[" .. index .. "].profile"
-          )
-          if case.movePower ~= expected.movePower or case.profile ~= expected.profile then
-            fail(
-              code,
-              field .. ".parameters." .. name .. " does not match the source move-power profile table",
-              context
-            )
-          end
-        end
-      else
-        SchemaCheck.checkInteger(value, context, code, field .. ".parameters." .. name)
-        if value < parameter.min or value > parameter.max then
-          fail(code, field .. ".parameters." .. name .. " is outside its source range", context)
-        end
-      end
-    end
-    for name in pairs(callbackDefinition.parameters) do
-      if parameters[name] == nil then
-        fail(code, field .. ".parameters omitted " .. name, context)
-      end
-    end
-  end
-  if instruction.op == "set-pokemon-picture-vanished" then
-    if type(instruction.vanished) ~= "boolean" then
-      fail(code, field .. ".vanished must be boolean", context)
-    end
-    if not Validate.isArray(instruction.pictureSets) then
-      fail(code, field .. ".pictureSets must be an array", context)
-    end
-    for index, pictureSet in ipairs(instruction.pictureSets) do
-      if not PICTURE_SETS[pictureSet] then
-        fail(code, field .. ".pictureSets[" .. index .. "] is unknown", context)
-      end
-    end
-  end
-  if instruction.op == "create-configured-sprite" then
-    local expectedContext = CONFIGURED_SPRITE_TASK_CONTEXTS[instruction.taskKind]
-    if expectedContext == nil or instruction.taskContext ~= expectedContext then
-      fail(code, field .. " has a task context that does not match its configured sprite task", context)
-    end
-    local parameters = instruction.parameters
-    local allowedParameters = CONFIGURED_SPRITE_TASK_PARAMETERS[instruction.taskKind] or {}
-    if type(parameters) ~= "table" then
-      fail(code, field .. ".parameters must be a record", context)
-      return
-    end
-    for name, value in pairs(parameters) do
-      local range = allowedParameters[name]
-      if range == nil then
-        fail(code, field .. ".parameters has an unknown field " .. tostring(name), context)
-        return
-      end
-      SchemaCheck.checkInteger(value, context, code, field .. ".parameters." .. name)
-      if value < range.min or value > range.max then
-        fail(code, field .. ".parameters." .. name .. " is outside its source range", context)
-      end
-    end
-    for name in pairs(allowedParameters) do
-      if parameters[name] == nil then
-        fail(code, field .. ".parameters omitted " .. name, context)
-      end
-    end
-  end
-  if instruction.updateKind ~= nil and not VISUAL_UPDATE_KINDS[instruction.updateKind] then
-    fail(code, field .. ".updateKind is unknown", context)
-  end
-  if instruction.mode ~= nil and not SPRITE_EFFECT_MODES[instruction.mode] then
-    fail(code, field .. ".mode is unknown", context)
-  end
-  if instruction.runtimeSelection ~= nil and not RUNTIME_SELECTIONS[instruction.runtimeSelection] then
-    fail(code, field .. ".runtimeSelection is unknown", context)
-  end
-  if instruction.battlerTarget ~= nil and not BATTLER_TARGETS[instruction.battlerTarget] then
-    fail(code, field .. ".battlerTarget is unknown", context)
-  end
-  if instruction.actionProfile ~= nil and not PARTICLE_ACTION_PROFILES[instruction.actionProfile] then
-    fail(code, field .. ".actionProfile is unknown", context)
-  end
-  if instruction.op == "create-parameterized-battler-effect" then
-    if instruction.actionProfile == nil or instruction.emitterPosition == nil then
-      fail(code, field .. " requires a semantic action profile and emitter position", context)
-    end
-    if instruction.resource ~= nil then
-      if instruction.resourceCases ~= nil or instruction.runtimeSelection ~= nil then
-        fail(code, field .. " fixed emitter cannot carry position-pair resource cases", context)
-      end
-    elseif
-      instruction.resourceCases == nil
-      or instruction.runtimeSelection ~= "battler-particle-position-pair"
-      or instruction.continuationSlot ~= nil
-    then
-      fail(code, field .. " requires a fixed emitter or a position-pair resource map", context)
-    end
-  end
-  if instruction.op == "create-parameterized-battler-effect" and instruction.resourceCases ~= nil then
-    if type(instruction.resourceCases) ~= "table" then
-      fail(code, field .. ".resourceCases must be a record", context)
-    end
-    local expectedCases = {}
-    for _, attacker in ipairs(BATTLER_POSITION_KEYS) do
-      for _, target in ipairs(BATTLER_POSITION_KEYS) do
-        expectedCases[attacker .. "/" .. target] = true
-      end
-    end
-    for pairKey, resourceKey in pairs(instruction.resourceCases) do
-      if
-        not expectedCases[pairKey]
-        or type(resourceKey) ~= "string"
-        or (resourceKey ~= "source-assert" and resourceKey:match("^battle/particle%-emitter/[^/]+$") == nil)
-      then
-        fail(code, field .. ".resourceCases has an unknown position pair or invalid resource key", context)
-      end
-      expectedCases[pairKey] = nil
-    end
-    for pairKey in pairs(expectedCases) do
-      fail(code, field .. ".resourceCases is missing position pair " .. pairKey, context)
-    end
-  end
-  if instruction.resourceKeys ~= nil then
-    if type(instruction.resourceKeys) ~= "table" then
-      fail(code, field .. ".resourceKeys must be a record", context)
-    end
-    for slot, resourceKey in pairs(instruction.resourceKeys) do
-      if not RESOURCE_KEY_SLOTS[slot] then
-        fail(code, field .. ".resourceKeys has an unknown slot", context)
-      end
-      checkString(resourceKey, context, code, field .. ".resourceKeys." .. slot)
-    end
-    local requiredSlots = RESOURCE_SLOTS_BY_OPERATION[instruction.op]
-    if requiredSlots ~= nil then
-      local expectedSlots = {}
-      for _, slot in ipairs(requiredSlots) do
-        expectedSlots[slot] = true
-      end
-      local optionalSlots = OPTIONAL_RESOURCE_SLOTS_BY_OPERATION[instruction.op] or {}
-      for slot in pairs(instruction.resourceKeys) do
-        if not expectedSlots[slot] and not optionalSlots[slot] then
-          fail(code, field .. ".resourceKeys has an unexpected slot", context)
-        end
-        expectedSlots[slot] = nil
-      end
-      for slot in pairs(expectedSlots) do
-        fail(code, field .. ".resourceKeys is missing slot " .. slot, context)
-      end
-    end
-  elseif RESOURCE_SLOTS_BY_OPERATION[instruction.op] ~= nil then
-    fail(code, field .. ".resourceKeys is required for this operation", context)
-  end
-  if instruction.taskInputRule ~= nil and not TASK_INPUT_RULES[instruction.taskInputRule] then
-    fail(code, field .. ".taskInputRule is unknown", context)
-  end
-  if instruction.taskStartRule ~= nil and not TASK_START_RULES[instruction.taskStartRule] then
-    fail(code, field .. ".taskStartRule is unknown", context)
-  end
-  if instruction.branchTarget ~= nil then
-    checkInt(instruction.branchTarget, context, code, field .. ".branchTarget")
-  end
-  if instruction.branchCases ~= nil then
-    if not Validate.isArray(instruction.branchCases) then
-      fail(code, field .. ".branchCases must be an array", context)
-    end
-    for index, branchCase in ipairs(instruction.branchCases) do
-      local branchField = field .. ".branchCases[" .. index .. "]"
-      SchemaCheck.checkRecord(
-        branchCase,
-        { sideMask = true, otherwise = true, target = true },
-        context,
-        code,
-        branchField
-      )
-      local hasMask = branchCase.sideMask ~= nil
-      local hasOtherwise = branchCase.otherwise == true
-      if hasMask == hasOtherwise then
-        fail(code, branchField .. " must have one condition", context)
-      end
-      if hasMask then
-        checkInt(branchCase.sideMask, context, code, branchField .. ".sideMask")
-      end
-      if branchCase.otherwise ~= nil and not hasOtherwise then
-        fail(code, branchField .. ".otherwise must be true", context)
-      end
-      checkInt(branchCase.target, context, code, branchField .. ".target")
-    end
-  end
-  if instruction.callKey ~= nil then
-    checkString(instruction.callKey, context, code, field .. ".callKey")
-  end
+  checkResourceKeys(instruction, definition, context, code, field)
 end
 
 local function checkProgram(program, context, code, field)
@@ -1888,11 +1824,6 @@ local function checkRequiredContext(requiredContext, context, code, field)
       fail(code, field .. "." .. key .. " has the wrong context type", context)
     end
   end
-  for key in pairs(requiredContext) do
-    if REQUIRED_CONTEXT_FIELDS[key] == nil then
-      fail(code, field .. " carries an unknown context parameter " .. tostring(key), context)
-    end
-  end
   checkNoNativeKeys(requiredContext, context, code, field)
 end
 
@@ -1966,6 +1897,55 @@ local function checkProgramResourceClosure(program, dependencies, resources, con
   end
 end
 
+-- True when `value` or any table nested in it satisfies `predicate`.
+local function anyNested(value, predicate)
+  if type(value) ~= "table" then
+    return false
+  end
+  if predicate(value) then
+    return true
+  end
+  for _, nested in pairs(value) do
+    if anyNested(nested, predicate) then
+      return true
+    end
+  end
+  return false
+end
+
+local function invokesCallback(value)
+  return value.op == "invoke-battle-animation-callback"
+end
+
+local function needsSpriteContextTable(value)
+  if not invokesCallback(value) then
+    return false
+  end
+  local profile = ANIMATION_CALLBACKS[value.callback]
+  return value.parameters.spriteContextSlot ~= nil
+    or value.parameters.oamModeSpriteSlots ~= nil
+    or (profile ~= nil and profile.requiresSpriteContextTable == true)
+end
+
+local function needsBattlerTopology(value)
+  if value.op == "set-pokemon-picture-vanished" then
+    return true
+  end
+  if not invokesCallback(value) then
+    return false
+  end
+  local profile = ANIMATION_CALLBACKS[value.callback]
+  return value.parameters.pictureSets ~= nil or (profile ~= nil and profile.requiresBattlerTopology == true)
+end
+
+local function needsMovePower(value)
+  if not invokesCallback(value) then
+    return false
+  end
+  local profile = ANIMATION_CALLBACKS[value.callback]
+  return profile ~= nil and profile.requiresMovePower == true
+end
+
 -- One closed effect artifact: its semantic key, the catalog generation it
 -- was lowered against, one executable program, the closed dependency list,
 -- the owned resource descriptors, and the typed context layout. Every
@@ -1995,79 +1975,13 @@ function BattleAnimationSchema.assertEffect(effect)
   checkResources(effect.resources, context, CODE_EFFECT, "effect resources")
   checkProgramResourceClosure(effect.program, effect.dependencies, effect.resources, context, CODE_EFFECT)
   checkRequiredContext(effect.requiredContext, context, CODE_EFFECT, "effect requiredContext")
-  local function requiresSpriteContextTable(value)
-    if type(value) ~= "table" then
-      return false
-    end
-    if value.op == "invoke-battle-animation-callback" and value.parameters.spriteContextSlot ~= nil then
-      return true
-    end
-    if value.op == "invoke-battle-animation-callback" and value.parameters.oamModeSpriteSlots ~= nil then
-      return true
-    end
-    if
-      value.op == "invoke-battle-animation-callback"
-      and ANIMATION_CALLBACKS[value.callback] ~= nil
-      and ANIMATION_CALLBACKS[value.callback].requiresSpriteContextTable == true
-    then
-      return true
-    end
-    for _, nested in pairs(value) do
-      if requiresSpriteContextTable(nested) then
-        return true
-      end
-    end
-    return false
-  end
-  local function requiresBattlerTopology(value)
-    if type(value) ~= "table" then
-      return false
-    end
-    if value.op == "set-pokemon-picture-vanished" then
-      return true
-    end
-    if value.op == "invoke-battle-animation-callback" and value.parameters.pictureSets ~= nil then
-      return true
-    end
-    if
-      value.op == "invoke-battle-animation-callback"
-      and ANIMATION_CALLBACKS[value.callback] ~= nil
-      and ANIMATION_CALLBACKS[value.callback].requiresBattlerTopology == true
-    then
-      return true
-    end
-    for _, nested in pairs(value) do
-      if requiresBattlerTopology(nested) then
-        return true
-      end
-    end
-    return false
-  end
-  local function requiresMovePower(value)
-    if type(value) ~= "table" then
-      return false
-    end
-    if
-      value.op == "invoke-battle-animation-callback"
-      and ANIMATION_CALLBACKS[value.callback] ~= nil
-      and ANIMATION_CALLBACKS[value.callback].requiresMovePower == true
-    then
-      return true
-    end
-    for _, nested in pairs(value) do
-      if requiresMovePower(nested) then
-        return true
-      end
-    end
-    return false
-  end
-  if requiresSpriteContextTable(effect.program) and effect.requiredContext.spriteContextTable == nil then
+  if anyNested(effect.program, needsSpriteContextTable) and effect.requiredContext.spriteContextTable == nil then
     fail(CODE_EFFECT, "effect requiredContext omitted spriteContextTable", context)
   end
-  if requiresBattlerTopology(effect.program) and effect.requiredContext.battlerTopology == nil then
+  if anyNested(effect.program, needsBattlerTopology) and effect.requiredContext.battlerTopology == nil then
     fail(CODE_EFFECT, "effect requiredContext omitted battlerTopology", context)
   end
-  if requiresMovePower(effect.program) and effect.requiredContext.movePower == nil then
+  if anyNested(effect.program, needsMovePower) and effect.requiredContext.movePower == nil then
     fail(CODE_EFFECT, "effect requiredContext omitted movePower", context)
   end
   checkNoNativeKeys(effect, context, CODE_EFFECT, "effect")
