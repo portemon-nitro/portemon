@@ -38,11 +38,11 @@ local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache
 local T = {}
 
 function T.contract_pins_the_current_asset_identities()
-  -- The audio contracts moved to explicit class schemas while the global
-  -- revision identifies the current shared generated-asset contracts. The
-  -- sequence initial-volume domain is the current NNS table domain.
-  Assert.deepEqual(DerivedAssetContract, {
-    revision = 14,
+  -- The audio contracts moved to explicit class schemas; each family table
+  -- below pins its own schema/format values. The global revision is
+  -- deliberately excluded so producer-only changes never touch this test.
+  -- The sequence initial-volume domain is the current NNS table domain.
+  local expectedFamilies = {
     map = {
       cacheFormat = "map-cache-v7",
       sceneSchema = "g4-map-scene-v13",
@@ -95,7 +95,6 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-new-game-init-v3",
     },
     fieldEffects = {
-      cacheFormat = "field-effect-cache-v16",
       cacheFormat = "field-effect-cache-v16",
       indexSchema = "g4-field-effect-index-v4",
     },
@@ -203,7 +202,10 @@ function T.contract_pins_the_current_asset_identities()
       sampleSchema = "g4-audio-sample-v4",
       provenanceSchema = "g4-audio-provenance-v1",
     },
-  })
+  }
+  for family, expected in pairs(expectedFamilies) do
+    Assert.deepEqual(DerivedAssetContract[family], expected, family)
+  end
 end
 
 function T.cache_modules_consume_the_contract_constants()

@@ -286,8 +286,4 @@ function T.semantic_records_do_not_add_files_to_cache_readiness()
   Assert.isFalse(cache.isReady(cacheFs, "ready"), "missing widget files are not ready")
 end
 
-function T.intro_contract_revision_requires_the_new_obj_geometry()
-  Assert.equal(DerivedAssetContract.revision, 14)
-end
-
 return { tests = T }

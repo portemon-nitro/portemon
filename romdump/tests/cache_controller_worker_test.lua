@@ -909,10 +909,13 @@ end
 -- source is required without destroying anything.
 function T.current_full_marker_boots_without_source_io()
   local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
   local GameVersion = require("romdump.src.source.GameVersion")
   local info = GameVersion.info("heartgold")
+  local currentProducer = "r" .. tostring(DerivedCacheVersions.heartgold)
+  local staleProducer = "r" .. tostring(DerivedCacheVersions.heartgold - 1)
   local identity =
-    DerivedCacheState.currentForSelection({ versionId = "heartgold", romSha1 = info.sha1, producerId = "r5" })
+    DerivedCacheState.currentForSelection({ versionId = "heartgold", romSha1 = info.sha1, producerId = currentProducer })
   local backend = FakeCache.new()
   DerivedCacheState.publish(CacheFs.forVersion("heartgold", backend), identity)
   local status, detail, opens, held = driveBootGate(backend)
@@ -922,7 +925,7 @@ function T.current_full_marker_boots_without_source_io()
   Assert.isFalse(held, "a fast boot retains no source buffer")
   local staleBackend = FakeCache.new()
   local stale =
-    DerivedCacheState.currentForSelection({ versionId = "heartgold", romSha1 = info.sha1, producerId = "r6" })
+    DerivedCacheState.currentForSelection({ versionId = "heartgold", romSha1 = info.sha1, producerId = staleProducer })
   DerivedCacheState.publish(CacheFs.forVersion("heartgold", staleBackend), stale)
   local staleStatus, staleDetail, staleOpens, _ = driveBootGate(staleBackend)
   Assert.equal(staleStatus, "source-required", "a stale full marker cannot skip the source")

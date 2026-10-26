@@ -3083,9 +3083,14 @@ end
 -- strict generation the controller derives on selection.
 local function sweepReleaseIdentity()
   local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
   local GameVersion = require("romdump.src.source.GameVersion")
   local info = GameVersion.info("heartgold")
-  return DerivedCacheState.currentForSelection({ versionId = "heartgold", romSha1 = info.sha1, producerId = "r5" })
+  return DerivedCacheState.currentForSelection({
+    versionId = "heartgold",
+    romSha1 = info.sha1,
+    producerId = "r" .. tostring(DerivedCacheVersions.heartgold),
+  })
 end
 
 -- A session on the sweep generation with a scripted deterministic pool:

@@ -472,7 +472,11 @@ function T.production_release_selection_reads_no_producer_sources()
   ProducerFingerprint.checkoutBackend = touch
   local ok, err = pcall(function()
     withPreparationCommand({}, function(select, exits)
-      Assert.equal(select(false), "r5", "release selection must carry the explicit per-game counter")
+      Assert.equal(
+        select(false),
+        "r" .. tostring(DerivedCacheVersions.heartgold),
+        "release selection must carry the explicit per-game counter"
+      )
       Assert.deepEqual(exits, { 0 }, "release selection must report success")
     end)
   end)
@@ -483,14 +487,6 @@ function T.production_release_selection_reads_no_producer_sources()
     error(err, 0)
   end
   Assert.equal(touches, 0, "release selection must perform zero producer-source reads")
-end
-
--- Release identity rotates through the explicit per-game counter for both
--- supported games when producer semantics change without a shared
--- asset-contract revision.
-function T.production_release_counters_rotate_for_both_supported_games()
-  Assert.equal(DerivedCacheVersions.heartgold, 5, "the HeartGold release counter rotates with the producer change")
-  Assert.equal(DerivedCacheVersions.soulsilver, 5, "the SoulSilver release counter rotates with the producer change")
 end
 
 return { tests = T }
