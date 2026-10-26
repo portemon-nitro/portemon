@@ -159,6 +159,17 @@ function BattleProtocol.validateChoice(choice, decisionKind)
     if payload.target ~= nil then
       BattleProtocol.validateTarget(payload.target)
     end
+    if
+      payload.moveSlot ~= nil
+      and (
+        type(payload.moveSlot) ~= "number"
+        or payload.moveSlot ~= payload.moveSlot
+        or payload.moveSlot % 1 ~= 0
+        or payload.moveSlot < 0
+      )
+    then
+      error(BattleErrors.input("item move slots are zero-based integers", { choice = kind }))
+    end
   elseif kind == "run" then
     -- Flight carries an empty payload. Whether flight is legal (wild
     -- against trainer formats, trapping) is format and session policy,

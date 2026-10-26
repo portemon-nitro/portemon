@@ -33,6 +33,8 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _names table<integer, string> visible names by combatant identity across packets
 ---@field _ownMoves table<string, string> own move display names by combatant and move identity
 ---@field _moveName (fun(move: string): string?)? borrowed move display-name resolver for foe narration
+---@field _itemName (fun(item: string): string?)? borrowed item display-name resolver for use narration
+---@field _battleItemUse (fun(item: string): table<string, unknown>?)? borrowed generated battle-use facts
 ---@field _revealPolicy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean } per-launch narration cadence copied from the shared pace table
 ---@field _accum number fractional accepted seconds awaiting their tick
 ---@field _diagnostics string[] recorded unknown-effect occurrences
@@ -92,6 +94,8 @@ end
 ---@class BattleTimeline.Options
 ---@field sound (fun(cue: table<string, unknown>))? sound-cue sink, drained immediately when supplied
 ---@field moveName (fun(move: string): string?)? display-name resolver for move identities the views never name
+---@field itemName (fun(item: string): string?)? display-name resolver for item identities
+---@field battleItemUse (fun(item: string): table<string, unknown>?)? generated battle-use facts for item narration
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
 ---@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire, absent without a screen owner
 
@@ -104,6 +108,8 @@ function BattleTimeline.new(opts)
   return setmetatable({
     _sound = opts.sound,
     _moveName = opts.moveName,
+    _itemName = opts.itemName,
+    _battleItemUse = opts.battleItemUse,
     _revealPolicy = revealPolicy,
     _effects = opts.effects,
     _nativeSeen = {},
@@ -674,6 +680,43 @@ local function moveName(self, combatant, move)
 end
 
 ---@param self BattleTimeline
+---@param item string item identity under display lookup
+---@return string display name when the borrowed catalog resolves it, else the honest identity
+local function itemName(self, item)
+  if type(self._itemName) == "function" then
+    local name = self._itemName(item)
+    if type(name) == "string" and name ~= "" then
+      return name
+    end
+  end
+  return item
+end
+
+---@param view unknown battle view under condition lookup
+---@param combatant integer identity under condition lookup
+---@return string? persistent condition shown on this combatant
+local function viewCondition(view, combatant)
+  if type(view) ~= "table" then
+    return nil
+  end
+  local record = view --[[@as table<string, unknown>]]
+  for _, groupName in ipairs({ "own", "foes" }) do
+    local group = record[groupName]
+    if type(group) == "table" then
+      for _, member in ipairs(group) do
+        if type(member) == "table" then
+          local mon = member --[[@as table<string, unknown>]]
+          if mon.combatant == combatant and type(mon.condition) == "string" then
+            return mon.condition --[[@as string]]
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+---@param self BattleTimeline
 ---@param move string move identity under ownership lookup
 ---@return integer? combatant identity owning the move, nil when no view named it
 local function moveOwner(self, move)
@@ -969,12 +1012,24 @@ local function translateStats(self, event, packet)
   -- the experience cue already showed the bar motion.
 end
 
+---@param event table<string, unknown> event carrying its event-time checkpoint
+---@return table<string, unknown>? event-time checkpoint exposed by the event
+local function eventObservation(event)
+  local observation = event.observation
+  if type(observation) == "table" then
+    return observation --[[@as table<string, unknown>]]
+  end
+  -- Public presentation events expose the same checkpoint as `after`.
+  local after = event.after
+  return type(after) == "table" and after --[[@as table<string, unknown>?]] or nil
+end
+
 ---@param self BattleTimeline
 ---@param target integer combatant identity under checkpoint lookup
 ---@param event table<string, unknown> sanitized kernel event carrying its event-time checkpoint
 local function enqueueCheckpointHealth(self, target, event)
-  local after = event.after --[[@as table<string, unknown>]]
-  local hp = after.hp --[[@as table<string, unknown>?]]
+  local observation = eventObservation(event)
+  local hp = type(observation) == "table" and observation.hp or nil
   if type(hp) == "table" and type(hp[target]) == "number" then
     enqueueHealth(self, target, hp[target] --[[@as integer]])
   end
@@ -1099,7 +1154,21 @@ local function translateStage(self, event)
   local after = payload.after
   if type(before) == "number" and type(after) == "number" and after ~= before then
     local direction = after > before and "rose" or "fell"
-    enqueueMessage(self, who .. "'s " .. tostring(payload.stat) .. " " .. direction .. ".", false)
+    local cause = event.cause --[[@as table<string, unknown>?]]
+    if type(cause) == "table" and cause.kind == "item" and type(cause.item) == "string" then
+      local statNames = {
+        attack = "Attack",
+        defense = "Defense",
+        specialAttack = "Special Attack",
+        specialDefense = "Special Defense",
+        speed = "Speed",
+        accuracy = "accuracy",
+      }
+      local stat = (type(payload.stat) == "string" and statNames[payload.stat]) or tostring(payload.stat)
+      enqueueMessage(self, "The " .. itemName(self, cause.item) .. " raised " .. who .. "’s " .. stat .. "!", false)
+    else
+      enqueueMessage(self, who .. "'s " .. tostring(payload.stat) .. " " .. direction .. ".", false)
+    end
   else
     enqueueMessage(self, who .. " felt the effect.", false)
   end
@@ -1107,9 +1176,60 @@ end
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown>
-local function translateItem(self, event)
-  local item = (event.payload --[[@as table<string, unknown>]]).item
-  enqueueMessage(self, "Used " .. tostring(type(item) == "string" and item or "an item") .. ".", false)
+---@param packet table<string, unknown> event delivery carrying before view under narration
+local function translateItem(self, event, packet)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  if type(payload.refused) == "string" then
+    if payload.refused == "no_effect" or payload.refused == "invalid_target" then
+      enqueueMessage(self, "It won’t do any good to use that!", false)
+    else
+      enqueueMessage(self, "The item could not be used.", false)
+    end
+    return
+  end
+  local itemText = type(payload.item) == "string" and itemName(self, payload.item) or "an item"
+  local actor = explicitActor(event)
+  local shown = actor ~= nil and self:_shown(actor) or nil
+  local user = type(shown) == "table" and shown.side == 2 and "The opposing Trainer" or "You"
+  enqueueMessage(self, user .. " used one " .. itemText .. "!", false)
+  local target = type(payload.target) == "table" and payload.target.combatant or nil
+  if type(target) ~= "number" then
+    local cause = event.cause --[[@as table<string, unknown>?]]
+    target = type(cause) == "table" and cause.combatant or nil
+  end
+  if type(target) == "number" and target % 1 == 0 then
+    ---@cast target integer
+    local who = combatName(self, target)
+    local beforeCondition = viewCondition(packet.before, target)
+    local checkpoint = eventObservation(event)
+    local checkpointCombatants = type(checkpoint) == "table" and checkpoint.combatants or nil
+    local checkpointTarget = type(checkpointCombatants) == "table" and checkpointCombatants[target] or nil
+    local afterCondition = type(checkpointTarget) == "table" and checkpointTarget.condition or nil
+    if type(beforeCondition) == "string" and afterCondition ~= beforeCondition then
+      enqueueMessage(self, who .. "'s " .. itemText .. " cured its " .. beforeCondition .. "!", false)
+    end
+    if type(payload.restored) == "number" and payload.restored > 0 then
+      enqueueCheckpointHealth(self, target, event)
+    end
+  end
+  if type(payload.restoredPp) == "number" and payload.restoredPp > 0 then
+    -- Battle party-menu result for PP servings (msg_0006_00087).
+    enqueueMessage(self, "PP was restored.", false)
+  end
+  if type(payload.item) == "string" and type(self._battleItemUse) == "function" then
+    local effects = self._battleItemUse(payload.item)
+    if type(effects) == "table" then
+      if effects.guardSpec == true then
+        enqueueMessage(self, "Your team became shrouded in mist!", false)
+      end
+      local stages = effects.stages
+      if type(stages) == "table" and type(stages.critical) == "number" and stages.critical > 0 then
+        local targetName = type(target) == "number" and target % 1 == 0 and combatName(self, target --[[@as integer]])
+          or "your Pokémon"
+        enqueueMessage(self, "The " .. itemText .. " raised " .. targetName .. "’s critical-hit ratio!", false)
+      end
+    end
+  end
 end
 
 -- Narrates a move learn-or-decline outcome named by the payload field
@@ -1276,6 +1396,10 @@ end
 ---@param event table<string, unknown>
 local function translateCured(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
+  local cause = event.cause --[[@as table<string, unknown>?]]
+  if type(cause) == "table" and cause.kind == "item" then
+    return
+  end
   enqueueMessage(self, nameOrBattler(self, payload.target) .. " recovered from " .. tostring(payload.key) .. ".", false)
 end
 
@@ -1491,7 +1615,7 @@ local function translateOther(self, event, packet)
     end
     return
   end
-  translate(self, event)
+  translate(self, event, packet)
   if nativeEffectKeyOf(event) ~= nil then
     enqueueNativeEffect(self, event, packet)
   end
@@ -1608,7 +1732,12 @@ function BattleTimeline:present(packet, sourceMessages)
       end
     end
     for _, event in ipairs(group) do
-      if event.kind ~= "move-used" then
+      if event.kind == "item" then
+        fresh[#fresh + 1] = event
+      end
+    end
+    for _, event in ipairs(group) do
+      if event.kind ~= "move-used" and event.kind ~= "item" then
         fresh[#fresh + 1] = event
       end
     end

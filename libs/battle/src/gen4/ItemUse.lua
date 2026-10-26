@@ -2,7 +2,9 @@
 -- A choice names an inventory owner, an item key, and a combatant holder.
 -- Planning validates the choice against declared stock minus outstanding
 -- reservations and reports a deterministic consumption checkpoint with
--- its effect operations; it never consumes, books hidden reservations,
+-- its effect operations; PP servings use semantic move facts to cap
+-- restoration at each move's native maximum. It
+-- never consumes, books hidden reservations,
 -- touches the live Bag, or draws. Execution revalidates the plan against
 -- live battle state at the native checkpoint, consumes exactly one unit
 -- into the battle-owned ledger, applies the planned operations, and
@@ -15,6 +17,7 @@ local BattleErrors = require("libs.battle.src.errors")
 local BattleContext = require("libs.battle.src.BattleContext")
 local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+local Moves = require("libs.mons.src.gen4.Moves")
 local PartyUse = require("libs.items.src.PartyUse")
 local StatStages = require("libs.battle.src.gen4.StatStages")
 local Status = require("libs.battle.src.gen4.Status")
@@ -36,6 +39,8 @@ ItemUse.CONSUMPTION_CHECKPOINT = "item_use"
 ---@class BattleItemEffectOperation
 ---@field kind string operation vocabulary, restore and cure for servings and capture for thrown balls
 ---@field amount integer? computed restoration of restore operations, nil otherwise
+---@field slot integer? zero-based move slot for PP restoration
+---@field maximum integer? maximum PP for PP restoration
 ---@field key string? persistent condition removed by cure operations, nil otherwise
 ---@field target BattleItemTarget holder the operation applies to
 
@@ -132,12 +137,25 @@ local function refusalReason(choice, view)
     return "invalid_target"
   end
   local combatants = declared.combatants --[[@as table<integer, unknown>]]
-  if
-    combatants[
-      target.combatant --[[@as integer]]
-    ] == nil
-  then
+  local holder = combatants[
+    target.combatant --[[@as integer]]
+  ]
+  if holder == nil then
     return "invalid_target"
+  end
+  if named.moveSlot ~= nil then
+    local slot = named.moveSlot
+    local mon = type(holder) == "table" and (holder --[[@as table<string, unknown>]]).mon or nil
+    local moves = type(mon) == "table" and (mon --[[@as table<string, unknown>]]).moves or nil
+    if
+      type(slot) ~= "number"
+      or slot % 1 ~= 0
+      or slot < 0
+      or type(moves) ~= "table"
+      or (moves --[[@as table<integer, unknown>]])[slot + 1] == nil
+    then
+      return "invalid_move"
+    end
   end
   return nil
 end
@@ -150,6 +168,7 @@ local function refusal(code)
     unknown_item = "the battle inventory carries no such item",
     empty = "the shared stack has no plannable unit left",
     invalid_target = "the chosen holder is not on the field",
+    invalid_move = "the chosen move slot is not held by the holder",
     no_effect = "the serving would change neither health nor condition",
     invalid_plan = "battle item plans carry their declared choice",
     already_executed = "battle item plans execute exactly once",
@@ -208,6 +227,22 @@ local function semanticEntry(item, itemFacts)
   return entry --[[@as table<string, unknown>]]
 end
 
+--- Reports whether a serving restores one chosen move: the native Restore
+--- PP page asks for that move before the serving can be chosen, so its
+--- choices carry a zero-based move slot while every other item carries none.
+--- Absent facts classify as no selection; planning reports them as missing.
+---@param item string item key under classification
+---@param itemFacts table<string, unknown> immutable semantic facts by item key
+---@return boolean true for one-move PP servings
+function ItemUse.selectsMove(item, itemFacts)
+  assert(type(itemFacts) == "table", "move selection reads the immutable item facts")
+  local entry = itemFacts[item]
+  local partyUse = type(entry) == "table" and (entry --[[@as table<string, unknown>]]).partyUse or nil
+  return type(partyUse) == "table"
+    and (partyUse --[[@as table<string, unknown>]]).kind == "pp"
+    and (partyUse --[[@as table<string, unknown>]]).target == "one"
+end
+
 ---@param restore unknown generated restore record under validation
 ---@param item string non-ball item key under the error context
 local function checkRestoreShape(restore, item)
@@ -253,6 +288,21 @@ local function checkMedicineShape(partyUse, item)
     end
   end
   checkRestoreShape(partyUse.restore, item)
+end
+
+---@param partyUse table<string, unknown> generated PP-use record under validation
+---@param item string non-ball item key under the error context
+local function checkPpShape(partyUse, item)
+  if partyUse.target ~= "one" and partyUse.target ~= "all" then
+    error(BattleErrors.missingBehavior("battle PP servings name one move or all moves", { item = item }))
+  end
+  if partyUse.boost ~= nil then
+    error(BattleErrors.missingBehavior("battle bag use does not support PP boosts", { item = item }))
+  end
+  local restore = partyUse.restore
+  if restore ~= "full" and (type(restore) ~= "number" or restore % 1 ~= 0 or restore < 1) then
+    error(BattleErrors.missingBehavior("battle PP servings carry a valid restore amount", { item = item }))
+  end
 end
 
 -- The shared poison cure clears either persistent record: the generated
@@ -413,9 +463,88 @@ local function planBattleServing(item, target, view, entry)
   return operations
 end
 
+---@param item string non-ball item key under planning
+---@param target BattleItemTarget holder target under planning
+---@param view table<string, unknown> declared battle state under planning
+---@param partyUse table<string, unknown> generated PP-use facts for the serving
+---@param moveFacts table<string, table<string, unknown>>? semantic move facts under PP planning
+---@param moveSlot integer? zero-based slot chosen for one-move restorations
+---@return BattleItemEffectOperation[] planned PP restorations, empty when no move can recover PP
+local function planPpServing(item, target, view, partyUse, moveFacts, moveSlot)
+  checkPpShape(partyUse, item)
+  if type(moveFacts) ~= "table" then
+    error(BattleErrors.missingBehavior("battle PP servings read their semantic move facts", { item = item }))
+  end
+  local combatants = (view --[[@as table<string, unknown>]]).combatants
+  local holder = type(combatants) == "table"
+      and (combatants --[[@as table<integer, unknown>]])[
+        target.combatant --[[@as integer]]
+      ]
+    or nil
+  local mon = type(holder) == "table" and (holder --[[@as table<string, unknown>]]).mon or nil
+  local moves = type(mon) == "table" and (mon --[[@as table<string, unknown>]]).moves or nil
+  if type(moves) ~= "table" then
+    error(BattleErrors.missingBehavior("battle PP servings read the holder's move slots", { item = item }))
+  end
+
+  local slots = {} ---@type integer[]
+  if partyUse.target == "all" then
+    for slot in
+      ipairs(moves --[[@as table<integer, unknown>]])
+    do
+      slots[#slots + 1] = slot - 1
+    end
+  else
+    if type(moveSlot) ~= "number" or moveSlot % 1 ~= 0 or moveSlot < 0 then
+      error(BattleErrors.missingBehavior("battle PP servings carry the selected move slot", { item = item }))
+    end
+    slots[1] = moveSlot
+  end
+
+  local operations = {} ---@type BattleItemEffectOperation[]
+  for _, slot in ipairs(slots) do
+    local move = (moves --[[@as table<integer, unknown>]])[slot + 1]
+    if type(move) == "table" then
+      local record = move --[[@as table<string, unknown>]]
+      local key, current, ups = record.move, record.pp, record.ppUps
+      if
+        type(key) ~= "string"
+        or type(current) ~= "number"
+        or current % 1 ~= 0
+        or current < 0
+        or type(ups) ~= "number"
+        or ups % 1 ~= 0
+      then
+        error(BattleErrors.missingBehavior("battle PP servings read complete move slots", { item = item }))
+      end
+      local facts = moveFacts[key]
+      if type(facts) ~= "table" or type(facts.basePp) ~= "number" then
+        error(BattleErrors.missingBehavior("battle PP servings read their move's base PP", { item = item, move = key }))
+      end
+      local maximum = Moves.maxPp(facts.basePp --[[@as integer]], ups --[[@as integer]])
+      if current < maximum then
+        local amount = partyUse.restore
+        if amount == "full" then
+          amount = maximum
+        end
+        assert(type(amount) == "number", "PP restoration facts carry a numeric amount after expansion")
+        operations[#operations + 1] = {
+          kind = "restore_pp",
+          slot = slot,
+          amount = amount --[[@as integer]],
+          maximum = maximum,
+          target = copyTarget(target),
+        }
+      end
+    end
+  end
+  return operations
+end
+
 --- Plans one serving from its generated semantics without mutating: cure
 --- operations name the concrete holder record each true cure flag
---- clears, and restoration carries the exact generated amount. Empty
+--- clears, restoration carries the exact generated amount, and PP
+--- operations cap at the semantic maximum. Empty
 --- operations report a serving with no effect. Battle-only servings
 --- plan their stages, focus, guard, and volatile cures from the
 --- generated battle use instead of medicine.
@@ -423,14 +552,19 @@ end
 ---@param target BattleItemTarget detached holder target under planning
 ---@param view table<string, unknown> declared battle state under planning
 ---@param itemFacts table<string, unknown>? immutable semantic facts by item key under planning
+---@param moveFacts table<string, table<string, unknown>>? immutable semantic move facts by key under planning
+---@param moveSlot integer? zero-based slot chosen for one-move PP servings
 ---@return BattleItemEffectOperation[] planned serving operations, empty without effect
-local function planServing(item, target, view, itemFacts)
+local function planServing(item, target, view, itemFacts, moveFacts, moveSlot)
   local entry = semanticEntry(item, itemFacts)
   local partyUse = entry.partyUse
   if type(partyUse) ~= "table" then
     error(BattleErrors.missingBehavior("battle servings carry their generated party use", { item = item }))
   end
   local record = partyUse --[[@as table<string, unknown>]]
+  if record.kind == "pp" then
+    return planPpServing(item, target, view, record, moveFacts, moveSlot)
+  end
   if record.kind ~= "medicine" then
     return planBattleServing(item, target, view, entry)
   end
@@ -482,8 +616,9 @@ end
 ---@param choice BattleItemChoice candidate item choice under planning
 ---@param view table<string, unknown> declared battle state under planning
 ---@param itemFacts table<string, unknown>? immutable semantic facts by item key for servings
+---@param moveFacts table<string, table<string, unknown>>? immutable semantic move facts by key for PP servings
 ---@return ItemUsePlan detached plan for the choice
-function ItemUse.plan(choice, view, itemFacts)
+function ItemUse.plan(choice, view, itemFacts, moveFacts)
   local named = choice
   local item = nil
   local inventoryId = nil
@@ -513,7 +648,9 @@ function ItemUse.plan(choice, view, itemFacts)
   if CaptureContext.isBall(item) then
     operations[#operations + 1] = { kind = "capture", target = copyTarget(target) }
   else
-    operations = planServing(item --[[@as string]], target --[[@as BattleItemTarget]], view, itemFacts)
+    local moveSlot = type(named) == "table" and (named --[[@as BattleItemChoice]]).moveSlot or nil
+    operations =
+      planServing(item --[[@as string]], target --[[@as BattleItemTarget]], view, itemFacts, moveFacts, moveSlot)
     if #operations == 0 then
       return {
         item = item,
@@ -554,18 +691,23 @@ local function checkStock(plan, battle)
 end
 
 --- Applies one serving plan to its live holder: restoration heals toward
---- the ceiling while persistent cures remove their named condition
---- through the status owner. Battle operations (stages, focus, guard,
---- volatile cures) apply through their own owner beside this one; unknown
---- operation kinds never execute. Both live health mirrors agree afterwards.
+--- the ceiling, PP restoration uses the move owner, and persistent cures
+--- remove their named condition through the status owner. Battle
+--- operations (stages, focus, guard, volatile cures) apply through their
+--- own owner beside this one; unknown operation kinds never execute.
+--- Both live health mirrors agree afterwards.
 ---@param executable ItemUsePlan executable serving plan under execution
+---@param battle table<string, unknown> battle-owned state under mutation
 ---@param holder table<string, unknown> live holder combatant under mutation
 ---@return integer actual health gained after ceiling capping
-local function applyServing(executable, holder)
+---@return integer actual PP restored across addressed moves
+local function applyServing(executable, battle, holder)
   local hp = holder.hp
   local maxHp = holder.maxHp
   assert(type(hp) == "number" and type(maxHp) == "number", "servings apply to a recorded holder")
   local gained = 0
+  local gainedPp = 0
+  local context = BattleContext.wrap(battle)
   for _, operation in
     ipairs(executable.effectOperations --[[@as BattleItemEffectOperation[] ]])
   do
@@ -578,6 +720,19 @@ local function applyServing(executable, holder)
           capped - hp --[[@as integer]]
         )
       hp = capped
+    elseif effect.kind == "restore_pp" then
+      local slot, amount, maximum = effect.slot, effect.amount, effect.maximum
+      assert(
+        type(slot) == "number" and type(amount) == "number" and type(maximum) == "number",
+        "PP restoration operations carry slot, amount, and maximum"
+      )
+      gainedPp = gainedPp
+        + context:restorePp(
+          executable.target.combatant --[[@as integer]],
+          slot --[[@as integer]],
+          amount --[[@as integer]],
+          maximum --[[@as integer]]
+        )
     elseif effect.kind == "cure" and effect.key ~= "confusion" and effect.key ~= "infatuation" then
       local mon = holder.mon
       if type(mon) ~= "table" then
@@ -596,7 +751,7 @@ local function applyServing(executable, holder)
       (condition --[[@as table<string, unknown>]]).currentHp = hp
     end
   end
-  return gained
+  return gained, gainedPp
 end
 
 --- Applies the battle operations of one serving plan through the
@@ -751,14 +906,14 @@ function ItemUse.execute(plan, battle, rng)
     executable.executed = true
     return { consumed = true, result = { ball = executable.item, target = target.combatant } }
   end
-  local restored = applyServing(executable, holder)
+  local restored, restoredPp = applyServing(executable, battle, holder)
   if
     hasBattleOperations(executable.effectOperations --[[@as table<integer, table<string, unknown>>]])
   then
     applyBattleUse(executable, battle, holder)
   end
   executable.executed = true
-  return { consumed = true, restored = restored, target = copyTarget(target) }
+  return { consumed = true, restored = restored, restoredPp = restoredPp, target = copyTarget(target) }
 end
 
 return ItemUse

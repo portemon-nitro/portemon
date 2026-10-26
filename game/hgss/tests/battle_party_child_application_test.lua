@@ -97,7 +97,12 @@ function T.voluntary_switch_seals_the_projected_reserve_fragment_once()
   local flows = coordinator()
   local options = switchOptions(2)
   Assert.isTrue(flows:open(partyIntent({ options = options })), "the voluntary party child opens")
+  drive(flows, { type = "navigate", direction = "down" })
   drive(flows, { type = "confirm" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 12 do
+    flows:tick()
+  end
   local result = flows:takeResult()
   Assert.notNil(result, "confirming the reserve stages its reply")
   Assert.equal(result.kind, "choice", "the reserve stages a choice")
@@ -121,6 +126,10 @@ function T.forced_replacement_holds_on_cancel_and_seals_on_confirm()
   Assert.isNil(flows:takeResult(), "a forced replacement has no cancel result")
   Assert.isTrue(flows:status().active, "a forced replacement keeps owning input after cancel")
   drive(flows, { type = "confirm" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 12 do
+    flows:tick()
+  end
   local result = flows:takeResult()
   Assert.notNil(result, "confirming the forced reserve stages its reply")
   Assert.equal(result.kind, "choice", "the forced reserve stages a choice")

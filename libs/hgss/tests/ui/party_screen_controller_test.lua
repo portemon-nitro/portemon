@@ -927,6 +927,24 @@ function T.item_target_confirm_emits_use_item_with_bag_identity()
   )
 end
 
+-- A silent completion answers the pending use without leaving target
+-- selection: the picker returns to its target state on the chosen slot.
+function T.item_target_no_op_returns_to_target_selection()
+  local controller = nativeController({
+    context = "item_target",
+    item = { key = "ETHER", bagRevision = 7 },
+  })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(controller:takeIntent().slot, 1, "the chosen slot emits its use")
+  controller:completeAction({ kind = "no_op" })
+  local restored = nativeStatus(controller)
+  Assert.equal(restored.state, "choosing_item_target", "the silent completion keeps target selection")
+  Assert.equal(restored.cursorNode, 1, "the chosen slot keeps the cursor")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(controller:takeIntent().slot, 1, "the restored selection emits again")
+end
+
 function T.give_target_confirm_emits_give_with_bag_identity()
   local controller = nativeController({
     context = "give_target",

@@ -186,6 +186,41 @@ function T.strike_plays_message_then_health_without_read_ahead()
   Assert.equal(battler(timeline:battlers(), 1).hp, 52, "untouched health never moves")
 end
 
+-- A PP serving narrates the native party-menu result after its use line.
+function T.pp_serving_narrates_the_restoration()
+  local timeline = BattleTimeline.new({
+    sound = function(_) end,
+    itemName = function(item)
+      return item == "ETHER" and "Ether" or nil
+    end,
+  })
+  timeline:reset(openingView())
+  local served = event(
+    "item",
+    { item = "ETHER", inventory = "party", target = { kind = "combatant", combatant = 1 }, restored = 0, restoredPp = 10 },
+    { [1] = 52, [3] = 57 }
+  )
+  served.cause = { kind = "action", combatant = 1 }
+  Assert.isTrue(timeline:present(packet(1, { served }, openingView())), "the serving packet is accepted")
+  local seen = {}
+  local lastId = nil
+  for _ = 1, 600 do
+    advance(timeline, TICK)
+    local shown = timeline:message()
+    if shown ~= nil and shown ~= "" then
+      local id = timeline:messageId()
+      if id ~= lastId then
+        seen[#seen + 1] = shown
+        lastId = id
+      else
+        seen[#seen] = shown
+      end
+    end
+    timeline:ack()
+  end
+  Assert.deepEqual(seen, { "You used one Ether!", "PP was restored." }, "the restoration follows its use line")
+end
+
 function T.displayed_battlers_preserve_false_source_caught_state()
   local view = openingView()
   view.foes[1].caught = false

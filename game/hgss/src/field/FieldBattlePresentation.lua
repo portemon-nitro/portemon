@@ -29,6 +29,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
 ---@field _monIconProvider table<string, unknown>? field-owned icon page provider borrowed for battle command icons
+---@field _battleMenus table<string, unknown> borrowed field-owned bag and party presentation services
 ---@field _imageFailures table<string, string> terminal upload failures by key, latched for the envelope lifetime
 ---@field _measureDisplay fun(): table<string, unknown> live display facts
 ---@field _graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
@@ -84,6 +85,7 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
 ---@field monIconProvider table<string, unknown>? borrowed field icon page provider for the active command icon
+---@field battleMenus table<string, unknown> borrowed field-owned bag and party presentation services
 ---@field imagePool table<string, unknown>? borrowed shared generated-image owner behind pooled uploads, required to resolve graphical drawables
 ---@field fieldRenderer table<string, unknown>? field-local native plane compositor
 ---@field fieldCamera fun(): table<string, unknown>? current field camera provider
@@ -303,6 +305,7 @@ function FieldBattlePresentation.new(opts)
     _itemCatalog = opts.itemCatalog,
     _monCatalog = opts.monCatalog,
     _monIconProvider = opts.monIconProvider,
+    _battleMenus = opts.battleMenus,
     _overrides = opts.overrides or {},
     _manifest = loadManifest(opts.cacheFs),
     _preparedDemands = {},
@@ -1214,6 +1217,7 @@ function FieldBattlePresentation:_preparationServices()
         failures[key] = failure --[[@as string]]
         return nil, failure
       end
+      images[key] = cell
       return cell
     end
     return nil
@@ -1860,6 +1864,7 @@ function FieldBattlePresentation:_buildPort(descriptor)
     itemCatalog = self._itemCatalog,
     monCatalog = self._monCatalog,
     monIconProvider = self._monIconProvider,
+    battleMenus = self._battleMenus,
     overrides = { sceneKey = sceneKey },
   })
   self._screen = screen

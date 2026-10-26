@@ -90,6 +90,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field startMenuRenderer StartMenuRenderer?
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
+---@field partyManifest table<string, unknown> validated native party-screen presentation geometry
 ---@field monIconProvider MonIconAssetProvider? the one shared party-icon demand owner for the state lifetime
 ---@field namingRenderer NamingScreenRenderer? lazily owned script naming renderer
 ---@field namingIconQuads table<string, table<integer, unknown>> prepared mon icon frames borrowed from the provider
@@ -105,6 +106,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field _apricornBoxRenderer ApricornBoxRenderer? owned source graphics and row renderer
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
+---@field bagManifest table<string, unknown> validated native bag presentation geometry
 ---@field pcManifest table<string, unknown> validated PC manifest borrowed by its application renderers
 ---@field storageRenderer PcStorageRenderer PC Storage renderer (borrows the shared image owner)
 ---@field mailboxRenderer MailboxRenderer Mailbox renderer (borrows the shared image owner)
@@ -532,9 +534,10 @@ function FieldPresentationResources.new(runtime)
       text = textRenderer,
       imagePool = sharedImages,
     })
+    self.partyManifest = PartyCache.loadManifest(runtime.cacheFs)
     self.partyScreenRenderer = PartyScreenRenderer.new({
       cacheFs = runtime.cacheFs,
-      manifest = PartyCache.loadManifest(runtime.cacheFs),
+      manifest = self.partyManifest,
       uiManifest = runtime.uiManifest,
       text = textRenderer,
       window = self.windowRenderer,
@@ -597,6 +600,7 @@ function FieldPresentationResources.new(runtime)
     -- The bag manifest loads once: the 2D pane renderer and the borrowed
     -- hero model renderer share the same validated table.
     local bagManifest = BagCache.loadManifest(runtime.cacheFs)
+    self.bagManifest = bagManifest
     self.heroRenderer = BagHeroRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = bagManifest,

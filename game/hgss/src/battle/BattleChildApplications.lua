@@ -21,8 +21,10 @@
 
 local BagController = require("libs.hgss.src.ui.BagController")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
+local BagLayout = require("libs.hgss.src.ui.BagLayout")
 local BagModel = require("libs.hgss.src.ui.BagModel")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local MonCache = require("libs.assets.src.MonCache")
 local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController")
 local PartyScreenController = require("libs.hgss.src.ui.PartyScreenController")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
@@ -89,6 +91,25 @@ local function battlePartyHit(x, y)
   return nil
 end
 
+local function fallbackPartyLayout(cancellable)
+  local function menuLayout(_, count)
+    local rows = {}
+    for index = 1, count do
+      rows[index] = { x = 0, y = index - 1, width = 1, height = 1 }
+    end
+    return rows
+  end
+  local function menuHit(_, _, _, _)
+    return nil
+  end
+  return {
+    neighbors = PartyScreenLayout.defaultNeighbors(cancellable),
+    hitTest = battlePartyHit,
+    menuLayout = menuLayout,
+    menuHit = menuHit,
+  }
+end
+
 -- Resolves one native battle-bag hit target over the canonical modal
 -- rows: visible cells name their visible cell, the footer cancels, and
 -- the pocket steppers name the neighboring pocket.
@@ -146,19 +167,44 @@ local function battleLearnHit(x, y)
   return nil
 end
 
+-- Resolves one native Restore PP hit target over the canonical modal
+-- rows: held rows select by move index, the footer returns.
+---@param x number tap horizontal position under hit-testing
+---@param y number tap vertical position under hit-testing
+---@return table<string, unknown>? native hit target, nil outside every control
+local function battleMoveHit(x, y)
+  for index = 0, 3 do
+    if hitContains(rowRect(index + 1), x, y) then
+      return { kind = "move", index = index }
+    end
+  end
+  if hitContains(CHILD_BACK, x, y) then
+    return { kind = "return" }
+  end
+  return nil
+end
+
 -- Maps one stable battle row/control identity to its canonical tap
 -- center for pointer synthesis. Unknown identities map to nothing so a
 -- foreign tap can never arm controller state.
 ---@param kind string composed child kind under mapping
 ---@param id string stable row/control identity under mapping
+---@param layout table<string, unknown>? native resolved hit geometry
+---@param menus table<string, unknown>? borrowed menu renderers and manifests
 ---@return table<string, number>? tap center, nil for unknown identities
-local function battleTapPoint(kind, id)
+local function battleTapPoint(kind, id, layout, menus)
   if kind == "party" or kind == "target" then
     local slot = tonumber(id:match("^party:(%d+)$") or "")
     if slot ~= nil and slot % 1 == 0 and slot >= 0 and slot <= 5 then
+      if type(layout) == "table" then
+        return rectCenter(assert(layout.slotRects[slot + 1], "native party layout carries every slot"))
+      end
       return rectCenter(rowRect(math.floor(slot) + 1))
     end
     if id == "back" then
+      if type(layout) == "table" and layout.cancelRect ~= nil then
+        return rectCenter(layout.cancelRect)
+      end
       return rectCenter(CHILD_BACK)
     end
     return nil
@@ -166,9 +212,20 @@ local function battleTapPoint(kind, id)
   if kind == "bag" then
     local cell = tonumber(id:match("^bag:(%d+)$") or "")
     if cell ~= nil and cell % 1 == 0 and cell >= 0 and cell <= 5 then
+      local manifest = type(menus) == "table" and menus.manifest or nil
+      local interactive = type(manifest) == "table" and manifest.interactive or nil
+      local slots = type(interactive) == "table" and interactive.itemSlots and interactive.itemSlots.slots or nil
+      if type(slots) == "table" then
+        return rectCenter(assert(slots[cell + 1].rect, "native bag slot carries its hit rectangle"))
+      end
       return rectCenter(rowRect(math.floor(cell) + 1))
     end
     if id == "back" then
+      local manifest = type(menus) == "table" and menus.manifest or nil
+      local interactive = type(manifest) == "table" and manifest.interactive or nil
+      if type(interactive) == "table" then
+        return rectCenter(assert(interactive.cancel.rect, "native bag carries its cancel rectangle"))
+      end
       return rectCenter(CHILD_BACK)
     end
     if id == "pocket_prev" then
@@ -176,6 +233,16 @@ local function battleTapPoint(kind, id)
     end
     if id == "pocket_next" then
       return rectCenter(CHILD_POCKET_NEXT)
+    end
+    return nil
+  end
+  if kind == "move" then
+    local slot = tonumber(id:match("^move:(%d+)$") or "")
+    if slot ~= nil and slot % 1 == 0 and slot >= 0 and slot <= 3 then
+      return rectCenter(rowRect(math.floor(slot) + 1))
+    end
+    if id == "back" then
+      return rectCenter(CHILD_BACK)
     end
     return nil
   end
@@ -200,13 +267,15 @@ end
 -- controller actions. Unknown identities drop without arming anything.
 ---@param kind string composed child kind under expansion
 ---@param events table<integer, table<string, unknown>> semantic input batch under expansion
+---@param layout table<string, unknown>? native resolved hit geometry
+---@param menus table<string, unknown>? borrowed menu renderers and manifests
 ---@return table<integer, table<string, unknown>> batch with taps expanded to pointer pairs
-local function expandTaps(kind, events)
+local function expandTaps(kind, events, layout, menus)
   local expanded = {}
   local taps = 0
   for _, event in ipairs(events) do
     if type(event) == "table" and event.type == "tap" and type(event.id) == "string" then
-      local point = battleTapPoint(kind, event.id)
+      local point = battleTapPoint(kind, event.id, layout, menus)
       if point ~= nil then
         taps = taps + 1
         local pointerId = "battle-tap:" .. tostring(taps)
@@ -417,6 +486,39 @@ local function itemLegality(options, key)
   return false, reason
 end
 
+---@param options table<string, unknown> decision options under target explanation
+---@param key string staged item identity under explanation
+---@param combatant integer addressed target under explanation
+---@return string? reason for this target, nil while enabled or unoffered
+local function itemTargetReason(options, key, combatant)
+  if type(options.actors) ~= "table" then
+    return nil
+  end
+  for _, actor in ipairs(options.actors) do
+    if type(actor) == "table" and type(actor.choices) == "table" then
+      for _, choice in ipairs(actor.choices) do
+        local fragment = type(choice) == "table" and choice.choice or nil
+        local payload = type(fragment) == "table" and fragment.payload or nil
+        local target = type(payload) == "table" and payload.target or nil
+        if
+          type(choice) == "table"
+          and choice.enabled ~= true
+          and type(fragment) == "table"
+          and fragment.kind == "item"
+          and type(payload) == "table"
+          and payload.item == key
+          and type(target) == "table"
+          and target.combatant == combatant
+          and type(choice.reason) == "string"
+        then
+          return choice.reason --[[@as string]]
+        end
+      end
+    end
+  end
+  return nil
+end
+
 -- Battle-local bag service over the detached stock: pocket reads project
 -- the detached inventory through the borrowed item catalog, the revision
 -- stays fixed for the child lifetime, and registrations are empty because
@@ -487,6 +589,21 @@ local function battlePartyModel(roster, eligible)
       if type(record) == "table" and type(record.slot) == "number" and type(record.combatant) == "number" then
         assert(slots[record.slot + 1] ~= nil, "battle roster slots stay unique")
         local fainted = (tonumber(record.hp) or 0) <= 0
+        local condition = type(record.condition) == "string" and record.condition:lower() or ""
+        local status = "ok"
+        if fainted then
+          status = "faint"
+        elseif condition == "sleep" then
+          status = "sleep"
+        elseif condition == "poison" or condition == "bad-poison" or condition == "toxic" then
+          status = "poison"
+        elseif condition == "burn" or condition == "freeze" or condition == "paralysis" then
+          status = condition
+        end
+        local iconKey = nil
+        if type(record.species) == "string" then
+          iconKey = MonCache.iconSelector(record.species, type(record.form) == "number" and record.form or 0, false)
+        end
         slots[record.slot + 1] = {
           occupied = true,
           eligible = eligible[record.combatant] == true,
@@ -495,7 +612,9 @@ local function battlePartyModel(roster, eligible)
           level = record.level,
           currentHp = tonumber(record.hp) or 0,
           maxHp = tonumber(record.maxHp) or 0,
-          status = fainted and "faint" or "ok",
+          status = status,
+          iconKey = iconKey,
+          genderSymbol = record.gender,
         }
       end
     end
@@ -656,6 +775,53 @@ local function harvest(child, controller)
   end
 end
 
+-- Composes the native move picker in its PP-restore context over one
+-- holder's detached roster moves, standing in for the native Restore PP
+-- page. Rows carry the roster's move, PP, and maximum PP facts in slot
+-- order; unheld slots stay empty so the picker never focuses them.
+---@param record table<string, unknown> detached roster record of the holder
+---@return table<string, unknown>? composed move picker
+---@return string? failure cause
+local function composeRestorePicker(record)
+  local moves = record.moves
+  assert(type(moves) == "table", "PP holders carry their roster moves")
+  local rows = {}
+  for index = 1, 4 do
+    local entry = moves[index]
+    if type(entry) == "table" then
+      rows[index] = {
+        kind = "move",
+        moveSlot = index - 1,
+        key = entry.move,
+        name = entry.name,
+        pp = entry.pp,
+        maxPp = entry.maxPp,
+      }
+    else
+      rows[index] = { kind = "empty", moveSlot = index - 1 }
+    end
+  end
+  local function refreshModel(_)
+    return { revision = 1, slotCount = 1, moves = copyValue(rows) }
+  end
+  local function moveLayout()
+    return { hitTest = battleMoveHit }
+  end
+  local ok, controller = pcall(SummaryController.new, {
+    mode = "move_pick",
+    model = { refresh = refreshModel },
+    resolveLayout = moveLayout,
+    reorderMoves = nil,
+    readNavigation = nil,
+    request = { context = "pp_restore" },
+  })
+  if not ok then
+    return nil, tostring(controller)
+  end
+  controller:refreshFacts()
+  return controller
+end
+
 -- Composes the native Bag application in its battle context over the
 -- detached stock. The kernel item policy drives the native refusal path;
 -- stock mutation entries refuse loudly. Target selection composes the
@@ -686,10 +852,16 @@ local function openBagChild(intent, services)
     return reason
   end
   local policy = { isEnabled = policyEnabled, reason = policyReason }
+  local battleMenus = type(services.battleMenus) == "table" and services.battleMenus or nil
+  local bagMenus = battleMenus ~= nil and battleMenus.bag or nil
+  local bagManifest = type(bagMenus) == "table" and bagMenus.manifest or nil
+  local nativeBagLayout = type(bagManifest) == "table"
+      and BagLayout.resolve({ manifest = bagManifest, heroVisible = false })
+    or nil
   local function emptyLayout()
-    return { hitTest = battleBagHit }
+    return nativeBagLayout or { hitTest = battleBagHit }
   end
-  local function noFieldActions()
+  local function noBattleActions()
     return {}
   end
   local ok, controller = pcall(BagController.new, {
@@ -697,7 +869,7 @@ local function openBagChild(intent, services)
     cursor = cursor,
     resolveLayout = emptyLayout,
     commands = refusingBagCommands(),
-    resolveActions = noFieldActions,
+    resolveActions = noBattleActions,
     context = "battle",
     battlePolicy = policy,
   })
@@ -710,13 +882,18 @@ local function openBagChild(intent, services)
     _identity = identity,
     _application = BattleChildApplications.RECEIPTS.bag,
     _controller = controller,
+    _layout = nativeBagLayout,
+    _menus = bagMenus,
     _options = options,
     _party = intent.party,
     _target = nil,
     _nativeIntent = nil,
     _nativeResult = nil,
+    _inputApplied = false,
     _targetIntent = nil,
     _targetResult = nil,
+    _move = nil,
+    _moveHolder = nil,
     _taken = false,
     _disposed = false,
   }
@@ -735,16 +912,81 @@ local function openBagChild(intent, services)
     for combatant in pairs(targets) do
       eligible[combatant] = true
     end
-    local target, targetErr = BattleChildApplications.openTargetPicker(roster, eligible, itemKey, services)
+    local target, targetErr =
+      BattleChildApplications.openTargetPicker(roster, eligible, itemKey, services, self._options)
     if target == nil then
       error(targetErr, 0)
     end
     self._target = target
   end
+  -- Opens the Restore PP move picker over the chosen holder while the
+  -- target list waits on its pending use: the picker owns input until it
+  -- closes back into that list.
+  ---@param slot integer chosen roster slot under move selection
+  function child:openMove(slot)
+    assert(self._target ~= nil and self._move == nil, "move selection follows one chosen target")
+    local holder = nil
+    for _, record in
+      ipairs(self._party --[[@as table<integer, table<string, unknown>>]])
+    do
+      if type(record) == "table" and record.slot == slot then
+        holder = record
+      end
+    end
+    assert(type(holder) == "table", "move selection reads the chosen roster record")
+    local picker, pickerErr = composeRestorePicker(holder)
+    if picker == nil then
+      error(pickerErr, 0)
+    end
+    self._move = picker
+    self._moveHolder = holder
+  end
+  -- Closes the move picker into the waiting target list: a refusal shows
+  -- its text over the list, a plain return restores the list silently.
+  ---@param refusal string? visible refusal text, nil for a plain return
+  function child:closeMove(refusal)
+    if self._move == nil then
+      return
+    end
+    self._move:dispose()
+    self._move = nil
+    self._moveHolder = nil
+    local target = assert(self._target, "move selection returns into its target list")
+    target:completeAction(refusal ~= nil and { kind = "refused", text = refusal } or { kind = "no_op" })
+  end
+  -- Drains one native move-picker outcome without sealing.
+  ---@return table<string, unknown>? move outcome, nil while the picker stays open
+  function child:takeMoveOutcome()
+    if self._move == nil then
+      return nil
+    end
+    local result = drainResult(self._move)
+    if type(result) == "table" and result.kind == "move_selected" and type(result.moveSlot) == "number" then
+      return { kind = "move_selected", moveSlot = result.moveSlot }
+    end
+    if type(result) == "table" and result.kind == "cancelled" then
+      return { kind = "cancelled" }
+    end
+    return nil
+  end
+  ---@return table<string, unknown>? native move picker status, nil without its picker
+  function child:moveStatus()
+    if self._move == nil then
+      return nil
+    end
+    local view = self._move:status()
+    view.holderName = self._moveHolder.name
+    return view
+  end
   -- Disposes only the target picker, keeping the retained bag browser.
   -- A disposed picker owns no input and seals nothing, so its pending
   -- evidence clears with it instead of leaking into the next picker.
   function child:closeTarget()
+    if self._move ~= nil then
+      self._move:dispose()
+      self._move = nil
+      self._moveHolder = nil
+    end
     if self._target ~= nil then
       self._target:dispose()
       self._target = nil
@@ -757,29 +999,45 @@ local function openBagChild(intent, services)
     if self._disposed or self._taken then
       return
     end
-    if self._target ~= nil then
+    if self._move ~= nil then
+      routeSemantic(self._move, expandTaps("move", events))
+    elseif self._target ~= nil then
+      self._target:updateFixed(expandTaps("target", events, self._target._layout, self._target._menus))
       local targetController = self._target._controller
-      routeSemantic(targetController, expandTaps("target", events))
-      local targetIntent = drainIntent(targetController)
-      if targetIntent ~= nil then
-        self._targetIntent = targetIntent
-      end
-      local targetResult = drainResult(targetController)
-      if targetResult ~= nil then
-        self._targetResult = targetResult
-      end
+      self._targetIntent = drainIntent(targetController) or self._targetIntent
+      self._targetResult = drainResult(targetController) or self._targetResult
+    else
+      self._controller:updateFixed(expandTaps("bag", events, self._layout, self._menus))
+      harvest(self, self._controller)
+    end
+    self._inputApplied = true
+  end
+  ---@param _ integer source ticks under stepping
+  function child:stepSourceTick(_)
+    if self._inputApplied then
+      self._inputApplied = false
       return
     end
-    routeSemantic(self._controller, expandTaps("bag", events))
+    if self._move ~= nil then
+      return
+    end
+    if self._target ~= nil then
+      local target = assert(self._target, "an active target owns its controller")
+      target:updateFixed({})
+      local targetController = target._controller
+      self._targetIntent = drainIntent(targetController) or self._targetIntent
+      self._targetResult = drainResult(targetController) or self._targetResult
+      return
+    end
+    self._controller:updateFixed({})
     harvest(self, self._controller)
   end
-  ---@param _ integer source ticks under stepping (event-stepped controllers keep no clock)
-  function child:stepSourceTick(_) end
   ---@param _ table<string, unknown>? borrowed display facts (the returned record is renderer-agnostic data)
   ---@return table<string, unknown> drawable bag record from the native application
   function child:draw(_)
     local view = self._controller:status()
     assert(type(view) == "table", "the native bag projects its drawable record")
+    view.layout = self._layout
     return view
   end
   -- Reports the native application receipt for the overlay currently
@@ -787,6 +1045,9 @@ local function openBagChild(intent, services)
   -- resting browser is the Bag application.
   ---@return string native application receipt
   function child:application()
+    if self._move ~= nil then
+      return BattleChildApplications.RECEIPTS.learn
+    end
     if self._target ~= nil then
       return BattleChildApplications.RECEIPTS.party
     end
@@ -851,7 +1112,10 @@ local function openBagChild(intent, services)
     if self._target == nil then
       return nil
     end
-    return self._target._controller:status()
+    local view = self._target._controller:status()
+    view.layout = self._target._layout
+    view.targetPromptKey = "useTarget"
+    return view
   end
   ---@return table<string, unknown>? bound result, exactly once
   function child:takeResult()
@@ -885,9 +1149,10 @@ end
 ---@param eligible table<integer, boolean> eligible combatants under composition
 ---@param itemKey string staged battle item identity under composition
 ---@param services table<string, unknown> borrowed battle services under composition
+---@param options table<string, unknown> current battle choice options under composition
 ---@return table<string, unknown>? composed target picker
 ---@return string? failure cause
-function BattleChildApplications.openTargetPicker(roster, eligible, itemKey, services)
+function BattleChildApplications.openTargetPicker(roster, eligible, itemKey, services, options)
   assert(type(roster) == "table", "target pickers read the detached roster")
   assert(type(itemKey) == "string" and itemKey ~= "", "target pickers stage their item")
   local model = battlePartyModel(roster, eligible)
@@ -896,13 +1161,22 @@ function BattleChildApplications.openTargetPicker(roster, eligible, itemKey, ser
     if eligible[record.combatant] == true then
       return { compatible = true }
     end
+    local reason = itemTargetReason(options, itemKey, record.combatant)
+    if reason == "no_effect" or reason == "invalid_target" then
+      return { compatible = false, note = "It won’t do any good to use that!" }
+    end
     return { compatible = false, note = "That choice is unavailable." }
   end
   local policy = { evaluateTarget = evaluateTarget }
+  local battleMenus = type(services.battleMenus) == "table" and services.battleMenus or nil
+  local partyMenus = battleMenus ~= nil and battleMenus.party or nil
+  local partyManifest = type(partyMenus) == "table" and partyMenus.manifest or nil
+  local nativePartyLayout = type(partyManifest) == "table"
+      and PartyScreenLayout.resolve({ manifest = partyManifest, cancellable = true })
+    or nil
   local function targetLayout()
-    return { neighbors = PartyScreenLayout.defaultNeighbors(true), hitTest = battlePartyHit }
+    return nativePartyLayout or fallbackPartyLayout(true)
   end
-  local _ = services
   local ok, controller = pcall(PartyScreenController.new, {
     context = "item_target",
     model = model,
@@ -914,7 +1188,7 @@ function BattleChildApplications.openTargetPicker(roster, eligible, itemKey, ser
   if not ok then
     return nil, tostring(controller)
   end
-  local picker = { _controller = controller, _disposed = false }
+  local picker = { _controller = controller, _disposed = false, _layout = nativePartyLayout, _menus = partyMenus }
   ---@param events table<integer, table<string, unknown>> semantic input batch under routing
   function picker:input(events)
     if not self._disposed then
@@ -925,6 +1199,14 @@ function BattleChildApplications.openTargetPicker(roster, eligible, itemKey, ser
   function picker:updateFixed(events)
     if not self._disposed then
       self._controller:updateFixed(events)
+    end
+  end
+  -- Resolves the pending target use: text shows over the list, anything
+  -- else returns to it silently.
+  ---@param outcome table<string, unknown> native action outcome under completion
+  function picker:completeAction(outcome)
+    if not self._disposed then
+      self._controller:completeAction(outcome)
     end
   end
   function picker:dispose()
@@ -949,27 +1231,57 @@ local function openPartyChild(intent, services)
   assert(type(intent.party) == "table", "party children carry their detached roster")
   local options = intent.options --[[@as table<string, unknown>]]
   local switches = enabledSwitches(options)
-  if next(switches) == nil then
-    return nil, "no eligible reserve answers the request"
-  end
   local eligible = {}
   for _, byReplacement in pairs(switches) do
     for combatant in pairs(byReplacement) do
       eligible[combatant] = true
     end
   end
-  local _ = services
+  if next(eligible) == nil then
+    return nil, "no eligible reserve answers the request"
+  end
   local model = battlePartyModel(intent.party --[[@as table<integer, table<string, unknown>>]], eligible)
+  local battleMenus = type(services.battleMenus) == "table" and services.battleMenus or nil
+  local partyMenus = battleMenus ~= nil and battleMenus.party or nil
+  local partyManifest = type(partyMenus) == "table" and partyMenus.manifest or nil
+  local nativePartyLayout = type(partyManifest) == "table"
+      and PartyScreenLayout.resolve({ manifest = partyManifest, cancellable = intent.cancellable == true })
+    or nil
   local function pickLayout()
+    return nativePartyLayout or fallbackPartyLayout(intent.cancellable == true)
+  end
+  local initialFocus = nil
+  if intent.purpose == "replacement" then
+    for slot = 0, 5 do
+      for _, record in
+        ipairs(intent.party --[[@as table<integer, table<string, unknown>>]])
+      do
+        if record.slot == slot and eligible[record.combatant] == true then
+          initialFocus = slot
+          break
+        end
+      end
+      if initialFocus ~= nil then
+        break
+      end
+    end
+    assert(initialFocus ~= nil, "replacement pickers focus an eligible reserve")
+  end
+  local function menuFor(_)
     return {
-      neighbors = PartyScreenLayout.defaultNeighbors(intent.cancellable == true),
-      hitTest = battlePartyHit,
+      { kind = "switch", label = "SWITCH" },
+      { kind = "quit", label = "QUIT" },
     }
   end
+  local function submenuFor(_, kind)
+    error("battle party selection has no " .. tostring(kind) .. " submenu", 2)
+  end
   local ok, controller = pcall(PartyScreenController.new, {
-    context = "pick",
+    context = "battle_pick",
     model = model,
     layout = pickLayout,
+    initialFocus = initialFocus,
+    actionPolicy = { menuFor = menuFor, submenuFor = submenuFor },
     allowCancel = intent.cancellable == true,
   })
   if not ok then
@@ -981,9 +1293,12 @@ local function openPartyChild(intent, services)
     _identity = identity,
     _application = BattleChildApplications.RECEIPTS.party,
     _controller = controller,
+    _layout = nativePartyLayout,
+    _menus = partyMenus,
     _options = options,
     _nativeIntent = nil,
     _nativeResult = nil,
+    _inputApplied = false,
     _taken = false,
     _disposed = false,
   }
@@ -992,17 +1307,27 @@ local function openPartyChild(intent, services)
     if self._disposed or self._taken then
       return
     end
-    routeSemantic(self._controller, expandTaps("party", events))
+    self._controller:updateFixed(expandTaps("party", events, self._layout, self._menus))
+    harvest(self, self._controller)
+    self._inputApplied = true
+  end
+  ---@param _ integer source ticks under stepping
+  function child:stepSourceTick(_)
+    if self._inputApplied then
+      self._inputApplied = false
+      return
+    end
+    self._controller:updateFixed({})
     harvest(self, self._controller)
   end
-  ---@param _ integer source ticks under stepping (event-stepped controllers keep no clock)
-  function child:stepSourceTick(_) end
   ---@param _ table<string, unknown>? borrowed display facts (the returned record is renderer-agnostic data)
   ---@return table<string, unknown> drawable party record from the native application
   function child:draw(_)
     local view = self._controller:status()
     assert(type(view) == "table", "the native party projects its drawable record")
-    return view
+    local nativeView = copyValue(view) --[[@as table<string, unknown>]]
+    nativeView.layout = self._layout
+    return nativeView
   end
   ---@return string native application receipt
   function child:application()
@@ -1070,7 +1395,7 @@ local function openPartyChild(intent, services)
       end
       return nil
     end
-    if result.kind == "cancelled" then
+    if result.kind == "cancelled" or (result.kind == "closed" and intent.cancellable == true) then
       return takeChildResult(self, "cancelled")
     end
     return nil

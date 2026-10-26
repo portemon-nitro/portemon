@@ -38,13 +38,25 @@ local function windowsForSecondPlayer(edge, step)
   }
 end
 
+-- Stands in for the per-screen asset holder: keyed drawables plus the
+-- lazily lent blend targets, allocated once per holder like production.
+local function fakeAssets()
+  local assets = {}
+  function assets.drawable(_, key)
+    return { key = key }
+  end
+  function assets.menuBlendTargets(self, graphics)
+    if self.blend == nil then
+      self.blend = BattleMenuPresenter.newBlendTargets(graphics)
+    end
+    return self.blend
+  end
+  return assets
+end
+
 function T.command_bg1_blends_over_the_planes_below_it_and_bg0_covers_the_result()
   local graphics = FakeGraphics.new({})
-  local assets = {
-    drawable = function(_, key)
-      return { key = key }
-    end,
-  }
+  local assets = fakeAssets()
   -- Command menu: SUB_0 (buttons) at priority 2 above SUB_1 (blended
   -- panels) and SUB_2 (backdrop), both at priority 3.
   local layers = {
@@ -63,19 +75,18 @@ function T.command_bg1_blends_over_the_planes_below_it_and_bg0_covers_the_result
   Assert.equal(graphics.shaders[1].sends[1].value, graphics.canvases[1], "the underlay holds only the planes below BG1")
   Assert.equal(graphics.draws[3].image, graphics.canvases[2], "the blended composite draws before the planes above BG1")
   Assert.equal(graphics.draws[4].image.key, "menu:command:screen:1", "BG0 covers the blend at its higher priority")
-  Assert.isTrue(graphics.canvases[1].released, "the lower-plane render target is released after composition")
-  Assert.isTrue(graphics.canvases[2].released, "the BG1 render target is released after composition")
-  Assert.isTrue(graphics.shaders[1].released, "the temporary blend shader is released after composition")
   Assert.equal(graphics.pushDepth(), 0, "the compositor restores borrowed graphics state")
+
+  BattleMenuPresenter.draw(graphics, assets, "command", layers, {})
+  Assert.equal(#graphics.canvases, 2, "a later frame composes into the same blend targets")
+  Assert.equal(#graphics.shaders, 1, "a later frame reuses the compiled blend shader")
+  Assert.isFalse(graphics.canvases[1].released, "the holder, not the frame, owns the underlay target")
+  Assert.isFalse(graphics.shaders[1].released, "the holder, not the frame, owns the blend shader")
 end
 
 function T.target_bg1_blends_over_bg0_when_it_has_the_higher_priority()
   local graphics = FakeGraphics.new({})
-  local assets = {
-    drawable = function(_, key)
-      return { key = key }
-    end,
-  }
+  local assets = fakeAssets()
   local layers = {
     { plane = 0, priority = 2 },
     { plane = 1, priority = 1 },
@@ -104,11 +115,7 @@ function T.offscreen_planes_ignore_pane_transform_and_restore_it_for_composition
   end
   graphics.translate(32, 48)
   graphics.setScissor(32, 48, 256, 192)
-  local assets = {
-    drawable = function(_, key)
-      return { key = key }
-    end,
-  }
+  local assets = fakeAssets()
   local layers = {
     { plane = 0, priority = 2 },
     { plane = 1, priority = 3 },
@@ -135,11 +142,7 @@ end
 
 function T.slide_windows_mask_bg0_and_bg1_below_the_native_w1_edge()
   local graphics = FakeGraphics.new({})
-  local assets = {
-    drawable = function(_, key)
-      return { key = key }
-    end,
-  }
+  local assets = fakeAssets()
   local layers = {
     { plane = 0, priority = 2 },
     { plane = 1, priority = 3 },
@@ -178,11 +181,7 @@ function T.source_slide_edges_keep_each_menu_plane_inside_and_outside_pixels()
       end
       originalDraw(image, ...)
     end
-    local assets = {
-      drawable = function(_, key)
-        return { key = key }
-      end,
-    }
+    local assets = fakeAssets()
     local layers = {
       { plane = 0, priority = 2 },
       { plane = 1, priority = 3 },
@@ -236,11 +235,7 @@ function T.second_player_slot_uses_the_opposite_native_w0_and_bg_scroll()
   local edges = { 184, 174, 164, 154, 145 }
   for step, edge in ipairs(edges) do
     local graphics = FakeGraphics.new({})
-    local assets = {
-      drawable = function(_, key)
-        return { key = key }
-      end,
-    }
+    local assets = fakeAssets()
     local layers = {
       { plane = 0, priority = 2 },
       { plane = 1, priority = 3 },

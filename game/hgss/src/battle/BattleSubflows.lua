@@ -19,7 +19,8 @@ local BattleChildApplications = require("game.hgss.src.battle.BattleChildApplica
 ---@field _launchId string owning launch identity
 ---@field _itemCatalog table<string, unknown>? borrowed immutable item catalog for pocket grouping
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
----@field _active string? live child kind: party, bag, target, learn, or naming
+---@field _battleMenus table<string, unknown>? borrowed native battle menu renderer and manifest services
+---@field _active string? live child kind: party, bag, target, move, learn, or naming
 ---@field _purpose string? selection purpose behind the active child
 ---@field _cancellable boolean cancel permission behind the active child
 ---@field _requestId integer open request identity behind the active child
@@ -30,6 +31,7 @@ local BattleChildApplications = require("game.hgss.src.battle.BattleChildApplica
 ---@field _openOptionsValue table<string, unknown>? decision options behind the active child
 ---@field _openPartyValue table<integer, table<string, unknown>>? party snapshot behind the active child
 ---@field _stagedItem string? staged battle item behind target selection
+---@field _stagedHolder integer? chosen holder behind Restore PP move selection
 ---@field _learnConfirm table<string, unknown>? staged learning confirmation behind its explicit confirm
 ---@field _composed table<string, unknown>? concrete battle child application behind the active child
 ---@field _queued table<integer, table<string, unknown>> buffered semantic edges behind the next source tick
@@ -66,6 +68,9 @@ end
 ---@return string visible refusal text
 local function refusalText(reason)
   if type(reason) == "string" and reason ~= "" then
+    if reason == "no_effect" or reason == "invalid_target" then
+      return "It won’t do any good to use that!"
+    end
     return reason
   end
   return "That choice is unavailable."
@@ -75,6 +80,7 @@ end
 ---@field launchId string owning launch identity
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog for pocket grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
+---@field battleMenus table<string, unknown>? borrowed native battle menu renderer and manifest services
 
 ---@param opts BattleSubflows.Options
 ---@return BattleSubflows
@@ -87,10 +93,14 @@ function BattleSubflows.new(opts)
   if opts.monCatalog ~= nil then
     assert(type(opts.monCatalog) == "table", "the mon catalog arrives as a record")
   end
+  if opts.battleMenus ~= nil then
+    assert(type(opts.battleMenus) == "table", "native battle menus arrive as a record")
+  end
   return setmetatable({
     _launchId = opts.launchId,
     _itemCatalog = opts.itemCatalog,
     _monCatalog = opts.monCatalog,
+    _battleMenus = opts.battleMenus,
     _active = nil,
     _purpose = nil,
     _cancellable = false,
@@ -102,6 +112,7 @@ function BattleSubflows.new(opts)
     _openOptionsValue = nil,
     _openPartyValue = nil,
     _stagedItem = nil,
+    _stagedHolder = nil,
     _learnConfirm = nil,
     _composed = nil,
     _queued = {},
@@ -151,6 +162,33 @@ local function enabledItemTargets(options, key)
         then
           found[choice.choice.payload.target.combatant] = choice.choice
         end
+      end
+    end
+  end
+  return found
+end
+
+---@param options table<string, unknown> decision options under projection
+---@param key string staged item identity under projection
+---@param combatant integer chosen holder under projection
+---@return table<integer, table<string, unknown>> enabled one-move PP fragments by zero-based move slot
+local function enabledItemMoves(options, key, combatant)
+  local found = {}
+  for _, actor in ipairs(options.actors or {}) do
+    for _, choice in ipairs(type(actor) == "table" and actor.choices or {}) do
+      local fragment = type(choice) == "table" and choice.choice or nil
+      local payload = type(fragment) == "table" and fragment.payload or nil
+      if
+        type(fragment) == "table"
+        and choice.enabled == true
+        and type(payload) == "table"
+        and fragment.kind == "item"
+        and payload.item == key
+        and type(payload.target) == "table"
+        and payload.target.combatant == combatant
+        and type(payload.moveSlot) == "number"
+      then
+        found[payload.moveSlot] = fragment
       end
     end
   end
@@ -222,6 +260,7 @@ function BattleSubflows:_capture(intent)
   self._pending = nil
   self._notice = nil
   self._stagedItem = nil
+  self._stagedHolder = nil
   self._learnConfirm = nil
   self._queued = {}
 end
@@ -245,7 +284,11 @@ end
 ---@return table<string, unknown>? composed child application
 ---@return string? failure cause
 local function composeChild(self, intent)
-  return BattleChildApplications.open(intent, { itemCatalog = self._itemCatalog, monCatalog = self._monCatalog })
+  return BattleChildApplications.open(intent, {
+    itemCatalog = self._itemCatalog,
+    monCatalog = self._monCatalog,
+    battleMenus = self._battleMenus,
+  })
 end
 
 -- Rebuilds the same native picker after a refused cancel closed it: the
@@ -420,8 +463,16 @@ local function laneEvent(allowed, event)
   return type(event) == "table" and allowed[event.type] == true
 end
 
-local BAG_EVENTS = { navigate = true, confirm = true, cancel = true, pointer_cancel = true }
-local LIST_EVENTS = { navigate = true, confirm = true, cancel = true }
+local BAG_EVENTS = {
+  navigate = true,
+  confirm = true,
+  cancel = true,
+  pointer_cancel = true,
+  pointer_down = true,
+  pointer_up = true,
+}
+local LIST_EVENTS =
+  { navigate = true, confirm = true, cancel = true, pointer_cancel = true, pointer_down = true, pointer_up = true }
 local NAMING_EVENTS = {
   navigate = true,
   confirm = true,
@@ -513,7 +564,40 @@ function BattleSubflows:_stageTarget(slot, itemKey)
     self._notice = "The selection expired."
     return
   end
+  if fragment.payload.moveSlot ~= nil then
+    -- One-move PP servings name their move on the native Restore PP page
+    -- before anything seals.
+    local composed = assert(self._composed, "move selection keeps its composed child")
+    composed:openMove(slot)
+    self._stagedHolder = combatant
+    self._active = "move"
+    return
+  end
   self._pending = { kind = "choice", reply = self:_bind(fragment) }
+end
+
+-- Stages one Restore PP outcome: an effective move seals its projected
+-- fragment, a move without effect explains itself over the target list,
+-- and Back returns to that list.
+---@param outcome table<string, unknown> drained native move outcome
+function BattleSubflows:_stageMove(outcome)
+  local composed = assert(self._composed, "move selection keeps its composed child")
+  if outcome.kind == "move_selected" then
+    local fragment = enabledItemMoves(
+      self:_openOptions(),
+      assert(self._stagedItem, "move selection keeps its staged item"),
+      assert(self._stagedHolder, "move selection keeps its staged holder")
+    )[outcome.moveSlot]
+    if fragment ~= nil then
+      self._pending = { kind = "choice", reply = self:_bind(fragment) }
+      return
+    end
+    composed:closeMove("It won’t have any effect.")
+  else
+    composed:closeMove(nil)
+  end
+  self._stagedHolder = nil
+  self._active = "target"
 end
 
 -- Queues one semantic input batch behind the next accepted source tick.
@@ -655,6 +739,11 @@ function BattleSubflows:tick()
         self._notice = nil
       end
     end
+  elseif self._active == "move" then
+    local outcome = composed:takeMoveOutcome()
+    if outcome ~= nil then
+      self:_stageMove(outcome)
+    end
   elseif self._active == "learn" then
     local outcome = composed:takeLearnOutcome()
     if outcome ~= nil then
@@ -720,6 +809,7 @@ local function projectRosterRows(self, native, kind)
     cancellable = self._cancellable,
     rows = {},
     focusId = nil,
+    native = native,
   } --[[@as table<string, unknown>]]
   local view = type(native) == "table" and native.view or nil
   if type(native) ~= "table" or native.open == false or type(view) ~= "table" then
@@ -800,6 +890,7 @@ local function projectBagRows(self, native)
       cancellable = self._cancellable,
       rows = {},
       focusId = nil,
+      native = native,
     } --[[@as table<string, unknown>]]
     if self._composed ~= nil then
       shell.application = self._composed:application()
@@ -816,6 +907,7 @@ local function projectBagRows(self, native)
       cancellable = self._cancellable,
       rows = {},
       focusId = "back",
+      native = native,
       pockets = {},
       currentPocket = nil,
       page = { current = 1, count = 1 },
@@ -874,11 +966,54 @@ local function projectBagRows(self, native)
     cancellable = self._cancellable,
     rows = rows,
     focusId = focusId,
+    native = native,
     pockets = pockets,
     currentPocket = native.pocket,
     page = copyValue(native.page) or { current = 1, count = 1 },
     stock = #slots,
   } --[[@as table<string, unknown>]]
+  if self._composed ~= nil then
+    view.application = self._composed:application()
+  end
+  return view
+end
+
+-- Projects the native Restore PP rows for paint and hit regions: each
+-- held move with its PP, the native picker focus, and the holder name.
+---@param native table<string, unknown> native move picker status under projection
+---@return table<string, unknown> detached move child view
+local function projectMoveRows(self, native)
+  local view = {
+    kind = "move",
+    purpose = self._purpose,
+    interactive = true,
+    notice = self._notice,
+    cancellable = true,
+    rows = {},
+    focusId = nil,
+    stagedItem = self._stagedItem,
+    holderName = native.holderName,
+  } --[[@as table<string, unknown>]]
+  if native.open == false then
+    return view
+  end
+  local facts = native.facts --[[@as table<string, unknown>]]
+  for _, row in
+    ipairs(facts.moves --[[@as table<integer, table<string, unknown>>]])
+  do
+    if row.kind == "move" then
+      view.rows[#view.rows + 1] = {
+        id = "move:" .. tostring(row.moveSlot),
+        label = tostring(row.name or row.key),
+        sub = "PP " .. tostring(row.pp) .. "/" .. tostring(row.maxPp),
+        detail = "",
+        enabled = true,
+      }
+    end
+  end
+  if type(native.moveSlot) == "number" then
+    view.focusId = "move:" .. tostring(native.moveSlot)
+  end
   if self._composed ~= nil then
     view.application = self._composed:application()
   end
@@ -1059,6 +1194,12 @@ function BattleSubflows:_projectChildView()
       return nil
     end
     return projectBagRows(self, native --[[@as table<string, unknown>]])
+  elseif self._active == "move" then
+    local native = self._composed:moveStatus()
+    if native == nil then
+      return nil
+    end
+    return projectMoveRows(self, native)
   elseif self._active == "learn" then
     return projectLearnRows(self)
   elseif self._active == "naming" then
@@ -1129,6 +1270,22 @@ function BattleSubflows:activateControl(id)
     return false
   end
   self._queued[#self._queued + 1] = { type = "tap", id = id }
+  return true
+end
+
+-- Routes a touch through the active native layout. The barrier owns only
+-- the pointer pair; the Bag or Party controller resolves its coordinates
+-- against the generated source hit geometry.
+---@param x number native logical touch coordinate
+---@param y number native logical touch coordinate
+---@return boolean consumed true while a pointer-owning child is open
+function BattleSubflows:activatePoint(x, y)
+  if self._disposed or self._active == nil or self._pending ~= nil then
+    return false
+  end
+  assert(type(x) == "number" and type(y) == "number", "native menu taps carry logical coordinates")
+  self._queued[#self._queued + 1] = { type = "pointer_down", pointerId = "battle-native-tap", x = x, y = y }
+  self._queued[#self._queued + 1] = { type = "pointer_up", pointerId = "battle-native-tap", x = x, y = y }
   return true
 end
 

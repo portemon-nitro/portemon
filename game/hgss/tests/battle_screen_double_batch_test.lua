@@ -14,6 +14,7 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 
 local T = {}
 
@@ -1485,6 +1486,12 @@ function T.both_sides_field_two_battlers_with_their_own_pictures_and_health()
             drawGraphics.draw(picture.image, picture.centerX - picture.width / 2, picture.centerY - picture.height / 2)
           end
           return { handle = "test-picture-pass" }
+        end,
+        menuBlendTargets = function(self, blendGraphics)
+          if self.menuBlend == nil then
+            self.menuBlend = BattleMenuPresenter.newBlendTargets(blendGraphics)
+          end
+          return self.menuBlend
         end,
       },
       frameKey = "four-pictures-frame",

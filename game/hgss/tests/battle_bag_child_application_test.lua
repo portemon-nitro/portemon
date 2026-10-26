@@ -105,6 +105,11 @@ function T.stocked_bag_opens_stages_and_cancels_without_touching_detached_stock(
   Assert.equal(flows:status().kind, "bag", "the open child is the bag")
   walkToMedicine(flows)
   drive(flows, { type = "confirm" })
+  flows:tick()
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
   Assert.isNil(flows:takeResult(), "staging the serving seals no reply")
   Assert.isTrue(flows:status().active, "staging keeps the child")
   Assert.equal(flows:status().stagedItem, "POTION", "the staged key is remembered")

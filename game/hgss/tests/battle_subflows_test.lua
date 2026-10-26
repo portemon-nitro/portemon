@@ -89,15 +89,53 @@ local function drive(flows, event)
   flows:tick()
 end
 
+---@param flows table<string, unknown> coordinator waiting on a bag selection
+local function useBagItem(flows)
+  drive(flows, { type = "confirm" })
+  flows:tick()
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+end
+
+---@param flows table<string, unknown> coordinator with a stocked item focused
+local function tapBagItem(flows)
+  Assert.isTrue(flows:activateControl("bag:0"), "the serving cell takes its native-layout tap")
+  flows:tick()
+  flows:tick()
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+end
+
+---@param flows table<string, unknown> coordinator waiting on a party switch
+---@param slot integer zero-based party slot to select
+local function switchPartyMon(flows, slot)
+  local view = flows:status().childView --[[@as table<string, unknown>]]
+  if view.focusId ~= "party:" .. tostring(slot) then
+    Assert.isTrue(flows:activateControl("party:" .. tostring(slot)), "the requested party slot takes its native tap")
+    flows:tick()
+  else
+    drive(flows, { type = "confirm" })
+  end
+  local native = flows:status().childView.native --[[@as table<string, unknown>]]
+  Assert.equal(native.state, "context", "the selected slot opens its native party action menu")
+  drive(flows, { type = "confirm" })
+  for _ = 1, 12 do
+    flows:tick()
+  end
+end
+
 function T.voluntary_party_selection_seals_the_projected_reserve_fragment()
   local flows = coordinator()
   local options = switchOptions(2)
   local ok, openErr = flows:open(partyIntent({ options = options }))
   Assert.isTrue(ok, "the voluntary party child opens: " .. tostring(openErr))
-  -- Focus rests on the eligible reserve, so confirming seals at once and
-  -- the reply carries the opening launch and request identity with the
-  -- projected fragment untouched.
-  drive(flows, { type = "confirm" })
+  -- Selecting a party member opens the native action menu; Switch alone
+  -- submits the projected replacement fragment.
+  switchPartyMon(flows, 1)
   local result = flows:takeResult()
   Assert.notNil(result, "confirming the reserve stages its reply")
   Assert.equal(result.kind, "choice", "the reserve stages a choice")
@@ -115,6 +153,9 @@ function T.voluntary_party_cancel_returns_a_bound_cancellation()
   local flows = coordinator()
   Assert.isTrue(flows:open(partyIntent({})), "the voluntary party child opens")
   drive(flows, { type = "cancel" })
+  for _ = 1, 12 do
+    flows:tick()
+  end
   local result = flows:takeResult()
   Assert.notNil(result, "cancel stages a result")
   Assert.equal(result.kind, "cancelled", "cancel reports a navigation cancellation")
@@ -139,11 +180,6 @@ function T.forced_replacement_blocks_every_cancel_path()
   drive(flows, { type = "pointer_up", pointerId = "probe", x = 10000, y = 10000 })
   Assert.isNil(flows:takeResult(), "pointer edges seal nothing")
   Assert.isTrue(flows:status().active, "pointer edges keep the child")
-  -- Only the eligible reserve leaves the state.
-  drive(flows, { type = "confirm" })
-  local result = flows:takeResult()
-  Assert.notNil(result, "the reserve stages its reply")
-  Assert.equal(result.kind, "choice", "the reserve stages a choice")
   flows:dispose()
 end
 
@@ -151,14 +187,20 @@ function T.ineligible_party_slots_stay_unfocusable()
   local flows = coordinator()
   local options = switchOptions(2)
   Assert.isTrue(flows:open(partyIntent({ options = options })), "the voluntary party child opens")
-  -- The owned screen never rests focus on an inadmissible slot:
-  -- stepping up from the eligible reserve holds the reserve, so
-  -- confirming still seals the projected reserve fragment and the
-  -- active lead can never intercept the choice.
-  drive(flows, { type = "navigate", direction = "up" })
   drive(flows, { type = "confirm" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 12 do
+    flows:tick()
+  end
+  Assert.isNil(flows:takeResult(), "the active lead is refused by the native Switch action")
+  drive(flows, { type = "confirm" })
+  drive(flows, { type = "cancel" })
+  for _ = 1, 12 do
+    flows:tick()
+  end
+  switchPartyMon(flows, 1)
   local result = flows:takeResult()
-  Assert.notNil(result, "confirming seals the eligible reserve")
+  Assert.notNil(result, "Switch on the eligible reserve stages its fragment")
   Assert.deepEqual(result.reply.choices[1], options.actors[1].choices[1].choice, "the reply names the reserve")
   flows:dispose()
 end
@@ -176,7 +218,7 @@ function T.party_selection_maps_slots_to_stable_combatants()
   local options = switchOptions(2)
   Assert.isTrue(flows:open(partyIntent({ party = roster, options = options })), "the party child opens")
   Assert.isNil(flows:status().rows, "the child status carries no selection rows")
-  drive(flows, { type = "confirm" })
+  switchPartyMon(flows, 1)
   local result = flows:takeResult()
   Assert.notNil(result, "confirming the reserve stages its reply")
   Assert.deepEqual(result.reply.choices[1], options.actors[1].choices[1].choice, "the reply names the reserve")
@@ -186,14 +228,14 @@ end
 function T.party_screen_disposes_on_close_and_reopens_cleanly()
   local flows = coordinator()
   Assert.isTrue(flows:open(partyIntent({})), "the first child opens")
-  drive(flows, { type = "confirm" })
+  switchPartyMon(flows, 1)
   Assert.notNil(flows:takeResult(), "the first child stages its reply")
   flows:closeChild()
   Assert.isFalse(flows:status().active, "closing settles the child")
   Assert.isNil(flows:takeResult(), "closing seals no late reply")
   local reopened = partyIntent({ requestId = 8, epoch = 9 })
   Assert.isTrue(flows:open(reopened), "the replacement child opens on a fresh screen")
-  drive(flows, { type = "confirm" })
+  switchPartyMon(flows, 1)
   local result = flows:takeResult()
   Assert.notNil(result, "the fresh screen stages its reply")
   Assert.equal(result.reply.requestId, 8, "the fresh reply binds the new request")
@@ -294,7 +336,7 @@ function T.bag_healing_stages_its_target_and_cancels_back_to_the_bag()
   local options = itemOptions({ itemChoice("POTION", 1, true) })
   Assert.isTrue(flows:open(bagIntent({ POTION = 5 }, options)), "the stocked bag opens")
   walkToMedicine(flows)
-  drive(flows, { type = "confirm" })
+  useBagItem(flows)
   Assert.isNil(flows:takeResult(), "staging the serving seals no reply")
   Assert.isTrue(flows:status().active, "staging keeps the child")
   Assert.equal(flows:status().stagedItem, "POTION", "the staged key is remembered")
@@ -318,12 +360,90 @@ function T.bag_healing_target_confirm_seals_the_native_fragment()
   local potion = itemChoice("POTION", 1, true)
   Assert.isTrue(flows:open(bagIntent({ POTION = 5 }, itemOptions({ potion }))), "the stocked bag opens")
   walkToMedicine(flows)
-  drive(flows, { type = "confirm" })
+  useBagItem(flows)
   drive(flows, { type = "confirm" })
   local result = flows:takeResult()
   Assert.notNil(result, "accepting the serving stages its reply")
   Assert.equal(result.kind, "choice", "the serving stages a choice")
   Assert.deepEqual(result.reply.choices[1], potion.choice, "the serving copies the native fragment")
+  flows:dispose()
+end
+
+---@param holder integer serving holder under projection
+---@param moveSlot integer zero-based held move under projection
+---@param enabled boolean selection legality under projection
+---@return table<string, unknown> native one-move PP choice for the synthetic options
+local function etherChoice(holder, moveSlot, enabled)
+  local option = itemChoice("ETHER", holder, enabled)
+  option.id = option.id .. ":" .. tostring(moveSlot)
+  option.reason = enabled and nil or "no_effect"
+  option.choice.payload.moveSlot = moveSlot
+  return option
+end
+
+---@return table<string, unknown> one-move PP bag intent whose lead holds a spent and a full move
+local function etherIntent()
+  local options = itemOptions({ etherChoice(1, 0, true), etherChoice(1, 1, false) })
+  local intent = bagIntent({ ETHER = 2 }, options)
+  intent.party[1].moves = {
+    { move = "TACKLE", name = "Tackle", pp = 5, maxPp = 35 },
+    { move = "GROWL", name = "Growl", pp = 40, maxPp = 40 },
+  }
+  return intent
+end
+
+-- One-move PP servings ask for their move after the target, like the
+-- native Restore PP page: a full move explains it has no effect, Back
+-- returns to the target list, and the chosen move seals its fragment.
+function T.bag_pp_serving_selects_its_move_before_sealing()
+  local catalog = ItemFixture.makeCatalog()
+  local flows = coordinator(catalog)
+  local intent = etherIntent()
+  Assert.isTrue(flows:open(intent), "the stocked bag opens")
+  walkToMedicine(flows)
+  useBagItem(flows)
+  Assert.equal(flows:status().kind, "target", "the serving opens its target list first")
+  drive(flows, { type = "confirm" })
+  Assert.isNil(flows:takeResult(), "choosing the holder seals no reply")
+  local view = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(view.kind, "move", "the holder opens its move picker")
+  Assert.deepEqual(
+    { view.rows[1].label, view.rows[2].label, #view.rows },
+    { "Tackle", "Growl", 2 },
+    "the picker lists the holder's moves"
+  )
+  Assert.equal(view.rows[1].sub, "PP 5/35", "move rows show their current PP")
+  Assert.equal(view.focusId, "move:0", "the picker opens on the first move")
+
+  drive(flows, { type = "cancel" })
+  Assert.isNil(flows:takeResult(), "Back seals no reply")
+  Assert.equal(flows:status().kind, "target", "Back returns to the target list")
+
+  drive(flows, { type = "confirm" })
+  Assert.equal(flows:status().kind, "move", "the holder reopens its move picker")
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  Assert.isNil(flows:takeResult(), "a full move seals no reply")
+  Assert.equal(flows:status().kind, "target", "a full move returns to the target list")
+  local native = flows:status().childView.native --[[@as table<string, unknown>]]
+  Assert.equal(native.message, "It won’t have any effect.", "the refusal shows the native text")
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+
+  drive(flows, { type = "confirm" })
+  Assert.equal(flows:status().kind, "move", "the acknowledged list reopens the move picker")
+  Assert.isTrue(flows:activateControl("move:0"), "the spent move takes its tap")
+  flows:tick()
+  local result = flows:takeResult()
+  Assert.notNil(result, "the spent move stages its reply")
+  Assert.equal(result.kind, "choice", "the serving stages a choice")
+  Assert.deepEqual(
+    result.reply.choices[1],
+    intent.options.actors[1].choices[1].choice,
+    "the chosen move copies its native fragment"
+  )
   flows:dispose()
 end
 
@@ -335,7 +455,7 @@ function T.bag_ball_throws_directly_at_the_opposing_holder()
   local options = itemOptions({ ownBall, foeBall })
   Assert.isTrue(flows:open(bagIntent({ POKE_BALL = 1 }, options)), "the stocked bag opens")
   walkToBalls(flows)
-  drive(flows, { type = "confirm" })
+  useBagItem(flows)
   local result = flows:takeResult()
   Assert.notNil(result, "throwing the ball stages its reply")
   Assert.deepEqual(result.reply.choices[1], foeBall.choice, "the throw addresses the opposing holder")
@@ -348,7 +468,7 @@ function T.bag_refused_rows_explain_themselves_without_sealing()
   local refused = itemChoice("POKE_BALL", 1, false)
   Assert.isTrue(flows:open(bagIntent({ POKE_BALL = 5 }, itemOptions({ refused }))), "the stocked bag opens")
   walkToBalls(flows)
-  drive(flows, { type = "confirm" })
+  useBagItem(flows)
   Assert.isNil(flows:takeResult(), "confirming a refused ball seals no reply")
   Assert.isTrue(flows:status().active, "the refusal keeps the child")
   -- The native projection carries the refusal: the focused row stays
@@ -549,7 +669,7 @@ end
 function T.stale_results_never_address_a_new_request()
   local flows = coordinator()
   Assert.isTrue(flows:open(partyIntent({})), "the first child opens")
-  drive(flows, { type = "confirm" })
+  switchPartyMon(flows, 1)
   local first = flows:takeResult()
   Assert.notNil(first, "the first child stages its reply")
   flows:closeChild()
@@ -690,12 +810,18 @@ function T.party_child_lists_six_stable_rows_with_no_hidden_screens()
     Assert.equal(rows[slot + 1].id, "party:" .. tostring(slot), "slot keeps its stable row")
   end
   Assert.isTrue(type(view.focusId) == "string", "focus already rests somewhere meaningful")
-  -- Edges wait for the accepted source tick: the buffered confirm seals
-  -- only once the tick drains it through the native selection, which
-  -- rests on the eligible reserve.
+  -- Edges wait for the accepted source tick. The first confirm opens the
+  -- native action menu; Switch on the selected reserve seals the fragment.
+  flows:update({ { type = "navigate", direction = "down" } })
+  flows:tick()
   flows:update({ { type = "confirm" } })
   Assert.isNil(flows:takeResult(), "the buffered edge seals nothing before its tick")
   flows:tick()
+  Assert.equal(flows:status().childView.native.state, "context", "the tick opens the native party action menu")
+  drive(flows, { type = "confirm" })
+  for _ = 1, 12 do
+    flows:tick()
+  end
   local result = flows:takeResult()
   Assert.notNil(result, "the accepted tick seals a projected reserve")
   assertSealedAmong(result.reply.choices[1], options.actors[1].choices, "the seal names a projected reserve")
@@ -715,14 +841,13 @@ function T.party_keys_and_taps_seal_the_same_projected_reserve()
   end
   local focused = keyed:status().childView --[[@as table<string, unknown>]]
   Assert.equal(focused.focusId, "party:1", "keys reach the first reserve row")
-  drive(keyed, { type = "confirm" })
+  switchPartyMon(keyed, 1)
   local keyedResult = keyed:takeResult()
   Assert.notNil(keyedResult, "keys seal the reserve")
   keyed:dispose()
   local tapped = coordinator()
   Assert.isTrue(tapped:open(partyIntent({ party = sixSlotRoster(), options = options })), "taps open the roster")
-  Assert.isTrue(tapped:activateControl("party:1"), "the reserve row takes the tap")
-  tapped:tick()
+  switchPartyMon(tapped, 1)
   local tappedResult = tapped:takeResult()
   Assert.notNil(tappedResult, "the tap seals the reserve")
   Assert.deepEqual(
@@ -798,8 +923,7 @@ function T.bag_target_cancel_restores_the_resting_browse_without_spending()
   Assert.equal(resting.currentPocket, "medicine", "the browse reaches the serving pocket")
   local restingPage = resting.page --[[@as table<string, integer>]]
   -- The lone serving stages straight from its cell through the tap lane.
-  Assert.isTrue(flows:activateControl("bag:0"), "the serving cell takes the tap")
-  flows:tick()
+  tapBagItem(flows)
   Assert.equal(flows:status().stagedItem, "POTION", "the serving stages")
   Assert.isNil(flows:takeResult(), "staging seals no reply")
   flows:update({ { type = "cancel" } })
@@ -823,8 +947,7 @@ function T.bag_target_cancel_restores_the_resting_browse_without_spending()
   end
   Assert.isTrue(foundServing, "the serving still lists after cancel")
   -- Staging again and accepting seals the exact projected serving.
-  Assert.isTrue(flows:activateControl("bag:0"), "the serving stages again")
-  flows:tick()
+  tapBagItem(flows)
   for _ = 1, 10 do
     local view = flows:status().childView --[[@as table<string, unknown>]]
     if view.focusId == "party:0" then
@@ -892,8 +1015,7 @@ function T.forced_replacement_restages_whole_replies_after_close()
   end
   -- A doubled confirm edge in one batch still stages exactly one reply:
   -- the accepted tick drains both edges but the native seal reports once.
-  flows:update({ { type = "confirm" }, { type = "confirm" } })
-  flows:tick()
+  switchPartyMon(flows, 1)
   local first = flows:takeResult()
   Assert.notNil(first, "the doubled edge stages its reply")
   Assert.isNil(flows:takeResult(), "the doubled edge stages no second reply")
@@ -912,7 +1034,7 @@ function T.forced_replacement_restages_whole_replies_after_close()
     end
     drive(flows, { type = "navigate", direction = "down" })
   end
-  drive(flows, { type = "confirm" })
+  switchPartyMon(flows, 4)
   local restaged = flows:takeResult()
   Assert.notNil(restaged, "the restaged child seals")
   Assert.deepEqual(

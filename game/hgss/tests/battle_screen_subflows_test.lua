@@ -366,6 +366,14 @@ local function press(rig, event)
   rig.pump(1)
 end
 
+---@param rig table live screen rig under test driving
+local function useNativeBattleBagItem(rig)
+  press(rig, { type = "confirm" })
+  rig.pump(1)
+  press(rig, { type = "confirm" })
+  rig.pump(8)
+end
+
 -- Terminal leave carries an explicit final-page acknowledgment: while
 -- narration plays, one genuine confirm through the real screen path
 -- advances it exactly as a player would, so the battle can settle.
@@ -595,16 +603,21 @@ local function waitForScreenDecision(rig, wanted)
   error("the screen never mirrored " .. wanted .. " (" .. rig.layout .. ")", 0)
 end
 
--- Choosing a reserve through the party child stays correct however the
--- child focuses: the only legal switch names the reserve, so a refusal
--- keeps the child open for one step down while a focused reserve seals
--- immediately. Either way at most one reply seals.
+-- Choosing a reserve through the party child stays correct: the native
+-- Switch menu refuses the lead, then the reserve seals the projected
+-- fragment. At most one reply seals.
 ---@param rig table live screen rig under test driving, resting on the open party child
 local function chooseReserveThroughChild(rig)
   press(rig, { type = "confirm" })
   if #rig.submits == 0 and rig.screen:status().mode == "child" then
+    press(rig, { type = "confirm" })
+    rig.pump(5)
+  end
+  if #rig.submits == 0 and rig.screen:status().mode == "child" then
     press(rig, { type = "navigate", direction = "down" })
     press(rig, { type = "confirm" })
+    press(rig, { type = "confirm" })
+    rig.pump(5)
   end
   if #rig.submits == 0 and rig.screen:status().mode ~= "child" then
     openPartyFromCommand(rig)
@@ -829,7 +842,7 @@ function T.bag_selection_consumes_only_through_native_execution()
     -- two cancels reach command, with no reply and no stock movement.
     openBagFromCommand(healing)
     walkToMedicineFirstCell(healing)
-    press(healing, { type = "confirm" })
+    useNativeBattleBagItem(healing)
     Assert.equal(#healing.submits, 0, "staging the serving seals no reply" .. tag)
     Assert.equal(healing.screen:status().mode, "child", "staging keeps the child open" .. tag)
     press(healing, { type = "cancel" })
@@ -848,16 +861,14 @@ function T.bag_selection_consumes_only_through_native_execution()
     -- stays put mid-battle and publishes exactly once on commit.
     openBagFromCommand(healing)
     walkToMedicineFirstCell(healing)
-    press(healing, { type = "confirm" })
-    press(healing, { type = "confirm" })
+    useNativeBattleBagItem(healing)
     if #healing.submits == 0 and healing.screen:status().mode == "child" then
-      press(healing, { type = "navigate", direction = "down" })
       press(healing, { type = "confirm" })
     end
     if #healing.submits == 0 and healing.screen:status().mode ~= "child" then
       openBagFromCommand(healing)
       walkToMedicineFirstCell(healing)
-      press(healing, { type = "confirm" })
+      useNativeBattleBagItem(healing)
       press(healing, { type = "confirm" })
     end
     Assert.equal(#healing.submits, 1, "accepting the serving seals exactly one reply" .. tag)
@@ -919,7 +930,7 @@ function T.bag_selection_consumes_only_through_native_execution()
     requireChildOwner("wild capture selection")
     openBagFromCommand(capture)
     walkToBallsFirstCell(capture)
-    press(capture, { type = "confirm" })
+    useNativeBattleBagItem(capture)
     Assert.equal(#capture.submits, 1, "throwing the ball seals exactly one reply" .. tag)
     Assert.deepEqual(capture.submits[1].choices[1], ballFragment, "the throw matches its native fragment" .. tag)
     -- Pump through the terminal narration.
@@ -1243,7 +1254,7 @@ function T.children_keep_exclusive_input_and_release_once()
     -- The staged target keeps the bag retained and inert behind it: one
     -- cancel reactivates the bag, the next reaches command.
     walkToMedicineFirstCell(rig)
-    press(rig, { type = "confirm" })
+    useNativeBattleBagItem(rig)
     Assert.equal(#rig.submits, 0, "staging the target seals no reply" .. tag)
     press(rig, { type = "navigate", direction = "down" })
     press(rig, { type = "navigate", direction = "up" })
@@ -1358,8 +1369,8 @@ function T.children_keep_exclusive_input_and_release_once()
 end
 
 -- The child overlay shares the battle screen's captured control identity:
--- a second pointer cannot complete a party-row press, but a fresh matched
--- tap on that projected row still submits its original switch choice.
+-- a second pointer cannot complete a party-row press, while a matched tap
+-- opens the native menu and Switch submits the projected choice.
 function T.child_party_tap_requires_the_matching_pointer()
   for _, layout in ipairs({ "paired", "compact" }) do
     local rig = openRig({
@@ -1389,6 +1400,10 @@ function T.child_party_tap_requires_the_matching_pointer()
     rig.screen:input({ { type = "pointer_down", pointerId = "touch:A", x = x, y = y } })
     rig.screen:input({ { type = "pointer_up", pointerId = "touch:A", x = x, y = y } })
     rig.pump(1)
+    press(rig, { type = "confirm" })
+    press(rig, { type = "confirm" })
+    rig.pump(5)
+    rig.pump(5)
     Assert.equal(#rig.submits, 1, "a matched pointer submits the party choice once (" .. layout .. ")")
     rig.screen:dispose()
     rig.battle:dispose()
@@ -1446,50 +1461,33 @@ local function assertPaintsOwnRows(before, after, marker, what)
   Assert.isTrue(seen, "the open " .. what .. " labels its entries (" .. marker .. ")")
 end
 
--- Probes the open child with matched press/release taps across the
--- interaction surface until one tap seals a reply. A tap that closes a
--- cancellable child without sealing reopens it once and continues, so
--- a footer cancel never ends the probe early. Two passes cover rows
--- that focus on the first tap and seal on the second.
+-- Taps each native party row, then confirms Switch through its action
+-- menu. Ineligible rows refuse and return to the roster before the next
+-- candidate is tapped.
 ---@param rig table live screen rig under test driving
 ---@param yLo integer first host row under probing
 ---@param yHi integer last host row under probing
 ---@param reopen (fun(rig: table))? reopens a voluntary child after a cancel tap
 ---@return boolean sealed true once a tap sealed exactly one reply
 local function tapSealsReply(rig, yLo, yHi, reopen)
-  local taps = 0
-  local cancelled = 0
-  for pass = 1, 2 do
-    local y = yLo
-    while y <= yHi do
-      local x = 8
-      while x <= 248 do
-        if rig.screen:status().mode ~= "child" then
-          if #rig.submits > 0 then
-            return true
-          end
-          if reopen == nil or cancelled >= 1 then
-            return false
-          end
-          cancelled = cancelled + 1
-          reopen(rig)
-          if rig.screen:status().mode ~= "child" then
-            return false
-          end
-        end
-        taps = taps + 1
-        local id = "touch:probe:" .. tostring(pass) .. ":" .. tostring(taps)
-        rig.screen:input({ { type = "pointer_down", pointerId = id, x = x, y = y } })
-        rig.screen:input({ { type = "pointer_up", pointerId = id, x = x, y = y } })
-        rig.pump(1)
-        if #rig.submits > 0 then
-          return true
-        end
-        x = x + 16
-      end
-      y = y + 16
+  if rig.screen:status().mode ~= "child" then
+    if #rig.submits > 0 or reopen == nil then
+      return #rig.submits > 0
     end
+    reopen(rig)
   end
+  local id = "touch:party-reserve"
+  local x = 100
+  local y = yLo + 44
+  if y > yHi then
+    return false
+  end
+  rig.screen:input({ { type = "pointer_down", pointerId = id, x = x, y = y } })
+  rig.screen:input({ { type = "pointer_up", pointerId = id, x = x, y = y } })
+  rig.pump(1)
+  press(rig, { type = "confirm" })
+  press(rig, { type = "confirm" })
+  rig.pump(5)
   return #rig.submits > 0
 end
 
@@ -1691,7 +1689,7 @@ function T.six_slot_party_and_bag_answer_at_once_on_both_displays()
     )
     walkToMedicineFirstCell(bagged)
     Assert.equal(drawnBagHeader(bagged), "BAG: medicine 1/1", "keys reach the serving pocket" .. tag)
-    press(bagged, { type = "confirm" })
+    useNativeBattleBagItem(bagged)
     Assert.equal(#bagged.submits, 0, "staging seals no reply" .. tag)
     Assert.equal(bagged.screen:status().mode, "child", "staging keeps the child" .. tag)
     press(bagged, { type = "cancel" })
@@ -1702,10 +1700,8 @@ function T.six_slot_party_and_bag_answer_at_once_on_both_displays()
     Assert.equal(bagged.bag:quantity("POTION"), 5, "staging takes no stock" .. tag)
     openBagFromCommand(bagged)
     walkToMedicineFirstCell(bagged)
-    press(bagged, { type = "confirm" })
-    press(bagged, { type = "confirm" })
+    useNativeBattleBagItem(bagged)
     if #bagged.submits == 0 and bagged.screen:status().mode == "child" then
-      press(bagged, { type = "navigate", direction = "down" })
       press(bagged, { type = "confirm" })
     end
     Assert.equal(#bagged.submits, 1, "accepting seals exactly one reply" .. tag)
@@ -1803,23 +1799,21 @@ function T.crowded_browse_pages_and_restores_after_target_cancel()
     walkToMedicineFirstCell(healing)
     local restingHeader = drawnBagHeader(healing)
     Assert.equal(restingHeader, "BAG: medicine 1/1", "the browse rests on the serving page" .. tag)
-    press(healing, { type = "confirm" })
+    useNativeBattleBagItem(healing)
     Assert.equal(#healing.submits, 0, "staging seals no reply" .. tag)
     press(healing, { type = "cancel" })
     Assert.equal(healing.screen:status().mode, "child", "target cancel returns to the bag" .. tag)
     Assert.equal(drawnBagHeader(healing), restingHeader, "cancel restores the resting page" .. tag)
     -- Confirming with no further navigation stages again, so the
     -- cancelled browse kept its focus on the serving cell.
-    press(healing, { type = "confirm" })
+    useNativeBattleBagItem(healing)
     Assert.equal(#healing.submits, 0, "the kept focus stages no reply" .. tag)
     Assert.equal(healing.screen:status().mode, "child", "the kept focus stays on its target" .. tag)
     press(healing, { type = "cancel" })
     Assert.equal(healing.screen:status().mode, "child", "the second cancel returns to the bag" .. tag)
     Assert.equal(healing.bag:revision(), revision, "the cancelled serving moves no stock" .. tag)
-    press(healing, { type = "confirm" })
-    press(healing, { type = "confirm" })
+    useNativeBattleBagItem(healing)
     if #healing.submits == 0 and healing.screen:status().mode == "child" then
-      press(healing, { type = "navigate", direction = "down" })
       press(healing, { type = "confirm" })
     end
     Assert.equal(#healing.submits, 1, "accepting seals exactly one reply" .. tag)
@@ -2046,22 +2040,25 @@ function T.native_party_focus_and_fragment_authority()
     local _, expectedSwitch = projectedReserveSwitch(rig, commandRequest)
     requireChildOwner("native party focus authority")
     openPartyFromCommand(rig)
-    -- The lone reserve owns the opening focus through the native picker.
-    Assert.equal(focusedChildRow(drawnInk(rig)), 2, "the native focus starts on the reserve" .. tag)
+    -- Native focus starts on the lead; the reserve is the next source row.
+    Assert.equal(focusedChildRow(drawnInk(rig)), 1, "the native focus starts on the lead" .. tag)
     -- A bare input moves no focus: edges wait for the accepted tick.
     rig.screen:input({ { type = "navigate", direction = "down" } })
-    Assert.equal(focusedChildRow(drawnInk(rig)), 2, "the navigation edge waits for the accepted source tick" .. tag)
+    Assert.equal(focusedChildRow(drawnInk(rig)), 1, "the navigation edge waits for the accepted source tick" .. tag)
     rig.pump(1)
-    Assert.isNil(focusedChildRow(drawnInk(rig)), "the accepted tick applies the buffered edge once" .. tag)
+    Assert.equal(focusedChildRow(drawnInk(rig)), 2, "the accepted tick applies the buffered edge once" .. tag)
     rig.screen:input({ { type = "navigate", direction = "up" } })
-    Assert.isNil(focusedChildRow(drawnInk(rig)), "the return edge waits for the accepted source tick" .. tag)
+    Assert.equal(focusedChildRow(drawnInk(rig)), 2, "the return edge waits for the accepted source tick" .. tag)
     rig.pump(1)
-    Assert.equal(focusedChildRow(drawnInk(rig)), 2, "the accepted tick restores the reserve focus" .. tag)
+    Assert.equal(focusedChildRow(drawnInk(rig)), 1, "the accepted tick restores the lead focus" .. tag)
     -- A matched tap on the reserve row seals its projected fragment.
-    local reserveY = yBase + 32 + 1 * 20 + 10
+    local reserveY = yBase + 44
     rig.screen:input({ { type = "pointer_down", pointerId = "tap:reserve", x = 128, y = reserveY } })
     rig.screen:input({ { type = "pointer_up", pointerId = "tap:reserve", x = 128, y = reserveY } })
     rig.pump(1)
+    press(rig, { type = "confirm" })
+    press(rig, { type = "confirm" })
+    rig.pump(5)
     Assert.equal(#rig.submits, 1, "the tap seals exactly one reply" .. tag)
     Assert.deepEqual(rig.submits[1].choices[1], expectedSwitch, "the tap names the stable reserve" .. tag)
     rig.screen:dispose()

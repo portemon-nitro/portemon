@@ -23,6 +23,11 @@ local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
+---@class BattleScreenState.GraphicsScope
+---@field host table<string, unknown> borrowed host graphics namespace
+---@field graphics table<string, unknown> forwarder counting push/pop scopes over the host
+---@field outstanding integer scopes pushed through the forwarder and not yet popped
+
 ---@class BattleScreenState
 ---@field _launchId string owning launch identity
 ---@field _manifest table<string, unknown> planning manifest behind the demand
@@ -35,6 +40,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _legacyAudio boolean true while the sink voices string roles without a cry port
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind cry identities, move names, and experience spans
 ---@field _monIconProvider table<string, unknown>? borrowed field icon page provider behind the command icon
+---@field _battleMenus table<string, unknown>? borrowed native battle menu renderers and manifests
 ---@field _assets BattlePresentationAssets per-launch preparation leases
 ---@field _timeline BattleTimeline ordered visible-cue player
 ---@field _player table<string, unknown> battle-private native animation interpreter over the live scene
@@ -64,6 +70,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _pendingResult table<string, unknown>? retained terminal result behind playing cues
 ---@field _pendingRegistration table<string, unknown>? detached frozen first-catch facts behind the card
 ---@field _registrationChild table<string, unknown>? open battle-owned registration presentation
+---@field _graphicsScope BattleScreenState.GraphicsScope? persistent scope-counting forwarder over the host graphics
 ---@field _registrationComplete boolean true once the card completes its terminal return
 ---@field _pokedex table<string, unknown>? borrowed field presentation resource owner behind the card
 ---@field _registrationAudio table<string, unknown>? borrowed registration audio adapter behind the card
@@ -228,6 +235,7 @@ end
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog for battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
 ---@field monIconProvider table<string, unknown>? borrowed field icon page provider for presented battle composition
+---@field battleMenus table<string, unknown>? borrowed field-owned native menu renderers and manifests
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
 ---@field musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@field musicBanks integer[]? chosen track bank identities behind the demand
@@ -868,6 +876,7 @@ function BattleScreenState.new(opts)
     _legacyAudio = type(opts.audio.playCry) ~= "function",
     _monCatalog = opts.monCatalog,
     _monIconProvider = opts.monIconProvider,
+    _battleMenus = opts.battleMenus,
     _assets = BattlePresentationAssets.new({
       assets = opts.assets,
       launchId = opts.launchId,
@@ -891,6 +900,7 @@ function BattleScreenState.new(opts)
       launchId = opts.launchId,
       itemCatalog = opts.itemCatalog,
       monCatalog = opts.monCatalog,
+      battleMenus = opts.battleMenus,
     }),
     _partySnapshot = nil,
     _inventorySnapshot = nil,
@@ -959,6 +969,24 @@ function BattleScreenState.new(opts)
     end
     moveNameOf = resolveMoveName
   end
+  local itemNameOf = nil
+  local battleItemUseOf = nil
+  if type(opts.itemCatalog) == "table" and type(opts.itemCatalog.item) == "function" then
+    local catalog = assert(opts.itemCatalog, "item lookup requires the borrowed catalog")
+    local lookup = opts.itemCatalog.item --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
+    local function resolveItemName(item)
+      local facts = lookup(catalog, item)
+      assert(type(facts.name) == "string", "item catalog entries carry their display name")
+      return facts.name --[[@as string]]
+    end
+    itemNameOf = resolveItemName
+    local function resolveBattleItemUse(item)
+      local definition = lookup(catalog, item)
+      local battleUse = definition.battleUse
+      return type(battleUse) == "table" and battleUse or nil
+    end
+    battleItemUseOf = resolveBattleItemUse
+  end
   -- One animation player per battle screen over the live scene: the
   -- real task factory, a semantic voice adapter over the existing
   -- battle audio path, and a selected-effect resource adapter over the
@@ -990,6 +1018,8 @@ function BattleScreenState.new(opts)
   self._nativeRouting = effects ~= nil
   self._timeline = BattleTimeline.new({
     moveName = moveNameOf,
+    itemName = itemNameOf,
+    battleItemUse = battleItemUseOf,
     textSpeed = opts.textSpeed or "mid",
     effects = effects,
   })
@@ -1633,7 +1663,19 @@ function BattleScreenState:_snapshot()
       end
     end
   end
-  self._assets:setIconKeys(commandIcon ~= nil and { commandIcon.key } or {})
+  local iconKeys = commandIcon ~= nil and { commandIcon.key } or {}
+  local activeChildView = self._subflows:status().childView
+  local childNative = type(activeChildView) == "table" and activeChildView.native or nil
+  local childParty = type(childNative) == "table" and childNative.view or nil
+  local childSlots = type(childParty) == "table" and childParty.slots or nil
+  if type(childSlots) == "table" then
+    for _, slot in ipairs(childSlots) do
+      if type(slot) == "table" and slot.occupied == true and type(slot.iconKey) == "string" then
+        iconKeys[#iconKeys + 1] = slot.iconKey
+      end
+    end
+  end
+  self._assets:setIconKeys(iconKeys)
   local menuWindows = nil
   if self._mode == "command" and self._menuGateTicks > 0 and type(acting) == "table" then
     local sideType = acting.sideType
@@ -1716,10 +1758,10 @@ function BattleScreenState:_snapshot()
       enemy = copyValue(self._manifest.hud.partyGauges[1]),
     },
     menuLayers = {
-      command = copyValue(self._manifest.menus.command.screens),
-      moves = copyValue(self._manifest.menus.moves.screens),
-      target = copyValue(self._manifest.menus.target.screens),
-      twoOption = copyValue(self._manifest.menus.twoOption.screens),
+      command = self._manifest.menus.command.screens,
+      moves = self._manifest.menus.moves.screens,
+      target = self._manifest.menus.target.screens,
+      twoOption = self._manifest.menus.twoOption.screens,
     },
     hudPatchSpans = self._manifest.hud.patchSpans,
     cursor = self._manifest.hud.cursor,
@@ -3818,9 +3860,12 @@ function BattleScreenState:_consume(event)
       self._armed = nil
       local control = event.control --[[@as table<string, unknown>?]]
       if type(control) == "table" and type(control.id) == "string" and sameControl(armed, control, event.pointerId) then
-        if
-          self._subflows:activateControl(control.id --[[@as string]])
-        then
+        local consumed = control.id == "native"
+            and type(event.x) == "number"
+            and type(event.y) == "number"
+            and self._subflows:activatePoint(event.x --[[@as number]], event.y --[[@as number]])
+          or self._subflows:activateControl(control.id --[[@as string]])
+        if consumed then
           self:_pollChild()
         end
       end
@@ -4401,6 +4446,15 @@ function BattleScreenState:updateFixed(dt)
   if self._mode == "child" and self._subflows:status().active then
     self._subflows:tick()
     self:_pollChild()
+    local menus = self._battleMenus
+    local child = self._subflows:status().childView
+    if type(menus) == "table" and type(child) == "table" and child.kind == "bag" then
+      local bag = menus.bag --[[@as table<string, unknown>?]]
+      local native = child.native
+      if type(bag) == "table" and type(bag.renderer) == "table" and type(native) == "table" then
+        bag.renderer:prepare(native)
+      end
+    end
   end
   -- The parent timeline advances exactly once above before the card is
   -- polled or stepped; no battle choice or other subflow advances while
@@ -4450,32 +4504,33 @@ function BattleScreenState:draw(resources)
   -- (see LogicalSurface), and this host drains them; text and window
   -- services hold the real namespace directly but never push, so the count
   -- stays exact. All battle rendering calls graphics dot-style, which the
-  -- forwarder preserves.
+  -- forwarder preserves. The forwarder persists per host namespace so
+  -- caches keyed by the namespace stay warm across frames.
   local hostGraphics = resources.graphics
-  local outstanding = 0
-  local function scopedPush(...)
-    outstanding = outstanding + 1
-    return hostGraphics.push(...)
-  end
-  local function scopedPop(...)
-    outstanding = outstanding - 1
-    return hostGraphics.pop(...)
-  end
-  local function scopedIndex(_, key)
-    if key == "push" then
-      return scopedPush
+  local scope = self._graphicsScope
+  if scope == nil or scope.host ~= hostGraphics then
+    local created = { host = hostGraphics, outstanding = 0 }
+    local forwarder = setmetatable({}, { __index = hostGraphics })
+    function forwarder.push(...)
+      created.outstanding = created.outstanding + 1
+      return hostGraphics.push(...)
     end
-    if key == "pop" then
-      return scopedPop
+    function forwarder.pop(...)
+      created.outstanding = created.outstanding - 1
+      return hostGraphics.pop(...)
     end
-    return hostGraphics[key]
+    created.graphics = forwarder
+    self._graphicsScope = created
+    scope = created
   end
-  local scoped = setmetatable({}, { __index = scopedIndex })
+  scope.outstanding = 0
+  local scoped = scope.graphics
   local owned = {
     graphics = scoped,
     text = self._text,
     windows = self._windows,
     assets = self._assets,
+    battleMenus = self._battleMenus,
     doublesHud = type(self._manifest.hud) == "table" and self._manifest.hud.doubles or nil,
     frameKey = self._assets:frameKey(),
     sceneImageKey = self._assets:sceneImage(),
@@ -4512,7 +4567,7 @@ function BattleScreenState:draw(resources)
     else
       graphics.setDepthMode()
     end
-    while outstanding > 0 do
+    while scope.outstanding > 0 do
       graphics.pop()
     end
   end)

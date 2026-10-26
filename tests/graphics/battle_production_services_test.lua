@@ -2,8 +2,9 @@
 -- field-local envelope builds its preparation services with the live host
 -- graphics namespace (never the test-only image map), the real battle
 -- screen prepares through them against the staged cache, and production
--- frames render to a canvas with real staged pixels. A second leg forces
--- a preparation failure and proves the deterministic failed state with
+-- frames render to a canvas with real staged pixels. Steady native frames
+-- reuse their resolved images instead of decoding and uploading again. A
+-- second leg forces a preparation failure and proves the deterministic failed state with
 -- context: no raise, no held cue mistaken for success, no blank success.
 
 local Assert = require("tests.support.Assert")
@@ -52,6 +53,19 @@ local function compactMeasurement()
     }),
     pixelRatio = 1,
     signature = "battle-production-services:compact",
+  }
+end
+
+local function nativeMeasurement()
+  return {
+    width = 256,
+    height = 384,
+    topology = ScreenTopology.dualDisplay(
+      { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+      { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+    ),
+    pixelRatio = 1,
+    signature = "battle-production-services:native",
   }
 end
 
@@ -792,6 +806,80 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
     if not ok then
       error(failure, 0)
     end
+  end
+end
+
+-- Native frames draw both battler portraits every frame, so a steady
+-- command view must draw from the images its first frame resolved: no
+-- second frame decodes or uploads anything.
+function T.native_steady_frames_reuse_resolved_images(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the production battle coverage needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local text, windows = productionDrawServices(scope, cacheFs, versionId)
+    local images = ImageAssetPool.new(cacheFs)
+    scope:own({
+      release = function()
+        images:dispose()
+      end,
+    })
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      graphics = love.graphics,
+      windows = windows,
+      text = text,
+      audio = recordingAudio(),
+      measureDisplay = nativeMeasurement,
+      imagePool = images,
+    })
+    scope:own({
+      release = function()
+        envelope:dispose()
+      end,
+    })
+    local launchId = "battle-native-steady"
+    local port = buildPort(envelope, {
+      launchId = launchId,
+      kind = "wild",
+      environment = { sceneKey = SCENE_KEY },
+      host = stubHost(),
+    })
+    driveToEnter(envelope, port, launchId, versionId)
+    driveToCommand(envelope, port, launchId, versionId, {
+      leadBack = stagedPortraitSelector(cacheFs, LEAD_SPECIES, "back"),
+      foeFront = stagedPortraitSelector(cacheFs, FOE_SPECIES, "front"),
+    })
+    local plan = livePlan(envelope:liveScreen(), versionId)
+    Assert.equal(#plan.panes, 2, versionId .. " pairs its native panes")
+    local canvas = scope:own(love.graphics.newCanvas(256, 384, { format = "rgba8" }))
+    local function render()
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      local drawn = envelope:drawBattle({ graphics = love.graphics, text = text, windows = windows })
+      love.graphics.setCanvas()
+      Assert.isTrue(drawn, versionId .. " draws its live battle")
+    end
+    render()
+    local realNewImageData, realNewImage = love.image.newImageData, love.graphics.newImage
+    local decoded, uploaded = 0, 0
+    love.image.newImageData = function(...)
+      decoded = decoded + 1
+      return realNewImageData(...)
+    end
+    love.graphics.newImage = function(...)
+      uploaded = uploaded + 1
+      return realNewImage(...)
+    end
+    local ok, failure = pcall(render)
+    love.image.newImageData, love.graphics.newImage = realNewImageData, realNewImage
+    if not ok then
+      error(failure, 0)
+    end
+    Assert.equal(decoded, 0, versionId .. " decodes no image data on a steady native frame")
+    Assert.equal(uploaded, 0, versionId .. " uploads no image on a steady native frame")
   end
 end
 

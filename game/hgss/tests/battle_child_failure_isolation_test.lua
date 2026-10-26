@@ -91,7 +91,12 @@ end
 function T.staged_results_report_once_and_stale_requests_never_seal()
   local flows = coordinator()
   Assert.isTrue(flows:open(partyIntent({})), "the party child opens")
+  drive(flows, { type = "navigate", direction = "down" })
   drive(flows, { type = "confirm" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 12 do
+    flows:tick()
+  end
   local staged = flows:takeResult()
   Assert.notNil(staged, "confirming stages its reply")
   Assert.equal(staged.kind, "choice", "the staged result is a choice")
