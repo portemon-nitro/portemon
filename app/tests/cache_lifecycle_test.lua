@@ -2523,7 +2523,7 @@ function T.blocked_boot_refuses_a_wrong_version_and_ignores_stale_replies()
       Assert.equal(#context.menus, 0, "the stale reply never installs a menu")
       Assert.deepEqual(
         emittedOpsForEpochSince(context, mark, second),
-        { "select", "check-boot-source" },
+        { "select", "check-boot-source", "request" },
         "reselection queues a fresh gate without a late offer"
       )
       local info = GameVersion.info(VERSION)

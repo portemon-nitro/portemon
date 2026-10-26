@@ -28,6 +28,9 @@ local function bootService(script)
     if script.bootReady then
       return "ready"
     end
+    if script.pending then
+      return "pending"
+    end
     return "source-required", script.sourceDetail
   end
   function service:request(_, selector)
@@ -198,6 +201,17 @@ function T.blocked_boot_keeps_the_stage_visible_and_never_transfers()
   withPatchedLoading(loading, record, function()
     local script = { sourceDetail = { code = "ROM_SOURCE_REQUIRED", message = "the original file is missing" } }
     local state = bootWait(script)
+    -- The remedy appears only after the gate confirms the block: the
+    -- pre-reply frame stays themed with no provisioning words.
+    local preCopy = captureCopy(800, 600, function()
+      state:draw()
+    end)
+    Assert.isTrue(
+      preCopy:lower():find("matching", 1, true) == nil,
+      "the pre-reply frame names no missing-ROM remedy, got: " .. preCopy
+    )
+    state:update(0.016)
+    state:update(0.016)
     local copy = captureCopy(800, 600, function()
       state:draw()
     end)
@@ -229,11 +243,7 @@ function T.cold_import_holds_its_card_until_the_selected_pair_is_drawable()
       seenPair = seenPair or pairIndex == 5
     end
     Assert.isTrue(seenPair, "the cold wait demands exactly the selected pair")
-    Assert.equal(
-      type(state.takeLoading),
-      "function",
-      "the boot wait exposes one exactly-once presentation transfer"
-    )
+    Assert.equal(type(state.takeLoading), "function", "the boot wait exposes one exactly-once presentation transfer")
     script.walkerReady = true
     loading.adoptResult = true
     state:update(0.016)
@@ -266,7 +276,9 @@ function T.failed_pair_adoption_releases_staged_art_and_holds_the_card()
     end)
     local lowered = copy:lower()
     Assert.isTrue(
-      lowered:find("error", 1, true) ~= nil or lowered:find("retry", 1, true) ~= nil or lowered:find("try again", 1, true) ~= nil,
+      lowered:find("error", 1, true) ~= nil
+        or lowered:find("retry", 1, true) ~= nil
+        or lowered:find("try again", 1, true) ~= nil,
       "the held card surfaces its error with a retry path, got: " .. copy
     )
     state:dispose()
@@ -314,10 +326,7 @@ function T.cold_retry_requests_the_pair_again_after_an_adoption_error()
     local copy = captureCopy(800, 600, function()
       state:draw()
     end)
-    Assert.isTrue(
-      copy:find("Press R", 1, true) ~= nil,
-      "the held card names its retry key, got: " .. copy
-    )
+    Assert.isTrue(copy:find("Press R", 1, true) ~= nil, "the held card names its retry key, got: " .. copy)
     state:keypressed("r")
     Assert.isNil(state.artFailure, "retry clears the adoption failure without re-verifying the source")
     loading.adoptResult = true
@@ -633,13 +642,11 @@ function T.warm_journey_keeps_one_pair_alive_and_retires_it_once()
     end
     return nil, nil
   end
-  function service:requestBootSource(_)
-  end
+  function service:requestBootSource(_) end
   function service:bootSourceStatus(_)
     return "ready", nil
   end
-  function service:update()
-  end
+  function service:update() end
   function service:retire(_)
     retires = retires + 1
   end
@@ -649,12 +656,9 @@ function T.warm_journey_keeps_one_pair_alive_and_retires_it_once()
   local presentations = {}
   local function fakeLoading()
     local presentation = { adopted = false, adoptions = 0, disposals = 0 }
-    function presentation:update()
-    end
-    function presentation:resize()
-    end
-    function presentation:draw()
-    end
+    function presentation:update() end
+    function presentation:resize() end
+    function presentation:draw() end
     function presentation:dispose()
       self.disposals = self.disposals + 1
     end
@@ -713,8 +717,7 @@ function T.warm_journey_keeps_one_pair_alive_and_retires_it_once()
       function preparation:poll()
         return nil, nil
       end
-      function preparation:dispose()
-      end
+      function preparation:dispose() end
       return preparation
     end
     love.math.random = function()
@@ -742,11 +745,7 @@ function T.warm_journey_keeps_one_pair_alive_and_retires_it_once()
       Assert.equal(demand.pairIndex, 7, "every demand names the one selected pair")
       Assert.equal(demand.urgency, "required", "the selected pair stays a required demand")
     end
-    Assert.equal(
-      getmetatable(App.state).__index,
-      StartupTitleState,
-      "the adopted pair transfers the warm journey"
-    )
+    Assert.equal(getmetatable(App.state).__index, StartupTitleState, "the adopted pair transfers the warm journey")
     Assert.equal(presentations[1].adoptions, 1, "the selected pair is adopted exactly once")
     local chosen = App.pairIndex
     for _ = 1, 10 do
@@ -792,6 +791,124 @@ function T.blocked_boot_demands_the_selected_pair_before_admission()
     end, "nothing detaches before admission and adoption")
     state:dispose()
     Assert.equal(loading.disposals, 1, "retiring the blocked wait releases its stage once")
+  end)
+end
+
+-- A pending gate shows themed animation with no provisioning words while it
+-- demands the selected pair; nothing transfers while verification is open.
+function T.pending_gate_shows_no_provisioning_copy_while_demanding_the_pair()
+  local loading = fakeLoading()
+  local record = {}
+  withPatchedLoading(loading, record, function()
+    local script = { pending = true }
+    local state = bootWait(script)
+    state:update(0.016)
+    state:update(0.016)
+    Assert.isTrue(#script.pairRequests >= 1, "the pending wait demands the selected pair early")
+    for _, pairIndex in ipairs(script.pairRequests) do
+      Assert.equal(pairIndex, 5, "the early demand names exactly the selected pair")
+    end
+    for _, urgency in ipairs(script.pairUrgencies) do
+      Assert.equal(urgency, "required", "the pending demand stays a required demand")
+    end
+    Assert.equal(script.fired or 0, 0, "a pending gate never transfers")
+    local copy = captureCopy(800, 600, function()
+      state:draw()
+    end)
+    local lowered = copy:lower()
+    Assert.isTrue(loading.draws >= 1, "the pending wait still paints its animated stage")
+    Assert.isTrue(
+      lowered:find("matching", 1, true) == nil,
+      "a pending gate names no matching-ROM remedy, got: " .. copy
+    )
+    Assert.isTrue(lowered:find("drop", 1, true) == nil, "a pending gate offers no drop-file instruction, got: " .. copy)
+    Assert.isTrue(lowered:find("provide", 1, true) == nil, "a pending gate shows no provisioning prompt, got: " .. copy)
+    script.pending = nil
+    script.sourceDetail = { code = "ROM_SOURCE_REQUIRED", message = "the original file is missing" }
+    state:update(0.016)
+    local confirmed = captureCopy(800, 600, function()
+      state:draw()
+    end)
+    Assert.isTrue(
+      confirmed:lower():find("matching", 1, true) ~= nil,
+      "a confirmed source-required gate names its remedy, got: " .. confirmed
+    )
+    Assert.equal(script.fired or 0, 0, "the confirmed block still never transfers")
+    state:dispose()
+    Assert.equal(loading.disposals, 1, "retiring the pending wait releases its stage once")
+  end)
+end
+
+-- Walker readiness while the gate is pending adopts both sprites into the
+-- owned presentation without transferring; the later ready answer fires once.
+function T.pending_walker_readiness_adopts_before_admission_without_transfer()
+  local loading = fakeLoading()
+  local record = {}
+  withPatchedLoading(loading, record, function()
+    local script = { pending = true, walkerReady = true }
+    local state = bootWait(script)
+    state:update(0.016)
+    Assert.isTrue(loading.adopted, "both sprites adopt while verification is still pending")
+    Assert.isTrue(loading.adoptions >= 1, "adoption runs against the generated pair art")
+    Assert.equal(script.fired or 0, 0, "visible sprites never transfer before the gate admits")
+    Assert.throws(function()
+      state:takeLoading()
+    end, "nothing detaches before admission even when sprites are visible")
+    script.pending = nil
+    script.bootReady = true
+    state:update(0.016)
+    Assert.equal(script.fired, 1, "the later ready answer transfers exactly once")
+    Assert.isTrue(state:takeLoading() == loading, "the transfer hands over the early-adopted presentation")
+    state:dispose()
+    Assert.equal(loading.disposals, 0, "disposing after transfer never touches the adopted art")
+  end)
+end
+
+-- A confirmed source-required gate with ready cached art may stage sprites
+-- yet never transfers; a stale epoch with staged art never fires or leaks.
+function T.confirmed_block_with_staged_art_never_transfers_and_releases_once()
+  local loading = fakeLoading()
+  local record = {}
+  withPatchedLoading(loading, record, function()
+    local script = { walkerReady = true, sourceDetail = { code = "ROM_SOURCE_REQUIRED" } }
+    local state = bootWait(script)
+    state:update(0.016)
+    Assert.isTrue(loading.adopted, "ready cached art stages even behind a confirmed block")
+    Assert.equal(script.fired or 0, 0, "a confirmed block never transfers even with ready art")
+    Assert.throws(function()
+      state:takeLoading()
+    end, "a blocked wait detaches nothing even when sprites are staged")
+    state:keypressed("escape")
+    Assert.equal(script.cancelled, 1, "escape releases the blocked wait exactly once")
+    Assert.equal(loading.disposals, 1, "cancellation releases the staged presentation once")
+    Assert.equal(script.fired or 0, 0, "cancellation never transfers")
+    state:dispose()
+    Assert.equal(loading.disposals, 1, "disposal never releases twice")
+  end)
+  local retiredLoading = fakeLoading()
+  local retiredRecord = {}
+  withPatchedLoading(retiredLoading, retiredRecord, function()
+    local live = true
+    local script = { pending = true, walkerReady = true }
+    local state = bootWait(script, {
+      isCurrent = function()
+        return live
+      end,
+    })
+    state:update(0.016)
+    Assert.isTrue(retiredLoading.adopted, "the live pending wait stages its sprites")
+    Assert.equal(script.fired or 0, 0, "the pending wait transfers nothing")
+    live = false
+    script.pending = nil
+    script.bootReady = true
+    state:update(0.016)
+    state:update(0.016)
+    Assert.equal(script.fired or 0, 0, "a retired epoch never transfers even with staged art")
+    Assert.throws(function()
+      state:takeLoading()
+    end, "a retired wait detaches nothing")
+    state:dispose()
+    Assert.equal(retiredLoading.disposals, 1, "retiring the stale wait releases its stage once")
   end)
 end
 
