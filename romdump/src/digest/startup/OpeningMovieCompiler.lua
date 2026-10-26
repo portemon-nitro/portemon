@@ -1771,22 +1771,24 @@ local function scene5Program(versionId)
     framesPerStep = 1,
     effect = "scene5-shutter",
   })
-  step(steps, "wipe", wipe, { kind = "duration", ticks = 18 })
-  -- All four scroll programs begin together once the ordered shutter and
-  -- its cleanup complete; the guard below holds their starts, it never
-  -- starts them early.
-  local scrollStarts = {}
-  scrollStarts[#scrollStarts + 1] = nextIndex(events)
+  -- The wipe dispatches the ordered shutter and hands off at once; the
+  -- following case waits on the real both-engine task, never a duration.
+  step(steps, "wipe", wipe, { kind = "duration", ticks = 1 })
+  step(steps, "wait-wipe", {}, { kind = "effect", effect = "scene5-shutter" })
+  -- All four scroll programs begin together on the next source case after
+  -- the shutter and its cleanup complete.
+  local beginScroll = {}
+  beginScroll[#beginScroll + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
-    "scroll",
+    "begin-scroll",
     0,
     { engine = "main", bgSlot = 1, dx = 0, dy = -0x40, ticks = 73, effect = "scroll-panorama" }
   )
   local paired = { { engine = "main", bgSlot = 2 }, { engine = "sub", bgSlot = 1 }, { engine = "sub", bgSlot = 2 } }
   for _, slot in ipairs(paired) do
-    scrollStarts[#scrollStarts + 1] = nextIndex(events)
-    events[#events + 1] = event("setScroll", "scroll", 0, {
+    beginScroll[#beginScroll + 1] = nextIndex(events)
+    events[#events + 1] = event("setScroll", "begin-scroll", 0, {
       engine = slot.engine,
       bgSlot = slot.bgSlot,
       dx = 0,
@@ -1795,10 +1797,11 @@ local function scene5Program(versionId)
       effect = "scroll-panorama",
     })
   end
-  step(steps, "scroll", {}, { kind = "effect", effect = "scene5-shutter" }, scrollStarts)
-  local wait = { nextIndex(events), nextIndex(events) + 1 }
-  events[#events + 1] = event("waitTicks", "wait", 0, { ticks = 20 })
-  events[#events + 1] = event("setFade", "wait", 20, {
+  step(steps, "begin-scroll", beginScroll, { kind = "duration", ticks = 1 })
+  -- The white fade is the scroll wait's guarded action: it starts at the
+  -- twentieth scroll tick while the 73-tick panorama keeps running.
+  local whiteOut = nextIndex(events)
+  events[#events + 1] = event("setFade", "wait-bg-scroll", 0, {
     scope = "both",
     mode = "brightness",
     color = "white",
@@ -1807,10 +1810,10 @@ local function scene5Program(versionId)
     terminal = "neutral",
     effect = "fade-white",
   })
-  step(steps, "wait", wait, { kind = "duration", ticks = 20 })
+  step(steps, "wait-bg-scroll", {}, { kind = "duration", ticks = 20 }, { whiteOut })
   local fadeFinish = nextIndex(events)
-  events[#events + 1] = event("finish", "fade", 0)
-  step(steps, "fade", {}, { kind = "effect", effect = "fade-white" }, { fadeFinish })
+  events[#events + 1] = event("finish", "wait-fade-out", 0)
+  step(steps, "wait-fade-out", {}, { kind = "effect", effect = "fade-white" }, { fadeFinish })
   return steps, events
 end
 

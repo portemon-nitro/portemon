@@ -3303,9 +3303,9 @@ local function every_scene_paints_its_authored_beat_on_both_engines(scope, conte
   advanceToSceneStep(movie, 4, "run-cyndaquil", 20000)
   advance(movie, 3)
   sampleBeat("scene 4 starter")
-  advanceToSceneStep(movie, 5, "wait", 20000)
+  advanceToSceneStep(movie, 5, "wait-bg-scroll", 20000)
   -- The scrolled panorama starts once the ordered shutter and its cleanup
-  -- complete, so sample the running scroll programs on the wait beat.
+  -- complete, so sample the running scroll programs on the scroll-wait beat.
   advance(movie, 5)
   movie:draw()
   local scrollBefore = sourceBytes(scope, movie.mainCanvas)
@@ -3798,11 +3798,12 @@ end
 local function sourced_panorama_pixels_match_wrapped_source_art(scope, versionId)
   local scenes, cacheFs = loadRomPackWithFillers(versionId, { 3, 4 })
   local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
-  advanceToSceneStep(movie, 5, "scroll", 20000)
+  advanceToSceneStep(movie, 5, "wait-bg-scroll", 20000)
   -- The wipe-step programs retire with the ordered shutter, so the lit
   -- baseline is sampled once the engine targets show the panorama and
-  -- before the concurrent white fade begins.
-  for _ = 1, 30 do
+  -- before the concurrent white fade begins: five sampling ticks stay
+  -- inside the twenty-tick scroll wait.
+  for _ = 1, 5 do
     movie:updateFixed()
     movie:draw()
   end
@@ -4416,10 +4417,11 @@ local function soulsilver_source_pan_edges_match_wrapped_native_art(scope, conte
   -- The scene carries no sprites.
   local lateScenes, lateCache = loadRomPackWithFillers(versionId, { 3, 4 })
   local late = openMovieWithCache(scope, lateScenes, lateCache, versionId, 512, 384, "single")
-  advanceToSceneStep(late, 5, "scroll", 20000)
+  advanceToSceneStep(late, 5, "wait-bg-scroll", 20000)
   -- The scroll programs start once the ordered shutter and its cleanup
-  -- complete; nineteen ticks later the run is still unfaded.
-  advance(late, 41)
+  -- complete; eighteen ticks into the scroll wait the run holds nineteen
+  -- scroll ticks and is still unfaded.
+  advance(late, 18)
   local lateSlot = assert(late.current, "the late movie owns its current slot")
   Assert.equal(lateSlot.backgrounds.main[1].scrollY, -16, "the late main BG1 holds its upward run")
   Assert.equal(lateSlot.backgrounds.main[2].scrollY, 176, "the late main BG2 holds 160 plus its downward run")
@@ -5537,12 +5539,12 @@ local function soulsilver_scene_five_shutter_runs_main_then_sub_across_layouts(s
     local waited = false
     for _ = 1, 200 do
       movie:updateFixed()
-      if currentStepId(movie) == "wait" then
+      if currentStepId(movie) == "wait-bg-scroll" then
         waited = true
         break
       end
     end
-    Assert.isTrue(waited, "the scroll step releases only after both cleanups")
+    Assert.isTrue(waited, "the scroll wait releases only after both cleanups")
     movie:dispose()
   end
 end
@@ -5608,6 +5610,213 @@ local function heartgold_scene_five_shutter_is_blocked_without_a_dump(scope, con
   end
   Assert.equal(shutters, 1, "HeartGold scene 5 carries its single sequential line shutter")
   Assert.equal(circles, 0, "HeartGold scene 5 carries no circle wipe")
+end
+
+-- Reads the four panorama background displacements out of the running
+-- scene-5 slot, so scroll starts show up as source state rather than
+-- inferred pixels.
+---@param movie table running opening movie
+---@return number[] scrollX/scrollY per panorama slot
+local function panoramaOffsets(movie)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local found = {}
+  for _, engine in ipairs({ "main", "sub" }) do
+    for _, bgSlot in ipairs({ 1, 2 }) do
+      local background = assert(slot.backgrounds[engine][bgSlot], engine .. " panorama " .. bgSlot .. " stays staged")
+      found[#found + 1] = background.scrollX
+      found[#found + 1] = background.scrollY
+    end
+  end
+  return found
+end
+
+---@param offsets number[] panorama displacements
+---@return number summed displacement magnitude
+local function totalPanoramaDisplacement(offsets)
+  local total = 0
+  for _, value in ipairs(offsets) do
+    total = total + math.abs(value)
+  end
+  return total
+end
+
+-- The fifth scene holds its four panorama scrolls until the ordered
+-- shutter and both engine cleanups finish: the wipe hands off after one
+-- dispatch tick, the wait holds with no scroll program through the main
+-- finish and the sub phase, and the first scroll increment lands only
+-- after the named shutter completes and the begin-scroll case dispatches.
+local function soulsilver_scene_five_scroll_starts_only_after_both_shutter_cleanups(scope, context)
+  if not RomImporter.isReady("soulsilver") then
+    context:skip("SoulSilver panorama scroll needs a user-owned SoulSilver ROM")
+  end
+  local movie = openMovie(scope, "soulsilver", 512, 384, "dual")
+  advanceToSceneStep(movie, 5, "wipe", 20000)
+  -- The wipe entry dispatches the ordered shutter on the following update
+  -- and hands off at once: the successor is selected, never dispatched,
+  -- in the same source tick.
+  movie:updateFixed()
+  Assert.equal(currentStepId(movie), "wait-wipe", "the wipe hands off after its single dispatch tick")
+  movie:draw()
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.notNil(slot.effects["scene5-shutter"], "the wipe dispatch starts the ordered shutter")
+  Assert.isFalse(slot.effects["scene5-shutter"].done, "the ordered shutter runs past its dispatch")
+  Assert.isNil(slot.effects["scroll-panorama"], "no panorama scroll starts with the shutter")
+  local parked = panoramaOffsets(movie)
+  Assert.isNil(
+    assert(movie.current, "the running movie owns its current slot").effects["scroll-panorama"],
+    "the shutter wait starts no scroll on entry"
+  )
+  -- The main finish still waits: the first engine cleanup runs while the
+  -- sub engine stays masked, and no scroll may start between the phases.
+  local mainDone = false
+  for _ = 1, 120 do
+    movie:updateFixed()
+    local live = assert(movie.current, "the running movie owns its current slot")
+    if live.shutter ~= nil and (live.shutter.sub.elapsed > 0 or live.shutter.active == "sub") then
+      mainDone = true
+      break
+    end
+  end
+  Assert.isTrue(mainDone, "the main shutter hands off to the sub phase")
+  local live = assert(movie.current, "the running movie owns its current slot")
+  Assert.isFalse(live.effects["scene5-shutter"].done, "the shutter wait stays pending between the phases")
+  Assert.isNil(live.effects["scroll-panorama"], "no panorama scroll starts between the shutter phases")
+  Assert.deepEqual(panoramaOffsets(movie), parked, "the panorama stays parked between the shutter phases")
+  Assert.equal(currentStepId(movie), "wait-wipe", "the shutter wait holds through the engine handoff")
+  -- The sub phase and its cleanup still gate every scroll program.
+  local subMid = false
+  for _ = 1, 200 do
+    movie:updateFixed()
+    local running = assert(movie.current, "the running movie owns its current slot")
+    if running.shutter ~= nil and running.shutter.sub.elapsed >= 9 then
+      subMid = true
+      break
+    end
+  end
+  Assert.isTrue(subMid, "the sub shutter advances bottom-up once active")
+  local mid = assert(movie.current, "the running movie owns its current slot")
+  Assert.isFalse(mid.effects["scene5-shutter"].done, "the shutter wait stays pending mid-sub")
+  Assert.isNil(mid.effects["scroll-panorama"], "no panorama scroll starts mid-sub")
+  Assert.equal(currentStepId(movie), "wait-wipe", "the shutter wait holds through the sub phase")
+  -- Both cleanups release the shutter wait; the scroll programs fire only
+  -- when the begin-scroll case dispatches on a later source tick.
+  local finished = false
+  for _ = 1, 200 do
+    movie:updateFixed()
+    if assert(movie.current, "the running movie owns its current slot").effects["scene5-shutter"].done then
+      finished = true
+      break
+    end
+  end
+  Assert.isTrue(finished, "both engine cleanups terminate the shutter wait")
+  Assert.equal(
+    currentStepId(movie),
+    "begin-scroll",
+    "the completed wait selects the scroll case without dispatching it"
+  )
+  Assert.isNil(
+    assert(movie.current, "the running movie owns its current slot").effects["scroll-panorama"],
+    "the scroll case fires its programs on the following source tick, never the completion tick"
+  )
+  movie:updateFixed()
+  Assert.equal(currentStepId(movie), "wait-bg-scroll", "the scroll case dispatches on one source tick")
+  local scrolled = assert(movie.current, "the running movie owns its current slot")
+  Assert.notNil(scrolled.effects["scroll-panorama"], "the begin-scroll case starts the panorama programs")
+  Assert.isFalse(scrolled.effects["scroll-panorama"].done, "the panorama programs run past their dispatch")
+  -- One source tick advances each panorama by a seventy-third of its
+  -- program, which truncates to zero displacement: drive until the first
+  -- visible increment lands, bounded well inside the scroll programs.
+  local moved = false
+  for _ = 1, 10 do
+    movie:updateFixed()
+    if totalPanoramaDisplacement(panoramaOffsets(movie)) ~= totalPanoramaDisplacement(parked) then
+      moved = true
+      break
+    end
+  end
+  Assert.isTrue(moved, "the first scroll increment lands only after the shutter is fully retired")
+  movie:dispose()
+end
+
+-- The fifth scene starts its 50-step white fade at the twentieth scroll
+-- tick while the 73-tick panorama keeps running: no fade exists for the
+-- first nineteen scroll ticks, white appears on both engines at the
+-- boundary while offsets keep changing, and the scene exits when the fade
+-- finishes even though the scroll programs have not.
+local function soulsilver_scene_five_white_fade_starts_at_scroll_tick_twenty(scope, context)
+  if not RomImporter.isReady("soulsilver") then
+    context:skip("SoulSilver panorama fade needs a user-owned SoulSilver ROM")
+  end
+  local movie = openMovie(scope, "soulsilver", 512, 384, "dual")
+  advanceToSceneStep(movie, 5, "begin-scroll", 20000)
+  -- The begin-scroll entry fires all four panorama programs on the
+  -- following update.
+  movie:updateFixed()
+  movie:draw()
+  Assert.equal(currentStepId(movie), "wait-bg-scroll", "the scroll programs hand off to their twenty-tick wait")
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.notNil(slot.effects["scroll-panorama"], "the panorama programs run through the scroll wait")
+  Assert.isNil(slot.effects["fade-white"], "no white fade exists on the first scroll tick")
+  local before = panoramaOffsets(movie)
+  local waited = 0
+  for _ = 1, 60 do
+    if currentStepId(movie) ~= "wait-bg-scroll" then
+      break
+    end
+    movie:updateFixed()
+    waited = waited + 1
+    local live = assert(movie.current, "the running movie owns its current slot")
+    if waited < 20 then
+      Assert.isNil(live.effects["fade-white"], "no white fade exists before the twentieth scroll tick")
+    end
+  end
+  Assert.equal(waited, 20, "the scroll wait counts its twenty source ticks")
+  Assert.equal(currentStepId(movie), "wait-fade-out", "the twentieth scroll tick hands off to the fade wait")
+  local boundary = assert(movie.current, "the running movie owns its current slot")
+  Assert.notNil(boundary.effects["fade-white"], "the white fade starts at the scroll boundary")
+  Assert.isFalse(boundary.effects["fade-white"].done, "the white fade runs past its start")
+  Assert.isFalse(boundary.effects["scroll-panorama"].done, "the panorama keeps running under the white fade")
+  local atFadeStart = panoramaOffsets(movie)
+  Assert.isTrue(
+    totalPanoramaDisplacement(atFadeStart) ~= totalPanoramaDisplacement(before),
+    "the panorama advances across the scroll wait"
+  )
+  movie:draw()
+  local fadingMain = sourceBytes(scope, movie.mainCanvas)
+  local fadingSub = sourceBytes(scope, movie.subCanvas)
+  for _ = 1, 25 do
+    movie:updateFixed()
+  end
+  movie:draw()
+  Assert.isTrue(
+    changeFraction(fadingMain, sourceBytes(scope, movie.mainCanvas), 256, 192) > 0.05,
+    "the white fade visibly progresses on the main engine while scrolling"
+  )
+  Assert.isTrue(
+    changeFraction(fadingSub, sourceBytes(scope, movie.subCanvas), 256, 192) > 0.05,
+    "the white fade visibly progresses on the sub engine while scrolling"
+  )
+  local fading = assert(movie.current, "the running movie owns its current slot")
+  Assert.isFalse(fading.effects["scroll-panorama"].done, "the panorama still runs late in the white fade")
+  local finished = false
+  for _ = 1, 120 do
+    movie:updateFixed()
+    if assert(movie.current, "the running movie owns its current slot").effects["fade-white"].done then
+      finished = true
+      break
+    end
+  end
+  Assert.isTrue(finished, "the fifty-step white fade completes")
+  local closing = assert(movie.current, "the running movie owns its current slot")
+  Assert.isFalse(closing.effects["scroll-panorama"].done, "the panorama has not finished when the fade does")
+  for _ = 1, 10 do
+    movie:updateFixed()
+    if movie:isFinished() then
+      break
+    end
+  end
+  Assert.isTrue(movie:isFinished(), "scene completion waits on the fade, not the scroll")
+  movie:dispose()
 end
 
 -- Counts real love.graphics.newQuad calls so background allocation shows up
@@ -5914,11 +6123,11 @@ local function sourced_wrap_stays_bounded_without_per_draw_quads(scope, versionI
   movie:dispose()
   local lateScenes, lateCache = loadRomPackWithFillers(versionId, { 3, 4 })
   local late = openMovieWithCache(scope, lateScenes, lateCache, versionId, 512, 384, "single")
-  advanceToSceneStep(late, 5, "scroll", 20000)
+  advanceToSceneStep(late, 5, "wait-bg-scroll", 20000)
   -- The scroll programs start once the ordered shutter and its cleanup
   -- complete; sample the running panorama before the concurrent white
   -- fade at the twentieth scroll tick washes the comparison.
-  advance(late, 41)
+  advance(late, 18)
   late:draw()
   assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "main", "scene 5 late wrap", liveEngineOffsets(late, "main"), {})
   assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "sub", "scene 5 late wrap", liveEngineOffsets(late, "sub"), {})
@@ -7100,6 +7309,8 @@ local T = GraphicsSmoke.suite({
   ["soulsilver scene one sunrise shows its static sun before scrolling"] = soulsilver_scene_one_sunrise_shows_static_sun_before_scroll,
   ["soulsilver scene three closes retire town drawing before the rival reveal"] = soulsilver_scene_three_closes_retire_town_drawing_before_the_rival_reveal,
   ["soulsilver scene five shutter runs main then sub across layouts"] = soulsilver_scene_five_shutter_runs_main_then_sub_across_layouts,
+  ["soulsilver scene five scroll starts only after both shutter cleanups"] = soulsilver_scene_five_scroll_starts_only_after_both_shutter_cleanups,
+  ["soulsilver scene five white fade starts at scroll tick twenty"] = soulsilver_scene_five_white_fade_starts_at_scroll_tick_twenty,
   ["heartgold scene two wipe is blocked without a dump"] = heartgold_scene_two_wipe_is_blocked_without_a_dump,
   ["heartgold scene three beats are blocked without a dump"] = heartgold_scene_three_beats_are_blocked_without_a_dump,
   ["heartgold scene five shutter is blocked without a dump"] = heartgold_scene_five_shutter_is_blocked_without_a_dump,
