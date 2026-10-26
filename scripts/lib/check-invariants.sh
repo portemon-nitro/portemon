@@ -9,7 +9,6 @@
 # planted violation is demonstrable without touching tracked files).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-repository_root="$(pwd)"
 
 fail=0
 violation() {
@@ -200,11 +199,28 @@ check_luarc_policy() {
   return 0
 }
 
+# Temporary 5.1 crutch: StyLua's pinned Lua51 syntax already rejects
+# goto/label/escape syntax, so only newer standard-library calls need a
+# lexical grep here. Deliberately no comment/string stripping: a call name
+# inside a comment or string is an accepted (rare, obvious) false positive.
+# The trailing `(` keeps the `table.unpack or unpack` probe passing.
+check_newer_stdlib_file() {
+  local path="$1"
+  local hits hit lineno
+  hits="$(grep -En '(^|[^A-Za-z0-9_])(table[[:space:]]*\.[[:space:]]*(unpack|pack|move)|string[[:space:]]*\.[[:space:]]*(pack|unpack|packsize)|math[[:space:]]*\.[[:space:]]*(type|tointeger)|package[[:space:]]*\.[[:space:]]*searchpath)[[:space:]]*\(' "$path" || true)"
+  [ -n "$hits" ] || return 0
+  while IFS= read -r hit; do
+    lineno="${hit%%:*}"
+    violation "$path:$lineno: newer Lua standard-library call: ${hit#*:}"
+  done <<< "$hits"
+}
+
 check_lua51_compatibility() {
-  [ "$#" -gt 0 ] || return 0
-  if ! python3 "$repository_root/scripts/ci/lua51_source_check.py" "$@"; then
-    fail=1
-  fi
+  local path
+  for path in "$@"; do
+    [ -r "$path" ] || continue
+    check_newer_stdlib_file "$path"
+  done
 }
 
 check_tracked_scope() {

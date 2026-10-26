@@ -24,7 +24,6 @@ REPO_ROOT = SCRIPT.parents[2]
 HOOK_SOURCE = REPO_ROOT / "scripts" / "hooks" / "pre-commit"
 LUARC_SOURCE = REPO_ROOT / ".luarc.json"
 STYLUA_SOURCE = REPO_ROOT / ".stylua.toml"
-LUA51_CHECK_SOURCE = REPO_ROOT / "scripts" / "ci" / "lua51_source_check.py"
 LINT_SOURCE = REPO_ROOT / "scripts" / "lint.sh"
 SCOPE_SOURCE = REPO_ROOT / "scripts" / "lib" / "scope.sh"
 REPO_CHECK_SOURCE = REPO_ROOT / "scripts" / "lib" / "check-repository.sh"
@@ -377,9 +376,6 @@ def _init_repo(
         lint_stub.chmod(0o755)
     (root / ".luarc.json").write_bytes(LUARC_SOURCE.read_bytes())
     (root / ".stylua.toml").write_bytes(STYLUA_SOURCE.read_bytes())
-    compat_target = root / "scripts" / "ci" / "lua51_source_check.py"
-    compat_target.parent.mkdir(parents=True, exist_ok=True)
-    compat_target.write_bytes(LUA51_CHECK_SOURCE.read_bytes())
     for relative in REQUIRED_CORE_FILES:
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -403,22 +399,9 @@ def _stage(repo: Path, relative: str, body: str) -> None:
     _run_git(repo, "add", "--", relative)
 
 
+# StyLua's pinned Lua51 syntax owns goto/label/escape syntax; this gate
+# only crutches the newer standard-library calls StyLua cannot see.
 class Lua51PolicyTest(unittest.TestCase):
-    def test_native_goto_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = write_production(Path(directory), "goto.lua",
-                "for _ = 1, 2 do\n  goto continue\n  ::continue::\nend\n")
-            result = run_gate(path)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("native goto", result.stderr)
-
-    def test_script_opcode_data_does_not_trigger(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = write_production(Path(directory), "opcode.lua",
-                "-- goto continue\nreturn { op = \"goto\", name = \"::continue::\" }\n")
-            result = run_gate(path)
-            self.assertEqual(result.returncode, 0, result.stderr)
-
     def test_unguarded_newer_table_api_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = write_production(Path(directory), "unpack.lua",
@@ -427,20 +410,28 @@ class Lua51PolicyTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("table.unpack", result.stderr)
 
+    def test_spaced_newer_call_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_production(Path(directory), "spaced.lua",
+                "local t = { 1, 2 }\nreturn table . unpack (t)\n")
+            result = run_gate(path)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("table . unpack", result.stderr)
+
+    def test_unguarded_newer_math_api_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_production(Path(directory), "tointeger.lua",
+                "return math.tointeger(1.0)\n")
+            result = run_gate(path)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("math.tointeger", result.stderr)
+
     def test_compatibility_probe_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = write_production(Path(directory), "compat.lua",
                 "local unpack = table.unpack or unpack\nreturn unpack({ 1, 2 })\n")
             result = run_gate(path)
             self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_hex_escape_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = write_test(Path(directory), "escape.lua",
-                r'local value = "\xFA"' + "\n")
-            result = run_gate(path)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("hexadecimal escape", result.stderr)
 
 class HookDelegationTest(unittest.TestCase):
     """The pre-commit hook defers to the lint gate."""
