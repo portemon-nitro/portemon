@@ -7,7 +7,7 @@
 -- manifest; edition branches resolve here, producer-side, into distinct
 -- versioned records. Timings below are the source state thresholds and
 -- effect lengths, not a master linear storyboard: parallel source effects
--- compose through waitEffects, and atTick composes state durations with
+-- compose through step guards, and atTick composes state durations with
 -- named effect lengths.
 
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")

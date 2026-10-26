@@ -598,8 +598,8 @@ end
 -- and the composition has no parallel global clock. Every effect wait names
 -- a started effect from the same program or a compiled sprite clip whose
 -- frame durations bound the wait; steps with unknown-length waits (circle
--- wipes, particle runs, sprite animation completion) advance the composition
--- by zero and order through the effect wait.
+-- wipes, particle runs, sprite animation completion) hold on their guard
+-- until the named effect finishes and order through step sequence.
 local function event(op, stepId, atStepTick, extra)
   local record = { op = op, stepId = stepId, atStepTick = atStepTick }
   if extra ~= nil then
@@ -614,8 +614,13 @@ end
 ---@param id string
 ---@param eventIndices integer[]
 ---@param wait table<string, unknown>
-local function step(steps, id, eventIndices, wait)
-  steps[#steps + 1] = { id = id, events = eventIndices, ["until"] = wait }
+---@param onComplete integer[]|nil guarded actions firing when the wait passes
+local function step(steps, id, eventIndices, wait, onComplete)
+  local record = { id = id, events = eventIndices, ["until"] = wait }
+  if onComplete ~= nil then
+    record.onCompleteEvents = onComplete
+  end
+  steps[#steps + 1] = record
 end
 
 ---@param events table<string, unknown>[]
@@ -1057,10 +1062,9 @@ local function scene1Program(clips, layers)
   events[#events + 1] = event("waitTicks", "run", 0, { ticks = 90 })
   events[#events + 1] = event("setFade", "run", 90, { kind = "white", ticks = 65, effect = "fade-white" })
   step(steps, "run", run, { kind = "duration", ticks = 90 })
-  local fade = { nextIndex(events), nextIndex(events) + 1 }
-  events[#events + 1] = event("waitEffects", "fade", 0, { effects = { "fade-white" } })
+  local fadeFinish = nextIndex(events)
   events[#events + 1] = event("finish", "fade", 0)
-  step(steps, "fade", fade, { kind = "effect", effect = "fade-white" })
+  step(steps, "fade", {}, { kind = "effect", effect = "fade-white" }, { fadeFinish })
   return steps, events
 end
 
@@ -1242,14 +1246,12 @@ local function scene2Program(clips)
     exit[#exit + 1] = position
   end
   step(steps, "lyra-exit", exit, { kind = "effect", effect = "scroll-lyra-exit" })
-  local wipe = { nextIndex(events), nextIndex(events) + 1 }
-  events[#events + 1] = event("waitEffects", "wipe", 0, { effects = { "scroll-lyra-exit" } })
+  local wipe = { nextIndex(events) }
   events[#events + 1] = event("circleWipe", "wipe", 0, { engine = "main", kind = 1, ticks = 8, effect = "wipe-circle" })
   step(steps, "wipe", wipe, { kind = "effect", effect = "wipe-circle" })
-  local done = { nextIndex(events), nextIndex(events) + 1 }
-  events[#events + 1] = event("waitEffects", "done", 0, { effects = { "wipe-circle" } })
+  local doneFinish = nextIndex(events)
   events[#events + 1] = event("finish", "done", 0)
-  step(steps, "done", done, { kind = "effect", effect = "wipe-circle" })
+  step(steps, "done", {}, { kind = "effect", effect = "wipe-circle" }, { doneFinish })
   return steps, events
 end
 
@@ -1332,13 +1334,12 @@ local function scene3Program(clips, layers)
   -- town close finishes, before any rival-only output: town pixels stop
   -- while the staged town resources stay owned by the slot. Step order
   -- gates the reveal on the finished close.
-  local rival = { nextIndex(events), nextIndex(events) + 1 }
+  local rival = { nextIndex(events) }
   events[#events + 1] = event("circleWipe", "rival", 0, { engine = "sub", kind = 2, ticks = 8, effect = "wipe-rival" })
   rival[#rival + 1] = nextIndex(events)
   events[#events + 1] = event("setModelVisible", "rival", 0, { visible = false })
   step(steps, "rival", rival, { kind = "effect", effect = "wipe-rival" })
-  local panelsStep = { nextIndex(events) }
-  events[#events + 1] = event("waitEffects", "panels", 0, { effects = { "wipe-rival" } })
+  local panelsStep = {}
   for index, delay in ipairs({ 56, 73, 92 }) do
     panelsStep[#panelsStep + 1] = showPanel("panels", delay, "rival-section-" .. index)
   end
@@ -1417,9 +1418,7 @@ local function scene3Program(clips, layers)
   setWindowVisible(events, "narrow-windows", 42, "sub", true)
   narrowWindows[#narrowWindows + 1] = #events
   step(steps, "narrow-windows", narrowWindows, { kind = "duration", ticks = 42 })
-  local waitNarrow = { nextIndex(events) }
-  events[#events + 1] = event("waitEffects", "wait-narrow", 0, { effects = { "window-narrow-x" } })
-  step(steps, "wait-narrow", waitNarrow, { kind = "effect", effect = "window-narrow-x" })
+  step(steps, "wait-narrow", {}, { kind = "effect", effect = "window-narrow-x" })
   local sprites = {}
   showSprite(events, 3, instances, clips, "sprites", 56, "eusine", "eusine", 0)
   sprites[#sprites + 1] = #events - 1
@@ -1439,13 +1438,12 @@ local function scene3Program(clips, layers)
     { engine = "sub", bgSlot = 1, dx = -116, dy = 0, ticks = 10, effect = "scroll-sub1" }
   )
   step(steps, "sprites", sprites, { kind = "duration", ticks = 145 })
-  local entei = { nextIndex(events) }
-  events[#events + 1] = event("waitEffects", "entei-exit", 0, { effects = { "scroll-sub1" } })
+  local enteiDone = {}
   setPlaneVisible(events, planes, layers, "entei-exit", 0, "sub", 1, false)
-  entei[#entei + 1] = #events
+  enteiDone[#enteiDone + 1] = #events
   emitWindow(events, 3, "nop-entei-exit", "entei-exit", 0, nil)
-  entei[#entei + 1] = #events
-  step(steps, "entei-exit", entei, { kind = "effect", effect = "scroll-sub1" })
+  enteiDone[#enteiDone + 1] = #events
+  step(steps, "entei-exit", {}, { kind = "effect", effect = "scroll-sub1" }, enteiDone)
   local raikou = {}
   showSprite(events, 3, instances, clips, "raikou", 0, "unown1", "eusine", 2)
   raikou[#raikou + 1] = #events - 1
@@ -1462,22 +1460,21 @@ local function scene3Program(clips, layers)
     { engine = "sub", bgSlot = 2, dx = -116, dy = 0, ticks = 10, effect = "scroll-sub2" }
   )
   step(steps, "raikou", raikou, { kind = "duration", ticks = 10 })
-  local rockets = { nextIndex(events) }
-  events[#events + 1] = event("waitEffects", "rockets", 0, { effects = { "scroll-sub1", "scroll-sub2" } })
+  local rocketsDone = {}
   setPlaneVisible(events, planes, layers, "rockets", 0, "sub", 2, false)
-  rockets[#rockets + 1] = #events
+  rocketsDone[#rocketsDone + 1] = #events
   emitWindow(events, 3, "nop-rocket", "rockets", 0, nil)
-  rockets[#rockets + 1] = #events
+  rocketsDone[#rocketsDone + 1] = #events
   for _, beast in ipairs({ "beast0", "beast1", "beast2" }) do
-    rockets[#rockets + 1] = showPanel("rockets", 0, beast)
+    rocketsDone[#rocketsDone + 1] = showPanel("rockets", 0, beast)
   end
   setPlaneVisible(events, planes, layers, "rockets", 0, "sub", 1, true)
-  rockets[#rockets + 1] = #events
+  rocketsDone[#rocketsDone + 1] = #events
   setPlaneVisible(events, planes, layers, "rockets", 0, "sub", 2, true)
-  rockets[#rockets + 1] = #events
+  rocketsDone[#rocketsDone + 1] = #events
   -- The beast panels show as a transition beat once both panel slides
   -- have finished; the beat completes on the latest slide.
-  step(steps, "rockets", rockets, { kind = "effect", effect = "scroll-sub2" })
+  step(steps, "rockets", {}, { kind = "effects", effects = { "scroll-sub1", "scroll-sub2" } }, rocketsDone)
   local suicune = {}
   showSprite(events, 3, instances, clips, "suicune", 0, "unown2", "eusine", 3)
   suicune[#suicune + 1] = #events - 1
@@ -1494,21 +1491,20 @@ local function scene3Program(clips, layers)
     { engine = "sub", bgSlot = 0, dx = 0x74, dy = 0, ticks = 10, effect = "scroll-sub0" }
   )
   step(steps, "suicune", suicune, { kind = "duration", ticks = 30 })
-  local viewport = { nextIndex(events) }
-  events[#events + 1] = event("waitEffects", "viewport", 0, { effects = { "scroll-sub0" } })
+  local viewportDone = {}
   setPlaneVisible(events, planes, layers, "viewport", 0, "sub", 0, false)
-  viewport[#viewport + 1] = #events
+  viewportDone[#viewportDone + 1] = #events
   emitWindow(events, 3, "expand-viewport", "viewport", 0, "window-expand-viewport")
-  viewport[#viewport + 1] = #events
-  viewport[#viewport + 1] = nextIndex(events)
+  viewportDone[#viewportDone + 1] = #events
+  viewportDone[#viewportDone + 1] = nextIndex(events)
   events[#events + 1] =
     event("setScroll", "viewport", 0, { engine = "sub", bgSlot = 1, dx = 0, dy = -0x30, ticks = 254 })
   events[#events + 1] =
     event("setScroll", "viewport", 0, { engine = "sub", bgSlot = 2, dx = 0, dy = -0x20, ticks = 254 })
-  viewport[#viewport + 1] = #events
-  -- The viewport hold completes when the tail scroll started by the next
-  -- step finishes; effect starts may complete in a later step.
-  step(steps, "viewport", viewport, { kind = "effect", effect = "scroll-sub3" })
+  viewportDone[#viewportDone + 1] = #events
+  -- The viewport mutations run once the closing beast slide finishes; the
+  -- tail scroll started by the next step runs under its own guard.
+  step(steps, "viewport", {}, { kind = "effect", effect = "scroll-sub0" }, viewportDone)
   local viewportTail = { nextIndex(events) }
   events[#events + 1] = event(
     "setScroll",
@@ -1517,10 +1513,9 @@ local function scene3Program(clips, layers)
     { engine = "sub", bgSlot = 3, dx = 0, dy = -0x08, ticks = 254, effect = "scroll-sub3" }
   )
   step(steps, "viewport-tail", viewportTail, { kind = "effect", effect = "scroll-sub3" })
-  local admins = { nextIndex(events), nextIndex(events) + 1 }
-  events[#events + 1] = event("waitEffects", "admins", 0, { effects = { "scroll-sub1" } })
+  local adminsFinish = nextIndex(events)
   events[#events + 1] = event("finish", "admins", 0)
-  step(steps, "admins", admins, { kind = "effect", effect = "scroll-sub1" })
+  step(steps, "admins", {}, { kind = "effect", effect = "scroll-sub1" }, { adminsFinish })
   return steps, events
 end
 
@@ -1541,8 +1536,6 @@ local function scene4Program(clips, layers)
   events[#events + 1] = event("setFade", "fade-in", 0, { kind = "black-shutter-open", ticks = 10, effect = "fade-in" })
   step(steps, "fade-in", fadeIn, { kind = "effect", effect = "fade-in" })
   local slideIn = {}
-  slideIn[#slideIn + 1] = nextIndex(events)
-  events[#events + 1] = event("waitEffects", "slide-in", 0, { effects = { "fade-in" } })
   -- The simultaneous top pan addresses the sub engine while the bottom
   -- pan addresses the main engine; both span the full display width.
   emitWindow(events, 4, "slide-in-top", "slide-in", 0, nil)
@@ -1665,10 +1658,9 @@ local function scene4Program(clips, layers)
   sparkle[#sparkle + 1] = #events - 1
   sparkle[#sparkle + 1] = #events
   step(steps, "sparkle", sparkle, { kind = "effect", effect = sparkleClip })
-  local done = { nextIndex(events), nextIndex(events) + 1 }
-  events[#events + 1] = event("waitEffects", "done", 0, { effects = { sparkleClip } })
+  local doneFinish = nextIndex(events)
   events[#events + 1] = event("finish", "done", 0)
-  step(steps, "done", done, { kind = "effect", effect = sparkleClip })
+  step(steps, "done", {}, { kind = "effect", effect = sparkleClip }, { doneFinish })
   return steps, events
 end
 
@@ -1694,10 +1686,11 @@ local function scene5Program(versionId)
     effect = "scene5-shutter",
   })
   step(steps, "wipe", wipe, { kind = "duration", ticks = 18 })
-  local scroll = {}
-  scroll[#scroll + 1] = nextIndex(events)
-  events[#events + 1] = event("waitEffects", "scroll", 0, { effects = { "scene5-shutter" } })
-  scroll[#scroll + 1] = nextIndex(events)
+  -- All four scroll programs begin together once the ordered shutter and
+  -- its cleanup complete; the guard below holds their starts, it never
+  -- starts them early.
+  local scrollStarts = {}
+  scrollStarts[#scrollStarts + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
     "scroll",
@@ -1706,7 +1699,7 @@ local function scene5Program(versionId)
   )
   local paired = { { engine = "main", bgSlot = 2 }, { engine = "sub", bgSlot = 1 }, { engine = "sub", bgSlot = 2 } }
   for _, slot in ipairs(paired) do
-    scroll[#scroll + 1] = nextIndex(events)
+    scrollStarts[#scrollStarts + 1] = nextIndex(events)
     events[#events + 1] = event("setScroll", "scroll", 0, {
       engine = slot.engine,
       bgSlot = slot.bgSlot,
@@ -1716,15 +1709,14 @@ local function scene5Program(versionId)
       effect = "scroll-panorama",
     })
   end
-  step(steps, "scroll", scroll, { kind = "effect", effect = "scroll-panorama" })
+  step(steps, "scroll", {}, { kind = "effect", effect = "scene5-shutter" }, scrollStarts)
   local wait = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitTicks", "wait", 0, { ticks = 20 })
   events[#events + 1] = event("setFade", "wait", 20, { kind = "white", ticks = 50, effect = "fade-white" })
   step(steps, "wait", wait, { kind = "duration", ticks = 20 })
-  local fade = { nextIndex(events), nextIndex(events) + 1 }
-  events[#events + 1] = event("waitEffects", "fade", 0, { effects = { "fade-white" } })
+  local fadeFinish = nextIndex(events)
   events[#events + 1] = event("finish", "fade", 0)
-  step(steps, "fade", fade, { kind = "effect", effect = "fade-white" })
+  step(steps, "fade", {}, { kind = "effect", effect = "fade-white" }, { fadeFinish })
   return steps, events
 end
 

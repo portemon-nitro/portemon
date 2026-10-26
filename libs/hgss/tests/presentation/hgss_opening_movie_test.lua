@@ -157,7 +157,6 @@ local function sceneEvents(sceneNumber)
       },
       { op = "waitTicks", stepId = "intro", atStepTick = 0, ticks = 10 },
       { op = "startEmitters", stepId = "starters", atStepTick = 0, group = "grass", emitters = { 6, 7, 8 } },
-      { op = "waitEffects", stepId = "starters", atStepTick = 0, effects = { "emitters-grass" } },
       { op = "waitTicks", stepId = "outro", atStepTick = 0, ticks = 10 },
       { op = "finish", stepId = "outro", atStepTick = 0 },
     }
@@ -214,8 +213,8 @@ local function sceneSteps(sceneNumber)
   elseif sceneNumber == 4 then
     return {
       { id = "intro", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 10 } },
-      { id = "starters", events = { 3, 4 }, ["until"] = { kind = "effect", effect = "emitters-grass" } },
-      { id = "outro", events = { 5, 6 }, ["until"] = { kind = "duration", ticks = 10 } },
+      { id = "starters", events = { 3 }, ["until"] = { kind = "effect", effect = "emitters-grass" } },
+      { id = "outro", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 10 } },
     }
   end
   return {
@@ -1205,6 +1204,9 @@ function T.immediate_offsets_land_first_and_continuous_pans_advance_per_tick()
   while movie:sceneNumber() < 2 do
     movie:updateFixed()
   end
+  -- The newly entered case first runs on the following update: its entry
+  -- programs dispatch there, and continuous programs advance at once.
+  movie:updateFixed()
   local function offsets()
     local current = assert(movie.current, "the running movie owns its current slot")
     return {
@@ -1217,10 +1219,12 @@ function T.immediate_offsets_land_first_and_continuous_pans_advance_per_tick()
   local entry = offsets()
   Assert.equal(entry.snapX, 128, "an immediate pan is already displaced on the first frame")
   Assert.equal(entry.snapY, 64, "an immediate pan is already displaced on the first frame")
+  Assert.equal(entry.subX, 64, "a continuous pan advances on its dispatch update")
+  Assert.equal(entry.driftY, -32, "independent slots advance on the dispatch update")
   movie:draw()
   local drawn = offsets()
   Assert.equal(drawn.snapX, 128, "the first draw keeps the immediate displacement")
-  for _ = 1, 10 do
+  for _ = 1, 9 do
     movie:updateFixed()
     movie:draw()
   end
@@ -1635,6 +1639,8 @@ function T.clip_completion_binds_the_compiled_clip_duration()
   end
   Assert.equal(movie:sceneNumber(), 1, "the finale holds for the nineteen ticks before the summed duration")
   movie:updateFixed()
+  Assert.equal(movie:sceneNumber(), 1, "the twentieth dispatched tick still runs the final frame")
+  movie:updateFixed()
   Assert.equal(movie:sceneNumber(), 2, "the finale completes exactly after the summed frame durations")
   movie:dispose()
   -- The same shape with an unstarted non-clip wait raises instead: a wait
@@ -1649,6 +1655,8 @@ function T.clip_completion_binds_the_compiled_clip_duration()
     rawMovie:updateFixed()
   end
   Assert.equal(rawMovie:sceneNumber(), 1, "playback reaches the setup step before the gated finale")
+  rawMovie:updateFixed()
+  Assert.equal(rawMovie:sceneNumber(), 1, "the tenth tick selects the gated finale without firing it")
   local failure = nil
   local ok, err = pcall(function()
     rawMovie:updateFixed()
@@ -2983,14 +2991,13 @@ function T.starter_particles_draw_only_on_main_through_flips()
     particleScene(
       {
         { id = "intro", events = { 1 }, ["until"] = { kind = "duration", ticks = 10 } },
-        { id = "starters", events = { 2, 3, 4 }, ["until"] = { kind = "effect", effect = "emitters-grass" } },
-        { id = "outro", events = { 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 10 } },
+        { id = "starters", events = { 2, 3 }, ["until"] = { kind = "effect", effect = "emitters-grass" } },
+        { id = "outro", events = { 4, 5, 6 }, ["until"] = { kind = "duration", ticks = 10 } },
       },
       {
         { op = "waitTicks", stepId = "intro", atStepTick = 0, ticks = 10 },
         { op = "startEmitters", stepId = "starters", atStepTick = 0, group = "grass", emitters = { 6, 7, 8 } },
         { op = "setScreenMapping", stepId = "starters", atStepTick = 5, mainPhysical = "lower" },
-        { op = "waitEffects", stepId = "starters", atStepTick = 0, effects = { "emitters-grass" } },
         { op = "setScreenMapping", stepId = "outro", atStepTick = 2, mainPhysical = "upper" },
         { op = "waitTicks", stepId = "outro", atStepTick = 0, ticks = 10 },
         { op = "finish", stepId = "outro", atStepTick = 0 },
@@ -4212,9 +4219,9 @@ function T.seven_source_wipes_play_in_order_with_their_own_engines_and_gates()
   end
   Assert.equal(movie:sceneNumber(), 3, "playback reaches the wipe sequence")
   local observed, beatStartTicks, lastBeat, thirdSlot = {}, {}, nil, nil
-  -- Sample before ticking: the entry cascade already applied the first
-  -- beat, so sampling first keeps every gate at its authored eight ticks
-  -- instead of shorting the first observation by one.
+  -- Sample after dispatching: a newly selected case first runs on the
+  -- following update, so the start lands when its entry fires and every
+  -- gate keeps its authored eight ticks.
   local guard = 0
   while movie:sceneNumber() == 3 and guard < 5000 do
     guard = guard + 1
@@ -4223,7 +4230,7 @@ function T.seven_source_wipes_play_in_order_with_their_own_engines_and_gates()
       thirdSlot = slot
       local step = assert(slot.manifest.timeline.steps[slot.stepIndex], "the movie stays on a known step")
       local id = assert(step.id, "the step carries its source identity")
-      if id ~= "done" and id ~= lastBeat and slot.wipe ~= nil then
+      if id ~= "done" and id ~= lastBeat and slot.wipe ~= nil and slot.stepElapsed >= 1 then
         lastBeat = id
         observed[#observed + 1] = { engine = slot.wipe.engine, kind = slot.wipe.kind, ticks = slot.wipe.ticks }
         beatStartTicks[#beatStartTicks + 1] = ticks
@@ -4614,6 +4621,9 @@ function T.background_wrap_draws_issue_no_new_quads_across_repeats_and_pans()
   while movie:sceneNumber() < 2 do
     movie:updateFixed()
   end
+  -- The newly entered case first runs on the following update: its entry
+  -- programs dispatch there, and the continuous drift advances at once.
+  movie:updateFixed()
   local slot = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(slot.backgrounds.main[0].scrollX, -511, "the base layer lands on its width-minus-one offset")
   Assert.equal(slot.backgrounds.main[0].scrollY, -1, "the base layer lands on its negative-one offset")
@@ -4621,7 +4631,8 @@ function T.background_wrap_draws_issue_no_new_quads_across_repeats_and_pans()
   Assert.equal(slot.backgrounds.main[1].scrollY, 191, "the tall layer lands on its height-minus-one offset")
   Assert.equal(slot.backgrounds.main[2].scrollX, 100000, "the ground layer lands on its huge offset")
   Assert.equal(slot.backgrounds.main[2].scrollY, -100001, "the ground layer lands on its huge negative offset")
-  Assert.equal(slot.backgrounds.sub[0].scrollX, 0, "the sub drift starts at its origin")
+  Assert.equal(slot.backgrounds.sub[0].scrollX, 0, "the sub drift holds its horizontal origin")
+  Assert.equal(slot.backgrounds.sub[0].scrollY, -32, "the sub drift advances on its dispatch update")
   local spriteImages = {}
   for _, clip in ipairs(scenes[2].spriteClips) do
     spriteImages[slot.imageByPath[clip.id]] = true

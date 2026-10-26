@@ -6,7 +6,7 @@ local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v5"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v6"
 local SOURCE_TICK_RATE = 30
 
 local CLOSED_OPS = {
@@ -29,7 +29,6 @@ local CLOSED_OPS = {
   setScreenMapping = true,
   setFade = true,
   waitTicks = true,
-  waitEffects = true,
   enableSkip = true,
   finish = true,
 }
@@ -488,7 +487,7 @@ end
 -- below reads the exact compiled bundles and fails until the producer
 -- emits that contract and the central reader enforces it.
 
-local STRICT_SCHEMA = "g4-startup-opening-scene-v5"
+local STRICT_SCHEMA = "g4-startup-opening-scene-v6"
 
 local function strictManifest(bundle, versionId, sceneNumber)
   local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
@@ -590,13 +589,6 @@ end
 
 local function waitedEffectIds(timeline)
   local waited = {}
-  for _, event in ipairs(timeline.events) do
-    if event.op == "waitEffects" and type(event.effects) == "table" then
-      for _, name in ipairs(event.effects) do
-        waited[#waited + 1] = name
-      end
-    end
-  end
   for _, step in ipairs(timeline.steps) do
     local finish = step["until"]
     if type(finish) == "table" and finish.kind == "effect" then
@@ -1922,20 +1914,31 @@ local function checkScene3SevenWipesWithGates(manifest)
       effects[event.effect] = event
     end
   end
-  local waited = {}
-  for _, event in ipairs(ordered) do
-    if event.op == "waitEffects" and type(event.effects) == "table" then
-      for _, name in ipairs(event.effects) do
-        waited[name] = true
-      end
-    end
+  local guardByStep = {}
+  for _, step in ipairs(manifest.timeline.steps) do
+    guardByStep[step.id] = step["until"]
   end
-  local wipeCount = 0
   for _, event in ipairs(ordered) do
     if event.op == "circleWipe" then
-      wipeCount = wipeCount + 1
-      if wipeCount > 1 then
-        Assert.isTrue(waited[event.effect] ~= true or wipeCount == 7, "scene 3 gates each close before the next wipe")
+      local guard = guardByStep[event.stepId]
+      Assert.notNil(guard, "scene 3 gates step " .. event.stepId .. " on its wipe")
+      if (event.engine == "main" and event.kind == 3) or event.engine == "sub" then
+        -- Each close holds on its own wipe effect, and the rival reveal
+        -- holds on its own wipe, so step order gates the next town beat
+        -- on the finished close and the reveal on the retired town.
+        Assert.equal(
+          guard.effect,
+          event.effect,
+          "scene 3 gates each close and the rival reveal on its own wipe"
+        )
+      else
+        -- Opens carry no wipe guard of their own: the town hold outlasts
+        -- the 8-tick open, and step order gates the close on the open.
+        Assert.equal(
+          guard.kind,
+          "duration",
+          "scene 3 holds each town open on its duration instead of its wipe"
+        )
       end
     end
   end
@@ -2066,13 +2069,128 @@ local function movieTickRateRemainsRetail30Hz(romFs, versionId)
   for sceneNumber = 1, 5 do
     local bundle = compileScene(romFs, versionId, sceneNumber)
     local manifest = strictManifest(bundle, versionId, sceneNumber)
-    Assert.equal(manifest.schema, "g4-startup-opening-scene-v5", "scene " .. sceneNumber .. " carries the v5 schema")
+    Assert.equal(manifest.schema, "g4-startup-opening-scene-v6", "scene " .. sceneNumber .. " carries the v6 schema")
     Assert.equal(manifest.sourceTickRate, 30, "scene " .. sceneNumber .. " runs at the retail 30 Hz tick rate")
   end
   local second = strictManifest(compileScene(romFs, versionId, 2), versionId, 2)
   local wipes = collectEvents(second, "circleWipe", "wipe")
   Assert.equal(#wipes, 1, "scene 2 keeps its single final wipe")
   Assert.equal(wipes[1].ticks, 8, "the 8-tick wipe costs 8 source updates")
+end
+
+-- Case-guard validation: unknown, zero-duration, duplicate, and future-start
+-- waits fail the strict reader, an eventless conjunctive wait passes, and
+-- the old pseudo-wait marker no longer validates.
+local function strictCaseGuardsRejectInvalidWaitsAndAcceptEventlessConjunctions(romFs, versionId)
+  local bundle = compileScene(romFs, versionId, 1)
+  local unknownManifest = deepCopyManifest(bundle.manifest)
+  unknownManifest.timeline.steps[#unknownManifest.timeline.steps + 1] =
+    { id = "bad-unknown", events = {}, ["until"] = { kind = "effect", effect = "no-such-effect" } }
+  local unknownLoaded, unknownErr = strictLoad(versionId, 1, unknownManifest, bundle.files, nil)
+  Assert.isNil(unknownLoaded, "an unknown effect wait never validates")
+  Assert.notNil(unknownErr, "an unknown effect wait reports its cause")
+  local zeroManifest = deepCopyManifest(bundle.manifest)
+  local zeroed = false
+  for _, step in ipairs(zeroManifest.timeline.steps) do
+    if step["until"].kind == "duration" and not zeroed then
+      step["until"].ticks = 0
+      zeroed = true
+    end
+  end
+  Assert.isTrue(zeroed, "scene 1 carries a duration step to empty")
+  local zeroLoaded, zeroErr = strictLoad(versionId, 1, zeroManifest, bundle.files, nil)
+  Assert.isNil(zeroLoaded, "a zero-duration wait never validates")
+  Assert.notNil(zeroErr, "a zero-duration wait reports its cause")
+  local duplicateManifest = deepCopyManifest(bundle.manifest)
+  local lastStep = duplicateManifest.timeline.steps[#duplicateManifest.timeline.steps]
+  lastStep.onCompleteEvents = { duplicateManifest.timeline.steps[1].events[1] }
+  local duplicateLoaded, duplicateErr = strictLoad(versionId, 1, duplicateManifest, bundle.files, nil)
+  Assert.isNil(duplicateLoaded, "an event owned twice never validates")
+  Assert.notNil(duplicateErr, "a duplicate event ownership reports its cause")
+  local futureManifest = deepCopyManifest(bundle.manifest)
+  futureManifest.timeline.steps[1]["until"] = { kind = "effect", effect = "fade-white" }
+  local futureLoaded, futureErr = strictLoad(versionId, 1, futureManifest, bundle.files, nil)
+  Assert.isNil(futureLoaded, "a wait on a later step effect never validates")
+  Assert.notNil(futureErr, "a future-start wait reports its cause")
+  local validManifest = deepCopyManifest(bundle.manifest)
+  validManifest.timeline.steps[#validManifest.timeline.steps + 1] = {
+    id = "tail-guard",
+    events = {},
+    ["until"] = { kind = "effects", effects = { "blend-copyright-main", "fade-white" } },
+  }
+  local validLoaded, validErr = strictLoad(versionId, 1, validManifest, bundle.files, nil)
+  Assert.notNil(validLoaded, "an eventless conjunctive wait validates: " .. tostring(validErr))
+  local pseudoManifest = deepCopyManifest(bundle.manifest)
+  local pseudoStep = pseudoManifest.timeline.steps[1]
+  local pseudoIndex = #pseudoManifest.timeline.events + 1
+  pseudoManifest.timeline.events[pseudoIndex] =
+    { op = "waitEffects", stepId = pseudoStep.id, atStepTick = 0, effects = { "blend-copyright-main" } }
+  pseudoStep.events[#pseudoStep.events + 1] = pseudoIndex
+  local pseudoLoaded, pseudoErr = strictLoad(versionId, 1, pseudoManifest, bundle.files, nil)
+  Assert.isNil(pseudoLoaded, "the pseudo-wait marker never validates")
+  Assert.notNil(pseudoErr, "the pseudo-wait marker reports its cause")
+end
+
+-- Producer structure: all five scenes emit no pseudo-wait marker, every
+-- step carries a duration, single-effect, or conjunctive guard, and every
+-- event is owned exactly once by its own step.
+local function compiledScenesEmitStrictCaseGuardsWithoutPseudoWaits(romFs, versionId)
+  for sceneNumber = 1, 5 do
+    local manifest = strictManifest(compileScene(romFs, versionId, sceneNumber), versionId, sceneNumber)
+    for _, event in ipairs(manifest.timeline.events) do
+      Assert.isTrue(
+        event.op ~= "waitEffects",
+        "scene " .. sceneNumber .. " emits no pseudo-wait marker"
+      )
+    end
+    local owned = {}
+    for _, step in ipairs(manifest.timeline.steps) do
+      local finish = assert(step["until"], "scene " .. sceneNumber .. " step " .. step.id .. " carries its guard")
+      Assert.isTrue(
+        finish.kind == "duration" or finish.kind == "effect" or finish.kind == "effects",
+        "scene " .. sceneNumber .. " step " .. step.id .. " guards on duration, effect, or effects"
+      )
+      if finish.kind == "duration" then
+        Assert.isTrue(
+          type(finish.ticks) == "number" and finish.ticks % 1 == 0 and finish.ticks > 0,
+          "scene " .. sceneNumber .. " step " .. step.id .. " waits a positive duration"
+        )
+      elseif finish.kind == "effect" then
+        Assert.isTrue(
+          type(finish.effect) == "string" and finish.effect ~= "",
+          "scene " .. sceneNumber .. " step " .. step.id .. " names its waited effect"
+        )
+      else
+        Assert.isTrue(
+          type(finish.effects) == "table" and #finish.effects > 0,
+          "scene " .. sceneNumber .. " step " .. step.id .. " names its waited effects"
+        )
+      end
+      local completion = step.onCompleteEvents or {}
+      Assert.isTrue(type(completion) == "table", "scene " .. sceneNumber .. " step " .. step.id .. " owns its completion list")
+      for _, index in ipairs(step.events) do
+        Assert.isNil(owned[index], "scene " .. sceneNumber .. " owns event " .. index .. " once")
+        owned[index] = step.id
+        Assert.equal(
+          manifest.timeline.events[index].stepId,
+          step.id,
+          "scene " .. sceneNumber .. " event " .. index .. " belongs to its step"
+        )
+      end
+      for _, index in ipairs(completion) do
+        Assert.isNil(owned[index], "scene " .. sceneNumber .. " owns completion event " .. index .. " once")
+        owned[index] = step.id
+        Assert.equal(
+          manifest.timeline.events[index].stepId,
+          step.id,
+          "scene " .. sceneNumber .. " completion event " .. index .. " belongs to its step"
+        )
+      end
+    end
+    for index = 1, #manifest.timeline.events do
+      Assert.notNil(owned[index], "scene " .. sceneNumber .. " event " .. index .. " is owned by its step")
+    end
+  end
 end
 
 return RomSuite.fromFacts({
@@ -2095,4 +2213,6 @@ return RomSuite.fromFacts({
   ["pinned native extents reproduce decoded art with pinned wrap edges"] = pinnedNativeExtentsAndWrapEdgeTopology,
   ["pinned scroll blend wipe and fade operands match retail calls"] = pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls,
   ["movie tick rate remains the retail 30 Hz source cadence"] = movieTickRateRemainsRetail30Hz,
+  ["strict case guards reject invalid waits and accept eventless conjunctions"] = strictCaseGuardsRejectInvalidWaitsAndAcceptEventlessConjunctions,
+  ["compiled scenes emit strict case guards without pseudo waits"] = compiledScenesEmitStrictCaseGuardsWithoutPseudoWaits,
 })

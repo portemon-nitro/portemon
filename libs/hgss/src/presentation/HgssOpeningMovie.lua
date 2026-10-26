@@ -133,8 +133,6 @@ end
 ---@field scrolls table<string, table<string, unknown>> live per-slot scroll programs by engine and slot
 ---@field imageExtents table<string, { width: integer, height: integer }> native extents by staged image path
 ---@field effects table<string, table<string, unknown>> started timed and emitter effects by name
----@field programEffects table<string, boolean> effect identities the program starts on some step
----@field programClips table<string, boolean> clip identities the program assigns on some step
 ---@field backgrounds table<string, table<integer, table<string, unknown>>> live layers by source engine and slot
 ---@field spriteInstances table<string, table<string, unknown>> live sprites by instance identity
 ---@field spriteOrder string[] instance identities in appearance order
@@ -230,19 +228,40 @@ local function checkBundleShape(manifest, sceneNumber, versionId, generationId)
       error(invalid("opening scene event carries no source step clock", { scene = sceneNumber }), 0)
     end
   end
+  local ownedOnce = {}
   for _, step in ipairs(timeline.steps) do
-    if type(step) ~= "table" or type(step.id) ~= "string" or type(step.events) ~= "table" or #step.events == 0 then
+    if
+      type(step) ~= "table"
+      or type(step.id) ~= "string"
+      or type(step.events) ~= "table"
+      or (step.onCompleteEvents ~= nil and type(step.onCompleteEvents) ~= "table")
+    then
       error(invalid("opening scene step is malformed", { scene = sceneNumber }), 0)
     end
     local finish = step["until"]
-    if type(finish) ~= "table" or (finish.kind ~= "duration" and finish.kind ~= "effect") then
+    if
+      type(finish) ~= "table"
+      or (finish.kind ~= "duration" and finish.kind ~= "effect" and finish.kind ~= "effects")
+    then
       error(invalid("opening scene step completion is malformed", { scene = sceneNumber }), 0)
     end
+    if finish.kind == "duration" and not (isInteger(finish.ticks) and finish.ticks > 0) then
+      error(invalid("opening scene step carries no source duration", { scene = sceneNumber }), 0)
+    end
+    local completion = step.onCompleteEvents or {}
     for _, index in ipairs(step.events) do
       local owned = timeline.events[index]
-      if not isInteger(index) or owned == nil or owned.stepId ~= step.id then
+      if not isInteger(index) or owned == nil or owned.stepId ~= step.id or ownedOnce[index] ~= nil then
         error(invalid("opening scene step references no owned event", { scene = sceneNumber }), 0)
       end
+      ownedOnce[index] = true
+    end
+    for _, index in ipairs(completion) do
+      local owned = timeline.events[index]
+      if not isInteger(index) or owned == nil or owned.stepId ~= step.id or ownedOnce[index] ~= nil then
+        error(invalid("opening scene step references no owned event", { scene = sceneNumber }), 0)
+      end
+      ownedOnce[index] = true
     end
   end
 end
@@ -535,8 +554,6 @@ local function acquireSlot(self, manifest)
     rng = (manifest.particles.seed or 0) * 131 + manifest.sceneNumber * 7919 + 17,
     scrolls = {},
     effects = {},
-    programEffects = {},
-    programClips = {},
     backgrounds = { main = {}, sub = {} },
     imageExtents = {},
     spriteInstances = {},
@@ -601,20 +618,6 @@ local function acquireSlot(self, manifest)
       slot.clipIds[clip.id] = clip
       if slot.imageByPath[clip.id] == nil then
         acquireImage(slot, self, clip.id)
-      end
-    end
-    -- Waits bind against the whole program, not just the current step:
-    -- an effect or clip the program starts in a later step advances the
-    -- waiting step by zero and orders through the wait, while a name the
-    -- program never starts is invalid. Record every program-bound identity
-    -- so step completion can tell the two apart without guessing.
-    for _, event in ipairs(manifest.timeline.events) do
-      if EFFECT_START_OPS[event.op] == true and type(event.effect) == "string" then
-        slot.programEffects[event.effect] = true
-      elseif event.op == "startEmitters" and type(event.group) == "string" then
-        slot.programEffects["emitters-" .. event.group] = true
-      elseif event.op == "setSpriteClip" and type(event.clipId) == "string" then
-        slot.programClips[event.clipId] = true
       end
     end
     -- Stage each compiled particle texture once per scene acquisition: the
@@ -1191,25 +1194,8 @@ local function applyEvent(self, slot, event)
     startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "waitTicks" then
     -- Duration steps own the wait; the event only marks the authored beat.
-  elseif op == "waitEffects" then
-    -- A wait names a started effect, a compiled clip, or an effect the
-    -- program starts on a later step; anything else never started.
-    for _, name in ipairs(event.effects) do
-      local group = name:match("^emitters%-(.+)$")
-      if group ~= nil then
-        if slot.effects[name] == nil and slot.programEffects[name] ~= true then
-          error(invalid("opening scene waits on emitters that never started", { effect = name }), 0)
-        end
-      elseif slot.effects[name] == nil and slot.clipIds[name] == nil and slot.programEffects[name] ~= true then
-        error(
-          invalid("opening scene effect wait names no started effect", {
-            scene = slot.sceneNumber,
-            effect = name,
-          }),
-          0
-        )
-      end
-    end
+    -- Guards live on the owning step record, so there is no wait-shaped
+    -- event in the grammar.
   elseif op == "enableSkip" then
     if slot.sceneNumber ~= 1 then
       error(invalid("only opening scene 1 opens the movie skip gate", { scene = slot.sceneNumber }), 0)
@@ -1438,6 +1424,57 @@ local function stepStartsEffectLater(slot, step, name)
 end
 
 ---@param slot OpeningMovieSlot scene slot
+---@param step table<string, unknown> active step
+---@param name string awaited effect, emitter group, or compiled clip identity
+---@return boolean true when the named guard has finished its source course
+local function guardDone(slot, step, name)
+  -- One guard resolves against live effect state only: a start the current
+  -- case still means to fire stays open, while a name nothing started is
+  -- invalid. Program-wide registration never counts as completion.
+  local group = name:match("^emitters%-(.+)$")
+  if group ~= nil then
+    if slot.effects[name] ~= nil then
+      return emittersDone(slot, group)
+    end
+  elseif slot.effects[name] ~= nil then
+    return slot.stepElapsed >= stepOwnTicks(slot) and slot.effects[name].done
+  elseif slot.clipIds[name] ~= nil and slot.clipStarts[name] ~= nil then
+    return slot.stepElapsed >= stepOwnTicks(slot) and clipWaitDone(slot, name)
+  end
+  if stepStartsEffectLater(slot, step, name) then
+    return false
+  end
+  if group ~= nil then
+    error(
+      invalid("opening scene waits on emitters that never started", {
+        scene = slot.sceneNumber,
+        step = step.id,
+        group = group,
+      }),
+      0
+    )
+  end
+  if slot.clipIds[name] ~= nil then
+    error(
+      invalid("opening scene waits on a clip that never started", {
+        scene = slot.sceneNumber,
+        step = step.id,
+        effect = name,
+      }),
+      0
+    )
+  end
+  error(
+    invalid("opening scene waits on an effect that never started", {
+      scene = slot.sceneNumber,
+      step = step.id,
+      effect = name,
+    }),
+    0
+  )
+end
+
+---@param slot OpeningMovieSlot scene slot
 ---@return boolean true when the active step has run its source course
 local function stepComplete(slot)
   local steps = slot.manifest.timeline.steps
@@ -1449,67 +1486,36 @@ local function stepComplete(slot)
   if finish.kind == "duration" then
     return slot.stepElapsed >= finish.ticks
   end
-  -- A wait bound to a start the current step still means to fire stays
-  -- open; a wait bound to a start living on a later step advances by zero
-  -- so that later step can start it; a name the program never binds is
-  -- invalid and never counts as complete.
-  local name = finish.effect
-  local group = name:match("^emitters%-(.+)$")
-  if group ~= nil then
-    if slot.effects[name] ~= nil then
-      return emittersDone(slot, group)
-    end
-    if stepStartsEffectLater(slot, step, name) then
+  if finish.kind == "effect" then
+    return guardDone(slot, step, finish.effect)
+  end
+  -- A conjunctive guard waits for the later completion: every named live
+  -- effect must finish before the case completes.
+  for _, name in ipairs(finish.effects) do
+    if not guardDone(slot, step, name) then
       return false
     end
-    if slot.programEffects[name] == true then
-      return true
+  end
+  return true
+end
+
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot
+local function applyCompletionEvents(self, slot)
+  -- Guarded actions belong to the case whose predicate just passed: they
+  -- fire once inside that same source case, before any successor runs.
+  local steps = slot.manifest.timeline.steps
+  local events = slot.manifest.timeline.events
+  local step = steps[slot.stepIndex]
+  if step == nil then
+    return
+  end
+  for _, index in ipairs(step.onCompleteEvents or {}) do
+    if not slot.applied[index] then
+      slot.applied[index] = true
+      applyEvent(self, slot, events[index])
     end
-    error(
-      invalid("opening scene waits on emitters that never started", {
-        scene = slot.sceneNumber,
-        step = step.id,
-        group = group,
-      }),
-      0
-    )
   end
-  if slot.effects[name] ~= nil then
-    return slot.stepElapsed >= stepOwnTicks(slot) and slot.effects[name].done
-  end
-  if slot.clipIds[name] ~= nil then
-    if slot.clipStarts[name] == nil then
-      if stepStartsEffectLater(slot, step, name) then
-        return false
-      end
-      if slot.programClips[name] ~= true then
-        error(
-          invalid("opening scene waits on a clip that never started", {
-            scene = slot.sceneNumber,
-            step = step.id,
-            effect = name,
-          }),
-          0
-        )
-      end
-      return true
-    end
-    return slot.stepElapsed >= stepOwnTicks(slot) and clipWaitDone(slot, name)
-  end
-  if stepStartsEffectLater(slot, step, name) then
-    return false
-  end
-  if slot.programEffects[name] == true then
-    return true
-  end
-  error(
-    invalid("opening scene waits on an effect that never started", {
-      scene = slot.sceneNumber,
-      step = step.id,
-      effect = name,
-    }),
-    0
-  )
 end
 
 ---@param self HgssOpeningMovie
@@ -1537,12 +1543,9 @@ local function finishCurrentScene(self)
   self.currentIndex = self.currentIndex + 1
   self.current = replacement
   self.pendingFinish = false
-  -- The incoming scene's first source step is already due: immediate
-  -- placements land before its first render and its scroll programs
-  -- start from the staged origins. Prefetched and transient slots never
-  -- apply early, so their tick-zero programs cannot leak movie-level
-  -- effects into the still-playing scene.
-  applyDueEvents(self, self.current)
+  -- The incoming scene first runs on the following fixed update: its clock
+  -- stays at zero and no entry event fires on the finishing update, so the
+  -- scene boundary separates the two source dispatches.
   releaseSlot(old)
 end
 
@@ -1890,25 +1893,22 @@ function HgssOpeningMovie:updateFixed()
   slot.stepElapsed = slot.stepElapsed + 1
   applyDueEvents(self, slot)
   advanceContinuous(slot)
-  local guard = 0
-  while not self.finished do
-    guard = guard + 1
-    assert(guard < 4096, "opening movie step cascade cannot settle")
-    if not stepComplete(slot) then
-      break
-    end
-    if self.pendingFinish then
-      finishCurrentScene(self)
-      break
-    end
-    local steps = slot.manifest.timeline.steps
-    slot.stepIndex = slot.stepIndex + 1
-    slot.stepElapsed = 0
-    if slot.stepIndex > #steps then
-      finishCurrentScene(self)
-      break
-    end
-    applyDueEvents(self, slot)
+  -- One source case per fixed update: a completed case runs its guarded
+  -- actions and selects its successor without dispatching it, so the next
+  -- case (or the next scene entry) first runs on the following update.
+  if not stepComplete(slot) then
+    return
+  end
+  applyCompletionEvents(self, slot)
+  if self.pendingFinish then
+    finishCurrentScene(self)
+    return
+  end
+  local steps = slot.manifest.timeline.steps
+  slot.stepIndex = slot.stepIndex + 1
+  slot.stepElapsed = 0
+  if slot.stepIndex > #steps then
+    finishCurrentScene(self)
   end
 end
 

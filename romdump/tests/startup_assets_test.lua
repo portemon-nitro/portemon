@@ -1282,7 +1282,7 @@ end
 -- fixtures build on the current contract instead.
 local OPENING_SCHEMA = "g4-startup-opening-scene-v3"
 
-local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v5"
+local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v6"
 
 local function openingLayer(engine, bgSlot, image)
   return {
@@ -1335,7 +1335,17 @@ local function openingEvents(sceneNumber, root)
         visible = true,
         priority = 0,
       },
-      { op = "setBlend", stepId = "fades", atStepTick = 0, effect = "blend-copyright", ticks = 60, from = 32, to = 31 },
+      {
+        op = "setBlend",
+        stepId = "fades",
+        atStepTick = 0,
+        engine = "main",
+        firstMask = 1,
+        secondMask = 32,
+        direction = 1,
+        ticks = 60,
+        effect = "blend-copyright",
+      },
       { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 20 },
       { op = "enableSkip", stepId = "setup", atStepTick = 20 },
       { op = "waitTicks", stepId = "logo", atStepTick = 0, ticks = 110 },
@@ -1366,22 +1376,31 @@ local function openingEvents(sceneNumber, root)
   elseif sceneNumber == 5 then
     return {
       { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "lower" },
-      { op = "circleWipe", stepId = "wipe", atStepTick = 0, mode = "in", ticks = 18, effect = "wipe-in" },
-      { op = "waitEffects", stepId = "scroll", atStepTick = 0, effects = { "wipe-in" } },
+      {
+        op = "shutterFade",
+        stepId = "wipe",
+        atStepTick = 0,
+        order = "main-then-sub",
+        mainPattern = "center-out",
+        subPattern = "bottom-up",
+        color = "black",
+        steps = 18,
+        framesPerStep = 1,
+        effect = "scene5-shutter",
+      },
       {
         op = "setScroll",
         stepId = "scroll",
         atStepTick = 0,
         engine = "main",
-        bgSlot = 1,
+        bgSlot = 0,
         dx = 0,
         dy = -64,
         ticks = 73,
-        direction = "up",
+        effect = "scroll-panorama",
       },
       { op = "waitTicks", stepId = "wait", atStepTick = 0, ticks = 20 },
-      { op = "setFade", stepId = "fade", atStepTick = 0, kind = "white", ticks = 50, effect = "fade-white" },
-      { op = "waitEffects", stepId = "fade", atStepTick = 0, effects = { "fade-white" } },
+      { op = "setFade", stepId = "wait", atStepTick = 20, kind = "white", ticks = 50, effect = "fade-white" },
       { op = "finish", stepId = "fade", atStepTick = 0 },
     }
   end
@@ -1412,9 +1431,9 @@ local function openingSteps(sceneNumber)
   elseif sceneNumber == 5 then
     return {
       { id = "wipe", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 18 } },
-      { id = "scroll", events = { 3, 4 }, ["until"] = { kind = "duration", ticks = 73 } },
-      { id = "wait", events = { 5 }, ["until"] = { kind = "duration", ticks = 20 } },
-      { id = "fade", events = { 6, 7, 8 }, ["until"] = { kind = "effect", effect = "fade-white" } },
+      { id = "scroll", events = {}, onCompleteEvents = { 3 }, ["until"] = { kind = "effect", effect = "scene5-shutter" } },
+      { id = "wait", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 20 } },
+      { id = "fade", events = {}, onCompleteEvents = { 6 }, ["until"] = { kind = "effect", effect = "fade-white" } },
     }
   end
   return { { id = "open", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 10 } } }
@@ -1463,43 +1482,11 @@ end
 
 -- A complete synthetic opening scene in the current shape: the legacy
 -- record above only covers the retired grammar, so current-contract checks
--- build from it and repair the blend and wipe operands that changed.
+-- build from the consistent step-guard timelines above under the current
+-- schema.
 local function validCurrentOpeningManifest(sceneNumber, versionId)
   local manifest = validOpeningManifest(sceneNumber, versionId)
   manifest.schema = CURRENT_OPENING_SCHEMA
-  if sceneNumber == 1 then
-    manifest.timeline.events[4] = {
-      op = "setBlend",
-      stepId = "fades",
-      atStepTick = 0,
-      engine = "main",
-      firstMask = 1,
-      secondMask = 32,
-      direction = 1,
-      ticks = 60,
-      effect = "blend-copyright",
-    }
-  elseif sceneNumber == 5 then
-    manifest.timeline.events[2] = {
-      op = "shutterFade",
-      stepId = "wipe",
-      atStepTick = 0,
-      order = "main-then-sub",
-      mainPattern = "center-out",
-      subPattern = "bottom-up",
-      color = "black",
-      steps = 18,
-      framesPerStep = 1,
-      effect = "scene5-shutter",
-    }
-    manifest.timeline.events[3] = {
-      op = "waitEffects",
-      stepId = "scroll",
-      atStepTick = 0,
-      effects = { "scene5-shutter" },
-    }
-    manifest.timeline.events[4].direction = nil
-  end
   return manifest
 end
 
@@ -1600,12 +1587,7 @@ function T.opening_scene_reader_enforces_the_strict_versioned_contract()
   Assert.isNil(staleRead, "a legacy scene record never validates")
   Assert.notNil(staleErr, "the stale schema reports its cause")
   local unstarted = deepCopy(manifest)
-  unstarted.timeline.events[1] = {
-    op = "waitEffects",
-    stepId = "copyright",
-    atStepTick = 0,
-    effects = { "no-such-effect" },
-  }
+  unstarted.timeline.steps[1]["until"] = { kind = "effect", effect = "no-such-effect" }
   local badWait, badWaitErr = StartupAssetCache.loadOpeningScene(openingCacheFs(unstarted, nil), 1, "heartgold")
   Assert.isNil(badWait, "an effect wait on nothing started never validates")
   Assert.notNil(badWaitErr, "the unstarted wait reports its cause")
@@ -1903,7 +1885,7 @@ end
 -- engine-local window records with plane masks, a town-stage stop limited to
 -- the town scene, and manual window overrides. These synthetic fixtures pin
 -- the strict reader contract without touching a ROM.
-local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v5"
+local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v6"
 
 local function openingLayerV3(engine, bgSlot, image, visible)
   return {
@@ -2139,7 +2121,7 @@ end
 -- The generated opening scene identity the producer and the strict reader
 -- agree on: full native surfaces with per-image extents, instant and
 -- continuous scroll modes, and per-engine blend and wipe operands.
-local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v5"
+local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v6"
 
 local function typedOpeningManifest()
   local manifest = validOpeningManifest(1, "heartgold")
@@ -2149,17 +2131,6 @@ local function typedOpeningManifest()
     { image = root .. "/main-bg-alt.png", width = 512, height = 512 },
   }
   manifest.assets[root .. "/main-bg-alt.png"] = true
-  manifest.timeline.events[4] = {
-    op = "setBlend",
-    stepId = "fades",
-    atStepTick = 0,
-    engine = "main",
-    firstMask = 1,
-    secondMask = 32,
-    direction = 1,
-    ticks = 60,
-    effect = "blend-copyright",
-  }
   local function appendLogoEvent(event)
     manifest.timeline.events[#manifest.timeline.events + 1] = event
     local steps = manifest.timeline.steps
