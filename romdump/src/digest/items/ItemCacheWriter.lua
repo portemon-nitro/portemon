@@ -8,7 +8,8 @@
 -- and any other derived class are never touched.
 
 local Errors = require("libs.errors.src.Errors")
-local PngWriter = require("romdump.src.digest.PngEncoder")
+local PngEncoder = require("romdump.src.digest.PngEncoder")
+local PngWriter = require("libs.assets.src.PngWriter")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
@@ -74,32 +75,12 @@ local function checkBundle(bundle)
     fail("ITEM_WRITER_HASH_MISMATCH", "index catalog hash does not match the catalog", {})
   end
   checkImage(bundle.icons, {}, "ITEM_WRITER_BAD_IMAGE", "icons")
-  local iconPng = PngWriter.encode(bundle.icons.width, bundle.icons.height, bundle.icons.pixels)
+  local iconPng = PngEncoder.encode(bundle.icons.width, bundle.icons.height, bundle.icons.pixels)
   if Hashing.sha1hex(iconPng) ~= bundle.index.iconHash then
     fail("ITEM_WRITER_HASH_MISMATCH", "index icon hash does not match the atlas", {})
   end
   checkRectsInBounds(bundle.iconManifest, bundle.icons, {}, "ITEM_WRITER_RECT_OUT_OF_BOUNDS", "icon")
   return iconPng
-end
-
--- Read one PNG's IHDR dimensions back without a PNG decoder: signature plus
--- the width/height words must match the staged image.
-local function probePngDimensions(png, context)
-  if #png < 33 or png:sub(1, 8) ~= "\137PNG\r\n\26\n" then
-    fail("ITEM_WRITER_PNG_UNREADABLE", "staged atlas is not a PNG", context)
-  end
-  if png:sub(13, 16) ~= "IHDR" then
-    fail("ITEM_WRITER_PNG_UNREADABLE", "staged atlas has no IHDR", context)
-  end
-  local width = 0
-  for i = 17, 20 do
-    width = width * 256 + string.byte(png, i)
-  end
-  local height = 0
-  for i = 21, 24 do
-    height = height * 256 + string.byte(png, i)
-  end
-  return width, height
 end
 
 local function persist(tx, bundle, iconPng)
@@ -117,7 +98,7 @@ local function persist(tx, bundle, iconPng)
   local iconManifest = stage:loadLua(ItemCache.iconManifestPath())
   ItemAssetSchema.assertIconManifest(iconManifest)
   ItemAssetSchema.assertCatalogIcons(catalog, iconManifest)
-  local iconWidth, iconHeight = probePngDimensions(assert(stage:read(ItemCache.iconImagePath())), {})
+  local iconWidth, iconHeight = PngWriter.completeDimensions(assert(stage:read(ItemCache.iconImagePath())))
   if iconWidth ~= bundle.icons.width or iconHeight ~= bundle.icons.height then
     fail("ITEM_WRITER_PNG_UNREADABLE", "staged icon atlas dimensions mismatch", {})
   end

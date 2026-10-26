@@ -549,7 +549,7 @@ function BattlePresentationCache.isReady(cacheFs, demand)
       return false
     end
     local bytes = cacheFs:read(BattlePresentationCache.sceneImagePath(sceneKey))
-    local imageWidth, imageHeight = PngWriter.dimensions(bytes)
+    local imageWidth, imageHeight = PngWriter.completeDimensions(bytes)
     if
       imageWidth ~= record.canvasWidth
       or imageHeight ~= record.canvasHeight
@@ -609,7 +609,7 @@ function BattlePresentationCache.isSceneReady(cacheFs, sceneKey, expectedMarker)
     return false
   end
   local bytes = cacheFs:read(BattlePresentationCache.sceneImagePath(sceneKey))
-  local imageWidth, imageHeight = PngWriter.dimensions(bytes)
+  local imageWidth, imageHeight = PngWriter.completeDimensions(bytes)
   return imageWidth == record.canvasWidth
     and imageHeight == record.canvasHeight
     and hasSceneLayerClosure(cacheFs, record)

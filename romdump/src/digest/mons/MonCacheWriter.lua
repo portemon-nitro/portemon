@@ -9,7 +9,8 @@
 -- only through their own staging; no whole-corpus pixel array is retained.
 
 local Errors = require("libs.errors.src.Errors")
-local PngWriter = require("romdump.src.digest.PngEncoder")
+local PngEncoder = require("romdump.src.digest.PngEncoder")
+local PngWriter = require("libs.assets.src.PngWriter")
 local MonCache = require("libs.assets.src.MonCache")
 local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 local Validate = require("libs.assets.src.Validate")
@@ -643,32 +644,13 @@ local function checkPageBundle(bundle)
   return bundle --[[@as { kind: "icons"|"portraits", pageId: integer, width: integer, height: integer, pixels: string, marker: string }]]
 end
 
--- Read one PNG's IHDR dimensions back without a PNG decoder: signature plus
--- the width/height words must match the staged image.
-local function probePngDimensions(png, context)
-  if #png < 33 or png:sub(1, 8) ~= "\137PNG\r\n\26\n" then
-    fail("MON_WRITER_PNG_UNREADABLE", "staged page is not a PNG", context)
-  end
-  if png:sub(13, 16) ~= "IHDR" then
-    fail("MON_WRITER_PNG_UNREADABLE", "staged page has no IHDR", context)
-  end
-  local width = 0
-  for i = 17, 20 do
-    width = width * 256 + string.byte(png, i)
-  end
-  local height = 0
-  for i = 21, 24 do
-    height = height * 256 + string.byte(png, i)
-  end
-  return width, height
-end
-
 local function persistPage(stage, bundle)
   local owned = checkPageBundle(bundle)
-  local png = PngWriter.encode(owned.width, owned.height, owned.pixels)
+  local png = PngEncoder.encode(owned.width, owned.height, owned.pixels)
   stage:write(MonCache.pageImagePath(owned.kind, owned.pageId), png)
   stage:write(MonCache.pageMarkerPath(owned.kind, owned.pageId), owned.marker)
-  local width, height = probePngDimensions(assert(stage:read(MonCache.pageImagePath(owned.kind, owned.pageId))), {})
+  local width, height =
+    PngWriter.completeDimensions(assert(stage:read(MonCache.pageImagePath(owned.kind, owned.pageId))))
   if width ~= owned.width or height ~= owned.height then
     fail("MON_WRITER_PNG_UNREADABLE", "staged page dimensions mismatch", {})
   end

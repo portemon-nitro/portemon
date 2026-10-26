@@ -25,6 +25,6 @@ function PngEncoder.encode(width, height, rgba)
 end
 
 PngEncoder.validateDimensions = PngWriter.validateDimensions
-PngEncoder.dimensions = PngWriter.dimensions
+PngEncoder.completeDimensions = PngWriter.completeDimensions
 
 return PngEncoder

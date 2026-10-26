@@ -639,6 +639,12 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
       end
       return cacheFs:read(path)
     end
+    function view.exists(_, path, expectedType)
+      if not revealed and path == imagePath then
+        return false
+      end
+      return cacheFs:exists(path, expectedType)
+    end
     -- The session image owner resolves paths exactly like the versioned
     -- cache: the hiding view delegates confinement while still hiding the
     -- pending global/scene bytes above.

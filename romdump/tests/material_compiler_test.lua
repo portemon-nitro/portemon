@@ -19,7 +19,7 @@ local T = {}
 -- texture extent and decode through the standard image pipeline.
 local function assertFinalPng(asset, width, height)
   local bytes = ffi.string(asset.data:getFFIPointer(), asset.data:getSize())
-  local imageWidth, imageHeight = PngWriter.dimensions(bytes)
+  local imageWidth, imageHeight = PngWriter.completeDimensions(bytes)
   Assert.equal(imageWidth, width, "staged texture width")
   Assert.equal(imageHeight, height, "staged texture height")
   local image = love.image.newImageData(love.filesystem.newFileData(bytes, "texture.png"))

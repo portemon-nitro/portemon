@@ -242,8 +242,37 @@ function T.fully_staged_demands_read_ready_and_breakages_do_not()
     )
   )
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "a fully staged demand reads ready")
+  local stagedScene = assert(
+    cache:read(BattlePresentationCache.sceneImagePath("general/grass/day")),
+    "the staged scene image is available"
+  )
   cache:write(BattlePresentationCache.sceneImagePath("general/grass/day"), "truncated")
   Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a corrupted scene image never reads as ready")
+  cache:write(BattlePresentationCache.sceneImagePath("general/grass/day"), stagedScene:sub(1, 33))
+  Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a header-only scene image never reads as ready")
+  Assert.isFalse(
+    BattlePresentationCache.isSceneReady(cache, "general/grass/day", "marker"),
+    "a header-only scene audit never reads as ready"
+  )
+  cache:write(
+    BattlePresentationCache.sceneImagePath("general/grass/day"),
+    stagedScene:sub(1, #stagedScene - 12)
+  )
+  Assert.isFalse(
+    BattlePresentationCache.isReady(cache, demand),
+    "a scene image without its terminal marker never reads as ready"
+  )
+  Assert.isFalse(
+    BattlePresentationCache.isSceneReady(cache, "general/grass/day", "marker"),
+    "a scene audit without its terminal marker never reads as ready"
+  )
+  cache:write(
+    BattlePresentationCache.sceneImagePath("general/grass/day"),
+    PngWriter.encode(256, 128, string.rep("\1\2\3\255", 256 * 128))
+  )
+  Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a wrongly sized scene image never reads as ready")
+  cache:write(BattlePresentationCache.sceneImagePath("general/grass/day"), stagedScene)
+  Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "a restored complete scene reads ready again")
   stageBattle(cache, manifest, "general/grass/day")
   cache:writeLua(BattlePresentationCache.sceneMapPath("general/grass/day"), {
     width = 512,

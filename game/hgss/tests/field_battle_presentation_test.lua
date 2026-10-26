@@ -1329,7 +1329,6 @@ end
 -- once the host reports ready and the staged bytes validate. Nothing
 -- paints a blank success and nothing fails before the build settles.
 function T.cold_scene_demand_waits_then_enters_once_staged()
-  local PngWriter = require("tests.support.PngEncoder")
   local sceneKey = "general/plain/day"
   local recordPath = BattlePresentationCache.scenePath(sceneKey)
   local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)
@@ -1380,8 +1379,8 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       },
       imagePath = imagePath,
     }
-    local stagedBytes = PngWriter.encode(512, 256, string.rep(string.char(9, 9, 9, 255), 512 * 256))
     local revealed = false
+    local imageStaged = false
     local view = { versionId = cacheFs.versionId }
     function view.loadLua(_, path)
       if path == recordPath then
@@ -1397,12 +1396,20 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
     end
     function view.read(_, path)
       if path == imagePath then
-        return revealed and stagedBytes or nil
+        -- Readiness never interprets scene pixels: presence alone answers
+        -- through exists, so staged bytes stay out of this channel.
+        return nil
       end
       if path == charactersPath then
         return revealed and string.rep("c", 65536) or nil
       end
       return cacheFs:read(path)
+    end
+    function view.exists(_, path, expectedType)
+      if path == imagePath then
+        return imageStaged
+      end
+      return cacheFs:exists(path, expectedType)
     end
     local asked = {}
     local answer = { ready = nil, failure = nil }
@@ -1438,7 +1445,31 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
     Assert.equal(asked[1].urgency, "required", versionId .. " demands its scene urgently")
     answer.ready = true
     revealed = true
+    imageStaged = true
     Assert.isTrue(services.prepare(demand()), versionId .. " enters once the staged scene validates")
+    imageStaged = false
+    local missing, missingErr = services.prepare(demand())
+    Assert.isNil(missing, versionId .. " never reads ready with its staged pixels absent")
+    Assert.isTrue(
+      type(missingErr) == "string" and missingErr:find(sceneKey, 1, true) ~= nil,
+      versionId .. " names its absent scene image: " .. tostring(missingErr)
+    )
+    local hostless = FieldBattlePresentation.new({
+      cacheFs = view,
+      windows = recordingWindows(),
+      text = recordingText(),
+      measureDisplay = function()
+        return dualMeasurement("cold-scene:dual")
+      end,
+      graphics = {},
+    })
+    local hostlessFailed, hostlessErr = hostless:_preparationServices().prepare(demand())
+    Assert.isNil(hostlessFailed, versionId .. " never reads ready without a scene demand host")
+    Assert.isTrue(
+      type(hostlessErr) == "string" and hostlessErr:find("no scene demand host", 1, true) ~= nil,
+      versionId .. " names the missing scene demand host: " .. tostring(hostlessErr)
+    )
+    hostless:dispose()
     envelope:dispose()
   end
 end
@@ -1465,6 +1496,12 @@ function T.scene_host_failure_fails_closed_naming_its_scene()
         return nil
       end
       return cacheFs:read(path)
+    end
+    function view.exists(_, path, expectedType)
+      if path == imagePath then
+        return false
+      end
+      return cacheFs:exists(path, expectedType)
     end
     local asked = 0
     local derivedAssets = {}

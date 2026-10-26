@@ -14,7 +14,7 @@ local PngWriter = {}
 
 ---@class PngWriter
 ---@field encode fun(width: integer, height: integer, rgba: string, compressZlib: fun(raw: string): string): string
----@field dimensions fun(png: string?): integer?, integer?
+---@field completeDimensions fun(png: string?): integer?, integer?
 ---@field validateDimensions fun(width: integer, height: integer)
 
 local CRC_TABLE = {}
@@ -79,24 +79,84 @@ function PngWriter.validateDimensions(width, height)
   end
 end
 
+-- Minimum structural envelope for a standalone PNG (file structure and
+-- chunks): signature, one IHDR, at least one IDAT byte, and a terminal IEND
+-- with nothing after it. This rejects empty and truncated bodies without
+-- decoding pixels or allocating host image resources, and never verifies
+-- CRCs or compressed payloads.
+local MAX_PNG_DIMENSION = 2147483647
+
+---@param bytes string
+---@param position integer 1-based offset of a 4-byte big-endian length
+---@return integer
+local function readU32(bytes, position)
+  local a, b, c, d = string.byte(bytes, position, position + 3)
+  assert(a ~= nil and b ~= nil and c ~= nil and d ~= nil, "chunk header must be present")
+  return ((a * 256 + b) * 256 + c) * 256 + d
+end
+
 ---@param png string? staged bytes
----@return integer? width image width, nil unless the IHDR geometry parses
----@return integer? height image height, nil unless the IHDR geometry parses
-function PngWriter.dimensions(png)
-  if type(png) ~= "string" or #png < 33 then
-    return nil
+---@return integer? width image width, only for a structurally complete envelope
+---@return integer? height image height, only for a structurally complete envelope
+function PngWriter.completeDimensions(png)
+  if type(png) ~= "string" then
+    return nil, nil
   end
-  if png:sub(1, 8) ~= SIGNATURE then
-    return nil
+  if #png < 8 or png:sub(1, 8) ~= SIGNATURE then
+    return nil, nil
   end
-  local a, b, c, d = png:byte(9, 12)
-  local length = ((a * 256 + b) * 256 + c) * 256 + d
-  if length ~= 13 or png:sub(13, 16) ~= "IHDR" then
-    return nil
+  local cursor = 9
+  if cursor + 8 - 1 > #png then
+    return nil, nil
   end
-  local w1, w2, w3, w4 = png:byte(17, 20)
-  local h1, h2, h3, h4 = png:byte(21, 24)
-  return ((w1 * 256 + w2) * 256 + w3) * 256 + w4, ((h1 * 256 + h2) * 256 + h3) * 256 + h4
+  if png:sub(cursor + 4, cursor + 7) ~= "IHDR" then
+    return nil, nil
+  end
+  if readU32(png, cursor) ~= 13 then
+    return nil, nil
+  end
+  if cursor + 8 + 13 + 4 - 1 > #png then
+    return nil, nil
+  end
+  local width = readU32(png, cursor + 8)
+  local height = readU32(png, cursor + 12)
+  if width < 1 or height < 1 or width > MAX_PNG_DIMENSION or height > MAX_PNG_DIMENSION then
+    return nil, nil
+  end
+  cursor = cursor + 8 + 13 + 4
+  local seenIdat = false
+  local idatTotal = 0
+  while true do
+    if cursor + 8 - 1 > #png then
+      return nil, nil
+    end
+    local length = readU32(png, cursor)
+    local chunkType = png:sub(cursor + 4, cursor + 7)
+    if length > MAX_PNG_DIMENSION then
+      return nil, nil
+    end
+    if cursor + 8 + length + 4 - 1 > #png then
+      return nil, nil
+    end
+    if chunkType == "IHDR" then
+      return nil, nil
+    elseif chunkType == "IDAT" then
+      seenIdat = true
+      idatTotal = idatTotal + length
+    elseif chunkType == "IEND" then
+      if length ~= 0 then
+        return nil, nil
+      end
+      if not seenIdat or idatTotal <= 0 then
+        return nil, nil
+      end
+      if cursor + 8 + length + 4 - 1 ~= #png then
+        return nil, nil
+      end
+      return width, height
+    end
+    cursor = cursor + 8 + length + 4
+  end
 end
 
 ---@param width integer

@@ -15,7 +15,6 @@ local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
 local MonCache = require("libs.assets.src.MonCache")
-local PngWriter = require("libs.assets.src.PngWriter")
 local BattleEncounterTransition = require("libs.hgss.src.transition.BattleEncounterTransition")
 local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
 local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFamilyFactory")
@@ -942,9 +941,7 @@ function FieldBattlePresentation:_preparationServices()
           end
           return nil, "battle scene " .. tostring(sceneKey) .. ": " .. cause
         end
-        local bytes = cacheFs:read(BattlePresentationCache.sceneImagePath(sceneKey))
-        local imageWidth, imageHeight = PngWriter.dimensions(bytes)
-        if imageWidth ~= record.canvasWidth or imageHeight ~= record.canvasHeight then
+        if not cacheFs:exists(BattlePresentationCache.sceneImagePath(sceneKey), "file") then
           if not scheduled then
             return nil,
               "battle scene image is not staged: " .. tostring(sceneKey) .. ": no scene demand host to schedule it"

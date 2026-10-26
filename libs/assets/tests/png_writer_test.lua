@@ -209,13 +209,31 @@ function T.falls_back_to_lossless_rgba_beyond_256_colors()
   Assert.equal(decoded.pixels, pixels, "fallback pixels survive exactly")
 end
 
-function T.dimensions_reports_staged_image_extents()
+function T.complete_envelope_reports_dimensions_only_for_whole_images()
   local png = PngEncoder.encode(3, 2, string.rep(px(9, 9, 9, 255), 3 * 2))
-  local width, height = PngWriter.dimensions(png)
+  local width, height = PngWriter.completeDimensions(png)
   Assert.equal(width, 3, "staged width")
   Assert.equal(height, 2, "staged height")
-  Assert.isNil(PngWriter.dimensions("not a png"), "garbage has no dimensions")
-  Assert.isNil(PngWriter.dimensions(png:sub(1, 20)), "truncated headers have no dimensions")
+  Assert.isNil(PngWriter.completeDimensions("not a png"), "garbage has no dimensions")
+  Assert.isNil(PngWriter.completeDimensions(png:sub(1, 20)), "truncated headers have no dimensions")
+  local headerWidth, headerHeight = PngWriter.completeDimensions(png:sub(1, 33))
+  Assert.isNil(headerWidth, "a header-only prefix reports no width")
+  Assert.isNil(headerHeight, "a header-only prefix reports no height")
+  Assert.isNil(
+    PngWriter.completeDimensions(png:sub(1, #png - 12)),
+    "an image without its terminal marker is incomplete"
+  )
+  Assert.isNil(PngWriter.completeDimensions(png .. "junk"), "trailing bytes after the terminal marker are incomplete")
+  local duplicated = png:sub(1, 33) .. png:sub(9, 33) .. png:sub(34)
+  Assert.isNil(PngWriter.completeDimensions(duplicated), "a repeated header chunk is incomplete")
+  local wide = {}
+  for i = 0, 256 do
+    wide[#wide + 1] = px(i % 256, math.floor(i / 256), 77, 255)
+  end
+  local fallbackWidth, fallbackHeight =
+    PngWriter.completeDimensions(PngEncoder.encode(257, 1, table.concat(wide)))
+  Assert.equal(fallbackWidth, 257, "a complete truecolor image reports its width")
+  Assert.equal(fallbackHeight, 1, "a complete truecolor image reports its height")
 end
 
 return { tests = T }
