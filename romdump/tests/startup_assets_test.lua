@@ -1282,7 +1282,7 @@ end
 -- fixtures build on the current contract instead.
 local OPENING_SCHEMA = "g4-startup-opening-scene-v3"
 
-local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v7"
+local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v8"
 
 local function openingLayer(engine, bgSlot, image)
   return {
@@ -1451,6 +1451,59 @@ local function openingSteps(sceneNumber)
   return { { id = "open", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 10 } } }
 end
 
+local function openingEmitter(id, group)
+  return {
+    id = id,
+    group = group,
+    emitterLife = 30,
+    particleLife = 30,
+    startOffset = 0,
+    generation = { countFx = 8192, interval = 1 },
+    initPosType = 2,
+    circleAxis = 0,
+    drawType = 0,
+    radius = 0.5,
+    length = 0,
+    position = { x = 0, y = 0, z = 0 },
+    axis = { x = 0, y = 1, z = 0 },
+    baseColorRgb = { r = 31, g = 31, b = 31 },
+    baseAlpha = 31,
+    baseScaleFx = 4096,
+    velocityFx = { pos = 819, axis = 0 },
+    velRandom = 0,
+    scaleRandom = 0,
+    lifeRandom = 0,
+    rotation = { min = 0, max = 0 },
+    useRotationAnim = false,
+    useInitRotationRandom = false,
+    initRotation = 0,
+    airResist = 128,
+    aspect = 1.0,
+    loopFrame = 1,
+    dbbScale = 0,
+    sclAnmDirect = 0,
+    texRepeat = { s = 0, t = 0 },
+    texture = 0,
+    textureImage = "assets/generated/startup/opening/4/particles/texture0.png",
+    animations = {},
+    child = nil,
+    fields = {},
+  }
+end
+
+local function nineOpeningEmitters()
+  local groups = { "water", "water", "water", "fire", "fire", "fire", "grass", "grass", "grass" }
+  local emitters = {}
+  for id = 0, 8 do
+    emitters[#emitters + 1] = openingEmitter(id, groups[id + 1])
+  end
+  return emitters
+end
+
+-- A complete synthetic opening scene in the current shape: the legacy
+
+-- record above only covers the retired grammar, so current-contract checks
+
 local function validOpeningManifest(sceneNumber, versionId)
   local root = "assets/generated/startup/opening/" .. tostring(sceneNumber)
   local manifest = {
@@ -1476,24 +1529,16 @@ local function validOpeningManifest(sceneNumber, versionId)
   if sceneNumber == 4 then
     manifest.particles = {
       seed = 0,
-      emitters = {
-        { id = 0, group = "water" },
-        { id = 1, group = "water" },
-        { id = 2, group = "water" },
-        { id = 3, group = "fire" },
-        { id = 4, group = "fire" },
-        { id = 5, group = "fire" },
-        { id = 6, group = "grass" },
-        { id = 7, group = "grass" },
-        { id = 8, group = "grass" },
-      },
+      emitters = nineOpeningEmitters(),
     }
   end
   return manifest
 end
 
--- A complete synthetic opening scene in the current shape: the legacy
--- record above only covers the retired grammar, so current-contract checks
+
+-- A strict synthetic starter emitter in the current normalized shape: the
+-- reader validates every staged animation, motion, and field value, so
+-- fixtures carry the full record, never a bare identity.
 -- build from the consistent step-guard timelines above under the current
 -- schema.
 local function validCurrentOpeningManifest(sceneNumber, versionId)
@@ -1897,7 +1942,7 @@ end
 -- engine-local window records with plane masks, a town-stage stop limited to
 -- the town scene, and manual window overrides. These synthetic fixtures pin
 -- the strict reader contract without touching a ROM.
-local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v7"
+local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v8"
 
 local function openingLayerV3(engine, bgSlot, image, visible)
   return {
@@ -2016,17 +2061,7 @@ function T.opening_scene_reader_accepts_engine_window_records()
   local manifest = validOpeningManifestV3(4, "heartgold")
   manifest.particles = {
     seed = 0,
-    emitters = {
-      { id = 0, group = "water" },
-      { id = 1, group = "water" },
-      { id = 2, group = "water" },
-      { id = 3, group = "fire" },
-      { id = 4, group = "fire" },
-      { id = 5, group = "fire" },
-      { id = 6, group = "grass" },
-      { id = 7, group = "grass" },
-      { id = 8, group = "grass" },
-    },
+    emitters = nineOpeningEmitters(),
   }
   appendStepEventV3(manifest, "open", openingWindowEvent("open", 0))
   local loaded, err = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 4, "heartgold")
@@ -2133,7 +2168,7 @@ end
 -- The generated opening scene identity the producer and the strict reader
 -- agree on: full native surfaces with per-image extents, instant and
 -- continuous scroll modes, and per-engine blend and wipe operands.
-local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v7"
+local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v8"
 
 local function typedOpeningManifest()
   local manifest = validOpeningManifest(1, "heartgold")

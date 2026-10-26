@@ -597,8 +597,13 @@ DerivedAssetContract.startupTitle = {
 -- terminal hold, positions backgrounds absolutely, resets physical screens
 -- to neutral, and flags whether each sprite clip animates; the v6 kind
 -- strings and the global fade are not accepted.
+-- The v8 record keeps the v7 grammar and replaces the starter particle
+-- boolean animation flags with the decoded numeric scale/color/alpha
+-- blocks, exact generation/velocity/scale magnitudes, placement/draw
+-- kinds, rotation and texture modes, child records, and spin/magnet
+-- fields; a v7 boolean record never validates.
 DerivedAssetContract.startupOpeningScene = {
-  schema = "g4-startup-opening-scene-v7",
+  schema = "g4-startup-opening-scene-v8",
   tickRate = 30,
 }
 

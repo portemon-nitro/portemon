@@ -6,7 +6,7 @@ local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v7"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v8"
 local SOURCE_TICK_RATE = 30
 
 local CLOSED_OPS = {
@@ -486,7 +486,7 @@ end
 -- below reads the exact compiled bundles and fails until the producer
 -- emits that contract and the central reader enforces it.
 
-local STRICT_SCHEMA = "g4-startup-opening-scene-v7"
+local STRICT_SCHEMA = "g4-startup-opening-scene-v8"
 
 local function strictManifest(bundle, versionId, sceneNumber)
   local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
@@ -2354,7 +2354,7 @@ local function movieTickRateRemainsRetail30Hz(romFs, versionId)
   for sceneNumber = 1, 5 do
     local bundle = compileScene(romFs, versionId, sceneNumber)
     local manifest = strictManifest(bundle, versionId, sceneNumber)
-    Assert.equal(manifest.schema, "g4-startup-opening-scene-v7", "scene " .. sceneNumber .. " carries the v7 schema")
+    Assert.equal(manifest.schema, "g4-startup-opening-scene-v8", "scene " .. sceneNumber .. " carries the v7 schema")
     Assert.equal(manifest.sourceTickRate, 30, "scene " .. sceneNumber .. " runs at the retail 30 Hz tick rate")
   end
   local second = strictManifest(compileScene(romFs, versionId, 2), versionId, 2)
@@ -2716,6 +2716,261 @@ local function scene3BeastExitsGuardTheRocketRetileAtAbsoluteOrigin(romFs, versi
   Assert.equal(viewportTail["until"].effect, "scroll-sub3", "the viewport tail keeps its own scroll guard")
 end
 
+
+-- The nine starter emitter records keep their exact staged animation and
+-- motion values through compilation: scale stages, RGB555 color endpoints,
+-- alpha levels, thresholds, placement, velocities, random ranges, fields,
+-- and child records all match the source member, and no boolean stand-in
+-- survives. Values below are the decoded source record contents.
+local STARTER_EXPECTED = {
+  [0] = {
+    initPosType = 2, drawType = 1, circleAxis = 0,
+    countFx = 41112, radius = 0.5205078125, length = 0.0,
+    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
+    baseR = 17, baseG = 27, baseB = 31,
+    ivelFx = 1066, avelFx = 0, bsclFx = 1638,
+    aspect = 1.724853515625, start = 0, rttMin = 0, rttMax = 0, initRtt = 0,
+    elife = 18, plife = 15, rndmBase = 84, rndmLife = 0, rndmVel = 102,
+    genIntvl = 1, baseAlp = 31, air = 129, tex = 4, loop = 1, dbb = 0, repS = 0, repT = 0, direct = 2,
+    scale = { s = 2923, n = 9988, e = 16201, inside = 128, outside = 128 },
+    colorS = { 13, 26, 31 }, colorE = { 3, 22, 31 }, colorIn = 7, colorPeak = 150, colorOut = 216, interp = 1,
+    alpha = { s = 10, n = 31, e = 15, inside = 128, outside = 128 },
+    child = nil,
+    fields = { { kind = "spin", rotation = 2000, axis = 2 } },
+  },
+  [1] = {
+    initPosType = 2, drawType = 0, circleAxis = 0,
+    countFx = 12288, radius = 0.22314453125, length = 0.0,
+    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
+    baseR = 31, baseG = 31, baseB = 31,
+    ivelFx = 1142, avelFx = 0, bsclFx = 2048,
+    aspect = 1.0, start = 0, rttMin = 1096, rttMax = -1097, initRtt = 0,
+    elife = 22, plife = 19, rndmBase = 51, rndmLife = 0, rndmVel = 45,
+    genIntvl = 2, baseAlp = 31, air = 78, tex = 1, loop = 3, dbb = 0, repS = 0, repT = 0, direct = 0,
+    scale = { s = 1218, n = 3411, e = 2558, inside = 128, outside = 128 },
+    colorS = { 31, 31, 31 }, colorE = { 4, 15, 25 }, colorIn = 51, colorPeak = 140, colorOut = 204, interp = 1,
+    alpha = { s = 8, n = 21, e = 0, inside = 125, outside = 125 },
+    child = { flag = 0x0006, sclE = 5360, life = 7, velRatio = 0, sclRatio = 49, clr = { 31, 31, 31 }, genNum = 1, genStart = 0, genIntvl = 3, tex = 8, repS = 1, repT = 1 },
+    fields = { { kind = "spin", rotation = 609, axis = 2 } },
+  },
+  [2] = {
+    initPosType = 2, drawType = 0, circleAxis = 0,
+    countFx = 30454, radius = 1.040771484375, length = 0.0,
+    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
+    baseR = 19, baseG = 31, baseB = 31,
+    ivelFx = 1294, avelFx = 0, bsclFx = 4096,
+    aspect = 1.0, start = 0, rttMin = 0, rttMax = 0, initRtt = 0,
+    elife = 8, plife = 40, rndmBase = 102, rndmLife = 0, rndmVel = 0,
+    genIntvl = 1, baseAlp = 26, air = 128, tex = 5, loop = 1, dbb = 0, repS = 0, repT = 0, direct = 0,
+    scale = { s = 4096, n = 2314, e = 1462, inside = 128, outside = 128 },
+    colorS = { 31, 31, 31 }, colorE = { 6, 17, 31 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    alpha = { s = 1, n = 26, e = 1, inside = 77, outside = 128 },
+    child = nil,
+    fields = { { kind = "spin", rotation = 365, axis = 2 } },
+  },
+  [3] = {
+    initPosType = 7, drawType = 0, circleAxis = 2,
+    countFx = 15227, radius = 0.5205078125, length = 1.33837890625,
+    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
+    baseR = 31, baseG = 12, baseB = 0,
+    ivelFx = 381, avelFx = 609, bsclFx = 2436,
+    aspect = 1.2490234375, start = 0, rttMin = 0, rttMax = 0, initRtt = 0,
+    elife = 20, plife = 16, rndmBase = 51, rndmLife = 0, rndmVel = 51,
+    genIntvl = 1, baseAlp = 31, air = 63, tex = 2, loop = 1, dbb = 0, repS = 1, repT = 0, direct = 0,
+    scale = { s = 9136, n = 4020, e = 853, inside = 128, outside = 128 },
+    colorS = { 31, 15, 0 }, colorE = { 21, 8, 0 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    alpha = { s = 20, n = 29, e = 0, inside = 45, outside = 64 },
+    child = { flag = 0x0060, sclE = 0, life = 1, velRatio = 0, sclRatio = 30, clr = { 31, 25, 0 }, genNum = 1, genStart = 0, genIntvl = 1, tex = 2, repS = 1, repT = 0 },
+    fields = { { kind = "magnet", x = 0.0, y = 12.081787109375, z = 0.0, mag = 0.00732421875 } },
+  },
+  [4] = {
+    initPosType = 2, drawType = 1, circleAxis = 0,
+    countFx = 8192, radius = 1.189697265625, length = 0.0,
+    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
+    baseR = 31, baseG = 19, baseB = 8,
+    ivelFx = 228, avelFx = 0, bsclFx = 6822,
+    aspect = 0.38671875, start = 0, rttMin = 0, rttMax = 0, initRtt = 0,
+    elife = 22, plife = 19, rndmBase = 90, rndmLife = 0, rndmVel = 102,
+    genIntvl = 2, baseAlp = 31, air = 129, tex = 7, loop = 1, dbb = 0, repS = 1, repT = 1, direct = 2,
+    scale = { s = 4096, n = 13156, e = 23388, inside = 128, outside = 128 },
+    colorS = { 31, 31, 16 }, colorE = { 23, 7, 0 }, colorIn = 11, colorPeak = 69, colorOut = 134, interp = 1,
+    alpha = { s = 31, n = 26, e = 4, inside = 128, outside = 128 },
+    child = nil,
+    fields = {  },
+  },
+  [5] = {
+    initPosType = 6, drawType = 0, circleAxis = 2,
+    countFx = 4096, radius = 0.81787109375, length = 5.501953125,
+    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
+    baseR = 31, baseG = 23, baseB = 8,
+    ivelFx = 761, avelFx = 0, bsclFx = 1462,
+    aspect = 1.0, start = 0, rttMin = 0, rttMax = 0, initRtt = 0,
+    elife = 30, plife = 13, rndmBase = 51, rndmLife = 0, rndmVel = 51,
+    genIntvl = 1, baseAlp = 31, air = 120, tex = 0, loop = 1, dbb = 0, repS = 1, repT = 1, direct = 0,
+    scale = { s = 3654, n = 2436, e = 853, inside = 128, outside = 128 },
+    colorS = { 31, 29, 21 }, colorE = { 30, 15, 4 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    alpha = { s = 0, n = 31, e = 0, inside = 45, outside = 128 },
+    child = nil,
+    fields = {  },
+  },
+  [6] = {
+    initPosType = 7, drawType = 0, circleAxis = 0,
+    countFx = 24576, radius = 0.743408203125, length = 0.0,
+    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
+    baseR = 19, baseG = 31, baseB = 19,
+    ivelFx = 1447, avelFx = 0, bsclFx = 4096,
+    aspect = 1.0, start = 6, rttMin = -2071, rttMax = -2071, initRtt = 0,
+    elife = 20, plife = 23, rndmBase = 128, rndmLife = 51, rndmVel = 51,
+    genIntvl = 4, baseAlp = 25, air = 133, tex = 6, loop = 3, dbb = 0, repS = 0, repT = 0, direct = 0,
+    scale = { s = 1827, n = 3167, e = 4507, inside = 128, outside = 128 },
+    colorS = { 31, 31, 31 }, colorE = { 7, 13, 7 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    alpha = { s = 13, n = 31, e = 0, inside = 26, outside = 133 },
+    child = nil,
+    fields = {  },
+  },
+  [7] = {
+    initPosType = 2, drawType = 0, circleAxis = 0,
+    countFx = 4096, radius = 0.81787109375, length = 0.0,
+    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
+    baseR = 1, baseG = 26, baseB = 5,
+    ivelFx = 761, avelFx = 0, bsclFx = 2924,
+    aspect = 1.0, start = 9, rttMin = 0, rttMax = 0, initRtt = 0,
+    elife = 30, plife = 13, rndmBase = 51, rndmLife = 0, rndmVel = 51,
+    genIntvl = 1, baseAlp = 31, air = 120, tex = 0, loop = 1, dbb = 0, repS = 1, repT = 1, direct = 0,
+    scale = { s = 3654, n = 2436, e = 853, inside = 128, outside = 128 },
+    colorS = { 16, 31, 12 }, colorE = { 0, 18, 0 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    alpha = { s = 0, n = 31, e = 0, inside = 45, outside = 128 },
+    child = nil,
+    fields = { { kind = "spin", rotation = 365, axis = 2 } },
+  },
+  [8] = {
+    initPosType = 0, drawType = 0, circleAxis = 0,
+    countFx = 4096, radius = 0.0, length = 0.0,
+    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
+    baseR = 13, baseG = 31, baseB = 13,
+    ivelFx = 0, avelFx = 0, bsclFx = 5360,
+    aspect = 1.0, start = 0, rttMin = -2315, rttMax = -2315, initRtt = 0,
+    elife = 10, plife = 23, rndmBase = 0, rndmLife = 0, rndmVel = 44,
+    genIntvl = 5, baseAlp = 25, air = 128, tex = 3, loop = 3, dbb = 0, repS = 0, repT = 0, direct = 0,
+    scale = { s = 1827, n = 15714, e = 26920, inside = 79, outside = 94 },
+    colorS = { 25, 31, 25 }, colorE = { 7, 13, 7 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    alpha = { s = 1, n = 31, e = 0, inside = 77, outside = 143 },
+    child = nil,
+    fields = {  },
+  },
+}
+
+
+local function starterEmitterRecordsKeepTheirSourceAnimationAndMotionValues(romFs, versionId)
+  local bundle = compileScene(romFs, versionId, 4)
+  local manifest = strictManifest(bundle, versionId, 4)
+  local byId = {}
+  for _, emitter in ipairs(assert(manifest.particles and manifest.particles.emitters, "scene 4 carries its emitter records")) do
+    byId[emitter.id] = emitter
+  end
+  for id = 0, 8 do
+    local record = assert(byId[id], "scene 4 keeps source emitter " .. id)
+    local expected = assert(STARTER_EXPECTED[id], "the oracle keeps source emitter " .. id)
+    local tag = "source emitter " .. id
+    Assert.equal(record.initPosType, expected.initPosType, tag .. " keeps its placement kind")
+    Assert.equal(record.drawType, expected.drawType, tag .. " keeps its draw kind")
+    Assert.equal(record.circleAxis, expected.circleAxis, tag .. " keeps its circle axis")
+    Assert.equal(record.generation.countFx, expected.countFx, tag .. " keeps its exact generation count")
+    Assert.equal(record.generation.interval, expected.genIntvl, tag .. " keeps its generation interval")
+    Assert.near(record.radius, expected.radius, 1e-9, tag .. " keeps its radius")
+    Assert.near(record.length, expected.length, 1e-9, tag .. " keeps its length")
+    Assert.near(record.axis.x, expected.axisX, 1e-9, tag .. " keeps its axis x")
+    Assert.near(record.axis.y, expected.axisY, 1e-9, tag .. " keeps its axis y")
+    Assert.near(record.axis.z, expected.axisZ, 1e-9, tag .. " keeps its axis z")
+    Assert.deepEqual(
+      record.baseColorRgb,
+      { r = expected.baseR, g = expected.baseG, b = expected.baseB },
+      tag .. " keeps its exact base color channels"
+    )
+    Assert.equal(record.velocityFx.pos, expected.ivelFx, tag .. " keeps its exact position velocity")
+    Assert.equal(record.velocityFx.axis, expected.avelFx, tag .. " keeps its exact axis velocity")
+    Assert.equal(record.baseScaleFx, expected.bsclFx, tag .. " keeps its exact base scale")
+    Assert.near(record.aspect, expected.aspect, 1e-9, tag .. " keeps its aspect")
+    Assert.equal(record.startOffset, expected.start, tag .. " keeps its start offset")
+    Assert.equal(record.rotation.min, expected.rttMin, tag .. " keeps its rotation minimum")
+    Assert.equal(record.rotation.max, expected.rttMax, tag .. " keeps its rotation maximum")
+    Assert.equal(record.initRotation, expected.initRtt, tag .. " keeps its initial rotation")
+    Assert.equal(record.emitterLife, expected.elife, tag .. " keeps its emitter lifespan")
+    Assert.equal(record.particleLife, expected.plife, tag .. " keeps its particle lifespan")
+    Assert.equal(record.scaleRandom, expected.rndmBase, tag .. " keeps its scale random range")
+    Assert.equal(record.lifeRandom, expected.rndmLife, tag .. " keeps its life random range")
+    Assert.equal(record.velRandom, expected.rndmVel, tag .. " keeps its velocity random range")
+    Assert.equal(record.baseAlpha, expected.baseAlp, tag .. " keeps its base alpha")
+    Assert.equal(record.airResist, expected.air, tag .. " keeps its air resistance")
+    Assert.equal(record.texture, expected.tex, tag .. " keeps its texture selection")
+    Assert.equal(record.loopFrame, expected.loop, tag .. " keeps its loop frame")
+    Assert.equal(record.dbbScale, expected.dbb, tag .. " keeps its directional scale")
+    Assert.equal(record.texRepeat.s, expected.repS, tag .. " keeps its horizontal texture repeat")
+    Assert.equal(record.texRepeat.t, expected.repT, tag .. " keeps its vertical texture repeat")
+    Assert.equal(record.sclAnmDirect, expected.direct, tag .. " keeps its scale animation direction")
+    local scale = assert(record.animations.scale, tag .. " keeps its scale block")
+    Assert.equal(scale.startFx, expected.scale.s, tag .. " keeps its scale start stage")
+    Assert.equal(scale.normalFx, expected.scale.n, tag .. " keeps its scale normal stage")
+    Assert.equal(scale.finishFx, expected.scale.e, tag .. " keeps its scale end stage")
+    Assert.equal(scale.inTick, expected.scale.inside, tag .. " keeps its scale entry threshold")
+    Assert.equal(scale.outTick, expected.scale.outside, tag .. " keeps its scale exit threshold")
+    local color = assert(record.animations.color, tag .. " keeps its color block")
+    Assert.deepEqual(
+      color.startRgb,
+      { r = expected.colorS[1], g = expected.colorS[2], b = expected.colorS[3] },
+      tag .. " keeps its color start channels"
+    )
+    Assert.deepEqual(
+      color.endRgb,
+      { r = expected.colorE[1], g = expected.colorE[2], b = expected.colorE[3] },
+      tag .. " keeps its color end channels"
+    )
+    Assert.equal(color.inTick, expected.colorIn, tag .. " keeps its color entry threshold")
+    Assert.equal(color.peakTick, expected.colorPeak, tag .. " keeps its color peak threshold")
+    Assert.equal(color.outTick, expected.colorOut, tag .. " keeps its color exit threshold")
+    Assert.isTrue(color.interpolate, tag .. " keeps its color interpolation")
+    local alpha = assert(record.animations.alpha, tag .. " keeps its alpha block")
+    Assert.equal(alpha.start, expected.alpha.s, tag .. " keeps its alpha start level")
+    Assert.equal(alpha.normal, expected.alpha.n, tag .. " keeps its alpha normal level")
+    Assert.equal(alpha.finish, expected.alpha.e, tag .. " keeps its alpha end level")
+    Assert.equal(alpha.inTick, expected.alpha.inside, tag .. " keeps its alpha entry threshold")
+    Assert.equal(alpha.outTick, expected.alpha.outside, tag .. " keeps its alpha exit threshold")
+    if expected.child == nil then
+      Assert.isNil(record.child, tag .. " carries no child")
+    else
+      local child = assert(record.child, tag .. " keeps its child block")
+      Assert.equal(child.life, expected.child.life, tag .. " keeps its child lifespan")
+      Assert.equal(child.velRatio, expected.child.velRatio, tag .. " keeps its child velocity ratio")
+      Assert.equal(child.sclRatio, expected.child.sclRatio, tag .. " keeps its child scale ratio")
+      Assert.deepEqual(
+        child.childColor,
+        { r = expected.child.clr[1], g = expected.child.clr[2], b = expected.child.clr[3] },
+        tag .. " keeps its child color channels"
+      )
+      Assert.equal(child.genNum, expected.child.genNum, tag .. " keeps its child generation count")
+      Assert.equal(child.genStart, expected.child.genStart, tag .. " keeps its child generation start")
+      Assert.equal(child.genInterval, expected.child.genIntvl, tag .. " keeps its child generation interval")
+      Assert.equal(child.texNo, expected.child.tex, tag .. " keeps its child texture selection")
+      Assert.equal(child.texRepeat.s, expected.child.repS, tag .. " keeps its child horizontal repeat")
+      Assert.equal(child.texRepeat.t, expected.child.repT, tag .. " keeps its child vertical repeat")
+    end
+    Assert.equal(#record.fields, #expected.fields, tag .. " keeps its field count")
+    for index, field in ipairs(expected.fields) do
+      local actual = record.fields[index]
+      Assert.equal(actual.kind, field.kind, tag .. " keeps its field kind")
+      if field.kind == "spin" then
+        Assert.equal(actual.rotation, field.rotation, tag .. " keeps its spin rotation step")
+        Assert.equal(actual.axis, field.axis, tag .. " keeps its spin rotation axis")
+      elseif field.kind == "magnet" then
+        Assert.near(actual.position.x, field.x, 1e-9, tag .. " keeps its magnet x")
+        Assert.near(actual.position.y, field.y, 1e-9, tag .. " keeps its magnet y")
+        Assert.near(actual.position.z, field.z, 1e-9, tag .. " keeps its magnet z")
+        Assert.near(actual.magnitude, field.mag, 1e-12, tag .. " keeps its magnet strength")
+      end
+    end
+  end
+end
+
 return RomSuite.fromFacts({
   ["source opening scenes compile to five independent versioned bundles"] = sourceOpeningScenesCompileToFiveIndependentVersionedBundles,
   ["source opening timeline keeps its five-scene transitions and skip gate"] = sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate,
@@ -2741,6 +2996,7 @@ return RomSuite.fromFacts({
   ["movie tick rate remains the retail 30 Hz source cadence"] = movieTickRateRemainsRetail30Hz,
   ["strict case guards reject invalid waits and accept eventless conjunctions"] = strictCaseGuardsRejectInvalidWaitsAndAcceptEventlessConjunctions,
   ["strict visual primitives reject malformed records"] = strictVisualPrimitivesRejectMalformedRecords,
+  ["starter emitter records keep their source animation and motion values"] = starterEmitterRecordsKeepTheirSourceAnimationAndMotionValues,
   ["compiled scenes emit strict case guards without pseudo waits"] = compiledScenesEmitStrictCaseGuardsWithoutPseudoWaits,
   ["scene 3 beast exits guard the rocket retile at the absolute origin"] = scene3BeastExitsGuardTheRocketRetileAtAbsoluteOrigin,
   ["scene five runs its shutter scroll and white fade in source order"] = sceneFiveRunsShutterScrollAndWhiteFadeInSourceOrder,
