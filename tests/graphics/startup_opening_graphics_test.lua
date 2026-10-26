@@ -2926,9 +2926,9 @@ local function real_starter_flips_map_each_source_engine_onto_its_authored_host_
     end
   end
   local starters = {
-    { step = "starter-chikorita", mainPhysical = "lower" },
-    { step = "starter-cyndaquil", mainPhysical = "upper" },
-    { step = "starter-totodile", mainPhysical = "lower" },
+    { step = "run-chikorita", mainPhysical = "lower" },
+    { step = "run-cyndaquil", mainPhysical = "upper" },
+    { step = "run-totodile", mainPhysical = "lower" },
   }
   for _, beat in ipairs(starters) do
     advanceToSceneStep(movie, 4, beat.step, 20000)
@@ -2946,9 +2946,9 @@ local function real_starter_flips_map_each_source_engine_onto_its_authored_host_
   -- Resizing never rewinds the source clock, so one single-surface movie
   -- covers the tall, wide, and native-like stages.
   local single = openMovie(scope, versionId, 600, 1000, "single")
-  advanceToSceneStep(single, 4, "starter-cyndaquil", 20000)
+  advanceToSceneStep(single, 4, "run-cyndaquil", 20000)
   advance(single, 4)
-  Assert.equal(currentStepId(single), "starter-cyndaquil", "the single-surface movie holds its emitter beat")
+  Assert.equal(currentStepId(single), "run-cyndaquil", "the single-surface movie holds its emitter beat")
   Assert.equal(single.current.mainPhysical, "upper", "the cyndaquil beat maps main to upper")
   for _, layout in ipairs({
     { width = 600, height = 1000, first = { 300, 250 }, second = { 300, 750 }, name = "tall" },
@@ -2957,7 +2957,7 @@ local function real_starter_flips_map_each_source_engine_onto_its_authored_host_
   }) do
     single:resize(layout.width, layout.height)
     Assert.equal(single:sceneNumber(), 4, layout.name .. " keeps the movie on its scene")
-    Assert.equal(currentStepId(single), "starter-cyndaquil", layout.name .. " keeps the movie on its beat")
+    Assert.equal(currentStepId(single), "run-cyndaquil", layout.name .. " keeps the movie on its beat")
     assertStackedPlacement(
       single,
       layout.width,
@@ -2986,8 +2986,8 @@ local function starter_particles_move_only_the_main_source_target(scope, context
     end
     Assert.notNil(nil, "scene 4 keeps its " .. stepId .. " step")
   end
-  Assert.equal(stepEffect("starter-chikorita"), "emitters-grass", "the first starter waits on its grass emitters")
-  Assert.equal(stepEffect("starter-cyndaquil"), "emitters-fire", "the second starter waits on its fire emitters")
+  Assert.equal(stepEffect("run-chikorita"), "emitters-grass", "the first starter waits on its grass emitters")
+  Assert.equal(stepEffect("run-cyndaquil"), "emitters-fire", "the second starter waits on its fire emitters")
   local movie = openMovie(scope, versionId, 512, 384, "dual")
   local function liveParticles()
     local count = 0
@@ -2997,7 +2997,7 @@ local function starter_particles_move_only_the_main_source_target(scope, context
     return count
   end
   local mappings = {}
-  for _, beat in ipairs({ "starter-chikorita", "starter-cyndaquil" }) do
+  for _, beat in ipairs({ "run-chikorita", "run-cyndaquil" }) do
     advanceToSceneStep(movie, 4, beat, 20000)
     advance(movie, 3)
     Assert.equal(currentStepId(movie), beat, beat .. " holds across its emitter beat")
@@ -3016,6 +3016,186 @@ local function starter_particles_move_only_the_main_source_target(scope, context
   end
   Assert.equal(mappings[1], "lower", "the first starter plays with main on the lower pane")
   Assert.equal(mappings[2], "upper", "the second starter plays after the flip with main on the upper pane")
+  movie:dispose()
+end
+
+-- The scene-4 close retires every starter and holds both engines black
+-- into the sparkle: the last close tick still shows a fully masked pair,
+-- and only the dispatched sparkle clears physical TOP while the main
+-- target on the bottom pane retains its black hold.
+local function scene4_close_retires_starters_and_holds_black_until_top_neutral(scope, context)
+  local versionId = selectedVersionId(context)
+  local movie = openMovie(scope, versionId, 512, 384, "dual")
+  advanceToSceneStep(movie, 4, "finish-totodile", 20000)
+  local guard = 0
+  while currentStepId(movie) == "finish-totodile" and guard < 200 do
+    movie:updateFixed()
+    guard = guard + 1
+  end
+  Assert.equal(currentStepId(movie), "sparkle", "the retired close hands off to sparkle")
+  movie:draw()
+  local retiredMain = sourceBytes(scope, movie.mainCanvas)
+  local retiredSub = sourceBytes(scope, movie.subCanvas)
+  Assert.isTrue(
+    regionLit(retiredMain, 256, 0, 255, 0, 191) < 0.02,
+    "the retired main target holds black into sparkle"
+  )
+  Assert.isTrue(
+    regionLit(retiredSub, 256, 0, 255, 0, 191) < 0.02,
+    "the retired sub target still holds black before the TOP reset"
+  )
+  movie:updateFixed()
+  Assert.equal(currentStepId(movie), "sparkle", "the sparkle dispatches on the tick after retirement")
+  movie:draw()
+  local sparkleMain = sourceBytes(scope, movie.mainCanvas)
+  local sparkleSub = sourceBytes(scope, movie.subCanvas)
+  Assert.isTrue(
+    regionLit(sparkleMain, 256, 0, 255, 0, 191) < 0.02,
+    "the bottom pane retains black while the sparkle plays"
+  )
+  Assert.isTrue(sparkleSub ~= retiredSub, "resetting physical TOP releases only the top target")
+  movie:dispose()
+end
+
+-- Each starter beat separates its appear frame from emission and its run
+-- from the flip: the appear tick shows its sprite with no live emitter,
+-- the run holds its mapping, and only the finish dispatch moves main.
+local function scene4_starter_beats_hold_emission_and_flip_until_their_cases(scope, context)
+  local versionId = selectedVersionId(context)
+  local movie = openMovie(scope, versionId, 512, 384, "dual")
+  advanceToSceneStep(movie, 4, "appear-chikorita", 20000)
+  movie:updateFixed()
+  Assert.equal(currentStepId(movie), "start-chikorita", "the appear lasts one source tick")
+  local appearSprite = assert(movie.current.spriteInstances.chikorita, "the appear stages its starter")
+  Assert.isTrue(appearSprite.visible, "the appear shows its starter")
+  local appearLive = 0
+  for _, runtime in ipairs(assert(movie.current.emitters, "the movie tracks its live emitters")) do
+    appearLive = appearLive + #(runtime.particles or {})
+    Assert.isFalse(runtime.group == "grass", "the appear frame runs no grass emitter")
+  end
+  Assert.equal(appearLive, 0, "the appear tick starts no emitter")
+  Assert.equal(movie.current.mainPhysical, "lower", "the appear flips no screen")
+  advanceToSceneStep(movie, 4, "run-chikorita", 20000)
+  advance(movie, 3)
+  Assert.equal(currentStepId(movie), "run-chikorita", "the run holds across its emitter beat")
+  local runLive = 0
+  for _, runtime in ipairs(assert(movie.current.emitters, "the movie tracks its run emitters")) do
+    runLive = runLive + #(runtime.particles or {})
+  end
+  Assert.isTrue(runLive > 0, "the run samples live emitters")
+  Assert.equal(movie.current.mainPhysical, "lower", "the run flips no screen before its finish")
+  advanceToSceneStep(movie, 4, "finish-chikorita", 20000)
+  Assert.equal(movie.current.mainPhysical, "lower", "the flip waits for its finish dispatch")
+  movie:updateFixed()
+  Assert.equal(movie.current.mainPhysical, "upper", "the finish dispatch moves main upper")
+  movie:dispose()
+end
+
+-- The authored scene-4 shutters keep the source row geometry on both
+-- engines: the 09 open reveals center-out over 10 source steps and the
+-- 08 close masks outer-in over 26, with revealed rows matching the
+-- settled art and masked rows holding black.
+local function scene4_authored_shutters_match_source_rows_on_both_engines(scope, context)
+  local versionId = selectedVersionId(context)
+  local movie = openMovie(scope, versionId, 512, 384, "dual")
+  local function rowEdgeOf(frameBytes, y)
+    local parts = {}
+    for _, x in ipairs({ 32, 224 }) do
+      local r, g, b = pixelOf(frameBytes, 256, x, y)
+      parts[#parts + 1] = string.format("%.2f,%.2f,%.2f", r, g, b)
+    end
+    return table.concat(parts, "|")
+  end
+  local function assertRowBlack(canvas, y, label)
+    for _, x in ipairs({ 32, 128, 224 }) do
+      local r, g, b = pixelOf(sourceBytes(scope, canvas), 256, x, y)
+      assertSameColor(r, g, b, 0, 0, 0, 0.08, label .. " masks row " .. y)
+    end
+  end
+  advanceToSceneStep(movie, 4, "fade-in", 20000)
+  movie:updateFixed()
+  Assert.equal(currentStepId(movie), "fade-in", "the open beat dispatches its first frame")
+  movie:draw()
+  local openFirstMain, openFirstSub = sourceBytes(scope, movie.mainCanvas), sourceBytes(scope, movie.subCanvas)
+  assertRowBlack(movie.mainCanvas, 8, "the open first frame on main")
+  assertRowBlack(movie.mainCanvas, 180, "the open first frame on main")
+  assertRowBlack(movie.subCanvas, 8, "the open first frame on sub")
+  assertRowBlack(movie.subCanvas, 180, "the open first frame on sub")
+  advance(movie, 4)
+  Assert.equal(currentStepId(movie), "fade-in", "the open holds its fifth frame")
+  movie:draw()
+  local openMidMain = sourceBytes(scope, movie.mainCanvas)
+  assertRowBlack(movie.mainCanvas, 8, "the open middle frame on main")
+  assertRowBlack(movie.mainCanvas, 180, "the open middle frame on main")
+  assertRowBlack(movie.subCanvas, 8, "the open middle frame on sub")
+  assertRowBlack(movie.subCanvas, 180, "the open middle frame on sub")
+  Assert.equal(
+    rowEdgeOf(openMidMain, 96),
+    rowEdgeOf(openFirstMain, 96),
+    "the revealed center holds still while the mask runs"
+  )
+  advance(movie, 5)
+  Assert.equal(currentStepId(movie), "slide-in", "the open completes into its slide on step ten")
+  movie:draw()
+  local openDoneMain, openDoneSub = sourceBytes(scope, movie.mainCanvas), sourceBytes(scope, movie.subCanvas)
+  Assert.equal(
+    rowEdgeOf(openMidMain, 60),
+    rowEdgeOf(openDoneMain, 60),
+    "the revealed mid rows match the settled art on main"
+  )
+  Assert.equal(
+    rowEdgeOf(openDoneMain, 96),
+    rowEdgeOf(openFirstMain, 96),
+    "the revealed center matches the settled art on main"
+  )
+  Assert.equal(
+    rowEdgeOf(openDoneSub, 96),
+    rowEdgeOf(openFirstSub, 96),
+    "the revealed center matches the settled art on sub"
+  )
+  Assert.isTrue(openDoneMain ~= openFirstMain, "the open actually reveals main art")
+  Assert.isTrue(openDoneSub ~= openFirstSub, "the open actually reveals sub art")
+  advanceToSceneStep(movie, 4, "run-totodile", 20000)
+  local guard = 0
+  while currentStepId(movie) == "run-totodile" and guard < 5000 do
+    movie:updateFixed()
+    guard = guard + 1
+  end
+  Assert.equal(currentStepId(movie), "finish-totodile", "the retired close starts its finish")
+  movie:draw()
+  local closeEntryMain = sourceBytes(scope, movie.mainCanvas)
+  movie:updateFixed()
+  Assert.equal(currentStepId(movie), "finish-totodile", "the close holds its first frame")
+  movie:draw()
+  assertRowBlack(movie.mainCanvas, 1, "the close first frame on main")
+  assertRowBlack(movie.mainCanvas, 190, "the close first frame on main")
+  assertRowBlack(movie.subCanvas, 1, "the close first frame on sub")
+  assertRowBlack(movie.subCanvas, 190, "the close first frame on sub")
+  Assert.equal(
+    rowEdgeOf(sourceBytes(scope, movie.mainCanvas), 96),
+    rowEdgeOf(closeEntryMain, 96),
+    "the close first frame keeps its revealed center"
+  )
+  advance(movie, 12)
+  Assert.equal(currentStepId(movie), "finish-totodile", "the close holds its middle frame")
+  movie:draw()
+  assertRowBlack(movie.mainCanvas, 8, "the close middle frame on main")
+  assertRowBlack(movie.mainCanvas, 180, "the close middle frame on main")
+  assertRowBlack(movie.subCanvas, 8, "the close middle frame on sub")
+  assertRowBlack(movie.subCanvas, 180, "the close middle frame on sub")
+  guard = 0
+  while currentStepId(movie) == "finish-totodile" and guard < 200 do
+    movie:updateFixed()
+    guard = guard + 1
+  end
+  Assert.equal(currentStepId(movie), "sparkle", "the close completes into sparkle on step twenty-six")
+  movie:draw()
+  assertRowBlack(movie.mainCanvas, 8, "the close final frame on main")
+  assertRowBlack(movie.mainCanvas, 96, "the close final frame on main")
+  assertRowBlack(movie.mainCanvas, 180, "the close final frame on main")
+  assertRowBlack(movie.subCanvas, 8, "the close final frame on sub")
+  assertRowBlack(movie.subCanvas, 96, "the close final frame on sub")
+  assertRowBlack(movie.subCanvas, 180, "the close final frame on sub")
   movie:dispose()
 end
 
@@ -3120,7 +3300,7 @@ local function every_scene_paints_its_authored_beat_on_both_engines(scope, conte
   Assert.notNil(movie.current.activeTown, "scene 3 selects its town stage")
   advance(movie, 15)
   sampleBeat("scene 3 town (" .. tostring(movie.current.activeTown) .. ")")
-  advanceToSceneStep(movie, 4, "starter-cyndaquil", 20000)
+  advanceToSceneStep(movie, 4, "run-cyndaquil", 20000)
   advance(movie, 3)
   sampleBeat("scene 4 starter")
   advanceToSceneStep(movie, 5, "wait", 20000)
@@ -4524,13 +4704,15 @@ local function soulsilver_source_starter_paints_its_authored_frame(scope, contex
   local versionId = selectedVersionId(context)
   local scenes = loadScenes(versionId)
   local movie = openMovie(scope, versionId, 512, 384, "single")
-  advanceToSceneStep(movie, 4, "starter-chikorita", 20000)
+  advanceToSceneStep(movie, 4, "run-chikorita", 20000)
   advance(movie, 3)
-  Assert.equal(currentStepId(movie), "starter-chikorita", "the first starter holds its emitter beat")
+  Assert.equal(currentStepId(movie), "run-chikorita", "the first starter holds its emitter beat")
+  -- The clip shows at the appear dispatch two source ticks before the run
+  -- entry, so three more ticks land on the fifth animation tick.
   local manifest = scenes[4]
   local placement = nil
   for _, event in ipairs(manifest.timeline.events) do
-    if event.op == "setSpriteClip" and event.stepId == "starter-chikorita" and event.instanceId == "chikorita" then
+    if event.op == "setSpriteClip" and event.stepId == "appear-chikorita" and event.instanceId == "chikorita" then
       placement = event
       break
     end
@@ -4549,7 +4731,7 @@ local function soulsilver_source_starter_paints_its_authored_frame(scope, contex
   local clipData = decodedArt(scope, clipBytes, placement.clipId)
   local main = sourceBytes(scope, movie.mainCanvas)
   local sub = sourceBytes(scope, movie.subCanvas)
-  local want = expectedClipFrame(manifest, placement.clipId, 3)
+  local want = expectedClipFrame(manifest, placement.clipId, 5)
   local best, bestRate, wantRate = 1, -1, nil
   local clip = nil
   for _, candidate in ipairs(manifest.spriteClips) do
@@ -6895,6 +7077,9 @@ local T = GraphicsSmoke.suite({
   ["composited town pixels stay visible and animate across hold ticks"] = composited_town_pixels_stay_visible_and_animate_across_hold_ticks,
   ["real starter flips map each source engine onto its authored host pane"] = real_starter_flips_map_each_source_engine_onto_its_authored_host_pane,
   ["starter particles move only the main source target"] = starter_particles_move_only_the_main_source_target,
+  ["scene 4 close retires starters and holds black until top neutral"] = scene4_close_retires_starters_and_holds_black_until_top_neutral,
+  ["scene 4 starter beats hold emission and flip until their cases"] = scene4_starter_beats_hold_emission_and_flip_until_their_cases,
+  ["scene 4 authored shutters match source rows on both engines"] = scene4_authored_shutters_match_source_rows_on_both_engines,
   ["slide-in windows reveal opposite halves on each engine"] = slide_in_windows_reveal_opposite_halves_on_each_engine,
   ["every scene paints its authored beat on both engines"] = every_scene_paints_its_authored_beat_on_both_engines,
   ["single-screen stages show the authored active engine"] = single_screen_stages_show_the_authored_active_engine,

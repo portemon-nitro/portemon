@@ -1165,20 +1165,198 @@ local function starterMappingAndPlaneMasksFollowTheRetailFlipOrder(romFs, versio
     "lower",
     "the second flip returns the main engine lower for the third starter"
   )
-  Assert.equal(mappings[2].stepId, "flip-chikorita", "the first flip follows the first starter")
-  Assert.equal(mappings[3].stepId, "flip-cyndaquil", "the second flip follows the second starter")
+  Assert.equal(mappings[2].stepId, "finish-chikorita", "the first finish follows the first starter")
+  Assert.equal(mappings[3].stepId, "finish-cyndaquil", "the second finish follows the second starter")
   local function visibleAt(stepId, engine, bgSlot)
     local state = planeStateAt(manifest, events, stepId)
     return state[engine .. ":" .. bgSlot]
   end
-  Assert.isTrue(visibleAt("flip-chikorita", "main", 2), "the first flip enables main plane 2")
-  Assert.isFalse(visibleAt("flip-chikorita", "main", 3), "the first flip disables main plane 3")
-  Assert.isFalse(visibleAt("flip-chikorita", "sub", 2), "the first flip disables sub plane 2")
-  Assert.isTrue(visibleAt("flip-chikorita", "sub", 3), "the first flip enables sub plane 3")
-  Assert.isFalse(visibleAt("flip-cyndaquil", "main", 2), "the second flip disables main plane 2")
-  Assert.isTrue(visibleAt("flip-cyndaquil", "main", 3), "the second flip enables main plane 3")
-  Assert.isTrue(visibleAt("flip-cyndaquil", "sub", 2), "the second flip enables sub plane 2")
-  Assert.isFalse(visibleAt("flip-cyndaquil", "sub", 3), "the second flip disables sub plane 3")
+  Assert.isTrue(visibleAt("finish-chikorita", "main", 2), "the first flip enables main plane 2")
+  Assert.isFalse(visibleAt("finish-chikorita", "main", 3), "the first flip disables main plane 3")
+  Assert.isFalse(visibleAt("finish-chikorita", "sub", 2), "the first flip disables sub plane 2")
+  Assert.isTrue(visibleAt("finish-chikorita", "sub", 3), "the first flip enables sub plane 3")
+  Assert.isFalse(visibleAt("finish-cyndaquil", "main", 2), "the second flip disables main plane 2")
+  Assert.isTrue(visibleAt("finish-cyndaquil", "main", 3), "the second flip enables main plane 3")
+  Assert.isTrue(visibleAt("finish-cyndaquil", "sub", 2), "the second flip enables sub plane 2")
+  Assert.isFalse(visibleAt("finish-cyndaquil", "sub", 3), "the second flip disables sub plane 3")
+end
+
+-- Scene 4 separates every starter into appear, start-emitters, run, and
+-- finish cases with the canonical grass/fire/water emitter sets: the
+-- sprite shows one source dispatch before its emitters start, the run
+-- gates on the live group, and only the finish cases move the physical
+-- mapping. The water run starts the 08 close the tick its emitters
+-- retire, the totodile finish retires art on the fade-completed tick,
+-- and sparkle resets only physical TOP before its clip ends the scene.
+local function scene4SplitsStarterAppearStartRunFinishWithDeferredFlipAndGuardedClose(romFs, versionId)
+  local manifest = strictManifest(compileScene(romFs, versionId, 4), versionId, 4)
+  local function eventsOf(op, stepId)
+    local found = {}
+    for _, event in ipairs(manifest.timeline.events) do
+      if event.op == op and (stepId == nil or event.stepId == stepId) then
+        found[#found + 1] = event
+      end
+    end
+    return found
+  end
+  local beats = {
+    { starter = "chikorita", group = "grass", emitters = { 6, 7, 8 }, finishMapping = "upper" },
+    { starter = "cyndaquil", group = "fire", emitters = { 3, 4, 5 }, finishMapping = "lower" },
+    { starter = "totodile", group = "water", emitters = { 0, 1, 2 }, finishMapping = nil },
+  }
+  local positions = {}
+  for position, step in ipairs(manifest.timeline.steps) do
+    positions[step.id] = position
+  end
+  local function stepRecord(id)
+    for _, step in ipairs(manifest.timeline.steps) do
+      if step.id == id then
+        return step
+      end
+    end
+    Assert.notNil(nil, "scene 4 keeps its " .. id .. " case")
+  end
+  local function entryHas(step, op)
+    for _, index in ipairs(step.events) do
+      if manifest.timeline.events[index].op == op then
+        return true
+      end
+    end
+    return false
+  end
+  for _, beat in ipairs(beats) do
+    local appearId, startId, runId = "appear-" .. beat.starter, "start-" .. beat.starter, "run-" .. beat.starter
+    local appear, start, run = stepRecord(appearId), stepRecord(startId), stepRecord(runId)
+    Assert.equal(
+      positions[startId],
+      positions[appearId] + 1,
+      "emission starts one source dispatch after the " .. beat.starter .. " appear"
+    )
+    Assert.equal(
+      positions[runId],
+      positions[startId] + 1,
+      "the " .. beat.starter .. " run follows its emission start"
+    )
+    Assert.isTrue(entryHas(appear, "setSpriteClip"), "the " .. beat.starter .. " appear shows its sprite")
+    Assert.isTrue(entryHas(appear, "spriteVisible"), "the " .. beat.starter .. " appear reveals its sprite")
+    Assert.isFalse(entryHas(appear, "startEmitters"), "the " .. beat.starter .. " appear starts no emitter")
+    Assert.equal(appear["until"].kind, "duration", "the " .. beat.starter .. " appear lasts one dispatch")
+    Assert.equal(appear["until"].ticks, 1, "the " .. beat.starter .. " appear lasts one tick")
+    local starts = eventsOf("startEmitters", startId)
+    Assert.equal(#starts, 1, "the " .. beat.starter .. " start emits its group once")
+    Assert.equal(starts[1].group, beat.group, "the " .. beat.starter .. " start keeps its source group")
+    Assert.deepEqual(
+      starts[1].emitters,
+      beat.emitters,
+      "the " .. beat.starter .. " start keeps its canonical source emitters"
+    )
+    Assert.isFalse(entryHas(start, "setSpriteClip"), "the " .. beat.starter .. " start shows no sprite")
+    Assert.equal(start["until"].kind, "duration", "the " .. beat.starter .. " start lasts one dispatch")
+    Assert.equal(start["until"].ticks, 1, "the " .. beat.starter .. " start lasts one tick")
+    Assert.equal(#run.events, 0, "the " .. beat.starter .. " run carries no entry event")
+    Assert.equal(run["until"].kind, "effect", "the " .. beat.starter .. " run waits on its emitters")
+    Assert.equal(
+      run["until"].effect,
+      "emitters-" .. beat.group,
+      "the " .. beat.starter .. " run gates on its live group"
+    )
+  end
+  for _, beat in ipairs({ beats[1], beats[2] }) do
+    local finishId = "finish-" .. beat.starter
+    local finish = stepRecord(finishId)
+    Assert.equal(
+      positions[finishId],
+      positions["run-" .. beat.starter] + 1,
+      "the " .. beat.starter .. " finish follows its run"
+    )
+    local mappings = eventsOf("setScreenMapping", finishId)
+    Assert.equal(#mappings, 1, "the " .. beat.starter .. " finish schedules its flip once")
+    Assert.equal(
+      mappings[1].mainPhysical,
+      beat.finishMapping,
+      "the " .. beat.starter .. " finish moves main to " .. tostring(beat.finishMapping)
+    )
+    Assert.equal(finish["until"].kind, "duration", "the " .. beat.starter .. " finish lasts one dispatch")
+    Assert.equal(finish["until"].ticks, 1, "the " .. beat.starter .. " finish lasts one tick")
+  end
+  for _, event in ipairs(eventsOf("setScreenMapping", nil)) do
+    Assert.isTrue(
+      event.stepId == "fade-in"
+        or event.stepId == "finish-chikorita"
+        or event.stepId == "finish-cyndaquil",
+      "no screen flip leaves before its finish case: " .. tostring(event.stepId)
+    )
+  end
+  for _, event in ipairs(eventsOf("startEmitters", nil)) do
+    Assert.isTrue(
+      event.stepId == "start-chikorita" or event.stepId == "start-cyndaquil" or event.stepId == "start-totodile",
+      "no emitter starts on an appear frame: " .. tostring(event.stepId)
+    )
+  end
+  local close = nil
+  for _, event in ipairs(eventsOf("setFade", nil)) do
+    if event.effect == "fade-close" then
+      close = event
+    end
+  end
+  Assert.notNil(close, "scene 4 closes through its 08 line shutter")
+  Assert.equal(close.stepId, "run-totodile", "the 08 close belongs to the water run case")
+  Assert.equal(close.scope, "both", "the 08 close covers both source engines")
+  Assert.equal(close.mode, "line-shutter", "the 08 close stays spatial")
+  Assert.equal(close.direction, "out", "the 08 close shuts outward")
+  Assert.equal(close.ticks, 26, "the 08 close runs its 26 source steps")
+  Assert.equal(close.terminal, "hold", "the 08 close retains black for the sparkle handoff")
+  Assert.equal(close.shape, "outer-in", "the 08 close keeps its source shape")
+  local runWater = stepRecord("run-totodile")
+  local closeDeferred = false
+  for _, index in ipairs(runWater.onCompleteEvents or {}) do
+    if manifest.timeline.events[index] == close then
+      closeDeferred = true
+    end
+  end
+  Assert.isTrue(closeDeferred, "the water run starts its close through guard completion")
+  Assert.isFalse(entryHas(runWater, "setFade"), "no shutter starts before the water emitters retire")
+  local finishTotodile = stepRecord("finish-totodile")
+  Assert.equal(
+    positions["finish-totodile"],
+    positions["run-totodile"] + 1,
+    "the totodile finish follows the water run"
+  )
+  Assert.equal(#finishTotodile.events, 0, "the totodile finish carries no entry event")
+  Assert.equal(
+    finishTotodile["until"].effect,
+    "fade-close",
+    "the totodile finish waits on the closing shutter"
+  )
+  local retiredPlanes, retiredSprites = {}, {}
+  for _, index in ipairs(finishTotodile.onCompleteEvents or {}) do
+    local event = manifest.timeline.events[index]
+    if event.op == "setLayer" and event.visible == false then
+      retiredPlanes[event.engine .. ":" .. tostring(event.bgSlot)] = true
+    elseif event.op == "spriteVisible" and event.visible == false then
+      retiredSprites[event.instanceId] = true
+    else
+      Assert.notNil(nil, "the totodile finish retires only art: " .. tostring(event.op))
+    end
+  end
+  for _, slot in ipairs({ "main:1", "main:2", "main:3" }) do
+    Assert.isTrue(retiredPlanes[slot] == true, "the totodile finish retires " .. slot)
+  end
+  for _, sprite in ipairs({ "chikorita", "cyndaquil", "totodile" }) do
+    Assert.isTrue(retiredSprites[sprite] == true, "the totodile finish retires " .. sprite)
+  end
+  local brightness = eventsOf("setBrightness", nil)
+  Assert.equal(#brightness, 1, "scene 4 resets brightness exactly once")
+  Assert.equal(brightness[1].stepId, "sparkle", "only the sparkle resets brightness")
+  Assert.equal(brightness[1].physical, "upper", "the sparkle resets physical TOP")
+  Assert.equal(brightness[1].value, "neutral", "the sparkle reset is neutral")
+  local sparkle = stepRecord("sparkle")
+  Assert.isTrue(entryHas(sparkle, "setSpriteClip"), "the sparkle starts its clip")
+  Assert.equal(
+    positions["sparkle"],
+    positions["finish-totodile"] + 1,
+    "the sparkle dispatches on the tick after retirement"
+  )
 end
 
 local EXPECTED_INITIAL_PLANES = {
@@ -2140,8 +2318,8 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
   assertExactEvents(fourth, 4, "setFade", "fade-in", FADE_KEYS, {
     "atStepTick=0 scope=both mode=line-shutter color=black direction=in ticks=10 terminal=neutral shape=center-out effect=fade-in",
   })
-  assertExactEvents(fourth, 4, "setFade", "finish-totodile", FADE_KEYS, {
-    "atStepTick=0 scope=both mode=line-shutter color=black direction=out ticks=26 terminal=neutral shape=outer-in effect=fade-close",
+  assertExactEvents(fourth, 4, "setFade", "run-totodile", FADE_KEYS, {
+    "atStepTick=0 scope=both mode=line-shutter color=black direction=out ticks=26 terminal=hold shape=outer-in effect=fade-close",
   })
   local pairedDy = (versionId == "heartgold") and -64 or 64
   assertExactEvents(fifth, 5, "setScroll", "wipe", SCROLL_KEYS, {
@@ -2484,6 +2662,7 @@ return RomSuite.fromFacts({
   ["source opening scenes compile to five independent versioned bundles"] = sourceOpeningScenesCompileToFiveIndependentVersionedBundles,
   ["source opening timeline keeps its five-scene transitions and skip gate"] = sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate,
   ["starter mapping and plane masks follow the retail flip order"] = starterMappingAndPlaneMasksFollowTheRetailFlipOrder,
+  ["scene 4 splits starter appear start run finish with deferred flip and guarded close"] = scene4SplitsStarterAppearStartRunFinishWithDeferredFlipAndGuardedClose,
   ["plane enable state is explicit in every compiled scene"] = planeEnableStateIsExplicitInEveryCompiledScene,
   ["town drawing stops before rival-only visuals"] = townDrawingStopsBeforeRivalOnlyVisuals,
   ["engine window records replace the synthetic kind shapes"] = engineWindowRecordsReplaceTheSyntheticKindShapes,
