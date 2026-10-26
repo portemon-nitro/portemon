@@ -5616,6 +5616,189 @@ local function heartgold_scene_two_and_five_wrap_is_blocked_without_a_dump(scope
   sourced_wrap_stays_bounded_without_per_draw_quads(scope, "heartgold")
 end
 
+-- The retail title object translation both 3D title objects inherit
+-- (title_screen.c TitleScreen_Load3DObjects): source (30, 95, 0) carried in
+-- the same /16 world units the existing title camera adopts. The expected
+-- values below spell the retail operand literally so the assertions anchor
+-- on the decompilation, never on the player's current framing.
+local TITLE_SOURCE_X, TITLE_SOURCE_Y, TITLE_SOURCE_Z = 30 / 16, 95 / 16, 0
+local TITLE_HALF_ANGLE_INDEX = 0xB60
+local TITLE_NATIVE_WIDTH, TITLE_NATIVE_HEIGHT = 256, 192
+
+local function titleTopology(width, height)
+  return {
+    surfaces = {
+      { id = "main", rect = { x = 0, y = 0, width = width, height = height }, touch = true, role = "world" },
+    },
+  }
+end
+
+local function openTitleScene(scope, versionId)
+  local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
+  local context = DisplayContext.new({
+    graphics = love.graphics,
+    topologyProvider = function(width, height)
+      return titleTopology(width, height)
+    end,
+  })
+  local scene = HgssTitleScene.new({
+    versionId = versionId,
+    cacheFs = CacheFs.forVersion(versionId),
+    width = TITLE_NATIVE_WIDTH,
+    height = TITLE_NATIVE_HEIGHT,
+    displayContext = context,
+  })
+  scope:own({
+    release = function()
+      scene:dispose()
+    end,
+  })
+  return scene
+end
+
+-- Projects a world-space point through column-major view and projection
+-- matrices onto the native title target, returning device pixels.
+local function titlePixel(view, projection, x, y, z)
+  local Matrix4 = require("libs.math.src.Matrix4")
+  local vx, vy, vz, vw = Matrix4.transformPoint(view, x, y, z)
+  local cx = projection[1] * vx + projection[5] * vy + projection[9] * vz + projection[13]
+  local cy = projection[2] * vx + projection[6] * vy + projection[10] * vz + projection[14]
+  local cw = projection[4] * vx + projection[8] * vy + projection[12] * vz + projection[16]
+  Assert.isTrue(cw ~= 0, "the placed title origin stays in front of the sourced lens")
+  return (cx / cw * 0.5 + 0.5) * TITLE_NATIVE_WIDTH, (1 - (cy / cw * 0.5 + 0.5)) * TITLE_NATIVE_HEIGHT
+end
+
+local function expectedTitleCamera(scene, Matrix4)
+  local timeline = assert(scene.bundle.timeline, "title bundle carries its camera timeline")
+  local rawTarget = assert(timeline.camera.target, "title bundle carries its camera target")
+  local unit = 1 / 16
+  local eye = { scene.cameraPos[1] * unit, scene.cameraPos[2] * unit, scene.cameraPos[3] * unit }
+  local target = { rawTarget[1] * unit, rawTarget[2] * unit, rawTarget[3] * unit }
+  local halfAngle = (TITLE_HALF_ANGLE_INDEX / 65536) * (2 * math.pi)
+  return Matrix4.lookAt(eye, target, { 0, 1, 0 }),
+    Matrix4.perspective(2 * halfAngle, TITLE_NATIVE_WIDTH / TITLE_NATIVE_HEIGHT, 1, 5000)
+end
+
+local function title_legend_carries_its_retail_placement(scope, versionId)
+  local Matrix4 = require("libs.math.src.Matrix4")
+  local scene = openTitleScene(scope, versionId)
+  local want = Matrix4.translate(TITLE_SOURCE_X, TITLE_SOURCE_Y, TITLE_SOURCE_Z)
+  Assert.deepEqual(
+    scene.legend.transform,
+    want,
+    "the " .. versionId .. " legendary inherits the retail object translation"
+  )
+  local camera = scene:_camera()
+  local wantView, wantProjection = expectedTitleCamera(scene, Matrix4)
+  Assert.deepEqual(camera.view(), wantView, "placing the legendary never moves the sourced camera")
+  Assert.deepEqual(camera.projection(), wantProjection, "placing the legendary never retunes the sourced lens")
+  local actualX, actualY, actualZ = Matrix4.transformPoint(scene.legend.transform, 0, 0, 0)
+  Assert.near(actualX, TITLE_SOURCE_X, 1e-9, "the legendary origin lands on the retail x")
+  Assert.near(actualY, TITLE_SOURCE_Y, 1e-9, "the legendary origin lands on the retail y")
+  Assert.near(actualZ, TITLE_SOURCE_Z, 1e-9, "the legendary origin lands on the retail z")
+  local pixelX, pixelY = titlePixel(camera.view(), camera.projection(), actualX, actualY, actualZ)
+  local expectedX, expectedY =
+    titlePixel(camera.view(), camera.projection(), TITLE_SOURCE_X, TITLE_SOURCE_Y, TITLE_SOURCE_Z)
+  Assert.near(pixelX, expectedX, 1e-6, "the legendary projects onto its retail screen point")
+  Assert.near(pixelY, expectedY, 1e-6, "the legendary projects onto its retail screen line")
+  local guard = 0
+  while scene.cameraPointIndex == 1 and guard < 5000 do
+    scene:updateFixed()
+    guard = guard + 1
+  end
+  Assert.equal(scene.cameraPointIndex, 2, "the title camera reaches its later waypoint")
+  Assert.deepEqual(
+    scene.legend.transform,
+    want,
+    "the traveling legendary keeps its retail placement at the later waypoint"
+  )
+  local laterView, _ = expectedTitleCamera(scene, Matrix4)
+  Assert.deepEqual(scene:_camera().view(), laterView, "the later waypoint still composes eye and target in world units")
+  local laterX, laterY = titlePixel(
+    scene:_camera().view(),
+    scene:_camera().projection(),
+    Matrix4.transformPoint(scene.legend.transform, 0, 0, 0)
+  )
+  local laterExpectedX, laterExpectedY = titlePixel(
+    scene:_camera().view(),
+    scene:_camera().projection(),
+    TITLE_SOURCE_X,
+    TITLE_SOURCE_Y,
+    TITLE_SOURCE_Z
+  )
+  Assert.near(laterX, laterExpectedX, 1e-6, "the traveling legendary still projects onto its retail point")
+  Assert.near(laterY, laterExpectedY, 1e-6, "the traveling legendary still projects onto its retail line")
+  scene:_drawModel()
+  local bytes = sourceBytes(scope, assert(scene.canvas, "the title keeps its native target"))
+  local painted = 0
+  for i = 4, #bytes, 4 do
+    if string.byte(bytes, i) > 0 then
+      painted = painted + 1
+    end
+  end
+  Assert.isTrue(painted > 0, "the placed legendary paints its native target instead of being culled")
+  scene:dispose()
+end
+
+local function title_sparkle_shares_the_retail_placement(scope, versionId)
+  local Matrix4 = require("libs.math.src.Matrix4")
+  local scene = openTitleScene(scope, versionId)
+  local want = Matrix4.translate(TITLE_SOURCE_X, TITLE_SOURCE_Y, TITLE_SOURCE_Z)
+  Assert.deepEqual(
+    scene.sparkle.transform,
+    want,
+    "the " .. versionId .. " sparkle inherits the same retail object translation"
+  )
+  Assert.deepEqual(
+    scene.sparkle.transform,
+    scene.legend.transform,
+    "legend and sparkle share one source placement"
+  )
+  Assert.isTrue(scene.legend ~= scene.sparkle, "legend and sparkle stay independent instances")
+  Assert.isTrue(
+    scene.legend.animationState ~= scene.sparkle.animationState,
+    "legend and sparkle keep independent animation state"
+  )
+  local view, projection = scene:_camera().view(), scene:_camera().projection()
+  for _ = 1, 10 do
+    scene:updateFixed()
+  end
+  Assert.deepEqual(
+    scene.sparkle.transform,
+    want,
+    "advancing the title clock never moves the sparkle placement"
+  )
+  Assert.deepEqual(scene:_camera().view(), view, "the sparkle placement never moves the sourced camera")
+  Assert.deepEqual(scene:_camera().projection(), projection, "the sparkle placement never retunes the sourced lens")
+  scene:dispose()
+end
+
+local function soulsilver_title_legend_carries_its_retail_placement(scope, context)
+  if not RomImporter.isReady("soulsilver") then
+    context:skip("SoulSilver title placement needs a user-owned SoulSilver dump")
+  end
+  title_legend_carries_its_retail_placement(scope, "soulsilver")
+end
+
+local function soulsilver_title_sparkle_shares_the_retail_placement(scope, context)
+  if not RomImporter.isReady("soulsilver") then
+    context:skip("SoulSilver title placement needs a user-owned SoulSilver dump")
+  end
+  title_sparkle_shares_the_retail_placement(scope, "soulsilver")
+end
+
+local function heartgold_title_placement_is_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold title placement needs a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the legendary and sparkle retail translation legs "
+        .. "cannot run for HeartGold and are never faked"
+    )
+  end
+  title_legend_carries_its_retail_placement(scope, "heartgold")
+  title_sparkle_shares_the_retail_placement(scope, "heartgold")
+end
+
 local T = GraphicsSmoke.suite({
   ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
@@ -5675,6 +5858,9 @@ local T = GraphicsSmoke.suite({
   ["heartgold scene three beats are blocked without a dump"] = heartgold_scene_three_beats_are_blocked_without_a_dump,
   ["heartgold scene five shutter is blocked without a dump"] = heartgold_scene_five_shutter_is_blocked_without_a_dump,
   ["heartgold wipe kinds are blocked without a dump"] = heartgold_wipe_kinds_are_blocked_without_a_dump,
+  ["soulsilver title legend carries its retail placement"] = soulsilver_title_legend_carries_its_retail_placement,
+  ["soulsilver title sparkle shares the retail placement"] = soulsilver_title_sparkle_shares_the_retail_placement,
+  ["heartgold title placement is blocked without a dump"] = heartgold_title_placement_is_blocked_without_a_dump,
 })
 T.metadata.capabilities = { "graphics", "rom_dump" }
 T.metadata.derivedAssets = {
@@ -5683,6 +5869,7 @@ T.metadata.derivedAssets = {
   "opening-scene:3",
   "opening-scene:4",
   "opening-scene:5",
+  "startup-title:global",
 }
 T.metadata.tags = { "startup", "opening" }
 return T
