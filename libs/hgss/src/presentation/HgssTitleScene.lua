@@ -50,6 +50,10 @@ local WIDTH, HEIGHT = 256, 192
 -- field of view of about 32 degrees, not the 42 degrees a generic
 -- presentation default would assume.
 local HALF_ANGLE_INDEX = 0xB60
+-- The sourced title object translation the legendary and the sparkle share
+-- (title_screen.c TitleScreen_Load3DObjects): source (30, 95, 0) carried in
+-- the same /16 world units the title camera adopts below.
+local TITLE_OBJECT_PLACEMENT = Matrix4.translate(30 / 16, 95 / 16, 0)
 -- The source (0, 0.5) clip pair cannot reach a host depth projection: a
 -- zero near plane is not representable. The runtime maps it onto a stable
 -- positive range that contains the whole camera script instead. Every
@@ -206,7 +210,7 @@ local function buildModel(self, descriptor, clips, key)
     end
     return image
   end
-  local instance = ModelInstance.new(definition, { resolveImage = resolveImage })
+  local instance = ModelInstance.new(definition, { transform = TITLE_OBJECT_PLACEMENT, resolveImage = resolveImage })
   instance.renderMeshesById = meshes
   for _, clip in pairs(clips) do
     local boundClip = assert(definition:animation(clip.id), "title definition dropped a validated animation channel")
