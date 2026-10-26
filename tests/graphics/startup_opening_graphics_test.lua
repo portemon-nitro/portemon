@@ -1131,6 +1131,7 @@ local function authored_sprites_stay_on_their_engine_with_frame_offsets(scope)
           y = 64,
           drawOrder = 1,
           clipId = clipId,
+          animate = true,
         },
         {
           op = "spriteVisible",
@@ -1183,7 +1184,18 @@ local function step_relative_fades_composite_on_the_gpu(scope)
   local events = {
     { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 30 },
     { op = "enableSkip", stepId = "setup", atStepTick = 10 },
-    { op = "setFade", stepId = "run", atStepTick = 90, kind = "white", ticks = 20, effect = "fade-run" },
+    {
+      op = "setFade",
+      stepId = "run",
+      atStepTick = 90,
+      scope = "both",
+      mode = "brightness",
+      color = "white",
+      direction = "out",
+      ticks = 20,
+      terminal = "neutral",
+      effect = "fade-run",
+    },
     { op = "waitTicks", stepId = "run", atStepTick = 0, ticks = 120 },
     { op = "finish", stepId = "run", atStepTick = 120 },
   }
@@ -1980,6 +1992,7 @@ local function pairedFlipScene()
         y = 64,
         drawOrder = 1,
         clipId = clipId,
+        animate = true,
       },
       {
         op = "spriteVisible",
@@ -2605,6 +2618,7 @@ local function synthetic_dual_coefficients_saturate_both_weights_per_pixel(scope
           y = 0,
           drawOrder = 0,
           clipId = probeClip,
+          animate = true,
         },
         {
           op = "spriteVisible",
@@ -6110,6 +6124,458 @@ local function conjunctive_effect_guard_holds_mutation_until_both_effects_finish
   movie:dispose()
 end
 
+-- Scoped engine-local brightness fades with terminal holds: a sub-engine
+-- brightness-out with a hold leaves the main target untouched throughout,
+-- turns sub black by its final tick, and keeps sub black across the step
+-- boundary until an authored reset.
+local function scoped_sub_brightness_out_holds_black_while_main_stays_clear(scope)
+  local root = sceneArtRoot(1)
+  local mainImage = root .. "layers/fade-main.png"
+  local subImage = root .. "layers/fade-sub.png"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local steps = {
+    { id = "setup", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 2 } },
+    { id = "fade", events = { 3 }, ["until"] = { kind = "effect", effect = "fade-sub" } },
+    { id = "tail", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 6 } },
+  }
+  local events = {
+    { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 2 },
+    { op = "enableSkip", stepId = "setup", atStepTick = 1 },
+    {
+      op = "setFade",
+      stepId = "fade",
+      atStepTick = 0,
+      scope = "sub",
+      mode = "brightness",
+      color = "black",
+      direction = "out",
+      ticks = 8,
+      terminal = "hold",
+      effect = "fade-sub",
+    },
+    { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 6 },
+    { op = "finish", stepId = "tail", atStepTick = 0 },
+  }
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      { compositeLayer(0, mainImage, 256, 192) },
+      { compositeLayer(0, subImage, 256, 192) },
+      {},
+      { seed = 0, emitters = {} },
+      steps,
+      events
+    ),
+    {
+      [mainImage] = solidPng(256, 192, 255, 0, 0),
+      [subImage] = solidPng(256, 192, 0, 255, 0),
+    },
+    gray16
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  advance(movie, 2)
+  movie:draw()
+  local mr, mg, mb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
+  assertSameColor(mr, mg, mb, 1, 0, 0, 0.08, "main stays clear before the sub fade")
+  local sr, sg, sb = pixelOf(sourceBytes(scope, movie.subCanvas), 256, 128, 96)
+  assertSameColor(sr, sg, sb, 0, 1, 0, 0.08, "sub starts on its authored art")
+  advance(movie, 4)
+  movie:draw()
+  local hr, hg, hb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
+  assertSameColor(hr, hg, hb, 1, 0, 0, 0.08, "main stays clear mid-way through the sub fade")
+  local qr, qg, qb = pixelOf(sourceBytes(scope, movie.subCanvas), 256, 128, 96)
+  Assert.near(qg, 0.5, 0.14, "sub is mid-transition half-way through its fade")
+  advance(movie, 4)
+  movie:draw()
+  local fr, fg, fb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
+  assertSameColor(fr, fg, fb, 1, 0, 0, 0.08, "main stays clear when the sub fade completes")
+  local br, bg, bb = pixelOf(sourceBytes(scope, movie.subCanvas), 256, 128, 96)
+  assertSameColor(br, bg, bb, 0, 0, 0, 0.08, "sub reaches black at its final fade tick")
+  Assert.equal(currentStepId(movie), "tail", "the named fade effect completes its step")
+  advance(movie, 5)
+  movie:draw()
+  local tr, tg, tb = pixelOf(sourceBytes(scope, movie.subCanvas), 256, 128, 96)
+  assertSameColor(tr, tg, tb, 0, 0, 0, 0.08, "sub holds black across the step boundary")
+  local ur, ug, ub = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
+  assertSameColor(ur, ug, ub, 1, 0, 0, 0.08, "main stays clear while sub holds black")
+  movie:dispose()
+end
+
+-- Two-range spatial line shutters on both engines: the center-out open
+-- reveals the middle band first while the outer rows stay black, and the
+-- outer-in close covers the edge rows first while the middle band stays
+-- lit. Identical masks on the left, center, and right columns prove row
+-- masks rather than a uniform alpha rectangle.
+local function both_engine_line_shutters_sample_source_rows_not_uniform_alpha(scope)
+  local root = sceneArtRoot(1)
+  local mainImage = root .. "layers/shutter-main.png"
+  local subImage = root .. "layers/shutter-sub.png"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local steps = {
+    { id = "setup", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 1 } },
+    { id = "open", events = { 3 }, ["until"] = { kind = "effect", effect = "fade-open" } },
+    { id = "close", events = { 4 }, ["until"] = { kind = "effect", effect = "fade-close" } },
+    { id = "tail", events = { 5, 6 }, ["until"] = { kind = "duration", ticks = 2 } },
+  }
+  local events = {
+    { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 1 },
+    { op = "enableSkip", stepId = "setup", atStepTick = 1 },
+    {
+      op = "setFade",
+      stepId = "open",
+      atStepTick = 0,
+      scope = "both",
+      mode = "line-shutter",
+      color = "black",
+      direction = "in",
+      ticks = 10,
+      terminal = "neutral",
+      shape = "center-out",
+      effect = "fade-open",
+    },
+    {
+      op = "setFade",
+      stepId = "close",
+      atStepTick = 0,
+      scope = "both",
+      mode = "line-shutter",
+      color = "black",
+      direction = "out",
+      ticks = 26,
+      terminal = "hold",
+      shape = "outer-in",
+      effect = "fade-close",
+    },
+    { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 2 },
+    { op = "finish", stepId = "tail", atStepTick = 0 },
+  }
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      { compositeLayer(0, mainImage, 256, 192) },
+      { compositeLayer(0, subImage, 256, 192) },
+      {},
+      { seed = 0, emitters = {} },
+      steps,
+      events
+    ),
+    {
+      [mainImage] = solidPng(256, 192, 255, 0, 0),
+      [subImage] = solidPng(256, 192, 0, 255, 0),
+    },
+    gray16
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  local function assertEngineRow(canvas, artR, artG, artB, y, covered, label)
+    for _, x in ipairs({ 32, 128, 224 }) do
+      local r, g, b = pixelOf(sourceBytes(scope, canvas), 256, x, y)
+      if covered then
+        assertSameColor(r, g, b, 0, 0, 0, 0.08, label .. " masks row " .. y)
+      else
+        assertSameColor(r, g, b, artR, artG, artB, 0.08, label .. " shows row " .. y)
+      end
+    end
+  end
+  advance(movie, 1)
+  advance(movie, 1)
+  movie:draw()
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 8, true, "the open first frame on main")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 96, false, "the open first frame on main")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 180, true, "the open first frame on main")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 8, true, "the open first frame on sub")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 96, false, "the open first frame on sub")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 180, true, "the open first frame on sub")
+  advance(movie, 4)
+  movie:draw()
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 8, true, "the open middle frame on main")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 96, false, "the open middle frame on main")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 180, true, "the open middle frame on main")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 8, true, "the open middle frame on sub")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 96, false, "the open middle frame on sub")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 180, true, "the open middle frame on sub")
+  advance(movie, 5)
+  movie:draw()
+  Assert.equal(currentStepId(movie), "close", "the open shutter completes into its close")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 8, false, "the open final frame on main")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 96, false, "the open final frame on main")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 180, false, "the open final frame on main")
+  advance(movie, 1)
+  movie:draw()
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 2, true, "the close first frame on main")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 96, false, "the close first frame on main")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 2, true, "the close first frame on sub")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 96, false, "the close first frame on sub")
+  advance(movie, 12)
+  movie:draw()
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 8, true, "the close middle frame on main")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 96, false, "the close middle frame on main")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 180, true, "the close middle frame on main")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 8, true, "the close middle frame on sub")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 96, false, "the close middle frame on sub")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 180, true, "the close middle frame on sub")
+  advance(movie, 13)
+  movie:draw()
+  Assert.equal(currentStepId(movie), "tail", "the close shutter completes into its tail")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 8, true, "the close final frame on main")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 96, true, "the close final frame on main")
+  assertEngineRow(movie.mainCanvas, 1, 0, 0, 180, true, "the close final frame on main")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 8, true, "the close final frame on sub")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 96, true, "the close final frame on sub")
+  assertEngineRow(movie.subCanvas, 0, 1, 0, 180, true, "the close final frame on sub")
+  movie:dispose()
+end
+
+-- Absolute background origins replace the register and cancel the
+-- same-slot scroll: after a running drift pans the wide map, the reset
+-- lands back on the origin and later ticks hold it there.
+local function absolute_scroll_position_overwrites_and_cancels_the_running_scroll(scope)
+  local root = sceneArtRoot(1)
+  local mainImage = root .. "layers/scroll-wide.png"
+  local subImage = root .. "layers/scroll-sub.png"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local steps = {
+    { id = "setup", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 1 } },
+    { id = "drift", events = { 3 }, ["until"] = { kind = "duration", ticks = 4 } },
+    { id = "reset", events = { 4 }, ["until"] = { kind = "duration", ticks = 4 } },
+    { id = "tail", events = { 5, 6 }, ["until"] = { kind = "duration", ticks = 2 } },
+  }
+  local events = {
+    { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 1 },
+    { op = "enableSkip", stepId = "setup", atStepTick = 1 },
+    { op = "setScroll", stepId = "drift", atStepTick = 0, engine = "main", bgSlot = 1, dx = 64, dy = 0, ticks = -1 },
+    { op = "setScrollPosition", stepId = "reset", atStepTick = 0, engine = "main", bgSlot = 1, x = 0, y = 0 },
+    { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 2 },
+    { op = "finish", stepId = "tail", atStepTick = 0 },
+  }
+  local left = string.rep(string.char(255, 0, 0, 255), 256)
+  local right = string.rep(string.char(0, 0, 255, 255), 256)
+  local rows = {}
+  for _ = 1, 192 do
+    rows[#rows + 1] = left .. right
+  end
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      { compositeLayer(1, mainImage, 512, 192) },
+      { compositeLayer(0, subImage, 256, 192) },
+      {},
+      { seed = 0, emitters = {} },
+      steps,
+      events
+    ),
+    {
+      [mainImage] = PngWriter.encode(512, 192, table.concat(rows)),
+      [subImage] = solidPng(256, 192, 0, 255, 0),
+    },
+    gray16
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  advance(movie, 1)
+  advance(movie, 4)
+  Assert.equal(currentStepId(movie), "reset", "the drift hands the reset step its scroll")
+  local drifted = liveEngineOffsets(movie, "main")
+  Assert.equal(drifted[1][1], 256, "the running drift pans the wide map")
+  movie:draw()
+  local dr, dg, db = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 0, 96)
+  assertSameColor(dr, dg, db, 0, 0, 1, 0.08, "the drifted viewport shows the second half")
+  advance(movie, 1)
+  movie:draw()
+  local reset = liveEngineOffsets(movie, "main")
+  Assert.equal(reset[1][1], 0, "the absolute reset overwrites the scrolled origin")
+  Assert.equal(reset[1][2], 0, "the absolute reset overwrites the scrolled row")
+  local rr, rg, rb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 0, 96)
+  assertSameColor(rr, rg, rb, 1, 0, 0, 0.08, "the reset viewport shows the first half")
+  advance(movie, 3)
+  local held = liveEngineOffsets(movie, "main")
+  Assert.equal(held[1][1], 0, "the cancelled drift never resumes after the reset")
+  movie:draw()
+  local hr, hg, hb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 0, 96)
+  assertSameColor(hr, hg, hb, 1, 0, 0, 0.08, "the held viewport keeps the first half")
+  movie:dispose()
+end
+
+-- Paused sprite clips hold their first frame through every draw and tick
+-- until a later authored start runs the same clip normally.
+local function paused_sprite_clip_holds_its_first_frame_until_started(scope)
+  local root = sceneArtRoot(1)
+  local stageImage = root .. "layers/stage.png"
+  local pitImage = root .. "layers/pit.png"
+  local clipId = root .. "sprites/hero.g4sprite"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local steps = {
+    { id = "setup", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 1 } },
+    { id = "paused", events = { 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 10 } },
+    { id = "run", events = { 6, 7, 8 }, ["until"] = { kind = "duration", ticks = 6 } },
+  }
+  local events = {
+    { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 1 },
+    { op = "enableSkip", stepId = "setup", atStepTick = 1 },
+    {
+      op = "setSpriteClip",
+      stepId = "paused",
+      atStepTick = 0,
+      instanceId = "hero",
+      engine = "main",
+      x = 32,
+      y = 64,
+      drawOrder = 1,
+      clipId = clipId,
+      animate = false,
+    },
+    {
+      op = "spriteVisible",
+      stepId = "paused",
+      atStepTick = 0,
+      instanceId = "hero",
+      engine = "main",
+      x = 32,
+      y = 64,
+      drawOrder = 1,
+      visible = true,
+    },
+    { op = "waitTicks", stepId = "paused", atStepTick = 0, ticks = 10 },
+    {
+      op = "setSpriteClip",
+      stepId = "run",
+      atStepTick = 0,
+      instanceId = "hero",
+      engine = "main",
+      x = 32,
+      y = 64,
+      drawOrder = 1,
+      clipId = clipId,
+      animate = true,
+    },
+    {
+      op = "spriteVisible",
+      stepId = "run",
+      atStepTick = 0,
+      instanceId = "hero",
+      engine = "main",
+      x = 32,
+      y = 64,
+      drawOrder = 1,
+      visible = true,
+    },
+    { op = "waitTicks", stepId = "run", atStepTick = 0, ticks = 6 },
+  }
+  local clipRows = {}
+  local firstHalf = string.rep(string.char(255, 255, 0, 255), 16)
+  local secondHalf = string.rep(string.char(0, 255, 255, 255), 16)
+  for _ = 1, 16 do
+    clipRows[#clipRows + 1] = firstHalf .. secondHalf
+  end
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      { compositeLayer(0, stageImage, 256, 192) },
+      { compositeLayer(0, pitImage, 256, 192) },
+      {
+        compositeClip(clipId, {
+          compositeFrame(0, 0, 16, 16, 0, 0, 2),
+          compositeFrame(16, 0, 16, 16, 0, 0, 2),
+        }),
+      },
+      { seed = 0, emitters = {} },
+      steps,
+      events
+    ),
+    {
+      [stageImage] = solidPng(256, 192, 255, 0, 255),
+      [pitImage] = solidPng(256, 192, 0, 255, 0),
+      [clipId] = PngWriter.encode(32, 16, table.concat(clipRows)),
+    },
+    gray16
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  advance(movie, 1)
+  advance(movie, 8)
+  movie:draw()
+  local pr, pg, pb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 40, 72)
+  assertSameColor(pr, pg, pb, 1, 1, 0, 0.08, "the paused clip holds its first frame")
+  advance(movie, 2)
+  Assert.equal(currentStepId(movie), "run", "the pause hands the authored start its clip")
+  movie:draw()
+  local hr, hg, hb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 40, 72)
+  assertSameColor(hr, hg, hb, 1, 1, 0, 0.08, "the clip still holds first-frame pixels before its start")
+  advance(movie, 2)
+  movie:draw()
+  local rr, rg, rb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 40, 72)
+  assertSameColor(rr, rg, rb, 0, 1, 1, 0.08, "the started clip advances to its second frame")
+  movie:dispose()
+end
+
+-- Physical-screen brightness resets resolve the live engine mapping: with
+-- the main engine flipped to the lower screen, resetting the upper screen
+-- clears only the sub hold while the main hold survives.
+local function physical_top_neutral_resets_only_the_mapped_engine(scope)
+  local root = sceneArtRoot(1)
+  local mainImage = root .. "layers/top-main.png"
+  local subImage = root .. "layers/top-sub.png"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local steps = {
+    { id = "setup", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 2 } },
+    { id = "hold", events = { 4 }, ["until"] = { kind = "effect", effect = "fade-both" } },
+    { id = "flip", events = { 5 }, ["until"] = { kind = "duration", ticks = 1 } },
+    { id = "reset", events = { 6 }, ["until"] = { kind = "duration", ticks = 2 } },
+    { id = "tail", events = { 7, 8 }, ["until"] = { kind = "duration", ticks = 2 } },
+  }
+  local events = {
+    { op = "setScreenMapping", stepId = "setup", atStepTick = 0, mainPhysical = "upper" },
+    { op = "enableSkip", stepId = "setup", atStepTick = 1 },
+    { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 2 },
+    {
+      op = "setFade",
+      stepId = "hold",
+      atStepTick = 0,
+      scope = "both",
+      mode = "brightness",
+      color = "black",
+      direction = "out",
+      ticks = 4,
+      terminal = "hold",
+      effect = "fade-both",
+    },
+    { op = "setScreenMapping", stepId = "flip", atStepTick = 0, mainPhysical = "lower" },
+    { op = "setBrightness", stepId = "reset", atStepTick = 0, physical = "upper", value = "neutral" },
+    { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 2 },
+    { op = "finish", stepId = "tail", atStepTick = 0 },
+  }
+  local scenes, cacheFs = compositePack(
+    compositeScene(
+      1,
+      { compositeLayer(0, mainImage, 256, 192) },
+      { compositeLayer(0, subImage, 256, 192) },
+      {},
+      { seed = 0, emitters = {} },
+      steps,
+      events
+    ),
+    {
+      [mainImage] = solidPng(256, 192, 255, 0, 0),
+      [subImage] = solidPng(256, 192, 0, 255, 0),
+    },
+    gray16
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  advance(movie, 2)
+  advance(movie, 4)
+  Assert.equal(currentStepId(movie), "flip", "the both-engine fade completes into its flip")
+  movie:draw()
+  local fr, fg, fb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
+  assertSameColor(fr, fg, fb, 0, 0, 0, 0.08, "the main hold covers its engine")
+  local gr, gg, gb = pixelOf(sourceBytes(scope, movie.subCanvas), 256, 128, 96)
+  assertSameColor(gr, gg, gb, 0, 0, 0, 0.08, "the sub hold covers its engine")
+  advance(movie, 1)
+  advance(movie, 1)
+  movie:draw()
+  local hr, hg, hb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
+  assertSameColor(hr, hg, hb, 0, 0, 0, 0.08, "the main hold survives the upper-screen reset")
+  local qr, qg, qb = pixelOf(sourceBytes(scope, movie.subCanvas), 256, 128, 96)
+  assertSameColor(qr, qg, qb, 0, 1, 0, 0.08, "the upper-screen reset clears only the mapped sub engine")
+  movie:dispose()
+end
+
 local T = GraphicsSmoke.suite({
   ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
@@ -6163,6 +6629,11 @@ local T = GraphicsSmoke.suite({
   ["synthetic terminal wipe brightness holds only for the retail kinds"] = synthetic_terminal_wipe_brightness_holds_only_for_the_retail_kinds,
   ["source cases dispatch one per fixed update"] = source_cases_dispatch_one_per_fixed_update,
   ["conjunctive effect guard holds mutation until both effects finish"] = conjunctive_effect_guard_holds_mutation_until_both_effects_finish,
+  ["scoped sub brightness out holds black while main stays clear"] = scoped_sub_brightness_out_holds_black_while_main_stays_clear,
+  ["both engine line shutters sample source rows not uniform alpha"] = both_engine_line_shutters_sample_source_rows_not_uniform_alpha,
+  ["absolute scroll position overwrites and cancels the running scroll"] = absolute_scroll_position_overwrites_and_cancels_the_running_scroll,
+  ["paused sprite clip holds its first frame until started"] = paused_sprite_clip_holds_its_first_frame_until_started,
+  ["physical top neutral resets only the mapped engine"] = physical_top_neutral_resets_only_the_mapped_engine,
   ["synthetic scene five shutter opens main center out before sub bottom up"] = synthetic_scene_five_shutter_opens_main_center_out_before_sub_bottom_up,
   ["soulsilver scene two final wipe keeps its source kind and white hold"] = soulsilver_scene_two_final_wipe_keeps_its_source_kind_and_white_hold,
   ["soulsilver scene three closes retire town drawing before the rival reveal"] = soulsilver_scene_three_closes_retire_town_drawing_before_the_rival_reveal,

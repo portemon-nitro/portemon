@@ -14,7 +14,7 @@ local ArtifactState = require("romdump.src.build.ArtifactState")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v6"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v7"
 local SOURCE_TICK_RATE = 30
 local JOURNEY_GENERATION = "startup-journey"
 
@@ -22,6 +22,8 @@ local CLOSED_OPS = {
   setLayer = true,
   setPalette = true,
   setScroll = true,
+  setScrollPosition = true,
+  setBrightness = true,
   setBlend = true,
   window = true,
   setWindowSecondary = true,

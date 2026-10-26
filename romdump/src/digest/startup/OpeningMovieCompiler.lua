@@ -904,7 +904,8 @@ end
 ---@param sprite string source sprite name
 ---@param bank string sprite bank name
 ---@param sequence integer played animation sequence
-local function showSprite(events, sceneNumber, instances, clips, stepId, atStepTick, sprite, bank, sequence)
+---@param animate boolean|nil false holds the first authored frame, nil and true animate normally
+local function showSprite(events, sceneNumber, instances, clips, stepId, atStepTick, sprite, bank, sequence, animate)
   local instance = instanceFor(instances, sprite)
   local clip = clipPath(clips, bank, sequence)
   local x, y = sourceLocalPosition(sceneNumber, instance.engine, instance.x, instance.y)
@@ -915,6 +916,7 @@ local function showSprite(events, sceneNumber, instances, clips, stepId, atStepT
     y = y,
     drawOrder = instance.drawOrder,
     clipId = clip,
+    animate = animate == nil and true or animate,
   })
   events[#events + 1] = event("spriteVisible", stepId, atStepTick, {
     instanceId = instance.id,
@@ -1060,7 +1062,15 @@ local function scene1Program(clips, layers)
   step(steps, "bird", bird, { kind = "duration", ticks = 128 })
   local run = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitTicks", "run", 0, { ticks = 90 })
-  events[#events + 1] = event("setFade", "run", 90, { kind = "white", ticks = 65, effect = "fade-white" })
+  events[#events + 1] = event("setFade", "run", 90, {
+    scope = "both",
+    mode = "brightness",
+    color = "white",
+    direction = "out",
+    ticks = 65,
+    terminal = "neutral",
+    effect = "fade-white",
+  })
   step(steps, "run", run, { kind = "duration", ticks = 90 })
   local fadeFinish = nextIndex(events)
   events[#events + 1] = event("finish", "fade", 0)
@@ -1094,6 +1104,7 @@ local function scene2Program(clips)
       y = y,
       drawOrder = instance.drawOrder,
       clipId = clip,
+      animate = true,
     })
     events[#events + 1] = event("spriteVisible", stepId, atStepTick, {
       instanceId = instance.id,
@@ -1158,7 +1169,14 @@ local function scene2Program(clips)
   flyin[#flyin + 1] = nextIndex(events)
   events[#events + 1] = event("setScroll", "flyin", 0, { engine = "sub", bgSlot = 0, dx = 0, dy = 64, ticks = -1 })
   flyin[#flyin + 1] = nextIndex(events)
-  events[#events + 1] = event("setFade", "flyin", 0, { kind = "white-in", ticks = 3 })
+  events[#events + 1] = event("setFade", "flyin", 0, {
+    scope = "both",
+    mode = "brightness",
+    color = "white",
+    direction = "in",
+    ticks = 3,
+    terminal = "neutral",
+  })
   -- Retail creation leaves ethan and lyra drawn but unanimated, so they
   -- show at their creation stations from the first step clock tick.
   for hero = 0, 2 do
@@ -1180,7 +1198,14 @@ local function scene2Program(clips)
   flyin[#flyin + 1] = nextIndex(events)
   events[#events + 1] = event("setScroll", "flyin", 56, { engine = "main", bgSlot = 0, dx = 0, dy = -0xC0, ticks = 5 })
   flyin[#flyin + 1] = nextIndex(events)
-  events[#events + 1] = event("setFade", "flyin", 56, { kind = "black-out", ticks = 8 })
+  events[#events + 1] = event("setFade", "flyin", 56, {
+    scope = "both",
+    mode = "brightness",
+    color = "black",
+    direction = "out",
+    ticks = 8,
+    terminal = "neutral",
+  })
   step(steps, "flyin", flyin, { kind = "duration", ticks = 56 })
   local settle = { nextIndex(events) }
   events[#events + 1] = event("waitTicks", "settle-flyin", 0, { ticks = 8 })
@@ -1533,7 +1558,16 @@ local function scene4Program(clips, layers)
   fadeIn[#fadeIn + 1] = nextIndex(events)
   events[#events + 1] = event("setScroll", "fade-in", 0, { engine = "main", bgSlot = 1, dx = 192, dy = 0, ticks = 0 })
   fadeIn[#fadeIn + 1] = nextIndex(events)
-  events[#events + 1] = event("setFade", "fade-in", 0, { kind = "black-shutter-open", ticks = 10, effect = "fade-in" })
+  events[#events + 1] = event("setFade", "fade-in", 0, {
+    scope = "both",
+    mode = "line-shutter",
+    color = "black",
+    direction = "in",
+    ticks = 10,
+    terminal = "neutral",
+    shape = "center-out",
+    effect = "fade-in",
+  })
   step(steps, "fade-in", fadeIn, { kind = "effect", effect = "fade-in" })
   local slideIn = {}
   -- The simultaneous top pan addresses the sub engine while the bottom
@@ -1643,8 +1677,16 @@ local function scene4Program(clips, layers)
     end
   end
   local finishTotodile = { nextIndex(events) }
-  events[#events + 1] =
-    event("setFade", "finish-totodile", 0, { kind = "black-shutter-close", ticks = 26, effect = "fade-close" })
+  events[#events + 1] = event("setFade", "finish-totodile", 0, {
+    scope = "both",
+    mode = "line-shutter",
+    color = "black",
+    direction = "out",
+    ticks = 26,
+    terminal = "neutral",
+    shape = "outer-in",
+    effect = "fade-close",
+  })
   for _, bgSlot in ipairs({ 1, 2, 3 }) do
     setPlaneVisible(events, planes, layers, "finish-totodile", 0, "main", bgSlot, false)
     finishTotodile[#finishTotodile + 1] = #events
@@ -1712,7 +1754,15 @@ local function scene5Program(versionId)
   step(steps, "scroll", {}, { kind = "effect", effect = "scene5-shutter" }, scrollStarts)
   local wait = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitTicks", "wait", 0, { ticks = 20 })
-  events[#events + 1] = event("setFade", "wait", 20, { kind = "white", ticks = 50, effect = "fade-white" })
+  events[#events + 1] = event("setFade", "wait", 20, {
+    scope = "both",
+    mode = "brightness",
+    color = "white",
+    direction = "out",
+    ticks = 50,
+    terminal = "neutral",
+    effect = "fade-white",
+  })
   step(steps, "wait", wait, { kind = "duration", ticks = 20 })
   local fadeFinish = nextIndex(events)
   events[#events + 1] = event("finish", "fade", 0)

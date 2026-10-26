@@ -592,8 +592,13 @@ DerivedAssetContract.startupTitle = {
 -- The v6 record steps carry one source-case guard (a positive duration, a
 -- single named effect, or a conjunction of named effects) with optional
 -- same-case completion events; the v5 pseudo-wait marker is not accepted.
+-- The v7 visual grammar scopes each fade to its source engines with an
+-- explicit brightness or line-shutter mode, color, direction, duration, and
+-- terminal hold, positions backgrounds absolutely, resets physical screens
+-- to neutral, and flags whether each sprite clip animates; the v6 kind
+-- strings and the global fade are not accepted.
 DerivedAssetContract.startupOpeningScene = {
-  schema = "g4-startup-opening-scene-v6",
+  schema = "g4-startup-opening-scene-v7",
   tickRate = 30,
 }
 

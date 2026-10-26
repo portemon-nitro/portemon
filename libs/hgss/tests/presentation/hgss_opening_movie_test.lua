@@ -154,6 +154,7 @@ local function sceneEvents(sceneNumber)
         y = 96,
         drawOrder = 1,
         clipId = root .. "sprites/ethan.g4sprite",
+        animate = true,
       },
       { op = "waitTicks", stepId = "intro", atStepTick = 0, ticks = 10 },
       { op = "startEmitters", stepId = "starters", atStepTick = 0, group = "grass", emitters = { 6, 7, 8 } },
@@ -186,7 +187,7 @@ local function sceneEvents(sceneNumber)
       ticks = 20,
     },
     { op = "waitTicks", stepId = "scroll", atStepTick = 0, ticks = 20 },
-    { op = "setFade", stepId = "fade", atStepTick = 0, kind = "white", ticks = 15 },
+    { op = "setFade", stepId = "fade", atStepTick = 0, scope = "both", mode = "brightness", color = "white", direction = "out", ticks = 15, terminal = "neutral" },
     { op = "finish", stepId = "fade", atStepTick = 0 },
   }
 end
@@ -1398,6 +1399,7 @@ local function heroScene(offsetX, offsetY)
       y = 64,
       drawOrder = 1,
       clipId = clipId,
+      animate = true,
     },
     {
       op = "spriteVisible",
@@ -1483,7 +1485,7 @@ local function fadeScene()
     {
       { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 30 },
       { op = "enableSkip", stepId = "setup", atStepTick = 10 },
-      { op = "setFade", stepId = "run", atStepTick = 90, kind = "white", ticks = 20, effect = "fade-run" },
+      { op = "setFade", stepId = "run", atStepTick = 90, scope = "both", mode = "brightness", color = "white", direction = "out", ticks = 20, terminal = "neutral", effect = "fade-run" },
       { op = "waitTicks", stepId = "run", atStepTick = 0, ticks = 120 },
       { op = "finish", stepId = "run", atStepTick = 120 },
     }
@@ -1610,6 +1612,7 @@ function T.clip_completion_binds_the_compiled_clip_duration()
           y = 96,
           drawOrder = 1,
           clipId = sparkleClip,
+          animate = true,
         },
         {
           op = "spriteVisible",
@@ -2351,7 +2354,7 @@ function T.steps_hold_until_a_later_start_fires_and_completes()
         { id = "tail", events = { 2, 3 }, ["until"] = { kind = "duration", ticks = 5 } },
       },
       {
-        { op = "setFade", stepId = "hold", atStepTick = 5, kind = "white", ticks = 4, effect = "late-fade" },
+        { op = "setFade", stepId = "hold", atStepTick = 5, scope = "both", mode = "brightness", color = "white", direction = "out", ticks = 4, terminal = "neutral", effect = "late-fade" },
         { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 },
         { op = "finish", stepId = "tail", atStepTick = 0 },
       }
@@ -2842,6 +2845,7 @@ function T.independent_engine_windows_mask_planes_through_flips()
           y = 96,
           drawOrder = 1,
           clipId = heroMain,
+          animate = true,
         },
         {
           op = "spriteVisible",
@@ -2864,6 +2868,7 @@ function T.independent_engine_windows_mask_planes_through_flips()
           y = 96,
           drawOrder = 1,
           clipId = heroSub,
+          animate = true,
         },
         {
           op = "spriteVisible",
@@ -4444,6 +4449,7 @@ function T.masked_pairs_keep_raw_under_planes_with_sprites_and_windows()
           y = 80,
           drawOrder = 0,
           clipId = probeClip,
+          animate = true,
         },
         {
           op = "spriteVisible",
@@ -4588,6 +4594,7 @@ function T.background_wrap_draws_issue_no_new_quads_across_repeats_and_pans()
           y = 64,
           drawOrder = 1,
           clipId = heroClip,
+          animate = true,
         },
         {
           op = "spriteVisible",

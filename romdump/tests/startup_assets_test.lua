@@ -1282,7 +1282,7 @@ end
 -- fixtures build on the current contract instead.
 local OPENING_SCHEMA = "g4-startup-opening-scene-v3"
 
-local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v6"
+local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v7"
 
 local function openingLayer(engine, bgSlot, image)
   return {
@@ -1359,6 +1359,7 @@ local function openingEvents(sceneNumber, root)
         y = 96,
         drawOrder = 1,
         clipId = clip,
+        animate = true,
       },
       {
         op = "spriteVisible",
@@ -1400,7 +1401,18 @@ local function openingEvents(sceneNumber, root)
         effect = "scroll-panorama",
       },
       { op = "waitTicks", stepId = "wait", atStepTick = 0, ticks = 20 },
-      { op = "setFade", stepId = "wait", atStepTick = 20, kind = "white", ticks = 50, effect = "fade-white" },
+      {
+        op = "setFade",
+        stepId = "wait",
+        atStepTick = 20,
+        scope = "both",
+        mode = "brightness",
+        color = "white",
+        direction = "out",
+        ticks = 50,
+        terminal = "neutral",
+        effect = "fade-white",
+      },
       { op = "finish", stepId = "fade", atStepTick = 0 },
     }
   end
@@ -1885,7 +1897,7 @@ end
 -- engine-local window records with plane masks, a town-stage stop limited to
 -- the town scene, and manual window overrides. These synthetic fixtures pin
 -- the strict reader contract without touching a ROM.
-local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v6"
+local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v7"
 
 local function openingLayerV3(engine, bgSlot, image, visible)
   return {
@@ -2121,7 +2133,7 @@ end
 -- The generated opening scene identity the producer and the strict reader
 -- agree on: full native surfaces with per-image extents, instant and
 -- continuous scroll modes, and per-engine blend and wipe operands.
-local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v6"
+local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v7"
 
 local function typedOpeningManifest()
   local manifest = validOpeningManifest(1, "heartgold")

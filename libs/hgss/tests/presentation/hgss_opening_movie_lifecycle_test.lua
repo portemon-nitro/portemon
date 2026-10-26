@@ -120,6 +120,7 @@ local function sceneEvents(sceneNumber)
         y = 96,
         drawOrder = 1,
         clipId = root .. "sprites/ethan.g4sprite",
+        animate = true,
       },
       { op = "waitTicks", stepId = "intro", atStepTick = 0, ticks = 10 },
       { op = "startEmitters", stepId = "starters", atStepTick = 0, group = "grass", emitters = { 6, 7, 8 } },
@@ -152,7 +153,7 @@ local function sceneEvents(sceneNumber)
       ticks = 20,
     },
     { op = "waitTicks", stepId = "scroll", atStepTick = 0, ticks = 20 },
-    { op = "setFade", stepId = "fade", atStepTick = 0, kind = "white", ticks = 15 },
+    { op = "setFade", stepId = "fade", atStepTick = 0, scope = "both", mode = "brightness", color = "white", direction = "out", ticks = 15, terminal = "neutral" },
     { op = "finish", stepId = "fade", atStepTick = 0 },
   }
 end

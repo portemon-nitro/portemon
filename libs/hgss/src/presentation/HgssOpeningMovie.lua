@@ -145,7 +145,7 @@ end
 ---@field townClipTicks table<string, integer>
 ---@field cameraDistance number?
 ---@field lightingMap number?
----@field fade table<string, unknown>?
+---@field fadeByEngine table<string, { task: table<string, unknown>?, hold: string? }>
 ---@field wipe table<string, unknown>? engine-local scanline wipe program
 ---@field wipeHold table<string, unknown>? retained full-engine white/black hold by source engine
 ---@field shutter table<string, unknown>? ordered main-then-sub line shutter program
@@ -567,7 +567,10 @@ local function acquireSlot(self, manifest)
     townClipTicks = {},
     cameraDistance = nil,
     lightingMap = nil,
-    fade = nil,
+    fadeByEngine = {
+      main = { task = nil, hold = nil },
+      sub = { task = nil, hold = nil },
+    },
     wipe = nil,
     wipeHold = { main = nil, sub = nil },
     shutter = nil,
@@ -1162,6 +1165,7 @@ local function applyEvent(self, slot, event)
     instance.y = event.y
     instance.drawOrder = event.drawOrder
     instance.clipId = event.clipId
+    instance.animate = event.animate
     instance.tick = 0
     instance.quads = {}
     slot.clipStarts[event.clipId] = slot.sceneTick
@@ -1189,8 +1193,94 @@ local function applyEvent(self, slot, event)
     startEmitters(slot, event.group, event.emitters)
   elseif op == "setScreenMapping" then
     slot.mainPhysical = event.mainPhysical
+  elseif op == "setScrollPosition" then
+    -- An absolute origin replaces the slot register and retires any live
+    -- program on the same slot, so later ticks hold the authored origin
+    -- instead of resuming a superseded drift.
+    local engineLayers = slot.backgrounds[event.engine]
+    local background = engineLayers ~= nil and engineLayers[event.bgSlot] or nil
+    if background == nil then
+      error(
+        invalid("opening scene position names no compiled background slot", {
+          scene = slot.sceneNumber,
+          engine = event.engine,
+          bgSlot = event.bgSlot,
+        }),
+        0
+      )
+    end
+    background.scrollX = event.x
+    background.scrollY = event.y
+    slot.scrolls[event.engine .. ":" .. event.bgSlot] = nil
+  elseif op == "setBrightness" then
+    -- A physical reset clears only the source engine currently driving
+    -- that screen; the other engine keeps its own hold or task.
+    if event.value ~= "neutral" then
+      error(
+        invalid("opening scene brightness carries no neutral reset", {
+          scene = slot.sceneNumber,
+          physical = event.physical,
+        }),
+        0
+      )
+    end
+    if event.physical ~= "upper" and event.physical ~= "lower" then
+      error(
+        invalid("opening scene brightness names no physical screen", {
+          scene = slot.sceneNumber,
+          physical = event.physical,
+        }),
+        0
+      )
+    end
+    local engine = "sub"
+    if (event.physical == "upper") == (slot.mainPhysical == "upper") then
+      engine = "main"
+    end
+    local state = slot.fadeByEngine[engine]
+    assert(state ~= nil, "movie slot keeps a fade record per source engine")
+    state.task = nil
+    state.hold = nil
   elseif op == "setFade" then
-    slot.fade = { kind = event.kind, ticks = event.ticks, elapsed = 0 }
+    -- One named wait covers every selected engine while each selected
+    -- engine runs its own task and terminal hold; the other engine is
+    -- untouched. A new fade supersedes the selected engines' holds.
+    local engines
+    if event.scope == "both" then
+      engines = { "main", "sub" }
+    elseif event.scope == "main" or event.scope == "sub" then
+      engines = { event.scope }
+    else
+      error(
+        invalid("opening scene fade names no source scope", {
+          scene = slot.sceneNumber,
+          scope = event.scope,
+        }),
+        0
+      )
+    end
+    for _, engine in ipairs(engines) do
+      local state = slot.fadeByEngine[engine]
+      if state == nil then
+        error(
+          invalid("opening scene fade names no source engine", {
+            scene = slot.sceneNumber,
+            engine = engine,
+          }),
+          0
+        )
+      end
+      state.task = {
+        mode = event.mode,
+        color = event.color,
+        direction = event.direction,
+        ticks = event.ticks,
+        elapsed = 0,
+        terminal = event.terminal,
+        shape = event.shape,
+      }
+      state.hold = nil
+    end
     startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "waitTicks" then
     -- Duration steps own the wait; the event only marks the authored beat.
@@ -1304,14 +1394,25 @@ local function advanceContinuous(slot)
       program.elapsed = program.elapsed + 1
     end
   end
-  if slot.fade ~= nil then
-    -- A finished fade retires instead of tinting later art: the source
-    -- fade task ends on its authored tick, so a completed cover must not
-    -- outlive the program that staged it.
-    if slot.fade.elapsed < slot.fade.ticks then
-      slot.fade.elapsed = slot.fade.elapsed + 1
-    else
-      slot.fade = nil
+  for _, engine in ipairs({ "main", "sub" }) do
+    local state = slot.fadeByEngine[engine]
+    local task = state ~= nil and state.task or nil
+    if task ~= nil then
+      -- A finished task retires instead of tinting later art: only an
+      -- authored hold persists past the final tick, on its own engine.
+      if task.elapsed < task.ticks then
+        task.elapsed = task.elapsed + 1
+        if task.elapsed >= task.ticks then
+          if task.terminal == "hold" then
+            state.hold = task.color
+          else
+            state.hold = nil
+          end
+          state.task = nil
+        end
+      else
+        state.task = nil
+      end
     end
   end
   if slot.wipe ~= nil then
@@ -1362,7 +1463,11 @@ local function advanceContinuous(slot)
   advanceWindowProgram(slot, "main")
   advanceWindowProgram(slot, "sub")
   for _, sprite in pairs(slot.spriteInstances) do
-    sprite.tick = sprite.tick + 1
+    -- A paused clip holds its first authored frame: only an animated
+    -- instance advances its tick on the source clock.
+    if sprite.animate ~= false then
+      sprite.tick = sprite.tick + 1
+    end
   end
   for name in pairs(slot.townClipTicks) do
     slot.townClipTicks[name] = slot.townClipTicks[name] + 1
@@ -2543,24 +2648,90 @@ local function drawParticles(self, slot)
   graphics.setColor(1, 1, 1, 1)
 end
 
----@param slot OpeningMovieSlot scene slot
-local function drawFade(self, slot)
-  local fade = slot.fade
-  if fade == nil then
+-- Engine-local line-shutter mask for one fade task: the revealed band is
+-- centered on the source middle row, growing outward for an opening fade
+-- and shrinking inward for a closing fade. Covered rows paint source
+-- black in two ranges; a fully revealed engine draws nothing.
+---@param self HgssOpeningMovie
+---@param task table<string, unknown> active line-shutter task
+local function drawLineShutter(self, task)
+  local ticks = math.max(task.ticks --[[@as integer]], 1)
+  local elapsed = math.min(task.elapsed --[[@as integer]], ticks)
+  local half
+  if task.direction == "in" then
+    half = elapsed * 96 / ticks
+  else
+    half = 96 - elapsed * 96 / ticks
+  end
+  if half >= 96 then
     return
   end
-  local progress = math.min(fade.elapsed / math.max(fade.ticks, 1), 1)
-  local kind = fade.kind or ""
-  local clearing = kind:find("in", 1, true) ~= nil or kind:find("open", 1, true) ~= nil
-  local alpha = clearing and (1 - progress) or progress
-  local white = kind:find("white", 1, true) ~= nil
-  if white then
-    self.graphics.setColor(1, 1, 1, alpha)
-  else
-    self.graphics.setColor(0, 0, 0, alpha)
+  local runs, runStart = {}, nil
+  for vcount = 0, SOURCE_HEIGHT - 1 do
+    local revealed = vcount >= 96 - half and vcount < 96 + half
+    if not revealed then
+      if runStart == nil then
+        runStart = vcount
+      end
+    elseif runStart ~= nil then
+      runs[#runs + 1] = { runStart, vcount - runStart }
+      runStart = nil
+    end
   end
-  self.graphics.rectangle("fill", 0, 0, SOURCE_WIDTH, SOURCE_HEIGHT)
-  self.graphics.setColor(1, 1, 1, 1)
+  if runStart ~= nil then
+    runs[#runs + 1] = { runStart, SOURCE_HEIGHT - runStart }
+  end
+  local graphics = self.graphics
+  for _, run in ipairs(runs) do
+    graphics.push("all")
+    local ok, failure = pcall(function()
+      graphics.setColor(0, 0, 0, 1)
+      graphics.intersectScissor(0, run[1], SOURCE_WIDTH, run[2])
+      graphics.rectangle("fill", 0, run[1], SOURCE_WIDTH, run[2])
+      graphics.setColor(1, 1, 1, 1)
+    end)
+    graphics.pop()
+    if not ok then
+      error(failure, 0)
+    end
+  end
+end
+
+-- One engine's own fade cover: the active task paints its brightness or
+-- line-shutter mask while it runs, and an authored hold washes the
+-- engine past completion; the other engine is never touched here.
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot
+---@param engine string source engine owning the sampled fade
+local function drawFade(self, slot, engine)
+  local state = slot.fadeByEngine ~= nil and slot.fadeByEngine[engine] or nil
+  local task = state ~= nil and state.task or nil
+  if task ~= nil then
+    if task.mode == "line-shutter" then
+      drawLineShutter(self, task)
+    else
+      local progress = math.min(task.elapsed / math.max(task.ticks, 1), 1)
+      local alpha = task.direction == "in" and (1 - progress) or progress
+      if task.color == "white" then
+        self.graphics.setColor(1, 1, 1, alpha)
+      else
+        self.graphics.setColor(0, 0, 0, alpha)
+      end
+      self.graphics.rectangle("fill", 0, 0, SOURCE_WIDTH, SOURCE_HEIGHT)
+      self.graphics.setColor(1, 1, 1, 1)
+    end
+    return
+  end
+  local hold = state ~= nil and state.hold or nil
+  if hold ~= nil then
+    if hold == "white" then
+      self.graphics.setColor(1, 1, 1, 1)
+    else
+      self.graphics.setColor(0, 0, 0, 1)
+    end
+    self.graphics.rectangle("fill", 0, 0, SOURCE_WIDTH, SOURCE_HEIGHT)
+    self.graphics.setColor(1, 1, 1, 1)
+  end
 end
 
 -- Source HBlank scanline boundary at the elapsed source tick: the wipe
@@ -3049,7 +3220,7 @@ function HgssOpeningMovie:_renderEngine(slot, canvas, engine)
     end
   end
   drawShutterMask(self, slot, engine)
-  drawFade(self, slot)
+  drawFade(self, slot, engine)
 end
 
 ---@param self HgssOpeningMovie
