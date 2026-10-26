@@ -70,13 +70,13 @@ local CONTINUE_MARK = ">"
 local CONTINUE_ORIGIN = { x = 232, y = 166 }
 local HUD_ENEMY = { x = 4, y = 4 }
 local HUD_PLAYER_RIGHT = 252
-local HUD_PLAYER_BOTTOM = 132
+local HUD_PLAYER_TOP = 4
 -- Fixed single-pane HUD boxes: the enemy bounds sit at the left/top
--- anchor, the player bounds sit with their right/bottom edges at the
--- player anchors. Rows follow the paired name/level pitch with the
--- paired 48-pixel health bar; the player box adds an experience row.
+-- anchor, the player bounds sit at the upper-right. Rows follow the paired
+-- name/level pitch with the paired 48-pixel health bar; the player box adds
+-- an experience row.
 local HUD_ENEMY_BOX = { width = 96, height = 36 }
-local HUD_PLAYER_BOX = { width = 104, height = 48 }
+local HUD_PLAYER_BOX = { width = 104, height = 36 }
 local HUD_BAR_WIDTH = 48
 local HUD_BAR_HEIGHT = 4
 local HUD_ROW_HEIGHT = 12
@@ -463,15 +463,16 @@ local function hudBox(battler, fallback, origin, size, withExp)
   local hp = (battler ~= nil and type(battler.hp) == "number" and battler.hp or 0) --[[@as number]]
   local maxHp = (battler ~= nil and type(battler.maxHp) == "number" and battler.maxHp or 0) --[[@as number]]
   local fraction = hudFraction(hp, maxHp)
-  local levelWidth = math.floor(size.width / 2)
+  local levelWidth = size.width
   local markWidth = 14
+  local rowHeight = withExp and 7 or HUD_ROW_HEIGHT
   local regions = {
     {
       id = "name",
       x = origin.x,
       y = origin.y,
       width = size.width - 2 * markWidth,
-      height = HUD_ROW_HEIGHT,
+      height = rowHeight,
       text = hudName(battler, fallback),
     },
     {
@@ -479,7 +480,7 @@ local function hudBox(battler, fallback, origin, size, withExp)
       x = origin.x + size.width - 2 * markWidth,
       y = origin.y,
       width = markWidth,
-      height = HUD_ROW_HEIGHT,
+      height = rowHeight,
       text = hudGender(battler),
     },
     {
@@ -487,41 +488,41 @@ local function hudBox(battler, fallback, origin, size, withExp)
       x = origin.x + size.width - markWidth,
       y = origin.y,
       width = markWidth,
-      height = HUD_ROW_HEIGHT,
+      height = rowHeight,
       text = hudCaught(battler),
     },
     {
       id = "level",
       x = origin.x,
-      y = origin.y + HUD_ROW_HEIGHT,
+      y = origin.y + rowHeight,
       width = levelWidth,
-      height = HUD_ROW_HEIGHT,
+      height = rowHeight,
       text = hudLevel(battler),
     },
     {
       id = "condition",
       x = origin.x + levelWidth,
-      y = origin.y + HUD_ROW_HEIGHT,
+      y = origin.y + rowHeight,
       width = size.width - levelWidth,
-      height = HUD_ROW_HEIGHT,
+      height = rowHeight,
       text = hudCondition(battler),
     },
-    {
-      id = "hp",
-      x = origin.x + HUD_BAR_WIDTH + 4,
-      y = origin.y + 2 * HUD_ROW_HEIGHT,
-      width = size.width - HUD_BAR_WIDTH - 4,
-      height = HUD_ROW_HEIGHT,
-      text = hudHealth(battler),
-    },
+  }
+  regions[#regions + 1] = {
+    id = "hp",
+    x = origin.x + HUD_BAR_WIDTH + 4,
+    y = origin.y + 2 * rowHeight,
+    width = size.width - HUD_BAR_WIDTH - 4,
+    height = rowHeight,
+    text = withExp and hudHealth(battler) or "",
   }
   if withExp then
     regions[#regions + 1] = {
       id = "exp",
       x = origin.x,
-      y = origin.y + 3 * HUD_ROW_HEIGHT,
+      y = origin.y + 3 * rowHeight,
       width = size.width,
-      height = HUD_ROW_HEIGHT,
+      height = rowHeight,
       text = "",
     }
   end
@@ -533,7 +534,7 @@ local function hudBox(battler, fallback, origin, size, withExp)
     regions = regions,
     bar = {
       x = origin.x,
-      y = origin.y + 2 * HUD_ROW_HEIGHT,
+      y = origin.y + 2 * rowHeight,
       width = HUD_BAR_WIDTH * fraction,
       height = HUD_BAR_HEIGHT,
       fraction = fraction,
@@ -589,7 +590,7 @@ local function compactDoublesHudBox(battler, fallback, origin, position, side)
         y = origin.y + 17,
         width = DOUBLES_HEALTH_WIDTH,
         height = 16,
-        text = hudHealth(battler),
+        text = battler ~= nil and battler.side == 2 and "" or hudHealth(battler),
       },
     },
     bar = {
@@ -875,12 +876,12 @@ function BattleCompactInterface.contentFor(view)
       local ally = hudBox(
         player,
         "LEAD",
-        { x = HUD_PLAYER_RIGHT - HUD_PLAYER_BOX.width, y = HUD_PLAYER_BOTTOM - HUD_PLAYER_BOX.height },
+        { x = HUD_PLAYER_RIGHT - HUD_PLAYER_BOX.width, y = HUD_PLAYER_TOP },
         HUD_PLAYER_BOX,
         true
       )
       ally.rightEdge = HUD_PLAYER_RIGHT
-      ally.bottomEdge = HUD_PLAYER_BOTTOM
+      ally.bottomEdge = HUD_PLAYER_TOP + HUD_PLAYER_BOX.height
       return { enemy = foe, player = ally }
     end)(),
     playerCenter = { x = PLAYER_CENTER.x, y = PLAYER_CENTER.y },
@@ -1190,17 +1191,18 @@ end
 ---@return number[] shared window background behind dock fills and text
 local function backgroundOf(resources)
   local windows = resources.windows
-  if type(windows) == "table" and type(windows.background) == "table" then
+  assert(type(windows) == "table", "compact battle presentation requires its window service")
+  if type(windows.background) == "table" then
     return windows.background --[[@as table]]
   end
   local text = resources.text
-  if type(text) == "table" and type(text.windowBackgroundColor) == "function" then
-    local ok, color = pcall(text.windowBackgroundColor, text)
-    if ok and type(color) == "table" then
-      return color --[[@as table]]
-    end
-  end
-  return { 0, 0, 0, 1 }
+  assert(
+    type(text) == "table" and type(text.windowBackgroundColor) == "function",
+    "compact battle windows publish their fill color"
+  )
+  local color = text.windowBackgroundColor(text)
+  assert(type(color) == "table", "compact battle windows publish an RGBA fill color")
+  return color --[[@as table]]
 end
 
 ---@param text table<string, unknown> borrowed text services
@@ -1387,12 +1389,26 @@ local function drawCommandDock(resources, view, content)
     if view.selection == id then
       label = CURSOR .. " " .. label
     end
-    drawLabel(
-      text,
-      label,
-      COMMAND_OUTER.x + 16 + column * COMMAND_CELL_WIDTH,
-      COMMAND_OUTER.y + 10 + row * COMMAND_CELL_HEIGHT
-    )
+    local x = COMMAND_OUTER.x + 16 + column * COMMAND_CELL_WIDTH
+    local y = COMMAND_OUTER.y + 10 + row * COMMAND_CELL_HEIGHT
+    if id == "fight" and type(view.commandIcon) == "table" then
+      local iconFacts = view.commandIcon --[[@as table<string, unknown>]]
+      local assets = assert(resources.assets, "the compact render borrows its icon assets")
+      local icon =
+        assets:drawable("battle:icon:" .. tostring(iconFacts.key) .. ":frame:" .. tostring(iconFacts.frameIndex or 1))
+      if icon ~= nil then
+        local draw = assert(icon.draw, "the party icon uses the shared palette-exact draw handle")
+        LogicalSurface.clip(
+          resources.graphics,
+          { x = x, y = y, width = COMMAND_CELL_WIDTH, height = COMMAND_CELL_HEIGHT },
+          function()
+            draw(icon, resources.graphics, x + 2, y + 2, 0, 0.5, 0.5)
+          end
+        )
+        x = x + 20
+      end
+    end
+    drawLabel(text, label, x, y)
   end
   windows.drawApplicationFrame(content.prompt.content, frame)
   windows.drawApplicationFrame(content.commands.content, frame)
@@ -1496,14 +1512,29 @@ end
 -- filled tiles sample the strip. Artwork draws under the neutral image
 -- tint however hostile the incoming graphics state is.
 ---@param graphics table<string, unknown> injected host graphics
+---@param text table<string, unknown> borrowed text services
+---@param assets table<string, unknown> generated battle assets
 ---@param art table<string, unknown> staged source character strip
 ---@param section table<string, unknown> staged source HUD section
 ---@param side table<string, unknown> anchored HUD box content under drawing
 ---@param battler table<string, unknown>? combatant facts under drawing
 ---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param artKey string semantic HUD art key to pass to the printer
 ---@param sideType integer native side type used by source HUD spans
 ---@param wildEnemy boolean whether caught-marker art is source-visible
-local function drawCompactHudCell(graphics, art, section, side, battler, view, sideType, wildEnemy)
+local function drawCompactHudCell(
+  graphics,
+  text,
+  assets,
+  art,
+  section,
+  side,
+  battler,
+  view,
+  artKey,
+  sideType,
+  wildEnemy
+)
   local layout = assert(side, "compact HUD artwork has an anchored box")
   local displayed = assert(battler, "compact HUD artwork belongs to a visible battler")
   local animation = assert(section.animation, "compact HUD artwork carries its native animation")
@@ -1627,6 +1658,20 @@ local function drawCompactHudCell(graphics, art, section, side, battler, view, s
       assert(section.componentBase, "compact HUD publishes the native component tile base")
     )
   end
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  BattleRenderer.drawCompactHudPrinters(
+    graphics,
+    text,
+    assets,
+    view,
+    artKey,
+    section,
+    objects,
+    displayed,
+    sideType,
+    sideType == 0,
+    { x = originX, y = originY, scale = scale }
+  )
 end
 
 ---@param graphics table<string, unknown> injected host graphics
@@ -1649,12 +1694,28 @@ local function drawHudSide(graphics, assets, text, artKey, battler, side, sectio
   local r, g, b, a = graphics.getColor()
   graphics.setColor(1, 1, 1, 1)
   local art = assets:drawable(artKey)
+  local printerReady = false
   if art ~= nil then
-    drawCompactHudCell(graphics, art, section, side, battler, view, sideType, wildEnemy)
+    local source = art.image or (art.lease and art.lease.image) or art
+    printerReady = type(source.getWidth) == "function"
+    drawCompactHudCell(graphics, text, assets, art, section, side, battler, view, artKey, sideType, wildEnemy)
   end
   if type(side.regions) == "table" then
     for _, region in ipairs(side.regions) do
-      if type(region.text) == "string" and region.text ~= "" then
+      if
+        (
+          not printerReady
+          or (
+            region.id ~= "name"
+            and region.id ~= "level"
+            and region.id ~= "hp"
+            and region.id ~= "gender"
+            and region.id ~= "caught"
+          )
+        )
+        and type(region.text) == "string"
+        and region.text ~= ""
+      then
         -- Wording never overflows its resolved region into the
         -- neighboring marks: the paired doubles panels fit the same
         -- way, so an overlong name truncates instead of painting over
@@ -1676,7 +1737,7 @@ local function drawCompactDoublesPanel(resources, box)
   LogicalSurface.clip(graphics, box, function()
     fillBox(graphics, background, box)
     for _, region in ipairs(box.regions) do
-      if type(region.text) == "string" and region.text ~= "" then
+      if not (box.side == 2 and region.id == "hp") and type(region.text) == "string" and region.text ~= "" then
         drawLabel(text, fitText(text, region.text, region.width), region.x, region.y)
       end
     end

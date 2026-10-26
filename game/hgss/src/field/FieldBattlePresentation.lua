@@ -11,7 +11,7 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-local BagCache = require("libs.assets.src.BagCache")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
 local MonCache = require("libs.assets.src.MonCache")
@@ -29,6 +29,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _pokedex table<string, unknown>? borrowed field presentation resource owner behind the registration card
 ---@field _itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
+---@field _monIconProvider table<string, unknown>? field-owned icon page provider borrowed for battle command icons
 ---@field _imageFailures table<string, string> terminal upload failures by key, latched for the envelope lifetime
 ---@field _measureDisplay fun(): table<string, unknown> live display facts
 ---@field _graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
@@ -83,6 +84,7 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@field graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
+---@field monIconProvider table<string, unknown>? borrowed field icon page provider for the active command icon
 ---@field imagePool table<string, unknown>? borrowed shared generated-image owner behind pooled uploads, required to resolve graphical drawables
 ---@field fieldRenderer table<string, unknown>? field-local native plane compositor
 ---@field fieldCamera fun(): table<string, unknown>? current field camera provider
@@ -245,6 +247,7 @@ function FieldBattlePresentation.new(opts)
     _graphics = opts.graphics,
     _itemCatalog = opts.itemCatalog,
     _monCatalog = opts.monCatalog,
+    _monIconProvider = opts.monIconProvider,
     _overrides = opts.overrides or {},
     _manifest = loadManifest(opts.cacheFs),
     _preparedDemands = {},
@@ -571,7 +574,33 @@ local function stagedArtPath(envelope, key)
     local section = menus.command
     return type(section) == "table" and section.image or nil
   end
-  local layout, screenIndex = tostring(key):match("^menu:([%a%-]+):screen:(%d+)$")
+  -- Fight-menu move buttons: one render per slot and move type and state,
+  -- plus the blank button of an empty slot.
+  local buttonSlot, buttonVariant = tostring(key):match("^menu:moves:move%-button:(%d+):(.+)$")
+  if buttonSlot ~= nil then
+    local screens = type(menus.moves) == "table" and menus.moves.screens or nil
+    local buttons = type(screens) == "table" and type(screens[1]) == "table" and screens[1].moveButtons or nil
+    local button = type(buttons) == "table" and buttons[tonumber(buttonSlot) + 1] or nil
+    if type(button) ~= "table" then
+      return nil
+    end
+    if buttonVariant == "empty" then
+      return button.empty
+    end
+    local typeKey, state = buttonVariant:match("^([a-z]+):([a-z]+)$")
+    local states = typeKey ~= nil and button.types[typeKey] or nil
+    return type(states) == "table" and states[state] or nil
+  end
+  -- Screen keys name the active scene background; screens drawing the
+  -- background-dependent lower palette stage one image per background.
+  local layout, screenIndex, background = tostring(key):match("^menu:([%a%-]+):screen:(%d+)@([%a_]+):touch$")
+  local touch = layout ~= nil and ":touch" or nil
+  if layout == nil then
+    layout, screenIndex, background = tostring(key):match("^menu:([%a%-]+):screen:(%d+)@([%a_]+)$")
+  end
+  if layout == nil then
+    layout, screenIndex = tostring(key):match("^menu:([%a%-]+):screen:(%d+)$")
+  end
   if layout ~= nil and screenIndex ~= nil then
     local sectionKey = layout == "command" and "command"
       or layout == "moves" and "moves"
@@ -581,7 +610,18 @@ local function stagedArtPath(envelope, key)
     local section = sectionKey ~= nil and menus[sectionKey] or nil
     local screens = type(section) == "table" and section.screens or nil
     local record = type(screens) == "table" and screens[tonumber(screenIndex)] or nil
-    return type(record) == "table" and record.image or nil
+    if type(record) ~= "table" then
+      return nil
+    end
+    local variants = record.backgrounds --[[@as table<string, string>?]]
+    local touchVariants = record.touchBackgrounds --[[@as table<string, string>?]]
+    if background ~= nil then
+      if touch == ":touch" and touchVariants ~= nil and touchVariants[background] ~= nil then
+        return touchVariants[background]
+      end
+      return variants ~= nil and variants[background] or record.image
+    end
+    return record.image
   end
   local feedbackLayout, controlId, state = tostring(key):match("^menu:([%a%-]+):feedback:(.+):([%a]+)$")
   if feedbackLayout ~= nil and controlId ~= nil and state ~= nil then
@@ -606,8 +646,16 @@ local function stagedArtPath(envelope, key)
     local section = menus.target
     return type(section) == "table" and section.image or nil
   end
+  if key == "menu:pulse-mask" then
+    local section = menus.lower
+    return type(section) == "table" and section.pulseMask or nil
+  end
   if key == "arrow" then
     local section = hud.arrow
+    return type(section) == "table" and section.image or nil
+  end
+  if key == "cursor" then
+    local section = hud.cursor
     return type(section) == "table" and section.image or nil
   end
   if key == "gauges:player" or key == "gauges:enemy" then
@@ -713,6 +761,10 @@ local function checkStagedMembers(envelope)
     return "battle presentation is not staged: the launch needs its staged menu, HUD, font, and audio roles"
   end
   local cacheFs = assert(envelope._cacheFs, "preparation requires the envelope cache")
+  local moveIconMarker = cacheFs:read(MoveIconCache.markerPath())
+  if not MoveIconCache.isReady(cacheFs, moveIconMarker) then
+    return "battle move type icons are not staged"
+  end
   local hud = manifest.hud --[[@as table<string, unknown>]]
   local menus = manifest.menus --[[@as table<string, unknown>]]
   local messages = manifest.messages --[[@as table<string, unknown>]]
@@ -723,6 +775,8 @@ local function checkStagedMembers(envelope)
     { key = "menu:target", path = type(menus.target) == "table" and menus.target.image or nil },
     { key = "hud:enemy", path = type(hud.enemy) == "table" and hud.enemy.image or nil },
     { key = "hud:player", path = type(hud.player) == "table" and hud.player.image or nil },
+    { key = "cursor", path = type(hud.cursor) == "table" and hud.cursor.image or nil },
+    { key = "menu:pulse-mask", path = type(menus.lower) == "table" and menus.lower.pulseMask or nil },
     { key = "hud:player-left", path = stagedArtPath(envelope, "hud:player-left") },
     { key = "hud:player-right", path = stagedArtPath(envelope, "hud:player-right") },
     { key = "hud:enemy-left", path = stagedArtPath(envelope, "hud:enemy-left") },
@@ -739,6 +793,44 @@ local function checkStagedMembers(envelope)
         key = "menu:" .. (menuKey == "twoOption" and "two-option" or menuKey) .. ":screen:" .. tostring(index),
         path = type(screen) == "table" and screen.image or nil,
       }
+      if type(screen) == "table" and type(screen.moveButtons) == "table" then
+        for slotIndex, button in ipairs(screen.moveButtons) do
+          local prefix = "menu:moves:move-button:" .. tostring(slotIndex - 1) .. ":"
+          required[#required + 1] = { key = prefix .. "empty", path = button.empty }
+          for typeKey, states in pairs(button.types) do
+            for state, image in pairs(states) do
+              required[#required + 1] = { key = prefix .. typeKey .. ":" .. state, path = image }
+            end
+          end
+        end
+      end
+      if type(screen) == "table" and type(screen.backgrounds) == "table" then
+        for background, image in pairs(screen.backgrounds) do
+          required[#required + 1] = {
+            key = "menu:"
+              .. (menuKey == "twoOption" and "two-option" or menuKey)
+              .. ":screen:"
+              .. tostring(index)
+              .. "@"
+              .. background,
+            path = image,
+          }
+        end
+      end
+      if type(screen) == "table" and type(screen.touchBackgrounds) == "table" then
+        for background, image in pairs(screen.touchBackgrounds) do
+          required[#required + 1] = {
+            key = "menu:"
+              .. (menuKey == "twoOption" and "two-option" or menuKey)
+              .. ":screen:"
+              .. tostring(index)
+              .. "@"
+              .. background
+              .. ":touch",
+            path = image,
+          }
+        end
+      end
       if type(screen) == "table" and type(screen.feedback) == "table" then
         for controlId, states in pairs(screen.feedback) do
           for state in pairs(states) do
@@ -798,7 +890,7 @@ function FieldBattlePresentation:_preparationServices()
   local cacheFs = assert(self._cacheFs, "preparation requires the envelope cache")
   local graphics = self._graphics
   local images = self._images --[[@as table<string, unknown>]]
-  local bagManifest = nil
+  local moveIconManifest = nil
   local stagedSceneKey = nil
   local stagedSceneLayer = nil
   local backgroundPixels = nil
@@ -872,6 +964,17 @@ function FieldBattlePresentation:_preparationServices()
     end
     if portraitsOk == false then
       return false, nil
+    end
+    local iconKeys = demand.iconKeys or {}
+    if envelope._monIconProvider ~= nil or #iconKeys > 0 then
+      local icons = assert(envelope._monIconProvider, "battle icon demand borrows the field icon provider")
+      local iconsReady, iconsFailure = icons:prepareKeys(iconKeys)
+      if iconsFailure ~= nil then
+        return nil, "battle command icon preparation failed: " .. tostring(iconsFailure)
+      end
+      if iconsReady ~= true then
+        return false, nil
+      end
     end
     -- Menu, HUD, font, and audio members are required only where
     -- pixels are actually required: headless composition keeps its
@@ -954,6 +1057,28 @@ function FieldBattlePresentation:_preparationServices()
       end
       return descriptor
     end
+    local iconKey, frameIndexText = tostring(key):match("^battle:icon:(.+):frame:(%d+)$")
+    if iconKey == nil then
+      iconKey = tostring(key):match("^battle:icon:(.+)$")
+    end
+    if iconKey ~= nil then
+      local icons = assert(envelope._monIconProvider, "battle command icons borrow the field icon provider")
+      local dimensions = icons:dimensions(iconKey)
+      local handle = icons:handleFor(iconKey)
+      local frameIndex = frameIndexText ~= nil and tonumber(frameIndexText) or 1
+      local quad = icons:quadFor(iconKey, frameIndex --[[@as integer]])
+      local drawable = { width = dimensions.width, height = dimensions.height }
+      function drawable:getDimensions()
+        return self.width, self.height
+      end
+      function drawable:draw(drawGraphics, x, y, ...)
+        return handle:drawQuad(drawGraphics, quad, x, y, ...)
+      end
+      function drawable:drawQuad(drawGraphics, _, x, y, ...)
+        return handle:drawQuad(drawGraphics, quad, x, y, ...)
+      end
+      return drawable
+    end
     -- Production drawables are real owned handles, legitimate waits, or
     -- terminal failures: staged bytes that fail decoding or GPU upload
     -- latch one keyed error instead of answering an unusable nil that
@@ -994,19 +1119,68 @@ function FieldBattlePresentation:_preparationServices()
       return image
     end
     local typeKey = key:match("^battle:move%-type%-icon:([a-z%-]+)$")
-    local artPath = nil
     if typeKey ~= nil then
-      if bagManifest == nil then
-        bagManifest = BagCache.loadManifest(cacheFs)
+      if moveIconManifest == nil then
+        moveIconManifest = MoveIconCache.loadManifest(cacheFs)
       end
-      local hero = bagManifest.hero --[[@as table<string, unknown>]]
-      local moveSummary = assert(hero.moveSummary, "the generated bag manifest carries move-summary art") --[[@as table<string, unknown>]]
-      local typeIcons = moveSummary.typeIcons --[[@as table<string, table<string, unknown>>]]
-      local icon = assert(typeIcons[typeKey], "the generated bag manifest carries every move type icon")
-      artPath = assert(icon.image, "the generated move type icon names its staged image") --[[@as string]]
-    else
-      artPath = stagedArtPath(envelope, key)
+      local types = moveIconManifest.types --[[@as table<string, table<string, unknown>>]]
+      local visual = types[typeKey]
+      if type(visual) ~= "table" then
+        return nil
+      end
+      local artPath = assert(visual.image, "the generated move type icon names its staged image") --[[@as string]]
+      local handle = nil
+      if envelope._pool ~= nil then
+        local failure
+        handle, failure = acquirePooled(envelope, key, artPath)
+        if handle == nil then
+          assert(type(failure) == "string", "staged upload failures carry their reason")
+          failures[key] = failure
+          return nil, failure
+        end
+      else
+        local bytes = cacheFs:read(artPath)
+        if type(bytes) ~= "string" then
+          return nil
+        end
+        local failure
+        handle, failure = uploadStaged(graphics, key, artPath, bytes)
+        if handle == nil then
+          assert(type(failure) == "string", "staged upload failures carry their reason")
+          failures[key] = failure
+          return nil, failure
+        end
+        images[key] = handle
+      end
+      local drawable = {
+        lease = handle,
+        width = assert(visual.width, "generated move type icon carries its width"),
+        height = assert(visual.height, "generated move type icon carries its height"),
+        offset = visual.offset,
+      }
+      function drawable:getDimensions()
+        return self.width, self.height
+      end
+      function drawable:draw(drawGraphics, x, y, ...)
+        if type(self.lease.draw) == "function" then
+          return self.lease:draw(drawGraphics, x, y, ...)
+        end
+        return drawGraphics.draw(self.lease, x, y, ...)
+      end
+      function drawable:drawQuad(drawGraphics, quad, x, y, ...)
+        if type(self.lease.drawQuad) == "function" then
+          return self.lease:drawQuad(drawGraphics, quad, x, y, ...)
+        end
+        return drawGraphics.draw(self.lease, quad, x, y, ...)
+      end
+      if envelope._pool ~= nil then
+        leases[key].handle = drawable
+      else
+        images[key] = drawable
+      end
+      return drawable
     end
+    local artPath = stagedArtPath(envelope, key)
     if artPath ~= nil then
       if envelope._pool ~= nil then
         local image, failure = acquirePooled(envelope, key, artPath)
@@ -1710,6 +1884,7 @@ function FieldBattlePresentation:_buildPort(descriptor)
     audio = self._screenAudio,
     itemCatalog = self._itemCatalog,
     monCatalog = self._monCatalog,
+    monIconProvider = self._monIconProvider,
     overrides = { sceneKey = sceneKey },
   })
   self._screen = screen

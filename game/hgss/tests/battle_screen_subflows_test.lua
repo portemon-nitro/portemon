@@ -198,7 +198,7 @@ local function openRig(opts)
     measurement = measurementFor(layout),
     layout = layout,
     text = { draws = {} },
-    windows = { calls = {} },
+    windows = { calls = {}, background = { 0.2, 0.3, 0.1, 1 } },
     audio = { plays = {} },
     assetsReady = opts.pendingAssets ~= true,
     assets = { prepared = {}, released = {} },
@@ -395,7 +395,18 @@ local function openPartyFromCommand(rig)
   press(rig, { type = "navigate", direction = "down" })
   press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "confirm" })
-  Assert.equal(rig.screen:status().mode, "child", "the Pokemon command opens the party child (" .. rig.layout .. ")")
+  local status = rig.screen:status()
+  Assert.equal(
+    status.mode,
+    "child",
+    "the Pokemon command opens the party child ("
+      .. rig.layout
+      .. ", mode "
+      .. tostring(status.mode)
+      .. ", error "
+      .. tostring(status.error)
+      .. ")"
+  )
 end
 
 ---@param rig table live screen rig under test driving, resting on its command prompt

@@ -930,7 +930,7 @@ local function productionHolder(services, launchId)
   return BattlePresentationAssets.new({
     assets = services,
     launchId = launchId,
-    sceneKey = "probe/plain/day",
+    sceneKey = "general/plain/day",
     shadowRegions = BattlePresentationManifestFixture.manifest().pictures.shadow.regions,
   })
 end

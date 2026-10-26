@@ -61,30 +61,29 @@ local ARROW_CELLS = {
 -- present/revealed, 2 fainted. The fourth authored state has no roster
 -- meaning and stays unused, as does the 32-pixel family.
 
--- Dynamic content anchors inside the composite bounds, in native logical
--- pixels: the enemy box spans (-6,8)-(122,72), the player box
--- (128,84)-(256,148). Name, level, and numeric health keep their
--- established anchors; the condition rides beside the level and the bar
--- rows carry tile work. The player experience tile row sits beneath the
--- health numerals; the narration frame tiles cover rows 136 and below,
--- so nothing dynamic sits beneath the experience row.
--- Narration window: content origin with its size, wrapped by the
--- selected frame border.
+-- Narration window (Battle_BattleInit's 27x4-tile window at tile 2,19):
+-- content origin with its size, wrapped by the selected frame border.
 local NARRATION_BOX = { x = 16, y = 152, width = 216, height = 32 }
-local NARRATION_TEXT = { x = 24, y = 160 }
 
--- Command text anchors from the source bounds table.
+-- Command text anchors and MAKE_TEXT_COLOR slots (lower OBJ palette bank
+-- 2) from BattleInput_CreateMainMenuObjects.
 local COMMAND_ANCHORS = {
   fight = { x = 128, y = 83 },
   bag = { x = 40, y = 169 },
   pokemon = { x = 216, y = 168 },
   run = { x = 128, y = 176 },
 }
-local COMMAND_LABELS = { fight = "FIGHT", bag = "BAG", pokemon = "POKEMON", run = "RUN" }
+local COMMAND_SLOTS = {
+  fight = { 1, 2, 3 },
+  bag = { 4, 5, 6 },
+  pokemon = { 7, 8, 9 },
+  run = { 10, 11, 12 },
+}
 
--- Move text anchors from the source two-by-two table. Move names keep
--- these anchors; the type and PP facts sit on the row beneath at their
--- own compiled anchors.
+-- Fight menu text anchors from BattleInput_CreateFightMenuObjects: the
+-- move name centers on its anchor, the "PP" label and the current/max
+-- values print left-aligned on the row beneath; the type icon centers on
+-- sTypeIconPositions.
 local MOVE_ANCHORS = {
   { x = 64, y = 45 },
   { x = 192, y = 44 },
@@ -110,6 +109,13 @@ local PP_MAX_ANCHORS = {
   { x = 204, y = 123 },
 }
 local CANCEL_ANCHOR = { x = 128, y = 175 }
+-- sTargetPokemonMenuPositions, by target control index.
+local TARGET_ANCHORS = {
+  { x = 60, y = 116 },
+  { x = 196, y = 32 },
+  { x = 196, y = 116 },
+  { x = 60, y = 32 },
+}
 
 -- Party gauge slots on the interaction pane, six per side. The 16-pixel
 -- source cells center on these origins through their compiled offsets.
@@ -272,33 +278,6 @@ local DOUBLES_HUD_SECTIONS = {
   ["hud:enemy-left"] = "enemyLeft",
   ["hud:enemy-right"] = "enemyRight",
 }
-local DOUBLES_FIELDS = {
-  ["hud:player-left"] = {
-    name = { x = 144, y = 88 },
-    level = { x = 224, y = 91 },
-    condition = { x = 208, y = 91 },
-    bar = { x = 192, y = 107 },
-  },
-  ["hud:player-right"] = {
-    name = { x = 150, y = 117 },
-    level = { x = 230, y = 120 },
-    condition = { x = 214, y = 120 },
-    bar = { x = 198, y = 136 },
-  },
-  ["hud:enemy-left"] = {
-    name = { x = 14, y = 4 },
-    level = { x = 88, y = 4 },
-    condition = { x = 72, y = 4 },
-    bar = { x = 56, y = 20 },
-  },
-  ["hud:enemy-right"] = {
-    name = { x = 8, y = 33 },
-    level = { x = 82, y = 33 },
-    condition = { x = 66, y = 33 },
-    bar = { x = 50, y = 49 },
-  },
-}
-
 -- Loud doubles occupancy: at most two live records per side and no
 -- shared visible slot. Identity rides the message so a doubled claim
 -- names both combatants.
@@ -503,94 +482,75 @@ local function drawArtwork(graphics, art, quad, x, y, ...)
   end
 end
 
--- Neutral health-box wording through the borrowed text services: the
--- field palette triple when the service carries the generated font
--- definition, a neutral caller palette otherwise. Every health-box word
--- carries its palette; no wording draws palette-less.
----@param text table<string, unknown> borrowed text services
----@param content string wording under drawing
----@param x number horizontal origin under drawing
----@param y number vertical origin under drawing
-local function hudText(text, content, x, y)
-  local wording = tostring(content)
-  if type(text.drawTextWithPalette) == "function" then
-    local palette = nil
-    local fontDef = text.fontDef --[[@as table<string, unknown>?]]
-    if type(fontDef) == "table" and type(fontDef.palette) == "table" then
-      local slots = fontDef.palette --[[@as table[] ]]
-      local function channel(slot)
-        local color = slots[slot]
-        assert(type(color) == "table", "health-box wording reads its font palette slot")
-        local r = assert(tonumber(color.r or color[1]), "font palette slots carry red") --[[@as number]]
-        local g = assert(tonumber(color.g or color[2]), "font palette slots carry green") --[[@as number]]
-        local b = assert(tonumber(color.b or color[3]), "font palette slots carry blue") --[[@as number]]
-        if r > 1 or g > 1 or b > 1 then
-          r, g, b = r / 255, g / 255, b / 255
-        end
-        return { r = r * 255, g = g * 255, b = b * 255 }
-      end
-      local ok, triple = pcall(function()
-        return {
-          foreground = channel(2),
-          shadow = channel(3),
-          background = channel(16),
-        }
-      end)
-      if ok then
-        palette = triple
-      end
+-- Resolves one source printer color triple through a staged text-role
+-- palette: the bank is the printer's palette offset and the slots are its
+-- MAKE_TEXT_COLOR entries. Slot zero is the transparent OBJ color.
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+---@param palette string staged printer palette ("narration", "hud", or "menu")
+---@param bank integer sixteen-color bank under selection
+---@param foreground integer source foreground slot
+---@param shadow integer source shadow slot
+---@param background integer source background slot
+---@return table<string, table<string, number>> RGB triple for the palette-driven text path
+local function sourcePalette(view, palette, bank, foreground, shadow, background)
+  local palettes = assert(view.textPalettes, "the battle view carries its staged text palettes") --[[@as table<string, table<string, unknown>>]]
+  local colors = assert(palettes[palette], "the battle view carries the " .. palette .. " text palette").colors --[[@as table[] ]]
+  local function at(slot)
+    if slot == 0 then
+      return { r = 0, g = 0, b = 0, a = 0 }
     end
-    if palette == nil then
-      palette = {
-        foreground = { r = 255, g = 255, b = 255 },
-        shadow = { r = 0, g = 0, b = 0 },
-        background = { r = 0, g = 0, b = 0, a = 0 },
-      }
-    end
-    text.drawTextWithPalette(wording, x, y, palette)
-    return
+    local color = assert(colors[bank * 16 + slot + 1], "source text slots fall inside their palette bank")
+    return { r = color.r, g = color.g, b = color.b }
   end
-  text.drawText(wording, x, y)
+  return { foreground = at(foreground), shadow = at(shadow), background = at(background) }
 end
 
 ---@param text table<string, unknown> borrowed text services
----@param role string source text role under drawing
+---@param role string source font role under drawing
 ---@param content string text under drawing
 ---@param x number horizontal origin under drawing
 ---@param y number vertical origin under drawing
----@param colors table<string, integer>? source palette slots for this text role
-local function drawRoleText(text, role, content, x, y, colors)
-  local draw = text.drawTextForRole --[[@as fun(role: string, content: string, x: number, y: number, colors: table<string, integer>?)?]]
+---@param palette table<string, table<string, number>>? source RGB triple for this printer
+local function drawRoleText(text, role, content, x, y, palette)
+  local draw = text.drawTextForRole --[[@as fun(role: string, content: string, x: number, y: number, palette: table<string, table<string, number>>?)?]]
   if draw ~= nil then
-    draw(role, content, x, y, colors)
+    draw(role, content, x, y, palette)
   else
     text.drawText(content, x, y)
   end
 end
 
-local function movePpColors(pp, maxPp)
+-- GetPPTextColor: the PP printer's foreground and shadow slots in the
+-- menu palette's PP bank, with a transparent background.
+---@param pp integer current move PP
+---@param maxPp integer maximum move PP
+---@return integer, integer foreground and shadow slots
+local function ppSlots(pp, maxPp)
   if pp == 0 then
-    return { foreground = 7, shadow = 8, background = 0 }
+    return 7, 8
   end
   if pp == maxPp then
-    return { foreground = 1, shadow = 2, background = 0 }
+    return 1, 2
   end
-  if (maxPp <= 2 and pp == 1) or (maxPp <= 7 and pp == 1) then
-    return { foreground = 5, shadow = 6, background = 0 }
-  end
-  if maxPp <= 7 then
-    if pp == 2 then
-      return { foreground = 3, shadow = 4, background = 0 }
+  if maxPp <= 2 then
+    if pp == 1 then
+      return 5, 6
+    end
+  elseif maxPp <= 7 then
+    if pp == 1 then
+      return 5, 6
+    elseif pp == 2 then
+      return 3, 4
     end
   else
     if pp <= maxPp / 4 then
-      return { foreground = 5, shadow = 6, background = 0 }
+      return 5, 6
     end
     if pp <= maxPp / 2 then
-      return { foreground = 3, shadow = 4, background = 0 }
+      return 3, 4
     end
   end
-  return { foreground = 1, shadow = 2, background = 0 }
+  return 1, 2
 end
 
 ---@param text table<string, unknown> borrowed text services
@@ -603,28 +563,6 @@ local function measureRoleText(text, role, content)
     return measure(role, content).width
   end
   return text.measure(content).width
-end
-
----@param text table<string, unknown> borrowed text services
----@param content string label wording under truncation
----@param maxWidth number tile span width under truncation
----@return string label fitting its tile span
-local function fitSpan(text, content, maxWidth)
-  local label = tostring(content)
-  if maxWidth > 0 then
-    if type(text.measure) == "function" then
-      while #label > 1 and text.measure(label).width > maxWidth do
-        label = label:sub(1, #label - 1)
-      end
-    elseif type(text.textWidth) == "function" then
-      while #label > 1 and text.textWidth(label) > maxWidth do
-        label = label:sub(1, #label - 1)
-      end
-    elseif 8 * #label > maxWidth then
-      label = label:sub(1, math.max(1, math.floor(maxWidth / 8)))
-    end
-  end
-  return label
 end
 
 -- Draws one native bar row as tile work over the staged strip: each
@@ -691,6 +629,23 @@ local function pictureRecord(records, battler, row)
   records[#records + 1] = { battler = battler, row = row, insertion = #records + 1 }
 end
 
+-- The GPU picture pass consumes staged image handles: leases and
+-- wrappers resolve to their staged image while headless descriptors and
+-- other pixel-less stand-ins never reach the isolated depth target.
+---@param handle unknown resolved drawable handle, nil when unstaged
+---@return unknown? staged image for the picture pass
+local function pictureImage(handle)
+  if type(handle) ~= "table" then
+    -- Host images draw directly.
+    return handle
+  end
+  local staged = handle.image or (handle.lease and handle.lease.image) or handle
+  if type(staged.getDimensions) ~= "function" then
+    return nil
+  end
+  return staged
+end
+
 local function drawPicturePlanes(graphics, assets, view, players, enemies, singles)
   local records = {}
   if singles then
@@ -730,15 +685,15 @@ local function drawPicturePlanes(graphics, assets, view, players, enemies, singl
       local shadow
       local shadowSize = type(battler.shadowSize) == "number" and battler.shadowSize or 0
       if shadowSize ~= 0 and battler.shadowVisible ~= false and battler.pictureVisible ~= true then
-        shadow = assets:drawable("shadow")
+        shadow = pictureImage(assets:drawable("shadow"))
       end
       if shadow ~= nil then
         local entryDx = type(battler.entryDx) == "number" and battler.entryDx or 0
         local entryDy = type(battler.entryDy) == "number" and battler.entryDy or 0
         local pictureCenterX = row.settledX + entryDx + (type(battler.shakeDx) == "number" and battler.shakeDx or 0)
         local pictureCenterY = row.settledY
-          - (type(battler.height) == "number" and battler.height or 0)
-          - (type(battler.sourceHeight) == "number" and battler.sourceHeight or 0)
+          + (type(battler.height) == "number" and battler.height or 0)
+          + (type(battler.sourceHeight) == "number" and battler.sourceHeight or 0)
           + entryDy
         local shadowOffsetX = type(battler.shadowOffsetX) == "number" and battler.shadowOffsetX or 0
         local shadowOffsetY = type(battler.shadowOffsetY) == "number" and battler.shadowOffsetY or 0
@@ -763,8 +718,6 @@ local function drawPicturePlanes(graphics, assets, view, players, enemies, singl
           textureRegion = assets:shadowRegion(shadowSize),
           shadowSize = shadowSize,
           shadowAffine = battler.shadowAffine ~= false,
-          shadowOffsetX = type(battler.shadowOffsetX) == "number" and battler.shadowOffsetX or 0,
-          shadowOffsetY = type(battler.shadowOffsetY) == "number" and battler.shadowOffsetY or 0,
           affineWidth = type(battler.affineWidth) == "number" and battler.affineWidth or 0x100,
           affineHeight = type(battler.affineHeight) == "number" and battler.affineHeight or 0x100,
           tintR = battler.shadowTint ~= nil and battler.shadowTint.r or 1,
@@ -777,22 +730,7 @@ local function drawPicturePlanes(graphics, assets, view, players, enemies, singl
       -- The Substitute doll is a transient native animation picture. The
       -- scene hides the replaced mon; the animation owner supplies the
       -- doll through its effect instance.
-      -- The GPU picture pass consumes staged image handles: leases and
-      -- wrappers resolve to their staged image while headless descriptors
-      -- and other pixel-less stand-ins never reach the isolated depth target.
-      local image = battler.substitute ~= true and battlerImage(assets, battler) or nil
-      if image ~= nil then
-        if type(image) ~= "table" then
-          -- Host images draw directly.
-        else
-          local staged = image.image or (image.lease and image.lease.image) or image
-          if type(staged.getDimensions) ~= "function" then
-            image = nil
-          else
-            image = staged
-          end
-        end
-      end
+      local image = battler.substitute ~= true and pictureImage(battlerImage(assets, battler)) or nil
       if image ~= nil then
         local sourceHeight = (type(battler.height) == "number" and battler.height or 0)
           + (type(battler.sourceHeight) == "number" and battler.sourceHeight or 0)
@@ -820,7 +758,7 @@ local function drawPicturePlanes(graphics, assets, view, players, enemies, singl
           centerX = row.settledX + (type(battler.entryDx) == "number" and battler.entryDx or 0) + (type(
             battler.shakeDx
           ) == "number" and battler.shakeDx or 0),
-          centerY = row.settledY - sourceHeight + (type(battler.entryDy) == "number" and battler.entryDy or 0),
+          centerY = row.settledY + sourceHeight + (type(battler.entryDy) == "number" and battler.entryDy or 0),
           zCenter = row.depth,
           zOffset = type(battler.zOffset) == "number" and battler.zOffset or 0,
           xOffset = type(battler.pictureXOffset) == "number" and battler.pictureXOffset or 0,
@@ -917,6 +855,59 @@ local function drawSpriteObject(graphics, image, stripWidth, baseX, baseY, obj)
   end
 end
 
+---@param graphics table<string, unknown> injected host graphics
+---@param assets table<string, unknown> generated battle assets
+---@param view table<string, unknown> battle snapshot under drawing
+---@param layout string active menu layout
+---@param regions table<integer, table<string, unknown>> menu hit regions
+local function drawKeypadCursor(graphics, assets, view, layout, regions)
+  if view.cursorVisible ~= true or type(view.selection) ~= "string" then
+    return
+  end
+  local selected = nil
+  if layout == "command" and type(view.commands) == "table" then
+    for index, command in ipairs(view.commands) do
+      if command.id == view.selection then
+        selected = regions[index]
+        break
+      end
+    end
+  else
+    for _, region in ipairs(regions) do
+      if region.id == view.selection then
+        selected = region
+        break
+      end
+    end
+  end
+  if selected == nil then
+    return
+  end
+  local image = assets:drawable("cursor")
+  if image == nil then
+    return
+  end
+  local section = assert(view.cursor, "battle view carries the source keypad cursor cell and animations")
+  local stripWidth = stripWidthOf(image)
+  if stripWidth == nil then
+    return
+  end
+  local left = selected.x + 8
+  local right = selected.x + selected.w - 8
+  local top = selected.y + 8
+  local bottom = selected.y + selected.h - 8
+  for corner = 1, 4 do
+    local animation = assert(section.animations[corner], "the cursor stages four corner animations")
+    local frame = assert(animation.frames[1], "each cursor corner animation has an initial frame")
+    local cell = assert(section.cells[frame.cell + 1], "cursor animation selects a staged cell")
+    local x = corner % 2 == 1 and left or right
+    local y = corner <= 2 and top or bottom
+    for _, object in ipairs(cell.objs) do
+      drawSpriteObject(graphics, image, stripWidth --[[@as integer]], x, y, object)
+    end
+  end
+end
+
 -- Draws one authored HUD composite at its anchor with the compiled local
 -- offsets. A missing strip draws nothing, never a substitute.
 ---@param graphics table<string, unknown> injected host graphics
@@ -974,34 +965,142 @@ local function hudTileOrigin(anchor, objects, tile)
   error("native HUD number tile belongs to a source cell object", 0)
 end
 
----@param text table<string, unknown> borrowed text services
----@param anchor table<string, number> source HUD anchor under drawing
----@param objects table<integer, table<string, unknown>> source cell objects under reading
----@param patches table<string, table<integer, { tile: integer }>> current/max native glyph spans
----@param hp integer displayed current HP
----@param maxHp integer displayed maximum HP
----@param graphics table<string, unknown> injected host graphics
-local function drawHpNumbers(graphics, text, anchor, objects, patches, hp, maxHp)
-  local current = tostring(hp)
-  local maximum = tostring(maxHp)
-  local currentX, currentY = hudTileOrigin(anchor, objects, patches.current[1].tile)
-  local maximumX, maximumY = hudTileOrigin(anchor, objects, patches.maximum[1].tile)
-  local currentLabel = fitSpan(text, current, 24)
-  local maximumLabel = fitSpan(text, maximum, 24)
-  local function width(value)
-    if type(text.measure) == "function" then
-      return text.measure(value).width
-    elseif type(text.textWidth) == "function" then
-      return text.textWidth(value)
+---@param patchSpans table<string, unknown> published source HUD patch spans
+---@param category string patch category under lookup
+---@param sideType integer native health-box side type
+---@return table<integer, { tile: integer, count: integer }> ordered character spans for the side type
+local function sideSpans(patchSpans, category, sideType)
+  for _, record in
+    ipairs(patchSpans[category] --[[@as table<integer, table<string, unknown>>]])
+  do
+    if record.sideType == sideType then
+      return record.spans or { record }
     end
-    return #value * 8
   end
-  LogicalSurface.clip(graphics, { x = currentX, y = currentY, width = 24, height = 8 }, function()
-    hudText(text, currentLabel, currentX + 24 - width(currentLabel), currentY)
-  end)
-  LogicalSurface.clip(graphics, { x = maximumX, y = maximumY, width = 24, height = 8 }, function()
-    hudText(text, maximumLabel, maximumX, maximumY)
-  end)
+  error("the HUD patch map covers " .. category .. " for side type " .. tostring(sideType), 0)
+end
+
+-- Prints the health-box character writes the way battle_hp_bar.c does:
+-- the nickname through an 8x2-tile font-0 window filled with HUD color
+-- 15 and printed in colors 14/2/15, the level's printer digits shifted
+-- half a tile down across two tile rows, and, on boxes showing numbers,
+-- the right-aligned current and left-aligned maximum HP digits. Every
+-- write lands on its source character tile wherever the cell places it.
+---@param graphics table<string, unknown> injected host graphics
+---@param text table<string, unknown> borrowed text services
+---@param assets table<string, unknown> injected asset holder
+---@param view table<string, unknown> internal semantic snapshot carrying the HUD patch spans and palettes
+---@param artKey string staged strip identity under drawing
+---@param section table<string, unknown> staged HUD section publishing its printer digits
+---@param anchor table<string, number> composite anchor under drawing
+---@param objects table<integer, table<string, unknown>> source cell objects
+---@param battler table<string, unknown> displayed battler facts under drawing
+---@param sideType integer native health-box side type
+---@param hpNumbers boolean true when the box prints its HP digits
+---@param compactTransform table<string, number>? transformed source cell placement in compact layout
+local function drawHudPrinters(
+  graphics,
+  text,
+  assets,
+  view,
+  artKey,
+  section,
+  anchor,
+  objects,
+  battler,
+  sideType,
+  hpNumbers,
+  compactTransform
+)
+  local art = assets:drawable(artKey)
+  local stripWidth = art ~= nil and stripWidthOf(art) or nil
+  local stripHeight = art ~= nil and stripHeightOf(art) or nil
+  if art == nil or stripWidth == nil or stripHeight == nil then
+    return
+  end
+  local digitBase = assert(section.digitBase, "health-box strips publish their printer digits") --[[@as integer]]
+  local patchSpans = assert(view.hudPatchSpans, "battle manifest carries source HUD patch spans")
+  local function project(x, y)
+    if compactTransform == nil then
+      return x, y, 1
+    end
+    local scale = assert(compactTransform.scale, "compact printer layout carries its source scale")
+    return compactTransform.x + x * scale, compactTransform.y + y * scale, scale
+  end
+  local function stripTile(index, x, y)
+    local drawX, drawY, scale = project(x, y)
+    drawArtwork(
+      graphics,
+      art,
+      graphics.newQuad(index * 8, 0, 8, 8, stripWidth, stripHeight),
+      drawX,
+      drawY,
+      0,
+      scale,
+      scale
+    )
+  end
+  -- Printer cells: a decimal digit selects its tile, anything else the
+  -- printer's fill tile.
+  local function printerTile(character)
+    local digit = character ~= nil and tonumber(character) or nil
+    return digit ~= nil and digitBase + digit or digitBase + 10
+  end
+
+  local window = sideSpans(patchSpans, "nickname", sideType)
+  local palette = sourcePalette(view, "hud", 0, 14, 2, 15)
+  local name = tostring(assert(battler.name, "health boxes print their battler's name"))
+  for row = 0, 1 do
+    local leading = window[row + 1]
+    for column = 0, 7 do
+      local tile = column < leading.count and leading.tile + column or window[row + 3].tile + column - leading.count
+      local sourceX, sourceY = hudTileOrigin(anchor, objects, tile)
+      local x, y, scale = project(sourceX, sourceY)
+      LogicalSurface.clip(graphics, { x = x, y = y, width = 8 * scale, height = 8 * scale }, function()
+        stripTile(digitBase + 10, sourceX, sourceY)
+        graphics.push("all")
+        graphics.translate(x, y)
+        graphics.scale(scale, scale)
+        drawRoleText(text, "hud", name, -column * 8, -row * 8, palette)
+        graphics.pop()
+      end)
+    end
+  end
+
+  if type(battler.level) == "number" then
+    local level = sideSpans(patchSpans, "level", sideType)
+    local digits = tostring(battler.level)
+    for index = 0, 2 do
+      local source = printerTile(digits:sub(index + 1, index + 1))
+      local sourceTopX, sourceTopY = hudTileOrigin(anchor, objects, level[1].tile + index)
+      local topX, topY, scale = project(sourceTopX, sourceTopY + 4)
+      LogicalSurface.clip(graphics, { x = topX, y = topY, width = 8 * scale, height = 4 * scale }, function()
+        stripTile(source, sourceTopX, sourceTopY + 4)
+      end)
+      local sourceBottomX, sourceBottomY = hudTileOrigin(anchor, objects, level[2].tile + index)
+      local bottomX, bottomY, bottomScale = project(sourceBottomX, sourceBottomY)
+      LogicalSurface.clip(
+        graphics,
+        { x = bottomX, y = bottomY, width = 8 * bottomScale, height = 4 * bottomScale },
+        function()
+          stripTile(source, sourceBottomX, sourceBottomY - 4)
+        end
+      )
+    end
+  end
+
+  if hpNumbers then
+    local current = string.format("%3d", assert(battler.hp, "player health boxes carry displayed HP"))
+    local maximum = tostring(assert(battler.maxHp, "player health boxes carry maximum HP"))
+    local currentTile = sideSpans(patchSpans, "currentHp", sideType)[1].tile
+    local maximumTile = sideSpans(patchSpans, "maximumHp", sideType)[1].tile
+    for index = 0, 2 do
+      local currentX, currentY = hudTileOrigin(anchor, objects, currentTile + index)
+      local maximumX, maximumY = hudTileOrigin(anchor, objects, maximumTile + index)
+      stripTile(printerTile(current:sub(index + 1, index + 1)), currentX, currentY)
+      stripTile(printerTile(maximum:sub(index + 1, index + 1)), maximumX, maximumY)
+    end
+  end
 end
 
 -- OAM priority is back-to-front in a painter, with the source object index
@@ -1158,32 +1257,18 @@ local function drawDoublesDetail(graphics, text, assets, sections, view, players
       local iconPatches =
         BattleScene.hudIconPatchTiles(patchSpans, row.sideType, battler.condition, battler.gender, caught)
       drawBarTiles(graphics, assets, art, { x = row.hudX, y = row.hudY }, cell.objs, componentBase, iconPatches)
-    end
-    record.cell = cell
-  end
-  for _, record in ipairs(hudRecords) do
-    local battler = record.battler --[[@as table<string, unknown>]]
-    local row = record.row --[[@as BattleRenderer.SlotGeometry]]
-    local art = record.art --[[@as string]]
-    local fields = assert(DOUBLES_FIELDS[art], "doubled HUD rows carry field bounds")
-    local name = battler.side == 1 and "LEAD" or "FOE"
-    hudText(text, fitSpan(text, tostring(battler.name or name), 72), fields.name.x, fields.name.y)
-    if type(battler.level) == "number" then
-      hudText(text, "Lv" .. tostring(battler.level), fields.level.x, fields.level.y)
-    end
-    if battler.side == 1 and battler.healthBoxMode == "numbers" and record.cell ~= nil then
-      local numberPatches = BattleScene.hpNumberPatchTiles(
-        assert(view.hudPatchSpans, "battle manifest carries source HUD patch spans"),
-        row.sideType
-      )
-      drawHpNumbers(
+      drawHudPrinters(
         graphics,
         text,
+        assets,
+        view,
+        art,
+        section,
         { x = row.hudX, y = row.hudY },
-        record.cell.objs,
-        numberPatches,
-        assert(battler.hp, "player health boxes carry displayed HP"),
-        assert(battler.maxHp, "player health boxes carry maximum HP")
+        cell.objs,
+        battler,
+        row.sideType,
+        playerMode == "numbers"
       )
     end
   end
@@ -1233,57 +1318,50 @@ local function bgScrollOf(view)
 end
 
 -- Draws one single-battle health box: the staged cell composite, the
--- native bar tile row, and the palette-aware name, level, condition
--- and health facts inside the tile spans. The foe box hides its
--- private health facts and carries no experience row; the player box
--- keeps its numeric health and draws its experience tile row.
+-- native bar tile rows and icons, and the printed name, level, and HP
+-- character writes. The foe box hides its private health facts and
+-- carries no experience row; the player box prints its HP digits and
+-- draws its experience tile row.
 ---@param graphics table<string, unknown> injected host graphics
 ---@param text table<string, unknown> borrowed text services
 ---@param assets table<string, unknown> injected asset holder
+---@param view table<string, unknown> internal semantic snapshot
 ---@param battler table<string, unknown> displayed battler facts under drawing
 ---@param artKey string staged strip identity under drawing
 ---@param anchor table<string, number> composite anchor under drawing
 ---@param section table<string, unknown> staged source HUD section under drawing
----@param nameX number name row horizontal origin under drawing
----@param nameY number name row vertical origin under drawing
----@param levelY number level row vertical origin under drawing
 ---@param playerBox boolean true for the player box with numerals and experience
 ---@param sideType integer source HUD side type
----@param patchSpans table<string, unknown> normalized source HUD patch spans
----@param gaugePatchTiles table<string, unknown>? active source task tile writes
----@param battleKind string battle encounter kind controlling the caught marker
----@param textPass boolean true during the separate health-box wording pass
-local function drawSingleHud(
-  graphics,
-  text,
-  assets,
-  battler,
-  artKey,
-  anchor,
-  section,
-  nameX,
-  nameY,
-  levelY,
-  playerBox,
-  sideType,
-  patchSpans,
-  gaugePatchTiles,
-  battleKind,
-  textPass
-)
-  if not textPass then
-    local cell = openingHudCell(section)
-    local objects = cell.objs --[[@as table<integer, table<string, unknown>>]]
-    drawHudComposite(graphics, assets, artKey, anchor, objects)
-    local componentBase = assert(section.componentBase, "single HUD strips publish their native component tile base")
-    local healthPatches = gaugeTaskTiles(gaugePatchTiles, sideType, "health")
-      or BattleScene.hpPatchTiles(patchSpans, sideType, battler.hp, battler.maxHp)
-    -- Bar patches name component-relative source tiles like the icon
-    -- patches below, so they ride the same staged component base.
-    drawBarTiles(graphics, assets, artKey, anchor, objects, componentBase, healthPatches)
-    local caught = nil
-    if not playerBox and battleKind == "wild" then
-      caught = battler.caught
+local function drawSingleHud(graphics, text, assets, view, battler, artKey, anchor, section, playerBox, sideType)
+  local patchSpans = assert(view.hudPatchSpans, "battle manifest carries source HUD patch spans")
+  local gaugePatchTiles = view.gaugePatchTiles --[[@as table<string, unknown>?]]
+  local cell = openingHudCell(section)
+  local objects = cell.objs --[[@as table<integer, table<string, unknown>>]]
+  drawHudComposite(graphics, assets, artKey, anchor, objects)
+  local componentBase = assert(section.componentBase, "single HUD strips publish their native component tile base")
+  local healthPatches = gaugeTaskTiles(gaugePatchTiles, sideType, "health")
+    or BattleScene.hpPatchTiles(patchSpans, sideType, battler.hp, battler.maxHp)
+  -- Bar patches name component-relative source tiles like the icon
+  -- patches below, so they ride the same staged component base.
+  drawBarTiles(graphics, assets, artKey, anchor, objects, componentBase, healthPatches)
+  local caught = nil
+  if not playerBox and view.battleKind == "wild" then
+    caught = battler.caught
+  end
+  drawBarTiles(
+    graphics,
+    assets,
+    artKey,
+    anchor,
+    objects,
+    componentBase,
+    BattleScene.hudIconPatchTiles(patchSpans, sideType, battler.condition, battler.gender, caught)
+  )
+  if playerBox then
+    local into = battler.expInto
+    local span = battler.expSpan
+    if type(battler.level) == "number" and battler.level >= 100 then
+      into, span = 0, 0
     end
     drawBarTiles(
       graphics,
@@ -1292,44 +1370,11 @@ local function drawSingleHud(
       anchor,
       objects,
       componentBase,
-      BattleScene.hudIconPatchTiles(patchSpans, sideType, battler.condition, battler.gender, caught)
-    )
-    if playerBox then
-      local into = battler.expInto
-      local span = battler.expSpan
-      if type(battler.level) == "number" and battler.level >= 100 then
-        into, span = 0, 0
-      end
-      drawBarTiles(
-        graphics,
-        assets,
-        artKey,
-        anchor,
-        objects,
-        componentBase,
-        gaugeTaskTiles(gaugePatchTiles, sideType, "experience")
-          or BattleScene.expPatchTiles(patchSpans, BattleScene.expTileFills(into, span))
-      )
-    end
-    return
-  end
-  local name = fitSpan(text, tostring(battler.name or (playerBox and "LEAD" or "FOE")), 88)
-  hudText(text, name, nameX, nameY)
-  if type(battler.level) == "number" then
-    hudText(text, "Lv" .. tostring(battler.level), nameX, levelY)
-  end
-  if playerBox then
-    local numberPatches = BattleScene.hpNumberPatchTiles(patchSpans, sideType)
-    drawHpNumbers(
-      graphics,
-      text,
-      anchor,
-      openingHudCell(section).objs,
-      numberPatches,
-      assert(battler.hp, "player health boxes carry displayed HP"),
-      assert(battler.maxHp, "player health boxes carry maximum HP")
+      gaugeTaskTiles(gaugePatchTiles, sideType, "experience")
+        or BattleScene.expPatchTiles(patchSpans, BattleScene.expTileFills(into, span))
     )
   end
+  drawHudPrinters(graphics, text, assets, view, artKey, section, anchor, objects, battler, sideType, playerBox)
 end
 
 ---@param resources table<string, unknown> borrowed application collaborators
@@ -1385,50 +1430,38 @@ local function drawDetail(resources, view)
     end
   end
   if singles then
-    local patchSpans = assert(view.hudPatchSpans, "battle manifest carries source HUD patch spans")
-    for _, pass in ipairs({ false, true }) do
-      if enemy ~= nil then
-        local row = sourceSlotGeometry(view, 1)
-        drawSingleHud(
-          graphics,
-          text,
-          assets,
-          enemy,
-          "hud:enemy",
-          { x = row.hudX, y = row.hudY },
-          assert(view.hudSections, "the battle view carries staged single HUD cells").enemy,
-          8,
-          16,
-          28,
-          false,
-          row.sideType,
-          patchSpans,
-          view.gaugePatchTiles,
-          view.battleKind,
-          pass
-        )
-      end
-      if player ~= nil then
-        local row = sourceSlotGeometry(view, 0)
-        drawSingleHud(
-          graphics,
-          text,
-          assets,
-          player,
-          "hud:player",
-          { x = row.hudX, y = row.hudY },
-          assert(view.hudSections, "the battle view carries staged single HUD cells").player,
-          144,
-          92,
-          104,
-          true,
-          row.sideType,
-          patchSpans,
-          view.gaugePatchTiles,
-          view.battleKind,
-          pass
-        )
-      end
+    local sections = view.hudSections --[[@as table<string, table<string, unknown>>]]
+    if enemy ~= nil then
+      assert(sections ~= nil, "the battle view carries staged single HUD cells")
+      local row = sourceSlotGeometry(view, 1)
+      drawSingleHud(
+        graphics,
+        text,
+        assets,
+        view,
+        enemy,
+        "hud:enemy",
+        { x = row.hudX, y = row.hudY },
+        sections.enemy,
+        false,
+        row.sideType
+      )
+    end
+    if player ~= nil then
+      assert(sections ~= nil, "the battle view carries staged single HUD cells")
+      local row = sourceSlotGeometry(view, 0)
+      drawSingleHud(
+        graphics,
+        text,
+        assets,
+        view,
+        player,
+        "hud:player",
+        { x = row.hudX, y = row.hudY },
+        sections.player,
+        true,
+        row.sideType
+      )
     end
   else
     drawDoublesDetail(
@@ -1442,21 +1475,19 @@ local function drawDetail(resources, view)
     )
   end
   if type(view.message) == "string" and view.message ~= "" then
-    windows.drawWindow(NARRATION_BOX, resources.frameKey, { 0, 0, 0, 0 })
-    LogicalSurface.clip(graphics, {
-      x = NARRATION_BOX.x + 8,
-      y = NARRATION_BOX.y + 8,
-      width = NARRATION_BOX.width - 16,
-      height = NARRATION_BOX.height - 16,
-    }, function()
-      drawRoleText(
-        text,
-        "narration",
-        view.message --[[@as string]],
-        NARRATION_TEXT.x,
-        NARRATION_TEXT.y,
-        { foreground = 1, shadow = 2, background = 0 }
-      )
+    -- Battle_BattleInit fills the message window with color 15 and prints
+    -- with the font's default slots: foreground 1, shadow 2, background 15.
+    local palette = sourcePalette(view, "narration", 0, 1, 2, 15)
+    local fill = palette.background
+    local messageBox = {
+      x = NARRATION_BOX.x,
+      y = NARRATION_BOX.y + (type(view.messageScrollY) == "number" and view.messageScrollY or 0),
+      width = NARRATION_BOX.width,
+      height = NARRATION_BOX.height,
+    }
+    windows.drawWindow(messageBox, resources.frameKey, { fill.r / 255, fill.g / 255, fill.b / 255, 1 })
+    LogicalSurface.clip(graphics, messageBox, function()
+      drawRoleText(text, "narration", view.message --[[@as string]], messageBox.x, messageBox.y, palette)
     end)
   end
   restoreColor(graphics, r, g, b, a)
@@ -1548,61 +1579,82 @@ local function drawControls(resources, view, layout, regions)
       end
     end
   end
+  local menuText = assert(view.menuText, "the battle view carries its staged source menu labels") --[[@as table<string, string>]]
+  -- BattleInput_CreateTextObject centers each label on its anchor when
+  -- asked and lifts the 16-pixel text object eight pixels above it; a
+  -- pressed button raises its label two more pixels.
+  local function label(role, content, anchor, centered, pressed, palette)
+    local x = anchor.x
+    if centered then
+      x = x - math.floor(measureRoleText(text, role, content) / 2)
+    end
+    drawRoleText(text, role, content, x, anchor.y - 8 - (pressed and 2 or 0), palette)
+  end
   for _, region in ipairs(regions) do
     local box = region --[[@as table<string, unknown>]]
     local id = box.id --[[@as string]]
     local pressed = armed ~= nil and armed.id == id and armed.scope == layout
-    local shift = pressed and 1 or 0
     local art = assets:drawable("menu:" .. layout .. ":" .. id)
     local slot = id:match("^move:(%d+)$")
     if slot ~= nil and movesBySlot[tonumber(slot)] == nil then
       -- Missing move slots stay visibly empty: no art, no label.
     else
       if art ~= nil then
-        drawArtwork(graphics, art, nil, box.x --[[@as number]] + shift, box.y --[[@as number]] + shift)
+        drawArtwork(graphics, art, nil, box.x --[[@as number]], box.y --[[@as number]])
       end
       if layout == "command" and COMMAND_ANCHORS[id] ~= nil then
-        local anchor = COMMAND_ANCHORS[id]
-        local entry = commandsById[id]
-        local enabled = entry == nil or entry.enabled ~= false
-        if enabled or id == "fight" or id == "bag" or id == "pokemon" then
-          local labelY = pressed and id == "fight" and layout == "command" and anchor.y - 2 or anchor.y
-          local commandColors = id == "fight" and { foreground = 1, shadow = 2, background = 3 }
-            or id == "bag" and { foreground = 4, shadow = 5, background = 6 }
-            or id == "pokemon" and { foreground = 7, shadow = 8, background = 9 }
-            or { foreground = 10, shadow = 11, background = 12 }
-          drawRoleText(text, "menu", COMMAND_LABELS[id] or id, anchor.x + shift, labelY, commandColors)
-        else
-          drawRoleText(
-            text,
-            "menu",
-            fitLabel(text, COMMAND_LABELS[id] or id, box.w --[[@as number]], "menu"),
-            anchor.x,
-            anchor.y,
-            { foreground = 10, shadow = 11, background = 12 }
+        local entry = assert(commandsById[id], "command controls carry their source facts")
+        local slots = COMMAND_SLOTS[id]
+        if id == "fight" and type(view.commandIcon) == "table" then
+          local iconFacts = view.commandIcon --[[@as table<string, unknown>]]
+          local icon = assets:drawable(
+            "battle:icon:" .. tostring(iconFacts.key) .. ":frame:" .. tostring(iconFacts.frameIndex or 1)
           )
+          if icon ~= nil then
+            local labelWidth =
+              measureRoleText(text, "menu", assert(entry.label, "command controls carry their source label"))
+            local labelLeft = COMMAND_ANCHORS.fight.x - math.floor(labelWidth / 2)
+            local dimensions = icon.getDimensions --[[@as fun(self: table<string, unknown>): number, number]]
+            local width, height = dimensions(icon)
+            -- BattleInput positions the 32-pixel sprite by its center at
+            -- the fight label's left edge minus sixteen pixels.
+            local iconX = iconFacts.rightOfLabel == true and labelLeft + labelWidth or labelLeft - 32
+            drawArtwork(graphics, icon, nil, iconX, COMMAND_ANCHORS.fight.y - 32 - (pressed and 2 or 0))
+            assert(width == 32 and height == 32, "battle command icons use the native 32-pixel extent")
+          end
         end
+        label(
+          "menu",
+          assert(entry.label, "command controls carry their source label") --[[@as string]],
+          COMMAND_ANCHORS[id],
+          true,
+          pressed,
+          sourcePalette(view, "menu", 2, slots[1], slots[2], slots[3])
+        )
       elseif slot ~= nil then
         local slotIndex = tonumber(slot) --[[@as integer]]
         local move = movesBySlot[slotIndex]
-        local anchor = MOVE_ANCHORS[slotIndex + 1]
         local typeAnchor = TYPE_ANCHORS[slotIndex + 1]
-        local ppCurrent = PP_CURRENT_ANCHORS[slotIndex + 1]
-        local ppMax = PP_MAX_ANCHORS[slotIndex + 1]
-        if move ~= nil and anchor ~= nil and move.name ~= nil then
-          drawRoleText(
-            text,
+        if move ~= nil and move.name ~= nil then
+          label(
             "menu",
-            fitLabel(text, move.name --[[@as string]], 120, "menu"),
-            anchor.x + shift,
-            anchor.y + shift,
-            { foreground = 7, shadow = 8, background = 9 }
+            move.name --[[@as string]],
+            MOVE_ANCHORS[slotIndex + 1],
+            true,
+            pressed,
+            sourcePalette(view, "menu", 3, 7, 8, 9)
           )
-          if ppCurrent ~= nil and ppMax ~= nil then
-            local ppColors = movePpColors(move.pp, move.maxPp)
-            drawRoleText(text, "menu", tostring(move.pp), ppCurrent.x + shift, ppCurrent.y + shift, ppColors)
-            drawRoleText(text, "menu", "/" .. tostring(move.maxPp), ppMax.x + shift, ppMax.y + shift, ppColors)
-          end
+          local foreground, shadow = ppSlots(move.pp --[[@as integer]], move.maxPp --[[@as integer]])
+          local ppPalette = sourcePalette(view, "menu", 4, foreground, shadow, 0)
+          label("hud", menuText.pp, PP_CURRENT_ANCHORS[slotIndex + 1], false, pressed, ppPalette)
+          label(
+            "hud",
+            string.format("%2d/%2d", move.pp, move.maxPp),
+            PP_MAX_ANCHORS[slotIndex + 1],
+            false,
+            pressed,
+            ppPalette
+          )
           if type(move.moveType) == "string" and typeAnchor ~= nil then
             local icon = assets:drawable("battle:move-type-icon:" .. move.moveType:lower())
             if icon ~= nil then
@@ -1616,40 +1668,29 @@ local function drawControls(resources, view, layout, regions)
                 type(iconWidth) == "number" and type(iconHeight) == "number",
                 "move-type icons carry measurable extents"
               )
+              local offset = icon.offset --[[@as table<string, number>?]]
               drawArtwork(
                 graphics,
                 icon,
                 nil,
-                typeAnchor.x + shift - math.floor(iconWidth / 2),
-                typeAnchor.y + shift - math.floor(iconHeight / 2)
+                typeAnchor.x - math.floor(iconWidth / 2) + (offset and offset.x or 0),
+                typeAnchor.y - math.floor(iconHeight / 2) + (offset and offset.y or 0) - (pressed and 2 or 0)
               )
             end
           end
         end
       elseif id == "cancel" then
-        drawRoleText(
-          text,
-          "menu",
-          "CANCEL",
-          CANCEL_ANCHOR.x + shift,
-          CANCEL_ANCHOR.y + shift,
-          { foreground = 10, shadow = 11, background = 12 }
-        )
+        label("menu", menuText.cancel, CANCEL_ANCHOR, true, pressed, sourcePalette(view, "menu", 2, 10, 11, 12))
       elseif id:match("^target:") ~= nil then
-        -- Target rows name their projected candidate with the focus
-        -- marker, so the chosen foe never depends on sprite order.
-        local name = targetName(view, id) or id
-        if view.selection == id then
-          name = "> " .. name
-        end
-        drawRoleText(
-          text,
+        local index = tonumber(id:match("^target:(%d+)$")) --[[@as integer]]
+        local opponent = index % 2 == 1
+        label(
           "menu",
-          fitLabel(text, name, box.w --[[@as number]], "menu"),
-          box.x --[[@as number]] + shift,
-          box.y --[[@as number]] + shift,
-          (id == "target:0" or id == "target:2") and { foreground = 4, shadow = 5, background = 6 }
-            or { foreground = 1, shadow = 2, background = 3 }
+          targetName(view, id) or id,
+          TARGET_ANCHORS[index + 1],
+          true,
+          pressed,
+          sourcePalette(view, "menu", 6, opponent and 1 or 4, opponent and 2 or 5, opponent and 3 or 6)
         )
       end
     end
@@ -1678,9 +1719,9 @@ local function drawGaugeCell(graphics, image, family, slotX, slotY, state)
   end
 end
 
--- Draws both party rows from their native source families by roster
+-- Draws the party rows from their native source families by roster
 -- visibility: the committed battle roster behind the player row, the
--- revealed active-foe count behind the enemy row. Unrevealed foes keep
+-- revealed active-foe count behind the trainer-battle enemy row. Unrevealed foes keep
 -- the absent cell, so no unrevealed species ever shows. A missing strip
 -- draws nothing, never a substitute.
 ---@param resources table<string, unknown> borrowed application collaborators
@@ -1714,6 +1755,11 @@ local function drawGauges(resources, view)
         state
       )
     end
+  end
+  -- BattleInput_EnableBallGauge shows the opponent row only in trainer
+  -- battles; a wild encounter draws the player row alone.
+  if view.battleKind == "wild" then
+    return
   end
   local enemyArt = assets:drawable("gauges:enemy")
   local enemyFamily = assert(families.enemy, "the battle view carries the opponent gauge family")
@@ -1929,16 +1975,23 @@ local function drawTwoOptionConfirmation(resources, view, child)
       bottomY = bottomY - 2
     end
   end
-  drawRoleText(text, "menu", top, 128 - math.floor(measureRoleText(text, "menu", top) / 2), topY, {
-    foreground = 1,
-    shadow = 2,
-    background = 3,
-  })
-  drawRoleText(text, "menu", bottom, 128 - math.floor(measureRoleText(text, "menu", bottom) / 2), bottomY, {
-    foreground = 10,
-    shadow = 11,
-    background = 12,
-  })
+  -- Source text objects sit eight pixels above their centered anchors.
+  drawRoleText(
+    text,
+    "menu",
+    top,
+    128 - math.floor(measureRoleText(text, "menu", top) / 2),
+    topY - 8,
+    sourcePalette(view, "menu", 2, 1, 2, 3)
+  )
+  drawRoleText(
+    text,
+    "menu",
+    bottom,
+    128 - math.floor(measureRoleText(text, "menu", bottom) / 2),
+    bottomY - 8,
+    sourcePalette(view, "menu", 2, 10, 11, 12)
+  )
 end
 
 ---@param resources table<string, unknown> borrowed application collaborators
@@ -2001,6 +2054,7 @@ local function drawInteraction(resources, view, content)
         drawRoleText(text, "menu", fitLabel(text, acting, 44, "menu"), 128, 8)
       end
       drawControls(resources, view, layout, regions)
+      drawKeypadCursor(graphics, assets, view, layout, regions)
     end
     if revealEdge ~= nil then
       LogicalSurface.clip(graphics, { x = 0, y = 0, width = 256, height = revealEdge }, drawOverlay)
@@ -2180,6 +2234,49 @@ function BattleRenderer.drawPane(resources, view, paneId, content)
   elseif paneId == "interaction" then
     drawInteraction(resources, view, content or {})
   end
+end
+
+-- Compact battle reuses the native HUD cell at a fitted scale, so its
+-- printer writes use the same staged digit tiles and font role through
+-- the cell's source coordinates.
+---@param graphics table<string, unknown>
+---@param text table<string, unknown>
+---@param assets table<string, unknown>
+---@param view table<string, unknown>
+---@param artKey string
+---@param section table<string, unknown>
+---@param objects table<integer, table<string, unknown>>
+---@param battler table<string, unknown>
+---@param sideType integer
+---@param hpNumbers boolean
+---@param transform { x: number, y: number, scale: number }
+function BattleRenderer.drawCompactHudPrinters(
+  graphics,
+  text,
+  assets,
+  view,
+  artKey,
+  section,
+  objects,
+  battler,
+  sideType,
+  hpNumbers,
+  transform
+)
+  drawHudPrinters(
+    graphics,
+    text,
+    assets,
+    view,
+    artKey,
+    section,
+    { x = 0, y = 0 },
+    objects,
+    battler,
+    sideType,
+    hpNumbers,
+    transform
+  )
 end
 
 return BattleRenderer

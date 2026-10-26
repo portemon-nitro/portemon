@@ -328,6 +328,10 @@ local function visualDuration(parameters)
   local perStep, count = nil, nil
   if isPositiveInt(parameters.ticksPerStep) and isPositiveInt(parameters.steps) then
     perStep, count = parameters.ticksPerStep, parameters.steps
+  elseif parameters.framesPerStep == 0 and isPositiveInt(parameters.repeatCount) then
+    -- Palette pulse callbacks admit a zero frame interval. It removes the
+    -- wait between repeats; each repeat still advances on one source tick.
+    return parameters.repeatCount
   elseif isPositiveInt(parameters.framesPerStep) and isPositiveInt(parameters.repeatCount) then
     perStep, count = parameters.framesPerStep, parameters.repeatCount
   elseif isPositiveInt(parameters.ticksPerDirection) and isPositiveInt(parameters.directionChanges) then

@@ -67,23 +67,10 @@ local function battleDrawServices(state, resources, runtime)
   function text.drawText(content, x, y)
     return textRenderer:drawText(content, x, y)
   end
-  function text.drawTextForRole(role, content, x, y, colors)
+  function text.drawTextForRole(role, content, x, y, palette)
     local renderer = assert(battleTextRenderers[role], "battle text role has a source font renderer")
-    if colors ~= nil then
-      local fontPalette = assert(renderer.fontDef.palette, "colored battle text reads its source font palette")
-      local function colorAt(slot)
-        local source = assert(fontPalette[slot + 1], "battle text source palette contains its selected slot")
-        return {
-          r = assert(tonumber(source.r or source[1]), "source font color has red"),
-          g = assert(tonumber(source.g or source[2]), "source font color has green"),
-          b = assert(tonumber(source.b or source[3]), "source font color has blue"),
-        }
-      end
-      return renderer:drawTextWithPalette(content, x, y, {
-        foreground = colorAt(colors.foreground),
-        shadow = colorAt(colors.shadow),
-        background = colorAt(colors.background),
-      })
+    if palette ~= nil then
+      return renderer:drawTextWithPalette(content, x, y, palette)
     end
     return renderer:drawText(content, x, y)
   end
@@ -98,6 +85,9 @@ local function battleDrawServices(state, resources, runtime)
   end
   function text.measure(content)
     return { width = textRenderer:textWidth(content), height = 16 }
+  end
+  function text.windowBackgroundColor()
+    return textRenderer:windowBackgroundColor()
   end
   local windows = {}
   local function frameIndexOf(frameKey)
@@ -263,6 +253,7 @@ function FieldState.new(game, options)
       audio = runtime.audio,
       derivedAssets = runtime.derivedAssets,
       imagePool = runtime.imageAssets,
+      monIconProvider = self.presentationResources.monIconProvider,
       pokedex = self.presentationResources:pokedex(),
       itemCatalog = assert(runtime.itemCatalog, "the presented battle envelope borrows its item catalog"),
       monCatalog = assert(runtime.monCatalog, "the presented battle envelope borrows its mon catalog"),

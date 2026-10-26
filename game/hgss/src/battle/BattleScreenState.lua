@@ -14,6 +14,7 @@ local BattleAnimationPlayer = require("libs.hgss.src.presentation.BattleAnimatio
 local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+local MonCache = require("libs.assets.src.MonCache")
 local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
@@ -33,6 +34,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _battleAudio BattleAudio launch-scoped voice operations over the sound boundary
 ---@field _legacyAudio boolean true while the sink voices string roles without a cry port
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind cry identities, move names, and experience spans
+---@field _monIconProvider table<string, unknown>? borrowed field icon page provider behind the command icon
 ---@field _assets BattlePresentationAssets per-launch preparation leases
 ---@field _timeline BattleTimeline ordered visible-cue player
 ---@field _player table<string, unknown> battle-private native animation interpreter over the live scene
@@ -47,6 +49,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _inventorySnapshot table<string, integer>? latest detached battle stock
 ---@field _mode string closed controller mode
 ---@field _selection string? highlighted semantic identity
+---@field _keyboardFocus boolean true while the last battle-menu input came from keys
 ---@field _armed table<string, unknown>? pressed control awaiting release
 ---@field _child table<string, unknown>? open child intent
 ---@field _request table<string, unknown>? mirrored open request
@@ -81,6 +84,10 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _sourceAccum number accepted seconds banked toward the next arrow tick
 ---@field _menuRevealStep integer source menu reveal frame, 0 through 4
 ---@field _menuGateTicks integer source ticks until menu input opens
+---@field _messageScrollY integer source BG1 message-window scroll from -51 to 0
+---@field _menuPulseBlend integer source palette blend coefficient from 0 through 16
+---@field _menuPulseDirection 0|1 source palette pulse direction
+---@field _iconAnimationTick integer mon icon animation clock in source ticks
 ---@field _scene table<string, unknown> native visual-state owner for entry travel and scroll
 ---@field _gaugeVisuals table<string, { sideType: integer, kind: string }> active native HUD gauge task destinations
 ---@field _sceneHasBackground boolean true after staged BG3 state installs
@@ -220,6 +227,7 @@ end
 ---@field registrationAudio table<string, unknown>? borrowed registration audio adapter behind the card
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog for battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
+---@field monIconProvider table<string, unknown>? borrowed field icon page provider for presented battle composition
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
 ---@field musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@field musicBanks integer[]? chosen track bank identities behind the demand
@@ -836,6 +844,9 @@ function BattleScreenState.new(opts)
   if opts.monCatalog ~= nil then
     assert(type(opts.monCatalog) == "table", "the mon catalog arrives as a record")
   end
+  if opts.monIconProvider ~= nil then
+    assert(type(opts.monIconProvider) == "table", "the icon provider arrives as a record")
+  end
   local overrides = opts.overrides or {}
   assert(type(overrides) == "table", "per-instance inputs arrive as a record")
   local manifest = opts.manifest --[[@as table<string, unknown>]]
@@ -856,6 +867,7 @@ function BattleScreenState.new(opts)
     _battleAudio = BattleAudio.new({ sink = opts.audio, launchId = opts.launchId }),
     _legacyAudio = type(opts.audio.playCry) ~= "function",
     _monCatalog = opts.monCatalog,
+    _monIconProvider = opts.monIconProvider,
     _assets = BattlePresentationAssets.new({
       assets = opts.assets,
       launchId = opts.launchId,
@@ -884,6 +896,7 @@ function BattleScreenState.new(opts)
     _inventorySnapshot = nil,
     _mode = "preparing",
     _selection = "fight",
+    _keyboardFocus = false,
     _armed = nil,
     _child = nil,
     _request = nil,
@@ -918,6 +931,10 @@ function BattleScreenState.new(opts)
     _sourceAccum = 0,
     _menuRevealStep = 4,
     _menuGateTicks = 0,
+    _messageScrollY = -51,
+    _menuPulseBlend = 0,
+    _menuPulseDirection = 0,
+    _iconAnimationTick = 0,
     _scene = BattleScene.new(),
     _gaugeVisuals = {},
     _sceneHasBackground = false,
@@ -1131,6 +1148,24 @@ local function enrichScene(self, battlers)
         local pictureAttributes = BattleScene.pictureAttributes(self._manifest, battler.portraitSelector)
         if pictureAttributes ~= nil then
           battler.sourceHeight = pictureAttributes.height
+          -- BattleControllerOpponent_CreatePokepic gives opponent pictures
+          -- the species shadow: grounded 36 pixels below the settled row
+          -- and the picture lifted by the shadow height. Animation patches
+          -- already copied above keep precedence.
+          local shadow = pictureAttributes.shadow --[[@as table<string, integer>?]]
+          if battler.side ~= 1 and shadow ~= nil then
+            local defaults = {
+              shadowSize = shadow.size,
+              shadowOffsetX = shadow.xOffset,
+              shadowOffsetY = 36 - pictureAttributes.height,
+              shadowHeight = shadow.height,
+            }
+            for key, value in pairs(defaults) do
+              if battler[key] == nil then
+                battler[key] = value
+              end
+            end
+          end
           battler.pictureAnimation = pictureAttributes.animation
           local pose = self._scene:picturePose(battler, pictureAttributes.animation)
           battler.pictureFrame = pose.frame
@@ -1547,6 +1582,58 @@ function BattleScreenState:_snapshot()
       }
     end
   end
+  local commandIcon = nil
+  if type(latest) == "table" and type(latest.own) == "table" then
+    local iconRecord = nil
+    if type(acting) == "table" then
+      for _, record in ipairs(latest.own) do
+        if type(record) == "table" and record.combatant == acting.combatant and record.active ~= false then
+          iconRecord = record
+          break
+        end
+      end
+    end
+    if iconRecord == nil then
+      for _, record in ipairs(latest.own) do
+        if type(record) == "table" and record.active ~= false and type(record.slot) == "number" then
+          iconRecord = record
+          break
+        end
+      end
+    end
+    if
+      iconRecord ~= nil
+      and type(iconRecord.species) == "string"
+      and type(iconRecord.form) == "number"
+      and iconRecord.form % 1 == 0
+      and iconRecord.form >= 0
+    then
+      local iconKey = MonCache.iconSelector(iconRecord.species, iconRecord.form --[[@as integer]], false)
+      if self._monIconProvider ~= nil then
+        local hp = tonumber(iconRecord.hp) or 0
+        local maxHp = tonumber(iconRecord.maxHp) or 0
+        local condition = type(iconRecord.condition) == "string" and iconRecord.condition:lower() or ""
+        local animation = 0
+        if hp > 0 and condition ~= "sleep" then
+          if condition == "poison" or condition == "bad-poison" then
+            animation = 5
+          elseif maxHp > 0 then
+            local pixels = math.max(1, math.floor(hp * 48 / maxHp))
+            animation = hp == maxHp and 1 or pixels > 24 and 2 or pixels > 9 and 3 or 4
+          end
+        end
+        commandIcon = {
+          key = iconKey,
+          hp = hp,
+          maxHp = maxHp,
+          animation = animation,
+          frameIndex = animation == 0 and 1 or math.floor(self._iconAnimationTick / (animation + 2)) % 2 + 1,
+          rightOfLabel = type(acting) == "table" and acting.sideType == 4,
+        }
+      end
+    end
+  end
+  self._assets:setIconKeys(commandIcon ~= nil and { commandIcon.key } or {})
   local menuWindows = nil
   if self._mode == "command" and self._menuGateTicks > 0 and type(acting) == "table" then
     local sideType = acting.sideType
@@ -1611,9 +1698,13 @@ function BattleScreenState:_snapshot()
     menuWindows = menuWindows,
     menuInputEnabled = self._menuGateTicks == 0,
     selection = self._selection,
+    cursorVisible = self._keyboardFocus and self._mode ~= "child",
     armed = self._armed ~= nil and { scope = self._armed.scope, id = self._armed.id } or nil,
+    touchFeedback = self._armed ~= nil and self._armed.id == "dialogue" and self._armed.pointerId ~= nil or false,
     requestId = self._request ~= nil and self._request.requestId or 0,
     message = (self._notice ~= nil and self._notice ~= "" and self._notice or completionPrompt or message),
+    messageScrollY = self._messageScrollY,
+    menuPulse = self._menuPulseBlend,
     battlers = battlers,
     bgScroll = self._scene:scroll(),
     backgroundRaster = self._scene:hasBackground() and self._scene:backgroundRaster() or nil,
@@ -1631,6 +1722,13 @@ function BattleScreenState:_snapshot()
       twoOption = copyValue(self._manifest.menus.twoOption.screens),
     },
     hudPatchSpans = self._manifest.hud.patchSpans,
+    cursor = self._manifest.hud.cursor,
+    menuText = self:_menuText(),
+    textPalettes = {
+      narration = self._manifest.messages.roles.narration.palette,
+      hud = self._manifest.messages.roles.hud.palette,
+      menu = self._manifest.messages.roles.menu.palette,
+    },
     gaugePatchTiles = gaugePatchTiles,
     commands = self:_commands(),
     moves = self:_moves(),
@@ -1638,6 +1736,7 @@ function BattleScreenState:_snapshot()
     foeCount = foes,
     arrowFrame = self:_arrowFrame(),
     actor = acting,
+    commandIcon = self._mode == "command" and commandIcon or nil,
     targetCandidates = targets,
     stagedChoices = staged,
     childIntent = self._child ~= nil and copyValue(self._child) or nil,
@@ -1756,6 +1855,16 @@ function BattleScreenState:_menuLayoutVariant()
   return "standard"
 end
 
+---@return table<string, string> source fight-menu labels: the PP marker and the cancel control
+function BattleScreenState:_menuText()
+  local entries = self._manifest.messages.entries --[[@as table<string, table<string, unknown>>]]
+  local function text(key)
+    local record = assert(entries[key], "the fight menu stages its source label " .. key)
+    return menuLabelText(record.tokens --[[@as table<integer, table<string, unknown>>]])
+  end
+  return { pp = text("label/pp-max"), cancel = text("label/target-cancel") }
+end
+
 ---@return table<integer, table<string, unknown>> command facts with kernel refusal reasons
 function BattleScreenState:_commands()
   local runEnabled = true
@@ -1772,6 +1881,9 @@ function BattleScreenState:_commands()
     end
   end
   local labels = self:_menuLabels()
+  local menus = self._manifest.menus --[[@as table<string, unknown>]]
+  local runLabels = assert(menus.runLabelSelector, "the staged menu catalog selects the run label") --[[@as table<string, string>]]
+  local entries = self._manifest.messages.entries --[[@as table<string, table<string, unknown>>]]
   local commands = {} ---@type table<integer, table<string, unknown>>
   for index, id in ipairs(self:_surfaceIds()) do
     local fact = { id = id, enabled = true } ---@type table<string, unknown>
@@ -1780,17 +1892,12 @@ function BattleScreenState:_commands()
       if runReason ~= nil then
         fact.reason = runReason
       end
-    elseif id ~= "fight" and id ~= "bag" and id ~= "pokemon" then
-      -- Specialized identities carry their staged label key so every
-      -- consumer names the sourced control; ordinary identities keep
-      -- their exact long-standing shape.
-      local labelKey = SURFACE_LABEL_KEYS[index]
-      if type(labelKey) == "string" and type(labels[labelKey]) == "string" then
-        fact.label = labels[labelKey]
-      else
-        fact.label = id
-      end
     end
+    -- Every control carries the source label its text object prints.
+    local slotKey = SURFACE_LABEL_KEYS[index]
+    local labelKey = slotKey == "run" and runLabels.ordinary or labels[slotKey]
+    local record = assert(entries[labelKey], "the command menu stages its source label " .. tostring(labelKey))
+    fact.label = menuLabelText(record.tokens --[[@as table<integer, table<string, unknown>>]])
     commands[#commands + 1] = fact
   end
   return commands
@@ -1906,6 +2013,8 @@ function BattleScreenState:view()
     selection = self._selection,
     commands = copyValue(snapshot.commands),
     moves = copyValue(snapshot.moves),
+    commandIcon = copyValue(snapshot.commandIcon),
+    cursorVisible = snapshot.cursorVisible,
     battlers = battlers,
     actor = copyValue(snapshot.actor),
     targets = copyValue(snapshot.targetCandidates),
@@ -3671,6 +3780,11 @@ end
 ---@param event table<string, unknown> mapped semantic input under consumption
 function BattleScreenState:_consume(event)
   local eventType = event.type
+  if eventType == "navigate" or eventType == "confirm" or eventType == "cancel" then
+    self._keyboardFocus = true
+  elseif eventType == "battle_press" or eventType == "child_press" then
+    self._keyboardFocus = false
+  end
   if eventType == "pointer_cancel" then
     self._armed = nil
     self._subflows:cancelPointerCapture()
@@ -4245,6 +4359,21 @@ function BattleScreenState:updateFixed(dt)
       end
       self._player:stepSourceTick({ tick = 1 })
       self._scene:stepSourceTick()
+      self._iconAnimationTick = self._iconAnimationTick + 1
+      self._messageScrollY = math.min(0, self._messageScrollY + 6)
+      if self._menuPulseDirection == 0 then
+        self._menuPulseBlend = self._menuPulseBlend + 2
+        if self._menuPulseBlend >= 17 then
+          self._menuPulseBlend = 15
+          self._menuPulseDirection = 1
+        end
+      else
+        self._menuPulseBlend = self._menuPulseBlend - 2
+        if self._menuPulseBlend <= 0 then
+          self._menuPulseBlend = 1
+          self._menuPulseDirection = 0
+        end
+      end
       if menuGateAtStart > 0 and self._menuGateTicks > 0 then
         self._menuGateTicks = self._menuGateTicks - 1
         if self._menuRevealStep < 4 then

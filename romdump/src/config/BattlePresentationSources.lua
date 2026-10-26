@@ -212,6 +212,45 @@ BattlePresentationSources.HUD_PATCH_SPANS = {
     { sideType = 4, spans = { { tile = 82, count = 2 }, { tile = 90, count = 2 } } },
     { sideType = 5, spans = { { tile = 81, count = 2 }, { tile = 89, count = 2 } } },
   },
+  -- Nickname window tiles (sNicknameVramRegions): the 8x2-tile text
+  -- window's first columns of each row, then each row's remaining columns.
+  nickname = {
+    {
+      sideType = 0,
+      spans = { { tile = 19, count = 5 }, { tile = 27, count = 5 }, { tile = 80, count = 3 }, { tile = 88, count = 3 } },
+    },
+    {
+      sideType = 1,
+      spans = { { tile = 17, count = 7 }, { tile = 25, count = 7 }, { tile = 80, count = 1 }, { tile = 88, count = 1 } },
+    },
+    {
+      sideType = 2,
+      spans = { { tile = 18, count = 6 }, { tile = 26, count = 6 }, { tile = 80, count = 2 }, { tile = 88, count = 2 } },
+    },
+    {
+      sideType = 3,
+      spans = { { tile = 17, count = 7 }, { tile = 25, count = 7 }, { tile = 80, count = 1 }, { tile = 88, count = 1 } },
+    },
+    {
+      sideType = 4,
+      spans = { { tile = 18, count = 6 }, { tile = 26, count = 6 }, { tile = 80, count = 2 }, { tile = 88, count = 2 } },
+    },
+    {
+      sideType = 5,
+      spans = { { tile = 17, count = 7 }, { tile = 25, count = 7 }, { tile = 80, count = 1 }, { tile = 88, count = 1 } },
+    },
+  },
+  -- Level digit tiles (sLevelVramRegions): three upper-row tiles receive
+  -- each digit's top half in their lower rows, three lower-row tiles its
+  -- bottom half in their upper rows.
+  level = {
+    { sideType = 0, spans = { { tile = 85, count = 3 }, { tile = 93, count = 3 } } },
+    { sideType = 1, spans = { { tile = 83, count = 3 }, { tile = 91, count = 3 } } },
+    { sideType = 2, spans = { { tile = 84, count = 3 }, { tile = 92, count = 3 } } },
+    { sideType = 3, spans = { { tile = 83, count = 3 }, { tile = 91, count = 3 } } },
+    { sideType = 4, spans = { { tile = 84, count = 3 }, { tile = 92, count = 3 } } },
+    { sideType = 5, spans = { { tile = 83, count = 3 }, { tile = 91, count = 3 } } },
+  },
   caught = {
     { sideType = 0, tile = 35, count = 1 },
     { sideType = 1, tile = 33, count = 1 },
@@ -253,6 +292,17 @@ BattlePresentationSources.HUD_PATCH_SPANS = {
       },
     },
   },
+}
+
+-- The health-box number printer (MessagePrinter_New(14, 2, 15)): digit
+-- tiles 0..9 from graphic/font member 5 with raw values 0/1/2 recolored to
+-- the HUD palette's background, foreground, and shadow slots.
+BattlePresentationSources.HUD_DIGITS = {
+  narc = "NARC_graphic_font",
+  member = 5,
+  foreground = 14,
+  shadow = 2,
+  background = 15,
 }
 
 -- Native battle health-box OBJ tiles from battle_hp_bar_data.h::gBattleHpBar_RawGraphicComponents.
@@ -360,6 +410,7 @@ BattlePresentationSources.ROLES = {
   lowerPalette = 246,
   hudPalette = 71,
   lowerObjPalette = 72,
+  cursorPalette = 80,
   playerHud = { nanr = 189, ncer = 190, ncgr = 191 },
   enemyHud = { nanr = 186, ncer = 187, ncgr = 188 },
   playerHudDoubleLeft = { nanr = 198, ncer = 199, ncgr = 200 },
@@ -367,6 +418,7 @@ BattlePresentationSources.ROLES = {
   enemyHudDoubleLeft = { nanr = 192, ncer = 193, ncgr = 194 },
   enemyHudDoubleRight = { nanr = 195, ncer = 196, ncgr = 197 },
   arrow = { nanr = 183, ncer = 184, ncgr = 185 },
+  cursor = { nanr = 252, ncer = 251, ncgr = 250 },
   gauges = {
     { ncer = 204, ncgr = 205, nanr = 206 },
     { ncer = 207, ncgr = 208, nanr = 209 },
@@ -692,6 +744,16 @@ BattlePresentationSources.MENU_TEXT_FONT_ID = 4
 BattlePresentationSources.HUD_MESSAGE_FONT_ID = 0
 BattlePresentationSources.RECORDER_FEEDBACK_FONT_ID = 0
 BattlePresentationSources.BUG_CONTEST_FONT_ID = 0
+-- Source palettes behind each battle text printer, as leading sixteen-color
+-- banks: Battle_BattleInit loads graphic/font member 8 into the narration
+-- window's palette; health-box names and digits print in the HUD OBJ
+-- palette; menu text OBJs select a bank of the seven-bank lower OBJ palette
+-- through their palOffset.
+BattlePresentationSources.TEXT_PALETTES = {
+  narration = { narc = "NARC_graphic_font", member = 8, banks = 1 },
+  hud = { narc = "NARC_a_0_0_8", member = 71, banks = 1 },
+  menu = { narc = "NARC_a_0_0_8", member = 72, banks = 7 },
+}
 BattlePresentationSources.TRANSITION_MESSAGE_MEMBER = 189
 BattlePresentationSources.TRANSITION_MESSAGE_ID = 0
 BattlePresentationSources.FRONTIER_TRAINER_MESSAGE_ROUTE = {
@@ -1548,6 +1610,10 @@ BattlePresentationSources.MENU_LAYOUT = {
   },
 }
 
+-- Shared lower-screen backdrop member whose bank-zero color 1 pulses while
+-- the battle command touch menu is open.
+BattlePresentationSources.MENU_PULSE_SCREEN = 43
+
 -- Button feedback is applied to the selected source screen buffer by
 -- battle_input.c::ov12_02268EE4. Rectangles are inclusive 8x8 tile bounds;
 -- offsets are raw 16-bit screen-entry increments for idle, selected, and
@@ -1595,13 +1661,32 @@ BattlePresentationSources.MENU_FEEDBACK = {
   },
 }
 
--- Physical lower BG planes corresponding to the menu screen buffers loaded
--- by BattleInput_ChangeMenu. Order matches each ordinary menu's role members.
+-- Fight-menu move buttons (BattleInput_CreateFightMenuObjects): each move
+-- loads its type palette (overlay_06.c sMoveTypePalettes, an 18-entry
+-- pointer table discovered in ARM9 overlay 6) over lower palette bank
+-- 8 + slot; the first empty slot onward copies the blank button tiles
+-- (sEmptyMoveButtonsScreenOffsets over sEmptyMoveButtonsTouchscreenRect)
+-- and loads lower bank 14 into the slot's bank.
+BattlePresentationSources.MOVE_BUTTONS = {
+  typePalettes = { cpu = "arm9", overlayId = 6, count = 18 },
+  firstBank = 8,
+  emptyBank = 14,
+  empty = {
+    { offset = 0x22F, left = 0, top = 3, right = 15, bottom = 9 },
+    { offset = 0x22C, left = 16, top = 3, right = 31, bottom = 9 },
+    { offset = 0x229, left = 0, top = 11, right = 15, bottom = 17 },
+    { offset = 0x226, left = 16, top = 11, right = 31, bottom = 17 },
+  },
+}
+
+-- Physical lower BG planes receiving each menu's screen buffers: the
+-- sBattleMenuTemplates screenBufferIds slot is the plane BattleInput_ChangeMenu
+-- loads (SUB_0 + slot). Order matches each ordinary menu's role members.
 BattlePresentationSources.MENU_PLANES = {
-  command = { 1, 2, 0 },
-  moves = { 3, 0 },
-  target = { 3, 2, 0 },
-  twoOption = { 2, 0 },
+  command = { 0, 1, 2 },
+  moves = { 0, 2 },
+  target = { 0, 1, 2 },
+  twoOption = { 0, 2 },
 }
 
 -- NARC-109 loads whose complete resource-kind/member tuples are source-
@@ -2505,6 +2590,7 @@ function BattlePresentationSources.validate()
     maximumHp = { 3 },
     status = { 3 },
     gender = { 2, 2 },
+    level = { 3, 3 },
     caught = { 1 },
   }) do
     local records = patchSpans[category]
@@ -2643,6 +2729,7 @@ function BattlePresentationSources.validate()
     "enemyHudDoubleLeft",
     "enemyHudDoubleRight",
     "arrow",
+    "cursor",
   }) do
     local role = roles[field]
     if type(role) ~= "table" or not member(role.nanr) or not member(role.ncer) or not member(role.ncgr) then

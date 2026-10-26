@@ -245,13 +245,14 @@ end
 
 ---@return table recording text-measurement boundary that stays usable for the whole test
 local function recordingText()
-  local text = { measures = 0, draws = 0, disposed = false }
+  local text = { measures = 0, draws = 0, disposed = false, lastY = {} }
   function text.measure(content)
     text.measures = text.measures + 1
     return { width = 8 * #tostring(content), height = 16 }
   end
-  function text.drawText(_content, _x, _y)
+  function text.drawText(content, _x, y)
     text.draws = text.draws + 1
+    text.lastY[tostring(content)] = y
   end
   return text
 end
@@ -963,11 +964,12 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   -- The re-entered prompt reveals before it arms: the press probes wait
   -- for the production input gate instead of racing it.
   driveToMode(rig, "command", 30)
-  local released = drawNow()
+  drawNow()
+  local releasedY = rig.text.lastY["FIGHT"]
   Assert.isTrue(#graphics.draws > 0, "the command composition draws through the recording boundary")
   rig.screen:input({ { type = "pointer_down", pointerId = "touch:3", x = 128, y = 83 + 192 } })
-  local pressed = drawNow()
-  Assert.isTrue(released ~= pressed, "the armed press shows its pressed treatment")
+  drawNow()
+  Assert.equal(rig.text.lastY["FIGHT"], releasedY - 2, "the armed press lifts its label like the source task")
   rig.screen:input({ { type = "pointer_move", pointerId = "touch:3", x = 84, y = 170 + 192 } })
   rig.screen:input({ { type = "pointer_up", pointerId = "touch:3", x = 84, y = 170 + 192 } })
   rig.pump(1)
@@ -1931,6 +1933,29 @@ function T.benched_reserves_contribute_no_live_side_positions()
   end
   Assert.equal(settledHp, 43, "the exact checkpoint applies after real completion")
   screen:dispose()
+end
+
+function T.keypad_focus_cursor_hides_after_pointer_input()
+  local modules = battleScreenModules("keypad focus belongs to the last input source", STATE_MODULE)
+  local rig = openWildRig(
+    modules,
+    "launch-screen-keypad-focus",
+    { species = "EEVEE", level = 20, seed = 0x77777777 },
+    { species = "EEVEE", level = 5, seed = 0x88888888, ability = "RUN_AWAY" },
+    foeRecord("EEVEE", 20, 0x5EED0007)
+  )
+  driveToMode(rig, "command", 600)
+
+  Assert.isFalse(rig.screen:view().cursorVisible, "touch-first command input starts without the keypad cursor")
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
+  Assert.isTrue(rig.screen:view().cursorVisible, "keyboard focus shows the source keypad cursor")
+  rig.screen:input({
+    { type = "battle_press", control = { scope = "command", id = "bag" }, pointerId = 1 },
+  })
+  rig.pump(1)
+  Assert.isFalse(rig.screen:view().cursorVisible, "touch input hides the keypad cursor")
+  rig.screen:dispose()
 end
 
 return { tests = T }

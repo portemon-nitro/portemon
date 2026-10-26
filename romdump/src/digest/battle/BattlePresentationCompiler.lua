@@ -762,7 +762,7 @@ end
 ---@param charData { depth: integer, tiles: string } decoded lower BG characters
 ---@param paletteData { colors: table[] } decoded lower BG palette
 ---@param screenData { width: integer, height: integer, entries: table[] } decoded menu tilemap
----@param patch { left: integer, top: integer, right: integer, bottom: integer, offset: integer } inclusive source tile rectangle and raw map offset
+---@param patch { left: integer, top: integer, right: integer, bottom: integer, offset: integer, crop?: { left: integer, top: integer, right: integer, bottom: integer } } inclusive source tile rectangle, raw map offset, and optional wider tile crop
 ---@return { width: integer, height: integer, pixels: string } cropped state art for the patched source map region
 function BattlePresentationCompiler.compileMenuFeedbackPatch(charData, paletteData, screenData, patch)
   assert(patch.left >= 0 and patch.top >= 0, "menu feedback bounds begin inside the source tilemap")
@@ -797,12 +797,15 @@ function BattlePresentationCompiler.compileMenuFeedbackPatch(charData, paletteDa
     height = screenData.height,
     entries = entries,
   })
-  local patchWidth = (patch.right - patch.left + 1) * 8
-  local patchHeight = (patch.bottom - patch.top + 1) * 8
+  -- The staged patch covers the offset tiles unless the caller names a
+  -- wider tile crop around them.
+  local crop = patch.crop or patch
+  local patchWidth = (crop.right - crop.left + 1) * 8
+  local patchHeight = (crop.bottom - crop.top + 1) * 8
   local rowBytes = patchWidth * 4
   local rows = {}
-  for y = patch.top * 8, (patch.bottom + 1) * 8 - 1 do
-    local start = (y * screenData.width + patch.left * 8) * 4 + 1
+  for y = crop.top * 8, (crop.bottom + 1) * 8 - 1 do
+    local start = (y * screenData.width + crop.left * 8) * 4 + 1
     rows[#rows + 1] = raster.pixels:sub(start, start + rowBytes - 1)
   end
   return { width = patchWidth, height = patchHeight, pixels = table.concat(rows) }
@@ -926,6 +929,21 @@ local function pictureAnimation(animationBytes, speciesId, facing)
   return { steps = steps }
 end
 
+-- The species record's trailing PokepicSpeciesAnimData fields: the signed
+-- shadow height and X offset and the shadow size the opponent Pokepic uses.
+local function pictureShadow(animationBytes, speciesId)
+  local offset = speciesId * Sources.PICTURE_ANIMATION_RECORD_SIZE + 86
+  local height, xOffset, size = string.byte(animationBytes, offset + 1, offset + 3)
+  assert(size ~= nil, "picture shadow attributes are truncated for species " .. speciesId)
+  if height >= 128 then
+    height = height - 256
+  end
+  if xOffset >= 128 then
+    xOffset = xOffset - 256
+  end
+  return { height = height, xOffset = xOffset, size = size }
+end
+
 ---@class BattlePresentationCompiler.ScenePayloads
 ---@field characters string normalized packed 4bpp color indices in tile order
 ---@field map { width: integer, height: integer, entries: table[] }
@@ -995,6 +1013,7 @@ local function compilePictureAttributes(romFs)
               pictureAttributes[key] = {
                 height = string.byte(heightBytes, 1),
                 animation = pictureAnimation(animationBytes, speciesId, facing),
+                shadow = facing == 2 and pictureShadow(animationBytes, speciesId) or nil,
               }
               pictureSelectors[key] = {
                 species = speciesKey,
@@ -1456,6 +1475,7 @@ function provenanceRoles()
     },
   }
   tripleRoles("arrow", ROLES.arrow)
+  tripleRoles("cursor", ROLES.cursor)
   roles.gauges = {}
   for _, family in ipairs(ROLES.gauges) do
     roles.gauges[#roles.gauges + 1] = {
@@ -1650,6 +1670,55 @@ local function compileIntroMusic(romFs, audioPlan, audioPlanError)
   }
 end
 
+-- Discovers overlay_06.c's sMoveTypePalettes: the one run of word pointers
+-- into the overlay image, each naming a sixteen-color BGR555 palette.
+---@param romFs RomFs
+---@return table<string, { colors: { r: integer, g: integer, b: integer }[] }> palettes by type key
+local function compileMoveTypePalettes(romFs)
+  local source = Sources.MOVE_BUTTONS.typePalettes
+  local bytes, info = romFs:readOverlay(source.cpu, source.overlayId)
+  if bytes == nil then
+    error(info, 0)
+  end
+  assert(info ~= nil, "overlay reads describe their image")
+  local base = info.ramAddress --[[@as integer]]
+  local function word(offset)
+    local b0, b1, b2, b3 = string.byte(bytes, offset + 1, offset + 4)
+    return b0 + b1 * 0x100 + b2 * 0x10000 + b3 * 0x1000000
+  end
+  local tableOffset = nil
+  for offset = 0, #bytes - source.count * 4, 4 do
+    local inside = true
+    for index = 0, source.count - 1 do
+      local pointer = word(offset + index * 4)
+      if pointer < base or pointer + 32 > base + #bytes then
+        inside = false
+        break
+      end
+    end
+    if inside then
+      if tableOffset ~= nil then
+        error(Errors.new("BATTLE_SOURCE_UNEXPECTED", "move type palette table is ambiguous", {}), 0)
+      end
+      tableOffset = offset
+    end
+  end
+  if tableOffset == nil then
+    error(Errors.new("BATTLE_SOURCE_UNEXPECTED", "move type palette table is absent from its overlay", {}), 0)
+  end
+  local palettes = {}
+  for typeId = 0, source.count - 1 do
+    local start = word(tableOffset + typeId * 4) - base
+    local colors = {}
+    for index = 0, 15 do
+      local low, high = string.byte(bytes, start + index * 2 + 1, start + index * 2 + 2)
+      colors[index + 1] = Rgb555.decode(low + high * 0x100)
+    end
+    palettes[assert(MonSources.typeKeys[typeId], "move types have semantic keys")] = { colors = colors }
+  end
+  return palettes
+end
+
 -- Compile the shared ordinary battle UI: menu compositions, health-box
 -- and arrow sprites with their animations, party gauges, terrain bake
 -- inputs, lower palettes per background, font/audio references, and the
@@ -1690,6 +1759,22 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       #componentBytes == Sources.HUD_COMPONENTS.tileCount * 32,
       "native HUD component bytes match their published tile count"
     )
+    -- Ten recolored printer digits plus the printer's fill tile, appended
+    -- after the native components on every health-box strip.
+    local digitSource = Sources.HUD_DIGITS
+    local digitChars =
+      decodeChars(openArchive(romFs, digitSource.narc, "health-box digits"), digitSource.member, "health-box digits")
+    assert(digitChars.depth == 3 and #digitChars.tiles >= 10 * 32, "health-box digits are ten 4bpp tiles")
+    local slotOf = { [0] = digitSource.background, digitSource.foreground, digitSource.shadow }
+    local digitByteParts = {}
+    for index = 1, 10 * 32 do
+      local byte = string.byte(digitChars.tiles, index)
+      local low = assert(slotOf[byte % 16], "health-box digit pixels use printer values 0..2")
+      local high = assert(slotOf[math.floor(byte / 16)], "health-box digit pixels use printer values 0..2")
+      digitByteParts[index] = string.char(high * 16 + low)
+    end
+    local fillByte = string.char(digitSource.background * 17)
+    local digitBytes = table.concat(digitByteParts) .. string.rep(fillByte, 32)
     local lowerObjPalette = decodePalette(sceneArchive, ROLES.lowerObjPalette, "lower OBJ palette")
     checkColorCount(lowerObjPalette, 112, "lower OBJ palette")
     local images = {}
@@ -1732,6 +1817,99 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       role = "shared lower characters",
     })
     stageSlice("lower-chars", lowerStrip.pixels, lowerStrip.width, lowerStrip.height)
+    -- Background-dependent lower palettes: backgrounds 0..16 read base
+    -- 247+b with touch 271+b; background 17 reads base 288, touch 289.
+    -- BattleInput_NewInit loads the base member's first sixteen colors over
+    -- lower palette 0, so screens drawing palette 0 vary per background.
+    local lowerVariants = {}
+    local backgroundLowerPalettes = {}
+    for backgroundId = 0, 17 do
+      local background = Sources.BACKGROUNDS[backgroundId + 1]
+      -- Variant palettes carry what the source carries (sixteen or
+      -- thirty-two colors depending on the background); the manifest
+      -- records the association without normalizing the counts.
+      local base = decodePalette(lower, Sources.lowerBasePaletteMember(backgroundId), background .. " lower palette")
+      local touch = decodePalette(lower, Sources.lowerTouchPaletteMember(backgroundId), background .. " touch palette")
+      lowerVariants[background] =
+        { base = { colors = paletteRecords(base) }, touch = { colors = paletteRecords(touch) } }
+      local colors = {}
+      local touchColors = {}
+      for index, color in ipairs(lowerPalette.colors) do
+        colors[index] = index <= 16 and base.colors[index] or color
+        touchColors[index] = colors[index]
+        if index >= 9 and index <= 16 then
+          touchColors[index] = assert(touch.colors[index], background .. " touch palette carries color " .. index)
+        end
+      end
+      backgroundLowerPalettes[#backgroundLowerPalettes + 1] = {
+        background = background,
+        palette = { colors = colors },
+        touchPalette = { colors = touchColors },
+      }
+    end
+    -- Background variants share one staged image per distinct raster, so
+    -- the backdrop every menu composes is staged once per background.
+    local stagedVariants = {}
+    local pulsePalette = { colors = {} }
+    for index = 1, #lowerPalette.colors do
+      pulsePalette.colors[index] = index == 2 and { r = 255, g = 255, b = 255 } or { r = 0, g = 0, b = 0 }
+    end
+    local pulseScreen = decodeScreen(lower, Sources.MENU_PULSE_SCREEN, "battle menu pulse mask")
+    local pulseMaskRaster = G2dRasterizer.renderScreen(lowerChars, pulsePalette, pulseScreen, {
+      asset = Sources.LOWER_NARC,
+      role = "battle menu palette-entry pulse mask",
+    })
+    local pulseMaskRows = {}
+    for offset = 1, #pulseMaskRaster.pixels, 4 do
+      local red, green, blue = string.byte(pulseMaskRaster.pixels, offset, offset + 2)
+      pulseMaskRows[#pulseMaskRows + 1] = red == 255 and green == 255 and blue == 255 and "\255\255\255\255"
+        or "\0\0\0\0"
+    end
+    stageSlice("menu-pulse-mask", table.concat(pulseMaskRows), pulseMaskRaster.width, pulseMaskRaster.height)
+    local pulseMaskPath = BattlePresentationCache.globalImagePath("menu-pulse-mask")
+    ---@param name string staged base slice name
+    ---@param screen { width: integer, height: integer, entries: table[] } decoded lower screen
+    ---@param label string diagnostic role label
+    ---@param baseRaster { pixels: string } raster under the shared base palette
+    ---@return table<string, string>? background-keyed base image paths, nil when no background changes the raster
+    ---@return table<string, string>? background-keyed touch image paths, nil when touch colors change no pixels
+    local function backgroundVariants(name, screen, label, baseRaster)
+      local backgrounds = nil
+      local touchBackgrounds = nil
+      for _, variant in ipairs(backgroundLowerPalettes) do
+        local raster = G2dRasterizer.renderScreen(lowerChars, variant.palette, screen, {
+          asset = Sources.LOWER_NARC,
+          role = label .. " " .. variant.background .. " variant",
+        })
+        if raster.pixels ~= baseRaster.pixels then
+          local path = stagedVariants[raster.pixels]
+          if path == nil then
+            local variantName = name .. "-" .. variant.background:gsub("_", "-")
+            stageSlice(variantName, raster.pixels, raster.width, raster.height)
+            path = BattlePresentationCache.globalImagePath(variantName)
+            stagedVariants[raster.pixels] = path
+          end
+          backgrounds = backgrounds or {}
+          backgrounds[variant.background] = path
+        end
+        local touchRaster = G2dRasterizer.renderScreen(lowerChars, variant.touchPalette, screen, {
+          asset = Sources.LOWER_NARC,
+          role = label .. " " .. variant.background .. " touch variant",
+        })
+        if touchRaster.pixels ~= baseRaster.pixels then
+          local touchPath = stagedVariants[touchRaster.pixels]
+          if touchPath == nil then
+            local variantName = name .. "-touch-" .. variant.background:gsub("_", "-")
+            stageSlice(variantName, touchRaster.pixels, touchRaster.width, touchRaster.height)
+            touchPath = BattlePresentationCache.globalImagePath(variantName)
+            stagedVariants[touchRaster.pixels] = touchPath
+          end
+          touchBackgrounds = touchBackgrounds or {}
+          touchBackgrounds[variant.background] = touchPath
+        end
+      end
+      return backgrounds, touchBackgrounds
+    end
     -- One menu descriptor per lower composition: the staged screen slices
     -- with the source template/priority facts where the source pins them.
     local function compileMenu(roleMembers, names, label, templates, priorities, planes, feedbackKey)
@@ -1758,6 +1936,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           path = tilemapPath,
         }
         menuTilemapProvenance[tilemapKey] = { archive = Sources.LOWER_NARC, memberId = memberId }
+        local backgrounds, touchBackgrounds = backgroundVariants(name, screen, label .. " screen " .. index, raster)
         local entry = {
           image = BattlePresentationCache.globalImagePath(name),
           width = raster.width,
@@ -1766,6 +1945,9 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           plane = planes[index],
           template = templates[index],
           priority = priorities[index],
+          backgrounds = backgrounds,
+          touchBackgrounds = touchBackgrounds,
+          pulse = memberId == Sources.MENU_PULSE_SCREEN,
         }
         if feedback ~= nil and index == feedback.screenIndex then
           entry.feedback = {}
@@ -1796,8 +1978,8 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       end
       return { image = screens[1].image, screens = screens }
     end
-    -- Command composition pins template buffer indices 1, 2, 0 with
-    -- priorities 2, 3, 3; the fourth buffer stays unused at priority 0.
+    -- Each composition pins its sBattleMenuTemplates screen buffer ids and
+    -- per-plane priorities; the fourth plane stays unused.
     local command = compileMenu(ROLES.commandScreens, {
       "menu-command-1",
       "menu-command-2",
@@ -1812,38 +1994,93 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       Sources.MENU_PLANES.moves,
       "moves"
     )
+    -- Move buttons by slot: the occupied button re-rendered with each type
+    -- palette in its bank (normal and pressed tilemaps), and the blank
+    -- button an empty slot shows.
+    do
+      local buttonSource = Sources.MOVE_BUTTONS
+      local typePalettes = compileMoveTypePalettes(romFs)
+      local screen = decodeScreen(lower, ROLES.fightScreens[1], "fight screen 1")
+      local feedback = Sources.MENU_FEEDBACK.moves
+      local typeButtons = {}
+      local function paletteWithBank(bank, colors)
+        local merged = {}
+        for index, color in ipairs(lowerPalette.colors) do
+          merged[index] = color
+        end
+        for index = 1, 16 do
+          merged[bank * 16 + index] = colors[index]
+        end
+        return { colors = merged }
+      end
+      for slot = 0, 3 do
+        local button = feedback.buttons[slot + 1]
+        assert(button.id == "move:" .. slot, "fight feedback lists the move buttons in slot order")
+        local bank = buttonSource.firstBank + slot
+        local types = {}
+        for typeKey, palette in pairs(typePalettes) do
+          local states = {}
+          for state, offset in pairs({ normal = 0, pressed = feedback.states.pressed }) do
+            local patch = BattlePresentationCompiler.compileMenuFeedbackPatch(
+              lowerChars,
+              paletteWithBank(bank, palette.colors),
+              screen,
+              { left = button.left, top = button.top, right = button.right, bottom = button.bottom, offset = offset }
+            )
+            local name = "menu-fight-move-" .. slot .. "-" .. typeKey .. "-" .. state
+            stageSlice(name, patch.pixels, patch.width, patch.height)
+            states[state] = BattlePresentationCache.globalImagePath(name)
+          end
+          types[typeKey] = states
+        end
+        local empty = buttonSource.empty[slot + 1]
+        local blankBank = {}
+        for index = 1, 16 do
+          blankBank[index] = lowerPalette.colors[buttonSource.emptyBank * 16 + index]
+        end
+        local blank =
+          BattlePresentationCompiler.compileMenuFeedbackPatch(lowerChars, paletteWithBank(bank, blankBank), screen, {
+            left = empty.left,
+            top = empty.top,
+            right = empty.right,
+            bottom = empty.bottom,
+            offset = empty.offset,
+            crop = button,
+          })
+        local emptyName = "menu-fight-move-" .. slot .. "-empty"
+        stageSlice(emptyName, blank.pixels, blank.width, blank.height)
+        typeButtons[slot + 1] = {
+          x = button.left * 8,
+          y = button.top * 8,
+          width = blank.width,
+          height = blank.height,
+          types = types,
+          empty = BattlePresentationCache.globalImagePath(emptyName),
+        }
+      end
+      moves.screens[1].moveButtons = typeButtons
+    end
     local target = compileMenu(ROLES.targetScreens, {
       "menu-target-1",
       "menu-target-2",
       "menu-target-3",
-    }, "target", { 4, 2, 0 }, { 2, 3, 3 }, Sources.MENU_PLANES.target, "target")
+    }, "target", { 4, 5, 0 }, { 2, 1, 3 }, Sources.MENU_PLANES.target, "target")
     local twoOption = compileMenu(ROLES.twoOptionScreens, {
       "menu-two-option-1",
       "menu-two-option-2",
     }, "two-option", { 6, 0 }, { 2, 3 }, Sources.MENU_PLANES.twoOption, "twoOption")
-    -- Background-dependent lower palettes: backgrounds 0..16 read base
-    -- 247+b with touch 271+b; background 17 reads base 288, touch 289.
-    local lowerVariants = {}
-    for backgroundId = 0, 17 do
-      local background = Sources.BACKGROUNDS[backgroundId + 1]
-      -- Variant palettes carry what the source carries (sixteen or
-      -- thirty-two colors depending on the background); the manifest
-      -- records the association without normalizing the counts.
-      local base = decodePalette(lower, Sources.lowerBasePaletteMember(backgroundId), background .. " lower palette")
-      local touch = decodePalette(lower, Sources.lowerTouchPaletteMember(backgroundId), background .. " touch palette")
-      lowerVariants[background] =
-        { base = { colors = paletteRecords(base) }, touch = { colors = paletteRecords(touch) } }
-    end
     -- Single-battle sprites: HUD boxes through the HUD palette, the arrow
     -- and party gauges through the lower OBJ palette. Associations are
     -- never swapped.
     local function compileSprite(triple, name, label, animIndex, includeHudComponents)
       local charTiles = triple.chars.tiles
       local componentBase = nil
+      local digitBase = nil
       if includeHudComponents then
         assert(triple.chars.depth == 3, "native health-box components use 4bpp characters")
         componentBase = #charTiles / 32
-        charTiles = charTiles .. componentBytes
+        digitBase = componentBase + Sources.HUD_COMPONENTS.tileCount
+        charTiles = charTiles .. componentBytes .. digitBytes
       end
       local strip = G2dRasterizer.renderTileStrip(
         { depth = triple.chars.depth, tiles = charTiles },
@@ -1861,6 +2098,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         palette = { colors = paletteRecords(triple.palette) },
         componentBase = componentBase,
         componentCount = includeHudComponents and Sources.HUD_COMPONENTS.tileCount or nil,
+        digitBase = digitBase,
       }
     end
     local playerTriple = decodeTriple(sceneArchive, ROLES.playerHud, hudPalette, "player HUD", true)
@@ -1912,6 +2150,22 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       ),
     }
     local arrow = compileSprite(arrowTriple, "arrow-chars", "player arrow")
+    local cursorPalette = decodePalette(sceneArchive, ROLES.cursorPalette, "keypad cursor palette")
+    checkColorCount(cursorPalette, 16, "keypad cursor palette")
+    local cursorTriple = decodeTriple(sceneArchive, ROLES.cursor, cursorPalette, "keypad cursor")
+    if #cursorTriple.anims < 4 then
+      error(
+        Errors.new("BATTLE_SOURCE_UNEXPECTED", "keypad cursor has fewer than four corner animations", {
+          animations = #cursorTriple.anims,
+        }),
+        0
+      )
+    end
+    local cursor = compileSprite(cursorTriple, "cursor-chars", "keypad cursor", 1)
+    cursor.animations = {}
+    for index, animation in ipairs(cursorTriple.anims) do
+      cursor.animations[index] = summarizeAnimation(animation)
+    end
     local partyGauges = {}
     for familyIndex, family in ipairs(ROLES.gauges) do
       local triple = decodeTriple(sceneArchive, family, lowerObjPalette, "party gauges " .. familyIndex)
@@ -1931,6 +2185,18 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     -- Keep narration bound to its own decoded FontID resource. The field-font
     -- producer stages every text-printer font role used by battle separately.
     local narrationFont = FieldFontCache.defPath(Sources.BATTLE_FONT_ID)
+    local textPalettes = {}
+    for role, source in pairs(Sources.TEXT_PALETTES) do
+      local archive = openArchive(romFs, source.narc, role .. " text palette")
+      local decoded = decodePalette(archive, source.member, role .. " text palette")
+      local colors = {}
+      for index = 1, source.banks * 16 do
+        local color = decoded.colors[index]
+        assert(color ~= nil, role .. " text palette carries its source banks")
+        colors[index] = { r = color.r, g = color.g, b = color.b }
+      end
+      textPalettes[role] = { colors = colors }
+    end
     local menuMessageArchive = openArchive(romFs, Sources.MENU_MESSAGE_BANK, "battle menu messages")
     local messageDependencies = {}
     local messageBanks = {}
@@ -3549,6 +3815,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         enemy = enemyHud,
         doubles = doublesHud,
         arrow = arrow,
+        cursor = cursor,
         partyGauges = partyGauges,
         patchSpans = Sources.HUD_PATCH_SPANS,
         terrain = {
@@ -3563,6 +3830,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           enemyLeft = "hud/doubles/enemy-left",
           enemyRight = "hud/doubles/enemy-right",
           arrow = "hud/arrow",
+          cursor = "hud/cursor",
           gauges = { "hud/gauge/health", "hud/gauge/experience" },
         },
         selectors = {
@@ -3595,6 +3863,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         twoOption = twoOption,
         lower = {
           image = BattlePresentationCache.globalImagePath("lower-chars"),
+          pulseMask = pulseMaskPath,
           palette = { colors = paletteRecords(lowerPalette) },
           variants = lowerVariants,
         },
@@ -3612,10 +3881,10 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       },
       messages = {
         roles = {
-          narration = { font = narrationFont },
-          trainerNarration = { font = narrationFont },
-          hud = { font = FieldFontCache.defPath(Sources.HUD_MESSAGE_FONT_ID) },
-          menu = { font = FieldFontCache.defPath(Sources.MENU_TEXT_FONT_ID) },
+          narration = { font = narrationFont, palette = textPalettes.narration },
+          trainerNarration = { font = narrationFont, palette = textPalettes.narration },
+          hud = { font = FieldFontCache.defPath(Sources.HUD_MESSAGE_FONT_ID), palette = textPalettes.hud },
+          menu = { font = FieldFontCache.defPath(Sources.MENU_TEXT_FONT_ID), palette = textPalettes.menu },
           bugContest = { font = FieldFontCache.defPath(Sources.BUG_CONTEST_FONT_ID) },
           recorderFeedback = { font = FieldFontCache.defPath(Sources.RECORDER_FEEDBACK_FONT_ID) },
         },

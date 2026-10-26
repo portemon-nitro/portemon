@@ -58,7 +58,7 @@ local function nominalOrigin(center, height)
   if type(height) == "number" then
     displacement = height
   end
-  return center.x - PICTURE_HALF, center.y - PICTURE_HALF - displacement
+  return center.x - PICTURE_HALF, center.y - PICTURE_HALF + displacement
 end
 
 ---@return table recording text boundary behind one draw
@@ -235,13 +235,16 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   for _, vertex in ipairs(assert(openingRattata[1].meshVertices, "the production mesh carries source vertices")) do
     portraitTop = math.min(portraitTop, vertex[2])
   end
+  -- Pokepic lowers the picture by its height and lifts an opponent's by
+  -- the species shadow height.
+  local expectedTop = DOUBLES_SETTLED[3].y - PICTURE_HALF + sourceAttributes.height - sourceAttributes.shadow.height
   Assert.equal(
     portraitTop,
-    DOUBLES_SETTLED[3].y - PICTURE_HALF - sourceAttributes.height,
+    expectedTop,
     "the real screen resolves staged front-facing source height into its mesh origin, got "
       .. tostring(portraitTop)
       .. " expected "
-      .. tostring(DOUBLES_SETTLED[3].y - PICTURE_HALF - sourceAttributes.height)
+      .. tostring(expectedTop)
   )
   local function arrivalDraws()
     local graphics = FakeGraphics.new({})

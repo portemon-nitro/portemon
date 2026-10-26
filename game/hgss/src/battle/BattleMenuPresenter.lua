@@ -44,10 +44,12 @@ extern Image underlay;
 vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
   vec4 top = Texel(texture, texture_coords);
   vec4 bottom = Texel(underlay, texture_coords);
-  vec3 blended = clamp((top.rgb * 8.0 + bottom.rgb * 12.0) / 16.0, 0.0, 1.0);
+  vec3 blended = mix(top.rgb, clamp((top.rgb * 8.0 + bottom.rgb * 12.0) / 16.0, 0.0, 1.0), bottom.a);
   return vec4(mix(bottom.rgb, blended, top.a), max(bottom.a, top.a)) * color;
 }
 ]]
+
+local PULSE_COLOR = { 0.741176, 0.549020, 1.0 }
 
 ---@param graphics love.graphics borrowed renderer graphics
 ---@param assets table<string, unknown> generated image holder
@@ -67,13 +69,15 @@ function BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWi
     return a.priority > b.priority
   end)
 
-  local planeOne
-  for _, entry in ipairs(ordered) do
+  -- Source BG1 is the alpha blend's first target over the planes below
+  -- it; planes above BG1 cover the blended result like any opaque plane.
+  local blendIndex = nil
+  for index, entry in ipairs(ordered) do
     if entry.layer.plane == 1 then
-      planeOne = entry.layer
+      blendIndex = index
     end
   end
-  if planeOne == nil then
+  if blendIndex == nil then
     for _, entry in ipairs(ordered) do
       BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, entry, menuWindows)
     end
@@ -112,20 +116,14 @@ function BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWi
     graphics.origin()
     graphics.setScissor()
     graphics.clear(0, 0, 0, 0)
-    for _, entry in ipairs(ordered) do
-      if entry.layer.plane ~= 1 then
-        BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, entry, menuWindows)
-      end
+    for index = 1, blendIndex - 1 do
+      BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, ordered[index], menuWindows)
     end
     graphics.setCanvas(topCanvas)
     graphics.origin()
     graphics.setScissor()
     graphics.clear(0, 0, 0, 0)
-    for _, entry in ipairs(ordered) do
-      if entry.layer.plane == 1 then
-        BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, entry, menuWindows)
-      end
-    end
+    BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, ordered[blendIndex], menuWindows)
     graphics.setCanvas(previousCanvas)
     graphics.pop()
     planeScopeOpen = false
@@ -136,6 +134,9 @@ function BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWi
     graphics.draw(topCanvas, 0, 0)
     graphics.pop()
     outputScopeOpen = false
+    for index = blendIndex + 1, #ordered do
+      BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, ordered[index], menuWindows)
+    end
   end)
   if outputScopeOpen then
     graphics.pop()
@@ -155,7 +156,7 @@ end
 ---@param assets table<string, unknown> generated image holder
 ---@param layout string selected lower menu layout
 ---@param view table<string, unknown> semantic render snapshot
----@param entry { index: integer, layer: { plane: integer, priority: number?, feedback: table<string, table<string, { x: number, y: number }>>? }, priority: number } selected screen entry
+---@param entry { index: integer, layer: { plane: integer, priority: number?, pulse?: boolean, feedback: table<string, table<string, { x: number, y: number }>>? }, priority: number } selected screen entry
 ---@param menuWindows table<string, unknown>? native window and lower BG scroll snapshot
 function BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, entry, menuWindows)
   local plane = entry.layer.plane
@@ -184,25 +185,66 @@ end
 ---@param assets table<string, unknown> generated image holder
 ---@param layout string selected lower menu layout
 ---@param view table<string, unknown> semantic render snapshot
----@param entry { index: integer, layer: { plane: integer, priority: number?, feedback: table<string, table<string, { x: number, y: number }>>? }, priority: number } selected screen entry
+---@param entry { index: integer, layer: { plane: integer, priority: number?, pulse?: boolean, feedback: table<string, table<string, { x: number, y: number }>>? }, priority: number } selected screen entry
 function BattleMenuPresenter._drawLayer(graphics, assets, layout, view, entry)
   local layer = entry.layer
-  local art = assets:drawable("menu:" .. layout .. ":screen:" .. tostring(entry.index))
+  local touch = view.touchFeedback == true and ":touch" or ""
+  local art = assets:drawable("menu:" .. layout .. ":screen:" .. tostring(entry.index) .. touch)
   if art ~= nil then
-    drawArtwork(graphics, art, 0, 0)
+    if layer.pulse == true and type(view.menuPulse) == "number" and view.menuPulse > 0 then
+      local mask = assert(assets:drawable("menu:pulse-mask"), "the battle backdrop pulse carries its index mask")
+      graphics.push("all")
+      drawArtwork(graphics, art, 0, 0)
+      graphics.setColor(PULSE_COLOR[1], PULSE_COLOR[2], PULSE_COLOR[3], view.menuPulse / 16)
+      drawArtwork(graphics, mask, 0, 0)
+      graphics.pop()
+    else
+      drawArtwork(graphics, art, 0, 0)
+    end
+  end
+  local armed = type(view.armed) == "table" and view.armed or nil
+  if armed ~= nil and (armed.scope ~= layout or type(armed.id) ~= "string") then
+    armed = nil
+  end
+  -- Move buttons carry their move's type palette and an empty slot shows
+  -- the blank button; a held move button shows its pressed tilemap.
+  local moveButtons = layer.moveButtons --[[@as table<integer, table<string, unknown>>?]]
+  if moveButtons ~= nil then
+    local movesBySlot = {}
+    for _, move in ipairs(type(view.moves) == "table" and view.moves or {}) do
+      if type(move) == "table" and type(move.slot) == "number" then
+        movesBySlot[move.slot] = move
+      end
+    end
+    for slotIndex, button in ipairs(moveButtons) do
+      local slot = slotIndex - 1
+      -- Unlearned slots arrive as placeholder records without a move.
+      local move = movesBySlot[slot]
+      local variant = "empty"
+      if move ~= nil and move.name ~= nil then
+        local state = armed ~= nil and armed.id == "move:" .. slot and "pressed" or "normal"
+        variant = assert(move.moveType, "displayed moves carry their type"):lower() .. ":" .. state
+      end
+      local buttonArt = assets:drawable("menu:moves:move-button:" .. slot .. ":" .. variant)
+      if buttonArt ~= nil then
+        drawArtwork(graphics, buttonArt, button.x, button.y)
+      end
+    end
   end
   if type(layer.feedback) ~= "table" then
     return
   end
-  local selection = type(view.selection) == "string" and view.selection or nil
-  local armed = type(view.armed) == "table" and view.armed or nil
-  local feedbackState = armed ~= nil and armed.scope == layout and armed.id == selection and "pressed" or "selected"
-  local controls = selection ~= nil and layer.feedback[selection] or nil
-  local feedback = type(controls) == "table" and controls[feedbackState] or nil
+  -- BattleInput_CopyButtonTilemap swaps in the pressed tilemap only while
+  -- a touched control is held; keypad focus is the cursor's job.
+  if armed == nil or (moveButtons ~= nil and armed.id:match("^move:") ~= nil) then
+    return
+  end
+  local controls = layer.feedback[armed.id]
+  local feedback = type(controls) == "table" and controls.pressed or nil
   if type(feedback) ~= "table" then
     return
   end
-  local patchImage = assets:drawable("menu:" .. layout .. ":feedback:" .. selection .. ":" .. feedbackState)
+  local patchImage = assets:drawable("menu:" .. layout .. ":feedback:" .. armed.id .. ":pressed")
   if patchImage ~= nil then
     drawArtwork(graphics, patchImage, feedback.x, feedback.y)
   end

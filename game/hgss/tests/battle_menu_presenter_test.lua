@@ -38,7 +38,38 @@ local function windowsForSecondPlayer(edge, step)
   }
 end
 
-function T.command_plane_one_blends_over_the_other_native_planes()
+function T.command_bg1_blends_over_the_planes_below_it_and_bg0_covers_the_result()
+  local graphics = FakeGraphics.new({})
+  local assets = {
+    drawable = function(_, key)
+      return { key = key }
+    end,
+  }
+  -- Command menu: SUB_0 (buttons) at priority 2 above SUB_1 (blended
+  -- panels) and SUB_2 (backdrop), both at priority 3.
+  local layers = {
+    { plane = 0, priority = 2 },
+    { plane = 1, priority = 3 },
+    { plane = 2, priority = 3 },
+  }
+
+  BattleMenuPresenter.draw(graphics, assets, "command", layers, {})
+
+  Assert.equal(#graphics.canvases, 2, "the native alpha blend owns one underlay and one BG1 target")
+  Assert.equal(graphics.draws[1].image.key, "menu:command:screen:3", "BG2 composes into the underlay first")
+  Assert.equal(graphics.draws[2].image.key, "menu:command:screen:2", "BG1 draws into its own blend target")
+  Assert.equal(#graphics.shaders, 1, "BG1 uses the native alpha blend shader")
+  Assert.equal(graphics.shaders[1].sends[1].name, "underlay", "BG1 blends against the composed lower planes")
+  Assert.equal(graphics.shaders[1].sends[1].value, graphics.canvases[1], "the underlay holds only the planes below BG1")
+  Assert.equal(graphics.draws[3].image, graphics.canvases[2], "the blended composite draws before the planes above BG1")
+  Assert.equal(graphics.draws[4].image.key, "menu:command:screen:1", "BG0 covers the blend at its higher priority")
+  Assert.isTrue(graphics.canvases[1].released, "the lower-plane render target is released after composition")
+  Assert.isTrue(graphics.canvases[2].released, "the BG1 render target is released after composition")
+  Assert.isTrue(graphics.shaders[1].released, "the temporary blend shader is released after composition")
+  Assert.equal(graphics.pushDepth(), 0, "the compositor restores borrowed graphics state")
+end
+
+function T.target_bg1_blends_over_bg0_when_it_has_the_higher_priority()
   local graphics = FakeGraphics.new({})
   local assets = {
     drawable = function(_, key)
@@ -46,24 +77,17 @@ function T.command_plane_one_blends_over_the_other_native_planes()
     end,
   }
   local layers = {
-    { plane = 1, priority = 2 },
+    { plane = 0, priority = 2 },
+    { plane = 1, priority = 1 },
     { plane = 2, priority = 3 },
-    { plane = 0, priority = 3 },
   }
 
-  BattleMenuPresenter.draw(graphics, assets, "command", layers, {})
+  BattleMenuPresenter.draw(graphics, assets, "target", layers, {})
 
-  Assert.equal(#graphics.canvases, 2, "the native alpha blend owns one target per source plane group")
-  Assert.equal(graphics.draws[1].image.key, "menu:command:screen:2", "BG2 is drawn behind the equal-priority BG0")
-  Assert.equal(graphics.draws[2].image.key, "menu:command:screen:3", "BG0 is drawn above BG2 at equal priority")
-  Assert.equal(#graphics.shaders, 1, "BG1 uses the native alpha blend shader")
-  Assert.equal(graphics.shaders[1].sends[1].name, "underlay", "BG1 blends against the composed lower planes")
-  Assert.equal(graphics.shaders[1].sends[1].value, graphics.canvases[1], "the underlay is the non-BG1 target")
-  Assert.equal(graphics.draws[#graphics.draws].image, graphics.canvases[2], "the blended plane is the final menu image")
-  Assert.isTrue(graphics.canvases[1].released, "the lower-plane render target is released after composition")
-  Assert.isTrue(graphics.canvases[2].released, "the BG1 render target is released after composition")
-  Assert.isTrue(graphics.shaders[1].released, "the temporary blend shader is released after composition")
-  Assert.equal(graphics.pushDepth(), 0, "the compositor restores borrowed graphics state")
+  Assert.equal(graphics.draws[1].image.key, "menu:target:screen:3", "BG2 is the farthest plane")
+  Assert.equal(graphics.draws[2].image.key, "menu:target:screen:1", "BG0 sits below BG1 inside the underlay")
+  Assert.equal(graphics.draws[3].image.key, "menu:target:screen:2", "BG1 is the blended top plane")
+  Assert.equal(graphics.draws[#graphics.draws].image, graphics.canvases[2], "nothing draws above the blended BG1")
 end
 
 function T.offscreen_planes_ignore_pane_transform_and_restore_it_for_composition()
@@ -86,23 +110,25 @@ function T.offscreen_planes_ignore_pane_transform_and_restore_it_for_composition
     end,
   }
   local layers = {
-    { plane = 1, priority = 2 },
+    { plane = 0, priority = 2 },
+    { plane = 1, priority = 3 },
     { plane = 2, priority = 3 },
-    { plane = 0, priority = 3 },
   }
 
   BattleMenuPresenter.draw(graphics, assets, "command", layers, {})
 
-  Assert.equal(#sourceDraws, 3, "the source lower planes draw into their own native targets")
-  for _, draw in ipairs(sourceDraws) do
+  Assert.equal(#sourceDraws, 3, "every source lower plane draws once")
+  for index = 1, 2 do
+    local draw = sourceDraws[index]
     Assert.equal(draw.x, 0, "offscreen source planes use the native horizontal origin")
     Assert.equal(draw.y, 0, "offscreen source planes use the native vertical origin")
     Assert.equal(#draw.scissor, 0, "offscreen source planes clear the parent pane scissor")
   end
-  local output = graphics.draws[#graphics.draws]
-  Assert.equal(graphics.transformPoint(output.x, output.y), 32, "the blended plane keeps the interaction pane x offset")
-  local outputY = select(2, graphics.transformPoint(output.x, output.y))
-  Assert.equal(outputY, 48, "the blended plane keeps the interaction pane y offset")
+  local composite = graphics.draws[3]
+  Assert.equal(graphics.transformPoint(composite.x, composite.y), 32, "the blend keeps the interaction pane x offset")
+  Assert.equal(select(2, graphics.transformPoint(composite.x, composite.y)), 48, "the blend keeps the pane y offset")
+  Assert.equal(sourceDraws[3].x, 32, "the plane above BG1 draws in the interaction pane")
+  Assert.equal(sourceDraws[3].y, 48, "the plane above BG1 keeps the pane y offset")
   Assert.deepEqual({ graphics.getScissor() }, { 32, 48, 256, 192 }, "the presenter restores the parent pane scissor")
   Assert.equal(graphics.pushDepth(), 0, "offscreen composition restores the host graphics stack")
 end
@@ -115,9 +141,9 @@ function T.slide_windows_mask_bg0_and_bg1_below_the_native_w1_edge()
     end,
   }
   local layers = {
-    { plane = 1, priority = 2 },
+    { plane = 0, priority = 2 },
+    { plane = 1, priority = 3 },
     { plane = 2, priority = 3 },
-    { plane = 0, priority = 3 },
   }
 
   BattleMenuPresenter.draw(graphics, assets, "command", layers, {}, windowsForSoloPlayer(174, 1))
@@ -129,7 +155,7 @@ end
 
 function T.source_slide_edges_keep_each_menu_plane_inside_and_outside_pixels()
   local edges = { 184, 174, 164, 154, 145 }
-  local planeByLayer = { 1, 2, 0 }
+  local planeByLayer = { 0, 1, 2 }
   local outsideWidths = OUTSIDE_WIDTH
   local scrollX = SCROLL_X
   for step, edge in ipairs(edges) do
@@ -158,9 +184,9 @@ function T.source_slide_edges_keep_each_menu_plane_inside_and_outside_pixels()
       end,
     }
     local layers = {
-      { plane = 1, priority = 2 },
+      { plane = 0, priority = 2 },
+      { plane = 1, priority = 3 },
       { plane = 2, priority = 3 },
-      { plane = 0, priority = 3 },
     }
 
     BattleMenuPresenter.draw(graphics, assets, "command", layers, {}, windowsForSoloPlayer(edge, step - 1))
@@ -216,9 +242,9 @@ function T.second_player_slot_uses_the_opposite_native_w0_and_bg_scroll()
       end,
     }
     local layers = {
-      { plane = 1, priority = 2 },
+      { plane = 0, priority = 2 },
+      { plane = 1, priority = 3 },
       { plane = 2, priority = 3 },
-      { plane = 0, priority = 3 },
     }
 
     BattleMenuPresenter.draw(graphics, assets, "command", layers, {}, windowsForSecondPlayer(edge, step - 1))

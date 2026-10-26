@@ -37,10 +37,6 @@ local BattleScene = {}
 BattleScene.__index = BattleScene
 local NitroBg3 = require("libs.nds.src.nitro.NitroBg3")
 
--- Nominal picture edge half inset: the final 80x80 image origin is the
--- adjusted center minus this inset (pokepic.c NNS_G2dDrawSpriteFast path).
-BattleScene.PICTURE_HALF = 40
-
 -- Native shadow quad geometry in native pixels, drawn at depth -1000
 -- behind every picture plane (pokepic.c shadow draw).
 BattleScene.SHADOW_WIDTH = 64
@@ -133,21 +129,6 @@ function BattleScene.slotRow(battler, order, rows)
   return assert(bySideType[singleType], "published geometry covers the selected single side type")
 end
 
----@param centerX number native settled center horizontal origin
----@param centerY number native settled center vertical origin
----@param height number|nil signed height displacement, baseline when absent
----@return number nominal image left edge
----@return number nominal image top edge
-function BattleScene.originFor(centerX, centerY, height)
-  assert(type(centerX) == "number", "picture origins read their center")
-  assert(type(centerY) == "number", "picture origins read their row")
-  local displacement = 0
-  if type(height) == "number" then
-    displacement = height
-  end
-  return centerX - BattleScene.PICTURE_HALF, centerY - BattleScene.PICTURE_HALF - displacement
-end
-
 -- Resolves the compiler's source-normalized picture selector for one
 -- canonical portrait asset selector. Shiny and plain images share the
 -- same source geometry and animation table; front and back never do.
@@ -197,16 +178,6 @@ function BattleScene.pictureAttributes(manifest, selector)
   ]
   assert(type(record) == "table", "source picture selectors resolve published attributes")
   return record
-end
-
----@param centerX number native settled center horizontal origin
----@param centerY number native settled center vertical origin
----@return number shadow quad left edge
----@return number shadow quad top edge
-function BattleScene.shadowOriginFor(centerX, centerY)
-  assert(type(centerX) == "number", "shadow origins read their center")
-  assert(type(centerY) == "number", "shadow origins read their row")
-  return centerX - BattleScene.SHADOW_WIDTH / 2, centerY - BattleScene.SHADOW_HEIGHT / 2
 end
 
 -- Exact integer health pixels behind one checkpoint
@@ -1563,7 +1534,7 @@ function BattleScene:installBackground(payload)
   self._backgroundRasterizer = nil
 end
 
--- Patches one zero-based SCRN entry, matching the source hardware index.
+-- Patches one zero-based row-major SCRN entry.
 ---@param index integer zero-based tilemap entry
 ---@param entry table<string, unknown> normalized BG3 map entry
 function BattleScene:patchBackgroundMap(index, entry)

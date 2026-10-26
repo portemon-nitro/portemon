@@ -329,8 +329,24 @@ local function checkPictureAttributes(attributes, context, code, field)
       fail(code, field .. " carries a malformed semantic key: " .. key, context)
     end
     local recordPath = field .. "[" .. key .. "]"
-    SchemaCheck.checkRecord(record, { height = true, animation = true }, context, code, recordPath)
+    SchemaCheck.checkRecord(record, { height = true, animation = true, shadow = true }, context, code, recordPath)
     checkInt(record.height, 0, 255, context, code, recordPath .. ".height")
+    -- Front pictures carry the species shadow geometry the opponent-side
+    -- Pokepic applies; back pictures never draw a shadow.
+    if facing == "front" then
+      SchemaCheck.checkRecord(
+        record.shadow,
+        { height = true, xOffset = true, size = true },
+        context,
+        code,
+        recordPath .. ".shadow"
+      )
+      checkInt(record.shadow.height, -128, 127, context, code, recordPath .. ".shadow.height")
+      checkInt(record.shadow.xOffset, -128, 127, context, code, recordPath .. ".shadow.xOffset")
+      checkInt(record.shadow.size, 0, 3, context, code, recordPath .. ".shadow.size")
+    elseif record.shadow ~= nil then
+      fail(code, recordPath .. ".shadow belongs to front pictures only", context)
+    end
     SchemaCheck.checkRecord(record.animation, { steps = true }, context, code, recordPath .. ".animation")
     if not Validate.isArray(record.animation.steps) or #record.animation.steps ~= 10 then
       fail(code, recordPath .. ".animation.steps must contain ten ordered entries", context)
@@ -850,8 +866,31 @@ local function checkMenuSection(section, context, code, field)
       template = true,
       priority = true,
       feedback = true,
+      backgrounds = true,
+      touchBackgrounds = true,
+      moveButtons = true,
+      pulse = true,
     }, context, code, entry)
     checkImagePath(screen.image, context, code, entry .. ".image")
+    if screen.pulse ~= nil and type(screen.pulse) ~= "boolean" then
+      fail(code, entry .. ".pulse must be a boolean", context)
+    end
+    -- Screens drawing the background-dependent lower palette carry one
+    -- staged image per battle background that changes their pixels.
+    if screen.backgrounds ~= nil then
+      SchemaCheck.checkRecord(screen.backgrounds, nil, context, code, entry .. ".backgrounds")
+      for background, image in pairs(screen.backgrounds) do
+        checkString(background, context, code, entry .. ".backgrounds key")
+        checkImagePath(image, context, code, entry .. ".backgrounds[" .. tostring(background) .. "]")
+      end
+    end
+    if screen.touchBackgrounds ~= nil then
+      SchemaCheck.checkRecord(screen.touchBackgrounds, nil, context, code, entry .. ".touchBackgrounds")
+      for background, image in pairs(screen.touchBackgrounds) do
+        checkString(background, context, code, entry .. ".touchBackgrounds key")
+        checkImagePath(image, context, code, entry .. ".touchBackgrounds[" .. tostring(background) .. "]")
+      end
+    end
     checkInt(screen.width, 8, nil, context, code, entry .. ".width")
     checkInt(screen.height, 8, nil, context, code, entry .. ".height")
     checkString(screen.tilemapKey, context, code, entry .. ".tilemapKey")
@@ -867,6 +906,39 @@ local function checkMenuSection(section, context, code, field)
     end
     if screen.priority ~= nil then
       checkInt(screen.priority, 0, nil, context, code, entry .. ".priority")
+    end
+    -- The fight menu's move buttons by slot: per-type normal and pressed
+    -- renders plus the blank button an empty slot shows.
+    if screen.moveButtons ~= nil then
+      if not Validate.isArray(screen.moveButtons) or #screen.moveButtons ~= 4 then
+        fail(code, entry .. ".moveButtons must carry the four move slots", context)
+      end
+      for slot, button in ipairs(screen.moveButtons) do
+        local buttonField = entry .. ".moveButtons[" .. slot .. "]"
+        SchemaCheck.checkRecord(
+          button,
+          { x = true, y = true, width = true, height = true, types = true, empty = true },
+          context,
+          code,
+          buttonField
+        )
+        checkInt(button.x, 0, screen.width - 1, context, code, buttonField .. ".x")
+        checkInt(button.y, 0, screen.height - 1, context, code, buttonField .. ".y")
+        checkInt(button.width, 1, screen.width - button.x, context, code, buttonField .. ".width")
+        checkInt(button.height, 1, screen.height - button.y, context, code, buttonField .. ".height")
+        checkImagePath(button.empty, context, code, buttonField .. ".empty")
+        SchemaCheck.checkRecord(button.types, nil, context, code, buttonField .. ".types")
+        if next(button.types) == nil then
+          fail(code, buttonField .. ".types must carry the move type renders", context)
+        end
+        for typeKey, states in pairs(button.types) do
+          local typeField = buttonField .. ".types[" .. tostring(typeKey) .. "]"
+          checkString(typeKey, context, code, typeField .. " key")
+          SchemaCheck.checkRecord(states, { normal = true, pressed = true }, context, code, typeField)
+          checkImagePath(states.normal, context, code, typeField .. ".normal")
+          checkImagePath(states.pressed, context, code, typeField .. ".pressed")
+        end
+      end
     end
     if screen.feedback ~= nil then
       SchemaCheck.checkRecord(screen.feedback, nil, context, code, entry .. ".feedback")
@@ -978,6 +1050,7 @@ local function checkSpriteSection(section, context, code, field)
     palette = true,
     componentBase = true,
     componentCount = true,
+    digitBase = true,
   }, context, code, field)
   checkImagePath(section.image, context, code, field .. ".image")
   if not Validate.isArray(section.cells) or #section.cells == 0 then
@@ -999,6 +1072,14 @@ local function checkSpriteSection(section, context, code, field)
   end
   if section.componentCount ~= nil then
     checkInt(section.componentCount, 1, 256, context, code, field .. ".componentCount")
+  end
+  -- Health-box strips append the number printer's ten digits and its fill
+  -- tile right after the native components.
+  if (section.componentBase ~= nil) ~= (section.digitBase ~= nil) then
+    fail(code, field .. " publishes printer digits exactly with its native components", context)
+  end
+  if section.digitBase ~= nil then
+    checkInt(section.digitBase, 0, 1023, context, code, field .. ".digitBase")
   end
   -- Gauge families keep every per-state animation alongside the selected
   -- one; single-animation sprites omit the extension.
@@ -1043,6 +1124,8 @@ local function checkHudPatchSpans(patchSpans, context, code, field)
     experience = true,
     status = true,
     gender = true,
+    nickname = true,
+    level = true,
     caught = true,
     playerDoubleMode = true,
   }, context, code, field)
@@ -1117,6 +1200,7 @@ local function checkHudPatchSpans(patchSpans, context, code, field)
     maximumHp = { 3 },
     status = { 3 },
     gender = { 2, 2 },
+    level = { 3, 3 },
     caught = { 1 },
   }) do
     local records = patchSpans[category]
@@ -1156,6 +1240,34 @@ local function checkHudPatchSpans(patchSpans, context, code, field)
       if not covered[sideType] then
         fail(code, field .. "." .. category .. " must cover all six native side types", context)
       end
+    end
+  end
+  -- Nickname windows are eight tiles wide on two rows: each row's leading
+  -- span and its remainder together cover the window.
+  if not Validate.isArray(patchSpans.nickname) or #patchSpans.nickname ~= 6 then
+    fail(code, field .. ".nickname must cover all six native side types", context)
+  end
+  local nicknameSides = {}
+  for index, record in ipairs(patchSpans.nickname) do
+    local entry = field .. ".nickname[" .. index .. "]"
+    SchemaCheck.checkRecord(record, { sideType = true, spans = true }, context, code, entry)
+    checkInt(record.sideType, 0, 5, context, code, entry .. ".sideType")
+    if nicknameSides[record.sideType] then
+      fail(code, field .. ".nickname side types must be unique", context)
+    end
+    nicknameSides[record.sideType] = true
+    if not Validate.isArray(record.spans) or #record.spans ~= 4 then
+      fail(code, entry .. ".spans must carry both rows' leading and trailing tiles", context)
+    end
+    for spanIndex, span in ipairs(record.spans) do
+      local spanField = entry .. ".spans[" .. spanIndex .. "]"
+      SchemaCheck.checkRecord(span, { tile = true, count = true }, context, code, spanField)
+      checkInt(span.tile, 0, 1023, context, code, spanField .. ".tile")
+      checkInt(span.count, 1, 8, context, code, spanField .. ".count")
+    end
+    local spans = record.spans
+    if spans[1].count ~= spans[2].count or spans[3].count ~= spans[4].count or spans[1].count + spans[3].count ~= 8 then
+      fail(code, entry .. ".spans must cover the eight-tile window rows", context)
     end
   end
   if not Validate.isArray(patchSpans.playerDoubleMode) or #patchSpans.playerDoubleMode ~= 2 then
@@ -1210,8 +1322,21 @@ local function checkTextRoles(roles, context, code, field)
   end
   for role, record in pairs(roles) do
     local entry = field .. "." .. role
-    SchemaCheck.checkRecord(record, { font = true }, context, code, entry)
+    SchemaCheck.checkRecord(record, { font = true, palette = true }, context, code, entry)
     checkString(record.font, context, code, entry .. ".font")
+    -- Printer palettes are whole sixteen-color source banks; roles drawn
+    -- by consumers outside the ordinary battle screen carry only their font.
+    if record.palette ~= nil then
+      checkPalette(record.palette, context, code, entry .. ".palette")
+      if #record.palette.colors % 16 ~= 0 then
+        fail(code, entry .. ".palette must carry whole sixteen-color banks", context)
+      end
+    end
+  end
+  for _, role in ipairs({ "narration", "menu", "hud" }) do
+    if roles[role] ~= nil and roles[role].palette == nil then
+      fail(code, field .. "." .. role .. " must carry its printer palette", context)
+    end
   end
 end
 
@@ -2859,13 +2984,15 @@ function BattlePresentationSchema.assertManifest(manifest)
   end
   SchemaCheck.checkRecord(
     manifest.menus.lower,
-    { image = true, palette = true, variants = true },
+    { image = true, palette = true, variants = true, pulseMask = true },
     context,
     CODE_MANIFEST,
     "manifest menus.lower"
   )
   checkImagePath(manifest.menus.lower.image, context, CODE_MANIFEST, "manifest menus.lower image")
   checkImageRef(manifest.menus.lower.image, "manifest menus.lower image")
+  checkImagePath(manifest.menus.lower.pulseMask, context, CODE_MANIFEST, "manifest menus.lower pulseMask")
+  checkImageRef(manifest.menus.lower.pulseMask, "manifest menus.lower pulseMask")
   checkPalette(manifest.menus.lower.palette, context, CODE_MANIFEST, "manifest menus.lower palette")
   SchemaCheck.checkRecord(manifest.menus.lower.variants, nil, context, CODE_MANIFEST, "manifest menus.lower variants")
   local variantCount = 0
@@ -2891,6 +3018,7 @@ function BattlePresentationSchema.assertManifest(manifest)
     enemy = true,
     doubles = true,
     arrow = true,
+    cursor = true,
     partyGauges = true,
     terrain = true,
     roles = true,
@@ -2919,6 +3047,10 @@ function BattlePresentationSchema.assertManifest(manifest)
     checkHudComponents(manifest.hud.doubles[slot], "manifest hud.doubles " .. slot)
   end
   checkSpriteSection(manifest.hud.arrow, context, CODE_MANIFEST, "manifest hud.arrow")
+  checkSpriteSection(manifest.hud.cursor, context, CODE_MANIFEST, "manifest hud.cursor")
+  if #manifest.hud.cursor.animations < 4 then
+    fail(CODE_MANIFEST, "manifest hud.cursor carries four corner animations", context)
+  end
   for _, field in ipairs({ "roles", "selectors" }) do
     checkCatalogTable(manifest.hud[field], context, CODE_MANIFEST, "manifest hud." .. field)
     if next(manifest.hud[field]) == nil then
@@ -2949,7 +3081,7 @@ function BattlePresentationSchema.assertManifest(manifest)
       checkImageRef(screen.image, "manifest menus." .. field .. " screen " .. index)
     end
   end
-  for _, field in ipairs({ "player", "enemy", "arrow" }) do
+  for _, field in ipairs({ "player", "enemy", "arrow", "cursor" }) do
     checkImageRef(manifest.hud[field].image, "manifest hud." .. field .. " image")
   end
   for _, slot in ipairs({ "playerLeft", "playerRight", "enemyLeft", "enemyRight" }) do

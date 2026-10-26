@@ -192,6 +192,70 @@ function T.health_box_patch_spans_follow_all_source_bar_templates()
       { sideType = 4, spans = { { tile = 82, count = 2 }, { tile = 90, count = 2 } } },
       { sideType = 5, spans = { { tile = 81, count = 2 }, { tile = 89, count = 2 } } },
     },
+    nickname = {
+      {
+        sideType = 0,
+        spans = {
+          { tile = 19, count = 5 },
+          { tile = 27, count = 5 },
+          { tile = 80, count = 3 },
+          { tile = 88, count = 3 },
+        },
+      },
+      {
+        sideType = 1,
+        spans = {
+          { tile = 17, count = 7 },
+          { tile = 25, count = 7 },
+          { tile = 80, count = 1 },
+          { tile = 88, count = 1 },
+        },
+      },
+      {
+        sideType = 2,
+        spans = {
+          { tile = 18, count = 6 },
+          { tile = 26, count = 6 },
+          { tile = 80, count = 2 },
+          { tile = 88, count = 2 },
+        },
+      },
+      {
+        sideType = 3,
+        spans = {
+          { tile = 17, count = 7 },
+          { tile = 25, count = 7 },
+          { tile = 80, count = 1 },
+          { tile = 88, count = 1 },
+        },
+      },
+      {
+        sideType = 4,
+        spans = {
+          { tile = 18, count = 6 },
+          { tile = 26, count = 6 },
+          { tile = 80, count = 2 },
+          { tile = 88, count = 2 },
+        },
+      },
+      {
+        sideType = 5,
+        spans = {
+          { tile = 17, count = 7 },
+          { tile = 25, count = 7 },
+          { tile = 80, count = 1 },
+          { tile = 88, count = 1 },
+        },
+      },
+    },
+    level = {
+      { sideType = 0, spans = { { tile = 85, count = 3 }, { tile = 93, count = 3 } } },
+      { sideType = 1, spans = { { tile = 83, count = 3 }, { tile = 91, count = 3 } } },
+      { sideType = 2, spans = { { tile = 84, count = 3 }, { tile = 92, count = 3 } } },
+      { sideType = 3, spans = { { tile = 83, count = 3 }, { tile = 91, count = 3 } } },
+      { sideType = 4, spans = { { tile = 84, count = 3 }, { tile = 92, count = 3 } } },
+      { sideType = 5, spans = { { tile = 83, count = 3 }, { tile = 91, count = 3 } } },
+    },
     caught = {
       { sideType = 0, tile = 35, count = 1 },
       { sideType = 1, tile = 33, count = 1 },

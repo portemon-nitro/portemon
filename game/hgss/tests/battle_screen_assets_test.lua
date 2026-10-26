@@ -1587,7 +1587,7 @@ function T.selected_effect_demand_reaches_ready_only_through_staged_closure()
   local owned = BattlePresentationAssets.new({
     assets = services,
     launchId = "probe-staging",
-    sceneKey = "probe/plain/day",
+    sceneKey = "general/plain/day",
     shadowRegions = SHADOW_REGIONS,
   })
   Assert.equal(owned:demandEffect("TACKLE"), false, "the unstaged effect polls pending without failing")
@@ -1650,7 +1650,7 @@ function T.overlapping_effect_leases_share_one_handle_and_release_exactly_once()
   local owned = BattlePresentationAssets.new({
     assets = staging.services,
     launchId = "probe-overlap",
-    sceneKey = "probe/plain/day",
+    sceneKey = "general/plain/day",
     shadowRegions = SHADOW_REGIONS,
   })
   Assert.equal(owned:demandEffect("TACKLE"), true, "the staged closure reads ready")
@@ -1711,7 +1711,7 @@ function T.effect_upload_failure_releases_acquired_handles_and_stays_failed()
   local owned = BattlePresentationAssets.new({
     assets = staging.services,
     launchId = "probe-upload-failure",
-    sceneKey = "probe/plain/day",
+    sceneKey = "general/plain/day",
     shadowRegions = SHADOW_REGIONS,
   })
   Assert.equal(owned:demandEffect("TACKLE"), true, "both payloads staged, so the effect reads ready")
@@ -1747,7 +1747,7 @@ function T.readiness_probes_create_no_images()
   local owned = BattlePresentationAssets.new({
     assets = staging.services,
     launchId = "probe-no-upload",
-    sceneKey = "probe/plain/day",
+    sceneKey = "general/plain/day",
     shadowRegions = SHADOW_REGIONS,
   })
   Assert.equal(owned:demandEffect("TACKLE"), false, "the unstaged effect polls pending")
@@ -1799,7 +1799,7 @@ function T.data_only_effect_readies_without_texture()
   local owned = BattlePresentationAssets.new({
     assets = staging.services,
     launchId = "probe-data-only",
-    sceneKey = "probe/plain/day",
+    sceneKey = "general/plain/day",
     shadowRegions = SHADOW_REGIONS,
   })
   Assert.equal(owned:demandEffect("GROWL"), true, "the data-only closure reads ready")

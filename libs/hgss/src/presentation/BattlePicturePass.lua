@@ -134,8 +134,9 @@ local function vertices(item)
   local left, right = -width / 2, width / 2
   local top, bottom = -height / 2, height / 2
   if item.kind == "shadow" then
-    left, right = -width / 2 + (item.shadowOffsetX or 0), width / 2 + (item.shadowOffsetX or 0)
-    top, bottom = -height / 2 + (item.shadowOffsetY or 0), height / 2 + (item.shadowOffsetY or 0)
+    -- The submitted center already carries the shadow offsets.
+    left, right = -width / 2, width / 2
+    top, bottom = -height / 2, height / 2
   elseif hasStripCrop then
     -- Strip bands stay centered on the submitted native center: only
     -- the UV window moves, never the rectangle.

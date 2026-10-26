@@ -1,24 +1,20 @@
--- Resolves the battle menu's type sprite through the source-generated bag visual.
+-- Battle move icons resolve through the generated shared move-icons family.
 
 local Assert = require("tests.support.Assert")
-local BagCache = require("libs.assets.src.BagCache")
-local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 
 local T = {}
 
-function T.battle_move_type_icons_resolve_the_generated_source_visual()
-  local iconPath = "assets/generated/bag/move-type-normal-frame-1.png"
+function T.battle_move_type_icons_use_the_generated_move_icon_manifest()
+  local iconPath = "assets/generated/move-icons/type-normal.png"
   local manifest = {
-    schema = BagCache.SCHEMA,
-    hero = { moveSummary = { typeIcons = { normal = { image = iconPath } } } },
+    schema = MoveIconCache.SCHEMA,
+    types = { normal = { image = iconPath, width = 32, height = 16, offset = { x = -1, y = 2 } } },
   }
   local cacheFs = { versionId = "battle-type-icon-probe" }
   function cacheFs:loadLua(path)
-    if path == BattlePresentationCache.manifestPath() then
-      return nil
-    end
-    if path == BagCache.manifestPath() then
+    if path == MoveIconCache.manifestPath() then
       return manifest
     end
     return nil
@@ -46,7 +42,7 @@ function T.battle_move_type_icons_resolve_the_generated_source_visual()
       end,
     },
   })
-  local ok, failure = pcall(function()
+  local ok, drawable, failure = pcall(function()
     local envelope = FieldBattlePresentation.new({
       cacheFs = cacheFs,
       windows = {},
@@ -65,14 +61,21 @@ function T.battle_move_type_icons_resolve_the_generated_source_visual()
       },
     })
     local icon = envelope:_preparationServices().drawable("battle:move-type-icon:normal")
-    Assert.notNil(icon, "the type icon gets an owned image from the bag source visual")
-    Assert.equal(uploadedPath, iconPath, "the drawable maps to the generated source type image")
+    Assert.notNil(icon, "the type icon gets an owned image from the shared source visual")
+    local width, height = icon:getDimensions()
+    Assert.equal(width, 32, "the generated icon preserves its width")
+    Assert.equal(height, 16, "the generated icon preserves its height")
+    Assert.deepEqual(icon.offset, { x = -1, y = 2 }, "the generated sprite keeps its authored offset")
     envelope:dispose()
+    return icon
   end)
   rawset(_G, "love", savedLove)
   if not ok then
-    error(failure, 0)
+    error(drawable, 0)
   end
+  Assert.equal(uploadedPath, iconPath, "the drawable maps to the generated move icon image")
+  Assert.notNil(drawable, "the generated icon remains available after its owned image was uploaded")
+  Assert.isNil(failure, "the staged icon resolves without a terminal failure")
 end
 
 return { tests = T }

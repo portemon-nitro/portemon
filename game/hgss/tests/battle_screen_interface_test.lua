@@ -111,6 +111,12 @@ local function view(mode)
     foeCount = 1,
     arrowFrame = 0,
     childIntent = nil,
+    commands = {
+      { id = "fight", enabled = true, label = "FIGHT" },
+      { id = "bag", enabled = true, label = "BAG" },
+      { id = "pokemon", enabled = true, label = "POKEMON" },
+      { id = "run", enabled = true, label = "RUN" },
+    },
     slotGeometry = manifest.battlefield.slots,
     hudSections = { player = manifest.hud.player, enemy = manifest.hud.enemy },
     gaugeFamilies = { player = manifest.hud.partyGauges[2], enemy = manifest.hud.partyGauges[1] },
@@ -121,6 +127,12 @@ local function view(mode)
       twoOption = manifest.menus.twoOption.screens,
     },
     hudPatchSpans = manifest.hud.patchSpans,
+    textPalettes = {
+      narration = manifest.messages.roles.narration.palette,
+      hud = manifest.messages.roles.hud.palette,
+      menu = manifest.messages.roles.menu.palette,
+    },
+    menuText = { pp = "PP", cancel = "CANCEL" },
     effectInstances = {},
   }
 end
@@ -412,6 +424,7 @@ function T.render_restores_borrowed_state()
       drawText = function(_, _, _) end,
     },
     windows = {
+      background = { 0.2, 0.3, 0.1, 1 },
       drawWindow = function(_, _, _) end,
     },
     assets = {
@@ -470,7 +483,7 @@ local function openInterfaceRig(opts)
       rig.text.draws[#rig.text.draws + 1] = { content = tostring(content), x = x, y = y }
     end,
   }
-  rig.windows = { calls = {} }
+  rig.windows = { calls = {}, background = { 0.2, 0.3, 0.1, 1 } }
   function rig.windows.drawWindow(box, frameKey, background)
     rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end
@@ -777,7 +790,7 @@ local function openChildRig(opts)
     measurement = childMeasurement(layout),
     layout = layout,
     text = { draws = {} },
-    windows = { calls = {} },
+    windows = { calls = {}, background = { 0.2, 0.3, 0.1, 1 } },
     audio = { plays = {} },
   }
   function rig.text.measure(content)

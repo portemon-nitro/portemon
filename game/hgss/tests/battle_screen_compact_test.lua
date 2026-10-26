@@ -89,7 +89,7 @@ local NARRATION_ORIGIN = { x = 12, y = 146, width = 232 }
 -- left, complete player bounds against the right edge above the dock.
 local HUD_ENEMY = { x = 4, y = 4 }
 local HUD_PLAYER_RIGHT = 252
-local HUD_PLAYER_BOTTOM = 132
+local HUD_PLAYER_TOP = 4
 local PLAYER_CENTER = { x = 60, y = 96 }
 local ENEMY_CENTER = { x = 196, y = 44 }
 
@@ -181,6 +181,11 @@ local function snapshot(mode, overrides)
     slotGeometry = manifest.battlefield.slots,
     hudSections = { player = manifest.hud.player, enemy = manifest.hud.enemy },
     hudPatchSpans = manifest.hud.patchSpans,
+    textPalettes = {
+      narration = manifest.messages.roles.narration.palette,
+      hud = manifest.messages.roles.hud.palette,
+      menu = manifest.messages.roles.menu.palette,
+    },
     effectInstances = {},
   }
   if mode == "moves" then
@@ -247,6 +252,9 @@ local function recordingText(order)
   function text.drawTextWithPalette(content, x, y, palette)
     order[#order + 1] = "text"
     text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y, palette = palette }
+  end
+  function text.drawTextForRole(_, content, x, y, palette)
+    text.drawTextWithPalette(content, x, y, palette)
   end
   return text
 end
@@ -358,7 +366,7 @@ function T.single_pane_command_dock_frames_prompt_and_options()
   Assert.equal(content.hud.enemy.x, HUD_ENEMY.x, "the enemy bounds keep their left anchor")
   Assert.equal(content.hud.enemy.y, HUD_ENEMY.y, "the enemy bounds keep their top anchor")
   Assert.equal(content.hud.player.rightEdge, HUD_PLAYER_RIGHT, "the player bounds keep their right edge")
-  Assert.equal(content.hud.player.bottomEdge, HUD_PLAYER_BOTTOM, "the player bounds sit above the dock")
+  Assert.equal(content.hud.player.y, HUD_PLAYER_TOP, "the player bounds keep their upper-right anchor")
   local key = plan.inputKey
   local again = resolve(compactMeasurement(), snapshot("command"))
   Assert.equal(again.inputKey, key, "equivalent re-resolution keeps its input identity")
@@ -487,6 +495,14 @@ function T.dock_draws_background_text_before_shared_borders()
     end
   end
   local function hudRegionOf(drawn)
+    if drawn.palette ~= nil then
+      for _, region in ipairs(expectedHud) do
+        if region.id == "name" and drawn.content == region.text then
+          return region
+        end
+      end
+      return nil
+    end
     for _, region in ipairs(expectedHud) do
       if drawn.content == region.text and drawn.x == region.x and drawn.y == region.y then
         return region
@@ -524,18 +540,11 @@ function T.dock_draws_background_text_before_shared_borders()
     local onGrid = x == 128 or x == 192
     Assert.isTrue(onGrid, "command labels begin eight pixels right of their cursor column")
   end
-  -- HUD-scoped bounds: every published wording draws exactly once at its
-  -- own origin, inside its side bounds and the scene viewport at unit
-  -- scale.
-  Assert.equal(#hudDraws, #expectedHud, "every published HUD wording draws exactly once")
-  for _, region in ipairs(expectedHud) do
-    local found = 0
-    for _, drawn in ipairs(hudDraws) do
-      if drawn.content == region.text and drawn.x == region.x and drawn.y == region.y then
-        found = found + 1
-      end
-    end
-    Assert.equal(found, 1, "the " .. region.id .. " wording draws once at its published origin")
+  -- Source name printers issue role-palette draws clipped to each native
+  -- name tile. They need not share the plan's fallback-label origin.
+  Assert.isTrue(#hudDraws > 0, "the native HUD name printers draw with their source role")
+  for _, drawn in ipairs(hudDraws) do
+    Assert.notNil(drawn.palette, "native HUD name ink uses the staged HUD palette")
   end
   for _, side in ipairs({ hud.enemy, hud.player }) do
     for _, region in ipairs(side.regions) do
@@ -801,7 +810,7 @@ local function openRig(opts)
       rig.text.draws[#rig.text.draws + 1] = { content = content, x = x, y = y }
     end,
   }
-  rig.windows = { calls = {} }
+  rig.windows = { calls = {}, background = { 0, 0, 0, 1 } }
   function rig.windows.drawWindow(box, frameKey, background)
     rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end
@@ -1111,7 +1120,7 @@ local function openLearnRig(layout)
       rig.text.draws[#rig.text.draws + 1] = { content = content, x = x, y = y }
     end,
   }
-  rig.windows = { calls = {} }
+  rig.windows = { calls = {}, background = { 0, 0, 0, 1 } }
   function rig.windows.drawWindow(box, frameKey, background)
     rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end

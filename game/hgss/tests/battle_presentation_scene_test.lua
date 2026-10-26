@@ -122,7 +122,7 @@ end
 ---@return number expected nominal image left edge
 ---@return number expected nominal image top edge
 local function nominalOrigin(center, height)
-  return center.x - PICTURE_HALF, center.y - PICTURE_HALF - displacementOf(height)
+  return center.x - PICTURE_HALF, center.y - PICTURE_HALF + displacementOf(height)
 end
 
 ---@param overrides table? battler fields replacing the healthy defaults
@@ -188,6 +188,12 @@ local function snapshot(overrides)
     effectInstances = {},
     slotGeometry = ManifestFixture.manifest().battlefield.slots,
     hudPatchSpans = ManifestFixture.manifest().hud.patchSpans,
+    textPalettes = {
+      narration = ManifestFixture.manifest().messages.roles.narration.palette,
+      hud = ManifestFixture.manifest().messages.roles.hud.palette,
+      menu = ManifestFixture.manifest().messages.roles.menu.palette,
+    },
+    menuText = { pp = "PP", cancel = "CANCEL" },
     hudSections = {
       player = ManifestFixture.manifest().hud.player,
       enemy = ManifestFixture.manifest().hud.enemy,
@@ -215,12 +221,18 @@ local function recordingText()
   function text.drawTextWithPalette(content, x, y, palette)
     text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y, palette = palette }
   end
+  function text.drawTextForRole(role, content, x, y, palette)
+    text.draws[#text.draws + 1] = { role = role, content = tostring(content), x = x, y = y, palette = palette }
+  end
+  function text.measureForRole(_, content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
   return text
 end
 
 ---@return table recording window boundary behind one draw
 local function recordingWindows()
-  local windows = { boxes = {} }
+  local windows = { boxes = {}, background = { 0, 0, 0, 1 } }
   function windows.drawWindow(box, frameKey, background)
     windows.boxes[#windows.boxes + 1] = { box = box, frame = frameKey, background = background }
   end
@@ -519,6 +531,39 @@ local function sampledTiles(draws)
   end
   table.sort(tiles)
   return tiles
+end
+
+-- Printer digits sampled from one health-box strip, as a sorted string:
+-- level digits draw twice (their upper and lower halves).
+---@param draws table[] recorded draws under inspection
+---@param handle string health-box strip identity
+---@return string sorted printed digits
+local function printedDigits(draws, handle)
+  local digitBase = ManifestFixture.manifest().hud.player.digitBase
+  local digits = {}
+  for _, entry in ipairs(draws) do
+    if type(entry.image) == "table" and entry.image.handle == handle and entry.quad ~= nil then
+      local digit = quadTile(entry.quad) - digitBase
+      if digit >= 0 and digit <= 9 then
+        digits[#digits + 1] = tostring(digit)
+      end
+    end
+  end
+  table.sort(digits)
+  return table.concat(digits)
+end
+
+---@param ... string printed strings, each with its draw count
+---@return string sorted digits the strings print
+local function expectedDigits(...)
+  local digits = {}
+  for _, content in ipairs({ ... }) do
+    for digit in content:gmatch("%d") do
+      digits[#digits + 1] = digit
+    end
+  end
+  table.sort(digits)
+  return table.concat(digits)
 end
 
 ---@param text table recording text boundary under inspection
@@ -937,14 +982,9 @@ function T.health_and_experience_draw_as_native_tile_work()
     }))
     Assert.equal(#drawn.graphics.rectangles, 0, "multi-hit checkpoint " .. hp .. " draws no rectangles")
     Assert.equal(
-      #textsOf(drawn.text, tostring(hp)),
-      hp == 30 and 2 or 1,
-      "multi-hit checkpoint " .. hp .. " keeps its exact displayed current-HP numeral"
-    )
-    Assert.equal(
-      #textsOf(drawn.text, "30"),
-      hp == 30 and 2 or 1,
-      "multi-hit checkpoint " .. hp .. " keeps its separate maximum-HP numeral"
+      printedDigits(drawn.graphics.draws, "hud:player"),
+      expectedDigits(tostring(hp), "30", "9", "9"),
+      "multi-hit checkpoint " .. hp .. " prints its current HP, maximum HP, and level digits"
     )
     local tiles = sampledTiles(drawn.graphics.draws)
     if previous ~= nil then
@@ -977,7 +1017,11 @@ function T.health_and_experience_draw_as_native_tile_work()
     },
   }))
   Assert.equal(#textsOf(leveled.text, "40"), 0, "experience across a level boundary never prints its total")
-  Assert.equal(#textsOf(leveled.text, "Lv11"), 1, "the new level prints after a multi-level gain")
+  Assert.equal(
+    printedDigits(leveled.graphics.draws, "hud:player"),
+    expectedDigits("30", "30", "11", "11"),
+    "the new level prints after a multi-level gain"
+  )
 
   local capped = drawnDetail(snapshot({
     battlers = {
@@ -1002,15 +1046,19 @@ end
 -- health facts.
 function T.health_box_fields_render_every_native_fact_in_span()
   local function hudBoxTexts(view)
-    local drawn = drawnDetail(view)
-    local enemyBox = { x = -6, y = 8, width = 128, height = 64 }
-    local playerBox = { x = 128, y = 84, width = 128, height = 64 }
-    return drawn, textsIn(drawn.text, enemyBox), textsIn(drawn.text, playerBox)
+    return drawnDetail(view)
   end
   local base = snapshot()
-  local baseDrawn, baseEnemy, basePlayer = hudBoxTexts(base)
-  Assert.isTrue(#baseEnemy >= 2, "the foe box carries its name and level wording")
-  Assert.isTrue(#basePlayer >= 3, "the player box carries its name, level and health wording")
+  local baseDrawn = hudBoxTexts(base)
+  local baseEnemy = textsOf(baseDrawn.text, "FOE")
+  local basePlayer = textsOf(baseDrawn.text, "LEAD")
+  Assert.isTrue(#baseEnemy > 0, "the foe box carries its name wording")
+  Assert.isTrue(#basePlayer > 0, "the player box carries its name wording")
+  Assert.isTrue(printedDigits(baseDrawn.graphics.draws, "hud:enemy") ~= "", "the foe level uses source printer tiles")
+  Assert.isTrue(
+    printedDigits(baseDrawn.graphics.draws, "hud:player") ~= "",
+    "the player values use source printer tiles"
+  )
   for _, entry in ipairs(baseEnemy) do
     Assert.notNil(entry.palette, "foe box wording carries its native palette")
   end
@@ -1027,8 +1075,9 @@ function T.health_box_fields_render_every_native_fact_in_span()
         local relative = quadTile(entry.quad) - 128
         -- Health and experience tiles occupy relative 0..37 (at most
         -- the red base plus a full fill, then the experience base plus
-        -- a full fill); status marks start above them.
-        if relative >= 38 then
+        -- a full fill); status marks start above them, and printer
+        -- digits follow the 78 components.
+        if relative >= 38 and relative < 78 then
           tiles[#tiles + 1] = relative
         end
       end
@@ -1172,21 +1221,23 @@ function T.health_box_fields_render_every_native_fact_in_span()
   })
   local longDrawn, longEnemy, longPlayer = hudBoxTexts(long)
   local _, _, _ = longDrawn, longEnemy, longPlayer
-  Assert.equal(
-    #textsOf(longDrawn.text, "EXCEEDINGLYLONGNAME"),
-    0,
-    "an overlong player name never prints past its tile span"
-  )
-  Assert.equal(
-    #textsOf(longDrawn.text, "ANOTHEROVERLONGFOENAME"),
-    0,
-    "an overlong foe name never prints past its tile span"
-  )
+  -- Names print only through their sixteen window tiles, each print
+  -- clipped to its own tile, so overlong names never pass the window.
+  Assert.equal(#textsOf(longDrawn.text, "EXCEEDINGLYLONGNAME"), 16, "the player name prints per window tile")
+  Assert.equal(#textsOf(longDrawn.text, "ANOTHEROVERLONGFOENAME"), 16, "the foe name prints per window tile")
 
   local private_ = snapshot()
   local privateDrawn = drawnDetail(private_)
-  Assert.equal(#textsOf(privateDrawn.text, "12"), 0, "the foe box never prints numeric health")
-  Assert.equal(#textsOf(privateDrawn.text, "30"), 2, "the player box keeps separate current and maximum HP numerals")
+  Assert.equal(
+    printedDigits(privateDrawn.graphics.draws, "hud:enemy"),
+    expectedDigits("5", "5"),
+    "the foe box prints only its level, never numeric health"
+  )
+  Assert.equal(
+    printedDigits(privateDrawn.graphics.draws, "hud:player"),
+    expectedDigits("30", "30", "9", "9"),
+    "the player box prints separate current and maximum HP digits"
+  )
 end
 
 -- Native layering survives hostile incoming graphics state on both the
@@ -1275,7 +1326,9 @@ function T.layers_survive_hostile_state_with_explicit_compact_adaptation()
     local regions = assert(side.box.regions, "the compact " .. side.label .. " box publishes its regions")
     local seen = {}
     for _, region in ipairs(regions) do
-      if type(region.text) == "string" and region.text ~= "" then
+      if region.id == "hp" then
+        seen[region.id] = true
+      elseif type(region.text) == "string" and region.text ~= "" then
         seen[region.id] = region.text
       end
     end
@@ -1398,7 +1451,9 @@ function T.pokepic_shadow_uses_source_adjustment_flags_and_picture_position()
       end,
     }
   )
-  Assert.deepEqual(calls[1], { 42, 105 }, "adjusted shadow follows the source picture center and offsets")
+  -- pokepic.c: shadow.y = yCenter + yOffset + shadow.yOffset, where
+  -- yCenter = settled row + picture height; the 16-pixel quad centers on it.
+  Assert.deepEqual(calls[1], { 42, 113 }, "adjusted shadow follows the source picture center and offsets")
 
   local fixed = {}
   drawnDetail(

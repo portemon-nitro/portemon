@@ -376,7 +376,7 @@ local function stagedEffectHolder(launchId, staging)
   return BattlePresentationAssets.new({
     assets = staging.services,
     launchId = launchId,
-    sceneKey = "probe/plain/day",
+    sceneKey = "general/plain/day",
     shadowRegions = BattlePresentationManifestFixture.manifest().pictures.shadow.regions,
   })
 end
@@ -517,7 +517,7 @@ local function probePaintStaging(launchId)
   local owned = BattlePresentationAssets.new({
     assets = envelope:_preparationServices(),
     launchId = launchId,
-    sceneKey = "probe/plain/day",
+    sceneKey = "general/plain/day",
     shadowRegions = ManifestFixture.manifest().pictures.shadow.regions,
   })
   return { cache = cache, envelope = envelope, owned = owned, textureBytes = textureBytes, graphics = graphics }

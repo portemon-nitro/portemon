@@ -571,11 +571,10 @@ function T.pressed_command_label_uses_the_native_feedback_offset()
     end
   end
   Assert.notNil(fight, "the pressed command keeps its native label visible")
-  Assert.equal(
-    fight.y,
-    81,
-    "the source pressed task moves the command label up two pixels from y=83 (observed " .. tostring(fight.y) .. ")"
-  )
+  -- The text object sits eight pixels above its y=83 anchor; the source
+  -- pressed task lifts it two more.
+  Assert.equal(fight.y, 73, "the source pressed task moves the command label up two pixels")
+  Assert.equal(fight.x, 128 - 20, "the label stays centered on its anchor")
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -1393,10 +1392,10 @@ local function nativeView(overrides)
       },
     },
     commands = {
-      { id = "fight", enabled = true },
-      { id = "bag", enabled = true },
-      { id = "pokemon", enabled = true },
-      { id = "run", enabled = true },
+      { id = "fight", enabled = true, label = "FIGHT" },
+      { id = "bag", enabled = true, label = "BAG" },
+      { id = "pokemon", enabled = true, label = "POKEMON" },
+      { id = "run", enabled = true, label = "RUN" },
     },
     moves = {
       { slot = 0, name = "TACKLE", pp = 35, maxPp = 35, moveType = "NORMAL", enabled = true },
@@ -1409,6 +1408,12 @@ local function nativeView(overrides)
     foeCount = 2,
     arrowFrame = 1,
     hudPatchSpans = battleManifest().hud.patchSpans,
+    textPalettes = {
+      narration = battleManifest().messages.roles.narration.palette,
+      hud = battleManifest().messages.roles.hud.palette,
+      menu = battleManifest().messages.roles.menu.palette,
+    },
+    menuText = { pp = "PP", cancel = "CANCEL" },
     childIntent = nil,
   }
   if overrides ~= nil then
@@ -1459,6 +1464,13 @@ local function drawNativePane(paneId, view, layout, held, doublesHud)
   drawView.hudSections.player.componentBase = 128
   drawView.hudSections.enemy.componentBase = 128
   drawView.hudPatchSpans = manifest.hud.patchSpans
+  drawView.textPalettes = drawView.textPalettes
+    or {
+      narration = manifest.messages.roles.narration.palette,
+      hud = manifest.messages.roles.hud.palette,
+      menu = manifest.messages.roles.menu.palette,
+    }
+  drawView.menuText = drawView.menuText or { pp = "PP", cancel = "CANCEL" }
   local resources = {
     graphics = graphics,
     text = text,
@@ -1558,6 +1570,21 @@ end
 ---@param x number drawn horizontal origin under inspection
 ---@param y number drawn vertical origin under inspection
 ---@return boolean true when the exact wording draws at the anchor
+-- The RGB triple a source menu printer resolves through the fixture's
+-- staged lower OBJ palette: bank and MAKE_TEXT_COLOR slots, slot 0
+-- transparent.
+local function menuColors(bank, foreground, shadow, background)
+  local colors = battleManifest().messages.roles.menu.palette.colors
+  local function at(slot)
+    if slot == 0 then
+      return { r = 0, g = 0, b = 0, a = 0 }
+    end
+    local color = colors[bank * 16 + slot + 1]
+    return { r = color.r, g = color.g, b = color.b }
+  end
+  return { foreground = at(foreground), shadow = at(shadow), background = at(background) }
+end
+
 local function textAt(text, content, x, y)
   for _, entry in ipairs(text.draws) do
     if entry.content == content and entry.x == x and entry.y == y then
@@ -1567,50 +1594,70 @@ local function textAt(text, content, x, y)
   return false
 end
 
-function T.native_health_box_bounds_long_names_and_neighbor_fields()
-  local view = nativeView()
+-- Health-box wording prints the battle_hp_bar.c way: the nickname through
+-- the 8x2-tile font-0 window, one clipped print per source character tile
+-- in HUD colors 14/2/15, the level as printer digit tiles shifted half a
+-- tile down, and the player's HP as right/left-aligned printer digits.
+function T.native_health_box_prints_through_its_source_character_tiles()
+  local manifest = battleManifest()
+  local view = nativeView({ arrowFrame = 0 })
   view.battlers[1].name = "LONGNICKNAMEBEYONDNATIVEWIDTH"
   local drawn = drawNativePane("detail", view, nil, {})
-  local name = nil
-  local level = nil
-  for _, entry in ipairs(drawn.text.draws) do
-    if entry.y == 92 and entry.x == 144 then
-      name = entry.content
-    elseif entry.content == "Lv9" then
-      level = entry
-    end
-  end
-  Assert.isTrue(type(name) == "string", "the health box draws its long nickname")
-  Assert.isTrue(8 * #name <= 88, "the measured nickname fits the authored 88-pixel name span")
-  Assert.isFalse(name == "LONGNICKNAMEBEYONDNATIVEWIDTH", "the native name span clips excess nickname glyphs")
-  Assert.isTrue(level ~= nil and level.x == 144 and level.y == 104, "level keeps its adjacent native field anchor")
-
-  local manifest = battleManifest()
   local section = manifest.hud.player
   local cell = section.cells[section.animation.frames[1].cell + 1]
-  local statusPatches =
-    require("libs.hgss.src.presentation.BattleScene").hudIconPatchTiles(manifest.hud.patchSpans, 0, "burn", nil, nil)
-  local statusLeft = math.huge
-  local statusRight = -math.huge
-  local statusY = nil
-  for _, patch in ipairs(statusPatches) do
+  local function tileOrigin(tile)
     for _, object in ipairs(cell.objs) do
       local columns = object.width / 8
-      local offset = patch.tile - object.tile
+      local offset = tile - object.tile
       if offset >= 0 and offset < columns * object.height / 8 then
-        local x = 144 + object.x + offset % columns * 8
-        local y = 92 + object.y + math.floor(offset / columns) * 8
-        statusLeft = math.min(statusLeft, x)
-        statusRight = math.max(statusRight, x + 8)
-        statusY = y
-        break
+        return 192 + object.x + offset % columns * 8, 116 + object.y + math.floor(offset / columns) * 8
       end
     end
+    error("tile " .. tile .. " belongs to a player object")
   end
-  Assert.isTrue(statusLeft < statusRight and type(statusY) == "number", "status art resolves to native cell tiles")
-  Assert.isTrue(statusRight <= 144, "the native status span ends before the nickname span begins")
-  Assert.isTrue(statusY == 92, "status art stays on its source row beside the nickname")
-  Assert.isTrue(level.x == 144 and level.y == 104, "the level occupies its separate source row")
+  local names = {}
+  for _, entry in ipairs(drawn.text.draws) do
+    if entry.content == view.battlers[1].name then
+      names[#names + 1] = entry
+    end
+    Assert.isFalse(entry.content == "Lv9" or entry.content == "30/30", "levels and HP never print as text")
+  end
+  Assert.equal(#names, 16, "the nickname window prints once per source character tile")
+  local palette = manifest.messages.roles.hud.palette.colors
+  for _, entry in ipairs(names) do
+    Assert.equal(entry.role, "hud", "the nickname uses the font-0 printer role")
+    Assert.deepEqual(
+      { entry.colors.foreground.r, entry.colors.shadow.r, entry.colors.background.r },
+      { palette[15].r, palette[3].r, palette[16].r },
+      "the nickname prints in HUD colors 14, 2, and 15"
+    )
+  end
+  local firstX, firstY = tileOrigin(19)
+  Assert.deepEqual({ names[1].x, names[1].y }, { 0, 0 }, "the first character starts at its local window origin")
+  local openedAtSourceTile = false
+  for _, transform in ipairs(drawn.graphics.transforms) do
+    if transform[1] == "translate" and transform[2] == firstX and transform[3] == firstY then
+      openedAtSourceTile = true
+      break
+    end
+  end
+  Assert.isTrue(openedAtSourceTile, "the text transform opens on its first source tile")
+  local function digitAt(digit, x, y)
+    for _, entry in ipairs(drawsOf(drawn.graphics, "hud:player")) do
+      if entry.quad ~= nil and entry.quad.x == (section.digitBase + digit) * 8 and entry.x == x and entry.y == y then
+        return true
+      end
+    end
+    return false
+  end
+  local levelX, levelY = tileOrigin(85)
+  Assert.isTrue(digitAt(9, levelX, levelY + 4), "the level digit's top half lands in the upper tile's lower rows")
+  local levelBottomX, levelBottomY = tileOrigin(93)
+  Assert.isTrue(digitAt(9, levelBottomX, levelBottomY - 4), "its bottom half lands in the lower tile's upper rows")
+  local currentX, currentY = tileOrigin(105)
+  Assert.isTrue(digitAt(3, currentX, currentY), "the current HP prints right-aligned in its three tiles")
+  local maximumX, maximumY = tileOrigin(108)
+  Assert.isTrue(digitAt(3, maximumX, maximumY), "the maximum HP prints left-aligned in its three tiles")
 end
 
 -- The HUD composites draw at their anchors with the compiled local
@@ -1655,17 +1702,10 @@ end
 -- tile bars per side. Foe numbers and experience totals never print.
 function T.native_hud_dynamic_content_uses_composite_geometry()
   local drawn = drawNativePane("detail", nativeView({ arrowFrame = 0 }), nil, {})
-  Assert.isTrue(textAt(drawn.text, "LEAD", 144, 92), "the player name keeps its anchor")
-  Assert.isTrue(textAt(drawn.text, "Lv9", 144, 104), "the player level keeps its anchor")
-  Assert.isFalse(textAt(drawn.text, "30/30", 144, 116), "the player renders native HP digit tiles")
   for _, entry in ipairs(drawn.text.draws) do
     Assert.isFalse(entry.content == "120", "the player never prints its experience total")
-  end
-  Assert.isFalse(textAt(drawn.text, "burn", 176, 104), "the player renders native status icon tiles")
-  Assert.isTrue(textAt(drawn.text, "FOE", 8, 16), "the foe name keeps its anchor")
-  Assert.isTrue(textAt(drawn.text, "Lv3", 8, 28), "the foe level keeps its anchor")
-  for _, entry in ipairs(drawn.text.draws) do
-    Assert.isFalse(entry.content == "12/12", "the foe prints no numeric health")
+    Assert.isFalse(entry.content == "burn", "the player renders native status icon tiles")
+    Assert.isFalse(entry.content == "12/12" or entry.content == "12", "the foe prints no numeric health")
   end
   Assert.equal(#drawn.graphics.rectangles, 0, "health bars never use painted rectangles")
   local tiles = {}
@@ -1754,15 +1794,16 @@ function T.native_health_box_icons_follow_side_and_encounter_visibility()
   end
 end
 
--- Missing strips draw nothing and never substitute: held keys skip their
--- composites while the wording and bars still draw.
+-- Missing strips draw nothing and never substitute: the wording prints
+-- into the strip's own character tiles, so it stays missing with them.
 function T.native_missing_art_draws_nothing()
   local drawn = drawNativePane("detail", nativeView({ arrowFrame = 3 }), nil, { "hud:player", "hud:enemy", "arrow" })
   Assert.equal(#drawsOf(drawn.graphics, "hud:player"), 0, "the held player strip draws nothing")
   Assert.equal(#drawsOf(drawn.graphics, "hud:enemy"), 0, "the held enemy strip draws nothing")
   Assert.equal(#drawsOf(drawn.graphics, "arrow"), 0, "the held arrow draws nothing")
-  Assert.isTrue(textAt(drawn.text, "LEAD", 144, 92), "held art keeps the player wording")
-  Assert.isTrue(textAt(drawn.text, "FOE", 8, 16), "held art keeps the foe wording")
+  for _, entry in ipairs(drawn.text.draws) do
+    Assert.isFalse(entry.content == "LEAD" or entry.content == "FOE", "held strips print no health-box wording")
+  end
 end
 
 -- The arrow draws its authored cells: the zero-time opening cell draws
@@ -1843,7 +1884,7 @@ end
 -- battle roster behind the player row, the revealed foe count behind
 -- the enemy row. Unrevealed foes keep the absent cell.
 function T.native_gauges_use_source_cells_by_roster_visibility()
-  local drawn = drawNativePane("interaction", nativeView({}), "command", {})
+  local drawn = drawNativePane("interaction", nativeView({ battleKind = "trainer" }), "command", {})
   local player = drawsOf(drawn.graphics, "gauges:player")
   Assert.equal(#player, 24, "the source 32px player objects use four tile rows per cell")
   Assert.equal(player[1].x, -4, "the source player object offset is preserved")
@@ -1894,7 +1935,7 @@ function T.native_menu_draws_generated_layers_in_priority_order()
   )
 end
 
-function T.native_menu_selection_draws_its_generated_tilemap_patch()
+function T.native_menu_feedback_draws_the_pressed_tilemap_only_while_held()
   for _, state in ipairs({ "selected", "pressed" }) do
     local view = nativeView({
       selection = "fight",
@@ -1923,11 +1964,11 @@ function T.native_menu_selection_draws_its_generated_tilemap_patch()
         menuDraws[#menuDraws + 1] = key
       end
     end
-    Assert.deepEqual(
-      menuDraws,
-      { "menu:command:screen:1", "menu:command:feedback:fight:" .. state },
-      "the focused command draws its generated " .. state .. " tilemap patch above the source layer"
-    )
+    local expected = { "menu:command:screen:1" }
+    if state == "pressed" then
+      expected[2] = "menu:command:feedback:fight:pressed"
+    end
+    Assert.deepEqual(menuDraws, expected, "only a held command swaps in its pressed tilemap (" .. state .. ")")
   end
 end
 
@@ -1946,10 +1987,8 @@ function T.native_gauges_follow_the_live_roster()
   Assert.equal(player[1].quad.w, 32, "the live player row uses the native family")
   Assert.equal(player[5].quad.x, 128, "the live reserve selects its source cell")
   Assert.equal(player[9].quad.x, 0, "the live empty slots keep their absent cell")
-  local enemy = drawsOf(graphics, "gauges:enemy")
-  Assert.equal(#enemy, 12, "the live enemy row bands six cells")
-  Assert.equal(enemy[1].quad.x, 32, "the live foe selects its source cell")
-  Assert.equal(enemy[3].quad.x, 0, "unrevealed live foes keep the absent cell")
+  -- The opponent row belongs to trainer battles; this wild rig hides it.
+  Assert.equal(#drawsOf(graphics, "gauges:enemy"), 0, "the live wild battle draws no opponent row")
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -1992,19 +2031,17 @@ function T.native_move_facts_use_compiled_type_and_split_pp_anchors()
   local graphics = FakeGraphics.new({})
   rig.screen:draw({ graphics = graphics })
   local text = rig.text
-  Assert.isTrue(textAt(text, first.name, 64, 45), "the first move name keeps its anchor: " .. tostring(first.name))
+  -- Move names center on their source anchor, eight pixels above it.
+  local nameX = 64 - math.floor(8 * #first.name / 2)
+  Assert.isTrue(textAt(text, first.name, nameX, 37), "the first move name keeps its anchor: " .. tostring(first.name))
   local firstNameDraw = nil
   for _, entry in ipairs(text.draws) do
-    if entry.content == first.name and entry.x == 64 and entry.y == 45 then
+    if entry.content == first.name and entry.x == nameX and entry.y == 37 then
       firstNameDraw = entry
     end
   end
   Assert.equal(firstNameDraw.role, "menu", "move facts use the generated menu font role")
-  Assert.deepEqual(
-    firstNameDraw.colors,
-    { foreground = 7, shadow = 8, background = 9 },
-    "move names use the source text color slots"
-  )
+  Assert.deepEqual(firstNameDraw.colors, menuColors(3, 7, 8, 9), "move names use the source bank and color slots")
   Assert.isFalse(textAt(text, first.moveType, 32, 61), "the source type sprite is not replaced by a text label")
   local typeIcon = nil
   for _, entry in ipairs(graphics.draws) do
@@ -2041,27 +2078,16 @@ function T.native_move_facts_use_compiled_type_and_split_pp_anchors()
       Assert.notNil(matchingDraw, "every typed move slot draws its source icon at slot " .. tostring(move.slot))
     end
   end
-  Assert.isTrue(textAt(text, tostring(first.pp), 59, 61), "the PP current keeps its field: " .. tostring(first.pp))
-  local ppDraw = nil
+  -- The font-0 "PP" label and the right-aligned current/max values print
+  -- left-aligned eight pixels above their source anchors.
+  local values = string.format("%2d/%2d", first.pp, first.maxPp)
+  Assert.isTrue(textAt(text, "PP", 59, 53), "the PP label keeps its field")
+  Assert.isTrue(textAt(text, values, 76, 53), "the PP values keep their field: " .. values)
   for _, entry in ipairs(text.draws) do
-    if entry.content == tostring(first.pp) and entry.x == 59 and entry.y == 61 then
-      ppDraw = entry
+    if (entry.content == "PP" and entry.x == 59) or entry.content == values then
+      Assert.equal(entry.role, "hud", "PP facts print with the font-0 printer")
+      Assert.deepEqual(entry.colors, menuColors(4, 1, 2, 0), "full PP uses the source normal PP colors")
     end
-  end
-  Assert.deepEqual(
-    ppDraw.colors,
-    { foreground = 1, shadow = 2, background = 0 },
-    "full PP uses the source normal PP color slots"
-  )
-  Assert.isTrue(
-    textAt(text, "/" .. tostring(first.maxPp), 76, 61),
-    "the PP max keeps its field: " .. tostring(first.maxPp)
-  )
-  for _, entry in ipairs(text.draws) do
-    Assert.isNil(
-      tostring(entry.content):match("^PP %d+/%d+$"),
-      "the merged PP string never draws: " .. tostring(entry.content)
-    )
   end
   rig.screen:dispose()
   rig.battle:dispose()
@@ -2103,20 +2129,15 @@ function T.native_zero_pp_move_keeps_its_disabled_facts()
   Assert.isFalse(move.enabled, "the exhausted slot is disabled")
   local text = rig.text
   rig.screen:draw({ graphics = FakeGraphics.new({}) })
-  Assert.isTrue(textAt(text, "0", 59, 61), "the zero current PP remains in its native field")
-  Assert.isTrue(textAt(text, "/35", 76, 61), "the exhausted move keeps its maximum PP field")
+  Assert.isTrue(textAt(text, " 0/35", 76, 53), "the zero current PP remains in its native field")
   local zeroPp = nil
   for _, entry in ipairs(text.draws) do
-    if entry.content == "0" and entry.x == 59 and entry.y == 61 then
+    if entry.content == " 0/35" and entry.x == 76 and entry.y == 53 then
       zeroPp = entry
       break
     end
   end
-  Assert.deepEqual(
-    zeroPp.colors,
-    { foreground = 7, shadow = 8, background = 0 },
-    "the exhausted move uses the native disabled PP palette"
-  )
+  Assert.deepEqual(zeroPp.colors, menuColors(4, 7, 8, 0), "the exhausted move uses the native disabled PP palette")
   rig.screen:input({ { type = "navigate", direction = "left" } })
   Assert.equal(rig.screen:view().selection, "move:0", "the test focuses the disabled zero-PP slot")
   rig.screen:input({ { type = "confirm" } })
@@ -2816,6 +2837,12 @@ end
 local function doublesDetailView(overrides)
   local view = {
     hudPatchSpans = battleManifest().hud.patchSpans,
+    textPalettes = {
+      narration = battleManifest().messages.roles.narration.palette,
+      hud = battleManifest().messages.roles.hud.palette,
+      menu = battleManifest().messages.roles.menu.palette,
+    },
+    menuText = { pp = "PP", cancel = "CANCEL" },
     mode = "command",
     arrowFrame = 1,
     actor = { combatant = 5, index = 1, total = 2 },
@@ -3042,17 +3069,18 @@ function T.doubled_health_boxes_use_each_role_source_cell_and_default_fields()
   end
   Assert.equal(#drawsOf(drawn.graphics, "hud:player"), 0, "no doubled ally shares the single-battle strip")
   Assert.equal(#drawsOf(drawn.graphics, "hud:enemy"), 0, "no doubled foe shares the single-battle strip")
-  Assert.isTrue(textAt(drawn.text, "ALLY-A", 144, 88), "the left ally names its own row")
-  Assert.isTrue(textAt(drawn.text, "Lv8", 224, 91), "the left ally level uses its mapped source patch")
-  Assert.isFalse(textAt(drawn.text, "40/40", 144, 103), "default doubled HUD omits numeric player health")
-  Assert.isFalse(textAt(drawn.text, "8000", 192, 103), "default doubled HUD omits player experience")
-  Assert.isTrue(textAt(drawn.text, "ALLY-B", 150, 117), "the right ally names its own row")
-  Assert.isTrue(textAt(drawn.text, "Lv9", 230, 120), "the right ally level uses its mapped source patch")
-  Assert.isFalse(textAt(drawn.text, "35/35", 150, 141), "default doubled HUD omits numeric health for every ally")
-  Assert.isTrue(textAt(drawn.text, "FOE-A", 14, 4), "the left foe names its own row")
-  Assert.isTrue(textAt(drawn.text, "Lv4", 88, 4), "the left foe level uses its mapped source patch")
-  Assert.isTrue(textAt(drawn.text, "FOE-B", 8, 33), "the right foe names its own row")
-  Assert.isTrue(textAt(drawn.text, "Lv5", 82, 33), "the right foe level uses its mapped source patch")
+  -- Every row prints its own nickname through its 8x2-tile window and
+  -- carries no free-standing level or numeric health text.
+  local printed = {}
+  for _, entry in ipairs(drawn.text.draws) do
+    printed[entry.content] = (printed[entry.content] or 0) + 1
+    Assert.isFalse(tostring(entry.content):match("^Lv%d+$") ~= nil, "levels print as digit tiles")
+  end
+  for _, name in ipairs({ "ALLY-A", "ALLY-B", "FOE-A", "FOE-B" }) do
+    Assert.equal(printed[name], 16, name .. " prints through its own nickname window")
+  end
+  Assert.isNil(printed["40/40"], "default doubled HUD omits numeric player health")
+  Assert.isNil(printed["8000"], "default doubled HUD omits player experience")
   local tiles = {}
   for _, entry in ipairs(drawn.graphics.draws) do
     if
@@ -3195,12 +3223,13 @@ function T.doubled_player_health_box_switches_between_native_gauge_and_number_ce
   local view = doublesDetailView()
   view.battlers[2].healthBoxMode = "numbers"
   local drawn = drawNativePane("detail", view, nil, {})
+  local section = battleManifest().hud.doubles.playerLeft
   local leftGaugeTiles = {}
   local leftModeTiles = {}
   for _, entry in ipairs(drawsOf(drawn.graphics, "hud:player-left")) do
     if type(entry.quad) == "table" and entry.quad.w == 8 and entry.quad.h == 8 then
       local tile = math.floor(entry.quad.x / 8)
-      if entry.y == 103 and entry.x >= 176 and entry.x < 256 then
+      if entry.y == 103 and entry.x >= 176 and entry.x < 256 and tile < section.digitBase then
         if tile < 128 then
           leftGaugeTiles[#leftGaugeTiles + 1] = tile
         else
@@ -3210,8 +3239,14 @@ function T.doubled_player_health_box_switches_between_native_gauge_and_number_ce
     end
   end
   Assert.deepEqual(leftGaugeTiles, {}, "number mode does not keep drawing the health gauge row")
-  Assert.isTrue(textAt(drawn.text, "40", 200, 103), "number mode prints the current HP inside its source span")
-  Assert.isTrue(textAt(drawn.text, "40", 224, 103), "number mode prints the maximum HP inside its source span")
+  -- Number mode prints " 40" and "40" as printer digit tiles.
+  local fours = 0
+  for _, entry in ipairs(drawn.graphics.draws) do
+    if entry.quad ~= nil and entry.quad.x == (section.digitBase + 4) * 8 then
+      fours = fours + 1
+    end
+  end
+  Assert.isTrue(fours >= 2, "number mode prints the current and maximum HP as printer digits")
   table.sort(leftModeTiles)
   Assert.deepEqual(leftModeTiles, { 197, 198, 199 }, "number mode patches the three native source cell components")
 

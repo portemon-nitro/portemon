@@ -167,6 +167,11 @@ local function drawnHud(view, held)
   end
   drawView.hudSections = { player = manifest.hud.player, enemy = manifest.hud.enemy }
   drawView.hudPatchSpans = manifest.hud.patchSpans
+  drawView.textPalettes = {
+    narration = manifest.messages.roles.narration.palette,
+    hud = manifest.messages.roles.hud.palette,
+    menu = manifest.messages.roles.menu.palette,
+  }
   local resources = {
     graphics = graphics,
     text = text,
@@ -228,13 +233,13 @@ function T.enemy_composite_draws_unscaled_at_left_top_bounds()
 end
 
 -- The player composite samples its source artwork through quads with its
--- complete bounds right-aligned and above the dock, never a whole strip.
-function T.player_composite_right_and_bottom_edges_hold_above_dock()
+-- complete bounds right-aligned above the foe picture and beside the enemy HUD.
+function T.player_composite_right_and_top_edges_clear_battle_art()
   local result = drawnHud(snapshot(), {})
   local content = assert(result.plan.content, "the compact plan carries its content")
   local bounds = assert(content.hud.player, "the plan carries the player bounds")
   Assert.equal(bounds.x + bounds.width, 252, "the player bounds keep their right edge")
-  Assert.equal(bounds.y + bounds.height, 132, "the player bounds sit above the dock")
+  Assert.equal(bounds.y, 4, "the player bounds keep the upper-right anchor")
   local composites = {}
   for _, entry in ipairs(drawsOf(result.graphics, "hud:player")) do
     if type(entry.quad) == "table" and entry.quad.w ~= 8 then
@@ -242,15 +247,18 @@ function T.player_composite_right_and_bottom_edges_hold_above_dock()
     end
   end
   Assert.equal(#composites, 16, "the player cell draws both native objects one scan row at a time")
-  Assert.equal(composites[1].x, bounds.x + 4, "the player native cell is centered in its aspect-fit bounds")
+  Assert.isTrue(
+    composites[1].x >= bounds.x and composites[1].x < bounds.x + bounds.width,
+    "the player native cell stays inside its aspect-fit bounds"
+  )
   Assert.equal(composites[1].y, bounds.y, "the player composite starts at the bounds top")
-  Assert.equal(composites[1].sx, 0.75, "the player cell preserves its source aspect ratio")
-  Assert.equal(composites[1].sy, 0.75, "the player cell preserves its source aspect ratio")
+  Assert.equal(composites[1].sx, composites[1].sy, "the player cell preserves its source aspect ratio")
+  Assert.isTrue(composites[1].sy < 0.75, "the player cell shrinks into the upper-right space")
   Assert.notNil(composites[1].quad, "the player composite samples its source strip through quads, never a whole strip")
 end
 
 -- Every dynamic region resolves the snapshot values: names, levels,
--- conditions and health on both sides plus the player numeric health,
+-- conditions and player health; opponent numeric health stays hidden,
 -- each inside its own side bounds. Experience draws as bar work, so the
 -- experience region carries no numeric wording.
 function T.hud_regions_carry_the_snapshot_values()
@@ -314,7 +322,7 @@ function T.hud_regions_carry_the_snapshot_values()
   Assert.equal(regionText(enemy, "name"), "WILDJR", "the enemy name resolves")
   Assert.equal(regionText(enemy, "level"), "Lv4", "the enemy level resolves")
   Assert.equal(regionText(enemy, "condition"), "", "a healthy combatant resolves no condition")
-  Assert.equal(regionText(enemy, "hp"), "40/57", "the enemy health resolves")
+  Assert.equal(regionText(enemy, "hp"), "", "the opponent numeric health stays hidden")
   for _, id in ipairs({ "name", "level", "condition", "hp", "exp" }) do
     insideBounds(player, id)
   end
@@ -664,7 +672,7 @@ function T.both_partners_draw_their_own_portrait_and_health_above_the_dock()
   local expected = {}
   for _, box in ipairs(boxes) do
     for _, region in ipairs(box.regions) do
-      if type(region.text) == "string" and region.text ~= "" then
+      if type(region.text) == "string" and region.text ~= "" and not (box.side == 2 and region.id == "hp") then
         expected[#expected + 1] = region
       end
     end
@@ -721,8 +729,8 @@ function T.both_partners_draw_their_own_portrait_and_health_above_the_dock()
   for _, drawn in ipairs(hurtResult.text.draws) do
     hurtWords[drawn.content] = (hurtWords[drawn.content] or 0) + 1
   end
-  Assert.equal(hurtWords["17/33"], 1, "the wounded foe resolves its exact health wording")
-  Assert.equal(hurtWords["45/45"], 1, "the partner foe keeps its health wording")
+  Assert.equal(hurtWords["17/33"], nil, "the wounded foe health wording stays private")
+  Assert.equal(hurtWords["45/45"], nil, "the partner foe health wording stays private")
 end
 
 -- Compact doubles panels are authored with the current theme and local
@@ -847,7 +855,7 @@ function T.doubles_panel_text_is_measured_to_each_field_width()
   local result = drawnHud(view, {})
   for _, box in ipairs(hudBoxes(assert(result.plan.content.hud))) do
     for _, region in ipairs(box.regions) do
-      if type(region.text) == "string" and region.text ~= "" then
+      if type(region.text) == "string" and region.text ~= "" and not (box.side == 2 and region.id == "hp") then
         local matching = nil
         for _, draw in ipairs(result.text.draws) do
           if draw.x == region.x and draw.y == region.y then

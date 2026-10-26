@@ -886,17 +886,8 @@ function T.slot_resolution_uses_published_geometry_for_every_side_type()
   end
 end
 
--- The nominal 80x80 origin is the center minus the half inset minus the
--- signed height displacement; shadows center their own quad on the
--- battler center.
-function T.origins_apply_half_inset_height_and_shadow_geometry()
-  local x, y = BattleScene.originFor(192, 50, nil)
-  Assert.deepEqual({ x, y }, { 152, 10 }, "the foe origin sits one half inset left and above its center")
-  local tx, ty = BattleScene.originFor(192, 50, 12)
-  Assert.deepEqual({ tx, ty }, { 152, -2 }, "a nonzero height displaces the origin upward only")
-  Assert.equal(tx, x, "height displacement never moves the origin horizontally")
-  local sx, sy = BattleScene.shadowOriginFor(192, 50)
-  Assert.deepEqual({ sx, sy }, { 160, 42 }, "the shadow quad centers on the battler center")
+-- Shadows use their native quad geometry behind every picture plane.
+function T.shadow_quads_use_native_geometry()
   Assert.equal(BattleScene.SHADOW_WIDTH, 64, "shadows span their native width")
   Assert.equal(BattleScene.SHADOW_HEIGHT, 16, "shadows span their native height")
   Assert.equal(BattleScene.SHADOW_DEPTH, -1000, "shadows sit behind every picture plane")

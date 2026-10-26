@@ -121,6 +121,12 @@ local function snapshot(overrides)
       doubles = doubles,
     },
     hudPatchSpans = manifest.hud.patchSpans,
+    textPalettes = {
+      narration = manifest.messages.roles.narration.palette,
+      hud = manifest.messages.roles.hud.palette,
+      menu = manifest.messages.roles.menu.palette,
+    },
+    menuText = { pp = "PP", cancel = "CANCEL" },
     mode = "command",
     selection = "fight",
     armed = nil,
@@ -207,7 +213,11 @@ local function drawnDetail(view, opts)
   local resources = {
     graphics = graphics,
     text = text,
-    windows = { drawWindow = function() end, drawApplicationFrame = function() end },
+    windows = {
+      background = { 0, 0, 0, 1 },
+      drawWindow = function() end,
+      drawApplicationFrame = function() end,
+    },
     doublesHud = opts.doublesHud or view.hudSections.doubles,
     assets = {
       drawable = function(_, key)
@@ -236,31 +246,37 @@ local function drawnDetail(view, opts)
   return graphics
 end
 
+-- Printer digit tiles one health-box strip draws on one row, as
+-- "digit@x" entries left to right; the fill tile is skipped.
+local function digitRow(graphics, handle, digitBase, y)
+  local found = {}
+  for _, entry in ipairs(graphics.draws) do
+    if type(entry.image) == "table" and entry.image.handle == handle and entry.quad ~= nil and entry.y == y then
+      local digit = math.floor(entry.quad.x / 8) - digitBase
+      if digit >= 0 and digit <= 9 then
+        found[#found + 1] = { x = entry.x, label = digit .. "@" .. entry.x }
+      end
+    end
+  end
+  table.sort(found, function(left, right)
+    return left.x < right.x
+  end)
+  local row = {}
+  for index, entry in ipairs(found) do
+    row[index] = entry.label
+  end
+  return row
+end
+
 function T.single_player_hp_numbers_follow_the_native_character_tile_spans()
   local view = snapshot()
   view.battlers[1].hp, view.battlers[1].maxHp = 16, 64
-  local opts = {}
-  local graphics = drawnDetail(view, opts)
-  local numericDraws = {}
-  for _, draw in ipairs(opts.text.draws) do
-    if draw.content == "16" or draw.content == "64" then
-      numericDraws[draw.content] = { x = draw.x, y = draw.y }
-    end
-  end
-  Assert.deepEqual(numericDraws, {
-    ["16"] = { x = 200, y = 124 },
-    ["64"] = { x = 224, y = 124 },
-  }, "current HP right-aligns and maximum HP left-aligns in their source tile spans")
-  local numberClips = {}
-  for _, clip in ipairs(graphics.scissorIntersections) do
-    if clip.requested[3] == 24 and clip.requested[4] == 8 then
-      numberClips[#numberClips + 1] = { x = clip.requested[1], y = clip.requested[2] }
-    end
-  end
+  local graphics = drawnDetail(view, {})
+  -- " 16" right-aligns across tiles 104..106; "64" left-aligns from 108.
   Assert.deepEqual(
-    numberClips,
-    { { x = 192, y = 124 }, { x = 224, y = 124 } },
-    "each numeral stays inside its native span"
+    digitRow(graphics, "hud:player", ManifestFixture.manifest().hud.player.digitBase, 124),
+    { "1@200", "6@208", "6@224", "4@232" },
+    "current HP right-aligns and maximum HP left-aligns in their source tile spans"
   )
 end
 
@@ -359,38 +375,26 @@ function T.doubles_player_hp_numbers_follow_each_native_side_type_span()
       }),
     },
   })
-  local opts = {}
-  local graphics = drawnDetail(view, opts)
-  local numericDraws = {}
-  for _, draw in ipairs(opts.text.draws) do
-    if draw.content == "17" or draw.content == "64" or draw.content == "23" or draw.content == "100" then
-      numericDraws[draw.content] = { x = draw.x, y = draw.y }
-    end
-  end
-  Assert.deepEqual(numericDraws, {
-    ["17"] = { x = 200, y = 103 },
-    ["64"] = { x = 224, y = 103 },
-    ["23"] = { x = 206, y = 132 },
-    ["100"] = { x = 230, y = 132 },
-  }, "each doubles player uses its side-type tile span and native cell anchor")
-  local hiddenEnemyNumbers = {}
-  for _, draw in ipairs(opts.text.draws) do
-    if draw.content == "30" or draw.content == "50" then
-      hiddenEnemyNumbers[draw.content] = true
-    end
-  end
-  Assert.deepEqual(hiddenEnemyNumbers, {}, "enemy doubles omit current and maximum HP numerals")
-  local numberClips = {}
-  for _, clip in ipairs(graphics.scissorIntersections) do
-    if clip.requested[3] == 24 and clip.requested[4] == 8 then
-      numberClips[#numberClips + 1] = { x = clip.requested[1], y = clip.requested[2] }
-    end
-  end
+  local graphics = drawnDetail(view, {})
+  local doubles = ManifestFixture.manifest().hud.doubles
   Assert.deepEqual(
-    numberClips,
-    { { x = 192, y = 103 }, { x = 224, y = 103 }, { x = 198, y = 132 }, { x = 230, y = 132 } },
-    "both doubles player numeral windows clip to their side-type tile spans"
+    digitRow(graphics, "hud:player-left", doubles.playerLeft.digitBase, 103),
+    { "1@200", "7@208", "6@224", "4@232" },
+    "the left player prints its HP digits in its side-type spans"
   )
+  Assert.deepEqual(
+    digitRow(graphics, "hud:player-right", doubles.playerRight.digitBase, 132),
+    { "2@206", "3@214", "1@230", "0@238", "0@246" },
+    "the right player prints its HP digits at its own cell anchor"
+  )
+  for _, handle in ipairs({ "hud:enemy-left", "hud:enemy-right" }) do
+    for _, entry in ipairs(graphics.draws) do
+      if type(entry.image) == "table" and entry.image.handle == handle and entry.quad ~= nil then
+        local digit = math.floor(entry.quad.x / 8) - doubles.enemyLeft.digitBase
+        Assert.isFalse(digit == 3 or digit == 4, "enemy doubles omit current and maximum HP digits")
+      end
+    end
+  end
 end
 
 -- The retained mutable BG3 layer is the scene actually presented. Its
@@ -848,7 +852,7 @@ function T.source_picture_height_shifts_the_nominal_origin()
   }))
   for _, entry in ipairs(graphics.draws) do
     if type(entry.image) == "table" and entry.image.handle == "mon:LEAD/0/male/plain/back" then
-      Assert.equal(entry.y, 112 - 40 - 17, "the source picture height displaces its center-based origin")
+      Assert.equal(entry.y, 112 - 40 + 17, "the source picture height lowers its center-based origin")
       return
     end
   end
@@ -950,7 +954,11 @@ function T.compact_bars_declare_their_vertical_adaptation()
   local resources = {
     graphics = graphics,
     text = text,
-    windows = { drawWindow = function() end, drawApplicationFrame = function() end },
+    windows = {
+      background = { 0, 0, 0, 1 },
+      drawWindow = function() end,
+      drawApplicationFrame = function() end,
+    },
     assets = {
       drawable = function(_, key)
         return stagedDrawable(key)

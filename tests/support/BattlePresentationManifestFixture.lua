@@ -20,6 +20,15 @@ end
 
 ---@param text string decoded synthetic menu label
 ---@return table<string, unknown> synthetic source-shaped menu message
+-- A printer palette of whole sixteen-color banks with distinct colors.
+local function printerPalette(banks)
+  local colors = {}
+  for index = 1, banks * 16 do
+    colors[index] = { r = index % 256, g = (index * 7) % 256, b = (index * 13) % 256 }
+  end
+  return { colors = colors }
+end
+
 local function menuLabel(text)
   local tokens = {}
   for index = 1, #text do
@@ -143,6 +152,7 @@ local function hudSection(image, y)
   }
   section.componentBase = 128
   section.componentCount = 78
+  section.digitBase = 206
   return section
 end
 
@@ -209,6 +219,8 @@ local function manifest()
       ["assets/generated/battle/hud-doubles-enemy-left-chars.png"] = { width = 1648, height = 8 },
       ["assets/generated/battle/hud-doubles-enemy-right-chars.png"] = { width = 1648, height = 8 },
       ["assets/generated/battle/arrow-chars.png"] = { width = 208, height = 8 },
+      ["assets/generated/battle/cursor-chars.png"] = { width = 128, height = 8 },
+      ["assets/generated/battle/menu-pulse-mask.png"] = { width = 256, height = 256 },
       ["assets/generated/battle/gauges-0-chars.png"] = { width = 128, height = 8 },
       ["assets/generated/battle/gauges-1-chars.png"] = { width = 512, height = 8 },
       ["assets/generated/battle/pokepic-shadow.png"] = { width = 64, height = 64 },
@@ -219,6 +231,7 @@ local function manifest()
     twoOption = menuSection(),
     lower = {
       image = "assets/generated/battle/lower-chars.png",
+      pulseMask = "assets/generated/battle/menu-pulse-mask.png",
       palette = { colors = { { r = 1, g = 2, b = 3 } } },
       variants = {
         general = {
@@ -236,6 +249,7 @@ local function manifest()
       enemyRight = hudSection("assets/generated/battle/hud-doubles-enemy-right-chars.png", -28),
     },
     arrow = spriteSection("assets/generated/battle/arrow-chars.png"),
+    cursor = spriteSection("assets/generated/battle/cursor-chars.png"),
     partyGauges = {
       gaugeSection("assets/generated/battle/gauges-0-chars.png", 16),
       gaugeSection("assets/generated/battle/gauges-1-chars.png", 32),
@@ -245,10 +259,10 @@ local function manifest()
       type1 = terrainSection(),
     },
     textRoles = {
-      narration = { font = "data/generated/field/font/font-0.lua" },
-      trainerNarration = { font = "data/generated/field/font/font-0.lua" },
-      hud = { font = "data/generated/field/font/font-0.lua" },
-      menu = { font = "data/generated/field/font/font-4.lua" },
+      narration = { font = "data/generated/field/font/font-0.lua", palette = printerPalette(1) },
+      trainerNarration = { font = "data/generated/field/font/font-0.lua", palette = printerPalette(1) },
+      hud = { font = "data/generated/field/font/font-0.lua", palette = printerPalette(1) },
+      menu = { font = "data/generated/field/font/font-4.lua", palette = printerPalette(7) },
       bugContest = { font = "data/generated/field/font/font-0.lua" },
       recorderFeedback = { font = "data/generated/field/font/font-0.lua" },
     },
@@ -532,6 +546,16 @@ local function manifest()
       enemy = old.enemyHud,
       doubles = old.doublesHud,
       arrow = old.arrow,
+      cursor = (function()
+        local cursor = old.cursor
+        cursor.animations = {
+          cursor.animation,
+          cursor.animation,
+          cursor.animation,
+          cursor.animation,
+        }
+        return cursor
+      end)(),
       partyGauges = old.partyGauges,
       terrain = old.terrain,
       patchSpans = require("romdump.src.config.BattlePresentationSources").HUD_PATCH_SPANS,
@@ -814,16 +838,18 @@ local function manifest()
         ["battle/pc-transfer/has-space/bill"] = { tokens = {} },
         ["battle/pc-transfer/box-full/someone"] = { tokens = {} },
         ["battle/pc-transfer/box-full/bill"] = { tokens = {} },
-        ["label/fight"] = { tokens = {} },
-        ["label/bag"] = { tokens = {} },
-        ["label/pokemon"] = { tokens = {} },
-        ["label/safari-ball"] = { tokens = {} },
-        ["label/safari-bait"] = { tokens = {} },
-        ["label/safari-mud"] = { tokens = {} },
-        ["label/pal-park-ball"] = { tokens = {} },
-        ["label/bug-contest-ball"] = { tokens = {} },
-        ["label/cancel"] = { tokens = {} },
-        ["label/run"] = { tokens = {} },
+        ["label/fight"] = menuLabel("FIGHT"),
+        ["label/bag"] = menuLabel("BAG"),
+        ["label/pokemon"] = menuLabel("POKEMON"),
+        ["label/safari-ball"] = menuLabel("BALL"),
+        ["label/safari-bait"] = menuLabel("BAIT"),
+        ["label/safari-mud"] = menuLabel("MUD"),
+        ["label/pal-park-ball"] = menuLabel("BALL"),
+        ["label/bug-contest-ball"] = menuLabel("BALL"),
+        ["label/cancel"] = menuLabel("CANCEL"),
+        ["label/run"] = menuLabel("RUN"),
+        ["label/pp-max"] = menuLabel("PP"),
+        ["label/target-cancel"] = menuLabel("CANCEL"),
         ["label/yes"] = menuLabel("Yes"),
         ["label/no"] = menuLabel("No"),
         ["label/keep-move"] = menuLabel("Keep Move"),

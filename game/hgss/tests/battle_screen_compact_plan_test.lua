@@ -90,6 +90,12 @@ local function snapshot(mode, overrides)
     slotGeometry = manifest.battlefield.slots,
     hudSections = { player = manifest.hud.player, enemy = manifest.hud.enemy },
     hudPatchSpans = manifest.hud.patchSpans,
+    textPalettes = {
+      narration = manifest.messages.roles.narration.palette,
+      hud = manifest.messages.roles.hud.palette,
+      menu = manifest.messages.roles.menu.palette,
+    },
+    menuText = { pp = "PP", cancel = "CANCEL" },
     effectInstances = {},
   }
   if mode == "moves" then
@@ -143,6 +149,9 @@ local function recordingText(order)
   function text.drawTextWithPalette(content, x, y, palette)
     order[#order + 1] = "text"
     text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y, palette = palette }
+  end
+  function text.drawTextForRole(_, content, x, y, palette)
+    text.drawTextWithPalette(content, x, y, palette)
   end
   return text
 end
@@ -500,8 +509,11 @@ function T.label_clip_regions_bound_drawn_text()
         break
       end
     end
-    if not hudScoped and entry.x < 112 then
-      Assert.isTrue(entry.y >= promptBox.y + 2, "wrapped prompt text stays below the cap-overlap row")
+    if not hudScoped and entry.palette == nil and entry.x < 112 then
+      Assert.isTrue(
+        entry.y >= promptBox.y + 2,
+        "wrapped prompt text stays below the cap-overlap row (" .. entry.y .. " < " .. (promptBox.y + 2) .. ")"
+      )
       Assert.isTrue(
         entry.y + 16 <= promptBox.y + promptBox.height - 1,
         "wrapped prompt text stays above the bottom cap row"
@@ -524,7 +536,7 @@ function T.hud_anchors_and_native_defaults_unaffected()
   Assert.equal(content.hud.enemy.x, 4, "the enemy bounds keep their left anchor")
   Assert.equal(content.hud.enemy.y, 4, "the enemy bounds keep their top anchor")
   Assert.equal(content.hud.player.rightEdge, 252, "the player bounds keep their right edge")
-  Assert.equal(content.hud.player.bottomEdge, 132, "the player bounds sit above the dock")
+  Assert.equal(content.hud.player.y, 4, "the player bounds keep the upper-right anchor")
   Assert.equal(content.playerCenter.x, 60, "the player image keeps its interim center column")
   Assert.equal(content.playerCenter.y, 96, "the player image keeps its interim center row")
   Assert.equal(content.enemyCenter.x, 196, "the enemy image keeps its interim center column")

@@ -704,6 +704,29 @@ function T.visual_duration_prefers_compiled_ticks_over_the_fallback()
   Assert.equal(#journal.released, #journal.acquired, "parameterized runs borrow without acquiring")
 end
 
+function T.palette_pulse_accepts_a_compiled_zero_frame_interval()
+  local scene = sceneWithPair()
+  local services = journalServices(scene)
+  local task = assert(BattleEffectTasks.create("pokemon-picture-repeated-palette-fade", {
+    battlerTarget = "attacker",
+    parameters = {
+      pictureTarget = "attacker",
+      framesPerStep = 0,
+      repeatCount = 3,
+      targetColor = 31,
+      fadeExtent = 10,
+      pauseTicks = 0,
+    },
+  }, occurrenceContext(), services))
+  for _ = 1, 2 do
+    task:stepSourceTick({ tick = 1 })
+    Assert.isTrue(task:status() ~= "complete", "the repeats have not completed early")
+  end
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "complete", "a zero frame interval still retires on its compiled repeat count")
+  task:dispose()
+end
+
 function T.operand_less_visual_without_a_marker_citation_fails_closed()
   -- Only verified synchronous-marker kinds retire without compiled timing
   -- operands; every other timing-less spawn fails closed with its kind

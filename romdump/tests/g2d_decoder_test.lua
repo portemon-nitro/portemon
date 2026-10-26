@@ -102,6 +102,24 @@ function T.screen_chunk_reports_size_and_entries()
   Assert.deepEqual(scr.entries[2], { tile = 0, flipH = true, flipV = true, palette = 5 })
 end
 
+function T.wide_screens_decode_hardware_screen_blocks_into_row_major_entries()
+  -- A 512x256 text BG stores two consecutive 32x32-tile screen blocks
+  -- (left half, then right half). Each entry's tile names its logical
+  -- position so the decoded order is checkable: tile = row * 64 + column.
+  local stored = {}
+  for blockColumn = 0, 1 do
+    for row = 0, 31 do
+      for column = 0, 31 do
+        stored[#stored + 1] = row * 64 + blockColumn * 32 + column
+      end
+    end
+  end
+  local scr = assert(G2dDecoder.decodeScreen(container("RCSN", { screenBlock(stored, 512, 256) })))
+  for index, entry in ipairs(scr.entries) do
+    Assert.equal(entry.tile, (index - 1) % 1024, "entry " .. index .. " sits at its logical row-major position")
+  end
+end
+
 function T.palette_chunk_decodes_15bit_colors()
   local data = container("NCLR", { paletteBlock({ 0x7FFF, 0x0000, 0x001F }) })
   local pal = assert(G2dDecoder.decodePalette(data))

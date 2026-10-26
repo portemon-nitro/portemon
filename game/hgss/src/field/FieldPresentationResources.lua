@@ -494,6 +494,7 @@ function FieldPresentationResources.new(runtime)
     self.battleTextRenderers = {}
     self.battleTextRenderers.narration = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, fontId = 1 })
     self.battleTextRenderers.menu = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, fontId = 4 })
+    self.battleTextRenderers.hud = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, fontId = 0 })
     local playerData = assert(runtime.playerData, "field presentation requires the validated player data")
     local playerOptions = assert(playerData.options, "field presentation requires the player options")
     local textFrame = assert(playerOptions.textFrame, "field presentation requires the player-owned frame index")

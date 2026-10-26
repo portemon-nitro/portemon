@@ -308,11 +308,22 @@ local function decodeScreenBlock(data, opts)
       chunkSize = blk.size,
     })
   end
+  -- A 512-pixel-wide text background stores its map as consecutive
+  -- 32x32-tile screen blocks, the order the hardware reads VRAM in; decoded
+  -- entries are row-major over the whole screen. Narrower maps are already
+  -- row-major, and other widths are not hardware block layouts.
+  local blocked = width == 512 and height % 256 == 0
   local entries = {}
   local count = math.floor(dataSize / 2)
   for i = 0, count - 1 do
     local e = reader:u16le(blk.payload + 12 + i * 2)
-    entries[i + 1] = {
+    local position = i
+    if blocked then
+      local blockIndex, within = math.floor(i / 1024), i % 1024
+      local row = math.floor(blockIndex / 2) * 32 + math.floor(within / 32)
+      position = row * 64 + (blockIndex % 2) * 32 + within % 32
+    end
+    entries[position + 1] = {
       tile = e % 1024,
       flipH = math.floor(e / 1024) % 2 == 1,
       flipV = math.floor(e / 2048) % 2 == 1,

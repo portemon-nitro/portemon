@@ -7,6 +7,8 @@
 -- failure, never a substitution. Borrowed text and window services are
 -- never owned here.
 
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+
 ---@class BattlePresentationAssets.Services
 ---@field prepare fun(demand: table<string, unknown>): boolean?, string?
 ---@field drawable fun(key: string): table<string, unknown>?, string?
@@ -28,6 +30,7 @@
 ---@field _assets BattlePresentationAssets.Services preparation services carrying prepare/drawable/release
 ---@field _launchId string owning launch identity
 ---@field _sceneKey string semantic scene identity for the demand
+---@field _background string battle background named by the scene identity
 ---@field _sceneImage string selected scene image key
 ---@field _sceneLayer table<string, unknown>? staged BG3 payload for the active scene
 ---@field _audioRoles string[] staged audio role symbols behind the demand
@@ -39,6 +42,7 @@
 ---@field _error string?
 ---@field _prepared boolean preparation accepted for the current demand
 ---@field _selectors string[] portrait selectors named so far
+---@field _iconKeys string[] party icon selectors named so far
 ---@field _owned table<string, boolean> image keys acquired through this holder
 ---@field _imageErrors table<string, string> terminal upload failures by key, latched without retry
 ---@field _effects table<string, BattlePresentationAssets.EffectState> per-effect demand/load/lease state by flat effect key
@@ -71,6 +75,8 @@ function BattlePresentationAssets.new(opts)
   assert(type(opts.assets.release) == "function", "the preparation services release handles")
   assert(type(opts.launchId) == "string" and opts.launchId ~= "", "the resource holder needs its launch identity")
   assert(type(opts.sceneKey) == "string" and opts.sceneKey ~= "", "the resource holder needs its scene identity")
+  local scene = BattlePresentationCache.parseSceneKey(opts.sceneKey)
+  assert(scene ~= nil, "the resource holder needs a canonical scene identity: " .. opts.sceneKey)
   if opts.frameKey ~= nil then
     assert(type(opts.frameKey) == "string" and opts.frameKey ~= "", "the frame selection names its key")
   end
@@ -88,6 +94,7 @@ function BattlePresentationAssets.new(opts)
     _assets = opts.assets,
     _launchId = opts.launchId,
     _sceneKey = opts.sceneKey,
+    _background = scene.background,
     _audioRoles = opts.audioRoles or {},
     _audioBanks = opts.audioBanks or {},
     _sceneImage = opts.sceneImage or ("scene:" .. opts.sceneKey),
@@ -99,6 +106,7 @@ function BattlePresentationAssets.new(opts)
     _error = nil,
     _prepared = false,
     _selectors = {},
+    _iconKeys = {},
     _owned = {},
     _imageErrors = {},
     _effects = {},
@@ -183,19 +191,63 @@ function BattlePresentationAssets:_demand()
     end
   end
   table.sort(banks)
+  local iconKeys = {}
+  for _, key in ipairs(self._iconKeys) do
+    iconKeys[#iconKeys + 1] = key
+  end
   return {
     launchId = self._launchId,
     scenes = { self._sceneKey },
     pages = selectors,
+    iconKeys = iconKeys,
     audio = { roles = roles, banks = banks, cries = cries },
   }
+end
+
+-- Names the party icon pages needed by the command menu. Like portraits,
+-- icon demand growth reopens preparation without releasing the current
+-- ready set; the borrowed field icon owner keeps the page leases.
+---@param iconKeys string[] exact canonical icon selectors currently needed
+function BattlePresentationAssets:setIconKeys(iconKeys)
+  assert(type(iconKeys) == "table", "party icon selectors arrive as an array")
+  local nextKeys, known = {}, {}
+  for _, key in ipairs(iconKeys) do
+    if type(key) == "string" and key ~= "" and not known[key] then
+      known[key] = true
+      nextKeys[#nextKeys + 1] = key
+    end
+  end
+  table.sort(nextKeys)
+  local changed = #nextKeys ~= #self._iconKeys
+  if not changed then
+    for index, key in ipairs(nextKeys) do
+      if self._iconKeys[index] ~= key then
+        changed = true
+        break
+      end
+    end
+  end
+  if changed then
+    self._iconKeys = nextKeys
+  end
+  if changed and self._state ~= "failed" then
+    self._state = "pending"
+    self._prepared = false
+  end
 end
 
 -- Image keys the launch always draws: the selected scene, both HUD
 -- composites, and all three menu surfaces. Battler portraits stay
 -- cue-gated through their side keys instead: their selectors arrive
 -- after the opening delivery, so readiness cannot wait on them.
-local REQUIRED_DRAWABLES = { "hud:enemy", "hud:player", "menu:command", "menu:moves", "menu:target", "shadow" }
+local REQUIRED_DRAWABLES = {
+  "hud:enemy",
+  "hud:player",
+  "menu:command",
+  "menu:moves",
+  "menu:target",
+  "shadow",
+}
 
 -- Runs preparation once per demand: an invalid frame selection or a
 -- service failure becomes failed with context; a missing required image
@@ -304,6 +356,15 @@ end
 ---@return string? terminal failure naming the exact image key, nil while pending or ready
 function BattlePresentationAssets:drawable(key)
   assert(type(key) == "string" and key ~= "", "image resolution names its key")
+  -- Lower menu screens resolve the scene background's palette variant.
+  local menuScreen = key:match("^(menu:[%a%-]+:screen:%d+):touch$")
+  local touch = menuScreen ~= nil and ":touch" or nil
+  if menuScreen == nil then
+    menuScreen = key:match("^(menu:[%a%-]+:screen:%d+)$")
+  end
+  if menuScreen ~= nil then
+    key = menuScreen .. "@" .. self._background .. (touch or "")
+  end
   if self._imageErrors[key] ~= nil then
     return nil, self._imageErrors[key]
   end

@@ -466,27 +466,6 @@ local function compileTransitions()
   return transitions
 end
 
--- Text backgrounds larger than 256 pixels store their map as consecutive
--- 32x32-tile screen blocks, the order the hardware reads VRAM in. Returns
--- the screen with its entries rearranged into row-major order.
-local function arrangeScreenBlocks(screen)
-  local columns = screen.width / 8
-  local rows = screen.height / 8
-  local entries = {}
-  local index = 0
-  for blockRow = 0, math.ceil(rows / 32) - 1 do
-    for blockColumn = 0, math.ceil(columns / 32) - 1 do
-      for row = 0, 31 do
-        for column = 0, 31 do
-          entries[(blockRow * 32 + row) * columns + blockColumn * 32 + column + 1] = screen.entries[index + 1]
-          index = index + 1
-        end
-      end
-    end
-  end
-  return { width = screen.width, height = screen.height, entries = entries }
-end
-
 local function rasterizeScreen(charData, paletteColors, screen, role)
   local ok, image = pcall(G2dRasterizer.renderScreen, charData, { colors = paletteColors }, screen, { role = role })
   if not ok then
@@ -1202,7 +1181,7 @@ local function compileBackgrounds(archive, dependencies, assets)
     readMember(archive, SummarySources.backgrounds.detailBacking, "detail-backing", dependencies),
     "detail-backing"
   )
-  local backingImage = rasterizeScreen(charMove, palette.colors, arrangeScreenBlocks(backing), "detail-backing")
+  local backingImage = rasterizeScreen(charMove, palette.colors, backing, "detail-backing")
   visuals.detailBacking = writePng(backingImage, SummaryCache.assetDir() .. "/detail-backing.png", assets)
   return visuals, palette, charMain, charSub
 end
