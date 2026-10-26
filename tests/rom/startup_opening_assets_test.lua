@@ -379,7 +379,7 @@ local function sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate(romF
 
   local fifth = checkSceneBundle(compileScene(romFs, versionId, 5), versionId, 5)
   local fifthEvents = opsInOrder(fifth, timelineEvents(fifth, 5))
-  local wipeAt, scrollAt, waitAt, fadeAt = nil, nil, nil, nil
+  local wipeAt, scrollAt, fadeAt = nil, nil, nil
   local circleWipes = 0
   for _, event in ipairs(fifthEvents) do
     if event.op == "shutterFade" and event.steps == 18 and wipeAt == nil then
@@ -388,8 +388,6 @@ local function sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate(romF
       circleWipes = circleWipes + 1
     elseif event.op == "setScroll" and eventMentions(event, 73) and scrollAt == nil then
       scrollAt = stepPosition(fifth, event.stepId)
-    elseif event.op == "waitTicks" and eventMentions(event, 20) and waitAt == nil then
-      waitAt = stepPosition(fifth, event.stepId)
     elseif event.op == "setFade" and eventMentions(event, 50) and fadeAt == nil then
       fadeAt = stepPosition(fifth, event.stepId)
     end
@@ -397,11 +395,10 @@ local function sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate(romF
   Assert.notNil(wipeAt, "scene 5 keeps its 18-step sequential line shutter")
   Assert.equal(circleWipes, 0, "scene 5 carries no circle wipe")
   Assert.notNil(scrollAt, "scene 5 keeps its 73-tick parallel scroll")
-  Assert.notNil(waitAt, "scene 5 keeps its 20-tick wait")
   Assert.notNil(fadeAt, "scene 5 keeps its closing 50-tick white fade")
   Assert.isTrue(
-    (wipeAt or 0) <= (scrollAt or 0) and (scrollAt or 0) <= (waitAt or 0) and (waitAt or 0) <= (fadeAt or 0),
-    "scene 5 keeps its wipe, scroll, wait, and fade order"
+    (wipeAt or 0) <= (scrollAt or 0) and (scrollAt or 0) <= (fadeAt or 0),
+    "scene 5 keeps its wipe, scroll, and fade order"
   )
 end
 
@@ -1000,8 +997,15 @@ local function effectWaitsResolveToStartedEffects(romFs, versionId)
   end
   stepById(manifests[1], 1, "run")
   Assert.equal(fadeTickInStep(manifests[1], 1, "run"), 90, "scene 1 fades at its run step threshold")
-  stepById(manifests[5], 5, "wait")
-  Assert.equal(fadeTickInStep(manifests[5], 5, "wait"), 20, "scene 5 fades at its wait step threshold")
+  local waitBgScroll = stepById(manifests[5], 5, "wait-bg-scroll")
+  Assert.equal(waitBgScroll["until"].ticks, 20, "scene 5 counts its twenty scroll ticks")
+  local guarded = waitBgScroll.onCompleteEvents or {}
+  Assert.equal(#guarded, 1, "scene 5 starts its white fade as the scroll wait's guarded action")
+  Assert.equal(
+    fadeTickInStep(manifests[5], 5, "wait-bg-scroll"),
+    0,
+    "scene 5 fires its white fade on the guard, never on a step tick"
+  )
   local fourth = manifests[4]
   local finale = fourth.timeline.steps[#fourth.timeline.steps]
   Assert.isTrue(type(finale) == "table" and type(finale["until"]) == "table", "scene 4 keeps its closing wait")
@@ -2326,7 +2330,7 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=0 engine=main bgSlot=2 dx=0 dy=160 ticks=0 effect=nil",
     "atStepTick=0 engine=sub bgSlot=2 dx=0 dy=160 ticks=0 effect=nil",
   })
-  assertExactEvents(fifth, 5, "setScroll", "scroll", SCROLL_KEYS, {
+  assertExactEvents(fifth, 5, "setScroll", "begin-scroll", SCROLL_KEYS, {
     "atStepTick=0 engine=main bgSlot=1 dx=0 dy=-64 ticks=73 effect=scroll-panorama",
     "atStepTick=0 engine=main bgSlot=2 dx=0 dy=" .. pairedDy .. " ticks=73 effect=scroll-panorama",
     "atStepTick=0 engine=sub bgSlot=1 dx=0 dy=" .. pairedDy .. " ticks=73 effect=scroll-panorama",
@@ -2336,8 +2340,8 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=0 order=main-then-sub mainPattern=center-out subPattern=bottom-up color=black steps=18 framesPerStep=1 effect=scene5-shutter",
   })
   Assert.equal(#collectEvents(fifth, "circleWipe", nil), 0, "scene 5 carries no circle wipe")
-  assertExactEvents(fifth, 5, "setFade", "wait", FADE_KEYS, {
-    "atStepTick=20 scope=both mode=brightness color=white direction=out ticks=50 terminal=neutral shape=nil effect=fade-white",
+  assertExactEvents(fifth, 5, "setFade", "wait-bg-scroll", FADE_KEYS, {
+    "atStepTick=0 scope=both mode=brightness color=white direction=out ticks=50 terminal=neutral shape=nil effect=fade-white",
   })
   local third = manifests[3]
   checkScene3SevenWipesWithGates(third)
@@ -2472,6 +2476,60 @@ local function compiledScenesEmitStrictCaseGuardsWithoutPseudoWaits(romFs, versi
       Assert.notNil(owned[index], "scene " .. sceneNumber .. " event " .. index .. " is owned by its step")
     end
   end
+end
+
+-- Scene 5 follows its five retail cases in order: the wipe dispatches the
+-- ordered shutter, a pure effect wait holds the next case until both engine
+-- cleanups finish, the begin-scroll case fires all four 73-tick panorama
+-- programs together, the 20-tick scroll wait starts the 50-step white fade
+-- as its guarded action while scrolling continues, and the closing wait
+-- finishes on the fade alone with no scroll dependency.
+local function sceneFiveRunsShutterScrollAndWhiteFadeInSourceOrder(romFs, versionId)
+  local fifth = strictManifest(compileScene(romFs, versionId, 5), versionId, 5)
+  local steps = assert(fifth.timeline.steps, "scene 5 carries its source case steps")
+  local ids = {}
+  for _, step in ipairs(steps) do
+    ids[#ids + 1] = step.id
+  end
+  Assert.deepEqual(
+    ids,
+    { "wipe", "wait-wipe", "begin-scroll", "wait-bg-scroll", "wait-fade-out" },
+    "scene 5 keeps its five retail cases in source order"
+  )
+  local wipe, waitWipe, beginScroll, waitBgScroll, waitFadeOut = steps[1], steps[2], steps[3], steps[4], steps[5]
+  Assert.equal(wipe["until"].kind, "duration", "the wipe case dispatches without a duration barrier")
+  Assert.equal(wipe["until"].ticks, 1, "the wipe case hands off after its single dispatch tick")
+  Assert.deepEqual(waitWipe.events, {}, "the shutter wait carries no early scroll starts")
+  Assert.equal(waitWipe["until"].kind, "effect", "the shutter wait blocks on the real task")
+  Assert.equal(waitWipe["until"].effect, "scene5-shutter", "the shutter wait names the both-engine shutter")
+  Assert.equal(beginScroll["until"].kind, "duration", "the begin-scroll case dispatches without waiting")
+  Assert.equal(beginScroll["until"].ticks, 1, "the begin-scroll case fires its programs on one tick")
+  local scrolls = collectEvents(fifth, "setScroll", "begin-scroll")
+  Assert.equal(#scrolls, 4, "all four panorama programs start together in the begin-scroll case")
+  for _, scroll in ipairs(scrolls) do
+    Assert.equal(scroll.atStepTick, 0, "each panorama program starts on the begin-scroll dispatch")
+    Assert.equal(scroll.ticks, 73, "each panorama program runs its 73 source ticks")
+    Assert.equal(scroll.effect, "scroll-panorama", "each panorama program shares the scroll wait identity")
+  end
+  Assert.deepEqual(waitBgScroll.events, {}, "the scroll wait starts no effect on entry")
+  Assert.equal(waitBgScroll["until"].kind, "duration", "the scroll wait counts scroll ticks")
+  Assert.equal(waitBgScroll["until"].ticks, 20, "the white fade arms at the twentieth scroll tick")
+  local guarded = waitBgScroll.onCompleteEvents or {}
+  Assert.equal(#guarded, 1, "the scroll wait fires exactly one guarded action")
+  local fade = fifth.timeline.events[guarded[1]]
+  Assert.equal(fade.op, "setFade", "the guarded action is the white fade")
+  Assert.equal(fade.scope, "both", "the white fade covers both source engines")
+  Assert.equal(fade.mode, "brightness", "the white fade is a brightness fade")
+  Assert.equal(fade.color, "white", "the closing fade whitens")
+  Assert.equal(fade.direction, "out", "the closing fade runs out")
+  Assert.equal(fade.ticks, 50, "the closing fade runs its 50 source steps")
+  Assert.equal(fade.effect, "fade-white", "the white fade owns the closing wait identity")
+  Assert.deepEqual(waitFadeOut.events, {}, "the closing wait starts no effect on entry")
+  Assert.equal(waitFadeOut["until"].kind, "effect", "scene completion waits on the fade task")
+  Assert.equal(waitFadeOut["until"].effect, "fade-white", "scene completion waits on the white fade alone")
+  local closing = waitFadeOut.onCompleteEvents or {}
+  Assert.equal(#closing, 1, "the closing wait fires exactly one guarded action")
+  Assert.equal(fifth.timeline.events[closing[1]].op, "finish", "the finished fade closes the scene")
 end
 
 -- The visual primitive grammar stays closed: a line shutter without its
@@ -2685,4 +2743,5 @@ return RomSuite.fromFacts({
   ["strict visual primitives reject malformed records"] = strictVisualPrimitivesRejectMalformedRecords,
   ["compiled scenes emit strict case guards without pseudo waits"] = compiledScenesEmitStrictCaseGuardsWithoutPseudoWaits,
   ["scene 3 beast exits guard the rocket retile at the absolute origin"] = scene3BeastExitsGuardTheRocketRetileAtAbsoluteOrigin,
+  ["scene five runs its shutter scroll and white fade in source order"] = sceneFiveRunsShutterScrollAndWhiteFadeInSourceOrder,
 })
