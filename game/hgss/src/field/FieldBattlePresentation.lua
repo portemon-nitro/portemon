@@ -110,6 +110,62 @@ local function loadManifest(cacheFs)
   return BattlePresentationCache.load(cacheFs)
 end
 
+---@class FieldBattlePresentation.StagedImage
+---@field image string cache-relative staged image path
+
+---@class FieldBattlePresentation.MoveButton
+---@field empty string blank-slot image path
+---@field types table<string, table<string, string>> image paths by move type, then by normal/pressed state
+
+---@class FieldBattlePresentation.MenuScreen
+---@field image string base screen image path
+---@field backgrounds table<string, string>? image paths by scene background that changes the screen pixels
+---@field touchBackgrounds table<string, string>? touch-feedback image paths by scene background
+---@field feedback table<string, table<string, FieldBattlePresentation.StagedImage>>? patches by control id, then state
+---@field moveButtons FieldBattlePresentation.MoveButton[]? fight-menu buttons by slot
+
+---@class FieldBattlePresentation.MenuSection
+---@field image string
+---@field screens FieldBattlePresentation.MenuScreen[]
+
+-- The staged manifest members this envelope reads, each one required by
+-- BattlePresentationSchema.assertManifest.
+---@class FieldBattlePresentation.StagedManifest
+---@field scenes { key: string }[]
+---@field pictures { shadow: FieldBattlePresentation.StagedImage }
+---@field hud { player: FieldBattlePresentation.StagedImage, enemy: FieldBattlePresentation.StagedImage, doubles: table<"playerLeft"|"playerRight"|"enemyLeft"|"enemyRight", FieldBattlePresentation.StagedImage>, arrow: FieldBattlePresentation.StagedImage, cursor: FieldBattlePresentation.StagedImage, partyGauges: FieldBattlePresentation.StagedImage[] }
+---@field menus { command: FieldBattlePresentation.MenuSection, moves: FieldBattlePresentation.MenuSection, target: FieldBattlePresentation.MenuSection, twoOption: FieldBattlePresentation.MenuSection, lower: { pulseMask: string } }
+---@field messages { roles: table<string, { font: string }> }
+---@field audioRoles { wild: string, trainer: string, rival: string, select: string }
+
+-- The one staged/planning decision. BattlePresentationCache.load answers
+-- either a verified manifest that passed
+-- BattlePresentationSchema.assertManifest or the unverified planning
+-- inventory, which carries only its scenes; a staged manifest is then
+-- indexed directly as the schema guarantees.
+---@param manifest table<string, unknown> loaded presentation manifest
+---@return FieldBattlePresentation.StagedManifest? staged manifest, nil for the planning inventory
+local function stagedManifest(manifest)
+  if manifest.verified ~= true then
+    return nil
+  end
+  return manifest --[[@as FieldBattlePresentation.StagedManifest]]
+end
+
+---@param manifest table<string, unknown> staged or planning presentation manifest
+---@param sceneKey string semantic scene key under admission
+---@return boolean true when the manifest inventories the scene
+local function inventoriesScene(manifest, sceneKey)
+  for _, entry in
+    ipairs(manifest.scenes --[[@as { key: string }[] ]])
+  do
+    if entry.key == sceneKey then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param cacheFs table<string, unknown> versioned derived cache behind demand validation
 ---@param pageId integer zero-based portrait page identity under validation
 ---@return string? reason, nil when the staged marker and PNG envelope validate
@@ -517,150 +573,121 @@ local function uploadPortraitCell(graphics, cacheFs, selector)
   return nil, "battle image " .. label .. " upload failed: " .. cause
 end
 
--- Resolves one menu or HUD drawable key to its staged image path through
--- the verified manifest. Per-control artwork has no staged counterpart
--- and resolves to nothing so those controls draw labels only. A
--- planning manifest stages nothing and resolves nothing.
----@param envelope FieldBattlePresentation
----@param key string drawable key under resolution
----@return string? cache-relative staged image path, nil without a staged counterpart
-local function stagedArtPath(envelope, key)
-  local manifest = envelope._manifest
-  if type(manifest) ~= "table" or type(manifest.hud) ~= "table" or type(manifest.menus) ~= "table" then
+-- Menu layout names inside drawable keys, by manifest menu section.
+local MENU_LAYOUTS = { command = "command", moves = "moves", target = "target", twoOption = "two-option" }
+local MENU_ORDER = { "command", "moves", "target", "twoOption" }
+local MENU_SECTIONS = {} ---@type table<string, string> manifest menu section by drawable-key layout
+for section, layout in pairs(MENU_LAYOUTS) do
+  MENU_SECTIONS[layout] = section
+end
+
+-- Whole staged images behind fixed drawable keys, as member paths into
+-- the verified manifest. Doubled health boxes resolve through the staged
+-- doubled family by slot: each row owns its dedicated strip, never a
+-- shared single-battle strip.
+---@type table<string, (string|integer)[]>
+local FIXED_ART = {
+  ["shadow"] = { "pictures", "shadow", "image" },
+  ["hud:enemy"] = { "hud", "enemy", "image" },
+  ["hud:player"] = { "hud", "player", "image" },
+  ["hud:player-left"] = { "hud", "doubles", "playerLeft", "image" },
+  ["hud:player-right"] = { "hud", "doubles", "playerRight", "image" },
+  ["hud:enemy-left"] = { "hud", "doubles", "enemyLeft", "image" },
+  ["hud:enemy-right"] = { "hud", "doubles", "enemyRight", "image" },
+  ["arrow"] = { "hud", "arrow", "image" },
+  ["cursor"] = { "hud", "cursor", "image" },
+  ["gauges:enemy"] = { "hud", "partyGauges", 1, "image" },
+  ["gauges:player"] = { "hud", "partyGauges", 2, "image" },
+  ["menu:command"] = { "menus", "command", "image" },
+  ["menu:moves"] = { "menus", "moves", "image" },
+  ["menu:target"] = { "menus", "target", "image" },
+  ["menu:pulse-mask"] = { "menus", "lower", "pulseMask" },
+}
+
+---@param manifest FieldBattlePresentation.StagedManifest
+---@param members (string|integer)[] schema-required member path ending at a staged image path
+---@return string cache-relative staged image path
+local function fixedArt(manifest, members)
+  local value = manifest --[[@as table]]
+  for _, member in ipairs(members) do
+    value = value[member]
+  end
+  return value --[[@as string]]
+end
+
+---@param manifest FieldBattlePresentation.StagedManifest
+---@param layout string menu layout named by a drawable key
+---@return FieldBattlePresentation.MenuSection? staged menu section, nil for an unknown layout
+local function menuSection(manifest, layout)
+  local section = MENU_SECTIONS[layout]
+  if section == nil then
     return nil
   end
-  local hud = manifest.hud --[[@as table<string, unknown>]]
-  local menus = manifest.menus --[[@as table<string, unknown>]]
-  if key == "shadow" then
-    local pictures = manifest.pictures
-    local shadow = type(pictures) == "table" and pictures.shadow or nil
-    return type(shadow) == "table" and shadow.image or nil
+  return manifest.menus[section] --[[@as FieldBattlePresentation.MenuSection]]
+end
+
+-- Screen keys name the active scene background after the screen index;
+-- screens drawing the background-dependent lower palette stage one image
+-- per background that changes their pixels, and touch feedback prefers its
+-- own variant. Any other screen falls back to its base image.
+---@param screen FieldBattlePresentation.MenuScreen
+---@param suffix string drawable-key text after the screen index
+---@return string? cache-relative staged image path, nil for a malformed suffix
+local function screenArt(screen, suffix)
+  if suffix == "" then
+    return screen.image
   end
-  if key == "hud:enemy" then
-    local section = hud.enemy
-    return type(section) == "table" and section.image or nil
+  local background = suffix:match("^@([%w_]+):touch$")
+  if background ~= nil and screen.touchBackgrounds ~= nil and screen.touchBackgrounds[background] ~= nil then
+    return screen.touchBackgrounds[background]
   end
-  if key == "hud:player" then
-    local section = hud.player
-    return type(section) == "table" and section.image or nil
+  background = background or suffix:match("^@([%w_]+)$")
+  if background == nil then
+    return nil
   end
-  -- Doubled health boxes resolve through the staged doubled family by
-  -- slot: each row owns its dedicated strip, never a shared
-  -- single-battle strip.
-  local doublesSlot = tostring(key):match("^hud:(.+)$")
-  if
-    doublesSlot == "player-left"
-    or doublesSlot == "player-right"
-    or doublesSlot == "enemy-left"
-    or doublesSlot == "enemy-right"
-  then
-    local family = type(hud.doubles) == "table" and hud.doubles or nil
-    local section = nil
-    if type(family) == "table" then
-      if doublesSlot == "player-left" then
-        section = family.playerLeft
-      elseif doublesSlot == "player-right" then
-        section = family.playerRight
-      elseif doublesSlot == "enemy-left" then
-        section = family.enemyLeft
-      else
-        section = family.enemyRight
-      end
-    end
-    return type(section) == "table" and section.image or nil
-  end
-  if key == "menu:command" then
-    local section = menus.command
-    return type(section) == "table" and section.image or nil
+  return screen.backgrounds ~= nil and screen.backgrounds[background] or screen.image
+end
+
+-- Resolves one menu or HUD drawable key to its staged image path through
+-- the verified manifest. Per-control artwork has no staged counterpart
+-- and resolves to nothing so those controls draw labels only.
+---@param manifest FieldBattlePresentation.StagedManifest
+---@param key string drawable key under resolution
+---@return string? cache-relative staged image path, nil without a staged counterpart
+local function stagedArtPath(manifest, key)
+  local fixed = FIXED_ART[key]
+  if fixed ~= nil then
+    return fixedArt(manifest, fixed)
   end
   -- Fight-menu move buttons: one render per slot and move type and state,
   -- plus the blank button of an empty slot.
-  local buttonSlot, buttonVariant = tostring(key):match("^menu:moves:move%-button:(%d+):(.+)$")
-  if buttonSlot ~= nil then
-    local screens = type(menus.moves) == "table" and menus.moves.screens or nil
-    local buttons = type(screens) == "table" and type(screens[1]) == "table" and screens[1].moveButtons or nil
-    local button = type(buttons) == "table" and buttons[tonumber(buttonSlot) + 1] or nil
-    if type(button) ~= "table" then
+  local slot, variant = key:match("^menu:moves:move%-button:(%d+):(.+)$")
+  if slot ~= nil then
+    local buttons = manifest.menus.moves.screens[1].moveButtons
+    local button = buttons ~= nil and buttons[tonumber(slot) + 1] or nil
+    if button == nil then
       return nil
     end
-    if buttonVariant == "empty" then
+    if variant == "empty" then
       return button.empty
     end
-    local typeKey, state = buttonVariant:match("^([a-z]+):([a-z]+)$")
+    local typeKey, state = variant:match("^([a-z]+):([a-z]+)$")
     local states = typeKey ~= nil and button.types[typeKey] or nil
-    return type(states) == "table" and states[state] or nil
+    return states ~= nil and states[state] or nil
   end
-  -- Screen keys name the active scene background; screens drawing the
-  -- background-dependent lower palette stage one image per background.
-  local layout, screenIndex, background = tostring(key):match("^menu:([%a%-]+):screen:(%d+)@([%a_]+):touch$")
-  local touch = layout ~= nil and ":touch" or nil
-  if layout == nil then
-    layout, screenIndex, background = tostring(key):match("^menu:([%a%-]+):screen:(%d+)@([%a_]+)$")
+  local layout, screenIndex, suffix = key:match("^menu:([%a%-]+):screen:(%d+)(.*)$")
+  if layout ~= nil then
+    local section = menuSection(manifest, layout)
+    local screen = section ~= nil and section.screens[tonumber(screenIndex)] or nil
+    return screen ~= nil and screenArt(screen, suffix) or nil
   end
-  if layout == nil then
-    layout, screenIndex = tostring(key):match("^menu:([%a%-]+):screen:(%d+)$")
-  end
-  if layout ~= nil and screenIndex ~= nil then
-    local sectionKey = layout == "command" and "command"
-      or layout == "moves" and "moves"
-      or layout == "target" and "target"
-      or layout == "two-option" and "twoOption"
-      or nil
-    local section = sectionKey ~= nil and menus[sectionKey] or nil
-    local screens = type(section) == "table" and section.screens or nil
-    local record = type(screens) == "table" and screens[tonumber(screenIndex)] or nil
-    if type(record) ~= "table" then
-      return nil
-    end
-    local variants = record.backgrounds --[[@as table<string, string>?]]
-    local touchVariants = record.touchBackgrounds --[[@as table<string, string>?]]
-    if background ~= nil then
-      if touch == ":touch" and touchVariants ~= nil and touchVariants[background] ~= nil then
-        return touchVariants[background]
-      end
-      return variants ~= nil and variants[background] or record.image
-    end
-    return record.image
-  end
-  local feedbackLayout, controlId, state = tostring(key):match("^menu:([%a%-]+):feedback:(.+):([%a]+)$")
-  if feedbackLayout ~= nil and controlId ~= nil and state ~= nil then
-    local sectionKey = feedbackLayout == "command" and "command"
-      or feedbackLayout == "moves" and "moves"
-      or feedbackLayout == "target" and "target"
-      or feedbackLayout == "two-option" and "twoOption"
-      or nil
-    local section = sectionKey ~= nil and menus[sectionKey] or nil
-    local screens = type(section) == "table" and section.screens or nil
-    local record = type(screens) == "table" and screens[1] or nil
-    local feedback = type(record) == "table" and record.feedback or nil
-    local controls = type(feedback) == "table" and feedback[controlId] or nil
-    local variant = type(controls) == "table" and controls[state] or nil
-    return type(variant) == "table" and variant.image or nil
-  end
-  if key == "menu:moves" then
-    local section = menus.moves
-    return type(section) == "table" and section.image or nil
-  end
-  if key == "menu:target" then
-    local section = menus.target
-    return type(section) == "table" and section.image or nil
-  end
-  if key == "menu:pulse-mask" then
-    local section = menus.lower
-    return type(section) == "table" and section.pulseMask or nil
-  end
-  if key == "arrow" then
-    local section = hud.arrow
-    return type(section) == "table" and section.image or nil
-  end
-  if key == "cursor" then
-    local section = hud.cursor
-    return type(section) == "table" and section.image or nil
-  end
-  if key == "gauges:player" or key == "gauges:enemy" then
-    local familyIndex = key == "gauges:player" and 2 or 1
-    local family = type(hud.partyGauges) == "table" and hud.partyGauges[familyIndex] or nil
-    return type(family) == "table" and family.image or nil
+  local feedbackLayout, controlId, state = key:match("^menu:([%a%-]+):feedback:(.+):(%a+)$")
+  if feedbackLayout ~= nil then
+    local section = menuSection(manifest, feedbackLayout)
+    local feedback = section ~= nil and section.screens[1].feedback or nil
+    local patches = feedback ~= nil and feedback[controlId] or nil
+    local patch = patches ~= nil and patches[state] or nil
+    return patch ~= nil and patch.image or nil
   end
   return nil
 end
@@ -685,37 +712,50 @@ local function exactPortraitSelector(key)
   return selector
 end
 
+local NOT_STAGED = "battle presentation is not staged: the launch needs its staged menu, HUD, font, and audio roles"
+
+-- The ordinary interface roles a demand may name beside its chosen track.
+local ORDINARY_AUDIO_ROLES = { "wild", "trainer", "rival", "select" }
+
+-- Fixed drawables every graphical launch reaches for.
+local REQUIRED_FIXED_ART = {
+  "menu:command",
+  "menu:moves",
+  "menu:target",
+  "hud:enemy",
+  "hud:player",
+  "cursor",
+  "menu:pulse-mask",
+  "hud:player-left",
+  "hud:player-right",
+  "hud:enemy-left",
+  "hud:enemy-right",
+}
+
 -- Validates the demanded audio members against the staged manifest
 -- roles: every demanded role must be one of the staged wild, trainer,
 -- rival, or select symbols. Banks and cries ride the demand for
 -- exactness; without the normalized audio membership in presentation
 -- scope only their shape is checked here.
----@param envelope FieldBattlePresentation
+---@param manifest FieldBattlePresentation.StagedManifest
+---@param musicRole string? launch's chosen battle-music symbol
 ---@param demand table<string, unknown> exact launch demand under validation
 ---@return string? reason, nil when the audio members validate
-local function checkAudioMembers(envelope, demand)
-  local manifest = envelope._manifest
-  if type(manifest) ~= "table" or type(manifest.hud) ~= "table" or type(manifest.menus) ~= "table" then
-    return "battle presentation is not staged: the launch needs its staged menu, HUD, font, and audio roles"
-  end
+local function checkAudioMembers(manifest, musicRole, demand)
   local audio = demand.audio or { roles = {}, banks = {}, cries = {} }
   if type(audio) ~= "table" then
     return "battle demands carry their audio roles"
   end
   local stagedRoles = {}
-  if type(manifest.audioRoles) == "table" then
-    for _, role in ipairs({ "wild", "trainer", "rival", "select" }) do
-      if type(manifest.audioRoles[role]) == "string" then
-        stagedRoles[manifest.audioRoles[role]] = true
-      end
-    end
+  for _, role in ipairs(ORDINARY_AUDIO_ROLES) do
+    stagedRoles[manifest.audioRoles[role]] = true
   end
   -- The launch's chosen battle-music track is legitimate by
   -- construction from the source selector beside the staged interface
   -- roles: special-species and class tracks name staged sequences
   -- outside the four ordinary roles.
-  if type(envelope._musicRole) == "string" and envelope._musicRole ~= "" then
-    stagedRoles[envelope._musicRole] = true
+  if type(musicRole) == "string" and musicRole ~= "" then
+    stagedRoles[musicRole] = true
   end
   if type(audio.roles) ~= "table" then
     return "battle demands carry their audio roles"
@@ -752,14 +792,10 @@ end
 -- and every manifest text role must have its staged font definition.
 -- The borrowed field text renderer owns font pixels; this checks the
 -- staged definitions the roles reference.
----@param envelope FieldBattlePresentation
+---@param cacheFs table<string, unknown> versioned derived cache behind demand validation
+---@param manifest FieldBattlePresentation.StagedManifest
 ---@return string? reason, nil when the staged members validate
-local function checkStagedMembers(envelope)
-  local manifest = envelope._manifest
-  if type(manifest) ~= "table" or type(manifest.hud) ~= "table" or type(manifest.menus) ~= "table" then
-    return "battle presentation is not staged: the launch needs its staged menu, HUD, font, and audio roles"
-  end
-  local cacheFs = assert(envelope._cacheFs, "preparation requires the envelope cache")
+local function checkStagedMembers(cacheFs, manifest)
   local moveIcons = cacheFs:loadLua(MoveIconCache.manifestPath())
   if type(moveIcons) ~= "table" or moveIcons.schema ~= MoveIconCache.SCHEMA then
     return "battle move type icons are not staged"
@@ -774,111 +810,63 @@ local function checkStagedMembers(envelope)
       return "battle move type icons are not staged"
     end
   end
-  local hud = manifest.hud --[[@as table<string, unknown>]]
-  local menus = manifest.menus --[[@as table<string, unknown>]]
-  local messages = manifest.messages --[[@as table<string, unknown>]]
-  local textRoles = type(messages) == "table" and messages.roles or nil
-  local required = {
-    { key = "menu:command", path = type(menus.command) == "table" and menus.command.image or nil },
-    { key = "menu:moves", path = type(menus.moves) == "table" and menus.moves.image or nil },
-    { key = "menu:target", path = type(menus.target) == "table" and menus.target.image or nil },
-    { key = "hud:enemy", path = type(hud.enemy) == "table" and hud.enemy.image or nil },
-    { key = "hud:player", path = type(hud.player) == "table" and hud.player.image or nil },
-    { key = "cursor", path = type(hud.cursor) == "table" and hud.cursor.image or nil },
-    { key = "menu:pulse-mask", path = type(menus.lower) == "table" and menus.lower.pulseMask or nil },
-    { key = "hud:player-left", path = stagedArtPath(envelope, "hud:player-left") },
-    { key = "hud:player-right", path = stagedArtPath(envelope, "hud:player-right") },
-    { key = "hud:enemy-left", path = stagedArtPath(envelope, "hud:enemy-left") },
-    { key = "hud:enemy-right", path = stagedArtPath(envelope, "hud:enemy-right") },
-  }
-  for _, menuKey in ipairs({ "command", "moves", "target", "twoOption" }) do
-    local menu = menus[menuKey]
-    local screens = type(menu) == "table" and menu.screens or nil
-    if type(screens) ~= "table" or #screens == 0 then
-      return "battle menu screens are not staged: " .. menuKey
-    end
-    for index, screen in ipairs(screens) do
-      required[#required + 1] = {
-        key = "menu:" .. (menuKey == "twoOption" and "two-option" or menuKey) .. ":screen:" .. tostring(index),
-        path = type(screen) == "table" and screen.image or nil,
-      }
-      if type(screen) == "table" and type(screen.moveButtons) == "table" then
+  local required = {} ---@type { key: string, path: string? }[]
+  local function need(key, path)
+    required[#required + 1] = { key = key, path = path }
+  end
+  for _, key in ipairs(REQUIRED_FIXED_ART) do
+    need(key, fixedArt(manifest, FIXED_ART[key]))
+  end
+  for _, sectionName in ipairs(MENU_ORDER) do
+    local prefix = "menu:" .. MENU_LAYOUTS[sectionName]
+    local section = manifest.menus[sectionName] --[[@as FieldBattlePresentation.MenuSection]]
+    for index, screen in ipairs(section.screens) do
+      local screenKey = prefix .. ":screen:" .. tostring(index)
+      need(screenKey, screen.image)
+      if screen.moveButtons ~= nil then
         for slotIndex, button in ipairs(screen.moveButtons) do
-          local prefix = "menu:moves:move-button:" .. tostring(slotIndex - 1) .. ":"
-          required[#required + 1] = { key = prefix .. "empty", path = button.empty }
+          local buttonKey = "menu:moves:move-button:" .. tostring(slotIndex - 1) .. ":"
+          need(buttonKey .. "empty", button.empty)
           for typeKey, states in pairs(button.types) do
             for state, image in pairs(states) do
-              required[#required + 1] = { key = prefix .. typeKey .. ":" .. state, path = image }
+              need(buttonKey .. typeKey .. ":" .. state, image)
             end
           end
         end
       end
-      if type(screen) == "table" and type(screen.backgrounds) == "table" then
+      if screen.backgrounds ~= nil then
         for background, image in pairs(screen.backgrounds) do
-          required[#required + 1] = {
-            key = "menu:"
-              .. (menuKey == "twoOption" and "two-option" or menuKey)
-              .. ":screen:"
-              .. tostring(index)
-              .. "@"
-              .. background,
-            path = image,
-          }
+          need(screenKey .. "@" .. background, image)
         end
       end
-      if type(screen) == "table" and type(screen.touchBackgrounds) == "table" then
+      if screen.touchBackgrounds ~= nil then
         for background, image in pairs(screen.touchBackgrounds) do
-          required[#required + 1] = {
-            key = "menu:"
-              .. (menuKey == "twoOption" and "two-option" or menuKey)
-              .. ":screen:"
-              .. tostring(index)
-              .. "@"
-              .. background
-              .. ":touch",
-            path = image,
-          }
+          need(screenKey .. "@" .. background .. ":touch", image)
         end
       end
-      if type(screen) == "table" and type(screen.feedback) == "table" then
+      -- Feedback patches validate through the same resolution the
+      -- renderers draw with.
+      if screen.feedback ~= nil then
         for controlId, states in pairs(screen.feedback) do
           for state in pairs(states) do
-            required[#required + 1] = {
-              key = "menu:"
-                .. (menuKey == "twoOption" and "two-option" or menuKey)
-                .. ":feedback:"
-                .. controlId
-                .. ":"
-                .. state,
-              path = stagedArtPath(
-                envelope,
-                "menu:"
-                  .. (menuKey == "twoOption" and "two-option" or menuKey)
-                  .. ":feedback:"
-                  .. controlId
-                  .. ":"
-                  .. state
-              ),
-            }
+            local feedbackKey = prefix .. ":feedback:" .. controlId .. ":" .. state
+            need(feedbackKey, stagedArtPath(manifest, feedbackKey))
           end
         end
       end
     end
   end
   for _, entry in ipairs(required) do
-    local bytes = type(entry.path) == "string" and cacheFs:read(entry.path) or nil
+    local bytes = entry.path ~= nil and cacheFs:read(entry.path) or nil
     if type(bytes) ~= "string" or #bytes == 0 then
-      return "battle menu art is not staged: " .. tostring(entry.key)
+      return "battle menu art is not staged: " .. entry.key
     end
   end
-  if type(textRoles) ~= "table" then
-    return "battle presentation is not staged: the launch needs its staged font roles"
-  end
+  local textRoles = manifest.messages.roles
   for _, role in ipairs({ "narration", "menu", "hud" }) do
     local record = textRoles[role]
-    local font = type(record) == "table" and record.font or nil
-    if type(font) ~= "string" or type(cacheFs:read(font)) ~= "string" then
-      return "battle font is not staged: " .. tostring(role)
+    if record == nil or type(cacheFs:read(record.font)) ~= "string" then
+      return "battle font is not staged: " .. role
     end
   end
   return nil
@@ -987,11 +975,15 @@ function FieldBattlePresentation:_preparationServices()
     -- pixels are actually required: headless composition keeps its
     -- descriptor behavior so recording views prove without staged art.
     if graphics ~= nil then
-      local stagedErr = checkStagedMembers(envelope)
+      local staged = stagedManifest(envelope._manifest)
+      if staged == nil then
+        return nil, NOT_STAGED
+      end
+      local stagedErr = checkStagedMembers(cacheFs, staged)
       if stagedErr ~= nil then
         return nil, stagedErr
       end
-      local audioErr = checkAudioMembers(envelope, demand)
+      local audioErr = checkAudioMembers(staged, envelope._musicRole, demand)
       if audioErr ~= nil then
         return nil, audioErr
       end
@@ -1187,7 +1179,8 @@ function FieldBattlePresentation:_preparationServices()
       end
       return drawable
     end
-    local artPath = stagedArtPath(envelope, key)
+    local staged = stagedManifest(envelope._manifest)
+    local artPath = staged ~= nil and stagedArtPath(staged, key) or nil
     if artPath ~= nil then
       if envelope._pool ~= nil then
         local image, failure = acquirePooled(envelope, key, artPath)
@@ -1684,7 +1677,7 @@ function FieldBattlePresentation:_pollPendingScreen()
     end
   end
   local manifest = loadManifest(self._cacheFs)
-  if type(manifest) ~= "table" or type(manifest.hud) ~= "table" or type(manifest.menus) ~= "table" then
+  if stagedManifest(manifest) == nil then
     if type(requestScene) ~= "function" then
       self:_failPendingLaunch("battle scene " .. tostring(sceneKey) .. ": no scene demand host to schedule it")
     else
@@ -1694,16 +1687,7 @@ function FieldBattlePresentation:_pollPendingScreen()
     end
     return
   end
-  local known = false
-  if type(manifest.scenes) == "table" then
-    for _, entry in ipairs(manifest.scenes) do
-      if type(entry) == "table" and entry.key == sceneKey then
-        known = true
-        break
-      end
-    end
-  end
-  if not known then
+  if not inventoriesScene(manifest, sceneKey) then
     self:_failPendingLaunch("launch scene is outside the presentation inventory: " .. tostring(sceneKey))
     return
   end
@@ -1762,14 +1746,9 @@ function FieldBattlePresentation:_screenAudioFor(launchId)
   local function play(role)
     assert(type(role) == "string" and role ~= "", "battle cues name their sound role")
     if role == "select" then
-      local audioRoles = type(manifest) == "table" and manifest.audioRoles or nil
-      assert(type(audioRoles) == "table", "battle sound needs its staged select role for launch " .. launchId)
-      local symbol = audioRoles.select
-      assert(
-        type(symbol) == "string" and symbol ~= "",
-        "battle sound needs its staged select role for launch " .. launchId
-      )
-      return controller:play(symbol)
+      local staged = stagedManifest(manifest)
+      assert(staged ~= nil, "battle sound needs its staged select role for launch " .. launchId)
+      return controller:play(staged.audioRoles.select)
     end
     local speciesKey = role:match("^cry:(.+)$")
     if speciesKey ~= nil then
@@ -1823,14 +1802,9 @@ function FieldBattlePresentation:_registrationAudioFor(launchId)
   end
   function audio.select()
     assert(type(controller.play) == "function", "registration select needs its audio sink for launch " .. launchId)
-    local audioRoles = type(manifest) == "table" and manifest.audioRoles or nil
-    assert(type(audioRoles) == "table", "registration sound needs its staged select role for launch " .. launchId)
-    local symbol = audioRoles.select
-    assert(
-      type(symbol) == "string" and symbol ~= "",
-      "registration sound needs its staged select role for launch " .. launchId
-    )
-    return controller:play(symbol)
+    local staged = stagedManifest(manifest)
+    assert(staged ~= nil, "registration sound needs its staged select role for launch " .. launchId)
+    return controller:play(staged.audioRoles.select)
   end
   return audio
 end
@@ -1851,16 +1825,10 @@ function FieldBattlePresentation:_buildPort(descriptor)
   local sceneKey = environment.sceneKey
   assert(type(sceneKey) == "string" and sceneKey ~= "", "launch environments resolve their scene identity")
   local manifest = self._manifest
-  local sceneKnown = false
-  if type(manifest) == "table" and type(manifest.scenes) == "table" then
-    for _, entry in ipairs(manifest.scenes) do
-      if type(entry) == "table" and entry.key == sceneKey then
-        sceneKnown = true
-        break
-      end
-    end
-  end
-  assert(sceneKnown, "launch scene is outside the presentation inventory: " .. tostring(sceneKey))
+  assert(
+    inventoriesScene(manifest, sceneKey),
+    "launch scene is outside the presentation inventory: " .. tostring(sceneKey)
+  )
   local host = descriptor.host
   local function submit(reply)
     if host == nil then
@@ -2104,7 +2072,7 @@ function FieldBattlePresentation:_startTransition(descriptor)
   assert(type(descriptor.environment) == "table", "presented field launches carry their selected scene key")
   local function loadStagedManifest()
     local manifest = loadManifest(self._cacheFs)
-    assert(manifest.verified == true, "a ready battle scene publishes its verified presentation manifest")
+    assert(stagedManifest(manifest), "a ready battle scene publishes its verified presentation manifest")
     return manifest
   end
   local transition = BattleEncounterTransition.new({
