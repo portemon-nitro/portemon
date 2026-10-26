@@ -1505,6 +1505,18 @@ local function copyStrings(values)
   return copied
 end
 
+---@generic K
+---@param values table<K, unknown> set or map whose keys are listed
+---@return K[] sorted keys
+local function sortedSetValues(values)
+  local result = {}
+  for value in pairs(values) do
+    result[#result + 1] = value
+  end
+  table.sort(result)
+  return result
+end
+
 local function introSequenceKey(sequenceSymbol)
   return "audio/sequence/" .. sequenceSymbol
 end
@@ -1719,6 +1731,1683 @@ local function compileMoveTypePalettes(romFs)
   return palettes
 end
 
+-- Returns a caught structured failure as a value; anything else is a
+-- programming error and propagates unchanged.
+---@param err unknown failure caught by pcall
+---@return Errors.Error structured failure
+local function structuredFailure(err)
+  if Errors.is(err) then
+    return err --[[@as Errors.Error]]
+  end
+  error(err, 0)
+end
+
+-- Optional source message route fields and their normalized names.
+local MESSAGE_SOURCE_ROUTE_FIELDS = {
+  programContext = "programContext",
+  placeholderPlan = "placeholderPlan",
+  mailExpansion = "expansion",
+  mailCase = "selectionCase",
+  placeholders = "placeholderInputs",
+  buffers = "bufferPlan",
+  selection = "selection",
+  recordSelection = "recordSelection",
+  resources = "resources",
+  routes = "routes",
+  reachable = "reachableCases",
+  unresolved = "unresolvedCases",
+}
+
+-- Copies a source menu context without its producer-only selector facts.
+---@param value unknown source context value
+---@return unknown copy
+local function copyMenuContext(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local copy = {}
+  for key, nested in pairs(value) do
+    if key ~= "sourceSelector" and key ~= "predicate" then
+      copy[key] = copyMenuContext(nested)
+    end
+  end
+  return copy
+end
+
+-- Message entries, routes, and fonts each menu text set draws.
+---@return table<string, { entries: string[], routes: string[], fonts: string[] }> text sets by key
+local function compileMenuTextSets()
+  local textSets = {
+    none = { entries = {}, routes = {}, fonts = {} },
+    main = { entries = { "label/cancel", "label/run" }, routes = {}, fonts = { "menu" } },
+    ["pal-park"] = { entries = {}, routes = {}, fonts = { "menu" } },
+    fight = {
+      entries = { "label/pp", "label/pp-max", "label/target-cancel" },
+      routes = { "menu/give-up-move" },
+      fonts = { "menu" },
+    },
+    target = {
+      entries = {
+        "label/target-cancel",
+        "label/target-gender-male",
+        "label/target-gender-female",
+        "label/target-gender-unknown",
+      },
+      routes = {},
+      fonts = { "menu" },
+    },
+    ["yes-no"] = { entries = { "label/yes", "label/no" }, routes = {}, fonts = { "menu" } },
+    ["keep-forget"] = { entries = { "label/keep-move", "label/forget-move" }, routes = {}, fonts = { "menu" } },
+    ["give-up"] = { entries = {}, routes = { "menu/give-up-move" }, fonts = { "menu" } },
+    ["switch-or-flee"] = {
+      entries = { "label/switch", "label/flee", "label/switch-flee" },
+      routes = {},
+      fonts = { "menu" },
+    },
+    ["switch-or-keep"] = {
+      entries = { "label/switch", "label/keep-battling-switch" },
+      routes = {},
+      fonts = { "menu" },
+    },
+    ["vs-recorder"] = {
+      entries = { "label/recorder-stop" },
+      routes = { "menu/vs-recorder-feedback" },
+      fonts = { "menu", "recorderFeedback" },
+    },
+  }
+  for _, rule in pairs(Sources.MENU_MODE_RULES) do
+    for _, key in pairs(rule.labels) do
+      textSets.main.entries[#textSets.main.entries + 1] = key
+    end
+  end
+  for _, key in pairs(Sources.MENU_MODE_RULES["pal-park"].labels) do
+    textSets["pal-park"].entries[#textSets["pal-park"].entries + 1] = key
+  end
+  return textSets
+end
+
+-- One source menu route normalized with its text set, required context,
+-- asset roles, and the staged layout resources it reaches.
+---@param route table<string, unknown> source menu route
+---@param textSet { entries: string[], routes: string[], fonts: string[] }
+---@param menuLayouts table<string, table<string, unknown>> staged menu layouts
+---@param resourceCatalog table<string, unknown> staged catalog
+---@return table<string, unknown> normalized menu route
+local function normalizeMenuRoute(route, textSet, menuLayouts, resourceCatalog)
+  local normalized = {
+    screenGroup = route.screenGroup,
+    textSet = route.textSet,
+    mode = route.mode,
+    phase = route.phase,
+    messageEntries = copyStrings(textSet.entries),
+    messageRoutes = copyStrings(textSet.routes),
+    fontRoles = copyStrings(textSet.fonts),
+    assetRoles = {},
+    assetBindings = {},
+    requiredContext = {},
+    resources = {},
+  }
+  local function addLayoutResources(layout)
+    for _, resource in pairs(layout) do
+      if type(resource) == "string" and resourceCatalog[resource] ~= nil then
+        normalized.resources[#normalized.resources + 1] = resource
+      end
+    end
+  end
+  if route.screenGroup == "command" then
+    normalized.requiredContext[#normalized.requiredContext + 1] = "main"
+    normalized.requiredContext[#normalized.requiredContext + 1] = "frontier"
+    addLayoutResources(menuLayouts.frontier)
+    normalized.assetRoles[#normalized.assetRoles + 1] = "frontierMenuLayout"
+  elseif route.screenGroup == "fight" then
+    normalized.requiredContext[#normalized.requiredContext + 1] = "moveSelection"
+    normalized.assetRoles[#normalized.assetRoles + 1] = "moveTypeIcon"
+  elseif route.screenGroup == "target" then
+    normalized.requiredContext[#normalized.requiredContext + 1] = "targetSelection"
+    normalized.assetRoles[#normalized.assetRoles + 1] = "pokemonIcon"
+    normalized.assetBindings.pokemonIcon = {
+      catalog = "mon-icons",
+      selector = "species-form",
+      context = { "targetSelection.candidate.species", "targetSelection.candidate.form" },
+      when = "candidate-enabled-and-hit",
+    }
+    normalized.assetRoles[#normalized.assetRoles + 1] = "battleCondition"
+  elseif route.screenGroup == "vs-recorder" then
+    normalized.requiredContext[#normalized.requiredContext + 1] = "vsRecorder"
+    normalized.resources[#normalized.resources + 1] = menuLayouts.vsRecorder.tilemap
+  end
+  if route.mode == "bug-contest" then
+    normalized.requiredContext[#normalized.requiredContext + 1] = "bugContest"
+    normalized.assetRoles[#normalized.assetRoles + 1] = "pokemonIcon"
+    normalized.assetBindings.pokemonIcon = {
+      catalog = "mon-icons",
+      selector = "species-form",
+      context = { "bugContest.caughtPokemon.species", "bugContest.caughtPokemon.form" },
+      when = "caught-mon-present",
+    }
+    normalized.fontRoles[#normalized.fontRoles + 1] = "bugContest"
+    for _, messageRouteKey in ipairs({
+      "menu/bug-contest-caught-gender",
+      "menu/bug-contest-level",
+      "menu/bug-contest-remaining-balls",
+    }) do
+      normalized.messageRoutes[#normalized.messageRoutes + 1] = messageRouteKey
+    end
+    addLayoutResources(menuLayouts.bugContest)
+  end
+  table.sort(normalized.messageEntries)
+  table.sort(normalized.messageRoutes)
+  table.sort(normalized.fontRoles)
+  table.sort(normalized.assetRoles)
+  table.sort(normalized.requiredContext)
+  table.sort(normalized.resources)
+  for index = #normalized.resources, 2, -1 do
+    if normalized.resources[index] == normalized.resources[index - 1] then
+      table.remove(normalized.resources, index)
+    end
+  end
+  return normalized
+end
+
+-- Tokenizes the battle menu labels and every source message record into
+-- semantic message entries.
+---@param decodedMessageBanks table<string, table<string, unknown>> decoded message banks by role
+---@return table<string, { tokens: table[] }> entries by semantic key
+---@return table<string, unknown> provenance source message ids by semantic key
+local function tokenizeMessageEntries(decodedMessageBanks)
+  local messageEntries = {}
+  local messageProvenance = {}
+  for _, key in ipairs(sortedSetValues(Sources.MENU_MESSAGES)) do
+    local messageId = Sources.MENU_MESSAGES[key]
+    local tokens, tokenFailure = UiMessageBank.tokens(decodedMessageBanks.scriptController, 197, messageId, charmap)
+    if tokens == nil then
+      error(
+        Errors.new("BATTLE_MENU_MESSAGE_INVALID", "battle menu text selector is absent or malformed", {
+          message = key,
+          messageId = messageId,
+          cause = tokenFailure and tokenFailure.message or "unknown tokenizer failure",
+        }),
+        0
+      )
+    end
+    messageEntries[key] = { tokens = tokens }
+    messageProvenance[key] = messageId
+  end
+  for _, key in ipairs(sortedSetValues(Sources.MESSAGE_RECORDS)) do
+    local source = Sources.MESSAGE_RECORDS[key]
+    local memberId = Sources.MESSAGE_BANKS[source.bank]
+    local tokens, tokenFailure =
+      UiMessageBank.tokens(decodedMessageBanks[source.bank], memberId, source.messageId, charmap)
+    if tokens == nil then
+      error(
+        Errors.new("BATTLE_MENU_MESSAGE_INVALID", "source battle message record is absent or malformed", {
+          message = key,
+          role = source.bank,
+          memberId = memberId,
+          messageId = source.messageId,
+          cause = tokenFailure and tokenFailure.message or "unknown tokenizer failure",
+        }),
+        0
+      )
+    end
+    messageEntries[key] = { tokens = tokens }
+    messageProvenance[key] = { bankRole = source.bank, messageId = source.messageId }
+  end
+  return messageEntries, messageProvenance
+end
+
+-- A source route's bank references as staged catalog keys: staged keys
+-- pass through, bank roles resolve to their staged bank.
+---@param sourceRoute table<string, unknown> source message route
+---@param messageBanks table<string, string> staged bank key by role
+---@param resourceCatalog table<string, unknown> staged catalog
+---@param bankRoleByResourceKey table<string, string> bank role by semantic resource key
+---@return string[] references
+local function semanticBankReferences(sourceRoute, messageBanks, resourceCatalog, bankRoleByResourceKey)
+  local references = {}
+  local function addReference(reference)
+    if bankRoleByResourceKey[reference] ~= nil or resourceCatalog[reference] ~= nil then
+      references[#references + 1] = reference
+      return
+    end
+    local resourceKey = messageBanks[reference]
+    if resourceKey == nil then
+      error(
+        Errors.new("BATTLE_MESSAGE_ROUTE_INVALID", "source message route references an unstaged bank key", {
+          bank = reference,
+        }),
+        0
+      )
+    end
+    references[#references + 1] = resourceKey
+  end
+  if sourceRoute.bankRole ~= nil then
+    addReference(sourceRoute.bankRole)
+  elseif sourceRoute.banks ~= nil then
+    for _, bank in ipairs(sourceRoute.banks) do
+      addReference(bank)
+    end
+  end
+  return references
+end
+
+-- Normalizes every source message route under its semantic key.
+---@param messageBanks table<string, string> staged bank key by role
+---@param resourceCatalog table<string, unknown> staged catalog
+---@return table<string, table<string, unknown>> routes by semantic key
+local function compileMessageSourceRoutes(messageBanks, resourceCatalog)
+  local bankRoleByResourceKey = {}
+  for role, resourceKey in pairs(Sources.MESSAGE_BANK_RESOURCE_KEYS) do
+    bankRoleByResourceKey[resourceKey] = role
+  end
+  local sourceMessageRoutes = Sources.MESSAGE_ROUTES
+  local routes = {}
+  for sourceName, sourceRoute in pairs(Sources.MESSAGE_SOURCE_ROUTES) do
+    local key = assert(sourceRoute.key, "message source route has a semantic key")
+    local inputs = sourceRoute.inputs or sourceRoute.operands
+    if inputs == nil and sourceRoute.input ~= nil then
+      inputs = { sourceRoute.input }
+    end
+    local route = {
+      banks = semanticBankReferences(sourceRoute, messageBanks, resourceCatalog, bankRoleByResourceKey),
+      inputs = inputs or {},
+    }
+    for sourceField, field in pairs(MESSAGE_SOURCE_ROUTE_FIELDS) do
+      route[field] = sourceRoute[sourceField]
+    end
+    if sourceName == "frontierTrainerSpeech" then
+      route.recordFormula = sourceMessageRoutes.frontierTrainerSpeech.recordFormula
+      route.profilePredicate = sourceMessageRoutes.frontierTrainerSpeech.profilePredicate
+    elseif sourceName == "trainerPairSpeech" then
+      route.recordSelection = sourceMessageRoutes.trainerPairSpeech.recordSelection
+    elseif sourceName == "recorderFeedback" then
+      route.routes = { "menu/vs-recorder-feedback" }
+    end
+    routes[key] = route
+  end
+  return routes
+end
+
+-- Global catalog staging: one semantic key per decoded payload. `staging`
+-- pairs the manifest resource catalog with the payloads staged beside it.
+---@class BattleGlobalStaging
+---@field catalog table<string, { kind: string, contentIdentity: string, format: string, geometry: table<string, unknown>, path: string }>
+---@field payloads table<string, unknown>
+
+---@param staging BattleGlobalStaging
+---@param resourceKey string semantic catalog key
+---@param descriptor { kind: string, contentIdentity: string, format: string, geometry: table<string, unknown> } catalog entry without its path
+---@param payload unknown decoded payload staged at the key's path
+local function stageCatalogResource(staging, resourceKey, descriptor, payload)
+  local path = BattlePresentationCache.globalResourcePath(resourceKey)
+  staging.catalog[resourceKey] = {
+    kind = descriptor.kind,
+    contentIdentity = descriptor.contentIdentity,
+    format = descriptor.format,
+    geometry = descriptor.geometry,
+    path = path,
+  }
+  staging.payloads[path] = payload
+end
+
+-- Stages the trainer message offset and pair index tables after checking
+-- their record widths and that every offset stays inside the pair table.
+---@param romFs RomFs
+---@param staging BattleGlobalStaging
+---@return table<string, table<string, unknown>> provenance offsets/pairs source coordinates and identities
+local function stageTrainerMessageTables(romFs, staging)
+  local trainerTables = Sources.TRAINER_MESSAGE_TABLES
+  local offsetArchive = openArchive(romFs, trainerTables.offsetsArchive, "trainer message offsets")
+  local pairArchive = openArchive(romFs, trainerTables.pairsArchive, "trainer message pairs")
+  local offsetBytes = must(offsetArchive:readMember(trainerTables.memberId), "trainer message offset table is absent")
+  local pairBytes = must(pairArchive:readMember(trainerTables.memberId), "trainer message pair table is absent")
+  if #offsetBytes % 2 ~= 0 or #pairBytes % 4 ~= 0 then
+    error(
+      Errors.new("BATTLE_TRAINER_MESSAGE_INDEX_INVALID", "trainer message tables have invalid record widths", {
+        offsetBytes = #offsetBytes,
+        pairBytes = #pairBytes,
+      }),
+      0
+    )
+  end
+  local offsetsReader = BinaryReader.new(offsetBytes, "trainer-message-offsets")
+  local pairsReader = BinaryReader.new(pairBytes, "trainer-message-pairs")
+  local trainerOffsets = {}
+  for offset = 0, #offsetBytes - 2, 2 do
+    trainerOffsets[#trainerOffsets + 1] = offsetsReader:u16le(offset)
+  end
+  local trainerPairs = {}
+  for offset = 0, #pairBytes - 4, 4 do
+    trainerPairs[offset / 4 + 1] =
+      { trainerIndex = pairsReader:u16le(offset), messageKind = pairsReader:u16le(offset + 2) }
+  end
+  for index, offset in ipairs(trainerOffsets) do
+    if offset % 4 ~= 0 or offset > #pairBytes then
+      error(
+        Errors.new("BATTLE_TRAINER_MESSAGE_INDEX_INVALID", "trainer offset escapes its pair table", {
+          trainerIndex = index - 1,
+          offset = offset,
+          pairBytes = #pairBytes,
+        }),
+        0
+      )
+    end
+  end
+  stageCatalogResource(staging, "trainer-message-index/offsets", {
+    kind = "message",
+    contentIdentity = Hashing.sha1hex(offsetBytes),
+    format = "hgss-trainer-message-offsets-v1",
+    geometry = { recordCount = #trainerOffsets },
+  }, { format = "HGSS_TRAINER_MESSAGE_OFFSETS", offsets = trainerOffsets })
+  stageCatalogResource(staging, "trainer-message-index/pairs", {
+    kind = "message",
+    contentIdentity = Hashing.sha1hex(pairBytes),
+    format = "hgss-trainer-message-pairs-v1",
+    geometry = { recordCount = #trainerPairs },
+  }, { format = "HGSS_TRAINER_MESSAGE_PAIRS", records = trainerPairs })
+  return {
+    offsets = {
+      archive = trainerTables.offsetsArchive,
+      memberId = trainerTables.memberId,
+      contentIdentity = Hashing.sha1hex(offsetBytes),
+      recordCount = #trainerOffsets,
+    },
+    pairs = {
+      archive = trainerTables.pairsArchive,
+      memberId = trainerTables.memberId,
+      contentIdentity = Hashing.sha1hex(pairBytes),
+      recordCount = #trainerPairs,
+    },
+  }
+end
+
+---@param decoded { cells: { objs: { x: integer, y: integer, width: integer, height: integer }[] }[] }
+---@return { cellCount: integer, bounds: table[] } per-cell OBJ bounding boxes
+local function cellBoundsGeometry(decoded)
+  local bounds = {}
+  for cellIndex, cell in ipairs(decoded.cells) do
+    local minX, minY, maxX, maxY
+    for _, obj in ipairs(cell.objs) do
+      minX = minX == nil and obj.x or math.min(minX, obj.x)
+      minY = minY == nil and obj.y or math.min(minY, obj.y)
+      maxX = math.max(maxX or (obj.x + obj.width), obj.x + obj.width)
+      maxY = math.max(maxY or (obj.y + obj.height), obj.y + obj.height)
+    end
+    bounds[cellIndex] = minX == nil and { x = 0, y = 0, width = 0, height = 0 }
+      or { x = minX, y = minY, width = maxX - minX, height = maxY - minY }
+  end
+  return { cellCount = #decoded.cells, bounds = bounds }
+end
+
+---@param decoded { colors: table[] }
+---@return string format, table<string, unknown> geometry
+local function describePalette(decoded)
+  return "nitro-palette-rgb888-v1", { colorCount = #decoded.colors }
+end
+
+---@param decoded { depth: integer, tiles: string }
+---@return string format, table<string, unknown> geometry
+local function describeCharacters(decoded)
+  return decoded.depth == 3 and "nitro-char-4bpp-v1" or "nitro-char-8bpp-v1",
+    { depth = decoded.depth, tileCount = #decoded.tiles / (decoded.depth == 3 and 32 or 64) }
+end
+
+---@param decoded { width: integer, height: integer, entries: table[] }
+---@return string format, table<string, unknown> geometry
+local function describeScreen(decoded)
+  return "nitro-bg-map-v1", { width = decoded.width, height = decoded.height, entryCount = #decoded.entries }
+end
+
+---@param decoded { cells: table[] }
+---@return string format, table<string, unknown> geometry
+local function describeCells(decoded)
+  return "nitro-obj-cells-v1", cellBoundsGeometry(decoded)
+end
+
+---@param decoded { anims: { frames: table[] }[] }
+---@return string format, table<string, unknown> geometry
+local function describeAnimation(decoded)
+  local frameCount = 0
+  for _, animation in ipairs(decoded.anims) do
+    frameCount = frameCount + #animation.frames
+  end
+  return "nitro-obj-animation-v1",
+    { animationCount = #decoded.anims, frameCount = frameCount, durationUnit = "native-frame" }
+end
+
+-- Catalog resource kinds: each decodes one archive member and names its
+-- staged format and geometry.
+local CATALOG_RESOURCE_CODECS = {
+  palette = { decode = decodePalette, describe = describePalette },
+  texture = { decode = decodeChars, describe = describeCharacters },
+  map = { decode = decodeScreen, describe = describeScreen },
+  cell = { decode = decodeCells, describe = describeCells },
+  animation = { decode = decodeAnimation, describe = describeAnimation },
+}
+
+-- Decodes one catalog resource member of a kind with a codec, letting
+-- `prepare` normalize the decoded payload before its geometry is measured.
+---@param archive Narc
+---@param memberId integer
+---@param kind string catalog resource kind
+---@param label string diagnostic label
+---@param prepare? fun(decoded: table<string, unknown>) in-place normalization
+---@return table<string, unknown> decoded payload
+---@return string format
+---@return table<string, unknown> geometry
+local function decodeCatalogResource(archive, memberId, kind, label, prepare)
+  local codec = assert(CATALOG_RESOURCE_CODECS[kind], "catalog resource kinds are checked before decoding")
+  local decoded = codec.decode(archive, memberId, label)
+  if prepare ~= nil then
+    prepare(decoded)
+  end
+  local format, geometry = codec.describe(decoded)
+  return decoded, format, geometry
+end
+
+-- Transition resource sets never stage BG maps.
+local TRANSITION_SET_KINDS = { palette = true, texture = true, cell = true, animation = true }
+
+-- Stages the fixed transition resource sets under `<set>/<resource>` keys.
+---@param staging BattleGlobalStaging
+---@param transitionArchive Narc
+---@return table<string, table<string, string>> resourceSets catalog keys by set and resource key
+---@return table<string, { archive: string, memberId: integer }> provenance by catalog key
+local function stageTransitionResourceSets(staging, transitionArchive)
+  local resourceSets = {}
+  local provenance = {}
+  for _, set in ipairs(Sources.TRANSITION_RESOURCE_SETS) do
+    local resourceKeys = {}
+    for _, resource in ipairs(set.resources) do
+      local bytes = must(transitionArchive:readMember(resource.member))
+      local resourceKey = set.key .. "/" .. resource.key
+      local label = "transition " .. resourceKey
+      -- Route cells normalize against the depth of the set's characters,
+      -- which the source lists before them.
+      local function normalizeCells(decoded)
+        local sourceMapping, mappingErr = G2dDecoder.decodeCellMapping(bytes, { label = label })
+        local mapping = mustDecode(sourceMapping, mappingErr, label .. " mapping", resource.member)
+        local characterKey = assert(resourceKeys.characters, "the route cell follows its character resource")
+        local characterResource =
+          assert(staging.catalog[characterKey], "the route character is cataloged before its cell")
+        TransitionCellNormalizer.normalize(decoded, mapping, characterResource.geometry.depth)
+      end
+      if not TRANSITION_SET_KINDS[resource.kind] then
+        error(
+          Errors.new("BATTLE_RESOURCE_KIND_UNKNOWN", "transition resource has no decoder", {
+            resource = resourceKey,
+            kind = resource.kind,
+          }),
+          0
+        )
+      end
+      local decoded, format, geometry = decodeCatalogResource(
+        transitionArchive,
+        resource.member,
+        resource.kind,
+        label,
+        resource.kind == "cell" and normalizeCells or nil
+      )
+      stageCatalogResource(staging, resourceKey, {
+        kind = resource.kind,
+        contentIdentity = Hashing.sha1hex(bytes),
+        format = format,
+        geometry = geometry,
+      }, decoded)
+      resourceKeys[resource.key] = resourceKey
+      provenance[resourceKey] = {
+        archive = Sources.TRANSITION_ARCHIVE,
+        memberId = resource.member,
+      }
+    end
+    resourceSets[set.key] = resourceKeys
+  end
+  return resourceSets, provenance
+end
+
+---@class BattleTransitionStaging
+---@field resourceSets table<string, table<string, string>>
+---@field provenance table<string, { archive: string, memberId: integer }>
+---@field sourceResources table<string, string> catalog key by `<kind>:<memberId>` source identity
+---@field resourceMembers table<string, { archive: string, members: table<integer, { selectors: table<unknown, true> }> }>
+---@field keySet table<string, true> content-addressed transition catalog keys
+---@field particleMembers table<string, { archive: string, memberId: integer }>
+---@field embeddedParticleResources table<string, { texture: string|nil, palette: string|nil }[]>
+
+-- Stages each typed transition member once under its content-addressed
+-- key, recording which source selectors reach it.
+---@param staging BattleGlobalStaging
+---@param transitionArchive Narc
+---@param transition BattleTransitionStaging
+local function stageTransitionTypedResources(staging, transitionArchive, transition)
+  for _, source in ipairs(Sources.TRANSITION_TYPED_RESOURCES) do
+    local provenanceKey = source.kind .. ":" .. source.memberId
+    if transition.sourceResources[provenanceKey] == nil then
+      local bytes = must(transitionArchive:readMember(source.memberId))
+      local contentIdentity = Hashing.sha1hex(bytes)
+      local resourceKey = "transition/content/" .. source.kind .. "/" .. contentIdentity
+      local label = "transition member " .. source.memberId .. " payload " .. resourceKey
+      if CATALOG_RESOURCE_CODECS[source.kind] == nil then
+        error(
+          Errors.new("BATTLE_RESOURCE_KIND_UNKNOWN", "transition source resource has no decoder", {
+            memberId = source.memberId,
+            kind = source.kind,
+          }),
+          0
+        )
+      end
+      local decoded, format, geometry = decodeCatalogResource(transitionArchive, source.memberId, source.kind, label)
+      stageCatalogResource(staging, resourceKey, {
+        kind = source.kind,
+        contentIdentity = contentIdentity,
+        format = format,
+        geometry = geometry,
+      }, decoded)
+      transition.keySet[resourceKey] = true
+      if transition.resourceMembers[resourceKey] == nil then
+        transition.resourceMembers[resourceKey] = {
+          archive = Sources.TRANSITION_ARCHIVE,
+          members = {},
+        }
+      end
+      transition.sourceResources[provenanceKey] = resourceKey
+    end
+    local memberProvenance = transition.resourceMembers[transition.sourceResources[provenanceKey]]
+    for _, sourceSelector in ipairs(source.selectors) do
+      local sourceProvenance = memberProvenance.members[source.memberId]
+      if sourceProvenance == nil then
+        sourceProvenance = { selectors = {} }
+        memberProvenance.members[source.memberId] = sourceProvenance
+      end
+      sourceProvenance.selectors[sourceSelector] = true
+    end
+  end
+end
+
+-- Stages one embedded APS texture or palette payload by content identity.
+---@param staging BattleGlobalStaging
+---@param transition BattleTransitionStaging
+---@param kind "texture"|"palette"
+---@param bytes string raw embedded payload
+---@return string resourceKey
+local function stageTransitionParticlePayload(staging, transition, kind, bytes)
+  local identity = Hashing.sha1hex(bytes)
+  local key = "transition/content/" .. kind .. "/" .. identity
+  if staging.catalog[key] == nil then
+    stageCatalogResource(staging, key, {
+      kind = kind,
+      contentIdentity = identity,
+      format = kind == "texture" and "nitro-spl-texture-data-v1" or "nitro-spl-palette-data-v1",
+      geometry = { byteCount = #bytes },
+    }, { bytes = bytes })
+    transition.keySet[key] = true
+  end
+  return key
+end
+
+-- Stages every transition APS archive with its embedded resources; shared
+-- texture references resolve onto the referenced staged texture.
+---@param staging BattleGlobalStaging
+---@param transitionArchive Narc
+---@param transition BattleTransitionStaging
+local function stageTransitionParticles(staging, transitionArchive, transition)
+  for _, memberId in ipairs(Sources.TRANSITION_PARTICLE_MEMBERS) do
+    local bytes = must(transitionArchive:readMember(memberId))
+    local decoded = must(Spl.decode(bytes))
+    local contentIdentity = Hashing.sha1hex(bytes)
+    local resourceKey = "transition/content/particle/" .. contentIdentity
+    local embeddedKeys = {}
+    local normalizedResources = {}
+    for resourceIndex, resource in ipairs(decoded.resources) do
+      local textureKey = resource.texture
+          and stageTransitionParticlePayload(staging, transition, "texture", resource.texture)
+        or nil
+      if resource.textureReference ~= nil then
+        local referenced = embeddedKeys[resource.textureReference + 1]
+        if referenced == nil or referenced.texture == nil then
+          error(
+            Errors.new("BATTLE_PARTICLE_RESOURCE_INVALID", "APS texture reference has no staged source", {
+              memberId = memberId,
+              resourceIndex = resourceIndex - 1,
+              textureReference = resource.textureReference,
+            }),
+            0
+          )
+        end
+        textureKey = referenced.texture
+      end
+      local paletteKey = resource.palette
+          and stageTransitionParticlePayload(staging, transition, "palette", resource.palette)
+        or nil
+      embeddedKeys[resourceIndex] = { texture = textureKey, palette = paletteKey }
+      normalizedResources[resourceIndex] = { textureKey = textureKey, paletteKey = paletteKey }
+    end
+    stageCatalogResource(staging, resourceKey, {
+      kind = "particle",
+      contentIdentity = contentIdentity,
+      format = "nitro-spl-aps-v1",
+      geometry = { emitterCount = #decoded.emitters, resourceCount = #decoded.resources },
+    }, {
+      format = decoded.format,
+      emitters = decoded.emitters,
+      resources = normalizedResources,
+      source = decoded.source,
+    })
+    transition.keySet[resourceKey] = true
+    transition.sourceResources["particle:" .. memberId] = resourceKey
+    transition.particleMembers[resourceKey] = { archive = Sources.TRANSITION_ARCHIVE, memberId = memberId }
+    transition.embeddedParticleResources[resourceKey] = embeddedKeys
+  end
+end
+
+---@param romFs RomFs
+---@param staging BattleGlobalStaging
+---@return BattleTransitionStaging transition staged transition resources and their provenance
+local function compileTransitionResources(romFs, staging)
+  local transitionArchive = openArchive(romFs, Sources.TRANSITION_ARCHIVE, "battle transitions")
+  local resourceSets, provenance = stageTransitionResourceSets(staging, transitionArchive)
+  ---@type BattleTransitionStaging
+  local transition = {
+    resourceSets = resourceSets,
+    provenance = provenance,
+    sourceResources = {},
+    resourceMembers = {},
+    keySet = {},
+    particleMembers = {},
+    embeddedParticleResources = {},
+  }
+  stageTransitionTypedResources(staging, transitionArchive, transition)
+  stageTransitionParticles(staging, transitionArchive, transition)
+  return transition
+end
+
+-- Catalog keys of every typed transition member any listed selector reaches.
+---@param sourceResources table<string, string> catalog key by source identity
+---@param selectors unknown[] source selectors
+---@return string[] sorted catalog keys
+local function transitionResourcesForSelectors(sourceResources, selectors)
+  local wanted = {}
+  for _, selector in ipairs(selectors) do
+    wanted[selector] = true
+  end
+  local selected = {}
+  for _, source in ipairs(Sources.TRANSITION_TYPED_RESOURCES) do
+    for _, sourceSelector in ipairs(source.selectors) do
+      if wanted[sourceSelector] then
+        selected[sourceResources[source.kind .. ":" .. source.memberId]] = true
+        break
+      end
+    end
+  end
+  return sortedSetValues(selected)
+end
+
+---@param messageKey string transition name message entry
+---@param sourceResources table<string, string> catalog key by source identity
+---@return table<string, { message: string, inputs: string[], resources: string[] }> routes by name
+local function compileTransitionMessageRoutes(messageKey, sourceResources)
+  local routes = {}
+  for routeName, sourceRoute in pairs(Sources.TRANSITION_MESSAGE_SOURCE_ROUTES) do
+    local input = routeName == "trainerName" and "trainerName" or "rivalName"
+    routes[routeName] = {
+      message = messageKey,
+      inputs = { input },
+      resources = transitionResourcesForSelectors(sourceResources, sourceRoute.selectors),
+    }
+  end
+  return routes
+end
+
+local TRANSITION_INTERNAL_KINDS = { palette = "palette", character = "texture", cell = "cell", animation = "animation" }
+
+---@param sourceResources table<string, string> catalog key by source identity
+---@return table<string, table<string, string>> catalog keys by route and role
+local function compileTransitionInternalResources(sourceResources)
+  local internalResources = {}
+  for routeName, sourceRoleMembers in pairs(Sources.TRANSITION_INTERNAL_RESOURCES) do
+    local resourceKeys = {}
+    for role, memberId in pairs(sourceRoleMembers) do
+      local resourceKey = sourceResources[TRANSITION_INTERNAL_KINDS[role] .. ":" .. memberId]
+      if resourceKey == nil then
+        error(
+          Errors.new("BATTLE_TRANSITION_RESOURCE_UNRESOLVED", "internal transition resource has no staged member", {
+            route = routeName,
+            role = role,
+          }),
+          0
+        )
+      end
+      resourceKeys[role] = resourceKey
+    end
+    internalResources[routeName] = resourceKeys
+  end
+  return internalResources
+end
+
+local TRANSITION_KIND_BY_ROLE = {
+  palette = "palette",
+  character = "texture",
+  characters = "texture",
+  cell = "cell",
+  animation = "animation",
+  map = "map",
+  maps = "map",
+}
+
+---@param sourceResources table<string, string> catalog key by source identity
+---@param role string asset group role
+---@param memberId number transition member
+---@param routeKey string route under normalization
+---@return string resourceKey
+local function transitionResourceForRole(sourceResources, role, memberId, routeKey)
+  local kind = TRANSITION_KIND_BY_ROLE[role]
+  if kind == nil then
+    error(
+      Errors.new("BATTLE_TRANSITION_RESOURCE_UNRESOLVED", "transition route has an unknown resource role", {
+        role = role,
+      }),
+      0
+    )
+  end
+  local resourceKey = sourceResources[kind .. ":" .. memberId]
+  if resourceKey == nil then
+    error(
+      Errors.new(
+        "BATTLE_TRANSITION_RESOURCE_UNRESOLVED",
+        "transition route " .. routeKey .. " references unstaged " .. role .. " member " .. memberId,
+        { role = role, memberId = memberId, route = routeKey }
+      ),
+      0
+    )
+  end
+  return resourceKey
+end
+
+-- Replaces every source member in a route asset group with its catalog key.
+---@param sourceResources table<string, string> catalog key by source identity
+---@param group table<string, unknown> source asset group
+---@param routeKey string route under normalization
+---@return table<string, unknown> normalized group
+local function normalizeTransitionResourceGroup(sourceResources, group, routeKey)
+  local normalized = {}
+  for role, value in pairs(group) do
+    if type(value) == "number" then
+      normalized[role] = transitionResourceForRole(sourceResources, role, value, routeKey)
+    elseif type(value) == "table" then
+      local entries = {}
+      for index, entry in ipairs(value) do
+        entries[index] = type(entry) == "number" and transitionResourceForRole(sourceResources, role, entry, routeKey)
+          or normalizeTransitionResourceGroup(sourceResources, entry, routeKey)
+      end
+      normalized[role] = #entries > 0 and entries or normalizeTransitionResourceGroup(sourceResources, value, routeKey)
+    else
+      error(
+        Errors.new("BATTLE_TRANSITION_RESOURCE_UNRESOLVED", "transition route resource group is malformed", {
+          role = role,
+        }),
+        0
+      )
+    end
+  end
+  return normalized
+end
+
+local TRANSITION_ROUTE_GROUPS = {
+  "sprite",
+  "record",
+  "fixedSprite",
+  "extraSprite",
+  "opponent",
+  "nameplate",
+  "spriteVariants",
+  "background",
+  "sceneAssets",
+}
+
+-- Context inputs by semantic route family, matched by key prefix.
+local TRANSITION_FAMILY_CONTEXT = {
+  { prefix = "^fallback/", inputs = { "battleType", "terrain", "timeOfDay" } },
+  { prefix = "^wild/", inputs = { "wildSpecies", "battleType" } },
+  { prefix = "^trainer/", inputs = { "trainerClass", "battleType" } },
+}
+
+---@param sourceRoute table<string, unknown> source selector route
+---@return table<string, true> context inputs the route reads
+local function transitionRouteContext(sourceRoute)
+  local context = {}
+  for _, family in ipairs(TRANSITION_FAMILY_CONTEXT) do
+    if sourceRoute.key:match(family.prefix) then
+      for _, input in ipairs(family.inputs) do
+        context[input] = true
+      end
+      break
+    end
+  end
+  if sourceRoute.context ~= nil and sourceRoute.context.playerGender == true then
+    context.playerGender = true
+  end
+  if sourceRoute.trainer ~= nil then
+    context.transitionTrainer = true
+  end
+  if sourceRoute.messageRoute ~= nil then
+    context[sourceRoute.messageRoute == "transition/rival-name" and "rivalName" or "trainerName"] = true
+  end
+  return context
+end
+
+---@param value unknown nested asset group value
+---@param set table<string, true> collected strings
+local function collectStrings(value, set)
+  if type(value) == "string" then
+    set[value] = true
+  elseif type(value) == "table" then
+    for _, nested in pairs(value) do
+      collectStrings(nested, set)
+    end
+  end
+end
+
+-- Normalizes one selector's source route into its semantic route record.
+---@param sourceRoute table<string, unknown> source selector route
+---@param selector unknown source selector
+---@param sourceResources table<string, string> catalog key by source identity
+---@return table<string, unknown> route semantic route record
+---@return table<string, true> resourceSet every catalog key the route reaches
+---@return table<string, true> contextSet every context input the route reads
+local function normalizeTransitionRoute(sourceRoute, selector, sourceResources)
+  local resourceSet = {}
+  for _, resourceKey in ipairs(transitionResourcesForSelectors(sourceResources, { selector })) do
+    resourceSet[resourceKey] = true
+  end
+  local groups = {}
+  for _, groupName in ipairs(TRANSITION_ROUTE_GROUPS) do
+    local sourceGroup = sourceRoute[groupName]
+    if sourceGroup ~= nil then
+      groups[groupName] = normalizeTransitionResourceGroup(sourceResources, sourceGroup, sourceRoute.key)
+    end
+  end
+  if sourceRoute.particles ~= nil then
+    local particles = {}
+    for role, memberId in pairs(sourceRoute.particles) do
+      local resourceKey = sourceResources["particle:" .. memberId]
+      if resourceKey == nil then
+        error(
+          Errors.new("BATTLE_TRANSITION_RESOURCE_UNRESOLVED", "transition route particle payload is not staged", {
+            memberId = memberId,
+            route = sourceRoute.key,
+          }),
+          0
+        )
+      end
+      particles[role] = resourceKey
+    end
+    groups.particles = particles
+  end
+  collectStrings(groups, resourceSet)
+  local contextSet = transitionRouteContext(sourceRoute)
+  local route = {
+    role = sourceRoute.role,
+    requiredContext = sortedSetValues(contextSet),
+    resources = sortedSetValues(resourceSet),
+    assetGroups = groups,
+    trainer = sourceRoute.trainer ~= nil and { key = sourceRoute.trainer.key } or nil,
+    task = sourceRoute.task,
+    messages = sourceRoute.messageRoute ~= nil and { sourceRoute.messageRoute } or nil,
+  }
+  return route, resourceSet, contextSet
+end
+
+-- Several selectors may share one semantic key: their roles must agree,
+-- at most one carries a task, and resources and context unite.
+---@param routeKey string semantic route key
+---@param prior table<string, unknown> route already normalized under the key
+---@param route table<string, unknown> route under merging
+---@param resourceSet table<string, true> the route's catalog keys
+---@param contextSet table<string, true> the route's context inputs
+local function mergeTransitionRoute(routeKey, prior, route, resourceSet, contextSet)
+  if prior.role ~= route.role then
+    error(
+      Errors.new("BATTLE_TRANSITION_ROUTE_CONFLICT", "semantic transition key has conflicting source roles", {
+        route = routeKey,
+      }),
+      0
+    )
+  end
+  if prior.task ~= nil and route.task ~= nil then
+    error(
+      Errors.new("BATTLE_TRANSITION_ROUTE_CONFLICT", "semantic transition key has conflicting source tasks", {
+        route = routeKey,
+      }),
+      0
+    )
+  end
+  route.task = route.task or prior.task
+  for _, resourceKey in ipairs(prior.resources) do
+    resourceSet[resourceKey] = true
+  end
+  route.resources = sortedSetValues(resourceSet)
+  for _, input in ipairs(prior.requiredContext) do
+    contextSet[input] = true
+  end
+  route.requiredContext = sortedSetValues(contextSet)
+  if route.messages == nil then
+    route.messages = prior.messages
+  end
+end
+
+---@param sourceResources table<string, string> catalog key by source identity
+---@return table<string, table<string, unknown>> semantic transition routes by key
+local function compileTransitionRoutes(sourceResources)
+  local routes = {}
+  for selector, sourceRoute in pairs(Sources.TRANSITION_SELECTOR_ROUTES) do
+    local route, resourceSet, contextSet = normalizeTransitionRoute(sourceRoute, selector, sourceResources)
+    local prior = routes[sourceRoute.key]
+    if prior ~= nil then
+      mergeTransitionRoute(sourceRoute.key, prior, route, resourceSet, contextSet)
+    end
+    routes[sourceRoute.key] = route
+  end
+  return routes
+end
+
+---@param category integer source transition category
+---@return string semantic route key
+local function semanticCategoryRoute(category)
+  local route = Sources.TRANSITION_PRESELECTION.categoryRoutes[category]
+  if type(route) == "table" and route.fallback == true then
+    return "setup-fallback"
+  end
+  if type(route) ~= "string" then
+    error(
+      Errors.new("BATTLE_TRANSITION_ROUTE_UNRESOLVED", "source category has no semantic transition route", {
+        category = category,
+      }),
+      0
+    )
+  end
+  return route
+end
+
+---@param category integer source transition category
+---@return string semantic intro music role
+local function musicRoleForCategory(category)
+  local sequenceSymbol = Sources.INTRO_MUSIC.rows[category + 1]
+  assert(sequenceSymbol ~= nil, "every source category selects an intro sequence")
+  local role = Sources.INTRO_MUSIC.roles[sequenceSymbol]
+  if role == nil and sequenceSymbol == Sources.AUDIO_ROLES.kantoTrainer then
+    role = "kanto-trainer"
+  end
+  assert(type(role) == "string", "every selected intro sequence has a semantic role")
+  return role
+end
+
+---@param sourceRoutes table<unknown, string> source route key by input
+---@param categories table<string, integer> source category by route key
+---@return table<unknown, string> semantic route by input
+local function normalizeInputRoutes(sourceRoutes, categories)
+  local routes = {}
+  for inputKey, routeKey in pairs(sourceRoutes) do
+    local category = categories[routeKey]
+    if category == nil then
+      error(
+        Errors.new("BATTLE_TRANSITION_ROUTE_UNRESOLVED", "source input has no semantic category route", {
+          input = inputKey,
+        }),
+        0
+      )
+    end
+    routes[inputKey] = semanticCategoryRoute(category)
+  end
+  return routes
+end
+
+---@param sourceRoutes table<unknown, string> source route key by input
+---@param categories table<string, integer> source category by route key
+---@return table<unknown, string> intro music role by input
+local function normalizeInputMusicRoles(sourceRoutes, categories)
+  local roles = {}
+  for inputKey, routeKey in pairs(sourceRoutes) do
+    local category = assert(categories[routeKey], "every source trainer or species route has a category")
+    roles[inputKey] = musicRoleForCategory(category)
+  end
+  return roles
+end
+
+---@param categories integer[] source transition categories
+---@return string[] semantic route keys in category order
+local function categoryRoutesForList(categories)
+  local routes = {}
+  for _, category in ipairs(categories) do
+    routes[#routes + 1] = semanticCategoryRoute(category)
+  end
+  return routes
+end
+
+-- The semantic transition preselection: input routes, music roles, and
+-- the trainer/wild/setup-fallback selection rules.
+---@return table<string, unknown> transition selection
+local function compileTransitionSelection()
+  local sourcePreselection = Sources.TRANSITION_PRESELECTION
+  local trainerClassRoutes =
+    normalizeInputRoutes(sourcePreselection.trainerClasses, sourcePreselection.trainerCategoryByKey)
+  local wildSpeciesRoutes = normalizeInputRoutes(sourcePreselection.wildSpecies, sourcePreselection.wildCategoryByKey)
+  local trainerClassMusicRoles =
+    normalizeInputMusicRoles(sourcePreselection.trainerClasses, sourcePreselection.trainerCategoryByKey)
+  local wildSpeciesMusicRoles =
+    normalizeInputMusicRoles(sourcePreselection.wildSpecies, sourcePreselection.wildCategoryByKey)
+  local sourceRules = sourcePreselection.selectionRules
+  local specialBattle = sourceRules.trainer.specialBattle
+  local selection = {
+    trainerClassRoutes = trainerClassRoutes,
+    wildSpeciesRoutes = wildSpeciesRoutes,
+    trainerClassMusicRoles = trainerClassMusicRoles,
+    wildSpeciesMusicRoles = wildSpeciesMusicRoles,
+    trainerRules = {
+      inputs = { "trainerClass", "battleType" },
+      specialBattle = {
+        preserveRoute = semanticCategoryRoute(specialBattle.preserveCategory),
+        preserveMusicRole = musicRoleForCategory(specialBattle.preserveCategory),
+        defaultRoute = semanticCategoryRoute(specialBattle.defaultCategory),
+        defaultMusicRole = musicRoleForCategory(specialBattle.defaultCategory),
+        doublesRoute = semanticCategoryRoute(specialBattle.doublesCategory),
+        doublesMusicRole = musicRoleForCategory(specialBattle.doublesCategory),
+      },
+      preserveRoutes = categoryRoutesForList(sourceRules.trainer.preserveCategories),
+      doublesRoute = semanticCategoryRoute(sourceRules.trainer.doublesCategory),
+      alternateTransitionRoute = semanticCategoryRoute(sourceRules.trainer.alternateCategory),
+      unknownRoute = semanticCategoryRoute(41),
+      unknownMusicRole = musicRoleForCategory(41),
+      doublesMusicRole = musicRoleForCategory(sourceRules.trainer.doublesCategory),
+      alternateMusicRole = musicRoleForCategory(sourceRules.trainer.alternateCategory),
+    },
+    wildRules = {
+      inputs = { "wildSpecies", "battleType", "transitionMode" },
+      specialMode = "wild-transition-special-case",
+      fallbackRoute = semanticCategoryRoute(sourceRules.wild.fallbackCategory),
+      fallbackMusicRole = musicRoleForCategory(sourceRules.wild.fallbackCategory),
+      doublesRoute = semanticCategoryRoute(sourceRules.wild.doublesCategoryWhenCategoryAtLeast.category),
+      doublesMusicRole = musicRoleForCategory(sourceRules.wild.doublesCategoryWhenCategoryAtLeast.category),
+    },
+    fallbackRoutes = {},
+  }
+  for selector = 0, 11 do
+    local sourceRoute = Sources.TRANSITION_SELECTOR_ROUTES[selector]
+    local context = assert(sourceRoute.context)
+    selection.fallbackRoutes[selector + 1] = {
+      route = sourceRoute.key,
+      terrain = context.terrain,
+      timeOfDay = context.timeOfDay,
+      battleKind = context.isTrainer and "trainer" or "wild",
+    }
+  end
+  return selection
+end
+
+-- Closure coverage for every transition route: its context, staged
+-- resource identities, and message entries.
+---@param routes table<string, table<string, unknown>> semantic transition routes
+---@param resourceCatalog table<string, { contentIdentity: string }>
+---@param messageEntries table<string, unknown>
+---@return table<string, table<string, unknown>> coverage by `transition/<route>` key
+local function transitionRouteCoverage(routes, resourceCatalog, messageEntries)
+  local coverage = {}
+  for routeKey, route in pairs(routes) do
+    local identityParts = { "transition-route", routeKey, route.role }
+    for _, input in ipairs(route.requiredContext) do
+      identityParts[#identityParts + 1] = "context=" .. input
+    end
+    for _, resourceKey in ipairs(route.resources) do
+      local descriptor = assert(resourceCatalog[resourceKey], "transition route resource is staged")
+      identityParts[#identityParts + 1] = resourceKey .. "=" .. descriptor.contentIdentity
+    end
+    for _, messageKey in ipairs(route.messages or {}) do
+      identityParts[#identityParts + 1] = messageKey .. "=" .. Hashing.hashLua(messageEntries[messageKey])
+    end
+    coverage["transition/" .. routeKey] = {
+      kind = "transition-route",
+      route = routeKey,
+      closureIdentity = Hashing.sha1hex(table.concat(identityParts, "\n")),
+      resources = route.resources,
+      operations = { route.role },
+    }
+  end
+  return coverage
+end
+
+-- Normalized catalog sections a semantic root closes over.
+---@class BattleSemanticClosureSources
+---@field resourceCatalog table<string, { contentIdentity: string }>
+---@field messageEntries table<string, unknown>
+---@field messageRoutes table<string, table<string, unknown>>
+---@field dynamicMessageRoutes table<string, table<string, unknown>>
+---@field normalizedMessageSourceRoutes table<string, table<string, unknown>>
+---@field sourceMessageRouteKeys table<string, string> semantic key by source message route name
+---@field menuRoutes table<string, table<string, unknown>>
+---@field transitionMessageRoutes table<string, table<string, unknown>>
+---@field transitionRoutes table<string, table<string, unknown>>
+
+---@class BattleSemanticClosure
+---@field resources table<string, true>
+---@field messages table<string, true>
+---@field routes table<string, true>
+
+---@param sources BattleSemanticClosureSources
+---@param closure BattleSemanticClosure
+---@param value unknown route value under walking
+local function collectSemanticResources(sources, closure, value)
+  if type(value) == "string" then
+    if sources.resourceCatalog[value] ~= nil then
+      closure.resources[value] = true
+    end
+  elseif type(value) == "table" then
+    for _, nested in pairs(value) do
+      collectSemanticResources(sources, closure, nested)
+    end
+  end
+end
+
+-- Walks a message route value, collecting the resources, message
+-- entries, and message routes it transitively reaches.
+---@param sources BattleSemanticClosureSources
+---@param closure BattleSemanticClosure
+---@param value unknown route value under walking
+---@param visited table<string, true> route keys already walked
+local function collectMessageClosure(sources, closure, value, visited)
+  if type(value) == "string" then
+    if sources.resourceCatalog[value] ~= nil then
+      closure.resources[value] = true
+      return
+    end
+    if sources.messageEntries[value] ~= nil then
+      closure.messages[value] = true
+      return
+    end
+    local routeKey = sources.sourceMessageRouteKeys[value] or value
+    local route = sources.normalizedMessageSourceRoutes[routeKey]
+      or sources.messageRoutes[routeKey]
+      or sources.dynamicMessageRoutes[value]
+    if route ~= nil then
+      closure.routes[routeKey] = true
+      if not visited[routeKey] then
+        visited[routeKey] = true
+        collectMessageClosure(sources, closure, route, visited)
+        return
+      end
+    end
+    local dynamic = sources.dynamicMessageRoutes[value]
+    if dynamic ~= nil and not visited[value] then
+      visited[value] = true
+      closure.routes[value] = true
+      collectMessageClosure(sources, closure, dynamic, visited)
+    end
+  elseif type(value) == "table" then
+    local firstRecord = value.firstRecord
+    local recordCount = value.recordCount
+    if type(firstRecord) == "string" and type(recordCount) == "number" then
+      local prefix, firstIndex = firstRecord:match("^(.*)/(%d+)$")
+      if prefix ~= nil then
+        for offset = 0, recordCount - 1 do
+          collectMessageClosure(sources, closure, prefix .. "/" .. (tonumber(firstIndex) + offset), visited)
+        end
+      end
+    end
+    for key, nested in pairs(value) do
+      if key == "placeholderPlan" and nested == "battleMessageTags" then
+        collectMessageClosure(sources, closure, "battle/message-template", visited)
+      else
+        collectMessageClosure(sources, closure, nested, visited)
+      end
+    end
+  end
+end
+
+-- The normalized route a semantic root names and the closure it reaches.
+---@param sources BattleSemanticClosureSources
+---@param root { kind: string, key: string, sourceRouteKey: string }
+---@return table<string, unknown>|nil routeValue, BattleSemanticClosure closure
+local function semanticRootClosure(sources, root)
+  ---@type BattleSemanticClosure
+  local closure = { resources = {}, messages = {}, routes = {} }
+  local routeValue
+  if root.kind == "menu-route" then
+    routeValue = sources.menuRoutes[root.sourceRouteKey]
+    if routeValue ~= nil then
+      collectSemanticResources(sources, closure, routeValue.resources)
+      collectMessageClosure(sources, closure, routeValue.messageEntries, {})
+      collectMessageClosure(sources, closure, routeValue.messageRoutes, {})
+    end
+  elseif root.kind == "message-route" then
+    routeValue = sources.normalizedMessageSourceRoutes[root.key]
+      or sources.messageRoutes[root.sourceRouteKey]
+      or sources.transitionMessageRoutes[root.sourceRouteKey]
+    if routeValue ~= nil then
+      collectMessageClosure(sources, closure, routeValue, { [root.key] = true })
+    end
+  elseif root.kind == "transition-route" then
+    routeValue = sources.transitionRoutes[root.sourceRouteKey]
+    if routeValue ~= nil then
+      collectSemanticResources(sources, closure, routeValue.resources)
+      collectMessageClosure(sources, closure, routeValue.messages, {})
+    end
+  end
+  return routeValue, closure
+end
+
+local MENU_FONT_IDS = {
+  bugContest = Sources.BUG_CONTEST_FONT_ID,
+  recorderFeedback = Sources.RECORDER_FEEDBACK_FONT_ID,
+}
+
+-- One semantic root's coverage record and closure identity.
+---@param sources BattleSemanticClosureSources
+---@param root { kind: string, key: string }
+---@param routeValue table<string, unknown> normalized root route
+---@param closure BattleSemanticClosure
+---@return table<string, unknown> coverage record
+local function semanticRootCoverage(sources, root, routeValue, closure)
+  local resourceKeys = sortedSetValues(closure.resources)
+  local identityParts = { root.kind, root.key, Hashing.hashLua(routeValue) }
+  for _, resourceKey in ipairs(resourceKeys) do
+    identityParts[#identityParts + 1] = resourceKey .. "=" .. sources.resourceCatalog[resourceKey].contentIdentity
+  end
+  for messageKey in pairs(closure.messages) do
+    if sources.messageEntries[messageKey] ~= nil then
+      identityParts[#identityParts + 1] = messageKey .. "=" .. Hashing.hashLua(sources.messageEntries[messageKey])
+    end
+  end
+  for routeKey in pairs(closure.routes) do
+    local closureRoute = sources.normalizedMessageSourceRoutes[routeKey]
+      or sources.messageRoutes[routeKey]
+      or sources.dynamicMessageRoutes[routeKey]
+    if closureRoute ~= nil then
+      identityParts[#identityParts + 1] = routeKey .. "=" .. Hashing.hashLua(closureRoute)
+    end
+  end
+  local isMenu = root.kind == "menu-route"
+  if isMenu then
+    for _, fontRole in ipairs(routeValue.fontRoles) do
+      identityParts[#identityParts + 1] = fontRole
+        .. "="
+        .. FieldFontCache.defPath(MENU_FONT_IDS[fontRole] or Sources.MENU_TEXT_FONT_ID)
+    end
+  end
+  table.sort(identityParts)
+  return {
+    kind = root.kind,
+    route = root.key,
+    closureIdentity = Hashing.sha1hex(table.concat(identityParts, "\n")),
+    resources = resourceKeys,
+    operations = { root.kind },
+    messageEntries = sortedSetValues(closure.messages),
+    messageRoutes = sortedSetValues(closure.routes),
+    fontRoles = isMenu and routeValue.fontRoles or {},
+    assetRoles = isMenu and routeValue.assetRoles or {},
+    assetBindings = isMenu and routeValue.assetBindings or {},
+    requiredContext = isMenu and routeValue.requiredContext or {},
+    programContext = root.kind == "message-route" and routeValue.programContext or nil,
+  }
+end
+
+-- Closes every semantic root not yet covered into `coverage`.
+---@param sources BattleSemanticClosureSources
+---@param semanticRoots { kind: string, key: string, sourceRouteKey: string }[]
+---@param coverage table<string, table<string, unknown>> coverage by root key, extended in place
+---@return string[] failures roots whose source route is not normalized
+local function closeSemanticRoots(sources, semanticRoots, coverage)
+  local failures = {}
+  for _, root in ipairs(semanticRoots) do
+    if coverage[root.key] == nil then
+      local routeValue, closure = semanticRootClosure(sources, root)
+      if routeValue == nil then
+        failures[#failures + 1] = root.key .. ": source semantic route is not normalized"
+      else
+        coverage[root.key] = semanticRootCoverage(sources, root, routeValue, closure)
+      end
+    end
+  end
+  return failures
+end
+
+---@param rootFailures string[] roots whose source route is not normalized
+---@param semanticRoots { key: string }[]
+---@param coverage table<string, table<string, unknown>> coverage by root key
+---@return string[] blockers
+local function coverageBlockers(rootFailures, semanticRoots, coverage)
+  local blockers = {}
+  if #rootFailures > 0 then
+    blockers[#blockers + 1] = "roots: " .. #rootFailures .. " source semantic roots did not close"
+    for _, failure in ipairs(rootFailures) do
+      blockers[#blockers + 1] = "roots: " .. failure
+    end
+  end
+  local uncoveredRoots = 0
+  for _, root in ipairs(semanticRoots) do
+    if coverage[root.key] == nil then
+      uncoveredRoots = uncoveredRoots + 1
+    end
+  end
+  if uncoveredRoots > 0 then
+    blockers[#blockers + 1] = "coverage: " .. uncoveredRoots .. " semantic roots have no closure identity"
+  end
+  return blockers
+end
+
+---@return table[] battlefield slot geometry rows
+local function battlefieldSlots()
+  local slots = {}
+  for index, row in ipairs(Sources.SLOT_GEOMETRY) do
+    slots[index] = {
+      sideType = row.sideType,
+      settledX = row.settledX,
+      settledY = row.settledY,
+      entryX = row.entryX,
+      entryY = row.entryY,
+      depth = row.depth,
+      hudX = row.hudX,
+      hudY = row.hudY,
+      hudPriority = row.hudPriority,
+      hudBgPriority = row.hudBgPriority,
+    }
+  end
+  return slots
+end
+
+---@return { key: string, x: integer, y: integer }[] layers menu layout layers in order
+---@return table<string, integer> indices source layer index by key
+local function menuLayoutLayers()
+  local layers = {}
+  local indices = {}
+  for _, layer in ipairs(Sources.MENU_LAYOUT.layers) do
+    layers[#layers + 1] = { key = layer.key, x = layer.x, y = layer.y }
+    indices[layer.key] = layer.index
+  end
+  return layers, indices
+end
+
+-- Background-dependent lower palettes: backgrounds 0..16 read base
+-- 247+b with touch 271+b; background 17 reads base 288, touch 289.
+-- BattleInput_NewInit loads the base member's first sixteen colors over
+-- lower palette 0, so screens drawing palette 0 vary per background.
+-- Variant palettes carry what the source carries (sixteen or thirty-two
+-- colors depending on the background); the manifest records the
+-- association without normalizing the counts.
+---@param lower Narc lower-screen archive
+---@param lowerPalette { colors: table[] } shared base lower palette
+---@return table<string, table<string, unknown>> lowerVariants source base/touch colors by background
+---@return { background: string, palette: table<string, unknown>, touchPalette: table<string, unknown> }[] palettes effective lower palettes in background order
+local function compileBackgroundLowerPalettes(lower, lowerPalette)
+  local lowerVariants = {}
+  local palettes = {}
+  for backgroundId = 0, 17 do
+    local background = Sources.BACKGROUNDS[backgroundId + 1]
+    local base = decodePalette(lower, Sources.lowerBasePaletteMember(backgroundId), background .. " lower palette")
+    local touch = decodePalette(lower, Sources.lowerTouchPaletteMember(backgroundId), background .. " touch palette")
+    lowerVariants[background] = { base = { colors = paletteRecords(base) }, touch = { colors = paletteRecords(touch) } }
+    local colors = {}
+    local touchColors = {}
+    for index, color in ipairs(lowerPalette.colors) do
+      colors[index] = index <= 16 and base.colors[index] or color
+      touchColors[index] = colors[index]
+      if index >= 9 and index <= 16 then
+        touchColors[index] = assert(touch.colors[index], background .. " touch palette carries color " .. index)
+      end
+    end
+    palettes[backgroundId + 1] =
+      { background = background, palette = { colors = colors }, touchPalette = { colors = touchColors } }
+  end
+  return lowerVariants, palettes
+end
+
+---@return string native health-box component tile bytes
+local function hudComponentBytes()
+  local componentByteParts = {}
+  local componentHex = Sources.HUD_COMPONENTS.hex
+  for index = 1, #componentHex, 2 do
+    componentByteParts[#componentByteParts + 1] = string.char(tonumber(componentHex:sub(index, index + 1), 16))
+  end
+  local componentBytes = table.concat(componentByteParts)
+  assert(
+    #componentBytes == Sources.HUD_COMPONENTS.tileCount * 32,
+    "native HUD component bytes match their published tile count"
+  )
+  return componentBytes
+end
+
+-- Ten recolored printer digits plus the printer's fill tile, appended
+-- after the native components on every health-box strip.
+---@param romFs RomFs
+---@return string digit tile bytes
+local function hudDigitBytes(romFs)
+  local digitSource = Sources.HUD_DIGITS
+  local digitChars =
+    decodeChars(openArchive(romFs, digitSource.narc, "health-box digits"), digitSource.member, "health-box digits")
+  assert(digitChars.depth == 3 and #digitChars.tiles >= 10 * 32, "health-box digits are ten 4bpp tiles")
+  local slotOf = { [0] = digitSource.background, digitSource.foreground, digitSource.shadow }
+  local digitByteParts = {}
+  for index = 1, 10 * 32 do
+    local byte = string.byte(digitChars.tiles, index)
+    local low = assert(slotOf[byte % 16], "health-box digit pixels use printer values 0..2")
+    local high = assert(slotOf[math.floor(byte / 16)], "health-box digit pixels use printer values 0..2")
+    digitByteParts[index] = string.char(high * 16 + low)
+  end
+  local fillByte = string.char(digitSource.background * 17)
+  return table.concat(digitByteParts) .. string.rep(fillByte, 32)
+end
+
+---@param romFs RomFs
+---@return table<string, { colors: table[] }> text palettes by role, truncated to their source banks
+local function compileTextPalettes(romFs)
+  local textPalettes = {}
+  for role, source in pairs(Sources.TEXT_PALETTES) do
+    local archive = openArchive(romFs, source.narc, role .. " text palette")
+    local decoded = decodePalette(archive, source.member, role .. " text palette")
+    local colors = {}
+    for index = 1, source.banks * 16 do
+      local color = decoded.colors[index]
+      assert(color ~= nil, role .. " text palette carries its source banks")
+      colors[index] = { r = color.r, g = color.g, b = color.b }
+    end
+    textPalettes[role] = { colors = colors }
+  end
+  return textPalettes
+end
+
+-- Decodes one source battle message bank, tokenizes every record, and
+-- stages it under its semantic bank key.
+---@param staging BattleGlobalStaging
+---@param archive Narc battle message archive
+---@param role string message bank role
+---@param dependencies table<string, unknown> message-bank decode dependencies, extended in place
+---@return table<string, unknown> bank decoded bank
+---@return string resourceKey staged bank key
+---@return { archive: string, memberId: integer, contentIdentity: string } provenance
+local function stageMessageBank(staging, archive, role, dependencies)
+  local memberId = Sources.MESSAGE_BANKS[role]
+  local sourceBytes = must(archive:readMember(memberId), "battle message source bank is absent")
+  local bank, failure =
+    UiMessageBank.read(archive, memberId, "battle message role " .. role, dependencies, "battle-message-" .. role)
+  if bank == nil then
+    error(
+      Errors.new("BATTLE_MESSAGE_BANK_INVALID", "source battle message bank does not decode", {
+        role = role,
+        memberId = memberId,
+        route = role,
+        cause = failure and failure.message or "unknown message-bank failure",
+      }),
+      0
+    )
+  end
+  local records = {}
+  local tokenCount = 0
+  for messageId = 0, bank.messageCount - 1 do
+    local tokens, tokenFailure = UiMessageBank.tokens(bank, memberId, messageId, charmap)
+    if tokens == nil then
+      error(
+        Errors.new("BATTLE_MESSAGE_BANK_INVALID", "source message record cannot be normalized", {
+          role = role,
+          memberId = memberId,
+          messageId = messageId,
+          cause = tokenFailure and tokenFailure.message or "unknown tokenization failure",
+        }),
+        0
+      )
+    end
+    records[messageId + 1] = { tokens = tokens }
+    tokenCount = tokenCount + #tokens
+  end
+  local identity = Hashing.sha1hex(sourceBytes)
+  local resourceKey = assert(Sources.MESSAGE_BANK_RESOURCE_KEYS[role], "message role has a semantic resource key")
+  stageCatalogResource(staging, resourceKey, {
+    kind = "message",
+    contentIdentity = identity,
+    format = "hgss-message-bank-tokens-v1",
+    geometry = { recordCount = bank.messageCount, tokenCount = tokenCount },
+  }, { format = "HGSS_MSG_BANK", records = records })
+  return bank, resourceKey, { archive = Sources.MENU_MESSAGE_BANK, memberId = memberId, contentIdentity = identity }
+end
+
+-- The battle message phase: staged message banks and trainer message
+-- index tables, tokenized message entries, and every normalized message
+-- route, placeholder, tag, and template input.
+---@param romFs RomFs
+---@param staging BattleGlobalStaging
+---@return table<string, unknown> messages normalized message sections plus their provenance
+local function compileBattleMessages(romFs, staging)
+  local menuMessageArchive = openArchive(romFs, Sources.MENU_MESSAGE_BANK, "battle menu messages")
+  local messageDependencies = {}
+  local messageBanks = {}
+  local decodedMessageBanks = {}
+  local messageBankProvenance = {}
+  for _, role in ipairs(sortedSetValues(Sources.MESSAGE_BANKS)) do
+    decodedMessageBanks[role], messageBanks[role], messageBankProvenance[role] =
+      stageMessageBank(staging, menuMessageArchive, role, messageDependencies)
+  end
+  local trainerTables = Sources.TRAINER_MESSAGE_TABLES
+  local trainerTableProvenance = stageTrainerMessageTables(romFs, staging)
+  local messageEntries, messageProvenance = tokenizeMessageEntries(decodedMessageBanks)
+
+  local messageRoutes = {}
+  for routeKey, route in pairs(Sources.MENU_MESSAGE_ROUTES) do
+    messageRoutes[routeKey] = {
+      inputs = route.inputs,
+      template = route.template,
+      templates = route.templates,
+      variants = route.variants,
+      branches = route.branches,
+    }
+  end
+  local sourceMessageRoutes = Sources.MESSAGE_ROUTES
+  local dynamicMessageRoutes = {
+    captureShake = {
+      bank = messageBanks[sourceMessageRoutes.captureShake.bank],
+      input = sourceMessageRoutes.captureShake.input,
+      firstRecord = sourceMessageRoutes.captureShake.firstRecord,
+      minimum = sourceMessageRoutes.captureShake.minimum,
+      maximum = sourceMessageRoutes.captureShake.maximum,
+      recordCount = sourceMessageRoutes.captureShake.recordCount,
+    },
+    metBillPCTransfer = {
+      banks = { messageBanks.scriptController },
+      inputs = sourceMessageRoutes.metBillPCTransfer.inputs,
+      cases = sourceMessageRoutes.metBillPCTransfer.cases,
+    },
+    frontierTrainerSpeech = {
+      banks = {
+        messageBanks.frontierTrainerProfileZero,
+        messageBanks.frontierTrainerProfileFallback,
+      },
+      inputs = sourceMessageRoutes.frontierTrainerSpeech.inputs,
+      profilePredicate = sourceMessageRoutes.frontierTrainerSpeech.profilePredicate,
+      recordFormula = sourceMessageRoutes.frontierTrainerSpeech.recordFormula,
+    },
+    trainerPairSpeech = {
+      bank = messageBanks.trainerPairLookup,
+      inputs = sourceMessageRoutes.trainerPairSpeech.inputs,
+      selection = {
+        lookup = sourceMessageRoutes.trainerPairSpeech.selection.lookup,
+        offsetsResource = trainerTables.offsetsResource,
+        pairsResource = trainerTables.pairsResource,
+        offsetSelection = trainerTables.offsetSelection,
+        pairSelection = trainerTables.pairSelection,
+      },
+    },
+    tutorialAuthor = {
+      bank = messageBanks.tutorialAuthor,
+      input = sourceMessageRoutes.tutorialAuthor.input,
+      variants = sourceMessageRoutes.tutorialAuthor.variants,
+    },
+  }
+  local normalizedMessageSourceRoutes = compileMessageSourceRoutes(messageBanks, staging.catalog)
+  local placeholderBanks = {}
+  for placeholderRole, bankRole in pairs(Sources.MESSAGE_PLACEHOLDER_BANKS) do
+    placeholderBanks[placeholderRole] = messageBanks[bankRole]
+  end
+  local placeholderSchemas = {}
+  for role, sourceSchema in pairs(Sources.MESSAGE_PLACEHOLDER_SCHEMAS) do
+    placeholderSchemas[role] = {
+      bank = messageBanks[sourceSchema.bankRole],
+      input = sourceSchema.input,
+    }
+  end
+  local messageTagSchemas = {}
+  for sourceTag, slots in pairs(Sources.MESSAGE_TAG_SCHEMAS) do
+    local key = sourceTag:gsub("^TAG_", ""):lower():gsub("_", "-")
+    messageTagSchemas[key] = slots
+  end
+  local messageTagInputs = {}
+  for role, resolver in pairs(Sources.MESSAGE_TAG_CONTEXT_RESOLVERS) do
+    messageTagInputs[role] = { input = resolver.input, output = resolver.result, selection = resolver.selectors }
+  end
+  local messageTemplateInputs = {}
+  for role, sourceInput in pairs(Sources.MESSAGE_TEMPLATE_INPUTS) do
+    messageTemplateInputs[role] = {
+      input = sourceInput.input,
+      dependency = sourceInput.dependency,
+      supported = sourceInput.supported,
+      reason = sourceInput.reason,
+    }
+  end
+  local transitionNameBank = decodedMessageBanks.transitionName
+  local transitionNameKey = "transition/trainer-name"
+  local transitionNameTokens, transitionNameTokenFailure =
+    UiMessageBank.tokens(transitionNameBank, Sources.TRANSITION_MESSAGE_MEMBER, Sources.TRANSITION_MESSAGE_ID, charmap)
+  if transitionNameTokens == nil then
+    error(
+      Errors.new("BATTLE_TRANSITION_MESSAGE_INVALID", "transition name text is absent or malformed", {
+        memberId = Sources.TRANSITION_MESSAGE_MEMBER,
+        messageId = Sources.TRANSITION_MESSAGE_ID,
+        cause = transitionNameTokenFailure and transitionNameTokenFailure.message or "unknown tokenizer failure",
+      }),
+      0
+    )
+  end
+  messageEntries[transitionNameKey] = { tokens = transitionNameTokens }
+  messageRoutes[transitionNameKey] = { template = transitionNameKey, inputs = { "trainerName" } }
+  messageRoutes["transition/rival-name"] = { template = transitionNameKey, inputs = { "rivalName" } }
+  return {
+    dependencies = messageDependencies,
+    banks = messageBanks,
+    bankProvenance = messageBankProvenance,
+    trainerTableProvenance = trainerTableProvenance,
+    entries = messageEntries,
+    provenance = messageProvenance,
+    routes = messageRoutes,
+    dynamicRoutes = dynamicMessageRoutes,
+    sourceRoutes = normalizedMessageSourceRoutes,
+    placeholderBanks = placeholderBanks,
+    placeholderSchemas = placeholderSchemas,
+    tagSchemas = messageTagSchemas,
+    tagInputs = messageTagInputs,
+    templateInputs = messageTemplateInputs,
+    transitionNameKey = transitionNameKey,
+    transitionMessageProvenance = {
+      archive = Sources.MENU_MESSAGE_BANK,
+      memberId = Sources.TRANSITION_MESSAGE_MEMBER,
+      messageId = Sources.TRANSITION_MESSAGE_ID,
+    },
+  }
+end
+
 -- Compile the shared ordinary battle UI: menu compositions, health-box
 -- and arrow sprites with their animations, party gauges, terrain bake
 -- inputs, lower palettes per background, font/audio references, and the
@@ -1749,37 +3438,15 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     checkColorCount(lowerPalette, 256, "base lower palette")
     local hudPalette = decodePalette(sceneArchive, ROLES.hudPalette, "ordinary HUD palette")
     checkColorCount(hudPalette, 16, "ordinary HUD palette")
-    local componentByteParts = {}
-    local componentHex = Sources.HUD_COMPONENTS.hex
-    for index = 1, #componentHex, 2 do
-      componentByteParts[#componentByteParts + 1] = string.char(tonumber(componentHex:sub(index, index + 1), 16))
-    end
-    local componentBytes = table.concat(componentByteParts)
-    assert(
-      #componentBytes == Sources.HUD_COMPONENTS.tileCount * 32,
-      "native HUD component bytes match their published tile count"
-    )
-    -- Ten recolored printer digits plus the printer's fill tile, appended
-    -- after the native components on every health-box strip.
-    local digitSource = Sources.HUD_DIGITS
-    local digitChars =
-      decodeChars(openArchive(romFs, digitSource.narc, "health-box digits"), digitSource.member, "health-box digits")
-    assert(digitChars.depth == 3 and #digitChars.tiles >= 10 * 32, "health-box digits are ten 4bpp tiles")
-    local slotOf = { [0] = digitSource.background, digitSource.foreground, digitSource.shadow }
-    local digitByteParts = {}
-    for index = 1, 10 * 32 do
-      local byte = string.byte(digitChars.tiles, index)
-      local low = assert(slotOf[byte % 16], "health-box digit pixels use printer values 0..2")
-      local high = assert(slotOf[math.floor(byte / 16)], "health-box digit pixels use printer values 0..2")
-      digitByteParts[index] = string.char(high * 16 + low)
-    end
-    local fillByte = string.char(digitSource.background * 17)
-    local digitBytes = table.concat(digitByteParts) .. string.rep(fillByte, 32)
+    local componentBytes = hudComponentBytes()
+    local digitBytes = hudDigitBytes(romFs)
     local lowerObjPalette = decodePalette(sceneArchive, ROLES.lowerObjPalette, "lower OBJ palette")
     checkColorCount(lowerObjPalette, 112, "lower OBJ palette")
     local images = {}
     local resourcePayloads = {}
     local resourceCatalog = {}
+    ---@type BattleGlobalStaging
+    local staging = { catalog = resourceCatalog, payloads = resourcePayloads }
     local menuTilemapProvenance = {}
     local function stageSlice(name, pixels, width, height)
       images[name] = { width = width, height = height, pixels = pixels }
@@ -1817,36 +3484,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       role = "shared lower characters",
     })
     stageSlice("lower-chars", lowerStrip.pixels, lowerStrip.width, lowerStrip.height)
-    -- Background-dependent lower palettes: backgrounds 0..16 read base
-    -- 247+b with touch 271+b; background 17 reads base 288, touch 289.
-    -- BattleInput_NewInit loads the base member's first sixteen colors over
-    -- lower palette 0, so screens drawing palette 0 vary per background.
-    local lowerVariants = {}
-    local backgroundLowerPalettes = {}
-    for backgroundId = 0, 17 do
-      local background = Sources.BACKGROUNDS[backgroundId + 1]
-      -- Variant palettes carry what the source carries (sixteen or
-      -- thirty-two colors depending on the background); the manifest
-      -- records the association without normalizing the counts.
-      local base = decodePalette(lower, Sources.lowerBasePaletteMember(backgroundId), background .. " lower palette")
-      local touch = decodePalette(lower, Sources.lowerTouchPaletteMember(backgroundId), background .. " touch palette")
-      lowerVariants[background] =
-        { base = { colors = paletteRecords(base) }, touch = { colors = paletteRecords(touch) } }
-      local colors = {}
-      local touchColors = {}
-      for index, color in ipairs(lowerPalette.colors) do
-        colors[index] = index <= 16 and base.colors[index] or color
-        touchColors[index] = colors[index]
-        if index >= 9 and index <= 16 then
-          touchColors[index] = assert(touch.colors[index], background .. " touch palette carries color " .. index)
-        end
-      end
-      backgroundLowerPalettes[#backgroundLowerPalettes + 1] = {
-        background = background,
-        palette = { colors = colors },
-        touchPalette = { colors = touchColors },
-      }
-    end
+    local lowerVariants, backgroundLowerPalettes = compileBackgroundLowerPalettes(lower, lowerPalette)
     -- Background variants share one staged image per distinct raster, so
     -- the backdrop every menu composes is staged once per background.
     local stagedVariants = {}
@@ -1925,16 +3563,14 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         local name = names[index]
         stageSlice(name, raster.pixels, raster.width, raster.height)
         local tilemapKey = "menu/tilemap/" .. name:sub(#"menu-" + 1):gsub("-", "/")
-        local tilemapPath = BattlePresentationCache.globalResourcePath(tilemapKey)
         local tilemapBytes = must(lower:readMember(memberId), "menu tilemap source member is absent")
-        resourcePayloads[tilemapPath] = screen
-        resourceCatalog[tilemapKey] = {
+        local format, geometry = describeScreen(screen)
+        stageCatalogResource(staging, tilemapKey, {
           kind = "map",
           contentIdentity = Hashing.sha1hex(tilemapBytes),
-          format = "nitro-bg-map-v1",
-          geometry = { width = screen.width, height = screen.height, entryCount = #screen.entries },
-          path = tilemapPath,
-        }
+          format = format,
+          geometry = geometry,
+        }, screen)
         menuTilemapProvenance[tilemapKey] = { archive = Sources.LOWER_NARC, memberId = memberId }
         local backgrounds, touchBackgrounds = backgroundVariants(name, screen, label .. " screen " .. index, raster)
         local entry = {
@@ -2185,434 +3821,12 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     -- Keep narration bound to its own decoded FontID resource. The field-font
     -- producer stages every text-printer font role used by battle separately.
     local narrationFont = FieldFontCache.defPath(Sources.BATTLE_FONT_ID)
-    local textPalettes = {}
-    for role, source in pairs(Sources.TEXT_PALETTES) do
-      local archive = openArchive(romFs, source.narc, role .. " text palette")
-      local decoded = decodePalette(archive, source.member, role .. " text palette")
-      local colors = {}
-      for index = 1, source.banks * 16 do
-        local color = decoded.colors[index]
-        assert(color ~= nil, role .. " text palette carries its source banks")
-        colors[index] = { r = color.r, g = color.g, b = color.b }
-      end
-      textPalettes[role] = { colors = colors }
-    end
-    local menuMessageArchive = openArchive(romFs, Sources.MENU_MESSAGE_BANK, "battle menu messages")
-    local messageDependencies = {}
-    local messageBanks = {}
-    local decodedMessageBanks = {}
-    local messageBankProvenance = {}
-    local messageBankRoles = {}
-    for role in pairs(Sources.MESSAGE_BANKS) do
-      messageBankRoles[#messageBankRoles + 1] = role
-    end
-    table.sort(messageBankRoles)
-    local function stageMessageBank(role)
-      local memberId = Sources.MESSAGE_BANKS[role]
-      local sourceBytes = must(menuMessageArchive:readMember(memberId), "battle message source bank is absent")
-      local bank, failure = UiMessageBank.read(
-        menuMessageArchive,
-        memberId,
-        "battle message role " .. role,
-        messageDependencies,
-        "battle-message-" .. role
-      )
-      if bank == nil then
-        error(
-          Errors.new("BATTLE_MESSAGE_BANK_INVALID", "source battle message bank does not decode", {
-            role = role,
-            memberId = memberId,
-            route = role,
-            cause = failure and failure.message or "unknown message-bank failure",
-          }),
-          0
-        )
-      end
-      local records = {}
-      local tokenCount = 0
-      for messageId = 0, bank.messageCount - 1 do
-        local tokens, tokenFailure = UiMessageBank.tokens(bank, memberId, messageId, charmap)
-        if tokens == nil then
-          error(
-            Errors.new("BATTLE_MESSAGE_BANK_INVALID", "source message record cannot be normalized", {
-              role = role,
-              memberId = memberId,
-              messageId = messageId,
-              cause = tokenFailure and tokenFailure.message or "unknown tokenization failure",
-            }),
-            0
-          )
-        end
-        records[messageId + 1] = { tokens = tokens }
-        tokenCount = tokenCount + #tokens
-      end
-      local identity = Hashing.sha1hex(sourceBytes)
-      local resourceKey = assert(Sources.MESSAGE_BANK_RESOURCE_KEYS[role], "message role has a semantic resource key")
-      local path = BattlePresentationCache.globalResourcePath(resourceKey)
-      resourceCatalog[resourceKey] = {
-        kind = "message",
-        contentIdentity = identity,
-        format = "hgss-message-bank-tokens-v1",
-        geometry = { recordCount = bank.messageCount, tokenCount = tokenCount },
-        path = path,
-      }
-      resourcePayloads[path] = { format = "HGSS_MSG_BANK", records = records }
-      messageBanks[role] = resourceKey
-      messageBankProvenance[role] = {
-        archive = Sources.MENU_MESSAGE_BANK,
-        memberId = memberId,
-        contentIdentity = identity,
-      }
-      return bank
-    end
-    for _, role in ipairs(messageBankRoles) do
-      decodedMessageBanks[role] = stageMessageBank(role)
-    end
-    local trainerTables = Sources.TRAINER_MESSAGE_TABLES
-    local offsetArchive = openArchive(romFs, trainerTables.offsetsArchive, "trainer message offsets")
-    local pairArchive = openArchive(romFs, trainerTables.pairsArchive, "trainer message pairs")
-    local offsetBytes = must(offsetArchive:readMember(trainerTables.memberId), "trainer message offset table is absent")
-    local pairBytes = must(pairArchive:readMember(trainerTables.memberId), "trainer message pair table is absent")
-    if #offsetBytes % 2 ~= 0 or #pairBytes % 4 ~= 0 then
-      error(
-        Errors.new("BATTLE_TRAINER_MESSAGE_INDEX_INVALID", "trainer message tables have invalid record widths", {
-          offsetBytes = #offsetBytes,
-          pairBytes = #pairBytes,
-        }),
-        0
-      )
-    end
-    local offsetsReader = BinaryReader.new(offsetBytes, "trainer-message-offsets")
-    local pairsReader = BinaryReader.new(pairBytes, "trainer-message-pairs")
-    local trainerOffsets = {}
-    for offset = 0, #offsetBytes - 2, 2 do
-      trainerOffsets[#trainerOffsets + 1] = offsetsReader:u16le(offset)
-    end
-    local trainerPairs = {}
-    for offset = 0, #pairBytes - 4, 4 do
-      trainerPairs[#trainerPairs + 1] = {
-        trainerIndex = pairsReader:u16le(offset),
-        messageSelector = pairsReader:u16le(offset + 2),
-      }
-    end
-    for index, offset in ipairs(trainerOffsets) do
-      if offset % 4 ~= 0 or offset > #pairBytes then
-        error(
-          Errors.new("BATTLE_TRAINER_MESSAGE_INDEX_INVALID", "trainer offset escapes its pair table", {
-            trainerIndex = index - 1,
-            offset = offset,
-            pairBytes = #pairBytes,
-          }),
-          0
-        )
-      end
-    end
-    local trainerTableProvenance = {
-      offsets = {
-        archive = trainerTables.offsetsArchive,
-        memberId = trainerTables.memberId,
-        contentIdentity = Hashing.sha1hex(offsetBytes),
-        recordCount = #trainerOffsets,
-      },
-      pairs = {
-        archive = trainerTables.pairsArchive,
-        memberId = trainerTables.memberId,
-        contentIdentity = Hashing.sha1hex(pairBytes),
-        recordCount = #trainerPairs,
-      },
-    }
-    local function stageTrainerMessageTable(resourceKey, bytes, payload, recordCount, role)
-      local path = BattlePresentationCache.globalResourcePath(resourceKey)
-      resourceCatalog[resourceKey] = {
-        kind = "message",
-        contentIdentity = Hashing.sha1hex(bytes),
-        format = role == "offsets" and "hgss-trainer-message-offsets-v1" or "hgss-trainer-message-pairs-v1",
-        geometry = { recordCount = recordCount },
-        path = path,
-      }
-      resourcePayloads[path] = payload
-    end
-    stageTrainerMessageTable(
-      "trainer-message-index/offsets",
-      offsetBytes,
-      { format = "HGSS_TRAINER_MESSAGE_OFFSETS", offsets = trainerOffsets },
-      #trainerOffsets,
-      "offsets"
-    )
-    local normalizedTrainerPairs = {}
-    for index, pair in ipairs(trainerPairs) do
-      normalizedTrainerPairs[index] = {
-        trainerIndex = pair.trainerIndex,
-        messageKind = pair.messageSelector,
-      }
-    end
-    stageTrainerMessageTable(
-      "trainer-message-index/pairs",
-      pairBytes,
-      { format = "HGSS_TRAINER_MESSAGE_PAIRS", records = normalizedTrainerPairs },
-      #normalizedTrainerPairs,
-      "pairs"
-    )
-    local messageBank = decodedMessageBanks.scriptController
-    local messageKeys = {}
-    for key in pairs(Sources.MENU_MESSAGES) do
-      messageKeys[#messageKeys + 1] = key
-    end
-    table.sort(messageKeys)
-    local messageEntries = {}
-    local messageProvenance = {}
-    for _, key in ipairs(messageKeys) do
-      local messageId = Sources.MENU_MESSAGES[key]
-      local tokens, tokenFailure = UiMessageBank.tokens(messageBank, 197, messageId, charmap)
-      if tokens == nil then
-        error(
-          Errors.new("BATTLE_MENU_MESSAGE_INVALID", "battle menu text selector is absent or malformed", {
-            message = key,
-            messageId = messageId,
-            cause = tokenFailure and tokenFailure.message or "unknown tokenizer failure",
-          }),
-          0
-        )
-      end
-      messageEntries[key] = { tokens = tokens }
-      messageProvenance[key] = messageId
-    end
-    local messageRecordKeys = {}
-    for key in pairs(Sources.MESSAGE_RECORDS) do
-      messageRecordKeys[#messageRecordKeys + 1] = key
-    end
-    table.sort(messageRecordKeys)
-    for _, key in ipairs(messageRecordKeys) do
-      local source = Sources.MESSAGE_RECORDS[key]
-      local memberId = Sources.MESSAGE_BANKS[source.bank]
-      local tokens, tokenFailure =
-        UiMessageBank.tokens(decodedMessageBanks[source.bank], memberId, source.messageId, charmap)
-      if tokens == nil then
-        error(
-          Errors.new("BATTLE_MENU_MESSAGE_INVALID", "source battle message record is absent or malformed", {
-            message = key,
-            role = source.bank,
-            memberId = memberId,
-            messageId = source.messageId,
-            cause = tokenFailure and tokenFailure.message or "unknown tokenizer failure",
-          }),
-          0
-        )
-      end
-      messageEntries[key] = { tokens = tokens }
-      messageProvenance[key] = { bankRole = source.bank, messageId = source.messageId }
-    end
-
-    local messageRoutes = {}
-    for routeKey, route in pairs(Sources.MENU_MESSAGE_ROUTES) do
-      local copy = { inputs = route.inputs }
-      if route.template ~= nil then
-        copy.template = route.template
-      end
-      if route.templates ~= nil then
-        copy.templates = route.templates
-      end
-      if route.variants ~= nil then
-        copy.variants = route.variants
-      end
-      if route.branches ~= nil then
-        copy.branches = route.branches
-      end
-      messageRoutes[routeKey] = copy
-    end
-    local sourceMessageRoutes = Sources.MESSAGE_ROUTES
-    local dynamicMessageRoutes = {
-      captureShake = {
-        bank = messageBanks[sourceMessageRoutes.captureShake.bank],
-        input = sourceMessageRoutes.captureShake.input,
-        firstRecord = sourceMessageRoutes.captureShake.firstRecord,
-        minimum = sourceMessageRoutes.captureShake.minimum,
-        maximum = sourceMessageRoutes.captureShake.maximum,
-        recordCount = sourceMessageRoutes.captureShake.recordCount,
-      },
-      metBillPCTransfer = {
-        banks = { messageBanks.scriptController },
-        inputs = sourceMessageRoutes.metBillPCTransfer.inputs,
-        cases = sourceMessageRoutes.metBillPCTransfer.cases,
-      },
-      frontierTrainerSpeech = {
-        banks = {
-          messageBanks.frontierTrainerProfileZero,
-          messageBanks.frontierTrainerProfileFallback,
-        },
-        inputs = sourceMessageRoutes.frontierTrainerSpeech.inputs,
-        profilePredicate = sourceMessageRoutes.frontierTrainerSpeech.profilePredicate,
-        recordFormula = sourceMessageRoutes.frontierTrainerSpeech.recordFormula,
-      },
-      trainerPairSpeech = {
-        bank = messageBanks.trainerPairLookup,
-        inputs = sourceMessageRoutes.trainerPairSpeech.inputs,
-        selection = {
-          lookup = sourceMessageRoutes.trainerPairSpeech.selection.lookup,
-          offsetsResource = trainerTables.offsetsResource,
-          pairsResource = trainerTables.pairsResource,
-          offsetSelection = trainerTables.offsetSelection,
-          pairSelection = trainerTables.pairSelection,
-        },
-      },
-      tutorialAuthor = {
-        bank = messageBanks.tutorialAuthor,
-        input = sourceMessageRoutes.tutorialAuthor.input,
-        variants = sourceMessageRoutes.tutorialAuthor.variants,
-      },
-    }
-    local messageBankRoleByResourceKey = {}
-    for role, resourceKey in pairs(Sources.MESSAGE_BANK_RESOURCE_KEYS) do
-      messageBankRoleByResourceKey[resourceKey] = role
-    end
-    local function semanticBankReferences(sourceRoute)
-      local references = {}
-      local function addReference(reference)
-        if messageBankRoleByResourceKey[reference] ~= nil or resourceCatalog[reference] ~= nil then
-          references[#references + 1] = reference
-          return
-        end
-        local resourceKey = messageBanks[reference]
-        if resourceKey == nil then
-          error(
-            Errors.new("BATTLE_MESSAGE_ROUTE_INVALID", "source message route references an unstaged bank key", {
-              bank = reference,
-            }),
-            0
-          )
-        end
-        references[#references + 1] = resourceKey
-      end
-      if sourceRoute.bankRole ~= nil then
-        addReference(sourceRoute.bankRole)
-      elseif sourceRoute.banks ~= nil then
-        for _, bank in ipairs(sourceRoute.banks) do
-          addReference(bank)
-        end
-      end
-      return references
-    end
-    local normalizedMessageSourceRoutes = {}
-    for sourceName, sourceRoute in pairs(Sources.MESSAGE_SOURCE_ROUTES) do
-      local key = assert(sourceRoute.key, "message source route has a semantic key")
-      local inputs = sourceRoute.inputs or sourceRoute.operands
-      if inputs == nil and sourceRoute.input ~= nil then
-        inputs = { sourceRoute.input }
-      end
-      local route = {
-        banks = semanticBankReferences(sourceRoute),
-        inputs = inputs or {},
-      }
-      if sourceRoute.programContext ~= nil then
-        route.programContext = sourceRoute.programContext
-      end
-      if sourceRoute.placeholderPlan ~= nil then
-        route.placeholderPlan = sourceRoute.placeholderPlan
-      end
-      if sourceRoute.mailExpansion ~= nil then
-        route.expansion = sourceRoute.mailExpansion
-      end
-      if sourceRoute.mailCase ~= nil then
-        route.selectionCase = sourceRoute.mailCase
-      end
-      if sourceRoute.placeholders ~= nil then
-        route.placeholderInputs = sourceRoute.placeholders
-      end
-      if sourceRoute.buffers ~= nil then
-        route.bufferPlan = sourceRoute.buffers
-      end
-      if sourceRoute.selection ~= nil then
-        route.selection = sourceRoute.selection
-      end
-      if sourceRoute.recordSelection ~= nil then
-        route.recordSelection = sourceRoute.recordSelection
-      end
-      if sourceRoute.resources ~= nil then
-        route.resources = sourceRoute.resources
-      end
-      if sourceRoute.routes ~= nil then
-        route.routes = sourceRoute.routes
-      end
-      if sourceRoute.reachable ~= nil then
-        route.reachableCases = sourceRoute.reachable
-      end
-      if sourceRoute.unresolved ~= nil then
-        route.unresolvedCases = sourceRoute.unresolved
-      end
-      if sourceName == "frontierTrainerSpeech" then
-        route.recordFormula = sourceMessageRoutes.frontierTrainerSpeech.recordFormula
-        route.profilePredicate = sourceMessageRoutes.frontierTrainerSpeech.profilePredicate
-      elseif sourceName == "trainerPairSpeech" then
-        route.recordSelection = sourceMessageRoutes.trainerPairSpeech.recordSelection
-      elseif sourceName == "recorderFeedback" then
-        route.routes = { "menu/vs-recorder-feedback" }
-      end
-      normalizedMessageSourceRoutes[key] = route
-    end
-    local placeholderBanks = {}
-    for placeholderRole, bankRole in pairs(Sources.MESSAGE_PLACEHOLDER_BANKS) do
-      placeholderBanks[placeholderRole] = messageBanks[bankRole]
-    end
-    local placeholderSchemas = {}
-    for role, sourceSchema in pairs(Sources.MESSAGE_PLACEHOLDER_SCHEMAS) do
-      placeholderSchemas[role] = {
-        bank = messageBanks[sourceSchema.bankRole],
-        input = sourceSchema.input,
-      }
-    end
-    local messageTagSchemas = {}
-    for sourceTag, slots in pairs(Sources.MESSAGE_TAG_SCHEMAS) do
-      local key = sourceTag:gsub("^TAG_", ""):lower():gsub("_", "-")
-      messageTagSchemas[key] = slots
-    end
-    local messageTagInputs = {}
-    for role, resolver in pairs(Sources.MESSAGE_TAG_CONTEXT_RESOLVERS) do
-      local normalized = { input = resolver.input, output = resolver.result }
-      if resolver.selectors ~= nil then
-        normalized.selection = resolver.selectors
-      end
-      messageTagInputs[role] = normalized
-    end
-    local messageTemplateInputs = {}
-    for role, sourceInput in pairs(Sources.MESSAGE_TEMPLATE_INPUTS) do
-      local normalized = { input = sourceInput.input }
-      if sourceInput.dependency ~= nil then
-        normalized.dependency = sourceInput.dependency
-      end
-      if sourceInput.supported ~= nil then
-        normalized.supported = sourceInput.supported
-      end
-      if sourceInput.reason ~= nil then
-        normalized.reason = sourceInput.reason
-      end
-      messageTemplateInputs[role] = normalized
-    end
-    local transitionNameBank = decodedMessageBanks.transitionName
-    local transitionNameKey = "transition/trainer-name"
-    local transitionNameTokens, transitionNameTokenFailure = UiMessageBank.tokens(
-      transitionNameBank,
-      Sources.TRANSITION_MESSAGE_MEMBER,
-      Sources.TRANSITION_MESSAGE_ID,
-      charmap
-    )
-    if transitionNameTokens == nil then
-      error(
-        Errors.new("BATTLE_TRANSITION_MESSAGE_INVALID", "transition name text is absent or malformed", {
-          memberId = Sources.TRANSITION_MESSAGE_MEMBER,
-          messageId = Sources.TRANSITION_MESSAGE_ID,
-          cause = transitionNameTokenFailure and transitionNameTokenFailure.message or "unknown tokenizer failure",
-        }),
-        0
-      )
-    end
-    messageEntries[transitionNameKey] = { tokens = transitionNameTokens }
-    messageRoutes[transitionNameKey] = { template = transitionNameKey, inputs = { "trainerName" } }
-    messageRoutes["transition/rival-name"] = { template = transitionNameKey, inputs = { "rivalName" } }
-    local transitionMessageProvenance = {
-      archive = Sources.MENU_MESSAGE_BANK,
-      memberId = Sources.TRANSITION_MESSAGE_MEMBER,
-      messageId = Sources.TRANSITION_MESSAGE_ID,
-    }
+    local textPalettes = compileTextPalettes(romFs)
+    local messages = compileBattleMessages(romFs, staging)
+    local messageEntries = messages.entries
+    local messageRoutes = messages.routes
+    local dynamicMessageRoutes = messages.dynamicRoutes
+    local normalizedMessageSourceRoutes = messages.sourceRoutes
 
     local menuModeRules = {}
     for mode, rule in pairs(Sources.MENU_MODE_RULES) do
@@ -2620,11 +3834,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       for slot, key in pairs(rule.labels) do
         labels[slot] = key
       end
-      local dynamicFields = {}
-      for index, field in ipairs(rule.dynamicFields) do
-        dynamicFields[index] = field
-      end
-      menuModeRules[mode] = { labels = labels, dynamicFields = dynamicFields }
+      menuModeRules[mode] = { labels = labels, dynamicFields = copyStrings(rule.dynamicFields) }
     end
 
     local menuLayouts = {}
@@ -2636,46 +3846,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       end)
       local resourceKey = "menu/layout/" .. layoutKey .. "/" .. pathSlot
       local label = "menu layout " .. layoutKey .. " " .. slot
-      local decoded
-      local format
-      local geometry
-      if source.kind == "texture" then
-        decoded = decodeChars(archive, source.memberId, label)
-        format = decoded.depth == 3 and "nitro-char-4bpp-v1" or "nitro-char-8bpp-v1"
-        geometry = { depth = decoded.depth, tileCount = #decoded.tiles / (decoded.depth == 3 and 32 or 64) }
-      elseif source.kind == "palette" then
-        decoded = decodePalette(archive, source.memberId, label)
-        format = "nitro-palette-rgb888-v1"
-        geometry = { colorCount = #decoded.colors }
-      elseif source.kind == "map" then
-        decoded = decodeScreen(archive, source.memberId, label)
-        format = "nitro-bg-map-v1"
-        geometry = { width = decoded.width, height = decoded.height, entryCount = #decoded.entries }
-      elseif source.kind == "cell" then
-        decoded = decodeCells(archive, source.memberId, label)
-        format = "nitro-obj-cells-v1"
-        local bounds = {}
-        for index, cell in ipairs(decoded.cells) do
-          local minX, minY, maxX, maxY
-          for _, obj in ipairs(cell.objs) do
-            minX = minX == nil and obj.x or math.min(minX, obj.x)
-            minY = minY == nil and obj.y or math.min(minY, obj.y)
-            maxX = math.max(maxX or (obj.x + obj.width), obj.x + obj.width)
-            maxY = math.max(maxY or (obj.y + obj.height), obj.y + obj.height)
-          end
-          bounds[index] = minX == nil and { x = 0, y = 0, width = 0, height = 0 }
-            or { x = minX, y = minY, width = maxX - minX, height = maxY - minY }
-        end
-        geometry = { cellCount = #decoded.cells, bounds = bounds }
-      elseif source.kind == "animation" then
-        decoded = decodeAnimation(archive, source.memberId, label)
-        format = "nitro-obj-animation-v1"
-        local frameCount = 0
-        for _, animation in ipairs(decoded.anims) do
-          frameCount = frameCount + #animation.frames
-        end
-        geometry = { animationCount = #decoded.anims, frameCount = frameCount, durationUnit = "native-frame" }
-      else
+      if CATALOG_RESOURCE_CODECS[source.kind] == nil then
         error(
           Errors.new("BATTLE_RESOURCE_KIND_UNKNOWN", "menu layout resource has no decoder", {
             resource = resourceKey,
@@ -2684,15 +3855,13 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           0
         )
       end
-      local path = BattlePresentationCache.globalResourcePath(resourceKey)
-      resourcePayloads[path] = decoded
-      resourceCatalog[resourceKey] = {
+      local decoded, format, geometry = decodeCatalogResource(archive, source.memberId, source.kind, label)
+      stageCatalogResource(staging, resourceKey, {
         kind = source.kind,
         contentIdentity = Hashing.sha1hex(bytes),
         format = format,
         geometry = geometry,
-        path = path,
-      }
+      }, decoded)
       menuLayoutProvenance[resourceKey] = {
         archive = source.archive,
         memberId = source.memberId,
@@ -2759,1028 +3928,56 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     local menuSelectors = {}
     local menuSelectorProvenance = {}
     for routeKey, route in pairs(Sources.MENU_ROUTES) do
-      local selector = { screenGroup = route.screenGroup, textSet = route.textSet }
-      if route.mode ~= nil then
-        selector.mode = route.mode
-      end
-      if route.phase ~= nil then
-        selector.phase = route.phase
-      end
-      menuSelectors[routeKey] = selector
+      menuSelectors[routeKey] =
+        { screenGroup = route.screenGroup, textSet = route.textSet, mode = route.mode, phase = route.phase }
       menuSelectorProvenance[routeKey] = route.sourceSelector
     end
     local menuRuntimeContexts = {}
     for contextKey, route in pairs(Sources.MENU_RUNTIME_CONTEXTS) do
-      local inputs = {}
-      for index, input in ipairs(route.inputs) do
-        inputs[index] = input
-      end
-      local assetRoles = {}
-      for index, role in ipairs(route.assetRoles) do
-        assetRoles[index] = role
-      end
-      menuRuntimeContexts[contextKey] = { inputs = inputs, assetRoles = assetRoles }
-    end
-    local function copyMenuContext(value)
-      if type(value) ~= "table" then
-        return value
-      end
-      local copy = {}
-      for key, nested in pairs(value) do
-        if key ~= "sourceSelector" and key ~= "predicate" then
-          copy[key] = copyMenuContext(nested)
-        end
-      end
-      return copy
+      menuRuntimeContexts[contextKey] =
+        { inputs = copyStrings(route.inputs), assetRoles = copyStrings(route.assetRoles) }
     end
     local menuContexts = {}
     for key, sourceContext in pairs(Sources.MENU_CONTEXTS) do
       menuContexts[key] = copyMenuContext(sourceContext)
     end
     menuContexts.frontier.input = "frontierBattle"
-    local menuTextSets = {
-      none = { entries = {}, routes = {}, fonts = {} },
-      main = { entries = { "label/cancel", "label/run" }, routes = {}, fonts = { "menu" } },
-      ["pal-park"] = { entries = {}, routes = {}, fonts = { "menu" } },
-      fight = {
-        entries = { "label/pp", "label/pp-max", "label/target-cancel" },
-        routes = { "menu/give-up-move" },
-        fonts = { "menu" },
-      },
-      target = {
-        entries = {
-          "label/target-cancel",
-          "label/target-gender-male",
-          "label/target-gender-female",
-          "label/target-gender-unknown",
-        },
-        routes = {},
-        fonts = { "menu" },
-      },
-      ["yes-no"] = { entries = { "label/yes", "label/no" }, routes = {}, fonts = { "menu" } },
-      ["keep-forget"] = { entries = { "label/keep-move", "label/forget-move" }, routes = {}, fonts = { "menu" } },
-      ["give-up"] = { entries = {}, routes = { "menu/give-up-move" }, fonts = { "menu" } },
-      ["switch-or-flee"] = {
-        entries = { "label/switch", "label/flee", "label/switch-flee" },
-        routes = {},
-        fonts = { "menu" },
-      },
-      ["switch-or-keep"] = {
-        entries = { "label/switch", "label/keep-battling-switch" },
-        routes = {},
-        fonts = { "menu" },
-      },
-      ["vs-recorder"] = {
-        entries = { "label/recorder-stop" },
-        routes = { "menu/vs-recorder-feedback" },
-        fonts = { "menu", "recorderFeedback" },
-      },
-    }
-    for _, rule in pairs(Sources.MENU_MODE_RULES) do
-      for _, key in pairs(rule.labels) do
-        menuTextSets.main.entries[#menuTextSets.main.entries + 1] = key
-      end
-    end
-    for _, key in pairs(Sources.MENU_MODE_RULES["pal-park"].labels) do
-      menuTextSets["pal-park"].entries[#menuTextSets["pal-park"].entries + 1] = key
-    end
+    local menuTextSets = compileMenuTextSets()
     local menuRoutes = {}
     for routeKey, route in pairs(Sources.MENU_ROUTES) do
       local textSet = assert(menuTextSets[route.textSet], "menu text set is source-defined")
-      local normalized = {
-        screenGroup = route.screenGroup,
-        textSet = route.textSet,
-        messageEntries = {},
-        messageRoutes = {},
-        fontRoles = {},
-        assetRoles = {},
-        assetBindings = {},
-        requiredContext = {},
-        resources = {},
-      }
-      for _, key in ipairs(textSet.entries) do
-        normalized.messageEntries[#normalized.messageEntries + 1] = key
-      end
-      for _, key in ipairs(textSet.routes) do
-        normalized.messageRoutes[#normalized.messageRoutes + 1] = key
-      end
-      for _, role in ipairs(textSet.fonts) do
-        normalized.fontRoles[#normalized.fontRoles + 1] = role
-      end
-      if route.screenGroup == "command" then
-        normalized.requiredContext[#normalized.requiredContext + 1] = "main"
-        normalized.requiredContext[#normalized.requiredContext + 1] = "frontier"
-        for _, resource in pairs(menuLayouts.frontier) do
-          if type(resource) == "string" and resourceCatalog[resource] ~= nil then
-            normalized.resources[#normalized.resources + 1] = resource
-          end
-        end
-        normalized.assetRoles[#normalized.assetRoles + 1] = "frontierMenuLayout"
-      elseif route.screenGroup == "fight" then
-        normalized.requiredContext[#normalized.requiredContext + 1] = "moveSelection"
-        normalized.assetRoles[#normalized.assetRoles + 1] = "moveTypeIcon"
-      elseif route.screenGroup == "target" then
-        normalized.requiredContext[#normalized.requiredContext + 1] = "targetSelection"
-        normalized.assetRoles[#normalized.assetRoles + 1] = "pokemonIcon"
-        normalized.assetBindings.pokemonIcon = {
-          catalog = "mon-icons",
-          selector = "species-form",
-          context = { "targetSelection.candidate.species", "targetSelection.candidate.form" },
-          when = "candidate-enabled-and-hit",
-        }
-        normalized.assetRoles[#normalized.assetRoles + 1] = "battleCondition"
-      elseif route.screenGroup == "vs-recorder" then
-        normalized.requiredContext[#normalized.requiredContext + 1] = "vsRecorder"
-        normalized.resources[#normalized.resources + 1] = menuLayouts.vsRecorder.tilemap
-      end
-      if route.mode == "bug-contest" then
-        normalized.requiredContext[#normalized.requiredContext + 1] = "bugContest"
-        normalized.assetRoles[#normalized.assetRoles + 1] = "pokemonIcon"
-        normalized.assetBindings.pokemonIcon = {
-          catalog = "mon-icons",
-          selector = "species-form",
-          context = { "bugContest.caughtPokemon.species", "bugContest.caughtPokemon.form" },
-          when = "caught-mon-present",
-        }
-        normalized.fontRoles[#normalized.fontRoles + 1] = "bugContest"
-        for _, messageRouteKey in ipairs({
-          "menu/bug-contest-caught-gender",
-          "menu/bug-contest-level",
-          "menu/bug-contest-remaining-balls",
-        }) do
-          normalized.messageRoutes[#normalized.messageRoutes + 1] = messageRouteKey
-        end
-        for _, resource in pairs(menuLayouts.bugContest) do
-          if type(resource) == "string" and resourceCatalog[resource] ~= nil then
-            normalized.resources[#normalized.resources + 1] = resource
-          end
-        end
-      end
-      if route.mode ~= nil then
-        normalized.mode = route.mode
-      end
-      if route.phase ~= nil then
-        normalized.phase = route.phase
-      end
-      table.sort(normalized.messageEntries)
-      table.sort(normalized.messageRoutes)
-      table.sort(normalized.fontRoles)
-      table.sort(normalized.assetRoles)
-      table.sort(normalized.requiredContext)
-      table.sort(normalized.resources)
-      for index = #normalized.resources, 2, -1 do
-        if normalized.resources[index] == normalized.resources[index - 1] then
-          table.remove(normalized.resources, index)
-        end
-      end
-      menuRoutes[routeKey] = normalized
+      menuRoutes[routeKey] = normalizeMenuRoute(route, textSet, menuLayouts, resourceCatalog)
     end
 
-    local transitionArchive = openArchive(romFs, Sources.TRANSITION_ARCHIVE, "battle transitions")
-    local transitionResourceSets = {}
-    local transitionProvenance = {}
-    for _, set in ipairs(Sources.TRANSITION_RESOURCE_SETS) do
-      local resourceKeys = {}
-      for _, resource in ipairs(set.resources) do
-        local bytes, resourceErr = transitionArchive:readMember(resource.member)
-        if bytes == nil then
-          error(resourceErr, 0)
-        end
-        local resourceKey = set.key .. "/" .. resource.key
-        local label = "transition " .. resourceKey
-        local decoded
-        local format
-        local geometry
-        if resource.kind == "palette" then
-          decoded = decodePalette(transitionArchive, resource.member, label)
-          format = "nitro-palette-rgb888-v1"
-          geometry = { colorCount = #decoded.colors }
-        elseif resource.kind == "texture" then
-          decoded = decodeChars(transitionArchive, resource.member, label)
-          format = decoded.depth == 3 and "nitro-char-4bpp-v1" or "nitro-char-8bpp-v1"
-          geometry = { depth = decoded.depth, tileCount = #decoded.tiles / (decoded.depth == 3 and 32 or 64) }
-        elseif resource.kind == "cell" then
-          decoded = decodeCells(transitionArchive, resource.member, label)
-          local sourceMapping, mappingErr = G2dDecoder.decodeCellMapping(bytes, { label = label })
-          local mapping = mustDecode(sourceMapping, mappingErr, label .. " mapping", resource.member)
-          local characterKey = assert(resourceKeys.characters, "the route cell follows its character resource")
-          local characterResource =
-            assert(resourceCatalog[characterKey], "the route character is cataloged before its cell")
-          TransitionCellNormalizer.normalize(decoded, mapping, characterResource.geometry.depth)
-          format = "nitro-obj-cells-v1"
-          local bounds = {}
-          for cellIndex, cell in ipairs(decoded.cells) do
-            local minX, minY, maxX, maxY
-            for _, obj in ipairs(cell.objs) do
-              minX = minX == nil and obj.x or math.min(minX, obj.x)
-              minY = minY == nil and obj.y or math.min(minY, obj.y)
-              maxX = math.max(maxX or (obj.x + obj.width), obj.x + obj.width)
-              maxY = math.max(maxY or (obj.y + obj.height), obj.y + obj.height)
-            end
-            bounds[cellIndex] = minX == nil and { x = 0, y = 0, width = 0, height = 0 }
-              or { x = minX, y = minY, width = maxX - minX, height = maxY - minY }
-          end
-          geometry = { cellCount = #decoded.cells, bounds = bounds }
-        elseif resource.kind == "animation" then
-          decoded = decodeAnimation(transitionArchive, resource.member, label)
-          format = "nitro-obj-animation-v1"
-          local frameCount = 0
-          for _, animation in ipairs(decoded.anims) do
-            frameCount = frameCount + #animation.frames
-          end
-          geometry = { animationCount = #decoded.anims, frameCount = frameCount, durationUnit = "native-frame" }
-        else
-          error(
-            Errors.new("BATTLE_RESOURCE_KIND_UNKNOWN", "transition resource has no decoder", {
-              resource = resourceKey,
-              kind = resource.kind,
-            }),
-            0
-          )
-        end
-        local path = BattlePresentationCache.globalResourcePath(resourceKey)
-        resourcePayloads[path] = decoded
-        resourceCatalog[resourceKey] = {
-          kind = resource.kind,
-          contentIdentity = Hashing.sha1hex(bytes),
-          format = format,
-          geometry = geometry,
-          path = path,
-        }
-        resourceKeys[resource.key] = resourceKey
-        transitionProvenance[resourceKey] = {
-          archive = Sources.TRANSITION_ARCHIVE,
-          memberId = resource.member,
-        }
-      end
-      transitionResourceSets[set.key] = resourceKeys
-    end
-    local transitionSourceResources = {}
-    local transitionResourceMembers = {}
-    local transitionResourceKeySet = {}
-    for _, source in ipairs(Sources.TRANSITION_TYPED_RESOURCES) do
-      local provenanceKey = source.kind .. ":" .. source.memberId
-      local prior = transitionSourceResources[provenanceKey]
-      if prior == nil then
-        local bytes, readErr = transitionArchive:readMember(source.memberId)
-        if bytes == nil then
-          error(readErr, 0)
-        end
-        local contentIdentity = Hashing.sha1hex(bytes)
-        local resourceKey = "transition/content/" .. source.kind .. "/" .. contentIdentity
-        local label = "transition member " .. source.memberId .. " payload " .. resourceKey
-        local decoded
-        local format
-        local geometry
-        if source.kind == "palette" then
-          decoded = decodePalette(transitionArchive, source.memberId, label)
-          format = "nitro-palette-rgb888-v1"
-          geometry = { colorCount = #decoded.colors }
-        elseif source.kind == "texture" then
-          decoded = decodeChars(transitionArchive, source.memberId, label)
-          format = decoded.depth == 3 and "nitro-char-4bpp-v1" or "nitro-char-8bpp-v1"
-          geometry = { depth = decoded.depth, tileCount = #decoded.tiles / (decoded.depth == 3 and 32 or 64) }
-        elseif source.kind == "cell" then
-          decoded = decodeCells(transitionArchive, source.memberId, label)
-          format = "nitro-obj-cells-v1"
-          local bounds = {}
-          for cellIndex, cell in ipairs(decoded.cells) do
-            local minX, minY, maxX, maxY
-            for _, obj in ipairs(cell.objs) do
-              minX = minX == nil and obj.x or math.min(minX, obj.x)
-              minY = minY == nil and obj.y or math.min(minY, obj.y)
-              maxX = math.max(maxX or (obj.x + obj.width), obj.x + obj.width)
-              maxY = math.max(maxY or (obj.y + obj.height), obj.y + obj.height)
-            end
-            bounds[cellIndex] = minX == nil and { x = 0, y = 0, width = 0, height = 0 }
-              or { x = minX, y = minY, width = maxX - minX, height = maxY - minY }
-          end
-          geometry = { cellCount = #decoded.cells, bounds = bounds }
-        elseif source.kind == "animation" then
-          decoded = decodeAnimation(transitionArchive, source.memberId, label)
-          format = "nitro-obj-animation-v1"
-          local frameCount = 0
-          for _, animation in ipairs(decoded.anims) do
-            frameCount = frameCount + #animation.frames
-          end
-          geometry = { animationCount = #decoded.anims, frameCount = frameCount, durationUnit = "native-frame" }
-        elseif source.kind == "map" then
-          decoded = decodeScreen(transitionArchive, source.memberId, label)
-          format = "nitro-bg-map-v1"
-          geometry = { width = decoded.width, height = decoded.height, entryCount = #decoded.entries }
-        else
-          error(
-            Errors.new("BATTLE_RESOURCE_KIND_UNKNOWN", "transition source resource has no decoder", {
-              memberId = source.memberId,
-              kind = source.kind,
-            }),
-            0
-          )
-        end
-        local path = BattlePresentationCache.globalResourcePath(resourceKey)
-        resourcePayloads[path] = decoded
-        resourceCatalog[resourceKey] = {
-          kind = source.kind,
-          contentIdentity = contentIdentity,
-          format = format,
-          geometry = geometry,
-          path = path,
-        }
-        transitionResourceKeySet[resourceKey] = true
-        if transitionResourceMembers[resourceKey] == nil then
-          transitionResourceMembers[resourceKey] = {
-            archive = Sources.TRANSITION_ARCHIVE,
-            members = {},
-          }
-        end
-        transitionSourceResources[provenanceKey] = resourceKey
-      end
-      for _, sourceSelector in ipairs(source.selectors) do
-        local memberProvenance = transitionResourceMembers[transitionSourceResources[provenanceKey]]
-        local sourceProvenance = memberProvenance.members[source.memberId]
-        if sourceProvenance == nil then
-          sourceProvenance = { selectors = {} }
-          memberProvenance.members[source.memberId] = sourceProvenance
-        end
-        sourceProvenance.selectors[sourceSelector] = true
-      end
-    end
-    local transitionParticleMembers = {}
-    local embeddedParticleResources = {}
-    local function stageParticlePayload(kind, bytes)
-      local identity = Hashing.sha1hex(bytes)
-      local key = "transition/content/" .. kind .. "/" .. identity
-      if resourceCatalog[key] == nil then
-        local path = BattlePresentationCache.globalResourcePath(key)
-        resourceCatalog[key] = {
-          kind = kind,
-          contentIdentity = identity,
-          format = kind == "texture" and "nitro-spl-texture-data-v1" or "nitro-spl-palette-data-v1",
-          geometry = { byteCount = #bytes },
-          path = path,
-        }
-        resourcePayloads[path] = { bytes = bytes }
-        transitionResourceKeySet[key] = true
-      end
-      return key
-    end
-    for _, memberId in ipairs(Sources.TRANSITION_PARTICLE_MEMBERS) do
-      local bytes, readErr = transitionArchive:readMember(memberId)
-      if bytes == nil then
-        error(readErr, 0)
-      end
-      local decoded, decodeErr = Spl.decode(bytes)
-      if decoded == nil then
-        error(decodeErr, 0)
-      end
-      local contentIdentity = Hashing.sha1hex(bytes)
-      local resourceKey = "transition/content/particle/" .. contentIdentity
-      local embeddedKeys = {}
-      for resourceIndex, resource in ipairs(decoded.resources) do
-        local textureKey = resource.texture and stageParticlePayload("texture", resource.texture) or nil
-        if resource.textureReference ~= nil then
-          local referenced = embeddedKeys[resource.textureReference + 1]
-          if referenced == nil or referenced.texture == nil then
-            error(
-              Errors.new("BATTLE_PARTICLE_RESOURCE_INVALID", "APS texture reference has no staged source", {
-                memberId = memberId,
-                resourceIndex = resourceIndex - 1,
-                textureReference = resource.textureReference,
-              }),
-              0
-            )
-          end
-          textureKey = referenced.texture
-        end
-        local paletteKey = resource.palette and stageParticlePayload("palette", resource.palette) or nil
-        embeddedKeys[resourceIndex] = { texture = textureKey, palette = paletteKey }
-      end
-      local normalizedResources = {}
-      for index in ipairs(decoded.resources) do
-        local embedded = embeddedKeys[index]
-        normalizedResources[index] = {
-          textureKey = embedded.texture,
-          paletteKey = embedded.palette,
-        }
-      end
-      local normalizedParticle = {
-        format = decoded.format,
-        emitters = decoded.emitters,
-        resources = normalizedResources,
-        source = decoded.source,
-      }
-      local path = BattlePresentationCache.globalResourcePath(resourceKey)
-      resourceCatalog[resourceKey] = {
-        kind = "particle",
-        contentIdentity = contentIdentity,
-        format = "nitro-spl-aps-v1",
-        geometry = { emitterCount = #decoded.emitters, resourceCount = #decoded.resources },
-        path = path,
-      }
-      resourcePayloads[path] = normalizedParticle
-      transitionResourceKeySet[resourceKey] = true
-      transitionSourceResources["particle:" .. memberId] = resourceKey
-      transitionParticleMembers[resourceKey] = { archive = Sources.TRANSITION_ARCHIVE, memberId = memberId }
-      embeddedParticleResources[resourceKey] = embeddedKeys
-    end
-    local function resourcesForSourceSelectors(selectors)
-      local selected = {}
-      for _, source in ipairs(Sources.TRANSITION_TYPED_RESOURCES) do
-        local included = false
-        for _, sourceSelector in ipairs(source.selectors) do
-          for _, selector in ipairs(selectors) do
-            if sourceSelector == selector then
-              included = true
-              break
-            end
-          end
-          if included then
-            break
-          end
-        end
-        if included then
-          local key = transitionSourceResources[source.kind .. ":" .. source.memberId]
-          selected[key] = true
-        end
-      end
-      local keys = {}
-      for key in pairs(selected) do
-        keys[#keys + 1] = key
-      end
-      table.sort(keys)
-      return keys
-    end
-    local transitionMessageRoutes = {}
-    for routeName, sourceRoute in pairs(Sources.TRANSITION_MESSAGE_SOURCE_ROUTES) do
-      local input = routeName == "trainerName" and "trainerName" or "rivalName"
-      transitionMessageRoutes[routeName] = {
-        message = transitionNameKey,
-        inputs = { input },
-        resources = resourcesForSourceSelectors(sourceRoute.selectors),
-      }
-    end
-    local transitionInternalResources = {}
-    local sourceResourceKinds = { palette = "palette", character = "texture", cell = "cell", animation = "animation" }
-    for routeName, sourceResources in pairs(Sources.TRANSITION_INTERNAL_RESOURCES) do
-      local resourceKeys = {}
-      for role, memberId in pairs(sourceResources) do
-        local resourceKey = transitionSourceResources[sourceResourceKinds[role] .. ":" .. memberId]
-        if resourceKey == nil then
-          error(
-            Errors.new("BATTLE_TRANSITION_RESOURCE_UNRESOLVED", "internal transition resource has no staged member", {
-              route = routeName,
-              role = role,
-            }),
-            0
-          )
-        end
-        resourceKeys[role] = resourceKey
-      end
-      transitionInternalResources[routeName] = resourceKeys
-    end
-    local function transitionResourceForRole(role, memberId, routeKey)
-      local kindByRole = {
-        palette = "palette",
-        character = "texture",
-        characters = "texture",
-        cell = "cell",
-        animation = "animation",
-        map = "map",
-        maps = "map",
-      }
-      local kind = kindByRole[role]
-      if kind == nil then
-        error(
-          Errors.new("BATTLE_TRANSITION_RESOURCE_UNRESOLVED", "transition route has an unknown resource role", {
-            role = role,
-          }),
-          0
-        )
-      end
-      local resourceKey = transitionSourceResources[kind .. ":" .. memberId]
-      if resourceKey == nil then
-        error(
-          Errors.new(
-            "BATTLE_TRANSITION_RESOURCE_UNRESOLVED",
-            "transition route " .. routeKey .. " references unstaged " .. role .. " member " .. memberId,
-            { role = role, memberId = memberId, route = routeKey }
-          ),
-          0
-        )
-      end
-      return resourceKey
-    end
-    local function normalizeTransitionResourceGroup(group, routeKey)
-      local normalized = {}
-      for role, value in pairs(group) do
-        if type(value) == "number" then
-          normalized[role] = transitionResourceForRole(role, value, routeKey)
-        elseif type(value) == "table" then
-          local entries = {}
-          for index, entry in ipairs(value) do
-            if type(entry) == "number" then
-              entries[index] = transitionResourceForRole(role, entry, routeKey)
-            else
-              entries[index] = normalizeTransitionResourceGroup(entry, routeKey)
-            end
-          end
-          if #entries > 0 then
-            normalized[role] = entries
-          else
-            normalized[role] = normalizeTransitionResourceGroup(value, routeKey)
-          end
-        else
-          error(
-            Errors.new("BATTLE_TRANSITION_RESOURCE_UNRESOLVED", "transition route resource group is malformed", {
-              role = role,
-            }),
-            0
-          )
-        end
-      end
-      return normalized
-    end
-    local transitionRoutes = {}
-    for selector, sourceRoute in pairs(Sources.TRANSITION_SELECTOR_ROUTES) do
-      local resourceKeys = resourcesForSourceSelectors({ selector })
-      local resourceSet = {}
-      for _, resourceKey in ipairs(resourceKeys) do
-        resourceSet[resourceKey] = true
-      end
-      local groups = {}
-      for _, groupName in ipairs({
-        "sprite",
-        "record",
-        "fixedSprite",
-        "extraSprite",
-        "opponent",
-        "nameplate",
-        "spriteVariants",
-        "background",
-        "sceneAssets",
-      }) do
-        local sourceGroup = sourceRoute[groupName]
-        if sourceGroup ~= nil then
-          groups[groupName] = normalizeTransitionResourceGroup(sourceGroup, sourceRoute.key)
-        end
-      end
-      if sourceRoute.particles ~= nil then
-        local particles = {}
-        for role, memberId in pairs(sourceRoute.particles) do
-          local resourceKey = transitionSourceResources["particle:" .. memberId]
-          if resourceKey == nil then
-            error(
-              Errors.new("BATTLE_TRANSITION_RESOURCE_UNRESOLVED", "transition route particle payload is not staged", {
-                memberId = memberId,
-                route = sourceRoute.key,
-              }),
-              0
-            )
-          end
-          particles[role] = resourceKey
-          resourceSet[resourceKey] = true
-        end
-        groups.particles = particles
-      end
-      local groupSet = {}
-      local function collectGroup(value)
-        if type(value) == "string" then
-          groupSet[value] = true
-        elseif type(value) == "table" then
-          for _, nested in pairs(value) do
-            collectGroup(nested)
-          end
-        end
-      end
-      collectGroup(groups)
-      for resourceKey in pairs(groupSet) do
-        resourceSet[resourceKey] = true
-      end
-      local routeResources = {}
-      for resourceKey in pairs(resourceSet) do
-        routeResources[#routeResources + 1] = resourceKey
-      end
-      table.sort(routeResources)
-      local requiredContext = {}
-      local contextSet = {}
-      local function requireContext(name)
-        if not contextSet[name] then
-          contextSet[name] = true
-          requiredContext[#requiredContext + 1] = name
-        end
-      end
-      if sourceRoute.key:match("^fallback/") then
-        requireContext("battleType")
-        requireContext("terrain")
-        requireContext("timeOfDay")
-      elseif sourceRoute.key:match("^wild/") then
-        requireContext("wildSpecies")
-        requireContext("battleType")
-      elseif sourceRoute.key:match("^trainer/") then
-        requireContext("trainerClass")
-        requireContext("battleType")
-      end
-      if sourceRoute.context ~= nil and sourceRoute.context.playerGender == true then
-        requireContext("playerGender")
-      end
-      local trainer
-      if sourceRoute.trainer ~= nil then
-        trainer = { key = sourceRoute.trainer.key }
-        requireContext("transitionTrainer")
-      end
-      local messages = {}
-      if sourceRoute.messageRoute ~= nil then
-        messages[1] = sourceRoute.messageRoute
-        if sourceRoute.messageRoute == "transition/rival-name" then
-          requireContext("rivalName")
-        else
-          requireContext("trainerName")
-        end
-      end
-      table.sort(requiredContext)
-      local route = {
-        role = sourceRoute.role,
-        requiredContext = requiredContext,
-        resources = routeResources,
-        assetGroups = groups,
-        trainer = trainer,
-      }
-      if sourceRoute.task ~= nil then
-        route.task = sourceRoute.task
-      end
-      if #messages > 0 then
-        route.messages = messages
-      end
-      local prior = transitionRoutes[sourceRoute.key]
-      if prior ~= nil then
-        if prior.role ~= route.role then
-          error(
-            Errors.new("BATTLE_TRANSITION_ROUTE_CONFLICT", "semantic transition key has conflicting source roles", {
-              route = sourceRoute.key,
-            }),
-            0
-          )
-        end
-        if prior.task ~= nil and route.task ~= nil then
-          error(
-            Errors.new("BATTLE_TRANSITION_ROUTE_CONFLICT", "semantic transition key has conflicting source tasks", {
-              route = sourceRoute.key,
-            }),
-            0
-          )
-        end
-        route.task = route.task or prior.task
-        for _, resourceKey in ipairs(route.resources) do
-          resourceSet[resourceKey] = true
-        end
-        for _, resourceKey in ipairs(prior.resources) do
-          resourceSet[resourceKey] = true
-        end
-        route.resources = {}
-        for resourceKey in pairs(resourceSet) do
-          route.resources[#route.resources + 1] = resourceKey
-        end
-        table.sort(route.resources)
-        for _, input in ipairs(prior.requiredContext) do
-          requireContext(input)
-        end
-        table.sort(requiredContext)
-        route.requiredContext = requiredContext
-        if #messages == 0 then
-          route.messages = prior.messages
-        end
-      end
-      transitionRoutes[sourceRoute.key] = route
-    end
-    local sourcePreselection = Sources.TRANSITION_PRESELECTION
-    local function semanticCategoryRoute(category)
-      local route = sourcePreselection.categoryRoutes[category]
-      if type(route) == "table" and route.fallback == true then
-        return "setup-fallback"
-      end
-      if type(route) ~= "string" then
-        error(
-          Errors.new("BATTLE_TRANSITION_ROUTE_UNRESOLVED", "source category has no semantic transition route", {
-            category = category,
-          }),
-          0
-        )
-      end
-      return route
-    end
-    local function normalizeInputRoutes(sourceRoutes, categories)
-      local routes = {}
-      for inputKey, routeKey in pairs(sourceRoutes) do
-        local category = categories[routeKey]
-        if category == nil then
-          error(
-            Errors.new("BATTLE_TRANSITION_ROUTE_UNRESOLVED", "source input has no semantic category route", {
-              input = inputKey,
-            }),
-            0
-          )
-        end
-        routes[inputKey] = semanticCategoryRoute(category)
-      end
-      return routes
-    end
-    local function musicRoleForCategory(category)
-      local sequenceSymbol = Sources.INTRO_MUSIC.rows[category + 1]
-      assert(sequenceSymbol ~= nil, "every source category selects an intro sequence")
-      local role = Sources.INTRO_MUSIC.roles[sequenceSymbol]
-      if role == nil and sequenceSymbol == Sources.AUDIO_ROLES.kantoTrainer then
-        role = "kanto-trainer"
-      end
-      assert(type(role) == "string", "every selected intro sequence has a semantic role")
-      return role
-    end
-    local function normalizeInputMusicRoles(sourceRoutes, categories)
-      local roles = {}
-      for inputKey, routeKey in pairs(sourceRoutes) do
-        local category = assert(categories[routeKey], "every source trainer or species route has a category")
-        roles[inputKey] = musicRoleForCategory(category)
-      end
-      return roles
-    end
-    local trainerClassRoutes =
-      normalizeInputRoutes(sourcePreselection.trainerClasses, sourcePreselection.trainerCategoryByKey)
-    local wildSpeciesRoutes = normalizeInputRoutes(sourcePreselection.wildSpecies, sourcePreselection.wildCategoryByKey)
-    local trainerClassMusicRoles =
-      normalizeInputMusicRoles(sourcePreselection.trainerClasses, sourcePreselection.trainerCategoryByKey)
-    local wildSpeciesMusicRoles =
-      normalizeInputMusicRoles(sourcePreselection.wildSpecies, sourcePreselection.wildCategoryByKey)
-    local function categoryRoutesForList(categories)
-      local routes = {}
-      for _, category in ipairs(categories) do
-        routes[#routes + 1] = semanticCategoryRoute(category)
-      end
-      return routes
-    end
-    local sourceRules = sourcePreselection.selectionRules
-    local transitionSelection = {
-      trainerClassRoutes = trainerClassRoutes,
-      wildSpeciesRoutes = wildSpeciesRoutes,
-      trainerClassMusicRoles = trainerClassMusicRoles,
-      wildSpeciesMusicRoles = wildSpeciesMusicRoles,
-      trainerRules = {
-        inputs = { "trainerClass", "battleType" },
-        specialBattle = {
-          preserveRoute = semanticCategoryRoute(sourceRules.trainer.specialBattle.preserveCategory),
-          preserveMusicRole = musicRoleForCategory(sourceRules.trainer.specialBattle.preserveCategory),
-          defaultRoute = semanticCategoryRoute(sourceRules.trainer.specialBattle.defaultCategory),
-          defaultMusicRole = musicRoleForCategory(sourceRules.trainer.specialBattle.defaultCategory),
-          doublesRoute = semanticCategoryRoute(sourceRules.trainer.specialBattle.doublesCategory),
-          doublesMusicRole = musicRoleForCategory(sourceRules.trainer.specialBattle.doublesCategory),
-        },
-        preserveRoutes = categoryRoutesForList(sourceRules.trainer.preserveCategories),
-        doublesRoute = semanticCategoryRoute(sourceRules.trainer.doublesCategory),
-        alternateTransitionRoute = semanticCategoryRoute(sourceRules.trainer.alternateCategory),
-        unknownRoute = semanticCategoryRoute(41),
-        unknownMusicRole = musicRoleForCategory(41),
-        doublesMusicRole = musicRoleForCategory(sourceRules.trainer.doublesCategory),
-        alternateMusicRole = musicRoleForCategory(sourceRules.trainer.alternateCategory),
-      },
-      wildRules = {
-        inputs = { "wildSpecies", "battleType", "transitionMode" },
-        specialMode = "wild-transition-special-case",
-        fallbackRoute = semanticCategoryRoute(sourceRules.wild.fallbackCategory),
-        fallbackMusicRole = musicRoleForCategory(sourceRules.wild.fallbackCategory),
-        doublesRoute = semanticCategoryRoute(sourceRules.wild.doublesCategoryWhenCategoryAtLeast.category),
-        doublesMusicRole = musicRoleForCategory(sourceRules.wild.doublesCategoryWhenCategoryAtLeast.category),
-      },
-      fallbackRoutes = {},
-    }
-    for selector = 0, 11 do
-      local sourceRoute = Sources.TRANSITION_SELECTOR_ROUTES[selector]
-      local context = assert(sourceRoute.context)
-      transitionSelection.fallbackRoutes[#transitionSelection.fallbackRoutes + 1] = {
-        route = sourceRoute.key,
-        terrain = context.terrain,
-        timeOfDay = context.timeOfDay,
-        battleKind = context.isTrainer and "trainer" or "wild",
-      }
-    end
-    local transitionCatalogKeys = {}
-    for resourceKey in pairs(transitionResourceKeySet) do
-      transitionCatalogKeys[#transitionCatalogKeys + 1] = resourceKey
-    end
-    table.sort(transitionCatalogKeys)
+    local transition = compileTransitionResources(romFs, staging)
+    local transitionMessageRoutes =
+      compileTransitionMessageRoutes(messages.transitionNameKey, transition.sourceResources)
+    local transitionInternalResources = compileTransitionInternalResources(transition.sourceResources)
+    local transitionRoutes = compileTransitionRoutes(transition.sourceResources)
+    local transitionSelection = compileTransitionSelection()
+    local transitionCatalogKeys = sortedSetValues(transition.keySet)
+    local transitionCoverage = transitionRouteCoverage(transitionRoutes, resourceCatalog, messageEntries)
 
-    local transitionCoverage = {}
-    for routeKey, route in pairs(transitionRoutes) do
-      local identityParts = { "transition-route", routeKey, route.role }
-      for _, input in ipairs(route.requiredContext) do
-        identityParts[#identityParts + 1] = "context=" .. input
-      end
-      for _, resourceKey in ipairs(route.resources) do
-        local descriptor = assert(resourceCatalog[resourceKey], "transition route resource is staged")
-        identityParts[#identityParts + 1] = resourceKey .. "=" .. descriptor.contentIdentity
-      end
-      for _, messageKey in ipairs(route.messages or {}) do
-        identityParts[#identityParts + 1] = messageKey .. "=" .. Hashing.hashLua(messageEntries[messageKey])
-      end
-      transitionCoverage["transition/" .. routeKey] = {
-        kind = "transition-route",
-        route = routeKey,
-        closureIdentity = Hashing.sha1hex(table.concat(identityParts, "\n")),
-        resources = route.resources,
-        operations = { route.role },
-      }
-    end
-
-    local rootFailures = {}
     local audioCompiler = require("romdump.src.digest.audio.AudioCompiler")
     local audioPlan, audioPlanError = audioCompiler.planSource(romFs)
     local introMusic = compileIntroMusic(romFs, audioPlan, audioPlanError)
 
-    local semanticRoots = Sources.listSemanticRoots()
-    local function collectSemanticResources(value, selected)
-      if type(value) == "string" then
-        if resourceCatalog[value] ~= nil then
-          selected[value] = true
-        end
-      elseif type(value) == "table" then
-        for _, nested in pairs(value) do
-          collectSemanticResources(nested, selected)
-        end
-      end
-    end
     local sourceMessageRouteKeys = {}
     for sourceName, sourceRoute in pairs(Sources.MESSAGE_SOURCE_ROUTES) do
       sourceMessageRouteKeys[sourceName] = sourceRoute.key
     end
-    local function collectMessageClosure(value, selectedResources, selectedMessages, visited, selectedRoutes)
-      if type(value) == "string" then
-        if resourceCatalog[value] ~= nil then
-          selectedResources[value] = true
-          return
-        end
-        if messageEntries[value] ~= nil then
-          selectedMessages[value] = true
-          return
-        end
-        local routeKey = sourceMessageRouteKeys[value] or value
-        local route = normalizedMessageSourceRoutes[routeKey] or messageRoutes[routeKey] or dynamicMessageRoutes[value]
-        if route ~= nil then
-          selectedRoutes[routeKey] = true
-        end
-        if route ~= nil and not visited[routeKey] then
-          visited[routeKey] = true
-          collectMessageClosure(route, selectedResources, selectedMessages, visited, selectedRoutes)
-          return
-        end
-        local dynamic = dynamicMessageRoutes[value]
-        if dynamic ~= nil and not visited[value] then
-          visited[value] = true
-          selectedRoutes[value] = true
-          collectMessageClosure(dynamic, selectedResources, selectedMessages, visited, selectedRoutes)
-        end
-      elseif type(value) == "table" then
-        local firstRecord = value.firstRecord
-        local recordCount = value.recordCount
-        if type(firstRecord) == "string" and type(recordCount) == "number" then
-          local prefix, firstIndex = firstRecord:match("^(.*)/(%d+)$")
-          if prefix ~= nil then
-            for offset = 0, recordCount - 1 do
-              collectMessageClosure(
-                prefix .. "/" .. (tonumber(firstIndex) + offset),
-                selectedResources,
-                selectedMessages,
-                visited,
-                selectedRoutes
-              )
-            end
-          end
-        end
-        for key, nested in pairs(value) do
-          if key == "placeholderPlan" and nested == "battleMessageTags" then
-            collectMessageClosure(
-              "battle/message-template",
-              selectedResources,
-              selectedMessages,
-              visited,
-              selectedRoutes
-            )
-          elseif key == "mailExpansion" or key == "expansion" then
-            collectMessageClosure(nested, selectedResources, selectedMessages, visited, selectedRoutes)
-          elseif key == "routes" then
-            collectMessageClosure(nested, selectedResources, selectedMessages, visited, selectedRoutes)
-          else
-            collectMessageClosure(nested, selectedResources, selectedMessages, visited, selectedRoutes)
-          end
-        end
-      end
-    end
-    local function sortedSetValues(values)
-      local result = {}
-      for value in pairs(values) do
-        result[#result + 1] = value
-      end
-      table.sort(result)
-      return result
-    end
-    for _, root in ipairs(semanticRoots) do
-      local coverageKey = root.key
-      if transitionCoverage[coverageKey] == nil then
-        local routeValue
-        local selectedResources = {}
-        local selectedMessageKeys = {}
-        local messageRouteKeys = {}
-        if root.kind == "menu-route" then
-          routeValue = menuRoutes[root.sourceRouteKey]
-          if routeValue ~= nil then
-            collectSemanticResources(routeValue.resources, selectedResources)
-            collectMessageClosure(
-              routeValue.messageEntries,
-              selectedResources,
-              selectedMessageKeys,
-              {},
-              messageRouteKeys
-            )
-            collectMessageClosure(
-              routeValue.messageRoutes,
-              selectedResources,
-              selectedMessageKeys,
-              {},
-              messageRouteKeys
-            )
-          end
-        elseif root.kind == "message-route" then
-          routeValue = normalizedMessageSourceRoutes[root.key]
-            or messageRoutes[root.sourceRouteKey]
-            or transitionMessageRoutes[root.sourceRouteKey]
-          if routeValue ~= nil then
-            collectMessageClosure(
-              routeValue,
-              selectedResources,
-              selectedMessageKeys,
-              { [root.key] = true },
-              messageRouteKeys
-            )
-          end
-        elseif root.kind == "transition-route" then
-          local transitionKey = root.sourceRouteKey
-          routeValue = transitionRoutes[transitionKey]
-          if routeValue ~= nil then
-            collectSemanticResources(routeValue.resources, selectedResources)
-            collectMessageClosure(routeValue.messages, selectedResources, selectedMessageKeys, {}, messageRouteKeys)
-          end
-        end
-        if routeValue == nil then
-          rootFailures[#rootFailures + 1] = root.key .. ": source semantic route is not normalized"
-        else
-          local resourceKeys = {}
-          for resourceKey in pairs(selectedResources) do
-            resourceKeys[#resourceKeys + 1] = resourceKey
-          end
-          table.sort(resourceKeys)
-          local identityParts = { root.kind, root.key, Hashing.hashLua(routeValue) }
-          for _, resourceKey in ipairs(resourceKeys) do
-            identityParts[#identityParts + 1] = resourceKey .. "=" .. resourceCatalog[resourceKey].contentIdentity
-          end
-          for messageKey in pairs(selectedMessageKeys) do
-            if messageEntries[messageKey] ~= nil then
-              identityParts[#identityParts + 1] = messageKey .. "=" .. Hashing.hashLua(messageEntries[messageKey])
-            end
-          end
-          for routeKey in pairs(messageRouteKeys) do
-            local closureRoute = normalizedMessageSourceRoutes[routeKey]
-              or messageRoutes[routeKey]
-              or dynamicMessageRoutes[routeKey]
-            if closureRoute ~= nil then
-              identityParts[#identityParts + 1] = routeKey .. "=" .. Hashing.hashLua(closureRoute)
-            end
-          end
-          if root.kind == "menu-route" then
-            for _, fontRole in ipairs(routeValue.fontRoles) do
-              identityParts[#identityParts + 1] = fontRole
-                .. "="
-                .. FieldFontCache.defPath(
-                  fontRole == "bugContest" and Sources.BUG_CONTEST_FONT_ID
-                    or fontRole == "recorderFeedback" and Sources.RECORDER_FEEDBACK_FONT_ID
-                    or Sources.MENU_TEXT_FONT_ID
-                )
-            end
-          end
-          table.sort(identityParts)
-          local operations = { root.kind }
-          transitionCoverage[coverageKey] = {
-            kind = root.kind,
-            route = root.key,
-            closureIdentity = Hashing.sha1hex(table.concat(identityParts, "\n")),
-            resources = resourceKeys,
-            operations = operations,
-            messageEntries = sortedSetValues(selectedMessageKeys),
-            messageRoutes = sortedSetValues(messageRouteKeys),
-            fontRoles = root.kind == "menu-route" and routeValue.fontRoles or {},
-            assetRoles = root.kind == "menu-route" and routeValue.assetRoles or {},
-            assetBindings = root.kind == "menu-route" and routeValue.assetBindings or {},
-            requiredContext = root.kind == "menu-route" and routeValue.requiredContext or {},
-            programContext = root.kind == "message-route" and routeValue.programContext or nil,
-          }
-        end
-      end
-    end
+    local semanticRoots = Sources.listSemanticRoots()
+    local rootFailures = closeSemanticRoots({
+      resourceCatalog = resourceCatalog,
+      messageEntries = messageEntries,
+      messageRoutes = messageRoutes,
+      dynamicMessageRoutes = dynamicMessageRoutes,
+      normalizedMessageSourceRoutes = normalizedMessageSourceRoutes,
+      sourceMessageRouteKeys = sourceMessageRouteKeys,
+      menuRoutes = menuRoutes,
+      transitionMessageRoutes = transitionMessageRoutes,
+      transitionRoutes = transitionRoutes,
+    }, semanticRoots, transitionCoverage)
 
     local transitionSelectorFamilies = {}
     for selector, family in pairs(Sources.TRANSITION_SELECTOR_FAMILIES) do
@@ -3791,6 +3988,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     for name, image in pairs(images) do
       imageManifest[BattlePresentationCache.globalImagePath(name)] = { width = image.width, height = image.height }
     end
+    local menuLayers, menuLayerIndices = menuLayoutLayers()
     local partialManifest = {
       schema = BattlePresentationSchema.MANIFEST_SCHEMA,
       version = { id = versionId, language = assert(MonSources.versionLanguages[versionId]) },
@@ -3800,14 +3998,14 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       -- staged manifest always carries its verification.
       verified = true,
       scenes = BattlePresentationCache.sceneInventory(),
-      battlefield = { slots = {} },
+      battlefield = { slots = battlefieldSlots() },
       layouts = {
         menu = {
           width = Sources.MENU_LAYOUT.width,
           height = Sources.MENU_LAYOUT.height,
           tilemapWidth = Sources.MENU_LAYOUT.tilemapWidth,
           tilemapHeight = Sources.MENU_LAYOUT.tilemapHeight,
-          layers = {},
+          layers = menuLayers,
         },
       },
       hud = {
@@ -3890,14 +4088,14 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         },
         entries = messageEntries,
         routes = messageRoutes,
-        banks = messageBanks,
+        banks = messages.banks,
         dynamicRoutes = dynamicMessageRoutes,
-        placeholderBanks = placeholderBanks,
+        placeholderBanks = messages.placeholderBanks,
         sourceRoutes = normalizedMessageSourceRoutes,
-        placeholders = placeholderSchemas,
-        tagSchemas = messageTagSchemas,
-        tagInputs = messageTagInputs,
-        templateInputs = messageTemplateInputs,
+        placeholders = messages.placeholderSchemas,
+        tagSchemas = messages.tagSchemas,
+        tagInputs = messages.tagInputs,
+        templateInputs = messages.templateInputs,
         templateExpansion = { input = Sources.MESSAGE_TEMPLATE_EXPANSION.input },
       },
       transitions = {
@@ -3912,7 +4110,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
             resolved = false,
           },
         },
-        resourceSets = transitionResourceSets,
+        resourceSets = transition.resourceSets,
         resources = transitionCatalogKeys,
         messageRoutes = transitionMessageRoutes,
         internalResources = transitionInternalResources,
@@ -3939,68 +4137,30 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       resources = resourceCatalog,
       coverage = transitionCoverage,
     }
-    for index, row in ipairs(Sources.SLOT_GEOMETRY) do
-      partialManifest.battlefield.slots[index] = {
-        sideType = row.sideType,
-        settledX = row.settledX,
-        settledY = row.settledY,
-        entryX = row.entryX,
-        entryY = row.entryY,
-        depth = row.depth,
-        hudX = row.hudX,
-        hudY = row.hudY,
-        hudPriority = row.hudPriority,
-        hudBgPriority = row.hudBgPriority,
-      }
-    end
-    local menuLayerIndices = {}
-    for _, layer in ipairs(Sources.MENU_LAYOUT.layers) do
-      partialManifest.layouts.menu.layers[#partialManifest.layouts.menu.layers + 1] = {
-        key = layer.key,
-        x = layer.x,
-        y = layer.y,
-      }
-      menuLayerIndices[layer.key] = layer.index
-    end
-    local blockers = {}
-    if #rootFailures > 0 then
-      blockers[#blockers + 1] = "roots: " .. #rootFailures .. " source semantic roots did not close"
-      for _, failure in ipairs(rootFailures) do
-        blockers[#blockers + 1] = "roots: " .. failure
-      end
-    end
-    local uncoveredRoots = 0
-    for _, root in ipairs(semanticRoots) do
-      if transitionCoverage[root.key] == nil then
-        uncoveredRoots = uncoveredRoots + 1
-      end
-    end
-    if uncoveredRoots > 0 then
-      blockers[#blockers + 1] = "coverage: " .. uncoveredRoots .. " semantic roots have no closure identity"
-    end
+    local blockers = coverageBlockers(rootFailures, semanticRoots, transitionCoverage)
     local provenance = {
       source = Sources.provenance,
       rom = { version = versionId, sha1 = romFs:metadata().sha1 },
       roles = provenanceRoles(),
       menuSelectors = menuSelectorProvenance,
-      menuMessageIds = messageProvenance,
-      messageBanks = messageBankProvenance,
+      menuMessageIds = messages.provenance,
+      messageBanks = messages.bankProvenance,
       messageSourceResources = Sources.MESSAGE_SOURCE_ROUTES,
-      trainerMessageTables = trainerTableProvenance,
+      trainerMessageTables = messages.trainerTableProvenance,
       recorderFeedbackFlags = Sources.RECORDER_FEEDBACK_SOURCE_FLAGS,
       recorderFeedbackUnreachableFlags = Sources.RECORDER_FEEDBACK_UNREACHABLE_FLAGS,
       frontierTrainerMessageRoute = Sources.FRONTIER_TRAINER_MESSAGE_ROUTE,
-      transitionMessage = transitionMessageProvenance,
+      transitionMessage = messages.transitionMessageProvenance,
       transitionMessageRoutes = Sources.TRANSITION_MESSAGE_SOURCE_ROUTES,
-      messageDependencies = messageDependencies,
-      transitionResources = transitionProvenance,
+      messageDependencies = messages.dependencies,
+      transitionResources = transition.provenance,
       transitionSelectorFamilies = transitionSelectorFamilies,
       transitionSelectorRoutes = Sources.TRANSITION_SELECTOR_ROUTES,
       transitionPreselection = Sources.TRANSITION_PRESELECTION,
-      transitionSourceResources = transitionSourceResources,
-      transitionResourceMembers = transitionResourceMembers,
-      transitionParticleMembers = transitionParticleMembers,
-      embeddedParticleResources = embeddedParticleResources,
+      transitionSourceResources = transition.sourceResources,
+      transitionResourceMembers = transition.resourceMembers,
+      transitionParticleMembers = transition.particleMembers,
+      embeddedParticleResources = transition.embeddedParticleResources,
       menuTilemaps = menuTilemapProvenance,
       menuLayouts = menuLayoutProvenance,
       menuLayerIndices = menuLayerIndices,
@@ -4030,10 +4190,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     }
   end)
   if not ok then
-    if Errors.is(bundle) then
-      return nil, bundle
-    end
-    error(bundle, 0)
+    return nil, structuredFailure(bundle)
   end
   if #bundle.blockers > 0 then
     return nil,
@@ -4448,6 +4605,1286 @@ function BattlePresentationCompiler.sceneMarker(romSha1, scene)
   )
 end
 
+-- Mutable staging owned by one compileEffect call: the resolved semantic
+-- resources and their payloads, the recorded source inputs, opened
+-- archives, managed-sprite bookkeeping, and decoded particle archives.
+---@class BattleEffectStaging
+---@field romFs RomFs
+---@field effectKey string
+---@field sources table<string, unknown> BattleAnimationSources
+---@field resolvedResources table<string, { kind: string, contentIdentity: string, payload: string }>
+---@field resourcePayloads table<string, unknown>
+---@field sourceInputs table[]
+---@field resolvedSourceInputs table[]
+---@field archives table<string, Narc>
+---@field managedSpriteResources table<integer, table<string, table<integer, string>>>
+---@field managedSpriteCapacities table<integer, { multiCell: boolean, multiAnimation: boolean }>
+---@field pendingCharacterRasters table<string, table<string, unknown>>
+---@field particleByBattler table<integer, string>
+---@field decodedParticleResources table<string, { bytes: string, decoded: NitroSplData, source: table<string, unknown> }>
+
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] source operands
+---@param message string failure message
+---@return Errors.Error unresolved source-input failure
+local function sourceInputError(state, role, operands, message)
+  return Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", message, {
+    effectKey = state.effectKey,
+    provenance = { role = role, operands = operands },
+  })
+end
+
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] source operands
+---@param selections table<string, table<string, unknown>> physical source selections by slot
+---@param normalized table<string, unknown> semantic resolution record
+local function recordSourceInput(state, role, operands, selections, normalized)
+  state.sourceInputs[#state.sourceInputs + 1] = { role = role, operands = operands, selections = selections }
+  state.resolvedSourceInputs[#state.resolvedSourceInputs + 1] = normalized
+end
+
+---@param state BattleEffectStaging
+---@param archiveSymbol string
+---@param label string diagnostic role
+---@return Narc archive opened once per effect
+local function effectArchive(state, archiveSymbol, label)
+  local archive = state.archives[archiveSymbol]
+  if archive == nil then
+    archive = openArchive(state.romFs, archiveSymbol, label)
+    state.archives[archiveSymbol] = archive
+  end
+  return archive
+end
+
+-- Stages one content-addressed effect resource. Re-staging the same key
+-- must carry the same kind, identity, and payload.
+---@param state BattleEffectStaging
+---@param resourceKey string semantic resource key
+---@param kind string resource kind
+---@param contentIdentity string SHA-1 content identity
+---@param payload unknown decoded payload
+local function addEffectResource(state, resourceKey, kind, contentIdentity, payload)
+  assert(type(resourceKey) == "string" and resourceKey ~= "", "effect resources use semantic keys")
+  assert(type(contentIdentity) == "string" and #contentIdentity == 40, "effect resources use SHA-1 identities")
+  local payloadPath = BattlePresentationCache.globalResourcePath("effect/content/" .. contentIdentity)
+  local previous = state.resolvedResources[resourceKey]
+  if previous ~= nil then
+    assert(
+      previous.kind == kind and previous.contentIdentity == contentIdentity,
+      "semantic resource identity is stable"
+    )
+    assert(
+      Hashing.hashLua(state.resourcePayloads[previous.payload]) == Hashing.hashLua(payload),
+      "equal resources share payloads"
+    )
+    return
+  end
+  state.resolvedResources[resourceKey] = { kind = kind, contentIdentity = contentIdentity, payload = payloadPath }
+  state.resourcePayloads[payloadPath] = payload
+end
+
+-- Stages one particle texture/palette pair as an exact drawable plus
+-- decoded colors, returning their semantic resource keys. Shared
+-- sources collapse onto one staged drawable through content identity.
+---@param state BattleEffectStaging
+---@param textureBytes string|nil raw 8-bit indexed texels when embedded
+---@param paletteBytes string|nil raw RGB555 pairs when embedded
+---@param textureFlags integer source resource flags word
+---@param provenance table<string, unknown> source coordinates for failures
+---@return { textureKey: string|nil, paletteKey: string|nil } staged semantic resource keys
+local function stageParticleTexture(state, textureBytes, paletteBytes, textureFlags, provenance)
+  local textureKey, paletteKey = nil, nil
+  local colors = nil
+  if paletteBytes ~= nil then
+    colors = decodeParticlePalette(paletteBytes, provenance)
+    local paletteIdentity = Hashing.sha1hex(paletteBytes)
+    paletteKey = "battle/particle/palette/" .. paletteIdentity
+    addEffectResource(state, paletteKey, "palette", paletteIdentity, { colors = colors })
+  end
+  if textureBytes ~= nil then
+    local paletteColors = colors ~= nil and #colors or 0
+    local width, height, bits = particleTextureDimensions(textureBytes, textureFlags, paletteColors, provenance)
+    local rgba = decodeParticleRgba(textureBytes, width, height, bits, colors or {})
+    local textureIdentity = Hashing.sha1hex(textureBytes)
+    textureKey = "battle/particle/texture/" .. textureIdentity
+    addEffectResource(state, textureKey, "texture", textureIdentity, {
+      width = width,
+      height = height,
+      rgba8888 = rgba,
+    })
+  end
+  return { textureKey = textureKey, paletteKey = paletteKey }
+end
+
+-- Stages every resource of one decoded particle archive exactly once,
+-- resolving shared texture references onto their staged drawable.
+---@param state BattleEffectStaging
+---@param decoded NitroSplData decoded particle archive under staging
+---@param provenance table<string, unknown> source coordinates for failures
+---@return { textureKey: string|nil, paletteKey: string|nil }[] staged entries in source order
+local function stageParticleArchiveResources(state, decoded, provenance)
+  local entries = {}
+  for resourceIndex, resource in ipairs(decoded.resources) do
+    local textureKey, paletteKey = nil, nil
+    if resource.textureReference ~= nil then
+      local referenced = entries[resource.textureReference + 1]
+      if referenced == nil or referenced.textureKey == nil then
+        error(
+          Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "particle texture reference has no staged payload", {
+            effectKey = state.effectKey,
+            resourceIndex = resourceIndex - 1,
+            textureReference = resource.textureReference,
+          }),
+          0
+        )
+      end
+      textureKey = referenced.textureKey
+      paletteKey = stageParticleTexture(state, nil, resource.palette, resource.flags, provenance).paletteKey
+    else
+      local staged = stageParticleTexture(state, resource.texture, resource.palette, resource.flags, provenance)
+      textureKey, paletteKey = staged.textureKey, staged.paletteKey
+    end
+    entries[resourceIndex] = { textureKey = textureKey, paletteKey = paletteKey }
+  end
+  return entries
+end
+
+---@param data string little-endian 32-bit words
+---@return integer[] words in source order
+local function u32leWords(data)
+  local words = {}
+  for offset = 1, #data, 4 do
+    words[#words + 1] = string.byte(data, offset)
+      + string.byte(data, offset + 1) * 256
+      + string.byte(data, offset + 2) * 65536
+      + string.byte(data, offset + 3) * 16777216
+  end
+  return words
+end
+
+-- The emitter's present section/calculation roles, each named once.
+---@param emitter NitroSplEmitter
+---@return string[] sorted feature roles
+local function particleEmitterFeatures(emitter)
+  local seen = {}
+  local features = {}
+  for _, group in ipairs({ emitter.sections, emitter.calculations }) do
+    for _, entry in ipairs(group) do
+      if seen[entry.role] == nil then
+        seen[entry.role] = true
+        features[#features + 1] = entry.role
+      end
+    end
+  end
+  table.sort(features)
+  return features
+end
+
+-- The texture slot an emitter draws: its texture section's selector when
+-- in range, otherwise its own ordinal clamped to the archive resources.
+---@param emitter NitroSplEmitter
+---@param entryCount integer staged archive resource count
+---@param emitterIndex integer zero-based emitter ordinal
+---@return integer|nil zero-based texture slot, nil when the archive stages no resources
+local function particleEmitterTextureSlot(emitter, entryCount, emitterIndex)
+  if entryCount == 0 then
+    return nil
+  end
+  for _, section in ipairs(emitter.sections) do
+    if section.role == "texture" then
+      local selected = string.byte(section.data, 1)
+      return selected < entryCount and selected or math.min(emitterIndex, entryCount - 1)
+    end
+  end
+  return math.min(emitterIndex, entryCount - 1)
+end
+
+-- Normalizes one raw emitter into source-independent typed state: the
+-- active source behaviors, the inline parameter bits, the base control
+-- values, one word vector per present section/calculation, and the
+-- resolved drawable its sprites draw. Unknown flags words fail.
+---@param effectKey string effect under compilation
+---@param emitter NitroSplEmitter raw emitter under normalizing
+---@param entries { textureKey: string|nil, paletteKey: string|nil }[] staged archive resources
+---@param emitterIndex integer zero-based emitter ordinal behind texture selection
+---@param provenance table<string, unknown> source coordinates for failures
+---@return table<string, unknown> normalized emitter record
+local function normalizeParticleEmitter(effectKey, emitter, entries, emitterIndex, provenance)
+  assert(#emitter.baseRecord == 0x58, "emitter base records keep their source size")
+  if KNOWN_PARTICLE_EMITTER_FLAGS[emitter.flags] ~= true then
+    error(
+      Errors.new("BATTLE_PARTICLE_RESOURCE_INVALID", "particle emitter flags are outside the source inventory", {
+        effectKey = effectKey,
+        flags = string.format("0x%08x", emitter.flags),
+        archiveSymbol = provenance.archiveSymbol,
+        memberId = provenance.memberId,
+      }),
+      0
+    )
+  end
+  local params = {}
+  for offset = 5, #emitter.baseRecord, 2 do
+    params[#params + 1] = string.byte(emitter.baseRecord, offset) + string.byte(emitter.baseRecord, offset + 1) * 256
+  end
+  local record = {
+    features = particleEmitterFeatures(emitter),
+    variant = clearParticleSelectorBits(emitter.flags),
+    params = params,
+  }
+  for _, group in ipairs({ emitter.sections, emitter.calculations }) do
+    for _, entry in ipairs(group) do
+      if record[entry.role] == nil then
+        record[entry.role] = u32leWords(entry.data)
+      end
+    end
+  end
+  local slot = particleEmitterTextureSlot(emitter, #entries, emitterIndex)
+  local textureKey = nil
+  if slot ~= nil then
+    local selected = entries[slot + 1]
+    textureKey = selected ~= nil and selected.textureKey or nil
+    if textureKey == nil then
+      error(
+        Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "particle emitter texture has no staged drawable", {
+          effectKey = effectKey,
+          emitterIndex = emitterIndex,
+          textureSlot = slot,
+          archiveSymbol = provenance.archiveSymbol,
+          memberId = provenance.memberId,
+        }),
+        0
+      )
+    end
+  end
+  record.textureSlot = slot
+  record.textureKey = textureKey
+  return record
+end
+
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] manager index, unused, then six capacities
+---@return table<string, unknown> empty resolution
+local function resolveManagerCapacities(state, role, operands)
+  if #operands ~= 8 then
+    error(sourceInputError(state, role, operands, "sprite manager capacity frame is invalid"), 0)
+  end
+  local managerIndex = operands[1]
+  local capacities = {}
+  for index = 3, 8 do
+    local capacity = operands[index]
+    if type(capacity) ~= "number" or capacity < 0 or capacity > 0x7fffffff or capacity % 1 ~= 0 then
+      error(
+        Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "sprite manager capacity is invalid", {
+          effectKey = state.effectKey,
+          provenance = { role = role, operands = operands, capacityIndex = index },
+        }),
+        0
+      )
+    end
+    capacities[index - 2] = capacity
+  end
+  if state.managedSpriteCapacities[managerIndex] ~= nil then
+    error(sourceInputError(state, role, operands, "sprite manager slot is initialized more than once"), 0)
+  end
+  local hasMultiResourceManagers = capacities[5] > 0 and capacities[6] > 0
+  state.managedSpriteCapacities[managerIndex] = {
+    multiCell = hasMultiResourceManagers,
+    multiAnimation = hasMultiResourceManagers,
+  }
+  recordSourceInput(state, role, operands, {}, {
+    role = role,
+    managerIndex = managerIndex,
+    multiCellEnabled = hasMultiResourceManagers,
+    multiAnimationEnabled = hasMultiResourceManagers,
+  })
+  return {}
+end
+
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] manager index
+---@return table<string, unknown> empty resolution
+local function resolveManagerDisposal(state, role, operands)
+  if #operands ~= 1 then
+    error(sourceInputError(state, role, operands, "sprite manager disposal frame is invalid"), 0)
+  end
+  state.managedSpriteCapacities[operands[1]] = nil
+  state.managedSpriteResources[operands[1]] = nil
+  recordSourceInput(state, role, operands, {}, { role = role, managerIndex = operands[1], disposed = true })
+  return {}
+end
+
+-- Reads and decodes one battler particle archive member, failing as an
+-- unavailable source when the member is absent.
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] source operands
+---@param source { archiveSymbol: string, memberId: integer } selected particle source
+---@param memberId integer selected member
+---@return string bytes, NitroSplData decoded
+local function decodeBattlerParticle(state, role, operands, source, memberId)
+  local particleArchive = effectArchive(state, source.archiveSymbol, "animation battler particle")
+  local bytes, readErr = particleArchive:readMember(memberId)
+  if bytes == nil then
+    error(
+      Errors.new("BATTLE_EFFECT_SOURCE_UNAVAILABLE", "selected battler particle member is absent", {
+        effectKey = state.effectKey,
+        provenance = {
+          archiveSymbol = source.archiveSymbol,
+          memberId = memberId,
+          role = role,
+          operands = operands,
+        },
+        cause = tostring(readErr),
+      }),
+      0
+    )
+  end
+  local decoded, decodeErr = Spl.decode(bytes, { effectKey = state.effectKey, role = role })
+  if decoded == nil then
+    error(decodeErr, 0)
+  end
+  return bytes, decoded --[[@as NitroSplData]]
+end
+
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] battler then particle member operands
+---@return table<string, unknown> resolution carrying the selected particle resource key
+local function resolveBattlerParticleResource(state, role, operands)
+  local sources = state.sources
+  local selection, _ = sources.resolveSourceSelection(role, operands)
+  local definition = assert(sources.sourceInput(51), "opcode 51 has producer source metadata")
+  if #operands ~= definition.operandCount then
+    error(
+      Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "battler particle resource has no typed source", {
+        effectKey = state.effectKey,
+        reason = "particle resource operand shape is invalid",
+        provenance = { role = role, operands = operands },
+      }),
+      0
+    )
+  end
+  local memberId = operands[definition.memberOperand]
+  local source = selection and selection.sourceSelections and selection.sourceSelections.particle
+    or {
+      archiveSymbol = definition.archiveSymbol,
+      memberId = memberId,
+      decoder = definition.decoder,
+      kind = definition.kind,
+    }
+  if source == nil or source.decoder ~= "spl" or source.kind ~= "particle" then
+    error(sourceInputError(state, role, operands, "battler particle source has no APS decoder"), 0)
+  end
+  local particleKey = selection and selection.resourceKeys and selection.resourceKeys.particle
+    or sources.resolveParticleResource(memberId)
+  local particle = particleKey ~= nil and state.decodedParticleResources[particleKey] or nil
+  if particle == nil then
+    local bytes, decoded = decodeBattlerParticle(state, role, operands, source, memberId)
+    particleKey = particleKey or ("battle/particle/content/" .. Hashing.sha1hex(bytes))
+    selection = {
+      resourceKeys = { particle = particleKey },
+      sourceSelections = { particle = source },
+    }
+    state.decodedParticleResources[particleKey] = { bytes = bytes, decoded = decoded, source = source }
+  end
+  state.particleByBattler[operands[1]] = selection.resourceKeys.particle
+  local selections = {
+    particle = { archiveSymbol = source.archiveSymbol, memberId = source.memberId, decoder = source.decoder },
+  }
+  recordSourceInput(state, role, operands, selections, { role = role, resourceKeys = selection.resourceKeys })
+  return { resourceKeys = selection.resourceKeys }
+end
+
+-- The staged resource a managed-sprite slot identity selects. Optional
+-- MCEL/MANM slots resolve to nil when no bytecode handler loaded them.
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] source operands; the first selects the manager
+---@param slot string managed resource slot
+---@param identity integer typed resource identity within the manager
+---@param subject string failure subject ("configured sprite" or "managed sprite")
+---@return string|nil resourceKey
+local function managedSpriteResourceKey(state, role, operands, slot, identity, subject)
+  local manager = state.managedSpriteResources[operands[1]]
+  local resources = manager and manager[slot]
+  local resourceKey = resources and resources[identity]
+  local optional = slot == "multiCell" or slot == "multiAnimation"
+  if resourceKey == nil and not (optional and resources == nil) then
+    error(
+      Errors.new(
+        "BATTLE_EFFECT_SOURCE_UNRESOLVED",
+        subject .. " resource identity has no prior source-selected payload",
+        {
+          effectKey = state.effectKey,
+          reason = "the selected manager has no decoded resource with this typed identity",
+          provenance = { role = role, operands = operands, slot = slot },
+        }
+      ),
+      0
+    )
+  end
+  return resourceKey
+end
+
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] source operands
+---@return table<string, unknown> resolution with the configured sprite's resources and task
+local function resolveConfiguredSpriteAction(state, role, operands)
+  local sources = state.sources
+  local selection, selectionErr = sources.resolveSourceSelection(role, operands)
+  if selection == nil then
+    error(
+      Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "configured sprite action is not source-resolved", {
+        effectKey = state.effectKey,
+        reason = selectionErr,
+        provenance = { role = role, operands = operands },
+      }),
+      0
+    )
+  end
+  local definition = assert(sources.sourceInput(78), "opcode 78 has source operand metadata")
+  local capacities = state.managedSpriteCapacities[operands[1]]
+  if capacities == nil then
+    error(sourceInputError(state, role, operands, "configured sprite manager has no active capacity record"), 0)
+  end
+  local resourceKeys = {}
+  for _, slot in ipairs(definition.resourceSlots) do
+    if capacities[slot] ~= false then
+      local operandIndex = assert(definition.resourceOperands[slot], "configured sprite slot has an operand")
+      resourceKeys[slot] =
+        managedSpriteResourceKey(state, role, operands, slot, operands[operandIndex], "configured sprite")
+    end
+  end
+  recordSourceInput(state, role, operands, {}, {
+    role = role,
+    resourceKeys = resourceKeys,
+    taskKind = selection.taskKind,
+    context = selection.context,
+    parameters = selection.parameters,
+  })
+  return {
+    resourceKeys = resourceKeys,
+    taskKind = selection.taskKind,
+    context = selection.context,
+    parameters = selection.parameters,
+  }
+end
+
+local MANAGED_SPRITE_TEMPLATE_SLOTS = { "character", "palette", "cell", "animation", "multiCell", "multiAnimation" }
+
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] manager, unused, then six resource identities
+---@return table<string, unknown> resolution with the template's resources
+local function resolveManagedSpriteTemplate(state, role, operands)
+  if #operands ~= 8 then
+    error(sourceInputError(state, role, operands, "managed sprite resource reference shape is invalid"), 0)
+  end
+  local resourceKeys = {}
+  for index, slot in ipairs(MANAGED_SPRITE_TEMPLATE_SLOTS) do
+    local reference = operands[index + 2]
+    -- Nitro's signed -1 resource ID means this sprite has no MCEL/MANM.
+    if not (index > 4 and reference == 0xffffffff) then
+      resourceKeys[slot] = managedSpriteResourceKey(state, role, operands, slot, reference, "managed sprite")
+    end
+  end
+  recordSourceInput(state, role, operands, {}, { role = role, resourceKeys = resourceKeys })
+  return { resourceKeys = resourceKeys }
+end
+
+-- Stages one selected APS emitter as a content-addressed emitter resource.
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] source operands
+---@param particleKey string selected particle archive key
+---@param particle { decoded: NitroSplData, source: table<string, unknown> } decoded particle archive
+---@param emitterOrdinal unknown zero-based emitter ordinal from the source plan
+---@param caseKey string selection case behind the emitter
+---@return string resourceKey staged emitter key
+local function stageActionEmitter(state, role, operands, particleKey, particle, emitterOrdinal, caseKey)
+  if type(emitterOrdinal) ~= "number" or emitterOrdinal < 0 or emitterOrdinal % 1 ~= 0 then
+    error(
+      Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "particle emitter ordinal is invalid", {
+        effectKey = state.effectKey,
+        provenance = { role = role, operands = operands, case = caseKey },
+        resourceKey = particleKey,
+      }),
+      0
+    )
+  end
+  local emitter = particle.decoded.emitters[emitterOrdinal + 1]
+  if emitter == nil then
+    error(
+      Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "particle emitter ordinal has no decoded APS record", {
+        effectKey = state.effectKey,
+        provenance = { role = role, operands = operands, case = caseKey },
+        resourceKey = particleKey,
+      }),
+      0
+    )
+  end
+  local provenance = { archiveSymbol = particle.source.archiveSymbol, memberId = particle.source.memberId }
+  local entries = stageParticleArchiveResources(state, particle.decoded, provenance)
+  local stagedEmitter = normalizeParticleEmitter(state.effectKey, emitter, entries, emitterOrdinal, provenance)
+  local contentIdentity = Hashing.hashLua(stagedEmitter)
+  local resourceKey = "battle/particle-emitter/" .. contentIdentity
+  addEffectResource(state, resourceKey, "particle-emitter", contentIdentity, stagedEmitter)
+  return resourceKey
+end
+
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] battler first
+---@param selection table<string, unknown> source selection plan
+---@return table<string, unknown> resolution with the action profile and emitter resources
+local function resolveParticleAction(state, role, operands, selection)
+  local normalized = {
+    role = role,
+    actionProfile = selection.actionProfile,
+    callbackCases = selection.callbackCases,
+    resourceCases = selection.resourceCases,
+    runtimeSelection = selection.runtimeSelection,
+    taskKind = selection.taskKind,
+  }
+  if type(selection.actionProfile) ~= "string" then
+    error(sourceInputError(state, role, operands, "battler particle action has no semantic profile"), 0)
+  end
+  local emitterSelections = selection.sourceEmitterSelections
+  if emitterSelections ~= nil then
+    local particleKey = state.particleByBattler[operands[1]]
+    local particle = particleKey ~= nil and state.decodedParticleResources[particleKey] or nil
+    if particle == nil then
+      error(sourceInputError(state, role, operands, "particle action has no earlier APS selection for its battler"), 0)
+    end
+    if emitterSelections.resource ~= nil then
+      normalized.resource =
+        stageActionEmitter(state, role, operands, particleKey, particle, emitterSelections.resource, "fixed")
+    else
+      normalized.resourceCases = {}
+      for pairKey, emitterOrdinal in pairs(emitterSelections) do
+        normalized.resourceCases[pairKey] = emitterOrdinal == "source-assert" and "source-assert"
+          or stageActionEmitter(state, role, operands, particleKey, particle, emitterOrdinal, pairKey)
+      end
+    end
+  end
+  local choosesEmitter = emitterSelections ~= nil or type(selection.callbackCases) == "table"
+  if choosesEmitter and type(normalized.resourceCases) ~= "table" and normalized.resource == nil then
+    error(sourceInputError(state, role, operands, "battler particle choice has no emitter resource cases"), 0)
+  end
+  recordSourceInput(state, role, operands, {}, normalized)
+  return {
+    actionProfile = selection.actionProfile,
+    callbackCases = selection.callbackCases,
+    resource = normalized.resource,
+    resourceCases = normalized.resourceCases,
+    runtimeSelection = selection.runtimeSelection,
+    taskKind = selection.taskKind,
+  }
+end
+
+local PALETTE_CALLBACK_OPERATIONS = {
+  ["copy-main-background-palette-to-fade-buffer"] = true,
+  ["grayscale-main-background-fade-buffer"] = true,
+}
+
+-- Resolves a callback whose source plan is one direct operation instead
+-- of a task: a no-op, a picture visibility change, or a palette copy.
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] source operands
+---@param selection table<string, unknown> source selection plan carrying `op`
+---@return table<string, unknown> resolution carrying the direct operation
+local function resolveCallbackOperation(state, role, operands, selection)
+  if selection.op == "noop" then
+    recordSourceInput(state, role, operands, {}, { role = role, op = "noop" })
+    return { op = "noop" }
+  end
+  local isPictureOperation = selection.op == "set-pokemon-picture-vanished"
+  local isPaletteOperation = PALETTE_CALLBACK_OPERATIONS[selection.op] == true
+  if not isPictureOperation and not isPaletteOperation then
+    error(sourceInputError(state, role, operands, "animation callback direct operation is invalid"), 0)
+  elseif isPictureOperation and (type(selection.pictureSets) ~= "table" or type(selection.vanished) ~= "boolean") then
+    error(sourceInputError(state, role, operands, "animation callback direct operation is invalid"), 0)
+  elseif isPaletteOperation and (selection.pictureSets ~= nil or selection.vanished ~= nil) then
+    error(sourceInputError(state, role, operands, "palette callback operation carries unexpected fields"), 0)
+  end
+  recordSourceInput(state, role, operands, {}, {
+    role = role,
+    op = selection.op,
+    pictureSets = selection.pictureSets,
+    vanished = selection.vanished,
+  })
+  return {
+    op = selection.op,
+    pictureSets = selection.pictureSets,
+    vanished = selection.vanished,
+  }
+end
+
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] source operands
+---@param selection table<string, unknown> source selection plan
+local function checkCallbackPlan(state, role, operands, selection)
+  if
+    type(selection.callback) ~= "string"
+    or type(selection.taskKind) ~= "string"
+    or type(selection.context) ~= "string"
+    or type(selection.parameters) ~= "table"
+  then
+    error(sourceInputError(state, role, operands, "animation callback plan has no semantic task"), 0)
+  end
+end
+
+-- Animation source decoders by source-plan decoder name. Each receives
+-- the selected archive member and returns its decoded payload.
+local function decodeAnimationChars(archive, memberId, _, label)
+  return decodeChars(archive, memberId, label .. " characters")
+end
+
+local function decodeAnimationPalette(archive, memberId, _, label)
+  return paletteRecords(decodePalette(archive, memberId, label .. " palette"))
+end
+
+local function decodeAnimationScreen(archive, memberId, _, label)
+  return decodeScreen(archive, memberId, label .. " screen")
+end
+
+local function decodeAnimationCells(archive, memberId, _, label)
+  return decodeCells(archive, memberId, label .. " cells")
+end
+
+local function decodeAnimationSequences(archive, memberId, _, label)
+  return decodeAnimation(archive, memberId, label .. " animation")
+end
+
+local function decodeAnimationMultiCell(_, _, bytes, _, options)
+  local MultiCell = require("libs.nds.src.nitro.g2d.MultiCell")
+  return must(MultiCell.decode(bytes, options))
+end
+
+local function decodeAnimationMultiCellAnimation(_, _, bytes, _, options)
+  local MultiCellAnimation = require("libs.nds.src.nitro.g2d.MultiCellAnimation")
+  return must(MultiCellAnimation.decode(bytes, options))
+end
+
+local ANIMATION_SOURCE_DECODERS = {
+  char = decodeAnimationChars,
+  palette = decodeAnimationPalette,
+  screen = decodeAnimationScreen,
+  cell = decodeAnimationCells,
+  animation = decodeAnimationSequences,
+  multiCell = decodeAnimationMultiCell,
+  multiCellAnimation = decodeAnimationMultiCellAnimation,
+}
+
+-- Reads, decodes, and stages every source-selected slot of one input in
+-- slot order under its content-addressed animation resource key.
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] source operands
+---@param sourceSelections table<string, table<string, unknown>> selected sources by slot
+---@return table<string, string> resourceKeys by slot
+---@return table<string, table<string, unknown>> selections physical selections by slot
+local function stageSelectedSources(state, role, operands, sourceSelections)
+  local resourceKeys = {}
+  local selections = {}
+  for _, slot in ipairs(sortedSetValues(sourceSelections)) do
+    local source = sourceSelections[slot]
+    local sourceArchive = effectArchive(state, source.archiveSymbol, "animation " .. role)
+    local sourceBytes, sourceErr = sourceArchive:readMember(source.memberId)
+    if sourceBytes == nil then
+      error(
+        Errors.new("BATTLE_EFFECT_SOURCE_UNAVAILABLE", "selected animation resource member is absent", {
+          effectKey = state.effectKey,
+          role = role,
+          provenance = {
+            archiveSymbol = source.archiveSymbol,
+            memberId = source.memberId,
+            operands = operands,
+            slot = slot,
+          },
+          cause = tostring(sourceErr),
+        }),
+        0
+      )
+    end
+    local decoder = ANIMATION_SOURCE_DECODERS[source.decoder]
+    if decoder == nil then
+      error(
+        Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "animation source selection has no decoder", {
+          effectKey = state.effectKey,
+          role = role,
+          provenance = { decoder = source.decoder, operands = operands, slot = slot },
+        }),
+        0
+      )
+    end
+    local decoded = decoder(
+      sourceArchive,
+      source.memberId,
+      sourceBytes,
+      "animation " .. role,
+      { effectKey = state.effectKey, role = role, slot = slot }
+    )
+    local contentIdentity = Hashing.sha1hex(sourceBytes)
+    local resourceSlot = slot:gsub("(%u)", "-%1"):lower()
+    local resourceKey = table.concat({ "battle/animation", role, resourceSlot, contentIdentity }, "/")
+    local payloadPath = BattlePresentationCache.globalResourcePath(resourceKey)
+    local previous = state.resolvedResources[resourceKey]
+    if previous ~= nil then
+      assert(
+        previous.contentIdentity == contentIdentity
+          and previous.kind == source.kind
+          and Hashing.hashLua(state.resourcePayloads[previous.payload]) == Hashing.hashLua(decoded),
+        "content-addressed battle resource keys identify one decoded format"
+      )
+    else
+      state.resolvedResources[resourceKey] =
+        { kind = source.kind, contentIdentity = contentIdentity, payload = payloadPath }
+      state.resourcePayloads[payloadPath] = decoded
+    end
+    resourceKeys[slot] = resourceKey
+    selections[slot] = { archiveSymbol = source.archiveSymbol, memberId = source.memberId, decoder = source.decoder }
+  end
+  return resourceKeys, selections
+end
+
+local MANAGED_SPRITE_SLOT_BY_ROLE = {
+  ["sprite-character"] = "character",
+  ["sprite-palette"] = "palette",
+  ["sprite-cell"] = "cell",
+  ["sprite-animation"] = "animation",
+}
+
+-- Records a sprite-loading input's staged resource under its manager and
+-- typed identity so later templates and configured actions resolve it.
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] manager then typed identity
+---@param resourceKeys table<string, string> staged resources by slot
+local function registerManagedSpriteResource(state, role, operands, resourceKeys)
+  local managedSlot = MANAGED_SPRITE_SLOT_BY_ROLE[role]
+  if managedSlot == nil then
+    return
+  end
+  local managerSlot = operands[1]
+  local manager = state.managedSpriteResources[managerSlot] or {}
+  state.managedSpriteResources[managerSlot] = manager
+  local byIdentity = manager[managedSlot] or {}
+  manager[managedSlot] = byIdentity
+  local previous = byIdentity[operands[2]]
+  if previous ~= nil and previous ~= resourceKeys[managedSlot] then
+    error(
+      Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "managed sprite resource identity is ambiguous", {
+        effectKey = state.effectKey,
+        provenance = { role = role, operands = operands, slot = managedSlot },
+      }),
+      0
+    )
+  end
+  byIdentity[operands[2]] = resourceKeys[managedSlot]
+end
+
+-- A staged character tile set must become an exact RGBA drawable before
+-- publication: the live image upload path admits no other texture shape.
+-- Same-call co-selected palettes pair immediately; lone characters keep
+-- their decoded tiles until the creating instruction pairs them.
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param resourceKeys table<string, string> staged resources by slot
+---@param selections table<string, table<string, unknown>> physical selections by slot
+local function queueCharacterRaster(state, role, resourceKeys, selections)
+  local characterKey = resourceKeys.character
+  if characterKey == nil or selections.character == nil or selections.character.decoder ~= "char" then
+    return
+  end
+  local characterDescriptor = state.resolvedResources[characterKey]
+  local stagedCharacters = characterDescriptor ~= nil and state.resourcePayloads[characterDescriptor.payload] or nil
+  if
+    characterDescriptor ~= nil
+    and characterDescriptor.kind == "texture"
+    and type(stagedCharacters) == "table"
+    and type(stagedCharacters.tiles) == "string"
+    and state.pendingCharacterRasters[characterKey] == nil
+  then
+    state.pendingCharacterRasters[characterKey] = {
+      resourceKey = characterKey,
+      payloadPath = characterDescriptor.payload,
+      chars = stagedCharacters,
+      paletteKey = resourceKeys.palette,
+      role = role,
+    }
+  end
+end
+
+-- The semantic output of a source-selected input; callback plans also
+-- carry their task context and parameters.
+---@param resourceKeys table<string, string> staged resources by slot
+---@param selection table<string, unknown> source selection plan
+---@param isCallbackPlan boolean
+---@return table<string, unknown> resolution record
+local function selectedSourceOutput(resourceKeys, selection, isCallbackPlan)
+  local output = {
+    resourceKeys = resourceKeys,
+    runtimeSelection = selection.runtimeSelection,
+    battlerTarget = selection.battlerTarget,
+    taskKind = selection.taskKind,
+    callback = selection.callback,
+    actionProfile = selection.actionProfile,
+    callbackCases = selection.callbackCases,
+  }
+  if isCallbackPlan then
+    output.context = selection.context
+    output.parameters = selection.parameters
+  end
+  return output
+end
+
+-- Resolves every input the source plan selects through
+-- BattleAnimationSources: particle actions, callbacks, and inputs that
+-- stage source members by slot.
+---@param state BattleEffectStaging
+---@param role string source input role
+---@param operands integer[] source operands
+---@return table<string, unknown> resolution record handed to the animation compiler
+local function resolveSelectedSourceInput(state, role, operands)
+  local selection, selectionErr = state.sources.resolveSourceSelection(role, operands)
+  if selection == nil then
+    error(
+      Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "animation source selection is not established", {
+        effectKey = state.effectKey,
+        reason = selectionErr,
+        provenance = { role = role, operands = operands },
+      }),
+      0
+    )
+  end
+  if role == "battler-particle-action" then
+    return resolveParticleAction(state, role, operands, selection)
+  end
+  local isCallbackPlan = role == "battle-animation-callback"
+  if isCallbackPlan then
+    if selection.op ~= nil then
+      return resolveCallbackOperation(state, role, operands, selection)
+    end
+    checkCallbackPlan(state, role, operands, selection)
+  end
+  local sourceSelections = selection.sourceSelections or {}
+  if next(sourceSelections) == nil and selection.battlerTarget == nil and not isCallbackPlan then
+    error(
+      Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "animation source plan carries no semantic output", {
+        effectKey = state.effectKey,
+        role = role,
+        provenance = { operands = operands },
+      }),
+      0
+    )
+  end
+  local resourceKeys, selections = stageSelectedSources(state, role, operands, sourceSelections)
+  registerManagedSpriteResource(state, role, operands, resourceKeys)
+  queueCharacterRaster(state, role, resourceKeys, selections)
+  local normalized = selectedSourceOutput(resourceKeys, selection, isCallbackPlan)
+  normalized.role = role
+  recordSourceInput(state, role, operands, selections, normalized)
+  return selectedSourceOutput(resourceKeys, selection, isCallbackPlan)
+end
+
+local SOURCE_INPUT_RESOLVERS = {
+  ["managed-sprite-manager-capacities"] = resolveManagerCapacities,
+  ["managed-sprite-manager-disposal"] = resolveManagerDisposal,
+  ["battler-particle-resource"] = resolveBattlerParticleResource,
+  ["configured-sprite-action"] = resolveConfiguredSpriteAction,
+  ["managed-sprite-template"] = resolveManagedSpriteTemplate,
+}
+
+local CONTEXT_TYPES = {
+  battlerTopology = "battle-animation-battler-topology",
+  spriteContextTable = "battle-animation-sprite-context-table",
+  movePower = "battle-animation-move-power-u16",
+}
+
+-- Typed context each native callback reads beyond its instruction.
+local CALLBACK_REQUIRED_CONTEXT = {
+  ["pokemon-picture-affine-blend-palette-transition"] = { "spriteContextTable" },
+  ["battle-sprite-sinusoidal-position-animation"] = { "battlerTopology", "spriteContextTable" },
+  ["battle-sprite-priority-appearance-transition"] = { "battlerTopology", "spriteContextTable" },
+  ["battle-background-alpha-scroll-transition"] = { "battlerTopology" },
+  ["battle-background-sprite-slide-transition"] = { "battlerTopology" },
+  ["pokemon-picture-selected-position-offset-transition"] = { "battlerTopology" },
+  ["pokemon-picture-offset-transition"] = { "battlerTopology" },
+  ["pokemon-picture-cyclic-two-phase-position-transition"] = { "battlerTopology" },
+  ["pokemon-picture-linear-offscreen-transition"] = { "battlerTopology" },
+  ["battle-background-four-picture-move-power-transition"] = { "movePower" },
+}
+
+-- Adds the typed context one instruction tree reads to `requiredContext`.
+---@param requiredContext table<string, { type: string }>
+---@param instruction unknown normalized instruction or nested value
+local function collectRequiredContext(requiredContext, instruction)
+  if type(instruction) ~= "table" then
+    return
+  end
+  local needs = {}
+  local parameters = instruction.parameters
+  if instruction.op == "set-pokemon-picture-vanished" then
+    needs[#needs + 1] = "battlerTopology"
+  end
+  if parameters ~= nil and (parameters.spriteContextSlot ~= nil or parameters.oamModeSpriteSlots ~= nil) then
+    needs[#needs + 1] = "spriteContextTable"
+  end
+  if parameters ~= nil and parameters.pictureSets ~= nil then
+    needs[#needs + 1] = "battlerTopology"
+  end
+  for _, name in ipairs(CALLBACK_REQUIRED_CONTEXT[instruction.callback] or {}) do
+    needs[#needs + 1] = name
+  end
+  for _, name in ipairs(needs) do
+    requiredContext[name] = { type = CONTEXT_TYPES[name] }
+  end
+  for _, nested in pairs(instruction) do
+    if type(nested) == "table" then
+      collectRequiredContext(requiredContext, nested)
+    end
+  end
+end
+
+-- Validates the semantic effect key and reads its routed source stream.
+---@param romFs RomFs
+---@param sources table<string, unknown> BattleAnimationSources
+---@param effectKey unknown requested key
+---@return table<string, unknown>|nil route, string|nil stream
+---@return Errors.Error|nil failure
+local function readEffectSource(romFs, sources, effectKey)
+  if type(effectKey) ~= "string" or effectKey == "" or effectKey:find("/", 1, true) ~= nil then
+    return nil,
+      nil,
+      Errors.new("BATTLE_EFFECT_UNKNOWN", "unknown battle effect key: " .. tostring(effectKey), {
+        effectKey = tostring(effectKey),
+      })
+  end
+  local route = sources.resolveSemanticRoute(effectKey)
+  if route == nil then
+    return nil,
+      nil,
+      Errors.new("BATTLE_EFFECT_UNKNOWN", "unknown battle effect key: " .. effectKey, {
+        effectKey = effectKey,
+      })
+  end
+  assert(
+    route.kind == "move" or route.kind == "battle-animation",
+    "source route resolver returns a supported semantic root kind"
+  )
+  local archive, archiveErr = romFs:openNarc(route.archiveSymbol)
+  if archive == nil then
+    return nil,
+      nil,
+      Errors.new("BATTLE_EFFECT_SOURCE_UNAVAILABLE", "could not open selected effect archive", {
+        effectKey = effectKey,
+        archiveSymbol = route.archiveSymbol,
+        memberId = route.memberId,
+        cause = tostring(archiveErr),
+      })
+  end
+  local stream, memberErr = archive:readMember(route.memberId)
+  if stream == nil then
+    return nil,
+      nil,
+      Errors.new("BATTLE_EFFECT_SOURCE_UNAVAILABLE", "could not read selected effect member", {
+        effectKey = effectKey,
+        archiveSymbol = route.archiveSymbol,
+        memberId = route.memberId,
+        cause = tostring(memberErr),
+      })
+  end
+  return route, stream, nil
+end
+
+-- The audio closure: every effect sound's sequence grouped by its bank,
+-- each bank one of the source-listed effect sound banks.
+---@param state BattleEffectStaging
+---@param instructions BattleAnimationInstruction[]
+---@return { bankId: integer, sequenceIds: integer[] }[]|nil audio provenance
+---@return unknown|nil failure
+local function effectAudioProvenance(state, instructions)
+  local hasSound = false
+  for _, instruction in ipairs(instructions) do
+    hasSound = hasSound or instruction.sound ~= nil
+  end
+  if not hasSound then
+    return {}
+  end
+  local audioCompiler = require("romdump.src.digest.audio.AudioCompiler")
+  local audioPlan, audioPlanErr = audioCompiler.planSource(state.romFs)
+  if audioPlan == nil then
+    return nil, audioPlanErr
+  end
+  local index = audioPlan.plan.index
+  local plannedBanks = {}
+  for _, bankSymbol in ipairs(state.sources.EFFECT_SOUND_BANKS) do
+    local bankId = index.bankBySymbol[bankSymbol]
+    assert(bankId ~= nil, "effect sound bank is source-indexed: " .. bankSymbol)
+    plannedBanks[bankId] = true
+  end
+  local sequencesByBank = {}
+  for _, instruction in ipairs(instructions) do
+    local sequenceSymbol = instruction.sound
+    if sequenceSymbol ~= nil then
+      local sequenceId = index.sequenceBySymbol[sequenceSymbol]
+      local sequenceRecord = sequenceId ~= nil and index.sequences[sequenceId] or nil
+      if sequenceRecord == nil then
+        return nil,
+          Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "effect sound has no source-indexed sequence", {
+            effectKey = state.effectKey,
+            sequenceSymbol = sequenceSymbol,
+          })
+      end
+      local bankId = sequenceRecord.bankId
+      if not plannedBanks[bankId] then
+        local bankRecord = index.banks[bankId]
+        return nil,
+          Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "effect sound lives outside the effect sound banks", {
+            effectKey = state.effectKey,
+            sequenceSymbol = sequenceSymbol,
+            bankSymbol = bankRecord ~= nil and bankRecord.symbol or nil,
+          })
+      end
+      sequencesByBank[bankId] = sequencesByBank[bankId] or {}
+      sequencesByBank[bankId][sequenceId] = true
+    end
+  end
+  local audioProvenance = {}
+  for _, bankId in ipairs(sortedSetValues(sequencesByBank)) do
+    audioProvenance[#audioProvenance + 1] = { bankId = bankId, sequenceIds = sortedSetValues(sequencesByBank[bankId]) }
+  end
+  return audioProvenance
+end
+
+-- The decoded APS archive behind one closure particle resource, reusing
+-- an archive a battler particle input already decoded.
+---@param state BattleEffectStaging
+---@param resourceKey string particle resource key
+---@return { bytes: string, decoded: NitroSplData, source: table<string, unknown> }|nil particle
+---@return unknown|nil failure
+local function closureParticle(state, resourceKey)
+  local particle = state.decodedParticleResources[resourceKey]
+  local source = particle and particle.source or state.sources.resolveParticleSource(resourceKey)
+  if source == nil or source.decoder ~= "spl" or source.kind ~= "particle" then
+    return nil,
+      Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "particle resource has no typed producer source", {
+        effectKey = state.effectKey,
+        resourceKey = resourceKey,
+      })
+  end
+  if particle ~= nil then
+    return particle
+  end
+  local particleArchive = state.archives[source.archiveSymbol]
+  if particleArchive == nil then
+    local openedParticleArchive, particleArchiveError = state.romFs:openNarc(source.archiveSymbol)
+    if openedParticleArchive == nil then
+      return nil, particleArchiveError
+    end
+    particleArchive = openedParticleArchive
+    state.archives[source.archiveSymbol] = openedParticleArchive
+  end
+  local bytes, particleReadErr = particleArchive:readMember(source.memberId)
+  if bytes == nil then
+    return nil, particleReadErr
+  end
+  local decoded, particleDecodeErr = Spl.decode(bytes, { role = "battle-effect-particle" })
+  if decoded == nil then
+    return nil, particleDecodeErr
+  end
+  particle = {
+    bytes = bytes,
+    decoded = decoded --[[@as NitroSplData]],
+    source = source,
+  }
+  state.decodedParticleResources[resourceKey] = particle
+  return particle
+end
+
+-- Stages one closure particle archive: its resources and every emitter
+-- normalized into the source-independent particle payload.
+---@param state BattleEffectStaging
+---@param resourceKey string particle resource key
+---@param particle { bytes: string, decoded: NitroSplData, source: table<string, unknown> } decoded particle archive
+local function stageClosureParticle(state, resourceKey, particle)
+  local provenance = {
+    archiveSymbol = particle.source.archiveSymbol,
+    memberId = particle.source.memberId,
+  }
+  local archiveDecoded = particle.decoded
+  assert(archiveDecoded ~= nil and type(archiveDecoded.emitters) == "table", "particle archives decode before staging")
+  local entries = stageParticleArchiveResources(state, archiveDecoded, provenance)
+  local normalizedEmitters = {}
+  for emitterIndex, emitter in ipairs(archiveDecoded.emitters) do
+    normalizedEmitters[emitterIndex] =
+      normalizeParticleEmitter(state.effectKey, emitter, entries, emitterIndex - 1, provenance)
+  end
+  local normalizedResources = {}
+  for resourceIndex, entry in ipairs(entries) do
+    normalizedResources[resourceIndex] = { textureKey = entry.textureKey, paletteKey = entry.paletteKey }
+  end
+  addEffectResource(state, resourceKey, "particle", Hashing.sha1hex(particle.bytes), {
+    emitters = normalizedEmitters,
+    resources = normalizedResources,
+  })
+end
+
+-- Stages every particle archive an effect instruction creates, in
+-- resource-key order.
+---@param state BattleEffectStaging
+---@param instructions BattleAnimationInstruction[]
+---@return { resourceKey: string, archiveSymbol: string, memberId: integer }[]|nil particle provenance
+---@return unknown|nil failure
+local function stageClosureParticles(state, instructions)
+  local particleResourceKeys = {}
+  for _, instruction in ipairs(instructions) do
+    if instruction.op == "create-battler-effect" and instruction.resource ~= nil then
+      particleResourceKeys[instruction.resource] = true
+    end
+  end
+  local particleProvenance = {}
+  for _, resourceKey in ipairs(sortedSetValues(particleResourceKeys)) do
+    local particle, particleErr = closureParticle(state, resourceKey)
+    if particle == nil then
+      return nil, particleErr
+    end
+    local staged, stageErr = pcall(stageClosureParticle, state, resourceKey, particle)
+    if not staged then
+      return nil, structuredFailure(stageErr)
+    end
+    local source = particle.source
+    particleProvenance[#particleProvenance + 1] =
+      { resourceKey = resourceKey, archiveSymbol = source.archiveSymbol, memberId = source.memberId }
+  end
+  return particleProvenance
+end
+
+-- Pairs each lone pending character with the one staged palette its
+-- creating instruction carries. Two different palettes claiming one
+-- character fail the build.
+---@param state BattleEffectStaging
+---@param instructions BattleAnimationInstruction[]
+---@return table<string, string> palette key by character key
+local function pairPendingCharacterPalettes(state, instructions)
+  local pairByCharacter = {}
+  for _, instruction in ipairs(instructions) do
+    if type(instruction.resourceKeys) == "table" then
+      local characters, palettes = {}, {}
+      for _, key in pairs(instruction.resourceKeys) do
+        if state.pendingCharacterRasters[key] ~= nil then
+          characters[#characters + 1] = key
+        elseif type(state.resolvedResources[key]) == "table" and state.resolvedResources[key].kind == "palette" then
+          palettes[#palettes + 1] = key
+        end
+      end
+      if #palettes == 1 then
+        for _, characterKey in ipairs(characters) do
+          local paired = pairByCharacter[characterKey]
+          if paired ~= nil and paired ~= palettes[1] then
+            error(
+              Errors.new(
+                "BATTLE_EFFECT_CLOSURE_UNRESOLVED",
+                "managed sprite character pairs with more than one staged palette",
+                { effectKey = state.effectKey, resourceKey = characterKey }
+              ),
+              0
+            )
+          end
+          pairByCharacter[characterKey] = palettes[1]
+        end
+      end
+    end
+  end
+  return pairByCharacter
+end
+
+-- Rasterize every pending character tile set through its paired source
+-- palette into the exact RGBA drawable the live image upload path
+-- requires. A character with no discoverable palette fails the build
+-- instead of publishing raw Nitro bitfields.
+---@param state BattleEffectStaging
+---@param instructions BattleAnimationInstruction[]
+local function rasterizePendingCharacters(state, instructions)
+  if next(state.pendingCharacterRasters) == nil then
+    return
+  end
+  local pairByCharacter = pairPendingCharacterPalettes(state, instructions)
+  for characterKey, pending in pairs(state.pendingCharacterRasters) do
+    local paletteKey = pending.paletteKey or pairByCharacter[characterKey]
+    local paletteDescriptor = paletteKey ~= nil and state.resolvedResources[paletteKey] or nil
+    local palettePayload = paletteDescriptor ~= nil and state.resourcePayloads[paletteDescriptor.payload] or nil
+    if type(palettePayload) ~= "table" or type(palettePayload[1]) ~= "table" or palettePayload[1].r == nil then
+      error(
+        Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "managed sprite character has no paired staged palette", {
+          effectKey = state.effectKey,
+          resourceKey = characterKey,
+          role = pending.role,
+        }),
+        0
+      )
+    end
+    local tileSize = pending.chars.depth == 3 and 32 or 64
+    local tileCount = math.floor(#pending.chars.tiles / tileSize)
+    local raster = G2dRasterizer.renderTileStrip(pending.chars, { colors = palettePayload }, 0, tileCount, 0, {
+      role = "battle effect " .. state.effectKey .. " " .. pending.role .. " characters",
+    })
+    state.resourcePayloads[pending.payloadPath] = {
+      width = raster.width,
+      height = raster.height,
+      rgba8888 = raster.pixels,
+    }
+  end
+end
+
+-- Validates the published effect record, re-raising a schema failure with
+-- the failing instruction's source offset and continuation slot.
+---@param effect BattlePresentationEffect
+---@param sourceOffsets table<integer, integer>|nil source offset by instruction index
+local function validateEffect(effect, sourceOffsets)
+  local effectSchema = require("libs.assets.src.battle.BattleAnimationSchema")
+  local valid, validationError = pcall(effectSchema.assertEffect, {
+    schema = effect.schema,
+    key = effect.key,
+    catalogIdentity = effect.catalogIdentity,
+    program = effect.program,
+    dependencies = effect.dependencies,
+    resources = effect.resources,
+    requiredContext = effect.requiredContext,
+  })
+  if valid then
+    return
+  end
+  local validation = structuredFailure(validationError)
+  local diagnosticContext = {}
+  for key, value in pairs(validation.context) do
+    diagnosticContext[key] = value
+  end
+  diagnosticContext.effectKey = effect.key
+  local instructionIndex = validation.message:match("instructions%[(%d+)%]")
+  if instructionIndex ~= nil then
+    local index = tonumber(instructionIndex)
+    assert(index ~= nil, "schema instruction index parses as an integer")
+    diagnosticContext.instructionIndex = index
+    if sourceOffsets ~= nil then
+      diagnosticContext.sourceOffset = sourceOffsets[index]
+    end
+    local instruction = effect.program.instructions[index]
+    if instruction ~= nil then
+      diagnosticContext.continuationSlot = instruction.continuationSlot
+    end
+  end
+  error(Errors.new(validation.code, validation.message, diagnosticContext), 0)
+end
+
 -- Compile one independently requested effect: a closed normalized program
 -- lowered through the animation compiler with its transitive resources and
 -- typed context. Source selection follows asm/overlay_07.s ov07_0221C01C
@@ -4461,906 +5898,43 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
   opts = opts or {}
   local versionId = opts.versionId or romFs:version()
   checkVersion(versionId)
-  if type(effectKey) ~= "string" or effectKey == "" or effectKey:find("/", 1, true) ~= nil then
-    return nil,
-      Errors.new("BATTLE_EFFECT_UNKNOWN", "unknown battle effect key: " .. tostring(effectKey), {
-        effectKey = tostring(effectKey),
-      })
-  end
   local animationSources = require("romdump.src.config.BattleAnimationSources")
-  local route = animationSources.resolveSemanticRoute(effectKey)
+  local route, stream, sourceErr = readEffectSource(romFs, animationSources, effectKey)
   if route == nil then
-    return nil,
-      Errors.new("BATTLE_EFFECT_UNKNOWN", "unknown battle effect key: " .. effectKey, {
-        effectKey = effectKey,
-      })
+    return nil, sourceErr
   end
-  assert(
-    route.kind == "move" or route.kind == "battle-animation",
-    "source route resolver returns a supported semantic root kind"
-  )
-  local archive, archiveErr = romFs:openNarc(route.archiveSymbol)
-  if archive == nil then
-    return nil,
-      Errors.new("BATTLE_EFFECT_SOURCE_UNAVAILABLE", "could not open selected effect archive", {
-        effectKey = effectKey,
-        archiveSymbol = route.archiveSymbol,
-        memberId = route.memberId,
-        cause = tostring(archiveErr),
-      })
-  end
-  local stream, memberErr = archive:readMember(route.memberId)
-  if stream == nil then
-    return nil,
-      Errors.new("BATTLE_EFFECT_SOURCE_UNAVAILABLE", "could not read selected effect member", {
-        effectKey = effectKey,
-        archiveSymbol = route.archiveSymbol,
-        memberId = route.memberId,
-        cause = tostring(memberErr),
-      })
+  ---@type BattleEffectStaging
+  local state = {
+    romFs = romFs,
+    effectKey = effectKey,
+    sources = animationSources,
+    resolvedResources = {},
+    resourcePayloads = {},
+    sourceInputs = {},
+    resolvedSourceInputs = {},
+    archives = {},
+    managedSpriteResources = {},
+    managedSpriteCapacities = {},
+    -- Managed-sprite and background character tile sets staged as raw
+    -- tile data until rasterizePendingCharacters pairs each with its
+    -- palette, so no staged texture keeps raw Nitro bitfields.
+    pendingCharacterRasters = {},
+    particleByBattler = {},
+    decodedParticleResources = {},
+  }
+  local function resolveSourceInput(role, operands)
+    return (SOURCE_INPUT_RESOLVERS[role] or resolveSelectedSourceInput)(state, role, operands)
   end
   local AnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
-  local resolvedResources = {}
-  local resourcePayloads = {}
-  local sourceInputs = {}
-  local resolvedSourceInputs = {}
-  local archives = {}
-  local managedSpriteResources = {}
-  local managedSpriteCapacities = {}
-  -- Managed-sprite and background character tile sets staged as raw tile
-  -- data, keyed by semantic resource key. Each entry keeps its decoded
-  -- tiles plus the same-call paired palette key when the selecting
-  -- instruction co-selected one; lone characters resolve their palette
-  -- through the creating instruction at the end of compilation. The
-  -- rasterization pass below replaces every entry with the exact RGBA
-  -- drawable the live image upload path requires, so no staged texture
-  -- keeps raw Nitro bitfields.
-  local pendingCharacterRasters = {}
-  local particleByBattler = {}
-  local decodedParticleResources = {}
-  local function addEffectResource(resourceKey, kind, contentIdentity, payload)
-    assert(type(resourceKey) == "string" and resourceKey ~= "", "effect resources use semantic keys")
-    assert(type(contentIdentity) == "string" and #contentIdentity == 40, "effect resources use SHA-1 identities")
-    local payloadPath = BattlePresentationCache.globalResourcePath("effect/content/" .. contentIdentity)
-    local previous = resolvedResources[resourceKey]
-    if previous ~= nil then
-      assert(
-        previous.kind == kind and previous.contentIdentity == contentIdentity,
-        "semantic resource identity is stable"
-      )
-      assert(
-        Hashing.hashLua(resourcePayloads[previous.payload]) == Hashing.hashLua(payload),
-        "equal resources share payloads"
-      )
-      return
-    end
-    resolvedResources[resourceKey] = { kind = kind, contentIdentity = contentIdentity, payload = payloadPath }
-    resourcePayloads[payloadPath] = payload
-  end
-  -- Stages one particle texture/palette pair as an exact drawable plus
-  -- decoded colors, returning their semantic resource keys. Shared
-  -- sources collapse onto one staged drawable through content identity.
-  ---@param textureBytes string|nil raw 8-bit indexed texels when embedded
-  ---@param paletteBytes string|nil raw RGB555 pairs when embedded
-  ---@param textureFlags integer source resource flags word
-  ---@param provenance table<string, unknown> source coordinates for failures
-  ---@return { textureKey: string|nil, paletteKey: string|nil } staged semantic resource keys
-  local function stageParticleTexture(textureBytes, paletteBytes, textureFlags, provenance)
-    local textureKey, paletteKey = nil, nil
-    local colors = nil
-    if paletteBytes ~= nil then
-      colors = decodeParticlePalette(paletteBytes, provenance)
-      local paletteIdentity = Hashing.sha1hex(paletteBytes)
-      paletteKey = "battle/particle/palette/" .. paletteIdentity
-      addEffectResource(paletteKey, "palette", paletteIdentity, { colors = colors })
-    end
-    if textureBytes ~= nil then
-      local paletteColors = colors ~= nil and #colors or 0
-      local width, height, bits = particleTextureDimensions(textureBytes, textureFlags, paletteColors, provenance)
-      local rgba = decodeParticleRgba(textureBytes, width, height, bits, colors or {})
-      local textureIdentity = Hashing.sha1hex(textureBytes)
-      textureKey = "battle/particle/texture/" .. textureIdentity
-      addEffectResource(textureKey, "texture", textureIdentity, {
-        width = width,
-        height = height,
-        rgba8888 = rgba,
-      })
-    end
-    return { textureKey = textureKey, paletteKey = paletteKey }
-  end
-  -- Stages every resource of one decoded particle archive exactly once,
-  -- resolving shared texture references onto their staged drawable.
-  ---@param decoded NitroSplData decoded particle archive under staging
-  ---@param provenance table<string, unknown> source coordinates for failures
-  ---@return { textureKey: string|nil, paletteKey: string|nil }[] staged entries in source order
-  local function stageParticleArchiveResources(decoded, provenance)
-    local entries = {}
-    for resourceIndex, resource in ipairs(decoded.resources) do
-      local textureKey, paletteKey = nil, nil
-      if resource.textureReference ~= nil then
-        local referenced = entries[resource.textureReference + 1]
-        if referenced == nil or referenced.textureKey == nil then
-          error(
-            Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "particle texture reference has no staged payload", {
-              effectKey = effectKey,
-              resourceIndex = resourceIndex - 1,
-              textureReference = resource.textureReference,
-            }),
-            0
-          )
-        end
-        textureKey = referenced.textureKey
-        paletteKey = stageParticleTexture(nil, resource.palette, resource.flags, provenance).paletteKey
-      else
-        local staged = stageParticleTexture(resource.texture, resource.palette, resource.flags, provenance)
-        textureKey, paletteKey = staged.textureKey, staged.paletteKey
-      end
-      entries[resourceIndex] = { textureKey = textureKey, paletteKey = paletteKey }
-    end
-    return entries
-  end
-  -- Normalizes one raw emitter into source-independent typed state: the
-  -- active source behaviors, the inline parameter bits, the base control
-  -- values, one word vector per present section/calculation, and the
-  -- resolved drawable its sprites draw. Unknown flags words fail.
-  ---@param emitter NitroSplEmitter raw emitter under normalizing
-  ---@param entries { textureKey: string|nil, paletteKey: string|nil }[] staged archive resources
-  ---@param emitterIndex integer zero-based emitter ordinal behind texture selection
-  ---@param provenance table<string, unknown> source coordinates for failures
-  ---@return table<string, unknown> normalized emitter record
-  local function normalizeParticleEmitter(emitter, entries, emitterIndex, provenance)
-    assert(#emitter.baseRecord == 0x58, "emitter base records keep their source size")
-    if KNOWN_PARTICLE_EMITTER_FLAGS[emitter.flags] ~= true then
-      error(
-        Errors.new("BATTLE_PARTICLE_RESOURCE_INVALID", "particle emitter flags are outside the source inventory", {
-          effectKey = effectKey,
-          flags = string.format("0x%08x", emitter.flags),
-          archiveSymbol = provenance.archiveSymbol,
-          memberId = provenance.memberId,
-        }),
-        0
-      )
-    end
-    local seen = {}
-    local features = {}
-    for _, section in ipairs(emitter.sections) do
-      if seen[section.role] == nil then
-        seen[section.role] = true
-        features[#features + 1] = section.role
-      end
-    end
-    for _, calculation in ipairs(emitter.calculations) do
-      if seen[calculation.role] == nil then
-        seen[calculation.role] = true
-        features[#features + 1] = calculation.role
-      end
-    end
-    table.sort(features)
-    local params = {}
-    for offset = 5, #emitter.baseRecord, 2 do
-      params[#params + 1] = string.byte(emitter.baseRecord, offset) + string.byte(emitter.baseRecord, offset + 1) * 256
-    end
-    local record = {
-      features = features,
-      variant = clearParticleSelectorBits(emitter.flags),
-      params = params,
-    }
-    local function stageWords(role, data)
-      if record[role] ~= nil then
-        return
-      end
-      local words = {}
-      for offset = 1, #data, 4 do
-        words[#words + 1] = string.byte(data, offset)
-          + string.byte(data, offset + 1) * 256
-          + string.byte(data, offset + 2) * 65536
-          + string.byte(data, offset + 3) * 16777216
-      end
-      record[role] = words
-    end
-    for _, section in ipairs(emitter.sections) do
-      stageWords(section.role, section.data)
-    end
-    for _, calculation in ipairs(emitter.calculations) do
-      stageWords(calculation.role, calculation.data)
-    end
-    local slot = nil
-    if #entries > 0 then
-      slot = math.min(emitterIndex, #entries - 1)
-      for _, section in ipairs(emitter.sections) do
-        if section.role == "texture" then
-          local selected = string.byte(section.data, 1)
-          if selected < #entries then
-            slot = selected
-          end
-          break
-        end
-      end
-    end
-    local textureKey = nil
-    if slot ~= nil then
-      local selected = entries[slot + 1]
-      textureKey = selected ~= nil and selected.textureKey or nil
-      if textureKey == nil then
-        error(
-          Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "particle emitter texture has no staged drawable", {
-            effectKey = effectKey,
-            emitterIndex = emitterIndex,
-            textureSlot = slot,
-            archiveSymbol = provenance.archiveSymbol,
-            memberId = provenance.memberId,
-          }),
-          0
-        )
-      end
-    end
-    record.textureSlot = slot
-    record.textureKey = textureKey
-    return record
-  end
-  local function stageParticleEmitter(emitter)
-    local contentIdentity = Hashing.hashLua(emitter)
-    local resourceKey = "battle/particle-emitter/" .. contentIdentity
-    local payloadPath = BattlePresentationCache.globalResourcePath("effect/content/" .. contentIdentity)
-    local previous = resolvedResources[resourceKey]
-    if previous == nil then
-      resolvedResources[resourceKey] = {
-        kind = "particle-emitter",
-        contentIdentity = contentIdentity,
-        payload = payloadPath,
-      }
-      resourcePayloads[payloadPath] = emitter
-    else
-      assert(previous.kind == "particle-emitter" and previous.contentIdentity == contentIdentity)
-      assert(Hashing.hashLua(resourcePayloads[previous.payload]) == contentIdentity)
-    end
-    return resourceKey
-  end
-  local function resolveSourceInput(role, operands)
-    if role == "managed-sprite-manager-capacities" then
-      if #operands ~= 8 then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "sprite manager capacity frame is invalid", {
-            effectKey = effectKey,
-            provenance = { role = role, operands = operands },
-          }),
-          0
-        )
-      end
-      local managerIndex = operands[1]
-      local capacities = {}
-      for index = 3, 8 do
-        local capacity = operands[index]
-        if type(capacity) ~= "number" or capacity < 0 or capacity > 0x7fffffff or capacity % 1 ~= 0 then
-          error(
-            Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "sprite manager capacity is invalid", {
-              effectKey = effectKey,
-              provenance = { role = role, operands = operands, capacityIndex = index },
-            }),
-            0
-          )
-        end
-        capacities[index - 2] = capacity
-      end
-      if managedSpriteCapacities[managerIndex] ~= nil then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "sprite manager slot is initialized more than once", {
-            effectKey = effectKey,
-            provenance = { role = role, operands = operands },
-          }),
-          0
-        )
-      end
-      local hasMultiResourceManagers = capacities[5] > 0 and capacities[6] > 0
-      managedSpriteCapacities[managerIndex] = {
-        multiCell = hasMultiResourceManagers,
-        multiAnimation = hasMultiResourceManagers,
-      }
-      sourceInputs[#sourceInputs + 1] = { role = role, operands = operands, selections = {} }
-      resolvedSourceInputs[#resolvedSourceInputs + 1] = {
-        role = role,
-        managerIndex = managerIndex,
-        multiCellEnabled = hasMultiResourceManagers,
-        multiAnimationEnabled = hasMultiResourceManagers,
-      }
-      return {}
-    end
-    if role == "managed-sprite-manager-disposal" then
-      if #operands ~= 1 then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "sprite manager disposal frame is invalid", {
-            effectKey = effectKey,
-            provenance = { role = role, operands = operands },
-          }),
-          0
-        )
-      end
-      managedSpriteCapacities[operands[1]] = nil
-      managedSpriteResources[operands[1]] = nil
-      sourceInputs[#sourceInputs + 1] = { role = role, operands = operands, selections = {} }
-      resolvedSourceInputs[#resolvedSourceInputs + 1] = { role = role, managerIndex = operands[1], disposed = true }
-      return {}
-    end
-    if role == "battler-particle-resource" then
-      local selection, _ = animationSources.resolveSourceSelection(role, operands)
-      local definition = assert(animationSources.sourceInput(51), "opcode 51 has producer source metadata")
-      if #operands ~= definition.operandCount then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "battler particle resource has no typed source", {
-            effectKey = effectKey,
-            reason = "particle resource operand shape is invalid",
-            provenance = { role = role, operands = operands },
-          }),
-          0
-        )
-      end
-      local memberId = operands[definition.memberOperand]
-      local source = selection and selection.sourceSelections and selection.sourceSelections.particle
-        or {
-          archiveSymbol = definition.archiveSymbol,
-          memberId = memberId,
-          decoder = definition.decoder,
-          kind = definition.kind,
-        }
-      if source == nil or source.decoder ~= "spl" or source.kind ~= "particle" then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "battler particle source has no APS decoder", {
-            effectKey = effectKey,
-            provenance = { role = role, operands = operands },
-          }),
-          0
-        )
-      end
-      local particleKey = selection and selection.resourceKeys and selection.resourceKeys.particle
-        or animationSources.resolveParticleResource(memberId)
-      local particle = particleKey ~= nil and decodedParticleResources[particleKey] or nil
-      if particle == nil then
-        local particleArchive = archives[source.archiveSymbol]
-        if particleArchive == nil then
-          particleArchive = openArchive(romFs, source.archiveSymbol, "animation battler particle")
-          archives[source.archiveSymbol] = particleArchive
-        end
-        local bytes, readErr = particleArchive:readMember(memberId)
-        if bytes == nil then
-          error(
-            Errors.new("BATTLE_EFFECT_SOURCE_UNAVAILABLE", "selected battler particle member is absent", {
-              effectKey = effectKey,
-              provenance = {
-                archiveSymbol = source.archiveSymbol,
-                memberId = memberId,
-                role = role,
-                operands = operands,
-              },
-              cause = tostring(readErr),
-            }),
-            0
-          )
-        end
-        local decoded, decodeErr = Spl.decode(bytes, { effectKey = effectKey, role = role })
-        if decoded == nil then
-          error(decodeErr, 0)
-        end
-        particleKey = particleKey or ("battle/particle/content/" .. Hashing.sha1hex(bytes))
-        selection = {
-          resourceKeys = { particle = particleKey },
-          sourceSelections = { particle = source },
-        }
-        particle = { bytes = bytes, decoded = decoded, source = source }
-        decodedParticleResources[particleKey] = particle
-      end
-      local selectedParticleKey = selection.resourceKeys.particle
-      particleByBattler[operands[1]] = selectedParticleKey
-      local selections = {
-        particle = { archiveSymbol = source.archiveSymbol, memberId = source.memberId, decoder = source.decoder },
-      }
-      sourceInputs[#sourceInputs + 1] = { role = role, operands = operands, selections = selections }
-      resolvedSourceInputs[#resolvedSourceInputs + 1] = { role = role, resourceKeys = selection.resourceKeys }
-      return { resourceKeys = selection.resourceKeys }
-    end
-    if role == "configured-sprite-action" then
-      local selection, selectionErr = animationSources.resolveSourceSelection(role, operands)
-      if selection == nil then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "configured sprite action is not source-resolved", {
-            effectKey = effectKey,
-            reason = selectionErr,
-            provenance = { role = role, operands = operands },
-          }),
-          0
-        )
-      end
-      local definition = assert(animationSources.sourceInput(78), "opcode 78 has source operand metadata")
-      local resourceKeys = {}
-      local manager = managedSpriteResources[operands[1]]
-      local capacities = managedSpriteCapacities[operands[1]]
-      if capacities == nil then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "configured sprite manager has no active capacity record", {
-            effectKey = effectKey,
-            provenance = { role = role, operands = operands },
-          }),
-          0
-        )
-      end
-      for _, slot in ipairs(definition.resourceSlots) do
-        if capacities[slot] ~= false then
-          local operandIndex = assert(definition.resourceOperands[slot], "configured sprite slot has an operand")
-          local identity = operands[operandIndex]
-          local resources = manager and manager[slot]
-          local resourceKey = resources and resources[identity]
-          local optional = slot == "multiCell" or slot == "multiAnimation"
-          if optional and resources == nil then
-            -- No bytecode handler loads MCEL/MANM resources; nil selects ordinary cells.
-          elseif resourceKey == nil then
-            error(
-              Errors.new(
-                "BATTLE_EFFECT_SOURCE_UNRESOLVED",
-                "configured sprite resource identity has no prior source-selected payload",
-                {
-                  effectKey = effectKey,
-                  reason = "the selected manager has no decoded resource with this typed identity",
-                  provenance = { role = role, operands = operands, slot = slot },
-                }
-              ),
-              0
-            )
-          end
-          resourceKeys[slot] = resourceKey
-        end
-      end
-      sourceInputs[#sourceInputs + 1] = { role = role, operands = operands, selections = {} }
-      local normalized = {
-        role = role,
-        resourceKeys = resourceKeys,
-        taskKind = selection.taskKind,
-        context = selection.context,
-        parameters = selection.parameters,
-      }
-      resolvedSourceInputs[#resolvedSourceInputs + 1] = normalized
-      return {
-        resourceKeys = resourceKeys,
-        taskKind = selection.taskKind,
-        context = selection.context,
-        parameters = selection.parameters,
-      }
-    end
-    if role == "managed-sprite-template" then
-      if #operands ~= 8 then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "managed sprite resource reference shape is invalid", {
-            effectKey = effectKey,
-            provenance = { role = role, operands = operands },
-          }),
-          0
-        )
-      end
-      local resourceKeys = {}
-      local resourceSlots = { "character", "palette", "cell", "animation", "multiCell", "multiAnimation" }
-      for index, slot in ipairs(resourceSlots) do
-        local reference = operands[index + 2]
-        local optional = index > 4
-        if optional and reference == 0xffffffff then
-          -- Nitro's signed -1 resource ID means this sprite has no MCEL/MANM.
-        else
-          local manager = managedSpriteResources[operands[1]]
-          local resources = manager and manager[slot]
-          local resourceKey = resources and resources[reference]
-          if optional and resources == nil then
-            -- No bytecode handler loads MCEL/MANM resources; nil selects ordinary cells.
-          elseif resourceKey == nil then
-            error(
-              Errors.new(
-                "BATTLE_EFFECT_SOURCE_UNRESOLVED",
-                "managed sprite resource identity has no prior source-selected payload",
-                {
-                  effectKey = effectKey,
-                  reason = "the selected manager has no decoded resource with this typed identity",
-                  provenance = { role = role, operands = operands, slot = slot },
-                }
-              ),
-              0
-            )
-          end
-          resourceKeys[slot] = resourceKey
-        end
-      end
-      sourceInputs[#sourceInputs + 1] = { role = role, operands = operands, selections = {} }
-      resolvedSourceInputs[#resolvedSourceInputs + 1] = { role = role, resourceKeys = resourceKeys }
-      return { resourceKeys = resourceKeys }
-    end
-    local selection, selectionErr = animationSources.resolveSourceSelection(role, operands)
-    if selection == nil then
-      error(
-        Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "animation source selection is not established", {
-          effectKey = effectKey,
-          reason = selectionErr,
-          provenance = { role = role, operands = operands },
-        }),
-        0
-      )
-    end
-    if role == "battler-particle-action" then
-      local normalized = {
-        role = role,
-        actionProfile = selection.actionProfile,
-        callbackCases = selection.callbackCases,
-        resourceCases = selection.resourceCases,
-        runtimeSelection = selection.runtimeSelection,
-        taskKind = selection.taskKind,
-      }
-      if type(selection.actionProfile) ~= "string" then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "battler particle action has no semantic profile", {
-            effectKey = effectKey,
-            provenance = { role = role, operands = operands },
-          }),
-          0
-        )
-      end
-      if selection.sourceEmitterSelections ~= nil then
-        local particleKey = particleByBattler[operands[1]]
-        local particle = particleKey ~= nil and decodedParticleResources[particleKey] or nil
-        if particle == nil then
-          error(
-            Errors.new(
-              "BATTLE_EFFECT_SOURCE_UNRESOLVED",
-              "particle action has no earlier APS selection for its battler",
-              {
-                effectKey = effectKey,
-                provenance = { role = role, operands = operands },
-              }
-            ),
-            0
-          )
-        end
-        local function emitterKey(emitterOrdinal, caseKey)
-          if type(emitterOrdinal) ~= "number" or emitterOrdinal < 0 or emitterOrdinal % 1 ~= 0 then
-            error(
-              Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "particle emitter ordinal is invalid", {
-                effectKey = effectKey,
-                provenance = { role = role, operands = operands, case = caseKey },
-                resourceKey = particleKey,
-              }),
-              0
-            )
-          end
-          local emitter = particle.decoded.emitters[emitterOrdinal + 1]
-          if emitter == nil then
-            error(
-              Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "particle emitter ordinal has no decoded APS record", {
-                effectKey = effectKey,
-                provenance = { role = role, operands = operands, case = caseKey },
-                resourceKey = particleKey,
-              }),
-              0
-            )
-          end
-          local entries = stageParticleArchiveResources(particle.decoded, {
-            archiveSymbol = particle.source.archiveSymbol,
-            memberId = particle.source.memberId,
-          })
-          local stagedEmitter = normalizeParticleEmitter(emitter, entries, emitterOrdinal, {
-            archiveSymbol = particle.source.archiveSymbol,
-            memberId = particle.source.memberId,
-          })
-          return stageParticleEmitter(stagedEmitter)
-        end
-        if selection.sourceEmitterSelections.resource ~= nil then
-          normalized.resource = emitterKey(selection.sourceEmitterSelections.resource, "fixed")
-        else
-          normalized.resourceCases = {}
-          for pairKey, emitterOrdinal in pairs(selection.sourceEmitterSelections) do
-            if emitterOrdinal == "source-assert" then
-              normalized.resourceCases[pairKey] = "source-assert"
-            else
-              normalized.resourceCases[pairKey] = emitterKey(emitterOrdinal, pairKey)
-            end
-          end
-        end
-      end
-      if selection.sourceEmitterSelections == nil and type(selection.callbackCases) ~= "table" then
-        normalized.actionProfile = selection.actionProfile
-      elseif type(normalized.resourceCases) ~= "table" then
-        if normalized.resource == nil then
-          error(
-            Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "battler particle choice has no emitter resource cases", {
-              effectKey = effectKey,
-              provenance = { role = role, operands = operands },
-            }),
-            0
-          )
-        end
-      end
-      sourceInputs[#sourceInputs + 1] = { role = role, operands = operands, selections = {} }
-      resolvedSourceInputs[#resolvedSourceInputs + 1] = normalized
-      return {
-        actionProfile = selection.actionProfile,
-        callbackCases = selection.callbackCases,
-        resource = normalized.resource,
-        resourceCases = normalized.resourceCases,
-        runtimeSelection = selection.runtimeSelection,
-        taskKind = selection.taskKind,
-      }
-    end
-    local callbackResult
-    if role == "battle-animation-callback" then
-      if selection.op == "noop" then
-        local normalized = { role = role, op = "noop" }
-        sourceInputs[#sourceInputs + 1] = { role = role, operands = operands, selections = {} }
-        resolvedSourceInputs[#resolvedSourceInputs + 1] = normalized
-        return { op = "noop" }
-      end
-      if selection.op ~= nil then
-        local isPictureOperation = selection.op == "set-pokemon-picture-vanished"
-        local isPaletteOperation = selection.op == "copy-main-background-palette-to-fade-buffer"
-          or selection.op == "grayscale-main-background-fade-buffer"
-        if not isPictureOperation and not isPaletteOperation then
-          error(
-            Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "animation callback direct operation is invalid", {
-              effectKey = effectKey,
-              provenance = { role = role, operands = operands },
-            }),
-            0
-          )
-        end
-        if isPictureOperation then
-          if type(selection.pictureSets) ~= "table" or type(selection.vanished) ~= "boolean" then
-            error(
-              Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "animation callback direct operation is invalid", {
-                effectKey = effectKey,
-                provenance = { role = role, operands = operands },
-              }),
-              0
-            )
-          end
-        elseif selection.pictureSets ~= nil or selection.vanished ~= nil then
-          error(
-            Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "palette callback operation carries unexpected fields", {
-              effectKey = effectKey,
-              provenance = { role = role, operands = operands },
-            }),
-            0
-          )
-        end
-        local normalized = {
-          role = role,
-          op = selection.op,
-          pictureSets = selection.pictureSets,
-          vanished = selection.vanished,
-        }
-        sourceInputs[#sourceInputs + 1] = { role = role, operands = operands, selections = {} }
-        resolvedSourceInputs[#resolvedSourceInputs + 1] = normalized
-        return {
-          op = selection.op,
-          pictureSets = selection.pictureSets,
-          vanished = selection.vanished,
-        }
-      end
-      if
-        type(selection.callback) ~= "string"
-        or type(selection.taskKind) ~= "string"
-        or type(selection.context) ~= "string"
-        or type(selection.parameters) ~= "table"
-      then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "animation callback plan has no semantic task", {
-            effectKey = effectKey,
-            provenance = { role = role, operands = operands },
-          }),
-          0
-        )
-      end
-      callbackResult = {
-        callback = selection.callback,
-        taskKind = selection.taskKind,
-        context = selection.context,
-        battlerTarget = selection.battlerTarget,
-        parameters = selection.parameters,
-      }
-    end
-    local resourceKeys = {}
-    local selections = {}
-    local slots = {}
-    local sourceSelections = selection.sourceSelections or {}
-    if next(sourceSelections) == nil and selection.battlerTarget == nil and callbackResult == nil then
-      error(
-        Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "animation source plan carries no semantic output", {
-          effectKey = effectKey,
-          role = role,
-          provenance = { operands = operands },
-        }),
-        0
-      )
-    end
-    for slot in pairs(sourceSelections) do
-      slots[#slots + 1] = slot
-    end
-    table.sort(slots)
-    for _, slot in ipairs(slots) do
-      local source = sourceSelections[slot]
-      local sourceArchive = archives[source.archiveSymbol]
-      if sourceArchive == nil then
-        sourceArchive = openArchive(romFs, source.archiveSymbol, "animation " .. role)
-        archives[source.archiveSymbol] = sourceArchive
-      end
-      local sourceBytes, sourceErr = sourceArchive:readMember(source.memberId)
-      if sourceBytes == nil then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNAVAILABLE", "selected animation resource member is absent", {
-            effectKey = effectKey,
-            role = role,
-            provenance = {
-              archiveSymbol = source.archiveSymbol,
-              memberId = source.memberId,
-              operands = operands,
-              slot = slot,
-            },
-            cause = tostring(sourceErr),
-          }),
-          0
-        )
-      end
-      local decoded
-      if source.decoder == "char" then
-        decoded = decodeChars(sourceArchive, source.memberId, "animation " .. role .. " characters")
-      elseif source.decoder == "palette" then
-        decoded = paletteRecords(decodePalette(sourceArchive, source.memberId, "animation " .. role .. " palette"))
-      elseif source.decoder == "screen" then
-        decoded = decodeScreen(sourceArchive, source.memberId, "animation " .. role .. " screen")
-      elseif source.decoder == "cell" then
-        decoded = decodeCells(sourceArchive, source.memberId, "animation " .. role .. " cells")
-      elseif source.decoder == "animation" then
-        decoded = decodeAnimation(sourceArchive, source.memberId, "animation " .. role .. " animation")
-      elseif source.decoder == "multiCell" then
-        local MultiCell = require("libs.nds.src.nitro.g2d.MultiCell")
-        local decodeErr
-        decoded, decodeErr = MultiCell.decode(sourceBytes, { effectKey = effectKey, role = role, slot = slot })
-        if decoded == nil then
-          error(decodeErr, 0)
-        end
-      elseif source.decoder == "multiCellAnimation" then
-        local MultiCellAnimation = require("libs.nds.src.nitro.g2d.MultiCellAnimation")
-        local decodeErr
-        decoded, decodeErr = MultiCellAnimation.decode(sourceBytes, { effectKey = effectKey, role = role, slot = slot })
-        if decoded == nil then
-          error(decodeErr, 0)
-        end
-      else
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "animation source selection has no decoder", {
-            effectKey = effectKey,
-            role = role,
-            provenance = { decoder = source.decoder, operands = operands, slot = slot },
-          }),
-          0
-        )
-      end
-      local contentIdentity = Hashing.sha1hex(sourceBytes)
-      local resourceSlot = slot:gsub("(%u)", "-%1"):lower()
-      local resourceKey = table.concat({ "battle/animation", role, resourceSlot, contentIdentity }, "/")
-      local payloadPath = BattlePresentationCache.globalResourcePath(resourceKey)
-      local descriptor = {
-        kind = source.kind,
-        contentIdentity = contentIdentity,
-        payload = payloadPath,
-      }
-      local previous = resolvedResources[resourceKey]
-      if previous ~= nil then
-        assert(
-          previous.contentIdentity == descriptor.contentIdentity
-            and previous.kind == descriptor.kind
-            and Hashing.hashLua(resourcePayloads[previous.payload]) == Hashing.hashLua(decoded),
-          "content-addressed battle resource keys identify one decoded format"
-        )
-      else
-        resolvedResources[resourceKey] = descriptor
-        resourcePayloads[payloadPath] = decoded
-      end
-      resourceKeys[slot] = resourceKey
-      selections[slot] = { archiveSymbol = source.archiveSymbol, memberId = source.memberId, decoder = source.decoder }
-    end
-    local managedSlot = ({
-      ["sprite-character"] = "character",
-      ["sprite-palette"] = "palette",
-      ["sprite-cell"] = "cell",
-      ["sprite-animation"] = "animation",
-    })[role]
-    if managedSlot ~= nil then
-      local managerSlot = operands[1]
-      managedSpriteResources[managerSlot] = managedSpriteResources[managerSlot] or {}
-      managedSpriteResources[managerSlot][managedSlot] = managedSpriteResources[managerSlot][managedSlot] or {}
-      local byIdentity = managedSpriteResources[managerSlot][managedSlot]
-      local previous = byIdentity[operands[2]]
-      if previous ~= nil and previous ~= resourceKeys[managedSlot] then
-        error(
-          Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "managed sprite resource identity is ambiguous", {
-            effectKey = effectKey,
-            provenance = { role = role, operands = operands, slot = managedSlot },
-          }),
-          0
-        )
-      end
-      byIdentity[operands[2]] = resourceKeys[managedSlot]
-    end
-    -- A staged character tile set must become an exact RGBA drawable
-    -- before publication: the live image upload path admits no other
-    -- texture shape. Same-call co-selected palettes pair immediately;
-    -- lone characters keep their decoded tiles until the creating
-    -- instruction pairs them below.
-    if resourceKeys.character ~= nil and selections.character ~= nil and selections.character.decoder == "char" then
-      local characterKey = resourceKeys.character
-      local characterDescriptor = resolvedResources[characterKey]
-      local stagedCharacters = characterDescriptor ~= nil and resourcePayloads[characterDescriptor.payload] or nil
-      if
-        characterDescriptor ~= nil
-        and characterDescriptor.kind == "texture"
-        and type(stagedCharacters) == "table"
-        and type(stagedCharacters.tiles) == "string"
-        and pendingCharacterRasters[characterKey] == nil
-      then
-        pendingCharacterRasters[characterKey] = {
-          resourceKey = characterKey,
-          payloadPath = characterDescriptor.payload,
-          chars = stagedCharacters,
-          paletteKey = resourceKeys.palette,
-          role = role,
-        }
-      end
-    end
-    sourceInputs[#sourceInputs + 1] = {
-      role = role,
-      operands = operands,
-      selections = selections,
-    }
-    local normalized = {
-      role = role,
-      resourceKeys = resourceKeys,
-      runtimeSelection = selection.runtimeSelection,
-      battlerTarget = selection.battlerTarget,
-      taskKind = selection.taskKind,
-      callback = selection.callback,
-      actionProfile = selection.actionProfile,
-      callbackCases = selection.callbackCases,
-    }
-    if callbackResult ~= nil then
-      normalized.callback = callbackResult.callback
-      normalized.taskKind = callbackResult.taskKind
-      normalized.context = callbackResult.context
-      normalized.battlerTarget = callbackResult.battlerTarget
-      normalized.parameters = callbackResult.parameters
-    end
-    resolvedSourceInputs[#resolvedSourceInputs + 1] = normalized
-    local result = {
-      resourceKeys = resourceKeys,
-      runtimeSelection = selection.runtimeSelection,
-      battlerTarget = selection.battlerTarget,
-      taskKind = selection.taskKind,
-      callback = selection.callback,
-      actionProfile = selection.actionProfile,
-      callbackCases = selection.callbackCases,
-    }
-    if callbackResult ~= nil then
-      result.callback = callbackResult.callback
-      result.taskKind = callbackResult.taskKind
-      result.context = callbackResult.context
-      result.battlerTarget = callbackResult.battlerTarget
-      result.parameters = callbackResult.parameters
-    end
-    return result
-  end
   local ok, program = pcall(AnimationCompiler.compile, {
     key = effectKey,
     stream = stream,
     resolveSourceInput = resolveSourceInput,
   })
   if not ok then
-    if Errors.is(program) then
-      return nil, program
-    end
-    error(program, 0)
+    return nil, structuredFailure(program)
   end
   assert(type(program) == "table", "animation compiler returns a program")
-  local sourceOffsets = program.sourceOffsets
   local effectProgram = {
     entry = program.entry,
     instructions = program.instructions,
@@ -5373,352 +5947,54 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
     attackerPosition = { type = "battler-position" },
     targetPosition = { type = "battler-position" },
   }
-  local function collectRequiredContext(instruction)
-    if type(instruction) ~= "table" then
-      return
-    end
-    if instruction.op == "set-pokemon-picture-vanished" then
-      requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
-    end
-    if
-      instruction.parameters ~= nil
-      and (instruction.parameters.spriteContextSlot ~= nil or instruction.parameters.oamModeSpriteSlots ~= nil)
-    then
-      requiredContext.spriteContextTable = { type = "battle-animation-sprite-context-table" }
-    end
-    if instruction.parameters ~= nil and instruction.parameters.pictureSets ~= nil then
-      requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
-    end
-    if instruction.callback == "pokemon-picture-affine-blend-palette-transition" then
-      requiredContext.spriteContextTable = { type = "battle-animation-sprite-context-table" }
-    elseif instruction.callback == "battle-sprite-sinusoidal-position-animation" then
-      requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
-      requiredContext.spriteContextTable = { type = "battle-animation-sprite-context-table" }
-    elseif instruction.callback == "battle-sprite-priority-appearance-transition" then
-      requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
-      requiredContext.spriteContextTable = { type = "battle-animation-sprite-context-table" }
-    elseif
-      instruction.callback == "battle-background-alpha-scroll-transition"
-      or instruction.callback == "battle-background-sprite-slide-transition"
-    then
-      requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
-    elseif instruction.callback == "pokemon-picture-selected-position-offset-transition" then
-      requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
-    elseif instruction.callback == "pokemon-picture-offset-transition" then
-      requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
-    elseif instruction.callback == "pokemon-picture-cyclic-two-phase-position-transition" then
-      requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
-    elseif instruction.callback == "pokemon-picture-linear-offscreen-transition" then
-      requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
-    elseif instruction.callback == "battle-background-four-picture-move-power-transition" then
-      requiredContext.movePower = { type = "battle-animation-move-power-u16" }
-    end
-    for _, nested in pairs(instruction) do
-      if type(nested) == "table" then
-        collectRequiredContext(nested)
-      end
-    end
-  end
   for _, instruction in ipairs(effectProgram.instructions) do
-    collectRequiredContext(instruction)
+    collectRequiredContext(requiredContext, instruction)
   end
-  local subprograms = effectProgram.subprograms
-  if type(subprograms) ~= "table" then
+  if type(effectProgram.subprograms) ~= "table" then
     return nil,
       Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "effect program carries no subprogram closure", {
         effectKey = effectKey,
         archiveSymbol = route.archiveSymbol,
         memberId = route.memberId,
-        resolvedSourceInputs = resolvedSourceInputs,
-        resourceDescriptors = resolvedResources,
-        resourcePayloads = resourcePayloads,
+        resolvedSourceInputs = state.resolvedSourceInputs,
+        resourceDescriptors = state.resolvedResources,
+        resourcePayloads = state.resourcePayloads,
       })
   end
-  for _, subprogram in pairs(subprograms) do
-    collectRequiredContext(subprogram)
+  for _, subprogram in pairs(effectProgram.subprograms) do
+    collectRequiredContext(requiredContext, subprogram)
   end
-  local soundSymbols = {}
-  for _, instruction in ipairs(effectProgram.instructions) do
-    if instruction.sound ~= nil then
-      soundSymbols[instruction.sound] = true
-    end
+  local audioProvenance, audioErr = effectAudioProvenance(state, effectProgram.instructions)
+  if audioProvenance == nil then
+    return nil, audioErr
   end
-  local audioProvenance, particleProvenance = {}, {}
-  if next(soundSymbols) ~= nil then
-    local audioCompiler = require("romdump.src.digest.audio.AudioCompiler")
-    local audioPlan, audioPlanErr = audioCompiler.planSource(romFs)
-    if audioPlan == nil then
-      return nil, audioPlanErr
-    end
-    local index = audioPlan.plan.index
-    local plannedBanks = {}
-    for _, bankSymbol in ipairs(animationSources.EFFECT_SOUND_BANKS) do
-      local bankId = index.bankBySymbol[bankSymbol]
-      assert(bankId ~= nil, "effect sound bank is source-indexed: " .. bankSymbol)
-      plannedBanks[bankId] = true
-    end
-    local sequencesByBank = {}
-    for _, instruction in ipairs(effectProgram.instructions) do
-      local sequenceSymbol = instruction.sound
-      if sequenceSymbol ~= nil then
-        local sequenceId = index.sequenceBySymbol[sequenceSymbol]
-        local sequenceRecord = sequenceId ~= nil and index.sequences[sequenceId] or nil
-        if sequenceRecord == nil then
-          return nil,
-            Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "effect sound has no source-indexed sequence", {
-              effectKey = effectKey,
-              sequenceSymbol = sequenceSymbol,
-            })
-        end
-        local bankId = sequenceRecord.bankId
-        if not plannedBanks[bankId] then
-          local bankRecord = index.banks[bankId]
-          return nil,
-            Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "effect sound lives outside the effect sound banks", {
-              effectKey = effectKey,
-              sequenceSymbol = sequenceSymbol,
-              bankSymbol = bankRecord ~= nil and bankRecord.symbol or nil,
-            })
-        end
-        sequencesByBank[bankId] = sequencesByBank[bankId] or {}
-        sequencesByBank[bankId][sequenceId] = true
-      end
-    end
-    local bankIds = {}
-    for bankId in pairs(sequencesByBank) do
-      bankIds[#bankIds + 1] = bankId
-    end
-    table.sort(bankIds)
-    for _, bankId in ipairs(bankIds) do
-      local sequenceIds = {}
-      for sequenceId in pairs(sequencesByBank[bankId]) do
-        sequenceIds[#sequenceIds + 1] = sequenceId
-      end
-      table.sort(sequenceIds)
-      audioProvenance[#audioProvenance + 1] = { bankId = bankId, sequenceIds = sequenceIds }
-    end
+  local particleProvenance, particleErr = stageClosureParticles(state, effectProgram.instructions)
+  if particleProvenance == nil then
+    return nil, particleErr
   end
-
-  local particleResourceKeys = {}
-  for _, instruction in ipairs(effectProgram.instructions) do
-    if instruction.op == "create-battler-effect" and instruction.resource ~= nil then
-      particleResourceKeys[instruction.resource] = true
-    end
-  end
-  local orderedParticleKeys = {}
-  for resourceKey in pairs(particleResourceKeys) do
-    orderedParticleKeys[#orderedParticleKeys + 1] = resourceKey
-  end
-  table.sort(orderedParticleKeys)
-  for _, resourceKey in ipairs(orderedParticleKeys) do
-    local particle = decodedParticleResources[resourceKey]
-    local source = particle and particle.source or animationSources.resolveParticleSource(resourceKey)
-    if source == nil or source.decoder ~= "spl" or source.kind ~= "particle" then
-      return nil,
-        Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "particle resource has no typed producer source", {
-          effectKey = effectKey,
-          resourceKey = resourceKey,
-        })
-    end
-    if particle == nil then
-      local particleArchive = archives[source.archiveSymbol]
-      if particleArchive == nil then
-        local openedParticleArchive, particleArchiveError = romFs:openNarc(source.archiveSymbol)
-        if openedParticleArchive == nil then
-          return nil, particleArchiveError
-        end
-        particleArchive = openedParticleArchive
-        archives[source.archiveSymbol] = openedParticleArchive
-      end
-      local bytes, particleReadErr = particleArchive:readMember(source.memberId)
-      if bytes == nil then
-        return nil, particleReadErr
-      end
-      local decoded, particleDecodeErr = Spl.decode(bytes, { role = "battle-effect-particle" })
-      if decoded == nil then
-        return nil, particleDecodeErr
-      end
-      particle = { bytes = bytes, decoded = decoded, source = source }
-      decodedParticleResources[resourceKey] = particle
-    end
-    local decoded = particle.decoded
-    local provenance = {
-      archiveSymbol = particle.source.archiveSymbol,
-      memberId = particle.source.memberId,
-    }
-    local archiveDecoded = decoded --[[@as NitroSplData]]
-    assert(
-      archiveDecoded ~= nil and type(archiveDecoded.emitters) == "table",
-      "particle archives decode before staging"
-    )
-    local normalizedEmitters = nil
-    local entries = nil
-    local normalizedOk, normalizeErr = pcall(function()
-      entries = stageParticleArchiveResources(archiveDecoded, provenance)
-      normalizedEmitters = {}
-      for emitterIndex, emitter in ipairs(archiveDecoded.emitters) do
-        normalizedEmitters[emitterIndex] = normalizeParticleEmitter(emitter, entries, emitterIndex - 1, provenance)
-      end
-    end)
-    if not normalizedOk then
-      if Errors.is(normalizeErr) then
-        return nil, normalizeErr
-      end
-      error(normalizeErr, 0)
-    end
-    assert(entries ~= nil and normalizedEmitters ~= nil, "particle archives normalize before staging")
-    local normalizedResources = {}
-    for resourceIndex, entry in ipairs(entries) do
-      normalizedResources[resourceIndex] = { textureKey = entry.textureKey, paletteKey = entry.paletteKey }
-    end
-    local normalizedParticle = {
-      emitters = normalizedEmitters,
-      resources = normalizedResources,
-    }
-    addEffectResource(resourceKey, "particle", Hashing.sha1hex(particle.bytes), normalizedParticle)
-    particleProvenance[#particleProvenance + 1] = {
-      resourceKey = resourceKey,
-      archiveSymbol = particle.source.archiveSymbol,
-      memberId = particle.source.memberId,
-    }
-  end
-
-  -- Rasterize every pending character tile set through its paired
-  -- source palette into the exact RGBA drawable the live image upload
-  -- path requires. Same-call co-selections pair directly; lone
-  -- characters pair through the creating instruction that carries both
-  -- the character key and its palette key. A character with no
-  -- discoverable palette, or one claimed by two different palettes,
-  -- fails the build instead of publishing raw Nitro bitfields.
-  local function rasterizePendingCharacters()
-    if next(pendingCharacterRasters) == nil then
-      return
-    end
-    local pairByCharacter = {}
-    for _, instruction in ipairs(effectProgram.instructions) do
-      if type(instruction.resourceKeys) == "table" then
-        local characters, palettes = {}, {}
-        for _, key in pairs(instruction.resourceKeys) do
-          if pendingCharacterRasters[key] ~= nil then
-            characters[#characters + 1] = key
-          elseif type(resolvedResources[key]) == "table" and resolvedResources[key].kind == "palette" then
-            palettes[#palettes + 1] = key
-          end
-        end
-        if #palettes == 1 then
-          for _, characterKey in ipairs(characters) do
-            if pairByCharacter[characterKey] == nil then
-              pairByCharacter[characterKey] = palettes[1]
-            elseif pairByCharacter[characterKey] ~= palettes[1] then
-              error(
-                Errors.new(
-                  "BATTLE_EFFECT_CLOSURE_UNRESOLVED",
-                  "managed sprite character pairs with more than one staged palette",
-                  {
-                    effectKey = effectKey,
-                    resourceKey = characterKey,
-                  }
-                ),
-                0
-              )
-            end
-          end
-        end
-      end
-    end
-    for characterKey, pending in pairs(pendingCharacterRasters) do
-      local paletteKey = pending.paletteKey or pairByCharacter[characterKey]
-      local paletteDescriptor = paletteKey ~= nil and resolvedResources[paletteKey] or nil
-      local palettePayload = paletteDescriptor ~= nil and resourcePayloads[paletteDescriptor.payload] or nil
-      if type(palettePayload) ~= "table" or type(palettePayload[1]) ~= "table" or palettePayload[1].r == nil then
-        error(
-          Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "managed sprite character has no paired staged palette", {
-            effectKey = effectKey,
-            resourceKey = characterKey,
-            role = pending.role,
-          }),
-          0
-        )
-      end
-      local tileSize = pending.chars.depth == 3 and 32 or 64
-      local tileCount = math.floor(#pending.chars.tiles / tileSize)
-      local raster = G2dRasterizer.renderTileStrip(pending.chars, { colors = palettePayload }, 0, tileCount, 0, {
-        role = "battle effect " .. effectKey .. " " .. pending.role .. " characters",
-      })
-      resourcePayloads[pending.payloadPath] = {
-        width = raster.width,
-        height = raster.height,
-        rgba8888 = raster.pixels,
-      }
-    end
-  end
-  local rasterOk, rasterErr = pcall(rasterizePendingCharacters)
+  local rasterOk, rasterErr = pcall(rasterizePendingCharacters, state, effectProgram.instructions)
   if not rasterOk then
-    if Errors.is(rasterErr) then
-      return nil, rasterErr
-    end
-    error(rasterErr, 0)
+    return nil, structuredFailure(rasterErr)
   end
-
-  local dependencies = {}
-  for key in pairs(resolvedResources) do
-    dependencies[#dependencies + 1] = key
-  end
-  table.sort(dependencies)
-  local catalogIdentity = versionId .. ":" .. romFs:metadata().sha1
   local effect = {
     schema = require("libs.assets.src.battle.BattleAnimationSchema").EFFECT_SCHEMA,
     key = effectKey,
-    catalogIdentity = catalogIdentity,
+    catalogIdentity = versionId .. ":" .. romFs:metadata().sha1,
     program = effectProgram,
-    dependencies = dependencies,
-    resources = resolvedResources,
+    dependencies = sortedSetValues(state.resolvedResources),
+    resources = state.resolvedResources,
     requiredContext = requiredContext,
-    resourcePayloads = resourcePayloads,
+    resourcePayloads = state.resourcePayloads,
     provenance = {
       archiveSymbol = route.archiveSymbol,
       memberId = route.memberId,
-      sourceInputs = sourceInputs,
-      resolvedSourceInputs = resolvedSourceInputs,
+      sourceInputs = state.sourceInputs,
+      resolvedSourceInputs = state.resolvedSourceInputs,
       audio = audioProvenance,
       particle = particleProvenance,
     },
   }
-  local effectSchema = require("libs.assets.src.battle.BattleAnimationSchema")
-  local valid, validationError = pcall(effectSchema.assertEffect, {
-    schema = effect.schema,
-    key = effect.key,
-    catalogIdentity = effect.catalogIdentity,
-    program = effect.program,
-    dependencies = effect.dependencies,
-    resources = effect.resources,
-    requiredContext = effect.requiredContext,
-  })
-  if not valid then
-    if Errors.is(validationError) then
-      local validation = validationError --[[@as Errors.Error]]
-      local instructionIndex = validation.message:match("instructions%[(%d+)%]")
-      local diagnosticContext = {}
-      for key, value in pairs(validation.context) do
-        diagnosticContext[key] = value
-      end
-      diagnosticContext.effectKey = effectKey
-      if instructionIndex ~= nil then
-        local index = tonumber(instructionIndex)
-        assert(index ~= nil, "schema instruction index parses as an integer")
-        diagnosticContext.instructionIndex = index
-        if sourceOffsets ~= nil then
-          diagnosticContext.sourceOffset = sourceOffsets[index]
-        end
-        local instruction = effectProgram.instructions[index]
-        if instruction ~= nil then
-          diagnosticContext.continuationSlot = instruction.continuationSlot
-        end
-      end
-      error(Errors.new(validation.code, validation.message, diagnosticContext), 0)
-    end
-    error(validationError, 0)
-  end
+  validateEffect(effect, program.sourceOffsets)
   return effect
 end
 
