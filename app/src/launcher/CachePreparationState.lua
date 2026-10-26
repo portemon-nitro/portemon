@@ -46,6 +46,7 @@ local ImportState = require("app.src.launcher.ImportState")
 ---@field freshImport boolean
 ---@field importStatus { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }?
 ---@field importReceipt string?
+---@field sourceStatus string? boot-source only: last observed gate status pending|ready|source-required|failed
 ---@field sourceDetail unknown? boot-source only: last typed source-required detail
 ---@field isCurrent fun(epoch: integer): boolean
 ---@field onReady fun()
@@ -195,6 +196,7 @@ function CachePreparationState.new(options)
     freshImport = options.freshImport == true,
     importStatus = options.importStatus,
     importReceipt = options.importReceipt,
+    sourceStatus = nil,
     sourceDetail = nil,
     isCurrent = options.isCurrent,
     onReady = options.onReady,
@@ -253,6 +255,17 @@ function CachePreparationState:_fire()
   if self.fired or self.dead then
     return
   end
+  -- The admission gate below guards only the boot-source transfer into the
+  -- movie and menu: the quiescence wait owns no source gate and transfers
+  -- on its exact barrier acknowledgement instead (old-source close, never
+  -- a new-gate transfer), exactly as before the boot invariants landed.
+  if self.kind == "boot-source" then
+    assert(self.bootAdmitted, "boot transfer requires the admitted source gate")
+    if self.pairIndex ~= nil then
+      assert(self.walkerReady, "boot transfer requires the adopted selected pair")
+      assert(self.artFailure == nil, "boot transfer requires no latched pair failure")
+    end
+  end
   self.fired = true
   self.onReady()
 end
@@ -287,10 +300,11 @@ function CachePreparationState:_adoptSelectedPair()
 end
 
 function CachePreparationState:_pollWalker()
-  -- An admitted boot transfers only once the selected pair is adopted: the
-  -- pair is a required demand on both warm and cold paths, a pending job
-  -- simply holds the transfer, and each failure kind latches visibly with
-  -- only its truthful remedy. A terminal worker record never heals under
+  -- The selected pair is a required demand on both warm and cold paths,
+  -- issued even while the source gate is still pending so the worker
+  -- compiles during the wait. Readiness is observed and adopted
+  -- independently of admission: staged sprites never transfer until the
+  -- admitted gate fires below. A terminal worker record never heals under
   -- the same epoch, so the worker latch stops every identical re-request
   -- until Escape/reselection mints a fresh epoch. A failed local adoption
   -- stops every automatic re-attempt until one explicit R authorizes one
@@ -301,17 +315,14 @@ function CachePreparationState:_pollWalker()
   local cold = self.freshImport
   if self.pairIndex ~= nil and serviceSupportsWalker(self.service) then
     -- Demand the selected pair early, even while the source gate is still
-    -- blocked, so the worker compiles during the wait. Only the readiness
-    -- observation, the GPU adoption, and the transfer below wait for the
-    -- admitted gate; the demand itself never does.
+    -- blocked, so the worker compiles during the wait. Only the transfer
+    -- below waits for the admitted gate; the demand, the readiness
+    -- observation, and the GPU adoption never do.
     self.service:request(self.epoch, {
       requestKind = "startup-walker",
       pairIndex = self.pairIndex,
       urgency = "required",
     })
-    if not self.bootAdmitted then
-      return
-    end
     local ready, failure = self.service:observe(self.epoch, {
       requestKind = "startup-walker",
       pairIndex = self.pairIndex,
@@ -322,7 +333,9 @@ function CachePreparationState:_pollWalker()
       if adopted then
         self.artFailure = nil
         self.artFailureOrigin = nil
-        self:_fire()
+        if self.bootAdmitted then
+          self:_fire()
+        end
         return
       end
       self.artFailure = adoptFailure
@@ -336,7 +349,7 @@ function CachePreparationState:_pollWalker()
     end
     return
   end
-  if not cold then
+  if not cold and self.bootAdmitted then
     self:_fire()
   end
 end
@@ -344,13 +357,13 @@ end
 function CachePreparationState:_pollBootSource()
   -- The boot gate owns no compilation policy: readiness means the full
   -- corpus already attests current or its exact source is pinned below
-  -- the controller. Source-required stays blocked with its typed detail,
-  -- a genuine controller failure latches as a boot error, and a stale
-  -- epoch resolves through the liveness guard without firing. The
-  -- selected pair is demanded early, even while blocked, so the worker
-  -- compiles during the wait; only adoption and transfer wait for the
-  -- admitted gate, and the pair answer and, on a cold import, its GPU
-  -- adoption are separate facts after that.
+  -- the controller. The observed gate status is stored separately from
+  -- admission: pending holds the themed stage with no provisioning words,
+  -- source-required stays blocked with its typed detail, a genuine
+  -- controller failure latches as a boot error, and a stale epoch resolves
+  -- through the liveness guard without firing. The selected pair is
+  -- demanded, observed, and adopted independently of admission on every
+  -- live status; only the transfer waits for the admitted gate.
   local service = assert(self.service, "boot-source preparation requires the process cache service")
   local statusOk, status, detail = pcall(service.bootSourceStatus, service, self.epoch)
   if not statusOk then
@@ -358,15 +371,24 @@ function CachePreparationState:_pollBootSource()
     return
   end
   if status == "ready" then
+    self.sourceStatus = "ready"
+    self.sourceDetail = nil
     self.bootAdmitted = true
     self:_pollWalker()
   elseif status == "source-required" then
-    -- A blocked boot still demands its selected pair early while the
-    -- matching-ROM remedy stays visible: the demand never transfers, and
-    -- adoption still waits for admission below.
+    -- A blocked boot still demands, observes, and adopts its selected pair
+    -- while the matching-ROM remedy stays visible: staged art never
+    -- transfers, and the typed reason joins once the gate replies.
+    self.sourceStatus = "source-required"
     self.sourceDetail = detail
     self:_pollWalker()
+  elseif status == "pending" then
+    self.sourceStatus = "pending"
+    self.sourceDetail = nil
+    self:_pollWalker()
   elseif status == "failed" then
+    self.sourceStatus = "failed"
+    self.sourceDetail = nil
     if type(detail) == "table" then
       self.error = detail.message or detail.code or "cache boot failed"
     elseif detail ~= nil then
@@ -374,6 +396,8 @@ function CachePreparationState:_pollBootSource()
     else
       self.error = "cache boot failed"
     end
+  elseif status == nil then
+    self.sourceStatus = nil
   end
 end
 
@@ -512,12 +536,29 @@ function CachePreparationState:_drawBootSource()
   -- An admitted gate draws only the themed stage while ordinary pair work
   -- is still pending: transitional frames carry no internal copy. The
   -- matching-ROM remedy below is reserved for a genuinely blocked boot,
-  -- which keeps it visible from the first frame while the stage animates
-  -- underneath it; the typed reason joins once the gate replies.
+  -- confirmed by an authoritative source-required status: pending and
+  -- pre-reply frames stay themed with no gate-inferred provisioning words,
+  -- while the confirmed block keeps the remedy visible from its first
+  -- confirmed frame with the stage animating underneath it. The one
+  -- exception is an explicitly verified wrong-version diagnostic: it names
+  -- a proven import fact rather than inferring a missing file from the
+  -- gate, so it stays visible even while the fresh gate is still pending.
   if self.bootAdmitted then
     return
   end
+  local mismatch = self.mismatch
+  if self.sourceStatus ~= "source-required" and mismatch == nil then
+    return
+  end
   local lg = love.graphics
+  if self.sourceStatus ~= "source-required" then
+    assert(type(mismatch) == "string", "a pending boot names only its verified mismatch")
+    lg.setColor(0.94, 0.94, 0.9, 1)
+    lg.print(mismatch, 24, 24)
+    lg.setColor(0.7, 0.78, 0.8, 1)
+    lg.print("Press escape to cancel.", 24, 48)
+    return
+  end
   lg.setColor(0.94, 0.94, 0.9, 1)
   lg.print("Provide the matching " .. bootVersionLabel(self.versionId) .. " ROM", 24, 24)
   lg.setColor(0.7, 0.78, 0.8, 1)

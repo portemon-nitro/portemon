@@ -274,6 +274,17 @@ function HgssLoadingPresentation.publishedPair(cacheFs)
   return nil
 end
 
+-- Whether one walking pair slot currently publishes a loadable manifest.
+-- Same acceptance as publishedPair, factored so selection hinting can
+-- validate one slot at a time without touching the asset cache directly.
+---@param cacheFs table<string, function> version cache holding the walker manifests
+---@param pairIndex integer walking pair slot 1..32
+---@return boolean whether the slot publishes a loadable manifest
+function HgssLoadingPresentation.publishedPairSlot(cacheFs, pairIndex)
+  local ok, manifest = pcall(StartupAssetCache.loadWalker, cacheFs, pairIndex)
+  return ok and manifest ~= nil
+end
+
 function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
   assert(not self.disposed, "disposed loading presentation cannot adopt art")
   if self.hero ~= nil then
