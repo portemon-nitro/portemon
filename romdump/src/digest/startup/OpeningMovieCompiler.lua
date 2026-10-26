@@ -1668,59 +1668,78 @@ local function scene4Program(clips, layers)
   local emitterIds = { { 6, 7, 8 }, { 3, 4, 5 }, { 0, 1, 2 } }
   local banks = { "chikorita", "cyndaquil", "totodile" }
   for round = 1, 3 do
-    local show = {}
-    showSprite(events, 4, instances, clips, "starter-" .. starters[round], 0, starters[round], banks[round], 0)
-    show[#show + 1] = #events - 1
-    show[#show + 1] = #events
-    show[#show + 1] = nextIndex(events)
+    -- Retail shows each starter one case before its emitters start, then
+    -- holds the run case until the group retires; the first two finishes
+    -- schedule the VBlank screen flip on their own following dispatch.
+    local appear = {}
+    showSprite(events, 4, instances, clips, "appear-" .. starters[round], 0, starters[round], banks[round], 0)
+    appear[#appear + 1] = #events - 1
+    appear[#appear + 1] = #events
+    step(steps, "appear-" .. starters[round], appear, { kind = "duration", ticks = 1 })
+    local start = { nextIndex(events) }
     events[#events + 1] =
-      event("startEmitters", "starter-" .. starters[round], 0, { group = groups[round], emitters = emitterIds[round] })
-    step(steps, "starter-" .. starters[round], show, { kind = "effect", effect = "emitters-" .. groups[round] })
+      event("startEmitters", "start-" .. starters[round], 0, { group = groups[round], emitters = emitterIds[round] })
+    step(steps, "start-" .. starters[round], start, { kind = "duration", ticks = 1 })
     if round < 3 then
+      step(steps, "run-" .. starters[round], {}, { kind = "effect", effect = "emitters-" .. groups[round] })
       -- Retail Task_IntroMovie_Scene4_FlipScreens: argument 0 (after the
       -- first starter) clears the flip so main returns upper with main
       -- BG2 on/BG3 off and sub BG2 off/BG3 on; argument 1 (after the
       -- second starter) sets the flip so main returns lower with the
       -- mirrored plane masks.
-      local flip = { nextIndex(events) }
+      local finish = { nextIndex(events) }
       local afterFirst = round == 1
       events[#events + 1] = event(
         "setScreenMapping",
-        "flip-" .. starters[round],
+        "finish-" .. starters[round],
         0,
         afterFirst and { mainPhysical = "upper" } or { mainPhysical = "lower" }
       )
-      setPlaneVisible(events, planes, layers, "flip-" .. starters[round], 0, "main", 2, afterFirst)
-      flip[#flip + 1] = #events
-      setPlaneVisible(events, planes, layers, "flip-" .. starters[round], 0, "main", 3, not afterFirst)
-      flip[#flip + 1] = #events
-      setPlaneVisible(events, planes, layers, "flip-" .. starters[round], 0, "sub", 2, not afterFirst)
-      flip[#flip + 1] = #events
-      setPlaneVisible(events, planes, layers, "flip-" .. starters[round], 0, "sub", 3, afterFirst)
-      flip[#flip + 1] = #events
-      step(steps, "flip-" .. starters[round], flip, { kind = "effect", effect = "emitters-" .. groups[round] })
+      setPlaneVisible(events, planes, layers, "finish-" .. starters[round], 0, "main", 2, afterFirst)
+      finish[#finish + 1] = #events
+      setPlaneVisible(events, planes, layers, "finish-" .. starters[round], 0, "main", 3, not afterFirst)
+      finish[#finish + 1] = #events
+      setPlaneVisible(events, planes, layers, "finish-" .. starters[round], 0, "sub", 2, not afterFirst)
+      finish[#finish + 1] = #events
+      setPlaneVisible(events, planes, layers, "finish-" .. starters[round], 0, "sub", 3, afterFirst)
+      finish[#finish + 1] = #events
+      step(steps, "finish-" .. starters[round], finish, { kind = "duration", ticks = 1 })
     end
   end
-  local finishTotodile = { nextIndex(events) }
-  events[#events + 1] = event("setFade", "finish-totodile", 0, {
+  -- The water run starts the 08 close the very tick its emitters retire:
+  -- the shutter is a guard-completion action, never an entry event, so no
+  -- close runs before the water group is done. The totodile finish waits
+  -- on the 26-step fade, then retires every main plane and starter sprite
+  -- on the fade-completed tick; the sparkle dispatches on the next tick.
+  local runWaterClose = { nextIndex(events) }
+  events[#events + 1] = event("setFade", "run-totodile", 0, {
     scope = "both",
     mode = "line-shutter",
     color = "black",
     direction = "out",
     ticks = 26,
-    terminal = "neutral",
+    terminal = "hold",
     shape = "outer-in",
     effect = "fade-close",
   })
+  step(steps, "run-totodile", {}, { kind = "effect", effect = "emitters-water" }, runWaterClose)
+  local retire = {}
   for _, bgSlot in ipairs({ 1, 2, 3 }) do
     setPlaneVisible(events, planes, layers, "finish-totodile", 0, "main", bgSlot, false)
-    finishTotodile[#finishTotodile + 1] = #events
+    retire[#retire + 1] = #events
   end
-  step(steps, "finish-totodile", finishTotodile, { kind = "effect", effect = "fade-close" })
+  for _, sprite in ipairs(starters) do
+    setSpriteVisible(events, 4, instances, "finish-totodile", 0, sprite, false)
+    retire[#retire + 1] = #events
+  end
+  step(steps, "finish-totodile", {}, { kind = "effect", effect = "fade-close" }, retire)
   -- The closing sparkle waits on its own compiled clip: the animation's
   -- frame durations bound the wait, with no separate named effect.
+  -- Physical TOP alone returns to neutral for the sparkle; the other
+  -- engine keeps its close hold behind the retired art.
   local sparkleClip = clipPath(clips, "hands", 2)
-  local sparkle = {}
+  local sparkle = { nextIndex(events) }
+  events[#events + 1] = event("setBrightness", "sparkle", 0, { physical = "upper", value = "neutral" })
   showSprite(events, 4, instances, clips, "sparkle", 0, "sparkles", "hands", 2)
   sparkle[#sparkle + 1] = #events - 1
   sparkle[#sparkle + 1] = #events
