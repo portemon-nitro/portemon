@@ -1964,6 +1964,106 @@ local function checkScene3SevenWipesWithGates(manifest)
   )
 end
 
+-- The sunrise beat stages the sun paused on its first authored frame and
+-- only the following scroll case restarts its clip: the paused assignment
+-- and the animated reassignment reference the same compiled clip, and the
+-- setup beat carries no sun of its own.
+local function scene1SunriseStagesPausedSunBeforeAnimatedScroll(romFs, versionId)
+  local manifest = strictManifest(compileScene(romFs, versionId, 1), versionId, 1)
+  local _, events = strictTimeline(manifest, 1)
+  local sunriseClips, sunriseShows, scrollClips = {}, {}, {}
+  for _, event in ipairs(events) do
+    if event.instanceId == "sun" then
+      if event.stepId == "sunrise" and event.op == "setSpriteClip" then
+        sunriseClips[#sunriseClips + 1] = event
+      elseif event.stepId == "sunrise" and event.op == "spriteVisible" then
+        sunriseShows[#sunriseShows + 1] = event
+      elseif event.stepId == "scroll" and event.op == "setSpriteClip" then
+        scrollClips[#scrollClips + 1] = event
+      end
+    end
+  end
+  Assert.equal(#sunriseClips, 1, "the sunrise beat stages the sun clip once")
+  Assert.equal(sunriseClips[1].atStepTick, 0, "the paused sun stages on the sunrise entry")
+  Assert.equal(sunriseClips[1].animate, false, "the sunrise beat holds the sun paused")
+  Assert.equal(#sunriseShows, 1, "the sunrise beat shows the staged sun")
+  Assert.isTrue(sunriseShows[1].visible, "the staged sun is visible on its setup beat")
+  Assert.equal(#scrollClips, 1, "the scroll case restarts the sun clip once")
+  Assert.equal(scrollClips[1].animate, true, "the scroll case animates the sun")
+  Assert.equal(
+    scrollClips[1].clipId,
+    sunriseClips[1].clipId,
+    "the scroll case restarts the same staged sun clip"
+  )
+  local sunrise = stepById(manifest, 1, "sunrise")
+  Assert.equal(sunrise["until"].kind, "duration", "the sunrise beat keeps its one-tick setup")
+  Assert.equal(sunrise["until"].ticks, 1, "the sunrise beat keeps its one-tick setup")
+  Assert.isTrue(
+    stepPosition(manifest, "sunrise") < stepPosition(manifest, "scroll"),
+    "the paused sun stages before the animated scroll case"
+  )
+end
+
+-- The flower flyin hands its settle and every later pan to source effect
+-- guards: the settle waits on both five-tick main scrolls and the
+-- eight-tick sub black-out together, so the longer fade gates the next
+-- pan, and each 90/7/66/10 pan and the final wipe wait on their own
+-- started effect instead of a bare duration.
+local function scene2SettleAndPanGuardsUseSourceEffects(romFs, versionId)
+  local manifest = strictManifest(compileScene(romFs, versionId, 2), versionId, 2)
+  local settle = stepById(manifest, 2, "settle-flyin")
+  local finish = assert(settle["until"], "scene 2 settle-flyin carries its guard")
+  Assert.equal(finish.kind, "effects", "the settle waits on its source tasks together")
+  local waited = {}
+  for _, name in ipairs(assert(finish.effects, "the settle names its waited effects")) do
+    waited[name] = true
+  end
+  Assert.isTrue(waited["scroll-settle-flyin"] == true, "the settle waits on its five-tick scrolls")
+  Assert.isTrue(waited["fade-settle-flyin"] == true, "the settle waits on its eight-tick sub fade")
+  local _, events = strictTimeline(manifest, 2)
+  local scrollTicks, fadeTicks = nil, nil
+  for _, event in ipairs(events) do
+    if event.stepId == "flyin" and event.atStepTick == 56 then
+      if event.op == "setScroll" then
+        Assert.equal(event.effect, "scroll-settle-flyin", "the flyin scroll starts the settle wait")
+        Assert.equal(event.ticks, 5, "the settle scroll keeps its five source ticks")
+        scrollTicks = event.ticks
+      elseif event.op == "setFade" then
+        Assert.equal(event.effect, "fade-settle-flyin", "the flyin fade starts the settle wait")
+        Assert.equal(event.scope, "sub", "the settle fade stays on the sub engine")
+        Assert.equal(event.terminal, "hold", "the settle fade retains its black")
+        Assert.equal(event.ticks, 8, "the settle fade keeps its eight source ticks")
+        fadeTicks = event.ticks
+      end
+    end
+  end
+  Assert.notNil(scrollTicks, "the flyin hands its scrolls to the settle guard")
+  Assert.notNil(fadeTicks, "the flyin hands its fade to the settle guard")
+  Assert.isTrue(
+    (fadeTicks or 0) > (scrollTicks or 0),
+    "the longer fade makes the settle conjunction load-bearing"
+  )
+  local panTicks = { ["slow-pan-ethan"] = 90, ["fast-pan-lyra"] = 7, ["slow-pan-lyra"] = 66 }
+  for stepId, ticks in pairs(panTicks) do
+    local pan = stepById(manifest, 2, stepId)
+    local guard = assert(pan["until"], "scene 2 " .. stepId .. " carries its guard")
+    Assert.equal(guard.kind, "effect", "scene 2 " .. stepId .. " waits on its own scroll")
+    Assert.equal(guard.effect, "scroll-" .. stepId, "scene 2 " .. stepId .. " names its started scroll")
+    local named = 0
+    for _, event in ipairs(events) do
+      if event.op == "setScroll" and event.stepId == stepId and event.effect == guard.effect then
+        Assert.equal(event.ticks, ticks, "scene 2 " .. stepId .. " keeps its source pan length")
+        named = named + 1
+      end
+    end
+    Assert.isTrue(named >= 1, "scene 2 " .. stepId .. " starts its waited scroll")
+  end
+  local wipe = stepById(manifest, 2, "wipe")
+  local wipeGuard = assert(wipe["until"], "scene 2 wipe carries its guard")
+  Assert.equal(wipeGuard.kind, "effect", "the final wipe waits on its own effect")
+  Assert.equal(wipeGuard.effect, "wipe-circle", "the final wipe names its started wipe")
+end
+
 -- Every scene 1/2/4/5 scroll offset, continuous job, and timed delta, plus
 -- each engine alpha mask/direction/duration and wipe kind/engine/duration
 -- with its fade brightness operand, pinned to the retail call at its
@@ -1999,8 +2099,8 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=0 engine=main bgSlot=1 dx=0 dy=320 ticks=0 effect=nil",
     "atStepTick=0 engine=main bgSlot=2 dx=0 dy=64 ticks=-1 effect=nil",
     "atStepTick=0 engine=sub bgSlot=0 dx=0 dy=64 ticks=-1 effect=nil",
-    "atStepTick=56 engine=main bgSlot=0 dx=0 dy=-192 ticks=5 effect=nil",
-    "atStepTick=56 engine=main bgSlot=1 dx=0 dy=-192 ticks=5 effect=nil",
+    "atStepTick=56 engine=main bgSlot=0 dx=0 dy=-192 ticks=5 effect=scroll-settle-flyin",
+    "atStepTick=56 engine=main bgSlot=1 dx=0 dy=-192 ticks=5 effect=scroll-settle-flyin",
   })
   assertExactEvents(second, 2, "setScroll", "slow-pan-ethan", SCROLL_KEYS, {
     "atStepTick=0 engine=main bgSlot=0 dx=32 dy=0 ticks=90 effect=scroll-slow-pan-ethan",
@@ -2020,7 +2120,7 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
   })
   assertExactEvents(second, 2, "setFade", "flyin", FADE_KEYS, {
     "atStepTick=0 scope=both mode=brightness color=white direction=in ticks=3 terminal=neutral shape=nil effect=nil",
-    "atStepTick=56 scope=both mode=brightness color=black direction=out ticks=8 terminal=neutral shape=nil effect=nil",
+    "atStepTick=56 scope=sub mode=brightness color=black direction=out ticks=8 terminal=hold shape=nil effect=fade-settle-flyin",
   })
   assertExactEvents(second, 2, "circleWipe", "wipe", WIPE_KEYS, {
     "atStepTick=0 engine=main kind=1 ticks=8 effect=wipe-circle",
@@ -2398,6 +2498,8 @@ return RomSuite.fromFacts({
   ["opening programs start from their source origins with immediate and continuous scrolls"] = openingProgramsStartFromTheirSourceOrigins,
   ["engine blends and wipes carry their source operands per stage engine"] = engineBlendsAndWipesCarrySourceOperands,
   ["pinned native extents reproduce decoded art with pinned wrap edges"] = pinnedNativeExtentsAndWrapEdgeTopology,
+  ["scene 1 sunrise stages its paused sun before the animated scroll"] = scene1SunriseStagesPausedSunBeforeAnimatedScroll,
+  ["scene 2 settle and pan guards use their source effects"] = scene2SettleAndPanGuardsUseSourceEffects,
   ["pinned scroll blend wipe and fade operands match retail calls"] = pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls,
   ["movie tick rate remains the retail 30 Hz source cadence"] = movieTickRateRemainsRetail30Hz,
   ["strict case guards reject invalid waits and accept eventless conjunctions"] = strictCaseGuardsRejectInvalidWaitsAndAcceptEventlessConjunctions,

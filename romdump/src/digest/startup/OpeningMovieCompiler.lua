@@ -1014,6 +1014,11 @@ local function scene1Program(clips, layers)
   sunrise[#sunrise + 1] = #events
   setLayerEvent(events, planes, layers, "sunrise", 0, "main", 3, nil, true)
   sunrise[#sunrise + 1] = #events
+  -- The sun draws from this setup beat but its clip stays paused: the
+  -- following scroll case restarts the same clip animated.
+  showSprite(events, 1, instances, clips, "sunrise", 0, "sun", "bird", 0, false)
+  sunrise[#sunrise + 1] = #events - 1
+  sunrise[#sunrise + 1] = #events
   sunrise[#sunrise + 1] = nextIndex(events)
   events[#events + 1] = event("waitTicks", "sunrise", 0, { ticks = 1 })
   step(steps, "sunrise", sunrise, { kind = "duration", ticks = 1 })
@@ -1194,28 +1199,41 @@ local function scene2Program(clips)
     end
   end
   flyin[#flyin + 1] = nextIndex(events)
-  events[#events + 1] = event("setScroll", "flyin", 56, { engine = "main", bgSlot = 1, dx = 0, dy = -0xC0, ticks = 5 })
+  events[#events + 1] = event(
+    "setScroll",
+    "flyin",
+    56,
+    { engine = "main", bgSlot = 1, dx = 0, dy = -0xC0, ticks = 5, effect = "scroll-settle-flyin" }
+  )
   flyin[#flyin + 1] = nextIndex(events)
-  events[#events + 1] = event("setScroll", "flyin", 56, { engine = "main", bgSlot = 0, dx = 0, dy = -0xC0, ticks = 5 })
+  events[#events + 1] = event(
+    "setScroll",
+    "flyin",
+    56,
+    { engine = "main", bgSlot = 0, dx = 0, dy = -0xC0, ticks = 5, effect = "scroll-settle-flyin" }
+  )
   flyin[#flyin + 1] = nextIndex(events)
+  -- The flower flyin darkens only the sub engine and keeps it black
+  -- through the later hero pans; the settle step below waits on this
+  -- fade together with the two five-tick scrolls above.
   events[#events + 1] = event("setFade", "flyin", 56, {
-    scope = "both",
+    scope = "sub",
     mode = "brightness",
     color = "black",
     direction = "out",
     ticks = 8,
-    terminal = "neutral",
+    terminal = "hold",
+    effect = "fade-settle-flyin",
   })
   step(steps, "flyin", flyin, { kind = "duration", ticks = 56 })
-  local settle = { nextIndex(events) }
-  events[#events + 1] = event("waitTicks", "settle-flyin", 0, { ticks = 8 })
+  local settle = {}
   for _, index in ipairs(panPositions("settle-flyin", ethanIds, 0, 0xC0, 5, 64, -96)) do
     settle[#settle + 1] = index
   end
   for _, index in ipairs(panPositions("settle-flyin", lyraIds, 0, 0xC0, 5, 320, -96)) do
     settle[#settle + 1] = index
   end
-  step(steps, "settle-flyin", settle, { kind = "duration", ticks = 8 })
+  step(steps, "settle-flyin", settle, { kind = "effects", effects = { "scroll-settle-flyin", "fade-settle-flyin" } })
   ---@param id string step identifier owning the pan
   ---@param dx integer retail horizontal scroll delta in pixels
   ---@param dy integer retail vertical scroll delta in pixels
