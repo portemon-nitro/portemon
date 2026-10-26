@@ -499,19 +499,36 @@ local function fillerEmitter(id, group, root)
     group = group,
     emitterLife = 30,
     particleLife = 30,
-    generation = { count = 2, interval = 1 },
+    startOffset = 0,
+    generation = { countFx = 8192, interval = 1 },
+    initPosType = 2,
+    circleAxis = 0,
+    drawType = 0,
     radius = 0.5,
     length = 0,
     position = { x = 0, y = 0, z = 0 },
     axis = { x = 0, y = 1, z = 0 },
-    baseColor = { r = 1, g = 1, b = 1 },
+    baseColorRgb = { r = 31, g = 31, b = 31 },
     baseAlpha = 31,
-    baseScale = 1,
-    velocity = { initial = 0.2, axis = 0 },
+    baseScaleFx = 4096,
+    velocityFx = { pos = 819, axis = 0 },
+    velRandom = 0,
+    scaleRandom = 0,
+    lifeRandom = 0,
     rotation = { min = 0, max = 0 },
+    useRotationAnim = false,
+    useInitRotationRandom = false,
+    initRotation = 0,
+    airResist = 128,
+    aspect = 1.0,
+    loopFrame = 1,
+    dbbScale = 0,
+    sclAnmDirect = 0,
+    texRepeat = { s = 0, t = 0 },
     texture = id,
     textureImage = root .. "particles/texture" .. id .. ".png",
-    animations = { scale = false, color = false, alpha = true },
+    animations = {},
+    child = nil,
     fields = {},
   }
 end
@@ -7100,8 +7117,61 @@ local function sourced_beast_exits_guard_the_rocket_retile_for_edition(scope, co
   beast_exits_guard_the_rocket_retile_at_the_absolute_origin(scope, versionId)
 end
 
+-- Each starter group replays its sourced emission schedule through the
+-- real scene bundle: the live-particle curve per group peaks at its
+-- sourced height and retires exactly when its emitters exhaust their
+-- bounded lifespans, identically on every replay. Peaks and completion
+-- ticks below come from the decoded nine emitter records and their
+-- generation, lifespan, and pool rules, not from the previous player.
+local function groupLiveCurve(movie, scope, group, starter)
+  advanceToSceneStep(movie, 4, "run-" .. starter, 20000)
+  local curve = {}
+  for _ = 1, 500 do
+    movie:draw()
+    local slot = assert(movie.current, "the running movie owns its current slot")
+    local live = 0
+    for _, runtime in ipairs(slot.emitters) do
+      if runtime.group == group then
+        live = live + #runtime.particles + #(runtime.children or {})
+      end
+    end
+    curve[#curve + 1] = live
+    if live == 0 then
+      return curve
+    end
+    movie:updateFixed()
+  end
+  error("the " .. group .. " run never retires its particles", 0)
+end
+
+local function starter_groups_replay_bounded_deterministic_curves(scope, context)
+  local versionId = selectedVersionId(context)
+  local expectations = {
+    { starter = "chikorita", group = "grass", peak = 45, done = 52 },
+    { starter = "cyndaquil", group = "fire", peak = 150, done = 43 },
+    { starter = "totodile", group = "water", peak = 200, done = 48 },
+  }
+  local first = openMovie(scope, versionId, 512, 384, "single")
+  local curves = {}
+  for _, want in ipairs(expectations) do
+    local curve = groupLiveCurve(first, scope, want.group, want.starter)
+    local peak = 0
+    for _, live in ipairs(curve) do
+      peak = math.max(peak, live)
+    end
+    Assert.equal(peak, want.peak, "the " .. want.group .. " run peaks at its sourced height")
+    Assert.equal(#curve, want.done, "the " .. want.group .. " run retires on its sourced tick")
+    curves[#curves + 1] = curve
+  end
+  local second = openMovie(scope, versionId, 512, 384, "single")
+  for index, want in ipairs(expectations) do
+    local replayed = groupLiveCurve(second, scope, want.group, want.starter)
+    Assert.deepEqual(replayed, curves[index], "the " .. want.group .. " curve replays deterministically")
+  end
+end
+
 local T = GraphicsSmoke.suite({
-  ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
+  ["starter groups replay bounded deterministic curves"] = starter_groups_replay_bounded_deterministic_curves,  ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
   ["soulsilver skip is gated and gpu stays bounded"] = soulsilver_skip_is_source_gated_and_gpu_stays_bounded,
   ["heartgold graphics are blocked without a dump"] = heartgold_opening_movie_graphics_are_blocked_without_a_dump,

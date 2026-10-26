@@ -752,6 +752,335 @@ local function validateOpeningClip(clip, sceneNumber)
   return true
 end
 
+-- A 5-bit retail color channel triple.
+---@param value unknown
+---@return boolean
+local function isRgb555Triple(value)
+  if type(value) ~= "table" then
+    return false
+  end
+  for _, channel in ipairs({ value.r, value.g, value.b }) do
+    if not isNonnegativeInteger(channel) or channel > 31 then
+      return false
+    end
+  end
+  return value.r ~= nil and value.g ~= nil and value.b ~= nil
+end
+
+---@param value unknown
+---@return boolean
+local function isXyz(value)
+  return type(value) == "table" and isFiniteNumber(value.x) and isFiniteNumber(value.y) and isFiniteNumber(value.z)
+end
+
+---@param animations unknown
+---@param sceneNumber integer
+---@return boolean|nil, Errors.Error|nil
+local function validateOpeningAnimationBlocks(animations, sceneNumber)
+  local path = StartupAssetCache.openingScenePath(sceneNumber)
+  if type(animations) ~= "table" or not onlyKeys(animations, { scale = true, color = true, alpha = true }) then
+    return nil, invalid("opening scene emitter animations are malformed", path)
+  end
+  if animations.scale ~= nil then
+    local scale = animations.scale
+    if
+      type(scale) ~= "table"
+      or not onlyKeys(scale, { startFx = true, normalFx = true, finishFx = true, inTick = true, outTick = true })
+      or not isInteger(scale.startFx)
+      or not isInteger(scale.normalFx)
+      or not isInteger(scale.finishFx)
+      or not isNonnegativeInteger(scale.inTick)
+      or scale.inTick > 255
+      or not isNonnegativeInteger(scale.outTick)
+      or scale.outTick > 255
+    then
+      return nil, invalid("opening scene emitter scale block is malformed", path)
+    end
+  end
+  if animations.color ~= nil then
+    local color = animations.color
+    if
+      type(color) ~= "table"
+      or not onlyKeys(
+        color,
+        { startRgb = true, endRgb = true, inTick = true, peakTick = true, outTick = true, interpolate = true }
+      )
+      or not isRgb555Triple(color.startRgb)
+      or not isRgb555Triple(color.endRgb)
+      or not isNonnegativeInteger(color.inTick)
+      or color.inTick > 255
+      or not isNonnegativeInteger(color.peakTick)
+      or color.peakTick > 255
+      or not isNonnegativeInteger(color.outTick)
+      or color.outTick > 255
+      or type(color.interpolate) ~= "boolean"
+    then
+      return nil, invalid("opening scene emitter color block is malformed", path)
+    end
+  end
+  if animations.alpha ~= nil then
+    local alpha = animations.alpha
+    if
+      type(alpha) ~= "table"
+      or not onlyKeys(
+        alpha,
+        { start = true, normal = true, finish = true, flick = true, inTick = true, outTick = true }
+      )
+      or not isNonnegativeInteger(alpha.start)
+      or alpha.start > 31
+      or not isNonnegativeInteger(alpha.normal)
+      or alpha.normal > 31
+      or not isNonnegativeInteger(alpha.finish)
+      or alpha.finish > 31
+      or not isNonnegativeInteger(alpha.flick)
+      or alpha.flick > 255
+      or not isNonnegativeInteger(alpha.inTick)
+      or alpha.inTick > 255
+      or not isNonnegativeInteger(alpha.outTick)
+      or alpha.outTick > 255
+    then
+      return nil, invalid("opening scene emitter alpha block is malformed", path)
+    end
+  end
+  return true
+end
+
+---@param child unknown
+---@param sceneNumber integer
+---@return boolean|nil, Errors.Error|nil
+local function validateOpeningChild(child, sceneNumber)
+  local path = StartupAssetCache.openingScenePath(sceneNumber)
+  if child == nil then
+    return true
+  end
+  if
+    type(child) ~= "table"
+    or not onlyKeys(child, {
+      useScaleAnm = true,
+      useAlphaAnm = true,
+      followEmitter = true,
+      useChildColor = true,
+      childColor = true,
+      drawType = true,
+      initVelRandom = true,
+      scaleEnd = true,
+      life = true,
+      velRatio = true,
+      sclRatio = true,
+      genNum = true,
+      genStart = true,
+      genInterval = true,
+      texNo = true,
+      textureImage = true,
+      texRepeat = true,
+    })
+    or type(child.useScaleAnm) ~= "boolean"
+    or type(child.useAlphaAnm) ~= "boolean"
+    or type(child.followEmitter) ~= "boolean"
+    or type(child.useChildColor) ~= "boolean"
+    or not isRgb555Triple(child.childColor)
+    or child.drawType ~= 0
+    or not isFiniteNumber(child.initVelRandom)
+    or not isFiniteNumber(child.scaleEnd)
+    or not isPositiveInteger(child.life)
+    or not isNonnegativeInteger(child.velRatio)
+    or child.velRatio > 255
+    or not isNonnegativeInteger(child.sclRatio)
+    or child.sclRatio > 255
+    or not isNonnegativeInteger(child.genNum)
+    or not isNonnegativeInteger(child.genStart)
+    or child.genStart > 255
+    or not isPositiveInteger(child.genInterval)
+    or not isNonnegativeInteger(child.texNo)
+    or child.texNo > 63
+    or type(child.textureImage) ~= "string"
+    or type(child.texRepeat) ~= "table"
+    or not isNonnegativeInteger(child.texRepeat.s)
+    or child.texRepeat.s > 3
+    or not isNonnegativeInteger(child.texRepeat.t)
+    or child.texRepeat.t > 3
+  then
+    return nil, invalid("opening scene emitter child record is malformed", path)
+  end
+  return true
+end
+
+---@param fields unknown
+---@param sceneNumber integer
+---@return boolean|nil, Errors.Error|nil
+local function validateOpeningFields(fields, sceneNumber)
+  local path = StartupAssetCache.openingScenePath(sceneNumber)
+  if type(fields) ~= "table" then
+    return nil, invalid("opening scene emitter fields are malformed", path)
+  end
+  for _, field in ipairs(fields) do
+    if type(field) ~= "table" or type(field.kind) ~= "string" then
+      return nil, invalid("opening scene emitter field is malformed", path)
+    end
+    if field.kind == "gravity" then
+      if not onlyKeys(field, { kind = true, magnitude = true }) or not isXyz(field.magnitude) then
+        return nil, invalid("opening scene emitter gravity field is malformed", path)
+      end
+    elseif field.kind == "magnet" then
+      if
+        not onlyKeys(field, { kind = true, position = true, magnitude = true })
+        or not isXyz(field.position)
+        or not isFiniteNumber(field.magnitude)
+      then
+        return nil, invalid("opening scene emitter magnet field is malformed", path)
+      end
+    elseif field.kind == "spin" then
+      if
+        not onlyKeys(field, { kind = true, rotation = true, axis = true })
+        or not isNonnegativeInteger(field.rotation)
+        or field.rotation > 65535
+        or not isNonnegativeInteger(field.axis)
+        or field.axis > 2
+      then
+        return nil, invalid("opening scene emitter spin field is malformed", path)
+      end
+    else
+      return nil, invalid("opening scene emitter field is outside the observed set", path)
+    end
+  end
+  return true
+end
+
+---@param emitter unknown
+---@return boolean|nil, Errors.Error|nil
+local function validateOpeningEmitter(emitter)
+  local path = StartupAssetCache.openingScenePath(4)
+  if
+    type(emitter) ~= "table"
+    or not onlyKeys(emitter, {
+      id = true,
+      group = true,
+      emitterLife = true,
+      particleLife = true,
+      startOffset = true,
+      generation = true,
+      initPosType = true,
+      circleAxis = true,
+      drawType = true,
+      radius = true,
+      length = true,
+      position = true,
+      axis = true,
+      baseColorRgb = true,
+      baseAlpha = true,
+      baseScaleFx = true,
+      velocityFx = true,
+      velRandom = true,
+      scaleRandom = true,
+      lifeRandom = true,
+      rotation = true,
+      useRotationAnim = true,
+      useInitRotationRandom = true,
+      initRotation = true,
+      airResist = true,
+      aspect = true,
+      loopFrame = true,
+      dbbScale = true,
+      sclAnmDirect = true,
+      texRepeat = true,
+      texture = true,
+      textureImage = true,
+      animations = true,
+      child = true,
+      fields = true,
+    })
+    or not isNonnegativeInteger(emitter.id)
+    or emitter.id > 8
+    or emitter.group ~= OPENING_EMITTER_GROUPS[emitter.id]
+  then
+    return nil, invalid("opening scene emitter is outside the nine source emitters", path)
+  end
+  -- Bounded lifespans retire their run cases; a zero interval or loop
+  -- frame would divide by zero in the retail update.
+  if
+    not isPositiveInteger(emitter.emitterLife)
+    or not isPositiveInteger(emitter.particleLife)
+    or not isNonnegativeInteger(emitter.startOffset)
+    or type(emitter.generation) ~= "table"
+    or not onlyKeys(emitter.generation, { countFx = true, interval = true })
+    or not isInteger(emitter.generation.countFx)
+    or not isPositiveInteger(emitter.generation.interval)
+  then
+    return nil, invalid("opening scene emitter schedule is malformed", path)
+  end
+  if
+    (emitter.initPosType ~= 0 and emitter.initPosType ~= 2 and emitter.initPosType ~= 6 and emitter.initPosType ~= 7)
+    or (emitter.circleAxis ~= 0 and emitter.circleAxis ~= 1 and emitter.circleAxis ~= 2)
+    or (emitter.drawType ~= 0 and emitter.drawType ~= 1)
+  then
+    return nil, invalid("opening scene emitter geometry kind is outside the observed set", path)
+  end
+  if
+    not isFiniteNumber(emitter.radius)
+    or emitter.radius < 0
+    or not isFiniteNumber(emitter.length)
+    or emitter.length < 0
+    or not isXyz(emitter.position)
+    or not isXyz(emitter.axis)
+    or not isRgb555Triple(emitter.baseColorRgb)
+    or not isNonnegativeInteger(emitter.baseAlpha)
+    or emitter.baseAlpha > 31
+    or not isInteger(emitter.baseScaleFx)
+    or type(emitter.velocityFx) ~= "table"
+    or not onlyKeys(emitter.velocityFx, { pos = true, axis = true })
+    or not isInteger(emitter.velocityFx.pos)
+    or not isInteger(emitter.velocityFx.axis)
+    or not isNonnegativeInteger(emitter.velRandom)
+    or emitter.velRandom > 255
+    or not isNonnegativeInteger(emitter.scaleRandom)
+    or emitter.scaleRandom > 255
+    or not isNonnegativeInteger(emitter.lifeRandom)
+    or emitter.lifeRandom > 255
+  then
+    return nil, invalid("opening scene emitter magnitudes are malformed", path)
+  end
+  if
+    type(emitter.rotation) ~= "table"
+    or not onlyKeys(emitter.rotation, { min = true, max = true })
+    or not isInteger(emitter.rotation.min)
+    or not isInteger(emitter.rotation.max)
+    or type(emitter.useRotationAnim) ~= "boolean"
+    or type(emitter.useInitRotationRandom) ~= "boolean"
+    or not isNonnegativeInteger(emitter.initRotation)
+    or emitter.initRotation > 65535
+    or not isNonnegativeInteger(emitter.airResist)
+    or emitter.airResist > 255
+    or not isFiniteNumber(emitter.aspect)
+    or not isPositiveInteger(emitter.loopFrame)
+    or not isNonnegativeInteger(emitter.dbbScale)
+    or emitter.dbbScale > 65535
+    or not isNonnegativeInteger(emitter.sclAnmDirect)
+    or emitter.sclAnmDirect > 7
+    or type(emitter.texRepeat) ~= "table"
+    or not isNonnegativeInteger(emitter.texRepeat.s)
+    or emitter.texRepeat.s > 3
+    or not isNonnegativeInteger(emitter.texRepeat.t)
+    or emitter.texRepeat.t > 3
+    or not isNonnegativeInteger(emitter.texture)
+    or type(emitter.textureImage) ~= "string"
+  then
+    return nil, invalid("opening scene emitter motion record is malformed", path)
+  end
+  local ok, err = validateOpeningAnimationBlocks(emitter.animations, 4)
+  if not ok then
+    return nil, err
+  end
+  ok, err = validateOpeningChild(emitter.child, 4)
+  if not ok then
+    return nil, err
+  end
+  ok, err = validateOpeningFields(emitter.fields, 4)
+  if not ok then
+    return nil, err
+  end
+  return true
+end
+
 local function validateOpeningEmitters(emitters, sceneNumber)
   if type(emitters) ~= "table" then
     return nil, invalid("opening scene emitter records are malformed", StartupAssetCache.openingScenePath(sceneNumber))
@@ -761,16 +1090,9 @@ local function validateOpeningEmitters(emitters, sceneNumber)
       return nil, invalid("opening scene 4 keeps all nine starter emitters", StartupAssetCache.openingScenePath(4))
     end
     for _, emitter in ipairs(emitters) do
-      if
-        type(emitter) ~= "table"
-        or type(emitter.id) ~= "number"
-        or emitter.id % 1 ~= 0
-        or emitter.id < 0
-        or emitter.id > 8
-        or emitter.group ~= OPENING_EMITTER_GROUPS[emitter.id]
-      then
-        return nil,
-          invalid("opening scene emitter is outside the nine source emitters", StartupAssetCache.openingScenePath(4))
+      local ok, err = validateOpeningEmitter(emitter)
+      if not ok then
+        return nil, err
       end
     end
     return true
@@ -1352,7 +1674,7 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
 end
 
 -- One independently staged opening-movie scene: strict source-independent
--- g4-startup-opening-scene-v7 package with numbered scene, edition, 30Hz
+-- g4-startup-opening-scene-v8 package with numbered scene, edition, 30Hz
 -- duration, per-engine BG slots with priority and alternate tilemaps, sprite
 -- clips with frame offsets, model descriptors and animations where used,
 -- starter emitter records where used, and the closed step-clocked event
@@ -1470,7 +1792,9 @@ function StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, versionId)
       end
     end
   end
-  if type(record.particles) ~= "table" or type(record.particles.seed) ~= "number" then
+  -- The particle heap starts zeroed, so the retail random stream opens at
+  -- zero; the normalized seed pins that instead of any host random state.
+  if type(record.particles) ~= "table" or record.particles.seed ~= 0 then
     return nil, invalid("opening scene particles are malformed", path)
   end
   local ok, err = validateOpeningEmitters(record.particles.emitters, sceneNumber)

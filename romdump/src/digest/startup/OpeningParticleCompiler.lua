@@ -127,6 +127,173 @@ local function normalizeField(field, block)
   )
 end
 
+-- Reads one staged scale block: three signed fx16 stages with entry/exit
+-- life-rate thresholds and the loop selector.
+---@param block string raw SPL member bytes
+---@param offset integer zero-based offset of the scale block
+---@param emitterId integer
+---@return table<string, unknown> normalized scale record
+local function decodeScaleBlock(block, offset, emitterId)
+  local reader = require("libs.codec.src.BinaryReader").new(block, "spl-scale")
+  local function fx16(value)
+    if value >= 32768 then
+      return value - 65536
+    end
+    return value
+  end
+  local thresholds = reader:u16le(offset + 6)
+  local etc = reader:u16le(offset + 8)
+  if etc % 2 ~= 0 then
+    sourceError("opening scene 4 particle uses an unrepresented looping scale", {
+      emitter = emitterId,
+      offset = offset,
+    })
+  end
+  return {
+    startFx = fx16(reader:u16le(offset)),
+    normalFx = fx16(reader:u16le(offset + 2)),
+    finishFx = fx16(reader:u16le(offset + 4)),
+    inTick = thresholds % 256,
+    outTick = math.floor(thresholds / 256) % 256,
+  }
+end
+
+-- Reads one staged color block: RGB555 endpoints with entry/peak/exit
+-- life-rate thresholds, the random-pick selector, and interpolation.
+---@param block string raw SPL member bytes
+---@param offset integer zero-based offset of the color block
+---@param emitterId integer
+---@return table<string, unknown> normalized color record
+local function decodeColorBlock(block, offset, emitterId)
+  local reader = require("libs.codec.src.BinaryReader").new(block, "spl-color")
+  local function channels(value)
+    return { r = value % 32, g = math.floor(value / 32) % 32, b = math.floor(value / 1024) % 32 }
+  end
+  local rates = reader:u32le(offset + 4)
+  local etc = reader:u16le(offset + 8)
+  if etc % 2 ~= 0 then
+    sourceError("opening scene 4 particle uses an unrepresented random color pick", {
+      emitter = emitterId,
+      offset = offset,
+    })
+  end
+  if math.floor(etc / 2) % 2 ~= 0 then
+    sourceError("opening scene 4 particle uses an unrepresented looping color", {
+      emitter = emitterId,
+      offset = offset,
+    })
+  end
+  return {
+    startRgb = channels(reader:u16le(offset)),
+    endRgb = channels(reader:u16le(offset + 2)),
+    inTick = rates % 256,
+    peakTick = math.floor(rates / 256) % 256,
+    outTick = math.floor(rates / 65536) % 256,
+    interpolate = math.floor(etc / 4) % 2 == 1,
+  }
+end
+
+-- Reads one staged alpha block: three 5-bit levels with entry/exit
+-- life-rate thresholds and the flicker magnitude.
+---@param block string raw SPL member bytes
+---@param offset integer zero-based offset of the alpha block
+---@param emitterId integer
+---@return table<string, unknown> normalized alpha record
+local function decodeAlphaBlock(block, offset, emitterId)
+  local reader = require("libs.codec.src.BinaryReader").new(block, "spl-alpha")
+  local levels = reader:u16le(offset)
+  local etc = reader:u16le(offset + 2)
+  if math.floor(etc / 256) % 2 ~= 0 then
+    sourceError("opening scene 4 particle uses an unrepresented looping alpha", {
+      emitter = emitterId,
+      offset = offset,
+    })
+  end
+  local thresholds = reader:u16le(offset + 4)
+  return {
+    start = levels % 32,
+    normal = math.floor(levels / 32) % 32,
+    finish = math.floor(levels / 1024) % 32,
+    flick = etc % 256,
+    inTick = thresholds % 256,
+    outTick = math.floor(thresholds / 256) % 256,
+  }
+end
+
+-- Normalizes one staged child block: spawn, animation, color, draw, and
+-- texture records for the particles a parent spawns over its life.
+---@param child table<string, unknown> decoded SplResource child record
+---@param byTexture table<integer, table<string, unknown>> staged textures by source id
+---@param emitterId integer
+---@return table<string, unknown> normalized child record
+local function normalizeChild(child, byTexture, emitterId)
+  local function childBit(bit)
+    return math.floor(child.flag / (2 ^ bit)) % 2 == 1
+  end
+  if math.floor(child.flag / 8) % 4 ~= 0 then
+    sourceError("opening scene 4 particle uses an unrepresented child rotation", {
+      emitter = emitterId,
+      offset = child.offset,
+    })
+  end
+  if childBit(0) then
+    sourceError("opening scene 4 particle uses an unrepresented field-driven child", {
+      emitter = emitterId,
+      offset = child.offset,
+    })
+  end
+  if math.floor(child.flag / 128) % 4 ~= 0 then
+    sourceError("opening scene 4 particle uses an unrepresented child draw kind", {
+      emitter = emitterId,
+      offset = child.offset,
+    })
+  end
+  if child.reverseS or child.reverseT then
+    sourceError("opening scene 4 particle uses mirrored child texture coordinates", {
+      emitter = emitterId,
+      offset = child.offset,
+    })
+  end
+  if child.life <= 0 then
+    sourceError("opening scene 4 particle child carries no lifespan", {
+      emitter = emitterId,
+      offset = child.offset,
+    })
+  end
+  if child.genInterval <= 0 then
+    sourceError("opening scene 4 particle child carries no generation interval", {
+      emitter = emitterId,
+      offset = child.offset,
+    })
+  end
+  local texture = byTexture[child.texNo]
+  if texture == nil then
+    sourceError("opening scene 4 particle child references a missing particle texture", {
+      emitter = emitterId,
+      texture = child.texNo,
+    })
+  end
+  assert(texture ~= nil, "unreachable: a missing child texture always raises")
+  return {
+    useScaleAnm = childBit(1),
+    useAlphaAnm = childBit(2),
+    followEmitter = childBit(5),
+    useChildColor = childBit(6),
+    childColor = child.colorRgb,
+    drawType = 0,
+    initVelRandom = child.initVelMagRndm,
+    scaleEnd = child.scaleEnd,
+    life = child.life,
+    velRatio = child.velRatio,
+    sclRatio = child.sclRatio,
+    genNum = child.genNum,
+    genStart = child.genStart,
+    genInterval = child.genInterval,
+    texNo = child.texNo,
+    textureImage = texture.image,
+    texRepeat = { s = child.texRepeatS, t = child.texRepeatT },
+  }
+end
 -- Compile the starter emitter set from the raw scene 4 SPL member into
 -- normalized per-emitter emission records plus staged texture art. The
 -- member must carry exactly the nine retail starter emitters; the texture
@@ -135,22 +302,22 @@ end
 -- the producer dependencies for the job receipt.
 ---@param memberBytes string raw NARC_a_0_5_9 member 4 bytes
 ---@param sceneRoot string scene asset root the texture art stages under
----@return table<string, unknown>|nil
----@return Errors.Error|string|nil
-function OpeningParticleCompiler.compile(memberBytes, sceneRoot)
-  assert(type(memberBytes) == "string", "opening particles require the source member bytes")
-  assert(type(sceneRoot) == "string" and sceneRoot ~= "", "opening particles require their scene asset root")
+---@return table<string, unknown>
+local function compileEmitters(memberBytes, sceneRoot)
   local decoded, decodeErr = SplResource.decode(memberBytes)
   if decoded == nil then
-    return nil, decodeErr
+    if Errors.is(decodeErr) then
+      error(decodeErr, 0)
+    end
+    sourceError("opening scene 4 particle member could not be decoded", {
+      error = tostring(decodeErr),
+    })
   end
+  assert(decoded ~= nil, "unreachable: a failed decode always raises")
   if #decoded.emitters ~= 9 then
-    return nil,
-      Errors.new(
-        OpeningParticleCompiler.ERROR.SOURCE_INVALID,
-        "opening scene 4 particle member carries no nine starter emitters",
-        { emitters = #decoded.emitters }
-      )
+    sourceError("opening scene 4 particle member carries no nine starter emitters", {
+      emitters = #decoded.emitters,
+    })
   end
   local files = {}
   local textures = {}
@@ -177,56 +344,147 @@ function OpeningParticleCompiler.compile(memberBytes, sceneRoot)
   local emitters = {}
   for _, emitter in ipairs(decoded.emitters) do
     if EMITTER_GROUPS[emitter.id] == nil then
-      return nil,
-        Errors.new(
-          OpeningParticleCompiler.ERROR.SOURCE_INVALID,
-          "opening scene 4 emitter is outside the nine source emitters",
-          { emitter = emitter.id }
-        )
+      sourceError("opening scene 4 emitter is outside the nine source emitters", { emitter = emitter.id })
     end
     if emitter.id ~= #emitters then
-      return nil,
-        Errors.new(
-          OpeningParticleCompiler.ERROR.SOURCE_INVALID,
-          "opening scene 4 emitters are out of source order",
-          { emitter = emitter.id, expected = #emitters }
-        )
+      sourceError("opening scene 4 emitters are out of source order", {
+        emitter = emitter.id,
+        expected = #emitters,
+      })
     end
     local texture = byTexture[emitter.textureIndex]
     if texture == nil then
-      return nil,
-        Errors.new(
-          OpeningParticleCompiler.ERROR.SOURCE_INVALID,
-          "opening scene 4 emitter references a missing particle texture",
-          { emitter = emitter.id, texture = emitter.textureIndex }
-        )
+      sourceError("opening scene 4 emitter references a missing particle texture", {
+        emitter = emitter.id,
+        texture = emitter.textureIndex,
+      })
+    end
+    assert(texture ~= nil, "unreachable: a missing emitter texture always raises")
+    -- Flag-derived geometry: the placement kind, the circle frame axis,
+    -- and the draw kind. Only the observed retail combinations compile;
+    -- anything else would silently mistune the replay.
+    local initPosType = emitter.flag % 16
+    if initPosType ~= 0 and initPosType ~= 2 and initPosType ~= 6 and initPosType ~= 7 then
+      sourceError("opening scene 4 emitter uses an unrepresented placement kind", {
+        emitter = emitter.id,
+        placement = initPosType,
+      })
+    end
+    local circleAxis = math.floor(emitter.flag / 64) % 4
+    if circleAxis == 3 then
+      sourceError("opening scene 4 emitter uses an unrepresented circle axis", {
+        emitter = emitter.id,
+        axis = circleAxis,
+      })
+    end
+    local drawType = math.floor(emitter.flag / 16) % 4
+    if drawType ~= 0 and drawType ~= 1 then
+      sourceError("opening scene 4 emitter uses an unrepresented draw kind", {
+        emitter = emitter.id,
+        draw = drawType,
+      })
+    end
+    if math.floor(emitter.flag / 4194304) % 2 == 1 then
+      sourceError("opening scene 4 emitter uses an unrepresented parent draw gate", { emitter = emitter.id })
+    end
+    if math.floor(emitter.flag / 8388608) % 2 == 1 then
+      sourceError("opening scene 4 emitter uses an unrepresented camera-relative draw", { emitter = emitter.id })
+    end
+    -- Bounded lifetimes and schedules: a zero generation interval or loop
+    -- frame divides by zero in the retail update, and a zero lifespan
+    -- divides the life-rate computation or never retires its run case.
+    if emitter.generationInterval <= 0 then
+      sourceError("opening scene 4 emitter carries no generation interval", { emitter = emitter.id })
+    end
+    if emitter.emitterLife <= 0 then
+      sourceError("opening scene 4 emitter carries no emitter lifespan", { emitter = emitter.id })
+    end
+    if emitter.particleLife <= 0 then
+      sourceError("opening scene 4 emitter carries no particle lifespan", { emitter = emitter.id })
+    end
+    if emitter.loopFrame <= 0 then
+      sourceError("opening scene 4 emitter carries no animation loop frame", { emitter = emitter.id })
+    end
+    if emitter.baseAlpha > 31 then
+      sourceError("opening scene 4 emitter carries no 5-bit base alpha", {
+        emitter = emitter.id,
+        alpha = emitter.baseAlpha,
+      })
+    end
+    -- Unrepresented texture modes: mirrored coordinates and nonzero UV
+    -- offsets have no path in the quad replay.
+    if emitter.reverseTex.s or emitter.reverseTex.t then
+      sourceError("opening scene 4 emitter uses mirrored texture coordinates", { emitter = emitter.id })
+    end
+    if emitter.offsetPos ~= 0 or emitter.offset.x ~= 0 or emitter.offset.y ~= 0 then
+      sourceError("opening scene 4 emitter uses an unrepresented texture offset", { emitter = emitter.id })
+    end
+    local animations = {}
+    if emitter.blocks.scaleOffset ~= nil then
+      animations.scale = decodeScaleBlock(memberBytes, emitter.blocks.scaleOffset, emitter.id)
+    end
+    if emitter.blocks.colorOffset ~= nil then
+      animations.color = decodeColorBlock(memberBytes, emitter.blocks.colorOffset, emitter.id)
+    end
+    if emitter.blocks.alphaOffset ~= nil then
+      animations.alpha = decodeAlphaBlock(memberBytes, emitter.blocks.alphaOffset, emitter.id)
+    end
+    local child = nil
+    if emitter.child ~= nil then
+      child = normalizeChild(emitter.child, byTexture, emitter.id)
     end
     local fields = {}
     for _, field in ipairs(emitter.fields) do
-      fields[#fields + 1] = normalizeField(field, memberBytes)
+      if field.kind == "spin" then
+        local spinReader = require("libs.codec.src.BinaryReader").new(memberBytes, "spl-spin")
+        local axis = spinReader:u16le(field.offset + 2)
+        if axis > 2 then
+          sourceError("opening scene 4 particle uses an unrepresented spin axis", {
+            emitter = emitter.id,
+            axis = axis,
+            offset = field.offset,
+          })
+        end
+        fields[#fields + 1] = { kind = "spin", rotation = spinReader:u16le(field.offset), axis = axis }
+      else
+        fields[#fields + 1] = normalizeField(field, memberBytes)
+      end
     end
     emitters[#emitters + 1] = {
       id = emitter.id,
       group = EMITTER_GROUPS[emitter.id],
       emitterLife = emitter.emitterLife,
       particleLife = emitter.particleLife,
-      generation = { count = emitter.generationCount, interval = emitter.generationInterval },
+      startOffset = emitter.startOffset,
+      generation = { countFx = emitter.generationCountFx, interval = emitter.generationInterval },
+      initPosType = initPosType,
+      circleAxis = circleAxis,
+      drawType = drawType,
       radius = emitter.radius,
       length = emitter.length,
       position = emitter.position,
       axis = emitter.axis,
-      baseColor = emitter.baseColor,
+      baseColorRgb = emitter.baseColorRgb,
       baseAlpha = emitter.baseAlpha,
-      baseScale = emitter.baseScale,
-      velocity = { initial = emitter.initialVelocity, axis = emitter.initialAxisVelocity },
+      baseScaleFx = emitter.baseScaleFx,
+      velocityFx = { pos = emitter.initialVelocityFx, axis = emitter.initialAxisVelocityFx },
+      velRandom = emitter.randomRanges.initVelocity,
+      scaleRandom = emitter.randomRanges.baseScale,
+      lifeRandom = emitter.randomRanges.particleLife,
       rotation = { min = emitter.rotationMin, max = emitter.rotationMax },
+      useRotationAnim = math.floor(emitter.flag / 4096) % 2 == 1,
+      useInitRotationRandom = math.floor(emitter.flag / 8192) % 2 == 1,
+      initRotation = emitter.initRotation,
+      airResist = emitter.airResist,
+      aspect = emitter.aspect,
+      loopFrame = emitter.loopFrame,
+      dbbScale = emitter.dbbScale,
+      sclAnmDirect = emitter.sclAnmDirect,
+      texRepeat = emitter.texRepeat,
       texture = texture.id,
       textureImage = texture.image,
-      animations = {
-        scale = emitter.blocks.scaleOffset ~= nil,
-        color = emitter.blocks.colorOffset ~= nil,
-        alpha = emitter.blocks.alphaOffset ~= nil,
-      },
+      animations = animations,
+      child = child,
       fields = fields,
     }
   end
@@ -235,6 +493,28 @@ function OpeningParticleCompiler.compile(memberBytes, sceneRoot)
     files = files,
     dependencies = { particleMemberHash = Hashing.sha1hex(memberBytes) },
   }
+end
+
+---@param memberBytes string raw NARC_a_0_5_9 member 4 bytes
+---@param sceneRoot string scene asset root the texture art stages under
+---@return table<string, unknown>|nil
+---@return Errors.Error|string|nil
+function OpeningParticleCompiler.compile(memberBytes, sceneRoot)
+  assert(type(memberBytes) == "string", "opening particles require the source member bytes")
+  assert(type(sceneRoot) == "string" and sceneRoot ~= "", "opening particles require their scene asset root")
+  -- Per-emitter failures raise with emitter context; the boundary converts
+  -- structured failures back to the nil-plus-cause contract, mirroring the
+  -- byte decoder below.
+  local ok, first, second = pcall(function()
+    return compileEmitters(memberBytes, sceneRoot)
+  end)
+  if ok then
+    return first, second
+  end
+  if Errors.is(first) then
+    return nil, first
+  end
+  error(first, 0)
 end
 
 return OpeningParticleCompiler

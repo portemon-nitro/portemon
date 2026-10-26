@@ -235,26 +235,45 @@ local function testEmitter(id, group)
     group = group,
     emitterLife = 30,
     particleLife = 30,
-    generation = { count = 2, interval = 1 },
+    startOffset = 0,
+    generation = { countFx = 8192, interval = 1 },
+    initPosType = 2,
+    circleAxis = 0,
+    drawType = 0,
     radius = 0.5,
     length = 0,
     position = { x = 0, y = 0, z = 0 },
     axis = { x = 0, y = 1, z = 0 },
-    baseColor = { r = 1, g = 1, b = 1 },
+    baseColorRgb = { r = 31, g = 31, b = 31 },
     baseAlpha = 31,
-    baseScale = 1,
-    velocity = { initial = 0.2, axis = 0 },
+    baseScaleFx = 4096,
+    velocityFx = { pos = 819, axis = 0 },
+    velRandom = 0,
+    scaleRandom = 0,
+    lifeRandom = 0,
     rotation = { min = 0, max = 0 },
+    useRotationAnim = false,
+    useInitRotationRandom = false,
+    initRotation = 0,
+    airResist = 128,
+    aspect = 1.0,
+    loopFrame = 1,
+    dbbScale = 0,
+    sclAnmDirect = 0,
+    texRepeat = { s = 0, t = 0 },
     texture = id,
     textureImage = root .. "particles/texture" .. id .. ".png",
-    animations = { scale = false, color = false, alpha = true },
+    animations = {},
+    child = nil,
     fields = {},
   }
 end
 
----@param sceneNumber integer
+---@param id integer source emitter id
+---@param group string starter group owning the emitter
+---@param buildEmitters (fun(id: integer, group: string): table)|nil per-emitter record builder
 ---@return table strict synthetic opening-scene manifest
-local function manifestFor(sceneNumber)
+local function manifestFor(sceneNumber, buildEmitters)
   local root = sceneRoot(sceneNumber)
   local upperImage = root .. "upper-bg.png"
   local lowerImage = root .. "lower-bg.png"
@@ -292,9 +311,10 @@ local function manifestFor(sceneNumber)
   end
   if sceneNumber == 4 then
     local emitters = {}
+    local builder = buildEmitters or testEmitter
     for id = 0, 8 do
       local group = id < 3 and "water" or (id < 6 and "fire" or "grass")
-      emitters[#emitters + 1] = testEmitter(id, group)
+      emitters[#emitters + 1] = builder(id, group)
     end
     local textures = {}
     for id = 0, 8 do
@@ -4694,6 +4714,470 @@ function T.background_wrap_draws_issue_no_new_quads_across_repeats_and_pans()
   playthrough(movie, graphics, 5000)
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the wrapped movie releases every handle")
+end
+
+-- Starter particle replay follows the retail software particle library:
+-- a source-seeded congruential stream drives placement, velocity, scale,
+-- rotation, and lifespan draws; per-tick life rates index the staged
+-- scale/color/alpha blocks; emitters retire only after their particles
+-- and children expire. Fixtures below mirror the normalized compiled
+-- shape with small synthetic values, never extracted bytes.
+
+---@param id integer source emitter id
+---@param group string starter group owning the emitter
+---@param overrides table<string, unknown>|nil top-level record overrides
+---@return table synthetic normalized starter emitter record
+local function splEmitter(id, group, overrides)
+  local root = sceneRoot(4)
+  local record = {
+    id = id,
+    group = group,
+    emitterLife = 30,
+    particleLife = 30,
+    startOffset = 0,
+    generation = { countFx = 4096, interval = 1 },
+    initPosType = 2,
+    circleAxis = 0,
+    drawType = 0,
+    radius = 0.5,
+    length = 0,
+    position = { x = 0, y = 0, z = 0 },
+    axis = { x = 0, y = 1, z = 0 },
+    baseColorRgb = { r = 31, g = 31, b = 31 },
+    baseAlpha = 31,
+    baseScaleFx = 4096,
+    velocityFx = { pos = 0, axis = 0 },
+    velRandom = 0,
+    scaleRandom = 0,
+    lifeRandom = 0,
+    rotation = { min = 0, max = 0 },
+    useRotationAnim = false,
+    useInitRotationRandom = false,
+    initRotation = 0,
+    airResist = 128,
+    aspect = 1.0,
+    loopFrame = 1,
+    dbbScale = 0,
+    sclAnmDirect = 0,
+    texRepeat = { s = 0, t = 0 },
+    texture = id,
+    textureImage = root .. "particles/texture" .. id .. ".png",
+    animations = {},
+    child = nil,
+    fields = {},
+  }
+  for key, value in pairs(overrides or {}) do
+    record[key] = value
+  end
+  return record
+end
+
+-- A quiet emitter that never spawns: zero generation keeps the starter
+-- group complete while the test observes its siblings. Short lifespans
+-- retire it promptly so the group run measures the observed emitter.
+local function quietEmitter(id, group, life)
+  return splEmitter(id, group, {
+    generation = { countFx = 0, interval = 1 },
+    emitterLife = life or 30,
+    particleLife = life or 30,
+  })
+end
+
+---@param build fun(id: integer, group: string): table scene-4 emitter builder
+---@return table[] scenes, table cacheFs
+local function splPack(build)
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    raw[sceneNumber] = manifestFor(sceneNumber, build)
+  end
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  return scenes, cacheFs
+end
+
+-- Advances the movie to the starter-emitter case of scene 4 and runs its
+-- first generation tick, so the grass runtime exists with newborn state.
+---@param movie table running movie
+---@param graphics table fake graphics host
+local function reachStarterCase(movie, graphics)
+  local ticks = 0
+  while movie:sceneNumber() < 4 and ticks < 20000 do
+    movie:updateFixed()
+    movie:draw()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 4, "playback reaches the starter scene")
+  ticks = 0
+  while #assert(movie.current, "the running movie owns its current slot").emitters == 0 and ticks < 20000 do
+    movie:updateFixed()
+    movie:draw()
+    ticks = ticks + 1
+  end
+  Assert.isTrue(
+    #assert(movie.current, "the running movie owns its current slot").emitters > 0,
+    "the starter case dispatches its emitters"
+  )
+end
+
+---@param movie table running movie
+---@return table live emitter runtime for source id 6
+local function grassRuntime(movie)
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  for _, runtime in ipairs(slot.emitters) do
+    if runtime.id == 6 then
+      return runtime
+    end
+  end
+  error("the grass emitter never started", 0)
+end
+
+function T.starter_rng_stream_matches_the_source_congruential_generator()
+  local function build(id, group)
+    if id ~= 6 then
+      return quietEmitter(id, group)
+    end
+    return splEmitter(id, group, {
+      initPosType = 0,
+      particleLife = 40,
+      lifeRandom = 255,
+    })
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  local runtime = grassRuntime(movie)
+  Assert.equal(#runtime.particles, 1, "the point emitter spawns one particle")
+  -- Seed zero opens the retail stream at the additive constant, and the
+  -- seventh draw (after placement, velocity, and scale draws) randomizes
+  -- the forty-tick lifespan down to six ticks.
+  Assert.equal(runtime.particles[1].life, 6, "the lifespan follows the seeded stream")
+  local replayScenes, replayCacheFs = splPack(build)
+  local replayGraphics = movieGraphics()
+  local replay = openMovie(replayScenes, replayCacheFs, replayGraphics)
+  reachStarterCase(replay, replayGraphics)
+  replay:updateFixed()
+  local replayRuntime = grassRuntime(replay)
+  Assert.equal(
+    replayRuntime.particles[1].life,
+    runtime.particles[1].life,
+    "a replayed seed randomizes the same lifespan"
+  )
+  movie:dispose()
+  replay:dispose()
+end
+
+function T.starter_life_rate_curves_follow_staged_animation_blocks()
+  local animations = {
+    scale = { startFx = 2048, normalFx = 4096, finishFx = 8192, inTick = 64, outTick = 192 },
+    color = {
+      startRgb = { r = 31, g = 0, b = 0 },
+      endRgb = { r = 0, g = 0, b = 31 },
+      inTick = 10,
+      peakTick = 100,
+      outTick = 200,
+      interpolate = true,
+    },
+    -- The flicker factor scales every level by 255/256 even at zero magnitude.
+    alpha = { start = 5, normal = 20, finish = 10, flick = 0, inTick = 30, outTick = 220 },
+  }
+  local function build(id, group)
+    if id ~= 6 then
+      return quietEmitter(id, group)
+    end
+    return splEmitter(id, group, {
+      emitterLife = 1,
+      particleLife = 5,
+      animations = animations,
+    })
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  movie:updateFixed()
+  movie:draw()
+  local first = grassRuntime(movie).particles[1]
+  Assert.notNil(first, "the single particle survives its second tick")
+  Assert.equal(first.age, 2, "the particle ages once per source tick")
+  -- Life rate 51 indexes the entry slope of every staged block.
+  Assert.equal(first.animScale, 3680, "the scale follows its entry slope")
+  Assert.deepEqual(first.colorRgb, { r = 31, g = 14, b = 14 }, "the color follows its entry slope")
+  Assert.equal(first.animAlpha, 19, "the alpha holds its flicker-scaled normal level")
+  Assert.equal(first.baseScale, 4080, "the base scale keeps its source randomization factor")
+  movie:updateFixed()
+  movie:updateFixed()
+  local fourth = grassRuntime(movie).particles[1]
+  Assert.notNil(fourth, "the single particle survives its fourth tick")
+  -- Life rate 153 holds the normal scale and descends the exit color slope.
+  Assert.equal(fourth.animScale, 4096, "the scale holds its normal stage")
+  Assert.deepEqual(fourth.colorRgb, { r = 15, g = 15, b = 31 }, "the color follows its exit slope")
+  Assert.equal(fourth.animAlpha, 19, "the alpha still holds its flicker-scaled normal level")
+  movie:dispose()
+end
+
+function T.starter_emission_accumulates_fractional_generation_counts()
+  local function build(id, group)
+    if id ~= 6 then
+      return quietEmitter(id, group)
+    end
+    return splEmitter(id, group, {
+      emitterLife = 7,
+      particleLife = 30,
+      generation = { countFx = 20480, interval = 3 },
+    })
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  -- Generation fires on ages 0, 3, and 6 only: three bursts of five.
+  for _ = 1, 10 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.equal(#grassRuntime(movie).particles, 15, "fractional counts accumulate without drift")
+  movie:dispose()
+end
+
+function T.starter_run_waits_for_child_particles_to_retire()
+  local child = {
+    useScaleAnm = false,
+    useAlphaAnm = false,
+    followEmitter = false,
+    useChildColor = true,
+    childColor = { r = 31, g = 0, b = 0 },
+    drawType = 0,
+    initVelRandom = 0,
+    scaleEnd = 1.0,
+    life = 5,
+    velRatio = 0,
+    sclRatio = 0,
+    genNum = 1,
+    genStart = 0,
+    genInterval = 1,
+    texNo = 6,
+    textureImage = sceneRoot(4) .. "particles/texture6.png",
+    texRepeat = { s = 0, t = 0 },
+  }
+  local function build(id, group)
+    if id ~= 6 then
+      return quietEmitter(id, group, 2)
+    end
+    return splEmitter(id, group, { emitterLife = 2, particleLife = 2, child = child })
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  for _ = 1, 6 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  local runtime = grassRuntime(movie)
+  Assert.isTrue(#runtime.children > 0, "parents spawn children every tick")
+  Assert.deepEqual(
+    runtime.children[1].colorRgb,
+    { r = 31, g = 0, b = 0 },
+    "children carry their own color record"
+  )
+  Assert.equal(movie:sceneNumber(), 4, "the run outlives its retired parents while children live")
+  for _ = 1, 20 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.equal(movie:sceneNumber(), 5, "the run completes once every child retires")
+  movie:dispose()
+end
+
+function T.starter_start_offset_gates_generation()
+  local function build(id, group)
+    if id ~= 6 then
+      return quietEmitter(id, group)
+    end
+    return splEmitter(id, group, { startOffset = 3, emitterLife = 10 })
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  for _ = 1, 2 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.equal(#grassRuntime(movie).particles, 0, "no particle spawns before the start offset")
+  movie:updateFixed()
+  movie:draw()
+  Assert.equal(#grassRuntime(movie).particles, 1, "generation opens on the offset tick")
+  movie:dispose()
+end
+
+function T.starter_third_axis_survives_to_projection()
+  local function build(id, group)
+    if id ~= 6 then
+      return quietEmitter(id, group)
+    end
+    return splEmitter(id, group, {
+      initPosType = 7,
+      circleAxis = 2,
+      radius = 0.5,
+      length = 2.0,
+      emitterLife = 5,
+    })
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  movie:updateFixed()
+  movie:draw()
+  local runtime = grassRuntime(movie)
+  local placed = nil
+  for _, particle in ipairs(runtime.particles) do
+    if placed == nil or math.abs(particle.z) > math.abs(placed.z) then
+      placed = particle
+    end
+  end
+  Assert.notNil(placed, "the volume emitter spawns its particle")
+  Assert.isTrue(math.abs(placed.z) > 1e-9, "the particle keeps its depth axis")
+  local px, py = 128 + placed.x * 24, 96 - placed.y * 24
+  local drawn = nil
+  for _, entry in ipairs(graphics.draws) do
+    if
+      entry.kind == "draw"
+      and entry.quad ~= nil
+      and math.abs(entry.x - px) < 1e-6
+      and math.abs(entry.y - py) < 1e-6
+    then
+      drawn = entry
+    end
+  end
+  Assert.notNil(drawn, "the particle paints through a texture quad at its projected position")
+  movie:dispose()
+end
+
+function T.starter_directional_billboards_orient_along_velocity()
+  local function build(id, group)
+    if id ~= 6 then
+      return quietEmitter(id, group)
+    end
+    return splEmitter(id, group, {
+      initPosType = 0,
+      drawType = 1,
+      emitterLife = 5,
+      velocityFx = { pos = 8192, axis = 0 },
+    })
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  movie:updateFixed()
+  movie:draw()
+  local runtime = grassRuntime(movie)
+  local placed = assert(runtime.particles[1], "the emitter spawns its particle")
+  -- The quad x-axis follows velocity cross camera-z in view space, so the
+  -- drawn rotation matches the velocity perpendicular on screen.
+  local expected = math.atan2(placed.vx --[[@as number]], placed.vy --[[@as number]])
+  local px, py = 128 + placed.x * 24, 96 - placed.y * 24
+  local drawn = nil
+  for _, entry in ipairs(graphics.draws) do
+    if
+      entry.kind == "draw"
+      and entry.quad ~= nil
+      and math.abs(entry.x - px) < 1e-6
+      and math.abs(entry.y - py) < 1e-6
+    then
+      drawn = entry
+    end
+  end
+  Assert.notNil(drawn, "the directional particle paints through a texture quad")
+  Assert.near(drawn.rotation, expected, 1e-9, "the quad orients along its velocity")
+  Assert.near(drawn.sx, drawn.sy, 1e-9, "the unbiased directional quad keeps equal axes")
+  movie:dispose()
+end
+
+function T.starter_pool_bounds_concurrent_particles()
+  local function build(id, group)
+    if id ~= 6 then
+      return quietEmitter(id, group)
+    end
+    return splEmitter(id, group, {
+      emitterLife = 30,
+      particleLife = 60,
+      generation = { countFx = 40960, interval = 1 },
+    })
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  for _ = 1, 35 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  Assert.equal(#grassRuntime(movie).particles, 200, "exhaustion drops extras instead of growing")
+  movie:dispose()
+end
+
+function T.starter_emitter_count_stays_within_its_scene_bound()
+  -- Four sequential starter groups keep every quiet emitter alive, so the
+  -- fourth start would exceed nine concurrent runtimes.
+  local starts = {
+    { group = "grass", emitters = { 6, 7, 8 } },
+    { group = "fire", emitters = { 3, 4, 5 } },
+    { group = "water", emitters = { 0, 1, 2 } },
+    { group = "grass", emitters = { 6, 7, 8 } },
+  }
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    raw[sceneNumber] = manifestFor(sceneNumber, quietEmitter)
+  end
+  local events, steps = {}, {}
+  for index, start in ipairs(starts) do
+    events[#events + 1] =
+      { op = "startEmitters", stepId = "start" .. index, atStepTick = 0, group = start.group, emitters = start.emitters }
+    steps[#steps + 1] = { id = "start" .. index, events = { #events }, ["until"] = { kind = "duration", ticks = 1 } }
+  end
+  events[#events + 1] = { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 5 }
+  steps[#steps + 1] = { id = "hold", events = { #events }, ["until"] = { kind = "duration", ticks = 5 } }
+  raw[4].timeline = { steps = steps, events = events }
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local ticks = 0
+  while movie:sceneNumber() < 4 and ticks < 20000 do
+    movie:updateFixed()
+    movie:draw()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 4, "playback reaches the starter scene")
+  for _ = 1, 3 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(#slot.emitters, 9, "three starter groups stay live together")
+  local ok, failure = pcall(function()
+    for _ = 1, 3 do
+      movie:updateFixed()
+      movie:draw()
+    end
+  end)
+  Assert.isFalse(ok, "a tenth concurrent emitter fails instead of growing")
+  Assert.notNil(failure, "the bound reports its cause")
+  movie:dispose()
 end
 
 return { tests = T }

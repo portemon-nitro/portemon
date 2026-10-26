@@ -80,6 +80,59 @@ local SUPPORTED_FIELD_BITS = {
 }
 
 ---@param reader BinaryReader
+---@param offset integer zero-based offset of the child block
+---@param emitterId integer
+---@return table<string, unknown> normalized child record
+local function decodeChild(reader, offset, emitterId)
+  local length = reader:length()
+  if offset + CHILD_SIZE > length then
+    sourceError("SPL emitter child block exceeds its resource", { emitter = emitterId, offset = offset })
+  end
+  local flag = reader:u16le(offset)
+  -- Only the observed child flag vocabulary decodes: reserved bits would
+  -- change spawn, animation, or draw behavior the structural walk cannot see.
+  if math.floor(flag / 4096) % 16 ~= 0 then
+    sourceError("SPL emitter uses an unsupported child feature", {
+      emitter = emitterId,
+      flag = flag,
+      offset = offset,
+    })
+  end
+  local color = reader:u16le(offset + 10)
+  local gen = reader:u32le(offset + 12)
+  local tex = reader:u32le(offset + 16)
+  local function toS16(value)
+    if value >= 32768 then
+      return value - 65536
+    end
+    return value
+  end
+  return {
+    offset = offset,
+    flag = flag,
+    initVelMagRndm = toS16(reader:u16le(offset + 2)) / 4096,
+    scaleEnd = toS16(reader:u16le(offset + 4)) / 4096,
+    life = reader:u16le(offset + 6),
+    velRatio = reader:u8(offset + 8),
+    sclRatio = reader:u8(offset + 9),
+    colorRgb = {
+      r = color % 32,
+      g = math.floor(color / 32) % 32,
+      b = math.floor(color / 1024) % 32,
+    },
+    genNum = gen % 256,
+    genStart = math.floor(gen / 256) % 256,
+    genInterval = math.floor(gen / 65536) % 256,
+    texNo = math.floor(gen / 16777216) % 256,
+    texRepeatS = tex % 4,
+    texRepeatT = math.floor(tex / 4) % 4,
+    reverseS = math.floor(tex / 16) % 2 == 1,
+    reverseT = math.floor(tex / 32) % 2 == 1,
+    dpolCenter = math.floor(tex / 64) % 2 == 1,
+  }
+end
+
+---@param reader BinaryReader
 ---@param baseOffset integer zero-based offset of the emitter base record
 ---@param emitterId integer
 ---@return table<string, unknown> normalized emitter record
@@ -159,18 +212,25 @@ local function decodeEmitter(reader, baseOffset, emitterId)
   local function vecFx32(offset)
     return { x = fx32(offset), y = fx32(offset + 4), z = fx32(offset + 8) }
   end
-  local function rgb555(offset)
+  local function rgb555Channels(offset)
     local value = reader:u16le(offset)
-    local r = math.floor(value % 32) / 31
-    local g = math.floor(value / 32 % 32) / 31
-    local b = math.floor(value / 1024 % 32) / 31
-    return { r = r, g = g, b = b }
+    return { r = value % 32, g = math.floor(value / 32) % 32, b = math.floor(value / 1024) % 32 }
+  end
+  -- Second animation/texture word: loop frame, directional scale, texture
+  -- repeat counts, the animated scale direction, and the polygon center.
+  local word1 = reader:u32le(baseOffset + 72)
+  -- Mirror/offset word: texture mirroring, the UV offset mode, and the
+  -- reserved remainder, which carries no behavior for the observed records.
+  local word2 = reader:u32le(baseOffset + 76)
+  local child = nil
+  if blocks.childOffset ~= nil then
+    child = decodeChild(reader, blocks.childOffset, emitterId)
   end
   return {
     id = emitterId,
     flag = flag,
     position = vecFx32(baseOffset + 4),
-    generationCount = fx32(baseOffset + 16),
+    generationCountFx = s32(baseOffset + 16),
     radius = fx32(baseOffset + 20),
     length = fx32(baseOffset + 24),
     axis = {
@@ -178,19 +238,35 @@ local function decodeEmitter(reader, baseOffset, emitterId)
       y = s16(baseOffset + 30) / 4096,
       z = s16(baseOffset + 32) / 4096,
     },
-    baseColor = rgb555(baseOffset + 34),
-    initialVelocity = fx32(baseOffset + 36),
-    initialAxisVelocity = fx32(baseOffset + 40),
-    baseScale = fx32(baseOffset + 44),
+    baseColorRgb = rgb555Channels(baseOffset + 34),
+    initialVelocityFx = s32(baseOffset + 36),
+    initialAxisVelocityFx = s32(baseOffset + 40),
+    baseScaleFx = s32(baseOffset + 44),
+    aspect = s16(baseOffset + 48) / 4096,
     startOffset = reader:u16le(baseOffset + 50),
     rotationMin = s16(baseOffset + 52),
     rotationMax = s16(baseOffset + 54),
+    initRotation = reader:u16le(baseOffset + 56),
     emitterLife = reader:u16le(baseOffset + 60),
     particleLife = reader:u16le(baseOffset + 62),
+    randomRanges = {
+      baseScale = reader:u8(baseOffset + 64),
+      particleLife = reader:u8(baseOffset + 65),
+      initVelocity = reader:u8(baseOffset + 66),
+    },
     generationInterval = reader:u8(baseOffset + 68),
     baseAlpha = reader:u8(baseOffset + 69),
+    airResist = reader:u8(baseOffset + 70),
     textureIndex = reader:u8(baseOffset + 71),
+    loopFrame = word1 % 256,
+    dbbScale = math.floor(word1 / 256) % 65536,
+    texRepeat = { s = math.floor(word1 / 16777216) % 4, t = math.floor(word1 / 67108864) % 4 },
+    sclAnmDirect = math.floor(word1 / 268435456) % 8,
+    reverseTex = { s = word2 % 2 == 1, t = math.floor(word2 / 2) % 2 == 1 },
+    offsetPos = math.floor(word2 / 4) % 8,
+    offset = { x = s16(baseOffset + 80) / 4096, y = s16(baseOffset + 82) / 4096 },
     blocks = blocks,
+    child = child,
     fields = fields,
   },
     cursor

@@ -130,4 +130,146 @@ function T.spl_decoder_rejects_a_bad_texture_magic()
   Assert.notNil(err, "the corrupt texture reports its cause")
 end
 
+local function s16(v)
+  v = v % 0x10000
+  return string.char(v % 256, math.floor(v / 256) % 256)
+end
+
+-- A base record with an explicit source tail: aspect, start offset,
+-- rotation range, init rotation, lifespans, random ranges, the generation
+-- word, the loop/texture word, the mirror/offset word, and UV offsets.
+-- All other base words stay zero; the flag selects optional blocks the
+-- caller appends after the base.
+local function tailEmitter(flag, tail, extra)
+  local parts = {}
+  parts[#parts + 1] = u32(flag)
+  parts[#parts + 1] = string.rep("\0", 44)
+  parts[#parts + 1] = s16(tail.aspect or 4096)
+  parts[#parts + 1] = u16(tail.start or 0)
+  parts[#parts + 1] = s16(tail.rttMin or 0)
+  parts[#parts + 1] = s16(tail.rttMax or 0)
+  parts[#parts + 1] = u16(tail.initRtt or 0)
+  parts[#parts + 1] = u16(0)
+  parts[#parts + 1] = u16(tail.emtrLife or 10)
+  parts[#parts + 1] = u16(tail.ptclLife or 20)
+  parts[#parts + 1] = string.char(
+    tail.rndmBase or 0,
+    tail.rndmLife or 0,
+    tail.rndmVel or 0,
+    0,
+    tail.genIntvl or 1,
+    tail.baseAlp or 31,
+    tail.air or 0,
+    tail.texNo or 0
+  )
+  local word1 = (tail.loop or 1)
+    + (tail.dbb or 0) * 256
+    + (tail.repS or 0) * 16777216
+    + (tail.repT or 0) * 67108864
+    + (tail.direct or 0) * 268435456
+  parts[#parts + 1] = u32(word1)
+  local word2 = (tail.revS and 1 or 0) + (tail.revT and 2 or 0) + (tail.offPos or 0) * 4
+  parts[#parts + 1] = u32(word2)
+  parts[#parts + 1] = s16(tail.offX or 0)
+  parts[#parts + 1] = s16(tail.offY or 0)
+  parts[#parts + 1] = u32(0)
+  local record = table.concat(parts)
+  Assert.equal(#record, 88, "the synthetic emitter base matches the retail base size")
+  if extra ~= nil then
+    record = record .. extra
+  end
+  return record
+end
+
+function T.spl_decoder_exposes_starter_header_scalars()
+  local record = tailEmitter(0, {
+    aspect = 5120,
+    start = 6,
+    rttMin = -2071,
+    rttMax = 1096,
+    initRtt = 77,
+    emtrLife = 20,
+    ptclLife = 23,
+    rndmBase = 128,
+    rndmLife = 51,
+    rndmVel = 45,
+    genIntvl = 4,
+    baseAlp = 25,
+    air = 133,
+    texNo = 6,
+    loop = 3,
+    dbb = 0,
+    repS = 0,
+    repT = 0,
+    direct = 2,
+  })
+  local member = blob(1, 1, { record }, { textureBlock() })
+  local decoded, err = SplResource.decode(member)
+  Assert.notNil(decoded, "the tailed member decodes: " .. tostring(err))
+  local emitterRecord = decoded.emitters[1]
+  Assert.near(emitterRecord.aspect, 5120 / 4096, 1e-9, "the emitter keeps its aspect")
+  Assert.equal(emitterRecord.initRotation, 77, "the emitter keeps its initial rotation")
+  Assert.equal(emitterRecord.randomRanges.baseScale, 128, "the emitter keeps its scale random range")
+  Assert.equal(emitterRecord.randomRanges.particleLife, 51, "the emitter keeps its life random range")
+  Assert.equal(emitterRecord.randomRanges.initVelocity, 45, "the emitter keeps its velocity random range")
+  Assert.equal(emitterRecord.airResist, 133, "the emitter keeps its air resistance")
+  Assert.equal(emitterRecord.loopFrame, 3, "the emitter keeps its animation loop frame")
+  Assert.equal(emitterRecord.dbbScale, 0, "the emitter keeps its directional scale")
+  Assert.equal(emitterRecord.texRepeat.s, 0, "the emitter keeps its horizontal texture repeat")
+  Assert.equal(emitterRecord.texRepeat.t, 0, "the emitter keeps its vertical texture repeat")
+  Assert.equal(emitterRecord.sclAnmDirect, 2, "the emitter keeps its scale animation direction")
+  Assert.equal(emitterRecord.reverseTex.s, false, "the emitter keeps its horizontal mirror flag")
+  Assert.equal(emitterRecord.reverseTex.t, false, "the emitter keeps its vertical mirror flag")
+  Assert.equal(emitterRecord.offsetPos, 0, "the emitter keeps its offset position mode")
+  Assert.equal(emitterRecord.startOffset, 6, "the emitter keeps its start offset")
+  Assert.equal(emitterRecord.rotationMin, -2071, "the emitter keeps its rotation minimum")
+  Assert.equal(emitterRecord.rotationMax, 1096, "the emitter keeps its rotation maximum")
+end
+
+function T.spl_decoder_exposes_child_block_contents()
+  local child = u16(0x0006)
+    .. s16(0)
+    .. s16(5360)
+    .. u16(7)
+    .. string.char(0, 49)
+    .. u16(0x7FFF)
+    .. string.char(1, 0, 3, 8)
+    .. string.char(5, 0, 0, 0)
+  local flag = 2 ^ 8 + 2 ^ 9 + 2 ^ 10 + 2 ^ 16
+  local record = tailEmitter(flag, {}, string.rep("\0", 12 + 12 + 8) .. child)
+  local member = blob(1, 1, { record }, { textureBlock() })
+  local decoded, err = SplResource.decode(member)
+  Assert.notNil(decoded, "the child member decodes: " .. tostring(err))
+  local childRecord = assert(
+    decoded.emitters[1].child,
+    "the emitter keeps its decoded child block"
+  )
+  Assert.equal(childRecord.flag, 0x0006, "the child keeps its flag")
+  Assert.equal(childRecord.life, 7, "the child keeps its lifespan")
+  Assert.equal(childRecord.velRatio, 0, "the child keeps its velocity ratio")
+  Assert.equal(childRecord.sclRatio, 49, "the child keeps its scale ratio")
+  Assert.equal(childRecord.genNum, 1, "the child keeps its generation count")
+  Assert.equal(childRecord.genStart, 0, "the child keeps its generation start")
+  Assert.equal(childRecord.genInterval, 3, "the child keeps its generation interval")
+  Assert.equal(childRecord.texNo, 8, "the child keeps its texture selection")
+  Assert.equal(childRecord.texRepeatS, 1, "the child keeps its horizontal texture repeat")
+  Assert.equal(childRecord.texRepeatT, 1, "the child keeps its vertical texture repeat")
+  Assert.deepEqual(
+    childRecord.colorRgb,
+    { r = 31, g = 31, b = 31 },
+    "the child keeps its color channels"
+  )
+end
+
+function T.spl_decoder_rejects_reserved_child_flag_bits()
+  local child = u16(0x1000)
+    .. string.rep("\0", 18)
+  local flag = 2 ^ 16
+  local record = tailEmitter(flag, {}, child)
+  local member = blob(1, 1, { record }, { textureBlock() })
+  local decoded, err = SplResource.decode(member)
+  Assert.isNil(decoded, "a reserved child flag never decodes silently")
+  Assert.notNil(err, "the reserved child flag reports its emitter context")
+end
+
 return { tests = T }

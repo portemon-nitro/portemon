@@ -52,19 +52,33 @@ local SOURCE_WIDTH, SOURCE_HEIGHT = 256, 192
 -- Ops whose `effect` field starts a waitable effect when the event fires.
 -- Started names (plus started emitter groups and compiled sprite clips)
 -- are the only identities a later wait may name.
--- Scene-4 starter particles are a closed consumer of the nine compiled
--- emitter records (src/intro_movie_scene_4.c starter sets): emission and
--- particle lifetimes, generation rate, origin, velocity, fields, color,
--- alpha, scale, and texture all come from the manifest. One world unit maps
--- to WORLD_TO_SOURCE_PX source pixels around the 256x192 stage center;
--- world +Y (the emitter axis of all nine records) maps to screen up. The
--- only randomness left is the uniform disc/axis spawn offset and the
--- initial spin within the recorded rotation range -- the retail SPL library
--- draws these from its own RNG stream, so the player draws them from its
--- deterministic per-slot stream seeded by the manifest seed (never
--- math.randomseed, never the global state).
-local WORLD_TO_SOURCE_PX = 16
+-- Scene-4 starter particles replay the retail software particle library
+-- through the nine compiled emitter records (src/intro_movie_scene_4.c
+-- starter sets): the deterministic congruential stream, 3D generation
+-- geometry, life-rate scale/color/alpha blocks, rotation, fields, and
+-- children all come from the manifest. The particle system renders through
+-- its orthographic camera (eye (0,0,4), target origin, 45-degree half
+-- angle, 4:3 frame): the visible half-extents are 16/3 by 4 world units,
+-- so one world unit spans exactly 24 source pixels on both axes around
+-- the 256x192 stage center, and depth only clips against the 1..900
+-- planes; world +Y maps to screen up. Particle state stays 3D until the
+-- projection; sizes, colors, and alphas evaluate the staged blocks with
+-- integer-exact channel arithmetic, while normalized directions and
+-- rotations use host floating point and are deterministic without being
+-- bit-identical to the retail fixed-point unit. The slot stream opens at
+-- the manifest seed (never math.randomseed, never the global state).
+local PARTICLE_PX_PER_UNIT = 24
 local STAGE_CENTER_X, STAGE_CENTER_Y = 128, 96
+local PARTICLE_DEPTH_NEAR, PARTICLE_DEPTH_FAR = 1, 900
+-- The scene-4 emitter callback pins every emitter to its resource position
+-- plus this z offset on every update (IntroMovie_Scene4_SPLEmitterCB).
+local EMITTER_CALLBACK_Z = 0.015625
+-- The retail particle heap bounds one system to 20 emitters and 200
+-- particles; exhausted spawns drop instead of growing (ParticleSystem_New
+-- with SPL_Init(..., 20, 200, ...)). The scene owns at most the nine
+-- compiled starter emitters at once.
+local MAX_PARTICLE_COUNT = 200
+local MAX_EMITTER_COUNT = 9
 local GPU_NEAR, GPU_FAR = 1, 5000
 -- Retail town field angle behind the scene-3 camera: the compiled town
 -- track carries this fovAngle, and a bundle without one keeps the same
@@ -107,16 +121,30 @@ local function truncTowardZero(n)
   return n >= 0 and math.floor(n) or math.ceil(n)
 end
 
----@param color unknown
----@return number r, number g, number b
-local function emitterColorChannels(color)
-  local source = color --[[@as table<string, unknown>]]
-  local r = (type(source) == "table" and (source.r or source[1])) or 1
-  local g = (type(source) == "table" and (source.g or source[2])) or 1
-  local b = (type(source) == "table" and (source.b or source[3])) or 1
-  return r, --[[@as number]]
-    g, --[[@as number]]
-    b --[[@as number]]
+-- C integer division truncates toward zero, unlike a flooring shift: color
+-- and scale slopes with negative spans must round the same way.
+---@param numerator number
+---@param denominator number
+---@return integer
+local function cdivTrunc(numerator, denominator)
+  assert(denominator ~= 0, "source slopes never divide by zero")
+  local quotient = numerator / denominator
+  if quotient >= 0 then
+    return math.floor(quotient)
+  end
+  return math.ceil(quotient)
+end
+
+-- Wrapping reinterpretation between the unsigned draw stream and the
+-- signed magnitudes the retail fixed point computes with.
+---@param value number
+---@return number
+local function s32wrap(value)
+  local wrapped = value % 4294967296
+  if wrapped >= 2147483648 then
+    return wrapped - 4294967296
+  end
+  return wrapped
 end
 
 ---@class OpeningMovieSlot
@@ -551,7 +579,7 @@ local function acquireSlot(self, manifest)
     sceneTick = 0,
     stepIndex = 1,
     stepElapsed = 0,
-    rng = (manifest.particles.seed or 0) * 131 + manifest.sceneNumber * 7919 + 17,
+    rng = manifest.particles.seed or 0,
     scrolls = {},
     effects = {},
     backgrounds = { main = {}, sub = {} },
@@ -626,11 +654,16 @@ local function acquireSlot(self, manifest)
     -- Stage each compiled particle texture once per scene acquisition: the
     -- images join the slot graph, so they release with the scene and the
     -- current/next two-scene bound covers them with no extra accounting.
+    -- Texture repeats tile through the quad, so every particle texture
+    -- opts into repeat wrapping where the host supports it.
     local particles = manifest.particles
     if type(particles) == "table" and type(particles.textures) == "table" then
       for _, texture in ipairs(particles.textures) do
         if slot.imageByPath[texture.image] == nil then
-          acquireImage(slot, self, texture.image)
+          local staged = acquireImage(slot, self, texture.image)
+          if staged.setWrap ~= nil then
+            staged:setWrap("repeat", "repeat")
+          end
         end
       end
     end
@@ -640,6 +673,15 @@ local function acquireSlot(self, manifest)
         if slot.imageByPath[emitter.textureImage] == nil then
           error(
             invalid("opening scene emitter names unstaged particle art", {
+              scene = slot.sceneNumber,
+              emitter = emitter.id,
+            }),
+            0
+          )
+        end
+        if emitter.child ~= nil and slot.imageByPath[emitter.child.textureImage] == nil then
+          error(
+            invalid("opening scene emitter child names unstaged particle art", {
               scene = slot.sceneNumber,
               emitter = emitter.id,
             }),
@@ -672,11 +714,25 @@ local function acquireSlot(self, manifest)
   return slot
 end
 
+-- One step of the retail particle library's congruential stream
+-- (seed = seed * 0x5EEDF715 + 0x1B0CB173 mod 2^32). The full product
+-- exceeds double precision, so 16-bit limbs keep every step exact; the
+-- high limb product vanishes modulo 2^32. Limbs derive from the staged
+-- constants so no hand-split literal can drift.
+local RNG_MULTIPLIER = 0x5EEDF715
+local RNG_INCREMENT = 0x1B0CB173
+local RNG_MULTIPLIER_LO = RNG_MULTIPLIER % 65536
+local RNG_MULTIPLIER_HI = (RNG_MULTIPLIER - RNG_MULTIPLIER_LO) / 65536
 ---@param slot OpeningMovieSlot scene slot owning the deterministic particle seed
----@return integer next local random value
+---@return integer next stream value
 local function rngNext(slot)
-  slot.rng = (slot.rng * 1103515245 + 12345) % 2147483648
-  return slot.rng
+  local seed = slot.rng --[[@as integer]]
+  local seedLo = seed % 65536
+  local seedHi = math.floor((seed - seedLo) / 65536)
+  local low = seedLo * RNG_MULTIPLIER_LO
+  local mid = seedLo * RNG_MULTIPLIER_HI + seedHi * RNG_MULTIPLIER_LO
+  slot.rng = ((low + (mid % 65536) * 65536 + RNG_INCREMENT) % 4294967296) --[[@as integer]]
+  return slot.rng --[[@as integer]]
 end
 
 ---@param slot OpeningMovieSlot scene slot
@@ -734,6 +790,73 @@ local function emittersDone(slot, group)
   return effect.done
 end
 
+-- Unit-length 3D vector. Retail normalizes in fixed point; the host
+-- normalizes the same direction in floating point, which keeps placement
+-- deterministic without matching every fixed-point rounding.
+---@param x number
+---@param y number
+---@param z number
+---@return number nx, number ny, number nz
+local function normalize3(x, y, z)
+  local length = math.sqrt(x * x + y * y + z * z)
+  assert(length > 0, "opening scene particle normalizes a zero vector")
+  return x / length, y / length, z / length
+end
+
+-- The emitter axis frame for circle, disc, cylinder, and hemisphere
+-- placement: two orthonormal vectors across the circle axis plus their
+-- normal, matching the retail cross-to-axis setup. The base vector is
+-- +Y unless the axis is parallel to it.
+---@param record table<string, unknown> compiled starter emitter record
+---@return table<string, unknown>? frame with c1x..c2z, or nil for point placement
+local function circleFrame(record)
+  local circleAxis = record.circleAxis --[[@as integer]]
+  local initPosType = record.initPosType --[[@as integer]]
+  -- Point emitters keep no frame; every other validated placement kind does.
+  if
+    initPosType ~= 2
+    and initPosType ~= 3
+    and initPosType ~= 5
+    and initPosType ~= 6
+    and initPosType ~= 7
+    and initPosType ~= 8
+    and initPosType ~= 9
+  then
+    return nil
+  end
+  local ax, ay, az = 0, 0, 1
+  if circleAxis == 2 then
+    ax, ay, az = 1, 0, 0
+  elseif circleAxis == 1 then
+    ax, ay, az = 0, 1, 0
+  end
+  local bx, by, bz = 0, 1, 0
+  if ay == 1 or ay == -1 then
+    bx, by, bz = 1, 0, 0
+  end
+  local c1x, c1y, c1z = normalize3(ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
+  local c2x, c2y, c2z = normalize3(ay * c1z - az * c1y, az * c1x - ax * c1z, ax * c1y - ay * c1x)
+  return { c1x = c1x, c1y = c1y, c1z = c1z, c2x = c2x, c2y = c2y, c2z = c2z }
+end
+
+-- Maps circle-frame coordinates into emitter space through the frame
+-- normal, matching the retail circle-axis projection.
+---@param frame table<string, unknown> circle frame from circleFrame
+---@param x number
+---@param y number
+---@param z number
+---@return number px, number py, number pz
+local function circleMap(frame, x, y, z)
+  local c1x = frame.c1x --[[@as number]]
+  local c1y = frame.c1y --[[@as number]]
+  local c1z = frame.c1z --[[@as number]]
+  local c2x = frame.c2x --[[@as number]]
+  local c2y = frame.c2y --[[@as number]]
+  local c2z = frame.c2z --[[@as number]]
+  local nx, ny, nz = normalize3(c1y * c2z - c1z * c2y, c1z * c2x - c1x * c2z, c1x * c2y - c1y * c2x)
+  return x * c1x + y * c2x + z * nx, x * c1y + y * c2y + z * ny, x * c1z + y * c2z + z * nz
+end
+
 ---@param slot OpeningMovieSlot scene slot
 ---@param group string starter group to ignite
 ---@param ids integer[] source emitter ids of the group
@@ -748,6 +871,18 @@ local function startEmitters(slot, group, ids)
       effect.done = false
     end
   end
+  local live = #slot.emitters
+  if live + #ids > MAX_EMITTER_COUNT then
+    error(
+      invalid("opening scene emitter count exceeds its scene bound", {
+        scene = slot.sceneNumber,
+        group = group,
+        live = live,
+        starting = #ids,
+      }),
+      0
+    )
+  end
   for _, id in ipairs(ids) do
     local record = slot.emitterRecords[id]
     if record == nil then
@@ -756,146 +891,524 @@ local function startEmitters(slot, group, ids)
     if record.group ~= group then
       error(invalid("opening scene emitter start leaves its source group", { emitter = id, group = group }), 0)
     end
+    local position = record.position --[[@as { x: number, y: number, z: number }]]
     slot.emitters[#slot.emitters + 1] = {
       id = id,
       group = group,
       record = record,
       age = 0,
-      credit = 0,
+      started = false,
+      carry = 0,
+      x = position.x,
+      y = position.y,
+      z = position.z + EMITTER_CALLBACK_Z,
+      frame = circleFrame(record),
       particles = {},
+      children = {},
+      quad = nil,
     }
   end
 end
 
----@param record table<string, unknown> compiled starter emitter record
----@return number originX, number originY source-pixel emission origin
-local function emitterOrigin(record)
-  local position = record.position --[[@as { x: number, y: number, z: number }]]
-  return STAGE_CENTER_X + position.x * WORLD_TO_SOURCE_PX, STAGE_CENTER_Y - position.y * WORLD_TO_SOURCE_PX
+-- Scales a fixed-point magnitude by a random factor around one, drawing
+-- once from the slot stream even when the range is zero. Integer-exact:
+-- every operand stays below 2^41.
+---@param valueFx integer fixed-point magnitude in 1/4096 units
+---@param range integer random range 0..255
+---@param slot OpeningMovieSlot scene slot
+---@return integer randomized magnitude in 1/4096 units
+local function randomizeFx(valueFx, range, slot)
+  local draw = math.floor(rngNext(slot) / 16777216)
+  local factor = range + 255 - math.floor(draw * range / 128)
+  return math.floor(factor * valueFx / 256)
 end
 
----@param record table<string, unknown> compiled starter emitter record
----@return number axisX, number axisY normalized screen-space emission axis
-local function emitterScreenAxis(record)
-  local axis = record.axis --[[@as { x: number, y: number, z: number }]]
-  local length = math.sqrt(axis.x * axis.x + axis.y * axis.y)
-  if length <= 0 then
-    return 0, -1
+-- A random fixed-point factor in [-1, 1), drawing once from the slot stream.
+---@param slot OpeningMovieSlot scene slot
+---@return integer factor in 1/4096 units
+local function randomSignedOneFx(slot)
+  local draw = math.floor(rngNext(slot) / 8388608)
+  return math.floor((draw * 4096 - 1048576) / 256)
+end
+
+-- A random unit vector in the disc plane, drawing twice.
+---@param slot OpeningMovieSlot scene slot
+---@return number x, number y
+local function arbVecXy(slot)
+  local x = s32wrap(rngNext(slot)) / 256
+  local y = s32wrap(rngNext(slot)) / 256
+  local length = math.sqrt(x * x + y * y)
+  assert(length > 0, "opening scene particle random disc degenerates")
+  return x / length, y / length
+end
+
+-- A random 3D unit vector, drawing three times.
+---@param slot OpeningMovieSlot scene slot
+---@return number x, number y, number z
+local function arbVecXyz(slot)
+  return normalize3(s32wrap(rngNext(slot)) / 256, s32wrap(rngNext(slot)) / 256, s32wrap(rngNext(slot)) / 256)
+end
+
+-- Evaluates one staged scale block at a life rate: integer-exact stage
+-- interpolation with truncating slopes, matching the retail in/out law.
+---@param anim table<string, unknown> normalized scale record
+---@param rate integer life rate 0..255
+---@return integer animated scale in fx16 units
+local function evalScaleFx(anim, rate)
+  local startFx = anim.startFx --[[@as integer]]
+  local normalFx = anim.normalFx --[[@as integer]]
+  local finishFx = anim.finishFx --[[@as integer]]
+  local inTick = anim.inTick --[[@as integer]]
+  local outTick = anim.outTick --[[@as integer]]
+  if rate < inTick then
+    return startFx + cdivTrunc((normalFx - startFx) * rate, inTick)
+  elseif rate < outTick then
+    return normalFx
   end
-  return axis.x / length, -axis.y / length
+  local span = 255 - outTick
+  if span <= 0 then
+    return finishFx
+  end
+  return finishFx + cdivTrunc((finishFx - normalFx) * (rate - 255), span)
 end
 
----@param record table<string, unknown> compiled starter emitter record
----@return number spinRate radians added to each particle per source tick
-local function emitterSpinRate(record)
-  local fields = record.fields --[[@as table<string, unknown>[] ]]
-  for _, field in ipairs(fields) do
-    local entry = field --[[@as table<string, unknown>]]
-    if entry.kind == "spin" then
-      return entry.rotation --[[@as number]] / 65536 * 2 * math.pi
+-- Evaluates one staged color block at a life rate: the start color below
+-- the entry threshold, the interpolated or snapped base-to-endpoint
+-- slopes, then the end color. Channel arithmetic is integer-exact.
+---@param anim table<string, unknown> normalized color record
+---@param baseRgb table<string, integer> base color channels
+---@param rate integer life rate 0..255
+---@return table<string, integer> animated color channels
+local function evalColorRgb(anim, baseRgb, rate)
+  local startRgb = anim.startRgb --[[@as table<string, integer>]]
+  local endRgb = anim.endRgb --[[@as table<string, integer>]]
+  local inTick = anim.inTick --[[@as integer]]
+  local peakTick = anim.peakTick --[[@as integer]]
+  local outTick = anim.outTick --[[@as integer]]
+  if rate < inTick then
+    return { r = startRgb.r, g = startRgb.g, b = startRgb.b }
+  elseif rate < peakTick then
+    if not anim.interpolate then
+      return { r = baseRgb.r, g = baseRgb.g, b = baseRgb.b }
+    end
+    local t, span = rate - inTick, peakTick - inTick
+    return {
+      r = startRgb.r + cdivTrunc(t * (baseRgb.r - startRgb.r), span),
+      g = startRgb.g + cdivTrunc(t * (baseRgb.g - startRgb.g), span),
+      b = startRgb.b + cdivTrunc(t * (baseRgb.b - startRgb.b), span),
+    }
+  elseif rate < outTick then
+    if not anim.interpolate then
+      return { r = endRgb.r, g = endRgb.g, b = endRgb.b }
+    end
+    local t, span = rate - peakTick, outTick - peakTick
+    return {
+      r = baseRgb.r + cdivTrunc(t * (endRgb.r - baseRgb.r), span),
+      g = baseRgb.g + cdivTrunc(t * (endRgb.g - baseRgb.g), span),
+      b = baseRgb.b + cdivTrunc(t * (endRgb.b - baseRgb.b), span),
+    }
+  end
+  return { r = endRgb.r, g = endRgb.g, b = endRgb.b }
+end
+
+-- Evaluates one staged alpha block at a life rate and applies the flicker
+-- draw: the level scales down by a random fraction of the flicker
+-- magnitude. The flicker draw happens on every evaluation even when the
+-- magnitude is zero, keeping the stream position sourced.
+---@param anim table<string, unknown> normalized alpha record
+---@param rate integer life rate 0..255
+---@param slot OpeningMovieSlot scene slot
+---@return integer animated alpha 0..31
+local function evalAlpha(anim, rate, slot)
+  local start = anim.start --[[@as integer]]
+  local normal = anim.normal --[[@as integer]]
+  local finish = anim.finish --[[@as integer]]
+  local inTick = anim.inTick --[[@as integer]]
+  local outTick = anim.outTick --[[@as integer]]
+  local level
+  if rate < inTick then
+    level = start + cdivTrunc(rate * (normal - start), inTick)
+  elseif rate < outTick then
+    level = normal
+  else
+    local span = 255 - outTick
+    if span <= 0 then
+      level = finish
+    else
+      level = finish + cdivTrunc((rate - 255) * (finish - normal), span)
     end
   end
-  return 0
+  local flickDraw = math.floor(rngNext(slot) / 16777216)
+  local flick = anim.flick --[[@as integer]]
+  return math.floor(level * (255 - math.floor(flick * flickDraw / 256)) / 256)
+end
+
+---@param slot OpeningMovieSlot scene slot
+---@return integer live parent and child particles across every emitter
+local function liveParticleCount(slot)
+  local count = 0
+  for _, runtime in ipairs(slot.emitters) do
+    count = count + #runtime.particles + #runtime.children
+  end
+  return count
 end
 
 ---@param slot OpeningMovieSlot scene slot
 ---@param runtime table<string, unknown> live emitter runtime gaining one particle
 local function spawnParticle(slot, runtime)
-  local record = runtime.record --[[@as table<string, unknown>]]
-  local radius = record.radius --[[@as number]]
-  local length = record.length --[[@as number]]
-  local originX, originY = emitterOrigin(record)
-  local axisX, axisY = emitterScreenAxis(record)
-  local angle = (rngNext(slot) % 3600) / 3600 * 2 * math.pi
-  local radial = (rngNext(slot) % 1000) / 1000
-  local along = ((rngNext(slot) % 1000) / 1000 - 0.5) * length * WORLD_TO_SOURCE_PX
-  local spread = radius * WORLD_TO_SOURCE_PX * radial
-  local velocity = record.velocity --[[@as { initial: number, axis: number }]]
-  local speed = velocity.initial * WORLD_TO_SOURCE_PX
-  local drift = velocity.axis * WORLD_TO_SOURCE_PX
-  local rotation = record.rotation --[[@as { min: number, max: number }]]
-  local spin = 0
-  if rotation.max ~= rotation.min then
-    local span = math.floor(rotation.max - rotation.min + 1)
-    spin = rotation.min + (rngNext(slot) % span)
-  else
-    spin = rotation.min
+  if liveParticleCount(slot) >= MAX_PARTICLE_COUNT then
+    return
   end
-  local life = record.particleLife --[[@as integer]]
+  local record = runtime.record --[[@as table<string, unknown>]]
+  local initPosType = record.initPosType --[[@as integer]]
+  local radius = record.radius --[[@as number]]
+  -- Exact round-trip: the compiled float divides a small integer magnitude
+  -- by 4096, so scaling back recovers the staged raw value.
+  local lengthFx = math.floor(record.length --[[@as number]] * 4096 + 0.5)
+  local px, py, pz = 0, 0, 0
+  local dirX, dirY, dirZ = 0, 0, 0
+  local hasDir = false
+  if initPosType == 2 then
+    local nx, ny = arbVecXy(slot)
+    local frame = runtime.frame --[[@as table<string, unknown>]]
+    px, py, pz = circleMap(frame, nx * radius, ny * radius, 0)
+  elseif initPosType == 6 or initPosType == 7 then
+    local vx, vy = arbVecXy(slot)
+    local frame = runtime.frame --[[@as table<string, unknown>]]
+    local lx, ly = vx * radius, vy * radius
+    if initPosType == 7 then
+      lx = lx * randomSignedOneFx(slot) / 4096
+      ly = ly * randomSignedOneFx(slot) / 4096
+    end
+    local draw = math.floor(rngNext(slot) / 8388608)
+    local lz = math.floor(s32wrap(lengthFx * draw - s32wrap(lengthFx * 256)) / 256) / 4096
+    px, py, pz = circleMap(frame, lx, ly, lz)
+    if initPosType == 6 then
+      -- Cylinder walls orient along the disc velocity mapped through the
+      -- frame directly, without the normal term.
+      dirX = vx * frame.c1x --[[@as number]] + vy * frame.c2x --[[@as number]]
+      dirY = vx * frame.c1y --[[@as number]] + vy * frame.c2y --[[@as number]]
+      dirZ = vx * frame.c1z --[[@as number]] + vy * frame.c2z --[[@as number]]
+      hasDir = true
+    end
+  end
+  local velocityFx = record.velocityFx --[[@as { pos: integer, axis: integer }]]
+  local velRandom = record.velRandom --[[@as integer]]
+  local velPos = randomizeFx(velocityFx.pos, velRandom, slot)
+  local velAxis = randomizeFx(velocityFx.axis, velRandom, slot)
+  local nx, ny, nz
+  if hasDir then
+    nx, ny, nz = normalize3(dirX, dirY, dirZ)
+  elseif px == 0 and py == 0 and pz == 0 then
+    nx, ny, nz = arbVecXyz(slot)
+  else
+    nx, ny, nz = normalize3(px, py, pz)
+  end
+  local axis = record.axis --[[@as { x: number, y: number, z: number }]]
+  local baseScale = randomizeFx(record.baseScaleFx --[[@as integer]], record.scaleRandom --[[@as integer]], slot)
+  local baseRgb = record.baseColorRgb --[[@as table<string, integer>]]
+  local rotation = record.rotation --[[@as { min: integer, max: integer }]]
+  local rtt
+  if record.useInitRotationRandom then
+    rtt = rngNext(slot) % 65536
+  else
+    rtt = record.initRotation --[[@as integer]]
+  end
+  local rttVel = 0
+  if record.useRotationAnim then
+    local draw = math.floor(rngNext(slot) / 1048576)
+    rttVel = math.floor((rotation.min * 4096 + (rotation.max - rotation.min) * draw) / 4096)
+  end
+  local lifeDraw = math.floor(rngNext(slot) / 16777216)
+  local lifeRandom = record.lifeRandom --[[@as integer]]
+  local particleLife = record.particleLife --[[@as integer]]
+  local life = math.floor((255 - math.floor(lifeDraw * lifeRandom / 256)) * particleLife / 256) + 1
+  local loopFrame = record.loopFrame --[[@as integer]]
   runtime.particles[#runtime.particles + 1] = {
-    x = originX + math.cos(angle) * spread + axisX * along,
-    y = originY + math.sin(angle) * spread + axisY * along,
-    vx = axisX * speed - axisY * drift,
-    vy = axisY * speed + axisX * drift,
+    x = px,
+    y = py,
+    z = pz,
+    vx = nx * velPos / 4096 + axis.x * velAxis / 4096,
+    vy = ny * velPos / 4096 + axis.y * velAxis / 4096,
+    vz = nz * velPos / 4096 + axis.z * velAxis / 4096,
+    rtt = rtt,
+    rttVel = rttVel,
     life = life,
-    maxLife = life,
-    rot = spin / 65536 * 2 * math.pi + emitterSpinRate(record),
+    age = 0,
+    diffLoop = math.floor(65535 / loopFrame),
+    diffNoloop = math.floor(65535 / life),
+    baseScale = baseScale,
+    animScale = 4096,
+    colorRgb = { r = baseRgb.r, g = baseRgb.g, b = baseRgb.b },
+    baseAlpha = record.baseAlpha --[[@as integer]],
+    animAlpha = 31,
+    texNo = record.texture --[[@as integer]],
+    ex = runtime.x --[[@as number]],
+    ey = runtime.y --[[@as number]],
+    ez = runtime.z --[[@as number]],
   }
 end
 
----@param record table<string, unknown> compiled starter emitter record
----@param particle table<string, unknown> live particle gaining field acceleration
----@param originX number source-pixel emitter origin
----@param originY number source-pixel emitter origin
-local function applyEmitterFields(record, particle, originX, originY)
-  local fields = record.fields --[[@as table<string, unknown>[] ]]
-  for _, field in ipairs(fields) do
+-- Spawns one child particle from a live parent: the parent position, its
+-- velocity scaled by the velocity ratio plus a random spread, the scaled
+-- base, and the child color or inherited color. Each spawn draws three
+-- times, even when the spread magnitude is zero.
+---@param slot OpeningMovieSlot scene slot
+---@param runtime table<string, unknown> live emitter runtime
+---@param parent table<string, unknown> live parent particle
+local function spawnChild(slot, runtime, parent)
+  local record = runtime.record --[[@as table<string, unknown>]]
+  local child = record.child --[[@as table<string, unknown>]]
+  local velRatio = child.velRatio --[[@as integer]]
+  local spreadFx = child.initVelRandom --[[@as number]]
+  local function spreadAxis(parentVel)
+    local scaled = parentVel * velRatio / 256
+    local draw = math.floor(rngNext(slot) / 8388608)
+    return scaled + math.floor((spreadFx * draw - spreadFx * 256) / 256)
+  end
+  local scaledBase = math.floor(parent.baseScale --[[@as integer]] * parent.animScale --[[@as integer]] / 4096)
+  local colorRgb = child.childColor --[[@as table<string, integer>]]
+  if not child.useChildColor then
+    local inherited = parent.colorRgb --[[@as table<string, integer>]]
+    colorRgb = { r = inherited.r, g = inherited.g, b = inherited.b }
+  end
+  runtime.children[#runtime.children + 1] = {
+    x = parent.x,
+    y = parent.y,
+    z = parent.z,
+    vx = spreadAxis(parent.vx --[[@as number]]),
+    vy = spreadAxis(parent.vy --[[@as number]]),
+    vz = spreadAxis(parent.vz --[[@as number]]),
+    rtt = 0,
+    rttVel = 0,
+    life = child.life --[[@as integer]],
+    age = 0,
+    baseScale = math.floor(
+      scaledBase
+        * (
+          child.sclRatio --[[@as integer]]
+          + 1
+        )
+        / 64
+    ),
+    animScale = 4096,
+    colorRgb = { r = colorRgb.r, g = colorRgb.g, b = colorRgb.b },
+    baseAlpha = math.floor(
+      parent.baseAlpha --[[@as integer]]
+        * (
+          parent.animAlpha --[[@as integer]]
+          + 1
+        )
+        / 32
+    ),
+    animAlpha = 31,
+    texNo = child.texNo --[[@as integer]],
+    ex = parent.ex,
+    ey = parent.ey,
+    ez = parent.ez,
+  }
+end
+
+-- Rotates a position about one source axis by a retail rotation step.
+---@param x number
+---@param y number
+---@param z number
+---@param axis integer 0, 1, or 2
+---@param rotation integer rotation step 0..65535
+---@return number rx, number ry, number rz
+local function spinRotate(x, y, z, axis, rotation)
+  local angle = rotation / 65536 * 2 * math.pi
+  local sine, cosine = math.sin(angle), math.cos(angle)
+  if axis == 0 then
+    return x, cosine * y - sine * z, sine * y + cosine * z
+  elseif axis == 1 then
+    return cosine * x + sine * z, y, cosine * z - sine * x
+  end
+  return cosine * x - sine * y, sine * x + cosine * y, z
+end
+
+-- Moves one particle for a source tick: rotation advance, air-resistance
+-- damping with the retail shift rounding, field acceleration, and the
+-- emitter-velocity carry (always zero for the observed scene).
+---@param particle table<string, unknown> live particle
+---@param airResist integer staged air resistance 0..255
+local function moveParticle(particle, airResist)
+  particle.rtt = (
+    particle.rtt --[[@as integer]]
+    + particle.rttVel --[[@as integer]]
+  ) % 65536
+  local damp = airResist + 384
+  particle.vx = math.floor(particle.vx --[[@as number]] * damp / 512)
+  particle.vy = math.floor(particle.vy --[[@as number]] * damp / 512)
+  particle.vz = math.floor(particle.vz --[[@as number]] * damp / 512)
+  particle.x = particle.x --[[@as number]] + particle.vx --[[@as number]]
+  particle.y = particle.y --[[@as number]] + particle.vy --[[@as number]]
+  particle.z = particle.z --[[@as number]] + particle.vz --[[@as number]]
+end
+
+-- Runs one particle through its staged scale/color/alpha blocks at its
+-- current age, then its fields and motion. Newborn particles update on
+-- their birth tick, matching the retail generation-then-update order.
+---@param slot OpeningMovieSlot scene slot
+---@param runtime table<string, unknown> live emitter runtime
+---@param particle table<string, unknown> live particle
+local function updateParticle(slot, runtime, particle)
+  local record = runtime.record --[[@as table<string, unknown>]]
+  local age = particle.age --[[@as integer]]
+  local rate = math.floor(particle.diffNoloop --[[@as integer]] * age / 256) % 256
+  local animations = record.animations --[[@as table<string, unknown>]]
+  if animations.scale ~= nil then
+    particle.animScale = evalScaleFx(animations.scale, rate)
+  end
+  if animations.color ~= nil then
+    particle.colorRgb = evalColorRgb(animations.color, record.baseColorRgb --[[@as table<string, integer>]], rate)
+  end
+  if animations.alpha ~= nil then
+    particle.animAlpha = evalAlpha(animations.alpha, rate, slot)
+  end
+  local accX, accY, accZ = 0, 0, 0
+  for _, field in
+    ipairs(record.fields --[[@as table<string, unknown>[] ]])
+  do
     local entry = field --[[@as table<string, unknown>]]
     if entry.kind == "gravity" then
       local magnitude = entry.magnitude --[[@as { x: number, y: number, z: number }]]
-      particle.vx = particle.vx --[[@as number]] + magnitude.x * WORLD_TO_SOURCE_PX
-      particle.vy = particle.vy --[[@as number]] - magnitude.y * WORLD_TO_SOURCE_PX
+      accX, accY, accZ = accX + magnitude.x, accY + magnitude.y, accZ + magnitude.z
     elseif entry.kind == "magnet" then
+      -- The retail magnet pulls toward its resource position with the
+      -- velocity-damped offset; positions here are emitter-relative, so
+      -- the attraction runs in the emitter frame exactly as staged.
       local target = entry.position --[[@as { x: number, y: number, z: number }]]
-      local dx = originX + target.x * WORLD_TO_SOURCE_PX - particle.x --[[@as number]]
-      local dy = originY - target.y * WORLD_TO_SOURCE_PX - particle.y --[[@as number]]
-      local distance = math.sqrt(dx * dx + dy * dy)
-      if distance > 1e-6 then
-        local pull = entry.magnitude --[[@as number]] * WORLD_TO_SOURCE_PX
-        particle.vx = particle.vx --[[@as number]] + dx / distance * pull
-        particle.vy = particle.vy --[[@as number]] + dy / distance * pull
+      local magnitude = entry.magnitude --[[@as number]]
+      local dx = target.x - particle.x --[[@as number]] - particle.vx --[[@as number]]
+      local dy = target.y - particle.y --[[@as number]] - particle.vy --[[@as number]]
+      local dz = target.z - particle.z --[[@as number]] - particle.vz --[[@as number]]
+      accX, accY, accZ = accX + magnitude * dx, accY + magnitude * dy, accZ + magnitude * dz
+    elseif entry.kind == "spin" then
+      particle.x, particle.y, particle.z = spinRotate(
+        particle.x --[[@as number]],
+        particle.y --[[@as number]],
+        particle.z --[[@as number]],
+        entry.axis --[[@as integer]],
+        entry.rotation --[[@as integer]]
+      )
+    end
+  end
+  particle.vx = particle.vx --[[@as number]] + accX
+  particle.vy = particle.vy --[[@as number]] + accY
+  particle.vz = particle.vz --[[@as number]] + accZ
+  moveParticle(particle, record.airResist --[[@as integer]])
+  if record.child ~= nil then
+    local child = record.child --[[@as table<string, unknown>]]
+    local genStart = child.genStart --[[@as integer]]
+    local genInterval = child.genInterval --[[@as integer]]
+    local life = particle.life --[[@as integer]]
+    local since = age * 4096 - life * genStart * 16
+    if since >= 0 and math.floor(since / 4096) % genInterval == 0 then
+      for _ = 1, child.genNum --[[@as integer]] do
+        if liveParticleCount(slot) < MAX_PARTICLE_COUNT then
+          spawnChild(slot, runtime, particle)
+        end
       end
     end
-    -- Spin advances the rendered rotation (see spawnParticle); it carries
-    -- no trajectory term in the observed records.
   end
+  particle.age = age + 1
+end
+
+-- Runs one child particle for a source tick: its staged shrink/fade
+-- curves (or none), emitter tracking, and motion. The retail
+-- scale-out divisor is degenerate (255 minus 255), which the host
+-- division fixup resolves to zero, so the child scale holds its staged
+-- end stage for its whole life.
+---@param runtime table<string, unknown> live emitter runtime
+---@param particle table<string, unknown> live child particle
+local function updateChild(runtime, particle)
+  local record = runtime.record --[[@as table<string, unknown>]]
+  local child = record.child --[[@as table<string, unknown>]]
+  local age = particle.age --[[@as integer]]
+  local life = particle.life --[[@as integer]]
+  local rate = math.floor(age * 256 / life)
+  if child.useScaleAnm then
+    particle.animScale = child.scaleEnd --[[@as integer]]
+  end
+  if child.useAlphaAnm then
+    particle.animAlpha = cdivTrunc((255 - rate) * 31, 255)
+  end
+  if child.followEmitter then
+    particle.ex = runtime.x
+    particle.ey = runtime.y
+    particle.ez = runtime.z
+  end
+  moveParticle(particle, record.airResist --[[@as integer]])
+  particle.age = age + 1
 end
 
 ---@param slot OpeningMovieSlot scene slot
 ---@param group string starter group to advance one source tick
 local function advanceEmitters(slot, group)
-  for _, runtime in ipairs(slot.emitters) do
+  -- Reverse creation order matches the retail intrusive-list head-first
+  -- walk, keeping the shared stream position sourced across emitters.
+  for index = #slot.emitters, 1, -1 do
+    local runtime = slot.emitters[index]
     if runtime.group == group then
       local record = runtime.record --[[@as table<string, unknown>]]
-      runtime.age = runtime.age --[[@as integer]] + 1
       local emitterLife = record.emitterLife --[[@as integer]]
-      if runtime.age <= emitterLife then
-        local generation = record.generation --[[@as { count: number, interval: integer }]]
-        runtime.credit = runtime.credit --[[@as number]] + generation.count / generation.interval
-        local due = math.floor(runtime.credit --[[@as number]])
-        runtime.credit = runtime.credit --[[@as number]] - due
-        for _ = 1, due do
-          spawnParticle(slot, runtime)
+      local age = runtime.age --[[@as integer]]
+      if
+        not runtime.started and age >= record.startOffset --[[@as integer]]
+      then
+        runtime.started = true
+        runtime.age = 0
+        age = 0
+      end
+      if runtime.started and (emitterLife == 0 or age < emitterLife) then
+        local generation = record.generation --[[@as { countFx: integer, interval: integer }]]
+        if age % generation.interval == 0 then
+          local total = generation.countFx + runtime.carry --[[@as integer]]
+          local due = math.floor(total / 4096)
+          runtime.carry = total - due * 4096
+          for _ = 1, due do
+            if liveParticleCount(slot) < MAX_PARTICLE_COUNT then
+              spawnParticle(slot, runtime)
+            end
+          end
         end
       end
-      local originX, originY = emitterOrigin(record)
-      local spin = emitterSpinRate(record)
-      local live = {}
-      for _, particle in ipairs(runtime.particles) do
-        local entry = particle --[[@as table<string, unknown>]]
-        applyEmitterFields(record, entry, originX, originY)
-        entry.x = entry.x --[[@as number]] + entry.vx --[[@as number]]
-        entry.y = entry.y --[[@as number]] + entry.vy --[[@as number]]
-        entry.rot = entry.rot --[[@as number]] + spin
-        entry.life = entry.life --[[@as integer]] - 1
+      -- Youngest particles update first: newborns join at the front of
+      -- the retail active list and update on their birth tick.
+      for particleIndex = #runtime.particles, 1, -1 do
+        local particle = runtime.particles[particleIndex]
+        updateParticle(slot, runtime, particle)
         if
-          entry.life --[[@as integer]]
-          > 0
+          particle.age --[[@as integer]]
+          > particle.life --[[@as integer]]
         then
-          live[#live + 1] = entry
+          table.remove(runtime.particles, particleIndex)
         end
       end
-      runtime.particles = live
+      for childIndex = #runtime.children, 1, -1 do
+        local childParticle = runtime.children[childIndex]
+        updateChild(runtime, childParticle)
+        if
+          childParticle.age --[[@as integer]]
+          > childParticle.life --[[@as integer]]
+        then
+          table.remove(runtime.children, childIndex)
+        end
+      end
+      runtime.age = runtime.age --[[@as integer]] + 1
+      -- Self-destroying emitters leave the active set once their age
+      -- passes their lifespan and their last particle retires.
+      if
+        emitterLife ~= 0
+        and runtime.started
+        and runtime.age --[[@as integer]]
+          > emitterLife
+        and #runtime.particles == 0
+        and #runtime.children == 0
+      then
+        table.remove(slot.emitters, index)
+      end
     end
   end
   for name, effect in pairs(slot.effects) do
@@ -904,15 +1417,8 @@ local function advanceEmitters(slot, group)
       local live = false
       for _, runtime in ipairs(slot.emitters) do
         if runtime.group == effectGroup then
-          local record = runtime.record --[[@as table<string, unknown>]]
-          if
-            runtime.age --[[@as integer]]
-              <= record.emitterLife --[[@as integer]]
-            or #runtime.particles > 0
-          then
-            live = true
-            break
-          end
+          live = true
+          break
         end
       end
       if not live then
@@ -2600,48 +3106,150 @@ local function drawSprites(self, slot, engine)
   end
 end
 
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot
+---@param runtime table<string, unknown> live emitter runtime
+---@param cacheKey string quad cache slot on the runtime
+---@param textureImage string staged particle texture path
+---@param repS integer horizontal repeat power
+---@param repT integer vertical repeat power
+---@return love.Image, love.Quad, number, number
+local function particleQuad(self, slot, runtime, cacheKey, textureImage, repS, repT)
+  -- Quads tile the staged texture when the record repeats it; one parent
+  -- and one child quad cache per live emitter and release with the slot.
+  local image = slot.imageByPath[textureImage]
+  assert(image ~= nil, "opening scene staged particle art is missing: " .. tostring(textureImage))
+  if runtime[cacheKey] == nil then
+    local width, height = image:getWidth(), image:getHeight()
+    runtime[cacheKey] = self.graphics.newQuad(0, 0, width * (2 ^ repS), height * (2 ^ repT), width, height)
+    runtime[cacheKey .. "Width"] = width * (2 ^ repS)
+    runtime[cacheKey .. "Height"] = height * (2 ^ repT)
+  end
+  return image,
+    runtime[cacheKey], --[[@as table<string, unknown>]]
+    runtime[cacheKey .. "Width"], --[[@as number]]
+    runtime[cacheKey .. "Height"] --[[@as number]]
+end
+
+---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
 local function drawParticles(self, slot)
   local graphics = self.graphics
-  -- Each live particle paints its own recorded texture, tinted by the
-  -- recorded base color, faded by the recorded base alpha (linearly to
-  -- zero over its life when the record carries the alpha animation flag),
-  -- and drawn at the recorded base scale (settling to half size when the
-  -- record carries the scale animation flag).
-  for _, runtime in ipairs(slot.emitters) do
+  -- One global draw list, far particles first: the retail hardware
+  -- depth-tests every billboard, and painter ordering is the 2D
+  -- stand-in. The sequence tiebreak keeps replay order deterministic
+  -- where depths coincide.
+  local draws = {}
+  local sequence = 0
+  for emitterIndex = #slot.emitters, 1, -1 do
+    local runtime = slot.emitters[emitterIndex]
+    for particleIndex = #runtime.particles, 1, -1 do
+      sequence = sequence + 1
+      draws[#draws + 1] =
+        { runtime = runtime, particle = runtime.particles[particleIndex], child = nil, seq = sequence }
+    end
+    for childIndex = #runtime.children, 1, -1 do
+      sequence = sequence + 1
+      draws[#draws + 1] = {
+        runtime = runtime,
+        particle = runtime.children[childIndex],
+        child = runtime.record.child,
+        seq = sequence,
+      }
+    end
+  end
+  table.sort(draws, function(a, b)
+    local za = a.particle.z --[[@as number]] + a.particle.ez --[[@as number]]
+    local zb = b.particle.z --[[@as number]] + b.particle.ez --[[@as number]]
+    if za ~= zb then
+      return za < zb
+    end
+    return a.seq < b.seq
+  end)
+  for _, draw in ipairs(draws) do
+    local runtime = draw.runtime
+    local particle = draw.particle --[[@as table<string, unknown>]]
     local record = runtime.record --[[@as table<string, unknown>]]
-    local textureImage = record.textureImage --[[@as string]]
-    local image = slot.imageByPath[textureImage]
-    assert(image ~= nil, "opening scene staged particle art is missing: " .. tostring(textureImage))
-    local imageWidth, imageHeight = image:getWidth(), image:getHeight()
-    local tintR, tintG, tintB = emitterColorChannels(record.baseColor)
-    local baseAlpha = record.baseAlpha --[[@as number]] / 31
-    local baseScale = record.baseScale --[[@as number]]
-    local animations = record.animations --[[@as table<string, unknown>]]
-    for _, particle in ipairs(runtime.particles) do
-      local entry = particle --[[@as table<string, unknown>]]
-      local life = entry.life --[[@as integer]]
-      if life > 0 then
-        local maxLife = entry.maxLife --[[@as integer]]
-        local fade = 1
-        if animations.alpha == true then
-          fade = life / maxLife
-        end
-        local scale = baseScale
-        if animations.scale == true then
-          scale = scale * (0.5 + 0.5 * life / maxLife)
-        end
-        graphics.setColor(tintR, tintG, tintB, baseAlpha * fade)
-        graphics.draw(
-          image,
-          entry.x --[[@as number]],
-          entry.y --[[@as number]],
-          entry.rot --[[@as number]],
-          scale,
-          scale,
-          imageWidth / 2,
-          imageHeight / 2
+    local alpha = math.floor(
+      particle.baseAlpha --[[@as integer]]
+        * (
+          particle.animAlpha --[[@as integer]]
+          + 1
         )
+        / 32
+    )
+    if alpha > 0 then
+      local worldX = particle.x --[[@as number]] + particle.ex --[[@as number]]
+      local worldY = particle.y --[[@as number]] + particle.ey --[[@as number]]
+      local worldZ = particle.z --[[@as number]] + particle.ez --[[@as number]]
+      local depth = 4 - worldZ
+      if depth >= PARTICLE_DEPTH_NEAR and depth <= PARTICLE_DEPTH_FAR then
+        local colorRgb = particle.colorRgb --[[@as table<string, integer>]]
+        local baseScale = particle.baseScale --[[@as number]] / 4096
+        local animScale = particle.animScale --[[@as number]] / 4096
+        local aspect = record.aspect --[[@as number]]
+        local sx = baseScale * aspect
+        local sy = baseScale
+        local direct = record.sclAnmDirect --[[@as integer]]
+        if direct == 0 then
+          sx, sy = sx * animScale, sy * animScale
+        elseif direct == 1 then
+          sx = sx * animScale
+        else
+          sy = sy * animScale
+        end
+        local rotation
+        -- Children always draw as billboards with their own texture;
+        -- parents follow their staged draw kind.
+        if draw.child ~= nil or record.drawType == 0 then
+          rotation = particle.rtt --[[@as integer]] / 65536 * 2 * math.pi
+        else
+          -- Directional billboards stretch along the 3D velocity: the
+          -- quad x-axis follows velocity cross camera-z in view space,
+          -- and the y extent grows as the motion turns screen-parallel.
+          local vx = particle.vx --[[@as number]]
+          local vy = particle.vy --[[@as number]]
+          local dirX, dirY = vy, -vx
+          local dirLength = math.sqrt(dirX * dirX + dirY * dirY)
+          if dirLength > 0 then
+            dirX, dirY = dirX / dirLength, dirY / dirLength
+            local speed = math.sqrt(vx * vx + vy * vy + particle.vz --[[@as number]] * particle.vz --[[@as number]])
+            local parallel = 1
+            if speed > 0 then
+              parallel = math.abs(particle.vz --[[@as number]] / speed)
+            end
+            local dbbScale = record.dbbScale --[[@as integer]]
+            sy = sy * (1 + (1 - parallel) * dbbScale / 4096)
+            rotation = math.atan2(-dirY, dirX)
+          else
+            rotation = nil
+          end
+        end
+        if rotation ~= nil then
+          local textureImage = record.textureImage --[[@as string]]
+          local repeat_ = record.texRepeat --[[@as { s: integer, t: integer }]]
+          local cacheKey = "quad"
+          if draw.child ~= nil then
+            local child = draw.child --[[@as table<string, unknown>]]
+            textureImage = child.textureImage --[[@as string]]
+            repeat_ = child.texRepeat --[[@as { s: integer, t: integer }]]
+            cacheKey = "childQuad"
+          end
+          local image, quad, quadWidth, quadHeight =
+            particleQuad(self, slot, runtime, cacheKey, textureImage, repeat_.s, repeat_.t)
+          graphics.setColor(colorRgb.r / 31, colorRgb.g / 31, colorRgb.b / 31, alpha / 31)
+          graphics.draw(
+            image,
+            quad,
+            STAGE_CENTER_X + worldX * PARTICLE_PX_PER_UNIT,
+            STAGE_CENTER_Y - worldY * PARTICLE_PX_PER_UNIT,
+            rotation,
+            2 * sx * PARTICLE_PX_PER_UNIT / quadWidth,
+            2 * sy * PARTICLE_PX_PER_UNIT / quadHeight,
+            quadWidth / 2,
+            quadHeight / 2
+          )
+        end
       end
     end
   end
@@ -2888,7 +3496,7 @@ end
 ---@return boolean true while starter particles remain alive
 local function particlesLive(slot)
   for _, runtime in ipairs(slot.emitters) do
-    if #runtime.particles > 0 then
+    if #runtime.particles > 0 or #runtime.children > 0 then
       return true
     end
   end
