@@ -780,6 +780,93 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
   end)
 end
 
+function T.tests.opening_music_starts_once_at_movie_entry_when_audio_is_ready()
+  withStartup(function()
+    local state = startSelection()
+    active.audioReady = true
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    local entryUpdates = 0
+    while state.phase ~= "movie" and entryUpdates < 5 do
+      App.update(1 / 30)
+      entryUpdates = entryUpdates + 1
+    end
+    Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
+    local function openings()
+      local count = 0
+      for _, session in ipairs(active.audioSessions) do
+        for _, event in ipairs(session.events) do
+          if event == "opening" then
+            count = count + 1
+          end
+        end
+      end
+      return count
+    end
+    Assert.equal(openings(), 1, "ready audio starts the opening track once at movie entry")
+    Assert.isTrue(
+      state.movie.ticks <= 1,
+      "the opening decision lands on the entry update before the movie advances"
+    )
+    for _ = 1, 30 do
+      App.update(1 / 30)
+    end
+    Assert.equal(state.phase, "movie", "the movie keeps playing behind its single opening track")
+    Assert.equal(openings(), 1, "the running movie never restarts its opening track")
+  end)
+end
+
+function T.tests.late_audio_readiness_never_starts_the_opening_track_mid_movie()
+  withStartup(function()
+    local state = startSelection()
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    pumpUntilMovie(state)
+    Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
+    Assert.equal(#active.audioSessions, 0, "the movie starts silent while audio is still pending")
+    for _ = 1, 10 do
+      App.update(1 / 30)
+    end
+    Assert.equal(state.phase, "movie", "pending audio never blocks the silent movie")
+    -- Audio becomes ready mid-movie: the opening track must not inject.
+    active.audioReady = true
+    App.update(1 / 30)
+    App.update(1 / 30)
+    local openings, titles = 0, 0
+    for _, session in ipairs(active.audioSessions) do
+      for _, event in ipairs(session.events) do
+        if event == "opening" then
+          openings = openings + 1
+        elseif event == "title" then
+          titles = titles + 1
+        end
+      end
+    end
+    Assert.equal(openings, 0, "late audio readiness never injects the opening track mid-movie")
+    -- The finished silent movie still hands off to the title, which
+    -- remains eligible for its own track.
+    while state.movie ~= nil and not state.movie:isFinished() do
+      state.movie:updateFixed()
+    end
+    App.update(1 / 30)
+    Assert.equal(state.phase, "title", "the silent movie still hands off to the legendary title")
+    openings, titles = 0, 0
+    for _, session in ipairs(active.audioSessions) do
+      for _, event in ipairs(session.events) do
+        if event == "opening" then
+          openings = openings + 1
+        elseif event == "title" then
+          titles = titles + 1
+        end
+      end
+    end
+    Assert.equal(openings, 0, "the silent opening stays silent through the title entry")
+    Assert.equal(titles, 1, "title entry still starts its own track once")
+  end)
+end
+
 function T.tests.startup_audio_composes_directly_without_the_game_root_wrapper()
   local GameAudio = require("game.hgss.src.audio.GameAudio")
   local savedCompose = GameAudio.compose
@@ -895,41 +982,37 @@ function T.tests.late_audio_checkpoints_play_only_the_current_stage_cue()
     Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
     Assert.equal(#active.audioSessions, 0, "the movie starts silent while audio is still pending")
 
-    -- Checkpoint 1: audio ready mid-movie starts the opening track once.
+    -- Checkpoint 1: audio ready mid-movie leaves the silent opening alone.
     active.audioReady = true
     App.update(1 / 30)
-    Assert.equal(#active.audioSessions, 1, "mid-movie readiness constructs one session")
-    local session = active.audioSessions[1]
-    Assert.deepEqual(session.events, { "opening" }, "mid-movie readiness starts only the opening track")
+    Assert.equal(#active.audioSessions, 0, "mid-movie readiness constructs no session")
     for _ = 1, 5 do
       App.update(1 / 30)
     end
-    Assert.deepEqual(session.events, { "opening" }, "the movie never restarts its track")
+    Assert.equal(#active.audioSessions, 0, "the running movie stays silent")
 
-    -- Checkpoint 2: title entry switches to the title track.
+    -- Checkpoint 2: title entry starts the title track on its own session.
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
     App.update(1 / 30)
     Assert.equal(state.phase, "title", "the finished movie hands off to the legendary title")
-    Assert.deepEqual(session.events, { "opening", "title" }, "title entry switches tracks exactly once")
+    Assert.equal(#active.audioSessions, 1, "title entry constructs one session")
+    local session = active.audioSessions[1]
+    Assert.deepEqual(session.events, { "title" }, "title entry starts only the title track")
 
     -- Checkpoint 3: skip while the session exists cries once.
     App.keypressed("return", "return", false)
-    Assert.deepEqual(session.events, { "opening", "title", "cry" }, "the accepted skip cries once")
+    Assert.deepEqual(session.events, { "title", "cry" }, "the accepted skip cries once")
     for _ = 1, 10 do
       App.update(1 / 30)
     end
-    Assert.deepEqual(session.events, { "opening", "title", "cry" }, "waiting never duplicates the cry")
+    Assert.deepEqual(session.events, { "title", "cry" }, "waiting never duplicates the cry")
 
     -- Checkpoint 4: the staged-menu fade starts the music fade once.
     active.bootstrapReady = true
     App.update(1 / 30)
-    Assert.deepEqual(
-      session.events,
-      { "opening", "title", "cry", "fade" },
-      "the fade starts once at handoff"
-    )
+    Assert.deepEqual(session.events, { "title", "cry", "fade" }, "the fade starts once at handoff")
 
     -- Checkpoint 5: the transferred menu keeps the session for cues only.
     for _ = 1, 100 do

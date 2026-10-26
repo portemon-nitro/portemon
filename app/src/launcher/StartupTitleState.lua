@@ -32,6 +32,7 @@ local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 ---@field movieCompleted boolean
 ---@field openingObserved boolean[]
 ---@field openingStarted boolean
+---@field openingAudioDecided boolean
 ---@field promotedScenes boolean
 ---@field promotedBootstrap boolean
 ---@field sceneError unknown?
@@ -150,6 +151,7 @@ function StartupTitleState.new(options)
     movieCompleted = false,
     openingObserved = { false, false, false, false, false },
     openingStarted = false,
+    openingAudioDecided = false,
     promotedScenes = false,
     promotedBootstrap = false,
     sceneError = nil,
@@ -470,14 +472,27 @@ end
 -- still waiting for the menu fade. A phase that already ended never starts
 -- its track belatedly.
 function StartupTitleState:_maybeStartAudio()
-  if not self.audioReady or not self:_live() or self.audio == nil then
+  if not self:_live() or self.audio == nil then
     return
   end
   if self.phase == "movie" and self.movie ~= nil then
+    -- The opening decision latches once at movie entry: ready audio
+    -- starts the track before the first frame, otherwise this movie
+    -- commits to silence and later readiness stays ignored.
+    if self.openingAudioDecided then
+      return
+    end
+    self.openingAudioDecided = true
+    if not self.audioReady then
+      return
+    end
     if not self.openingStarted and type(self.audio.openingReady) == "function" then
       self.openingStarted = true
       self.audio.openingReady()
     end
+    return
+  end
+  if not self.audioReady then
     return
   end
   if self.phase ~= "title" or self.title == nil then
@@ -657,6 +672,7 @@ function StartupTitleState:_reenterMovie()
   -- A fresh movie entry re-enables its own opening track and the next
   -- title entry re-enables its own title track on the same session.
   self.openingStarted = false
+  self.openingAudioDecided = false
   self.audioStarted = false
   if self.audio ~= nil and type(self.audio.beginMovieCycle) == "function" then
     self.audio.beginMovieCycle()
