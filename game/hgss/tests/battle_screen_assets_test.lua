@@ -784,6 +784,24 @@ local function layoutOnlyCache(portraitEntries)
   for _, section in pairs(hud.doubles) do
     cache.files[section.image] = solidPortraitPng(8, 8)
   end
+  if type(hud.cursor) == "table" and type(hud.cursor.image) == "string" then
+    cache.files[hud.cursor.image] = solidPortraitPng(8, 8)
+  end
+  if type(stagedManifest.menus) == "table" and type(stagedManifest.menus.lower) == "table" then
+    local pulseMask = stagedManifest.menus.lower.pulseMask
+    if type(pulseMask) == "string" then
+      cache.files[pulseMask] = solidPortraitPng(8, 8)
+    end
+  end
+  do
+    local MoveIconFixture = require("tests.support.MoveIconFixture")
+    local MoveIconCache = require("libs.assets.src.MoveIconCache")
+    local moveIcons = MoveIconFixture.manifest()
+    cache.lua[MoveIconCache.manifestPath()] = moveIcons
+    for _, path in ipairs(MoveIconCache.referencedPaths(moveIcons)) do
+      cache.files[path] = solidPortraitPng(32, 16)
+    end
+  end
   cache.files[stagedManifest.pictures.shadow.image] = solidPortraitPng(64, 64)
   cache.files[sceneImage] = solidPortraitPng(512, 256)
   cache.files[charactersPath] = string.rep("\0", 65536)

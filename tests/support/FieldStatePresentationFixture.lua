@@ -344,6 +344,22 @@ function FieldStatePresentationFixture.cache()
         frames = { { x = 0, y = 0, width = 32, height = 32, duration = 1 } },
         pageId = 0,
       },
+      ["EEVEE/f0"] = {
+        x = 32,
+        y = 0,
+        width = 32,
+        height = 32,
+        frames = { { x = 32, y = 0, width = 32, height = 32, duration = 1 } },
+        pageId = 0,
+      },
+      ["CHIKORITA/f0"] = {
+        x = 0,
+        y = 32,
+        width = 32,
+        height = 32,
+        frames = { { x = 0, y = 32, width = 32, height = 32, duration = 1 } },
+        pageId = 0,
+      },
     },
     representative = { "TEST/f0" },
   })

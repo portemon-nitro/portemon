@@ -162,6 +162,12 @@ local function productionDrawServices(scope, cacheFs, versionId)
   function text.measure(content)
     return { width = textRenderer:textWidth(content), height = 16 }
   end
+  function text.windowBackgroundColor()
+    return textRenderer:windowBackgroundColor()
+  end
+  function text.textWidth(content)
+    return textRenderer:textWidth(content)
+  end
   local windows = {}
   local function frameIndexOf(frameKey)
     if frameKey == nil or frameKey == "default" then
@@ -199,7 +205,7 @@ local function recordingText()
 end
 
 local function recordingWindows()
-  local windows = { calls = {} }
+  local windows = { calls = {}, background = { 0, 0, 0, 1 } }
   function windows.drawWindow(box, frameKey, background)
     windows.calls[#windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end

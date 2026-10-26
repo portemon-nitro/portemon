@@ -761,9 +761,19 @@ local function checkStagedMembers(envelope)
     return "battle presentation is not staged: the launch needs its staged menu, HUD, font, and audio roles"
   end
   local cacheFs = assert(envelope._cacheFs, "preparation requires the envelope cache")
-  local moveIconMarker = cacheFs:read(MoveIconCache.markerPath())
-  if not MoveIconCache.isReady(cacheFs, moveIconMarker) then
+  local moveIcons = cacheFs:loadLua(MoveIconCache.manifestPath())
+  if type(moveIcons) ~= "table" or moveIcons.schema ~= MoveIconCache.SCHEMA then
     return "battle move type icons are not staged"
+  end
+  local iconsOk, iconPaths = pcall(MoveIconCache.referencedPaths, moveIcons)
+  if not iconsOk or type(iconPaths) ~= "table" then
+    return "battle move type icons are not staged"
+  end
+  for _, path in ipairs(iconPaths) do
+    local bytes = cacheFs:read(path)
+    if type(bytes) ~= "string" or #bytes == 0 then
+      return "battle move type icons are not staged"
+    end
   end
   local hud = manifest.hud --[[@as table<string, unknown>]]
   local menus = manifest.menus --[[@as table<string, unknown>]]

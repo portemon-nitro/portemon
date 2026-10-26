@@ -176,6 +176,13 @@ local function stageBattlePresentation(cache)
     local image = (section --[[@as table<string, unknown>]]).image --[[@as string]]
     cache:write(image, solidPng(1648, 8))
   end
+  if type(hud.cursor) == "table" and type(hud.cursor.image) == "string" then
+    cache:write(hud.cursor.image, solidPng(128, 8))
+  end
+  local lower = staged.menus ~= nil and staged.menus.lower or nil
+  if type(lower) == "table" and type(lower.pulseMask) == "string" then
+    cache:write(lower.pulseMask, solidPng(8, 8))
+  end
   -- The Pokepic shadow plate the asset holder requires beside the HUD.
   local pictures = staged.pictures --[[@as table<string, unknown>]]
   local shadow = pictures.shadow --[[@as table<string, unknown>]]

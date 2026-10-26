@@ -1119,6 +1119,8 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
     arrow = "battle-staging/arrow.png",
     gauge0 = "battle-staging/gauge-0.png",
     gauge1 = "battle-staging/gauge-1.png",
+    cursor = "battle-staging/cursor.png",
+    pulseMask = "battle-staging/pulse-mask.png",
   }
   local fontPaths = {
     narration = "battle-staging/font-narration.fnt",
@@ -1149,6 +1151,8 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
   battleManifest.hud.doubles.playerRight.image = artPaths.playerRight
   battleManifest.hud.doubles.enemyLeft.image = artPaths.enemyLeft
   battleManifest.hud.doubles.enemyRight.image = artPaths.enemyRight
+  battleManifest.hud.cursor.image = artPaths.cursor
+  battleManifest.menus.lower.pulseMask = artPaths.pulseMask
   battleManifest.messages.roles.narration.font = fontPaths.narration
   battleManifest.messages.roles.menu.font = fontPaths.menu
   battleManifest.messages.roles.hud.font = fontPaths.hud
@@ -1166,11 +1170,22 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
     artPaths.playerRight,
     artPaths.enemyLeft,
     artPaths.enemyRight,
+    artPaths.pulseMask,
   }) do
     battleManifest.menus.images[path] = { width = 8, height = 8 }
   end
+  battleManifest.menus.images[artPaths.cursor] = { width = 8, height = 8 }
   local cache = CacheFs.forVersion("battle-staging-convergence-probe")
   cache:writeLua(BattlePresentationCache.manifestPath(), battleManifest)
+  do
+    local MoveIconFixture = require("tests.support.MoveIconFixture")
+    local MoveIconCache = require("libs.assets.src.MoveIconCache")
+    local moveIcons = MoveIconFixture.manifest()
+    cache:writeLua(MoveIconCache.manifestPath(), moveIcons)
+    for _, path in ipairs(MoveIconCache.referencedPaths(moveIcons)) do
+      cache:write(path, artPng(99))
+    end
+  end
   cache:writeLua(BattlePresentationCache.scenePath(sceneKey), {
     schema = "g4-battle-scene-v2",
     key = sceneKey,
