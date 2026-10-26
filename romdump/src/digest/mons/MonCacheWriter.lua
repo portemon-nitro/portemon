@@ -9,7 +9,7 @@
 -- only through their own staging; no whole-corpus pixel array is retained.
 
 local Errors = require("libs.errors.src.Errors")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("romdump.src.digest.PngEncoder")
 local MonCache = require("libs.assets.src.MonCache")
 local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 local Validate = require("libs.assets.src.Validate")

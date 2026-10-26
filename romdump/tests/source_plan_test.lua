@@ -983,7 +983,7 @@ function T.page_adoption_reaches_the_same_closure_in_either_arrival_order()
       local MonCache = require("libs.assets.src.MonCache")
       local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
       local function stageLayout()
-        local PngWriter = require("libs.assets.src.PngWriter")
+        local PngWriter = require("tests.support.PngEncoder")
         MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "order-catalog-marker")
         writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "order-catalog-marker")
         MonCacheWriter.writeLayout(
@@ -1379,7 +1379,7 @@ end
 function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
   local MonCache = require("libs.assets.src.MonCache")
   local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
-  local PngWriter = require("libs.assets.src.PngWriter")
+  local PngWriter = require("tests.support.PngEncoder")
   local generation = "corrupted-page-generation"
   local backend = FakeCache.new()
   local realForVersion = CacheFs.forVersion
@@ -1855,7 +1855,7 @@ function T.refused_page_handoff_fails_the_ready_owner_once()
   withPatched(patches, function()
     local MonCache = require("libs.assets.src.MonCache")
     local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
-    local PngWriter = require("libs.assets.src.PngWriter")
+    local PngWriter = require("tests.support.PngEncoder")
     MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "refused-catalog-marker")
     writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "refused-catalog-marker")
     MonCacheWriter.writeLayout(

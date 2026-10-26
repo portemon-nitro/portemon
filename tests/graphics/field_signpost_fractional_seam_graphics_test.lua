@@ -9,7 +9,7 @@ local FieldSignpostFixture = require("tests.support.FieldSignpostFixture")
 local FieldSignpostRenderer = require("libs.hgss.src.ui.FieldSignpostRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 
 local T = {}
 

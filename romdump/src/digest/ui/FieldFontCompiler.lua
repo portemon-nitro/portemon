@@ -17,7 +17,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("romdump.src.digest.PngEncoder")
 local FieldFontDecoder = require("romdump.src.digest.ui.FieldFontDecoder")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")

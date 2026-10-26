@@ -15,7 +15,7 @@ local OakIntroController = require("game.hgss.src.newgame.OakIntroController")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local PixelScale = require("libs.ui.src.PixelScale")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 
 local T = {}
 

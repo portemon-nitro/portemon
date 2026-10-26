@@ -8,7 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 
 local T = {}
 

@@ -3,7 +3,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("romdump.src.digest.PngEncoder")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local ApricornBoxSources = require("romdump.src.config.ApricornBoxSources")

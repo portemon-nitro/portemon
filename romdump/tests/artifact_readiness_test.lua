@@ -423,7 +423,7 @@ local function publishAudioFamily(cache, marker)
 end
 
 local function publishMonFamily(cache, marker)
-  local PngWriter = require("libs.assets.src.PngWriter")
+  local PngWriter = require("tests.support.PngEncoder")
   local function manifestFor(schema, pageImage, pageWidth, pageHeight, cell)
     return {
       schema = schema,
@@ -679,7 +679,7 @@ end
 local function publishItemFamily(cache)
   local Writer = require("romdump.src.digest.items.ItemCacheWriter")
   local Hashing = require("romdump.src.digest.Hashing")
-  local PngWriter = require("libs.assets.src.PngWriter")
+  local PngWriter = require("tests.support.PngEncoder")
   local ItemFixture = require("libs.items.tests.item_fixture")
   local marker = ItemCache.marker("test-rom", "test-dep")
   local pixels = string.rep("\0", 32 * 32 * 4)
@@ -748,7 +748,7 @@ local function publishEmoteFamily(cache)
       },
     },
   }
-  local PngWriter = require("libs.assets.src.PngWriter")
+  local PngWriter = require("tests.support.PngEncoder")
   local ok, err = pcall(Writer.write, cache, {
     marker = marker,
     model = {
@@ -808,7 +808,7 @@ local function publishEffectFamily(cache)
   local Writer = require("romdump.src.digest.field.FieldEntranceIndicatorCacheWriter")
   local ModelAsset = require("libs.assets.src.model.ModelAsset")
   local MeshWriter = require("libs.assets.src.model.MeshWriter")
-  local PngWriter = require("libs.assets.src.PngWriter")
+  local PngWriter = require("tests.support.PngEncoder")
   local Contract = require("libs.assets.src.DerivedAssetContract")
   local function staticModel(key)
     return {

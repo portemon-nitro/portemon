@@ -200,7 +200,7 @@ local EXISTING_DOMAINS = {
   },
 }
 
-local ROOT_UTILITIES = { "Hashing", "Lz10", "Lz11" }
+local ROOT_UTILITIES = { "Hashing", "Lz10", "Lz11", "PngEncoder" }
 
 local function pathExists(path)
   local handle = io.open(BASE .. "/" .. path, "r")

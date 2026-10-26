@@ -2,9 +2,10 @@
 -- truecolor fallback beyond 256 distinct RGBA colors. Indexed output uses
 -- 8-bit palette indices with PLTE/tRNS chunks, preserving every color and
 -- alpha value exactly, including the RGB of fully transparent pixels. Both
--- shapes compress their filter-zero scanlines with zlib through LÖVE, so the
--- encoded length varies with content: callers must treat the output as an
--- opaque byte string, never a fixed function of the dimensions.
+-- shapes hand their filter-zero scanlines to a caller-supplied zlib
+-- compressor, so the encoded length varies with content: callers must treat
+-- the output as an opaque byte string, never a fixed function of the
+-- dimensions.
 
 local bit = require("bit")
 local Errors = require("libs.errors.src.Errors")
@@ -12,7 +13,7 @@ local Errors = require("libs.errors.src.Errors")
 local PngWriter = {}
 
 ---@class PngWriter
----@field encode fun(width: integer, height: integer, rgba: string): string
+---@field encode fun(width: integer, height: integer, rgba: string, compressZlib: fun(raw: string): string): string
 ---@field dimensions fun(png: string?): integer?, integer?
 ---@field validateDimensions fun(width: integer, height: integer)
 
@@ -108,10 +109,11 @@ local function ihdr(width, height, colorType)
 end
 
 ---@param raw string filter-zero scanlines
+---@param compressZlib fun(raw: string): string host zlib compressor
 ---@return string IDAT chunk with the zlib-compressed scanlines
-local function idat(raw)
-  local compressed = love.data.compress("string", "zlib", raw)
-  assert(type(compressed) == "string", "string-container compression returns its bytes as a string")
+local function idat(raw, compressZlib)
+  local compressed = compressZlib(raw)
+  assert(type(compressed) == "string", "zlib compression must return a string")
   return chunk("IDAT", compressed)
 end
 
@@ -122,8 +124,9 @@ end
 ---@param width integer
 ---@param height integer
 ---@param rgba string
+---@param compressZlib fun(raw: string): string host zlib compressor returning wrapped bytes
 ---@return string png encoded image bytes
-function PngWriter.encode(width, height, rgba)
+function PngWriter.encode(width, height, rgba, compressZlib)
   PngWriter.validateDimensions(width, height)
   assert(type(rgba) == "string", "PngWriter.encode requires an RGBA string")
   local expectedLength = width * height * 4
@@ -134,6 +137,7 @@ function PngWriter.encode(width, height, rgba)
       { width = width, height = height, length = #rgba }
     )
   end
+  assert(type(compressZlib) == "function", "PngWriter.encode requires a zlib compressor function")
 
   -- First-seen palette order keeps the encoding deterministic; stopping
   -- past 257 distinct tuples selects the fallback without scanning the
@@ -165,7 +169,7 @@ function PngWriter.encode(width, height, rgba)
       rows[#rows + 1] = "\0"
       rows[#rows + 1] = rgba:sub(row * stride + 1, (row + 1) * stride)
     end
-    return SIGNATURE .. ihdr(width, height, 6) .. idat(table.concat(rows)) .. chunk("IEND", "")
+    return SIGNATURE .. ihdr(width, height, 6) .. idat(table.concat(rows), compressZlib) .. chunk("IEND", "")
   end
 
   local plte, trns = {}, {}
@@ -192,7 +196,7 @@ function PngWriter.encode(width, height, rgba)
     .. ihdr(width, height, 3)
     .. chunk("PLTE", table.concat(plte))
     .. chunk("tRNS", table.concat(trns))
-    .. idat(table.concat(rows))
+    .. idat(table.concat(rows), compressZlib)
     .. chunk("IEND", "")
 end
 

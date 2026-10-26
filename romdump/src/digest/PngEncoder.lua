@@ -1,0 +1,28 @@
+-- Producer-side PNG encoding over the shared source-independent image writer.
+-- The writer itself takes no host dependency, so this narrow adapter supplies
+-- the LÖVE zlib compressor on each call. Producers keep a three-argument
+-- encoding operation; only the import target changes.
+
+local PngWriter = require("libs.assets.src.PngWriter")
+
+local PngEncoder = {}
+
+---@param raw string filter-zero PNG scanlines
+---@return string zlib-wrapped compressed bytes
+local function compressZlib(raw)
+  local compressed = love.data.compress("string", "zlib", raw)
+  assert(type(compressed) == "string", "string-container compression returns its bytes as a string")
+  return compressed
+end
+
+---@param width integer
+---@param height integer
+---@param rgba string row-major top-left RGBA bytes
+---@return string png encoded image bytes
+function PngEncoder.encode(width, height, rgba)
+  return PngWriter.encode(width, height, rgba, compressZlib)
+end
+
+PngEncoder.validateDimensions = PngWriter.validateDimensions
+
+return PngEncoder

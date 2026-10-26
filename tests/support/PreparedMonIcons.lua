@@ -11,7 +11,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local MonCache = require("libs.assets.src.MonCache")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local PreparedMonIcons = {}

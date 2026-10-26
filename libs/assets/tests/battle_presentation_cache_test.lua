@@ -10,7 +10,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local MonCache = require("libs.assets.src.MonCache")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 
 local T = {}
 

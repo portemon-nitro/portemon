@@ -1329,7 +1329,7 @@ end
 -- once the host reports ready and the staged bytes validate. Nothing
 -- paints a blank success and nothing fails before the build settles.
 function T.cold_scene_demand_waits_then_enters_once_staged()
-  local PngWriter = require("libs.assets.src.PngWriter")
+  local PngWriter = require("tests.support.PngEncoder")
   local sceneKey = "general/plain/day"
   local recordPath = BattlePresentationCache.scenePath(sceneKey)
   local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)

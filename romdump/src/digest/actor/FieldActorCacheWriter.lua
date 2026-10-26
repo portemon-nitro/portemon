@@ -7,7 +7,7 @@
 -- compiled map are never touched.
 
 local Errors = require("libs.errors.src.Errors")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("romdump.src.digest.PngEncoder")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 

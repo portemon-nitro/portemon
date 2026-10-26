@@ -15,7 +15,7 @@ local MonCache = require("libs.assets.src.MonCache")
 local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 
 local T = {}
 

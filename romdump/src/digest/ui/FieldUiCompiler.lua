@@ -15,7 +15,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("romdump.src.digest.PngEncoder")
 local Lz10 = require("romdump.src.digest.Lz10")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")

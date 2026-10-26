@@ -13,7 +13,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 

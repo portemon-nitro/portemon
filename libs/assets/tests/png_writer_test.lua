@@ -4,6 +4,7 @@
 
 local Assert = require("tests.support.Assert")
 local PngWriter = require("libs.assets.src.PngWriter")
+local PngEncoder = require("tests.support.PngEncoder")
 local Errors = require("libs.errors.src.Errors")
 
 local T = {}
@@ -69,14 +70,14 @@ local function decodePixels(png, name)
 end
 
 local function assertRoundTrip(width, height, pixels, name)
-  local decoded = decodePixels(PngWriter.encode(width, height, pixels), name)
+  local decoded = decodePixels(PngEncoder.encode(width, height, pixels), name)
   Assert.equal(decoded.width, width, "decoded width")
   Assert.equal(decoded.height, height, "decoded height")
   Assert.equal(decoded.pixels, pixels, "decoded pixels match exactly")
 end
 
 function T.starts_with_signature_and_has_ihdr_idat_iend()
-  local png = PngWriter.encode(1, 1, px(10, 20, 30, 255))
+  local png = PngEncoder.encode(1, 1, px(10, 20, 30, 255))
   Assert.equal(png:sub(1, 8), PNG_SIGNATURE)
   Assert.equal(png:sub(13, 16), "IHDR")
   Assert.isTrue(png:find("IDAT", 1, true) ~= nil, "has IDAT")
@@ -118,7 +119,7 @@ function T.uses_indexed_encoding_for_256_or_fewer_colors()
     .. px(1, 2, 3, 4)
     .. px(200, 150, 100, 77)
     .. px(5, 6, 7, 8)
-  local png = PngWriter.encode(4, 2, pixels)
+  local png = PngEncoder.encode(4, 2, pixels)
   local info = parseChunks(png)
   Assert.equal(info.width, 4, "IHDR width")
   Assert.equal(info.height, 2, "IHDR height")
@@ -136,13 +137,72 @@ function T.preserves_transparent_rgb_exactly()
   assertRoundTrip(2, 1, pixels, "transparent.png")
 end
 
+function T.rejects_a_missing_or_invalid_compressor_callback()
+  local pixels = px(1, 2, 3, 255)
+  local ok = pcall(PngWriter.encode, 1, 1, pixels)
+  Assert.isTrue(not ok, "encode without a compressor callback fails")
+  local badOk = pcall(PngWriter.encode, 1, 1, pixels, "zlib")
+  Assert.isTrue(not badOk, "encode with a non-function compressor fails")
+  local wrongOk = pcall(PngWriter.encode, 1, 1, pixels, function()
+    return 42
+  end)
+  Assert.isTrue(not wrongOk, "encode with a non-string zlib result fails")
+end
+
+function T.uses_the_injected_compressor_for_both_color_paths()
+  local calls = {}
+  local function spy(raw)
+    calls[#calls + 1] = raw
+    return love.data.compress("string", "zlib", raw)
+  end
+  local indexed = px(10, 20, 30, 255) .. px(200, 150, 100, 128) .. px(0, 0, 0, 0) .. px(255, 128, 64, 0)
+  local indexedPng = PngWriter.encode(2, 2, indexed, spy)
+  local wide = {}
+  for i = 0, 256 do
+    wide[#wide + 1] = px(i % 256, math.floor(i / 256), 77, 255)
+  end
+  local widePixels = table.concat(wide)
+  local fallbackPng = PngWriter.encode(257, 1, widePixels, spy)
+  Assert.equal(#calls, 2, "injected compressor runs once per encoding")
+  Assert.equal(#calls[1], 2 * (1 + 2), "indexed scanlines reach the compressor uncompressed")
+  Assert.equal(#calls[2], 1 * (1 + 257 * 4), "truecolor scanlines reach the compressor uncompressed")
+  Assert.equal(decodePixels(indexedPng, "injected-indexed.png").pixels, indexed, "indexed pixels survive")
+  Assert.equal(decodePixels(fallbackPng, "injected-fallback.png").pixels, widePixels, "fallback pixels survive")
+end
+
+function T.encodes_exactly_256_distinct_colors_as_indexed()
+  local parts = {}
+  for i = 0, 255 do
+    parts[#parts + 1] = px(i, 255 - i, math.floor(i / 2), i % 3 == 0 and 0 or 255)
+  end
+  local pixels = table.concat(parts)
+  local png = PngEncoder.encode(16, 16, pixels)
+  local info = parseChunks(png)
+  Assert.equal(info.colorType, 3, "256 distinct colors still encode indexed")
+  local decoded = decodePixels(png, "boundary-256.png")
+  Assert.equal(decoded.pixels, pixels, "boundary indexed pixels survive exactly")
+end
+
+function T.falls_back_to_truecolor_at_exactly_257_distinct_colors()
+  local parts = {}
+  for i = 0, 256 do
+    parts[#parts + 1] = px(i % 256, math.floor(i / 256), 77, 255)
+  end
+  local pixels = table.concat(parts)
+  local png = PngEncoder.encode(257, 1, pixels)
+  local info = parseChunks(png)
+  Assert.equal(info.colorType, 6, "257 distinct colors fall back to truecolor with alpha")
+  local decoded = decodePixels(png, "boundary-257.png")
+  Assert.equal(decoded.pixels, pixels, "boundary fallback pixels survive exactly")
+end
+
 function T.falls_back_to_lossless_rgba_beyond_256_colors()
   local parts = {}
   for i = 0, 288 do
     parts[#parts + 1] = px(i % 256, math.floor(i / 256), 77, 255)
   end
   local pixels = table.concat(parts)
-  local png = PngWriter.encode(17, 17, pixels)
+  local png = PngEncoder.encode(17, 17, pixels)
   local info = parseChunks(png)
   Assert.equal(info.colorType, 6, "high-color images fall back to truecolor with alpha")
   local decoded = decodePixels(png, "fallback.png")
@@ -150,7 +210,7 @@ function T.falls_back_to_lossless_rgba_beyond_256_colors()
 end
 
 function T.dimensions_reports_staged_image_extents()
-  local png = PngWriter.encode(3, 2, string.rep(px(9, 9, 9, 255), 3 * 2))
+  local png = PngEncoder.encode(3, 2, string.rep(px(9, 9, 9, 255), 3 * 2))
   local width, height = PngWriter.dimensions(png)
   Assert.equal(width, 3, "staged width")
   Assert.equal(height, 2, "staged height")

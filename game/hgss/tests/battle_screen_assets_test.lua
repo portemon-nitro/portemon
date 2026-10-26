@@ -733,7 +733,7 @@ local PROBE_TICK = 1 / 60
 ---@param height integer
 ---@return string real decodable pixels the host image loader accepts
 local function solidPortraitPng(width, height)
-  local PngWriter = require("libs.assets.src.PngWriter")
+  local PngWriter = require("tests.support.PngEncoder")
   local pixels = {}
   for _ = 1, width * height do
     pixels[#pixels + 1] = string.char(255, 255, 255, 255)

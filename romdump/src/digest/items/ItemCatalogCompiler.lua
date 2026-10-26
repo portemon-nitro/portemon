@@ -23,7 +23,7 @@ local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokeniz
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local charmap = require("romdump.src.catalog.hgss.charmap")
 local Hashing = require("romdump.src.digest.Hashing")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("romdump.src.digest.PngEncoder")
 local ItemPresentationCompiler = require("romdump.src.digest.items.ItemPresentationCompiler")
 
 ---@class ItemCatalogCompiler

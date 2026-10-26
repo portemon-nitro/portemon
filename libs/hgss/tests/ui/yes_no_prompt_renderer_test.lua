@@ -9,7 +9,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 local PromptController = require("libs.hgss.src.ui.YesNoPromptController")
 local PromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 

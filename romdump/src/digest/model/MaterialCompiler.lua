@@ -15,7 +15,7 @@ local ffi = require("ffi")
 local Hashing = require("romdump.src.digest.Hashing")
 local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
 local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("romdump.src.digest.PngEncoder")
 
 local MaterialCompiler = {}
 

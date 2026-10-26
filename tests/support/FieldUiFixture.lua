@@ -12,7 +12,7 @@
 -- a distinct color, so a misplacement or wrong rect is a pixel mismatch,
 -- never a wash.
 
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")

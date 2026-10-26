@@ -13,7 +13,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 
 local T = {}

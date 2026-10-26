@@ -5,7 +5,7 @@
 -- and a marker.
 
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 
 local BundleFixture = {}
 

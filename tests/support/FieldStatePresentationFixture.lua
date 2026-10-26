@@ -9,7 +9,7 @@
 
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 local PartyCache = require("libs.assets.src.PartyCache")
 local BagCache = require("libs.assets.src.BagCache")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")

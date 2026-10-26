@@ -20,7 +20,7 @@ local PcApplicationHost = require("game.hgss.src.pc.PcApplicationHost")
 local PcPresentationFixture = require("tests.support.PcPresentationFixture")
 local PcStorageRenderer = require("libs.hgss.src.ui.PcStorageRenderer")
 local PcStorageState = require("game.hgss.src.pc.StorageScreenState")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 

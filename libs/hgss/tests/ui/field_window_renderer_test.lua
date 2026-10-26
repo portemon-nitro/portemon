@@ -9,7 +9,7 @@ local Assert = require("tests.support.Assert")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 
 local T = {}
 

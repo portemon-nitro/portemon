@@ -7,7 +7,7 @@ local Errors = require("libs.errors.src.Errors")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local Hashing = require("romdump.src.digest.Hashing")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 local ItemFixture = require("libs.items.tests.item_fixture")
 
 local T = {}

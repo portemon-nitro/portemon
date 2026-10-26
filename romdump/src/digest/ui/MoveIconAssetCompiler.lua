@@ -12,7 +12,7 @@ local MonSources = require("romdump.src.config.MonSources")
 local MoveIconAssetSchema = require("libs.assets.src.MoveIconAssetSchema")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local MoveIconSources = require("romdump.src.config.MoveIconSources")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("romdump.src.digest.PngEncoder")
 
 local MoveIconAssetCompiler = {}
 

@@ -8,7 +8,7 @@
 -- and any other derived class are never touched.
 
 local Errors = require("libs.errors.src.Errors")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("romdump.src.digest.PngEncoder")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
