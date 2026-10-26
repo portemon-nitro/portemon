@@ -800,15 +800,14 @@ function T.dock_draw_uses_shared_background_and_shared_frame()
   Assert.isTrue(fills >= 2, "both dock panels establish their background fills")
 end
 
--- Child footer wording stays identical across the two presentations:
--- the same detached child view draws the same guidance caption and
--- the same occupied-roster fraction through the compact fullscreen
--- modal and the paired lower-pane modal. Bag, target, forced and
--- voluntary party selection, move learning, and a party selection
--- with no admitted rows cover every footer branch; learning titles
--- its modal with no footer caption or fraction on either
--- presentation, and only battlefield health fractions may accompany
--- a missing occupancy.
+-- Child title and footer wording stay identical across the two
+-- presentations: the same detached child view draws the same title,
+-- guidance caption, and occupied-roster fraction through the compact
+-- fullscreen modal and the paired lower-pane modal. Bag, target, forced
+-- and voluntary party selection, move learning, and a party selection
+-- with no admitted rows cover every title and footer branch; learning
+-- carries no footer caption or fraction on either presentation, and
+-- only battlefield health fractions may accompany a missing occupancy.
 ---@param count integer row count under test driving
 ---@param occupied integer leading occupied rows under test driving
 ---@return table detached roster rows under test driving
@@ -889,24 +888,28 @@ function T.child_footer_wording_matches_across_compact_and_paired_draws()
       },
       caption = "Select an item.",
       occupancy = nil,
+      title = "BAG: MEDICINE 1/2",
     },
     {
       name = "target",
       child = { kind = "target", stagedItem = "POTION", focusId = "slot:1", rows = footerRosterRows(3, 2) },
       caption = "Select the target.",
       occupancy = "2/3",
+      title = "Use POTION on whom?",
     },
     {
       name = "forced-party",
       child = { kind = "party", focusId = "slot:1", rows = footerRosterRows(3, 2) },
       caption = "Select its replacement.",
       occupancy = "2/3",
+      title = "Choose a replacement!",
     },
     {
       name = "voluntary-party",
       child = { kind = "party", cancellable = true, focusId = "slot:1", rows = footerRosterRows(3, 2) },
       caption = "Select a reserve.",
       occupancy = "2/3",
+      title = "Choose a Pokemon!",
     },
     {
       name = "learn",
@@ -930,6 +933,7 @@ function T.child_footer_wording_matches_across_compact_and_paired_draws()
       child = { kind = "party" },
       caption = "Select its replacement.",
       occupancy = nil,
+      title = "Choose a replacement!",
     },
   }
   local captions = {
@@ -955,8 +959,8 @@ function T.child_footer_wording_matches_across_compact_and_paired_draws()
       end
     end
     if case.title ~= nil then
-      Assert.isTrue(compactInk[case.title] ~= nil, "the compact modal titles its learning" .. tag)
-      Assert.isTrue(pairedInk[case.title] ~= nil, "the paired modal titles its learning" .. tag)
+      Assert.isTrue(compactInk[case.title] ~= nil, "the compact modal titles its child" .. tag)
+      Assert.isTrue(pairedInk[case.title] ~= nil, "the paired modal titles its child identically" .. tag)
     end
     if case.caption ~= nil then
       Assert.isTrue(compactInk[case.caption] ~= nil, "the compact modal guides its child" .. tag)
@@ -980,6 +984,46 @@ function T.child_footer_wording_matches_across_compact_and_paired_draws()
           )
         end
       end
+    end
+  end
+end
+
+-- Multi-actor decisions name the acting battler at each dock's acting
+-- origin so staged choices are never mistaken for the previous entry's;
+-- a single-actor decision names nobody there.
+function T.multi_actor_docks_name_the_acting_battler()
+  local origins = {
+    command = { x = 12, y = 146 },
+    moves = { x = 16, y = 112 },
+    target = { x = 20, y = 112 },
+  }
+  for mode, origin in pairs(origins) do
+    for _, total in ipairs({ 1, 2 }) do
+      local view = snapshot(mode, { actor = { combatant = 1, index = 1, total = total } })
+      local plan = resolve(singleMeasurement(256, 192, "compact-plan-test:acting-" .. mode .. total), view)
+      local graphics = FakeGraphics.new({})
+      local order = {}
+      local text = recordingText(order)
+      ApplicationPresentation.draw(graphics, {
+        graphics = graphics,
+        text = text,
+        windows = recordingWindows(order),
+        assets = {
+          drawable = function(_, key)
+            return fakeImage(key)
+          end,
+        },
+        frameKey = "compact-plan-test-frame",
+        sceneImageKey = "scene:test",
+      }, view, plan)
+      local named = false
+      for _, entry in ipairs(text.draws) do
+        if entry.content == "LEAD" and entry.x == origin.x and entry.y == origin.y then
+          named = true
+        end
+      end
+      local tag = " (" .. mode .. ", " .. total .. " actors)"
+      Assert.equal(named, total > 1, "the dock names the acting battler only in multi-actor decisions" .. tag)
     end
   end
 end

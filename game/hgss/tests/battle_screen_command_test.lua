@@ -3304,6 +3304,26 @@ function T.doubled_arrow_follows_the_acting_partner_health_box()
   Assert.equal(rightBands[1].y, 124, "the arrow shares the right anchor row")
 end
 
+-- Multi-actor decisions name the acting battler above the interaction
+-- menu, fitted to its 44-pixel label; a single-actor decision names
+-- nobody there.
+function T.interaction_menu_names_the_acting_battler_in_multi_actor_decisions()
+  for _, total in ipairs({ 1, 2 }) do
+    local view = doublesDetailView({
+      actor = { combatant = 11, index = 2, total = total },
+      commands = nativeView().commands,
+    })
+    local drawn = drawNativePane("interaction", view, "command", {})
+    local named = false
+    for _, entry in ipairs(drawn.text.draws) do
+      if entry.content == "ALLY-" and entry.x == 128 and entry.y == 8 then
+        named = true
+      end
+    end
+    Assert.equal(named, total > 1, "the menu names the acting battler only in multi-actor decisions")
+  end
+end
+
 function T.doubled_arrow_keeps_the_right_slot_when_left_partner_hides()
   local view = doublesDetailView({ actor = { combatant = 11, index = 2, total = 2 } })
   for _, battler in ipairs(view.battlers) do

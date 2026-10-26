@@ -15,6 +15,7 @@ local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
+local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
 
 -- Interim battler anchors on the native canvas: retained for layout
 -- compatibility while native picture geometry lives in the visual
@@ -141,62 +142,6 @@ local function restoreColor(graphics, r, g, b, a)
   graphics.setColor(r, g, b, a)
 end
 
----@param record table<string, unknown> displayed battler facts under drawing
----@return boolean true when the record owns a live battlefield slot
-local function liveSlot(record)
-  -- Only live active records draw: hidden (cue-withdrawn, fainted,
-  -- unrevealed), inactive (benched) and historic records never own a
-  -- current sprite or HUD.
-  return type(record) == "table" and record.visible ~= false and record.active ~= false
-end
-
----@param records table<integer, table<string, unknown>> one side live records under ordering
-local function sortBySlot(records)
-  -- Positions stay opaque: only the relative order within a side
-  -- decides the left/right cell, never a hardcoded slot number. The
-  -- combatant identity breaks ties deterministically.
-  table.sort(records, function(a, b)
-    local pa, pb = a.position, b.position
-    if type(pa) == "number" and type(pb) == "number" and pa ~= pb then
-      return pa < pb
-    end
-    return a.combatant < b.combatant
-  end)
-end
-
--- Canonical side slot order behind stable rows: every distinct native
--- position an active record claims on the side, hidden records
--- included, in slot order. Withdrawal, faint and reveal cues hide and
--- show records without moving slots, so the survivors keep their rows
--- while a neighbor transitions instead of reindexing onto its row.
----@param view table<string, unknown> internal semantic snapshot under drawing
----@param playerSide boolean true for the near player side, false for the far foe side
----@return integer[] distinct claimed native positions in slot order
-local function canonicalOrder(view, playerSide)
-  local seen = {} ---@type table<integer, boolean>
-  local order = {} ---@type integer[]
-  if type(view.battlers) == "table" then
-    for _, battler in ipairs(view.battlers) do
-      if
-        type(battler) == "table"
-        and battler.active ~= false
-        and type(battler.position) == "number"
-        and (battler.side == 1) == playerSide
-        and not seen[
-          battler.position --[[@as integer]]
-        ]
-      then
-        seen[
-          battler.position --[[@as integer]]
-        ] = true
-        order[#order + 1] = battler.position --[[@as integer]]
-      end
-    end
-  end
-  table.sort(order)
-  return order
-end
-
 -- Layout family follows occupied native slots, never transient
 -- visibility: a single battle keeps its established anchors while a
 -- lead hides mid-switch, and a double battle keeps its rows while a
@@ -210,31 +155,7 @@ local function doublesFormat(view, players, enemies)
   if #players > 1 or #enemies > 1 then
     return true
   end
-  return #canonicalOrder(view, true) >= 2 or #canonicalOrder(view, false) >= 2
-end
-
--- Resolves one live battler's stable sourced row: its index in the
--- canonical claimed order, so a surviving slot never slides onto a
--- hidden neighbor's row. Records without a native position keep
--- their live-order row, matching the legacy layout.
----@param order integer[] canonical claimed positions in slot order
----@param battler table<string, unknown> live battler facts under drawing
----@param fallback integer live-order row behind position-less records
----@param rows table<integer, table<string, unknown>> sourced rows behind the side
----@param context string assertion context naming the sourced rows
----@return table<string, unknown> the battler's stable row
-local function doublesRow(order, battler, fallback, rows, context)
-  local position = battler.position
-  if type(position) == "number" then
-    for index, slot in ipairs(order) do
-      if slot == position then
-        assert(rows[index] ~= nil, context)
-        return rows[index]
-      end
-    end
-  end
-  assert(rows[fallback] ~= nil, context)
-  return rows[fallback]
+  return #BattleViewRoster.claimedPositions(view, true) >= 2 or #BattleViewRoster.claimedPositions(view, false) >= 2
 end
 
 -- Semantic art roles associated with the four doubled source side types.
@@ -250,6 +171,44 @@ local DOUBLES_ROWS = {
     { sideType = 5, art = "hud:enemy-right" },
   },
 }
+
+-- Resolves one live battler's stable sourced row: its index in the
+-- side's claimed order, so a surviving slot never slides onto a hidden
+-- neighbor's row; position-less records keep their live-order row.
+---@param order integer[] canonical claimed positions in slot order
+---@param battler table<string, unknown> live battler facts under drawing
+---@param fallback integer live-order row behind position-less records
+---@param rows table<integer, table<string, unknown>> sourced rows behind the side
+---@param context string assertion context naming the sourced rows
+---@return table<string, unknown> the battler's stable row
+local function doublesRow(order, battler, fallback, rows, context)
+  local row = rows[BattleViewRoster.claimedIndex(order, battler, fallback)]
+  assert(row ~= nil, context)
+  return row
+end
+
+-- Pairs every live doubles battler with its sourced row, foes before
+-- allies in slot order: the insertion order the depth and HUD passes
+-- keep for ties.
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
+---@param enemies table<integer, table<string, unknown>> live enemy-side battler facts in slot order
+---@return { battler: table<string, unknown>, role: table<string, unknown> }[] live battlers with their sourced rows
+local function doublesRoles(view, players, enemies)
+  local roles = {}
+  local foeOrder = BattleViewRoster.claimedPositions(view, false)
+  local allyOrder = BattleViewRoster.claimedPositions(view, true)
+  for index, foe in ipairs(enemies) do
+    local role = doublesRow(foeOrder, foe, index, DOUBLES_ROWS.enemy, "the sourced enemy rows cover every live foe")
+    roles[#roles + 1] = { battler = foe, role = role }
+  end
+  for index, ally in ipairs(players) do
+    local role =
+      doublesRow(allyOrder, ally, index, DOUBLES_ROWS.player, "the sourced player rows cover every live ally")
+    roles[#roles + 1] = { battler = ally, role = role }
+  end
+  return roles
+end
 
 ---@class BattleRenderer.SlotGeometry
 ---@field sideType integer normalized source slot identity
@@ -287,59 +246,24 @@ local function checkDoublesSlots(players, enemies)
   assert(#players <= 2, "at most two live player battlers draw (got " .. tostring(#players) .. ")")
   assert(#enemies <= 2, "at most two live enemy battlers draw (got " .. tostring(#enemies) .. ")")
   local claimed = {}
-  for _, battler in ipairs(players) do
-    if type(battler.position) == "number" then
-      local other = claimed[battler.position]
-      assert(
-        other == nil,
-        "native slot "
-          .. tostring(battler.position)
-          .. " is visibly claimed twice (combatants "
-          .. tostring(other)
-          .. " and "
-          .. tostring(battler.combatant)
-          .. ")"
-      )
-      claimed[battler.position] = battler.combatant
-    end
-  end
-  for _, battler in ipairs(enemies) do
-    if type(battler.position) == "number" then
-      local other = claimed[battler.position]
-      assert(
-        other == nil,
-        "native slot "
-          .. tostring(battler.position)
-          .. " is visibly claimed twice (combatants "
-          .. tostring(other)
-          .. " and "
-          .. tostring(battler.combatant)
-          .. ")"
-      )
-      claimed[battler.position] = battler.combatant
-    end
-  end
-end
-
----@param view table<string, unknown> internal semantic snapshot
----@return table<integer, table<string, unknown>> live player-side battler facts in slot order
----@return table<integer, table<string, unknown>> live enemy-side battler facts in slot order
-local function splitBattlers(view)
-  local players, enemies = {}, {}
-  if type(view.battlers) == "table" then
-    for _, battler in ipairs(view.battlers) do
-      if liveSlot(battler) then
-        if battler.side == 1 then
-          players[#players + 1] = battler
-        else
-          enemies[#enemies + 1] = battler
-        end
+  for _, side in ipairs({ players, enemies }) do
+    for _, battler in ipairs(side) do
+      if type(battler.position) == "number" then
+        local other = claimed[battler.position]
+        assert(
+          other == nil,
+          "native slot "
+            .. tostring(battler.position)
+            .. " is visibly claimed twice (combatants "
+            .. tostring(other)
+            .. " and "
+            .. tostring(battler.combatant)
+            .. ")"
+        )
+        claimed[battler.position] = battler.combatant
       end
     end
   end
-  sortBySlot(players)
-  sortBySlot(enemies)
-  return players, enemies
 end
 
 ---@param assets table<string, unknown> injected asset holder
@@ -625,9 +549,37 @@ local function gaugeTaskTiles(all, sideType, kind)
   return bySide ~= nil and bySide[kind] or nil
 end
 
-local function pictureRecord(records, battler, row)
-  records[#records + 1] = { battler = battler, row = row, insertion = #records + 1 }
+---@param value unknown optional numeric snapshot fact
+---@param default number value standing in for an absent fact
+---@return number
+local function numberOr(value, default)
+  return type(value) == "number" and value or default
 end
+
+---@param tint table<string, number>? optional picture tint
+---@return number red multiplier
+---@return number green multiplier
+---@return number blue multiplier
+---@return number alpha multiplier
+local function tintOf(tint)
+  if tint == nil then
+    return 1, 1, 1, 1
+  end
+  return tint.r or 1, tint.g or 1, tint.b or 1, tint.a or 1
+end
+
+-- Battler picture fields that default to zero, keyed by picture field
+-- with the snapshot fact behind each.
+local PICTURE_OFFSETS = {
+  zOffset = "zOffset",
+  xOffset = "pictureXOffset",
+  yOffset = "pictureYOffset",
+  xOffset2 = "pictureXOffset2",
+  yOffset2 = "pictureYOffset2",
+  shadowHeight = "shadowHeight",
+  pivotX = "pivotX",
+  pivotY = "pivotY",
+}
 
 -- The GPU picture pass consumes staged image handles: leases and
 -- wrappers resolve to their staged image while headless descriptors and
@@ -646,176 +598,203 @@ local function pictureImage(handle)
   return staged
 end
 
-local function drawPicturePlanes(graphics, assets, view, players, enemies, singles)
+-- Live battlers with their published slot rows in native depth order:
+-- singles take the fixed source side types, doubles their claimed
+-- sourced rows. Insertion order (foe first) breaks depth ties.
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
+---@param enemies table<integer, table<string, unknown>> live enemy-side battler facts in slot order
+---@param singles boolean true while the battle keeps its single layout
+---@return { battler: table<string, unknown>, row: BattleRenderer.SlotGeometry, insertion: integer }[] depth-ordered records
+local function pictureRecords(view, players, enemies, singles)
   local records = {}
+  local function add(battler, row)
+    records[#records + 1] = { battler = battler, row = row, insertion = #records + 1 }
+  end
   if singles then
-    local enemy, player = enemies[1], players[1]
-    if enemy ~= nil then
-      pictureRecord(records, enemy, sourceSlotGeometry(view, 1))
+    if enemies[1] ~= nil then
+      add(enemies[1], sourceSlotGeometry(view, 1))
     end
-    if player ~= nil then
-      pictureRecord(records, player, sourceSlotGeometry(view, 0))
+    if players[1] ~= nil then
+      add(players[1], sourceSlotGeometry(view, 0))
     end
   else
-    local foeOrder = canonicalOrder(view, false)
-    local allyOrder = canonicalOrder(view, true)
-    for index, foe in ipairs(enemies) do
-      local role = doublesRow(foeOrder, foe, index, DOUBLES_ROWS.enemy, "the sourced enemy rows cover every live foe")
-      pictureRecord(records, foe, sourceSlotGeometry(view, role.sideType))
-    end
-    for index, ally in ipairs(players) do
-      local role =
-        doublesRow(allyOrder, ally, index, DOUBLES_ROWS.player, "the sourced player rows cover every live ally")
-      pictureRecord(records, ally, sourceSlotGeometry(view, role.sideType))
+    for _, entry in ipairs(doublesRoles(view, players, enemies)) do
+      add(entry.battler, sourceSlotGeometry(view, entry.role.sideType))
     end
   end
   table.sort(records, function(left, right)
-    local leftRow = left.row --[[@as BattleRenderer.SlotGeometry]]
-    local rightRow = right.row --[[@as BattleRenderer.SlotGeometry]]
-    if leftRow.depth ~= rightRow.depth then
-      return leftRow.depth < rightRow.depth
+    if left.row.depth ~= right.row.depth then
+      return left.row.depth < right.row.depth
     end
     return left.insertion < right.insertion
   end)
+  return records
+end
+
+-- The native shadow plane under one battler: absent without a shadow
+-- size, while hidden, or while the battler draws its own visible plane.
+-- Adjusted shadows follow the picture center; fixed shadows keep their
+-- source position.
+---@param assets table<string, unknown> injected asset holder
+---@param battler table<string, unknown> displayed battler facts under drawing
+---@param row BattleRenderer.SlotGeometry the battler's published slot row
+---@return table<string, unknown>? shadow picture for the picture pass
+local function shadowPicture(assets, battler, row)
+  local shadowSize = numberOr(battler.shadowSize, 0)
+  if shadowSize == 0 or battler.shadowVisible == false or battler.pictureVisible == true then
+    return nil
+  end
+  local shadow = pictureImage(assets:drawable("shadow"))
+  if shadow == nil then
+    return nil
+  end
+  local pictureCenterX = row.settledX + numberOr(battler.entryDx, 0) + numberOr(battler.shakeDx, 0)
+  local pictureCenterY = row.settledY
+    + numberOr(battler.height, 0)
+    + numberOr(battler.sourceHeight, 0)
+    + numberOr(battler.entryDy, 0)
+  local shadowX = battler.shadowAdjustX == false
+      and assert(type(battler.shadowX) == "number" and battler.shadowX, "fixed shadows carry their source X")
+    or pictureCenterX + numberOr(battler.pictureXOffset, 0) + numberOr(battler.shadowOffsetX, 0)
+  local shadowY = battler.shadowAdjustY == false
+      and assert(type(battler.shadowY) == "number" and battler.shadowY, "fixed shadows carry their source Y")
+    or pictureCenterY + numberOr(battler.pictureYOffset, 0) + numberOr(battler.shadowOffsetY, 0)
+  local tintR, tintG, tintB = tintOf(battler.shadowTint --[[@as table<string, number>?]])
+  return {
+    kind = "shadow",
+    image = shadow,
+    centerX = shadowX,
+    centerY = shadowY,
+    zCenter = BattleScene.SHADOW_DEPTH,
+    width = BattleScene.SHADOW_WIDTH,
+    height = BattleScene.SHADOW_HEIGHT,
+    textureRegion = assets:shadowRegion(shadowSize),
+    shadowSize = shadowSize,
+    shadowAffine = battler.shadowAffine ~= false,
+    affineWidth = numberOr(battler.affineWidth, 0x100),
+    affineHeight = numberOr(battler.affineHeight, 0x100),
+    tintR = tintR,
+    tintG = tintG,
+    tintB = tintB,
+    alpha = numberOr(battler.polygonAlpha, 31) / 31,
+    paletteFade = battler.paletteFade,
+  }
+end
+
+-- One battler's own picture plane at its slot row with its transient
+-- entry, shake, height, scale, and affine facts. The Substitute doll is
+-- a transient native animation picture: the scene hides the replaced
+-- mon and the animation owner supplies the doll through its effect.
+---@param assets table<string, unknown> injected asset holder
+---@param battler table<string, unknown> displayed battler facts under drawing
+---@param row BattleRenderer.SlotGeometry the battler's published slot row
+---@return table<string, unknown>? battler picture, nil while substituted or unstaged
+local function battlerPicture(assets, battler, row)
+  if battler.substitute == true then
+    return nil
+  end
+  local image = pictureImage(battlerImage(assets, battler))
+  if image == nil then
+    return nil
+  end
+  local sourceHeight = numberOr(battler.height, 0) + numberOr(battler.sourceHeight, 0)
+  local scaleX = numberOr(battler.scaleX, 1)
+  local scaleY = numberOr(battler.scaleY, 1)
+  if battler.affineMode == true then
+    scaleX = scaleX
+      * assert(type(battler.affineWidth) == "number" and battler.affineWidth, "affine pictures carry native width")
+      / 0x100
+    scaleY = scaleY
+      * assert(type(battler.affineHeight) == "number" and battler.affineHeight, "affine pictures carry native height")
+      / 0x100
+  end
+  local pictureVisible = battler.pictureVisible == true
+  local tintR, tintG, tintB, tintA = tintOf(battler.pictureTint --[[@as table<string, number>?]])
+  local picture = {
+    image = image,
+    centerX = row.settledX + numberOr(battler.entryDx, 0) + numberOr(battler.shakeDx, 0),
+    centerY = row.settledY + sourceHeight + numberOr(battler.entryDy, 0),
+    zCenter = row.depth,
+    pictureVisible = pictureVisible,
+    width = pictureVisible and numberOr(battler.pictureWidth, 80) or 80 * scaleX,
+    height = pictureVisible and numberOr(battler.pictureHeight, 80) or 80 * scaleY,
+    rotationX = battler.rotationX,
+    rotationY = battler.rotationY,
+    rotationZ = battler.rotationZ,
+    rotation = battler.rotation,
+    tintR = tintR,
+    tintG = tintG,
+    tintB = tintB,
+    alpha = numberOr(battler.polygonAlpha, 31) / 31 * tintA,
+    paletteFade = battler.paletteFade,
+  }
+  for field, fact in pairs(PICTURE_OFFSETS) do
+    picture[field] = numberOr(battler[fact], 0)
+  end
+  return picture
+end
+
+-- One transient effect picture. Source cell bands crop their staged tile
+-- strip through an exact pixel origin; whole-image pictures omit the
+-- origin and flips.
+---@param assets table<string, unknown> injected asset holder
+---@param picture table<string, unknown> transient effect picture facts
+---@return table<string, unknown> effect picture for the picture pass
+local function effectPicture(assets, picture)
+  local assetKey = assert(picture.assetKey, "transient pictures carry their staged drawable key")
+  local image = assert(assets:drawable(assetKey), "transient effect drawables are staged before submission")
+  return {
+    kind = "effect",
+    image = image,
+    centerX = assert(picture.centerX, "transient pictures carry native X"),
+    centerY = assert(picture.centerY, "transient pictures carry native Y"),
+    zCenter = assert(picture.zCenter, "transient pictures carry native depth"),
+    width = assert(picture.width, "transient pictures carry native width"),
+    height = assert(picture.height, "transient pictures carry native height"),
+    alpha = assert(picture.alpha, "transient pictures carry polygon alpha"),
+    rotationX = picture.rotationX,
+    rotationY = picture.rotationY,
+    rotationZ = picture.rotationZ,
+    tintR = picture.tintR or 1,
+    tintG = picture.tintG or 1,
+    tintB = picture.tintB or 1,
+    paletteFade = picture.paletteFade,
+    pictureVisible = picture.xOffset2 ~= nil or picture.yOffset2 ~= nil,
+    xOffset2 = picture.xOffset2,
+    yOffset2 = picture.yOffset2,
+    flipH = picture.flipH,
+    flipV = picture.flipV,
+  }
+end
+
+-- Submits every depth-ordered battler shadow and picture, then the
+-- transient effect pictures, as one isolated picture pass composited
+-- under the neutral tint. Vanished and undrawn battlers submit nothing.
+---@param graphics table<string, unknown> injected host graphics
+---@param assets table<string, unknown> injected asset holder
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
+---@param enemies table<integer, table<string, unknown>> live enemy-side battler facts in slot order
+---@param singles boolean true while the battle keeps its single layout
+local function drawPicturePlanes(graphics, assets, view, players, enemies, singles)
   local pictures = {}
-  for _, record in ipairs(records) do
-    local battler = record.battler --[[@as table<string, unknown>]]
-    local row = record.row --[[@as BattleRenderer.SlotGeometry]]
+  local function submit(picture)
+    if picture ~= nil then
+      pictures[#pictures + 1] = picture
+    end
+  end
+  for _, record in ipairs(pictureRecords(view, players, enemies, singles)) do
+    local battler = record.battler
     if battler.vanished ~= true and battler.dontDraw ~= true then
-      local shadow
-      local shadowSize = type(battler.shadowSize) == "number" and battler.shadowSize or 0
-      if shadowSize ~= 0 and battler.shadowVisible ~= false and battler.pictureVisible ~= true then
-        shadow = pictureImage(assets:drawable("shadow"))
-      end
-      if shadow ~= nil then
-        local entryDx = type(battler.entryDx) == "number" and battler.entryDx or 0
-        local entryDy = type(battler.entryDy) == "number" and battler.entryDy or 0
-        local pictureCenterX = row.settledX + entryDx + (type(battler.shakeDx) == "number" and battler.shakeDx or 0)
-        local pictureCenterY = row.settledY
-          + (type(battler.height) == "number" and battler.height or 0)
-          + (type(battler.sourceHeight) == "number" and battler.sourceHeight or 0)
-          + entryDy
-        local shadowOffsetX = type(battler.shadowOffsetX) == "number" and battler.shadowOffsetX or 0
-        local shadowOffsetY = type(battler.shadowOffsetY) == "number" and battler.shadowOffsetY or 0
-        local shadowX = battler.shadowAdjustX == false
-            and assert(type(battler.shadowX) == "number" and battler.shadowX, "fixed shadows carry their source X")
-          or pictureCenterX
-            + (type(battler.pictureXOffset) == "number" and battler.pictureXOffset or 0)
-            + shadowOffsetX
-        local shadowY = battler.shadowAdjustY == false
-            and assert(type(battler.shadowY) == "number" and battler.shadowY, "fixed shadows carry their source Y")
-          or pictureCenterY
-            + (type(battler.pictureYOffset) == "number" and battler.pictureYOffset or 0)
-            + shadowOffsetY
-        pictures[#pictures + 1] = {
-          kind = "shadow",
-          image = shadow,
-          centerX = shadowX,
-          centerY = shadowY,
-          zCenter = BattleScene.SHADOW_DEPTH,
-          width = BattleScene.SHADOW_WIDTH,
-          height = BattleScene.SHADOW_HEIGHT,
-          textureRegion = assets:shadowRegion(shadowSize),
-          shadowSize = shadowSize,
-          shadowAffine = battler.shadowAffine ~= false,
-          affineWidth = type(battler.affineWidth) == "number" and battler.affineWidth or 0x100,
-          affineHeight = type(battler.affineHeight) == "number" and battler.affineHeight or 0x100,
-          tintR = battler.shadowTint ~= nil and battler.shadowTint.r or 1,
-          tintG = battler.shadowTint ~= nil and battler.shadowTint.g or 1,
-          tintB = battler.shadowTint ~= nil and battler.shadowTint.b or 1,
-          alpha = (type(battler.polygonAlpha) == "number" and battler.polygonAlpha or 31) / 31,
-          paletteFade = battler.paletteFade,
-        }
-      end
-      -- The Substitute doll is a transient native animation picture. The
-      -- scene hides the replaced mon; the animation owner supplies the
-      -- doll through its effect instance.
-      local image = battler.substitute ~= true and pictureImage(battlerImage(assets, battler)) or nil
-      if image ~= nil then
-        local sourceHeight = (type(battler.height) == "number" and battler.height or 0)
-          + (type(battler.sourceHeight) == "number" and battler.sourceHeight or 0)
-        local tint = battler.pictureTint --[[@as table<string, number>?]]
-        local scaleX = type(battler.scaleX) == "number" and battler.scaleX or 1
-        local scaleY = type(battler.scaleY) == "number" and battler.scaleY or 1
-        if battler.affineMode == true then
-          scaleX = scaleX
-            * assert(
-              type(battler.affineWidth) == "number" and battler.affineWidth,
-              "affine pictures carry native width"
-            )
-            / 0x100
-          scaleY = scaleY
-            * assert(
-              type(battler.affineHeight) == "number" and battler.affineHeight,
-              "affine pictures carry native height"
-            )
-            / 0x100
-        end
-        local alpha = (type(battler.polygonAlpha) == "number" and battler.polygonAlpha or 31) / 31
-        local pictureVisible = battler.pictureVisible == true
-        pictures[#pictures + 1] = {
-          image = image,
-          centerX = row.settledX + (type(battler.entryDx) == "number" and battler.entryDx or 0) + (type(
-            battler.shakeDx
-          ) == "number" and battler.shakeDx or 0),
-          centerY = row.settledY + sourceHeight + (type(battler.entryDy) == "number" and battler.entryDy or 0),
-          zCenter = row.depth,
-          zOffset = type(battler.zOffset) == "number" and battler.zOffset or 0,
-          xOffset = type(battler.pictureXOffset) == "number" and battler.pictureXOffset or 0,
-          yOffset = type(battler.pictureYOffset) == "number" and battler.pictureYOffset or 0,
-          xOffset2 = type(battler.pictureXOffset2) == "number" and battler.pictureXOffset2 or 0,
-          yOffset2 = type(battler.pictureYOffset2) == "number" and battler.pictureYOffset2 or 0,
-          pictureVisible = pictureVisible,
-          shadowHeight = type(battler.shadowHeight) == "number" and battler.shadowHeight or 0,
-          pivotX = type(battler.pivotX) == "number" and battler.pivotX or 0,
-          pivotY = type(battler.pivotY) == "number" and battler.pivotY or 0,
-          width = pictureVisible and (type(battler.pictureWidth) == "number" and battler.pictureWidth or 80)
-            or 80 * scaleX,
-          height = pictureVisible and (type(battler.pictureHeight) == "number" and battler.pictureHeight or 80)
-            or 80 * scaleY,
-          rotationX = battler.rotationX,
-          rotationY = battler.rotationY,
-          rotationZ = battler.rotationZ,
-          rotation = battler.rotation,
-          tintR = tint ~= nil and tint.r or 1,
-          tintG = tint ~= nil and tint.g or 1,
-          tintB = tint ~= nil and tint.b or 1,
-          alpha = alpha * (tint ~= nil and tint.a or 1),
-          paletteFade = battler.paletteFade,
-        }
-      end
+      submit(shadowPicture(assets, battler, record.row))
+      submit(battlerPicture(assets, battler, record.row))
     end
   end
   for _, effect in ipairs(assert(view.effectInstances, "battle snapshots carry transient effect instances")) do
     local picture = effect.picture --[[@as table<string, unknown>?]]
     if picture ~= nil then
-      local assetKey = assert(picture.assetKey, "transient pictures carry their staged drawable key")
-      local image = assert(assets:drawable(assetKey), "transient effect drawables are staged before submission")
-      -- Source cell bands crop their staged tile strip through an exact
-      -- pixel origin; whole-image pictures omit the origin and flips.
-      local hasCrop = picture.xOffset2 ~= nil or picture.yOffset2 ~= nil
-      pictures[#pictures + 1] = {
-        kind = "effect",
-        image = image,
-        centerX = assert(picture.centerX, "transient pictures carry native X"),
-        centerY = assert(picture.centerY, "transient pictures carry native Y"),
-        zCenter = assert(picture.zCenter, "transient pictures carry native depth"),
-        width = assert(picture.width, "transient pictures carry native width"),
-        height = assert(picture.height, "transient pictures carry native height"),
-        alpha = assert(picture.alpha, "transient pictures carry polygon alpha"),
-        rotationX = picture.rotationX,
-        rotationY = picture.rotationY,
-        rotationZ = picture.rotationZ,
-        tintR = picture.tintR or 1,
-        tintG = picture.tintG or 1,
-        tintB = picture.tintB or 1,
-        paletteFade = picture.paletteFade,
-        pictureVisible = hasCrop,
-        xOffset2 = picture.xOffset2,
-        yOffset2 = picture.yOffset2,
-        flipH = picture.flipH,
-        flipV = picture.flipV,
-      }
+      submit(effectPicture(assets, picture))
     end
   end
   if #pictures > 0 then
@@ -1187,27 +1166,14 @@ local function drawDoublesDetail(graphics, text, assets, sections, view, players
   -- Every live slot paints its HUD at its canonical sourced row; picture
   -- planes were already submitted by depth before this OBJ pass.
   checkDoublesSlots(players, enemies)
-  local foeOrder = canonicalOrder(view, false)
-  local allyOrder = canonicalOrder(view, true)
   -- Build one ordered native HUD pass. Its template draw priority is
   -- distinct from the battler's Pokepic depth and the BG priority.
   local hudRecords = {}
-  for index, foe in ipairs(enemies) do
-    local role = doublesRow(foeOrder, foe, index, DOUBLES_ROWS.enemy, "the sourced enemy rows cover every live foe")
+  for _, entry in ipairs(doublesRoles(view, players, enemies)) do
     hudRecords[#hudRecords + 1] = {
-      battler = foe,
-      row = sourceSlotGeometry(view, role.sideType),
-      art = role.art,
-      insertion = #hudRecords + 1,
-    }
-  end
-  for index, ally in ipairs(players) do
-    local role =
-      doublesRow(allyOrder, ally, index, DOUBLES_ROWS.player, "the sourced player rows cover every live ally")
-    hudRecords[#hudRecords + 1] = {
-      battler = ally,
-      row = sourceSlotGeometry(view, role.sideType),
-      art = role.art,
+      battler = entry.battler,
+      row = sourceSlotGeometry(view, entry.role.sideType),
+      art = entry.role.art,
       insertion = #hudRecords + 1,
     }
   end
@@ -1286,7 +1252,7 @@ local function doublesArrowBase(view, players)
   local row = DOUBLES_ROWS.player[1]
   local actor = view.actor --[[@as table<string, unknown>?]]
   if type(actor) == "table" and actor.combatant ~= nil then
-    local order = canonicalOrder(view, true)
+    local order = BattleViewRoster.claimedPositions(view, true)
     for index, ally in ipairs(players) do
       if ally.combatant == actor.combatant then
         row = doublesRow(order, ally, index, DOUBLES_ROWS.player, "the sourced player rows cover every live ally")
@@ -1306,15 +1272,26 @@ local function bgScrollOf(view)
   if type(scroll) ~= "table" then
     return 0, 0
   end
-  local x, y = scroll.x, scroll.y
-  if type(x) ~= "number" then
-    x = 0
+  return numberOr(scroll.x, 0), numberOr(scroll.y, 0)
+end
+
+-- Resolves the battlefield scene layer: the snapshot's raster background
+-- when the asset holder renders one, else the selected scene image. A
+-- reported background failure draws no substitute scene.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param assets table<string, unknown> injected asset holder
+---@param view table<string, unknown> internal semantic snapshot
+---@return table<string, unknown>? scene drawable, nil while unavailable
+local function sceneLayer(resources, assets, view)
+  local scene = nil
+  local backgroundFailure = nil
+  if type(view.backgroundRaster) == "table" and type(assets.background) == "function" then
+    scene, backgroundFailure = assets:background(view.backgroundRaster --[[@as table<string, unknown>]])
   end
-  if type(y) ~= "number" then
-    y = 0
+  if scene == nil and backgroundFailure == nil then
+    scene = assets:drawable(resources.sceneImageKey --[[@as string]])
   end
-  return x, --[[@as number]]
-    y --[[@as number]]
+  return scene
 end
 
 -- Draws one single-battle health box: the staged cell composite, the
@@ -1377,12 +1354,107 @@ local function drawSingleHud(graphics, text, assets, view, battler, artKey, anch
   drawHudPrinters(graphics, text, assets, view, artKey, section, anchor, objects, battler, sideType, playerBox)
 end
 
+-- Draws the selection arrow in the decision modes. The arrow OBJ uses
+-- priority 0x11, behind the source HP box OBJ range; the opening cell and
+-- out-of-range frames draw nothing.
+---@param graphics table<string, unknown> injected host graphics
+---@param assets table<string, unknown> injected asset holder
+---@param view table<string, unknown> internal semantic snapshot
+---@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
+---@param singles boolean true while the battle keeps its single layout
+local function drawSelectionArrow(graphics, assets, view, players, singles)
+  if view.mode ~= "command" and view.mode ~= "moves" and view.mode ~= "target" then
+    return
+  end
+  local cell = view.arrowFrame --[[@as integer?]]
+  if type(cell) ~= "number" or cell < 1 or cell > #ARROW_CELLS - 1 then
+    return
+  end
+  local art = assets:drawable("arrow")
+  if art == nil then
+    return
+  end
+  local baseX, baseY
+  if singles then
+    local row = sourceSlotGeometry(view, 0)
+    baseX = row.hudX - BattleRenderer.ARROW_OFFSET
+    baseY = row.hudY - 2
+  else
+    baseX, baseY = doublesArrowBase(view, players)
+  end
+  for _, obj in ipairs(ARROW_CELLS[cell + 1]) do
+    drawSpriteObject(graphics, art --[[@as table<string, unknown>]], ARROW_STRIP_WIDTH, baseX, baseY, obj)
+  end
+end
+
+-- Single-battle health boxes in draw order: the foe box first, then the
+-- player box with its numerals and experience row.
+local SINGLE_HUDS = {
+  { sideType = 1, art = "hud:enemy", section = "enemy", playerBox = false },
+  { sideType = 0, art = "hud:player", section = "player", playerBox = true },
+}
+
+---@param graphics table<string, unknown> injected host graphics
+---@param text table<string, unknown> borrowed text services
+---@param assets table<string, unknown> injected asset holder
+---@param view table<string, unknown> internal semantic snapshot
+---@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
+---@param enemies table<integer, table<string, unknown>> live enemy-side battler facts in slot order
+local function drawSinglesDetail(graphics, text, assets, view, players, enemies)
+  local sections = view.hudSections --[[@as table<string, table<string, unknown>>]]
+  local battlers = { [0] = players[1], [1] = enemies[1] }
+  for _, hud in ipairs(SINGLE_HUDS) do
+    local battler = battlers[hud.sideType]
+    if battler ~= nil then
+      assert(sections ~= nil, "the battle view carries staged single HUD cells")
+      local row = sourceSlotGeometry(view, hud.sideType)
+      drawSingleHud(
+        graphics,
+        text,
+        assets,
+        view,
+        battler,
+        hud.art,
+        { x = row.hudX, y = row.hudY },
+        sections[hud.section],
+        hud.playerBox,
+        row.sideType
+      )
+    end
+  end
+end
+
+-- Battle_BattleInit fills the message window with color 15 and prints
+-- with the font's default slots: foreground 1, shadow 2, background 15.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot
+local function drawNarration(resources, view)
+  if type(view.message) ~= "string" or view.message == "" then
+    return
+  end
+  local graphics = resources.graphics --[[@as table<string, unknown>]]
+  local text = resources.text --[[@as table<string, unknown>]]
+  local windows = resources.windows --[[@as table<string, unknown>]]
+  local palette = sourcePalette(view, "narration", 0, 1, 2, 15)
+  local fill = palette.background
+  local messageBox = {
+    x = NARRATION_BOX.x,
+    y = NARRATION_BOX.y + numberOr(view.messageScrollY, 0),
+    width = NARRATION_BOX.width,
+    height = NARRATION_BOX.height,
+  }
+  windows.drawWindow(messageBox, resources.frameKey, { fill.r / 255, fill.g / 255, fill.b / 255, 1 })
+  LogicalSurface.clip(graphics, messageBox, function()
+    drawRoleText(text, "narration", view.message --[[@as string]], messageBox.x, messageBox.y, palette)
+  end)
+end
+
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
 local function drawDetail(resources, view)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local text = assert(resources.text, "the battle render borrows its text services")
-  local windows = assert(resources.windows, "the battle render borrows its window services")
+  assert(resources.windows, "the battle render borrows its window services")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
   local doublesHud = resources.doublesHud --[[@as table<string, unknown>?]]
   -- The battlefield draws under the neutral image tint however hostile
@@ -1392,77 +1464,17 @@ local function drawDetail(resources, view)
   graphics.setColor(1, 1, 1, 1)
   -- The background layer honors the viewport scroll on its own decoded
   -- layer; portraits and health boxes stay layer-independent.
-  local scrollX, scrollY = bgScrollOf(view)
-  local scene = nil
-  local backgroundFailure = nil
-  if type(view.backgroundRaster) == "table" and type(assets.background) == "function" then
-    scene, backgroundFailure = assets:background(view.backgroundRaster --[[@as table<string, unknown>]])
-  end
-  if scene == nil and backgroundFailure == nil then
-    scene = assets:drawable(resources.sceneImageKey --[[@as string]])
-  end
+  local scene = sceneLayer(resources, assets, view)
   if scene ~= nil then
+    local scrollX, scrollY = bgScrollOf(view)
     drawSceneLayer(graphics, scene, scrollX, scrollY)
   end
-  local players, enemies = splitBattlers(view)
+  local players, enemies = BattleViewRoster.liveSides(view)
   local singles = not doublesFormat(view, players, enemies)
   drawPicturePlanes(graphics, assets, view, players, enemies, singles)
-  local player = singles and players[1] or nil
-  local enemy = singles and enemies[1] or nil
-  -- The arrow OBJ uses priority 0x11, behind the source HP box OBJ range.
-  if view.mode == "command" or view.mode == "moves" or view.mode == "target" then
-    local cell = view.arrowFrame --[[@as integer?]]
-    if type(cell) == "number" and cell >= 1 and cell <= #ARROW_CELLS - 1 then
-      local art = assets:drawable("arrow")
-      if art ~= nil then
-        local baseX, baseY
-        if singles then
-          local row = sourceSlotGeometry(view, 0)
-          baseX = row.hudX - BattleRenderer.ARROW_OFFSET
-          baseY = row.hudY - 2
-        else
-          baseX, baseY = doublesArrowBase(view, players)
-        end
-        for _, obj in ipairs(ARROW_CELLS[cell + 1]) do
-          drawSpriteObject(graphics, art --[[@as table<string, unknown>]], ARROW_STRIP_WIDTH, baseX, baseY, obj)
-        end
-      end
-    end
-  end
+  drawSelectionArrow(graphics, assets, view, players, singles)
   if singles then
-    local sections = view.hudSections --[[@as table<string, table<string, unknown>>]]
-    if enemy ~= nil then
-      assert(sections ~= nil, "the battle view carries staged single HUD cells")
-      local row = sourceSlotGeometry(view, 1)
-      drawSingleHud(
-        graphics,
-        text,
-        assets,
-        view,
-        enemy,
-        "hud:enemy",
-        { x = row.hudX, y = row.hudY },
-        sections.enemy,
-        false,
-        row.sideType
-      )
-    end
-    if player ~= nil then
-      assert(sections ~= nil, "the battle view carries staged single HUD cells")
-      local row = sourceSlotGeometry(view, 0)
-      drawSingleHud(
-        graphics,
-        text,
-        assets,
-        view,
-        player,
-        "hud:player",
-        { x = row.hudX, y = row.hudY },
-        sections.player,
-        true,
-        row.sideType
-      )
-    end
+    drawSinglesDetail(graphics, text, assets, view, players, enemies)
   else
     drawDoublesDetail(
       graphics,
@@ -1474,45 +1486,8 @@ local function drawDetail(resources, view)
       enemies
     )
   end
-  if type(view.message) == "string" and view.message ~= "" then
-    -- Battle_BattleInit fills the message window with color 15 and prints
-    -- with the font's default slots: foreground 1, shadow 2, background 15.
-    local palette = sourcePalette(view, "narration", 0, 1, 2, 15)
-    local fill = palette.background
-    local messageBox = {
-      x = NARRATION_BOX.x,
-      y = NARRATION_BOX.y + (type(view.messageScrollY) == "number" and view.messageScrollY or 0),
-      width = NARRATION_BOX.width,
-      height = NARRATION_BOX.height,
-    }
-    windows.drawWindow(messageBox, resources.frameKey, { fill.r / 255, fill.g / 255, fill.b / 255, 1 })
-    LogicalSurface.clip(graphics, messageBox, function()
-      drawRoleText(text, "narration", view.message --[[@as string]], messageBox.x, messageBox.y, palette)
-    end)
-  end
+  drawNarration(resources, view)
   restoreColor(graphics, r, g, b, a)
-end
-
----@param view table<string, unknown> internal semantic snapshot under drawing
----@return string? acting battler display name, nil outside multi-actor decisions
-local function actingName(view)
-  local actor = view.actor --[[@as table<string, unknown>?]]
-  if type(actor) ~= "table" or type(actor.total) ~= "number" or actor.total <= 1 then
-    return nil
-  end
-  if type(view.battlers) == "table" then
-    for _, battler in ipairs(view.battlers) do
-      if
-        type(battler) == "table"
-        and battler.combatant == actor.combatant
-        and type(battler.name) == "string"
-        and battler.name ~= ""
-      then
-        return battler.name --[[@as string]]
-      end
-    end
-  end
-  return nil
 end
 
 ---@param view table<string, unknown> internal semantic snapshot under drawing
@@ -1784,77 +1759,97 @@ end
 
 -- Battle child modal geometry inside one 256x192 interaction surface.
 -- The paired pointer mapper publishes hit regions from these same
--- numbers, and the compact fullscreen modal reuses them, so a painted
--- row and its tap target always agree.
+-- numbers, so a painted row and its tap target always agree.
 local CHILD_TITLE = { x = 8, y = 8, maxWidth = 240 }
-local CHILD_ROW_X = 8
 local CHILD_ROW_Y0 = 32
 local CHILD_ROW_H = 20
 local CHILD_LABEL_X = 12
 local CHILD_DETAIL_X = 144
-local CHILD_CONFIRM_Y = 136
 local CHILD_BACK_LABEL = { x = 12, y = 156 }
 local CHILD_NOTICE = { x = 12, y = 172, maxWidth = 232 }
+-- Tabular row columns: the entry name width, the level or quantity
+-- column, and the health or legality column with its width. Bag rows
+-- trade the level column for a wider item name.
+local CHILD_COLUMNS = { nameWidth = 68, subX = 116, detailX = 156, detailWidth = 80 }
+local CHILD_BAG_COLUMNS = { nameWidth = 100, subX = 146, detailX = 180, detailWidth = 56 }
 
----@param child table<string, unknown> detached child view under titling
----@return string modal title wording
-local function childTitle(child)
-  local kind = child.kind
-  if kind == "target" then
-    return "Use " .. tostring(child.stagedItem or "the item") .. " on whom?"
-  elseif kind == "bag" then
-    if child.empty == true then
-      return "The bag is empty."
-    end
-    local page = child.page --[[@as table<string, unknown>?]]
-    local paging = ""
-    if type(page) == "table" then
-      paging = " " .. tostring(page.current or 1) .. "/" .. tostring(page.count or 1)
-    end
-    return "BAG: " .. tostring(child.currentPocket or "?") .. paging
-  elseif kind == "learn" then
-    return "Forget a move for " .. tostring(child.incomingMove or "?") .. "?"
+---@param text table<string, unknown> borrowed text services
+---@param child table<string, unknown> detached child view under drawing
+---@param box table<string, unknown> projected learning row under drawing
+---@param index integer one-based row number
+---@param y number row top under drawing
+local function drawLearnRow(text, child, box, index, y)
+  local marker = (child.focusId == box.id) and "> " or "  "
+  local label = marker .. tostring(index) .. ". " .. tostring(box.label or "")
+  text.drawText(fitLabel(text, label, 128), CHILD_LABEL_X, y + 4)
+  if type(box.detail) == "string" and box.detail ~= "" then
+    text.drawText(fitLabel(text, box.detail, 100), CHILD_DETAIL_X, y + 4)
+  end
+end
+
+-- Tabular rows share one column each for the focused number, the entry
+-- name, its level or quantity, and its health or legality facts, so
+-- every visible fact has its own draw.
+---@param text table<string, unknown> borrowed text services
+---@param child table<string, unknown> detached child view under drawing
+---@param box table<string, unknown> projected party, target, or bag row under drawing
+---@param index integer one-based row number
+---@param y number row top under drawing
+local function drawTabularRow(text, child, box, index, y)
+  local columns = child.kind == "bag" and CHILD_BAG_COLUMNS or CHILD_COLUMNS
+  local head = ((child.focusId == box.id) and "> " or "  ") .. tostring(index) .. "."
+  text.drawText(head, CHILD_LABEL_X, y + 4)
+  local name = tostring(box.label or "")
+  if box.enabled ~= true and box.empty ~= true then
+    name = name .. " [X]"
+  end
+  text.drawText(fitLabel(text, name, columns.nameWidth), 44, y + 4)
+  if type(box.sub) == "string" and box.sub ~= "" then
+    text.drawText(box.sub, columns.subX, y + 4)
+  end
+  if type(box.detail) == "string" and box.detail ~= "" then
+    text.drawText(fitLabel(text, box.detail, columns.detailWidth), columns.detailX, y + 4)
+  end
+end
+
+-- The modal footer: Back on learning and cancellable children, the
+-- forced-choice notice on party and target children, bag pocket
+-- stepping, and the notice or guidance caption outside learning.
+---@param text table<string, unknown> borrowed text services
+---@param child table<string, unknown> detached child view under drawing
+local function drawChildFooter(text, child)
+  if child.kind == "learn" then
+    text.drawText("BACK", CHILD_NOTICE.x, CHILD_NOTICE.y)
+    return
   end
   if child.cancellable == true then
-    return "Choose a Pokemon!"
+    text.drawText("BACK", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
+  elseif child.kind == "party" or child.kind == "target" then
+    text.drawText("No retreat!", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
   end
-  return "Choose a replacement!"
+  if child.kind == "bag" and child.empty ~= true then
+    text.drawText("<", 100, CHILD_BACK_LABEL.y)
+    text.drawText(">", 232, CHILD_BACK_LABEL.y)
+  end
+  local notice = child.notice
+  if type(notice) ~= "string" or notice == "" then
+    notice = BattleChildText.subtitle(child)
+  end
+  text.drawText(fitLabel(text, notice, CHILD_NOTICE.maxWidth), CHILD_NOTICE.x, CHILD_NOTICE.y)
 end
 
----@param child table<string, unknown> detached child view under confirmation wording
----@return string staged confirmation wording
-local function learnConfirmText(child)
-  local confirmation = child.confirmation --[[@as table<string, unknown>?]]
-  if type(confirmation) ~= "table" then
-    return ""
-  end
-  if confirmation.kind == "stop" then
-    return "Stop learning " .. tostring(child.incomingMove or "?") .. "?"
-  end
-  if confirmation.kind == "decline" then
-    return "Do not learn " .. tostring(child.incomingMove or "?") .. "?"
-  end
-  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
-  local slot = confirmation.slot --[[@as integer?]]
-  local name = "?"
-  if type(rows) == "table" and type(slot) == "number" and type(rows[slot + 1]) == "table" then
-    name = tostring(rows[slot + 1].label or "?")
-  end
-  return "Forget " .. name .. "?"
-end
-
--- Draws the open child as a battle-local modal over the lower pane:
--- the title, every projected row with its focus and disabled marks,
--- the staged learning confirmation, and the permitted Back/Confirm
--- and pocket controls. Upper-battlefield drawing is untouched.
+-- Draws the open child as a battle-local modal over the lower pane: the
+-- title, every projected row with its focus and disabled marks, and the
+-- permitted Back and pocket controls. A staged learning confirmation
+-- draws the two-option menu instead. Upper-battlefield drawing is
+-- untouched.
 ---@param resources table<string, unknown> borrowed application collaborators
----@param view table<string, unknown> internal semantic snapshot
 ---@param child table<string, unknown> detached child view under drawing
-local function drawChild(resources, view, child)
+local function drawChild(resources, child)
   local text = assert(resources.text, "the battle render borrows its text services")
   local windows = assert(resources.windows, "the battle render borrows its window services")
   windows.drawWindow({ x = 0, y = 0, width = 256, height = 192 }, resources.frameKey, { 0, 0, 0 })
-  text.drawText(fitLabel(text, childTitle(child), CHILD_TITLE.maxWidth), CHILD_TITLE.x, CHILD_TITLE.y)
+  text.drawText(fitLabel(text, BattleChildText.title(child), CHILD_TITLE.maxWidth), CHILD_TITLE.x, CHILD_TITLE.y)
   local occupancy = BattleChildText.occupancy(child)
   if occupancy ~= nil then
     text.drawText(occupancy, 216, CHILD_TITLE.y)
@@ -1864,80 +1859,15 @@ local function drawChild(resources, view, child)
   end
   local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
   if type(rows) == "table" then
+    local drawRow = child.kind == "learn" and drawLearnRow or drawTabularRow
     for index, row in ipairs(rows) do
       if index > 6 then
         break
       end
-      local box = row --[[@as table<string, unknown>]]
-      local y = CHILD_ROW_Y0 + (index - 1) * CHILD_ROW_H
-      if child.kind == "learn" then
-        local marker = (child.focusId == box.id) and "> " or "  "
-        local label = marker .. tostring(index) .. ". " .. tostring(box.label or "")
-        text.drawText(fitLabel(text, label, 128), CHILD_LABEL_X, y + 4)
-        if type(box.detail) == "string" and box.detail ~= "" then
-          text.drawText(fitLabel(text, box.detail, 100), CHILD_DETAIL_X, y + 4)
-        end
-      else
-        -- Tabular rows share one column each for the focused number,
-        -- the entry name, its level or quantity, and its health or
-        -- legality facts, so every visible fact has its own draw.
-        local head = ((child.focusId == box.id) and "> " or "  ") .. tostring(index) .. "."
-        text.drawText(head, CHILD_LABEL_X, y + 4)
-        local name = tostring(box.label or "")
-        if box.enabled ~= true and box.empty ~= true then
-          name = name .. " [X]"
-        end
-        local nameWidth = 68
-        local subX = 116
-        local detailX = 156
-        local detailWidth = 80
-        if child.kind == "bag" then
-          nameWidth = 100
-          subX = 146
-          detailX = 180
-          detailWidth = 56
-        end
-        text.drawText(fitLabel(text, name, nameWidth), 44, y + 4)
-        if type(box.sub) == "string" and box.sub ~= "" then
-          text.drawText(box.sub, subX, y + 4)
-        end
-        if type(box.detail) == "string" and box.detail ~= "" then
-          text.drawText(fitLabel(text, box.detail, detailWidth), detailX, y + 4)
-        end
-      end
+      drawRow(text, child, row, index, CHILD_ROW_Y0 + (index - 1) * CHILD_ROW_H)
     end
   end
-  if child.kind == "learn" and type(child.confirmation) == "table" then
-    text.drawText(fitLabel(text, learnConfirmText(child), 240), CHILD_ROW_X, CHILD_CONFIRM_Y)
-  end
-  if child.kind == "learn" then
-    if type(child.confirmation) == "table" then
-      text.drawText("CONFIRM", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
-    end
-    text.drawText("BACK", CHILD_NOTICE.x, CHILD_NOTICE.y)
-  else
-    if child.cancellable == true then
-      text.drawText("BACK", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
-    elseif child.kind == "party" or child.kind == "target" then
-      text.drawText("No retreat!", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
-    end
-  end
-  if child.kind == "bag" and child.empty ~= true then
-    text.drawText("<", 100, CHILD_BACK_LABEL.y)
-    text.drawText(">", 232, CHILD_BACK_LABEL.y)
-  end
-  if type(child.notice) == "string" and child.notice ~= "" then
-    if child.kind ~= "learn" then
-      text.drawText(fitLabel(text, child.notice, CHILD_NOTICE.maxWidth), CHILD_NOTICE.x, CHILD_NOTICE.y)
-    end
-  elseif child.kind ~= "learn" then
-    text.drawText(
-      fitLabel(text, BattleChildText.subtitle(child), CHILD_NOTICE.maxWidth),
-      CHILD_NOTICE.x,
-      CHILD_NOTICE.y
-    )
-  end
-  local _ = view
+  drawChildFooter(text, child)
 end
 
 ---@param resources table<string, unknown> borrowed application collaborators
@@ -1947,52 +1877,47 @@ local function drawTwoOptionConfirmation(resources, view, child)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
   local text = assert(resources.text, "the battle render borrows its text services")
-  local menuLayers = assert(view.menuLayers, "the battle view carries generated menu screen layers")
-  local layers = assert(menuLayers.twoOption, "the battle view carries source two-option layers") --[[@as table[] ]]
-  local armed = type(view.armed) == "table" and view.armed or nil
-  local selected = nil
-  local pressedId = nil
-  if type(armed) == "table" and armed.scope == "child" then
-    if armed.id == "confirm" then
-      selected, pressedId = "yes", "yes"
-    elseif armed.id == "back" then
-      selected, pressedId = "cancel", "cancel"
-    end
-  end
-  BattleMenuPresenter.draw(graphics, assets, "two-option", layers, {
-    selection = selected,
-    armed = pressedId ~= nil and { scope = "two-option", id = pressedId } or nil,
-  })
+  local pressed = BattleMenuPresenter.drawChildTwoOption(graphics, assets, view)
   local labels = assert(child.twoOption, "learning confirmation carries source-selected labels") --[[@as table<string, unknown>]]
   local top = assert(labels.top, "the top option has its staged source label") --[[@as string]]
   local bottom = assert(labels.bottom, "the bottom option has its staged source label") --[[@as string]]
-  local topY = 67
-  local bottomY = 139
-  if armed ~= nil and armed.scope == "child" then
-    if armed.id == "confirm" then
-      topY = topY - 2
-    elseif armed.id == "back" then
-      bottomY = bottomY - 2
-    end
+  -- Source text objects sit eight pixels above their centered anchors; a
+  -- pressed option raises its label two more pixels.
+  local function drawOption(label, anchorY, optionId, palette)
+    local y = anchorY - (pressed == optionId and 2 or 0) - 8
+    drawRoleText(text, "menu", label, 128 - math.floor(measureRoleText(text, "menu", label) / 2), y, palette)
   end
-  -- Source text objects sit eight pixels above their centered anchors.
-  drawRoleText(
-    text,
-    "menu",
-    top,
-    128 - math.floor(measureRoleText(text, "menu", top) / 2),
-    topY - 8,
-    sourcePalette(view, "menu", 2, 1, 2, 3)
-  )
-  drawRoleText(
-    text,
-    "menu",
-    bottom,
-    128 - math.floor(measureRoleText(text, "menu", bottom) / 2),
-    bottomY - 8,
-    sourcePalette(view, "menu", 2, 10, 11, 12)
-  )
+  drawOption(top, 67, "yes", sourcePalette(view, "menu", 2, 1, 2, 3))
+  drawOption(bottom, 139, "cancel", sourcePalette(view, "menu", 2, 10, 11, 12))
 end
+
+-- Interaction-pane control regions by menu layout; any other layout
+-- keeps the command regions. Read-only: drawing never mutates them.
+local INTERACTION_REGIONS = {
+  moves = {
+    { id = "move:0", x = 0, y = 24, w = 128, h = 56 },
+    { id = "move:1", x = 128, y = 24, w = 128, h = 56 },
+    { id = "move:2", x = 0, y = 88, w = 128, h = 56 },
+    { id = "move:3", x = 128, y = 88, w = 128, h = 56 },
+    { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
+  },
+  target = {
+    { id = "target:0", x = 0, y = 88, w = 121, h = 57 },
+    { id = "target:1", x = 136, y = 8, w = 120, h = 73 },
+    { id = "target:2", x = 136, y = 88, w = 120, h = 57 },
+    { id = "target:3", x = 0, y = 8, w = 121, h = 73 },
+    { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
+  },
+  command = {
+    { id = "fight", x = 0, y = 24, w = 256, h = 120 },
+    { id = "bag", x = 0, y = 144, w = 80, h = 48 },
+    { id = "pokemon", x = 176, y = 144, w = 80, h = 48 },
+    { id = "run", x = 88, y = 152, w = 80, h = 40 },
+  },
+}
+
+-- Menu layer sections by drawable menu layout.
+local MENU_SECTIONS = { command = "command", moves = "moves", target = "target", ["two-option"] = "twoOption" }
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
@@ -2003,7 +1928,7 @@ local function drawInteraction(resources, view, content)
     if child.kind == "learn" and type(child.confirmation) == "table" then
       drawTwoOptionConfirmation(resources, view, child)
     else
-      drawChild(resources, view, child)
+      drawChild(resources, child)
     end
     return
   end
@@ -2011,81 +1936,31 @@ local function drawInteraction(resources, view, content)
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
   local text = assert(resources.text, "the battle render borrows its text services")
   local layout = content.layout --[[@as string]]
-  if layout ~= "command" and layout ~= "moves" and layout ~= "target" and layout ~= "two-option" then
+  if MENU_SECTIONS[layout] == nil then
     layout = "command"
   end
   local menuLayers = assert(view.menuLayers, "the battle view carries generated menu screen layers")
-  local sectionKey = layout == "two-option" and "twoOption" or layout
-  local layers = assert(menuLayers[sectionKey], "the battle view carries layers for its selected menu") --[[@as table[] ]]
-  local regions = {}
-  if layout == "moves" then
-    regions = {
-      { id = "move:0", x = 0, y = 24, w = 128, h = 56 },
-      { id = "move:1", x = 128, y = 24, w = 128, h = 56 },
-      { id = "move:2", x = 0, y = 88, w = 128, h = 56 },
-      { id = "move:3", x = 128, y = 88, w = 128, h = 56 },
-      { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
-    }
-  elseif layout == "target" then
-    regions = {
-      { id = "target:0", x = 0, y = 88, w = 121, h = 57 },
-      { id = "target:1", x = 136, y = 8, w = 120, h = 73 },
-      { id = "target:2", x = 136, y = 88, w = 120, h = 57 },
-      { id = "target:3", x = 0, y = 8, w = 121, h = 73 },
-      { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
-    }
+  local layers = assert(menuLayers[MENU_SECTIONS[layout]], "the battle view carries layers for its selected menu") --[[@as table[] ]]
+  local regions = INTERACTION_REGIONS[layout] or INTERACTION_REGIONS.command
+  local menuWindows = type(view.menuWindows) == "table" and view.menuWindows or nil
+  BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWindows)
+  local function drawOverlay()
+    -- Multi-actor turns name the acting battler above the menu so staged
+    -- choices are never mistaken for the previous entry's selection.
+    local acting = BattleViewRoster.actingName(view)
+    if acting ~= nil then
+      drawRoleText(text, "menu", fitLabel(text, acting, 44, "menu"), 128, 8)
+    end
+    drawControls(resources, view, layout, regions)
+    drawKeypadCursor(graphics, assets, view, layout, regions)
+  end
+  local revealEdge = view.menuRevealEdge
+  if type(revealEdge) == "number" then
+    LogicalSurface.clip(graphics, { x = 0, y = 0, width = 256, height = revealEdge }, drawOverlay)
   else
-    regions = {
-      { id = "fight", x = 0, y = 24, w = 256, h = 120 },
-      { id = "bag", x = 0, y = 144, w = 80, h = 48 },
-      { id = "pokemon", x = 176, y = 144, w = 80, h = 48 },
-      { id = "run", x = 88, y = 152, w = 80, h = 40 },
-    }
+    drawOverlay()
   end
-  local function drawMenu()
-    local revealEdge = type(view.menuRevealEdge) == "number" and view.menuRevealEdge or nil
-    local menuWindows = type(view.menuWindows) == "table" and view.menuWindows or nil
-    BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWindows)
-    local function drawOverlay()
-      -- Multi-actor turns name the acting battler above the menu so staged
-      -- choices are never mistaken for the previous entry's selection.
-      local acting = actingName(view)
-      if acting ~= nil then
-        drawRoleText(text, "menu", fitLabel(text, acting, 44, "menu"), 128, 8)
-      end
-      drawControls(resources, view, layout, regions)
-      drawKeypadCursor(graphics, assets, view, layout, regions)
-    end
-    if revealEdge ~= nil then
-      LogicalSurface.clip(graphics, { x = 0, y = 0, width = 256, height = revealEdge }, drawOverlay)
-    else
-      drawOverlay()
-    end
-  end
-  drawMenu()
   drawGauges(resources, view)
-end
-
----@param view table<string, unknown> internal semantic snapshot
----@return table<string, unknown>? first player-side battler facts in view order
----@return table<string, unknown>? first enemy-side battler facts in view order
-local function singleSlots(view)
-  -- The legacy singles projection: first record per side in view
-  -- order, visibility decided by the caller. Untouched so single-side
-  -- pictures never move with or without native slots.
-  local player, enemy = nil, nil
-  if type(view.battlers) == "table" then
-    for _, battler in ipairs(view.battlers) do
-      if type(battler) == "table" then
-        if battler.side == 1 and player == nil then
-          player = battler
-        elseif battler.side ~= 1 and enemy == nil then
-          enemy = battler
-        end
-      end
-    end
-  end
-  return player, enemy
 end
 
 ---@param graphics table<string, unknown> injected host graphics
@@ -2098,53 +1973,53 @@ local function drawCompactSlots(graphics, assets, view, spots)
   -- records own no slot; a missing portrait draws nothing under the
   -- existing pending path, never a fallback picture. Draw never
   -- mutates engine or cue state.
-  local players, enemies = splitBattlers(view)
+  local players, enemies = BattleViewRoster.liveSides(view)
   local live = {}
-  for _, battler in ipairs(players) do
-    if type(battler.position) == "number" then
-      assert(
-        live[battler.position] == nil,
-        "compact slot "
-          .. tostring(battler.position)
-          .. " is visibly claimed twice (combatant "
-          .. tostring(battler.combatant)
-          .. ")"
-      )
-      live[battler.position] = battler
-    end
-  end
-  for _, battler in ipairs(enemies) do
-    if type(battler.position) == "number" then
-      assert(
-        live[battler.position] == nil,
-        "compact slot "
-          .. tostring(battler.position)
-          .. " is visibly claimed twice (combatant "
-          .. tostring(battler.combatant)
-          .. ")"
-      )
-      live[battler.position] = battler
+  for _, side in ipairs({ players, enemies }) do
+    for _, battler in ipairs(side) do
+      if type(battler.position) == "number" then
+        assert(
+          live[battler.position] == nil,
+          "compact slot "
+            .. tostring(battler.position)
+            .. " is visibly claimed twice (combatant "
+            .. tostring(battler.combatant)
+            .. ")"
+        )
+        live[battler.position] = battler
+      end
     end
   end
   for _, spot in ipairs(spots) do
     local battler = live[spot.position]
-    if battler ~= nil then
-      local image = battlerImage(assets, battler)
-      if image ~= nil then
-        local dx = (type(battler.shakeDx) == "number" and battler.shakeDx or 0) --[[@as number]]
-        if type(battler.pictureXOffset) == "number" then
-          dx = dx + battler.pictureXOffset --[[@as number]]
-        end
-        local scale = assert(spot.scale, "compact doubles portraits carry their authored presentation scale")
-        local allocation = { x = spot.x, y = spot.y, width = spot.width, height = spot.height }
-        LogicalSurface.clip(graphics, allocation, function()
-          -- Lease-paired cells draw through the shared sampler so the
-          -- recorded draw carries the staged cell exactly; owned and
-          -- test images draw directly.
-          drawArtwork(graphics, image, image.quad, spot.x + dx * scale, spot.y, 0, scale, scale)
-        end)
-      end
+    local image = battler ~= nil and battlerImage(assets, battler) or nil
+    if image ~= nil then
+      local dx = numberOr(battler.shakeDx, 0) + numberOr(battler.pictureXOffset, 0)
+      local scale = assert(spot.scale, "compact doubles portraits carry their authored presentation scale")
+      local allocation = { x = spot.x, y = spot.y, width = spot.width, height = spot.height }
+      LogicalSurface.clip(graphics, allocation, function()
+        -- Lease-paired cells draw through the shared sampler so the
+        -- recorded draw carries the staged cell exactly; owned and
+        -- test images draw directly.
+        drawArtwork(graphics, image, image.quad, spot.x + dx * scale, spot.y, 0, scale, scale)
+      end)
     end
+  end
+end
+
+-- Draws one visible singles battler portrait at its compact center with
+-- its transient shake.
+---@param graphics table<string, unknown> injected host graphics
+---@param assets table<string, unknown> injected asset holder
+---@param battler table<string, unknown>? first battler facts on the side
+---@param center table<string, number> compact image center under drawing
+local function drawCompactSingle(graphics, assets, battler, center)
+  if battler == nil or battler.visible == false then
+    return
+  end
+  local image = battlerImage(assets, battler)
+  if image ~= nil then
+    drawArtwork(graphics, image, image.quad, center.x + numberOr(battler.shakeDx, 0), center.y)
   end
 end
 
@@ -2163,32 +2038,16 @@ end
 local function drawCompactScene(resources, view, content)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
-  local viewport = content.scene
-  if type(viewport) ~= "table" then
-    viewport = { x = 0, y = 0, width = 256, height = 136 }
-  end
-  local playerCenter = content.playerCenter
-  if type(playerCenter) ~= "table" then
-    playerCenter = BattleRenderer.PLAYER_CENTER
-  end
-  local enemyCenter = content.enemyCenter
-  if type(enemyCenter) ~= "table" then
-    enemyCenter = BattleRenderer.ENEMY_CENTER
-  end
+  local viewport = type(content.scene) == "table" and content.scene or { x = 0, y = 0, width = 256, height = 136 }
+  local playerCenter = type(content.playerCenter) == "table" and content.playerCenter or BattleRenderer.PLAYER_CENTER
+  local enemyCenter = type(content.enemyCenter) == "table" and content.enemyCenter or BattleRenderer.ENEMY_CENTER
   -- Compact images use ordinary alpha composition under an isolated
   -- neutral image tint, then restore the caller's complete graphics state.
   graphics.push("all")
   graphics.setBlendMode("alpha", "alphamultiply")
   graphics.setColor(1, 1, 1, 1)
   LogicalSurface.clip(graphics, viewport, function()
-    local scene = nil
-    local backgroundFailure = nil
-    if type(view.backgroundRaster) == "table" and type(assets.background) == "function" then
-      scene, backgroundFailure = assets:background(view.backgroundRaster --[[@as table<string, unknown>]])
-    end
-    if scene == nil and backgroundFailure == nil then
-      scene = assets:drawable(resources.sceneImageKey --[[@as string]])
-    end
+    local scene = sceneLayer(resources, assets, view)
     if scene ~= nil then
       local scrollX, scrollY = bgScrollOf(view)
       drawSceneLayer(graphics, scene, scrollX, scrollY)
@@ -2197,21 +2056,9 @@ local function drawCompactScene(resources, view, content)
     if type(spots) == "table" then
       drawCompactSlots(graphics, assets, view, spots --[[@as table<integer, table<string, unknown>>]])
     else
-      local player, enemy = singleSlots(view)
-      if enemy ~= nil and enemy.visible ~= false then
-        local front = battlerImage(assets, enemy)
-        if front ~= nil then
-          local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
-          drawArtwork(graphics, front, front.quad, enemyCenter.x + dx, enemyCenter.y)
-        end
-      end
-      if player ~= nil and player.visible ~= false then
-        local back = battlerImage(assets, player)
-        if back ~= nil then
-          local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
-          drawArtwork(graphics, back, back.quad, playerCenter.x + dx, playerCenter.y)
-        end
-      end
+      local player, enemy = BattleViewRoster.firstPerSide(view)
+      drawCompactSingle(graphics, assets, enemy, enemyCenter)
+      drawCompactSingle(graphics, assets, player, playerCenter)
     end
   end)
   graphics.pop()

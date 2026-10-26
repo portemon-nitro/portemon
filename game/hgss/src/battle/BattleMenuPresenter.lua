@@ -250,4 +250,29 @@ function BattleMenuPresenter._drawLayer(graphics, assets, layout, view, entry)
   end
 end
 
+-- Child-scoped controls mapped onto the source two-option identities.
+local CHILD_TWO_OPTION = { confirm = "yes", back = "cancel" }
+
+-- Draws the learning confirmation's two-option planes with the armed
+-- child control selecting and pressing its source option: Confirm the top
+-- "yes" option and Back the bottom "cancel" option.
+---@param graphics love.graphics borrowed renderer graphics
+---@param assets table<string, unknown> generated image holder
+---@param view table<string, unknown> semantic render snapshot carrying the menu layers and armed control
+---@return string? pressed source option identity, nil while no child control is armed
+function BattleMenuPresenter.drawChildTwoOption(graphics, assets, view)
+  local menuLayers = assert(view.menuLayers, "the battle view carries generated menu screen layers")
+  local layers = assert(menuLayers.twoOption, "the battle view carries source two-option layers") --[[@as table[] ]]
+  local armed = view.armed
+  local pressed = nil
+  if type(armed) == "table" and armed.scope == "child" then
+    pressed = CHILD_TWO_OPTION[armed.id]
+  end
+  BattleMenuPresenter.draw(graphics, assets, "two-option", layers, {
+    selection = pressed,
+    armed = pressed ~= nil and { scope = "two-option", id = pressed } or nil,
+  })
+  return pressed
+end
+
 return BattleMenuPresenter

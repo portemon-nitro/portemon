@@ -17,6 +17,7 @@ local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
@@ -246,61 +247,6 @@ local function scopeFor(mode, view)
   return "command"
 end
 
----@param record table<string, unknown> displayed battler facts under resolution
----@return boolean true when the record owns a live compact slot
-local function liveSlot(record)
-  -- Only live active records resolve geometry: hidden, inactive and
-  -- historic records never claim a HUD box or sprite anchor.
-  return type(record) == "table" and record.visible ~= false and record.active ~= false
-end
-
----@param records table<integer, table<string, unknown>> one side live records under ordering
-local function sortBySlot(records)
-  -- Positions stay opaque: only the relative order within a side
-  -- decides the cell, never a hardcoded slot number. The combatant
-  -- identity breaks ties deterministically.
-  table.sort(records, function(a, b)
-    local pa, pb = a.position, b.position
-    if type(pa) == "number" and type(pb) == "number" and pa ~= pb then
-      return pa < pb
-    end
-    return a.combatant < b.combatant
-  end)
-end
-
--- Canonical side slot order behind stable cells: every distinct native
--- position an active record claims on the side, hidden records
--- included, in slot order. Cues hide and show records without moving
--- slots, so the survivors keep their cells while a neighbor
--- transitions instead of reindexing onto its cell.
----@param view table<string, unknown> internal semantic snapshot under resolution
----@param playerSide boolean true for the near player side, false for the far foe side
----@return integer[] distinct claimed native positions in slot order
-local function canonicalOrder(view, playerSide)
-  local seen = {} ---@type table<integer, boolean>
-  local order = {} ---@type integer[]
-  if type(view.battlers) == "table" then
-    for _, battler in ipairs(view.battlers) do
-      if
-        type(battler) == "table"
-        and battler.active ~= false
-        and type(battler.position) == "number"
-        and (battler.side == 1) == playerSide
-        and not seen[
-          battler.position --[[@as integer]]
-        ]
-      then
-        seen[
-          battler.position --[[@as integer]]
-        ] = true
-        order[#order + 1] = battler.position --[[@as integer]]
-      end
-    end
-  end
-  table.sort(order)
-  return order
-end
-
 -- Layout family follows occupied native slots, never transient
 -- visibility: a double battle keeps its four cells while a neighbor
 -- hides mid-transition. Single battles never reach doubles occupancy,
@@ -310,7 +256,7 @@ end
 ---@param enemies table<integer, table<string, unknown>> live foes in slot order
 ---@return boolean true while the battle occupies doubles slots
 local function doublesFormat(view, players, enemies)
-  if #canonicalOrder(view, true) >= 2 or #canonicalOrder(view, false) >= 2 then
+  if #BattleViewRoster.claimedPositions(view, true) >= 2 or #BattleViewRoster.claimedPositions(view, false) >= 2 then
     return true
   end
   if #players == 2 and #enemies == 2 then
@@ -322,48 +268,6 @@ local function doublesFormat(view, players, enemies)
     return true
   end
   return false
-end
-
----@param view table<string, unknown> internal semantic snapshot
----@return table<string, unknown>? first player-side battler facts in view order
----@return table<string, unknown>? first enemy-side battler facts in view order
-local function singleSlots(view)
-  -- The legacy singles projection: first record per side in view
-  -- order. Untouched so single-side geometry never moves.
-  local player, enemy = nil, nil
-  if type(view.battlers) == "table" then
-    for _, battler in ipairs(view.battlers) do
-      if type(battler) == "table" then
-        if battler.side == 1 and player == nil then
-          player = battler
-        elseif battler.side ~= 1 and enemy == nil then
-          enemy = battler
-        end
-      end
-    end
-  end
-  return player, enemy
-end
-
----@param view table<string, unknown> internal semantic snapshot
----@return table<integer, table<string, unknown>> live player-side battler facts in slot order
----@return table<integer, table<string, unknown>> live enemy-side battler facts in slot order
-local function splitBattlers(view)
-  local players, enemies = {}, {}
-  if type(view.battlers) == "table" then
-    for _, battler in ipairs(view.battlers) do
-      if liveSlot(battler) then
-        if battler.side == 1 then
-          players[#players + 1] = battler
-        else
-          enemies[#enemies + 1] = battler
-        end
-      end
-    end
-  end
-  sortBySlot(players)
-  sortBySlot(enemies)
-  return players, enemies
 end
 
 -- Adapted compact doubles geometry: a modern one-screen arrangement
@@ -603,38 +507,9 @@ local function compactDoublesHudBox(battler, fallback, origin, position, side)
   }
 end
 
--- Pure single-pane geometry for one semantic snapshot: dock allocations,
--- framed content boxes, hit cells, cursor and label origins, HUD anchors
--- and image centers. The controller owns no rectangles; draw and input
--- mapping consume these same regions.
----@param child table<string, unknown> detached child view under titling
----@return string modal title wording
-local function childTitle(child)
-  local kind = child.kind
-  if kind == "target" then
-    return "Use " .. tostring(child.stagedItem or "the item") .. " on whom?"
-  elseif kind == "bag" then
-    if child.empty == true then
-      return "The bag is empty."
-    end
-    local page = child.page --[[@as table<string, unknown>?]]
-    local paging = ""
-    if type(page) == "table" then
-      paging = " " .. tostring(page.current or 1) .. "/" .. tostring(page.count or 1)
-    end
-    return "BAG: " .. tostring(child.currentPocket or "?") .. paging
-  elseif kind == "learn" then
-    return "Forget a move for " .. tostring(child.incomingMove or "?") .. "?"
-  end
-  if child.cancellable == true then
-    return "Choose a Pokemon!"
-  end
-  return "Choose a replacement!"
-end
-
 -- Canonical child plan content with the same row numbers the modal
--- paint uses: six rows, a footer Back, a learning Confirm, and bag
--- pocket stepping. Draw and input mapping consume these same rects.
+-- paint uses: six rows, a footer Back, and bag pocket stepping. Draw
+-- and input mapping consume these same rects.
 ---@param child table<string, unknown> detached child view under resolution
 ---@return table<string, unknown> canonical child plan content
 local function childContent(child)
@@ -661,25 +536,38 @@ local function childContent(child)
     end
   end
   local backRect = { x = 8, y = 152, width = 80, height = 40 }
-  local confirmRect = { x = 168, y = 152, width = 80, height = 40 }
   if child.kind == "learn" then
     backRect = { x = 8, y = 172, width = 240, height = 20 }
-    confirmRect = { x = 8, y = 152, width = 240, height = 20 }
   end
   return {
     kind = child.kind,
     focusId = child.focusId,
-    title = childTitle(child),
+    title = BattleChildText.title(child),
     rows = rows,
     hasBack = not twoOption and (child.cancellable == true or child.kind == "learn"),
-    hasConfirm = false,
     twoOption = twoOption,
     hasPocketNav = child.kind == "bag" and child.empty ~= true,
     back = backRect,
-    confirm = confirmRect,
     pocketPrev = { x = 96, y = 152, width = 76, height = 40 },
     pocketNext = { x = 176, y = 152, width = 72, height = 40 },
   }
+end
+
+---@param players table<integer, table<string, unknown>> live allies in slot order
+---@param enemies table<integer, table<string, unknown>> live foes in slot order
+---@return table<integer, table<string, unknown>> live battlers keyed by their native position
+local function livePositions(players, enemies)
+  local live = {} ---@type table<integer, table<string, unknown>>
+  for _, side in ipairs({ players, enemies }) do
+    for _, battler in ipairs(side) do
+      if type(battler.position) == "number" then
+        live[
+          battler.position --[[@as integer]]
+        ] = battler
+      end
+    end
+  end
+  return live
 end
 
 ---@param view table<string, unknown> internal semantic snapshot under resolution
@@ -692,21 +580,7 @@ local function doublesHud(view, players, enemies)
   -- cell with no live owner: paint skips ownerless boxes while the
   -- survivors stay on their rows. Draw and hit regions consume these
   -- same bounds.
-  local live = {} ---@type table<integer, table<string, unknown>>
-  for _, battler in ipairs(players) do
-    if type(battler.position) == "number" then
-      live[
-        battler.position --[[@as integer]]
-      ] = battler
-    end
-  end
-  for _, battler in ipairs(enemies) do
-    if type(battler.position) == "number" then
-      live[
-        battler.position --[[@as integer]]
-      ] = battler
-    end
-  end
+  local live = livePositions(players, enemies)
   -- Side identity behind an ownerless transition cell comes from the
   -- side's live records; every doubles view fields one, so the plan
   -- keeps the owner's side without guessing it.
@@ -736,8 +610,8 @@ local function doublesHud(view, players, enemies)
       boxes[#boxes + 1] = compactDoublesHudBox(owner, fallback, cell, position, side)
     end
   end
-  add(canonicalOrder(view, false), DOUBLES_HUD_CELLS.enemy, "FOE", foeSide)
-  add(canonicalOrder(view, true), DOUBLES_HUD_CELLS.player, "LEAD", allySide)
+  add(BattleViewRoster.claimedPositions(view, false), DOUBLES_HUD_CELLS.enemy, "FOE", foeSide)
+  add(BattleViewRoster.claimedPositions(view, true), DOUBLES_HUD_CELLS.player, "LEAD", allySide)
   table.sort(boxes, function(a, b)
     if a.y ~= b.y then
       return a.y < b.y
@@ -758,16 +632,7 @@ local function doublesSpriteCenters(view, players, enemies)
   local spots = {} ---@type table<integer, table<string, unknown>>
   local function add(list, order, cells)
     for index, battler in ipairs(list) do
-      local row = index
-      if type(battler.position) == "number" then
-        for candidate, slot in ipairs(order) do
-          if slot == battler.position then
-            row = candidate
-            break
-          end
-        end
-      end
-      local cell = cells[row]
+      local cell = cells[BattleViewRoster.claimedIndex(order, battler, index)]
       assert(cell ~= nil, "the compact doubles anchors cover every live battler")
       spots[#spots + 1] = {
         position = battler.position,
@@ -779,8 +644,8 @@ local function doublesSpriteCenters(view, players, enemies)
       }
     end
   end
-  add(enemies, canonicalOrder(view, false), DOUBLES_PICTURE_CELLS.enemy)
-  add(players, canonicalOrder(view, true), DOUBLES_PICTURE_CELLS.player)
+  add(enemies, BattleViewRoster.claimedPositions(view, false), DOUBLES_PICTURE_CELLS.enemy)
+  add(players, BattleViewRoster.claimedPositions(view, true), DOUBLES_PICTURE_CELLS.player)
   table.sort(spots, function(a, b)
     local pa = a.position
     local pb = b.position
@@ -788,6 +653,26 @@ local function doublesSpriteCenters(view, players, enemies)
     return pa < pb
   end)
   return spots
+end
+
+---@param rect table<string, unknown> fixed half-open rect
+---@return table<string, unknown> caller-owned copy of the rect
+local function copyRect(rect)
+  return { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
+end
+
+-- The legacy single-side HUD boxes: the foe box at the left/top anchor
+-- and the player box at the upper-right with its experience row.
+---@param view table<string, unknown> internal semantic snapshot under resolution
+---@return table<string, unknown> side-keyed HUD boxes
+local function singlesHud(view)
+  local player, enemy = BattleViewRoster.firstPerSide(view)
+  local foe = hudBox(enemy, "FOE", { x = HUD_ENEMY.x, y = HUD_ENEMY.y }, HUD_ENEMY_BOX, false)
+  local ally =
+    hudBox(player, "LEAD", { x = HUD_PLAYER_RIGHT - HUD_PLAYER_BOX.width, y = HUD_PLAYER_TOP }, HUD_PLAYER_BOX, true)
+  ally.rightEdge = HUD_PLAYER_RIGHT
+  ally.bottomEdge = HUD_PLAYER_TOP + HUD_PLAYER_BOX.height
+  return { enemy = foe, player = ally }
 end
 
 ---@param view table<string, unknown> internal semantic snapshot under resolution
@@ -827,21 +712,21 @@ function BattleCompactInterface.contentFor(view)
   -- doubles slots, even while a neighbor hides mid-transition; hidden
   -- slots keep their cells with no live owner. Every other occupancy
   -- keeps the legacy single-side geometry untouched.
-  local players, enemies = splitBattlers(view)
+  local players, enemies = BattleViewRoster.liveSides(view)
   local doubles = doublesFormat(view, players, enemies)
   return {
     kind = "battle",
     layout = scopeFor(type(mode) == "string" and mode or "command", view),
     compact = true,
-    scene = { x = SCENE.x, y = SCENE.y, width = SCENE.width, height = SCENE.height },
-    dock = { x = dock.x, y = dock.y, width = dock.width, height = dock.height },
+    scene = copyRect(SCENE),
+    dock = copyRect(dock),
     prompt = {
-      outer = { x = PROMPT_OUTER.x, y = PROMPT_OUTER.y, width = PROMPT_OUTER.width, height = PROMPT_OUTER.height },
+      outer = copyRect(PROMPT_OUTER),
       content = contentOf(PROMPT_OUTER),
     },
     promptOrigin = { x = PROMPT_ORIGIN.x, y = PROMPT_ORIGIN.y },
     commands = {
-      outer = { x = COMMAND_OUTER.x, y = COMMAND_OUTER.y, width = COMMAND_OUTER.width, height = COMMAND_OUTER.height },
+      outer = copyRect(COMMAND_OUTER),
       content = commandsContent,
       cells = cells,
       cursors = cursors,
@@ -849,12 +734,7 @@ function BattleCompactInterface.contentFor(view)
     movePanels = { left = contentOf(MOVE_LEFT_OUTER), right = contentOf(MOVE_RIGHT_OUTER) },
     moveGrid = { x = MOVE_GRID_X, columnWidth = MOVE_COLUMN_WIDTH, rowHeight = MOVE_ROW_HEIGHT },
     moveBack = {
-      rect = {
-        x = MOVE_BACK_RECT.x,
-        y = MOVE_BACK_RECT.y,
-        width = MOVE_BACK_RECT.width,
-        height = MOVE_BACK_RECT.height,
-      },
+      rect = copyRect(MOVE_BACK_RECT),
       label = { x = MOVE_BACK_LABEL.x, y = MOVE_BACK_LABEL.y },
     },
     moveInfo = moveInfo(view),
@@ -867,23 +747,7 @@ function BattleCompactInterface.contentFor(view)
       origin = { x = NARRATION_ORIGIN.x, y = NARRATION_ORIGIN.y },
       width = NARRATION_WIDTH,
     },
-    hud = (function()
-      if doubles then
-        return doublesHud(view, players, enemies)
-      end
-      local player, enemy = singleSlots(view)
-      local foe = hudBox(enemy, "FOE", { x = HUD_ENEMY.x, y = HUD_ENEMY.y }, HUD_ENEMY_BOX, false)
-      local ally = hudBox(
-        player,
-        "LEAD",
-        { x = HUD_PLAYER_RIGHT - HUD_PLAYER_BOX.width, y = HUD_PLAYER_TOP },
-        HUD_PLAYER_BOX,
-        true
-      )
-      ally.rightEdge = HUD_PLAYER_RIGHT
-      ally.bottomEdge = HUD_PLAYER_TOP + HUD_PLAYER_BOX.height
-      return { enemy = foe, player = ally }
-    end)(),
+    hud = doubles and doublesHud(view, players, enemies) or singlesHud(view),
     playerCenter = { x = PLAYER_CENTER.x, y = PLAYER_CENTER.y },
     enemyCenter = { x = ENEMY_CENTER.x, y = ENEMY_CENTER.y },
     spriteCenters = doubles and doublesSpriteCenters(view, players, enemies) or nil,
@@ -904,7 +768,8 @@ local function hitRegion(regions, x, y)
 end
 
 -- Child hit regions from the same canonical rows the modal paints,
--- plus the footer Back, learning Confirm, and bag pocket stepping.
+-- plus the footer Back and bag pocket stepping; a staged learning
+-- confirmation maps its two source options.
 ---@param child table<string, unknown>? canonical child plan content under mapping
 ---@return table<integer, table<string, unknown>>? active hit regions with their scopes
 local function childRegions(child)
@@ -918,157 +783,27 @@ local function childRegions(child)
     }
   end
   local regions = {}
+  local function add(id, rect)
+    regions[#regions + 1] =
+      { id = id, x = rect.x, y = rect.y, width = rect.width, height = rect.height, scope = "child" }
+  end
   local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
   if type(rows) == "table" then
     for _, row in ipairs(rows) do
       local box = row --[[@as table<string, unknown>]]
       if box.empty ~= true and type(box.id) == "string" then
-        regions[#regions + 1] = {
-          id = box.id,
-          x = box.x,
-          y = box.y,
-          width = box.width,
-          height = box.height,
-          scope = "child",
-        }
+        add(box.id, box)
       end
     end
   end
   if child.hasBack == true then
-    local back = child.back --[[@as table<string, unknown>]]
-    regions[#regions + 1] =
-      { id = "back", x = back.x, y = back.y, width = back.width, height = back.height, scope = "child" }
-  end
-  if child.hasConfirm == true then
-    local confirm = child.confirm --[[@as table<string, unknown>]]
-    regions[#regions + 1] = {
-      id = "confirm",
-      x = confirm.x,
-      y = confirm.y,
-      width = confirm.width,
-      height = confirm.height,
-      scope = "child",
-    }
+    add("back", child.back)
   end
   if child.hasPocketNav == true then
-    local prev = child.pocketPrev --[[@as table<string, unknown>]]
-    local next = child.pocketNext --[[@as table<string, unknown>]]
-    regions[#regions + 1] = {
-      id = "pocket_prev",
-      x = prev.x,
-      y = prev.y,
-      width = prev.width,
-      height = prev.height,
-      scope = "child",
-    }
-    regions[#regions + 1] = {
-      id = "pocket_next",
-      x = next.x,
-      y = next.y,
-      width = next.width,
-      height = next.height,
-      scope = "child",
-    }
+    add("pocket_prev", child.pocketPrev)
+    add("pocket_next", child.pocketNext)
   end
   return regions
-end
-
--- Child taps drive only the bound child owner: rows arm and seal
--- through the shared child convention with stable row/control ids.
----@param event table<string, unknown> session-inverted logical input
----@param regions table<integer, table<string, unknown>>? active child hit regions
----@return table<string, unknown>? semantic battle input, nil when the battle ignores it
-local function mapChildInput(event, regions)
-  if regions == nil then
-    if event.type == "pointer_cancel" then
-      return { type = "child_cancel", pointerId = event.pointerId }
-    end
-    return nil
-  end
-  local eventType = event.type
-  if eventType == "pointer_down" and type(event.x) == "number" and type(event.y) == "number" then
-    local region = hitRegion(regions, event.x, event.y)
-    if region == nil then
-      return nil
-    end
-    return { type = "child_press", control = { scope = "child", id = region.id }, pointerId = event.pointerId }
-  end
-  if eventType == "pointer_move" and type(event.x) == "number" and type(event.y) == "number" then
-    local region = hitRegion(regions, event.x, event.y)
-    local control = nil
-    if region ~= nil then
-      control = { scope = "child", id = region.id }
-    end
-    return { type = "child_slide", control = control, pointerId = event.pointerId }
-  end
-  if eventType == "pointer_up" and type(event.x) == "number" and type(event.y) == "number" then
-    local region = hitRegion(regions, event.x, event.y)
-    local control = nil
-    if region ~= nil then
-      control = { scope = "child", id = region.id }
-    end
-    return { type = "child_activate", control = control, pointerId = event.pointerId }
-  end
-  if eventType == "pointer_cancel" then
-    return { type = "child_cancel", pointerId = event.pointerId }
-  end
-  if eventType == "confirm" or eventType == "cancel" then
-    return { type = eventType }
-  end
-  if eventType == "navigate" then
-    return { type = "navigate", direction = event.direction, pointerId = event.pointerId }
-  end
-  return nil
-end
-
--- Narration and outcome share one full-surface dialogue tap: presses
--- arm and releases confirm through the dialogue scope, so the screen
--- can acknowledge the shown page on a matched gesture only.
----@param event table<string, unknown> session-inverted logical input
----@param mode string controller mode under mapping
----@param regions table<integer, table<string, unknown>>? active dialogue hit regions
----@return table<string, unknown>? semantic battle input, nil when the battle ignores it
-local function mapDialogueInput(event, mode, regions)
-  if regions == nil then
-    if event.type == "pointer_cancel" then
-      return { type = "pointer_cancel", pointerId = event.pointerId }
-    end
-    return nil
-  end
-  local eventType = event.type
-  if eventType == "pointer_down" and type(event.x) == "number" and type(event.y) == "number" then
-    local region = hitRegion(regions, event.x, event.y)
-    if region == nil then
-      return nil
-    end
-    return { type = "battle_press", control = { scope = mode, id = region.id }, pointerId = event.pointerId }
-  end
-  if eventType == "pointer_move" and type(event.x) == "number" and type(event.y) == "number" then
-    local region = hitRegion(regions, event.x, event.y)
-    local control = nil
-    if region ~= nil then
-      control = { scope = mode, id = region.id }
-    end
-    return { type = "battle_slide", control = control, pointerId = event.pointerId }
-  end
-  if eventType == "pointer_up" and type(event.x) == "number" and type(event.y) == "number" then
-    local region = hitRegion(regions, event.x, event.y)
-    local control = nil
-    if region ~= nil then
-      control = { scope = mode, id = region.id }
-    end
-    return { type = "battle_activate", control = control, pointerId = event.pointerId }
-  end
-  if eventType == "pointer_cancel" then
-    return { type = "pointer_cancel", pointerId = event.pointerId }
-  end
-  if eventType == "confirm" or eventType == "cancel" then
-    return { type = eventType }
-  end
-  if eventType == "navigate" then
-    return { type = "navigate", direction = event.direction, pointerId = event.pointerId }
-  end
-  return nil
 end
 
 ---@param content table<string, unknown> canonical compact plan content
@@ -1081,51 +816,57 @@ local function regionsFor(content, mode)
   if mode == "narration" or mode == "outcome" then
     return { { id = "dialogue", x = 0, y = 0, width = 256, height = 192, scope = mode } }
   end
+  local regions = {}
+  local function add(id, rect)
+    regions[#regions + 1] = { id = id, x = rect.x, y = rect.y, width = rect.width, height = rect.height, scope = mode }
+  end
   if mode == "command" then
-    local regions = {}
     for _, cell in ipairs(content.commands.cells) do
-      regions[#regions + 1] =
-        { id = cell.id, x = cell.x, y = cell.y, width = cell.width, height = cell.height, scope = "command" }
+      add(cell.id, cell)
     end
     return regions
   elseif mode == "moves" then
-    local regions = {}
     for slot = 0, 3 do
-      local column = slot % 2
-      local row = math.floor(slot / 2)
-      regions[#regions + 1] = {
-        id = "move:" .. tostring(slot),
-        x = MOVE_GRID_X + column * MOVE_COLUMN_WIDTH,
-        y = MOVE_GRID_TOP + row * MOVE_ROW_HEIGHT,
+      add("move:" .. tostring(slot), {
+        x = MOVE_GRID_X + slot % 2 * MOVE_COLUMN_WIDTH,
+        y = MOVE_GRID_TOP + math.floor(slot / 2) * MOVE_ROW_HEIGHT,
         width = MOVE_COLUMN_WIDTH,
         height = MOVE_ROW_HEIGHT,
-        scope = "moves",
-      }
+      })
     end
-    regions[#regions + 1] = {
-      id = "cancel",
-      x = MOVE_BACK_RECT.x,
-      y = MOVE_BACK_RECT.y,
-      width = MOVE_BACK_RECT.width,
-      height = MOVE_BACK_RECT.height,
-      scope = "moves",
-    }
+    add("cancel", MOVE_BACK_RECT)
     return regions
   elseif mode == "target" then
-    local regions = {}
     for _, row in ipairs(content.targetRows) do
-      regions[#regions + 1] =
-        { id = row.id, x = row.x, y = row.y, width = row.width, height = row.height, scope = "target" }
+      add(row.id, row)
     end
     return regions
   end
   return nil
 end
 
+-- Semantic input types behind the pointer gestures: the open child
+-- drives its bound child owner, every other mode the battle controller.
+local CHILD_INPUT = {
+  pointer_down = "child_press",
+  pointer_move = "child_slide",
+  pointer_up = "child_activate",
+  pointer_cancel = "child_cancel",
+}
+local BATTLE_INPUT = {
+  pointer_down = "battle_press",
+  pointer_move = "battle_slide",
+  pointer_up = "battle_activate",
+  pointer_cancel = "pointer_cancel",
+}
+
 -- Maps session-inverted logical input to the shared semantic battle
 -- input: presses arm, slides track, releases confirm through the same
--- press convention as the paired panes. Regions outside every control
--- map to nothing; semantic keys pass through to the shared controller.
+-- press convention as the paired panes, each control carrying its hit
+-- region's scope. Presses outside every control map to nothing; semantic
+-- keys pass through to the shared controller. Narration and outcome
+-- share one full-surface dialogue tap, so the screen acknowledges the
+-- shown page on a matched gesture only.
 ---@param event table<string, unknown> session-inverted logical input
 ---@param view table<string, unknown> internal semantic snapshot carrying the mode scope
 ---@param plan table<string, unknown> resolved plan carrying the canonical content
@@ -1139,44 +880,22 @@ function BattleCompactInterface.mapInput(event, view, plan)
   if eventType == "pointer_down" and event.outside == true then
     return nil
   end
-  if view.mode == "child" then
-    return mapChildInput(event, regionsFor(content, view.mode))
+  local kinds = view.mode == "child" and CHILD_INPUT or BATTLE_INPUT
+  local regions = regionsFor(content, view.mode --[[@as string]])
+  if eventType == "pointer_cancel" then
+    return { type = kinds.pointer_cancel, pointerId = event.pointerId }
   end
-  if view.mode == "narration" or view.mode == "outcome" then
-    return mapDialogueInput(event, view.mode --[[@as string]], regionsFor(content, view.mode))
-  end
-  local regions = regionsFor(content, view.mode)
   if regions == nil then
-    if eventType == "pointer_cancel" then
-      return { type = "pointer_cancel", pointerId = event.pointerId }
-    end
     return nil
   end
-  if eventType == "pointer_down" and type(event.x) == "number" and type(event.y) == "number" then
+  local gesture = kinds[eventType]
+  if gesture ~= nil and type(event.x) == "number" and type(event.y) == "number" then
     local region = hitRegion(regions, event.x, event.y)
-    if region == nil then
+    if region == nil and eventType == "pointer_down" then
       return nil
     end
-    return { type = "battle_press", control = { scope = region.scope, id = region.id }, pointerId = event.pointerId }
-  end
-  if eventType == "pointer_move" and type(event.x) == "number" and type(event.y) == "number" then
-    local region = hitRegion(regions, event.x, event.y)
-    local control = nil
-    if region ~= nil then
-      control = { scope = region.scope, id = region.id }
-    end
-    return { type = "battle_slide", control = control, pointerId = event.pointerId }
-  end
-  if eventType == "pointer_up" and type(event.x) == "number" and type(event.y) == "number" then
-    local region = hitRegion(regions, event.x, event.y)
-    local control = nil
-    if region ~= nil then
-      control = { scope = region.scope, id = region.id }
-    end
-    return { type = "battle_activate", control = control, pointerId = event.pointerId }
-  end
-  if eventType == "pointer_cancel" then
-    return { type = "pointer_cancel", pointerId = event.pointerId }
+    local control = region ~= nil and { scope = region.scope, id = region.id } or nil
+    return { type = gesture, control = control, pointerId = event.pointerId }
   end
   if eventType == "confirm" or eventType == "cancel" then
     return { type = eventType }
@@ -1338,28 +1057,6 @@ local function fillBox(graphics, background, box)
   graphics.rectangle("fill", box.x, box.y, box.width, box.height)
 end
 
----@param view table<string, unknown> internal semantic snapshot under drawing
----@return string? acting battler display name, nil outside multi-actor decisions
-local function actingName(view)
-  local actor = view.actor --[[@as table<string, unknown>?]]
-  if type(actor) ~= "table" or type(actor.total) ~= "number" or actor.total <= 1 then
-    return nil
-  end
-  if type(view.battlers) == "table" then
-    for _, battler in ipairs(view.battlers) do
-      if
-        type(battler) == "table"
-        and battler.combatant == actor.combatant
-        and type(battler.name) == "string"
-        and battler.name ~= ""
-      then
-        return battler.name --[[@as string]]
-      end
-    end
-  end
-  return nil
-end
-
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot under drawing
 ---@param content table<string, unknown> canonical compact plan content under drawing
@@ -1372,7 +1069,7 @@ local function drawCommandDock(resources, view, content)
   fillBox(resources.graphics, background, content.commands.outer)
   -- Multi-actor turns name the acting battler first so staged choices
   -- are never mistaken for the previous entry's selection.
-  local acting = actingName(view)
+  local acting = BattleViewRoster.actingName(view)
   local promptLines = wrapPrompt(text, view.message or "", PROMPT_MAX_WIDTH, acting ~= nil and 1 or 2)
   local promptY = PROMPT_ORIGIN.y
   if acting ~= nil then
@@ -1448,7 +1145,7 @@ local function drawMoveDock(resources, view, content)
   drawLabel(text, fitText(text, info.typeText, MOVE_INFO_MAX_WIDTH), MOVE_INFO_TEXT_X, info.typeRowY)
   drawLabel(text, fitText(text, info.ppText, MOVE_INFO_MAX_WIDTH), MOVE_INFO_TEXT_X, info.ppRowY)
   drawLabel(text, "BACK", MOVE_BACK_LABEL.x, MOVE_BACK_LABEL.y)
-  local acting = actingName(view)
+  local acting = BattleViewRoster.actingName(view)
   if acting ~= nil then
     drawLabel(text, fitText(text, acting, MOVE_LABEL_WIDTH), MOVE_GRID_X + 8, MOVE_GRID_TOP - 16)
   end
@@ -1464,7 +1161,7 @@ local function drawTargetDock(resources, view, content)
   local windows = assert(resources.windows, "the compact render borrows its window services")
   local background = backgroundOf(resources)
   fillBox(resources.graphics, background, TARGET_OUTER)
-  local acting = actingName(view)
+  local acting = BattleViewRoster.actingName(view)
   if acting ~= nil then
     drawLabel(text, fitText(text, acting, TARGET_ROW_WIDTH), TARGET_ROW_X + 8, TARGET_FIRST_Y - 18)
   end
@@ -1637,16 +1334,14 @@ local function drawCompactHudCell(
   local health = sidePatches ~= nil and sidePatches.health or BattleScene.hpPatchTiles(patchSpans, sideType, hp, maxHp)
   -- Bar patches name component-relative source tiles like the icon
   -- patches below, so they ride the same staged component base.
-  drawPatches(health, assert(section.componentBase, "compact HUD publishes the native component tile base"))
+  local componentBase = assert(section.componentBase, "compact HUD publishes the native component tile base")
+  drawPatches(health, componentBase)
   local condition, gender, caught = displayed.condition, displayed.gender, displayed.caught
   assert(condition == nil or type(condition) == "string", "compact HUD status is a source status name")
   assert(gender == nil or type(gender) == "string", "compact HUD gender is a source category when present")
   assert(caught == nil or type(caught) == "boolean", "compact HUD caught marker is a source flag")
   caught = wildEnemy and caught or nil
-  drawPatches(
-    BattleScene.hudIconPatchTiles(patchSpans, sideType, condition, gender, caught),
-    assert(section.componentBase, "compact HUD publishes the native component tile base")
-  )
+  drawPatches(BattleScene.hudIconPatchTiles(patchSpans, sideType, condition, gender, caught), componentBase)
   if sideType == 0 then
     local into, span, level = displayed.expInto, displayed.expSpan, displayed.level
     if type(level) == "number" and level >= 100 then
@@ -1655,7 +1350,7 @@ local function drawCompactHudCell(
     drawPatches(
       sidePatches ~= nil and sidePatches.experience
         or BattleScene.expPatchTiles(patchSpans, BattleScene.expTileFills(into, span)),
-      assert(section.componentBase, "compact HUD publishes the native component tile base")
+      componentBase
     )
   end
   local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
@@ -1673,6 +1368,10 @@ local function drawCompactHudCell(
     { x = originX, y = originY, scale = scale }
   )
 end
+
+-- HUD regions the native cell printers write once the strip carries
+-- pixels; the remaining regions always draw through the text services.
+local PRINTED_HUD_REGIONS = { name = true, level = true, hp = true, gender = true, caught = true }
 
 ---@param graphics table<string, unknown> injected host graphics
 ---@param assets table<string, unknown> injected asset holder
@@ -1703,16 +1402,7 @@ local function drawHudSide(graphics, assets, text, artKey, battler, side, sectio
   if type(side.regions) == "table" then
     for _, region in ipairs(side.regions) do
       if
-        (
-          not printerReady
-          or (
-            region.id ~= "name"
-            and region.id ~= "level"
-            and region.id ~= "hp"
-            and region.id ~= "gender"
-            and region.id ~= "caught"
-          )
-        )
+        not (printerReady and PRINTED_HUD_REGIONS[region.id])
         and type(region.text) == "string"
         and region.text ~= ""
       then
@@ -1781,18 +1471,7 @@ local function drawCompactHud(resources, view, content)
     -- Doubles: one HUD box per live slot, matched by native position
     -- in the plan's box order with its own name, health and bar. The
     -- same resolved bounds drive paint; hidden slots draw nothing.
-    local players, enemies = splitBattlers(view)
-    local live = {}
-    for _, battler in ipairs(players) do
-      if type(battler.position) == "number" then
-        live[battler.position] = true
-      end
-    end
-    for _, battler in ipairs(enemies) do
-      if type(battler.position) == "number" then
-        live[battler.position] = true
-      end
-    end
+    local live = livePositions(BattleViewRoster.liveSides(view))
     for _, box in ipairs(boxes) do
       if live[box.position] ~= nil then
         drawCompactDoublesPanel(resources, box)
@@ -1800,7 +1479,7 @@ local function drawCompactHud(resources, view, content)
     end
     return
   end
-  local player, enemy = singleSlots(view)
+  local player, enemy = BattleViewRoster.firstPerSide(view)
   LogicalSurface.clip(graphics, viewport, function()
     local sections = assert(view.hudSections, "compact HUD carries staged native cell sections")
     drawHudSide(
@@ -1830,10 +1509,139 @@ local function drawCompactHud(resources, view, content)
   end)
 end
 
+-- Draws the staged learning confirmation as the source two-option menu
+-- with its staged labels centered on the option anchors; a pressed
+-- option raises its label two pixels.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param childView table<string, unknown>? detached child view carrying the staged labels
+local function drawTwoOptionModal(resources, view, childView)
+  local text = resources.text --[[@as table<string, unknown>]]
+  local graphics = assert(resources.graphics, "the compact render borrows its host graphics")
+  local assets = assert(resources.assets, "the compact render borrows its asset holder")
+  local pressed = BattleMenuPresenter.drawChildTwoOption(graphics, assets, view)
+  local sourceLabels = assert(childView, "the child snapshot carries source text") --[[@as table<string, unknown>]]
+  local labels = assert(sourceLabels.twoOption, "learning confirmation carries staged source labels") --[[@as table<string, unknown>]]
+  local drawText = text.drawTextForRole --[[@as fun(role: string, content: string, x: number, y: number, colors: table<string, integer>?)?]]
+  local measureText = text.measureForRole --[[@as fun(role: string, content: string): table<string, number>?]]
+  local function drawOption(value, anchorY, colors, optionId)
+    local label = assert(value, "the two-option source label is staged") --[[@as string]]
+    local width = measureText ~= nil and measureText("menu", label).width or text.measure(label).width
+    local y = pressed == optionId and anchorY - 2 or anchorY
+    if drawText ~= nil then
+      drawText("menu", label, 128 - math.floor(width / 2), y, colors)
+    else
+      text.drawText(label, 128 - math.floor(width / 2), y)
+    end
+  end
+  drawOption(labels.top, 67, { foreground = 1, shadow = 2, background = 3 }, "yes")
+  drawOption(labels.bottom, 139, { foreground = 10, shadow = 11, background = 12 }, "cancel")
+end
+
+-- Tabular row columns relative to the row origin: the entry name width,
+-- the level or quantity column, and the health or legality column with
+-- its width. Bag rows trade the level column for a wider item name.
+local CHILD_ROW_COLUMNS = { nameWidth = 68, subX = 116, detailX = 156, detailWidth = 80 }
+local CHILD_BAG_ROW_COLUMNS = { nameWidth = 100, subX = 146, detailX = 180, detailWidth = 56 }
+
+---@param text table<string, unknown> borrowed text services
+---@param box table<string, unknown> canonical learning row under drawing
+---@param index integer one-based row number
+---@param focused boolean true when the row holds the child focus
+local function drawLearnRow(text, box, index, focused)
+  local x, y =
+    box.x, --[[@as number]]
+    box.y --[[@as number]]
+  local label = tostring(box.label or "")
+  if focused then
+    label = CURSOR .. " " .. label
+  end
+  label = tostring(index) .. ". " .. label
+  if box.enabled ~= true and box.empty ~= true then
+    label = label .. " [X]"
+  end
+  drawLabel(text, fitText(text, label, 128), x + 4, y + 4)
+  if type(box.detail) == "string" and box.detail ~= "" then
+    drawLabel(text, fitText(text, box.detail, 96), x + 136, y + 4)
+  end
+end
+
+---@param text table<string, unknown> borrowed text services
+---@param box table<string, unknown> canonical party, target, or bag row under drawing
+---@param index integer one-based row number
+---@param focused boolean true when the row holds the child focus
+---@param columns table<string, number> tabular columns relative to the row origin
+local function drawTabularRow(text, box, index, focused, columns)
+  local x, y =
+    box.x, --[[@as number]]
+    box.y --[[@as number]]
+  drawLabel(text, (focused and CURSOR or " ") .. " " .. tostring(index) .. ".", x + 4, y + 4)
+  local name = tostring(box.label or "")
+  if box.enabled ~= true and box.empty ~= true then
+    name = name .. " [X]"
+  end
+  drawLabel(text, fitText(text, name, columns.nameWidth), x + 36, y + 4)
+  if type(box.sub) == "string" and box.sub ~= "" then
+    drawLabel(text, tostring(box.sub), x + columns.subX, y + 4)
+  end
+  if type(box.detail) == "string" and box.detail ~= "" then
+    drawLabel(text, fitText(text, box.detail, columns.detailWidth), x + columns.detailX, y + 4)
+  end
+end
+
+---@param childView table<string, unknown> detached child view carrying the staged confirmation
+---@return string staged confirmation wording
+local function learnConfirmation(childView)
+  local confirmation = childView.confirmation --[[@as table<string, unknown>]]
+  if confirmation.kind == "stop" then
+    return "Stop learning " .. tostring(childView.incomingMove or "?") .. "?"
+  elseif confirmation.kind == "decline" then
+    return "Do not learn " .. tostring(childView.incomingMove or "?") .. "?"
+  end
+  local rows = childView.rows --[[@as table<integer, table<string, unknown>>?]]
+  local slot = confirmation.slot --[[@as integer?]]
+  local name = "?"
+  if type(rows) == "table" and type(slot) == "number" and type(rows[slot + 1]) == "table" then
+    name = tostring(rows[slot + 1].label or "?")
+  end
+  return "Forget " .. name .. "?"
+end
+
+-- The modal footer: the staged learning confirmation wording, Back or
+-- the forced-choice notice, bag pocket stepping, and the notice or
+-- guidance caption outside learning.
+---@param text table<string, unknown> borrowed text services
+---@param childPlan table<string, unknown> canonical child plan content
+---@param childView table<string, unknown>? detached child view under drawing
+local function drawChildFooter(text, childPlan, childView)
+  local view = type(childView) == "table" and childView or nil
+  if view ~= nil and view.kind == "learn" and type(view.confirmation) == "table" then
+    drawLabel(text, fitText(text, learnConfirmation(view), 232), 12, 136)
+  end
+  if childPlan.hasBack == true then
+    local back = childPlan.back --[[@as table<string, unknown>]]
+    drawLabel(text, "BACK", back.x --[[@as number]] + 4, back.y --[[@as number]] + 4)
+  elseif view ~= nil and (view.kind == "party" or view.kind == "target") then
+    drawLabel(text, "No retreat!", 12, 156)
+  end
+  if childPlan.hasPocketNav == true then
+    drawLabel(text, "<", 100, 156)
+    drawLabel(text, ">", 232, 156)
+  end
+  if view == nil or view.kind == "learn" then
+    return
+  end
+  local notice = view.notice
+  if type(notice) ~= "string" or notice == "" then
+    notice = BattleChildText.subtitle(view)
+  end
+  drawLabel(text, fitText(text, notice, 232), 12, 172)
+end
+
 -- Draws the open child as a fullscreen 256x192 modal: the title,
 -- every projected row with its focus and disabled marks, the staged
--- learning confirmation, and the permitted Back/Confirm and pocket
--- controls. The battlefield stays hidden behind the modal while open.
+-- learning confirmation, and the permitted Back and pocket controls.
+-- The battlefield stays hidden behind the modal while open.
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot under drawing
 ---@param content table<string, unknown> canonical compact plan content under drawing
@@ -1841,51 +1649,16 @@ local function drawChildModal(resources, view, content)
   local text = assert(resources.text, "the compact render borrows its text services")
   local windows = assert(resources.windows, "the compact render borrows its window services")
   local background = backgroundOf(resources)
-  local frame = resources.frameKey
   local childPlan = assert(content.child, "the child modal carries its plan")
   local childView = view.childView --[[@as table<string, unknown>?]]
   if childPlan.twoOption == true then
-    local graphics = assert(resources.graphics, "the compact render borrows its host graphics")
-    local assets = assert(resources.assets, "the compact render borrows its asset holder")
-    local menuLayers = assert(view.menuLayers, "the battle view carries generated menu screen layers")
-    local layers = assert(menuLayers.twoOption, "the battle view carries source two-option layers") --[[@as table[] ]]
-    local armed = type(view.armed) == "table" and view.armed or nil
-    local selection = nil
-    local pressedId = nil
-    if type(armed) == "table" and armed.scope == "child" then
-      if armed.id == "confirm" then
-        selection, pressedId = "yes", "yes"
-      elseif armed.id == "back" then
-        selection, pressedId = "cancel", "cancel"
-      end
-    end
-    BattleMenuPresenter.draw(graphics, assets, "two-option", layers, {
-      selection = selection,
-      armed = pressedId ~= nil and { scope = "two-option", id = pressedId } or nil,
-    })
-    local sourceLabels = assert(childView, "the child snapshot carries source text") --[[@as table<string, unknown>]]
-    local labels = assert(sourceLabels.twoOption, "learning confirmation carries staged source labels") --[[@as table<string, unknown>]]
-    local drawText = text.drawTextForRole --[[@as fun(role: string, content: string, x: number, y: number, colors: table<string, integer>?)?]]
-    local measureText = text.measureForRole --[[@as fun(role: string, content: string): table<string, number>?]]
-    local function drawOption(value, anchorY, colors, pressed)
-      local label = assert(value, "the two-option source label is staged") --[[@as string]]
-      local width = measureText ~= nil and measureText("menu", label).width or text.measure(label).width
-      local y = pressed and anchorY - 2 or anchorY
-      if drawText ~= nil then
-        drawText("menu", label, 128 - math.floor(width / 2), y, colors)
-      else
-        text.drawText(label, 128 - math.floor(width / 2), y)
-      end
-    end
-    drawOption(labels.top, 67, { foreground = 1, shadow = 2, background = 3 }, pressedId == "yes")
-    drawOption(labels.bottom, 139, { foreground = 10, shadow = 11, background = 12 }, pressedId == "cancel")
+    drawTwoOptionModal(resources, view, childView)
     return
   end
   fillBox(resources.graphics, background, { x = 0, y = 0, width = 256, height = 192 })
-  local title = childPlan.title --[[@as string?]]
-  drawLabel(text, fitText(text, tostring(title or ""), 200), 12, 10)
+  drawLabel(text, fitText(text, tostring(childPlan.title or ""), 200), 12, 10)
   if type(childView) == "table" then
-    local occupancy = BattleChildText.occupancy(childView --[[@as table<string, unknown>]])
+    local occupancy = BattleChildText.occupancy(childView)
     if occupancy ~= nil then
       drawLabel(text, occupancy, 216, 10)
     end
@@ -1896,93 +1669,17 @@ local function drawChildModal(resources, view, content)
   local rows = childPlan.rows --[[@as table<integer, table<string, unknown>>?]]
   local focusId = type(childView) == "table" and childView.focusId or nil
   if type(rows) == "table" then
+    local columns = childPlan.kind == "bag" and CHILD_BAG_ROW_COLUMNS or CHILD_ROW_COLUMNS
     for index, row in ipairs(rows) do
-      local box = row --[[@as table<string, unknown>]]
       if childPlan.kind == "learn" then
-        local label = tostring(box.label or "")
-        if focusId == box.id then
-          label = CURSOR .. " " .. label
-        end
-        label = tostring(index) .. ". " .. label
-        if box.enabled ~= true and box.empty ~= true then
-          label = label .. " [X]"
-        end
-        drawLabel(text, fitText(text, label, 128), box.x --[[@as number]] + 4, box.y --[[@as number]] + 4)
-        if type(box.detail) == "string" and box.detail ~= "" then
-          drawLabel(text, fitText(text, box.detail, 96), box.x --[[@as number]] + 136, box.y --[[@as number]] + 4)
-        end
+        drawLearnRow(text, row, index, focusId == row.id)
       else
-        local head = ((focusId == box.id) and CURSOR or " ") .. " " .. tostring(index) .. "."
-        drawLabel(text, head, box.x --[[@as number]] + 4, box.y --[[@as number]] + 4)
-        local name = tostring(box.label or "")
-        if box.enabled ~= true and box.empty ~= true then
-          name = name .. " [X]"
-        end
-        local nameWidth = 68
-        local subX = 116
-        local detailX = 156
-        local detailWidth = 80
-        if childPlan.kind == "bag" then
-          nameWidth = 100
-          subX = 146
-          detailX = 180
-          detailWidth = 56
-        end
-        drawLabel(text, fitText(text, name, nameWidth), box.x --[[@as number]] + 36, box.y --[[@as number]] + 4)
-        if type(box.sub) == "string" and box.sub ~= "" then
-          drawLabel(text, tostring(box.sub), box.x --[[@as number]] + subX, box.y --[[@as number]] + 4)
-        end
-        if type(box.detail) == "string" and box.detail ~= "" then
-          drawLabel(
-            text,
-            fitText(text, box.detail, detailWidth),
-            box.x --[[@as number]] + detailX,
-            box.y --[[@as number]] + 4
-          )
-        end
+        drawTabularRow(text, row, index, focusId == row.id, columns)
       end
     end
   end
-  if type(childView) == "table" and childView.kind == "learn" and type(childView.confirmation) == "table" then
-    local confirmation = childView.confirmation --[[@as table<string, unknown>]]
-    local wording = ""
-    if confirmation.kind == "stop" then
-      wording = "Stop learning " .. tostring(childView.incomingMove or "?") .. "?"
-    elseif confirmation.kind == "decline" then
-      wording = "Do not learn " .. tostring(childView.incomingMove or "?") .. "?"
-    else
-      local name = "?"
-      local planRows = childView.rows --[[@as table<integer, table<string, unknown>>?]]
-      local slot = confirmation.slot --[[@as integer?]]
-      if type(planRows) == "table" and type(slot) == "number" and type(planRows[slot + 1]) == "table" then
-        name = tostring(planRows[slot + 1].label or "?")
-      end
-      wording = "Forget " .. name .. "?"
-    end
-    drawLabel(text, fitText(text, wording, 232), 12, 136)
-  end
-  if childPlan.hasBack == true then
-    local back = childPlan.back --[[@as table<string, unknown>]]
-    drawLabel(text, "BACK", back.x --[[@as number]] + 4, back.y --[[@as number]] + 4)
-  elseif type(childView) == "table" and (childView.kind == "party" or childView.kind == "target") then
-    drawLabel(text, "No retreat!", 12, 156)
-  end
-  if childPlan.hasPocketNav == true then
-    drawLabel(text, "<", 100, 156)
-    drawLabel(text, ">", 232, 156)
-  end
-  if childPlan.hasConfirm == true then
-    local confirm = childPlan.confirm --[[@as table<string, unknown>]]
-    drawLabel(text, "CONFIRM", confirm.x --[[@as number]] + 4, confirm.y --[[@as number]] + 4)
-  end
-  if type(childView) == "table" and type(childView.notice) == "string" and childView.notice ~= "" then
-    if childView.kind ~= "learn" then
-      drawLabel(text, fitText(text, childView.notice, 232), 12, 172)
-    end
-  elseif type(childView) == "table" and childView.kind ~= "learn" then
-    drawLabel(text, fitText(text, BattleChildText.subtitle(childView --[[@as table<string, unknown>]]), 232), 12, 172)
-  end
-  windows.drawApplicationFrame({ x = 8, y = 8, width = 240, height = 176 }, frame)
+  drawChildFooter(text, childPlan, childView)
+  windows.drawApplicationFrame({ x = 8, y = 8, width = 240, height = 176 }, resources.frameKey)
 end
 
 -- Draws the resolved compact plan inside its placement: the source scene
@@ -2095,9 +1792,8 @@ end
 ---@param view table<string, unknown> internal semantic snapshot under resolution
 ---@return table<string, unknown> complete compact plan
 function BattleCompactInterface.nativeLike(context, view)
-  local ApplicationLayoutRef = ApplicationLayout
   local geometry =
-    ApplicationLayoutRef.coverOrFrame(context --[[@as ApplicationLayout.Context]], BattleCompactInterface.NATIVE, {
+    ApplicationLayout.coverOrFrame(context --[[@as ApplicationLayout.Context]], BattleCompactInterface.NATIVE, {
       maxOverdraw = ZERO_CROP,
     })
   local measurement = context.measurement --[[@as table<string, unknown>]]
@@ -2113,28 +1809,7 @@ function BattleCompactInterface.nativeLike(context, view)
 end
 
 -- Pair-too-small compact fallback: when a paired composition cannot fit,
--- the same compact pane resolves instead of a clipped battle. Below the
--- one-times fit floor the pane keeps integer mapping at the logical
--- origin so every control stays addressable through one transform.
----@param context table<string, unknown> layout context carrying the measurement
----@param view table<string, unknown> internal semantic snapshot under resolution
----@return table<string, unknown> complete compact plan
-function BattleCompactInterface.fallback(context, view)
-  local ApplicationLayoutRef = ApplicationLayout
-  local geometry =
-    ApplicationLayoutRef.coverOrFrame(context --[[@as ApplicationLayout.Context]], BattleCompactInterface.NATIVE, {
-      maxOverdraw = ZERO_CROP,
-    })
-  local measurement = context.measurement --[[@as table<string, unknown>]]
-  local placement = geometry.placements[BattleCompactInterface.NATIVE.id]
-  local ratio = measurement.pixelRatio
-  if type(ratio) ~= "number" or ratio <= 0 then
-    ratio = 1
-  end
-  if placement == nil or (placement.pixelScale ~= nil and placement.pixelScale < 1) then
-    return compactPlan(integerPlacement(ratio --[[@as number]]), {}, view, measurement.signature --[[@as string?]])
-  end
-  return compactPlan(placement, geometry.frames or {}, view, measurement.signature --[[@as string?]])
-end
+-- the same compact pane resolves instead of a clipped battle.
+BattleCompactInterface.fallback = BattleCompactInterface.nativeLike
 
 return BattleCompactInterface

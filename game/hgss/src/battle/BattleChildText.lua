@@ -1,11 +1,36 @@
--- Shared footer wording for an open battle child modal. Both battle
--- presentations draw the same guidance caption and the same occupied
--- roster fraction while keeping their own screen geometry and pixel
--- placement, so only these two pure text projections live here. The
+-- Shared title and footer wording for an open battle child modal. Both
+-- battle presentations draw the same title, guidance caption, and
+-- occupied roster fraction while keeping their own screen geometry and
+-- pixel placement, so only these pure text projections live here. The
 -- helper never observes LÖVE, input, assets, or mutable state.
 
 ---@class BattleChildText
 local BattleChildText = {}
+
+---@param child table<string, unknown> detached child view under titling
+---@return string modal title wording
+function BattleChildText.title(child)
+  local kind = child.kind
+  if kind == "target" then
+    return "Use " .. tostring(child.stagedItem or "the item") .. " on whom?"
+  elseif kind == "bag" then
+    if child.empty == true then
+      return "The bag is empty."
+    end
+    local page = child.page --[[@as table<string, unknown>?]]
+    local paging = ""
+    if type(page) == "table" then
+      paging = " " .. tostring(page.current or 1) .. "/" .. tostring(page.count or 1)
+    end
+    return "BAG: " .. tostring(child.currentPocket or "?") .. paging
+  elseif kind == "learn" then
+    return "Forget a move for " .. tostring(child.incomingMove or "?") .. "?"
+  end
+  if child.cancellable == true then
+    return "Choose a Pokemon!"
+  end
+  return "Choose a replacement!"
+end
 
 ---@param child table<string, unknown> detached child view under guidance wording
 ---@return string footer guidance wording
