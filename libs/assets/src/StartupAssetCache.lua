@@ -573,6 +573,8 @@ local OPENING_OPS = {
   setLayer = true,
   setPalette = true,
   setScroll = true,
+  setScrollPosition = true,
+  setBrightness = true,
   setBlend = true,
   window = true,
   setWindowSecondary = true,
@@ -790,17 +792,50 @@ local function validateOpeningEventOperands(event, sceneNumber)
       return nil, "opening scene wait carries no source tick count"
     end
   elseif op == "setFade" then
+    if event.scope ~= "main" and event.scope ~= "sub" and event.scope ~= "both" then
+      return nil, "opening scene fade names no source scope"
+    end
+    if event.mode ~= "brightness" and event.mode ~= "line-shutter" then
+      return nil, "opening scene fade names no source mode"
+    end
+    if event.color ~= "white" and event.color ~= "black" then
+      return nil, "opening scene fade names no source color"
+    end
+    if event.direction ~= "in" and event.direction ~= "out" then
+      return nil, "opening scene fade names no source direction"
+    end
     if not isPositiveInteger(event.ticks) then
       return nil, "opening scene effect carries no source tick count"
     end
-    if event.kind ~= nil and type(event.kind) ~= "string" then
-      return nil, "opening scene effect kind is malformed"
+    if event.terminal ~= "hold" and event.terminal ~= "neutral" then
+      return nil, "opening scene fade names no terminal hold"
     end
-    if event.direction ~= nil and type(event.direction) ~= "string" then
-      return nil, "opening scene effect direction is malformed"
+    if event.mode == "line-shutter" then
+      if event.shape ~= "center-out" and event.shape ~= "outer-in" then
+        return nil, "opening scene line shutter carries no source shape"
+      end
+    elseif event.shape ~= nil then
+      return nil, "opening scene brightness fade carries no shape"
     end
     if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
       return nil, "opening scene effect start names no effect"
+    end
+  elseif op == "setScrollPosition" then
+    if OPENING_ENGINES[event.engine] ~= true then
+      return nil, "opening scene position names no source engine"
+    end
+    if not isNonnegativeInteger(event.bgSlot) or event.bgSlot > 3 then
+      return nil, "opening scene position names no numeric background slot"
+    end
+    if not isInteger(event.x) or not isInteger(event.y) then
+      return nil, "opening scene position carries no integer source coordinates"
+    end
+  elseif op == "setBrightness" then
+    if event.physical ~= "upper" and event.physical ~= "lower" then
+      return nil, "opening scene brightness names no physical screen"
+    end
+    if event.value ~= "neutral" then
+      return nil, "opening scene brightness carries no neutral reset"
     end
   elseif op == "setBlend" then
     if OPENING_ENGINES[event.engine] ~= true then
@@ -967,6 +1002,9 @@ local function validateOpeningEventOperands(event, sceneNumber)
     if type(event.clipId) ~= "string" or event.clipId == "" then
       return nil, "opening scene sprite clip event points at no compiled clip"
     end
+    if type(event.animate) ~= "boolean" then
+      return nil, "opening scene sprite clip carries no animation flag"
+    end
   elseif op == "spriteVisible" then
     if type(event.instanceId) ~= "string" or event.instanceId == "" then
       return nil, "opening scene sprite visibility names no instance"
@@ -1027,7 +1065,18 @@ end
 
 local OPENING_EVENT_KEYS = {
   waitTicks = { ticks = true },
-  setFade = { ticks = true, kind = true, effect = true, direction = true, from = true, to = true },
+  setFade = {
+    scope = true,
+    mode = true,
+    color = true,
+    direction = true,
+    ticks = true,
+    terminal = true,
+    shape = true,
+    effect = true,
+  },
+  setScrollPosition = { engine = true, bgSlot = true, x = true, y = true },
+  setBrightness = { physical = true, value = true },
   setBlend = {
     ticks = true,
     effect = true,
@@ -1067,7 +1116,15 @@ local OPENING_EVENT_KEYS = {
   setWindowSecondary = { engine = true, rect = true, insideMask = true },
   setWindowVisible = { engine = true, visible = true },
   setModelVisible = { visible = true },
-  setSpriteClip = { instanceId = true, engine = true, x = true, y = true, drawOrder = true, clipId = true },
+  setSpriteClip = {
+    instanceId = true,
+    engine = true,
+    x = true,
+    y = true,
+    drawOrder = true,
+    clipId = true,
+    animate = true,
+  },
   spriteVisible = { instanceId = true, engine = true, x = true, y = true, drawOrder = true, visible = true },
   setModelClip = { model = true, clip = true },
   setCamera = { distance = true, angle = true },
@@ -1295,7 +1352,7 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
 end
 
 -- One independently staged opening-movie scene: strict source-independent
--- g4-startup-opening-scene-v6 package with numbered scene, edition, 30Hz
+-- g4-startup-opening-scene-v7 package with numbered scene, edition, 30Hz
 -- duration, per-engine BG slots with priority and alternate tilemaps, sprite
 -- clips with frame offsets, model descriptors and animations where used,
 -- starter emitter records where used, and the closed step-clocked event

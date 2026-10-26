@@ -6,13 +6,15 @@ local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v6"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v7"
 local SOURCE_TICK_RATE = 30
 
 local CLOSED_OPS = {
   setLayer = true,
   setPalette = true,
   setScroll = true,
+  setScrollPosition = true,
+  setBrightness = true,
   setBlend = true,
   window = true,
   setWindowSecondary = true,
@@ -487,7 +489,7 @@ end
 -- below reads the exact compiled bundles and fails until the producer
 -- emits that contract and the central reader enforces it.
 
-local STRICT_SCHEMA = "g4-startup-opening-scene-v6"
+local STRICT_SCHEMA = "g4-startup-opening-scene-v7"
 
 local function strictManifest(bundle, versionId, sceneNumber)
   local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
@@ -1875,7 +1877,8 @@ local BLEND_KEYS = { "atStepTick", "engine", "firstMask", "secondMask", "directi
 local WIPE_KEYS = { "atStepTick", "engine", "kind", "ticks", "effect" }
 local SHUTTER_KEYS =
   { "atStepTick", "order", "mainPattern", "subPattern", "color", "steps", "framesPerStep", "effect" }
-local FADE_KEYS = { "atStepTick", "kind", "ticks", "effect" }
+local FADE_KEYS =
+  { "atStepTick", "scope", "mode", "color", "direction", "ticks", "terminal", "shape", "effect" }
 
 -- Independently transcribed source call table: scene 1 main (first 1,
 -- second 0x1E) and sub (first 2, second 0x1E); scene 2 final main kind 1
@@ -1989,7 +1992,7 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=0 engine=sub firstMask=2 secondMask=30 direction=1 ticks=80 effect=scroll-sunrise-sub",
   })
   assertExactEvents(first, 1, "setFade", "run", FADE_KEYS, {
-    "atStepTick=90 kind=white ticks=65 effect=fade-white",
+    "atStepTick=90 scope=both mode=brightness color=white direction=out ticks=65 terminal=neutral shape=nil effect=fade-white",
   })
   assertExactEvents(second, 2, "setScroll", "flyin", SCROLL_KEYS, {
     "atStepTick=0 engine=main bgSlot=0 dx=0 dy=192 ticks=0 effect=nil",
@@ -2016,8 +2019,8 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=0 engine=main bgSlot=1 dx=0 dy=-128 ticks=10 effect=scroll-lyra-exit",
   })
   assertExactEvents(second, 2, "setFade", "flyin", FADE_KEYS, {
-    "atStepTick=0 kind=white-in ticks=3 effect=nil",
-    "atStepTick=56 kind=black-out ticks=8 effect=nil",
+    "atStepTick=0 scope=both mode=brightness color=white direction=in ticks=3 terminal=neutral shape=nil effect=nil",
+    "atStepTick=56 scope=both mode=brightness color=black direction=out ticks=8 terminal=neutral shape=nil effect=nil",
   })
   assertExactEvents(second, 2, "circleWipe", "wipe", WIPE_KEYS, {
     "atStepTick=0 engine=main kind=1 ticks=8 effect=wipe-circle",
@@ -2035,10 +2038,10 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=0 engine=sub bgSlot=1 dx=192 dy=0 ticks=10 effect=scroll-slide-out",
   })
   assertExactEvents(fourth, 4, "setFade", "fade-in", FADE_KEYS, {
-    "atStepTick=0 kind=black-shutter-open ticks=10 effect=fade-in",
+    "atStepTick=0 scope=both mode=line-shutter color=black direction=in ticks=10 terminal=neutral shape=center-out effect=fade-in",
   })
   assertExactEvents(fourth, 4, "setFade", "finish-totodile", FADE_KEYS, {
-    "atStepTick=0 kind=black-shutter-close ticks=26 effect=fade-close",
+    "atStepTick=0 scope=both mode=line-shutter color=black direction=out ticks=26 terminal=neutral shape=outer-in effect=fade-close",
   })
   local pairedDy = (versionId == "heartgold") and -64 or 64
   assertExactEvents(fifth, 5, "setScroll", "wipe", SCROLL_KEYS, {
@@ -2056,7 +2059,7 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
   })
   Assert.equal(#collectEvents(fifth, "circleWipe", nil), 0, "scene 5 carries no circle wipe")
   assertExactEvents(fifth, 5, "setFade", "wait", FADE_KEYS, {
-    "atStepTick=20 kind=white ticks=50 effect=fade-white",
+    "atStepTick=20 scope=both mode=brightness color=white direction=out ticks=50 terminal=neutral shape=nil effect=fade-white",
   })
   local third = manifests[3]
   checkScene3SevenWipesWithGates(third)
@@ -2069,7 +2072,7 @@ local function movieTickRateRemainsRetail30Hz(romFs, versionId)
   for sceneNumber = 1, 5 do
     local bundle = compileScene(romFs, versionId, sceneNumber)
     local manifest = strictManifest(bundle, versionId, sceneNumber)
-    Assert.equal(manifest.schema, "g4-startup-opening-scene-v6", "scene " .. sceneNumber .. " carries the v6 schema")
+    Assert.equal(manifest.schema, "g4-startup-opening-scene-v7", "scene " .. sceneNumber .. " carries the v7 schema")
     Assert.equal(manifest.sourceTickRate, 30, "scene " .. sceneNumber .. " runs at the retail 30 Hz tick rate")
   end
   local second = strictManifest(compileScene(romFs, versionId, 2), versionId, 2)
@@ -2193,6 +2196,113 @@ local function compiledScenesEmitStrictCaseGuardsWithoutPseudoWaits(romFs, versi
   end
 end
 
+-- The visual primitive grammar stays closed: a line shutter without its
+-- source shape, a fade naming no source scope, a brightness fade carrying a
+-- shape, a position with nonfinite coordinates, a sprite clip without its
+-- animation flag, a brightness reset naming no physical screen, and a
+-- legacy kind-string fade all fail the strict reader with their own cause.
+local function strictVisualPrimitivesRejectMalformedRecords(romFs, versionId)
+  local bundle = compileScene(romFs, versionId, 1)
+  local function firstFade(manifest)
+    for _, event in ipairs(manifest.timeline.events) do
+      if event.op == "setFade" then
+        return event
+      end
+    end
+    Assert.notNil(nil, "scene 1 carries a fade to mutate")
+  end
+  local function firstClip(manifest)
+    for _, event in ipairs(manifest.timeline.events) do
+      if event.op == "setSpriteClip" then
+        return event
+      end
+    end
+    Assert.notNil(nil, "scene 1 carries a sprite clip to mutate")
+  end
+  local function firstScroll(manifest)
+    for _, event in ipairs(manifest.timeline.events) do
+      if event.op == "setScroll" then
+        return event
+      end
+    end
+    Assert.notNil(nil, "scene 1 carries a scroll to mutate")
+  end
+  local function assertRejected(mutated, cause, message)
+    local loaded, err = strictLoad(versionId, 1, mutated, bundle.files, nil)
+    Assert.isNil(loaded, message)
+    Assert.notNil(err, message .. " reports its cause")
+    Assert.isTrue(
+      tostring(err):find(cause, 1, true) ~= nil,
+      message .. " names its cause: " .. tostring(err)
+    )
+  end
+  -- Nonfinite coordinates never survive the staged-file serialization, so
+  -- this leg reads the mutated manifest straight through the strict
+  -- reader instead of round-tripping it through the cache backend.
+  local function assertRejectedDirect(mutated, cause, message)
+    local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
+    mutated.generationId = "strict-contract-check"
+    local directFs = {
+      loadLua = function(_, path)
+        if path == StartupAssetCache.openingScenePath(1) then
+          return mutated
+        end
+        return nil
+      end,
+      exists = function()
+        return true
+      end,
+      read = function()
+        return ""
+      end,
+    }
+    local loaded, err = StartupAssetCache.loadOpeningScene(directFs, 1, versionId)
+    Assert.isNil(loaded, message)
+    Assert.notNil(err, message .. " reports its cause")
+    Assert.isTrue(
+      tostring(err):find(cause, 1, true) ~= nil,
+      message .. " names its cause: " .. tostring(err)
+    )
+  end
+  local shapeless = deepCopyManifest(bundle.manifest)
+  local fade = firstFade(shapeless)
+  fade.scope, fade.mode, fade.color, fade.direction, fade.terminal = "both", "line-shutter", "black", "in", "neutral"
+  fade.kind = nil
+  assertRejected(shapeless, "line shutter", "a line shutter without its source shape never validates")
+  local scopeless = deepCopyManifest(bundle.manifest)
+  fade = firstFade(scopeless)
+  fade.scope, fade.mode, fade.color, fade.direction, fade.terminal = "upper", "brightness", "black", "out", "hold"
+  fade.kind = nil
+  assertRejected(scopeless, "scope", "a fade naming no source scope never validates")
+  local shapedBrightness = deepCopyManifest(bundle.manifest)
+  fade = firstFade(shapedBrightness)
+  fade.scope, fade.mode, fade.color, fade.direction, fade.terminal, fade.shape =
+    "both", "brightness", "black", "out", "hold", "center-out"
+  fade.kind = nil
+  assertRejected(shapedBrightness, "shape", "a brightness fade carrying a shape never validates")
+  local infinitePosition = deepCopyManifest(bundle.manifest)
+  local scroll = firstScroll(infinitePosition)
+  scroll.op = "setScrollPosition"
+  scroll.dx, scroll.dy, scroll.ticks, scroll.effect = nil, nil, nil, nil
+  scroll.x, scroll.y = 0 / 0, 0
+  assertRejectedDirect(infinitePosition, "coordinates", "a position with nonfinite coordinates never validates")
+  local flagless = deepCopyManifest(bundle.manifest)
+  firstClip(flagless).animate = nil
+  assertRejected(flagless, "animation flag", "a sprite clip without its animation flag never validates")
+  local screenless = deepCopyManifest(bundle.manifest)
+  fade = firstFade(screenless)
+  fade.op = "setBrightness"
+  fade.scope, fade.mode, fade.color, fade.direction, fade.ticks, fade.terminal, fade.effect, fade.kind =
+    nil, nil, nil, nil, nil, nil, nil, nil
+  fade.physical, fade.value = "middle", "neutral"
+  assertRejected(screenless, "physical screen", "a brightness reset naming no physical screen never validates")
+  local legacyKind = deepCopyManifest(bundle.manifest)
+  fade = firstFade(legacyKind)
+  fade.scope, fade.mode, fade.color, fade.direction, fade.terminal, fade.shape = nil, nil, nil, nil, nil, nil
+  fade.kind = "white"
+  assertRejected(legacyKind, "unknown field", "a legacy kind-string fade never validates")
+end
+
 return RomSuite.fromFacts({
   ["source opening scenes compile to five independent versioned bundles"] = sourceOpeningScenesCompileToFiveIndependentVersionedBundles,
   ["source opening timeline keeps its five-scene transitions and skip gate"] = sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate,
@@ -2214,5 +2324,6 @@ return RomSuite.fromFacts({
   ["pinned scroll blend wipe and fade operands match retail calls"] = pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls,
   ["movie tick rate remains the retail 30 Hz source cadence"] = movieTickRateRemainsRetail30Hz,
   ["strict case guards reject invalid waits and accept eventless conjunctions"] = strictCaseGuardsRejectInvalidWaitsAndAcceptEventlessConjunctions,
+  ["strict visual primitives reject malformed records"] = strictVisualPrimitivesRejectMalformedRecords,
   ["compiled scenes emit strict case guards without pseudo waits"] = compiledScenesEmitStrictCaseGuardsWithoutPseudoWaits,
 })
