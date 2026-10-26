@@ -444,6 +444,17 @@ local function candidateForActor(actor)
   }
 end
 
+-- An occupancy slot needs a stable key: a composite surface, or a complete
+-- source identity. Coverage probes resolve cross-cell steps through a
+-- temporary region that carries source identity without a composite surface,
+-- and uncovered tiles carry neither; every occupancy gate below funnels
+-- through this predicate so all of them agree on what can be claimed.
+---@param position table<string, unknown>
+---@return boolean
+local function claimablePosition(position)
+  return position.surfaceId ~= nil or (position.cellKey ~= nil and position.sourceSurfaceId ~= nil)
+end
+
 local function managerSlot(entry, actor)
   return entry.store:managerSlot(actor)
 end
@@ -483,12 +494,13 @@ end
 ---@param position FieldActorResolvedPosition
 local function publishResolvedPosition(entry, actor, position)
   local state = actor:numericState()
+  local departure = candidateForActor(actor)
   local oldKey
-  if state.resident == 1 and state.solid == 1 and state.hasSurfaceId == 1 then
-    oldKey = entry.occupancy:key(candidateForActor(actor))
+  if state.resident == 1 and state.solid == 1 and claimablePosition(departure) then
+    oldKey = entry.occupancy:key(departure)
   end
   local newKey
-  if position.resident and position.surfaceId ~= nil and state.solid == 1 then
+  if position.resident and state.solid == 1 and claimablePosition(position) then
     newKey = entry.occupancy:key(position --[[@as FieldOccupancyCandidate]])
   end
   if oldKey and newKey and oldKey == newKey then
@@ -653,7 +665,7 @@ function FieldActorManager:_instantiate(entry, event, eventState)
   if not ok then
     if actor then
       local state = actor:numericState()
-      if state.resident == 1 and state.solid == 1 and state.hasSurfaceId == 1 then
+      if state.resident == 1 and state.solid == 1 and claimablePosition(candidateForActor(actor)) then
         local key = entry.occupancy:key(candidateForActor(actor))
         occupancyRemove(entry, key, actor)
       end
@@ -697,7 +709,7 @@ function FieldActorManager:_destroy(entry, actor)
   -- vacate it: a non-solid or stale actor must never erase another actor's
   -- occupancy entry by coordinate.
   local state = actor:numericState()
-  if state.resident == 1 and state.solid == 1 and state.hasSurfaceId == 1 then
+  if state.resident == 1 and state.solid == 1 and claimablePosition(candidateForActor(actor)) then
     local key = entry.occupancy:key(candidateForActor(actor))
     occupancyRemove(entry, key, actor)
   end
@@ -1673,6 +1685,9 @@ local function resolveAutonomousDestination(self, entry, actor, direction, conte
     if endpoint == nil or blocked then
       return nil
     end
+    if not claimablePosition(endpoint) then
+      return nil
+    end
     local candidate = {
       fieldX = endpoint.fieldX,
       fieldZ = endpoint.fieldZ,
@@ -1757,12 +1772,16 @@ function FieldActorManager:_advanceAutonomousAction(entry, actor, action)
   if action.reservationKey then
     local reservation = entry.occupancy:reservationByKey(action.reservationKey)
     assert(reservation and reservation.actorId == actor.actorId, "autonomous reservation is missing at commit")
-    local oldKey = entry.occupancy:key(candidateForActor(actor))
+    local departure = candidateForActor(actor)
+    local oldKey ---@type string?
+    if claimablePosition(departure) then
+      oldKey = entry.occupancy:key(departure)
+    end
     local newKey = entry.occupancy:key(reservation.candidate)
     local commitState = actor:numericState()
     if commitState.solid == 1 then
       assert(entry.occupancy:winnerByKey(newKey) == nil, "autonomous destination became occupied")
-      if commitState.resident == 1 then
+      if commitState.resident == 1 and oldKey ~= nil then
         assert(entry.occupancy:containsByKey(oldKey, actor), "autonomous departure occupancy is missing")
       end
     end
@@ -2018,7 +2037,7 @@ function FieldActorManager:reconcilePhysicalWorld()
       local reconcileState = actor:numericState()
       if isResident(runtimeMap, reconcileState.fieldX, reconcileState.fieldZ) then
         local projection = projectionFor(runtimeMap, actor)
-        if reconcileState.solid == 1 and projection.surfaceId ~= nil then
+        if reconcileState.solid == 1 and claimablePosition(projection) then
           stagedOccupancy:claim(actor, {
             fieldX = reconcileState.fieldX,
             fieldZ = reconcileState.fieldZ,
@@ -2670,7 +2689,7 @@ function FieldActorManager:setPosition(actorId, position, options)
   end
   local newKey = newCandidate and entry.occupancy:key(newCandidate) or nil
   local oldKey
-  if state.resident == 1 and state.solid == 1 and state.hasSurfaceId == 1 then
+  if state.resident == 1 and state.solid == 1 and claimablePosition(candidateForActor(actor)) then
     oldKey = entry.occupancy:key(candidateForActor(actor))
   end
   local scripted = options ~= nil and options.scripted == true

@@ -3776,4 +3776,259 @@ function T.a_frozen_neighbor_action_never_blocks_pausing()
   mgr:dispose()
 end
 
+-- Two stacked plates split at x=32 with stable source identities, mirroring
+-- the composed physical window production serves to cross-cell wanderers.
+local function splitCellTerrain()
+  return TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 0,
+        minZ = 0,
+        maxX = 32,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+        cellKey = "0:0",
+        sourceSurfaceId = 12,
+      },
+      {
+        id = 1,
+        minX = 32,
+        minZ = 0,
+        maxX = 64,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+        cellKey = "1:0",
+        sourceSurfaceId = 13,
+      },
+    },
+  })
+end
+
+local function splitCellRegion()
+  return {
+    sourceSurface = function(_, cellKey, sourceSurfaceId)
+      if cellKey == "0:0" and sourceSurfaceId == 12 then
+        return 0
+      elseif cellKey == "1:0" and sourceSurfaceId == 13 then
+        return 1
+      end
+      return nil
+    end,
+  }
+end
+
+-- Mimics FieldCoverage.probe across 32-tile cell boundaries: destinations in
+-- the actor's own cell resolve through the committed composite surface, while
+-- cross-cell destinations resolve source identity without one.
+local function boundaryProbe()
+  return function(_, fieldX, fieldZ, from)
+    Assert.equal(fieldZ, 3)
+    local sameCell = math.floor(from.fromFieldX / 32) == math.floor(fieldX / 32)
+    if sameCell then
+      return {
+        cellKey = "1:0",
+        sourceSurfaceId = 13,
+        surfaceId = 1,
+        worldY = 0,
+        collision = { blocked = false },
+      }
+    end
+    return {
+      cellKey = "1:0",
+      sourceSurfaceId = 13,
+      surfaceId = nil,
+      worldY = 0,
+      collision = { blocked = false },
+    }
+  end
+end
+
+-- A coverage probe can land an autonomous step on a resident cell that sheet
+-- carries source identity without a composite surface. The landing must still
+-- join the occupancy index, or the next autonomous commit faults on its
+-- missing departure occupancy.
+function T.autonomous_cross_cell_probe_landing_keeps_departure_occupancy()
+  local objects = {
+    object({ movementType = "wander_around", x = 31, z = 3, xRange = 2, yRange = -1 }),
+  }
+  local map = runtimeMap(objects)
+  map.terrain = splitCellTerrain()
+  map.fieldRegion = splitCellRegion()
+  map.probePhysicalCell = boundaryProbe()
+  local mgr = manager(objects, { map = map })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  forceAutonomy(mgr, "east")
+
+  for tick = 1, 9 do
+    mgr:step(tick)
+  end
+  Assert.equal(actor:getFieldPosition().fieldX, 32)
+  Assert.isNil(actor:getSurfaceId(), "a cross-cell probe landing carries no composite surface")
+  Assert.equal(actor.cellKey, "1:0")
+  Assert.equal(actor:getSourceSurfaceId(), 13)
+  Assert.equal(
+    assert(mgr:getAt(61, {
+      fieldX = 32,
+      fieldZ = 3,
+      surfaceId = nil,
+      cellKey = "1:0",
+      sourceSurfaceId = 13,
+    })),
+    actor,
+    "a source-identified landing must occupy its cell"
+  )
+
+  for tick = 10, 18 do
+    mgr:step(tick)
+  end
+  Assert.equal(actor:getFieldPosition().fieldX, 33)
+  Assert.equal(actor:getSurfaceId(), 1)
+  Assert.equal(assert(mgr:getAt(61, stableCandidate(33, 3, 1, "1:0", 13))), actor)
+  Assert.isNil(
+    mgr:getAt(61, {
+      fieldX = 32,
+      fieldZ = 3,
+      surfaceId = nil,
+      cellKey = "1:0",
+      sourceSurfaceId = 13,
+    }),
+    "committing the next step must vacate its source-identified departure cell"
+  )
+
+  mgr:removePresence(actorId, false)
+  Assert.isNil(
+    mgr:getAt(61, stableCandidate(33, 3, 1, "1:0", 13)),
+    "destroying an actor vacates its committed cell"
+  )
+  mgr:dispose()
+end
+
+-- A destination tile with no occupancy identity at all (an uncovered hole)
+-- cannot be reserved: the autonomous step waits out the tick instead of
+-- faulting on the unkeyable destination.
+function T.autonomous_step_onto_identity_less_tile_waits()
+  local objects = {
+    object({ movementType = "wander_around", x = 3, z = 3, xRange = 2, yRange = -1 }),
+  }
+  local map = runtimeMap(objects)
+  map.terrain = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 0,
+        minZ = 0,
+        maxX = 4,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+      },
+      {
+        id = 1,
+        minX = 6,
+        minZ = 0,
+        maxX = 64,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+      },
+    },
+  })
+  local mgr = manager(objects, { map = map })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  forceAutonomy(mgr, "east")
+
+  for tick = 1, 9 do
+    mgr:step(tick)
+  end
+  Assert.equal(actor:getFieldPosition().fieldX, 3, "an unreservable destination must hold the actor in place")
+  Assert.isTrue(mgr:isPausable(actorId), "a waited-out step must not hold an autonomous action")
+  mgr:dispose()
+end
+
+-- An actor spawned over an uncovered hole carries no occupancy identity. Its
+-- first step onto covered ground must commit cleanly: no departure identity
+-- means nothing to release, and the covered destination joins the index.
+function T.autonomous_departure_without_identity_commits_cleanly()
+  local objects = {
+    object({ movementType = "wander_around", x = 5, z = 3, xRange = 2, yRange = -1 }),
+  }
+  local map = runtimeMap(objects)
+  map.terrain = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 0,
+        minZ = 0,
+        maxX = 4,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+      },
+      {
+        id = 1,
+        minX = 6,
+        minZ = 0,
+        maxX = 64,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+      },
+    },
+  })
+  local mgr = manager(objects, { map = map })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  Assert.isNil(actor:getSurfaceId(), "an uncovered spawn carries no surface")
+  forceAutonomy(mgr, "east")
+
+  for tick = 1, 9 do
+    mgr:step(tick)
+  end
+  Assert.equal(actor:getFieldPosition().fieldX, 6)
+  Assert.equal(actor:getSurfaceId(), 1)
+  Assert.equal(assert(mgr:getAt(61, candidate(6, 3, 1))), actor)
+  mgr:dispose()
+end
+
+-- Repositioning a source-identified actor onto its own cell must neither fault
+-- on its own occupancy nor drop its claim.
+function T.repositioning_a_source_identified_actor_onto_its_own_cell_is_stable()
+  local objects = {
+    object({ movementType = "wander_around", x = 31, z = 3, xRange = 2, yRange = -1 }),
+  }
+  local map = runtimeMap(objects)
+  map.terrain = splitCellTerrain()
+  map.fieldRegion = splitCellRegion()
+  map.probePhysicalCell = boundaryProbe()
+  local mgr = manager(objects, { map = map })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  forceAutonomy(mgr, "east")
+
+  for tick = 1, 9 do
+    mgr:step(tick)
+  end
+  Assert.isNil(actor:getSurfaceId(), "a cross-cell probe landing carries no composite surface")
+
+  mgr:setPosition(actorId, { fieldX = 32, fieldZ = 3 })
+  Assert.equal(actor:getFieldPosition().fieldX, 32)
+  Assert.equal(
+    assert(mgr:getAt(61, stableCandidate(32, 3, 1, "1:0", 13))),
+    actor,
+    "repositioning onto the committed cell must keep the actor claimed"
+  )
+  mgr:dispose()
+end
+
 return { tests = T }
