@@ -3933,29 +3933,14 @@ local function soulsilver_source_wipe_slopes_with_the_scanline_without_spilling(
   local romHigh = romDifferingX(96)
   Assert.isFalse(romLow == romHigh, "the sourced wipe slopes with the scanline")
   local romSubMid = sourceBytes(scope, romMovie.subCanvas)
-  -- The sourced wipe owns the main engine while the sub engine keeps
-  -- scrolling its own art, so byte equality cannot tell spill from scroll.
-  -- The sub art carries no black at either scroll position while the wipe
-  -- cover paints opaque black on every kind, so counting black stays
-  -- scroll-immune and still catches any spill onto the other engine.
-  local function blackPixels(bytes)
-    local found = 0
-    for y = 0, 191, 2 do
-      for x = 0, 255, 4 do
-        local r, g, b = pixelOf(bytes, 256, x, y)
-        if r < 0.01 and g < 0.01 and b < 0.01 then
-          found = found + 1
-        end
-      end
-    end
-    return found
-  end
-  Assert.equal(
-    blackPixels(romSubBefore),
-    0,
-    "the other engine art carries no black before the sourced wipe"
+  -- The sourced black-out holds the sub engine black through the wipe
+  -- beat, so the wipe owns main alone: the sub target carries retained
+  -- black before the wipe and the wipe leaves it byte-identical.
+  Assert.isTrue(
+    regionLit(romSubBefore, 256, 0, 255, 0, 191) < 0.05,
+    "the sub engine keeps its retained black into the sourced wipe"
   )
-  Assert.equal(blackPixels(romSubMid), 0, "the sourced wipe never spills onto the other engine")
+  Assert.equal(romSubMid, romSubBefore, "the sourced wipe leaves the held sub engine untouched")
   romMovie:dispose()
 end
 
@@ -4219,9 +4204,12 @@ local function soulsilver_source_pan_edges_match_wrapped_native_art(scope, conte
     [1] = { 16, 128 },
     [2] = { 0, 64 * elapsed },
   }, {})
-  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "sub", "scene 2 end", {
-    [0] = { 0, 64 * elapsed },
-  }, {})
+  -- The end pan runs under the retained sub black-out, so the sub target
+  -- carries held black instead of wrapped art.
+  Assert.isTrue(
+    regionLit(sourceBytes(scope, movie.subCanvas), 256, 0, 255, 0, 191) < 0.05,
+    "scene 2 end holds its sub black through the pan"
+  )
   -- Scene 4: the slide carries opposing offsets before settling. Live
   -- hand sprites are excluded by their slot boxes.
   advanceToSceneStep(movie, 4, "slide-in", 20000)
@@ -5014,11 +5002,126 @@ local function blackGridCount(bytes, width)
   return found
 end
 
+-- The sourced second scene fades only its sub engine to black while the
+-- main heroes keep panning: the main target stays lit through the
+-- eight-tick fade, the sub target reaches black and holds it across the
+-- following ninety-tick pan, and the next pan waits for the fade rather
+-- than the shorter scrolls.
+local function soulsilver_scene_two_sub_blackout_holds_while_main_pans(scope, context)
+  if not RomImporter.isReady("soulsilver") then
+    context:skip("SoulSilver sub blackout needs a user-owned SoulSilver ROM")
+  end
+  local movie = openMovie(scope, "soulsilver", 512, 384, "dual")
+  advanceToSceneStep(movie, 2, "flyin", 20000)
+  movie:updateFixed()
+  movie:draw()
+  Assert.isTrue(
+    regionLit(sourceBytes(scope, movie.mainCanvas), 256, 0, 255, 0, 191) > 0.2,
+    "the flyin lights main before the black-out"
+  )
+  Assert.isTrue(
+    regionLit(sourceBytes(scope, movie.subCanvas), 256, 0, 255, 0, 191) > 0.2,
+    "the flyin lights sub before the black-out"
+  )
+  -- The fifty-sixth flyin update starts the settle tasks; three updates
+  -- later the sub fade is mid-course while main keeps its heroes.
+  advance(movie, 55)
+  Assert.equal(currentStepId(movie), "settle-flyin", "the settle opens on the fifty-sixth flyin tick")
+  advance(movie, 3)
+  movie:draw()
+  Assert.isTrue(
+    regionLit(sourceBytes(scope, movie.mainCanvas), 256, 0, 255, 0, 191) > 0.2,
+    "main stays lit mid-way through the sub-only black-out"
+  )
+  -- The five-tick scrolls finish while the eight-tick fade still runs:
+  -- the settle must not release its next pan yet.
+  advance(movie, 1)
+  Assert.equal(
+    currentStepId(movie),
+    "settle-flyin",
+    "the settle still waits while the sub fade runs past its scrolls"
+  )
+  -- Once the fade completes the next pan begins with main art showing
+  -- and sub at full black.
+  advance(movie, 3)
+  Assert.equal(
+    currentStepId(movie),
+    "slow-pan-ethan",
+    "the next pan begins once the sub fade completes"
+  )
+  movie:draw()
+  local doneMain = sourceBytes(scope, movie.mainCanvas)
+  local doneSub = sourceBytes(scope, movie.subCanvas)
+  Assert.isTrue(regionLit(doneMain, 256, 0, 255, 0, 191) > 0.2, "main shows its hero art past the sub fade")
+  Assert.isTrue(regionLit(doneSub, 256, 0, 255, 0, 191) < 0.05, "sub reaches black when its fade completes")
+  -- Halfway through the ninety-tick pan the heroes keep moving on main
+  -- while sub holds its black without drifting.
+  advance(movie, 45)
+  movie:draw()
+  local holdMain = sourceBytes(scope, movie.mainCanvas)
+  local holdSub = sourceBytes(scope, movie.subCanvas)
+  Assert.isTrue(regionLit(holdMain, 256, 0, 255, 0, 191) > 0.2, "main keeps its hero art across its pans")
+  Assert.isTrue(regionLit(holdSub, 256, 0, 255, 0, 191) < 0.05, "sub holds black across the main hero pans")
+  Assert.isTrue(
+    changeFraction(doneMain, holdMain, 256, 192) > 0.02,
+    "main pans continue while sub holds black"
+  )
+  Assert.isTrue(
+    changeFraction(doneSub, holdSub, 256, 192) < 0.01,
+    "sub stays still while it holds black"
+  )
+  movie:dispose()
+end
+
+-- The sourced first scene shows its sun paused on the setup beat and
+-- only animates it once the scroll case starts: the sunrise entry carries
+-- a visible unanimated sun at its station, a repeated draw keeps the
+-- identical frame, and the following case advances both the clip and the
+-- background scroll programs.
+local function soulsilver_scene_one_sunrise_shows_static_sun_before_scroll(scope, context)
+  if not RomImporter.isReady("soulsilver") then
+    context:skip("SoulSilver sunrise needs a user-owned SoulSilver ROM")
+  end
+  local movie = openMovie(scope, "soulsilver", 512, 384, "dual")
+  advanceToSceneStep(movie, 1, "sunrise", 20000)
+  movie:updateFixed()
+  movie:draw()
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.notNil(slot.spriteInstances["sun"], "the sunrise beat shows its sun")
+  local sun = assert(slot.spriteInstances["sun"], "the sunrise beat shows its sun")
+  Assert.isTrue(sun.visible == true, "the staged sun is visible on its setup beat")
+  Assert.equal(sun.animate, false, "the sunrise beat holds the sun paused")
+  Assert.equal(sun.tick, 0, "the paused sun keeps its first authored frame")
+  local first = sourceBytes(scope, movie.mainCanvas)
+  Assert.isTrue(
+    regionLit(first, 256, 112, 144, 80, 112) > 0.3,
+    "the sunrise beat paints sun pixels at its station"
+  )
+  movie:draw()
+  Assert.equal(sourceBytes(scope, movie.mainCanvas), first, "a repeated draw keeps the identical static sun")
+  movie:updateFixed()
+  Assert.equal(currentStepId(movie), "scroll", "the animated scroll case follows the setup beat")
+  Assert.equal(sun.animate, true, "the scroll case restarts the sun clip")
+  advance(movie, 30)
+  movie:draw()
+  Assert.isTrue((sun.tick or 0) > 0, "the scroll case advances the sun clip")
+  local offsets = currentScrollOffsets(movie)
+  Assert.isTrue(
+    offsets.main1 ~= 0 or offsets.main2 ~= 0,
+    "the scroll case moves its sunrise backgrounds"
+  )
+  Assert.isTrue(
+    changeFraction(first, sourceBytes(scope, movie.mainCanvas), 256, 192) > 0.05,
+    "the scroll case animates the sunrise beat"
+  )
+  movie:dispose()
+end
+
 -- The sourced second scene carries exactly one main wipe with its retail
 -- kind and eight ticks: early, middle, and finished frames show game art
 -- on the left and the white backdrop on the right, the finished white
--- holds past completion, and the idle engine stays clean on every
--- stage layout.
+-- holds past completion, and the sub engine keeps its retained flyin
+-- black untouched by the wipe on every stage layout.
 local function soulsilver_scene_two_final_wipe_keeps_its_source_kind_and_white_hold(scope, context)
   if not RomImporter.isReady("soulsilver") then
     context:skip("SoulSilver final wipe needs a user-owned SoulSilver ROM")
@@ -5044,7 +5147,10 @@ local function soulsilver_scene_two_final_wipe_keeps_its_source_kind_and_white_h
     advanceToSceneStep(movie, 2, "wipe", 20000)
     movie:draw()
     local subBefore = sourceBytes(scope, movie.subCanvas)
-    Assert.equal(blackGridCount(subBefore, 256), 0, "the other engine art carries no black before the wipe")
+    Assert.isTrue(
+      regionLit(subBefore, 256, 0, 255, 0, 191) < 0.05,
+      "the sub engine keeps its retained black into the wipe beat"
+    )
     advance(movie, 2)
     movie:draw()
     local main = sourceBytes(scope, movie.mainCanvas)
@@ -5055,7 +5161,7 @@ local function soulsilver_scene_two_final_wipe_keeps_its_source_kind_and_white_h
       local r, g, b = pixelOf(main, 256, row.edge + 12, row.y)
       assertSameColor(r, g, b, 1, 1, 1, 0.12, "the sourced wipe hides the right behind white")
     end
-    Assert.equal(blackGridCount(sub, 256), 0, "the sourced wipe never spills black onto the other engine")
+    Assert.equal(sub, subBefore, "the main wipe leaves the held sub engine untouched")
     if midMain == nil then
       midMain, midSub = main, sub
     else
@@ -6805,6 +6911,8 @@ local T = GraphicsSmoke.suite({
   ["physical top neutral resets only the mapped engine"] = physical_top_neutral_resets_only_the_mapped_engine,
   ["synthetic scene five shutter opens main center out before sub bottom up"] = synthetic_scene_five_shutter_opens_main_center_out_before_sub_bottom_up,
   ["soulsilver scene two final wipe keeps its source kind and white hold"] = soulsilver_scene_two_final_wipe_keeps_its_source_kind_and_white_hold,
+  ["soulsilver scene two sub blackout holds while main pans"] = soulsilver_scene_two_sub_blackout_holds_while_main_pans,
+  ["soulsilver scene one sunrise shows its static sun before scrolling"] = soulsilver_scene_one_sunrise_shows_static_sun_before_scroll,
   ["soulsilver scene three closes retire town drawing before the rival reveal"] = soulsilver_scene_three_closes_retire_town_drawing_before_the_rival_reveal,
   ["soulsilver scene five shutter runs main then sub across layouts"] = soulsilver_scene_five_shutter_runs_main_then_sub_across_layouts,
   ["heartgold scene two wipe is blocked without a dump"] = heartgold_scene_two_wipe_is_blocked_without_a_dump,
