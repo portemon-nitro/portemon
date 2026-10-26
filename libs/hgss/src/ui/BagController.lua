@@ -927,6 +927,21 @@ function BagController:_runContinuation(continuation)
     self:_commitRegistration(continuation.register == true)
   elseif kind == "intent" then
     local itemKey = assert(self._actionItemKey, "field actions snapshot their item")
+    if self._context == "battle" then
+      local policy = assert(self._battlePolicy, "the battle context carries its native options")
+      if not policy.isEnabled(itemKey) then
+        self:_toBrowsing()
+        local reason = policy.reason(itemKey)
+        if type(reason) ~= "string" or reason == "" then
+          reason = "That choice is unavailable."
+        end
+        self:_startMessage(reason, true)
+        return
+      end
+      self:_toBrowsing()
+      self:_emitIntent("battle_select", itemKey)
+      return
+    end
     self:_toBrowsing()
     self:_emitIntent(assert(continuation.intent, "intent continuations carry their kind"), itemKey)
   else
@@ -952,6 +967,9 @@ end
 
 ---@return table<string, unknown>[]
 function BagController:_currentActions()
+  if self._context == "battle" then
+    return { { id = "use", label = "USE", slot = 0 } }
+  end
   local actions = self._resolveActions(self._view)
   assert(type(actions) == "table", "the action policy returns dynamic actions")
   validateActions(actions)
@@ -1708,12 +1726,15 @@ function BagController:_syncNested()
   return true
 end
 
--- Confirms one battle cell without opening the field action menu:
+-- Confirms one battle cell through the native Use action page:
 -- tabs and Cancel keep their browsing behavior, an empty cell stays a
--- no-op, an enabled cell forwards one selection intent for the owning
--- battle flow to stage, and a refused cell explains its native reason
--- with no stock movement. Consumption stays with native execution.
+-- no-op, and the action continuation stages an enabled choice or shows
+-- its refusal without moving stock.
 function BagController:_confirmBattle()
+  if self._state == "action_menu" then
+    self:_chooseActionNode(self._actionNode)
+    return
+  end
   if self._state ~= "browsing" then
     return
   end
@@ -1731,23 +1752,7 @@ function BagController:_confirmBattle()
     if absolute == nil then
       return
     end
-    if self._intent ~= nil then
-      return
-    end
-    local selected = assert(self._view.selected, "an occupied focus carries its record")
-    local itemKey = assert(selected.item, "selected slots carry their item key")
-    local policy = assert(self._battlePolicy, "the battle context carries its native options")
-    if policy.isEnabled(itemKey) then
-      self:_play(EFFECT.select)
-      self:_emitIntent("battle_select", itemKey)
-    else
-      self:_play(EFFECT.invalid)
-      local reason = policy.reason(itemKey)
-      if type(reason) ~= "string" or reason == "" then
-        reason = "That choice is unavailable."
-      end
-      self:_startMessage(reason, true)
-    end
+    self:_openActionMenu()
   end
 end
 

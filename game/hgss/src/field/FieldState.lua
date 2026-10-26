@@ -22,6 +22,10 @@ local HoOhAssetPreparer = require("game.hgss.src.field.HoOhAssetPreparer")
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
 local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", dpright = "east" }
+-- The presented battle and its native child controllers speak UI directions.
+local KEY_UI_DIRECTIONS =
+  { w = "up", up = "up", s = "down", down = "down", a = "left", left = "left", d = "right", right = "right" }
+local GAMEPAD_UI_DIRECTIONS = { dpup = "up", dpdown = "down", dpleft = "left", dpright = "right" }
 
 -- The finite modal extra-button producers: keyboard Tab stays X/cry and the
 -- existing registered y/u bindings stay intact, so only these six keys and
@@ -254,6 +258,18 @@ function FieldState.new(game, options)
       derivedAssets = runtime.derivedAssets,
       imagePool = runtime.imageAssets,
       monIconProvider = self.presentationResources.monIconProvider,
+      battleMenus = {
+        party = {
+          manifest = self.presentationResources.partyManifest,
+          renderer = self.presentationResources.partyScreenRenderer,
+          icons = self.presentationResources.monIconProvider,
+        },
+        bag = {
+          manifest = self.presentationResources.bagManifest,
+          renderer = self.presentationResources.bagRenderer,
+          icons = self.presentationResources.itemIconProvider,
+        },
+      },
       pokedex = self.presentationResources:pokedex(),
       itemCatalog = assert(runtime.itemCatalog, "the presented battle envelope borrows its item catalog"),
       monCatalog = assert(runtime.monCatalog, "the presented battle envelope borrows its mon catalog"),
@@ -1663,7 +1679,7 @@ function FieldState:_routeBattleKey(key)
   if envelope == nil or not envelope:ownsInput() then
     return false
   end
-  local direction = KEY_DIRECTIONS[key]
+  local direction = KEY_UI_DIRECTIONS[key]
   if direction ~= nil then
     envelope:input({ { type = "navigate", direction = direction } })
     return true
@@ -1698,7 +1714,7 @@ function FieldState:_routeBattleGamepadButton(source, button)
     envelope:input({ { type = "cancel" } })
     return true
   end
-  local direction = GAMEPAD_DIRECTIONS[button]
+  local direction = GAMEPAD_UI_DIRECTIONS[button]
   if direction ~= nil then
     envelope:input({ { type = "navigate", direction = direction } })
     return true

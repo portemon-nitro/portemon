@@ -1115,6 +1115,40 @@ function T.presented_admission_fails_closed_without_a_port()
   Assert.deepEqual(holds, {}, "no input hold precedes a constructed port")
 end
 
+-- The source selector chooses wild music even when a planning manifest
+-- has no staged role table; the launch demand then stages that exact track.
+function T.presented_wild_launch_selects_music_without_manifest_roles()
+  local descriptor
+  local runtime = fakeRuntime({
+    versionId = "heartgold",
+    cacheFs = {
+      versionId = "heartgold",
+      loadLua = function()
+        return {}
+      end,
+    },
+    session = {
+      setBattleActive = function() end,
+      setForegroundHold = function() end,
+    },
+    input = { clearAll = function() end },
+  })
+  runtime.battleCoordinator._captureLaunchEnvironment = function()
+    return { sceneKey = "general/plain/day" }
+  end
+  runtime.battleCoordinator._captureTransitionContext = function()
+    return {}
+  end
+  runtime:bindBattlePresentation(function(launchDescriptor)
+    descriptor = launchDescriptor
+    return {}
+  end)
+
+  runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE" } })
+
+  Assert.equal(descriptor.musicRole, "SEQ_GS_VS_NORAPOKE", "ordinary wild battles select their source track")
+end
+
 -- Launch environments resolve from compiled map facts and live avatar
 -- state without consuming randomness: surfing overrides to ocean,
 -- standing behavior selects terrain ahead of the background default,

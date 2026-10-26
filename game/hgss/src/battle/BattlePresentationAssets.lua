@@ -48,6 +48,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 ---@field _effects table<string, BattlePresentationAssets.EffectState> per-effect demand/load/lease state by flat effect key
 ---@field _effectDrawables table<string, boolean> staged semantic texture keys admitted through effect leases
 ---@field _picturePass table<string, unknown>? per-screen Pokepic color/depth renderer
+---@field _menuBlend BattleMenuPresenter.BlendTargets? per-screen native menu BG1 blend targets
 ---@field _released boolean release guard
 local BattlePresentationAssets = {}
 BattlePresentationAssets.__index = BattlePresentationAssets
@@ -112,6 +113,7 @@ function BattlePresentationAssets.new(opts)
     _effects = {},
     _effectDrawables = {},
     _picturePass = nil,
+    _menuBlend = nil,
     _released = false,
   }, BattlePresentationAssets)
 end
@@ -631,6 +633,18 @@ function BattlePresentationAssets:renderPictures(graphics, pictures)
   return self._picturePass:render(graphics, pictures)
 end
 
+-- Lends this screen's native menu BG1 blend targets, allocated on first use.
+---@param graphics love.graphics borrowed graphics namespace
+---@return BattleMenuPresenter.BlendTargets
+function BattlePresentationAssets:menuBlendTargets(graphics)
+  assert(not self._released, "released battle assets lend no menu blend targets")
+  if self._menuBlend == nil then
+    local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
+    self._menuBlend = BattleMenuPresenter.newBlendTargets(graphics)
+  end
+  return self._menuBlend
+end
+
 ---@param size integer native Pokepic shadow-size selector
 ---@return table<string, unknown> normalized image rectangle for the selected size
 function BattlePresentationAssets:shadowRegion(size)
@@ -672,6 +686,10 @@ function BattlePresentationAssets:dispose()
   if self._picturePass ~= nil then
     self._picturePass:release()
     self._picturePass = nil
+  end
+  if self._menuBlend ~= nil then
+    self._menuBlend:release()
+    self._menuBlend = nil
   end
   for key in pairs(self._owned) do
     self._assets.release(key)

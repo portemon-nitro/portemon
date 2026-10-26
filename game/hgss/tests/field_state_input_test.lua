@@ -151,6 +151,43 @@ end
 -- cannot silently drop a field key and the keypad Enter expansion flows.
 -- Escape reaches cancel input instead of the host quit, and removed aliases
 -- stay inert.
+-- The presented battle consumes the shared UI direction vocabulary that
+-- every native child controller (bag, party, picker) validates.
+function T.battle_owned_keys_and_dpad_navigate_with_ui_directions()
+  local received = {}
+  local state = stateWithInput({})
+  state.battleEnvelope = {
+    ownsInput = function()
+      return true
+    end,
+    input = function(_, events)
+      received[#received + 1] = events[1].direction
+    end,
+  }
+
+  for _, key in ipairs({ "up", "down", "left", "right", "w", "s", "a", "d" }) do
+    state:_routeBattleKey(key)
+  end
+  for _, button in ipairs({ "dpup", "dpdown", "dpleft", "dpright" }) do
+    state:_routeBattleGamepadButton("gamepad:7:" .. button, button)
+  end
+
+  Assert.deepEqual(received, {
+    "up",
+    "down",
+    "left",
+    "right",
+    "up",
+    "down",
+    "left",
+    "right",
+    "up",
+    "down",
+    "left",
+    "right",
+  })
+end
+
 function T.shared_binding_aliases_drive_field_action_cancel_and_menu()
   local calls = {}
   local input = {}

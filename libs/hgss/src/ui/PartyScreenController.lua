@@ -18,7 +18,7 @@ local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
 ---@class PartyScreenController
----@field _context "browse"|"pick"|"item_target"|"give_target"|"give_resume"
+---@field _context "browse"|"pick"|"battle_pick"|"item_target"|"give_target"|"give_resume"
 ---@field _model PartyScreenController.Model
 ---@field _facts PartyScreenController.View? the retained projection owned by refreshFacts
 ---@field _factsModel PartyScreenController.Model? the model that produced the retained projection
@@ -105,7 +105,7 @@ PartyScreenController.__index = PartyScreenController
 ---@field slot integer?
 
 ---@class PartyScreenController.Options
----@field context "browse"|"pick"|"item_target"|"give_target"|"give_resume"
+---@field context "browse"|"pick"|"battle_pick"|"item_target"|"give_target"|"give_resume"
 ---@field initialFocus integer|"cancel"?
 ---@field allowCancel boolean?
 ---@field model PartyScreenController.Model
@@ -215,10 +215,11 @@ function PartyScreenController.new(opts)
   assert(
     opts.context == "browse"
       or opts.context == "pick"
+      or opts.context == "battle_pick"
       or opts.context == "item_target"
       or opts.context == "give_target"
       or opts.context == "give_resume",
-    "the party controller requires a named browse, pick, item_target, give_target, or give_resume context"
+    "the party controller requires a named browse, pick, battle_pick, item_target, give_target, or give_resume context"
   )
   assert(
     type(opts.model) == "table" and type(opts.model.refresh) == "function",
@@ -964,7 +965,7 @@ end
 function PartyScreenController:_confirmSlotTarget()
   local node = self._cursorNode
   if node == "cancel" then
-    if self._context == "pick" then
+    if self._context == "pick" or self._context == "battle_pick" then
       self:_cancelPick()
       return
     end
@@ -1011,7 +1012,7 @@ function PartyScreenController:_confirmSlotTarget()
     return
   end
   assert(isSlotNode(node), "targets resolve to party slots")
-  if self._context == "pick" then
+  if self._context == "pick" or self._context == "battle_pick" then
     ---@cast node integer
     self._result = { kind = "selected", slot = node }
     self:_transition("closing")
@@ -1091,6 +1092,17 @@ function PartyScreenController:_confirmMenuEntry()
     return
   end
   if entry.kind == "switch" then
+    if self._context == "battle_pick" then
+      local record = assert(self._view.slots[slot + 1], "battle Switch reads its selected slot")
+      if record.eligible ~= true then
+        self:_requestInvalidSound()
+        self:_dismissMenu()
+        return
+      end
+      self._result = { kind = "selected", slot = slot }
+      self:_transition("closing")
+      return
+    end
     self._swapSource = slot
     self._menu = nil
     self._menuIndex = nil
@@ -1204,6 +1216,16 @@ function PartyScreenController:_confirm()
     self:_confirmSlotTarget()
     return
   end
+  if self._context == "battle_pick" then
+    if self._state == "browse" then
+      self:_confirmBrowse()
+    elseif isMenuState(self._state) then
+      self:_beginMenuPress()
+    else
+      self:_confirmSlotTarget()
+    end
+    return
+  end
   if self._state == "browse" then
     self:_confirmBrowse()
     return
@@ -1228,7 +1250,7 @@ end
 
 function PartyScreenController:_cancel()
   if self._state == "browse" then
-    if self._context == "pick" then
+    if self._context == "pick" or self._context == "battle_pick" then
       self:_cancelPick()
       return
     end
@@ -1824,7 +1846,7 @@ end
 -- message, waiting, or continuation state. Script selection never emits
 -- this edge.
 function PartyScreenController:_dismiss()
-  if self._context == "pick" then
+  if self._context == "pick" or self._context == "battle_pick" then
     error("party dismiss is a browse-flow edge; pick context never emits it", 2)
   end
   self._result = { kind = "closed" }
@@ -1838,7 +1860,7 @@ end
 -- advances them.
 ---@class PartyScreenController.Status
 ---@field open boolean
----@field context "browse"|"pick"|"item_target"|"give_target"|"give_resume"?
+---@field context "browse"|"pick"|"battle_pick"|"item_target"|"give_target"|"give_resume"?
 ---@field state string?
 ---@field mode "browse"|"pick"|"item_target"|"give_target"|"give_resume"?
 ---@field action string?
@@ -2018,7 +2040,8 @@ function PartyScreenController:completeAction(outcome)
   self:_restoreOrigin(origin)
 end
 
--- Restores the pre-intent cursor and menu position after an outcome.
+-- Restores the pre-intent cursor and menu position after an outcome;
+-- target selection resumes in place.
 ---@param origin PartyScreenController.Origin
 function PartyScreenController:_restoreOrigin(origin)
   local view = self._view
@@ -2031,6 +2054,10 @@ function PartyScreenController:_restoreOrigin(origin)
     self._donorSlot = nil
     self._donorMoveSlot = nil
     self:_transition("browse")
+    return
+  end
+  if origin.state == "choosing_item_target" then
+    self:_transition(origin.state)
     return
   end
   if origin.state == "context" or origin.state == "item_context" or origin.state == "mail_context" then

@@ -1092,9 +1092,9 @@ end
 -- wild special-species table wins first, then the trainer class table
 -- with the rival override, then the ordinary kind default, with the
 -- Kanto regional remap last. Selection consumes no battle or
--- encounter randomness and never infers from display strings. Banks
--- resolve through the normalized audio catalog at playback; a launch
--- without staged roles selects no music instead of guessing.
+-- encounter randomness and never infers from display strings. The
+-- presentation stages this selected sequence through the normalized
+-- audio catalog; selection does not depend on a verified manifest.
 ---@param request table<string, unknown> launch request carrying its kind and payload
 ---@return string|number? resolved trainer class key or numeric native class, nil for wild launches
 function FieldBattleCoordinator:_battleTrainerClass(request)
@@ -1137,18 +1137,6 @@ end
 ---@param request table<string, unknown> launch request carrying its kind and payload
 ---@return string? normalized battle-music sequence symbol
 function FieldBattleCoordinator:_battleMusicRole(request)
-  if fieldRuntime(self).cacheFs == nil then
-    return nil
-  end
-  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local okManifest, manifest = pcall(BattlePresentationCache.load, fieldRuntime(self).cacheFs)
-  if not okManifest or type(manifest) ~= "table" then
-    return nil
-  end
-  local roles = manifest.audioRoles
-  if type(roles) ~= "table" then
-    return nil
-  end
   local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
   local payload = request.payload
   if type(payload) ~= "table" then

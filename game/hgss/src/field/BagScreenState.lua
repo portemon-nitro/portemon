@@ -207,8 +207,8 @@ function BagScreenState.new(opts)
   -- menu rides the pure policy projection bound to that same service.
   -- Persistence stays with the normal save capture; nothing writes here.
   -- The battle context selects only: its commands are tripwires that fail
-  -- closed instead of reaching the live service, and its action policy is
-  -- empty because battle selections bypass the field action menu.
+  -- closed instead of reaching the live service; the controller owns the
+  -- battle Use action and never calls the field policy.
   local function tossItem(itemKey, quantity)
     return service:take(itemKey, quantity)
   end

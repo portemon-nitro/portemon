@@ -595,4 +595,81 @@ function T.repeated_screening_servings_refuse_at_commit()
   session:dispose()
 end
 
+
+---@param actorOptions table<string, unknown> one actor's projected options under search
+---@param item string item key under search
+---@param holder integer combatant receiving the serving
+---@return table<integer, table<string, unknown>> item options by zero-based move slot
+local function itemOptionsBySlot(actorOptions, item, holder)
+  local found = {}
+  for _, option in
+    ipairs(actorOptions.choices --[[@as table<integer, table<string, unknown>>]])
+  do
+    local choice = option.choice --[[@as table<string, unknown>]]
+    local payload = choice.payload --[[@as table<string, unknown>]]
+    if choice.kind == "item" and payload.item == item and targetsHolder(payload.target, holder) then
+      Assert.isTrue(type(payload.moveSlot) == "number", "one-move PP options name their move slot")
+      found[payload.moveSlot --[[@as integer]]] = option
+    end
+  end
+  return found
+end
+
+-- A one-move PP serving is chosen per move slot like the native Restore
+-- PP page: each held move projects its own option, a full move refuses
+-- with no effect, a choice naming no move is refused at submission, and
+-- the chosen move recovers the generated amount through the item path.
+function T.one_move_pp_servings_select_their_move()
+  local Executor = executorOwner()
+  local content = actionContent()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  lead.mon.moves = { { move = "TACKLE", pp = 5, ppUps = 0 }, { move = "GROWL", pp = 40, ppUps = 0 } }
+  local pack = SessionFixture.inventory("party", { 1 }, { ETHER = 1 })
+  local facts = { ETHER = { partyUse = { kind = "pp", target = "one", restore = 10, mood = 0 } } }
+  local scenario =
+    itemScenario({ lead }, { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) }, pack, facts)
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  scenario.moveFacts.GROWL = CatalogFixture.makeCatalog():move("GROWL")
+  local session = Executor.new(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local options = session:decisionOptions(alpha.requestId)
+  local bySlot = itemOptionsBySlot(options.actors[1], "ETHER", 1)
+  Assert.isTrue(bySlot[0] ~= nil and bySlot[0].enabled == true, "the spent move offers its restoration")
+  Assert.isTrue(bySlot[1] ~= nil and bySlot[1].enabled == false, "the full move refuses its restoration")
+  Assert.equal(bySlot[1].reason, "no_effect", "the full move explains it would have no effect")
+
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local unslotted, unslottedErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "ETHER", 1) }))
+  Assert.isFalse(unslotted, "a one-move PP serving naming no move is refused")
+  Assert.notNil(unslottedErr, "the refusal carries its input error")
+
+  local unheld = bagChoice(actor, "ETHER", 1)
+  unheld.payload.moveSlot = 2
+  Assert.isFalse(
+    session:submit(SessionFixture.replyFor(alpha, { unheld })),
+    "a move slot the holder does not hold is refused"
+  )
+
+  local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { bySlot[0].choice }))
+  Assert.isTrue(ok, "the slotted restoration is accepted")
+  Assert.isNil(replyErr, "accepted bag use carries no input error")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(
+    session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) })),
+    "the opposing exchange is accepted"
+  )
+  local turn = session:advance(64)
+  local served = servedItemEvent(turn.events or {})
+  local payload = served.payload --[[@as table<string, unknown>]]
+  Assert.equal(payload.restoredPp, 10, "the event reports the restored PP")
+  local settled = session:capture()
+  Assert.equal(settled.combatants[1].mon.moves[1].pp, 15, "the chosen move recovers the generated amount")
+  Assert.equal(settled.combatants[1].mon.moves[2].pp, 40, "the other move is untouched")
+  Assert.equal(settled.inventories.party.quantities.ETHER, 0, "exactly one unit leaves the stock")
+  session:dispose()
+end
+
 return { tests = T }

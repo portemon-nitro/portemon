@@ -6,9 +6,12 @@
 
 local Assert = require("tests.support.Assert")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
+local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
@@ -16,6 +19,7 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 
 local T = {}
 local TICK = 1 / 60
@@ -430,6 +434,12 @@ function T.render_restores_borrowed_state()
     assets = {
       drawable = function(_, key)
         return image(key)
+      end,
+      menuBlendTargets = function(self, blendGraphics)
+        if self.menuBlend == nil then
+          self.menuBlend = BattleMenuPresenter.newBlendTargets(blendGraphics)
+        end
+        return self.menuBlend
       end,
     },
     frameKey = "default",
@@ -849,6 +859,7 @@ local function openChildRig(opts)
   end
   rig.party = party
   rig.bag = bag
+  rig.bagManifest = BagPresentationFixture.manifest()
   local launchId = opts.launchId or "launch-battle-bag"
   local foeSpec = opts.foe or { species = "EEVEE", level = 4, seed = 0x5EED0002 }
   local foe = makeFoe(foeSpec)
@@ -868,6 +879,15 @@ local function openChildRig(opts)
       ability = "RUN_AWAY",
     },
   }
+  local battleBagRenderer = {}
+  battleBagRenderer.owner = battleBagRenderer
+  function battleBagRenderer:prepare(_)
+    return true
+  end
+  function battleBagRenderer:draw(_, plan, _)
+    rig.bagPlacement = plan.panes[1].placement
+    return true
+  end
   local screen = BattleScreenState.new({
     launchId = launchId,
     manifest = BattlePresentationManifestFixture.manifest(),
@@ -884,6 +904,13 @@ local function openChildRig(opts)
     text = rig.text,
     windows = rig.windows,
     audio = rig.audio,
+    battleMenus = {
+      bag = {
+        manifest = rig.bagManifest,
+        renderer = battleBagRenderer,
+        icons = {},
+      },
+    },
   })
   rig.screen = screen
   rig.port = screen:presentationPort()
@@ -1005,94 +1032,23 @@ local function firstEnabledMoveFragment(rig, request)
   error("the action request carries an enabled move (" .. rig.layout .. ")", 0)
 end
 
+-- Taps the focused native Bag cell, then the generated Use button.
 ---@param rig table live screen rig under test driving
----@return table<string, integer> drawn text census keyed by content for one render
-local function renderedContents(rig)
-  rig.text.draws = {}
-  rig.screen:draw({ graphics = FakeGraphics.new({}) })
-  local census = {}
-  for _, drawn in ipairs(rig.text.draws) do
-    local content = tostring(drawn.content)
-    census[content] = (census[content] or 0) + 1
+---@return boolean sealed true once the native selection sealed a reply
+local function tapSealsBagReply(rig)
+  local function tap(rect)
+    local x = rect.x + rect.width / 2
+    local y = rect.y + rect.height / 2 + (rig.layout == "paired" and 192 or 0)
+    local pointerId = "touch:native-bag"
+    rig.screen:input({ { type = "pointer_down", pointerId = pointerId, x = x, y = y } })
+    rig.screen:input({ { type = "pointer_up", pointerId = pointerId, x = x, y = y } })
+    rig.pump(1)
   end
-  return census
-end
-
----@param census table<string, integer> rendered text census under inspection
----@return integer distinct drawn contents
-local function censusSize(census)
-  local total = 0
-  for _, _ in pairs(census) do
-    total = total + 1
-  end
-  return total
-end
-
--- The open bag paints its own pocket rows instead of the command
--- fallback: strictly more text appears and a new entry names the
--- given item marker, matched without case.
----@param before table<string, integer> command text census under comparison
----@param after table<string, integer> bag text census under comparison
----@param marker string required new visible item marker under comparison
----@param what string bag description under comparison
-local function assertPaintsBagRows(before, after, marker, what)
-  Assert.isTrue(
-    censusSize(after) >= censusSize(before) + 4,
-    "the open " .. what .. " paints its own rows instead of the command fallback"
-  )
-  local seen = false
-  for content, _ in pairs(after) do
-    if before[content] == nil and tostring(content):lower():find(marker, 1, true) ~= nil then
-      seen = true
-    end
-  end
-  Assert.isTrue(seen, "the open " .. what .. " names its stocked entries (" .. marker .. ")")
-end
-
--- Probes the open bag with matched press/release taps across the
--- interaction surface until one tap seals a reply. A tap that closes
--- the bag without sealing reopens it and walks back once, so a footer
--- cancel never ends the probe early. Two passes cover entries that
--- focus on the first tap and seal on the second.
----@param rig table live screen rig under test driving
----@param yLo integer first host row under probing
----@param yHi integer last host row under probing
----@param rewalk fun(rig: table) reopens the bag and walks back after a cancel tap
----@return boolean sealed true once a tap sealed exactly one reply
-local function tapSealsBagReply(rig, yLo, yHi, rewalk)
-  local taps = 0
-  local cancelled = 0
-  for pass = 1, 2 do
-    local y = yLo
-    while y <= yHi do
-      local x = 8
-      while x <= 248 do
-        if rig.screen:status().mode ~= "child" then
-          if #rig.submits > 0 then
-            return true
-          end
-          if cancelled >= 1 then
-            return false
-          end
-          cancelled = cancelled + 1
-          rewalk(rig)
-          if rig.screen:status().mode ~= "child" then
-            return false
-          end
-        end
-        taps = taps + 1
-        local id = "touch:bag:" .. tostring(pass) .. ":" .. tostring(taps)
-        rig.screen:input({ { type = "pointer_down", pointerId = id, x = x, y = y } })
-        rig.screen:input({ { type = "pointer_up", pointerId = id, x = x, y = y } })
-        rig.pump(1)
-        if #rig.submits > 0 then
-          return true
-        end
-        x = x + 16
-      end
-      y = y + 16
-    end
-  end
+  local interactive = rig.bagManifest.interactive
+  tap(interactive.itemSlots.slots[1].rect)
+  rig.pump(2)
+  tap(interactive.overlays.actionMenu.slots[1].hitRect)
+  rig.pump(8)
   return #rig.submits > 0
 end
 
@@ -1105,10 +1061,6 @@ end
 function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
   for _, layout in ipairs({ "paired", "compact" }) do
     local tag = " (" .. layout .. ")"
-    local yLo, yHi = 8, 184
-    if layout == "paired" then
-      yLo, yHi = 200, 376
-    end
     local rig = openChildRig({
       layout = layout,
       launchId = "launch-visible-bag-" .. layout,
@@ -1136,16 +1088,21 @@ function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
       end
     end
     Assert.isTrue(#enabledPotions >= 1, "the stocked healing stays selectable" .. tag)
-    local commandInk = renderedContents(rig)
     openBagFromCommand(rig)
+    rig.screen:draw({ graphics = FakeGraphics.new({}) })
+    Assert.equal(rig.screen:status().mode, "child", "drawing the borrowed native renderer keeps the Bag open" .. tag)
+    local paneFrame = assert(rig.bagPlacement, "the open Bag draws through the borrowed renderer" .. tag).frame
+    Assert.deepEqual(
+      { paneFrame.x, paneFrame.y, paneFrame.width, paneFrame.height },
+      layout == "compact" and { 0, 0, 256, 192 } or { 0, 192, 256, 192 },
+      "the Bag draws inside the battle interaction pane" .. tag
+    )
     walkToMedicineFirstCell(rig)
-    assertPaintsBagRows(commandInk, renderedContents(rig), "potion", "medicine pocket" .. tag)
     press(rig, { type = "cancel" })
     press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "command", "leaving the medicine pocket returns to command" .. tag)
     openBagFromCommand(rig)
     walkToBallsFirstCell(rig)
-    assertPaintsBagRows(commandInk, renderedContents(rig), "ball", "balls pocket" .. tag)
     press(rig, { type = "cancel" })
     press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "command", "leaving the pockets returns to command" .. tag)
@@ -1156,6 +1113,10 @@ function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
     press(rig, { type = "confirm" })
     Assert.equal(#rig.submits, 0, "staging the serving seals no reply" .. tag)
     Assert.equal(rig.screen:status().mode, "child", "staging keeps the child open" .. tag)
+    rig.pump(1)
+    press(rig, { type = "confirm" })
+    rig.pump(8)
+    Assert.equal(#rig.submits, 0, "using the serving opens its target picker without sealing" .. tag)
     press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "child", "target cancel returns to the retained bag" .. tag)
     press(rig, { type = "cancel" })
@@ -1165,7 +1126,12 @@ function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
     openBagFromCommand(rig)
     walkToMedicineFirstCell(rig)
     press(rig, { type = "confirm" })
+    rig.pump(1)
     press(rig, { type = "confirm" })
+    rig.pump(8)
+    if #rig.submits == 0 and rig.screen:status().mode == "child" then
+      press(rig, { type = "confirm" })
+    end
     if #rig.submits == 0 and rig.screen:status().mode == "child" then
       press(rig, { type = "navigate", direction = "down" })
       press(rig, { type = "confirm" })
@@ -1236,15 +1202,76 @@ function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
     Assert.notNil(ballFragment, "the wild ball stays throwable" .. tag)
     openBagFromCommand(capture)
     walkToBallsFirstCell(capture)
-    local function rewalk()
-      openBagFromCommand(capture)
-      walkToBallsFirstCell(capture)
-    end
-    Assert.isTrue(tapSealsBagReply(capture, yLo, yHi, rewalk), "a tap on the visible ball throws it" .. tag)
+    Assert.isTrue(tapSealsBagReply(capture), "a tap on the visible ball throws it" .. tag)
     Assert.equal(#capture.submits, 1, "the throw seals exactly one reply" .. tag)
     Assert.deepEqual(capture.submits[1].choices[1], ballFragment, "the throw matches its native fragment" .. tag)
     capture.screen:dispose()
     capture.battle:dispose()
+  end
+end
+
+function T.native_battle_bag_draws_under_the_battle_pane_placement()
+  local graphics = FakeGraphics.new()
+  local received
+  local bagRenderer = {
+    draw = function(_, _, plan)
+      received = plan.panes[1].placement
+      LogicalSurface.draw(graphics, received, function() end)
+    end,
+  }
+  local placement = {
+    frame = { x = 0, y = 192, width = 256, height = 192 },
+    origin = { x = 0, y = 192 },
+    scale = 1,
+    logicalWidth = 256,
+    logicalHeight = 192,
+    clipRect = { x = 0, y = 192, width = 256, height = 192 },
+  }
+  local handled = BattleRenderer.drawNativeChild({
+    battleMenus = { bag = { renderer = bagRenderer, icons = {} } },
+  }, {
+    kind = "bag",
+    native = { open = true, layout = {} },
+  }, placement)
+
+  Assert.isTrue(handled, "the native bag child is rendered")
+  Assert.isTrue(received == placement, "the bag draws under the battle pane placement")
+  Assert.equal(graphics:pushDepth(), 0, "the native placement completes its logical drawing scope")
+end
+
+function T.native_battle_party_waits_for_its_icon_pages()
+  local draws = 0
+  local partyRenderer = {
+    draw = function()
+      draws = draws + 1
+    end,
+  }
+  local state = "pending"
+  local resources = {
+    assets = {
+      state = function()
+        return state
+      end,
+    },
+    battleMenus = { party = { renderer = partyRenderer, icons = {} } },
+  }
+  local placement = {
+    frame = { x = 0, y = 192, width = 256, height = 192 },
+    origin = { x = 0, y = 192 },
+    scale = 1,
+    logicalWidth = 256,
+    logicalHeight = 192,
+    clipRect = { x = 0, y = 192, width = 256, height = 192 },
+  }
+  for _, kind in ipairs({ "party", "target" }) do
+    state = "pending"
+    local child = { kind = kind, native = { open = true, layout = {} } }
+    Assert.isTrue(BattleRenderer.drawNativeChild(resources, child, placement), "the pending " .. kind .. " stays native")
+    Assert.equal(draws, 0, "the " .. kind .. " picker draws no icon before its page is prepared")
+    state = "ready"
+    Assert.isTrue(BattleRenderer.drawNativeChild(resources, child, placement), "the ready " .. kind .. " is rendered")
+    Assert.equal(draws, 1, "the " .. kind .. " picker draws once its icon pages are prepared")
+    draws = 0
   end
 end
 

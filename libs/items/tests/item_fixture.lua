@@ -60,6 +60,15 @@ local KNOWN = {
       mood = 0,
     },
   },
+  -- Battle PP selection stocks this serving. The synthetic identity
+  -- replaces an unreferenced medicine placeholder so per-pocket counts
+  -- stay put; production catalogs carry the retail identity.
+  ETHER = {
+    nativeId = 49,
+    pocket = "medicine",
+    name = "Ether",
+    partyUse = { kind = "pp", target = "one", restore = 10, mood = 0 },
+  },
   SOOTHE_BELL = { nativeId = 218, pocket = "items", friendshipBoost = true },
   EXP__SHARE = { nativeId = 61, pocket = "items" },
   AMULET_COIN = {

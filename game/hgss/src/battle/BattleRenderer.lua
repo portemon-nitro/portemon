@@ -1870,6 +1870,55 @@ local function drawChild(resources, child)
   drawChildFooter(text, child)
 end
 
+-- Battle borrows the field session's native application renderers for
+-- bag and party children. Their controller status and generated geometry
+-- travel together from the same child composition.
+---@param resources table<string, unknown>
+---@param child table<string, unknown>
+---@param placement LayoutGeometry.Placement resolved placement of the 256x192 pane the child covers
+---@return boolean handled
+function BattleRenderer.drawNativeChild(resources, child, placement)
+  local menus = resources.battleMenus
+  local native = child.native
+  if type(menus) ~= "table" or type(native) ~= "table" or native.open == false then
+    return false
+  end
+  if child.kind == "bag" then
+    local bag = menus.bag --[[@as table<string, unknown>?]]
+    if type(bag) ~= "table" or type(bag.renderer) ~= "table" then
+      return false
+    end
+    local content = assert(native.layout, "the battle bag shares its native generated layout")
+    bag.renderer:draw(native, {
+      content = content,
+      panes = {
+        {
+          id = "interaction",
+          placement = placement,
+          interactive = true,
+        },
+      },
+    }, { icons = assert(bag.icons, "the native bag borrows field item icons") })
+    return true
+  end
+  if child.kind == "party" or child.kind == "target" then
+    local party = menus.party --[[@as table<string, unknown>?]]
+    if type(party) ~= "table" or type(party.renderer) ~= "table" then
+      return false
+    end
+    -- Opening the picker grows the battle icon demand by its roster; the
+    -- picker stays blank until those pages are adopted, like the field party.
+    local assets = assert(resources.assets, "the native party borrows the battle asset holder")
+    if assets:state() ~= "ready" then
+      return true
+    end
+    local layout = assert(native.layout, "the battle party shares its native generated layout")
+    party.renderer:draw(native, layout, assert(party.icons, "the native party borrows field mon icons"))
+    return true
+  end
+  return false
+end
+
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
 ---@param child table<string, unknown> confirmed learning child view with source labels
@@ -1922,9 +1971,13 @@ local MENU_SECTIONS = { command = "command", moves = "moves", target = "target",
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
 ---@param content table<string, unknown> canonical plan content carrying the layout
-local function drawInteraction(resources, view, content)
+---@param placement LayoutGeometry.Placement resolved placement of the interaction pane
+local function drawInteraction(resources, view, content, placement)
   if view.mode == "child" and type(view.childView) == "table" then
     local child = view.childView --[[@as table<string, unknown>]]
+    if BattleRenderer.drawNativeChild(resources, child, placement) then
+      return
+    end
     if child.kind == "learn" and type(child.confirmation) == "table" then
       drawTwoOptionConfirmation(resources, view, child)
     else
@@ -2071,7 +2124,8 @@ end
 ---@param view table<string, unknown> internal semantic snapshot
 ---@param paneId string resolved pane identity
 ---@param content table<string, unknown> canonical plan content carrying the layout
-function BattleRenderer.drawPane(resources, view, paneId, content)
+---@param placement LayoutGeometry.Placement resolved placement the pane draws under
+function BattleRenderer.drawPane(resources, view, paneId, content, placement)
   assert(type(resources) == "table", "pane drawing borrows its resources")
   assert(type(view) == "table", "pane drawing reads its snapshot")
   if paneId == "compact" then
@@ -2079,7 +2133,7 @@ function BattleRenderer.drawPane(resources, view, paneId, content)
   elseif paneId == "detail" then
     drawDetail(resources, view)
   elseif paneId == "interaction" then
-    drawInteraction(resources, view, content or {})
+    drawInteraction(resources, view, content or {}, placement)
   end
 end
 

@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
@@ -1486,6 +1487,12 @@ local function drawNativePane(paneId, view, layout, held, doublesHud)
       renderPictures = function(_, _, pictures)
         pictureRecords = pictures
         return { handle = "picture-pass" }
+      end,
+      menuBlendTargets = function(self, blendGraphics)
+        if self.menuBlend == nil then
+          self.menuBlend = BattleMenuPresenter.newBlendTargets(blendGraphics)
+        end
+        return self.menuBlend
       end,
     },
     frameKey = "default",

@@ -51,8 +51,48 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
 
 local PULSE_COLOR = { 0.741176, 0.549020, 1.0 }
 
+---@class BattleMenuPresenter.BlendTargets
+---@field bottom love.Canvas planes below BG1, sampled as the blend underlay
+---@field top love.Canvas BG1 alone, blended over the underlay
+---@field shader love.Shader source BG1 alpha-blend shader
+local BlendTargets = {}
+BlendTargets.__index = BlendTargets
+
+-- Allocates the render targets and shader of the BG1 alpha blend. The
+-- per-screen asset holder owns the result and releases it exactly once.
+---@param graphics love.graphics host graphics namespace
+---@return BattleMenuPresenter.BlendTargets
+function BattleMenuPresenter.newBlendTargets(graphics)
+  local bottom, top, shader
+  local ok, failure = pcall(function()
+    bottom = graphics.newCanvas(256, 192)
+    top = graphics.newCanvas(256, 192)
+    shader = graphics.newShader(BLEND_SHADER)
+    assert(bottom ~= nil and top ~= nil and shader ~= nil, "native menu composition allocates its render targets")
+  end)
+  if not ok then
+    if bottom ~= nil then
+      bottom:release()
+    end
+    if top ~= nil then
+      top:release()
+    end
+    if shader ~= nil then
+      shader:release()
+    end
+    error(failure, 0)
+  end
+  return setmetatable({ bottom = bottom, top = top, shader = shader }, BlendTargets)
+end
+
+function BlendTargets:release()
+  self.bottom:release()
+  self.top:release()
+  self.shader:release()
+end
+
 ---@param graphics love.graphics borrowed renderer graphics
----@param assets table<string, unknown> generated image holder
+---@param assets table<string, unknown> generated image holder owning the blend targets
 ---@param layout string selected lower menu layout
 ---@param layers table[] source screen records with plane and priority
 ---@param view table<string, unknown> semantic render snapshot
@@ -84,29 +124,8 @@ function BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWi
     return
   end
 
-  local bottomCanvas, topCanvas, shader
-  local acquired, acquireError = pcall(function()
-    bottomCanvas = graphics.newCanvas(256, 192)
-    topCanvas = graphics.newCanvas(256, 192)
-    shader = graphics.newShader(BLEND_SHADER)
-    assert(
-      bottomCanvas ~= nil and topCanvas ~= nil and shader ~= nil,
-      "native menu composition allocates its render targets"
-    )
-  end)
-  if not acquired then
-    if bottomCanvas ~= nil then
-      bottomCanvas:release()
-    end
-    if topCanvas ~= nil then
-      topCanvas:release()
-    end
-    if shader ~= nil then
-      shader:release()
-    end
-    error(acquireError, 0)
-  end
-
+  local targets = assets:menuBlendTargets(graphics) --[[@as BattleMenuPresenter.BlendTargets]]
+  local bottomCanvas, topCanvas, shader = targets.bottom, targets.top, targets.shader
   local previousCanvas = graphics.getCanvas()
   graphics.push("all")
   local planeScopeOpen = true
@@ -144,9 +163,6 @@ function BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWi
   if planeScopeOpen then
     graphics.pop()
   end
-  bottomCanvas:release()
-  topCanvas:release()
-  shader:release()
   if not ok then
     error(err, 0)
   end

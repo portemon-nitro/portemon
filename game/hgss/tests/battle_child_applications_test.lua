@@ -240,6 +240,13 @@ function T.bag_child_stages_value_only_intents_over_detached_stock()
   child:input({ { type = "navigate", direction = "right" } })
   child:input({ { type = "navigate", direction = "down" } })
   child:input({ { type = "confirm" } })
+  child:stepSourceTick(1)
+  child:stepSourceTick(1)
+  Assert.equal(child:draw().state, "action_menu", "selecting a cell opens the native Use action")
+  child:input({ { type = "confirm" } })
+  for _ = 1, 8 do
+    child:stepSourceTick(1)
+  end
   local native = child:status().native
   Assert.notNil(native, "the native bag application answers its own selection")
   Assert.equal(native.kind, "battle_select", "the native intent selects without mutating")
@@ -346,7 +353,13 @@ function T.party_child_translates_native_selections_into_kernel_fragments()
   assert(child ~= nil, "the party child composes")
   Assert.equal(child:application(), "party", "the party child carries its native receipt")
   Assert.isNil(child:takeResult(), "opening consumes the initiating edge: nothing is staged")
+  child:input({ { type = "navigate", direction = "down" } })
   child:input({ { type = "confirm" } })
+  Assert.equal(child:draw().state, "context", "the selected mon opens the native party action menu")
+  child:input({ { type = "confirm" } })
+  for _ = 1, 12 do
+    child:stepSourceTick(1)
+  end
   local result = child:takeResult()
   Assert.notNil(result, "the native selection translates into a bound result")
   assert(result ~= nil, "the translated result seals")
@@ -526,10 +539,24 @@ function T.native_bag_focus_and_target_continuation()
   Assert.isTrue(flows:activateControl("bag:0"), "the serving cell tap belongs to the open child")
   flows:tick()
   Assert.equal(focusId(), "bag:0", "the tap returns the native focus to the serving cell")
-  -- Staging then cancelling the target restores the resting browse.
+  -- The source bag opens its Use action after selecting a cell. The
+  -- battle barrier must wait for that action before opening a target.
   step({ { type = "confirm" } })
+  flows:tick()
+  Assert.equal(flows:status().kind, "bag", "selecting an item keeps the native bag open")
+  Assert.equal(flows:status().childView.native.state, "action_menu", "item selection opens the native Use menu")
+  Assert.isNil(flows:takeResult(), "opening the Use menu stages no battle intent")
+  step({ { type = "confirm" } })
+  for _ = 1, 8 do
+    flows:tick()
+  end
   Assert.isNil(flows:takeResult(), "staging the serving seals no reply")
   Assert.equal(flows:status().kind, "target", "staging opens target selection")
+  Assert.equal(
+    flows:status().childView.native.targetPromptKey,
+    "useTarget",
+    "the battle target pick carries the Use prompt"
+  )
   step({ { type = "cancel" } })
   Assert.equal(flows:status().kind, "bag", "target cancel reactivates the bag")
   Assert.equal(flows:status().childView.currentPocket, "medicine", "target cancel keeps the resting pocket")
@@ -576,6 +603,12 @@ function T.native_bag_focus_and_target_continuation()
   Assert.equal(thrown:status().childView.currentPocket, "balls", "keys reach the ball pocket")
   thrown:update({ { type = "confirm" } })
   thrown:tick()
+  thrown:tick()
+  thrown:update({ { type = "confirm" } })
+  thrown:tick()
+  for _ = 1, 8 do
+    thrown:tick()
+  end
   local ballResult = thrown:takeResult()
   Assert.notNil(ballResult, "throwing the ball seals its reply")
   assert(ballResult ~= nil, "the ball reply seals")

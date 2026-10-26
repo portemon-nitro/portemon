@@ -929,6 +929,22 @@ function T.child_footer_wording_matches_across_compact_and_paired_draws()
       title = "Forget a move for EMBER?",
     },
     {
+      name = "move",
+      child = {
+        kind = "move",
+        cancellable = true,
+        holderName = "LEAD",
+        focusId = "move:0",
+        rows = {
+          { id = "move:0", label = "Tackle", sub = "PP 5/35", detail = "", enabled = true },
+          { id = "move:1", label = "Growl", sub = "PP 40/40", detail = "", enabled = true },
+        },
+      },
+      caption = "Restore which move?",
+      occupancy = nil,
+      title = "LEAD",
+    },
+    {
       name = "missing-rows-party",
       child = { kind = "party" },
       caption = "Select its replacement.",
@@ -940,6 +956,7 @@ function T.child_footer_wording_matches_across_compact_and_paired_draws()
     "Select the target.",
     "Select an item.",
     "Select a move to forget.",
+    "Restore which move?",
     "Select a reserve.",
     "Select its replacement.",
   }

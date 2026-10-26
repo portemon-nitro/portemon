@@ -41,6 +41,8 @@ function BattleChildText.subtitle(child)
     return "Select an item."
   elseif child.kind == "learn" then
     return "Select a move to forget."
+  elseif child.kind == "move" then
+    return "Restore which move?"
   elseif child.cancellable == true then
     return "Select a reserve."
   end

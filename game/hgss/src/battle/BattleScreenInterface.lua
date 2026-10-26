@@ -75,6 +75,14 @@ local function childRegions(child)
   if type(child) ~= "table" or child.interactive ~= true then
     return nil
   end
+  local native = child.native --[[@as table<string, unknown>?]]
+  if
+    (child.kind == "bag" or child.kind == "party" or child.kind == "target")
+    and type(native) == "table"
+    and type(native.layout) == "table"
+  then
+    return { { id = "native", x = 0, y = 0, w = 256, h = 192 } }
+  end
   if child.kind == "learn" and type(child.confirmation) == "table" then
     return {
       { id = "confirm", x = 0, y = 32, w = 256, h = 64 },
@@ -172,7 +180,13 @@ local function mapChildPointer(event, regions)
     if region == nil then
       return nil
     end
-    return { type = "child_press", control = { scope = "child", id = region.id }, pointerId = event.pointerId }
+    return {
+      type = "child_press",
+      control = { scope = "child", id = region.id },
+      pointerId = event.pointerId,
+      x = event.x,
+      y = event.y,
+    }
   end
   if eventType == "pointer_move" and type(event.x) == "number" and type(event.y) == "number" then
     local region = hitRegion(regions, event.x --[[@as number]], event.y --[[@as number]])
@@ -188,7 +202,7 @@ local function mapChildPointer(event, regions)
     if region ~= nil then
       control = { scope = "child", id = region.id }
     end
-    return { type = "child_activate", control = control, pointerId = event.pointerId }
+    return { type = "child_activate", control = control, pointerId = event.pointerId, x = event.x, y = event.y }
   end
   if eventType == "pointer_cancel" then
     return { type = "child_cancel", pointerId = event.pointerId }
@@ -346,7 +360,7 @@ local function renderBattle(resources, view, plan)
   for _, pane in ipairs(panes) do
     local placement = assert(pane.placement, "battle panes carry placements")
     LogicalSurface.draw(graphics, placement, function()
-      BattleRenderer.drawPane(resources, view, pane.id --[[@as string]], plan.content)
+      BattleRenderer.drawPane(resources, view, pane.id --[[@as string]], plan.content, placement)
     end)
   end
 end

@@ -1696,6 +1696,15 @@ function T.battle_context_walks_tabs_and_selects_without_mutating()
   state:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.equal(selectedKey(state:status()), "POTION", "the medicine walk reaches its first cell")
   state:updateFixed({ { type = "confirm" } })
+  local selection = state:status()
+  for _ = assert(selection.itemSelectElapsed) + 1, assert(selection.itemSelectTotal) do
+    state:updateFixed({})
+  end
+  Assert.equal(state:status().state, "action_menu", "the selected item opens its native Use page")
+  state:updateFixed({ { type = "confirm" } })
+  for _ = 1, 8 do
+    state:updateFixed({})
+  end
   local intent = assert(state:takeIntent(), "confirming an enabled cell forwards its selection")
   Assert.equal(intent.kind, "battle_select", "battle selections ride their own intent")
   Assert.equal(intent.item, "POTION", "the intent snapshots the item identity")
@@ -1720,6 +1729,15 @@ function T.battle_context_refuses_disabled_cells_with_reasons()
   state:updateFixed({ { type = "navigate", direction = "right" } })
   state:updateFixed({ { type = "navigate", direction = "down" } })
   state:updateFixed({ { type = "confirm" } })
+  local selection = state:status()
+  for _ = assert(selection.itemSelectElapsed) + 1, assert(selection.itemSelectTotal) do
+    state:updateFixed({})
+  end
+  Assert.equal(state:status().state, "action_menu", "the selected item opens its native Use page")
+  state:updateFixed({ { type = "confirm" } })
+  for _ = 1, 8 do
+    state:updateFixed({})
+  end
   Assert.isNil(state:takeIntent(), "a refused cell forwards no selection")
   local lower = assert(state:status().lowerMessage, "the refusal stays visible")
   Assert.isTrue(lower.fullText:find("the warden refuses") ~= nil, "the refusal names its reason")

@@ -4965,13 +4965,14 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       inventoryId = inventoryId,
       item = payload.item,
       target = { kind = "combatant", combatant = holder.combatant },
+      moveSlot = payload.moveSlot,
     }
     -- Reservations were accounted when the reply was sealed, so planning
     -- here classifies against the live battle state without double-counting
     -- the sealed promise. Servings read the immutable session item facts;
     -- balls never reach them. The live state carries the battle-local
     -- effects battle-only servings gate on, so no reduced view travels here.
-    local plan = ItemUse.plan(choice, state, itemFacts)
+    local plan = ItemUse.plan(choice, state, itemFacts, moveFacts)
     if plan.failureReason ~= nil then
       -- The holder left the field after the reply was sealed: the
       -- serving is refused with no stock, ledger, draw, or health
@@ -5013,6 +5014,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       inventory = inventoryId,
       target = copyValue(outcome.target),
       restored = outcome.restored,
+      restoredPp = outcome.restoredPp,
     })
     event.actionId = ordinal
   end
@@ -6602,8 +6604,9 @@ end
 ---@param staged table<string, unknown> reservation maps staged for the reply under admission
 ---@param moveFacts table<string, table<string, unknown>>? immutable move facts by move identity
 ---@param speciesFacts table<string, SpeciesFormFacts>? static species facts for the curse typing read
+---@param itemFacts table<string, table<string, unknown>>? immutable item facts, required for item choices
 ---@return table<string, unknown>? input error, or nil when the choice binds
-local function checkChoiceBinding(state, choice, admitted, battleKind, staged, moveFacts, speciesFacts)
+local function checkChoiceBinding(state, choice, admitted, battleKind, staged, moveFacts, speciesFacts, itemFacts)
   local actor = choice.actor --[[@as table<string, unknown>]]
   local payload = choice.payload --[[@as table<string, unknown>]]
   local openBatch = state.pending --[[@as table<string, unknown>]]
@@ -6690,6 +6693,16 @@ local function checkChoiceBinding(state, choice, admitted, battleKind, staged, m
     for _ = 1, claimed do
       outstanding[#outstanding + 1] = { inventoryId = participant.inventoryId, item = payload.item }
     end
+    local selectsMove = ItemUse.selectsMove(
+      payload.item --[[@as string]],
+      assert(itemFacts, "item choices bind against the session item facts")
+    )
+    if selectsMove ~= (payload.moveSlot ~= nil) then
+      return BattleErrors.input(
+        selectsMove and "one-move PP servings name their restored move" or "only one-move PP servings name a move",
+        { item = payload.item }
+      )
+    end
     local okChoice, refusal = ItemUse.validateChoice({
       inventoryId = participant.inventoryId,
       item = payload.item,
@@ -6697,6 +6710,7 @@ local function checkChoiceBinding(state, choice, admitted, battleKind, staged, m
         kind = "combatant",
         combatant = type(holder) == "table" and holder.combatant or nil,
       },
+      moveSlot = payload.moveSlot,
     }, {
       inventories = state.inventories,
       combatants = state.combatants,
@@ -6749,8 +6763,9 @@ end
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
 ---@param moveFacts table<string, table<string, unknown>>? immutable move facts by move identity
 ---@param speciesFacts table<string, SpeciesFormFacts>? static species facts for the curse typing read
+---@param itemFacts table<string, table<string, unknown>>? immutable item facts, required for item choices
 ---@return table<string, unknown>? input error, or nil when the choice is selectable
-local function probeChoice(state, choice, decisionKind, admitted, battleKind, moveFacts, speciesFacts)
+local function probeChoice(state, choice, decisionKind, admitted, battleKind, moveFacts, speciesFacts, itemFacts)
   local ok, valid = pcall(BattleProtocol.validateChoice, choice, decisionKind)
   if not ok then
     return valid --[[@as table<string, unknown>]]
@@ -6766,7 +6781,8 @@ local function probeChoice(state, choice, decisionKind, admitted, battleKind, mo
     battleKind,
     { replacements = {}, items = {} },
     moveFacts,
-    speciesFacts
+    speciesFacts,
+    itemFacts
   )
 end
 
@@ -7025,10 +7041,19 @@ end
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
 ---@param moveFacts table<string, table<string, unknown>>? immutable move facts by move identity
 ---@param speciesFacts table<string, SpeciesFormFacts>? static species facts
+---@param itemFacts table<string, table<string, unknown>>? immutable item facts, required for item choices
 ---@return table<string, unknown>
-local function probedOption(state, choice, id, role, display, admitted, battleKind, moveFacts, speciesFacts)
-  local rejected =
-    probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
+local function probedOption(state, choice, id, role, display, admitted, battleKind, moveFacts, speciesFacts, itemFacts)
+  local rejected = probeChoice(
+    state,
+    choice,
+    HgssSessionExecutor.DECISION_KIND,
+    admitted,
+    battleKind,
+    moveFacts,
+    speciesFacts,
+    itemFacts
+  )
   return {
     id = id,
     role = role,
@@ -7040,6 +7065,23 @@ local function probedOption(state, choice, id, role, display, admitted, battleKi
 end
 
 -- Sorted keys of the participant's bag stock not already reserved this turn.
+-- The item-owner choice behind one projected bag fragment.
+---@param participant table<string, unknown> acting participant owning the inventory
+---@param payload table<string, unknown> projected item payload
+---@return BattleItemChoice
+local function itemUseChoice(participant, payload)
+  local target = payload.target --[[@as table<string, unknown>]]
+  return {
+    inventoryId = participant.inventoryId --[[@as string]],
+    item = payload.item --[[@as string]],
+    target = {
+      kind = "combatant",
+      combatant = target.combatant --[[@as integer]],
+    },
+    moveSlot = payload.moveSlot --[[@as integer?]],
+  }
+end
+
 ---@param state table<string, unknown> live battle state under read-only inspection
 ---@param participant table<string, unknown>
 ---@return string[]
@@ -7082,8 +7124,9 @@ end
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts by move identity
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts for the curse typing read
+---@param itemFacts table<string, table<string, unknown>> immutable semantic item facts
 ---@return table<string, unknown> ordinary action options for the actor
-local function actionActorOptions(state, actor, admitted, battleKind, moveFacts, speciesFacts)
+local function actionActorOptions(state, actor, admitted, battleKind, moveFacts, speciesFacts, itemFacts)
   local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
   local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
   local entry = {
@@ -7191,27 +7234,64 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts,
       speciesFacts
     )
   end
-  -- Targets enumerate every active holder with the owner's limits:
-  -- selection stays legal while execution may still refuse an
-  -- effect-less serving without consuming anything.
+  -- Targets enumerate active holders with the owner's limits. A serving
+  -- with no applicable effect is refused here, before it can be sealed as
+  -- an action and cost the player a turn.
   for _, key in ipairs(availableItemKeys(state, participant)) do
+    local selectsMove = ItemUse.selectsMove(key, itemFacts)
     for _, holder in ipairs(activeCombatants(state)) do
-      local choice = {
-        actor = fragmentActor(actor),
-        kind = "item",
-        payload = { item = key, target = { kind = "combatant", combatant = holder } },
-      } --[[@as table<string, unknown>]]
-      choices[#choices + 1] = probedOption(
-        state,
-        choice,
-        "item:" .. key .. ":" .. holder,
-        "item",
-        { item = key },
-        admitted,
-        battleKind,
-        moveFacts,
-        speciesFacts
-      )
+      -- One-move PP servings offer one option per held move, like the
+      -- native Restore PP page; every other item offers one per holder.
+      local moveSlots = { false } ---@type (integer|false)[]
+      if selectsMove then
+        moveSlots = {}
+        local holderMon = BattleState.combatant(state, holder).mon --[[@as table<string, unknown>]]
+        for index in
+          ipairs(holderMon.moves --[[@as table<integer, unknown>]])
+        do
+          moveSlots[#moveSlots + 1] = index - 1
+        end
+      end
+      for _, moveSlot in ipairs(moveSlots) do
+        local payload = { item = key, target = { kind = "combatant", combatant = holder } } --[[@as table<string, unknown>]]
+        local id = "item:" .. key .. ":" .. holder
+        if moveSlot ~= false then
+          payload.moveSlot = moveSlot
+          id = id .. ":" .. moveSlot
+        end
+        local choice = { actor = fragmentActor(actor), kind = "item", payload = payload } --[[@as table<string, unknown>]]
+        local option = probedOption(
+          state,
+          choice,
+          id,
+          "item",
+          { item = key },
+          admitted,
+          battleKind,
+          moveFacts,
+          speciesFacts,
+          itemFacts
+        )
+        if option.enabled == true and not CaptureContext.isBall(key) then
+          local ok, planned = pcall(ItemUse.plan, itemUseChoice(participant, payload), state, itemFacts, moveFacts)
+          if ok then
+            local plan = planned --[[@as table<string, unknown>]]
+            if plan.failureReason == "no_effect" then
+              option.enabled = false
+              option.reason = "no_effect"
+            end
+          elseif
+            type(planned) ~= "table"
+            or (planned --[[@as table<string, unknown>]]).code ~= BattleErrors.MISSING_BEHAVIOR
+          then
+            error(planned, 0)
+          else
+            option.enabled = false
+            option.reason = "unavailable"
+          end
+        end
+        choices[#choices + 1] = option
+      end
     end
   end
   local run = { actor = fragmentActor(actor), kind = "run", payload = {} } --[[@as table<string, unknown>]]
@@ -7437,8 +7517,15 @@ function HgssSessionExecutor:decisionOptions(requestId)
     for _, actor in
       ipairs(wanted.actors --[[@as table<integer, table<string, unknown>>]])
     do
-      actors[#actors + 1] =
-        actionActorOptions(state, actor, self._admitted, self._battleKind, self._moveFacts, self._speciesFacts)
+      actors[#actors + 1] = actionActorOptions(
+        state,
+        actor,
+        self._admitted,
+        self._battleKind,
+        self._moveFacts,
+        self._speciesFacts,
+        self._itemFacts
+      )
     end
   end
   return options
@@ -7520,8 +7607,9 @@ function HgssSessionExecutor:submit(reply)
   local battleKind = self._battleKind
   local moveFacts = self._moveFacts
   local speciesFacts = self._speciesFacts
+  local itemFacts = self._itemFacts
   local stored, err, requestId = DecisionBatch.submit(state, reply, function(choice, staged)
-    return checkChoiceBinding(state, choice, admitted, battleKind, staged, moveFacts, speciesFacts)
+    return checkChoiceBinding(state, choice, admitted, battleKind, staged, moveFacts, speciesFacts, itemFacts)
   end)
   if stored then
     -- Committed replies retire their pending trainer servings: later

@@ -881,7 +881,23 @@ function BattleCompactInterface.mapInput(event, view, plan)
     return nil
   end
   local kinds = view.mode == "child" and CHILD_INPUT or BATTLE_INPUT
-  local regions = regionsFor(content, view.mode --[[@as string]])
+  local regions = nil
+  if view.mode == "child" then
+    local child = content.child
+    local childView = view.childView
+    local native = type(childView) == "table" and childView.native or nil
+    local nativeChild = type(child) == "table"
+      and (child.kind == "bag" or child.kind == "party" or child.kind == "target")
+      and type(native) == "table"
+      and type(native.layout) == "table"
+    if nativeChild then
+      regions = { { id = "native", x = 0, y = 0, width = 256, height = 192, scope = "child" } }
+    else
+      regions = regionsFor(content, view.mode --[[@as string]])
+    end
+  else
+    regions = regionsFor(content, view.mode --[[@as string]])
+  end
   if eventType == "pointer_cancel" then
     return { type = kinds.pointer_cancel, pointerId = event.pointerId }
   end
@@ -1645,12 +1661,19 @@ end
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot under drawing
 ---@param content table<string, unknown> canonical compact plan content under drawing
-local function drawChildModal(resources, view, content)
+---@param placement LayoutGeometry.Placement resolved placement of the compact pane
+local function drawChildModal(resources, view, content, placement)
   local text = assert(resources.text, "the compact render borrows its text services")
   local windows = assert(resources.windows, "the compact render borrows its window services")
   local background = backgroundOf(resources)
   local childPlan = assert(content.child, "the child modal carries its plan")
   local childView = view.childView --[[@as table<string, unknown>?]]
+  if type(childView) == "table" then
+    local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+    if BattleRenderer.drawNativeChild(resources, childView, placement) then
+      return
+    end
+  end
   if childPlan.twoOption == true then
     drawTwoOptionModal(resources, view, childView)
     return
@@ -1698,10 +1721,10 @@ function BattleCompactInterface.render(resources, view, plan)
   local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
   LogicalSurface.draw(graphics, placement, function()
     if view.mode == "child" and type(content.child) == "table" and type(view.childView) == "table" then
-      drawChildModal(resources, view, content)
+      drawChildModal(resources, view, content, placement)
       return
     end
-    BattleRenderer.drawPane(resources, view, BattleCompactInterface.NATIVE.id, content)
+    BattleRenderer.drawPane(resources, view, BattleCompactInterface.NATIVE.id, content, placement)
     drawCompactHud(resources, view, content)
     local mode = view.mode
     if mode == "command" then

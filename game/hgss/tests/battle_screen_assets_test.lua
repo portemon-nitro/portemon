@@ -6,6 +6,7 @@
 -- counts.
 
 local Assert = require("tests.support.Assert")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local StubLease = require("tests.support.StubLease")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
@@ -218,11 +219,18 @@ function T.disposal_releases_owned_handles_once()
   owned:update()
   Assert.notNil(owned:drawable("scene:probe"), "the scene image is owned")
   Assert.notNil(owned:drawable(playerBack), "the player image is owned")
+  local graphics = FakeGraphics.new({})
+  local blend = owned:menuBlendTargets(graphics)
+  Assert.equal(owned:menuBlendTargets(graphics), blend, "every menu frame reuses the screen's blend targets")
+  Assert.equal(#graphics.canvases, 2, "the blend targets allocate their two canvases once")
+  Assert.equal(#graphics.shaders, 1, "the blend targets compile their shader once")
   owned:dispose()
   owned:dispose()
   Assert.equal(assets.released["scene:probe"], 1, "the scene handle releases once")
   Assert.equal(assets.released[playerBack], 1, "the player handle releases once")
   Assert.isNil(assets.released[enemyFront], "never-drawn keys never release")
+  Assert.isTrue(graphics.canvases[1].released and graphics.canvases[2].released, "disposal releases the blend canvases")
+  Assert.isTrue(graphics.shaders[1].released, "disposal releases the blend shader")
 end
 
 -- A regrown demand reopens pending until the enlarged exact demand
