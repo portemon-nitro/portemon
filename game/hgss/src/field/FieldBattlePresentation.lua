@@ -841,7 +841,8 @@ function FieldBattlePresentation:_preparationServices()
           return nil, "battle scene " .. tostring(sceneKey) .. ": " .. cause
         end
         local bytes = cacheFs:read(BattlePresentationCache.sceneImagePath(sceneKey))
-        if type(bytes) ~= "string" or #bytes ~= PngWriter.encodedSize(record.canvasWidth, record.canvasHeight) then
+        local imageWidth, imageHeight = PngWriter.dimensions(bytes)
+        if imageWidth ~= record.canvasWidth or imageHeight ~= record.canvasHeight then
           if not scheduled then
             return nil,
               "battle scene image is not staged: " .. tostring(sceneKey) .. ": no scene demand host to schedule it"

@@ -168,6 +168,11 @@
 -- keeps every vertex's own provenance. Map scenes and field effects embed
 -- the model descriptors and rebuild.
 --
+-- revision 14: generated PNGs encode indexed (color type 3 with PLTE/tRNS)
+-- at or under 256 distinct RGBA colors and zlib-compressed truecolor with
+-- alpha beyond that, replacing the uncompressed stored-block encoding. Every
+-- derived image rebuilds; decoded pixels are unchanged.
+--
 -- world schema 1: the world manifest is a structural catalog derived from
 -- source analysis alone. Membership means the source map is structurally
 -- loadable, never that its scene geometry compiled; every record carries the
@@ -175,7 +180,7 @@
 
 local DerivedAssetContract = {}
 
-DerivedAssetContract.revision = 13
+DerivedAssetContract.revision = 14
 
 DerivedAssetContract.map = {
   cacheFormat = "map-cache-v7",

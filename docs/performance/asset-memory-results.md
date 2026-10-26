@@ -110,19 +110,15 @@ below can prove the whole-process ceiling.
 
 ## Disk read/decode study (derived files only)
 
-Opt-in diagnostic: `luajit scripts/perf/asset-disk-io-study.lua
-<derived-png-dir> [max-files]`. It reads already-generated PNG files,
-parses the stored-block stream with an independent read-only decoder,
-verifies the Adler checksum, classifies the private-derivative byte model
-(index bytes plus palette bytes at or under 256 exact colors, else
-straight RGBA), optionally re-encodes through the production writer to
-verify identical bytes, and measures one conventional zlib pass over the
-same raw bytes when a system zlib is available. It never writes into the
-sample directory, never opens the user ROM, and never mutates the
-production cache, writer, or pipeline. A file it cannot parse fails the
-run loudly instead of being averaged away.
+The former opt-in `scripts/perf/asset-disk-io-study.lua` diagnostic was
+retired with the indexed-PNG writer change: its independent decoder only
+parsed the old uncompressed stored-block stream, so its premise is
+obsolete now that the production writer emits compressed indexed PNGs
+directly. The historical samples below measured the old encoding and are
+kept as pre-change figures, not current disk sizes.
 
-Two honest samples from the private test cache (heartgold derived output):
+Two honest samples from the private test cache (heartgold derived output,
+old stored-block encoding):
 
 - 30 map textures (1–16 KiB each): stored file bytes 110,408; raw decoded
   RGBA 107,520; derivative model 27,792 (all 30 fit the indexed shape at
@@ -138,10 +134,10 @@ Reading: conventional compression wins on *disk* bytes for these small
 flat textures, while the derivative model wins on *resident* bytes (roughly
 one quarter of raw RGBA here) — and disk size is not live memory. The
 retained-cache policy keeps every derived file regardless; there is no
-disk LRU and no writer migration in this change. A scoped writer change
-would need its own evidence-backed proposal pinned to current code, not a
-rider on this validation. If justified later, the study script above is
-the instrument to re-run.
+disk LRU and no writer migration in this change. That scoped writer change
+(the indexed-PNG encoding) has since landed as its own proposal; any
+follow-up storage study needs a new instrument pinned to the current
+encoding, not the retired script.
 
 ## Predicted working-set counters (validated, not yet calibrated)
 

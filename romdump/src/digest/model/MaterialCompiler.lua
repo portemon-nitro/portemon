@@ -19,9 +19,12 @@ local PngWriter = require("libs.assets.src.PngWriter")
 
 local MaterialCompiler = {}
 
--- Bumped whenever the decode changes in a cache-breaking way; part of the
--- content-addressed texture key so the model cache invalidates.
-local DECODER_VERSION = "texdec-v1"
+-- Bumped whenever the decode or the staged PNG presentation changes in a
+-- cache-breaking way; part of the content-addressed texture key so the
+-- model cache invalidates. Shared texture paths must always carry the
+-- same bytes, so an encoding change rotates the key instead of
+-- contradicting live files staged under the old bytes.
+local DECODER_VERSION = "texdec-v2"
 
 local function hashPart(value, label)
   if type(value) == "string" then
@@ -74,17 +77,14 @@ function MaterialCompiler.decodeTexture(texture, decoderOpts, textures, name, sc
 
   if not textures[key] then
     scratch = scratch or TextureDecoder.newScratch()
-    local pngSize = PngWriter.encodedSize(texture.width, texture.height)
+    PngWriter.validateDimensions(texture.width, texture.height)
     local rgba = love.data.newByteData(texture.width * texture.height * 4)
     local rgbaPointer = assert(rgba:getFFIPointer(), "texture RGBA Data has no FFI pointer")
     local rgbaSize = rgba:getSize()
     ---@cast rgbaSize integer
     local alphaUsage = TextureDecoder.decodeInto(decoderOpts, rgbaPointer, rgbaSize, scratch, { name = name })
-    local png = love.data.newByteData(pngSize)
-    local pngPointer = assert(png:getFFIPointer(), "texture PNG Data has no FFI pointer")
-    local pngLength = png:getSize()
-    ---@cast pngLength integer
-    PngWriter.encodeInto(texture.width, texture.height, rgbaPointer, rgbaSize, pngPointer, pngLength)
+    local png =
+      love.data.newByteData(PngWriter.encode(texture.width, texture.height, ffi.string(rgbaPointer, rgbaSize)))
     textures[key] = {
       data = png,
       width = texture.width,

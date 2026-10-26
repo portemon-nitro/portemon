@@ -384,11 +384,9 @@ local function captureServices(scope, cacheFs, versionId)
       Assert.notNil(record, versionId .. " stages its scene: " .. tostring(recordErr))
       local bytes =
         assert(cacheFs:read(BattlePresentationCache.sceneImagePath(sceneKey)), versionId .. " stages its scene image")
-      Assert.equal(
-        #bytes,
-        PngWriter.encodedSize(record.canvasWidth, record.canvasHeight),
-        versionId .. " stages the complete scene image"
-      )
+      local imageWidth, imageHeight = PngWriter.dimensions(bytes)
+      Assert.equal(imageWidth, record.canvasWidth, versionId .. " stages the complete scene image width")
+      Assert.equal(imageHeight, record.canvasHeight, versionId .. " stages the complete scene image height")
     end
     for _, page in ipairs(demand.pages or {}) do
       requirePortraitKey(cacheFs, page)

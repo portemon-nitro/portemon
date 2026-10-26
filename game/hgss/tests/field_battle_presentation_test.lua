@@ -1851,7 +1851,7 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       },
       imagePath = imagePath,
     }
-    local stagedBytes = string.rep("s", PngWriter.encodedSize(512, 256))
+    local stagedBytes = PngWriter.encode(512, 256, string.rep(string.char(9, 9, 9, 255), 512 * 256))
     local revealed = false
     local view = { versionId = cacheFs.versionId }
     function view.loadLua(_, path)

@@ -9,9 +9,23 @@ local BinaryView = require("libs.codec.src.BinaryView")
 local Errors = require("libs.errors.src.Errors")
 local MaterialCompiler = require("romdump.src.digest.model.MaterialCompiler")
 local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
+local PngWriter = require("libs.assets.src.PngWriter")
 local TexFixture = require("tests.support.Tex0Fixture")
+local ffi = require("ffi")
 
 local T = {}
+
+-- The stored texture asset carries final PNG bytes: they parse to the
+-- texture extent and decode through the standard image pipeline.
+local function assertFinalPng(asset, width, height)
+  local bytes = ffi.string(asset.data:getFFIPointer(), asset.data:getSize())
+  local imageWidth, imageHeight = PngWriter.dimensions(bytes)
+  Assert.equal(imageWidth, width, "staged texture width")
+  Assert.equal(imageHeight, height, "staged texture height")
+  local image = love.image.newImageData(love.filesystem.newFileData(bytes, "texture.png"))
+  Assert.equal(image:getWidth(), width, "decoded texture width")
+  Assert.equal(image:getHeight(), height, "decoded texture height")
+end
 
 -- One 8x8 palette16 texture "t" (all texels index 1) + palette "p".
 local function buildPack()
@@ -41,7 +55,7 @@ function T.textured_untextured_and_dedup()
 
   local asset = out.textures[out.materials[1].texture]
   Assert.equal(asset.width, 8)
-  Assert.equal(asset.data:getSize(), 57 + 2 + (8 * (1 + 8 * 4)) + 5 + 4)
+  assertFinalPng(asset, 8, 8)
   Assert.isTrue(asset.alphaUsage.hasOpaque)
   Assert.isFalse(asset.alphaUsage.hasZero)
   Assert.isFalse(asset.alphaUsage.hasPartial)
@@ -119,7 +133,7 @@ function T.decode_texture_is_the_single_content_addressed_store()
 
   local asset = textures[a]
   Assert.equal(asset.width, 8)
-  Assert.equal(asset.data:getSize(), 57 + 2 + (8 * (1 + 8 * 4)) + 5 + 4)
+  assertFinalPng(asset, 8, 8)
   Assert.isTrue(asset.alphaUsage.hasOpaque)
   Assert.isFalse(asset.alphaUsage.hasZero)
 end
