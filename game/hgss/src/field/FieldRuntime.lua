@@ -8,6 +8,7 @@ local PixelScale = require("libs.ui.src.PixelScale")
 local FieldActorDefinitionProvider = require("libs.hgss.src.actors.FieldActorDefinitionProvider")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
+local PartyAssetPrefetch = require("game.hgss.src.field.PartyAssetPrefetch")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
@@ -571,6 +572,8 @@ end
 ---@field itemCatalog ItemCatalog the shared item catalog behind mon and later Bag composition
 ---@field monLanguage string the semantic language key the mon catalog was built for
 ---@field monService HgssMonService the live party/creation/script mon service
+---@field _partyPrefetchRevision integer? last warmed party revision, nil before the first warmup
+---@field _partyPrefetchCooldown number? seconds until a deferred party warmup retries, failing closed at zero
 ---@field fashionCase FashionCaseState live accessory inventory restored from the save
 ---@field followerInteractionCatalog table<string, unknown> generated follower interaction rules
 ---@field followerReactionTicks table<string, integer> follower reaction emote kind -> emote action duration
@@ -2003,6 +2006,41 @@ function FieldRuntime:_load(loadOptions)
   end
 end
 
+-- Seconds between deferred party-warmup retries while selector manifests
+-- are still staging.
+local PARTY_PREFETCH_RETRY_SECONDS = 1.0
+
+-- Warms the live party's compiled assets once per party revision, plus a
+-- bounded retry while selector manifests are still staging. Best effort
+-- only: a deferral rearms the cooldown instead of failing the update,
+-- and the required display demands stay the correctness path.
+function FieldRuntime:_pollPartyAssetWarmup(dt)
+  local service = assert(self.monService, "party warmup requires the live mon service")
+  local revision = service:partyRevision()
+  local cooldown = self._partyPrefetchCooldown or 0
+  if revision == self._partyPrefetchRevision then
+    if cooldown <= 0 then
+      return
+    end
+    cooldown = cooldown - dt
+    self._partyPrefetchCooldown = cooldown
+    if cooldown > 0 then
+      return
+    end
+  end
+  local warmed = PartyAssetPrefetch.prefetch({
+    monService = service,
+    cacheFs = assert(self.cacheFs, "party warmup requires the version cache filesystem"),
+    derivedAssets = assert(self.derivedAssets, "party warmup requires the semantic derived-asset host"),
+  })
+  self._partyPrefetchRevision = revision
+  if warmed then
+    self._partyPrefetchCooldown = 0
+  else
+    self._partyPrefetchCooldown = PARTY_PREFETCH_RETRY_SECONDS
+  end
+end
+
 function FieldRuntime:update(dt)
   local maxSemanticDt = FieldSession.FIXED_DT * FieldSession.MAX_CATCH_UP_TICKS
   local acceptedDt = math.min(dt, maxSemanticDt)
@@ -2012,6 +2050,16 @@ function FieldRuntime:update(dt)
 
   if self.residency then
     self.residency:updatePrefetch()
+  end
+
+  -- Consumers observe party changes by polling partyRevision, so the
+  -- near-urgency asset warmup rides the same poll: save-load boot warms
+  -- the loaded party on its first update and every later party mutation
+  -- rewarms through its revision bump. Cache and host absence (a
+  -- headless seam without derived assets) skips warmup without touching
+  -- the required display demands.
+  if self.monService ~= nil and self.cacheFs ~= nil and self.derivedAssets ~= nil then
+    self:_pollPartyAssetWarmup(dt)
   end
 
   self.session.accumulator = self.session.accumulator + acceptedDt

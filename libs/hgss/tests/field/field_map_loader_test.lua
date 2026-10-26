@@ -3007,4 +3007,102 @@ function T.staged_begin_neighbor_failure_preserves_cause_when_scene_release_thro
   loader:release()
 end
 
+-- Ring-only cell host: committed cells and logical/field closures answer
+-- ready while the radius-2-only cell at (19, 12) follows the ring
+-- behavior (true ready, false pending, or a failure string).
+local function ringCellHost(calls, ringCell)
+  local function respond(kind, id, urgency)
+    calls[#calls + 1] = { kind = kind, mapId = id, urgency = urgency }
+    return true
+  end
+  return {
+    requestField = function(mapId, urgency)
+      return respond("field", mapId, urgency)
+    end,
+    requestLogicalField = function(mapId, urgency)
+      return respond("logical", mapId, urgency)
+    end,
+    requestCell = function(descriptor, urgency)
+      calls[#calls + 1] = { kind = "cell", x = descriptor.x, z = descriptor.z, urgency = urgency }
+      if descriptor.x == 19 and descriptor.z == 12 then
+        if type(ringCell) == "string" then
+          return false, ringCell
+        end
+        return ringCell
+      end
+      return true
+    end,
+  }
+end
+
+local function ringCellUrgency(calls, x, z)
+  for _, call in ipairs(calls) do
+    if call.kind == "cell" and call.x == x and call.z == z then
+      return call.urgency
+    end
+  end
+  return nil
+end
+
+function T.request_location_warms_ring_cells_as_near_without_blocking()
+  local cache, world = neighboringPlanningFixture({
+    demandCell(21, 12, 0),
+    demandCell(20, 12, 1),
+    demandCell(19, 12, 1),
+  })
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = ringCellHost(calls, false) })
+  local ready, failure = loader:requestLocation(0, 695, 397, "required")
+  Assert.isTrue(ready, "a pending ring cell never blocks its destination by default")
+  Assert.isNil(failure)
+  Assert.equal(
+    ringCellUrgency(calls, 19, 12),
+    "near",
+    "the ring cell enrolls as a near prefetch by default"
+  )
+  Assert.equal(
+    ringCellUrgency(calls, 21, 12),
+    "required",
+    "committed cells keep the caller urgency"
+  )
+  loader:release()
+end
+
+function T.request_location_waits_for_pending_ring_cells_when_required()
+  local cache, world = neighboringPlanningFixture({
+    demandCell(21, 12, 0),
+    demandCell(20, 12, 1),
+    demandCell(19, 12, 1),
+  })
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = ringCellHost(calls, false) })
+  local ready, failure = loader:requestLocation(0, 695, 397, "required", { neighborUrgency = "required" })
+  Assert.isFalse(ready, "a pending ring cell holds the destination when neighbors are required")
+  Assert.isNil(failure)
+  Assert.equal(
+    ringCellUrgency(calls, 19, 12),
+    "required",
+    "the ring cell enrolls at the neighbor urgency"
+  )
+  loader:release()
+end
+
+function T.request_location_fails_when_a_required_ring_cell_fails()
+  local cache, world = neighboringPlanningFixture({
+    demandCell(21, 12, 0),
+    demandCell(20, 12, 1),
+    demandCell(19, 12, 1),
+  })
+  local calls = {}
+  local loader = FieldMapLoader.new(
+    cache,
+    world,
+    { derivedAssets = ringCellHost(calls, "neighbor cell missing") }
+  )
+  local ready, failure = loader:requestLocation(0, 695, 397, "required", { neighborUrgency = "required" })
+  Assert.isFalse(ready, "a failed ring cell fails the destination when neighbors are required")
+  Assert.equal(failure, "neighbor cell missing", "the underlying ring cause surfaces")
+  loader:release()
+end
+
 return { tests = T }

@@ -108,7 +108,7 @@ end
 ---@param catalog MonCatalog
 ---@param mon table<string, unknown>
 ---@return string
-local function portraitSelectorFor(catalog, mon)
+function SummaryModel.portraitSelectorFor(catalog, mon)
   local speciesKey = assert(mon.species, "stored mons carry their species")
   assert(type(speciesKey) == "string", "species keys are strings")
   local form = assert(mon.form, "stored mons carry their form")
@@ -675,7 +675,7 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
         assert(member.form, "stored mons carry their form"),
         false
       )
-      portraitSelector = portraitSelectorFor(catalog, member)
+      portraitSelector = SummaryModel.portraitSelectorFor(catalog, member)
     end
     roster[#roster + 1] = {
       slot = slot,

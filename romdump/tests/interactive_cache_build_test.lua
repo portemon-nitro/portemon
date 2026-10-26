@@ -1807,8 +1807,8 @@ function T.runtime_milestone_carries_bounded_static_services()
   for identityKey in pairs(set) do
     local kind, key = identityKey:match("^([^:]+):(.+)$")
     Assert.isTrue(
-      kind ~= "audio-bank" or key == "750" or key == "700",
-      "runtime enrolls no audio bank but the shared transition and menu-effect banks: " .. identityKey
+      kind ~= "audio-bank" or key == "750" or key == "700" or key == "758",
+      "runtime enrolls no audio bank but the shared transition, menu-effect, and trainer card banks: " .. identityKey
     )
     Assert.isTrue(kind ~= "script-member", "runtime enrolls no script member: " .. identityKey)
     Assert.isTrue(kind ~= "map-data", "runtime enrolls no field record: " .. identityKey)

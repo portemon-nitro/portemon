@@ -25,7 +25,7 @@ PartyScreenModel.SLOT_COUNT = 6
 ---@param service HgssMonService the live mon service (partyCount/partyRevision/partyMon/partyMonDerived/catalog)
 ---@param mon table<string, unknown> an owned party mon copy
 ---@return string
-local function iconKeyFor(service, mon)
+function PartyScreenModel.iconKeyFor(service, mon)
   if mon.isEgg then
     return MonCache.iconSelector(mon.species, mon.form, true)
   end
@@ -65,7 +65,7 @@ local function projectSlot(service, slot0, isEligible)
   assert(mon.condition.currentHp <= derived.maxHp, "current HP cannot exceed derived max HP")
   record.occupied = true
   record.eligible = isEligible(slot0) == true
-  record.iconKey = iconKeyFor(service, mon)
+  record.iconKey = PartyScreenModel.iconKeyFor(service, mon)
   record.displayName = Mon.displayName(mon, catalog)
   record.level = derived.level
   record.gender = Personality.gender(species.genderRatio, mon.personality)

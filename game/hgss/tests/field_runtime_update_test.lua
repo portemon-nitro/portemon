@@ -519,6 +519,92 @@ function T.tests.follower_update_resumes_when_map_ownership_matches()
   Assert.equal(calls.count, 1, "follower reconciliation resumes for coherent ownership")
 end
 
+local function runtimeWithPartyWarmup(hostCalls, revisionOf)
+  local calls = {}
+  local runtime = runtimeWithoutAudio(calls)
+  runtime.monService = {
+    partyCount = function()
+      return 1
+    end,
+    partyRevision = function()
+      return revisionOf.revision
+    end,
+    partyMon = function()
+      return {
+        species = "PIKACHU",
+        form = 0,
+        personality = 1,
+        isEgg = false,
+        moves = {},
+        origin = { trainerId = 1 },
+      }
+    end,
+    catalog = function()
+      return {
+        species = function()
+          return { nativeId = 25, genderRatio = 0 }
+        end,
+        form = function()
+          return { portrait = "PIKACHU/f0/male/plain" }
+        end,
+        iconSelection = function()
+          return "PIKACHU/f0"
+        end,
+        move = function(_, key)
+          error("unknown move " .. tostring(key), 0)
+        end,
+      }
+    end,
+  }
+  runtime.cacheFs = {
+    loadLua = function()
+      return nil
+    end,
+  }
+  runtime.derivedAssets = {
+    requestIconPage = function(pageId, urgency)
+      hostCalls[#hostCalls + 1] = { kind = "icon", id = pageId, urgency = urgency }
+      return true
+    end,
+    requestMonPortraitPage = function(pageId, urgency)
+      hostCalls[#hostCalls + 1] = { kind = "portrait", id = pageId, urgency = urgency }
+      return true
+    end,
+    requestAudioBank = function(bankId, urgency)
+      hostCalls[#hostCalls + 1] = { kind = "audio", id = bankId, urgency = urgency }
+      return true
+    end,
+    requestBattleEffect = function(effectKey, urgency)
+      hostCalls[#hostCalls + 1] = { kind = "effect", id = effectKey, urgency = urgency }
+      return true
+    end,
+  }
+  return runtime
+end
+
+function T.tests.party_warmup_enrolls_near_demands_on_revision_change()
+  local hostCalls = {}
+  local revisionOf = { revision = 7 }
+  local runtime = runtimeWithPartyWarmup(hostCalls, revisionOf)
+
+  runtime:update(1 / 60)
+  local warmed = false
+  for _, call in ipairs(hostCalls) do
+    if call.kind == "audio" and call.id == 25 and call.urgency == "near" then
+      warmed = true
+    end
+  end
+  Assert.isTrue(warmed, "the first update warms the party cry bank as near")
+
+  local count = #hostCalls
+  runtime:update(1 / 60)
+  Assert.equal(#hostCalls, count, "an unchanged party enrolls nothing more")
+
+  revisionOf.revision = 8
+  runtime:update(1 / 60)
+  Assert.isTrue(#hostCalls > count, "a party change rewarms the party assets")
+end
+
 function T.tests.follower_update_rejects_stable_map_ownership_drift()
   local calls = { count = 0 }
   local runtime = runtimeForFollowerCoherence(61, 60, false, calls)

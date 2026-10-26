@@ -185,6 +185,31 @@ function T.geometry_polling_reuses_the_single_built_loader()
   state:dispose()
 end
 
+function T.geometry_demand_requires_neighbor_cells_for_save_entry()
+  local seenOptions = {}
+  local state = FieldPreparationState.new(continueOptions({
+    createLoader = function()
+      local loader = readyGeometryLoader({})
+      function loader:requestLocation(_, _, _, _, options)
+        seenOptions[#seenOptions + 1] = options
+        return true
+      end
+      return loader
+    end,
+  }))
+  settle(state)
+  Assert.isTrue(#seenOptions >= 1, "geometry polling demands the entry location")
+  for _, options in ipairs(seenOptions) do
+    Assert.equal(
+      type(options) == "table" and options.neighborUrgency or nil,
+      "required",
+      "save entry holds the field until neighbor cells stage"
+    )
+  end
+  Assert.equal(state.phase, "done")
+  state:dispose()
+end
+
 function T.escape_before_readiness_never_builds_a_loader()
   local builds = 0
   local cancelled = 0

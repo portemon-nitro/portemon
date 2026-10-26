@@ -1543,6 +1543,22 @@ function T.field_runtime_settles_standard_menu_bank_without_family_summaries(rom
   session:retire()
 end
 
+-- The trainer card opens through the field Start Menu and plays its open
+-- sound synchronously at construction (SEQ_SE_DP_CARD3, owned by
+-- TrainerCardController), so no map or script closure can pull its bank
+-- in: the field-runtime roster must carry that bank resolved through the
+-- adopted audio index, never a hardcoded bank assumption.
+function T.field_runtime_covers_the_trainer_card_sound_bank(romFs, versionId)
+  local audioPlan = assert(AudioCompiler.plan(romFs), "trainer card coverage needs the adopted audio plan")
+  local index = assert(audioPlan.index, "trainer card coverage needs the adopted audio index")
+  local bankId = audioBankOf(index, "SEQ_SE_DP_CARD3", "trainer card open")
+  local runtimeBanks = runtimeAudioBanks()
+  Assert.isTrue(
+    runtimeBanks[tostring(bankId)] == true,
+    "field runtime carries the trainer card open-sound bank " .. tostring(bankId)
+  )
+end
+
 function T.logical_field_waits_for_script_only_audio_bank(romFs, versionId)
   assert(activeBackend ~= nil, "the census owns its backend for the run")
   local cache = CacheFs.forVersion(versionId, activeBackend)

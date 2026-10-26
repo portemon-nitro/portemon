@@ -226,8 +226,10 @@ local FIELD_PLANNING_JOBS = {
 -- boot composes unconditionally, the two protocol menu label banks (Start
 -- Menu plus the standard list menu script hosts acquire synchronously),
 -- the shared transition/door sound-effect bank (transition exitSound/door
--- symbols live in Lua constant tables no map closure can reach), the audio
--- catalog and the script summary. It never contains intro setup, whole-
+-- symbols live in Lua constant tables no map closure can reach), the
+-- trainer card open-sound bank (SEQ_SE_DP_CARD3 plays synchronously at card
+-- construction, equally unreachable from map closures), the audio catalog
+-- and the script summary. It never contains intro setup, whole-
 -- family summaries, or a per-map/per-bank corpus enumeration.
 local FIELD_RUNTIME_JOBS = {
   "world-catalog:global",
@@ -265,6 +267,7 @@ local FIELD_RUNTIME_JOBS = {
   "message-bank:279",
   "audio-bank:750",
   "audio-bank:700",
+  "audio-bank:758",
   "audio-catalog:global",
   "script-summary:global",
 }

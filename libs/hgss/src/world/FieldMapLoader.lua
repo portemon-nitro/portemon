@@ -1606,13 +1606,25 @@ end
 ---@param fieldX integer
 ---@param fieldZ integer
 ---@param urgency string
+---@param options { neighborUrgency: string }? ring-cell demand options, defaulting to near prefetch
 ---@return boolean
 ---@return string|nil
-function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
+function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency, options)
   assert(not self.released, "field map loader is released")
   assert(type(fieldX) == "number" and fieldX % 1 == 0, "field x must be an integer")
   assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "field z must be an integer")
   assert(type(urgency) == "string" and urgency ~= "", "location demand requires an urgency")
+  local neighborUrgency = "near"
+  if options ~= nil then
+    assert(type(options) == "table", "location demand options arrive as a record")
+    if options.neighborUrgency ~= nil then
+      assert(
+        options.neighborUrgency == "near" or options.neighborUrgency == "required",
+        "neighbor urgency is near or required"
+      )
+      neighborUrgency = options.neighborUrgency
+    end
+  end
   local record = worldRecord(self.world, idOrSymbol)
   local host = self.derivedAssets
   -- Read-only snapshot of the already resolved demand membership for the
@@ -1642,6 +1654,7 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
     return false, assetsFailure
   end
   local pending = not assetsReady
+  local committedKeys = {} ---@type table<string, boolean> matrixMemberId:index of cells already demanded
   local function consume(ready, failure)
     if failure ~= nil then
       return failure
@@ -1664,6 +1677,7 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
     local anchorX, anchorZ = math.floor(fieldX / 32), math.floor(fieldZ / 32)
     local committed = FieldCoverage.descriptorsAt(self.fieldCellIndex, matrix.memberId, anchorX, anchorZ)
     for _, descriptor in ipairs(committed) do
+      committedKeys[descriptor.matrixMemberId .. ":" .. descriptor.index] = true
       local cellFailure = consume(host.requestCell(descriptor, urgency))
       if cellFailure ~= nil then
         snap()
@@ -1693,13 +1707,33 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
     end
   end
   -- The ring beyond the committed footprint is the next step's residency:
-  -- enroll its logical closures as near demand so the first moves after
-  -- arrival never reach an unrequested map. Never gates the destination.
+  -- its cells enroll at the neighbor urgency while its logical closures
+  -- stay near prefetch so the first moves after arrival never reach an
+  -- unrequested map. The default near enrollment never gates the
+  -- destination; a required neighbor urgency holds the destination until
+  -- the ring cells stage, so an initial outdoor entry presents with its
+  -- first moves already compiled.
   if type(matrix) == "table" and type(matrix.memberId) == "number" then
     local anchorX, anchorZ = math.floor(fieldX / 32), math.floor(fieldZ / 32)
     for _, descriptor in
       ipairs(FieldCoverage.footprintDescriptorsAt(self.fieldCellIndex, matrix.memberId, anchorX, anchorZ))
     do
+      local cellKey = descriptor.matrixMemberId .. ":" .. descriptor.index
+      if not committedKeys[cellKey] then
+        committedKeys[cellKey] = true
+        -- Near enrollment never gates, matching the neighbor visual and
+        -- logical prefetch below: only a required neighbor urgency joins
+        -- the destination readiness through consume.
+        if neighborUrgency == "required" then
+          local ringFailure = consume(host.requestCell(descriptor, neighborUrgency))
+          if ringFailure ~= nil then
+            snap()
+            return false, ringFailure
+          end
+        else
+          host.requestCell(descriptor, neighborUrgency)
+        end
+      end
       local header = descriptor.mapHeaderId
       if type(header) == "number" and header % 1 == 0 and not seen[header] then
         local headerId = math.floor(header)

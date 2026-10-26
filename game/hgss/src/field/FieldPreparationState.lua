@@ -151,7 +151,13 @@ end
 function FieldPreparationState:_pollGeometry()
   local target = assert(self.target, "geometry demand requires its target")
   local loader = assert(self.loader, "geometry demand requires the retained planning loader")
-  local ready, failure = loader:requestLocation(target.idOrSymbol, target.fieldX, target.fieldZ, "required")
+  -- Save entry holds the field until the neighbor ring stages: an
+  -- initial outdoor arrival presents with its first moves already
+  -- compiled. Indoor targets carry no physical ring, so the option is a
+  -- no-op for them.
+  local ready, failure = loader:requestLocation(target.idOrSymbol, target.fieldX, target.fieldZ, "required", {
+    neighborUrgency = "required",
+  })
   if failure ~= nil then
     error(failure, 0)
   end
