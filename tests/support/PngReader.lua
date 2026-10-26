@@ -14,19 +14,9 @@ function PngReader.rgba(png)
   assert(type(png) == "string", "PngReader.rgba requires staged PNG bytes")
   local data = love.image.newImageData(love.filesystem.newFileData(png, "assertion.png"))
   local width, height = data:getWidth(), data:getHeight()
-  local rows = {}
-  for y = 0, height - 1 do
-    for x = 0, width - 1 do
-      local r, g, b, a = data:getPixel(x, y)
-      rows[#rows + 1] = string.char(
-        math.floor(r * 255 + 0.5),
-        math.floor(g * 255 + 0.5),
-        math.floor(b * 255 + 0.5),
-        math.floor(a * 255 + 0.5)
-      )
-    end
-  end
-  return width, height, table.concat(rows)
+  assert(data:getFormat() == "rgba8", "PngReader requires RGBA8 decoded pixels")
+  assert(data:getSize() == width * height * 4, "decoded RGBA8 byte length does not match dimensions")
+  return width, height, data:getString()
 end
 
 -- One pixel as r, g, b, a from an rgba buffer returned by PngReader.rgba.
