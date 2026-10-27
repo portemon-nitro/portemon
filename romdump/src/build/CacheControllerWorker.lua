@@ -354,14 +354,6 @@ local function validateSelectors(params)
       end
     end
   elseif kind == "startup-walker" then
-    if
-      type(params.pairIndex) ~= "number"
-      or params.pairIndex % 1 ~= 0
-      or params.pairIndex < 1
-      or params.pairIndex > 32
-    then
-      return "startup-walker request needs an integer pairIndex 1..32"
-    end
     for _, field in ipairs({
       "name",
       "mapId",
@@ -372,6 +364,7 @@ local function validateSelectors(params)
       "bankId",
       "effectKey",
       "sceneNumber",
+      "pairIndex",
     }) do
       if params[field] ~= nil then
         return "startup-walker request carries no " .. field .. " selector"
@@ -424,7 +417,7 @@ function Worker:_invoke(params)
   elseif kind == "battle-presentation" then
     return session:requestJob("battle-presentation", "global", urgency)
   elseif kind == "startup-walker" then
-    return session:requestStartupWalker(params.pairIndex, urgency)
+    return session:requestStartupWalker(urgency)
   elseif kind == "opening-scene" then
     return session:requestOpeningScene(params.sceneNumber, urgency)
   end

@@ -14,7 +14,6 @@ local ImportState = require("app.src.launcher.ImportState")
 local VersionSelectState = require("app.src.launcher.VersionSelectState")
 local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
 local EditionPreference = require("app.src.launcher.EditionPreference")
-local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local StartupTitleState = require("app.src.launcher.StartupTitleState")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -28,7 +27,6 @@ local CacheFs = require("libs.storage.src.CacheFs")
 ---@field epoch integer latest borrowed controller epoch, monotonically increasing
 ---@field pendingQuiesce table<string, integer>|nil unacknowledged source-close barrier for import
 ---@field pairIndex integer? selected-epoch walking pair 1..32, chosen once per selection
----@field _publishedPairHint { versionId: string, pairIndex: integer, receipt: string? }? volatile smallest-pair hint keyed by version and publication receipt, never source authorization
 ---@field _importReceipt string? received filename latched synchronously on drop/picker input
 ---@field _pendingImport table<string, unknown>? deferred import descriptor awaiting its receipt paint
 ---@field selectedVersionId string? currently selected game version
@@ -595,86 +593,6 @@ function App._publishFirstPlay(versionId)
   pcall(FirstPlayCompletion.publish, versionId, generation)
 end
 
--- Publication receipt for the volatile pair hint: the controller-derived
--- generation token for the selecting provisioner when known. A nil receipt
--- never trusts the hint; the owning scan settles the pair instead. The
--- receipt only proves the publication set is unchanged, never authorization.
----@return string? current publication receipt, or nil when still unknown
-local function currentPublicationReceipt()
-  local provisioner = App.provisioner
-  if provisioner ~= nil and type(provisioner.generationId) == "function" then
-    local ok, known = pcall(provisioner.generationId, provisioner)
-    if ok and type(known) == "string" and known ~= "" then
-      return known
-    end
-  end
-  return nil
-end
-
--- Warm pair scan: the smallest currently published walking pair (1..32) is
--- reused for the new epoch; when no manifest loads, the epoch falls back
--- to one fresh random pair for normal preparation. A volatile hint keyed by
--- version and publication receipt avoids rescanning all 32 manifests when
--- the same version still publishes under the same receipt: the hint only
--- orders the probe, and every slot is validated through the presentation
--- that owns walker manifests, so a smaller newcomer or stale entry still
--- resolves to the exact smallest full scan. The controller still gates every
--- transfer, so an unverified file can never pose as a pair.
----@param versionId string newly selected game version
----@return integer? currently published pair, or nil when none loads
-local function publishedPair(versionId)
-  local cacheOk, cacheFs = pcall(CacheFs.forVersion, versionId)
-  if not cacheOk or cacheFs == nil then
-    return nil
-  end
-  local receipt = currentPublicationReceipt()
-  local hint = App._publishedPairHint
-  local hinted = nil
-  if
-    type(hint) == "table"
-    and hint.versionId == versionId
-    and hint.receipt ~= nil
-    and hint.receipt == receipt
-    and type(hint.pairIndex) == "number"
-    and hint.pairIndex % 1 == 0
-    and hint.pairIndex >= 1
-    and hint.pairIndex <= 32
-  then
-    hinted = hint.pairIndex
-  end
-  local found
-  if hinted ~= nil then
-    -- A matching hint only orders the owner-validated probe: slots below
-    -- the hint are rechecked first so a smaller newcomer still wins, and
-    -- a stale hint falls through to the exact smallest full scan.
-    for pairIndex = 1, hinted - 1 do
-      if HgssLoadingPresentation.publishedPairSlot(cacheFs, pairIndex) then
-        found = pairIndex
-        break
-      end
-    end
-    if found == nil and HgssLoadingPresentation.publishedPairSlot(cacheFs, hinted) then
-      found = hinted
-    end
-    if found == nil then
-      for pairIndex = hinted + 1, 32 do
-        if HgssLoadingPresentation.publishedPairSlot(cacheFs, pairIndex) then
-          found = pairIndex
-          break
-        end
-      end
-    end
-  else
-    found = HgssLoadingPresentation.publishedPair(cacheFs)
-  end
-  if found ~= nil then
-    App._publishedPairHint = { versionId = versionId, pairIndex = found, receipt = receipt }
-  elseif type(App._publishedPairHint) == "table" and App._publishedPairHint.versionId == versionId then
-    App._publishedPairHint = nil
-  end
-  return found
-end
-
 -- Whether the version already carries a persisted source registration.
 -- Answered behind the importer seam without opening the ROM: a filename
 -- or launch route alone never counts, and a failed read is unregistered.
@@ -705,12 +623,11 @@ function App._selectVersion(versionId, options)
   local provisioner = DerivedAssetProvisioner.new(provisionerOptions(versionId))
   App.provisioner = provisioner
   App.epoch = assert(provisioner.epoch, "selection borrowed no epoch")
-  -- One walking pair per newly selected epoch: the App alone chooses it
-  -- once per selection, preferring the smallest currently published pair
-  -- on a warm cache and rolling one fresh random pair otherwise. Later
-  -- journeys (menu returns, New Game, Continue, editor, late GPU adoption)
-  -- reuse it, never reroll.
-  App.pairIndex = publishedPair(versionId) or math.floor(love.math.random(1, 32))
+  -- One walking pair per newly selected epoch: the App alone draws one
+  -- fresh random pair once per selection, independent of the published
+  -- catalog. Later journeys (menu returns, New Game, Continue, editor,
+  -- late GPU adoption) reuse it, never reroll.
+  App.pairIndex = math.floor(love.math.random(1, 32))
   local epoch = App.epoch
   local service = assert(App.service, "process cache service is unavailable")
   -- A newly imported verified source crosses on the same control stream
@@ -821,7 +738,6 @@ function App.load(opts)
   App.epoch = 0
   App.pendingQuiesce = nil
   App.pairIndex = nil
-  App._publishedPairHint = nil
   App._importReceipt = nil
   App._pendingImport = nil
   App.selectedVersionId = nil

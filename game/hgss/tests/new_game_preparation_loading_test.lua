@@ -28,8 +28,8 @@ local function keyedHost(overrides)
   -- The C01 typed pair demand is a plain dot call carrying the caller's
   -- 1..32 selection; anything else (including a colon-passed self) fails
   -- the pair identity assertions below.
-  function host.requestStartupWalker(pairIndex, urgency)
-    calls.walker[#calls.walker + 1] = { pairIndex = pairIndex, urgency = urgency }
+  function host.requestStartupWalker(urgency)
+    calls.walker[#calls.walker + 1] = { urgency = urgency }
     if behavior.walkerFailure ~= nil then
       return nil, behavior.walkerFailure
     end
@@ -97,10 +97,9 @@ local function assertNoLegacyGlobalMilestone(calls)
   end
 end
 
-local function assertOnlySelectedPair(calls)
-  Assert.isTrue(#calls.walker >= 1, "the decorative demand names the selected pair")
+local function assertSharedDecorativeDemand(calls)
+  Assert.isTrue(#calls.walker >= 1, "the decorative demand observes the shared visuals")
   for _, call in ipairs(calls.walker) do
-    Assert.equal(call.pairIndex, PAIR_INDEX, "every decorative demand names the same selected pair")
     Assert.equal(call.urgency, "near", "the decorative demand stays nonblocking")
   end
 end
@@ -128,7 +127,7 @@ function T.requests_only_the_selected_pair_and_never_the_legacy_global_milestone
   local state = newEntry(host)
   state:update(0)
   state:update(0)
-  assertOnlySelectedPair(calls)
+  assertSharedDecorativeDemand(calls)
   assertNoLegacyGlobalMilestone(calls)
 end
 

@@ -93,8 +93,9 @@ function NewGamePreparationState:_pollLoaderArt()
   end
   -- The loading cover is decorative: any failure in this whole sequence
   -- latches once as a cosmetic diagnostic and never blocks or cancels the
-  -- required intro below. A pending pair demand stays retryable.
-  local observed, ready, failure = pcall(self.derivedAssets.requestStartupWalker, self.startupPairIndex, "near")
+  -- required intro below. A pending shared demand stays retryable.
+  -- The selected pair stays local to the presentation lookup below.
+  local observed, ready, failure = pcall(self.derivedAssets.requestStartupWalker, "near")
   if not observed then
     self.loaderArtFailure = ready
     self.loaderArtObserved = true

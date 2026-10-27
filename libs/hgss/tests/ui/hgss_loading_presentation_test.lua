@@ -26,24 +26,32 @@ local function visual(frameWidth, frameHeight)
   }
 end
 
-local function cache(versionId, pairIndex)
-  local selected = pairIndex or 1
-  local choice = require("libs.assets.src.StartupAssetCache").walkerChoice(selected)
-  local followerSpecies = choice.followerSpeciesId
+local SPECIES_IDS = { 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }
+
+local function cache(versionId, _)
+  local heroes = {
+    ethan = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png",
+      visual = visual(),
+    },
+    lyra = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/lyra.png",
+      visual = visual(),
+    },
+  }
+  local followers = {}
+  for _, speciesId in ipairs(SPECIES_IDS) do
+    followers[tostring(speciesId)] = {
+      atlasPath = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png",
+      visual = visual(),
+    }
+  end
   local record = {
     schema = Contract.startupWalker.schema,
     versionId = versionId or "heartgold",
     generationId = "test",
-    pairIndex = selected,
-    hero = {
-      atlasPath = "assets/generated/startup/loader/pairs/" .. selected .. "/hero.png",
-      visual = visual(),
-    },
-    follower = {
-      speciesId = followerSpecies,
-      atlasPath = "assets/generated/startup/loader/pairs/" .. selected .. "/follower.png",
-      visual = visual(),
-    },
+    heroes = heroes,
+    followers = followers,
   }
   return {
     loadLua = function()
@@ -530,20 +538,33 @@ local function startupPairVisual(frameWidth, frameHeight)
 end
 
 local function startupPairCacheFs(pairIndex, versionId, heroWidth, heroHeight, followerWidth, followerHeight)
-  local heroPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/hero.png"
-  local followerPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/follower.png"
+  local choice = require("libs.assets.src.StartupAssetCache").walkerChoice(pairIndex)
+  local heroPath = "assets/generated/startup/loader/subjects/heroes/" .. choice.heroId .. ".png"
+  local followerPath = "assets/generated/startup/loader/subjects/followers/" .. choice.followerSpeciesId .. ".png"
   local reads = {}
+  local heroes = {
+    ethan = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png",
+      visual = startupPairVisual(heroWidth, heroHeight),
+    },
+    lyra = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/lyra.png",
+      visual = startupPairVisual(heroWidth, heroHeight),
+    },
+  }
+  local followers = {}
+  for _, speciesId in ipairs(SPECIES_IDS) do
+    followers[tostring(speciesId)] = {
+      atlasPath = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png",
+      visual = startupPairVisual(followerWidth, followerHeight),
+    }
+  end
   local record = {
-    schema = "g4-startup-walker-v1",
+    schema = "g4-startup-walker-v2",
     versionId = versionId,
     generationId = "test-generation",
-    pairIndex = pairIndex,
-    hero = { atlasPath = heroPath, visual = startupPairVisual(heroWidth, heroHeight) },
-    follower = {
-      speciesId = 25,
-      atlasPath = followerPath,
-      visual = startupPairVisual(followerWidth, followerHeight),
-    },
+    heroes = heroes,
+    followers = followers,
   }
   return {
     reads = reads,

@@ -850,12 +850,7 @@ function InteractiveCacheBuild:_payload(kind, key)
     payload.pageKind = "portraits"
     payload.pageId = tonumber(key)
   elseif kind == "startup-loader" then
-    local pairIndex = tonumber(key)
-    assert(
-      pairIndex ~= nil and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
-      "walking pair index must be an integer 1..32"
-    )
-    payload.pairIndex = pairIndex
+    assert(key == "global", "startup loader jobs carry the global key")
   elseif kind == "opening-scene" then
     local sceneNumber = tonumber(key)
     assert(
@@ -2194,18 +2189,13 @@ function InteractiveCacheBuild:requestMonPortraitPage(pageId, urgency)
   return self:_answer(self:_requestDirect("mon-portrait-page", key, urgency))
 end
 
----@param pairIndex integer
 ---@param urgency string
 ---@return boolean
 ---@return string|nil
-function InteractiveCacheBuild:requestStartupWalker(pairIndex, urgency)
+function InteractiveCacheBuild:requestStartupWalker(urgency)
   assert(not self.retired, "generation session is retired")
-  assert(
-    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
-    "walking pair index must be an integer 1..32"
-  )
   ArtifactJobs.priorityFor(urgency)
-  return self:_answer(self:_requestDirect("startup-loader", tostring(pairIndex), urgency))
+  return self:_answer(self:_requestDirect("startup-loader", "global", urgency))
 end
 
 -- One independently requestable opening-movie scene: exactly scenes 1..5

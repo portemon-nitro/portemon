@@ -133,9 +133,6 @@ local function withStartup(fn)
     if selector.name == "startup-title" then
       return active.titleAssetsReady ~= false, nil
     end
-    if selector.name == "startup-loader" then
-      return true, nil
-    end
     if selector.name == "bootstrap" then
       return active.bootstrapReady == true, nil
     end
@@ -370,8 +367,8 @@ function T.tests.title_is_presented_while_menu_and_first_play_are_pending()
       )
     end
     Assert.deepEqual(
-      { startupRequests[1], startupRequests[2], startupRequests[3], startupRequests[4] },
-      { "startup-loader", "startup-title", "bootstrap", "startup-audio" },
+      { startupRequests[1], startupRequests[2], startupRequests[3] },
+      { "startup-title", "bootstrap", "startup-audio" },
       "the first startup demand batch prioritizes title before broad bootstrap"
     )
   end)

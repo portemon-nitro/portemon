@@ -69,412 +69,64 @@ local function drainCommands(service)
   return commands
 end
 
-function T.startup_walker_requests_dedupe_by_pair_and_leave_other_pairs_pending()
+function T.startup_walker_global_demand_dedupes_to_one_worker_request()
   local service, provisioner = selectGame()
   local epoch = assert(provisioner.epoch, "the selection borrows an epoch")
   local gameHost = provisioner:gameHost()
   Assert.isTrue(
     type(gameHost.requestStartupWalker) == "function",
-    "the selected game host demands its walking pair"
+    "the selected game host demands the shared walking visuals"
   )
-  local pending, pendingErr = gameHost.requestStartupWalker(5, "required")
-  Assert.isNil(pending, "an unbuilt pair observes no readiness")
-  Assert.isNil(pendingErr, "an unbuilt pair observes no failure")
-  local first = service:request(epoch, { requestKind = "startup-walker", pairIndex = 5, urgency = "required" })
-  Assert.notNil(first, "the pair selector routes to the worker")
-  local second = service:request(epoch, { requestKind = "startup-walker", pairIndex = 5, urgency = "near" })
-  Assert.equal(second, first, "the same pair deduplicates to one worker request")
-  local other = service:request(epoch, { requestKind = "startup-walker", pairIndex = 6, urgency = "required" })
-  Assert.isTrue(other ~= first, "another pair stays its own worker request")
+  local pending, pendingErr = gameHost.requestStartupWalker("required")
+  Assert.isNil(pending, "an unbuilt catalog observes no readiness")
+  Assert.isNil(pendingErr, "an unbuilt catalog observes no failure")
+  local first = service:request(epoch, { requestKind = "startup-walker", urgency = "required" })
+  Assert.notNil(first, "the shared selector routes to the worker")
+  local second = service:request(epoch, { requestKind = "startup-walker", urgency = "near" })
+  Assert.equal(second, first, "the shared demand deduplicates to one worker request")
   service:update()
-  local pairKeys = {}
+  local sharedDemands = 0
   for _, command in ipairs(drainCommands(service)) do
     if command.op == "request" and command.requestKind == "startup-walker" then
-      pairKeys[#pairKeys + 1] = command.pairIndex
+      sharedDemands = sharedDemands + 1
+      Assert.isNil(command.pairIndex, "the worker demand carries no pair identity")
     end
   end
-  Assert.equal(#pairKeys, 2, "only the two demanded pairs leave the game thread")
-  local seen = {}
-  for _, pairIndex in ipairs(pairKeys) do
-    seen[pairIndex] = true
-  end
-  Assert.isTrue(seen[5] == true and seen[6] == true, "the worker sees exactly the demanded pairs")
-  local stillPending, _ = service:observe(epoch, { requestKind = "startup-walker", pairIndex = 6 })
-  Assert.isNil(stillPending, "the second pair stays pending before its answer lands")
+  Assert.equal(sharedDemands, 1, "only the one shared demand leaves the game thread")
   service:injectReply({ op = "request-result", epoch = epoch, requestId = first, state = "ready" })
   service:update()
-  local ready, failure = gameHost.requestStartupWalker(5, "required")
-  Assert.isTrue(ready, "the pushed ready event lands in the matching pair observation")
-  Assert.isNil(failure, "a ready pair carries no failure")
-  local otherPending, _ = gameHost.requestStartupWalker(6, "required")
-  Assert.isNil(otherPending, "the other pair stays pending after the first pair completes")
+  local ready, failure = gameHost.requestStartupWalker("required")
+  Assert.isTrue(ready, "the pushed ready event lands in the shared observation")
+  Assert.isNil(failure, "a ready catalog carries no failure")
   provisioner:dispose()
   service:shutdown()
 end
 
-function T.startup_walker_requests_reject_indexes_outside_the_thirty_two_choices()
+function T.startup_walker_requests_reject_any_pair_selector()
   local service, provisioner = selectGame()
-  local gameHost = provisioner:gameHost()
-  Assert.isTrue(
-    type(gameHost.requestStartupWalker) == "function",
-    "the selected game host demands its walking pair"
-  )
-  for _, badIndex in ipairs({ 0, 33, 2.5, "5" }) do
-    local ok, _ = pcall(function()
-      gameHost.requestStartupWalker(badIndex, "required")
-    end)
-    Assert.isFalse(ok, "pair index " .. tostring(badIndex) .. " never leaves the game thread")
+  for _, selector in ipairs({
+    { requestKind = "startup-walker", pairIndex = 5, urgency = "required" },
+    { requestKind = "startup-walker", pairIndex = 0, urgency = "required" },
+    { requestKind = "startup-walker", pairIndex = 33, urgency = "required" },
+  }) do
+    local ok, _ = pcall(service.request, service, assert(provisioner.epoch), selector)
+    Assert.isFalse(ok, "a pair selector never leaves the game thread")
   end
+  local gameHost = provisioner:gameHost()
+  local ok, _ = pcall(service.request, service, assert(provisioner.epoch), {
+    requestKind = "startup-walker",
+    urgency = "required",
+  })
+  Assert.isTrue(ok, "the selector-free demand routes to the worker")
+  Assert.isTrue(type(gameHost.requestStartupWalker) == "function", "the game host keeps its shared demand")
   service:update()
   for _, command in ipairs(drainCommands(service)) do
-    Assert.isFalse(
-      command.requestKind == "startup-walker",
-      "a rejected pair index queues no worker request"
-    )
+    if command.requestKind == "startup-walker" then
+      Assert.isNil(command.pairIndex, "a queued shared demand carries no pair identity")
+    end
   end
   provisioner:dispose()
   service:shutdown()
-end
-
--- A warm selection reuses the one published ready pair instead of rolling a
--- fresh random index: with only pair 7 current and the random source forced
--- toward unavailable pair 23, the epoch must settle on 7 and never demand
--- 23 from the worker.
-function T.warm_selection_reuses_the_published_ready_pair()
-  local App = require("app.src.App")
-  local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
-  local CacheFs = require("libs.storage.src.CacheFs")
-  local LoadingModule = require("libs.hgss.src.ui.HgssLoadingPresentation")
-  local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
-  local HgssGame = require("game.hgss.src.HgssGame")
-  local StartupTitleState = require("app.src.launcher.StartupTitleState")
-  local saved = {
-    state = App.state,
-    importer = App.importer,
-    provisioner = App.provisioner,
-    service = App.service,
-    epoch = App.epoch,
-    pairIndex = App.pairIndex,
-    pendingQuiesce = App.pendingQuiesce,
-    selectedVersionId = App.selectedVersionId,
-    rebindVersionId = App._rebindVersionId,
-    bootBlockedVersionId = App._bootBlockedVersionId,
-    startupWarmup = App._startupWarmup,
-    opts = App.opts,
-    loadWalker = StartupAssetCache.loadWalker,
-    forVersion = CacheFs.forVersion,
-    loadingNew = LoadingModule.new,
-    isCurrent = FirstPlayCompletion.isCurrent,
-    firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
-    random = love.math.random,
-  }
-  local demands = {}
-  local epochs = 0
-  local service = {}
-  function service:select(_)
-    epochs = epochs + 1
-    return epochs
-  end
-  function service:request(_, selector)
-    if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      demands[#demands + 1] = { pairIndex = selector.pairIndex, urgency = selector.urgency }
-    end
-  end
-  function service:observe(_, selector)
-    if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      if selector.pairIndex == 7 then
-        return true, nil
-      end
-      return nil, nil
-    end
-    return nil, nil
-  end
-  function service:requestBootSource(_)
-  end
-  function service:bootSourceStatus(_)
-    return "ready", nil
-  end
-  function service:update()
-  end
-  function service:retire(_)
-  end
-  function service:generationId(_)
-    return "synthetic-test-generation"
-  end
-  local loading = {
-    adopted = false,
-    adoptions = 0,
-    disposals = 0,
-  }
-  function loading:update()
-  end
-  function loading:resize()
-  end
-  function loading:draw()
-  end
-  function loading:dispose()
-    self.disposals = self.disposals + 1
-  end
-  function loading:adoptGeneratedAssets()
-    self.adoptions = self.adoptions + 1
-    self.adopted = true
-    return true
-  end
-  local function restore()
-    if App.state ~= nil then
-      App.setState(nil)
-    end
-    if App.provisioner ~= nil then
-      App._retireSelection()
-    end
-    App.state = saved.state
-    App.importer = saved.importer
-    App.provisioner = saved.provisioner
-    App.service = saved.service
-    App.epoch = saved.epoch
-    App.pairIndex = saved.pairIndex
-    App.pendingQuiesce = saved.pendingQuiesce
-    App.selectedVersionId = saved.selectedVersionId
-    App._rebindVersionId = saved.rebindVersionId
-    App._bootBlockedVersionId = saved.bootBlockedVersionId
-    App._startupWarmup = saved.startupWarmup
-    App.opts = saved.opts
-    StartupAssetCache.loadWalker = saved.loadWalker
-    CacheFs.forVersion = saved.forVersion
-    LoadingModule.new = saved.loadingNew
-    FirstPlayCompletion.isCurrent = saved.isCurrent
-    HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
-    love.math.random = saved.random
-  end
-  local ok, err = xpcall(function()
-    StartupAssetCache.loadWalker = function(_, pairIndex)
-      if pairIndex == 7 then
-        return { pairIndex = 7 }
-      end
-      return nil, "synthetic missing pair"
-    end
-    CacheFs.forVersion = function(_)
-      return {}
-    end
-    LoadingModule.new = function()
-      return loading
-    end
-    FirstPlayCompletion.isCurrent = function()
-      return false
-    end
-    HgssGame.newFirstPlayCachePreparation = function(_)
-      local preparation = {}
-      function preparation:poll()
-        return nil, nil
-      end
-      function preparation:dispose()
-      end
-      return preparation
-    end
-    love.math.random = function()
-      return 23
-    end
-    App.state = nil
-    App.importer = nil
-    App.provisioner = nil
-    App.service = service
-    App.epoch = 0
-    App.pairIndex = nil
-    App.pendingQuiesce = nil
-    App.selectedVersionId = nil
-    App._rebindVersionId = nil
-    App._bootBlockedVersionId = nil
-    App._startupWarmup = nil
-    App.opts = { dev = false }
-    App._selectVersion("soulsilver")
-    for _ = 1, 5 do
-      App.update(0.016)
-    end
-    Assert.equal(App.pairIndex, 7, "the warm epoch settles on the published ready pair, not the forced random index")
-    Assert.isTrue(#demands >= 1, "the warm epoch demands its selected pair from the worker")
-    for _, demand in ipairs(demands) do
-      Assert.equal(demand.pairIndex, 7, "no worker demand names the unavailable pair")
-    end
-    Assert.equal(
-      getmetatable(App.state).__index,
-      StartupTitleState,
-      "the adopted ready pair completes the warm handoff"
-    )
-  end, debug.traceback)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- Several published pairs resolve deterministically to the smallest index:
--- with pairs 3 and 7 current and the random source forced toward 23, the
--- epoch must settle on 3 and demand only 3 from the worker.
-function T.multiple_published_pairs_resolve_to_the_smallest_index()
-  local App = require("app.src.App")
-  local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
-  local CacheFs = require("libs.storage.src.CacheFs")
-  local LoadingModule = require("libs.hgss.src.ui.HgssLoadingPresentation")
-  local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
-  local HgssGame = require("game.hgss.src.HgssGame")
-  local StartupTitleState = require("app.src.launcher.StartupTitleState")
-  local saved = {
-    state = App.state,
-    importer = App.importer,
-    provisioner = App.provisioner,
-    service = App.service,
-    epoch = App.epoch,
-    pairIndex = App.pairIndex,
-    pendingQuiesce = App.pendingQuiesce,
-    selectedVersionId = App.selectedVersionId,
-    rebindVersionId = App._rebindVersionId,
-    bootBlockedVersionId = App._bootBlockedVersionId,
-    startupWarmup = App._startupWarmup,
-    opts = App.opts,
-    loadWalker = StartupAssetCache.loadWalker,
-    forVersion = CacheFs.forVersion,
-    loadingNew = LoadingModule.new,
-    isCurrent = FirstPlayCompletion.isCurrent,
-    firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
-    random = love.math.random,
-  }
-  local demands = {}
-  local epochs = 0
-  local service = {}
-  function service:select(_)
-    epochs = epochs + 1
-    return epochs
-  end
-  function service:request(_, selector)
-    if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      demands[#demands + 1] = selector.pairIndex
-    end
-  end
-  function service:observe(_, selector)
-    if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      if selector.pairIndex == 3 then
-        return true, nil
-      end
-      return nil, nil
-    end
-    return nil, nil
-  end
-  function service:requestBootSource(_)
-  end
-  function service:bootSourceStatus(_)
-    return "ready", nil
-  end
-  function service:update()
-  end
-  function service:retire(_)
-  end
-  function service:generationId(_)
-    return "synthetic-test-generation"
-  end
-  local loading = {
-    adopted = false,
-    adoptions = 0,
-    disposals = 0,
-  }
-  function loading:update()
-  end
-  function loading:resize()
-  end
-  function loading:draw()
-  end
-  function loading:dispose()
-    self.disposals = self.disposals + 1
-  end
-  function loading:adoptGeneratedAssets()
-    self.adoptions = self.adoptions + 1
-    self.adopted = true
-    return true
-  end
-  local function restore()
-    if App.state ~= nil then
-      App.setState(nil)
-    end
-    if App.provisioner ~= nil then
-      App._retireSelection()
-    end
-    App.state = saved.state
-    App.importer = saved.importer
-    App.provisioner = saved.provisioner
-    App.service = saved.service
-    App.epoch = saved.epoch
-    App.pairIndex = saved.pairIndex
-    App.pendingQuiesce = saved.pendingQuiesce
-    App.selectedVersionId = saved.selectedVersionId
-    App._rebindVersionId = saved.rebindVersionId
-    App._bootBlockedVersionId = saved.bootBlockedVersionId
-    App._startupWarmup = saved.startupWarmup
-    App.opts = saved.opts
-    StartupAssetCache.loadWalker = saved.loadWalker
-    CacheFs.forVersion = saved.forVersion
-    LoadingModule.new = saved.loadingNew
-    FirstPlayCompletion.isCurrent = saved.isCurrent
-    HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
-    love.math.random = saved.random
-  end
-  local ok, err = xpcall(function()
-    StartupAssetCache.loadWalker = function(_, pairIndex)
-      if pairIndex == 3 or pairIndex == 7 then
-        return { pairIndex = pairIndex }
-      end
-      return nil, "synthetic missing pair"
-    end
-    CacheFs.forVersion = function(_)
-      return {}
-    end
-    LoadingModule.new = function()
-      return loading
-    end
-    FirstPlayCompletion.isCurrent = function()
-      return false
-    end
-    HgssGame.newFirstPlayCachePreparation = function(_)
-      local preparation = {}
-      function preparation:poll()
-        return nil, nil
-      end
-      function preparation:dispose()
-      end
-      return preparation
-    end
-    love.math.random = function()
-      return 23
-    end
-    App.state = nil
-    App.importer = nil
-    App.provisioner = nil
-    App.service = service
-    App.epoch = 0
-    App.pairIndex = nil
-    App.pendingQuiesce = nil
-    App.selectedVersionId = nil
-    App._rebindVersionId = nil
-    App._bootBlockedVersionId = nil
-    App._startupWarmup = nil
-    App.opts = { dev = false }
-    App._selectVersion("soulsilver")
-    for _ = 1, 5 do
-      App.update(0.016)
-    end
-    Assert.equal(App.pairIndex, 3, "the epoch settles on the smallest published pair")
-    Assert.isTrue(#demands >= 1, "the epoch demands its selected pair from the worker")
-    for _, pairIndex in ipairs(demands) do
-      Assert.equal(pairIndex, 3, "no worker demand names another pair")
-    end
-    Assert.equal(
-      getmetatable(App.state).__index,
-      StartupTitleState,
-      "the adopted ready pair completes the handoff"
-    )
-  end, debug.traceback)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
 end
 
 -- With no published manifest at all the epoch keeps one random fallback
@@ -516,15 +168,12 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
   end
   function service:request(_, selector)
     if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      demands[#demands + 1] = selector.pairIndex
+      demands[#demands + 1] = { pairIndex = selector.pairIndex, urgency = selector.urgency }
     end
   end
   function service:observe(_, selector)
     if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      if selector.pairIndex == 23 then
-        return true, nil
-      end
-      return nil, nil
+      return true, nil
     end
     return nil, nil
   end
@@ -627,22 +276,181 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
       App.update(0.016)
     end
     Assert.equal(App.pairIndex, 23, "the epoch keeps its one random fallback pair")
-    Assert.isTrue(#demands >= 1, "the fallback pair is demanded from the worker")
-    local distinct = {}
-    for _, pairIndex in ipairs(demands) do
-      Assert.equal(pairIndex, 23, "no worker demand names another pair")
-      distinct[pairIndex] = true
+    Assert.isTrue(#demands >= 1, "the shared visuals are demanded from the worker")
+    for _, demand in ipairs(demands) do
+      Assert.isNil(demand.pairIndex, "the shared demand carries no pair identity")
+      Assert.equal(demand.urgency, "required", "the shared demand stays required")
     end
-    local distinctCount = 0
-    for _ in pairs(distinct) do
-      distinctCount = distinctCount + 1
-    end
-    Assert.equal(distinctCount, 1, "the fallback never precaches the other pairs")
     Assert.equal(
       getmetatable(App.state).__index,
       StartupTitleState,
       "the prepared fallback pair completes the handoff"
     )
+  end, debug.traceback)
+  restore()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Each newly selected epoch draws one fresh pair independent of the
+-- published catalog: the same warm catalog never biases the draw, the
+-- worker demand carries no pair identity, and the draw happens once per
+-- selection.
+function T.new_epochs_draw_independent_pairs_without_cache_scan()
+  local App = require("app.src.App")
+  local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local LoadingModule = require("libs.hgss.src.ui.HgssLoadingPresentation")
+  local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
+  local HgssGame = require("game.hgss.src.HgssGame")
+  local saved = {
+    state = App.state,
+    importer = App.importer,
+    provisioner = App.provisioner,
+    service = App.service,
+    epoch = App.epoch,
+    pairIndex = App.pairIndex,
+    pendingQuiesce = App.pendingQuiesce,
+    selectedVersionId = App.selectedVersionId,
+    rebindVersionId = App._rebindVersionId,
+    bootBlockedVersionId = App._bootBlockedVersionId,
+    startupWarmup = App._startupWarmup,
+    opts = App.opts,
+    loadWalker = StartupAssetCache.loadWalker,
+    forVersion = CacheFs.forVersion,
+    loadingNew = LoadingModule.new,
+    isCurrent = FirstPlayCompletion.isCurrent,
+    firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
+    random = love.math.random,
+  }
+  local demands = {}
+  local epochs = 0
+  local randomCalls = 0
+  local randomValues = { 7, 25 }
+  local scanCalls = 0
+  local service = {}
+  function service:select(_)
+    epochs = epochs + 1
+    return epochs
+  end
+  function service:request(_, selector)
+    if type(selector) == "table" and selector.requestKind == "startup-walker" then
+      demands[#demands + 1] = { pairIndex = selector.pairIndex, urgency = selector.urgency }
+    end
+  end
+  function service:observe(_, selector)
+    if type(selector) == "table" and selector.requestKind == "startup-walker" then
+      return true, nil
+    end
+    return nil, nil
+  end
+  function service:requestBootSource(_)
+  end
+  function service:bootSourceStatus(_)
+    return "ready", nil
+  end
+  function service:update()
+  end
+  function service:retire(_)
+  end
+  function service:generationId(_)
+    return "synthetic-test-generation"
+  end
+  local loading = {}
+  function loading:update()
+  end
+  function loading:resize()
+  end
+  function loading:draw()
+  end
+  function loading:dispose()
+  end
+  function loading:adoptGeneratedAssets()
+    return true
+  end
+  local function restore()
+    if App.state ~= nil then
+      App.setState(nil)
+    end
+    if App.provisioner ~= nil then
+      App._retireSelection()
+    end
+    App.state = saved.state
+    App.importer = saved.importer
+    App.provisioner = saved.provisioner
+    App.service = saved.service
+    App.epoch = saved.epoch
+    App.pairIndex = saved.pairIndex
+    App.pendingQuiesce = saved.pendingQuiesce
+    App.selectedVersionId = saved.selectedVersionId
+    App._rebindVersionId = saved.rebindVersionId
+    App._bootBlockedVersionId = saved.bootBlockedVersionId
+    App._startupWarmup = saved.startupWarmup
+    App.opts = saved.opts
+    StartupAssetCache.loadWalker = saved.loadWalker
+    CacheFs.forVersion = saved.forVersion
+    LoadingModule.new = saved.loadingNew
+    FirstPlayCompletion.isCurrent = saved.isCurrent
+    HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
+    love.math.random = saved.random
+  end
+  local ok, err = xpcall(function()
+    StartupAssetCache.loadWalker = function(_, _)
+      scanCalls = scanCalls + 1
+      return nil, "synthetic catalog is never a selection signal"
+    end
+    CacheFs.forVersion = function(_)
+      return {}
+    end
+    LoadingModule.new = function()
+      return loading
+    end
+    FirstPlayCompletion.isCurrent = function()
+      return false
+    end
+    HgssGame.newFirstPlayCachePreparation = function(_)
+      local preparation = {}
+      function preparation:poll()
+        return nil, nil
+      end
+      function preparation:dispose()
+      end
+      return preparation
+    end
+    love.math.random = function(_, _)
+      randomCalls = randomCalls + 1
+      return assert(randomValues[randomCalls], "one random draw per epoch")
+    end
+    App.state = nil
+    App.importer = nil
+    App.provisioner = nil
+    App.service = service
+    App.epoch = 0
+    App.pairIndex = nil
+    App.pendingQuiesce = nil
+    App.selectedVersionId = nil
+    App._rebindVersionId = nil
+    App._bootBlockedVersionId = nil
+    App._startupWarmup = nil
+    App.opts = { dev = false }
+    App._selectVersion("heartgold")
+    Assert.equal(App.pairIndex, 7, "the first epoch keeps its drawn pair")
+    for _ = 1, 5 do
+      App.update(0.016)
+    end
+    App._selectVersion("heartgold")
+    Assert.equal(App.pairIndex, 25, "the next epoch draws again instead of reusing the catalog")
+    for _ = 1, 5 do
+      App.update(0.016)
+    end
+    Assert.equal(randomCalls, 2, "each epoch draws exactly once")
+    Assert.equal(scanCalls, 0, "selection never scans the published catalog")
+    Assert.isTrue(#demands >= 2, "both epochs demand the shared visuals")
+    for _, demand in ipairs(demands) do
+      Assert.isNil(demand.pairIndex, "the shared demand carries no pair identity")
+      Assert.equal(demand.urgency, "required", "the shared demand stays required")
+    end
   end, debug.traceback)
   restore()
   if not ok then

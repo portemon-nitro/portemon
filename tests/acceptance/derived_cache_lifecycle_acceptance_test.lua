@@ -202,9 +202,7 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
   local requestedMaps = {}
   local requestedMilestones = {}
   local host = {
-    requestStartupWalker = function(pairIndex, urgency)
-      -- Optional loader art never joins Continue's field-entry gates.
-      Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
+    requestStartupWalker = function(urgency)
       Assert.equal(urgency, "near")
       return false
     end,
@@ -397,8 +395,7 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
   local requested = { milestones = {}, milestoneDemands = {}, maps = {}, pages = 0 }
   local planningReady, runtimeReady, geometryReady, introReady = false, false, false, false
   local host = {
-    requestStartupWalker = function(pairIndex, urgency)
-      Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
+    requestStartupWalker = function(urgency)
       Assert.equal(urgency, "near")
       return false
     end,

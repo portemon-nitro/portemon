@@ -199,9 +199,6 @@ local function withStartup(fn)
     if selector.name == "startup-title" then
       return active.titleAssetsReady ~= false, nil
     end
-    if selector.name == "startup-loader" then
-      return true, nil
-    end
     if selector.name == "bootstrap" then
       return active.bootstrapReady == true, nil
     end

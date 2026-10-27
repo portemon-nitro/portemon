@@ -258,33 +258,6 @@ function HgssLoadingPresentation:_ensureCaptionFont()
   return nil
 end
 
--- Smallest currently published walking pair (1..32) for one version cache,
--- or nil when no manifest loads. Read-only: manifests are verified on
--- load and the cache controller still gates every transfer, so an
--- unverified file can never pose as a ready pair.
----@param cacheFs table<string, function> version cache holding the walker manifests
----@return integer? currently published pair, or nil when none loads
-function HgssLoadingPresentation.publishedPair(cacheFs)
-  for pairIndex = 1, 32 do
-    local ok, manifest = pcall(StartupAssetCache.loadWalker, cacheFs, pairIndex)
-    if ok and manifest ~= nil then
-      return pairIndex
-    end
-  end
-  return nil
-end
-
--- Whether one walking pair slot currently publishes a loadable manifest.
--- Same acceptance as publishedPair, factored so selection hinting can
--- validate one slot at a time without touching the asset cache directly.
----@param cacheFs table<string, function> version cache holding the walker manifests
----@param pairIndex integer walking pair slot 1..32
----@return boolean whether the slot publishes a loadable manifest
-function HgssLoadingPresentation.publishedPairSlot(cacheFs, pairIndex)
-  local ok, manifest = pcall(StartupAssetCache.loadWalker, cacheFs, pairIndex)
-  return ok and manifest ~= nil
-end
-
 function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
   assert(not self.disposed, "disposed loading presentation cannot adopt art")
   if self.hero ~= nil then
@@ -295,18 +268,24 @@ function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
     self.artFailure = missing
     return false, missing
   end
-  local manifest, manifestError = StartupAssetCache.loadWalker(cacheFs, self.pairIndex)
+  if self.versionId == nil then
+    local missing = "selected-version loader assets are unavailable"
+    self.artFailure = missing
+    return false, missing
+  end
+  local manifest, manifestError = StartupAssetCache.loadWalker(cacheFs, self.versionId)
   if manifest == nil then
     self.artFailure = manifestError
     return false, manifestError
   end
-  if self.versionId == nil or manifest.versionId ~= self.versionId then
-    local mismatch = "selected-version loader assets are unavailable"
-    self.artFailure = mismatch
-    return false, mismatch
+  local choice = StartupAssetCache.walkerChoice(self.pairIndex)
+  local hero = manifest.heroes and manifest.heroes[choice.heroId]
+  local follower = manifest.followers and manifest.followers[tostring(choice.followerSpeciesId)]
+  if hero == nil or follower == nil then
+    local missing = "selected walking subjects are unavailable"
+    self.artFailure = missing
+    return false, missing
   end
-  local hero = manifest.hero
-  local follower = manifest.follower
   local staged = {}
   local ok, result = pcall(function()
     local heroImage = self:_loadImage(cacheFs, hero.atlasPath)
@@ -346,11 +325,10 @@ function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
     self.artFailure = result
     return false, result
   end
-  local choice = StartupAssetCache.walkerChoice(self.pairIndex)
   self.heroId = choice.heroId
   self.hero = { visual = hero.visual, image = result.heroImage, quads = result.heroQuads }
   self.follower = {
-    speciesId = follower.speciesId,
+    speciesId = choice.followerSpeciesId,
     visual = follower.visual,
     image = result.followerImage,
     quads = result.followerQuads,

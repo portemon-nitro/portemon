@@ -184,17 +184,13 @@ function DerivedAssetProvisioner.new(options)
     requestBattlePresentation = function(urgency)
       return ask("battle-presentation", urgency)
     end,
-    -- One selected walking pair for the loading stage (dot call): the
-    -- caller owns the 1..32 selection, the worker compiles exactly those
-    -- two field actor sprites, and readiness observes only the matching
-    -- keyed receipt. A ready worker result reads true; anything else
-    -- reads pending with retained attribution.
-    requestStartupWalker = function(pairIndex, urgency)
-      assert(
-        type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
-        "walking pair index must be an integer 1..32"
-      )
-      local ready, failure = ask("startup-walker", urgency, { pairIndex = pairIndex })
+    -- The shared walking visuals for the loading stage (dot call): the
+    -- worker compiles the one global subject catalog, and readiness
+    -- observes only the global receipt. The caller keeps its 1..32
+    -- selection locally for presentation lookup. A ready worker result
+    -- reads true; anything else reads pending with retained attribution.
+    requestStartupWalker = function(urgency)
+      local ready, failure = ask("startup-walker", urgency)
       if ready then
         return true
       end

@@ -2670,9 +2670,9 @@ function T.unbuilt_startup_milestones_answer_pending_and_audio_requests_source_i
   local titleReady, titleFailure = session:requestMilestone("startup-title", "required")
   Assert.isFalse(titleReady, "startup-title remains pending before its artifacts are ready")
   Assert.isNil(titleFailure, "startup-title has no premature failure")
-  local walkerReady, walkerFailure = session:requestStartupWalker(5, "required")
-  Assert.isFalse(walkerReady, "the selected walking pair remains pending before its artifacts are ready")
-  Assert.isNil(walkerFailure, "the selected walking pair has no premature failure")
+  local walkerReady, walkerFailure = session:requestStartupWalker("required")
+  Assert.isFalse(walkerReady, "the shared walking visuals remain pending before artifacts are ready")
+  Assert.isNil(walkerFailure, "the shared walking visuals have no premature failure")
   Assert.isNil(session.byKey["source-plan:global"], "visual scopes enroll no source inventory")
   local audioReady, audioFailure = session:requestMilestone("startup-audio", "near")
   Assert.isFalse(audioReady, "startup-audio remains pending before adoption")
@@ -2758,24 +2758,24 @@ function T.title_visual_scope_certifies_while_optional_audio_bank_fails()
   end
 end
 
--- One selected walking pair compiles from its bounded actor inputs: it
+-- The shared walking catalog compiles from its bounded actor inputs: it
 -- enrolls no source inventory and pulls no field corpus.
 function T.loader_scope_publishes_without_source_inventory_demand()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
   local session, _ = isolatedSession("loader-bounded-generation", pool, backend)
-  local ready, failure = session:requestStartupWalker(5, "required")
-  Assert.isFalse(ready, "the selected pair stays pending while cold")
-  Assert.isNil(failure, "the selected pair reports no failure while pending")
-  Assert.isNil(session.byKey["source-plan:global"], "the bounded pair enrolls no source inventory")
-  pool.states["startup-loader:5"] = "ready"
+  local ready, failure = session:requestStartupWalker("required")
+  Assert.isFalse(ready, "the shared visuals stay pending while cold")
+  Assert.isNil(failure, "the shared visuals report no failure while pending")
+  Assert.isNil(session.byKey["source-plan:global"], "the bounded catalog enrolls no source inventory")
+  pool.states["startup-loader:global"] = "ready"
   for _ = 1, 10 do
     session:update()
   end
-  local again, againFailure = session:requestStartupWalker(5, "required")
-  Assert.isTrue(again, "the bounded pair certifies from its own visual job")
-  Assert.isNil(againFailure, "the bounded pair reports no failure on success")
-  Assert.isNil(session.byKey["actors:global"], "the pair pulls no actor corpus")
+  local again, againFailure = session:requestStartupWalker("required")
+  Assert.isTrue(again, "the bounded catalog certifies from its own visual job")
+  Assert.isNil(againFailure, "the bounded catalog reports no failure on success")
+  Assert.isNil(session.byKey["actors:global"], "the catalog pulls no actor corpus")
 end
 
 -- A milestone file from a previous generation never answers ready: trust

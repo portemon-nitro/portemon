@@ -314,18 +314,17 @@ function CachePreparationState:_pollWalker()
   end
   local cold = self.freshImport
   if self.pairIndex ~= nil and serviceSupportsWalker(self.service) then
-    -- Demand the selected pair early, even while the source gate is still
+    -- Demand the shared visuals early, even while the source gate is still
     -- blocked, so the worker compiles during the wait. Only the transfer
     -- below waits for the admitted gate; the demand, the readiness
-    -- observation, and the GPU adoption never do.
+    -- observation, and the GPU adoption never do. The selected pair stays
+    -- local to presentation lookup and never rides the worker demand.
     self.service:request(self.epoch, {
       requestKind = "startup-walker",
-      pairIndex = self.pairIndex,
       urgency = "required",
     })
     local ready, failure = self.service:observe(self.epoch, {
       requestKind = "startup-walker",
-      pairIndex = self.pairIndex,
     })
     if ready == true then
       self.walkerReady = true

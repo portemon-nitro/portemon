@@ -396,9 +396,8 @@ local function read(cacheFs, path, schema, versionId)
       schema = true,
       versionId = true,
       generationId = true,
-      pairIndex = true,
-      hero = true,
-      follower = true,
+      heroes = true,
+      followers = true,
     }
   elseif schema == Contract.startupOpeningScene.schema then
     allowed = {
@@ -527,14 +526,9 @@ function StartupAssetCache.walkerIndex(heroId, speciesId)
   return 16 + ordinal
 end
 
----@param pairIndex integer
 ---@return string
-function StartupAssetCache.walkerPath(pairIndex)
-  assert(
-    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
-    "walking pair index must be an integer 1..32"
-  )
-  return "data/generated/startup/loader/pairs/" .. tostring(pairIndex) .. ".lua"
+function StartupAssetCache.walkerCatalogPath()
+  return "data/generated/startup/loader/catalog.lua"
 end
 
 function StartupAssetCache.titlePath()
@@ -1859,58 +1853,83 @@ local function hasWalkerPivot(visual)
   return type(pivot) == "table" and pivot.x == 0.5 and pivot.y == 1
 end
 
-local function walkerAtlasPath(path, pairIndex)
+local function heroSubjectPath(path, heroId)
   if not generatedPath(path, "loader") then
     return false
   end
-  local prefix = "assets/generated/startup/loader/pairs/" .. tostring(pairIndex) .. "/"
-  return type(path) == "string" and path:sub(1, #prefix) == prefix
+  return path == "assets/generated/startup/loader/subjects/heroes/" .. heroId .. ".png"
+end
+
+local function followerSubjectPath(path, speciesId)
+  if not generatedPath(path, "loader") then
+    return false
+  end
+  return path == "assets/generated/startup/loader/subjects/followers/" .. tostring(speciesId) .. ".png"
+end
+
+local function validSubjectEntry(entry, atlasPath)
+  return type(entry) == "table"
+    and onlyKeys(entry, { visual = true, atlasPath = true })
+    and entry.atlasPath == atlasPath
+    and hasAnimatedEastWalk(entry.visual)
+    and hasWalkerPivot(entry.visual)
 end
 
 ---@param cacheFs CacheFs
----@param pairIndex integer
+---@param versionId string
 ---@return table<string, unknown>|nil
 ---@return Errors.Error|string|nil
-function StartupAssetCache.loadWalker(cacheFs, pairIndex)
-  assert(
-    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
-    "walking pair index must be an integer 1..32"
-  )
-  local path = StartupAssetCache.walkerPath(pairIndex)
-  local bundle, err = read(cacheFs, path, Contract.startupWalker.schema)
+function StartupAssetCache.loadWalker(cacheFs, versionId)
+  assert(EDITIONS[versionId], "walking catalog edition must be heartgold or soulsilver")
+  local path = StartupAssetCache.walkerCatalogPath()
+  local bundle, err = read(cacheFs, path, Contract.startupWalker.schema, versionId)
   if bundle == nil then
     return nil, err
   end
-  if bundle.pairIndex ~= pairIndex then
-    return nil, invalid("walking pair manifest names another pair", path)
+  local heroes = bundle.heroes
+  if type(heroes) ~= "table" or not onlyKeys(heroes, { ethan = true, lyra = true }) then
+    return nil, invalid("walking catalog heroes must name exactly ethan and lyra", path)
   end
-  local hero = bundle.hero
-  if
-    type(hero) ~= "table"
-    or not onlyKeys(hero, { visual = true, atlasPath = true })
-    or not hasAnimatedEastWalk(hero.visual)
-    or not hasWalkerPivot(hero.visual)
-    or not walkerAtlasPath(hero.atlasPath, pairIndex)
-  then
-    return nil, invalid("walking pair hero needs an animated east walk atlas with source pivot", path)
+  for _, heroId in ipairs({ "ethan", "lyra" }) do
+    local expected = "assets/generated/startup/loader/subjects/heroes/" .. heroId .. ".png"
+    local hero = heroes[heroId]
+    if not validSubjectEntry(hero, expected) or not heroSubjectPath(hero.atlasPath, heroId) then
+      return nil, invalid("walking catalog hero needs an animated east walk atlas with source pivot", path)
+    end
+    if not cacheFs:exists(hero.atlasPath, "file") then
+      return nil, invalid("walking catalog hero atlas is missing", hero.atlasPath)
+    end
   end
-  if not cacheFs:exists(hero.atlasPath, "file") then
-    return nil, invalid("walking pair hero atlas is missing", hero.atlasPath)
+  local followers = bundle.followers
+  if type(followers) ~= "table" then
+    return nil, invalid("walking catalog followers must name sixteen species", path)
   end
-  local follower = bundle.follower
-  if
-    type(follower) ~= "table"
-    or not onlyKeys(follower, { speciesId = true, visual = true, atlasPath = true })
-    or type(follower.speciesId) ~= "number"
-    or follower.speciesId % 1 ~= 0
-    or not hasAnimatedEastWalk(follower.visual)
-    or not hasWalkerPivot(follower.visual)
-    or not walkerAtlasPath(follower.atlasPath, pairIndex)
-  then
-    return nil, invalid("walking pair follower needs an animated east walk atlas with source pivot", path)
+  local followerCount = 0
+  for key, follower in pairs(followers) do
+    followerCount = followerCount + 1
+    local speciesId = tonumber(key)
+    local known = false
+    if speciesId ~= nil and speciesId % 1 == 0 then
+      for _, candidate in ipairs(FOLLOWER_SPECIES_IDS) do
+        if candidate == speciesId then
+          known = true
+          break
+        end
+      end
+    end
+    if not known or key ~= tostring(speciesId) then
+      return nil, invalid("walking catalog follower key is unknown", path)
+    end
+    local expected = "assets/generated/startup/loader/subjects/followers/" .. key .. ".png"
+    if not validSubjectEntry(follower, expected) or not followerSubjectPath(follower.atlasPath, speciesId) then
+      return nil, invalid("walking catalog follower needs an animated east walk atlas with source pivot", path)
+    end
+    if not cacheFs:exists(follower.atlasPath, "file") then
+      return nil, invalid("walking catalog follower atlas is missing", follower.atlasPath)
+    end
   end
-  if not cacheFs:exists(follower.atlasPath, "file") then
-    return nil, invalid("walking pair follower atlas is missing", follower.atlasPath)
+  if followerCount ~= 16 then
+    return nil, invalid("walking catalog followers must name sixteen species", path)
   end
   return bundle
 end

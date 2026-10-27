@@ -35,7 +35,10 @@ local function bootService(script)
   end
   function service:request(_, selector)
     if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      script.pairRequests[#script.pairRequests + 1] = selector.pairIndex
+      script.pairRequests[#script.pairRequests + 1] = {
+        pairIndex = selector.pairIndex,
+        urgency = selector.urgency,
+      }
       script.pairUrgencies[#script.pairUrgencies + 1] = selector.urgency
       return "walker-request"
     end
@@ -238,11 +241,10 @@ function T.cold_import_holds_its_card_until_the_selected_pair_is_drawable()
     local state = bootWait(script, { freshImport = true })
     state:update(0.016)
     Assert.equal(script.fired or 0, 0, "the cold card holds while the selected pair is still pending")
-    local seenPair = false
-    for _, pairIndex in ipairs(script.pairRequests) do
-      seenPair = seenPair or pairIndex == 5
+    Assert.isTrue(#script.pairRequests >= 1, "the cold wait demands the shared visuals")
+    for _, demand in ipairs(script.pairRequests) do
+      Assert.isNil(demand.pairIndex, "the shared demand carries no pair identity")
     end
-    Assert.isTrue(seenPair, "the cold wait demands exactly the selected pair")
     Assert.equal(type(state.takeLoading), "function", "the boot wait exposes one exactly-once presentation transfer")
     script.walkerReady = true
     loading.adoptResult = true
@@ -332,7 +334,7 @@ function T.cold_retry_requests_the_pair_again_after_an_adoption_error()
     loading.adoptResult = true
     state:update(0.016)
     Assert.equal(script.fired, 1, "the retried adoption completes the cold handoff")
-    Assert.isTrue(#script.pairRequests >= 2, "retry re-requests the selected pair")
+    Assert.isTrue(#script.pairRequests >= 2, "retry re-requests the shared visuals")
     Assert.isTrue(state:takeLoading() == loading, "retry transfers the exact owned presentation")
     state:dispose()
   end)
@@ -353,12 +355,12 @@ function T.warm_boot_holds_transfer_until_the_selected_pair_is_adopted()
     state:update(0.016)
     state:update(0.016)
     Assert.equal(script.fired or 0, 0, "the warm wait never transfers while the selected pair is still pending")
-    Assert.isTrue(#script.pairRequests >= 1, "the warm wait demands the selected pair while it waits")
-    for _, pairIndex in ipairs(script.pairRequests) do
-      Assert.equal(pairIndex, 5, "the warm wait demands exactly the selected pair")
+    Assert.isTrue(#script.pairRequests >= 1, "the warm wait demands the shared visuals while it waits")
+    for _, demand in ipairs(script.pairRequests) do
+      Assert.isNil(demand.pairIndex, "the shared demand carries no pair identity")
     end
     for _, urgency in ipairs(script.pairUrgencies) do
-      Assert.equal(urgency, "required", "the selected pair is a required demand, never best-effort interest")
+      Assert.equal(urgency, "required", "the shared visuals are a required demand, never best-effort interest")
     end
     Assert.isFalse(loading.adopted, "nothing is adopted before the pair job answers")
     script.walkerReady = true
@@ -421,7 +423,7 @@ function T.warm_pair_worker_error_holds_transfer_until_the_pair_recovers()
     local freshScript = { bootReady = true, walkerReady = true }
     local fresh = bootWait(freshScript)
     fresh:update(0.016)
-    Assert.isTrue(#freshScript.pairRequests >= 1, "a fresh selection demands the pair anew")
+    Assert.isTrue(#freshScript.pairRequests >= 1, "a fresh selection demands the shared visuals anew")
     fresh:dispose()
     state:dispose()
   end)
@@ -476,7 +478,7 @@ function T.warm_epoch_switch_after_admission_never_fires_the_retired_wait()
     })
     state:update(0.016)
     Assert.equal(script.fired or 0, 0, "the admitted wait holds while the selected pair is pending")
-    Assert.isTrue(#script.pairRequests >= 1, "the live wait demands the selected pair")
+    Assert.isTrue(#script.pairRequests >= 1, "the live wait demands the shared visuals")
     live = false
     script.walkerReady = true
     loading.adoptResult = true
@@ -484,7 +486,7 @@ function T.warm_epoch_switch_after_admission_never_fires_the_retired_wait()
     state:update(0.016)
     state:update(0.016)
     Assert.equal(script.fired or 0, 0, "a retired epoch never transfers when the pair answers late")
-    Assert.equal(#script.pairRequests, demands, "a retired epoch issues no further pair demands")
+    Assert.equal(#script.pairRequests, demands, "a retired epoch issues no further shared demands")
     Assert.throws(function()
       state:takeLoading()
     end, "a retired wait detaches nothing")
@@ -506,10 +508,10 @@ function T.warm_pair_retry_issues_one_demand_per_update_without_transfer()
       state:update(0.016)
     end
     Assert.equal(script.fired or 0, 0, "a persistently failing adoption never transfers")
-    Assert.equal(#script.pairRequests, 1, "the latched adoption issues no further pair demands")
+    Assert.equal(#script.pairRequests, 1, "the latched adoption issues no further shared demands")
     Assert.equal(loading.adoptions, 1, "the latched adoption attempts no automatic retry")
-    for _, pairIndex in ipairs(script.pairRequests) do
-      Assert.equal(pairIndex, 5, "every retry keeps the selected pair without a default species")
+    for _, demand in ipairs(script.pairRequests) do
+      Assert.isNil(demand.pairIndex, "every retry keeps the shared demand without a pair identity")
     end
     for _, urgency in ipairs(script.pairUrgencies) do
       Assert.equal(urgency, "required", "every retry keeps the required demand")
@@ -521,7 +523,7 @@ function T.warm_pair_retry_issues_one_demand_per_update_without_transfer()
     -- again while the adopter keeps failing.
     state:keypressed("r")
     state:update(0.016)
-    Assert.equal(#script.pairRequests, 2, "one explicit key re-issues the pair demand once")
+    Assert.equal(#script.pairRequests, 2, "one explicit key re-issues the shared demand once")
     Assert.equal(loading.adoptions, 2, "one explicit key re-attempts the adoption once")
     Assert.equal(script.fired or 0, 0, "the renewed failure latches again without transfer")
     state:dispose()
@@ -588,187 +590,6 @@ function T.cancelled_or_retired_selection_releases_loading_once_and_never_transf
   end)
 end
 
--- The full warm journey keeps exactly one pair alive: the production
--- selection settles on the published ready pair, the transfer adopts it
--- exactly once with no demand for any other pair, the identity survives
--- later updates, and switching edition releases the one presentation once.
-function T.warm_journey_keeps_one_pair_alive_and_retires_it_once()
-  local App = require("app.src.App")
-  local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
-  local CacheFs = require("libs.storage.src.CacheFs")
-  local LoadingModule = require("libs.hgss.src.ui.HgssLoadingPresentation")
-  local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
-  local HgssGame = require("game.hgss.src.HgssGame")
-  local StartupTitleState = require("app.src.launcher.StartupTitleState")
-  local saved = {
-    state = App.state,
-    importer = App.importer,
-    provisioner = App.provisioner,
-    service = App.service,
-    epoch = App.epoch,
-    pairIndex = App.pairIndex,
-    pendingQuiesce = App.pendingQuiesce,
-    selectedVersionId = App.selectedVersionId,
-    rebindVersionId = App._rebindVersionId,
-    bootBlockedVersionId = App._bootBlockedVersionId,
-    startupWarmup = App._startupWarmup,
-    opts = App.opts,
-    loadWalker = StartupAssetCache.loadWalker,
-    forVersion = CacheFs.forVersion,
-    loadingNew = LoadingModule.new,
-    isCurrent = FirstPlayCompletion.isCurrent,
-    firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
-    random = love.math.random,
-  }
-  local demands = {}
-  local epochs = 0
-  local retires = 0
-  local service = {}
-  function service:select(_)
-    epochs = epochs + 1
-    return epochs
-  end
-  function service:request(_, selector)
-    if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      demands[#demands + 1] = { epoch = epochs, pairIndex = selector.pairIndex, urgency = selector.urgency }
-    end
-  end
-  function service:observe(_, selector)
-    if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      if selector.pairIndex == 7 then
-        return true, nil
-      end
-      return nil, nil
-    end
-    return nil, nil
-  end
-  function service:requestBootSource(_) end
-  function service:bootSourceStatus(_)
-    return "ready", nil
-  end
-  function service:update() end
-  function service:retire(_)
-    retires = retires + 1
-  end
-  function service:generationId(_)
-    return "synthetic-test-generation"
-  end
-  local presentations = {}
-  local function fakeLoading()
-    local presentation = { adopted = false, adoptions = 0, disposals = 0 }
-    function presentation:update() end
-    function presentation:resize() end
-    function presentation:draw() end
-    function presentation:dispose()
-      self.disposals = self.disposals + 1
-    end
-    function presentation:adoptGeneratedAssets()
-      self.adoptions = self.adoptions + 1
-      self.adopted = true
-      return true
-    end
-    presentations[#presentations + 1] = presentation
-    return presentation
-  end
-  local function restore()
-    if App.state ~= nil then
-      App.setState(nil)
-    end
-    if App.provisioner ~= nil then
-      App._retireSelection()
-    end
-    App.state = saved.state
-    App.importer = saved.importer
-    App.provisioner = saved.provisioner
-    App.service = saved.service
-    App.epoch = saved.epoch
-    App.pairIndex = saved.pairIndex
-    App.pendingQuiesce = saved.pendingQuiesce
-    App.selectedVersionId = saved.selectedVersionId
-    App._rebindVersionId = saved.rebindVersionId
-    App._bootBlockedVersionId = saved.bootBlockedVersionId
-    App._startupWarmup = saved.startupWarmup
-    App.opts = saved.opts
-    StartupAssetCache.loadWalker = saved.loadWalker
-    CacheFs.forVersion = saved.forVersion
-    LoadingModule.new = saved.loadingNew
-    FirstPlayCompletion.isCurrent = saved.isCurrent
-    HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
-    love.math.random = saved.random
-  end
-  local ok, err = xpcall(function()
-    StartupAssetCache.loadWalker = function(_, pairIndex)
-      if pairIndex == 7 then
-        return { pairIndex = 7 }
-      end
-      return nil, "synthetic missing pair"
-    end
-    CacheFs.forVersion = function(_)
-      return {}
-    end
-    LoadingModule.new = function()
-      return fakeLoading()
-    end
-    FirstPlayCompletion.isCurrent = function()
-      return false
-    end
-    HgssGame.newFirstPlayCachePreparation = function(_)
-      local preparation = {}
-      function preparation:poll()
-        return nil, nil
-      end
-      function preparation:dispose() end
-      return preparation
-    end
-    love.math.random = function()
-      return 23
-    end
-    App.state = nil
-    App.importer = nil
-    App.provisioner = nil
-    App.service = service
-    App.epoch = 0
-    App.pairIndex = nil
-    App.pendingQuiesce = nil
-    App.selectedVersionId = nil
-    App._rebindVersionId = nil
-    App._bootBlockedVersionId = nil
-    App._startupWarmup = nil
-    App.opts = { dev = false }
-    App._selectVersion("soulsilver")
-    for _ = 1, 5 do
-      App.update(0.016)
-    end
-    Assert.equal(App.pairIndex, 7, "the warm epoch keeps the published ready pair")
-    Assert.isTrue(#demands >= 1, "the warm journey demands its pair while it waits")
-    for _, demand in ipairs(demands) do
-      Assert.equal(demand.pairIndex, 7, "every demand names the one selected pair")
-      Assert.equal(demand.urgency, "required", "the selected pair stays a required demand")
-    end
-    Assert.equal(getmetatable(App.state).__index, StartupTitleState, "the adopted pair transfers the warm journey")
-    Assert.equal(presentations[1].adoptions, 1, "the selected pair is adopted exactly once")
-    local chosen = App.pairIndex
-    for _ = 1, 10 do
-      App.update(0.016)
-    end
-    Assert.equal(App.pairIndex, chosen, "later updates never reselect the pair within the epoch")
-    for _, demand in ipairs(demands) do
-      Assert.equal(demand.pairIndex, chosen, "no second pair ever leaves the game thread")
-    end
-    App._selectVersion("soulsilver")
-    for _ = 1, 3 do
-      App.update(0.016)
-    end
-    Assert.equal(presentations[1].disposals, 1, "switching edition releases the retired presentation once")
-    Assert.equal(App.pairIndex, 7, "the fresh epoch settles on the ready pair again")
-    Assert.isTrue(retires >= 1, "switching edition retires the previous selection")
-  end, debug.traceback)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
-end
-
 -- The selected pair is demanded while the source gate is still blocked:
 -- the worker compiles during the wait, but nothing is adopted and nothing
 -- transfers until the gate admits the epoch.
@@ -780,9 +601,9 @@ function T.blocked_boot_demands_the_selected_pair_before_admission()
     local state = bootWait(script)
     state:update(0.016)
     state:update(0.016)
-    Assert.isTrue(#script.pairRequests >= 1, "the blocked wait demands the selected pair early")
-    for _, pairIndex in ipairs(script.pairRequests) do
-      Assert.equal(pairIndex, 5, "the early demand names exactly the selected pair")
+    Assert.isTrue(#script.pairRequests >= 1, "the blocked wait demands the shared visuals early")
+    for _, demand in ipairs(script.pairRequests) do
+      Assert.isNil(demand.pairIndex, "the early demand carries no pair identity")
     end
     Assert.equal(script.fired or 0, 0, "the blocked gate never transfers")
     Assert.isFalse(loading.adopted, "nothing is adopted before the gate admits the epoch")
@@ -804,9 +625,9 @@ function T.pending_gate_shows_no_provisioning_copy_while_demanding_the_pair()
     local state = bootWait(script)
     state:update(0.016)
     state:update(0.016)
-    Assert.isTrue(#script.pairRequests >= 1, "the pending wait demands the selected pair early")
-    for _, pairIndex in ipairs(script.pairRequests) do
-      Assert.equal(pairIndex, 5, "the early demand names exactly the selected pair")
+    Assert.isTrue(#script.pairRequests >= 1, "the pending wait demands the shared visuals early")
+    for _, demand in ipairs(script.pairRequests) do
+      Assert.isNil(demand.pairIndex, "the early demand carries no pair identity")
     end
     for _, urgency in ipairs(script.pairUrgencies) do
       Assert.equal(urgency, "required", "the pending demand stays a required demand")

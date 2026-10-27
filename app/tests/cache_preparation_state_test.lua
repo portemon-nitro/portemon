@@ -26,7 +26,7 @@ local function bootService(script)
     end
     return "source-required", script.detail
   end
-  -- Selected-pair demand seam: the wait requests its pair early, even
+  -- Shared-visual demand seam: the wait requests the catalog early, even
   -- while the source gate is still blocked, and only observes readiness
   -- once the gate admits. Fixtures answer through script.walkerReady.
   function service:request(_, selector)
