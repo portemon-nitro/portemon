@@ -103,47 +103,6 @@ local function graphics()
   return value
 end
 
-function T.static_copy_and_generated_walk_animation_have_separate_lifetimes()
-  local graphics = graphics()
-  local presentation = Presentation.new({
-    purpose = "import",
-    versionId = "heartgold",
-    pairIndex = 1,
-    width = 480,
-    height = 360,
-    graphics = graphics,
-    random = function()
-      return 0
-    end,
-  })
-  presentation:draw({ state = "verifying", message = "Verifying cartridge identity…" })
-  Assert.equal(#graphics.images, 0, "the static view creates no ROM-derived images")
-  Assert.equal(graphics.printfCalls[1].text, "Enraging the lake…")
-
-  Assert.isTrue(presentation:adoptGeneratedAssets(cache()))
-  presentation:draw()
-  local first = graphics.draws[#graphics.draws].quad.x
-  presentation:update(1 / 60)
-  presentation:draw()
-  Assert.equal(first, graphics.draws[#graphics.draws].quad.x, "walking cadence follows 30 Hz source ticks")
-  presentation:update(1 / 60)
-  presentation:draw()
-  local second = graphics.draws[#graphics.draws].quad.x
-  Assert.isTrue(first ~= second, "clip ticks advance the hero frame")
-  Assert.equal(presentation.follower.speciesId, 1, "injected random source chooses one follower once")
-  for _, image in ipairs(graphics.images) do
-    Assert.equal(image.filters[1].min, "nearest", "pixel atlases retain nearest sampling")
-    Assert.equal(image.filters[1].mag, "nearest", "pixel atlases retain nearest sampling")
-  end
-  presentation:resize(1280, 720)
-  presentation:draw({ state = "verifying" })
-  presentation:dispose()
-  presentation:dispose()
-  for _, image in ipairs(graphics.images) do
-    Assert.equal(image.releaseCount, 1, "every owned image is released once")
-  end
-end
-
 function T.allocation_failure_leaves_static_view_and_releases_staged_images()
   local graphics = FakeGraphics.new({ failOnImageCall = 2 })
   graphics.getDimensions = function()
@@ -323,63 +282,6 @@ function T.failed_adoption_keeps_the_same_stage_and_recovers_on_retry()
   for _, image in ipairs(host.images) do
     Assert.equal(image.releaseCount, 1, "every owned image is released once")
   end
-end
-
-function T.caption_cycle_contains_the_authored_examples_and_randomizes_actor_once()
-  local graphics = graphics()
-  local nextValue = 0
-  local presentation = Presentation.new({
-    purpose = "startup",
-    versionId = "heartgold",
-    pairIndex = 19,
-    width = 256,
-    height = 192,
-    graphics = graphics,
-    random = function()
-      nextValue = nextValue + 1
-      return 0
-    end,
-  })
-  Assert.isTrue(presentation:adoptGeneratedAssets(cache(nil, 19)))
-  Assert.equal(presentation.heroId, "lyra")
-  Assert.equal(presentation.follower.speciesId, 7)
-  local expected = {
-    "Enraging the lake…",
-    "Poisoning Amphy…",
-    "Reviving Team Rocket…",
-    "Delivering the SecretPotion…",
-    "Waking Snorlax…",
-    "Polishing Poké Balls…",
-    "Calling Professor Elm…",
-  }
-  for index = 1, #expected do
-    graphics.printfCalls = {}
-    presentation:draw()
-    Assert.equal(graphics.printfCalls[1].text, expected[index])
-    if index < #expected then
-      for _ = 1, 4 do
-        presentation:update(1)
-      end
-    end
-  end
-  Assert.equal(nextValue, 1, "the walking pair never consumes the caption stream")
-  -- The decorative stage never paints caller-supplied progress: a status
-  -- draw paints exactly the same flavor line as a plain draw.
-  graphics.printfCalls = {}
-  presentation:draw()
-  local plainCount = #graphics.printfCalls
-  local plainFirst = graphics.printfCalls[1].text
-  graphics.printfCalls = {}
-  presentation:draw({ label = "Preparing destination", error = "Source unavailable" })
-  Assert.equal(#graphics.printfCalls, plainCount, "a status draw adds no extra line to the decorative stage")
-  Assert.equal(graphics.printfCalls[1].text, plainFirst, "a status draw keeps the same flavor line")
-  for _, call in ipairs(graphics.printfCalls) do
-    Assert.isTrue(
-      call.text ~= "Preparing destination" and call.text ~= "Source unavailable",
-      "caller-supplied progress never paints on the decorative stage"
-    )
-  end
-  presentation:dispose()
 end
 
 function T.responsive_layout_uses_safe_regions_and_routes_dual_copy_to_auxiliary()

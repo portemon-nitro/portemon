@@ -44,13 +44,13 @@ local THEMES = {
 }
 local SKY_BANDS = 4
 local CAPTIONS = {
-  "Enraging the lake…",
-  "Poisoning Amphy…",
-  "Reviving Team Rocket…",
-  "Delivering the SecretPotion…",
-  "Waking Snorlax…",
-  "Polishing Poké Balls…",
-  "Calling Professor Elm…",
+  "Enraging the lake...",
+  "Poisoning Amphy...",
+  "Reviving Team Rocket...",
+  "Disposing of Kris...",
+  "Placing Sudowoodo...",
+  "Burning the tower...",
+  "Warming the shoes...",
 }
 local CAPTION_SECONDS = 4
 local CAPTION_TRANSITION_SECONDS = 0.4
