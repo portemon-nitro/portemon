@@ -4995,6 +4995,341 @@ function T.starter_run_waits_for_child_particles_to_retire()
   movie:dispose()
 end
 
+-- Signed 32-bit arithmetic shift: the retail damping step wraps the raw
+-- product to 32 bits, then shifts right keeping the sign, which floors
+-- negative quotients instead of truncating them toward zero.
+---@param value integer raw pre-shift product
+---@param shift integer right-shift amount
+---@return integer shifted raw value
+local function arithShift32(value, shift)
+  local wrapped = value % 4294967296
+  if wrapped >= 2147483648 then
+    wrapped = wrapped - 4294967296
+  end
+  return math.floor(wrapped / (2 ^ shift))
+end
+
+-- Source damping oracle: the signed raw velocity times the staged
+-- coefficient, shifted back to 1/4096 units with sign preserved.
+---@param rawVel integer raw velocity in 1/4096 units
+---@param airResist integer staged air resistance 0..255
+---@return integer damped raw velocity
+local function dampOracle(rawVel, airResist)
+  return arithShift32(rawVel * (airResist + 384), 9)
+end
+
+-- C integer division truncates toward zero, matching the retail scale
+-- slopes when the numerator goes negative.
+---@param numerator integer
+---@param denominator integer
+---@return integer truncated quotient
+local function cdivOracle(numerator, denominator)
+  assert(denominator ~= 0, "the test oracle never divides by zero")
+  local quotient = numerator / denominator
+  if quotient >= 0 then
+    return math.floor(quotient)
+  end
+  return math.ceil(quotient)
+end
+
+-- The retail congruential stream step, mirroring the production slot
+-- stream so the test can predict the exact draws a step consumes.
+local RNG_LO, RNG_HI, RNG_INC = 0xF715, 0x5EED, 0x1B0CB173
+---@param seed integer stream state before the draw
+---@return integer stream state after one draw
+local function rngStep(seed)
+  local lo = seed % 65536
+  local hi = math.floor((seed - lo) / 65536)
+  local low = lo * RNG_LO
+  local mid = lo * RNG_HI + hi * RNG_LO
+  return (low + (mid % 65536) * 65536 + RNG_INC) % 4294967296
+end
+
+function T.starter_subunit_velocities_keep_fractional_damping_precision()
+  local cases = {
+    { raw = 1066 },
+    { raw = -1066 },
+    { raw = 381 },
+  }
+  local function build(id, group)
+    if id ~= 6 then
+      return quietEmitter(id, group)
+    end
+    return splEmitter(id, group, { emitterLife = 30, particleLife = 30, airResist = 128 })
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  movie:updateFixed()
+  local runtime = grassRuntime(movie)
+  for _, case in ipairs(cases) do
+    local particle = assert(runtime.particles[1], "the point emitter holds its particle")
+    particle.x, particle.y, particle.z = 0, 0, 0
+    particle.vx, particle.vy, particle.vz = case.raw / 4096, 0, 0
+    particle.age, particle.life = 0, 30
+    movie:updateFixed()
+    local expected = dampOracle(case.raw, 128)
+    Assert.equal(
+      particle.vx * 4096,
+      expected,
+      "raw velocity " .. case.raw .. " survives signed damping instead of collapsing to whole units"
+    )
+    Assert.equal(
+      particle.x * 4096,
+      expected,
+      "raw velocity " .. case.raw .. " integrates its fractional step into position"
+    )
+  end
+  movie:dispose()
+end
+
+function T.starter_fields_apply_after_damping_with_raw_child_spread()
+  local orderCases = {
+    { velRaw = 4096, accRaw = 2048, airResist = 63 },
+    { velRaw = -2048, accRaw = 1024, airResist = 63 },
+  }
+  local function build(id, group)
+    if id ~= 6 then
+      return quietEmitter(id, group)
+    end
+    return splEmitter(id, group, {
+      emitterLife = 30,
+      particleLife = 30,
+      airResist = 63,
+      fields = { { kind = "gravity", magnitude = { x = 0.5, y = 0, z = 0 } } },
+    })
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  movie:updateFixed()
+  local runtime = grassRuntime(movie)
+  local record = runtime.record --[[@as table<string, unknown>]]
+  for _, case in ipairs(orderCases) do
+    local particle = assert(runtime.particles[1], "the point emitter holds its particle")
+    particle.x, particle.y, particle.z = 0, 0, 0
+    particle.vx, particle.vy, particle.vz = case.velRaw / 4096, 0, 0
+    particle.age, particle.life = 0, 30
+    record.airResist = case.airResist
+    local fields = record.fields --[[@as table<string, unknown>[] ]]
+    local gravity = fields[1] --[[@as table<string, unknown>]]
+    gravity.magnitude = { x = case.accRaw / 4096, y = 0, z = 0 }
+    movie:updateFixed()
+    local expected = dampOracle(case.velRaw, case.airResist) + case.accRaw
+    Assert.equal(
+      particle.vx * 4096,
+      expected,
+      "field acceleration lands after damping for raw velocity " .. case.velRaw
+    )
+    Assert.equal(
+      particle.x * 4096,
+      expected,
+      "the damped-then-pushed velocity integrates for raw velocity " .. case.velRaw
+    )
+  end
+  movie:dispose()
+end
+
+function T.starter_child_spread_keeps_raw_precision_with_three_stream_draws()
+  local spreadRaw = 381
+  local child = {
+    useScaleAnm = false,
+    useAlphaAnm = false,
+    followEmitter = false,
+    useChildColor = true,
+    childColor = { r = 31, g = 0, b = 0 },
+    drawType = 0,
+    initVelRandom = spreadRaw / 4096,
+    scaleEnd = 1.0,
+    life = 30,
+    velRatio = 0,
+    sclRatio = 30,
+    genNum = 1,
+    genStart = 0,
+    genInterval = 1,
+    texNo = 3,
+    textureImage = sceneRoot(4) .. "particles/texture3.png",
+    texRepeat = { s = 0, t = 0 },
+  }
+  local function build(id, group)
+    if id ~= 6 then
+      return quietEmitter(id, group)
+    end
+    return splEmitter(id, group, { emitterLife = 1, particleLife = 30, child = child })
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  movie:updateFixed()
+  local runtime = grassRuntime(movie)
+  Assert.isTrue(#runtime.children > 0, "the parent spawns children every tick")
+  runtime.children = {}
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local streamBefore = slot.rng --[[@as integer]]
+  movie:updateFixed()
+  Assert.equal(#runtime.children, 1, "the parent spawns exactly one more child")
+  local streamAfter = slot.rng --[[@as integer]]
+  Assert.equal(
+    streamAfter,
+    rngStep(rngStep(rngStep(streamBefore))),
+    "one child consumes exactly three stream draws"
+  )
+  local first = rngStep(streamBefore)
+  local second = rngStep(first)
+  local third = rngStep(second)
+  local draws = {
+    math.floor(first / 8388608),
+    math.floor(second / 8388608),
+    math.floor(third / 8388608),
+  }
+  local spawned = runtime.children[1]
+  local velocities = { spawned.vx, spawned.vy, spawned.vz }
+  for axis = 1, 3 do
+    local expected = math.floor((spreadRaw * draws[axis] - spreadRaw * 256) / 256)
+    Assert.equal(
+      velocities[axis] --[[@as number]] * 4096,
+      expected,
+      "child axis " .. axis .. " keeps its fractional raw spread"
+    )
+  end
+  movie:dispose()
+end
+
+function T.starter_child_scale_interpolates_raw_unity_curve_and_paints_once_normalized()
+  local endRaw = 5360
+  local function childBlock(scaleEnd, useScaleAnm, texNo, life)
+    return {
+      useScaleAnm = useScaleAnm,
+      useAlphaAnm = false,
+      followEmitter = false,
+      useChildColor = true,
+      childColor = { r = 31, g = 31, b = 31 },
+      drawType = 0,
+      initVelRandom = 0,
+      scaleEnd = scaleEnd,
+      life = life,
+      velRatio = 0,
+      sclRatio = 63,
+      genNum = 1,
+      genStart = 0,
+      genInterval = 1,
+      texNo = texNo,
+      textureImage = sceneRoot(4) .. "particles/texture" .. texNo .. ".png",
+      texRepeat = { s = 0, t = 0 },
+    }
+  end
+  local function build(id, group)
+    if id == 6 then
+      return splEmitter(id, group, {
+        emitterLife = 1,
+        particleLife = 30,
+        child = childBlock(endRaw / 4096, true, 3, 7),
+      })
+    elseif id == 7 then
+      return splEmitter(id, group, {
+        emitterLife = 1,
+        particleLife = 30,
+        child = childBlock(2.0, false, 4, 30),
+      })
+    elseif id == 8 then
+      return splEmitter(id, group, {
+        emitterLife = 1,
+        particleLife = 30,
+        child = childBlock(0.5, true, 5, 30),
+      })
+    end
+    return quietEmitter(id, group)
+  end
+  local scenes, cacheFs = splPack(build)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  reachStarterCase(movie, graphics)
+  movie:updateFixed()
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  local runtimes = {}
+  for _, runtime in ipairs(slot.emitters) do
+    if runtime.id == 6 or runtime.id == 7 or runtime.id == 8 then
+      runtimes[runtime.id --[[@as integer]]] = runtime
+    end
+  end
+  local animated = assert(runtimes[6], "the animated-scale emitter runs")
+  local flat = assert(runtimes[7], "the fixed-scale emitter runs")
+  local shrinking = assert(runtimes[8], "the shrinking-scale emitter runs")
+  Assert.isTrue(#animated.children > 0, "the animated parent spawns its child")
+  animated.children[1].age = 0
+  flat.children[1].age = 0
+  shrinking.children[1].age = 0
+  local function lifeRate(age, life)
+    return math.floor(age * 256 / life)
+  end
+  local function scaleOracle(age)
+    local rate = lifeRate(age, 7)
+    return endRaw + cdivOracle((endRaw - 4096) * (rate - 255), 255)
+  end
+  local childImage = slot.imageByPath[sceneRoot(4) .. "particles/texture3.png"]
+  Assert.notNil(childImage, "the animated child texture is staged")
+  local drawnSx = {}
+  for age = 0, 3 do
+    movie:updateFixed()
+    movie:draw()
+    local childParticle = animated.children[1]
+    Assert.equal(
+      childParticle.age,
+      age + 1,
+      "the animated child ages once per source tick"
+    )
+    Assert.equal(
+      childParticle.animScale,
+      scaleOracle(age),
+      "the animated child scale follows its life rate at age " .. age
+    )
+    Assert.equal(
+      flat.children[1].animScale,
+      4096,
+      "the fixed child holds unity at age " .. age
+    )
+    local shrinkingScale = shrinking.children[1].animScale --[[@as number]]
+    local shrinkingRate = lifeRate(age, 30)
+    Assert.equal(
+      shrinkingScale,
+      2048 + cdivOracle((2048 - 4096) * (shrinkingRate - 255), 255),
+      "the shrinking child descends toward its end at age " .. age
+    )
+    if age == 0 then
+      Assert.equal(childParticle.animScale, 4096, "the animated child starts at unity")
+    end
+    if age == 3 then
+      Assert.isTrue(shrinkingScale < 4096, "the shrinking child stays below unity")
+    end
+    local expectX = 128 + (childParticle.x --[[@as number]] + childParticle.ex --[[@as number]]) * 24
+    local expectY = 96 - (childParticle.y --[[@as number]] + childParticle.ey --[[@as number]]) * 24
+    local found = nil
+    for _, entry in ipairs(graphics.draws) do
+      if
+        entry.kind == "draw"
+        and entry.image == childImage
+        and entry.quad ~= nil
+        and math.abs(entry.x - expectX) < 1e-6
+        and math.abs(entry.y - expectY) < 1e-6
+      then
+        found = entry
+      end
+    end
+    Assert.notNil(found, "the animated child paints through its own texture at age " .. age)
+    drawnSx[age] = assert(found, "the animated child paints at age " .. age).sx
+  end
+  Assert.near(
+    drawnSx[3] / drawnSx[0],
+    scaleOracle(3) / scaleOracle(0),
+    1e-9,
+    "the painted child width follows the raw scale without a second normalization"
+  )
+  movie:dispose()
+end
+
 function T.starter_start_offset_gates_generation()
   local function build(id, group)
     if id ~= 6 then
