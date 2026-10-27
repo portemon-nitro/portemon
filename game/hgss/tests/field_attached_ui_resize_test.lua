@@ -292,18 +292,14 @@ local function effectiveScaleAtHeight(height)
   local viewport = FieldViewport.new(1280, height, { mode = "expanded" })
   local scale = FieldPixelScale.new(FieldPresentation.fieldScale)
   scale:resize(viewport.referenceFrame.height)
-  return scale:resolvedScale(), scale:cameraZoom(), viewport
+  return scale:resolvedScale(), viewport
 end
 
-function T.field_scale_preserves_the_resize_curve_and_camera_projection()
-  local scaleA, zoomA = effectiveScaleAtHeight(600)
-  local scaleB, zoomB = effectiveScaleAtHeight(720)
-  -- With resizeCompensation 0.7, zoom changes with height
-  Assert.isTrue(zoomA ~= zoomB, "resize must change effective zoom per field_presentation.lua")
-  Assert.equal(scaleA % 1, 0, "the resolved scale at the reference height is integral")
-  Assert.equal(scaleB % 1, 0, "the resolved scale after resize is integral")
-  Assert.near(scaleA, (600 / 192) * zoomA, 1e-9)
-  Assert.near(scaleB, (720 / 192) * zoomB, 1e-9)
+function T.field_scale_preserves_the_resize_curve()
+  local scaleA = effectiveScaleAtHeight(600)
+  local scaleB = effectiveScaleAtHeight(720)
+  Assert.equal(scaleA, 3, "the resolved scale at the reference height follows the locked curve")
+  Assert.equal(scaleB, 3, "the resolved scale after resize follows the locked curve")
 end
 
 -- Field dialogue shares one resolved presentation contract with Oak: the host
@@ -1116,6 +1112,46 @@ function T.active_celebi_presenters_survive_covered_return()
   if not ok then
     error(err, 0)
   end
+end
+
+function T.attached_menus_follow_the_resolved_reference_scale_across_zoom_and_resize()
+  local viewport = FieldViewport.new(1280, 720, { mode = "expanded" })
+  local scale = FieldPixelScale.new(FieldPresentation.fieldScale)
+  scale:resize(viewport.referenceFrame.height)
+  Assert.equal(scale:resolvedScale(), 3, "the wide baseline stays on its nominal level")
+
+  local function menuContext()
+    return {
+      bounds = viewport.referenceFrame,
+      preferredScale = scale:resolvedScale(),
+    }
+  end
+
+  local baseline = menuContext()
+  Assert.deepEqual(baseline.bounds, viewport.referenceFrame, "menus anchor to the fitted reference frame")
+  Assert.equal(baseline.preferredScale, 3, "menus prefer the nominal scale, not a physical count")
+
+  scale:zoomIn()
+  local zoomed = menuContext()
+  Assert.equal(zoomed.preferredScale, 4, "a manual zoom step moves the preferred menu scale by one")
+  Assert.deepEqual(zoomed.bounds, baseline.bounds, "zooming never moves the reference anchor")
+
+  viewport:resize(750, 900)
+  scale:resize(viewport.referenceFrame.height)
+  local portrait = menuContext()
+  Assert.equal(
+    portrait.preferredScale,
+    4,
+    "a portrait resize preserves the manual offset on its own nominal baseline"
+  )
+  Assert.deepEqual(portrait.bounds, viewport.referenceFrame, "menus track the refitted reference frame")
+  Assert.equal(viewport.worldViewport.width, 750, "the world rectangle keeps its own width")
+  Assert.equal(viewport.worldViewport.height, 900, "the world rectangle keeps its own height")
+
+  scale:reset()
+  local settled = menuContext()
+  Assert.equal(settled.preferredScale, 3, "reset restores the portrait nominal baseline")
+  Assert.deepEqual(settled.bounds, viewport.referenceFrame, "reset never moves the reference anchor")
 end
 
 function T.field_yes_no_layout_receives_the_resolved_dialogue_outer_rect()

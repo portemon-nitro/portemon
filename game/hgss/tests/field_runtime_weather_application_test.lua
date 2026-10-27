@@ -150,16 +150,10 @@ local function runtimeWithClock(catalog, calls, currentMap)
     runtimeMap = currentMap,
     overworld = FieldOverworldLifecycle.new(),
     cameraProfiles = { field = cameraProfile() },
-    viewport = {
-      worldAspect = function()
-        return 4 / 3
-      end,
-    },
-    fieldPixelScale = {
-      cameraZoom = function()
-        return 1
-      end,
-    },
+    configureCameraProjection = function(_, camera)
+      camera:setProjectionAspect(4 / 3)
+      camera:setZoom(1)
+    end,
     avatar = { spriteId = 1 },
     playerAvatar = {
       currentSpriteId = function()

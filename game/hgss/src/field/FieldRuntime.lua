@@ -3920,10 +3920,27 @@ function FieldRuntime:acknowledgeDestinationPresentation()
   self.session:acknowledgeDestinationPresentation()
 end
 
+---@param camera FieldCamera
+function FieldRuntime:configureCameraProjection(camera)
+  local grid = assert(self.viewport.pixelGrid, "field projection requires a published pixel grid")
+  camera:setProjectionAspect(grid.allocationWidth / grid.allocationHeight)
+  camera:setZoom(192 / grid.allocationHeight)
+end
+
 function FieldRuntime:_updateCameraProjection()
   self.fieldPixelScale:resize(self.viewport.referenceFrame.height)
-  self.camera:setProjectionAspect(self.viewport:worldAspect())
-  self.camera:setZoom(self.fieldPixelScale:cameraZoom())
+  local measurement = self.presentationDisplay
+  if measurement == nil then
+    measurement = self.displayContext:measure(self.viewport.width, self.viewport.height)
+  end
+  local nominal = self.fieldPixelScale:resolvedScale()
+  local ratio = assert(measurement.pixelRatio)
+  local worldHeight = self.viewport.worldViewport.height
+  local referenceHeight = self.viewport.referenceFrame.height
+  local physicalScale = math.max(1, math.floor(nominal * ratio * worldHeight / referenceHeight + 0.5))
+  local candidateGrid = PixelScale.cover(self.viewport.worldViewport, physicalScale, ratio)
+  self.viewport.pixelGrid = candidateGrid
+  self:configureCameraProjection(self.camera)
 end
 
 -- Re-apply the user's field-scale change to the camera projection.
@@ -4029,9 +4046,9 @@ function FieldRuntime:resizePresentation(width, height, screenTopology)
   self.menuHost:setScreenTopology(screenTopology)
   self.yesNoHost:resize(width, height)
   self.yesNoHost:setScreenTopology(screenTopology)
-  self:_updateCameraProjection()
   self._displayTopology = screenTopology
   self.presentationDisplay = self.displayContext:measure(width, height)
+  self:_updateCameraProjection()
   if self.martHost then
     self.martHost:refreshPresentation()
   end

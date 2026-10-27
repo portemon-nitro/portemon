@@ -207,16 +207,10 @@ local function world(mode)
     },
     scriptHosts = {},
     cameraProfiles = { [0] = cameraProfile() },
-    viewport = {
-      worldAspect = function()
-        return 4 / 3
-      end,
-    },
-    fieldPixelScale = {
-      cameraZoom = function()
-        return 1
-      end,
-    },
+    configureCameraProjection = function(_, camera)
+      camera:setProjectionAspect(4 / 3)
+      camera:setZoom(1)
+    end,
     playerAvatar = {
       currentSpriteId = function()
         return 101

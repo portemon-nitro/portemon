@@ -134,7 +134,6 @@ function T.integer_bounds_include_exact_endpoints_and_fallback_at_tiny_sizes()
   })
   endpoint:resize(192)
   Assert.equal(endpoint:resolvedScale(), 2, "the exact integer interval endpoint remains legal")
-  Assert.near(endpoint:cameraZoom(), 2, 1e-12)
 
   local tiny = FieldPixelScale.new({
     baseCameraZoom = 1,
@@ -144,7 +143,6 @@ function T.integer_bounds_include_exact_endpoints_and_fallback_at_tiny_sizes()
     resizeCompensation = 0,
   })
   Assert.equal(tiny:resolvedScale(), 1, "a tiny host falls back to one pixel")
-  Assert.near(tiny:cameraZoom(), 192, 1e-12)
 end
 
 function T.automatic_scale_uses_half_up_quantization_at_thresholds()
