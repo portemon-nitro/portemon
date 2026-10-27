@@ -278,6 +278,7 @@ local function withStartup(fn)
     end
     function session:beginOpening()
       self.events[#self.events + 1] = "opening"
+      return true
     end
     function session:beginTitle(record)
       if record ~= nil and self.titleRecord == nil then
@@ -465,6 +466,9 @@ function T.tests.startup_demands_all_five_opening_scenes_and_keeps_one_menu_thro
   withStartup(function()
     local state = startSelection()
     Assert.notNil(state, "the selected edition installs its startup state")
+    -- The journey runs behind the admitted movie, so its soundtrack
+    -- banks are ready before the five scenes complete.
+    active.audioReady = true
 
     -- The transferred boot presentation is the one startup presentation:
     -- no second loader is constructed on the way into the cinematic.
@@ -556,6 +560,9 @@ function T.tests.warm_movie_starts_at_once_while_a_true_first_import_keeps_its_b
     -- eligible update with no loader beat.
     local state = startSelection()
     Assert.notNil(state, "the selected edition installs its startup state")
+    -- Both the warm and the cold entry admit through the same
+    -- soundtrack confirmation, so the banks are ready throughout.
+    active.audioReady = true
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
@@ -588,6 +595,9 @@ end
 function T.tests.accepted_title_input_proceeds_once_and_latches_until_the_staged_menu_fades()
   withStartup(function()
     local state = startSelection()
+    -- The skip journey runs behind the admitted movie, so its
+    -- soundtrack banks are ready before the scenes complete.
+    active.audioReady = true
     -- The legendary title follows the completed opening movie.
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
@@ -740,22 +750,31 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
   end)
 
   withStartup(function()
-    -- Audio that stays absent through the skip and the fade earns no cry
-    -- and no replayed track, and never blocks the menu transfer.
+    -- Audio lost after admission stays lost through the skip and the
+    -- fade: no cry and no replayed track, and never blocks the menu
+    -- transfer.
     local state = startSelection()
-    -- The legendary title follows the completed opening movie.
+    -- The admitted movie needs its soundtrack; the loss below happens
+    -- after that acknowledgment.
+    active.audioReady = true
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
     pumpUntilMovie(state)
+    Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
+    -- The soundtrack drops out after admission but before the title
+    -- entry: the finished movie still hands off with no title track.
+    App._releaseStartupAudio()
+    active.audioReady = false
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
     App.update(1 / 30)
     Assert.equal(state.phase, "title", "the selected edition reaches its legendary title")
+    -- The title press latches with no session behind it.
     App.keypressed("return", "return", false)
     Assert.isTrue(state.skipRequested, "the title press latches while audio is absent")
-    Assert.equal(#active.audioSessions, 0, "absent audio constructs no session behind the skip")
+    Assert.equal(#active.audioSessions, 1, "the skip with absent audio constructs no additional session")
     active.bootstrapReady = true
     App.update(1 / 30)
     Assert.isTrue(
@@ -817,52 +836,53 @@ function T.tests.opening_music_starts_once_at_movie_entry_when_audio_is_ready()
   end)
 end
 
-function T.tests.late_audio_readiness_never_starts_the_opening_track_mid_movie()
+function T.tests.pending_audio_holds_loader_until_readiness_admits_the_movie()
   withStartup(function()
     local state = startSelection()
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    pumpUntilMovie(state)
-    Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
-    Assert.equal(#active.audioSessions, 0, "the movie starts silent while audio is still pending")
+    -- Pending soundtrack banks hold the loader: the staged movie waits
+    -- silently with no source tick, no session, and no start.
     for _ = 1, 10 do
       App.update(1 / 30)
     end
-    Assert.equal(state.phase, "movie", "pending audio never blocks the silent movie")
-    -- Audio becomes ready mid-movie: the opening track must not inject.
+    Assert.equal(state.phase, "loading", "pending audio holds the loader behind the staged movie")
+    Assert.notNil(state.movie, "all five scenes stage the movie while audio is pending")
+    Assert.equal(state.movie.ticks, 0, "no source tick advances while the soundtrack is pending")
+    Assert.equal(#active.audioSessions, 0, "pending audio constructs no session behind the loader")
+    local paints = active.paints
+    App.draw()
+    Assert.isTrue(active.paints > paints, "the loader keeps painting while audio is pending")
+    -- Readiness admits the staged movie with exactly one opening start.
     active.audioReady = true
-    App.update(1 / 30)
-    App.update(1 / 30)
-    local openings, titles = 0, 0
-    for _, session in ipairs(active.audioSessions) do
-      for _, event in ipairs(session.events) do
-        if event == "opening" then
-          openings = openings + 1
-        elseif event == "title" then
-          titles = titles + 1
+    pumpUntilMovie(state)
+    Assert.equal(state.phase, "movie", "readiness admits the staged movie")
+    local function counts()
+      local openings, titles = 0, 0
+      for _, session in ipairs(active.audioSessions) do
+        for _, event in ipairs(session.events) do
+          if event == "opening" then
+            openings = openings + 1
+          elseif event == "title" then
+            titles = titles + 1
+          end
         end
       end
+      return openings, titles
     end
-    Assert.equal(openings, 0, "late audio readiness never injects the opening track mid-movie")
-    -- The finished silent movie still hands off to the title, which
-    -- remains eligible for its own track.
+    local openings, titles = counts()
+    Assert.equal(openings, 1, "readiness starts the opening track once at admission")
+    Assert.equal(titles, 0, "admission starts no title track")
+    -- The admitted movie hands off to the title, which starts its own
+    -- track once; the opening never replays.
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
     App.update(1 / 30)
-    Assert.equal(state.phase, "title", "the silent movie still hands off to the legendary title")
-    openings, titles = 0, 0
-    for _, session in ipairs(active.audioSessions) do
-      for _, event in ipairs(session.events) do
-        if event == "opening" then
-          openings = openings + 1
-        elseif event == "title" then
-          titles = titles + 1
-        end
-      end
-    end
-    Assert.equal(openings, 0, "the silent opening stays silent through the title entry")
+    Assert.equal(state.phase, "title", "the admitted movie hands off to the legendary title")
+    openings, titles = counts()
+    Assert.equal(openings, 1, "the opening track is never repeated after admission")
     Assert.equal(titles, 1, "title entry still starts its own track once")
   end)
 end
@@ -912,6 +932,9 @@ end
 function T.tests.movie_skip_never_becomes_title_skip_and_releases_are_swallowed()
   withStartup(function()
     local state = startSelection()
+    -- The skip-eligibility journey runs behind the admitted movie, so
+    -- its soundtrack banks are ready before the scenes complete.
+    active.audioReady = true
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
@@ -978,41 +1001,53 @@ function T.tests.late_audio_checkpoints_play_only_the_current_stage_cue()
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    pumpUntilMovie(state)
-    Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
-    Assert.equal(#active.audioSessions, 0, "the movie starts silent while audio is still pending")
-
-    -- Checkpoint 1: audio ready mid-movie leaves the silent opening alone.
-    active.audioReady = true
-    App.update(1 / 30)
-    Assert.equal(#active.audioSessions, 0, "mid-movie readiness constructs no session")
+    -- Checkpoint 0: pending audio holds the loader behind the staged
+    -- movie with no tick and no session.
     for _ = 1, 5 do
       App.update(1 / 30)
     end
-    Assert.equal(#active.audioSessions, 0, "the running movie stays silent")
+    Assert.equal(state.phase, "loading", "pending audio holds the loader behind the staged movie")
+    Assert.notNil(state.movie, "all five scenes stage the movie while audio is pending")
+    Assert.equal(state.movie.ticks, 0, "no source tick advances while the soundtrack is pending")
+    Assert.equal(#active.audioSessions, 0, "pending audio constructs no session behind the loader")
 
-    -- Checkpoint 2: title entry starts the title track on its own session.
+    -- Checkpoint 1: readiness admits the movie with only the opening cue.
+    active.audioReady = true
+    pumpUntilMovie(state)
+    Assert.equal(state.phase, "movie", "readiness admits the staged movie")
+    Assert.equal(#active.audioSessions, 1, "admission constructs one session")
+    Assert.deepEqual(
+      active.audioSessions[1].events,
+      { "opening" },
+      "admission starts only the opening track"
+    )
+
+    -- Checkpoint 2: title entry adds the title track on the same session.
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
     App.update(1 / 30)
     Assert.equal(state.phase, "title", "the finished movie hands off to the legendary title")
-    Assert.equal(#active.audioSessions, 1, "title entry constructs one session")
+    Assert.equal(#active.audioSessions, 1, "title entry constructs no second session")
     local session = active.audioSessions[1]
-    Assert.deepEqual(session.events, { "title" }, "title entry starts only the title track")
+    Assert.deepEqual(session.events, { "opening", "title" }, "title entry adds only the title track")
 
     -- Checkpoint 3: skip while the session exists cries once.
     App.keypressed("return", "return", false)
-    Assert.deepEqual(session.events, { "title", "cry" }, "the accepted skip cries once")
+    Assert.deepEqual(session.events, { "opening", "title", "cry" }, "the accepted skip cries once")
     for _ = 1, 10 do
       App.update(1 / 30)
     end
-    Assert.deepEqual(session.events, { "title", "cry" }, "waiting never duplicates the cry")
+    Assert.deepEqual(session.events, { "opening", "title", "cry" }, "waiting never duplicates the cry")
 
     -- Checkpoint 4: the staged-menu fade starts the music fade once.
     active.bootstrapReady = true
     App.update(1 / 30)
-    Assert.deepEqual(session.events, { "title", "cry", "fade" }, "the fade starts once at handoff")
+    Assert.deepEqual(
+      session.events,
+      { "opening", "title", "cry", "fade" },
+      "the fade starts once at handoff"
+    )
 
     -- Checkpoint 5: the transferred menu keeps the session for cues only.
     for _ = 1, 100 do
@@ -1036,6 +1071,9 @@ function T.tests.idle_title_loops_the_movie_without_losing_epoch_or_menu()
   withStartup(function()
     active.titleTimeoutFrames = 30
     local state = startSelection()
+    -- Both the first entry and the idle-loop re-entry admit through
+    -- the same soundtrack confirmation, so the banks stay ready.
+    active.audioReady = true
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
@@ -1071,6 +1109,9 @@ function T.tests.idle_title_loops_the_movie_without_losing_epoch_or_menu()
   withStartup(function()
     active.titleTimeoutFrames = 30
     local state = startSelection()
+    -- The skipped title still needs its admitted movie first, so the
+    -- soundtrack banks are ready before the scenes complete.
+    active.audioReady = true
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
@@ -1092,6 +1133,9 @@ end
 function T.tests.resize_during_fade_keeps_clocks_and_overlay()
   withStartup(function()
     local state = startSelection()
+    -- The resize journey runs behind the admitted movie, so its
+    -- soundtrack banks are ready before the scenes complete.
+    active.audioReady = true
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
@@ -1156,6 +1200,9 @@ function T.tests.failed_opening_scene_is_a_visible_error_and_retirement_disposes
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
+    -- The retirement journey needs its admitted movie first, so the
+    -- soundtrack banks are ready before the selection starts.
+    active.audioReady = true
     local state = startSelection()
     pumpUntilMovie(state)
     Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")

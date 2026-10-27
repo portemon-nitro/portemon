@@ -110,12 +110,19 @@ end
 
 -- Starts the opening movie track exactly once. A session created after the
 -- movie already ended never replays it; the title entry replaces it below.
+-- Confirms only a successful start: a rejected play stays unlatched for
+-- retry, a disposed or title-born session refuses.
+---@return boolean acknowledged
 function StartupAudioSession:beginOpening()
-  if self.disposed or self.openingStarted or self.titleStarted then
-    return
+  if self.disposed or self.titleStarted then
+    return false
   end
-  self.openingStarted = true
+  if self.openingStarted then
+    return true
+  end
   self.sound:playMusic(OPENING_THEME)
+  self.openingStarted = true
+  return true
 end
 
 function StartupAudioSession:beginTitle(record)

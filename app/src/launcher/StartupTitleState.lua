@@ -32,7 +32,6 @@ local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 ---@field movieCompleted boolean
 ---@field openingObserved boolean[]
 ---@field openingStarted boolean
----@field openingAudioDecided boolean
 ---@field promotedScenes boolean
 ---@field promotedBootstrap boolean
 ---@field sceneError unknown?
@@ -151,7 +150,6 @@ function StartupTitleState.new(options)
     movieCompleted = false,
     openingObserved = { false, false, false, false, false },
     openingStarted = false,
-    openingAudioDecided = false,
     promotedScenes = false,
     promotedBootstrap = false,
     sceneError = nil,
@@ -394,12 +392,41 @@ function StartupTitleState:_maybeEnterMovie()
   if self.initialImport and self.loaderVisibleTime < LOADER_DWELL_SECONDS then
     return
   end
+  if not self:_confirmSoundtrackStart() then
+    return
+  end
   self.phase = "movie"
-  self:_maybeStartAudio()
   local movie = assert(self.movie)
   if movie:isFinished() then
     self:_finishMovie()
   end
+end
+
+-- Confirms the staged movie's soundtrack start without advancing a tick.
+-- Pending banks hold the loader; a missing session or callback, a raised
+-- play failure, or a rejected start records its diagnostic and admits no
+-- movie. Returns true only after the start is acknowledged.
+---@return boolean
+function StartupTitleState:_confirmSoundtrackStart()
+  if not self.audioReady then
+    return false
+  end
+  if self.audio == nil or type(self.audio.openingReady) ~= "function" then
+    self.audioError = self.audioError or "startup audio unavailable"
+    return false
+  end
+  local ok, acknowledged, reason = pcall(self.audio.openingReady)
+  if not ok then
+    self.audioError = acknowledged
+    return false
+  end
+  if acknowledged ~= true then
+    self.audioError = reason or "startup audio unavailable"
+    return false
+  end
+  self.openingStarted = true
+  self.audioError = nil
+  return true
 end
 
 -- Retires the finished or skipped movie exactly once. An independently
@@ -466,30 +493,16 @@ function StartupTitleState:_notifyTitleReady()
   end
 end
 
--- Phase-aware audio dispatch. The opening track starts once when the movie
--- becomes active; the title track starts once on unskipped title entry; a
--- pending legendary cry is delivered exactly once while a latched skip is
--- still waiting for the menu fade. A phase that already ended never starts
--- its track belatedly.
+-- Phase-aware audio dispatch. The opening track is confirmed at movie
+-- admission before the first frame; the title track starts once on
+-- unskipped title entry; a pending legendary cry is delivered exactly once
+-- while a latched skip is still waiting for the menu fade. A phase that
+-- already ended never starts its track belatedly.
 function StartupTitleState:_maybeStartAudio()
   if not self:_live() or self.audio == nil then
     return
   end
-  if self.phase == "movie" and self.movie ~= nil then
-    -- The opening decision latches once at movie entry: ready audio
-    -- starts the track before the first frame, otherwise this movie
-    -- commits to silence and later readiness stays ignored.
-    if self.openingAudioDecided then
-      return
-    end
-    self.openingAudioDecided = true
-    if not self.audioReady then
-      return
-    end
-    if not self.openingStarted and type(self.audio.openingReady) == "function" then
-      self.openingStarted = true
-      self.audio.openingReady()
-    end
+  if self.phase == "movie" then
     return
   end
   if not self.audioReady then
@@ -584,7 +597,13 @@ function StartupTitleState:_pollAssets()
     end
   end
   if not self.audioObserved then
-    local ready, failure = self:_request("startup-audio", "near")
+    -- While the movie is staged the soundtrack banks ride required ahead
+    -- of visuals; the title-only path keeps its speculative demand.
+    local urgency = "near"
+    if self.movie ~= nil then
+      urgency = "required"
+    end
+    local ready, failure = self:_request("startup-audio", urgency)
     if failure ~= nil then
       self.audioObserved = true
       self.audioError = failure
@@ -668,16 +687,23 @@ function StartupTitleState:_reenterMovie()
     return
   end
   self.movie = movie
-  self.phase = "movie"
   -- A fresh movie entry re-enables its own opening track and the next
   -- title entry re-enables its own title track on the same session.
   self.openingStarted = false
-  self.openingAudioDecided = false
   self.audioStarted = false
   if self.audio ~= nil and type(self.audio.beginMovieCycle) == "function" then
     self.audio.beginMovieCycle()
   end
-  self:_maybeStartAudio()
+  -- The idle loop admits through the same soundtrack confirmation as
+  -- normal entry; a rejected start holds the loader instead of playing
+  -- silently, and later updates retry the admission.
+  self.phase = "loading"
+  if self:_confirmSoundtrackStart() then
+    self.phase = "movie"
+    if movie:isFinished() then
+      self:_finishMovie()
+    end
+  end
 end
 
 -- Ownership order only: detach before callback, never restore once the
@@ -780,6 +806,13 @@ function StartupTitleState:_status()
     return {
       label = "Title unavailable",
       error = tostring(detail),
+      detail = "Press Esc to return",
+    }
+  end
+  if self.audioError ~= nil and self.movie ~= nil and not self.movieCompleted then
+    return {
+      label = "Movie unavailable",
+      error = tostring(self.audioError),
       detail = "Press Esc to return",
     }
   end

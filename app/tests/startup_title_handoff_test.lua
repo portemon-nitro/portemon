@@ -1305,7 +1305,7 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
   local function fakeHost()
     local host = {}
     function host.requestMilestone(name, _)
-      if name == "startup-loader" or name == "startup-title" then
+      if name == "startup-loader" or name == "startup-title" or name == "startup-audio" then
         return true, nil
       end
       return false, nil
@@ -1373,6 +1373,11 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
       height = 600,
       initialImport = initialImport,
       loading = fakeLoading(),
+      audio = {
+        openingReady = function()
+          return true
+        end,
+      },
     })
     return state, staged
   end
@@ -1409,6 +1414,289 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
   if not ok then
     error(err, 0)
   end
+end
+
+-- A staged opening movie waits behind the visible loader while its
+-- soundtrack banks are still pending: no source tick advances and no
+-- movie frame draws until the selected audio session confirms the start.
+function T.tests.movie_holds_loader_until_soundtrack_start_is_confirmed()
+  local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local MovieModule = require("libs.hgss.src.presentation.HgssOpeningMovie")
+  local saved = {
+    forVersion = CacheFs.forVersion,
+    loadScenes = MovieModule.loadValidatedScenes,
+    movieNew = MovieModule.new,
+  }
+  local audioPending = true
+  local audioUrgencies = {}
+  local order = {}
+  local sounds = 0
+  local ticks = 0
+  local draws = 0
+  local function fakeLoading()
+    local presentation = {}
+    function presentation:update() end
+    function presentation:resize() end
+    function presentation:draw() end
+    function presentation:dispose() end
+    function presentation:adoptGeneratedAssets()
+      return true
+    end
+    return presentation
+  end
+  local host = {}
+  function host.requestMilestone(name, urgency)
+    if name == "startup-audio" then
+      audioUrgencies[#audioUrgencies + 1] = urgency
+      if audioPending then
+        return false, nil
+      end
+      return true, nil
+    end
+    if name == "startup-loader" or name == "startup-title" then
+      return true, nil
+    end
+    return false, nil
+  end
+  function host.requestOpeningScene(_, _)
+    return true, nil
+  end
+  local movie = { disposed = 0 }
+  function movie:updateFixed()
+    ticks = ticks + 1
+    order[#order + 1] = "tick"
+  end
+  function movie:draw()
+    draws = draws + 1
+  end
+  function movie:resize() end
+  function movie:skipAllowed()
+    return false
+  end
+  function movie:requestSkip()
+    return false
+  end
+  function movie:isFinished()
+    return false
+  end
+  function movie:sceneNumber()
+    return 1
+  end
+  function movie:dispose()
+    self.disposed = self.disposed + 1
+  end
+  local audio = {}
+  function audio.openingReady()
+    sounds = sounds + 1
+    order[#order + 1] = "sound"
+    return true
+  end
+  CacheFs.forVersion = function(_)
+    return {}
+  end
+  MovieModule.loadValidatedScenes = function()
+    return { {}, {}, {}, {}, {} }
+  end
+  MovieModule.new = function(_)
+    return movie
+  end
+  local ok, err = xpcall(function()
+    local state = StartupTitleState.new({
+      versionId = "heartgold",
+      epoch = 7,
+      derivedAssets = host,
+      stageMenu = function()
+        error("the soundtrack hold test never stages a menu")
+      end,
+      onFinished = function()
+        error("the soundtrack hold test never finishes")
+      end,
+      onSwitchEdition = function() end,
+      isCurrent = function()
+        return true
+      end,
+      width = 800,
+      height = 600,
+      initialImport = false,
+      loading = fakeLoading(),
+      audio = audio,
+    })
+    for _ = 1, 5 do
+      state:update(1 / 30)
+    end
+    Assert.notNil(state.movie, "the five ready scenes stage the movie behind the loader")
+    Assert.equal(state.phase, "loading", "pending soundtrack banks keep the loader visible")
+    Assert.equal(ticks, 0, "no source tick advances while the soundtrack is pending")
+    Assert.equal(sounds, 0, "no soundtrack start is confirmed while its banks are pending")
+    local required = false
+    for _, urgency in ipairs(audioUrgencies) do
+      if urgency == "required" then
+        required = true
+      end
+    end
+    Assert.isTrue(required, "the staged movie demands its soundtrack banks ahead of visuals")
+    state:draw()
+    Assert.equal(draws, 0, "the loader draw shows no movie frame while the soundtrack is pending")
+    audioPending = false
+    for _ = 1, 5 do
+      state:update(1 / 30)
+    end
+    Assert.equal(sounds, 1, "readiness confirms exactly one soundtrack start")
+    Assert.equal(state.phase, "movie", "the confirmed soundtrack admits the staged movie")
+    local firstSound, firstTick = nil, nil
+    for index, kind in ipairs(order) do
+      if kind == "sound" and firstSound == nil then
+        firstSound = index
+      end
+      if kind == "tick" and firstTick == nil then
+        firstTick = index
+      end
+    end
+    Assert.notNil(firstSound, "the soundtrack start is recorded")
+    Assert.notNil(firstTick, "the admitted movie advances")
+    Assert.isTrue(firstSound < firstTick, "the soundtrack start precedes the first movie tick")
+    for _ = 1, 5 do
+      state:update(1 / 30)
+    end
+    Assert.equal(sounds, 1, "later updates never restart the admitted soundtrack")
+    state:dispose()
+  end, debug.traceback)
+  CacheFs.forVersion = saved.forVersion
+  MovieModule.loadValidatedScenes = saved.loadScenes
+  MovieModule.new = saved.movieNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A terminal soundtrack failure and a rejected soundtrack start both keep
+-- the loader visible with an explicit diagnostic: the movie never plays
+-- silently and the selection can still be cancelled.
+function T.tests.audio_failure_keeps_loader_visible_instead_of_silent_movie()
+  local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local MovieModule = require("libs.hgss.src.presentation.HgssOpeningMovie")
+  local saved = {
+    forVersion = CacheFs.forVersion,
+    loadScenes = MovieModule.loadValidatedScenes,
+    movieNew = MovieModule.new,
+  }
+  local function runCase(mode)
+    local ticks = 0
+    local statuses = {}
+    local cancelled = false
+    local function fakeLoading()
+      local presentation = {}
+      function presentation:update() end
+      function presentation:resize() end
+      function presentation:draw(status)
+        statuses[#statuses + 1] = status
+      end
+      function presentation:dispose() end
+      function presentation:adoptGeneratedAssets()
+        return true
+      end
+      return presentation
+    end
+    local host = {}
+    function host.requestMilestone(name, _)
+      if name == "startup-audio" then
+        if mode == "bank failure" then
+          return false, "synthetic bank failure"
+        end
+        return true, nil
+      end
+      if name == "startup-loader" or name == "startup-title" then
+        return true, nil
+      end
+      return false, nil
+    end
+    function host.requestOpeningScene(_, _)
+      return true, nil
+    end
+    local movie = {}
+    function movie:updateFixed()
+      ticks = ticks + 1
+    end
+    function movie:draw() end
+    function movie:resize() end
+    function movie:skipAllowed()
+      return false
+    end
+    function movie:requestSkip()
+      return false
+    end
+    function movie:isFinished()
+      return false
+    end
+    function movie:sceneNumber()
+      return 1
+    end
+    function movie:dispose() end
+    local audio = {}
+    function audio.openingReady()
+      if mode == "rejected start" then
+        return false, "synthetic play failure"
+      end
+      error("the " .. mode .. " case never confirms a soundtrack start")
+    end
+    CacheFs.forVersion = function(_)
+      return {}
+    end
+    MovieModule.loadValidatedScenes = function()
+      return { {}, {}, {}, {}, {} }
+    end
+    MovieModule.new = function(_)
+      return movie
+    end
+    local ok, err = xpcall(function()
+      local state = StartupTitleState.new({
+        versionId = "heartgold",
+        epoch = 7,
+        derivedAssets = host,
+        stageMenu = function()
+          error("the " .. mode .. " case never stages a menu")
+        end,
+        onFinished = function()
+          error("the " .. mode .. " case never finishes")
+        end,
+        onSwitchEdition = function() end,
+        onCancel = function()
+          cancelled = true
+        end,
+        isCurrent = function()
+          return true
+        end,
+        width = 800,
+        height = 600,
+        initialImport = false,
+        loading = fakeLoading(),
+        audio = audio,
+      })
+      for _ = 1, 5 do
+        state:update(1 / 30)
+      end
+      Assert.isFalse(
+        state.phase == "movie",
+        "the " .. mode .. " never admits a silent movie"
+      )
+      Assert.equal(ticks, 0, "the " .. mode .. " advances no source tick")
+      state:draw()
+      Assert.notNil(statuses[#statuses], "the " .. mode .. " stays visible with a diagnostic")
+      state:keypressed("escape", "escape", false)
+      Assert.isTrue(cancelled, "the " .. mode .. " still honours selection cancel")
+      state:dispose()
+    end, debug.traceback)
+    CacheFs.forVersion = saved.forVersion
+    MovieModule.loadValidatedScenes = saved.loadScenes
+    MovieModule.new = saved.movieNew
+    if not ok then
+      error(err, 0)
+    end
+  end
+  runCase("bank failure")
+  runCase("rejected start")
 end
 
 return T

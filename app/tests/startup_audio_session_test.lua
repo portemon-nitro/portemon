@@ -327,4 +327,74 @@ function T.tests.disposal_during_fading_releases_once_and_stays_silent()
   Assert.equal(sink.releases, 1, "the sink is released exactly once")
 end
 
+-- The opening cue confirms only a successful play: a successful start and
+-- its repeat acknowledge, a rejected play leaves the start unlatched for
+-- retry, a disposed session refuses, and a title-born session never
+-- replays the movie track.
+function T.tests.opening_start_confirms_only_a_successful_play()
+  local audio, events, sink = composition()
+  local session = StartupAudioSession.new({
+    versionId = "heartgold",
+    titleRecord = { crySpeciesId = 250 },
+    audioComposition = audio,
+  })
+  Assert.equal(session:beginOpening(), true, "a successful play acknowledges the opening start")
+  Assert.equal(session:beginOpening(), true, "the started opening acknowledges its repeat without replaying")
+  Assert.deepEqual(events, {
+    { "music", "SEQ_GS_TITLE" },
+  }, "the opening track starts exactly once")
+  session:beginMovieCycle()
+  Assert.equal(session:beginOpening(), true, "a fresh entry acknowledges its own opening start")
+  Assert.deepEqual(events, {
+    { "music", "SEQ_GS_TITLE" },
+    { "music", "SEQ_GS_TITLE" },
+  }, "each admitted entry starts the opening track once")
+  session:dispose()
+  Assert.equal(sink.releases, 1, "the borrowed composition sink is released exactly once")
+  Assert.equal(session:beginOpening(), false, "a disposed session refuses a new start")
+
+  local attempts = 0
+  local played = {}
+  local flaky = {}
+  function flaky:playMusic(sequence)
+    attempts = attempts + 1
+    if attempts == 1 then
+      error("synthetic play failure")
+    end
+    played[#played + 1] = sequence
+  end
+  function flaky:play(sequence)
+    played[#played + 1] = sequence
+  end
+  function flaky:playCry() end
+  function flaky:fadeMusicOut() end
+  function flaky:stopMusic() end
+  function flaky:updateSoundFrame() end
+  local retried = StartupAudioSession.new({
+    versionId = "heartgold",
+    titleRecord = { crySpeciesId = 250 },
+    audioComposition = { sound = flaky, sink = nil },
+  })
+  local failure = Assert.throws(function()
+    retried:beginOpening()
+  end, "a rejected play surfaces instead of acknowledging")
+  Assert.notNil(failure, "the rejected play carries a diagnostic")
+  Assert.equal(retried:beginOpening(), true, "the unlatched start retries after the rejection")
+  Assert.deepEqual(played, { "SEQ_GS_TITLE" }, "the retry plays the opening track once")
+  retried:dispose()
+
+  local titleAudio, titleEvents = composition()
+  local titleSession = StartupAudioSession.new({
+    versionId = "heartgold",
+    titleRecord = { crySpeciesId = 250 },
+    audioComposition = titleAudio,
+  })
+  titleSession:beginTitle()
+  Assert.equal(titleSession:beginOpening(), false, "a title-born session never replays the movie track")
+  Assert.deepEqual(titleEvents, {
+    { "music", "SEQ_GS_POKEMON_THEME" },
+  }, "the title-born session keeps only its title track")
+  titleSession:dispose()
+end
+
 return { tests = T.tests }
