@@ -1282,7 +1282,7 @@ end
 -- fixtures build on the current contract instead.
 local OPENING_SCHEMA = "g4-startup-opening-scene-v3"
 
-local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v8"
+local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v9"
 
 local function openingLayer(engine, bgSlot, image)
   return {
@@ -1544,6 +1544,8 @@ end
 local function validCurrentOpeningManifest(sceneNumber, versionId)
   local manifest = validOpeningManifest(sceneNumber, versionId)
   manifest.schema = CURRENT_OPENING_SCHEMA
+  manifest.initialDisplay =
+    { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } }
   return manifest
 end
 
@@ -1942,7 +1944,7 @@ end
 -- engine-local window records with plane masks, a town-stage stop limited to
 -- the town scene, and manual window overrides. These synthetic fixtures pin
 -- the strict reader contract without touching a ROM.
-local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v8"
+local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v9"
 
 local function openingLayerV3(engine, bgSlot, image, visible)
   return {
@@ -1987,6 +1989,7 @@ local function validOpeningManifestV3(sceneNumber, versionId)
     generationId = "test-generation",
     sceneNumber = sceneNumber,
     sourceTickRate = 30,
+    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
     layers = {
       main = { openingLayerV3("main", 0, root .. "/main-bg.png", true) },
       sub = { openingLayerV3("sub", 0, root .. "/sub-bg.png", false) },
@@ -2168,11 +2171,13 @@ end
 -- The generated opening scene identity the producer and the strict reader
 -- agree on: full native surfaces with per-image extents, instant and
 -- continuous scroll modes, and per-engine blend and wipe operands.
-local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v8"
+local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v9"
 
 local function typedOpeningManifest()
   local manifest = validOpeningManifest(1, "heartgold")
   manifest.schema = NATIVE_OPENING_SCHEMA
+  manifest.initialDisplay =
+    { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } }
   local root = "assets/generated/startup/opening/1"
   manifest.layers.main[1].variants = {
     { image = root .. "/main-bg-alt.png", width = 512, height = 512 },

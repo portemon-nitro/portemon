@@ -289,6 +289,7 @@ local function manifestFor(sceneNumber, buildEmitters)
     generationId = "movie-test-generation",
     sceneNumber = sceneNumber,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
+    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
     layers = {
       main = { layer(0, upperImage, 256, 192) },
       sub = { layer(0, lowerImage, 256, 192) },
@@ -892,6 +893,7 @@ local function compositeManifest(sceneNumber, upper, lower, clips, steps, events
     generationId = COMPOSITE_GENERATION,
     sceneNumber = sceneNumber,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
+    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
     layers = { main = upper, sub = lower },
     spriteClips = clips,
     models = {},
@@ -1851,6 +1853,7 @@ local function townScene(models)
     generationId = "movie-test-generation",
     sceneNumber = 3,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
+    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
     layers = {
       main = { layer(0, upperImage, 256, 192) },
       sub = { layer(0, lowerImage, 256, 192) },
@@ -2605,6 +2608,7 @@ local function particleScene(steps, events)
     generationId = "movie-test-generation",
     sceneNumber = 4,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
+    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
     layers = {
       main = { layer(0, upperImage, 256, 192) },
       sub = { layer(0, lowerImage, 256, 192) },
@@ -2632,6 +2636,7 @@ local function townSceneCustom(models, steps, events, mainVisible)
     generationId = "movie-test-generation",
     sceneNumber = 3,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
+    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
     layers = {
       main = { layer(0, upperImage, 256, 192, 0, mainVisible) },
       sub = { layer(0, lowerImage, 256, 192) },
@@ -5512,6 +5517,277 @@ function T.starter_emitter_count_stays_within_its_scene_bound()
   end)
   Assert.isFalse(ok, "a tenth concurrent emitter fails instead of growing")
   Assert.notNil(failure, "the bound reports its cause")
+  movie:dispose()
+end
+
+-- Source entry mapping and physical holds are staged on acquisition:
+-- every freshly acquired slot already routes main to its authored
+-- screen with the authored upper/lower holds, before any source tick
+-- runs on it. Handoffs carry the same guarantee: the incoming slot is
+-- correct while its clock still reads zero.
+local ENTRY_HOLDS = {
+  [1] = { mainPhysical = "lower", upper = "neutral", lower = "neutral" },
+  [2] = { mainPhysical = "upper", upper = "white", lower = "white" },
+  [3] = { mainPhysical = "upper", upper = "white", lower = "black" },
+  [4] = { mainPhysical = "lower", upper = "black", lower = "black" },
+  [5] = { mainPhysical = "lower", upper = "black", lower = "black" },
+}
+
+---@param sceneNumber integer retail scene position
+---@return table strict synthetic opening-scene manifest with staged entry holds
+local function manifestWithEntry(sceneNumber)
+  local manifest = manifestFor(sceneNumber)
+  local entry = assert(ENTRY_HOLDS[sceneNumber], "every scene stages its source entry holds")
+  manifest.initialDisplay = {
+    mainPhysical = entry.mainPhysical,
+    physicalBrightness = { upper = entry.upper, lower = entry.lower },
+  }
+  return manifest
+end
+
+---@param slot table acquired scene slot
+---@param sceneNumber integer retail scene position
+local function checkEntryHolds(slot, sceneNumber)
+  local entry = assert(ENTRY_HOLDS[sceneNumber], "every scene stages its source entry holds")
+  Assert.equal(
+    slot.mainPhysical,
+    entry.mainPhysical,
+    "scene " .. sceneNumber .. " maps main to physical " .. entry.mainPhysical .. " before its first tick"
+  )
+  Assert.isTrue(
+    type(slot.physicalBrightness) == "table",
+    "scene " .. sceneNumber .. " stages its physical holds before its first tick"
+  )
+  Assert.equal(
+    slot.physicalBrightness.upper,
+    entry.upper,
+    "scene " .. sceneNumber .. " holds physical upper " .. entry.upper
+  )
+  Assert.equal(
+    slot.physicalBrightness.lower,
+    entry.lower,
+    "scene " .. sceneNumber .. " holds physical lower " .. entry.lower
+  )
+end
+
+---@return table[] scenes, table cacheFs strict five-scene pack with staged entry holds
+local function entryPack()
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    raw[sceneNumber] = manifestWithEntry(sceneNumber)
+  end
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  return scenes, cacheFs
+end
+
+function T.scene_slots_stage_their_source_entry_mapping_and_holds_before_the_first_tick()
+  local scenes, cacheFs = entryPack()
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  checkEntryHolds(assert(movie.current, "the running movie owns its current slot"), 1)
+  local prefetched = assert(movie.nextSlot, "the prefetched slot is staged before its scene starts")
+  Assert.equal(prefetched.sceneNumber, 2, "the prefetched slot stages the incoming scene")
+  Assert.equal(prefetched.stepElapsed, 0, "the prefetched slot has run no source tick")
+  checkEntryHolds(prefetched, 2)
+  for target = 2, 5 do
+    local ticks = 0
+    while movie:sceneNumber() < target and ticks < 20000 do
+      movie:updateFixed()
+      ticks = ticks + 1
+    end
+    Assert.equal(movie:sceneNumber(), target, "playback reaches scene " .. target)
+    local slot = assert(movie.current, "the running movie owns its current slot")
+    Assert.equal(slot.stepElapsed, 0, "scene " .. target .. " has not run its first tick")
+    checkEntryHolds(slot, target)
+  end
+  movie:dispose()
+end
+
+function T.staged_sprites_stay_visible_while_the_physical_bottom_holds_black_until_its_wipe()
+  local third = manifestWithEntry(3)
+  local root = sceneRoot(3)
+  local clipId = root .. "sprites/silver.g4sprite"
+  third.spriteClips = { spriteClip(clipId, { stillFrame() }) }
+  third.assets[clipId] = true
+  third.timeline = {
+    steps = {
+      { id = "enter", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 20 } },
+      { id = "reveal", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 8 } },
+      { id = "tail", events = { 6, 7 }, ["until"] = { kind = "duration", ticks = 2 } },
+    },
+    events = {
+      {
+        op = "setSpriteClip",
+        stepId = "enter",
+        atStepTick = 0,
+        instanceId = "silver-silhouette",
+        engine = "sub",
+        x = 120,
+        y = 80,
+        drawOrder = 1,
+        clipId = clipId,
+        animate = true,
+      },
+      {
+        op = "spriteVisible",
+        stepId = "enter",
+        atStepTick = 0,
+        instanceId = "silver-silhouette",
+        engine = "sub",
+        x = 120,
+        y = 80,
+        drawOrder = 1,
+        visible = true,
+      },
+      { op = "waitTicks", stepId = "enter", atStepTick = 0, ticks = 20 },
+      { op = "circleWipe", stepId = "reveal", atStepTick = 0, engine = "sub", kind = 2, ticks = 8 },
+      { op = "waitTicks", stepId = "reveal", atStepTick = 0, ticks = 8 },
+      { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 2 },
+      { op = "finish", stepId = "tail", atStepTick = 2 },
+    },
+  }
+  local raw = { manifestWithEntry(1), manifestWithEntry(2), third, manifestWithEntry(4), manifestWithEntry(5) }
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local ticks = 0
+  while movie:sceneNumber() < 3 and ticks < 20000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 3, "playback reaches the third scene")
+  local entered = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(entered.stepElapsed, 0, "the incoming scene has not run its first tick")
+  checkEntryHolds(entered, 3)
+  -- The entry tick stages the rival; the black bottom hold still covers it.
+  movie:updateFixed()
+  local staged = assert(movie.current, "the running movie owns its current slot")
+  local silver = assert(
+    staged.spriteInstances["silver-silhouette"],
+    "the entry tick stages the rival instance"
+  )
+  Assert.isTrue(silver.visible, "the rival stays staged while hidden")
+  Assert.isTrue(
+    type(staged.physicalBrightness) == "table",
+    "the entry keeps its staged physical holds"
+  )
+  Assert.equal(staged.physicalBrightness.lower, "black", "the staged rival does not lift the bottom hold")
+  -- The authored bottom wipe releases the hold while keeping the rival.
+  local waited = 0
+  while movie.current.stepIndex < 2 and waited < 200 do
+    movie:updateFixed()
+    waited = waited + 1
+  end
+  Assert.equal(movie.current.stepIndex, 2, "playback reaches the bottom reveal")
+  movie:updateFixed()
+  local revealed = assert(movie.current, "the running movie owns its current slot")
+  Assert.isTrue(
+    type(revealed.physicalBrightness) == "table",
+    "the reveal keeps its staged physical holds"
+  )
+  Assert.equal(
+    revealed.physicalBrightness.lower,
+    "neutral",
+    "the bottom wipe releases the bottom hold"
+  )
+  Assert.isTrue(
+    revealed.spriteInstances["silver-silhouette"].visible,
+    "the reveal keeps the rival staged"
+  )
+  movie:dispose()
+end
+
+function T.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets()
+  local first = manifestWithEntry(1)
+  first.initialDisplay = {
+    mainPhysical = "upper",
+    physicalBrightness = { upper = "white", lower = "black" },
+  }
+  first.timeline = {
+    steps = {
+      { id = "setup", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 4 } },
+      { id = "flip", events = { 3, 4 }, ["until"] = { kind = "duration", ticks = 4 } },
+      { id = "reset", events = { 5, 6 }, ["until"] = { kind = "duration", ticks = 4 } },
+      { id = "tail", events = { 7, 8 }, ["until"] = { kind = "duration", ticks = 2 } },
+    },
+    events = {
+      { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 4 },
+      { op = "enableSkip", stepId = "setup", atStepTick = 1 },
+      { op = "setScreenMapping", stepId = "flip", atStepTick = 0, mainPhysical = "lower" },
+      { op = "waitTicks", stepId = "flip", atStepTick = 0, ticks = 4 },
+      { op = "setBrightness", stepId = "reset", atStepTick = 0, physical = "upper", value = "neutral" },
+      { op = "waitTicks", stepId = "reset", atStepTick = 0, ticks = 4 },
+      { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 2 },
+      { op = "finish", stepId = "tail", atStepTick = 0 },
+    },
+  }
+  local raw = { first, manifestWithEntry(2), manifestWithEntry(3), manifestWithEntry(4), manifestWithEntry(5) }
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local setup = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(setup.mainPhysical, "upper", "the scene maps main to physical upper before its first tick")
+  Assert.isTrue(
+    type(setup.physicalBrightness) == "table",
+    "the scene stages its physical holds before its first tick"
+  )
+  Assert.equal(setup.physicalBrightness.upper, "white", "the scene holds physical upper white")
+  Assert.equal(setup.physicalBrightness.lower, "black", "the scene holds physical lower black")
+  local waited = 0
+  while movie.current.stepIndex < 2 and waited < 200 do
+    movie:updateFixed()
+    waited = waited + 1
+  end
+  Assert.equal(movie.current.stepIndex, 2, "playback reaches the authored flip")
+  movie:updateFixed()
+  local flipped = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(flipped.mainPhysical, "lower", "the authored flip moves the main engine")
+  Assert.isTrue(
+    type(flipped.physicalBrightness) == "table",
+    "the flip keeps the staged physical holds"
+  )
+  Assert.equal(
+    flipped.physicalBrightness.upper,
+    "white",
+    "the flip leaves the upper hold on the upper screen"
+  )
+  Assert.equal(
+    flipped.physicalBrightness.lower,
+    "black",
+    "the flip leaves the lower hold on the lower screen"
+  )
+  waited = 0
+  while movie.current.stepIndex < 3 and waited < 200 do
+    movie:updateFixed()
+    waited = waited + 1
+  end
+  Assert.equal(movie.current.stepIndex, 3, "playback reaches the authored reset")
+  movie:updateFixed()
+  local reset = assert(movie.current, "the running movie owns its current slot")
+  Assert.isTrue(
+    type(reset.physicalBrightness) == "table",
+    "the reset keeps the staged physical holds"
+  )
+  Assert.equal(reset.physicalBrightness.upper, "neutral", "the authored reset clears only the upper hold")
+  Assert.equal(reset.physicalBrightness.lower, "black", "the authored reset keeps the lower hold")
   movie:dispose()
 end
 

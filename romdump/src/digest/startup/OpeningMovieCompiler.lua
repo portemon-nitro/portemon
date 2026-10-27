@@ -968,11 +968,11 @@ local function scene1Program(clips, layers)
   copyright[#copyright + 1] = #events
   setPlaneVisible(events, planes, layers, "copyright", 0, "main", 0, true)
   copyright[#copyright + 1] = #events
+  -- The copyright shows at the displaced origin: main BG0 holds Y=128
+  -- from this entry until the setup case restores the origin on its
+  -- twentieth source tick, when the Game Freak layers enable.
   copyright[#copyright + 1] = nextIndex(events)
-  events[#events + 1] = event("setScroll", "copyright", 0, { engine = "main", bgSlot = 0, dx = 0, dy = 128, ticks = 0 })
-  copyright[#copyright + 1] = nextIndex(events)
-  events[#events + 1] =
-    event("setScroll", "copyright", 0, { engine = "main", bgSlot = 0, dx = 0, dy = -128, ticks = 0 })
+  events[#events + 1] = event("setScrollPosition", "copyright", 0, { engine = "main", bgSlot = 0, x = 0, y = 128 })
   copyright[#copyright + 1] = nextIndex(events)
   events[#events + 1] = event("waitTicks", "copyright", 0, { ticks = 30 })
   step(steps, "copyright", copyright, { kind = "duration", ticks = 30 })
@@ -1001,6 +1001,8 @@ local function scene1Program(clips, layers)
   setup[#setup + 1] = #events
   setPlaneVisible(events, planes, layers, "setup", 20, "sub", 1, true)
   setup[#setup + 1] = #events
+  setup[#setup + 1] = nextIndex(events)
+  events[#events + 1] = event("setScrollPosition", "setup", 20, { engine = "main", bgSlot = 0, x = 0, y = 0 })
   step(steps, "setup", setup, { kind = "duration", ticks = 20 })
   local logo = { nextIndex(events) }
   events[#events + 1] = event("waitTicks", "logo", 0, { ticks = 110 })
@@ -1934,6 +1936,7 @@ function OpeningMovieCompiler.compileScene(romFs, versionId, sceneNumber)
     versionId = versionId,
     sceneNumber = sceneNumber,
     sourceTickRate = SceneSources.TICK_RATE,
+    initialDisplay = SceneSources.initialDisplay(sceneNumber),
     layers = layers,
     spriteClips = clips,
     models = models,

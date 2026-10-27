@@ -6,7 +6,7 @@ local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v8"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v9"
 local SOURCE_TICK_RATE = 30
 
 local CLOSED_OPS = {
@@ -486,7 +486,7 @@ end
 -- below reads the exact compiled bundles and fails until the producer
 -- emits that contract and the central reader enforces it.
 
-local STRICT_SCHEMA = "g4-startup-opening-scene-v8"
+local STRICT_SCHEMA = "g4-startup-opening-scene-v9"
 
 local function strictManifest(bundle, versionId, sceneNumber)
   local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
@@ -1104,6 +1104,39 @@ local function strictValidationAcceptsOnlyCompleteContracts(romFs, versionId)
   local badRole, badRoleErr = strictLoad(versionId, 4, badRoleManifest, compiled[4].files, nil)
   Assert.isNil(badRole, "a scene with a bad physical role never validates")
   Assert.notNil(badRoleErr, "a bad physical role reports its cause")
+  -- Every scene stages its source entry mapping and physical holds: the
+  -- manifest carries one immutable per-scene record the slot applies
+  -- before its first draw, distinct from later timeline mapping events.
+  local entryHolds = {
+    [1] = { mainPhysical = "lower", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+    [2] = { mainPhysical = "upper", physicalBrightness = { upper = "white", lower = "white" } },
+    [3] = { mainPhysical = "upper", physicalBrightness = { upper = "white", lower = "black" } },
+    [4] = { mainPhysical = "lower", physicalBrightness = { upper = "black", lower = "black" } },
+    [5] = { mainPhysical = "lower", physicalBrightness = { upper = "black", lower = "black" } },
+  }
+  for sceneNumber = 1, 5 do
+    local entryManifest = assert(compiled[sceneNumber].manifest, "scene " .. sceneNumber .. " publishes its manifest")
+    Assert.equal(
+      entryManifest.schema,
+      "g4-startup-opening-scene-v9",
+      "scene " .. sceneNumber .. " carries the entry-mapping scene schema"
+    )
+    Assert.deepEqual(
+      entryManifest.initialDisplay,
+      entryHolds[sceneNumber],
+      "scene " .. sceneNumber .. " stages its source entry mapping and holds"
+    )
+  end
+  local omitted = deepCopyManifest(compiled[3].manifest)
+  omitted.initialDisplay = nil
+  local omittedLoaded, omittedErr = strictLoad(versionId, 3, omitted, compiled[3].files, nil)
+  Assert.isNil(omittedLoaded, "a scene without its entry mapping and holds never validates")
+  Assert.notNil(omittedErr, "a missing entry mapping reports its cause")
+  local badHold = deepCopyManifest(compiled[2].manifest)
+  badHold.initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "gray", lower = "white" } }
+  local badHoldLoaded, badHoldErr = strictLoad(versionId, 2, badHold, compiled[2].files, nil)
+  Assert.isNil(badHoldLoaded, "a scene with an unknown hold never validates")
+  Assert.notNil(badHoldErr, "an unknown hold reports its cause")
   for sceneNumber = 1, 5 do
     local manifest = strictManifest(compiled[sceneNumber], versionId, sceneNumber)
     local loaded, err = strictLoad(versionId, sceneNumber, manifest, compiled[sceneNumber].files, nil)
@@ -1693,16 +1726,35 @@ local function openingProgramsStartFromTheirSourceOrigins(romFs, versionId)
   requireInitScroll(compiled[2], 2, "sub", 0, -1, 0, 64)
   requireInitScroll(compiled[4], 4, "sub", 1, 0, -192, 0)
   requireInitScroll(compiled[4], 4, "main", 1, 0, 192, 0)
-  local copyright = initScrolls(compiled[1], "main", 0)
-  Assert.isTrue(#copyright >= 2, "scene 1 resets its copyright offset after showing it")
-  Assert.equal(copyright[1].dx, 0, "scene 1 shows its copyright from its source offset")
-  Assert.equal(copyright[1].dy, 128, "scene 1 shows its copyright from its source offset")
-  local total = 0
-  for _, event in ipairs(copyright) do
-    Assert.equal(event.ticks, 0, "scene 1 copyright offsets apply immediately")
-    total = total + event.dy
+  -- The copyright offset is an absolute placement, not a same-tick
+  -- canceling pair: main BG0 shows Y128 from the copyright entry until
+  -- the setup case restores the origin on its twentieth source tick.
+  local placements = {}
+  for _, event in ipairs(compiled[1].timeline.events) do
+    if event.op == "setScrollPosition" and event.engine == "main" and event.bgSlot == 0 then
+      placements[#placements + 1] = event
+    end
   end
-  Assert.equal(total, 0, "scene 1 returns to its origin after the copyright")
+  Assert.equal(#placements, 2, "scene 1 places its copyright origin exactly twice")
+  local show, reset = placements[1], placements[2]
+  Assert.equal(show.stepId, "copyright", "the copyright entry shows the offset")
+  Assert.equal(show.atStepTick, 0, "the copyright entry shows the offset on its first tick")
+  Assert.equal(show.x, 0, "the copyright keeps its horizontal origin")
+  Assert.equal(show.y, 128, "the copyright shows its source offset")
+  Assert.equal(reset.stepId, "setup", "the logo setup restores the origin")
+  Assert.equal(reset.atStepTick, 20, "the logo setup restores the origin on its twentieth tick")
+  Assert.equal(reset.x, 0, "the logo setup keeps the horizontal origin")
+  Assert.equal(reset.y, 0, "the logo setup restores the vertical origin")
+  for _, event in ipairs(compiled[1].timeline.events) do
+    Assert.isFalse(
+      event.op == "setScroll"
+        and event.stepId == "copyright"
+        and event.engine == "main"
+        and event.bgSlot == 0
+        and event.dy == -128,
+      "no same-tick scroll cancels the copyright offset"
+    )
+  end
   requireInitScroll(compiled[5], 5, "main", 2, 0, 0, 160)
   requireInitScroll(compiled[5], 5, "sub", 2, 0, 0, 160)
   local sawPanorama = false
@@ -2058,6 +2110,7 @@ local function assertExactEvents(manifest, sceneNumber, op, stepId, keys, expect
 end
 
 local SCROLL_KEYS = { "atStepTick", "engine", "bgSlot", "dx", "dy", "ticks", "effect" }
+local POSITION_KEYS = { "atStepTick", "engine", "bgSlot", "x", "y" }
 local BLEND_KEYS = { "atStepTick", "engine", "firstMask", "secondMask", "direction", "ticks", "effect" }
 local WIPE_KEYS = { "atStepTick", "engine", "kind", "ticks", "effect" }
 local SHUTTER_KEYS =
@@ -2260,9 +2313,11 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     manifests[sceneNumber] = strictManifest(compileScene(romFs, versionId, sceneNumber), versionId, sceneNumber)
   end
   local first, second, fourth, fifth = manifests[1], manifests[2], manifests[4], manifests[5]
-  assertExactEvents(first, 1, "setScroll", "copyright", SCROLL_KEYS, {
-    "atStepTick=0 engine=main bgSlot=0 dx=0 dy=128 ticks=0 effect=nil",
-    "atStepTick=0 engine=main bgSlot=0 dx=0 dy=-128 ticks=0 effect=nil",
+  assertExactEvents(first, 1, "setScrollPosition", "copyright", POSITION_KEYS, {
+    "atStepTick=0 engine=main bgSlot=0 x=0 y=128",
+  })
+  assertExactEvents(first, 1, "setScrollPosition", "setup", POSITION_KEYS, {
+    "atStepTick=20 engine=main bgSlot=0 x=0 y=0",
   })
   assertExactEvents(first, 1, "setScroll", "scroll", SCROLL_KEYS, {
     "atStepTick=0 engine=main bgSlot=1 dx=0 dy=-32 ticks=240 effect=scroll-sunrise",
@@ -2357,7 +2412,7 @@ local function movieTickRateRemainsRetail30Hz(romFs, versionId)
   for sceneNumber = 1, 5 do
     local bundle = compileScene(romFs, versionId, sceneNumber)
     local manifest = strictManifest(bundle, versionId, sceneNumber)
-    Assert.equal(manifest.schema, "g4-startup-opening-scene-v8", "scene " .. sceneNumber .. " carries the v7 schema")
+    Assert.equal(manifest.schema, "g4-startup-opening-scene-v9", "scene " .. sceneNumber .. " carries the current scene schema")
     Assert.equal(manifest.sourceTickRate, 30, "scene " .. sceneNumber .. " runs at the retail 30 Hz tick rate")
   end
   local second = strictManifest(compileScene(romFs, versionId, 2), versionId, 2)
