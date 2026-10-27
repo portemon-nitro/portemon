@@ -453,6 +453,7 @@ local function compositeScene(sceneNumber, main, sub, clips, particles, steps, e
     generationId = COMPOSITE_GENERATION,
     sceneNumber = sceneNumber,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
+    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
     layers = { main = main, sub = sub },
     spriteClips = clips,
     models = {},
@@ -1046,6 +1047,7 @@ local function fillerRomScene(versionId, generationId, sceneNumber, art)
     generationId = generationId,
     sceneNumber = sceneNumber,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
+    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
     layers = {
       main = { compositeLayer(0, upperImage, 256, 192) },
       sub = { compositeLayer(0, lowerImage, 256, 192) },
@@ -2521,7 +2523,10 @@ local function composited_town_pixels_stay_visible_and_animate_across_hold_ticks
   movie:draw()
   local before = drawBytes(movie, scope, 512, 384)
   Assert.isTrue(paneLitCells(before, 0) > 3000, "the composed town lights the main-mapped upper pane")
-  Assert.isTrue(lowerLitCells(before) > 500, "the town beat keeps the sub panels lit")
+  Assert.isTrue(
+    lowerLitCells(before) < 50,
+    "the town beat holds the lower screen black before its reveal"
+  )
   for _ = 1, 15 do
     movie:updateFixed()
   end
@@ -2929,7 +2934,10 @@ local function soulsilver_town_stays_on_main_and_stops_at_the_rival_beat(scope, 
   end
   local beatBytes = drawBytes(movie, scope, 512, 384)
   Assert.isTrue(paneLitCells(beatBytes, 0) > 3000, "the town beat lights the main-mapped upper pane")
-  Assert.isTrue(lowerLitCells(beatBytes) > 500, "the town beat keeps the sub-mapped lower panels lit")
+  Assert.isTrue(
+    lowerLitCells(beatBytes) < 50,
+    "the town beat holds the lower screen black before its reveal"
+  )
   Assert.equal(movie.current.activeTown, "new-bark-town", "the town beat selects its stage")
   advance(movie, 5)
   local laterBytes = drawBytes(movie, scope, 512, 384)
@@ -4442,26 +4450,44 @@ local function soulsilver_source_copyright_blend_and_white_fade_match_retail_ope
   -- target is BG0 itself.
   advanceToSceneStep(movie, 1, "fades", 20000)
   local slot = assert(movie.current, "the running movie owns its current slot")
-  Assert.equal(slot.backgrounds.main[0].scrollX, 0, "the copyright returns its main BG0 to the origin")
+  Assert.equal(slot.backgrounds.main[0].scrollY, 128, "the fade beat still shows the copyright offset")
   local checked = 0
   for _, engine in ipairs({ "main", "sub" }) do
     local background = slot.backgrounds[engine][0]
     Assert.notNil(background, "the copyright stages " .. engine .. " BG0")
     local data = decodedArt(scope, assert(movie.cacheFs:read(background.image)), background.image)
-    local texelX, texelY = findBrightTexel(data)
+    -- The displaced copyright origin shifts which texture rows the canvas
+    -- shows: canvas row cy carries texture row (cy + scrollY) modulo the
+    -- native height, so the bright texel is searched over canvas rows and
+    -- mapped back to its texture row for the expected color.
+    local texWidth, texHeight = data:getWidth(), data:getHeight()
+    local texelX, sampleY = nil, nil
+    for cy = 0, 191, 4 do
+      local ty = (cy + background.scrollY) % texHeight
+      for x = 0, math.min(texWidth - 1, 255), 4 do
+        local r, g, b, a = data:getPixel(x, ty)
+        if a > 0.98 and r > 0.7 and g > 0.7 and b > 0.7 then
+          texelX, sampleY = x, cy
+          break
+        end
+      end
+      if texelX ~= nil then
+        break
+      end
+    end
     if texelX ~= nil then
       checked = checked + 1
-      local er, eg, eb = data:getPixel(texelX, texelY)
+      local er, eg, eb = data:getPixel(texelX, (sampleY + background.scrollY) % texHeight)
       movie:draw()
       local canvas = (engine == "main") and movie.mainCanvas or movie.subCanvas
-      local preR, preG, preB = pixelOf(sourceBytes(scope, canvas), 256, texelX, texelY)
+      local preR, preG, preB = pixelOf(sourceBytes(scope, canvas), 256, texelX, sampleY)
       Assert.near(preR, er, 0.06, engine .. " BG0 starts opaque before its blend")
       Assert.near(preG, eg, 0.06, engine .. " BG0 starts opaque before its blend")
       Assert.near(preB, eb, 0.06, engine .. " BG0 starts opaque before its blend")
       advance(movie, 45)
       Assert.near(retailBlendWeight(45, 60, 1), 0.5, 1e-9, "the retail coefficient halves at 45 of 60 ticks")
       movie:draw()
-      local midR, midG, midB = pixelOf(sourceBytes(scope, canvas), 256, texelX, texelY)
+      local midR, midG, midB = pixelOf(sourceBytes(scope, canvas), 256, texelX, sampleY)
       Assert.near(midR, er * 0.5, 0.12, engine .. " BG0 halves toward black under its retail weight")
       Assert.near(midG, eg * 0.5, 0.12, engine .. " BG0 halves toward black under its retail weight")
       Assert.near(midB, eb * 0.5, 0.12, engine .. " BG0 halves toward black under its retail weight")
@@ -4477,6 +4503,14 @@ local function soulsilver_source_copyright_blend_and_white_fade_match_retail_ope
     end
   end
   Assert.equal(checked, 2, "both engine copyright BG0s carry a bright opaque texel")
+  -- The origin returns only at the setup case twentieth tick, beside
+  -- the logo layer change: the fades above must still have shown the
+  -- displaced placement.
+  advanceToSceneStep(movie, 1, "setup", 20000)
+  advance(movie, 20)
+  movie:draw()
+  slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(slot.backgrounds.main[0].scrollY, 0, "the setup beat restores the vertical origin")
   -- The closing white fade fires at run tick 90 for 65 ticks: both
   -- engine targets move strictly toward white while dark authored art
   -- stays legitimate pre-fade content.
@@ -7263,6 +7297,401 @@ local function starter_groups_replay_bounded_deterministic_curves(scope, context
   end
 end
 
+-- Source entry mapping and physical holds cover every handoff before
+-- the first tick: an acquired slot already routes main to its authored
+-- screen with the authored upper/lower holds, so the first host draw
+-- after a scene boundary never flashes a neutral frame.
+---@param slot table acquired scene slot
+---@param sceneNumber integer retail scene position
+---@param mainPhysical string authored screen carrying the main engine output
+---@param upper string authored physical upper hold
+---@param lower string authored physical lower hold
+local EntryHolds = {}
+function EntryHolds.assertPhysicalEntry(slot, sceneNumber, mainPhysical, upper, lower)
+  Assert.equal(
+    slot.mainPhysical,
+    mainPhysical,
+    "scene " .. sceneNumber .. " maps main to physical " .. mainPhysical .. " before its first tick"
+  )
+  Assert.isTrue(
+    type(slot.physicalBrightness) == "table",
+    "scene " .. sceneNumber .. " stages its physical holds before its first tick"
+  )
+  Assert.equal(
+    slot.physicalBrightness.upper,
+    upper,
+    "scene " .. sceneNumber .. " holds physical upper " .. upper
+  )
+  Assert.equal(
+    slot.physicalBrightness.lower,
+    lower,
+    "scene " .. sceneNumber .. " holds physical lower " .. lower
+  )
+end
+
+---@param raw table[] five scene manifests in retail order
+---@param art table<string, string> staged png bytes by generated path
+---@param defaultPng string fallback png bytes for art no probe samples
+---@return table[] scenes, table cacheFs strict five-scene pack with staged composite art
+function EntryHolds.packFive(raw, art, defaultPng)
+  local byPath = {}
+  for sceneNumber, manifest in ipairs(raw) do
+    byPath[StartupAssetCache.openingScenePath(sceneNumber)] = manifest
+  end
+  local cacheFs = {
+    loadLua = function(_, path)
+      return byPath[path]
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      return art[path] or defaultPng
+    end,
+  }
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, "soulsilver")
+    Assert.notNil(loaded, "composite scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  return scenes, cacheFs
+end
+
+---@param sceneNumber integer retail scene position
+---@param mainImage string staged main background path
+---@param subImage string staged sub background path
+---@param mainPhysical string authored screen carrying the main engine output
+---@param upper string authored physical upper hold
+---@param lower string authored physical lower hold
+---@return table strict synthetic scene with staged entry holds and a short fill program
+function EntryHolds.entryHoldScene(sceneNumber, mainImage, subImage, mainPhysical, upper, lower)
+  local events = {
+    { op = "waitTicks", stepId = "fill", atStepTick = 0, ticks = 10 },
+    { op = "finish", stepId = "fill", atStepTick = 0 },
+  }
+  local eventIndexes = { 1, 2 }
+  if sceneNumber == 1 then
+    events[2] = { op = "enableSkip", stepId = "fill", atStepTick = 1 }
+    events[3] = { op = "finish", stepId = "fill", atStepTick = 0 }
+    eventIndexes = { 1, 2, 3 }
+  end
+  local scene = compositeScene(
+    sceneNumber,
+    { compositeLayer(0, mainImage, 256, 192) },
+    { compositeLayer(0, subImage, 256, 192) },
+    {},
+    { seed = 0, emitters = {} },
+    { { id = "fill", events = eventIndexes, ["until"] = { kind = "duration", ticks = 10 } } },
+    events
+  )
+  scene.initialDisplay = {
+    mainPhysical = mainPhysical,
+    physicalBrightness = { upper = upper, lower = lower },
+  }
+  return scene
+end
+
+-- The handoff from the first scene lands on the authored entry state
+-- with no tick run on the incoming scene: mapping and both physical
+-- holds are already staged, and the host panes already paint them.
+function EntryHolds.entry_mapping_and_physical_holds_cover_the_handoff_before_the_first_tick(scope)
+  local firstMain = sceneArtRoot(1) .. "layers/hold-main.png"
+  local firstSub = sceneArtRoot(1) .. "layers/hold-sub.png"
+  local secondMain = sceneArtRoot(2) .. "layers/hold-main.png"
+  local secondSub = sceneArtRoot(2) .. "layers/hold-sub.png"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local scenes, cacheFs = EntryHolds.packFive(
+    {
+      EntryHolds.entryHoldScene(1, firstMain, firstSub, "lower", "neutral", "neutral"),
+      EntryHolds.entryHoldScene(2, secondMain, secondSub, "upper", "white", "white"),
+      fillerScene(3),
+      fillerScene(4),
+      fillerScene(5),
+    },
+    {
+      [firstMain] = solidPng(256, 192, 255, 0, 0),
+      [firstSub] = solidPng(256, 192, 0, 255, 0),
+      [secondMain] = solidPng(256, 192, 255, 0, 0),
+      [secondSub] = solidPng(256, 192, 0, 0, 255),
+    },
+    gray16
+  )
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  local first = assert(movie.current, "the running movie owns its current slot")
+  EntryHolds.assertPhysicalEntry(first, 1, "lower", "neutral", "neutral")
+  local prefetched = assert(movie.nextSlot, "the prefetched slot is staged before its scene starts")
+  Assert.equal(prefetched.sceneNumber, 2, "the prefetched slot stages the incoming scene")
+  Assert.equal(prefetched.stepElapsed, 0, "the prefetched slot has run no source tick")
+  EntryHolds.assertPhysicalEntry(prefetched, 2, "upper", "white", "white")
+  local ticks = 0
+  while movie:sceneNumber() < 2 and ticks < 20000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 2, "playback reaches the second scene")
+  local second = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(second.stepElapsed, 0, "the incoming scene has not run its first tick")
+  EntryHolds.assertPhysicalEntry(second, 2, "upper", "white", "white")
+  movie:draw()
+  local host = drawBytes(movie, scope, 512, 384)
+  local upperR, upperG, upperB = pixelOf(host, 512, 256, 96)
+  assertSameColor(upperR, upperG, upperB, 1, 1, 1, 0.08, "the upper pane holds white before the first tick")
+  local lowerR, lowerG, lowerB = pixelOf(host, 512, 256, 288)
+  assertSameColor(lowerR, lowerG, lowerB, 1, 1, 1, 0.08, "the lower pane holds white before the first tick")
+  movie:dispose()
+end
+
+-- The staged rival stays internally visible while the physical bottom
+-- holds black: the lower host pane stays opaque until the authored
+-- bottom wipe begins, and only the wipe releases the hold.
+function EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_black_until_its_wipe(scope)
+  local root = sceneArtRoot(3)
+  local mainImage = root .. "layers/rival-main.png"
+  local subImage = root .. "layers/rival-sub.png"
+  local clipId = root .. "sprites/silver.g4sprite"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local scene = compositeScene(
+    3,
+    { compositeLayer(0, mainImage, 256, 192) },
+    { compositeLayer(0, subImage, 256, 192) },
+    {
+      compositeClip(clipId, { compositeFrame(0, 0, 16, 16, 0, 0, 1) }),
+    },
+    { seed = 0, emitters = {} },
+    {
+      { id = "enter", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 20 } },
+      { id = "reveal", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 8 } },
+      { id = "tail", events = { 6, 7 }, ["until"] = { kind = "duration", ticks = 2 } },
+    },
+    {
+      {
+        op = "setSpriteClip",
+        stepId = "enter",
+        atStepTick = 0,
+        instanceId = "silver-silhouette",
+        engine = "sub",
+        x = 120,
+        y = 80,
+        drawOrder = 1,
+        clipId = clipId,
+        animate = true,
+      },
+      {
+        op = "spriteVisible",
+        stepId = "enter",
+        atStepTick = 0,
+        instanceId = "silver-silhouette",
+        engine = "sub",
+        x = 120,
+        y = 80,
+        drawOrder = 1,
+        visible = true,
+      },
+      { op = "waitTicks", stepId = "enter", atStepTick = 0, ticks = 20 },
+      { op = "circleWipe", stepId = "reveal", atStepTick = 0, engine = "sub", kind = 2, ticks = 8 },
+      { op = "waitTicks", stepId = "reveal", atStepTick = 0, ticks = 8 },
+      { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 2 },
+      { op = "finish", stepId = "tail", atStepTick = 2 },
+    }
+  )
+  scene.initialDisplay = {
+    mainPhysical = "upper",
+    physicalBrightness = { upper = "white", lower = "black" },
+  }
+  local scenes, cacheFs = compositePackAt(scene, 3, {
+    [mainImage] = solidPng(256, 192, 255, 0, 0),
+    [subImage] = solidPng(256, 192, 0, 255, 0),
+    [clipId] = solidPng(16, 16, 255, 255, 0),
+  }, gray16)
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  local ticks = 0
+  while movie:sceneNumber() < 3 and ticks < 20000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 3, "playback reaches the third scene")
+  local entered = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(entered.stepElapsed, 0, "the incoming scene has not run its first tick")
+  EntryHolds.assertPhysicalEntry(entered, 3, "upper", "white", "black")
+  -- The entry tick stages the rival; the black bottom hold still covers it.
+  movie:updateFixed()
+  local staged = assert(movie.current, "the running movie owns its current slot")
+  local silver = assert(
+    staged.spriteInstances["silver-silhouette"],
+    "the entry tick stages the rival instance"
+  )
+  Assert.isTrue(silver.visible, "the rival stays staged while hidden")
+  Assert.isTrue(
+    type(staged.physicalBrightness) == "table",
+    "the entry keeps its staged physical holds"
+  )
+  Assert.equal(
+    staged.physicalBrightness.lower,
+    "black",
+    "the staged rival does not lift the bottom hold"
+  )
+  movie:draw()
+  local hidden = drawBytes(movie, scope, 512, 384)
+  local hiddenR, hiddenG, hiddenB = pixelOf(hidden, 512, 256, 288)
+  assertSameColor(hiddenR, hiddenG, hiddenB, 0, 0, 0, 0.08, "the lower pane stays black over the staged rival")
+  -- The authored bottom wipe releases the hold, so the tail shows art.
+  advanceToSceneStep(movie, 3, "reveal", 20000)
+  advance(movie, 1)
+  local released = assert(movie.current, "the running movie owns its current slot")
+  Assert.isTrue(
+    type(released.physicalBrightness) == "table",
+    "the reveal keeps its staged physical holds"
+  )
+  Assert.equal(
+    released.physicalBrightness.lower,
+    "neutral",
+    "the bottom wipe releases the bottom hold"
+  )
+  advanceToSceneStep(movie, 3, "tail", 20000)
+  advance(movie, 1)
+  Assert.equal(movie:sceneNumber(), 3, "the tail still plays the third scene after one tick")
+  movie:draw()
+  local revealed = drawBytes(movie, scope, 512, 384)
+  Assert.isTrue(
+    regionLit(revealed, 512, 0, 511, 200, 375) > 0.5,
+    "the revealed lower pane shows its staged art"
+  )
+  movie:dispose()
+end
+
+-- Physical holds stay pinned to the physical screen across mapping flips
+-- and fade effects: the flip reroutes engines without carrying a hold,
+-- and only the authored neutral reset clears one.
+function EntryHolds.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets(scope)
+  local root = sceneArtRoot(1)
+  local mainImage = root .. "layers/pin-main.png"
+  local subImage = root .. "layers/pin-sub.png"
+  local gray16 = solidPng(16, 16, 128, 128, 128)
+  local scene = compositeScene(
+    1,
+    { compositeLayer(0, mainImage, 256, 192) },
+    { compositeLayer(0, subImage, 256, 192) },
+    {},
+    { seed = 0, emitters = {} },
+    {
+      { id = "setup", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 4 } },
+      { id = "flip", events = { 3, 4 }, ["until"] = { kind = "duration", ticks = 4 } },
+      { id = "reset", events = { 5, 6 }, ["until"] = { kind = "duration", ticks = 4 } },
+      { id = "tail", events = { 7, 8 }, ["until"] = { kind = "duration", ticks = 2 } },
+    },
+    {
+      { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 4 },
+      { op = "enableSkip", stepId = "setup", atStepTick = 1 },
+      { op = "setScreenMapping", stepId = "flip", atStepTick = 0, mainPhysical = "lower" },
+      { op = "waitTicks", stepId = "flip", atStepTick = 0, ticks = 4 },
+      { op = "setBrightness", stepId = "reset", atStepTick = 0, physical = "upper", value = "neutral" },
+      { op = "waitTicks", stepId = "reset", atStepTick = 0, ticks = 4 },
+      { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 2 },
+      { op = "finish", stepId = "tail", atStepTick = 0 },
+    }
+  )
+  scene.initialDisplay = {
+    mainPhysical = "upper",
+    physicalBrightness = { upper = "white", lower = "black" },
+  }
+  local scenes, cacheFs = compositePack(scene, {
+    [mainImage] = solidPng(256, 192, 255, 0, 0),
+    [subImage] = solidPng(256, 192, 0, 255, 0),
+  }, gray16)
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+  local setup = assert(movie.current, "the running movie owns its current slot")
+  EntryHolds.assertPhysicalEntry(setup, 1, "upper", "white", "black")
+  advanceToSceneStep(movie, 1, "flip", 20000)
+  advance(movie, 1)
+  local flipped = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(flipped.mainPhysical, "lower", "the authored flip moves the main engine")
+  Assert.isTrue(
+    type(flipped.physicalBrightness) == "table",
+    "the flip keeps the staged physical holds"
+  )
+  Assert.equal(
+    flipped.physicalBrightness.upper,
+    "white",
+    "the flip leaves the upper hold on the upper screen"
+  )
+  Assert.equal(
+    flipped.physicalBrightness.lower,
+    "black",
+    "the flip leaves the lower hold on the lower screen"
+  )
+  movie:draw()
+  local held = drawBytes(movie, scope, 512, 384)
+  local heldUpperR, heldUpperG, heldUpperB = pixelOf(held, 512, 256, 96)
+  assertSameColor(heldUpperR, heldUpperG, heldUpperB, 1, 1, 1, 0.08, "the upper pane keeps its hold across the flip")
+  local heldLowerR, heldLowerG, heldLowerB = pixelOf(held, 512, 256, 288)
+  assertSameColor(heldLowerR, heldLowerG, heldLowerB, 0, 0, 0, 0.08, "the lower pane keeps its hold across the flip")
+  advanceToSceneStep(movie, 1, "reset", 20000)
+  advance(movie, 1)
+  local reset = assert(movie.current, "the running movie owns its current slot")
+  Assert.isTrue(
+    type(reset.physicalBrightness) == "table",
+    "the reset keeps the staged physical holds"
+  )
+  Assert.equal(reset.physicalBrightness.upper, "neutral", "the authored reset clears only the upper hold")
+  Assert.equal(reset.physicalBrightness.lower, "black", "the authored reset keeps the lower hold")
+  movie:draw()
+  local cleared = drawBytes(movie, scope, 512, 384)
+  local clearedR, clearedG, clearedB = pixelOf(cleared, 512, 256, 96)
+  assertSameColor(clearedR, clearedG, clearedB, 0, 1, 0, 0.08, "the cleared upper pane shows its mapped engine")
+  local keptR, keptG, keptB = pixelOf(cleared, 512, 256, 288)
+  assertSameColor(keptR, keptG, keptB, 0, 0, 0, 0.08, "the lower pane keeps its hold after the upper reset")
+  movie:dispose()
+end
+
+-- The retail scene-2 to scene-3 boundary keeps the physical bottom black
+-- before the first tick runs: the mapping already routes main upper
+-- while the staged rival stays hidden behind the hold.
+---@param scope table test scope owning the movie
+---@param versionId string selected edition identity
+function EntryHolds.scene_two_to_three_handoff_holds_black_bottom_for_edition(scope, versionId)
+  local scenes, cacheFs = loadRomPackWithFillers(versionId, {})
+  local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "dual")
+  local ticks = 0
+  while movie:sceneNumber() < 3 and ticks < 20000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 3, "playback reaches the third scene")
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(slot.stepElapsed, 0, "the incoming scene has not run its first tick")
+  Assert.equal(slot.mainPhysical, "upper", "scene 3 maps main to physical upper")
+  Assert.isTrue(
+    type(slot.physicalBrightness) == "table",
+    "scene 3 stages its physical holds before its first tick"
+  )
+  Assert.equal(slot.physicalBrightness.upper, "white", "scene 3 holds physical upper white")
+  Assert.equal(slot.physicalBrightness.lower, "black", "scene 3 holds physical lower black")
+  movie:draw()
+  local host = drawBytes(movie, scope, 512, 384)
+  Assert.near(regionLit(host, 512, 0, 511, 200, 375), 0, 0.01, "the lower pane stays black before the first tick")
+  Assert.isTrue(
+    regionLit(host, 512, 0, 511, 8, 183) > 0.9,
+    "the upper pane already holds white before the first tick"
+  )
+  movie:dispose()
+end
+
+function EntryHolds.soulsilver_scene_two_to_three_handoff_holds_black_bottom_before_the_first_tick(scope, context)
+  EntryHolds.scene_two_to_three_handoff_holds_black_bottom_for_edition(scope, selectedVersionId(context))
+end
+
+function EntryHolds.heartgold_scene_two_to_three_handoff_is_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold scene handoff needs a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the pre-first-tick black-bottom leg "
+        .. "cannot run for HeartGold and is never faked"
+    )
+  end
+  EntryHolds.scene_two_to_three_handoff_holds_black_bottom_for_edition(scope, "heartgold")
+end
+
 local T = GraphicsSmoke.suite({
   ["starter groups replay bounded deterministic curves"] = starter_groups_replay_bounded_deterministic_curves,  ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
@@ -7286,6 +7715,11 @@ local T = GraphicsSmoke.suite({
   ["heartgold pan edges are blocked without a dump"] = heartgold_pan_edges_are_blocked_without_a_dump,
   ["soulsilver source copyright blend and white fade match retail operands"] = soulsilver_source_copyright_blend_and_white_fade_match_retail_operands,
   ["heartgold copyright blend and fade are blocked without a dump"] = heartgold_copyright_blend_and_fade_are_blocked_without_a_dump,
+  ["entry mapping and physical holds cover the handoff before the first tick"] = EntryHolds.entry_mapping_and_physical_holds_cover_the_handoff_before_the_first_tick,
+  ["staged sprites stay visible while the physical bottom holds black until its wipe"] = EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_black_until_its_wipe,
+  ["physical holds stay pinned across mapping flips and neutral resets"] = EntryHolds.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets,
+  ["soulsilver scene two to three handoff holds black bottom before the first tick"] = EntryHolds.soulsilver_scene_two_to_three_handoff_holds_black_bottom_before_the_first_tick,
+  ["heartgold scene two to three handoff is blocked without a dump"] = EntryHolds.heartgold_scene_two_to_three_handoff_is_blocked_without_a_dump,
   ["soulsilver source town wipe slopes with the scanline"] = soulsilver_source_town_wipe_slopes_with_the_scanline,
   ["heartgold town wipe is blocked without a dump"] = heartgold_town_wipe_is_blocked_without_a_dump,
   ["soulsilver source starter paints its authored frame"] = soulsilver_source_starter_paints_its_authored_frame,

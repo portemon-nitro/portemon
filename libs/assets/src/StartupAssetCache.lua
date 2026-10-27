@@ -407,6 +407,7 @@ local function read(cacheFs, path, schema, versionId)
       generationId = true,
       sceneNumber = true,
       sourceTickRate = true,
+      initialDisplay = true,
       layers = true,
       spriteClips = true,
       models = true,
@@ -1674,7 +1675,7 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
 end
 
 -- One independently staged opening-movie scene: strict source-independent
--- g4-startup-opening-scene-v8 package with numbered scene, edition, 30Hz
+-- g4-startup-opening-scene-v9 package with numbered scene, edition, 30Hz
 -- duration, per-engine BG slots with priority and alternate tilemaps, sprite
 -- clips with frame offsets, model descriptors and animations where used,
 -- starter emitter records where used, and the closed step-clocked event
@@ -1703,6 +1704,22 @@ function StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, versionId)
   end
   if record.sourceTickRate ~= Contract.startupOpeningScene.tickRate then
     return nil, invalid("opening scene manifest runs outside the source frame rate", path)
+  end
+  local entry = record.initialDisplay
+  if type(entry) ~= "table" or not onlyKeys(entry, { mainPhysical = true, physicalBrightness = true }) then
+    return nil, invalid("opening scene entry display is malformed", path)
+  end
+  if entry.mainPhysical ~= "upper" and entry.mainPhysical ~= "lower" then
+    return nil, invalid("opening scene entry display names no physical screen", path)
+  end
+  local holds = entry.physicalBrightness
+  if type(holds) ~= "table" or not onlyKeys(holds, { upper = true, lower = true }) then
+    return nil, invalid("opening scene entry holds are malformed", path)
+  end
+  for _, role in ipairs({ "upper", "lower" }) do
+    if holds[role] ~= "neutral" and holds[role] ~= "white" and holds[role] ~= "black" then
+      return nil, invalid("opening scene entry hold names no physical brightness", path)
+    end
   end
   if type(record.layers) ~= "table" or not onlyKeys(record.layers, { main = true, sub = true }) then
     return nil, invalid("opening scene keeps its main and sub engine layers", path)

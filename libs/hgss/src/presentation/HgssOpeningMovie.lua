@@ -190,6 +190,7 @@ end
 ---@field clipIds table<string, table<string, unknown>> compiled sprite clips by staged identity
 ---@field clipStarts table<string, integer> latest assignment tick by compiled clip identity
 ---@field mainPhysical string physical screen carrying the main engine output
+---@field physicalBrightness table<string, string> staged physical upper/lower holds owned by the slot
 ---@field emitters table[] live emitter runtimes with their record-driven particles
 ---@field emitterRecords table<integer, table<string, unknown>> compiled emitter records by source id
 ---@field activeTown string?
@@ -587,6 +588,57 @@ local function buildTownStage(self, slot)
   end
 end
 
+-- Stages the slot entry display from the required manifest record: the
+-- physical screen carrying the main engine plus a private mutable copy of
+-- the physical upper/lower holds. The holds stay pinned to the physical
+-- screens across engine mapping flips; only authored brightness, wipe,
+-- fade, and shutter transitions release them.
+---@param manifest table<string, unknown> validated scene bundle
+---@return string physical screen carrying the main engine output
+local function entryMainPhysical(manifest)
+  local entry = manifest.initialDisplay
+  if type(entry) ~= "table" or (entry.mainPhysical ~= "upper" and entry.mainPhysical ~= "lower") then
+    error(invalid("opening scene stages no entry mapping", { scene = manifest.sceneNumber }), 0)
+  end
+  return entry.mainPhysical
+end
+
+---@param manifest table<string, unknown> validated scene bundle
+---@return table<string, string> private mutable physical upper/lower holds
+local function entryPhysicalBrightness(manifest)
+  local entry = manifest.initialDisplay
+  local holds = type(entry) == "table" and entry.physicalBrightness or nil
+  if type(holds) ~= "table" then
+    error(invalid("opening scene stages no entry holds", { scene = manifest.sceneNumber }), 0)
+  end
+  local staged = {}
+  for _, role in ipairs({ "upper", "lower" }) do
+    if holds[role] ~= "neutral" and holds[role] ~= "white" and holds[role] ~= "black" then
+      error(invalid("opening scene stages no entry hold", { scene = manifest.sceneNumber }), 0)
+    end
+    staged[role] = holds[role]
+  end
+  return staged
+end
+
+-- Releases the physical hold on the screen the named source engine
+-- currently drives, so a flip reroutes engines without carrying a hold
+-- to the other screen. Engine fade tasks and holds are untouched.
+---@param slot OpeningMovieSlot scene slot
+---@param engine string source engine owning the released output
+local function releasePhysicalHold(slot, engine)
+  local holds = assert(slot.physicalBrightness, "movie slot keeps its staged physical holds")
+  local physical
+  if engine == "main" then
+    physical = slot.mainPhysical
+  elseif engine == "sub" then
+    physical = (slot.mainPhysical == "upper") and "lower" or "upper"
+  else
+    error(invalid("opening scene transition names no source engine", { engine = engine }), 0)
+  end
+  holds[physical] = "neutral"
+end
+
 ---@param self HgssOpeningMovie
 ---@param manifest table<string, unknown> validated scene bundle
 ---@return OpeningMovieSlot slot acquired scene slot
@@ -611,7 +663,8 @@ local function acquireSlot(self, manifest)
     spriteOrder = {},
     clipIds = {},
     clipStarts = {},
-    mainPhysical = "upper",
+    mainPhysical = entryMainPhysical(manifest),
+    physicalBrightness = entryPhysicalBrightness(manifest),
     emitters = {},
     emitterRecords = {},
     activeTown = nil,
@@ -1666,6 +1719,9 @@ local function applyEvent(self, slot, event)
         slot.wipeHold = { main = nil, sub = nil }
       end
       slot.wipeHold[event.engine] = nil
+      -- An opening wipe releases the physical hold on the screen its
+      -- engine currently drives; the staged sprite and layer state stays.
+      releasePhysicalHold(slot, event.engine)
     end
     startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "shutterFade" then
@@ -1682,6 +1738,10 @@ local function applyEvent(self, slot, event)
       main = { elapsed = 0, clean = 0 },
       sub = { elapsed = 0, clean = 0 },
     }
+    -- The ordered shutter covers both engines, so both entry holds retire
+    -- with its masks rather than painting over the reveal.
+    releasePhysicalHold(slot, "main")
+    releasePhysicalHold(slot, "sub")
     slot.effects[event.effect] = { started = true, done = false }
   elseif op == "setSpriteClip" then
     local instance = slot.spriteInstances[event.instanceId]
@@ -1743,8 +1803,9 @@ local function applyEvent(self, slot, event)
     background.scrollY = event.y
     slot.scrolls[event.engine .. ":" .. event.bgSlot] = nil
   elseif op == "setBrightness" then
-    -- A physical reset clears only the source engine currently driving
-    -- that screen; the other engine keeps its own hold or task.
+    -- A physical reset clears the staged hold on that screen plus the
+    -- fade task and hold of the source engine currently driving it; the
+    -- other engine keeps its own hold or task.
     if event.value ~= "neutral" then
       error(
         invalid("opening scene brightness carries no neutral reset", {
@@ -1763,6 +1824,8 @@ local function applyEvent(self, slot, event)
         0
       )
     end
+    local holds = assert(slot.physicalBrightness, "movie slot keeps its staged physical holds")
+    holds[event.physical] = "neutral"
     local engine = "sub"
     if (event.physical == "upper") == (slot.mainPhysical == "upper") then
       engine = "main"
@@ -1800,6 +1863,9 @@ local function applyEvent(self, slot, event)
           0
         )
       end
+      -- The authored fade replaces the entry hold on the screens it
+      -- drives; the fade task itself covers the transition.
+      releasePhysicalHold(slot, engine)
       state.task = {
         mode = event.mode,
         color = event.color,
@@ -3484,6 +3550,29 @@ local function drawShutterMask(self, slot, engine)
   end
 end
 
+-- Projects one physical screen, then paints its staged hold exactly once
+-- over the same host pane. Holds never touch the shared engine canvases,
+-- so a later mapping flip reroutes engines without carrying a hold.
+---@param self HgssOpeningMovie
+---@param canvas love.Canvas fixed role target to project
+---@param rect { x: number, y: number, width: number, height: number } host pane receiving the role
+---@param cover boolean true fills (crops) the pane, false fits (letterboxes) it
+---@param hold string|nil staged physical hold covering the pane
+local function blitPhysicalRole(self, canvas, rect, cover, hold)
+  self:_blitRole(canvas, rect, cover)
+  if hold ~= "white" and hold ~= "black" then
+    return
+  end
+  local graphics = self.graphics
+  if hold == "white" then
+    graphics.setColor(1, 1, 1, 1)
+  else
+    graphics.setColor(0, 0, 0, 1)
+  end
+  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+  graphics.setColor(1, 1, 1, 1)
+end
+
 ---@param self HgssOpeningMovie
 ---@param canvas love.Canvas fixed role target to project
 ---@param rect { x: number, y: number, width: number, height: number } host pane receiving the role
@@ -3897,23 +3986,32 @@ function HgssOpeningMovie:_render()
   local lowerCanvas = (roleEngine(slot, "upper") == "main") and self.subCanvas or self.mainCanvas
   assert(upperCanvas ~= nil, "movie role targets are missing")
   assert(lowerCanvas ~= nil, "movie role targets are missing")
+  local holds = slot.physicalBrightness
+  local upperHold = type(holds) == "table" and holds.upper or nil
+  local lowerHold = type(holds) == "table" and holds.lower or nil
   graphics.clear(0, 0, 0, 1)
   if configuration == "dualDisplay" and selection.secondary ~= nil and selection.secondary.usableBounds ~= nil then
     -- Each physical surface is its own source screen: fill it like the
     -- tall panes below, preserving the 4:3 projection without squeezing.
-    self:_blitRole(upperCanvas, copyRect(primary), true)
-    self:_blitRole(lowerCanvas, copyRect(selection.secondary.usableBounds), true)
+    blitPhysicalRole(self, upperCanvas, copyRect(primary), true, upperHold)
+    blitPhysicalRole(self, lowerCanvas, copyRect(selection.secondary.usableBounds), true, lowerHold)
     return
   end
   if configuration == "tall" then
     local half = primary.height / 2
-    self:_blitRole(upperCanvas, { x = primary.x, y = primary.y, width = primary.width, height = half }, true)
-    self:_blitRole(lowerCanvas, {
+    blitPhysicalRole(
+      self,
+      upperCanvas,
+      { x = primary.x, y = primary.y, width = primary.width, height = half },
+      true,
+      upperHold
+    )
+    blitPhysicalRole(self, lowerCanvas, {
       x = primary.x,
       y = primary.y + half,
       width = primary.width,
       height = primary.height - half,
-    }, true)
+    }, true, lowerHold)
     return
   end
   if shotIsPaired(slot) then
@@ -3926,21 +4024,42 @@ function HgssOpeningMovie:_render()
       local paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
       local x = primary.x + (primary.width - paneWidth * 2) / 2
       local y = primary.y + (primary.height - paneHeight) / 2
-      self:_blitRole(upperCanvas, { x = x, y = y, width = paneWidth, height = paneHeight }, false)
-      self:_blitRole(lowerCanvas, { x = x + paneWidth, y = y, width = paneWidth, height = paneHeight }, false)
+      blitPhysicalRole(self, upperCanvas, { x = x, y = y, width = paneWidth, height = paneHeight }, false, upperHold)
+      blitPhysicalRole(
+        self,
+        lowerCanvas,
+        { x = x + paneWidth, y = y, width = paneWidth, height = paneHeight },
+        false,
+        lowerHold
+      )
       return
     end
     local scale = math.min(primary.width / SOURCE_WIDTH, primary.height / (SOURCE_HEIGHT * 2))
     local paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
     local x = primary.x + (primary.width - paneWidth) / 2
     local y = primary.y + (primary.height - paneHeight * 2) / 2
-    self:_blitRole(upperCanvas, { x = x, y = y, width = paneWidth, height = paneHeight }, false)
-    self:_blitRole(lowerCanvas, { x = x, y = y + paneHeight, width = paneWidth, height = paneHeight }, false)
+    blitPhysicalRole(self, upperCanvas, { x = x, y = y, width = paneWidth, height = paneHeight }, false, upperHold)
+    blitPhysicalRole(
+      self,
+      lowerCanvas,
+      { x = x, y = y + paneHeight, width = paneWidth, height = paneHeight },
+      false,
+      lowerHold
+    )
     return
   end
-  local activeCanvas = (activeEngine(slot) == "main") and self.mainCanvas or self.subCanvas
+  local active = activeEngine(slot)
+  local activeCanvas = (active == "main") and self.mainCanvas or self.subCanvas
   assert(activeCanvas ~= nil, "movie role targets are missing")
-  self:_blitRole(activeCanvas, copyRect(primary), false)
+  -- The single stage shows the authored active engine on its own physical
+  -- screen, so a staged hold on that screen still covers the output.
+  local activeHold
+  if active == "main" then
+    activeHold = (slot.mainPhysical == "upper") and upperHold or lowerHold
+  else
+    activeHold = (slot.mainPhysical == "upper") and lowerHold or upperHold
+  end
+  blitPhysicalRole(self, activeCanvas, copyRect(primary), false, activeHold)
 end
 
 function HgssOpeningMovie:draw()

@@ -602,8 +602,11 @@ DerivedAssetContract.startupTitle = {
 -- blocks, exact generation/velocity/scale magnitudes, placement/draw
 -- kinds, rotation and texture modes, child records, and spin/magnet
 -- fields; a v7 boolean record never validates.
+-- The v9 record keeps the v8 grammar and carries the required source
+-- entry display record: the physical screen holding the main engine plus
+-- the physical upper/lower holds staged before the first source case.
 DerivedAssetContract.startupOpeningScene = {
-  schema = "g4-startup-opening-scene-v8",
+  schema = "g4-startup-opening-scene-v9",
   tickRate = 30,
 }
 

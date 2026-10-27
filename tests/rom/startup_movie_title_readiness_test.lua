@@ -14,7 +14,7 @@ local ArtifactState = require("romdump.src.build.ArtifactState")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v8"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v10"
 local SOURCE_TICK_RATE = 30
 local JOURNEY_GENERATION = "startup-journey"
 

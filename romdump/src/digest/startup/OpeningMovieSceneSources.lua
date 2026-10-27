@@ -452,6 +452,35 @@ local INITIAL_VISIBLE = {
   [5] = { main = { [1] = true, [2] = true }, sub = { [1] = true, [2] = true } },
 }
 
+-- Source entry display facts: the retail IntroMovie_SceneN_Init mapping
+-- and brightness each scene holds before its first Main update. Scenes 1,
+-- 4, and 5 flip the main engine onto the physical lower screen; scenes 2
+-- and 3 keep it on the physical upper screen. Scene 2 opens both screens
+-- white, scene 3 keeps the inherited upper white while holding the lower
+-- screen black, and scenes 4 and 5 hold both screens black. The compiler
+-- publishes these verbatim; the runtime stages them on slot acquisition.
+local INITIAL_DISPLAY = {
+  [1] = { mainPhysical = "lower", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+  [2] = { mainPhysical = "upper", physicalBrightness = { upper = "white", lower = "white" } },
+  [3] = { mainPhysical = "upper", physicalBrightness = { upper = "white", lower = "black" } },
+  [4] = { mainPhysical = "lower", physicalBrightness = { upper = "black", lower = "black" } },
+  [5] = { mainPhysical = "lower", physicalBrightness = { upper = "black", lower = "black" } },
+}
+
+---@param sceneNumber integer
+---@return table<string, unknown> source entry display record for the scene
+function OpeningMovieSceneSources.initialDisplay(sceneNumber)
+  checkScene(sceneNumber)
+  local entry = assert(INITIAL_DISPLAY[sceneNumber], "opening scene entry display names a compiled scene")
+  return {
+    mainPhysical = entry.mainPhysical,
+    physicalBrightness = {
+      upper = entry.physicalBrightness.upper,
+      lower = entry.physicalBrightness.lower,
+    },
+  }
+end
+
 ---@param sceneNumber integer
 ---@param engine string source engine owning the slot
 ---@param bgSlot integer numeric background plane 0..3
