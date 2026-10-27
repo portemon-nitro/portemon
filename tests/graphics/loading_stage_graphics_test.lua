@@ -560,7 +560,7 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
       return true, nil
     end,
     requestMilestone = function(name, _)
-      if name == "startup-title" then
+      if name == "startup-title" or name == "startup-audio" then
         return true, nil
       end
       return false, nil
@@ -600,6 +600,11 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
       height = HEIGHT,
       initialImport = initialImport,
       loading = presentation,
+      audio = {
+        openingReady = function()
+          return true
+        end,
+      },
     })
     return state
   end

@@ -230,8 +230,42 @@ local function startupAudioBorrow(versionId, epoch)
     end
   end
   return {
+    -- Reports the current-epoch opening start result: true only after the
+    -- selected session accepts SEQ_GS_TITLE. A stale epoch, missing
+    -- session or callback, rejected play, or composition failure admits
+    -- no movie and returns its reason instead of succeeding silently.
+    ---@return boolean acknowledged
+    ---@return string? reason
     openingReady = function()
-      invoke("beginOpening", true)
+      if App.epoch ~= epoch or App.selectedVersionId ~= versionId then
+        return false, "stale selection epoch"
+      end
+      local session = App.startupAudioSession
+      if session == nil then
+        session = App._ensureStartupAudio(versionId, epoch, nil)
+        if session == nil then
+          return false, App.startupAudioError or "startup audio unavailable"
+        end
+      end
+      if type(session.beginOpening) ~= "function" then
+        App._recordStartupAudioError("startup audio cannot start the opening track")
+        return false, "startup audio cannot start the opening track"
+      end
+      local ok, acknowledged, reason = pcall(session.beginOpening, session)
+      if not ok then
+        App._recordStartupAudioError(acknowledged)
+        App._releaseStartupAudio()
+        return false, tostring(acknowledged)
+      end
+      if acknowledged ~= true then
+        local detail = reason or App.startupAudioError or "startup audio unavailable"
+        App._recordStartupAudioError(detail)
+        if session.disposed then
+          App._releaseStartupAudio()
+        end
+        return false, detail
+      end
+      return true, nil
     end,
     titleReady = function(titleRecord)
       invoke("beginTitle", true, titleRecord)
