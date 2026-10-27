@@ -66,57 +66,46 @@ end
 ---@param artifact PreparedArtifact
 ---@param bundle table<string, unknown>
 ---@param generationId string
----@param pairIndex integer?
 ---@return string
-function StartupCacheWriter.stageLoader(artifact, bundle, generationId, pairIndex)
+function StartupCacheWriter.stageLoader(artifact, bundle, generationId)
   assert(artifact and type(artifact.stageFs) == "function", "startup staging requires a PreparedArtifact")
   assert(type(bundle) == "table" and type(bundle.manifest) == "table", "loader bundle requires its manifest")
   assert(type(bundle.atlases) == "table", "loader bundle requires compiled atlases")
   assert(type(generationId) == "string" and generationId ~= "", "startup generation identity is required")
-  local selected = pairIndex ~= nil and pairIndex or bundle.manifest.pairIndex
-  assert(
-    type(selected) == "number" and selected % 1 == 0 and selected >= 1 and selected <= 32,
-    "walking pair index must be an integer 1..32"
-  )
-  assert(bundle.manifest.pairIndex == selected, "loader bundle names another walking pair")
-  assert(bundle.manifest.schema == "g4-startup-walker-v1", "loader bundle carries the keyed pair schema")
-  local pairRoot = "assets/generated/startup/loader/pairs/" .. tostring(selected)
-  local manifestPath = StartupAssetCache.walkerPath(selected)
+  assert(bundle.manifest.schema == "g4-startup-walker-v2", "loader bundle carries the shared catalog schema")
+  assert(bundle.manifest.pairIndex == nil, "loader bundle carries no pair selection")
+  local assetRoot = "assets/generated/startup/loader"
+  local manifestPath = StartupAssetCache.walkerCatalogPath()
   local manifest = copyManifest(bundle.manifest, generationId)
   local count = 0
   local files = {}
   for path, atlas in pairs(bundle.atlases) do
     assert(type(atlas) == "table", "loader atlas must contain pixel dimensions")
     assert(
-      type(path) == "string" and path:sub(1, #pairRoot + 1) == pairRoot .. "/",
-      "loader atlas escapes its walking pair root"
+      type(path) == "string" and path:sub(1, #assetRoot + 10) == assetRoot .. "/subjects/",
+      "loader atlas escapes its shared subject root"
     )
     if not hasTransparentTexel(atlas.pixels) then
-      Errors.raise("STARTUP_ASSET_STAGE_INVALID", "staged walking pair atlas has no transparent pixels", {
+      Errors.raise("STARTUP_ASSET_STAGE_INVALID", "staged walking subject atlas has no transparent pixels", {
         path = path,
       })
     end
     files[path] = PngWriter.encode(atlas.width, atlas.height, atlas.pixels)
     count = count + 1
   end
-  assert(count == 2, "one walking pair stages exactly two atlases")
+  assert(count == 18, "one shared catalog stages exactly eighteen atlases")
   local stage = artifact:stageFs()
   artifact:addOwnedRoot(manifestPath)
-  artifact:addOwnedRoot(pairRoot)
-  writeFiles(stage, files, pairRoot)
+  artifact:addOwnedRoot(assetRoot)
+  writeFiles(stage, files, assetRoot)
   stage:writeLua(manifestPath, manifest)
-  local readback, readError = StartupAssetCache.loadWalker(stage, selected)
+  local readback, readError = StartupAssetCache.loadWalker(stage, manifest.versionId)
   if readback == nil or readback.generationId ~= generationId then
-    Errors.raise("STARTUP_ASSET_STAGE_INVALID", "staged walking pair manifest failed validation", {
+    Errors.raise("STARTUP_ASSET_STAGE_INVALID", "staged walking catalog manifest failed validation", {
       cause = readError and tostring(readError) or "generation mismatch",
     })
   end
-  return "startup-loader:"
-    .. tostring(selected)
-    .. ":"
-    .. generationId
-    .. ":"
-    .. Hashing.hashLua(bundle.dependencies or bundle.manifest)
+  return "startup-loader:global:" .. generationId .. ":" .. Hashing.hashLua(bundle.dependencies or bundle.manifest)
 end
 
 ---@param artifact PreparedArtifact

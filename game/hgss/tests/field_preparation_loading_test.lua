@@ -19,8 +19,8 @@ local function keyedHost(behavior)
   -- The typed pair demand is a plain dot call carrying the caller's 1..32
   -- selection; anything else (including a colon-passed self) fails the
   -- pair identity assertions below.
-  function host.requestStartupWalker(pairIndex, urgency)
-    calls.walker[#calls.walker + 1] = { pairIndex = pairIndex, urgency = urgency }
+  function host.requestStartupWalker(urgency)
+    calls.walker[#calls.walker + 1] = { urgency = urgency }
     if behavior.walkerFailure ~= nil then
       return nil, behavior.walkerFailure
     end
@@ -126,10 +126,9 @@ local function assertNoLegacyGlobalMilestone(calls)
   end
 end
 
-local function assertOnlySelectedPair(calls)
-  Assert.isTrue(#calls.walker >= 1, "the decorative demand names the selected pair")
+local function assertSharedDecorativeDemand(calls)
+  Assert.isTrue(#calls.walker >= 1, "the decorative demand observes the shared visuals")
   for _, call in ipairs(calls.walker) do
-    Assert.equal(call.pairIndex, PAIR_INDEX, "every decorative demand names the same selected pair")
     Assert.equal(call.urgency, "near", "the decorative demand stays nonblocking")
   end
 end
@@ -153,7 +152,7 @@ function T.draws_one_loader_frame_before_an_otherwise_ready_continue_transfer()
   state:update(1 / 60)
   Assert.equal(counts.transfers, 1, "readiness transfers exactly once after the first loader draw")
   Assert.equal(watch.disposes, 1, "the transfer releases the entry stage exactly once")
-  assertOnlySelectedPair(calls)
+  assertSharedDecorativeDemand(calls)
   assertNoLegacyGlobalMilestone(calls)
 end
 

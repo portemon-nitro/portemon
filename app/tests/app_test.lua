@@ -188,9 +188,6 @@ local function withAppHarness(opts, ready, fn)
     if selector.requestKind == "milestone" and selector.name == "bootstrap" then
       return true, nil
     end
-    if selector.requestKind == "milestone" and selector.name == "startup-loader" then
-      return true, nil
-    end
     if selector.requestKind == "milestone" and selector.name == "startup-title" then
       return result.startupTitleReady == true, nil
     end
@@ -201,10 +198,10 @@ local function withAppHarness(opts, ready, fn)
     if selector.requestKind == "opening-scene" then
       return result.startupTitleReady == true, nil
     end
-    -- A cold first import gates on its selected walking pair: the harness
-    -- models a healthy worker by default, while tests set walkerReady to
-    -- false to hold the card on a still-pending pair.
-    if selector.requestKind == "startup-walker" and selector.pairIndex == App.pairIndex then
+    -- Boot gates on the shared walking visuals: the harness models a
+    -- healthy worker by default, while tests set walkerReady to false to
+    -- hold the card on still-pending art.
+    if selector.requestKind == "startup-walker" then
       if result.walkerReady == false then
         return nil, nil
       end
@@ -1798,7 +1795,6 @@ function T.menu_installation_requests_intro_and_field_closures_at_near_urgency()
       "field-runtime",
       "new-game-intro",
       "startup-audio",
-      "startup-loader",
       "startup-title",
     }, "menu installation demands the intro and both field closures alongside the bootstrap check")
     for _, name in ipairs({ "new-game-intro", "field-planning", "field-runtime" }) do
@@ -2559,14 +2555,16 @@ function T.registered_reimport_stays_warm_while_true_first_import_stays_cold()
   end
 end
 
--- A warm selection keeps its one published pair across the title handoff,
--- retail entry, and the save editor: every owner forwards the same index
--- without reselecting.
-function T.warm_selection_keeps_one_pair_across_title_game_and_editor()
+-- A selected pair survives the title handoff, retail entry, menu return,
+-- and the save editor without reselecting, a new selection draws again,
+-- and the title never demands its own loader milestone: boot already owns
+-- the one shared demand.
+function T.selected_pair_survives_title_menu_game_editor_and_rerolls_on_reselect()
   local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
   local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
   local savedLoadWalker = StartupAssetCache.loadWalker
   local savedEditorNew = SaveEditorState.new
+  local savedRandom = love.math.random
   local ok, err = xpcall(function()
     StartupAssetCache.loadWalker = function(_, pairIndex)
       if pairIndex == 7 then
@@ -2584,35 +2582,59 @@ function T.warm_selection_keeps_one_pair_across_title_game_and_editor()
     withAppHarness({ dev = false }, function(id)
       return id == "soulsilver"
     end, function(result)
+      local loaderMilestones = 0
+      local service = assert(App.service, "selection borrows a service")
+      local originalRequest = service.request
+      local originalObserve = service.observe
+      service.request = function(self, epoch, selector)
+        if type(selector) == "table" and selector.requestKind == "milestone" and selector.name == "startup-loader" then
+          loaderMilestones = loaderMilestones + 1
+        end
+        return originalRequest(self, epoch, selector)
+      end
+      service.observe = function(self, epoch, selector)
+        if type(selector) == "table" and selector.requestKind == "milestone" and selector.name == "startup-loader" then
+          loaderMilestones = loaderMilestones + 1
+        end
+        return originalObserve(self, epoch, selector)
+      end
+      local draws = { 5, 9 }
+      local drawCalls = 0
+      love.math.random = function(_, _)
+        drawCalls = drawCalls + 1
+        return assert(draws[drawCalls], "one draw per selection")
+      end
       App._selectVersion("soulsilver")
+      Assert.equal(App.pairIndex, 5, "the epoch keeps its drawn pair despite the warm catalog")
       App.update(0.016)
       App.update(0.016)
       local StartupTitleState = require("app.src.launcher.StartupTitleState")
       Assert.equal(
         getmetatable(App.state).__index,
         StartupTitleState,
-        "the warm pair transfers into startup title ownership"
+        "the drawn pair transfers into startup title ownership"
       )
-      Assert.equal(App.pairIndex, 7, "the warm epoch settles on the published pair")
-      Assert.isFalse(App.state.initialImport, "the ordinary warm selection takes no import beat")
       finishStartupTitle(result)
       local menu = assert(App.state, "skip installs the staged menu")
-      Assert.equal(menu, result.menus[#result.menus], "the exact staged menu installs")
       menu.options.onResult({ kind = "new_game" })
       local launch = assert(result.launches[#result.launches], "retail entry is captured")
-      Assert.equal(launch.startupPairIndex, 7, "retail entry forwards the selected pair")
-      Assert.equal(App.pairIndex, 7, "entering retail never reselects the pair")
+      Assert.equal(launch.startupPairIndex, 5, "retail entry forwards the drawn pair")
+      Assert.equal(App.pairIndex, 5, "entering retail never reselects the pair")
       launch.onExit({ kind = "main_menu" })
       local returned = assert(App.state, "returning installs a menu")
-      Assert.equal(App.pairIndex, 7, "returning to the menu never reselects the pair")
+      Assert.equal(App.pairIndex, 5, "returning to the menu never reselects the pair")
       returned.options.onResult({ kind = "edit", saveId = "synthetic-save" })
       Assert.notNil(editorOptions, "the save editor receives the selection")
-      Assert.equal(editorOptions.startupPairIndex, 7, "the editor forwards the selected pair")
-      Assert.equal(App.pairIndex, 7, "opening the editor never reselects the pair")
+      Assert.equal(editorOptions.startupPairIndex, 5, "the editor forwards the drawn pair")
+      Assert.equal(loaderMilestones, 0, "the title never demands its own loader milestone")
+      App._selectVersion("soulsilver")
+      Assert.equal(App.pairIndex, 9, "a new selection draws again")
+      Assert.equal(drawCalls, 2, "each selection draws exactly once")
     end)
   end, debug.traceback)
   StartupAssetCache.loadWalker = savedLoadWalker
   SaveEditorState.new = savedEditorNew
+  love.math.random = savedRandom
   if not ok then
     error(err, 0)
   end

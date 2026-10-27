@@ -15,11 +15,10 @@ local T = {}
 
 function T.startup_families_are_closed_global_artifacts()
   Assert.isTrue(ArtifactState.KINDS["startup-loader"] == true, "startup-loader is a known family")
-  Assert.equal(ArtifactState.path("startup-loader", "1"), "data/generated/jobs/startup-loader/1.lua")
-  Assert.equal(ArtifactState.path("startup-loader", "32"), "data/generated/jobs/startup-loader/32.lua")
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "global"), "startup-loader rejects the legacy global key")
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "0"), "startup-loader keys start at one")
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "33"), "startup-loader keys end at thirty-two")
+  Assert.equal(ArtifactState.path("startup-loader", "global"), "data/generated/jobs/startup-loader/global.lua")
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "1"), "startup-loader rejects numeric selectors")
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "32"), "startup-loader rejects numeric selectors")
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "0"), "startup-loader rejects numeric selectors")
   Assert.isTrue(pcall(ArtifactJobs.sizeClass, "startup-loader"), "startup-loader has a worker descriptor")
   Assert.isTrue(ArtifactState.KINDS["startup-title"] == true, "startup-title is a known family")
   Assert.equal(ArtifactState.path("startup-title", "global"), "data/generated/jobs/startup-title/global.lua")
@@ -45,23 +44,22 @@ function T.startup_jobs_are_present_in_the_full_corpus_iterator()
       break
     end
     if job.kind == "startup-loader" then
-      found[job.kind] = (found[job.kind] or 0) + 1
+      found[job.kind] = job.key == "global"
     elseif job.kind == "startup-title" then
       found[job.kind] = job.key == "global"
     end
   end
-  Assert.isNil(found["startup-loader"], "the selected walking pair never joins the eager corpus sweep")
-  Assert.deepEqual(found, { ["startup-title"] = true })
+  Assert.deepEqual(found, { ["startup-loader"] = true, ["startup-title"] = true })
 end
 
 function T.startup_manifests_have_fixed_versioned_paths()
   local ok, StartupAssetCache = pcall(require, "libs.assets.src.StartupAssetCache")
   Assert.isTrue(ok, "strict startup manifest reader exists")
-  Assert.equal(StartupAssetCache.walkerPath(5), "data/generated/startup/loader/pairs/5.lua")
+  Assert.equal(StartupAssetCache.walkerCatalogPath(), "data/generated/startup/loader/catalog.lua")
   Assert.equal(StartupAssetCache.titlePath(), "data/generated/startup/title.lua")
 end
 
-function T.walker_manifest_requires_its_generated_atlas_files()
+function T.shared_catalog_manifest_requires_its_generated_subject_files()
   local visual = {
     render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
     pivot = { x = 0.5, y = 1 },
@@ -69,17 +67,22 @@ function T.walker_manifest_requires_its_generated_atlas_files()
       east = { walk = { frames = { { frameIndex = 1, ticks = 1 }, { frameIndex = 2, ticks = 1 } } } },
     },
   }
+  local followers = {}
+  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
+    followers[tostring(speciesId)] = {
+      atlasPath = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png",
+      visual = visual,
+    }
+  end
   local manifest = {
     schema = StartupAssetContract.startupWalker.schema,
     versionId = "heartgold",
     generationId = "generation-a",
-    pairIndex = 5,
-    hero = { atlasPath = "assets/generated/startup/loader/pairs/5/hero.png", visual = visual },
-    follower = {
-      speciesId = 25,
-      atlasPath = "assets/generated/startup/loader/pairs/5/follower.png",
-      visual = visual,
+    heroes = {
+      ethan = { atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png", visual = visual },
+      lyra = { atlasPath = "assets/generated/startup/loader/subjects/heroes/lyra.png", visual = visual },
     },
+    followers = followers,
   }
   local cacheFs = {
     loadLua = function()
@@ -89,9 +92,9 @@ function T.walker_manifest_requires_its_generated_atlas_files()
       return false
     end,
   }
-  local loaded, err = StartupAssetCache.loadWalker(cacheFs, 5)
+  local loaded, err = StartupAssetCache.loadWalker(cacheFs, "heartgold")
   Assert.isNil(loaded)
-  Assert.notNil(err, "a walking pair with missing atlas files is not ready")
+  Assert.notNil(err, "a shared catalog with missing subject files is not ready")
 end
 
 -- The visual startup scopes own no audio membership even beside an
@@ -120,7 +123,7 @@ function T.title_visual_scopes_ignore_adopted_audio_membership()
     Assert.deepEqual(dependencies, {}, "startup-title keeps no audio prerequisite")
   end
   do
-    local dependencies, complete = ArtifactJobs.dependencies("startup-loader", "5", plan)
+    local dependencies, complete = ArtifactJobs.dependencies("startup-loader", "global", plan)
     Assert.isTrue(complete, "startup-loader stays final beside an adopted audio plan")
     Assert.deepEqual(dependencies, {}, "startup-loader keeps no audio prerequisite")
   end
@@ -180,40 +183,57 @@ function T.startup_writer_owns_disjoint_roots_and_stages_manifest_last()
       },
     }
   end
-  local heroPixels = string.char(200, 180, 120, 255) .. string.char(0, 0, 0, 0)
-  local followerPixels = string.char(200, 180, 120, 255) .. string.char(0, 0, 0, 0)
+  local subjectPixels = string.char(200, 180, 120, 255) .. string.char(0, 0, 0, 0)
+  local heroes = {
+    ethan = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png",
+      visual = pairVisual(1, 1),
+    },
+    lyra = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/lyra.png",
+      visual = pairVisual(1, 1),
+    },
+  }
+  local followers = {}
+  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
+    followers[tostring(speciesId)] = {
+      atlasPath = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png",
+      visual = pairVisual(1, 1),
+    }
+  end
+  local atlases = {}
+  for _, entry in pairs(heroes) do
+    atlases[entry.atlasPath] = { width = 2, height = 1, pixels = subjectPixels }
+  end
+  for _, entry in pairs(followers) do
+    atlases[entry.atlasPath] = { width = 2, height = 1, pixels = subjectPixels }
+  end
   local bundle = {
     manifest = {
-      schema = "g4-startup-walker-v1",
+      schema = "g4-startup-walker-v2",
       versionId = "heartgold",
-      pairIndex = 5,
-      hero = {
-        atlasPath = "assets/generated/startup/loader/pairs/5/hero.png",
-        visual = pairVisual(1, 1),
-      },
-      follower = {
-        speciesId = 25,
-        atlasPath = "assets/generated/startup/loader/pairs/5/follower.png",
-        visual = pairVisual(1, 1),
-      },
+      heroes = heroes,
+      followers = followers,
     },
-    atlases = {
-      ["assets/generated/startup/loader/pairs/5/hero.png"] = { width = 2, height = 1, pixels = heroPixels },
-      ["assets/generated/startup/loader/pairs/5/follower.png"] = { width = 2, height = 1, pixels = followerPixels },
-    },
+    atlases = atlases,
     dependencies = { versionId = "heartgold" },
     sourceHash = "source-hash",
   }
-  Assert.isTrue(pcall(StartupCacheWriter.stageLoader, artifact, bundle, "generation-a", 5))
-  Assert.equal(#roots, 2, "one manifest file and one pair directory are owned")
+  Assert.isTrue(pcall(StartupCacheWriter.stageLoader, artifact, bundle, "generation-a"))
   local rootSet = {}
   for _, path in ipairs(roots) do
     rootSet[path] = true
   end
-  Assert.isTrue(rootSet["data/generated/startup/loader/pairs/5.lua"])
-  Assert.isTrue(rootSet["assets/generated/startup/loader/pairs/5"])
-  Assert.isNil(rootSet["assets/generated/startup/loader"], "staging one pair never owns the shared loader root")
-  Assert.equal(writes[#writes].path, StartupAssetCache.walkerPath(5), "manifest is the last staged file")
+  Assert.isTrue(rootSet["data/generated/startup/loader/catalog.lua"], "the shared catalog owns its manifest")
+  Assert.isTrue(rootSet["assets/generated/startup/loader"], "the shared catalog owns the loader root")
+  local pngCount = 0
+  for _, write in ipairs(writes) do
+    if write.path:sub(-4) == ".png" then
+      pngCount = pngCount + 1
+    end
+  end
+  Assert.equal(pngCount, 18, "the shared catalog stages exactly eighteen subject images")
+  Assert.equal(writes[#writes].path, StartupAssetCache.walkerCatalogPath(), "manifest is the last staged file")
   Assert.equal(writes[#writes].record.generationId, "generation-a")
 end
 
@@ -435,11 +455,11 @@ function T.startup_visual_dependencies_are_empty_and_final()
     Assert.deepEqual(dependencies, {}, "startup-title carries no prerequisite jobs")
   end
   do
-    local dependencies, complete = ArtifactJobs.dependencies("startup-loader", "5", {})
+    local dependencies, complete = ArtifactJobs.dependencies("startup-loader", "global", {})
     Assert.isTrue(complete, "startup-loader resolves without adopted plans")
     Assert.deepEqual(dependencies, {}, "startup-loader carries no prerequisite jobs")
   end
-  Assert.deepEqual(ArtifactJobs.startupLoaderJobs(5), { { kind = "startup-loader", key = "5" } })
+  Assert.deepEqual(ArtifactJobs.startupLoaderJobs(), { { kind = "startup-loader", key = "global" } })
   Assert.deepEqual(ArtifactJobs.startupTitleJobs(), { { kind = "startup-title", key = "global" } })
 end
 
@@ -1003,40 +1023,44 @@ local function startupPairVisual(frameWidth, frameHeight)
   }
 end
 
-local function startupPairManifest(pairIndex, versionId)
-  return {
-    schema = "g4-startup-walker-v1",
-    versionId = versionId,
-    generationId = "generation-a",
-    pairIndex = pairIndex,
-    hero = {
-      atlasPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/hero.png",
+local function sharedCatalogManifest(versionId)
+  local heroes = {
+    ethan = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png",
       visual = startupPairVisual(16, 24),
     },
-    follower = {
-      speciesId = 25,
-      atlasPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/follower.png",
-      visual = startupPairVisual(12, 20),
+    lyra = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/lyra.png",
+      visual = startupPairVisual(16, 24),
     },
+  }
+  local followers = {}
+  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
+    followers[tostring(speciesId)] = {
+      atlasPath = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png",
+      visual = startupPairVisual(12, 20),
+    }
+  end
+  return {
+    schema = "g4-startup-walker-v2",
+    versionId = versionId,
+    generationId = "generation-a",
+    heroes = heroes,
+    followers = followers,
   }
 end
 
--- Keyed pair readiness is isolated per selection: numeric pair keys address
--- their own receipt and manifest roots, the legacy global key addresses
--- nothing, and only the manifest matching the requested pair validates.
-function T.startup_pair_receipts_are_keyed_and_isolated()
-  Assert.equal(ArtifactState.path("startup-loader", "1"), "data/generated/jobs/startup-loader/1.lua")
-  Assert.equal(ArtifactState.path("startup-loader", "32"), "data/generated/jobs/startup-loader/32.lua")
-  Assert.isFalse(
-    pcall(ArtifactState.path, "startup-loader", "global"),
-    "the legacy global key no longer addresses a walking pair"
-  )
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "0"), "pair keys start at one")
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "33"), "pair keys end at thirty-two")
-  Assert.isTrue(type(StartupAssetCache.walkerPath) == "function", "the startup cache owns the per-pair manifest path")
-  Assert.equal(StartupAssetCache.walkerPath(5), "data/generated/startup/loader/pairs/5.lua")
-  Assert.isTrue(type(StartupAssetCache.loadWalker) == "function", "the startup cache reads one strict pair manifest")
-  local manifest = startupPairManifest(5, "heartgold")
+-- Global catalog readiness is isolated per edition: the global key
+-- addresses its own receipt and catalog root, numeric keys address
+-- nothing, and only the manifest matching the requested edition validates.
+function T.shared_catalog_receipts_are_global_and_isolated()
+  Assert.equal(ArtifactState.path("startup-loader", "global"), "data/generated/jobs/startup-loader/global.lua")
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "1"), "numeric loader keys are rejected")
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "32"), "numeric loader keys are rejected")
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "0"), "numeric loader keys are rejected")
+  Assert.equal(StartupAssetCache.walkerCatalogPath(), "data/generated/startup/loader/catalog.lua")
+  Assert.isTrue(type(StartupAssetCache.loadWalker) == "function", "the startup cache reads one strict catalog")
+  local manifest = sharedCatalogManifest("heartgold")
   local cacheFs = {
     loadLua = function()
       return manifest
@@ -1045,13 +1069,12 @@ function T.startup_pair_receipts_are_keyed_and_isolated()
       return true
     end,
   }
-  local loaded, loadErr = StartupAssetCache.loadWalker(cacheFs, 5)
-  Assert.notNil(loaded, "the strict pair manifest loads: " .. tostring(loadErr))
-  Assert.equal(loaded.pairIndex, 5, "the loaded pair carries its selection")
-  Assert.equal(loaded.follower.speciesId, 25, "the loaded pair names its follower species")
-  local wrongPair, wrongErr = StartupAssetCache.loadWalker(cacheFs, 6)
-  Assert.isNil(wrongPair, "a manifest for another pair never authorizes this pair")
-  Assert.notNil(wrongErr, "the wrong-pair manifest reports its cause")
+  local loaded, loadErr = StartupAssetCache.loadWalker(cacheFs, "heartgold")
+  Assert.notNil(loaded, "the strict shared catalog loads: " .. tostring(loadErr))
+  Assert.isNil(loaded.pairIndex, "the shared catalog carries no pair selection")
+  local wrongEdition, wrongErr = StartupAssetCache.loadWalker(cacheFs, "soulsilver")
+  Assert.isNil(wrongEdition, "a catalog for another edition never authorizes this edition")
+  Assert.notNil(wrongErr, "the wrong-edition catalog reports its cause")
   local missingFs = {
     loadLua = function()
       return manifest
@@ -1060,32 +1083,34 @@ function T.startup_pair_receipts_are_keyed_and_isolated()
       return false
     end,
   }
-  local missing, missingErr = StartupAssetCache.loadWalker(missingFs, 5)
-  Assert.isNil(missing, "a pair with missing atlas files is not ready")
-  Assert.notNil(missingErr, "the missing atlas reports its cause")
+  local missing, missingErr = StartupAssetCache.loadWalker(missingFs, "heartgold")
+  Assert.isNil(missing, "a catalog with missing subject files is not ready")
+  Assert.notNil(missingErr, "the missing subject reports its cause")
   local legacyFs = {
     loadLua = function()
-      return { schema = StartupAssetContract.startupLoader.schema, versionId = "heartgold" }
+      return { schema = "g4-startup-walker-v1", versionId = "heartgold" }
     end,
     exists = function()
       return true
     end,
   }
-  local legacy, legacyErr = StartupAssetCache.loadWalker(legacyFs, 5)
-  Assert.isNil(legacy, "the legacy global manifest never reads as a pair")
-  Assert.notNil(legacyErr, "the legacy manifest reports its cause")
+  local legacy, legacyErr = StartupAssetCache.loadWalker(legacyFs, "heartgold")
+  Assert.isNil(legacy, "the retired pair schema never reads as a catalog")
+  Assert.notNil(legacyErr, "the retired schema reports its cause")
 end
 
--- The pair reader rejects invalid selections, stale editions, and pivot or
--- clip defects without touching the cache.
-function T.startup_pair_reader_rejects_invalid_selection_and_defects()
-  for _, badIndex in ipairs({ 0, 33, 1.5, "5" }) do
-    Assert.isFalse(pcall(StartupAssetCache.loadWalker, {}, badIndex), "pair " .. tostring(badIndex) .. " is rejected")
-    Assert.isFalse(pcall(StartupAssetCache.walkerPath, badIndex), "pair path " .. tostring(badIndex) .. " is rejected")
+-- The catalog reader rejects unknown editions, subjects, and atlas paths
+-- plus pivot or clip defects without touching the cache.
+function T.shared_catalog_reader_rejects_invalid_edition_subjects_and_defects()
+  for _, badEdition in ipairs({ "red", "", 5 }) do
+    Assert.isFalse(
+      pcall(StartupAssetCache.loadWalker, {}, badEdition),
+      "edition " .. tostring(badEdition) .. " is rejected"
+    )
   end
-  local manifest = startupPairManifest(5, "heartgold")
-  local badPivot = startupPairManifest(5, "heartgold")
-  badPivot.hero.visual.pivot = { x = 0, y = 0 }
+  local manifest = sharedCatalogManifest("heartgold")
+  local badPivot = sharedCatalogManifest("heartgold")
+  badPivot.heroes.ethan.visual.pivot = { x = 0, y = 0 }
   local pivotFs = {
     loadLua = function()
       return badPivot
@@ -1094,105 +1119,93 @@ function T.startup_pair_reader_rejects_invalid_selection_and_defects()
       return true
     end,
   }
-  local rejected, rejectErr = StartupAssetCache.loadWalker(pivotFs, 5)
-  Assert.isNil(rejected, "a manifest without the source bottom-center pivot is rejected")
+  local rejected, rejectErr = StartupAssetCache.loadWalker(pivotFs, "heartgold")
+  Assert.isNil(rejected, "a catalog without the source bottom-center pivot is rejected")
   Assert.notNil(rejectErr, "the pivot defect reports its cause")
+  local badPath = sharedCatalogManifest("heartgold")
+  badPath.followers["25"].atlasPath = "assets/generated/startup/loader/pairs/5/follower.png"
+  local pathFs = {
+    loadLua = function()
+      return badPath
+    end,
+    exists = function()
+      return true
+    end,
+  }
+  local badPathLoaded, badPathErr = StartupAssetCache.loadWalker(pathFs, "heartgold")
+  Assert.isNil(badPathLoaded, "a subject atlas outside the subject root is rejected")
+  Assert.notNil(badPathErr, "the escaped atlas path reports its cause")
+  local badSubject = sharedCatalogManifest("heartgold")
+  badSubject.followers["999999"] = badSubject.followers["25"]
+  badSubject.followers["25"] = nil
+  local subjectFs = {
+    loadLua = function()
+      return badSubject
+    end,
+    exists = function()
+      return true
+    end,
+  }
+  local badSubjectLoaded, badSubjectErr = StartupAssetCache.loadWalker(subjectFs, "heartgold")
+  Assert.isNil(badSubjectLoaded, "a catalog with an unknown follower subject is rejected")
+  Assert.notNil(badSubjectErr, "the unknown subject reports its cause")
 end
 
--- Staging one pair never touches its siblings: the writer owns only its
--- manifest and pair directory, and no staged file escapes its pair root.
-function T.startup_pair_writer_preserves_sibling_pairs()
+-- A failed catalog restage preserves its previous live output: the writer
+-- stages all eighteen subject images before the manifest, and a failure
+-- halfway through leaves the previous live catalog and receipt intact.
+function T.shared_catalog_failed_publish_keeps_previous_live_catalog()
   local StartupCacheWriter = require("romdump.src.digest.startup.StartupCacheWriter")
-  local function stagePairWrites(pairIndex)
-    local writes, roots = {}, {}
-    local stage = {
-      write = function(_, path, bytes)
-        writes[#writes + 1] = { path = path, bytes = bytes }
-      end,
-      writeLua = function(_, path, record)
-        writes[#writes + 1] = { path = path, record = record }
-      end,
-      loadLua = function(_, path)
-        for _, write in ipairs(writes) do
-          if write.path == path then
-            return write.record
-          end
-        end
-      end,
-      exists = function(_, path, kind)
-        for _, write in ipairs(writes) do
-          if write.path == path then
-            return true
-          end
-        end
-        return false
-      end,
-    }
-    local artifact = {
-      stageFs = function()
-        return stage
-      end,
-      addOwnedRoot = function(_, path)
-        roots[#roots + 1] = path
-      end,
-    }
-    local pixels = string.char(200, 180, 120, 255) .. string.char(0, 0, 0, 0)
-    local bundle = {
-      manifest = {
-        schema = "g4-startup-walker-v1",
-        versionId = "heartgold",
-        pairIndex = pairIndex,
-        hero = {
-          atlasPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/hero.png",
-          visual = startupPairVisual(1, 1),
-        },
-        follower = {
-          speciesId = 25,
-          atlasPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/follower.png",
-          visual = startupPairVisual(1, 1),
-        },
-      },
-      atlases = {
-        ["assets/generated/startup/loader/pairs/" .. pairIndex .. "/hero.png"] = {
-          width = 2,
-          height = 1,
-          pixels = pixels,
-        },
-        ["assets/generated/startup/loader/pairs/" .. pairIndex .. "/follower.png"] = {
-          width = 2,
-          height = 1,
-          pixels = pixels,
-        },
-      },
-      dependencies = { versionId = "heartgold" },
-    }
-    Assert.isTrue(pcall(StartupCacheWriter.stageLoader, artifact, bundle, "generation-a", pairIndex))
-    return writes, roots
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local livePng = "assets/generated/startup/loader/subjects/heroes/ethan.png"
+  local catalogPath = StartupAssetCache.walkerCatalogPath()
+  local receiptPath = ArtifactState.path("startup-loader", "global")
+  cacheFs:write(livePng, "previous pixels")
+  cacheFs:writeLua(catalogPath, { generationId = "previous-generation" })
+  cacheFs:writeLua(receiptPath, { generationId = "previous-generation", marker = "previous" })
+  local originalWrite = backend.write
+  local stagedWrites = 0
+  backend.write = function(self, path, bytes)
+    stagedWrites = stagedWrites + 1
+    if stagedWrites == 2 then
+      error("injected staged binary write failure")
+    end
+    return originalWrite(self, path, bytes)
   end
-  local writes5, roots5 = stagePairWrites(5)
-  local writes6, roots6 = stagePairWrites(6)
-  for _, write in ipairs(writes5) do
-    Assert.isNil(write.path:find("pairs/6", 1, true), "staging pair 5 never writes sibling pair 6 files")
+  local artifact = PreparedArtifact.new({
+    cacheFs = cacheFs,
+    generationId = "current-generation",
+    epoch = 1,
+    kind = "startup-loader",
+    key = "global",
+    jobKey = "startup-loader:global",
+    stageName = "catalog-write-failure",
+  })
+  local pixels = string.char(200, 180, 120, 255) .. string.char(0, 0, 0, 0)
+  local manifest = sharedCatalogManifest("heartgold")
+  local atlases = {}
+  for _, entry in pairs(manifest.heroes) do
+    atlases[entry.atlasPath] = { width = 2, height = 1, pixels = pixels }
   end
-  for _, write in ipairs(writes6) do
-    Assert.isNil(write.path:find("pairs/5", 1, true), "staging pair 6 never writes sibling pair 5 files")
+  for _, entry in pairs(manifest.followers) do
+    atlases[entry.atlasPath] = { width = 2, height = 1, pixels = pixels }
   end
-  local rootSet5 = {}
-  for _, root in ipairs(roots5) do
-    rootSet5[root] = true
-  end
-  Assert.isTrue(rootSet5["data/generated/startup/loader/pairs/5.lua"], "pair 5 owns its manifest")
-  Assert.isTrue(rootSet5["assets/generated/startup/loader/pairs/5"], "pair 5 owns its directory")
-  Assert.isNil(rootSet5["data/generated/startup/loader/pairs/6.lua"], "pair 5 never owns its sibling manifest")
-  Assert.isNil(rootSet5["assets/generated/startup/loader"], "pair 5 never owns the shared loader root")
-  Assert.isTrue(
-    StartupAssetCache.walkerPath(5) ~= StartupAssetCache.walkerPath(6),
-    "sibling pairs address distinct manifests"
+  local ok, failure = pcall(StartupCacheWriter.stageLoader, artifact, {
+    manifest = manifest,
+    atlases = atlases,
+    dependencies = { versionId = "heartgold" },
+  }, "current-generation")
+  Assert.isFalse(ok, "the injected stage write fails: " .. tostring(failure))
+  Assert.isFalse(artifact:stageFs():exists(catalogPath, "file"), "a failed family stage has no catalog")
+  Assert.isFalse(artifact:stageFs():exists(receiptPath, "file"), "a failed family stage has no receipt")
+  Assert.equal(cacheFs:read(livePng), "previous pixels", "the previous live subject remains intact")
+  Assert.equal(
+    cacheFs:loadLua(catalogPath).generationId,
+    "previous-generation",
+    "the previous live catalog remains intact"
   )
-  Assert.isTrue(
-    ArtifactState.path("startup-loader", "5") ~= ArtifactState.path("startup-loader", "6"),
-    "sibling pairs address distinct receipts"
-  )
+  Assert.equal(cacheFs:loadLua(receiptPath).marker, "previous", "the previous readiness receipt remains intact")
 end
 
 -- An atlas without transparent pixels is malformed: the writer fails the
@@ -1230,28 +1243,20 @@ function T.startup_pair_writer_rejects_opaque_atlases()
     addOwnedRoot = function() end,
   }
   local opaque = string.rep(string.char(200, 180, 120, 255), 2)
+  local manifest = sharedCatalogManifest("heartgold")
+  local atlases = {}
+  for _, entry in pairs(manifest.heroes) do
+    atlases[entry.atlasPath] = { width = 2, height = 1, pixels = opaque }
+  end
+  for _, entry in pairs(manifest.followers) do
+    atlases[entry.atlasPath] = { width = 2, height = 1, pixels = opaque }
+  end
   local bundle = {
-    manifest = {
-      schema = "g4-startup-walker-v1",
-      versionId = "heartgold",
-      pairIndex = 5,
-      hero = {
-        atlasPath = "assets/generated/startup/loader/pairs/5/hero.png",
-        visual = startupPairVisual(1, 1),
-      },
-      follower = {
-        speciesId = 25,
-        atlasPath = "assets/generated/startup/loader/pairs/5/follower.png",
-        visual = startupPairVisual(1, 1),
-      },
-    },
-    atlases = {
-      ["assets/generated/startup/loader/pairs/5/hero.png"] = { width = 2, height = 1, pixels = opaque },
-      ["assets/generated/startup/loader/pairs/5/follower.png"] = { width = 2, height = 1, pixels = opaque },
-    },
+    manifest = manifest,
+    atlases = atlases,
     dependencies = { versionId = "heartgold" },
   }
-  Assert.isFalse(pcall(StartupCacheWriter.stageLoader, artifact, bundle, "generation-a", 5))
+  Assert.isFalse(pcall(StartupCacheWriter.stageLoader, artifact, bundle, "generation-a"))
 end
 
 -- The five opening-movie scenes form one closed numeric family beside the
@@ -2386,6 +2391,74 @@ function T.opening_scene_reader_resolves_owned_variant_images_through_layer_chan
   local rejected, reason = StartupAssetCache.loadOpeningScene(openingCacheFs(shadowed, nil), 1, "heartgold")
   Assert.isNil(rejected, "an alternate shadowing its own base image never validates")
   Assert.notNil(reason, "the ambiguous slot image reports its cause")
+end
+
+-- The walking visuals publish as one shared family: a single versioned
+-- catalog names exactly two heroes and sixteen followers under confined
+-- subject paths, one global job carries readiness, and a failed restage
+-- keeps the previous live catalog without a half-published successor.
+function T.shared_loader_catalog_publishes_eighteen_subjects_atomically()
+  Assert.equal(
+    StartupAssetContract.startupWalker.schema,
+    "g4-startup-walker-v2",
+    "the shared catalog carries the versioned schema"
+  )
+  Assert.equal(
+    ArtifactState.path("startup-loader", "global"),
+    "data/generated/jobs/startup-loader/global.lua",
+    "readiness is one global receipt"
+  )
+  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "1"), "a numeric loader key is rejected")
+  Assert.deepEqual(
+    ArtifactJobs.startupLoaderJobs(),
+    { { kind = "startup-loader", key = "global" } },
+    "one global loader job carries the family"
+  )
+  Assert.equal(
+    StartupAssetCache.walkerCatalogPath(),
+    "data/generated/startup/loader/catalog.lua",
+    "the family publishes one catalog manifest"
+  )
+  local subjectVisual = startupPairVisual(16, 24)
+  local heroes = {
+    ethan = { atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png", visual = subjectVisual },
+    lyra = { atlasPath = "assets/generated/startup/loader/subjects/heroes/lyra.png", visual = subjectVisual },
+  }
+  local followers = {}
+  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
+    followers[tostring(speciesId)] = {
+      atlasPath = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png",
+      visual = subjectVisual,
+    }
+  end
+  local manifest = {
+    schema = "g4-startup-walker-v2",
+    versionId = "heartgold",
+    generationId = "generation-a",
+    heroes = heroes,
+    followers = followers,
+  }
+  local cacheFs = {
+    loadLua = function()
+      return manifest
+    end,
+    exists = function()
+      return true
+    end,
+  }
+  local loaded, loadErr = StartupAssetCache.loadWalker(cacheFs, "heartgold")
+  Assert.notNil(loaded, "the shared catalog loads: " .. tostring(loadErr))
+  Assert.isNil(loaded.pairIndex, "the catalog carries no pair selection")
+  local heroCount = 0
+  for _ in pairs(loaded.heroes) do
+    heroCount = heroCount + 1
+  end
+  local followerCount = 0
+  for _ in pairs(loaded.followers) do
+    followerCount = followerCount + 1
+  end
+  Assert.equal(heroCount, 2, "the catalog names exactly two heroes")
+  Assert.equal(followerCount, 16, "the catalog names exactly sixteen followers")
 end
 
 return { tests = T }

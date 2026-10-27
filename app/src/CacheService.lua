@@ -162,14 +162,11 @@ local function selectorKey(selector)
     end
     return "battle-presentation"
   elseif kind == "startup-walker" then
-    assert(
-      type(selector.pairIndex) == "number"
-        and selector.pairIndex % 1 == 0
-        and selector.pairIndex >= 1
-        and selector.pairIndex <= 32,
-      "startup-walker request requires an integer pairIndex 1..32"
-    )
-    return "startup-walker:" .. tostring(selector.pairIndex)
+    assert(selector.pairIndex == nil, "startup-walker request carries no pair selector")
+    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId" }) do
+      assert(selector[field] == nil, "startup-walker request carries no " .. field .. " selector")
+    end
+    return "startup-walker"
   elseif kind == "opening-scene" then
     assert(
       type(selector.sceneNumber) == "number"
@@ -294,7 +291,7 @@ function CacheService:request(epoch, selector)
   elseif selector.requestKind == "battle-presentation" then
     -- The selector-free shared battle demand names its kind and urgency only.
   elseif selector.requestKind == "startup-walker" then
-    command.pairIndex = selector.pairIndex
+    -- The shared walker demand carries no pair identity.
   elseif selector.requestKind == "opening-scene" then
     command.sceneNumber = selector.sceneNumber
   else

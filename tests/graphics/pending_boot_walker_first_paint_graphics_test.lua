@@ -6,7 +6,6 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
-local Presentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local RomImporter = require("romdump.src.source.RomImporter")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
@@ -72,11 +71,12 @@ local function pending_gate_paints_adopted_walker_pixels_without_transfer(scope,
     context:skip("no user-owned SoulSilver dump is ready")
   end
   local cacheFs = CacheFs.forVersion("soulsilver")
-  local pairIndex = Presentation.publishedPair(cacheFs)
-  Assert.notNil(pairIndex, "the prepared test cache publishes a selectable walking pair")
-  ---@cast pairIndex integer
-  local manifest = StartupAssetCache.loadWalker(cacheFs, pairIndex)
-  Assert.notNil(manifest, "the selected pair reads back as a ready bundle")
+  local pairIndex = 5
+  local manifest = StartupAssetCache.loadWalker(cacheFs, "soulsilver")
+  Assert.notNil(manifest, "the shared walking catalog reads back as a ready bundle")
+  local choice = StartupAssetCache.walkerChoice(pairIndex)
+  Assert.notNil(choice.heroId, "the fixed pair maps to a catalog hero")
+  Assert.notNil(choice.followerSpeciesId, "the fixed pair maps to a catalog follower")
   local script = { bootPolls = 0, walkerDemands = 0, fired = 0 }
   local state = pendingBootWaitWithReadyWalker(pairIndex, script)
   local ok, err = xpcall(function()
@@ -139,6 +139,6 @@ local suite = GraphicsSmoke.suite({
   ["pending gate paints adopted walker pixels without transfer"] = pending_gate_paints_adopted_walker_pixels_without_transfer,
 })
 suite.metadata.capabilities = { "graphics", "rom_dump" }
-suite.metadata.derivedAssets = { "startup-loader:5" }
+suite.metadata.derivedAssets = { "startup-loader:global" }
 suite.metadata.tags = { "startup" }
 return suite

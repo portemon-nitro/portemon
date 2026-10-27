@@ -257,7 +257,7 @@ end
 ---@field startupPairIndex integer selected 1..32 walking pair, decorative only
 ---@field width number
 ---@field height number
----@field derivedAssets { requestMilestone: fun(name: string, urgency: string): unknown; requestStartupWalker: fun(pairIndex: integer, urgency: string): unknown }
+---@field derivedAssets { requestMilestone: fun(name: string, urgency: string): unknown; requestStartupWalker: fun(urgency: string): unknown }
 ---@field repositoryRoot string
 ---@field onResult fun(result: { kind: string })
 ---@field displayContext DisplayContext
@@ -726,7 +726,7 @@ function State:_pollLoadingArt()
     type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
     "save editor opening requires the selected walking pair 1..32"
   )
-  local ok, ready, failure = pcall(self.derivedAssets.requestStartupWalker, pairIndex, "near")
+  local ok, ready, failure = pcall(self.derivedAssets.requestStartupWalker, "near")
   if not ok then
     self.loaderArtFailure = ready
     self.loaderArtObserved = true

@@ -32,10 +32,9 @@ function T.tests.pending_or_failed_loader_art_does_not_change_editor_readiness_o
     loading = presentation,
     loaderArtObserved = false,
     derivedAssets = {
-      requestStartupWalker = function(pairIndex, priority)
+      requestStartupWalker = function(urgency)
         artRequests = artRequests + 1
-        Assert.equal(pairIndex, 32, "the decorative demand names the selected pair")
-        Assert.equal(priority, "near")
+        Assert.equal(urgency, "near", "the decorative demand stays nonblocking")
         return false, "loader artwork unavailable"
       end,
       requestMilestone = function(_, priority)
@@ -81,10 +80,9 @@ function T.tests.throwing_loader_adoption_leaves_editor_opening_authoritative()
     _invalidatePublication = function() end,
     _settleScope = function() end,
     derivedAssets = {
-      requestStartupWalker = function(pairIndex, priority)
+      requestStartupWalker = function(urgency)
         artRequests = artRequests + 1
-        Assert.equal(pairIndex, 32, "the decorative demand names the selected pair")
-        Assert.equal(priority, "near")
+        Assert.equal(urgency, "near", "the decorative demand stays nonblocking")
         return true
       end,
       requestMilestone = function(_, priority)
@@ -139,10 +137,9 @@ function T.tests.pending_loader_art_stays_retryable_then_adopts_successfully_onc
     _invalidatePublication = function() end,
     _settleScope = function() end,
     derivedAssets = {
-      requestStartupWalker = function(pairIndex, priority)
+      requestStartupWalker = function(urgency)
         artRequests = artRequests + 1
-        Assert.equal(pairIndex, 32, "the decorative demand names the selected pair")
-        Assert.equal(priority, "near")
+        Assert.equal(urgency, "near", "the decorative demand stays nonblocking")
         return artReady
       end,
       requestMilestone = function(_, priority)
@@ -185,9 +182,8 @@ function T.tests.adopted_loader_art_is_released_once_on_opening_error()
     _invalidatePublication = function() end,
     _settleScope = function() end,
     derivedAssets = {
-      requestStartupWalker = function(pairIndex, priority)
-        Assert.equal(pairIndex, 32, "the decorative demand names the selected pair")
-        Assert.equal(priority, "near")
+      requestStartupWalker = function(urgency)
+        Assert.equal(urgency, "near", "the decorative demand stays nonblocking")
         return true
       end,
       requestMilestone = function(_, priority)

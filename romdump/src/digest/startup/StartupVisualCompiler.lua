@@ -34,18 +34,41 @@ local function assertEastWalk(visual, spriteId)
   end
 end
 
-local function selectedSpriteIds(pairIndex)
-  local choice = StartupAssetCache.walkerChoice(pairIndex)
-  local gender = choice.heroId == "ethan" and 0 or 1
-  local heroSprite = PlayerAvatar.statesForGender(gender).walking
-  local followerSprite = MonSources.followerSpriteId(choice.followerSpeciesId, 0, false)
-  assert(followerSprite ~= nil, "walking pair follower has no source sprite")
-  local spriteIds = { heroSprite, followerSprite }
-  if heroSprite == followerSprite then
-    spriteIds = { heroSprite }
+local function selectedSpriteIds()
+  local heroSprites = {
+    ethan = PlayerAvatar.statesForGender(0).walking,
+    lyra = PlayerAvatar.statesForGender(1).walking,
+  }
+  local followerSpecies = {}
+  for pairIndex = 1, 32 do
+    local choice = StartupAssetCache.walkerChoice(pairIndex)
+    followerSpecies[choice.followerSpeciesId] = true
   end
-  assert(#spriteIds == 2, "one walking pair compiles exactly one hero and one follower sprite")
-  return spriteIds, heroSprite, followerSprite, choice
+  local orderedSpecies = {}
+  for speciesId in pairs(followerSpecies) do
+    orderedSpecies[#orderedSpecies + 1] = speciesId
+  end
+  table.sort(orderedSpecies)
+  local followerSprites = {}
+  for _, speciesId in ipairs(orderedSpecies) do
+    local spriteId = MonSources.followerSpriteId(speciesId, 0, false)
+    assert(spriteId ~= nil, "walking follower has no source sprite")
+    followerSprites[speciesId] = spriteId
+  end
+  local seen = {}
+  local spriteIds = {}
+  local function include(spriteId)
+    if not seen[spriteId] then
+      seen[spriteId] = true
+      spriteIds[#spriteIds + 1] = spriteId
+    end
+  end
+  include(heroSprites.ethan)
+  include(heroSprites.lyra)
+  for _, speciesId in ipairs(orderedSpecies) do
+    include(followerSprites[speciesId])
+  end
+  return spriteIds, heroSprites, followerSprites, orderedSpecies
 end
 
 local function startupVisual(sourceVisual, spriteId)
@@ -63,50 +86,53 @@ local function startupVisual(sourceVisual, spriteId)
 end
 
 ---@param romFs table<string, unknown>
----@param pairIndex integer
 ---@return table<string, unknown>|nil
 ---@return Errors.Error|string|nil
-function StartupVisualCompiler.compile(romFs, pairIndex)
+function StartupVisualCompiler.compile(romFs)
   assert(romFs and type(romFs.metadata) == "function", "startup visuals require a ROM filesystem")
-  assert(
-    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
-    "walking pair index must be an integer 1..32"
-  )
-  local spriteIds, heroSprite, followerSprite, choice = selectedSpriteIds(pairIndex)
+  local spriteIds, heroSprites, followerSprites, orderedSpecies = selectedSpriteIds()
   local compiled, err = FieldActorCompiler.compileSprites(romFs, spriteIds)
   if compiled == nil then
     return nil, err
   end
   local versionId = assert(romFs:version(), "startup visuals require an edition")
-  local root = "assets/generated/startup/loader/pairs/" .. tostring(pairIndex)
-  local heroPath = root .. "/hero.png"
-  local followerPath = root .. "/follower.png"
-  local heroVisual = startupVisual(assert(compiled.visuals[heroSprite]), heroSprite)
-  local followerVisual = startupVisual(assert(compiled.visuals[followerSprite]), followerSprite)
-  local atlases = {
-    [heroPath] = assert(compiled.atlases[heroSprite]),
-    [followerPath] = assert(compiled.atlases[followerSprite]),
-  }
+  local heroes = {}
+  for _, heroId in ipairs({ "ethan", "lyra" }) do
+    local spriteId = heroSprites[heroId]
+    local path = "assets/generated/startup/loader/subjects/heroes/" .. heroId .. ".png"
+    heroes[heroId] = {
+      atlasPath = path,
+      visual = startupVisual(assert(compiled.visuals[spriteId]), spriteId),
+    }
+  end
+  local followers = {}
+  for _, speciesId in ipairs(orderedSpecies) do
+    local spriteId = followerSprites[speciesId]
+    local path = "assets/generated/startup/loader/subjects/followers/" .. tostring(speciesId) .. ".png"
+    followers[tostring(speciesId)] = {
+      atlasPath = path,
+      visual = startupVisual(assert(compiled.visuals[spriteId]), spriteId),
+    }
+  end
+  local atlases = {}
+  for heroId, entry in pairs(heroes) do
+    atlases[entry.atlasPath] = assert(compiled.atlases[heroSprites[heroId]])
+  end
+  for key, entry in pairs(followers) do
+    atlases[entry.atlasPath] = assert(compiled.atlases[followerSprites[tonumber(key)]])
+  end
   local dependencies = {
     versionId = versionId,
     romSha1 = assert(romFs:metadata().sha1),
     actorSources = compiled.dependencies,
     spriteIds = spriteIds,
-    pairIndex = pairIndex,
-    followerSpeciesId = choice.followerSpeciesId,
-    heroId = choice.heroId,
   }
   return {
     manifest = {
-      schema = "g4-startup-walker-v1",
+      schema = "g4-startup-walker-v2",
       versionId = versionId,
-      pairIndex = pairIndex,
-      hero = { atlasPath = heroPath, visual = heroVisual },
-      follower = {
-        speciesId = choice.followerSpeciesId,
-        atlasPath = followerPath,
-        visual = followerVisual,
-      },
+      heroes = heroes,
+      followers = followers,
     },
     atlases = atlases,
     dependencies = dependencies,

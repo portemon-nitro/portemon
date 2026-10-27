@@ -571,7 +571,7 @@ DerivedAssetContract.startupLoader = {
 }
 
 DerivedAssetContract.startupWalker = {
-  schema = "g4-startup-walker-v1",
+  schema = "g4-startup-walker-v2",
 }
 
 -- startupTitle schema 2: the title manifest carries the source projection

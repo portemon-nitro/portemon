@@ -72,8 +72,8 @@ end
 -- logged so tests can prove demand ordering and urgency.
 local function gatedHost(gates, log)
   return {
-    requestStartupWalker = function(pairIndex, urgency)
-      log[#log + 1] = { pairIndex = pairIndex, urgency = urgency }
+    requestStartupWalker = function(urgency)
+      log[#log + 1] = { urgency = urgency }
       if gates.walkerFailure ~= nil then
         return false, gates.walkerFailure
       end

@@ -47,7 +47,6 @@ local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 ---@field titleError unknown?
 ---@field bootstrapError unknown?
 ---@field requested boolean
----@field loaderObserved boolean
 ---@field titleObserved boolean
 ---@field titleReadyNotified boolean
 ---@field bootstrapObserved boolean
@@ -165,7 +164,6 @@ function StartupTitleState.new(options)
     titleError = nil,
     bootstrapError = nil,
     requested = false,
-    loaderObserved = false,
     titleObserved = false,
     titleReadyNotified = false,
     bootstrapObserved = false,
@@ -244,21 +242,19 @@ function StartupTitleState:_startRequests()
   end
   -- Request order preserves title priority ahead of broad menu/gameplay
   -- work. Bootstrap stays near until the title pipeline shows progress.
-  for _, name in ipairs({ "startup-loader", "startup-title" }) do
-    local ready, failure = self:_request(name)
-    if name == "startup-loader" and ready then
-      self:_adoptLoader()
-    elseif name == "startup-title" and ready then
+  -- Boot already owns the one shared loader demand and passes the adopted
+  -- presentation forward, so the title never demands its own copy.
+  do
+    local ready, failure = self:_request("startup-title")
+    if ready then
       if not self.movieCompleted then
         self.titleReadyPending = true
       else
         self:_adoptTitle()
       end
     elseif failure ~= nil then
-      if name == "startup-title" then
-        self.titleError = failure
-        self.phase = "error"
-      end
+      self.titleError = failure
+      self.phase = "error"
     end
   end
   local bootstrapReady, bootstrapFailure = self:_request("bootstrap", "near")
@@ -277,22 +273,6 @@ function StartupTitleState:_startRequests()
   end
   self:_notifyTitleReady()
   self:_maybeStartAudio()
-end
-
-function StartupTitleState:_adoptLoader()
-  if self.loaderObserved or not self:_live() then
-    return
-  end
-  self.loaderObserved = true
-  local ok, cacheFs = pcall(CacheFs.forVersion, self.versionId)
-  if not ok then
-    self.loading.artFailure = cacheFs
-    return
-  end
-  local adopted, failure = self.loading:adoptGeneratedAssets(cacheFs)
-  if not adopted then
-    self.loading.artFailure = failure
-  end
 end
 
 -- Polls the five numbered scene demands, promotes scenes 2..5 to required
@@ -566,15 +546,6 @@ function StartupTitleState:_pollAssets()
   self:_pollOpeningScenes()
   if self.phase == "error" then
     return
-  end
-  if not self.loaderObserved then
-    local ready, failure = self:_request("startup-loader")
-    if failure ~= nil then
-      self.loading.artFailure = failure
-      self.loaderObserved = true
-    elseif ready then
-      self:_adoptLoader()
-    end
   end
   if not self.titleObserved then
     local ready, failure = self:_request("startup-title")

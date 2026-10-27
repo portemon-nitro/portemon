@@ -45,11 +45,11 @@ local function keyedHost(behavior)
   local calls = { walker = {}, milestones = {} }
   local host = {
     calls = calls,
-    -- The typed pair demand is a plain dot call carrying the caller's
-    -- 1..32 selection; anything else (including a colon-passed self)
-    -- fails the pair identity assertions below.
-    requestStartupWalker = function(pairIndex, urgency)
-      calls.walker[#calls.walker + 1] = { pairIndex = pairIndex, urgency = urgency }
+    -- The shared visual demand is a plain dot call carrying only the
+    -- urgency; the caller's 1..32 selection stays local to the
+    -- presentation lookup below.
+    requestStartupWalker = function(urgency)
+      calls.walker[#calls.walker + 1] = { urgency = urgency }
       if behavior.walkerFailure ~= nil then
         return nil, behavior.walkerFailure
       end
@@ -103,9 +103,8 @@ local function assertNoLegacyGlobalMilestone(calls)
 end
 
 local function assertOnlySelectedPair(calls)
-  Assert.isTrue(#calls.walker >= 1, "the decorative demand names the selected pair")
+  Assert.isTrue(#calls.walker >= 1, "the decorative demand observes the shared visuals")
   for _, call in ipairs(calls.walker) do
-    Assert.equal(call.pairIndex, PAIR_INDEX, "every decorative demand names the same selected pair")
     Assert.equal(call.urgency, "near", "the decorative demand stays nonblocking")
   end
 end
@@ -193,9 +192,9 @@ function T.tests.retry_open_reuses_the_same_selected_pair_with_a_fresh_stage()
     )
     State._pollLoadingArt(state)
     Assert.equal(
-      host.calls.walker[1].pairIndex,
-      PAIR_INDEX,
-      "the retried opening demands the same selected pair again"
+      host.calls.walker[1].urgency,
+      "near",
+      "the retried opening demands the shared visuals again"
     )
   end)
   rawset(Presentation, "new", originalNew)

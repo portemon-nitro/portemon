@@ -790,10 +790,9 @@ function T.continue_enters_field_when_optional_loading_art_throws()
     versionId = "heartgold",
     startupPairIndex = 1,
     derivedAssets = {
-      requestStartupWalker = function(pairIndex, urgency)
+      requestStartupWalker = function(urgency)
         artRequests = artRequests + 1
-        Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
-        Assert.equal(urgency, "near")
+        Assert.equal(urgency, "near", "the decorative demand stays nonblocking")
         error("synthetic loader art failure", 0)
       end,
       requestMilestone = function(_, urgency)
@@ -869,10 +868,9 @@ function T.continue_pending_loader_art_never_blocks_transfer_and_is_never_adopte
     versionId = "heartgold",
     startupPairIndex = 1,
     derivedAssets = {
-      requestStartupWalker = function(pairIndex, urgency)
+      requestStartupWalker = function(urgency)
         artRequests = artRequests + 1
-        Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
-        Assert.equal(urgency, "near")
+        Assert.equal(urgency, "near", "the decorative demand stays nonblocking")
         if loaderReady then
           return true
         end
@@ -925,10 +923,9 @@ function T.continue_pending_loader_art_never_blocks_transfer_and_is_never_adopte
   end
   loaderReady = true
   state.derivedAssets = {
-    requestStartupWalker = function(pairIndex, urgency)
+    requestStartupWalker = function(urgency)
       artRequests = artRequests + 1
-      Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
-      Assert.equal(urgency, "near")
+      Assert.equal(urgency, "near", "the decorative demand stays nonblocking")
       return true
     end,
     requestMilestone = function(_, urgency)
@@ -971,10 +968,9 @@ function T.continue_malformed_loader_art_latches_once_and_cancel_releases_cover_
     versionId = "heartgold",
     startupPairIndex = 1,
     derivedAssets = {
-      requestStartupWalker = function(pairIndex, urgency)
+      requestStartupWalker = function(urgency)
         artRequests = artRequests + 1
-        Assert.equal(pairIndex, 1, "the decorative demand names the selected pair")
-        Assert.equal(urgency, "near")
+        Assert.equal(urgency, "near", "the decorative demand stays nonblocking")
         return true
       end,
       requestMilestone = function(_, urgency)

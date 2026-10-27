@@ -14,8 +14,8 @@ local function pendingHost()
   local calls = {}
   return {
     calls = calls,
-    requestStartupWalker = function(pairIndex, urgency)
-      calls[#calls + 1] = { pairIndex = pairIndex, urgency = urgency }
+    requestStartupWalker = function(urgency)
+      calls[#calls + 1] = { urgency = urgency, shared = true }
       return false
     end,
     requestMilestone = function(name, urgency)
@@ -68,13 +68,12 @@ function T.pending_preparation_requests_the_intro_milestone_without_transferring
   Assert.equal(readyCalls, 0, "no candidate or Oak transfer happens while pending")
   local pairDemands = 0
   for _, call in ipairs(host.calls) do
-    if call.pairIndex ~= nil then
+    if call.shared == true then
       pairDemands = pairDemands + 1
-      Assert.equal(call.pairIndex, PAIR_INDEX, "the decorative demand names the selected pair")
       Assert.equal(call.urgency, "near", "the decorative demand stays nonblocking")
     end
   end
-  Assert.isTrue(pairDemands >= 1, "pending entry keeps polling its selected pair decoratively")
+  Assert.isTrue(pairDemands >= 1, "pending entry keeps polling the shared visuals decoratively")
 end
 
 function T.ready_preparation_transfers_exactly_once()

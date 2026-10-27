@@ -116,20 +116,36 @@ local function startupTransparentAtlas(frameWidth, frameHeight)
   return PngWriter.encode(width, frameHeight, table.concat(parts))
 end
 
-local function startupPairCacheFs(pairIndex, versionId)
-  local heroPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/hero.png"
-  local followerPath = "assets/generated/startup/loader/pairs/" .. pairIndex .. "/follower.png"
+local function startupPairCacheFs(_, versionId)
+  local heroes = {
+    ethan = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png",
+      visual = startupPairVisual(16, 24),
+    },
+    lyra = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/lyra.png",
+      visual = startupPairVisual(16, 24),
+    },
+  }
+  local followers = {}
+  local files = {}
+  for _, path in ipairs({
+    "assets/generated/startup/loader/subjects/heroes/ethan.png",
+    "assets/generated/startup/loader/subjects/heroes/lyra.png",
+  }) do
+    files[path] = startupTransparentAtlas(16, 24)
+  end
+  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
+    local path = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png"
+    followers[tostring(speciesId)] = { atlasPath = path, visual = startupPairVisual(12, 20) }
+    files[path] = startupTransparentAtlas(12, 20)
+  end
   local manifest = {
-    schema = "g4-startup-walker-v1",
+    schema = "g4-startup-walker-v2",
     versionId = versionId,
     generationId = "test-generation",
-    pairIndex = pairIndex,
-    hero = { atlasPath = heroPath, visual = startupPairVisual(16, 24) },
-    follower = { speciesId = 25, atlasPath = followerPath, visual = startupPairVisual(12, 20) },
-  }
-  local files = {
-    [heroPath] = startupTransparentAtlas(16, 24),
-    [followerPath] = startupTransparentAtlas(12, 20),
+    heroes = heroes,
+    followers = followers,
   }
   return {
     loadLua = function()
@@ -912,7 +928,7 @@ end
 
 function T.failed_pair_adoption_releases_staged_art_without_half_published_sprites(scope)
   local good = startupPairCacheFs(5, "heartgold")
-  local followerPath = "assets/generated/startup/loader/pairs/5/follower.png"
+  local followerPath = "assets/generated/startup/loader/subjects/followers/155.png"
   local bad = {
     loadLua = good.loadLua,
     exists = good.exists,
