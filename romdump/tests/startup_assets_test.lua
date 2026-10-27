@@ -1282,7 +1282,7 @@ end
 -- fixtures build on the current contract instead.
 local OPENING_SCHEMA = "g4-startup-opening-scene-v3"
 
-local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v9"
+local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v10"
 
 local function openingLayer(engine, bgSlot, image)
   return {
@@ -1303,6 +1303,8 @@ local function openingClip(root, name)
     bank = "synthetic",
     sequence = 0,
     frameCount = 2,
+    playMode = "forward_loop",
+    loopStartFrameIdx = 0,
     frames = {
       { x = 0, y = 0, width = 8, height = 8, offsetX = 0, offsetY = 0, duration = 4 },
       { x = 8, y = 0, width = 8, height = 8, offsetX = 1, offsetY = 0, duration = 4 },
@@ -1358,6 +1360,7 @@ local function openingEvents(sceneNumber, root)
         x = 128,
         y = 96,
         drawOrder = 1,
+        objPriority = 1,
         clipId = clip,
         animate = true,
       },
@@ -1443,7 +1446,12 @@ local function openingSteps(sceneNumber)
   elseif sceneNumber == 5 then
     return {
       { id = "wipe", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 18 } },
-      { id = "scroll", events = {}, onCompleteEvents = { 3 }, ["until"] = { kind = "effect", effect = "scene5-shutter" } },
+      {
+        id = "scroll",
+        events = {},
+        onCompleteEvents = { 3 },
+        ["until"] = { kind = "effect", effect = "scene5-shutter" },
+      },
       { id = "wait", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 20 } },
       { id = "fade", events = {}, onCompleteEvents = { 6 }, ["until"] = { kind = "effect", effect = "fade-white" } },
     }
@@ -1535,7 +1543,6 @@ local function validOpeningManifest(sceneNumber, versionId)
   return manifest
 end
 
-
 -- A strict synthetic starter emitter in the current normalized shape: the
 -- reader validates every staged animation, motion, and field value, so
 -- fixtures carry the full record, never a bare identity.
@@ -1544,8 +1551,7 @@ end
 local function validCurrentOpeningManifest(sceneNumber, versionId)
   local manifest = validOpeningManifest(sceneNumber, versionId)
   manifest.schema = CURRENT_OPENING_SCHEMA
-  manifest.initialDisplay =
-    { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } }
+  manifest.initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } }
   return manifest
 end
 
@@ -1737,7 +1743,8 @@ function T.opening_scene_reader_accepts_only_the_scene5_shutter_shape()
   extraKey.timeline.events[2].fadeType = 9
   cases[#cases + 1] = { manifest = extraKey, scene = 5, label = "a shutter carrying a numeric fade type" }
   for _, case in ipairs(cases) do
-    local rejected, reason = StartupAssetCache.loadOpeningScene(openingCacheFs(case.manifest, nil), case.scene, "heartgold")
+    local rejected, reason =
+      StartupAssetCache.loadOpeningScene(openingCacheFs(case.manifest, nil), case.scene, "heartgold")
     Assert.isNil(rejected, case.label .. " never validates")
     Assert.notNil(reason, case.label .. " reports its cause")
   end
@@ -1944,7 +1951,7 @@ end
 -- engine-local window records with plane masks, a town-stage stop limited to
 -- the town scene, and manual window overrides. These synthetic fixtures pin
 -- the strict reader contract without touching a ROM.
-local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v9"
+local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v10"
 
 local function openingLayerV3(engine, bgSlot, image, visible)
   return {
@@ -2049,8 +2056,7 @@ function T.opening_scene_reader_requires_initial_plane_state()
   Assert.notNil(missingErr, "the missing plane state reports its cause")
   local vague = deepCopy(manifest)
   vague.layers.main[1].initialVisible = "yes"
-  local badVisible, badVisibleErr =
-    StartupAssetCache.loadOpeningScene(openingCacheFs(vague, nil), 3, "heartgold")
+  local badVisible, badVisibleErr = StartupAssetCache.loadOpeningScene(openingCacheFs(vague, nil), 3, "heartgold")
   Assert.isNil(badVisible, "a non-boolean plane state is not ready")
   Assert.notNil(badVisibleErr, "the malformed plane state reports its cause")
   local stale = deepCopy(manifest)
@@ -2093,17 +2099,14 @@ function T.opening_scene_reader_accepts_engine_window_records()
   local permanent = deepCopy(manifest)
   permanent.timeline.events[#permanent.timeline.events].ticks = 0
   permanent.timeline.events[#permanent.timeline.events].effect = "window-stuck"
-  local permanentRead, permanentErr =
-    StartupAssetCache.loadOpeningScene(openingCacheFs(permanent, nil), 4, "heartgold")
+  local permanentRead, permanentErr = StartupAssetCache.loadOpeningScene(openingCacheFs(permanent, nil), 4, "heartgold")
   Assert.isNil(permanentRead, "an immediate window assignment schedules no permanent wait")
   Assert.notNil(permanentErr, "the zero-duration effect reports its cause")
   local immediate = deepCopy(manifest)
   immediate.timeline.events[#immediate.timeline.events].ticks = 0
-  immediate.timeline.events[#immediate.timeline.events].from =
-    { x1 = 70, y1 = 64, x2 = 185, y2 = 192 }
+  immediate.timeline.events[#immediate.timeline.events].from = { x1 = 70, y1 = 64, x2 = 185, y2 = 192 }
   immediate.timeline.events[#immediate.timeline.events].to = { x1 = 70, y1 = 64, x2 = 185, y2 = 192 }
-  local immediateRead, immediateErr =
-    StartupAssetCache.loadOpeningScene(openingCacheFs(immediate, nil), 4, "heartgold")
+  local immediateRead, immediateErr = StartupAssetCache.loadOpeningScene(openingCacheFs(immediate, nil), 4, "heartgold")
   Assert.notNil(immediateRead, "an immediate window assignment reads ready: " .. tostring(immediateErr))
 end
 
@@ -2171,13 +2174,12 @@ end
 -- The generated opening scene identity the producer and the strict reader
 -- agree on: full native surfaces with per-image extents, instant and
 -- continuous scroll modes, and per-engine blend and wipe operands.
-local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v9"
+local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v10"
 
 local function typedOpeningManifest()
   local manifest = validOpeningManifest(1, "heartgold")
   manifest.schema = NATIVE_OPENING_SCHEMA
-  manifest.initialDisplay =
-    { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } }
+  manifest.initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } }
   local root = "assets/generated/startup/opening/1"
   manifest.layers.main[1].variants = {
     { image = root .. "/main-bg-alt.png", width = 512, height = 512 },
@@ -2303,8 +2305,12 @@ function T.opening_scene_writer_publishes_typed_bundles_atomically()
     jobKey = "opening-scene:1",
     stageName = "opening-scene-1-typed",
   })
-  local marker, stageErr =
-    OpeningMovieCacheWriter.stageScene(artifact, { manifest = manifest, files = typedOpeningFiles(root) }, "typed-generation", 1)
+  local marker, stageErr = OpeningMovieCacheWriter.stageScene(
+    artifact,
+    { manifest = manifest, files = typedOpeningFiles(root) },
+    "typed-generation",
+    1
+  )
   Assert.notNil(marker, "the typed scene stages its numbered package: " .. tostring(stageErr))
   artifact:finishSuccess({ marker = marker })
   Assert.isTrue(
@@ -2377,8 +2383,7 @@ function T.opening_scene_reader_resolves_owned_variant_images_through_layer_chan
   shadowed.layers.main[1].variants = {
     { image = root .. "/main-bg.png", width = 512, height = 512 },
   }
-  local rejected, reason =
-    StartupAssetCache.loadOpeningScene(openingCacheFs(shadowed, nil), 1, "heartgold")
+  local rejected, reason = StartupAssetCache.loadOpeningScene(openingCacheFs(shadowed, nil), 1, "heartgold")
   Assert.isNil(rejected, "an alternate shadowing its own base image never validates")
   Assert.notNil(reason, "the ambiguous slot image reports its cause")
 end

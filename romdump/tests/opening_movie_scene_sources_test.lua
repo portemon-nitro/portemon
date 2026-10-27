@@ -43,7 +43,7 @@ function T.scene_sources_reject_bad_scenes_and_editions()
 end
 
 function T.scene_sources_keep_five_bounded_scenes_at_the_source_tick_rate()
-  Assert.equal(SceneSources.SCHEMA, "g4-startup-opening-scene-v9", "the scene schema is pinned")
+  Assert.equal(SceneSources.SCHEMA, "g4-startup-opening-scene-v10", "the scene schema is pinned")
   Assert.equal(SceneSources.TICK_RATE, 30, "the scenes run at the retail 30 Hz source frame rate")
   Assert.equal(SceneSources.PARTICLE_ARCHIVE, "NARC_a_0_5_9", "the particle archive is pinned")
   Assert.equal(SceneSources.PARTICLE_MEMBER, 4, "the starter particle member is pinned")
@@ -299,14 +299,17 @@ function T.scene_sources_declare_post_init_plane_visibility_per_slot()
     Assert.equal(
       SceneSources.initialVisible(case.scene, case.engine, case.slot),
       case.visible,
-      "scene " .. case.scene .. " " .. case.engine .. " plane " .. case.slot .. " starts "
+      "scene "
+        .. case.scene
+        .. " "
+        .. case.engine
+        .. " plane "
+        .. case.slot
+        .. " starts "
         .. (case.visible and "enabled" or "disabled")
     )
   end
-  Assert.isFalse(
-    pcall(SceneSources.initialVisible, 1, "main", 9),
-    "an uncompiled slot declares no plane state"
-  )
+  Assert.isFalse(pcall(SceneSources.initialVisible, 1, "main", 9), "an uncompiled slot declares no plane state")
 end
 
 function T.scene_sources_declare_engine_window_pans_with_masks()
@@ -379,7 +382,7 @@ function T.scene_sources_alias_the_current_opening_scene_contract()
   )
   Assert.equal(
     SceneSources.SCHEMA,
-    "g4-startup-opening-scene-v9",
+    "g4-startup-opening-scene-v10",
     "the scene sources carry the current native scene shape"
   )
   Assert.equal(SceneSources.TICK_RATE, 30, "the scenes keep the retail 30 Hz source tick rate")

@@ -825,22 +825,123 @@ local function startTimedEffect(slot, name, ticks)
   slot.effects[name] = { started = true, done = false, remaining = ticks, total = ticks }
 end
 
----@param slot OpeningMovieSlot scene slot
----@param clipId string staged sprite clip identity
----@return integer summed frame durations bounding the clip wait
-local function clipTotalTicks(slot, clipId)
-  local clip = slot.clipIds[clipId]
-  assert(clip ~= nil, "opening scene clip wait names a compiled clip")
-  local total = 0
-  for _, frame in ipairs(clip.frames) do
-    total = total + (frame.duration or 1)
+-- One compiled sprite clip advances two sequence units per source tick.
+local PLAYBACK_UNITS_PER_TICK = 2
+
+-- Supported compiled sequence modes, mirroring the shared animation
+-- decoder vocabulary without importing its producer module.
+local PLAYBACK_MODES = { forward = true, forward_loop = true, reverse = true, reverse_loop = true }
+
+---@class OpeningSpritePlayback
+---@field mode string validated playback mode
+---@field loopStart integer loop re-entry frame index
+---@field current integer current frame index
+---@field forward boolean true while a ping-pong pass advances forward
+---@field elapsed integer elapsed ticks within the current cell
+---@field active boolean false once a one-shot pass completes
+---@field cell integer one-based shown frame cell
+---@param clip table<string, unknown> staged sprite clip record
+---@param mode string validated playback mode
+---@return OpeningSpritePlayback playback state reset to the clip loop start
+local function resetPlayback(clip, mode)
+  local frames = clip.frames --[[@as table[] ]]
+  local count = #frames
+  local loopStart = clip.loopStartFrameIdx --[[@as integer]]
+  if type(loopStart) ~= "number" or loopStart < 0 or loopStart >= count then
+    error(invalid("opening scene sprite clip loop start is outside its frames", { clip = clip.id }), 0)
   end
-  return math.max(total, 1)
+  return {
+    mode = mode,
+    loopStart = loopStart,
+    current = loopStart,
+    forward = true,
+    elapsed = 0,
+    active = true,
+    cell = loopStart + 1,
+  }
+end
+
+---@param state OpeningSpritePlayback live playback state
+---@param clip table<string, unknown> staged sprite clip record
+local function pumpPlayback(state, clip)
+  local frames = clip.frames --[[@as table[] ]]
+  local count = #frames
+  local function durationAt(index)
+    local frame = frames[index + 1]
+    return (type(frame) == "table" and frame.duration) or 0
+  end
+  -- The bound only guards degenerate all-silent clips against an endless
+  -- pass; every reachable authored clip exits through a shown cell, a
+  -- window edge, or a loop restart long before it.
+  local guard = 8 * (count + 2)
+  while state.active and state.elapsed >= durationAt(state.current) do
+    guard = guard - 1
+    if guard <= 0 then
+      break
+    end
+    state.elapsed = state.elapsed - durationAt(state.current)
+    if state.mode == "forward" or state.mode == "forward_loop" then
+      state.current = state.current + 1
+      if state.current >= count then
+        if state.mode == "forward" then
+          state.active = false
+          state.current = count - 1
+        else
+          -- A looping restart re-enters at the loop start with no
+          -- carry-over, so the loop head keeps its authored timing.
+          state.current = state.loopStart
+          state.elapsed = 0
+        end
+      end
+    else
+      local next = state.current + (state.forward and 1 or -1)
+      if next >= count then
+        -- The far edge turns without reshowing its cell: the edge cell
+        -- already spent its duration on the way in.
+        state.forward = false
+        next = state.current - 1
+      elseif next < state.loopStart then
+        if state.mode == "reverse" then
+          state.active = false
+          next = state.loopStart
+        else
+          state.forward = true
+          next = state.current + 1
+        end
+      end
+      state.current = next
+    end
+    if state.current < 0 then
+      state.current = 0
+    elseif state.current >= count then
+      state.current = count - 1
+    end
+    -- Silent cells are consumed without becoming the shown cell.
+    if durationAt(state.current) ~= 0 then
+      state.cell = state.current + 1
+    end
+  end
+end
+
+---@param clip table<string, unknown> staged sprite clip record
+---@return OpeningSpritePlayback playback state showing the clip reset cell
+local function startPlayback(clip)
+  local mode = clip.playMode
+  if PLAYBACK_MODES[mode] ~= true then
+    error(invalid("opening scene sprite clip carries no supported play mode", { clip = clip.id }), 0)
+  end
+  local frames = clip.frames
+  if type(frames) ~= "table" or #frames == 0 then
+    error(invalid("opening scene sprite clip carries no frames", { clip = clip.id }), 0)
+  end
+  local state = resetPlayback(clip, mode --[[@as string]])
+  pumpPlayback(state, clip)
+  return state
 end
 
 ---@param slot OpeningMovieSlot scene slot
 ---@param name string compiled clip identity ending its wait
----@return boolean true once the clip has played its summed frame durations
+---@return boolean true once no live player still runs the clip
 local function clipWaitDone(slot, name)
   local start = slot.clipStarts[name]
   if start == nil then
@@ -852,7 +953,16 @@ local function clipWaitDone(slot, name)
       0
     )
   end
-  return (slot.sceneTick - start) >= clipTotalTicks(slot, name)
+  for _, instanceId in ipairs(slot.spriteOrder) do
+    local instance = slot.spriteInstances[instanceId]
+    local state = (instance ~= nil) and instance.playback or nil
+    if instance ~= nil and instance.clipId == name and state ~= nil and state.active then
+      return false
+    end
+  end
+  -- With no bound live player nothing can still run the clip, so the
+  -- wait is done; a looping clip never reaches this while bound.
+  return true
 end
 
 ---@param slot OpeningMovieSlot scene slot
@@ -1754,10 +1864,22 @@ local function applyEvent(self, slot, event)
     instance.x = event.x
     instance.y = event.y
     instance.drawOrder = event.drawOrder
+    instance.objPriority = event.objPriority
     instance.clipId = event.clipId
     instance.animate = event.animate
     instance.tick = 0
     instance.quads = {}
+    local clip = slot.clipIds[event.clipId]
+    if clip ~= nil then
+      -- A fresh assignment restarts the sequence from the clip loop
+      -- start; the reset cell shows until the first source advance.
+      local state = startPlayback(clip)
+      instance.playback = state
+      instance.displayFrame = state.cell
+    else
+      instance.playback = nil
+      instance.displayFrame = 1
+    end
     slot.clipStarts[event.clipId] = slot.sceneTick
   elseif op == "spriteVisible" then
     local instance = slot.spriteInstances[event.instanceId]
@@ -2059,6 +2181,19 @@ local function advanceContinuous(slot)
   advanceWindowProgram(slot, "main")
   advanceWindowProgram(slot, "sub")
   for _, sprite in pairs(slot.spriteInstances) do
+    local state = sprite.playback
+    if state ~= nil then
+      -- The shown cell latches before the source advance, so draws and
+      -- resizes without a source tick keep showing the same cell.
+      sprite.displayFrame = state.cell
+      if sprite.animate ~= false and state.active then
+        local clip = slot.clipIds[sprite.clipId]
+        if clip ~= nil then
+          state.elapsed = state.elapsed + PLAYBACK_UNITS_PER_TICK
+          pumpPlayback(state, clip)
+        end
+      end
+    end
     -- A paused clip holds its first authored frame: only an animated
     -- instance advances its tick on the source clock.
     if sprite.animate ~= false then
@@ -2371,7 +2506,9 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
   if (top.a > 0.002) {
     return vec4(top.rgb / max(top.a, 0.00390625), (planeId + 1.0) / 8.0);
   }
-  return prev;
+  // Unscale before the write scales again, so a plane that paints nothing
+  // here still carries the previous raw entry forward exact.
+  return vec4(prev.rgb / max(prev.a, 0.00390625), prev.a);
 }
 ]]
 
@@ -2672,27 +2809,16 @@ end
 ---@param clip table<string, unknown> staged sprite clip record
 ---@return integer 1-based frame index
 local function spriteFrameIndex(sprite, clip)
-  local count = clip.frameCount or 1
-  if count <= 1 then
+  local frames = clip.frames
+  local count = (type(frames) == "table" and #frames > 0) and #frames or (clip.frameCount or 1)
+  if count < 1 then
+    count = 1
+  end
+  local frame = sprite.displayFrame
+  if type(frame) ~= "number" or frame < 1 or frame > count then
     return 1
   end
-  if type(clip.frames) == "table" and #clip.frames > 0 then
-    local total = 0
-    for _, frame in ipairs(clip.frames) do
-      total = total + (frame.duration or 1)
-    end
-    total = math.max(total, 1)
-    local elapsed = sprite.tick % total
-    for index, frame in ipairs(clip.frames) do
-      local duration = frame.duration or 1
-      if elapsed < duration then
-        return index
-      end
-      elapsed = elapsed - duration
-    end
-    return #clip.frames
-  end
-  return (math.floor(sprite.tick / 8) % count) + 1
+  return math.floor(frame)
 end
 
 ---@param slot OpeningMovieSlot scene slot
@@ -3134,65 +3260,48 @@ end
 
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
----@param engine string source engine owning the drawn instances
-local function drawSprites(self, slot, engine)
+---@param sprite table<string, unknown> live sprite instance to rasterize
+local function drawSpriteInstance(self, slot, sprite)
   local graphics = self.graphics
-  local staged = {}
-  for order, instanceId in ipairs(slot.spriteOrder) do
-    local instance = slot.spriteInstances[instanceId]
-    if instance ~= nil and instance.engine == engine and instance.visible and instance.clipId ~= nil then
-      staged[#staged + 1] = { order = order, instance = instance }
-    end
+  local image = slot.imageByPath[sprite.clipId]
+  if image == nil then
+    return
   end
-  table.sort(staged, function(a, b)
-    local anterior = a.instance.drawOrder or 0
-    local posterior = b.instance.drawOrder or 0
-    if anterior ~= posterior then
-      return anterior < posterior
-    end
-    return a.order < b.order
-  end)
-  for _, entry in ipairs(staged) do
-    local sprite = entry.instance
-    local image = slot.imageByPath[sprite.clipId]
-    if image ~= nil then
-      local clip = clipById(slot, sprite.clipId)
-      local frame = (clip ~= nil) and spriteFrameIndex(sprite, clip) or 1
-      local record = clip ~= nil and type(clip.frames) == "table" and clip.frames[frame] or nil
-      local offsetX, offsetY = 0, 0
-      if type(record) == "table" then
-        offsetX = record.offsetX or 0
-        offsetY = record.offsetY or 0
-      end
-      local x, y = sprite.x + offsetX, sprite.y + offsetY
-      local quad = nil
-      if type(record) == "table" then
-        if type(record.x) == "number" and type(record.width) == "number" and record.width > 0 then
+  local clip = clipById(slot, sprite.clipId)
+  local frame = (clip ~= nil) and spriteFrameIndex(sprite, clip) or 1
+  local record = clip ~= nil and type(clip.frames) == "table" and clip.frames[frame] or nil
+  local offsetX, offsetY = 0, 0
+  if type(record) == "table" then
+    offsetX = record.offsetX or 0
+    offsetY = record.offsetY or 0
+  end
+  local x, y = sprite.x + offsetX, sprite.y + offsetY
+  local quad = nil
+  if type(record) == "table" then
+    if type(record.x) == "number" and type(record.width) == "number" and record.width > 0 then
+      quad = sprite.quads[frame]
+      if quad == nil then
+        local imageWidth, imageHeight = image:getWidth(), image:getHeight()
+        local clipped = pcall(function()
+          sprite.quads[frame] = graphics.newQuad(
+            math.max(record.x, 0),
+            math.max(record.y or 0, 0),
+            math.min(record.width, imageWidth),
+            math.min(record.height or imageHeight, imageHeight),
+            imageWidth,
+            imageHeight
+          )
+        end)
+        if clipped then
           quad = sprite.quads[frame]
-          if quad == nil then
-            local imageWidth, imageHeight = image:getWidth(), image:getHeight()
-            local clipped = pcall(function()
-              sprite.quads[frame] = graphics.newQuad(
-                math.max(record.x, 0),
-                math.max(record.y or 0, 0),
-                math.min(record.width, imageWidth),
-                math.min(record.height or imageHeight, imageHeight),
-                imageWidth,
-                imageHeight
-              )
-            end)
-            if clipped then
-              quad = sprite.quads[frame]
-            end
-          end
         end
       end
-      if quad ~= nil then
-        graphics.draw(image, quad, x, y)
-      else
-        graphics.draw(image, x, y)
-      end
     end
+  end
+  if quad ~= nil then
+    graphics.draw(image, quad, x, y)
+  else
+    graphics.draw(image, x, y)
   end
 end
 
@@ -3647,14 +3756,14 @@ local function drawWrappedBackground(self, image, background)
   end
 end
 
--- One ordered engine content pass without an alpha program: enabled 2D
--- slots back-to-front, the main BG0 3D stage at priority 0, starter
--- particles, then OBJ sprites above every BG, all opaque.
----@param self HgssOpeningMovie
+-- One back-to-front plane order shared by the solid and blended engine
+-- passes: higher numeric priority paints first so lower numbers cover,
+-- backgrounds precede sprites sharing a priority, and sprites keep
+-- their authored order inside a shared priority.
 ---@param slot OpeningMovieSlot scene slot
 ---@param engine string source engine owning the drawn planes
-local function drawEngineContent(self, slot, engine)
-  local graphics = self.graphics
+---@return table[] contributions back-to-front
+local function orderedPlanes(slot, engine)
   local planes = {}
   for _, background in ipairs(sortedBackgrounds(slot, engine)) do
     planes[#planes + 1] =
@@ -3668,15 +3777,53 @@ local function drawEngineContent(self, slot, engine)
       planes[#planes + 1] = { priority = 0, bgSlot = 0, kind = 2 }
     end
   end
+  local order = 0
+  for _, instanceId in ipairs(slot.spriteOrder) do
+    order = order + 1
+    local instance = slot.spriteInstances[instanceId]
+    if instance ~= nil and instance.engine == engine and instance.visible and instance.clipId ~= nil then
+      planes[#planes + 1] = {
+        priority = instance.objPriority or 0,
+        bgSlot = 0,
+        kind = 3,
+        drawOrder = instance.drawOrder or 0,
+        order = order,
+        instance = instance,
+      }
+    end
+  end
   table.sort(planes, function(a, b)
     if a.priority ~= b.priority then
       return a.priority > b.priority
     end
-    if a.bgSlot ~= b.bgSlot then
-      return a.bgSlot < b.bgSlot
+    local aSprite = a.kind == 3
+    local bSprite = b.kind == 3
+    if aSprite ~= bSprite then
+      return not aSprite
     end
-    return a.kind < b.kind
+    if not aSprite then
+      if a.bgSlot ~= b.bgSlot then
+        return a.bgSlot < b.bgSlot
+      end
+      return a.kind < b.kind
+    end
+    if a.drawOrder ~= b.drawOrder then
+      return a.drawOrder < b.drawOrder
+    end
+    return a.order < b.order
   end)
+  return planes
+end
+
+-- One ordered engine content pass without an alpha program: enabled 2D
+-- slots, the main BG0 3D stage at priority 0, starter particles, and
+-- OBJ sprites interleaved by hardware priority, all opaque.
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot
+---@param engine string source engine owning the drawn planes
+local function drawEngineContent(self, slot, engine)
+  local graphics = self.graphics
+  local planes = orderedPlanes(slot, engine)
   for _, plane in ipairs(planes) do
     if plane.kind == 0 then
       local background = plane.background
@@ -3695,19 +3842,20 @@ local function drawEngineContent(self, slot, engine)
         graphics.draw(scratch, 0, 0)
         graphics.setBlendMode("alpha", "alphamultiply")
       end)
-    else
+    elseif plane.kind == 2 then
       -- Starter particles emit on the main 3D output alone; the physical
       -- mapping below moves that whole target, never a second copy.
       drawPlaneClipped(self, slot, engine, 0, function()
         drawParticles(self, slot)
       end)
+    else
+      local sprite = assert(plane.instance, "ordered sprite plane carries its instance")
+      drawPlaneClipped(self, slot, engine, 4, function()
+        graphics.setColor(1, 1, 1, 1)
+        drawSpriteInstance(self, slot, sprite)
+      end)
     end
   end
-  graphics.setColor(1, 1, 1, 1)
-  drawPlaneClipped(self, slot, engine, 4, function()
-    graphics.setColor(1, 1, 1, 1)
-    drawSprites(self, slot, engine)
-  end)
   graphics.setColor(1, 1, 1, 1)
 end
 
@@ -3727,28 +3875,7 @@ local function drawCompositedEngine(self, slot, engine, program, canvas)
   local eva, evb = blendCoefficients(program)
   local firstMask = program.firstMask --[[@as integer]]
   local secondMask = program.secondMask --[[@as integer]]
-  local planes = {}
-  for _, background in ipairs(sortedBackgrounds(slot, engine)) do
-    planes[#planes + 1] =
-      { priority = background.priority, bgSlot = background.bgSlot, kind = 0, background = background }
-  end
-  if engine == "main" then
-    if townDrawable(slot) then
-      planes[#planes + 1] = { priority = 0, bgSlot = 0, kind = 1 }
-    end
-    if particlesLive(slot) then
-      planes[#planes + 1] = { priority = 0, bgSlot = 0, kind = 2 }
-    end
-  end
-  table.sort(planes, function(a, b)
-    if a.priority ~= b.priority then
-      return a.priority > b.priority
-    end
-    if a.bgSlot ~= b.bgSlot then
-      return a.bgSlot < b.bgSlot
-    end
-    return a.kind < b.kind
-  end)
+  local planes = orderedPlanes(slot, engine)
   local planeCanvas = assert(self.planeCanvas, "movie compositor requires its raster scratch")
   local colorShader = assert(self.colorShader, "movie compositor requires its color mix shader")
   local rawShader = assert(self.rawShader, "movie compositor requires its raw plane shader")
@@ -3814,30 +3941,26 @@ local function drawCompositedEngine(self, slot, engine, program, canvas)
         local scratch = assert(self.townScratch, "town stage requires its composite scratch")
         graphics.draw(scratch, 0, 0)
       end)
-    else
+    elseif plane.kind == 2 then
       -- Starter particles emit on the main 3D output alone; the physical
       -- mapping below moves that whole target, never a second copy.
       drawPlaneClipped(self, slot, engine, 0, function()
         drawParticles(self, slot)
       end)
+    else
+      local sprite = assert(plane.instance, "ordered sprite plane carries its instance")
+      drawPlaneClipped(self, slot, engine, 4, function()
+        drawSpriteInstance(self, slot, sprite)
+      end)
     end
-    runColorPass(plane.bgSlot)
-    runRawPass(plane.bgSlot)
+    -- Sprites feed the compositor with the OBJ plane identity even when
+    -- interleaved between background slots.
+    local planeId = (plane.kind == 3) and 4 or plane.bgSlot
+    runColorPass(planeId)
+    runRawPass(planeId)
     rawOld, rawNew = rawNew, rawOld
     colorOld, colorNew = colorNew, colorOld
   end
-  graphics.setCanvas(planeCanvas)
-  graphics.clear(0, 0, 0, 0)
-  graphics.setBlendMode("alpha", "alphamultiply")
-  graphics.setColor(1, 1, 1, 1)
-  graphics.setShader()
-  drawPlaneClipped(self, slot, engine, 4, function()
-    drawSprites(self, slot, engine)
-  end)
-  runColorPass(4)
-  runRawPass(4)
-  rawOld, rawNew = rawNew, rawOld
-  colorOld, colorNew = colorNew, colorOld
   graphics.setCanvas(canvas)
   graphics.setScissor()
   graphics.setBlendMode("alpha", "alphamultiply")

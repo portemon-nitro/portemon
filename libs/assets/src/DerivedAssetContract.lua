@@ -605,8 +605,12 @@ DerivedAssetContract.startupTitle = {
 -- The v9 record keeps the v8 grammar and carries the required source
 -- entry display record: the physical screen holding the main engine plus
 -- the physical upper/lower holds staged before the first source case.
+-- The v10 record keeps the v9 grammar and requires the compiled sprite
+-- playback facts on every clip (play mode with its loop start frame) and
+-- the hardware sprite priority on every clip assignment; older bundles
+-- never validate.
 DerivedAssetContract.startupOpeningScene = {
-  schema = "g4-startup-opening-scene-v9",
+  schema = "g4-startup-opening-scene-v10",
   tickRate = 30,
 }
 

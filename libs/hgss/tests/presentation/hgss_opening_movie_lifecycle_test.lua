@@ -119,6 +119,7 @@ local function sceneEvents(sceneNumber)
         x = 64,
         y = 96,
         drawOrder = 1,
+        objPriority = 1,
         clipId = root .. "sprites/ethan.g4sprite",
         animate = true,
       },
@@ -153,7 +154,17 @@ local function sceneEvents(sceneNumber)
       ticks = 20,
     },
     { op = "waitTicks", stepId = "scroll", atStepTick = 0, ticks = 20 },
-    { op = "setFade", stepId = "fade", atStepTick = 0, scope = "both", mode = "brightness", color = "white", direction = "out", ticks = 15, terminal = "neutral" },
+    {
+      op = "setFade",
+      stepId = "fade",
+      atStepTick = 0,
+      scope = "both",
+      mode = "brightness",
+      color = "white",
+      direction = "out",
+      ticks = 15,
+      terminal = "neutral",
+    },
     { op = "finish", stepId = "fade", atStepTick = 0 },
   }
 end
@@ -243,9 +254,25 @@ local function manifestFor(sceneNumber)
   local lowerImage = root .. "lower-bg.png"
   local clips = {}
   if sceneNumber == 1 then
-    clips = { { id = root .. "sprites/clip0.g4sprite", frameCount = 1, frames = { stillFrame() } } }
+    clips = {
+      {
+        id = root .. "sprites/clip0.g4sprite",
+        frameCount = 1,
+        playMode = "forward_loop",
+        loopStartFrameIdx = 0,
+        frames = { stillFrame() },
+      },
+    }
   elseif sceneNumber == 4 then
-    clips = { { id = root .. "sprites/ethan.g4sprite", frameCount = 1, frames = { stillFrame() } } }
+    clips = {
+      {
+        id = root .. "sprites/ethan.g4sprite",
+        frameCount = 1,
+        playMode = "forward_loop",
+        loopStartFrameIdx = 0,
+        frames = { stillFrame() },
+      },
+    }
   end
   local manifest = {
     schema = Contract.startupOpeningScene.schema,
@@ -660,10 +687,7 @@ function T.started_wipe_effects_hold_the_close_step_for_their_authored_ticks()
   Assert.equal(wipeBoundary(0, 10, 191), 255, "the opening edge starts fully closed on every row")
   Assert.equal(wipeBoundary(10, 10, 48), 0, "the final edge ends fully open")
   Assert.equal(wipeBoundary(10, 10, 191), 0, "the final edge ends fully open on every row")
-  Assert.isFalse(
-    wipeBoundary(2, 10, 48) == wipeBoundary(2, 10, 96),
-    "early edges already slope with the scanline"
-  )
+  Assert.isFalse(wipeBoundary(2, 10, 48) == wipeBoundary(2, 10, 96), "early edges already slope with the scanline")
   local probeGraphics = movieGraphics()
   local probeMovie = openMovie(scenes, cacheFs, probeGraphics)
   while probeMovie:sceneNumber() < 2 do
@@ -816,10 +840,7 @@ function T.started_wipe_effects_hold_the_close_step_for_their_authored_ticks()
   local kindLow = otherEdges(48)
   local kindHigh = otherEdges(96)
   if #probeLow > 0 and #kindLow > 0 then
-    Assert.isFalse(
-      #probeLow == #kindLow and probeLow[1] == kindLow[1],
-      "different wipe kinds target different windows"
-    )
+    Assert.isFalse(#probeLow == #kindLow and probeLow[1] == kindLow[1], "different wipe kinds target different windows")
   elseif #probeHigh > 0 and #kindHigh > 0 then
     Assert.isFalse(
       #probeHigh == #kindHigh and probeHigh[1] == kindHigh[1],
@@ -975,7 +996,11 @@ function T.preflight_holds_at_most_three_scene_graphs_while_readying_all_five()
   Assert.isTrue((tracker.liveByScene[1] or 0) > 0, "the current scene graph stays resident")
   Assert.isTrue((tracker.liveByScene[2] or 0) > 0, "the next scene graph stays resident")
   for sceneNumber = 3, 5 do
-    Assert.equal(tracker.liveByScene[sceneNumber] or 0, 0, "transient scene " .. sceneNumber .. " releases before return")
+    Assert.equal(
+      tracker.liveByScene[sceneNumber] or 0,
+      0,
+      "transient scene " .. sceneNumber .. " releases before return"
+    )
   end
   Assert.equal(#graphics.canvases, 2, "preflight keeps exactly two bounded role targets")
   for _, canvas in ipairs(graphics.canvases) do
@@ -1114,7 +1139,8 @@ function T.finished_wipe_brightness_holds_only_for_the_retail_kinds_until_the_ne
     end
     steps[#steps + 1] = { id = "hold-" .. kind, events = holdEvents, ["until"] = { kind = "duration", ticks = 6 } }
   end
-  steps[#steps + 1] = { id = "done", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 5 } }
+  steps[#steps + 1] =
+    { id = "done", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 5 } }
   events[#events + 1] = { op = "waitTicks", stepId = "done", atStepTick = 0, ticks = 5 }
   events[#events + 1] = { op = "finish", stepId = "done", atStepTick = 0 }
   local scenes, cacheFs = packWithOverrides({
@@ -1270,8 +1296,26 @@ function T.scene_five_shutter_opens_main_center_out_before_sub_bottom_up_and_wai
         },
         events = {
           { op = "setScreenMapping", stepId = "wipe", atStepTick = 0, mainPhysical = "lower" },
-          { op = "setScroll", stepId = "wipe", atStepTick = 0, engine = "main", bgSlot = 0, dx = 0, dy = 160, ticks = 0 },
-          { op = "setScroll", stepId = "wipe", atStepTick = 0, engine = "sub", bgSlot = 0, dx = 0, dy = 160, ticks = 0 },
+          {
+            op = "setScroll",
+            stepId = "wipe",
+            atStepTick = 0,
+            engine = "main",
+            bgSlot = 0,
+            dx = 0,
+            dy = 160,
+            ticks = 0,
+          },
+          {
+            op = "setScroll",
+            stepId = "wipe",
+            atStepTick = 0,
+            engine = "sub",
+            bgSlot = 0,
+            dx = 0,
+            dy = 160,
+            ticks = 0,
+          },
           {
             op = "shutterFade",
             stepId = "wipe",
@@ -1561,10 +1605,7 @@ function T.compositor_acquisition_failures_release_every_handle_exactly_once()
       openMovie(scenes, cacheFs, graphics)
     end, "a failed " .. failing.label .. " acquisition aborts construction")
     Assert.equal(liveHandles(graphics), 0, "a failed " .. failing.label .. " leaves no live handle")
-    assertReleasedExactlyOnce(
-      graphics,
-      "a failed " .. failing.label .. " releases every acquired handle exactly once"
-    )
+    assertReleasedExactlyOnce(graphics, "a failed " .. failing.label .. " releases every acquired handle exactly once")
   end
 end
 

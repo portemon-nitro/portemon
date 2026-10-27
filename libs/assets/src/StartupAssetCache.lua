@@ -598,6 +598,11 @@ local OPENING_OPS = {
 
 local OPENING_ENGINES = { main = true, sub = true }
 
+-- Play modes repeat the shared animation decoder's four normalized strings
+-- here so the generated contract stays readable without ROM knowledge.
+-- libs/assets must not import the decoder's producer module.
+local OPENING_PLAY_MODES = { forward = true, forward_loop = true, reverse = true, reverse_loop = true }
+
 -- Source window rectangles are 256x192 engine-local pixel endpoints: x in
 -- 0..255 (255 denotes the full-width source helper case), y in 0..192.
 ---@param rect unknown candidate rectangle
@@ -720,7 +725,7 @@ local function validateOpeningClipFrame(frame, sceneNumber)
     )
     or not isFiniteNumber(frame.offsetX)
     or not isFiniteNumber(frame.offsetY)
-    or not isPositiveInteger(frame.duration)
+    or not isNonnegativeInteger(frame.duration)
   then
     return nil, invalid("opening scene sprite clip frame is malformed", StartupAssetCache.openingScenePath(sceneNumber))
   end
@@ -730,16 +735,36 @@ end
 local function validateOpeningClip(clip, sceneNumber)
   if
     type(clip) ~= "table"
-    or not onlyKeys(
-      clip,
-      { id = true, bank = true, sequence = true, frameCount = true, frames = true, speciesId = true }
-    )
+    or not onlyKeys(clip, {
+      id = true,
+      bank = true,
+      sequence = true,
+      frameCount = true,
+      playMode = true,
+      loopStartFrameIdx = true,
+      frames = true,
+      speciesId = true,
+    })
     or type(clip.id) ~= "string"
     or not isPositiveInteger(clip.frameCount)
     or type(clip.frames) ~= "table"
     or #clip.frames == 0
   then
     return nil, invalid("opening scene sprite clip is malformed", StartupAssetCache.openingScenePath(sceneNumber))
+  end
+  if type(clip.playMode) ~= "string" or OPENING_PLAY_MODES[clip.playMode] ~= true then
+    return nil,
+      invalid(
+        "opening scene sprite clip carries no supported play mode",
+        StartupAssetCache.openingScenePath(sceneNumber)
+      )
+  end
+  if not isNonnegativeInteger(clip.loopStartFrameIdx) or clip.loopStartFrameIdx >= clip.frameCount then
+    return nil,
+      invalid(
+        "opening scene sprite clip loop start is outside its frames",
+        StartupAssetCache.openingScenePath(sceneNumber)
+      )
   end
   if not isOpeningSceneRoot(clip.id, sceneNumber) then
     return nil, invalid("opening scene sprite clip escapes its scene asset root", clip.id)
@@ -1322,6 +1347,9 @@ local function validateOpeningEventOperands(event, sceneNumber)
     if not isNonnegativeInteger(event.drawOrder) then
       return nil, "opening scene sprite carries no draw order"
     end
+    if not isNonnegativeInteger(event.objPriority) or event.objPriority > 3 then
+      return nil, "opening scene sprite clip carries no hardware sprite priority"
+    end
     if type(event.clipId) ~= "string" or event.clipId == "" then
       return nil, "opening scene sprite clip event points at no compiled clip"
     end
@@ -1445,6 +1473,7 @@ local OPENING_EVENT_KEYS = {
     x = true,
     y = true,
     drawOrder = true,
+    objPriority = true,
     clipId = true,
     animate = true,
   },
@@ -1675,7 +1704,7 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
 end
 
 -- One independently staged opening-movie scene: strict source-independent
--- g4-startup-opening-scene-v9 package with numbered scene, edition, 30Hz
+-- g4-startup-opening-scene-v10 package with numbered scene, edition, 30Hz
 -- duration, per-engine BG slots with priority and alternate tilemaps, sprite
 -- clips with frame offsets, model descriptors and animations where used,
 -- starter emitter records where used, and the closed step-clocked event
