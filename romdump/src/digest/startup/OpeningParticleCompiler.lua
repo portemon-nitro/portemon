@@ -12,7 +12,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("romdump.src.digest.PngEncoder")
 local SplResource = require("libs.nds.src.nitro.spl.SplResource")
 local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
 
