@@ -1,7 +1,7 @@
 -- Publishes startup visuals and title resources through the worker's staged artifact.
 
 local Errors = require("libs.errors.src.Errors")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("romdump.src.digest.PngEncoder")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 local Hashing = require("romdump.src.digest.Hashing")
 
