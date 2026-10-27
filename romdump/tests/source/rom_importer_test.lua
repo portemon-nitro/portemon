@@ -1,4 +1,5 @@
 local Assert = require("tests.support.Assert")
+local RomBinding = require("romdump.src.source.RomBinding")
 local RomImporter = require("romdump.src.source.RomImporter")
 local RomSource = require("romdump.src.source.RomSource")
 local NdsBuilder = require("tests.support.NdsBuilder")
@@ -803,6 +804,364 @@ function T.dropped_candidate_holding_another_rom_stays_ephemeral_but_usable()
         Assert.isTrue(value:find("OVERLAY0-DATB", 1, true) == nil, "no candidate payload may be copied either")
       end
     end
+  end)
+end
+
+-- Queued imports validate in a platform worker thread and report back over
+-- channels. These scenarios drive that protocol through a deterministic
+-- stand-in transport: in-memory FIFO channels plus worker threads whose
+-- liveness the test flips. Nothing blocks, sleeps, or spawns OS threads.
+local function withQueuedHost(fn)
+  local threads, channels, importers = {}, {}, {}
+  local function newChannel()
+    local values = {}
+    local channel = {}
+    function channel:push(value)
+      values[#values + 1] = value
+      return true
+    end
+    function channel:pop()
+      if #values == 0 then
+        return nil
+      end
+      return table.remove(values, 1)
+    end
+    channels[#channels + 1] = channel
+    return channel
+  end
+  local function newThread(bootstrap)
+    local thread = { bootstrap = bootstrap, alive = true, starts = 0 }
+    function thread:start(...)
+      self.starts = self.starts + 1
+      self.args = { ... }
+      return true
+    end
+    function thread:isRunning()
+      return self.alive
+    end
+    function thread:getError()
+      return self.threadError
+    end
+    threads[#threads + 1] = thread
+    return thread
+  end
+  local realLove = assert(rawget(_G, "love"), "queued imports need the platform host")
+  local fakeLove = {
+    data = realLove.data,
+    filesystem = realLove.filesystem,
+    timer = realLove.timer,
+    thread = { newChannel = newChannel, newThread = newThread },
+  }
+  local host = { threads = threads, channels = channels }
+  function host:watch(importer)
+    importers[#importers + 1] = importer
+    return importer
+  end
+  rawset(_G, "love", fakeLove)
+  local ok, err = pcall(fn, host)
+  -- Retire every owned worker through the real lease rules so a failed
+  -- assertion cannot leak a live worker into the next scenario.
+  for _, thread in ipairs(threads) do
+    thread.alive = false
+  end
+  for _ = 1, 8 do
+    for _, importer in ipairs(importers) do
+      pcall(function()
+        importer:update()
+      end)
+    end
+    for _, thread in ipairs(threads) do
+      thread.alive = false
+    end
+  end
+  for _, channel in ipairs(channels) do
+    while channel:pop() ~= nil do
+    end
+  end
+  rawset(_G, "love", realLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- The importer's live worker session. Queued tests read the issued session
+-- id out of the worker inbox the importer itself populated, then answer
+-- with that id; ids are never invented by the fake.
+local function liveSession(importer)
+  Assert.notNil(importer._queued, "the import must hold a live worker session")
+  return importer._queued
+end
+
+local function retireWorkers(host)
+  for _, thread in ipairs(host.threads) do
+    thread.alive = false
+  end
+end
+
+local function pump(importer, rounds)
+  for _ = 1, rounds do
+    importer:update()
+  end
+end
+
+-- A strict source binding for the synthetic cartridge the harness builds.
+local function syntheticBinding(info)
+  return {
+    schema = 1,
+    versionId = info.id,
+    romSha1 = info.sha1,
+    kind = "nds",
+    path = false,
+    displayName = info.displayName,
+    zipEntry = false,
+  }
+end
+
+-- A terminal worker result carrying genuine shared bytes for the session.
+local function completePacket(h, sessionId)
+  return {
+    id = sessionId,
+    kind = "complete",
+    versionId = h.info.id,
+    report = { sha1 = h.info.sha1 },
+    sourceName = "synthetic.nds",
+    displayName = h.info.displayName,
+    binding = syntheticBinding(h.info),
+    byteData = love.data.newByteData(h.data),
+  }
+end
+
+-- A fresh import must start a worker at once: after the previous worker
+-- exited and its outbox drained, no lease may hold the next import back.
+-- The probe is canceled and retired before returning.
+local function assertLeaseFree(host)
+  local probe = harness()
+  host:watch(probe.importer)
+  probe.importer:queuePath("probe.nds")
+  probe.importer:update()
+  Assert.isTrue(
+    probe.importer:status().stage ~= "waiting",
+    "a fresh import must start at once once the old worker exited"
+  )
+  probe.importer:cancelQueued()
+  retireWorkers(host)
+  for _, channel in ipairs(host.channels) do
+    while channel:pop() ~= nil do
+    end
+  end
+  probe.importer:update()
+  Assert.equal(probe.importer.state, "idle")
+end
+
+-- A queued import publishes only after the worker validates and the game
+-- thread commits: the binding lands once, completion fires once, and the
+-- shared bytes are offered for exactly one handoff.
+function T.queued_import_commits_after_validation_and_hands_its_source_once()
+  withQueuedHost(function(host)
+    local h = harness()
+    host:watch(h.importer)
+    h.importer:queuePath("synthetic.nds")
+    h.importer:update()
+    Assert.equal(h.importer.state, "reading")
+    local session = liveSession(h.importer)
+    local sessionId = assert(session.inbox:pop()).id
+    Assert.isNil(h.backend.files["heartgold/rom-source.lua"], "queueing alone publishes no binding")
+    Assert.isNil(h.importer:takeVerifiedSource(), "a running import offers no handoff yet")
+    Assert.equal(#h.events, 0)
+    session.outbox:push({ id = sessionId, kind = "status", state = "verifying", progress = 0.25 })
+    h.importer:update()
+    Assert.equal(h.importer.state, "verifying")
+    session.outbox:push({ id = sessionId, kind = "validated" })
+    h.importer:update()
+    local commit = session.inbox:pop()
+    Assert.notNil(commit, "validation must be answered with a commit")
+    Assert.equal(commit.id, sessionId)
+    Assert.equal(commit.op, "commit")
+    Assert.isNil(session.inbox:pop(), "exactly one commit authorizes the registration")
+    Assert.isNil(h.backend.files["heartgold/rom-source.lua"], "validation alone publishes no binding")
+    session.outbox:push(completePacket(h, sessionId))
+    h.importer:update()
+    Assert.equal(h.importer.state, "complete")
+    Assert.equal(#h.events, 1, "completion fires exactly once")
+    Assert.equal(h.events[1], "heartgold")
+    local binding = CacheFs.forVersion("heartgold", h.backend):loadLua(RomBinding.PATH)
+    Assert.notNil(binding, "the authorized result publishes its binding")
+    Assert.equal(binding.versionId, "heartgold")
+    Assert.equal(binding.romSha1, h.info.sha1)
+    local handed = h.importer:takeVerifiedSource()
+    Assert.notNil(handed, "completion offers its verified bytes once")
+    Assert.equal(handed:sha1(), h.info.sha1)
+    Assert.isNil(h.importer:takeVerifiedSource(), "the handoff is one-shot")
+    retireWorkers(host)
+    pump(h.importer, 4)
+    assertLeaseFree(host)
+  end)
+end
+
+-- Canceling a queued import retires its worker: the cancel reaches the
+-- worker, and late results from the retired session can never publish a
+-- binding, complete the import, or hand out bytes.
+function T.queued_cancel_drops_late_worker_results_without_publishing()
+  withQueuedHost(function(host)
+    local h = harness()
+    host:watch(h.importer)
+    h.importer:queuePath("synthetic.nds")
+    h.importer:update()
+    local session = liveSession(h.importer)
+    local sessionId = assert(session.inbox:pop()).id
+    -- A packet for another session never moves the live import.
+    session.outbox:push({ id = "not-this-session", kind = "status", state = "verifying", progress = 0.5 })
+    session.outbox:push({ id = sessionId, kind = "validated" })
+    h.importer:update()
+    Assert.equal(h.importer.state, "reading")
+    Assert.equal(h.importer.progress, 0, "a stale packet changes no visible progress")
+    local commit = session.inbox:pop()
+    Assert.notNil(commit, "the live validation is still answered with a commit")
+    Assert.equal(commit.op, "commit")
+    -- Cancel after the gate authorized the worker: the retired packet must
+    -- still be excluded from durable publication and handoff.
+    h.importer:cancelQueued()
+    Assert.equal(h.importer.state, "idle")
+    local cancel = session.inbox:pop()
+    Assert.notNil(cancel, "canceling must tell the worker to abandon its session")
+    Assert.equal(cancel.id, sessionId)
+    Assert.equal(cancel.op, "cancel")
+    session.outbox:push(completePacket(h, sessionId))
+    session.outbox:push({
+      id = sessionId,
+      kind = "error",
+      errorCode = "ROM_IMPORT_FAILED",
+      message = "late",
+      context = {},
+    })
+    session.outbox:push({ id = sessionId, kind = "status", state = "verifying", progress = 0.9 })
+    retireWorkers(host)
+    pump(h.importer, 5)
+    Assert.equal(h.importer.state, "idle", "late packets never revive a retired import")
+    Assert.equal(#h.events, 0)
+    Assert.isNil(h.backend.files["heartgold/rom-source.lua"], "a retired result publishes no binding")
+    Assert.isNil(h.importer:takeVerifiedSource(), "a retired import offers no handoff")
+    assertLeaseFree(host)
+  end)
+end
+
+-- A superseding import never starts a second worker while the canceled
+-- first worker is still alive: it waits, then starts with its own session
+-- once the old worker exits and drains. Old-session packets stay ignored.
+function T.superseding_import_waits_for_the_live_worker_lease()
+  withQueuedHost(function(host)
+    local first = harness()
+    local second = harness()
+    host:watch(first.importer)
+    host:watch(second.importer)
+    first.importer:queuePath("first.nds", "first-session")
+    first.importer:update()
+    local firstSession = liveSession(first.importer)
+    Assert.equal(assert(firstSession.inbox:pop()).id, "first-session")
+    Assert.equal(#host.threads, 1)
+    first.importer:cancelQueued()
+    Assert.equal(first.importer.state, "idle")
+    -- The retired worker is still physically alive: the newcomer waits.
+    second.importer:queuePath("second.nds", "second-session")
+    second.importer:update()
+    pump(second.importer, 3)
+    Assert.equal(#host.threads, 1, "no second worker starts while the retired one is alive")
+    Assert.equal(second.importer:status().stage, "waiting")
+    -- Late packets from the retired session are drained, never published.
+    firstSession.outbox:push(completePacket(first, "first-session"))
+    pump(first.importer, 2)
+    Assert.equal(first.importer.state, "idle")
+    Assert.equal(#first.events, 0)
+    Assert.isNil(first.backend.files["heartgold/rom-source.lua"])
+    -- Only once the old worker exits does the waiting import start.
+    retireWorkers(host)
+    second.importer:update()
+    Assert.equal(#host.threads, 2, "the waiting import starts after the old worker exits")
+    local secondSession = liveSession(second.importer)
+    local request = secondSession.inbox:pop()
+    Assert.notNil(request)
+    Assert.equal(request.id, "second-session")
+    -- An old-session result in the new outbox is ignored; only the live
+    -- session's result publishes.
+    secondSession.outbox:push(completePacket(second, "first-session"))
+    secondSession.outbox:push(completePacket(second, "second-session"))
+    second.importer:update()
+    Assert.equal(second.importer.state, "complete")
+    Assert.equal(#second.events, 1)
+    Assert.equal(second.events[1], "heartgold")
+    local binding = CacheFs.forVersion("heartgold", second.backend):loadLua(RomBinding.PATH)
+    Assert.notNil(binding)
+    Assert.equal(binding.romSha1, second.info.sha1)
+    Assert.equal(#first.events, 0, "the retired session never completes")
+    Assert.isNil(first.importer:takeVerifiedSource())
+    retireWorkers(host)
+    pump(second.importer, 4)
+    assertLeaseFree(host)
+  end)
+end
+
+-- A worker that dies without answering earns exactly one retry; a second
+-- death fails the import with nothing published. A logical worker error
+-- fails at once and never retries.
+function T.lost_worker_retries_once_then_fails_while_logic_errors_do_not_retry()
+  withQueuedHost(function(host)
+    local h = harness()
+    host:watch(h.importer)
+    h.importer:queuePath("synthetic.nds")
+    h.importer:update()
+    local firstSession = liveSession(h.importer)
+    local firstId = assert(firstSession.inbox:pop()).id
+    Assert.equal(#host.threads, 1)
+    -- Progress alone is not a result: the worker then dies silently.
+    firstSession.outbox:push({ id = firstId, kind = "status", state = "verifying", progress = 0.4 })
+    h.importer:update()
+    Assert.equal(h.importer.state, "verifying")
+    Assert.equal(#h.events, 0)
+    firstSession.thread.alive = false
+    h.importer:update()
+    Assert.equal(#host.threads, 2, "a lost worker earns exactly one retry")
+    Assert.isTrue(h.importer:isBusy(), "the retry keeps the import in flight")
+    local retrySession = liveSession(h.importer)
+    Assert.isTrue(retrySession.thread ~= firstSession.thread, "the retry runs on a new worker")
+    local retryId = assert(retrySession.inbox:pop()).id
+    Assert.isTrue(retryId ~= firstId, "the retry is a distinct session")
+    -- The retry dies too: terminal error, no third worker, nothing published.
+    retrySession.thread.alive = false
+    h.importer:update()
+    Assert.equal(h.importer.state, "error")
+    Assert.equal(h.importer:status().errorCode, "IMPORT_WORKER_LOST")
+    pump(h.importer, 3)
+    Assert.equal(#host.threads, 2, "no third worker ever starts")
+    Assert.equal(#h.events, 0)
+    Assert.isNil(h.backend.files["heartgold/rom-source.lua"], "a lost worker publishes no binding")
+    Assert.isNil(h.importer:takeVerifiedSource(), "a failed import offers no handoff")
+    -- A logical worker error fails at once with no retry.
+    local failed = harness()
+    host:watch(failed.importer)
+    failed.importer:queuePath("synthetic.nds")
+    failed.importer:update()
+    Assert.isTrue(failed.importer:status().stage ~= "waiting", "the freed lease admits the next import")
+    local failedSession = liveSession(failed.importer)
+    local failedId = assert(failedSession.inbox:pop()).id
+    failedSession.outbox:push({
+      id = failedId,
+      kind = "error",
+      errorCode = "NDS_UNKNOWN_ROM",
+      message = "the worker rejected the cartridge",
+      context = {},
+    })
+    failed.importer:update()
+    Assert.equal(failed.importer.state, "error")
+    Assert.equal(failed.importer:status().errorCode, "NDS_UNKNOWN_ROM")
+    Assert.equal(#host.threads, 3, "a validation failure starts no retry worker")
+    Assert.isNil(failed.backend.files["heartgold/rom-source.lua"])
+    Assert.equal(#failed.events, 0)
+    retireWorkers(host)
+    for _ = 1, 6 do
+      h.importer:update()
+      failed.importer:update()
+    end
+    assertLeaseFree(host)
   end)
 end
 

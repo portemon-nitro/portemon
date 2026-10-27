@@ -771,6 +771,61 @@ function T.quiescence_card_names_the_pending_file_before_the_barrier_admits()
       close = function() end,
     }
   end
+  -- Every admitted barrier above starts a real background validation
+  -- through the deferred file receipt. Retire each started session through
+  -- its public cancel/update seam so no worker lease outlives this case.
+  local startedImporters = {}
+  local function noteStartedImporter()
+    if App.importer ~= nil then
+      startedImporters[#startedImporters + 1] = App.importer
+    end
+  end
+  local function retireStartedImporters()
+    local threads = {}
+    for _, importer in ipairs(startedImporters) do
+      pcall(function()
+        local queued = importer._queued
+        if type(queued) == "table" and queued.thread ~= nil then
+          threads[#threads + 1] = { importer = importer, thread = queued.thread }
+        end
+      end)
+      pcall(function()
+        importer:cancelQueued()
+      end)
+    end
+    if App.importer ~= nil then
+      pcall(function()
+        App.importer:cancelQueued()
+      end)
+    end
+    App._pendingImport = nil
+    for _, entry in ipairs(threads) do
+      for _ = 1, 200 do
+        pcall(function()
+          entry.importer:update()
+        end)
+        local ok, running = pcall(entry.thread.isRunning, entry.thread)
+        if not ok or running ~= true then
+          break
+        end
+        pcall(love.timer.sleep, 0.01)
+      end
+    end
+    for _, importer in ipairs(startedImporters) do
+      for _ = 1, 8 do
+        pcall(function()
+          importer:update()
+        end)
+      end
+    end
+    if App.importer ~= nil then
+      for _ = 1, 8 do
+        pcall(function()
+          App.importer:update()
+        end)
+      end
+    end
+  end
   local ok, err = xpcall(function()
     for _, kind in ipairs({ "path", "drop" }) do
       local script = { status = "pending", barrier = 7, imports = 0 }
@@ -835,6 +890,39 @@ function T.quiescence_card_names_the_pending_file_before_the_barrier_admits()
       )
       App.update(0.016)
       Assert.equal(#calls, 0, "the render thread never reads the " .. kind .. " source")
+      noteStartedImporter()
+      local owned = App.importer
+      if owned ~= nil then
+        local worker = nil
+        pcall(function()
+          local queued = owned._queued
+          if type(queued) == "table" then
+            worker = queued.thread
+          end
+        end)
+        pcall(function()
+          owned:cancelQueued()
+        end)
+        if worker ~= nil then
+          for _ = 1, 200 do
+            pcall(function()
+              owned:update()
+            end)
+            local okWorker, running = pcall(worker.isRunning, worker)
+            if not okWorker or running ~= true then
+              break
+            end
+            pcall(love.timer.sleep, 0.01)
+          end
+        end
+        for _ = 1, 8 do
+          pcall(function()
+            owned:update()
+          end)
+        end
+      end
+      App._pendingImport = nil
+      App.importer = nil
     end
     do
       local script = { status = "pending", barrier = 11, imports = 0 }
@@ -871,8 +959,10 @@ function T.quiescence_card_names_the_pending_file_before_the_barrier_admits()
       App.update(0.016)
       Assert.isNil(App.pendingQuiesce, "escape releases the pending barrier")
       Assert.equal(#calls, 0, "a cancelled wait never starts its worker")
+      noteStartedImporter()
     end
   end, debug.traceback)
+  retireStartedImporters()
   restoreAll()
   if not ok then
     error(err, 0)
