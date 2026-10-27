@@ -1875,7 +1875,7 @@ local PINNED_SS_EXTENTS = {
 -- this side proves the full map decoded at its native extent.
 local PINNED_SS_EDGE_TOPOLOGY = {
   [1] = {
-    main = { [0] = "TOTT", [1] = "OTOO", [2] = "TTTT", [3] = "TTOO" },
+    main = { [0] = "TOTT", [1] = "TTOO", [2] = "TTTT", [3] = "OTOO" },
     sub = { [0] = "TTTT", [1] = "TTTT", [3] = "OOOO" },
   },
   [2] = {

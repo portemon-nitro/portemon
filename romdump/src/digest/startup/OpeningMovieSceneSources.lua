@@ -71,8 +71,12 @@ function OpeningMovieSceneSources.backgrounds(versionId, sceneNumber)
       layers[#layers + 1] =
         { engine = "sub", bgSlot = 3, priority = 3, char = charSub, screen = screen, palette = paletteSub }
     end
+    -- Screens list the MAIN1, MAIN2, MAIN3 members in slot order: retail
+    -- loads each screen onto its same-numbered plane
+    -- (src/intro_movie_scene_1.c IntroMovie_Scene1_LoadBgGfx), so the full
+    -- sunrise art stays on the static BG3 underlay while BG1 scrolls.
     for index, screen in ipairs(screensMain) do
-      local slots = { 3, 2, 1 }
+      local slots = { 1, 2, 3 }
       layers[#layers + 1] = {
         engine = "main",
         bgSlot = slots[index],
