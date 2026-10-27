@@ -6,7 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
-local PngWriter = require("libs.assets.src.PngWriter")
+local PngWriter = require("tests.support.PngEncoder")
 local Presentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 
 local WIDTH, HEIGHT = 480, 360
