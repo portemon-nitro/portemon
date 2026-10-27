@@ -74,6 +74,14 @@ local T = {
       -- behind a host that never stages instead of failing with
       -- provenance.
       "battle-effect:LEER",
+      -- Route 29 wilds strike back with the full SENTRET repertoire:
+      -- SCRATCH and FORESIGHT from level 1 and DEFENSE_CURL from level 4.
+      -- Stale pre-schema records fail the launch with their identity, so
+      -- the suite stages the whole executed set instead of trusting
+      -- whatever an earlier preparation left behind.
+      "battle-effect:SCRATCH",
+      "battle-effect:FORESIGHT",
+      "battle-effect:DEFENSE_CURL",
     },
     tags = { "field", "battle" },
   },

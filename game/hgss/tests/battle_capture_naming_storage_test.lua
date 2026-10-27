@@ -97,27 +97,6 @@ function T.capture_naming_opens_as_a_real_naming_child()
   flows:dispose()
 end
 
-function T.soulsilver_variant_stays_blocked_without_its_owned_cache(context)
-  local GameVersion = require("romdump.src.source.GameVersion")
-  local RomImporter = require("romdump.src.source.RomImporter")
-  local known = false
-  for _, versionId in ipairs(GameVersion.ORDER) do
-    if versionId == "soulsilver" then
-      known = true
-    end
-  end
-  Assert.isTrue(known, "setup: the second version is a known parity dimension")
-  if not RomImporter.isReady("soulsilver") then
-    context:skip(
-      "BLOCKED: no ready soulsilver user-owned ROM cache in this checkout; second-version naming parity is unverified"
-    )
-  end
-  Assert.isTrue(
-    false,
-    "a ready soulsilver cache appeared: this probe must grow a real second-version comparison before it may pass"
-  )
-end
-
 ---@param value unknown value under test preparation
 ---@return unknown a detached copy sharing no table with the source
 local function deepCopy(value)
@@ -189,15 +168,17 @@ local function dualMeasurement()
 end
 
 ---@param speciesList string[] catalog species keys filling the live party in order
+---@param catalog table? mon catalog under ownership, fixture root when absent
+---@param game string? versioned game identity under ownership, heartgold when absent
 ---@return table live party owner holding the described members in order
-local function makePartyOwner(speciesList)
+local function makePartyOwner(speciesList, catalog, game)
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
-  local catalog = CatalogFixture.makeCatalog()
+  catalog = catalog or CatalogFixture.makeCatalog()
   local owner = HgssMonService.new({
     catalog = catalog,
     bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture()),
     profile = CatalogFixture.profile(),
-    game = "heartgold",
+    game = game or "heartgold",
     language = "english",
     charmap = CatalogFixture.CHARMAP,
     games = CatalogFixture.GAMES,
@@ -219,9 +200,10 @@ end
 ---@param species string catalog species key under test preparation
 ---@param level integer battle level under test preparation
 ---@param seed integer fixed generator state under test preparation
+---@param catalog table? mon catalog under generation, fixture root when absent
 ---@return table full mon-domain record for the enemy side
-local function makeFoe(species, level, seed)
-  local catalog = CatalogFixture.makeCatalog()
+local function makeFoe(species, level, seed, catalog)
+  catalog = catalog or CatalogFixture.makeCatalog()
   local factory = CatalogFixture.makeFactory(seed, catalog)
   local record = factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level }))
   record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
@@ -278,11 +260,12 @@ local function openCaptureRig(opts)
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
-  local party = makePartyOwner(opts.party)
+  local catalog = opts.catalog or CatalogFixture.makeCatalog()
+  local party = makePartyOwner(opts.party, opts.catalog, opts.game)
   local bag = opts.bag
   local player = { trainerId = 99, trainerName = "MINT", language = "french" }
   local launchId = opts.launchId or "launch-capture-naming"
-  local foe = makeFoe(opts.foeSpecies or "EEVEE", opts.foeLevel or 3, 0x5EED0002)
+  local foe = makeFoe(opts.foeSpecies or "EEVEE", opts.foeLevel or 3, 0x5EED0002, opts.catalog)
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foe },
     { party = party, bag = bag, player = player }
@@ -310,7 +293,7 @@ local function openCaptureRig(opts)
       return rig.measurement
     end,
     itemCatalog = ItemFixture.makeCatalog(),
-    monCatalog = CatalogFixture.makeCatalog(),
+    monCatalog = catalog,
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,
@@ -786,4 +769,115 @@ function T.stale_revision_before_rename_keeps_committed_mon()
   battle:dispose()
 end
 
-return { tests = T }
+-- Every ready version replays the committed capture through its own owned
+-- mon catalog: the versioned catalog names the same party and foe
+-- species, the thrown ball settles as a capture in the first fitting
+-- party slot, the native naming lane seals the typed nickname, and the
+-- save gate reopens once the nickname resolves. The catalog and the game
+-- identity both come from the versioned cache, never from a shared
+-- fallback, so a version skew in species identities fails here instead
+-- of hiding behind the synthetic fixture.
+function T.versioned_species_replay_the_capture_naming_and_storage_flow(context)
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local RomImporter = require("romdump.src.source.RomImporter")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local ItemCache = require("libs.assets.src.ItemCache")
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local MonCache = require("libs.assets.src.MonCache")
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local versions = {}
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
+    end
+  end
+  if #versions == 0 then
+    context:skip("the versioned capture flow needs a ready user-owned dump with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local root = MonCache.loadCatalog(cacheFs)
+    Assert.equal(root.version.id, versionId, "the owned catalog names its own version, never a shared fallback")
+    local items = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))
+    local catalog = MonCatalog.new(root, items)
+    for _, speciesKey in ipairs({ "CHIKORITA", "TOTODILE", "EEVEE" }) do
+      local known, knownErr = pcall(function()
+        return catalog:species(speciesKey)
+      end)
+      Assert.isTrue(known, "the owned " .. versionId .. " catalog names " .. speciesKey .. ": " .. tostring(knownErr))
+    end
+    local rig = openCaptureRig({
+      launchId = "launch-versioned-capture",
+      catalog = catalog,
+      game = versionId,
+      party = { "CHIKORITA", "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE" },
+      bag = makeBallBag(),
+      foeSpecies = "EEVEE",
+      foeLevel = 3,
+    })
+    local SessionFixture = require("libs.battle.tests.session_fixture")
+    local opening = driveToDecision(rig, 600)
+    local request = assert(opening.request, "the capture battle asks its opening decision on " .. versionId)
+    local options = rig.battle:decisionOptions(request.requestId)
+    Assert.notNil(options, "the opening decision projects its options on " .. versionId)
+    local fragment = nil
+    for _, actor in ipairs(options.actors) do
+      for _, choice in ipairs(actor.choices or {}) do
+        if
+          choice.enabled == true
+          and type(choice.choice) == "table"
+          and type(choice.choice.payload) == "table"
+          and choice.choice.payload.item == "MASTER_BALL"
+        then
+          fragment = choice.choice
+        end
+      end
+    end
+    Assert.notNil(fragment, "the opening decision offers the stocked ball on " .. versionId)
+    local thrown, throwErr = rig.battle:submit(SessionFixture.replyFor(request, { fragment })) 
+    Assert.isTrue(thrown, "the thrown ball is accepted on " .. versionId .. ": " .. tostring(throwErr))
+    local committed = driveToCommitted(rig, 1200)
+    Assert.equal(committed.result, "capture", "the thrown ball settles as a capture on " .. versionId)
+    local receipt = assert(committed.outcomeReceipt, "completion carries its commit receipt on " .. versionId)
+    Assert.equal(#receipt.placements, 1, "the capture reports its single placement on " .. versionId)
+    Assert.equal(receipt.placements[1].destination, "party", "a fitting capture stays in the party on " .. versionId)
+    Assert.equal(receipt.placements[1].partySlot, 5, "the fifth slot holds the newcomer on " .. versionId)
+    local question = driveToNicknameQuestion(rig, 1200)
+    Assert.equal(question.kind, "capture_nickname", "the offered completion names the nickname decision on " .. versionId)
+    rig.screen:input({ { type = "confirm" } })
+    rig.pump(3)
+    local naming = rig.screen:status().completion
+    Assert.notNil(naming, "answering yes keeps the completion open on " .. versionId)
+    assert(naming ~= nil, "the naming stage reports itself on " .. versionId)
+    Assert.equal(naming.stage, "naming", "answering yes opens the native naming lane on " .. versionId)
+    rig.screen:input({ { type = "text", text = "AB" } })
+    rig.pump(1)
+    Assert.equal(rig.screen:status().completion.text, "AB", "the native screen stages the typed text on " .. versionId)
+    rig.screen:input({ { type = "name_control", id = "ok" } })
+    for _ = 1, 600 do
+      rig.pump(1)
+      ackNarration(rig)
+      if rig.battle:status().phase == "complete" then
+        break
+      end
+    end
+    Assert.equal(rig.battle:status().phase, "complete", "the named capture still returns to the field on " .. versionId)
+    Assert.isNil(rig.screen:status().completion, "the sealed nickname consumes its completion on " .. versionId)
+    local stored = rig.party:partyMon(5)
+    Assert.equal(stored.species, "EEVEE", "the appended mon keeps its caught species on " .. versionId)
+    Assert.equal(stored.nickname, "AB", "the typed nickname reaches the committed party on " .. versionId)
+    local saveable, _ = rig.battle:canSave()
+    Assert.isTrue(saveable, "the save gate reopens once the nickname resolves on " .. versionId)
+    rig.battle:dispose()
+    rig.screen:dispose()
+  end
+end
+
+
+return {
+  tests = T,
+  metadata = {
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "mon-catalog:global", "items:global" },
+  },
+}

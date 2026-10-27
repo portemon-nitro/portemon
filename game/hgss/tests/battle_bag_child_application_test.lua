@@ -146,25 +146,59 @@ function T.bag_child_view_carries_the_native_bag_application_receipt()
   flows:dispose()
 end
 
-function T.soulsilver_variant_stays_blocked_without_its_owned_cache(context)
+-- Every ready version replays the frozen stocked-bag flow through its own
+-- owned item catalog: the real catalog stocks the same POTION key, pocket
+-- travel lands on the same staged serving, and staging plus cancelling
+-- seal the identical receipts without touching the detached stock. The
+-- catalog comes from the versioned cache, never from a shared fallback,
+-- so a version skew in item identities fails here instead of hiding
+-- behind the synthetic fixture.
+function T.versioned_item_catalogs_replay_the_stocked_bag_flow(context)
   local GameVersion = require("romdump.src.source.GameVersion")
   local RomImporter = require("romdump.src.source.RomImporter")
-  local known = false
+  local MonBucket = require("tests.support.MonBucket")
+  local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if versionId == "soulsilver" then
-      known = true
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
     end
   end
-  Assert.isTrue(known, "setup: the second version is a known parity dimension")
-  if not RomImporter.isReady("soulsilver") then
-    context:skip(
-      "BLOCKED: no ready soulsilver user-owned ROM cache in this checkout; second-version bag parity is unverified"
-    )
+  if #versions == 0 then
+    context:skip("the versioned bag flow needs a ready user-owned dump with a derived cache")
   end
-  Assert.isTrue(
-    false,
-    "a ready soulsilver cache appeared: this probe must grow a real second-version comparison before it may pass"
-  )
+  for _, versionId in ipairs(versions) do
+    local _, items = MonBucket.openCatalogs(versionId)
+    local stocked, stockErr = pcall(function()
+      return items:item("POTION")
+    end)
+    Assert.isTrue(stocked, "the owned " .. versionId .. " catalog stocks POTION: " .. tostring(stockErr))
+    local flows = BattleSubflows.new({ launchId = "launch-bag-child", itemCatalog = items })
+    local inventory = { POTION = 5 }
+    Assert.isTrue(flows:open(bagIntent(inventory)), "the stocked bag opens on " .. versionId)
+    walkToMedicine(flows)
+    local view = flows:status().childView
+    Assert.notNil(view, "the open bag exposes its child view on " .. versionId)
+    Assert.equal(view.application, "bag", "the bag view carries its native application receipt on " .. versionId)
+    drive(flows, { type = "confirm" })
+    Assert.isNil(flows:takeResult(), "staging the serving seals no reply on " .. versionId)
+    Assert.equal(flows:status().stagedItem, "POTION", "the staged key is remembered on " .. versionId)
+    Assert.deepEqual(inventory, { POTION = 5 }, "browsing never mutates the detached stock on " .. versionId)
+    drive(flows, { type = "cancel" })
+    Assert.isNil(flows:takeResult(), "the restored browser seals nothing on its own on " .. versionId)
+    drive(flows, { type = "cancel" })
+    local result = flows:takeResult()
+    Assert.notNil(result, "bag cancel stages a result on " .. versionId)
+    Assert.equal(result.kind, "cancelled", "bag cancel reports a navigation cancellation on " .. versionId)
+    Assert.equal(result.requestId, 7, "the cancellation answers the open request on " .. versionId)
+    Assert.equal(result.launchId, "launch-bag-child", "the cancellation answers the open launch on " .. versionId)
+    flows:dispose()
+  end
 end
 
-return { tests = T }
+return {
+  tests = T,
+  metadata = {
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "mon-catalog:global", "items:global" },
+  },
+}

@@ -173,25 +173,71 @@ function T.party_child_view_carries_the_native_party_application_receipt()
   flows:dispose()
 end
 
-function T.soulsilver_variant_stays_blocked_without_its_owned_cache(context)
+-- Every ready version replays the frozen party flows through rosters drawn
+-- from its own owned mon catalog: the versioned catalog names the same
+-- EEVEE reserve, the voluntary switch seals the identical projected
+-- fragment once, and the forced replacement holds on cancel and seals on
+-- confirm. The catalog comes from the versioned cache, never from a
+-- shared fallback, so a version skew in species identities fails here
+-- instead of hiding behind the synthetic fixture.
+function T.versioned_rosters_replay_the_frozen_party_flows(context)
   local GameVersion = require("romdump.src.source.GameVersion")
   local RomImporter = require("romdump.src.source.RomImporter")
-  local known = false
+  local MonBucket = require("tests.support.MonBucket")
+  local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if versionId == "soulsilver" then
-      known = true
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
     end
   end
-  Assert.isTrue(known, "setup: the second version is a known parity dimension")
-  if not RomImporter.isReady("soulsilver") then
-    context:skip(
-      "BLOCKED: no ready soulsilver user-owned ROM cache in this checkout; second-version party parity is unverified"
-    )
+  if #versions == 0 then
+    context:skip("the versioned party flow needs a ready user-owned dump with a derived cache")
   end
-  Assert.isTrue(
-    false,
-    "a ready soulsilver cache appeared: this probe must grow a real second-version comparison before it may pass"
-  )
+  for _, versionId in ipairs(versions) do
+    local catalog = MonBucket.openCatalogs(versionId)
+    local known, knownErr = pcall(function()
+      return catalog:species("EEVEE")
+    end)
+    Assert.isTrue(known, "the owned " .. versionId .. " catalog names the EEVEE reserve: " .. tostring(knownErr))
+    local roster = {
+      { combatant = 1, slot = 0, name = "EEVEE", level = 20, hp = 30, maxHp = 30 },
+      { combatant = 2, slot = 1, name = "EEVEE", level = 5, hp = 10, maxHp = 18 },
+    }
+    local options = switchOptions(2)
+    local flows = coordinator()
+    local intent = partyIntent({ options = options, party = roster })
+    Assert.isTrue(flows:open(intent), "the voluntary party child opens on " .. versionId)
+    drive(flows, { type = "confirm" })
+    local result = flows:takeResult()
+    Assert.notNil(result, "confirming the reserve stages its reply on " .. versionId)
+    Assert.equal(result.kind, "choice", "the reserve stages a choice on " .. versionId)
+    Assert.deepEqual(
+      result.reply.choices[1],
+      options.actors[1].choices[1].choice,
+      "the reply copies the projected fragment on " .. versionId
+    )
+    Assert.equal(result.reply.launchId, "launch-party-child", "the reply answers the open launch on " .. versionId)
+    Assert.isNil(flows:takeResult(), "the staged reply reports once on " .. versionId)
+    flows:dispose()
+    local forced = coordinator()
+    Assert.isTrue(
+      forced:open(partyIntent({ purpose = "replacement", cancellable = false, party = roster })),
+      "the forced replacement child opens on " .. versionId
+    )
+    drive(forced, { type = "cancel" })
+    Assert.isNil(forced:takeResult(), "a forced replacement has no cancel result on " .. versionId)
+    drive(forced, { type = "confirm" })
+    local sealed = forced:takeResult()
+    Assert.notNil(sealed, "confirming the forced reserve stages its reply on " .. versionId)
+    Assert.equal(sealed.kind, "choice", "the forced reserve stages a choice on " .. versionId)
+    forced:dispose()
+  end
 end
 
-return { tests = T }
+return {
+  tests = T,
+  metadata = {
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "mon-catalog:global", "items:global" },
+  },
+}
