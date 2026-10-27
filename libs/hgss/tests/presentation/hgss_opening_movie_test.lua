@@ -74,9 +74,17 @@ end
 
 ---@param id string staged clip identity under its scene root
 ---@param frames table[] compiled clip frames
+---@param playMode string|nil normalized NANR playback mode carried by the strict scene contract
+---@param loopStartFrameIdx integer|nil zero-based loop entry frame carried by the strict scene contract
 ---@return table compiled sprite clip record
-local function spriteClip(id, frames)
-  return { id = id, frameCount = #frames, frames = frames }
+local function spriteClip(id, frames, playMode, loopStartFrameIdx)
+  return {
+    id = id,
+    frameCount = #frames,
+    frames = frames,
+    playMode = playMode or "forward_loop",
+    loopStartFrameIdx = loopStartFrameIdx or 0,
+  }
 end
 
 ---@return table single-frame still clip frame
@@ -153,6 +161,7 @@ local function sceneEvents(sceneNumber)
         x = 64,
         y = 96,
         drawOrder = 1,
+        objPriority = 1,
         clipId = root .. "sprites/ethan.g4sprite",
         animate = true,
       },
@@ -187,7 +196,17 @@ local function sceneEvents(sceneNumber)
       ticks = 20,
     },
     { op = "waitTicks", stepId = "scroll", atStepTick = 0, ticks = 20 },
-    { op = "setFade", stepId = "fade", atStepTick = 0, scope = "both", mode = "brightness", color = "white", direction = "out", ticks = 15, terminal = "neutral" },
+    {
+      op = "setFade",
+      stepId = "fade",
+      atStepTick = 0,
+      scope = "both",
+      mode = "brightness",
+      color = "white",
+      direction = "out",
+      ticks = 15,
+      terminal = "neutral",
+    },
     { op = "finish", stepId = "fade", atStepTick = 0 },
   }
 end
@@ -1420,6 +1439,7 @@ local function heroScene(offsetX, offsetY)
       x = 32,
       y = 64,
       drawOrder = 1,
+      objPriority = 1,
       clipId = clipId,
       animate = true,
     },
@@ -1464,18 +1484,18 @@ function T.authored_sprite_frames_offset_the_draw_origin_and_draw_once()
   local secondScenes, secondCache = packWithSceneAt(heroScene(52, 30), 1)
   local secondGraphics = movieGraphics()
   local second = openMovie(secondScenes, secondCache, secondGraphics)
-  local firstClip = assert(
-    first.current.imageByPath[sceneRoot(1) .. "sprites/hero.g4sprite"],
-    "the hero clip image is staged"
-  )
-  local secondClip = assert(
-    second.current.imageByPath[sceneRoot(1) .. "sprites/hero.g4sprite"],
-    "the hero clip image is staged"
-  )
-  for _ = 1, 8 do
+  local firstClip =
+    assert(first.current.imageByPath[sceneRoot(1) .. "sprites/hero.g4sprite"], "the hero clip image is staged")
+  local secondClip =
+    assert(second.current.imageByPath[sceneRoot(1) .. "sprites/hero.g4sprite"], "the hero clip image is staged")
+  for _ = 1, 4 do
     first:updateFixed()
     second:updateFixed()
   end
+  -- Four source ticks at double speed reach the offset frame (entered
+  -- at six units of the 6+6 pair and latched for the fourth draw);
+  -- sampling later would wrap back to the reset cell and hide the
+  -- authored offsets.
   -- Construction preflights every scene through the same frame path,
   -- so only draws issued after the opener count toward the per-frame
   -- proof.
@@ -1507,7 +1527,18 @@ local function fadeScene()
     {
       { op = "waitTicks", stepId = "setup", atStepTick = 0, ticks = 30 },
       { op = "enableSkip", stepId = "setup", atStepTick = 10 },
-      { op = "setFade", stepId = "run", atStepTick = 90, scope = "both", mode = "brightness", color = "white", direction = "out", ticks = 20, terminal = "neutral", effect = "fade-run" },
+      {
+        op = "setFade",
+        stepId = "run",
+        atStepTick = 90,
+        scope = "both",
+        mode = "brightness",
+        color = "white",
+        direction = "out",
+        ticks = 20,
+        terminal = "neutral",
+        effect = "fade-run",
+      },
       { op = "waitTicks", stepId = "run", atStepTick = 0, ticks = 120 },
       { op = "finish", stepId = "run", atStepTick = 120 },
     }
@@ -1615,7 +1646,7 @@ function T.clip_completion_binds_the_compiled_clip_duration()
           clipFrame(0, 0, 16, 16, 0, 0, 6),
           clipFrame(0, 0, 16, 16, 0, 0, 6),
           clipFrame(0, 0, 16, 16, 0, 0, 8),
-        }),
+        }, "forward", 0),
       },
       {
         { id = "setup", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 10 } },
@@ -1633,6 +1664,7 @@ function T.clip_completion_binds_the_compiled_clip_duration()
           x = 128,
           y = 96,
           drawOrder = 1,
+          objPriority = 1,
           clipId = sparkleClip,
           animate = true,
         },
@@ -1650,8 +1682,10 @@ function T.clip_completion_binds_the_compiled_clip_duration()
       }
     )
   end
-  -- The clip sums to 6 + 6 + 8 source ticks; the finale step completes
-  -- exactly then, neither on an earlier frame nor a tick late.
+  -- The one-shot sparkle sums to 6 + 6 + 8 units and the controller
+  -- advances two units per source tick, so the finale step runs ten
+  -- ticks and completes on the tenth; a looping clip would never
+  -- complete this effect wait.
   local scenes, cacheFs = packWithSceneAt(sparkleScene(sparkleClip), 1)
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
@@ -1659,12 +1693,10 @@ function T.clip_completion_binds_the_compiled_clip_duration()
     movie:updateFixed()
   end
   Assert.equal(movie:sceneNumber(), 1, "the setup step hands over to the clip finale")
-  for _ = 1, 19 do
+  for _ = 1, 9 do
     movie:updateFixed()
   end
-  Assert.equal(movie:sceneNumber(), 1, "the finale holds for the nineteen ticks before the summed duration")
-  movie:updateFixed()
-  Assert.equal(movie:sceneNumber(), 1, "the twentieth dispatched tick still runs the final frame")
+  Assert.equal(movie:sceneNumber(), 1, "the finale holds for the nine ticks before the summed duration")
   movie:updateFixed()
   Assert.equal(movie:sceneNumber(), 2, "the finale completes exactly after the summed frame durations")
   movie:dispose()
@@ -2377,7 +2409,18 @@ function T.steps_hold_until_a_later_start_fires_and_completes()
         { id = "tail", events = { 2, 3 }, ["until"] = { kind = "duration", ticks = 5 } },
       },
       {
-        { op = "setFade", stepId = "hold", atStepTick = 5, scope = "both", mode = "brightness", color = "white", direction = "out", ticks = 4, terminal = "neutral", effect = "late-fade" },
+        {
+          op = "setFade",
+          stepId = "hold",
+          atStepTick = 5,
+          scope = "both",
+          mode = "brightness",
+          color = "white",
+          direction = "out",
+          ticks = 4,
+          terminal = "neutral",
+          effect = "late-fade",
+        },
         { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 },
         { op = "finish", stepId = "tail", atStepTick = 0 },
       }
@@ -2742,21 +2785,21 @@ function T.town_stage_draws_on_main_and_stops_without_releasing()
     models[#models + 1] = buildableTown("town-" .. town, town, clips, texture, clips)
   end
   local customThird = townSceneCustom(models, {
-      { id = "arrive", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 20 } },
-      { id = "hold", events = { 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 30 } },
-    }, {
-      { op = "setCamera", stepId = "arrive", atStepTick = 0, distance = 100 },
-      -- The clip fires mid-step: handoff stages every tick-zero program
-      -- before the first frame, and the fake host cannot feed the real
-      -- town renderer, so the town stays off until its authored tick
-      -- exactly like the stop below stays off after its.
-      { op = "setModelClip", stepId = "arrive", atStepTick = 10, model = "town-0", clip = "arrive-pose" },
-      { op = "waitTicks", stepId = "arrive", atStepTick = 0, ticks = 20 },
-      { op = "setLighting", stepId = "hold", atStepTick = 0, map = 1 },
-      { op = "setModelVisible", stepId = "hold", atStepTick = 10, visible = false },
-      { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 30 },
-      { op = "finish", stepId = "hold", atStepTick = 0 },
-    }, false)
+    { id = "arrive", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 20 } },
+    { id = "hold", events = { 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 30 } },
+  }, {
+    { op = "setCamera", stepId = "arrive", atStepTick = 0, distance = 100 },
+    -- The clip fires mid-step: handoff stages every tick-zero program
+    -- before the first frame, and the fake host cannot feed the real
+    -- town renderer, so the town stays off until its authored tick
+    -- exactly like the stop below stays off after its.
+    { op = "setModelClip", stepId = "arrive", atStepTick = 10, model = "town-0", clip = "arrive-pose" },
+    { op = "waitTicks", stepId = "arrive", atStepTick = 0, ticks = 20 },
+    { op = "setLighting", stepId = "hold", atStepTick = 0, map = 1 },
+    { op = "setModelVisible", stepId = "hold", atStepTick = 10, visible = false },
+    { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 30 },
+    { op = "finish", stepId = "hold", atStepTick = 0 },
+  }, false)
   -- Town geometry decodes from real encoded mesh bytes; every other staged
   -- path serves synthetic bytes the fake image host accepts.
   local meshBytes = MeshWriter.encode(NitroModelFixture.doorQuad())
@@ -2856,7 +2899,13 @@ function T.independent_engine_windows_mask_planes_through_flips()
         spriteClip(heroMain, { stillFrame() }),
         spriteClip(heroSub, { stillFrame() }),
       },
-      { { id = "reveal", events = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 }, ["until"] = { kind = "duration", ticks = 20 } } },
+      {
+        {
+          id = "reveal",
+          events = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 },
+          ["until"] = { kind = "duration", ticks = 20 },
+        },
+      },
       {
         windowEvent("reveal", 0, "main", windowRect(255, 0, 255, 192), windowRect(0, 0, 255, 192), 10, 30, 28),
         windowEvent("reveal", 0, "sub", windowRect(0, 0, 0, 192), windowRect(0, 0, 255, 192), 10, 30, 28),
@@ -2869,6 +2918,7 @@ function T.independent_engine_windows_mask_planes_through_flips()
           x = 200,
           y = 96,
           drawOrder = 1,
+          objPriority = 1,
           clipId = heroMain,
           animate = true,
         },
@@ -2892,6 +2942,7 @@ function T.independent_engine_windows_mask_planes_through_flips()
           x = 32,
           y = 96,
           drawOrder = 1,
+          objPriority = 1,
           clipId = heroSub,
           animate = true,
         },
@@ -3018,21 +3069,18 @@ end
 
 function T.starter_particles_draw_only_on_main_through_flips()
   local scenes, cacheFs = packWithSceneAt(
-    particleScene(
-      {
-        { id = "intro", events = { 1 }, ["until"] = { kind = "duration", ticks = 10 } },
-        { id = "starters", events = { 2, 3 }, ["until"] = { kind = "effect", effect = "emitters-grass" } },
-        { id = "outro", events = { 4, 5, 6 }, ["until"] = { kind = "duration", ticks = 10 } },
-      },
-      {
-        { op = "waitTicks", stepId = "intro", atStepTick = 0, ticks = 10 },
-        { op = "startEmitters", stepId = "starters", atStepTick = 0, group = "grass", emitters = { 6, 7, 8 } },
-        { op = "setScreenMapping", stepId = "starters", atStepTick = 5, mainPhysical = "lower" },
-        { op = "setScreenMapping", stepId = "outro", atStepTick = 2, mainPhysical = "upper" },
-        { op = "waitTicks", stepId = "outro", atStepTick = 0, ticks = 10 },
-        { op = "finish", stepId = "outro", atStepTick = 0 },
-      }
-    ),
+    particleScene({
+      { id = "intro", events = { 1 }, ["until"] = { kind = "duration", ticks = 10 } },
+      { id = "starters", events = { 2, 3 }, ["until"] = { kind = "effect", effect = "emitters-grass" } },
+      { id = "outro", events = { 4, 5, 6 }, ["until"] = { kind = "duration", ticks = 10 } },
+    }, {
+      { op = "waitTicks", stepId = "intro", atStepTick = 0, ticks = 10 },
+      { op = "startEmitters", stepId = "starters", atStepTick = 0, group = "grass", emitters = { 6, 7, 8 } },
+      { op = "setScreenMapping", stepId = "starters", atStepTick = 5, mainPhysical = "lower" },
+      { op = "setScreenMapping", stepId = "outro", atStepTick = 2, mainPhysical = "upper" },
+      { op = "waitTicks", stepId = "outro", atStepTick = 0, ticks = 10 },
+      { op = "finish", stepId = "outro", atStepTick = 0 },
+    }),
     4
   )
   -- Images 11..19 are the nine staged particle textures behind the 8-wide tag.
@@ -3110,7 +3158,17 @@ function T.window_sampling_truncates_toward_zero_and_applies_zero_ticks_immediat
       { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
       { { id = "sweep", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "effect", effect = "win-sweep" } } },
       {
-        windowEvent("sweep", 0, "main", windowRect(200, 0, 255, 100), windowRect(50, 0, 255, 100), 7, 31, 0, "win-sweep"),
+        windowEvent(
+          "sweep",
+          0,
+          "main",
+          windowRect(200, 0, 255, 100),
+          windowRect(50, 0, 255, 100),
+          7,
+          31,
+          0,
+          "win-sweep"
+        ),
         { op = "enableSkip", stepId = "sweep", atStepTick = 10 },
         { op = "waitTicks", stepId = "sweep", atStepTick = 0, ticks = 40 },
         { op = "finish", stepId = "sweep", atStepTick = 40 },
@@ -3487,16 +3545,7 @@ function T.selected_planes_blend_with_capped_coefficients_under_window_masks()
           effect = "mid-cross",
           ticks = 31,
         },
-        windowEvent(
-          "hold",
-          0,
-          "main",
-          windowRect(0, 0, 127, 191),
-          windowRect(0, 0, 127, 191),
-          0,
-          3,
-          31
-        ),
+        windowEvent("hold", 0, "main", windowRect(0, 0, 127, 191), windowRect(0, 0, 127, 191), 0, 3, 31),
         { op = "enableSkip", stepId = "hold", atStepTick = 10 },
         { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
         { op = "finish", stepId = "hold", atStepTick = 40 },
@@ -3542,16 +3591,8 @@ function T.selected_planes_blend_with_capped_coefficients_under_window_masks()
   movie:draw()
   local evaAtSixteen = uniformSends(graphics, "eva")
   local evbAtSixteen = uniformSends(graphics, "evb")
-  Assert.equal(
-    evaAtSixteen[#evaAtSixteen],
-    16,
-    "the saturation tick caps the first side at sixteen"
-  )
-  Assert.equal(
-    evbAtSixteen[#evbAtSixteen],
-    15,
-    "the second side stays near-full at sixteen steps"
-  )
+  Assert.equal(evaAtSixteen[#evaAtSixteen], 16, "the saturation tick caps the first side at sixteen")
+  Assert.equal(evbAtSixteen[#evbAtSixteen], 15, "the second side stays near-full at sixteen steps")
   for _ = 1, 15 do
     movie:updateFixed()
   end
@@ -3564,11 +3605,7 @@ function T.selected_planes_blend_with_capped_coefficients_under_window_masks()
     "the capped first side plateaus instead of tracking the tick count"
   )
   Assert.equal(evaAtFull[#evaAtFull], 16, "the final raw step stays saturated")
-  Assert.equal(
-    evbAtFull[#evbAtFull],
-    0,
-    "the independent second side retires while the first side plateaus"
-  )
+  Assert.equal(evbAtFull[#evbAtFull], 0, "the independent second side retires while the first side plateaus")
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the mask movie releases every handle")
 end
@@ -3603,10 +3640,7 @@ function T.row_wipe_boundaries_follow_the_scanline_cosine_law()
   Assert.equal(wipeBoundary(20, 20, 0), 0, "the final edge ends fully open")
   Assert.equal(wipeBoundary(20, 20, 191), 0, "the final edge ends fully open on every row")
   Assert.equal(wipeBoundary(10, 20, 96), 127, "the halfway edge centers on every row")
-  Assert.isFalse(
-    wipeBoundary(5, 20, 48) == wipeBoundary(5, 20, 96),
-    "quarter-transition edges slope with the scanline"
-  )
+  Assert.isFalse(wipeBoundary(5, 20, 48) == wipeBoundary(5, 20, 96), "quarter-transition edges slope with the scanline")
   local upperImage = root .. "layers/wipe-upper.png"
   local lowerImage = root .. "layers/wipe-lower.png"
   local scenes, cacheFs = packWithSceneAt(
@@ -3797,10 +3831,7 @@ function T.blend_coefficients_follow_exact_sixteenth_steps()
   Assert.equal(fullEva, 16, "the final raw step stays saturated")
   Assert.equal(fullEva, cappedEva, "saturation plateaus instead of tracking the tick count")
   Assert.equal(fullEvb, 0, "the independent second side retires at the final tick")
-  assertNativeScratchDraws(
-    compositorDrawsOf(graphics, movie, frontHandle, 0),
-    "excluded front"
-  )
+  assertNativeScratchDraws(compositorDrawsOf(graphics, movie, frontHandle, 0), "excluded front")
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the coefficient movie releases every handle")
 end
@@ -3933,22 +3964,14 @@ function T.wipe_endpoints_retire_cleanly_without_arithmetic_faults()
   end
   local doneBaseline = mainScissors()
   movie:draw()
-  Assert.equal(
-    mainScissors(),
-    doneBaseline,
-    "the completed wipe draws no further row spans"
-  )
+  Assert.equal(mainScissors(), doneBaseline, "the completed wipe draws no further row spans")
   for _ = 1, 4 do
     movie:updateFixed()
   end
   Assert.equal(movie:sceneNumber(), 2, "the step still holds its authored duration past the wipe")
   local tailBaseline = mainScissors()
   movie:draw()
-  Assert.equal(
-    mainScissors(),
-    tailBaseline,
-    "the retired wipe stops clipping rows once its ticks elapse"
-  )
+  Assert.equal(mainScissors(), tailBaseline, "the retired wipe stops clipping rows once its ticks elapse")
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the endpoint movie releases every handle")
 end
@@ -4021,17 +4044,11 @@ function T.engine_effects_stay_local_across_a_physical_flip()
   local firstEva = #uniformSends(graphics, "eva")
   local firstEvb = #uniformSends(graphics, "evb")
   movie:draw()
-  assertNativeScratchDraws(
-    compositorDrawsOf(graphics, movie, mainBackHandle, firstBaseline),
-    "selected main"
-  )
+  assertNativeScratchDraws(compositorDrawsOf(graphics, movie, mainBackHandle, firstBaseline), "selected main")
   local firstEvaSends, firstEvbSends = frameWeights(firstEva, firstEvb)
   assertUniform(firstEvaSends, 1, "the opening weight selects the masked back plane first")
   assertUniform(firstEvbSends, 16, "the main engine opens saturated second")
-  assertNativeScratchDraws(
-    compositorDrawsOf(graphics, movie, mainFrontHandle, firstBaseline),
-    "unmasked main"
-  )
+  assertNativeScratchDraws(compositorDrawsOf(graphics, movie, mainFrontHandle, firstBaseline), "unmasked main")
   -- The idle engine never enters the compositor: it paints its own role
   -- target natively with no coefficient sends of its own.
   local subFirst = engineDrawsOf(graphics, movie, "sub", subBackHandle, firstBaseline)
@@ -4047,21 +4064,10 @@ function T.engine_effects_stay_local_across_a_physical_flip()
   local flipEva = #uniformSends(graphics, "eva")
   local flipEvb = #uniformSends(graphics, "evb")
   movie:draw()
-  assertNativeScratchDraws(
-    compositorDrawsOf(graphics, movie, mainBackHandle, flipBaseline),
-    "flipped selected main"
-  )
+  assertNativeScratchDraws(compositorDrawsOf(graphics, movie, mainBackHandle, flipBaseline), "flipped selected main")
   local flipEvaSends, flipEvbSends = frameWeights(flipEva, flipEvb)
-  assertUniform(
-    flipEvaSends,
-    7,
-    "the flip carries the running main first weight instead of restarting it"
-  )
-  assertUniform(
-    flipEvbSends,
-    16,
-    "the flip carries the running main second weight instead of restarting it"
-  )
+  assertUniform(flipEvaSends, 7, "the flip carries the running main first weight instead of restarting it")
+  assertUniform(flipEvbSends, 16, "the flip carries the running main second weight instead of restarting it")
   local subFlip = engineDrawsOf(graphics, movie, "sub", subBackHandle, flipBaseline)
   Assert.isTrue(#subFlip > 0, "the idle engine still paints its own target across the flip")
   for _, draw in ipairs(subFlip) do
@@ -4161,10 +4167,7 @@ function T.circle_wipe_kinds_cover_the_source_inside_outside_spans_with_the_sour
           spans[#spans + 1] = { x = requested[1], y = requested[2], w = requested[3], color = fill.color }
         end
       else
-        Assert.isFalse(
-          canvas == movie.subCanvas,
-          "kind " .. probe.kind .. " clips nothing on the idle engine"
-        )
+        Assert.isFalse(canvas == movie.subCanvas, "kind " .. probe.kind .. " clips nothing on the idle engine")
       end
     end
     Assert.equal(rectCursor, #addedRects, "every cover fill is accounted for by a wipe scissor")
@@ -4225,7 +4228,8 @@ function T.seven_source_wipes_play_in_order_with_their_own_engines_and_gates()
       effect = "wipe-beat-" .. index,
     }
   end
-  steps[#steps + 1] = { id = "done", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 5 } }
+  steps[#steps + 1] =
+    { id = "done", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 5 } }
   events[#events + 1] = { op = "waitTicks", stepId = "done", atStepTick = 0, ticks = 5 }
   events[#events + 1] = { op = "finish", stepId = "done", atStepTick = 0 }
   local root = sceneRoot(3)
@@ -4337,16 +4341,8 @@ end
 
 function T.independent_weights_mix_raw_pairs_without_a_global_alpha()
   Assert.equal(mixedChannel(31, 31, 16, 16), 31, "two saturated weights clamp instead of doubling")
-  Assert.equal(
-    mixedChannel(31, 0, 15, 16),
-    29,
-    "the lower weight still contributes beside a saturated upper weight"
-  )
-  Assert.equal(
-    mixedChannel(31, 31, 15, 16),
-    31,
-    "near-saturated pairs exceed any complementary single-weight mix"
-  )
+  Assert.equal(mixedChannel(31, 0, 15, 16), 29, "the lower weight still contributes beside a saturated upper weight")
+  Assert.equal(mixedChannel(31, 31, 15, 16), 31, "near-saturated pairs exceed any complementary single-weight mix")
   Assert.equal(mixedChannel(31, 0, 0, 16), 0, "a zero first weight shows the raw under pixel")
   local first, second = sourceCoefficients(15, 31, 0)
   Assert.equal(first, 15, "the opening direction counts the first side up from zero")
@@ -4473,6 +4469,7 @@ function T.masked_pairs_keep_raw_under_planes_with_sprites_and_windows()
           x = 120,
           y = 80,
           drawOrder = 0,
+          objPriority = 1,
           clipId = probeClip,
           animate = true,
         },
@@ -4487,16 +4484,7 @@ function T.masked_pairs_keep_raw_under_planes_with_sprites_and_windows()
           drawOrder = 0,
           visible = true,
         },
-        windowEvent(
-          "hold",
-          0,
-          "main",
-          windowRect(128, 0, 255, 191),
-          windowRect(128, 0, 255, 191),
-          40,
-          23,
-          22
-        ),
+        windowEvent("hold", 0, "main", windowRect(128, 0, 255, 191), windowRect(128, 0, 255, 191), 40, 23, 22),
         { op = "enableSkip", stepId = "hold", atStepTick = 10 },
         { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 },
         { op = "finish", stepId = "hold", atStepTick = 40 },
@@ -4526,10 +4514,7 @@ function T.masked_pairs_keep_raw_under_planes_with_sprites_and_windows()
   Assert.equal(secondMasks[#secondMasks], 2, "only the middle plane stays eligible underneath")
   local firstWeights = shaderSends(graphics, "eva")
   local secondWeights = shaderSends(graphics, "evb")
-  Assert.isTrue(
-    #firstWeights > 0 and #secondWeights > 0,
-    "the masked pair keeps both independent weights"
-  )
+  Assert.isTrue(#firstWeights > 0 and #secondWeights > 0, "the masked pair keeps both independent weights")
   Assert.near(
     secondWeights[#secondWeights] / firstWeights[#firstWeights],
     16 / 15,
@@ -4604,9 +4589,36 @@ function T.background_wrap_draws_issue_no_new_quads_across_repeats_and_pans()
       { spriteClip(heroClip, { stillFrame() }) },
       { { id = "pan", events = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 }, ["until"] = { kind = "duration", ticks = 60 } } },
       {
-        { op = "setScroll", stepId = "pan", atStepTick = 0, engine = "main", bgSlot = 0, dx = -511, dy = -1, ticks = 0 },
-        { op = "setScroll", stepId = "pan", atStepTick = 0, engine = "main", bgSlot = 1, dx = 255, dy = 191, ticks = 0 },
-        { op = "setScroll", stepId = "pan", atStepTick = 0, engine = "main", bgSlot = 2, dx = 100000, dy = -100001, ticks = 0 },
+        {
+          op = "setScroll",
+          stepId = "pan",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 0,
+          dx = -511,
+          dy = -1,
+          ticks = 0,
+        },
+        {
+          op = "setScroll",
+          stepId = "pan",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 1,
+          dx = 255,
+          dy = 191,
+          ticks = 0,
+        },
+        {
+          op = "setScroll",
+          stepId = "pan",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 2,
+          dx = 100000,
+          dy = -100001,
+          ticks = 0,
+        },
         { op = "setScroll", stepId = "pan", atStepTick = 0, engine = "sub", bgSlot = 0, dx = 0, dy = -32, ticks = -1 },
         windowEvent("pan", 0, "main", windowRect(0, 0, 127, 191), windowRect(128, 0, 255, 191), 60, 19, 19),
         {
@@ -4618,6 +4630,7 @@ function T.background_wrap_draws_issue_no_new_quads_across_repeats_and_pans()
           x = 32,
           y = 64,
           drawOrder = 1,
+          objPriority = 1,
           clipId = heroClip,
           animate = true,
         },
@@ -4986,11 +4999,7 @@ function T.starter_run_waits_for_child_particles_to_retire()
   end
   local runtime = grassRuntime(movie)
   Assert.isTrue(#runtime.children > 0, "parents spawn children every tick")
-  Assert.deepEqual(
-    runtime.children[1].colorRgb,
-    { r = 31, g = 0, b = 0 },
-    "children carry their own color record"
-  )
+  Assert.deepEqual(runtime.children[1].colorRgb, { r = 31, g = 0, b = 0 }, "children carry their own color record")
   Assert.equal(movie:sceneNumber(), 4, "the run outlives its retired parents while children live")
   for _ = 1, 20 do
     movie:updateFixed()
@@ -5177,11 +5186,7 @@ function T.starter_child_spread_keeps_raw_precision_with_three_stream_draws()
   movie:updateFixed()
   Assert.equal(#runtime.children, 1, "the parent spawns exactly one more child")
   local streamAfter = slot.rng --[[@as integer]]
-  Assert.equal(
-    streamAfter,
-    rngStep(rngStep(rngStep(streamBefore))),
-    "one child consumes exactly three stream draws"
-  )
+  Assert.equal(streamAfter, rngStep(rngStep(rngStep(streamBefore))), "one child consumes exactly three stream draws")
   local first = rngStep(streamBefore)
   local second = rngStep(first)
   local third = rngStep(second)
@@ -5257,7 +5262,9 @@ function T.starter_child_scale_interpolates_raw_unity_curve_and_paints_once_norm
   local runtimes = {}
   for _, runtime in ipairs(slot.emitters) do
     if runtime.id == 6 or runtime.id == 7 or runtime.id == 8 then
-      runtimes[runtime.id --[[@as integer]]] = runtime
+      runtimes[
+        runtime.id --[[@as integer]]
+      ] = runtime
     end
   end
   local animated = assert(runtimes[6], "the animated-scale emitter runs")
@@ -5281,21 +5288,13 @@ function T.starter_child_scale_interpolates_raw_unity_curve_and_paints_once_norm
     movie:updateFixed()
     movie:draw()
     local childParticle = animated.children[1]
-    Assert.equal(
-      childParticle.age,
-      age + 1,
-      "the animated child ages once per source tick"
-    )
+    Assert.equal(childParticle.age, age + 1, "the animated child ages once per source tick")
     Assert.equal(
       childParticle.animScale,
       scaleOracle(age),
       "the animated child scale follows its life rate at age " .. age
     )
-    Assert.equal(
-      flat.children[1].animScale,
-      4096,
-      "the fixed child holds unity at age " .. age
-    )
+    Assert.equal(flat.children[1].animScale, 4096, "the fixed child holds unity at age " .. age)
     local shrinkingScale = shrinking.children[1].animScale --[[@as number]]
     local shrinkingRate = lifeRate(age, 30)
     Assert.equal(
@@ -5309,8 +5308,16 @@ function T.starter_child_scale_interpolates_raw_unity_curve_and_paints_once_norm
     if age == 3 then
       Assert.isTrue(shrinkingScale < 4096, "the shrinking child stays below unity")
     end
-    local expectX = 128 + (childParticle.x --[[@as number]] + childParticle.ex --[[@as number]]) * 24
-    local expectY = 96 - (childParticle.y --[[@as number]] + childParticle.ey --[[@as number]]) * 24
+    local expectX = 128
+      + (
+        childParticle.x --[[@as number]]
+        + childParticle.ex --[[@as number]]
+      ) * 24
+    local expectY = 96
+      - (
+        childParticle.y --[[@as number]]
+        + childParticle.ey --[[@as number]]
+      ) * 24
     local found = nil
     for _, entry in ipairs(graphics.draws) do
       if
@@ -5480,8 +5487,13 @@ function T.starter_emitter_count_stays_within_its_scene_bound()
   end
   local events, steps = {}, {}
   for index, start in ipairs(starts) do
-    events[#events + 1] =
-      { op = "startEmitters", stepId = "start" .. index, atStepTick = 0, group = start.group, emitters = start.emitters }
+    events[#events + 1] = {
+      op = "startEmitters",
+      stepId = "start" .. index,
+      atStepTick = 0,
+      group = start.group,
+      emitters = start.emitters,
+    }
     steps[#steps + 1] = { id = "start" .. index, events = { #events }, ["until"] = { kind = "duration", ticks = 1 } }
   end
   events[#events + 1] = { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 5 }
@@ -5631,6 +5643,7 @@ function T.staged_sprites_stay_visible_while_the_physical_bottom_holds_black_unt
         x = 120,
         y = 80,
         drawOrder = 1,
+        objPriority = 1,
         clipId = clipId,
         animate = true,
       },
@@ -5674,15 +5687,9 @@ function T.staged_sprites_stay_visible_while_the_physical_bottom_holds_black_unt
   -- The entry tick stages the rival; the black bottom hold still covers it.
   movie:updateFixed()
   local staged = assert(movie.current, "the running movie owns its current slot")
-  local silver = assert(
-    staged.spriteInstances["silver-silhouette"],
-    "the entry tick stages the rival instance"
-  )
+  local silver = assert(staged.spriteInstances["silver-silhouette"], "the entry tick stages the rival instance")
   Assert.isTrue(silver.visible, "the rival stays staged while hidden")
-  Assert.isTrue(
-    type(staged.physicalBrightness) == "table",
-    "the entry keeps its staged physical holds"
-  )
+  Assert.isTrue(type(staged.physicalBrightness) == "table", "the entry keeps its staged physical holds")
   Assert.equal(staged.physicalBrightness.lower, "black", "the staged rival does not lift the bottom hold")
   -- The authored bottom wipe releases the hold while keeping the rival.
   local waited = 0
@@ -5693,19 +5700,9 @@ function T.staged_sprites_stay_visible_while_the_physical_bottom_holds_black_unt
   Assert.equal(movie.current.stepIndex, 2, "playback reaches the bottom reveal")
   movie:updateFixed()
   local revealed = assert(movie.current, "the running movie owns its current slot")
-  Assert.isTrue(
-    type(revealed.physicalBrightness) == "table",
-    "the reveal keeps its staged physical holds"
-  )
-  Assert.equal(
-    revealed.physicalBrightness.lower,
-    "neutral",
-    "the bottom wipe releases the bottom hold"
-  )
-  Assert.isTrue(
-    revealed.spriteInstances["silver-silhouette"].visible,
-    "the reveal keeps the rival staged"
-  )
+  Assert.isTrue(type(revealed.physicalBrightness) == "table", "the reveal keeps its staged physical holds")
+  Assert.equal(revealed.physicalBrightness.lower, "neutral", "the bottom wipe releases the bottom hold")
+  Assert.isTrue(revealed.spriteInstances["silver-silhouette"].visible, "the reveal keeps the rival staged")
   movie:dispose()
 end
 
@@ -5745,10 +5742,7 @@ function T.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets()
   local movie = openMovie(scenes, cacheFs, graphics)
   local setup = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(setup.mainPhysical, "upper", "the scene maps main to physical upper before its first tick")
-  Assert.isTrue(
-    type(setup.physicalBrightness) == "table",
-    "the scene stages its physical holds before its first tick"
-  )
+  Assert.isTrue(type(setup.physicalBrightness) == "table", "the scene stages its physical holds before its first tick")
   Assert.equal(setup.physicalBrightness.upper, "white", "the scene holds physical upper white")
   Assert.equal(setup.physicalBrightness.lower, "black", "the scene holds physical lower black")
   local waited = 0
@@ -5760,20 +5754,9 @@ function T.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets()
   movie:updateFixed()
   local flipped = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(flipped.mainPhysical, "lower", "the authored flip moves the main engine")
-  Assert.isTrue(
-    type(flipped.physicalBrightness) == "table",
-    "the flip keeps the staged physical holds"
-  )
-  Assert.equal(
-    flipped.physicalBrightness.upper,
-    "white",
-    "the flip leaves the upper hold on the upper screen"
-  )
-  Assert.equal(
-    flipped.physicalBrightness.lower,
-    "black",
-    "the flip leaves the lower hold on the lower screen"
-  )
+  Assert.isTrue(type(flipped.physicalBrightness) == "table", "the flip keeps the staged physical holds")
+  Assert.equal(flipped.physicalBrightness.upper, "white", "the flip leaves the upper hold on the upper screen")
+  Assert.equal(flipped.physicalBrightness.lower, "black", "the flip leaves the lower hold on the lower screen")
   waited = 0
   while movie.current.stepIndex < 3 and waited < 200 do
     movie:updateFixed()
@@ -5782,13 +5765,459 @@ function T.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets()
   Assert.equal(movie.current.stepIndex, 3, "playback reaches the authored reset")
   movie:updateFixed()
   local reset = assert(movie.current, "the running movie owns its current slot")
-  Assert.isTrue(
-    type(reset.physicalBrightness) == "table",
-    "the reset keeps the staged physical holds"
-  )
+  Assert.isTrue(type(reset.physicalBrightness) == "table", "the reset keeps the staged physical holds")
   Assert.equal(reset.physicalBrightness.upper, "neutral", "the authored reset clears only the upper hold")
   Assert.equal(reset.physicalBrightness.lower, "black", "the authored reset keeps the lower hold")
   movie:dispose()
+end
+
+-- Nitro playback and hardware priority: these synthetic scenes carry the
+-- normalized animation and priority fields through raw manifests, so the
+-- player proves its own progression and plane order instead of failing on
+-- strict-reader rejection. The strict reader's share of the contract is
+-- proved by the validator tests at the end of this file.
+---@param custom table custom scene manifest
+---@param customIndex integer position of the custom scene in retail order
+---@return table[] scenes, table cacheFs five-scene pack bypassing the strict reader
+local function packRawWithSceneAt(custom, customIndex)
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    if sceneNumber == customIndex then
+      raw[sceneNumber] = custom
+    else
+      raw[sceneNumber] = manifestFor(sceneNumber)
+    end
+  end
+  return raw, stubCache(raw)
+end
+
+---@return table strict synthetic scene sampling four playback modes plus one paused instance
+local function nitroModeScene()
+  local root = sceneRoot(2)
+  local clips = {
+    spriteClip(root .. "sprites/nitro-fwd.g4sprite", {
+      clipFrame(0, 0, 16, 16, 0, 0, 2),
+      clipFrame(16, 0, 16, 16, 40, 0, 2),
+      clipFrame(32, 0, 16, 16, 80, 0, 2),
+    }, "forward", 0),
+    spriteClip(root .. "sprites/nitro-loop.g4sprite", {
+      clipFrame(0, 0, 16, 16, 0, 0, 2),
+      clipFrame(16, 0, 16, 16, 40, 0, 0),
+      clipFrame(32, 0, 16, 16, 80, 0, 2),
+      clipFrame(48, 0, 16, 16, 120, 0, 2),
+    }, "forward_loop", 0),
+    spriteClip(root .. "sprites/nitro-rev.g4sprite", {
+      clipFrame(0, 0, 16, 16, 0, 0, 2),
+      clipFrame(16, 0, 16, 16, 40, 0, 2),
+      clipFrame(32, 0, 16, 16, 80, 0, 2),
+    }, "reverse", 0),
+    spriteClip(root .. "sprites/nitro-revloop.g4sprite", {
+      clipFrame(0, 0, 16, 16, 0, 0, 2),
+      clipFrame(16, 0, 16, 16, 40, 0, 2),
+      clipFrame(32, 0, 16, 16, 80, 0, 2),
+    }, "reverse_loop", 0),
+    spriteClip(root .. "sprites/nitro-still.g4sprite", {
+      clipFrame(0, 0, 16, 16, 200, 0, 6),
+    }, "forward", 0),
+  }
+  local instances = {
+    { id = "fwd", clip = 1, animate = true },
+    { id = "loop", clip = 2, animate = true },
+    { id = "rev", clip = 3, animate = true },
+    { id = "revloop", clip = 4, animate = true },
+    { id = "still", clip = 5, animate = false },
+  }
+  local events = {}
+  for order, instance in ipairs(instances) do
+    events[#events + 1] = {
+      op = "setSpriteClip",
+      stepId = "nitro",
+      atStepTick = 0,
+      instanceId = instance.id,
+      engine = "main",
+      x = 0,
+      y = 0,
+      drawOrder = order,
+      objPriority = 1,
+      clipId = clips[instance.clip].id,
+      animate = instance.animate,
+    }
+    events[#events + 1] = {
+      op = "spriteVisible",
+      stepId = "nitro",
+      atStepTick = 0,
+      instanceId = instance.id,
+      engine = "main",
+      x = 0,
+      y = 0,
+      drawOrder = order,
+      visible = true,
+    }
+  end
+  events[#events + 1] = { op = "waitTicks", stepId = "nitro", atStepTick = 0, ticks = 16 }
+  events[#events + 1] = { op = "finish", stepId = "nitro", atStepTick = 16 }
+  local owned = {}
+  for index = 1, #events do
+    owned[#owned + 1] = index
+  end
+  return compositeManifest(
+    2,
+    { layer(0, root .. "layers/nitro-upper.png", 256, 192) },
+    { layer(0, root .. "layers/nitro-lower.png", 256, 192) },
+    clips,
+    { { id = "nitro", events = owned, ["until"] = { kind = "duration", ticks = 16 } } },
+    events
+  )
+end
+
+---@param movie table running opening movie positioned at its custom scene
+---@param graphics table fake graphics namespace
+---@param clipIds string[] staged clip identities to sample, one per instance
+---@param ticks integer source ticks to sample
+---@return table<string, integer[]> horizontal draw origin per clip identity per tick
+local function sampleClipOrigins(movie, graphics, clipIds, ticks)
+  local images = {}
+  for _, clipId in ipairs(clipIds) do
+    images[clipId] = assert(movie.current.imageByPath[clipId], "clip " .. clipId .. " is staged")
+  end
+  local origins = {}
+  for _, clipId in ipairs(clipIds) do
+    origins[clipId] = {}
+  end
+  for _ = 1, ticks do
+    movie:updateFixed()
+    local baseline = #graphics.draws
+    movie:draw()
+    for _, clipId in ipairs(clipIds) do
+      local found = {}
+      for index = baseline + 1, #graphics.draws do
+        local draw = graphics.draws[index]
+        if draw.image == images[clipId] then
+          found[#found + 1] = draw.x
+        end
+      end
+      Assert.equal(#found, 1, "instance " .. clipId .. " draws exactly once per frame")
+      origins[clipId][#origins[clipId] + 1] = found[1]
+    end
+  end
+  return origins
+end
+
+function T.nitro_play_modes_follow_source_edge_handling_at_double_speed()
+  local scene = nitroModeScene()
+  local scenes, cacheFs = packRawWithSceneAt(scene, 2)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  while movie:sceneNumber() < 2 do
+    movie:updateFixed()
+  end
+  local clips = scene.spriteClips
+  local clipIds = {}
+  for _, clip in ipairs(clips) do
+    clipIds[#clipIds + 1] = clip.id
+  end
+  local origins = sampleClipOrigins(movie, graphics, clipIds, 14)
+  local fwd, loop, rev, revloop, still =
+    origins[clipIds[1]], origins[clipIds[2]], origins[clipIds[3]], origins[clipIds[4]], origins[clipIds[5]]
+  -- The forward one-shot latches its reset cell on the entry tick, advances
+  -- two animation units per source tick, then clamps on its terminal cell.
+  Assert.equal(fwd[1], 0, "the drawn frame latches the reset cell before the first advance")
+  Assert.equal(fwd[2], 40, "double speed reaches the second cell on the second tick")
+  Assert.equal(fwd[3], 80, "double speed reaches the terminal cell on the third tick")
+  for tick = 4, 14 do
+    Assert.equal(fwd[tick], 80, "a finished one-shot holds its terminal cell without restarting")
+  end
+  -- The looping clip restarts from its loop start and never displays the
+  -- zero-duration cell.
+  local expectedLoop = { 0, 80, 120, 0, 80, 120, 0, 80, 120, 0, 80, 120, 0, 80 }
+  for tick = 1, 14 do
+    Assert.equal(loop[tick], expectedLoop[tick], "the looping clip replays from its loop start on tick " .. tick)
+  end
+  -- The paused instance holds its authored cell while the source clock runs.
+  for tick = 1, 14 do
+    Assert.equal(still[tick], 200, "an animation-paused instance never leaves its first cell")
+  end
+  -- The back-and-forth clip traverses to its far edge and back, then stops
+  -- on its start cell instead of wrapping.
+  local expectedRev = { 0, 40, 80, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+  for tick = 1, 14 do
+    Assert.equal(rev[tick], expectedRev[tick], "the back-and-forth one-shot plays its traverse on tick " .. tick)
+  end
+  -- The looping back-and-forth clip keeps traversing without settling.
+  local expectedRevLoop = { 0, 40, 80, 40, 0, 40, 80, 40, 0, 40, 80, 40, 0, 40 }
+  for tick = 1, 14 do
+    Assert.equal(
+      revloop[tick],
+      expectedRevLoop[tick],
+      "the looping back-and-forth clip keeps traversing on tick " .. tick
+    )
+  end
+  -- Repeated host draws never advance the latched cells: two more frames
+  -- without a source tick keep showing the terminal cell.
+  local terminalImage = assert(movie.current.imageByPath[clipIds[1]], "the one-shot clip stays staged")
+  for _ = 1, 2 do
+    local baseline = #graphics.draws
+    movie:draw()
+    local found = {}
+    for index = baseline + 1, #graphics.draws do
+      local draw = graphics.draws[index]
+      if draw.image == terminalImage then
+        found[#found + 1] = draw.x
+      end
+    end
+    Assert.equal(#found, 1, "the finished instance still draws exactly once per frame")
+    Assert.equal(found[1], 80, "redraws without a source tick keep the terminal cell")
+  end
+  movie:dispose()
+end
+
+function T.bg_priority_zero_occludes_lower_priority_sprites_in_draw_order()
+  local root = sceneRoot(2)
+  local backImage = root .. "layers/occlude-back.png"
+  local frontImage = root .. "layers/occlude-front.png"
+  local midClip = spriteClip(root .. "sprites/occlude-mid.g4sprite", { stillFrame() }, "forward", 0)
+  local tieClip = spriteClip(root .. "sprites/occlude-tie.g4sprite", { stillFrame() }, "forward", 0)
+  local scene = compositeManifest(
+    2,
+    {
+      layer(1, backImage, 256, 192, 2),
+      layer(0, frontImage, 256, 192, 0),
+    },
+    { layer(0, root .. "layers/occlude-lower.png", 256, 192) },
+    { midClip, tieClip },
+    { { id = "hold", events = { 1, 2, 3, 4, 5, 6 }, ["until"] = { kind = "duration", ticks = 10 } } },
+    {
+      {
+        op = "setSpriteClip",
+        stepId = "hold",
+        atStepTick = 0,
+        instanceId = "mid",
+        engine = "main",
+        x = 0,
+        y = 0,
+        drawOrder = 1,
+        objPriority = 1,
+        clipId = midClip.id,
+        animate = true,
+      },
+      {
+        op = "spriteVisible",
+        stepId = "hold",
+        atStepTick = 0,
+        instanceId = "mid",
+        engine = "main",
+        x = 0,
+        y = 0,
+        drawOrder = 1,
+        visible = true,
+      },
+      {
+        op = "setSpriteClip",
+        stepId = "hold",
+        atStepTick = 0,
+        instanceId = "tie",
+        engine = "main",
+        x = 0,
+        y = 0,
+        drawOrder = 2,
+        objPriority = 0,
+        clipId = tieClip.id,
+        animate = true,
+      },
+      {
+        op = "spriteVisible",
+        stepId = "hold",
+        atStepTick = 0,
+        instanceId = "tie",
+        engine = "main",
+        x = 0,
+        y = 0,
+        drawOrder = 2,
+        visible = true,
+      },
+      { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 10 },
+      { op = "finish", stepId = "hold", atStepTick = 10 },
+    }
+  )
+  local scenes, cacheFs = packRawWithSceneAt(scene, 2)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  while movie:sceneNumber() < 2 do
+    movie:updateFixed()
+  end
+  movie:updateFixed()
+  local baseline = #graphics.draws
+  movie:draw()
+  local images = {
+    back = assert(movie.current.imageByPath[backImage], "the back background is staged"),
+    mid = assert(movie.current.imageByPath[midClip.id], "the covered sprite is staged"),
+    front = assert(movie.current.imageByPath[frontImage], "the foreground background is staged"),
+    tie = assert(movie.current.imageByPath[tieClip.id], "the tied sprite is staged"),
+  }
+  local firstIndex = {}
+  for index = baseline + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    for name, image in pairs(images) do
+      if draw.image == image and firstIndex[name] == nil then
+        firstIndex[name] = index
+      end
+    end
+  end
+  for name in pairs(images) do
+    Assert.notNil(firstIndex[name], "the " .. name .. " plane paints in the sampled frame")
+  end
+  Assert.isTrue(
+    firstIndex.back < firstIndex.mid,
+    "the back background paints before the lower-priority sprite it sits behind"
+  )
+  Assert.isTrue(
+    firstIndex.mid < firstIndex.front,
+    "the occluding foreground background paints after the sprite it covers"
+  )
+  Assert.isTrue(firstIndex.front < firstIndex.tie, "the tied sprite paints after its same-priority background")
+  movie:dispose()
+end
+
+function T.two_instances_sharing_one_clip_keep_independent_phases()
+  local root = sceneRoot(2)
+  local shared = spriteClip(root .. "sprites/shared-phase.g4sprite", {
+    clipFrame(0, 0, 16, 16, 0, 0, 6),
+    clipFrame(16, 0, 16, 16, 40, 0, 6),
+    clipFrame(32, 0, 16, 16, 80, 0, 6),
+  }, "forward", 0)
+  -- The two instances share one clip image but stage at different origins,
+  -- so each drawn frame stays attributable to its own playback phase.
+  local scene = compositeManifest(
+    2,
+    { layer(0, root .. "layers/phase-upper.png", 256, 192) },
+    { layer(0, root .. "layers/phase-lower.png", 256, 192) },
+    { shared },
+    { { id = "phase", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 20 } } },
+    {
+      {
+        op = "setSpriteClip",
+        stepId = "phase",
+        atStepTick = 0,
+        instanceId = "early",
+        engine = "main",
+        x = 0,
+        y = 0,
+        drawOrder = 1,
+        objPriority = 1,
+        clipId = shared.id,
+        animate = true,
+      },
+      {
+        op = "spriteVisible",
+        stepId = "phase",
+        atStepTick = 0,
+        instanceId = "early",
+        engine = "main",
+        x = 0,
+        y = 0,
+        drawOrder = 1,
+        visible = true,
+      },
+      {
+        op = "setSpriteClip",
+        stepId = "phase",
+        atStepTick = 6,
+        instanceId = "late",
+        engine = "main",
+        x = 100,
+        y = 0,
+        drawOrder = 2,
+        objPriority = 1,
+        clipId = shared.id,
+        animate = true,
+      },
+      {
+        op = "spriteVisible",
+        stepId = "phase",
+        atStepTick = 6,
+        instanceId = "late",
+        engine = "main",
+        x = 100,
+        y = 0,
+        drawOrder = 2,
+        visible = true,
+      },
+      { op = "waitTicks", stepId = "phase", atStepTick = 0, ticks = 20 },
+    }
+  )
+  local scenes, cacheFs = packRawWithSceneAt(scene, 2)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  while movie:sceneNumber() < 2 do
+    movie:updateFixed()
+  end
+  local image = assert(movie.current.imageByPath[shared.id], "the shared clip image is staged")
+  for _ = 1, 6 do
+    movie:updateFixed()
+    movie:draw()
+  end
+  local early, late = {}, {}
+  for _ = 1, 12 do
+    movie:updateFixed()
+    local baseline = #graphics.draws
+    movie:draw()
+    local xs = {}
+    for index = baseline + 1, #graphics.draws do
+      local draw = graphics.draws[index]
+      if draw.image == image then
+        xs[#xs + 1] = draw.x
+      end
+    end
+    Assert.equal(#xs, 2, "both instances sharing the clip draw every frame")
+    table.sort(xs)
+    early[#early + 1] = xs[1]
+    late[#late + 1] = xs[2] - 100
+  end
+  Assert.equal(early[2], 80, "the first instance has already reached its terminal cell")
+  Assert.equal(late[2], 0, "the later instance still shows its reset cell on the same tick")
+  Assert.equal(early[12], 80, "the first instance holds its terminal cell")
+  Assert.equal(late[12], 80, "the later instance reaches the same terminal cell without restarting")
+  movie:dispose()
+end
+
+function T.strict_opening_clips_reject_unknown_play_modes()
+  local raw = manifestFor(4)
+  raw.spriteClips[1].playMode = "sideways"
+  local loaded, err = StartupAssetCache.loadOpeningScene(stubCache({ [4] = raw }), 4, VERSION_ID)
+  Assert.isNil(loaded, "a clip with an unknown playback mode never enters the runtime: " .. tostring(err))
+end
+
+function T.strict_opening_clips_reject_out_of_range_loop_starts()
+  local raw = manifestFor(4)
+  raw.spriteClips[1].loopStartFrameIdx = 99
+  local loaded, err = StartupAssetCache.loadOpeningScene(stubCache({ [4] = raw }), 4, VERSION_ID)
+  Assert.isNil(loaded, "a clip with a loop start outside its frames never enters the runtime: " .. tostring(err))
+end
+
+function T.strict_sprite_events_reject_out_of_range_obj_priority()
+  local raw = manifestFor(4)
+  for _, event in ipairs(raw.timeline.events) do
+    if event.op == "setSpriteClip" then
+      event.objPriority = 7
+    end
+  end
+  local loaded, err = StartupAssetCache.loadOpeningScene(stubCache({ [4] = raw }), 4, VERSION_ID)
+  Assert.isNil(loaded, "a sprite event with a priority outside 0..3 never enters the runtime: " .. tostring(err))
+end
+
+function T.strict_opening_scenes_reject_bundles_missing_playback_fields()
+  local raw = manifestFor(4)
+  for _, clip in ipairs(raw.spriteClips) do
+    clip.playMode = nil
+    clip.loopStartFrameIdx = nil
+  end
+  for _, event in ipairs(raw.timeline.events) do
+    if event.op == "setSpriteClip" then
+      event.objPriority = nil
+    end
+  end
+  local loaded, err = StartupAssetCache.loadOpeningScene(stubCache({ [4] = raw }), 4, VERSION_ID)
+  Assert.isNil(loaded, "a bundle without playback and priority fields never enters the runtime: " .. tostring(err))
 end
 
 return { tests = T }

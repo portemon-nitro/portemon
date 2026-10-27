@@ -179,7 +179,7 @@ end
 ---@param bankName string
 ---@param sequence integer zero-based retail sequence
 ---@param animation { anims: table[] } decoded NANR sequences
----@return { frames: table[] } retail sequence record
+---@return { frames: table[], playMode: string, loopStartFrameIdx: integer } retail sequence record
 local function playedSequence(sceneNumber, bankName, sequence, animation)
   local record = animation.anims[sequence + 1]
   if record == nil then
@@ -294,6 +294,8 @@ local function compileBank(sceneNumber, bank, charData, paletteData, cellData, a
       bank = bank.name,
       sequence = sequence,
       frameCount = #strip.frames,
+      playMode = played.playMode,
+      loopStartFrameIdx = played.loopStartFrameIdx,
       frames = strip.frames,
     }
     if bank.speciesId ~= nil then
@@ -907,6 +909,7 @@ end
 ---@param animate boolean|nil false holds the first authored frame, nil and true animate normally
 local function showSprite(events, sceneNumber, instances, clips, stepId, atStepTick, sprite, bank, sequence, animate)
   local instance = instanceFor(instances, sprite)
+  assert(type(instance.objPriority) == "number", "opening sprite station carries no hardware priority: " .. sprite)
   local clip = clipPath(clips, bank, sequence)
   local x, y = sourceLocalPosition(sceneNumber, instance.engine, instance.x, instance.y)
   events[#events + 1] = event("setSpriteClip", stepId, atStepTick, {
@@ -915,6 +918,7 @@ local function showSprite(events, sceneNumber, instances, clips, stepId, atStepT
     x = x,
     y = y,
     drawOrder = instance.drawOrder,
+    objPriority = instance.objPriority,
     clipId = clip,
     animate = animate == nil and true or animate,
   })
@@ -1100,8 +1104,12 @@ end
 local function scene2Program(clips)
   local instances = SceneSources.spriteInstances(2)
   local steps, events = {}, {}
-  local function showInstance(stepId, atStepTick, instanceId, bank, sequence)
+  local function showInstance(stepId, atStepTick, instanceId, bank, sequence, animate)
     local instance = instanceById(instances, instanceId)
+    assert(
+      type(instance.objPriority) == "number",
+      "opening sprite station carries no hardware priority: " .. instanceId
+    )
     local clip = clipPath(clips, bank, sequence)
     local x, y = sourceLocalPosition(2, instance.engine, instance.x, instance.y)
     events[#events + 1] = event("setSpriteClip", stepId, atStepTick, {
@@ -1110,8 +1118,9 @@ local function scene2Program(clips)
       x = x,
       y = y,
       drawOrder = instance.drawOrder,
+      objPriority = instance.objPriority,
       clipId = clip,
-      animate = true,
+      animate = animate == nil and true or animate,
     })
     events[#events + 1] = event("spriteVisible", stepId, atStepTick, {
       instanceId = instance.id,
@@ -1185,12 +1194,12 @@ local function scene2Program(clips)
     terminal = "neutral",
   })
   -- Retail creation leaves ethan and lyra drawn but unanimated, so they
-  -- show at their creation stations from the first step clock tick.
+  -- show paused at their creation stations from the first step clock tick.
   for hero = 0, 2 do
-    local clipIndex, visibleIndex = showInstance("flyin", 0, "ethan" .. hero, "characters", hero)
+    local clipIndex, visibleIndex = showInstance("flyin", 0, "ethan" .. hero, "characters", hero, false)
     flyin[#flyin + 1] = clipIndex
     flyin[#flyin + 1] = visibleIndex
-    clipIndex, visibleIndex = showInstance("flyin", 0, "lyra" .. hero, "characters", 3 + hero)
+    clipIndex, visibleIndex = showInstance("flyin", 0, "lyra" .. hero, "characters", 3 + hero, false)
     flyin[#flyin + 1] = clipIndex
     flyin[#flyin + 1] = visibleIndex
   end

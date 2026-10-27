@@ -6,7 +6,7 @@ local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v9"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v10"
 local SOURCE_TICK_RATE = 30
 
 local CLOSED_OPS = {
@@ -486,7 +486,7 @@ end
 -- below reads the exact compiled bundles and fails until the producer
 -- emits that contract and the central reader enforces it.
 
-local STRICT_SCHEMA = "g4-startup-opening-scene-v9"
+local STRICT_SCHEMA = "g4-startup-opening-scene-v10"
 
 local function strictManifest(bundle, versionId, sceneNumber)
   local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
@@ -551,7 +551,8 @@ local function checkStepClock(events, sceneNumber)
   end
 end
 
-local STARTING_OPS = { setBlend = true, setScroll = true, setFade = true, circleWipe = true, shutterFade = true, window = true }
+local STARTING_OPS =
+  { setBlend = true, setScroll = true, setFade = true, circleWipe = true, shutterFade = true, window = true }
 
 local function startedEffectIds(events)
   local started = {}
@@ -1118,7 +1119,7 @@ local function strictValidationAcceptsOnlyCompleteContracts(romFs, versionId)
     local entryManifest = assert(compiled[sceneNumber].manifest, "scene " .. sceneNumber .. " publishes its manifest")
     Assert.equal(
       entryManifest.schema,
-      "g4-startup-opening-scene-v9",
+      "g4-startup-opening-scene-v10",
       "scene " .. sceneNumber .. " carries the entry-mapping scene schema"
     )
     Assert.deepEqual(
@@ -1192,16 +1193,8 @@ local function starterMappingAndPlaneMasksFollowTheRetailFlipOrder(romFs, versio
   end
   Assert.equal(#mappings, 3, "scene 4 records its entry mapping and its two starter flips")
   Assert.equal(mappings[1].mainPhysical, "lower", "scene 4 opens with its main engine on the lower screen")
-  Assert.equal(
-    mappings[2].mainPhysical,
-    "upper",
-    "the first flip moves the main engine upper for the second starter"
-  )
-  Assert.equal(
-    mappings[3].mainPhysical,
-    "lower",
-    "the second flip returns the main engine lower for the third starter"
-  )
+  Assert.equal(mappings[2].mainPhysical, "upper", "the first flip moves the main engine upper for the second starter")
+  Assert.equal(mappings[3].mainPhysical, "lower", "the second flip returns the main engine lower for the third starter")
   Assert.equal(mappings[2].stepId, "finish-chikorita", "the first finish follows the first starter")
   Assert.equal(mappings[3].stepId, "finish-cyndaquil", "the second finish follows the second starter")
   local function visibleAt(stepId, engine, bgSlot)
@@ -1269,11 +1262,7 @@ local function scene4SplitsStarterAppearStartRunFinishWithDeferredFlipAndGuarded
       positions[appearId] + 1,
       "emission starts one source dispatch after the " .. beat.starter .. " appear"
     )
-    Assert.equal(
-      positions[runId],
-      positions[startId] + 1,
-      "the " .. beat.starter .. " run follows its emission start"
-    )
+    Assert.equal(positions[runId], positions[startId] + 1, "the " .. beat.starter .. " run follows its emission start")
     Assert.isTrue(entryHas(appear, "setSpriteClip"), "the " .. beat.starter .. " appear shows its sprite")
     Assert.isTrue(entryHas(appear, "spriteVisible"), "the " .. beat.starter .. " appear reveals its sprite")
     Assert.isFalse(entryHas(appear, "startEmitters"), "the " .. beat.starter .. " appear starts no emitter")
@@ -1318,9 +1307,7 @@ local function scene4SplitsStarterAppearStartRunFinishWithDeferredFlipAndGuarded
   end
   for _, event in ipairs(eventsOf("setScreenMapping", nil)) do
     Assert.isTrue(
-      event.stepId == "fade-in"
-        or event.stepId == "finish-chikorita"
-        or event.stepId == "finish-cyndaquil",
+      event.stepId == "fade-in" or event.stepId == "finish-chikorita" or event.stepId == "finish-cyndaquil",
       "no screen flip leaves before its finish case: " .. tostring(event.stepId)
     )
   end
@@ -1354,17 +1341,9 @@ local function scene4SplitsStarterAppearStartRunFinishWithDeferredFlipAndGuarded
   Assert.isTrue(closeDeferred, "the water run starts its close through guard completion")
   Assert.isFalse(entryHas(runWater, "setFade"), "no shutter starts before the water emitters retire")
   local finishTotodile = stepRecord("finish-totodile")
-  Assert.equal(
-    positions["finish-totodile"],
-    positions["run-totodile"] + 1,
-    "the totodile finish follows the water run"
-  )
+  Assert.equal(positions["finish-totodile"], positions["run-totodile"] + 1, "the totodile finish follows the water run")
   Assert.equal(#finishTotodile.events, 0, "the totodile finish carries no entry event")
-  Assert.equal(
-    finishTotodile["until"].effect,
-    "fade-close",
-    "the totodile finish waits on the closing shutter"
-  )
+  Assert.equal(finishTotodile["until"].effect, "fade-close", "the totodile finish waits on the closing shutter")
   local retiredPlanes, retiredSprites = {}, {}
   for _, index in ipairs(finishTotodile.onCompleteEvents or {}) do
     local event = manifest.timeline.events[index]
@@ -1471,10 +1450,7 @@ local function planeEnableStateIsExplicitInEveryCompiledScene(romFs, versionId)
   local hidden = planeStateAt(fourth, fourthEvents, "hide-hands")
   Assert.isFalse(hidden["main:1"] or hidden["sub:1"], "the slide-out disables both first planes")
   local finale = planeStateAt(fourth, fourthEvents, "finish-totodile")
-  Assert.isFalse(
-    finale["main:1"] or finale["main:2"] or finale["main:3"],
-    "the finale disables the main planes"
-  )
+  Assert.isFalse(finale["main:1"] or finale["main:2"] or finale["main:3"], "the finale disables the main planes")
   local third = strictManifest(compileScene(romFs, versionId, 3), versionId, 3)
   local _, thirdEvents = strictTimeline(third, 3)
   local borders = planeStateAt(third, thirdEvents, "borders")
@@ -1504,8 +1480,10 @@ local function townDrawingStopsBeforeRivalOnlyVisuals(romFs, versionId)
   Assert.isTrue((stopStep or 0) < (rivalOnly or 0), "the town stop fires before the rival-only beats")
   Assert.equal(#manifest.models, 3, "the town models stay staged after the drawing stop")
   for _, event in ipairs(events) do
-    Assert.isFalse(event.op == "finish" and (stepPosition(manifest, event.stepId) or 0) < (stopStep or 0)
-      , "no early finish ends the scene before the town stop")
+    Assert.isFalse(
+      event.op == "finish" and (stepPosition(manifest, event.stepId) or 0) < (stopStep or 0),
+      "no early finish ends the scene before the town stop"
+    )
   end
 end
 
@@ -1604,9 +1582,7 @@ local function backgroundLayersKeepTheirFullSourceMapExtents(romFs, versionId)
     local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
     local layers = assert(manifest.layers, "scene " .. sceneNumber .. " carries its engine layers")
     for _, engine in ipairs({ "main", "sub" }) do
-      for _, layer in
-        ipairs(assert(layers[engine], "scene " .. sceneNumber .. " keys its " .. engine .. " layers"))
-      do
+      for _, layer in ipairs(assert(layers[engine], "scene " .. sceneNumber .. " keys its " .. engine .. " layers")) do
         local slot = "scene " .. sceneNumber .. " " .. engine .. " slot " .. tostring(layer.bgSlot)
         Assert.isTrue(
           type(layer.width) == "number" and layer.width % 1 == 0 and layer.width >= 256,
@@ -1648,10 +1624,7 @@ local function backgroundLayersKeepTheirFullSourceMapExtents(romFs, versionId)
       end
     end
   end
-  Assert.isTrue(
-    sawNativeExtent,
-    "at least one compiled layer keeps a native extent beyond the retail display"
-  )
+  Assert.isTrue(sawNativeExtent, "at least one compiled layer keeps a native extent beyond the retail display")
   Assert.isTrue(sawAlternateRecord, "at least one compiled layer carries an alternate image record")
 end
 
@@ -1702,14 +1675,8 @@ local function openingProgramsStartFromTheirSourceOrigins(romFs, versionId)
     for _, event in ipairs(manifest.timeline.events) do
       if event.op == "setScroll" then
         local where = "scene " .. sceneNumber .. " scroll"
-        Assert.isTrue(
-          type(event.dx) == "number" and event.dx % 1 == 0,
-          where .. " displaces by whole source pixels"
-        )
-        Assert.isTrue(
-          type(event.dy) == "number" and event.dy % 1 == 0,
-          where .. " displaces by whole source pixels"
-        )
+        Assert.isTrue(type(event.dx) == "number" and event.dx % 1 == 0, where .. " displaces by whole source pixels")
+        Assert.isTrue(type(event.dy) == "number" and event.dy % 1 == 0, where .. " displaces by whole source pixels")
         Assert.isTrue(
           type(event.ticks) == "number" and event.ticks % 1 == 0 and event.ticks >= -1,
           where .. " uses an instant, continuous, or timed mode"
@@ -1784,20 +1751,14 @@ local function engineBlendsAndWipesCarrySourceOperands(romFs, versionId)
       if event.op == "setBlend" then
         sawBlend = true
         local where = "scene " .. sceneNumber .. " blend"
-        Assert.isTrue(
-          event.engine == "main" or event.engine == "sub",
-          where .. " targets one stage engine"
-        )
+        Assert.isTrue(event.engine == "main" or event.engine == "sub", where .. " targets one stage engine")
         for _, mask in ipairs({ event.firstMask, event.secondMask }) do
           Assert.isTrue(
             type(mask) == "number" and mask % 1 == 0 and mask >= 0 and mask <= 63,
             where .. " selects source planes with a six-bit mask"
           )
         end
-        Assert.isTrue(
-          event.direction == 0 or event.direction == 1,
-          where .. " animates in one source direction"
-        )
+        Assert.isTrue(event.direction == 0 or event.direction == 1, where .. " animates in one source direction")
         Assert.isTrue(
           type(event.ticks) == "number" and event.ticks % 1 == 0 and event.ticks > 0,
           where .. " runs a positive source duration"
@@ -1814,10 +1775,7 @@ local function engineBlendsAndWipesCarrySourceOperands(romFs, versionId)
         sawWipe = true
         wipesByScene[sceneNumber] = true
         local where = "scene " .. sceneNumber .. " wipe"
-        Assert.isTrue(
-          event.engine == "main" or event.engine == "sub",
-          where .. " targets one stage engine"
-        )
+        Assert.isTrue(event.engine == "main" or event.engine == "sub", where .. " targets one stage engine")
         Assert.isTrue(
           type(event.kind) == "number" and event.kind % 1 == 0 and event.kind >= 0 and event.kind <= 3,
           where .. " carries a source wipe kind"
@@ -1987,7 +1945,9 @@ local function pinnedNativeExtentsAndWrapEdgeTopology(romFs, versionId)
     local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
     local scenePinned = (versionId == "soulsilver") and pinned[sceneNumber] or nil
     for _, engine in ipairs({ "main", "sub" }) do
-      for _, layer in ipairs(assert(manifest.layers[engine], "scene " .. sceneNumber .. " keys its " .. engine .. " layers")) do
+      for _, layer in
+        ipairs(assert(manifest.layers[engine], "scene " .. sceneNumber .. " keys its " .. engine .. " layers"))
+      do
         local where = "scene " .. sceneNumber .. " " .. engine .. " slot " .. tostring(layer.bgSlot)
         local data = decodedBundleImage(bundle, layer.image, sceneNumber)
         Assert.equal(data:getWidth(), layer.width, where .. " base art decodes to its recorded width")
@@ -2006,11 +1966,7 @@ local function pinnedNativeExtentsAndWrapEdgeTopology(romFs, versionId)
             topologyPinned = topologyPinned[1]
           end
           if topologyPinned ~= nil then
-            Assert.equal(
-              edgeTopology(data),
-              topologyPinned,
-              where .. " keeps its pinned SS wrap-edge topology"
-            )
+            Assert.equal(edgeTopology(data), topologyPinned, where .. " keeps its pinned SS wrap-edge topology")
           end
         end
         local variantTopologies = nil
@@ -2113,10 +2069,8 @@ local SCROLL_KEYS = { "atStepTick", "engine", "bgSlot", "dx", "dy", "ticks", "ef
 local POSITION_KEYS = { "atStepTick", "engine", "bgSlot", "x", "y" }
 local BLEND_KEYS = { "atStepTick", "engine", "firstMask", "secondMask", "direction", "ticks", "effect" }
 local WIPE_KEYS = { "atStepTick", "engine", "kind", "ticks", "effect" }
-local SHUTTER_KEYS =
-  { "atStepTick", "order", "mainPattern", "subPattern", "color", "steps", "framesPerStep", "effect" }
-local FADE_KEYS =
-  { "atStepTick", "scope", "mode", "color", "direction", "ticks", "terminal", "shape", "effect" }
+local SHUTTER_KEYS = { "atStepTick", "order", "mainPattern", "subPattern", "color", "steps", "framesPerStep", "effect" }
+local FADE_KEYS = { "atStepTick", "scope", "mode", "color", "direction", "ticks", "terminal", "shape", "effect" }
 
 -- Independently transcribed source call table: scene 1 main (first 1,
 -- second 0x1E) and sub (first 2, second 0x1E); scene 2 final main kind 1
@@ -2167,19 +2121,11 @@ local function checkScene3SevenWipesWithGates(manifest)
         -- Each close holds on its own wipe effect, and the rival reveal
         -- holds on its own wipe, so step order gates the next town beat
         -- on the finished close and the reveal on the retired town.
-        Assert.equal(
-          guard.effect,
-          event.effect,
-          "scene 3 gates each close and the rival reveal on its own wipe"
-        )
+        Assert.equal(guard.effect, event.effect, "scene 3 gates each close and the rival reveal on its own wipe")
       else
         -- Opens carry no wipe guard of their own: the town hold outlasts
         -- the 8-tick open, and step order gates the close on the open.
-        Assert.equal(
-          guard.kind,
-          "duration",
-          "scene 3 holds each town open on its duration instead of its wipe"
-        )
+        Assert.equal(guard.kind, "duration", "scene 3 holds each town open on its duration instead of its wipe")
       end
     end
   end
@@ -2228,11 +2174,7 @@ local function scene1SunriseStagesPausedSunBeforeAnimatedScroll(romFs, versionId
   Assert.isTrue(sunriseShows[1].visible, "the staged sun is visible on its setup beat")
   Assert.equal(#scrollClips, 1, "the scroll case restarts the sun clip once")
   Assert.equal(scrollClips[1].animate, true, "the scroll case animates the sun")
-  Assert.equal(
-    scrollClips[1].clipId,
-    sunriseClips[1].clipId,
-    "the scroll case restarts the same staged sun clip"
-  )
+  Assert.equal(scrollClips[1].clipId, sunriseClips[1].clipId, "the scroll case restarts the same staged sun clip")
   local sunrise = stepById(manifest, 1, "sunrise")
   Assert.equal(sunrise["until"].kind, "duration", "the sunrise beat keeps its one-tick setup")
   Assert.equal(sunrise["until"].ticks, 1, "the sunrise beat keeps its one-tick setup")
@@ -2277,10 +2219,7 @@ local function scene2SettleAndPanGuardsUseSourceEffects(romFs, versionId)
   end
   Assert.notNil(scrollTicks, "the flyin hands its scrolls to the settle guard")
   Assert.notNil(fadeTicks, "the flyin hands its fade to the settle guard")
-  Assert.isTrue(
-    (fadeTicks or 0) > (scrollTicks or 0),
-    "the longer fade makes the settle conjunction load-bearing"
-  )
+  Assert.isTrue((fadeTicks or 0) > (scrollTicks or 0), "the longer fade makes the settle conjunction load-bearing")
   local panTicks = { ["slow-pan-ethan"] = 90, ["fast-pan-lyra"] = 7, ["slow-pan-lyra"] = 66 }
   for stepId, ticks in pairs(panTicks) do
     local pan = stepById(manifest, 2, stepId)
@@ -2412,7 +2351,11 @@ local function movieTickRateRemainsRetail30Hz(romFs, versionId)
   for sceneNumber = 1, 5 do
     local bundle = compileScene(romFs, versionId, sceneNumber)
     local manifest = strictManifest(bundle, versionId, sceneNumber)
-    Assert.equal(manifest.schema, "g4-startup-opening-scene-v9", "scene " .. sceneNumber .. " carries the current scene schema")
+    Assert.equal(
+      manifest.schema,
+      "g4-startup-opening-scene-v10",
+      "scene " .. sceneNumber .. " carries the current scene schema"
+    )
     Assert.equal(manifest.sourceTickRate, 30, "scene " .. sceneNumber .. " runs at the retail 30 Hz tick rate")
   end
   local second = strictManifest(compileScene(romFs, versionId, 2), versionId, 2)
@@ -2481,10 +2424,7 @@ local function compiledScenesEmitStrictCaseGuardsWithoutPseudoWaits(romFs, versi
   for sceneNumber = 1, 5 do
     local manifest = strictManifest(compileScene(romFs, versionId, sceneNumber), versionId, sceneNumber)
     for _, event in ipairs(manifest.timeline.events) do
-      Assert.isTrue(
-        event.op ~= "waitEffects",
-        "scene " .. sceneNumber .. " emits no pseudo-wait marker"
-      )
+      Assert.isTrue(event.op ~= "waitEffects", "scene " .. sceneNumber .. " emits no pseudo-wait marker")
     end
     local owned = {}
     for _, step in ipairs(manifest.timeline.steps) do
@@ -2510,7 +2450,10 @@ local function compiledScenesEmitStrictCaseGuardsWithoutPseudoWaits(romFs, versi
         )
       end
       local completion = step.onCompleteEvents or {}
-      Assert.isTrue(type(completion) == "table", "scene " .. sceneNumber .. " step " .. step.id .. " owns its completion list")
+      Assert.isTrue(
+        type(completion) == "table",
+        "scene " .. sceneNumber .. " step " .. step.id .. " owns its completion list"
+      )
       for _, index in ipairs(step.events) do
         Assert.isNil(owned[index], "scene " .. sceneNumber .. " owns event " .. index .. " once")
         owned[index] = step.id
@@ -2625,10 +2568,7 @@ local function strictVisualPrimitivesRejectMalformedRecords(romFs, versionId)
     local loaded, err = strictLoad(versionId, 1, mutated, bundle.files, nil)
     Assert.isNil(loaded, message)
     Assert.notNil(err, message .. " reports its cause")
-    Assert.isTrue(
-      tostring(err):find(cause, 1, true) ~= nil,
-      message .. " names its cause: " .. tostring(err)
-    )
+    Assert.isTrue(tostring(err):find(cause, 1, true) ~= nil, message .. " names its cause: " .. tostring(err))
   end
   -- Nonfinite coordinates never survive the staged-file serialization, so
   -- this leg reads the mutated manifest straight through the strict
@@ -2653,10 +2593,7 @@ local function strictVisualPrimitivesRejectMalformedRecords(romFs, versionId)
     local loaded, err = StartupAssetCache.loadOpeningScene(directFs, 1, versionId)
     Assert.isNil(loaded, message)
     Assert.notNil(err, message .. " reports its cause")
-    Assert.isTrue(
-      tostring(err):find(cause, 1, true) ~= nil,
-      message .. " names its cause: " .. tostring(err)
-    )
+    Assert.isTrue(tostring(err):find(cause, 1, true) ~= nil, message .. " names its cause: " .. tostring(err))
   end
   local shapeless = deepCopyManifest(bundle.manifest)
   local fade = firstFade(shapeless)
@@ -2774,7 +2711,6 @@ local function scene3BeastExitsGuardTheRocketRetileAtAbsoluteOrigin(romFs, versi
   Assert.equal(viewportTail["until"].effect, "scroll-sub3", "the viewport tail keeps its own scroll guard")
 end
 
-
 -- The nine starter emitter records keep their exact staged animation and
 -- motion values through compilation: scale stages, RGB555 color endpoints,
 -- alpha levels, thresholds, placement, velocities, random ranges, fields,
@@ -2782,148 +2718,454 @@ end
 -- survives. Values below are the decoded source record contents.
 local STARTER_EXPECTED = {
   [0] = {
-    initPosType = 2, drawType = 1, circleAxis = 0,
-    countFx = 41112, radius = 0.5205078125, length = 0.0,
-    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
-    baseR = 17, baseG = 27, baseB = 31,
-    ivelFx = 1066, avelFx = 0, bsclFx = 1638,
-    aspect = 1.724853515625, start = 0, rttMin = 0, rttMax = 0, initRtt = 0,
-    elife = 18, plife = 15, rndmBase = 84, rndmLife = 0, rndmVel = 102,
-    genIntvl = 1, baseAlp = 31, air = 129, tex = 4, loop = 1, dbb = 0, repS = 0, repT = 0, direct = 2,
+    initPosType = 2,
+    drawType = 1,
+    circleAxis = 0,
+    countFx = 41112,
+    radius = 0.5205078125,
+    length = 0.0,
+    axisX = 0.0,
+    axisY = 1.0,
+    axisZ = 0.0,
+    baseR = 17,
+    baseG = 27,
+    baseB = 31,
+    ivelFx = 1066,
+    avelFx = 0,
+    bsclFx = 1638,
+    aspect = 1.724853515625,
+    start = 0,
+    rttMin = 0,
+    rttMax = 0,
+    initRtt = 0,
+    elife = 18,
+    plife = 15,
+    rndmBase = 84,
+    rndmLife = 0,
+    rndmVel = 102,
+    genIntvl = 1,
+    baseAlp = 31,
+    air = 129,
+    tex = 4,
+    loop = 1,
+    dbb = 0,
+    repS = 0,
+    repT = 0,
+    direct = 2,
     scale = { s = 2923, n = 9988, e = 16201, inside = 128, outside = 128 },
-    colorS = { 13, 26, 31 }, colorE = { 3, 22, 31 }, colorIn = 7, colorPeak = 150, colorOut = 216, interp = 1,
+    colorS = { 13, 26, 31 },
+    colorE = { 3, 22, 31 },
+    colorIn = 7,
+    colorPeak = 150,
+    colorOut = 216,
+    interp = 1,
     alpha = { s = 10, n = 31, e = 15, inside = 128, outside = 128 },
     child = nil,
     fields = { { kind = "spin", rotation = 2000, axis = 2 } },
   },
   [1] = {
-    initPosType = 2, drawType = 0, circleAxis = 0,
-    countFx = 12288, radius = 0.22314453125, length = 0.0,
-    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
-    baseR = 31, baseG = 31, baseB = 31,
-    ivelFx = 1142, avelFx = 0, bsclFx = 2048,
-    aspect = 1.0, start = 0, rttMin = 1096, rttMax = -1097, initRtt = 0,
-    elife = 22, plife = 19, rndmBase = 51, rndmLife = 0, rndmVel = 45,
-    genIntvl = 2, baseAlp = 31, air = 78, tex = 1, loop = 3, dbb = 0, repS = 0, repT = 0, direct = 0,
+    initPosType = 2,
+    drawType = 0,
+    circleAxis = 0,
+    countFx = 12288,
+    radius = 0.22314453125,
+    length = 0.0,
+    axisX = 0.0,
+    axisY = 1.0,
+    axisZ = 0.0,
+    baseR = 31,
+    baseG = 31,
+    baseB = 31,
+    ivelFx = 1142,
+    avelFx = 0,
+    bsclFx = 2048,
+    aspect = 1.0,
+    start = 0,
+    rttMin = 1096,
+    rttMax = -1097,
+    initRtt = 0,
+    elife = 22,
+    plife = 19,
+    rndmBase = 51,
+    rndmLife = 0,
+    rndmVel = 45,
+    genIntvl = 2,
+    baseAlp = 31,
+    air = 78,
+    tex = 1,
+    loop = 3,
+    dbb = 0,
+    repS = 0,
+    repT = 0,
+    direct = 0,
     scale = { s = 1218, n = 3411, e = 2558, inside = 128, outside = 128 },
-    colorS = { 31, 31, 31 }, colorE = { 4, 15, 25 }, colorIn = 51, colorPeak = 140, colorOut = 204, interp = 1,
+    colorS = { 31, 31, 31 },
+    colorE = { 4, 15, 25 },
+    colorIn = 51,
+    colorPeak = 140,
+    colorOut = 204,
+    interp = 1,
     alpha = { s = 8, n = 21, e = 0, inside = 125, outside = 125 },
-    child = { flag = 0x0006, sclE = 5360, life = 7, velRatio = 0, sclRatio = 49, clr = { 31, 31, 31 }, genNum = 1, genStart = 0, genIntvl = 3, tex = 8, repS = 1, repT = 1 },
+    child = {
+      flag = 0x0006,
+      sclE = 5360,
+      life = 7,
+      velRatio = 0,
+      sclRatio = 49,
+      clr = { 31, 31, 31 },
+      genNum = 1,
+      genStart = 0,
+      genIntvl = 3,
+      tex = 8,
+      repS = 1,
+      repT = 1,
+    },
     fields = { { kind = "spin", rotation = 609, axis = 2 } },
   },
   [2] = {
-    initPosType = 2, drawType = 0, circleAxis = 0,
-    countFx = 30454, radius = 1.040771484375, length = 0.0,
-    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
-    baseR = 19, baseG = 31, baseB = 31,
-    ivelFx = 1294, avelFx = 0, bsclFx = 4096,
-    aspect = 1.0, start = 0, rttMin = 0, rttMax = 0, initRtt = 0,
-    elife = 8, plife = 40, rndmBase = 102, rndmLife = 0, rndmVel = 0,
-    genIntvl = 1, baseAlp = 26, air = 128, tex = 5, loop = 1, dbb = 0, repS = 0, repT = 0, direct = 0,
+    initPosType = 2,
+    drawType = 0,
+    circleAxis = 0,
+    countFx = 30454,
+    radius = 1.040771484375,
+    length = 0.0,
+    axisX = 0.0,
+    axisY = 1.0,
+    axisZ = 0.0,
+    baseR = 19,
+    baseG = 31,
+    baseB = 31,
+    ivelFx = 1294,
+    avelFx = 0,
+    bsclFx = 4096,
+    aspect = 1.0,
+    start = 0,
+    rttMin = 0,
+    rttMax = 0,
+    initRtt = 0,
+    elife = 8,
+    plife = 40,
+    rndmBase = 102,
+    rndmLife = 0,
+    rndmVel = 0,
+    genIntvl = 1,
+    baseAlp = 26,
+    air = 128,
+    tex = 5,
+    loop = 1,
+    dbb = 0,
+    repS = 0,
+    repT = 0,
+    direct = 0,
     scale = { s = 4096, n = 2314, e = 1462, inside = 128, outside = 128 },
-    colorS = { 31, 31, 31 }, colorE = { 6, 17, 31 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    colorS = { 31, 31, 31 },
+    colorE = { 6, 17, 31 },
+    colorIn = 51,
+    colorPeak = 128,
+    colorOut = 204,
+    interp = 1,
     alpha = { s = 1, n = 26, e = 1, inside = 77, outside = 128 },
     child = nil,
     fields = { { kind = "spin", rotation = 365, axis = 2 } },
   },
   [3] = {
-    initPosType = 7, drawType = 0, circleAxis = 2,
-    countFx = 15227, radius = 0.5205078125, length = 1.33837890625,
-    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
-    baseR = 31, baseG = 12, baseB = 0,
-    ivelFx = 381, avelFx = 609, bsclFx = 2436,
-    aspect = 1.2490234375, start = 0, rttMin = 0, rttMax = 0, initRtt = 0,
-    elife = 20, plife = 16, rndmBase = 51, rndmLife = 0, rndmVel = 51,
-    genIntvl = 1, baseAlp = 31, air = 63, tex = 2, loop = 1, dbb = 0, repS = 1, repT = 0, direct = 0,
+    initPosType = 7,
+    drawType = 0,
+    circleAxis = 2,
+    countFx = 15227,
+    radius = 0.5205078125,
+    length = 1.33837890625,
+    axisX = 0.0,
+    axisY = 1.0,
+    axisZ = 0.0,
+    baseR = 31,
+    baseG = 12,
+    baseB = 0,
+    ivelFx = 381,
+    avelFx = 609,
+    bsclFx = 2436,
+    aspect = 1.2490234375,
+    start = 0,
+    rttMin = 0,
+    rttMax = 0,
+    initRtt = 0,
+    elife = 20,
+    plife = 16,
+    rndmBase = 51,
+    rndmLife = 0,
+    rndmVel = 51,
+    genIntvl = 1,
+    baseAlp = 31,
+    air = 63,
+    tex = 2,
+    loop = 1,
+    dbb = 0,
+    repS = 1,
+    repT = 0,
+    direct = 0,
     scale = { s = 9136, n = 4020, e = 853, inside = 128, outside = 128 },
-    colorS = { 31, 15, 0 }, colorE = { 21, 8, 0 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    colorS = { 31, 15, 0 },
+    colorE = { 21, 8, 0 },
+    colorIn = 51,
+    colorPeak = 128,
+    colorOut = 204,
+    interp = 1,
     alpha = { s = 20, n = 29, e = 0, inside = 45, outside = 64 },
-    child = { flag = 0x0060, sclE = 0, life = 1, velRatio = 0, sclRatio = 30, clr = { 31, 25, 0 }, genNum = 1, genStart = 0, genIntvl = 1, tex = 2, repS = 1, repT = 0 },
+    child = {
+      flag = 0x0060,
+      sclE = 0,
+      life = 1,
+      velRatio = 0,
+      sclRatio = 30,
+      clr = { 31, 25, 0 },
+      genNum = 1,
+      genStart = 0,
+      genIntvl = 1,
+      tex = 2,
+      repS = 1,
+      repT = 0,
+    },
     fields = { { kind = "magnet", x = 0.0, y = 12.081787109375, z = 0.0, mag = 0.00732421875 } },
   },
   [4] = {
-    initPosType = 2, drawType = 1, circleAxis = 0,
-    countFx = 8192, radius = 1.189697265625, length = 0.0,
-    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
-    baseR = 31, baseG = 19, baseB = 8,
-    ivelFx = 228, avelFx = 0, bsclFx = 6822,
-    aspect = 0.38671875, start = 0, rttMin = 0, rttMax = 0, initRtt = 0,
-    elife = 22, plife = 19, rndmBase = 90, rndmLife = 0, rndmVel = 102,
-    genIntvl = 2, baseAlp = 31, air = 129, tex = 7, loop = 1, dbb = 0, repS = 1, repT = 1, direct = 2,
+    initPosType = 2,
+    drawType = 1,
+    circleAxis = 0,
+    countFx = 8192,
+    radius = 1.189697265625,
+    length = 0.0,
+    axisX = 0.0,
+    axisY = 1.0,
+    axisZ = 0.0,
+    baseR = 31,
+    baseG = 19,
+    baseB = 8,
+    ivelFx = 228,
+    avelFx = 0,
+    bsclFx = 6822,
+    aspect = 0.38671875,
+    start = 0,
+    rttMin = 0,
+    rttMax = 0,
+    initRtt = 0,
+    elife = 22,
+    plife = 19,
+    rndmBase = 90,
+    rndmLife = 0,
+    rndmVel = 102,
+    genIntvl = 2,
+    baseAlp = 31,
+    air = 129,
+    tex = 7,
+    loop = 1,
+    dbb = 0,
+    repS = 1,
+    repT = 1,
+    direct = 2,
     scale = { s = 4096, n = 13156, e = 23388, inside = 128, outside = 128 },
-    colorS = { 31, 31, 16 }, colorE = { 23, 7, 0 }, colorIn = 11, colorPeak = 69, colorOut = 134, interp = 1,
+    colorS = { 31, 31, 16 },
+    colorE = { 23, 7, 0 },
+    colorIn = 11,
+    colorPeak = 69,
+    colorOut = 134,
+    interp = 1,
     alpha = { s = 31, n = 26, e = 4, inside = 128, outside = 128 },
     child = nil,
-    fields = {  },
+    fields = {},
   },
   [5] = {
-    initPosType = 6, drawType = 0, circleAxis = 2,
-    countFx = 4096, radius = 0.81787109375, length = 5.501953125,
-    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
-    baseR = 31, baseG = 23, baseB = 8,
-    ivelFx = 761, avelFx = 0, bsclFx = 1462,
-    aspect = 1.0, start = 0, rttMin = 0, rttMax = 0, initRtt = 0,
-    elife = 30, plife = 13, rndmBase = 51, rndmLife = 0, rndmVel = 51,
-    genIntvl = 1, baseAlp = 31, air = 120, tex = 0, loop = 1, dbb = 0, repS = 1, repT = 1, direct = 0,
+    initPosType = 6,
+    drawType = 0,
+    circleAxis = 2,
+    countFx = 4096,
+    radius = 0.81787109375,
+    length = 5.501953125,
+    axisX = 0.0,
+    axisY = 1.0,
+    axisZ = 0.0,
+    baseR = 31,
+    baseG = 23,
+    baseB = 8,
+    ivelFx = 761,
+    avelFx = 0,
+    bsclFx = 1462,
+    aspect = 1.0,
+    start = 0,
+    rttMin = 0,
+    rttMax = 0,
+    initRtt = 0,
+    elife = 30,
+    plife = 13,
+    rndmBase = 51,
+    rndmLife = 0,
+    rndmVel = 51,
+    genIntvl = 1,
+    baseAlp = 31,
+    air = 120,
+    tex = 0,
+    loop = 1,
+    dbb = 0,
+    repS = 1,
+    repT = 1,
+    direct = 0,
     scale = { s = 3654, n = 2436, e = 853, inside = 128, outside = 128 },
-    colorS = { 31, 29, 21 }, colorE = { 30, 15, 4 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    colorS = { 31, 29, 21 },
+    colorE = { 30, 15, 4 },
+    colorIn = 51,
+    colorPeak = 128,
+    colorOut = 204,
+    interp = 1,
     alpha = { s = 0, n = 31, e = 0, inside = 45, outside = 128 },
     child = nil,
-    fields = {  },
+    fields = {},
   },
   [6] = {
-    initPosType = 7, drawType = 0, circleAxis = 0,
-    countFx = 24576, radius = 0.743408203125, length = 0.0,
-    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
-    baseR = 19, baseG = 31, baseB = 19,
-    ivelFx = 1447, avelFx = 0, bsclFx = 4096,
-    aspect = 1.0, start = 6, rttMin = -2071, rttMax = -2071, initRtt = 0,
-    elife = 20, plife = 23, rndmBase = 128, rndmLife = 51, rndmVel = 51,
-    genIntvl = 4, baseAlp = 25, air = 133, tex = 6, loop = 3, dbb = 0, repS = 0, repT = 0, direct = 0,
+    initPosType = 7,
+    drawType = 0,
+    circleAxis = 0,
+    countFx = 24576,
+    radius = 0.743408203125,
+    length = 0.0,
+    axisX = 0.0,
+    axisY = 1.0,
+    axisZ = 0.0,
+    baseR = 19,
+    baseG = 31,
+    baseB = 19,
+    ivelFx = 1447,
+    avelFx = 0,
+    bsclFx = 4096,
+    aspect = 1.0,
+    start = 6,
+    rttMin = -2071,
+    rttMax = -2071,
+    initRtt = 0,
+    elife = 20,
+    plife = 23,
+    rndmBase = 128,
+    rndmLife = 51,
+    rndmVel = 51,
+    genIntvl = 4,
+    baseAlp = 25,
+    air = 133,
+    tex = 6,
+    loop = 3,
+    dbb = 0,
+    repS = 0,
+    repT = 0,
+    direct = 0,
     scale = { s = 1827, n = 3167, e = 4507, inside = 128, outside = 128 },
-    colorS = { 31, 31, 31 }, colorE = { 7, 13, 7 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    colorS = { 31, 31, 31 },
+    colorE = { 7, 13, 7 },
+    colorIn = 51,
+    colorPeak = 128,
+    colorOut = 204,
+    interp = 1,
     alpha = { s = 13, n = 31, e = 0, inside = 26, outside = 133 },
     child = nil,
-    fields = {  },
+    fields = {},
   },
   [7] = {
-    initPosType = 2, drawType = 0, circleAxis = 0,
-    countFx = 4096, radius = 0.81787109375, length = 0.0,
-    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
-    baseR = 1, baseG = 26, baseB = 5,
-    ivelFx = 761, avelFx = 0, bsclFx = 2924,
-    aspect = 1.0, start = 9, rttMin = 0, rttMax = 0, initRtt = 0,
-    elife = 30, plife = 13, rndmBase = 51, rndmLife = 0, rndmVel = 51,
-    genIntvl = 1, baseAlp = 31, air = 120, tex = 0, loop = 1, dbb = 0, repS = 1, repT = 1, direct = 0,
+    initPosType = 2,
+    drawType = 0,
+    circleAxis = 0,
+    countFx = 4096,
+    radius = 0.81787109375,
+    length = 0.0,
+    axisX = 0.0,
+    axisY = 1.0,
+    axisZ = 0.0,
+    baseR = 1,
+    baseG = 26,
+    baseB = 5,
+    ivelFx = 761,
+    avelFx = 0,
+    bsclFx = 2924,
+    aspect = 1.0,
+    start = 9,
+    rttMin = 0,
+    rttMax = 0,
+    initRtt = 0,
+    elife = 30,
+    plife = 13,
+    rndmBase = 51,
+    rndmLife = 0,
+    rndmVel = 51,
+    genIntvl = 1,
+    baseAlp = 31,
+    air = 120,
+    tex = 0,
+    loop = 1,
+    dbb = 0,
+    repS = 1,
+    repT = 1,
+    direct = 0,
     scale = { s = 3654, n = 2436, e = 853, inside = 128, outside = 128 },
-    colorS = { 16, 31, 12 }, colorE = { 0, 18, 0 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    colorS = { 16, 31, 12 },
+    colorE = { 0, 18, 0 },
+    colorIn = 51,
+    colorPeak = 128,
+    colorOut = 204,
+    interp = 1,
     alpha = { s = 0, n = 31, e = 0, inside = 45, outside = 128 },
     child = nil,
     fields = { { kind = "spin", rotation = 365, axis = 2 } },
   },
   [8] = {
-    initPosType = 0, drawType = 0, circleAxis = 0,
-    countFx = 4096, radius = 0.0, length = 0.0,
-    axisX = 0.0, axisY = 1.0, axisZ = 0.0,
-    baseR = 13, baseG = 31, baseB = 13,
-    ivelFx = 0, avelFx = 0, bsclFx = 5360,
-    aspect = 1.0, start = 0, rttMin = -2315, rttMax = -2315, initRtt = 0,
-    elife = 10, plife = 23, rndmBase = 0, rndmLife = 0, rndmVel = 44,
-    genIntvl = 5, baseAlp = 25, air = 128, tex = 3, loop = 3, dbb = 0, repS = 0, repT = 0, direct = 0,
+    initPosType = 0,
+    drawType = 0,
+    circleAxis = 0,
+    countFx = 4096,
+    radius = 0.0,
+    length = 0.0,
+    axisX = 0.0,
+    axisY = 1.0,
+    axisZ = 0.0,
+    baseR = 13,
+    baseG = 31,
+    baseB = 13,
+    ivelFx = 0,
+    avelFx = 0,
+    bsclFx = 5360,
+    aspect = 1.0,
+    start = 0,
+    rttMin = -2315,
+    rttMax = -2315,
+    initRtt = 0,
+    elife = 10,
+    plife = 23,
+    rndmBase = 0,
+    rndmLife = 0,
+    rndmVel = 44,
+    genIntvl = 5,
+    baseAlp = 25,
+    air = 128,
+    tex = 3,
+    loop = 3,
+    dbb = 0,
+    repS = 0,
+    repT = 0,
+    direct = 0,
     scale = { s = 1827, n = 15714, e = 26920, inside = 79, outside = 94 },
-    colorS = { 25, 31, 25 }, colorE = { 7, 13, 7 }, colorIn = 51, colorPeak = 128, colorOut = 204, interp = 1,
+    colorS = { 25, 31, 25 },
+    colorE = { 7, 13, 7 },
+    colorIn = 51,
+    colorPeak = 128,
+    colorOut = 204,
+    interp = 1,
     alpha = { s = 1, n = 31, e = 0, inside = 77, outside = 143 },
     child = nil,
-    fields = {  },
+    fields = {},
   },
 }
-
 
 local function starterEmitterRecordsKeepTheirSourceAnimationAndMotionValues(romFs, versionId)
   local bundle = compileScene(romFs, versionId, 4)
   local manifest = strictManifest(bundle, versionId, 4)
   local byId = {}
-  for _, emitter in ipairs(assert(manifest.particles and manifest.particles.emitters, "scene 4 carries its emitter records")) do
+  for _, emitter in
+    ipairs(assert(manifest.particles and manifest.particles.emitters, "scene 4 carries its emitter records"))
+  do
     byId[emitter.id] = emitter
   end
   for id = 0, 8 do
@@ -3029,6 +3271,165 @@ local function starterEmitterRecordsKeepTheirSourceAnimationAndMotionValues(romF
   end
 end
 
+-- The scene 2 program keeps its six hero instances drawn but
+-- animation-paused while the timed flowers animate: pans move the heroes
+-- through position-only visibility updates, never through a clip restart.
+local function scene2HeroesPauseWhileFlowersAnimate(romFs, versionId)
+  local manifest = strictManifest(compileScene(romFs, versionId, 2), versionId, 2)
+  local _, events = strictTimeline(manifest, 2)
+  local heroes = { ethan0 = true, ethan1 = true, ethan2 = true, lyra0 = true, lyra1 = true, lyra2 = true }
+  local heroStages, flowerStages = {}, {}
+  for _, event in ipairs(events) do
+    if event.op == "setSpriteClip" then
+      if heroes[event.instanceId] then
+        heroStages[#heroStages + 1] = event
+      elseif type(event.instanceId) == "string" and event.instanceId:match("^flower") then
+        flowerStages[#flowerStages + 1] = event
+      end
+    end
+  end
+  Assert.equal(#heroStages, 6, "all six hero instances stage their clips")
+  for _, stage in ipairs(heroStages) do
+    Assert.isFalse(stage.animate, "hero " .. stage.instanceId .. " stays animation-paused")
+    Assert.equal(stage.stepId, "flyin", "hero " .. stage.instanceId .. " stages once on the entry case")
+  end
+  Assert.isTrue(#flowerStages >= 2, "the timed flowers stage their own clips")
+  for _, stage in ipairs(flowerStages) do
+    Assert.isTrue(stage.animate, "flower " .. stage.instanceId .. " animates on its timed beat")
+  end
+  local heroShows = 0
+  for _, event in ipairs(events) do
+    if event.op == "spriteVisible" and heroes[event.instanceId] and event.visible then
+      heroShows = heroShows + 1
+    end
+  end
+  Assert.isTrue(heroShows > 6, "hero pans move the paused instances through position-only visibility")
+end
+
+-- Scene 2 occlusion is a hardware plane order: the foreground background
+-- keeps source priority 0, heroes sit at sprite priority 1 behind it, and
+-- flowers tie the foreground at sprite priority 0.
+local function scene2HardwarePrioritySeparatesForegroundAndSprites(romFs, versionId)
+  local manifest = strictManifest(compileScene(romFs, versionId, 2), versionId, 2)
+  local layers = engineLayers(manifest, 2)
+  local bg0Priority = nil
+  for _, layerRecord in ipairs(layers.main) do
+    if layerRecord.bgSlot == 0 then
+      bg0Priority = layerRecord.priority
+    end
+  end
+  Assert.equal(bg0Priority, 0, "the scene 2 foreground background keeps its source priority")
+  local _, events = strictTimeline(manifest, 2)
+  local heroes = { ethan0 = true, ethan1 = true, ethan2 = true, lyra0 = true, lyra1 = true, lyra2 = true }
+  local heroCount, flowerCount = 0, 0
+  for _, event in ipairs(events) do
+    if event.op == "setSpriteClip" then
+      if heroes[event.instanceId] then
+        heroCount = heroCount + 1
+        Assert.equal(event.objPriority, 1, "hero " .. event.instanceId .. " sits behind the foreground background")
+      elseif type(event.instanceId) == "string" and event.instanceId:match("^flower") then
+        flowerCount = flowerCount + 1
+        Assert.equal(event.objPriority, 0, "flower " .. event.instanceId .. " ties the foreground background")
+      end
+    end
+  end
+  Assert.equal(heroCount, 6, "all six hero instances carry their sprite priority")
+  Assert.isTrue(flowerCount >= 2, "the timed flowers carry their sprite priority")
+end
+
+-- Starter and sparkle clips carry the exact playback facts the source
+-- animation records decode to: the compiled mode, loop start, and
+-- per-frame durations equal an independent decode of the same archive
+-- members, never a copied compiler output. Decoding repeats the two
+-- normalizations the compiler applies at the source boundary (optional LZ
+-- decompression, then the shared animation decoder, which this test never
+-- modifies).
+local function starterSparkleClipsMatchDecodedNanr(romFs, versionId)
+  local SceneSources = requireProducer("OpeningMovieSceneSources")
+  local decoderOk, G2dDecoder = pcall(require, "romdump.src.digest.ui.G2dDecoder")
+  Assert.isTrue(decoderOk, "the shared animation decoder is available for independent observation")
+  local lzOk, Lz10 = pcall(require, "romdump.src.digest.Lz10")
+  Assert.isTrue(lzOk, "the LZ decoder is available for independent observation")
+  local archive, archiveErr = romFs:openNarc(SceneSources.ARCHIVE)
+  Assert.notNil(archive, "the opening source archive opens: " .. tostring(archiveErr))
+  local bundle = compileScene(romFs, versionId, 4)
+  local manifest = strictManifest(bundle, versionId, 4)
+  local clipsByKey = {}
+  for _, clip in ipairs(manifest.spriteClips) do
+    clipsByKey[clip.bank .. ":" .. tostring(clip.sequence)] = clip
+  end
+  -- One combined assertion so a single run reports every independently
+  -- decoded observation, not just the first mismatch.
+  local observed, mismatched = {}, {}
+  for _, bank in ipairs(SceneSources.objects(versionId, 4)) do
+    local memberBytes, memberErr = archive:readMember(bank.animation)
+    Assert.isTrue(
+      type(memberBytes) == "string",
+      "bank " .. bank.name .. " animation member reads: " .. tostring(memberErr)
+    )
+    if string.byte(memberBytes, 1) == 0x10 then
+      memberBytes = assert(Lz10.decode(memberBytes), "bank " .. bank.name .. " animation decompresses")
+    end
+    local decoded, decodeErr = G2dDecoder.decodeAnimation(memberBytes, { label = bank.name })
+    Assert.notNil(decoded, "bank " .. bank.name .. " animation decodes: " .. tostring(decodeErr))
+    for _, sequence in ipairs(bank.sequences) do
+      local key = bank.name .. ":" .. tostring(sequence)
+      local played = decoded.anims[sequence + 1]
+      Assert.notNil(played, "bank " .. key .. " has a decoded played sequence")
+      local durations = {}
+      for _, frame in ipairs(played.frames) do
+        durations[#durations + 1] = tostring(frame.duration)
+      end
+      observed[#observed + 1] = key
+        .. " mode="
+        .. tostring(played.playMode)
+        .. " loopStart="
+        .. tostring(played.loopStartFrameIdx)
+        .. " durations="
+        .. table.concat(durations, ",")
+      local clip = clipsByKey[key]
+      if clip == nil then
+        mismatched[#mismatched + 1] = key .. " publishes no compiled clip"
+      else
+        if clip.playMode ~= played.playMode then
+          mismatched[#mismatched + 1] = key .. " mode compiled=" .. tostring(clip.playMode)
+        end
+        if clip.loopStartFrameIdx ~= played.loopStartFrameIdx then
+          mismatched[#mismatched + 1] = key .. " loopStart compiled=" .. tostring(clip.loopStartFrameIdx)
+        end
+        if #clip.frames ~= #played.frames then
+          mismatched[#mismatched + 1] = key
+            .. " frameCount compiled="
+            .. tostring(#clip.frames)
+            .. " decoded="
+            .. tostring(#played.frames)
+        else
+          for index, frame in ipairs(clip.frames) do
+            if frame.duration ~= played.frames[index].duration then
+              mismatched[#mismatched + 1] = key
+                .. " frame "
+                .. index
+                .. " duration compiled="
+                .. tostring(frame.duration)
+                .. " decoded="
+                .. tostring(played.frames[index].duration)
+            end
+          end
+        end
+      end
+    end
+  end
+  Assert.equal(
+    #mismatched,
+    0,
+    "compiled clips keep their decoded playback facts (decoded: "
+      .. table.concat(observed, " | ")
+      .. "; mismatches: "
+      .. table.concat(mismatched, " | ")
+      .. ")"
+  )
+end
+
 return RomSuite.fromFacts({
   ["source opening scenes compile to five independent versioned bundles"] = sourceOpeningScenesCompileToFiveIndependentVersionedBundles,
   ["source opening timeline keeps its five-scene transitions and skip gate"] = sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate,
@@ -3058,4 +3459,7 @@ return RomSuite.fromFacts({
   ["compiled scenes emit strict case guards without pseudo waits"] = compiledScenesEmitStrictCaseGuardsWithoutPseudoWaits,
   ["scene 3 beast exits guard the rocket retile at the absolute origin"] = scene3BeastExitsGuardTheRocketRetileAtAbsoluteOrigin,
   ["scene five runs its shutter scroll and white fade in source order"] = sceneFiveRunsShutterScrollAndWhiteFadeInSourceOrder,
+  ["scene 2 heroes pause while flowers animate and pans move"] = scene2HeroesPauseWhileFlowersAnimate,
+  ["scene 2 hardware priority separates foreground and sprites"] = scene2HardwarePrioritySeparatesForegroundAndSprites,
+  ["starter and sparkle clips match decoded animation records"] = starterSparkleClipsMatchDecodedNanr,
 })

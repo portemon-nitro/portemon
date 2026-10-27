@@ -251,10 +251,7 @@ end
 local function assertPaneShowsEngine(r, g, b, mr, mg, mb, or_, og, ob, message)
   local mapped = colorDistance(r, g, b, mr, mg, mb)
   local other = colorDistance(r, g, b, or_, og, ob)
-  Assert.isTrue(
-    mapped + 0.2 < other,
-    message .. (" (mapped %.3f vs other %.3f)"):format(mapped, other)
-  )
+  Assert.isTrue(mapped + 0.2 < other, message .. (" (mapped %.3f vs other %.3f)"):format(mapped, other))
 end
 
 -- Fraction of coarsely sampled pixels that change between two frames.
@@ -466,8 +463,14 @@ end
 ---@param id string staged clip identity under its scene root
 ---@param frames table[] compiled clip frames
 ---@return table compiled sprite clip record
-local function compositeClip(id, frames)
-  return { id = id, frameCount = #frames, frames = frames }
+local function compositeClip(id, frames, playMode, loopStartFrameIdx)
+  return {
+    id = id,
+    frameCount = #frames,
+    frames = frames,
+    playMode = playMode or "forward_loop",
+    loopStartFrameIdx = loopStartFrameIdx or 0,
+  }
 end
 
 ---@param x integer
@@ -1087,8 +1090,7 @@ local function loadRomPackWithFillers(versionId, fillerIndexes)
   local fillerArt = {}
   local fillerManifests = {}
   for _, sceneNumber in ipairs(fillerIndexes) do
-    fillerManifests[sceneNumber] =
-      fillerRomScene(versionId, probe[1].generationId, sceneNumber, fillerArt)
+    fillerManifests[sceneNumber] = fillerRomScene(versionId, probe[1].generationId, sceneNumber, fillerArt)
   end
   local cacheFs = {
     loadLua = function(_, path)
@@ -1149,6 +1151,10 @@ local function authored_sprites_stay_on_their_engine_with_frame_offsets(scope)
           x = 32,
           y = 64,
           drawOrder = 1,
+          -- The stage backdrop keeps background priority 0, so the
+          -- subject sprite takes OBJ priority 0: backgrounds paint first
+          -- on a shared priority, keeping the offset probe visible.
+          objPriority = 0,
           clipId = clipId,
           animate = true,
         },
@@ -1539,8 +1545,7 @@ end
 ---@param versionId string selected edition identity
 ---@return table? movie, unknown failure
 local function driveMovieCatching(scope, scenes, cacheFs, versionId)
-  local constructed, movieOrFailure =
-    pcall(openMovieWithCache, scope, scenes, cacheFs, versionId, 512, 384, "single")
+  local constructed, movieOrFailure = pcall(openMovieWithCache, scope, scenes, cacheFs, versionId, 512, 384, "single")
   if not constructed then
     return nil, movieOrFailure
   end
@@ -2100,6 +2105,10 @@ local function pairedFlipScene()
         x = 32,
         y = 64,
         drawOrder = 1,
+        -- The pair backdrops keep background priority 0, so the hero
+        -- takes OBJ priority 0 and wins the shared-priority tie on its
+        -- owning engine in every layout.
+        objPriority = 0,
         clipId = clipId,
         animate = true,
       },
@@ -2523,10 +2532,7 @@ local function composited_town_pixels_stay_visible_and_animate_across_hold_ticks
   movie:draw()
   local before = drawBytes(movie, scope, 512, 384)
   Assert.isTrue(paneLitCells(before, 0) > 3000, "the composed town lights the main-mapped upper pane")
-  Assert.isTrue(
-    lowerLitCells(before) < 50,
-    "the town beat holds the lower screen black before its reveal"
-  )
+  Assert.isTrue(lowerLitCells(before) < 50, "the town beat holds the lower screen black before its reveal")
   for _ = 1, 15 do
     movie:updateFixed()
   end
@@ -2729,6 +2735,7 @@ local function synthetic_dual_coefficients_saturate_both_weights_per_pixel(scope
           x = 128,
           y = 0,
           drawOrder = 0,
+          objPriority = 1,
           clipId = probeClip,
           animate = true,
         },
@@ -2776,13 +2783,15 @@ local function synthetic_dual_coefficients_saturate_both_weights_per_pixel(scope
   Assert.near(lg, 1, 0.06, "the masked region shows the raw middle plane at the opening tick")
   Assert.near(lr, 0, 0.06, "no masked top red leaks at the opening tick")
   Assert.near(lb, 0, 0.06, "no lower blue leaks at the opening tick")
-  -- The sprite pair is not eligible: its red under plane is outside the
-  -- second mask, so the sprite paints unchanged at every tick while the
-  -- masked region stays raw middle.
+  -- The probe sits under the front plane: background priority 0 paints
+  -- after OBJ priority 1, and the probe's plane-4 record falls outside
+  -- the second mask, so no pair blends at the sprite point and it
+  -- retires the raw front red at every tick. That steady red also proves
+  -- no separate raw sprite overlay paints over the composition.
   local or_, og, ob = sampleAt(320, 48)
-  Assert.near(or_, 0, 0.1, "the unselected under plane leaves the sprite raw at the opening tick")
-  Assert.near(og, 1, 0.06, "the sprite keeps full green at the opening tick")
-  Assert.near(ob, 1, 0.06, "the sprite keeps full blue at the opening tick")
+  Assert.near(or_, 1, 0.06, "the covered probe shows the raw front red at the opening tick")
+  Assert.near(og, 0, 0.06, "no mid green survives under the covering front at the opening tick")
+  Assert.near(ob, 0, 0.06, "no probe blue survives under the covering front at the opening tick")
   local br, bg, bb = sampleAt(320, 144)
   Assert.near(bg, 1, 0.06, "the blend pair shows its raw green under pixel at the opening tick")
   Assert.near(br, 0, 0.06, "no top red covers at the opening tick")
@@ -2794,9 +2803,9 @@ local function synthetic_dual_coefficients_saturate_both_weights_per_pixel(scope
   Assert.near(lg, 1, 0.06, "the masked region stays raw middle through the blend")
   Assert.near(lr, 0, 0.06, "the masked top never blends where its window hides it")
   or_, og, ob = sampleAt(320, 48)
-  Assert.isTrue(or_ < 0.04, "the unselected under plane never tints the sprite")
-  Assert.near(og, 1, 0.06, "the sprite keeps full green at fifteen steps")
-  Assert.near(ob, 1, 0.06, "the sprite keeps full blue at fifteen steps")
+  Assert.near(or_, 1, 0.06, "the covered probe shows the raw front red at fifteen steps")
+  Assert.near(og, 0, 0.06, "no mid green survives under the covering front at fifteen steps")
+  Assert.near(ob, 0, 0.06, "no probe blue survives under the covering front at fifteen steps")
   br, bg, bb = sampleAt(320, 144)
   Assert.near(br, 29 / 31, 0.08, "the top keeps its red share at fifteen steps")
   Assert.near(bg, 1, 0.06, "the under keeps its full green share at fifteen steps")
@@ -2804,18 +2813,18 @@ local function synthetic_dual_coefficients_saturate_both_weights_per_pixel(scope
   -- Sixteen steps saturates the first side: raw (16, 15).
   advance(movie, 1)
   or_, og, ob = sampleAt(320, 48)
-  Assert.isTrue(or_ < 0.04, "the sprite stays untinted at sixteen steps")
-  Assert.near(og, 1, 0.06, "the sprite keeps full green at sixteen steps")
-  Assert.near(ob, 1, 0.06, "the sprite keeps full blue at sixteen steps")
+  Assert.near(or_, 1, 0.06, "the covered probe shows the raw front red at sixteen steps")
+  Assert.near(og, 0, 0.06, "no mid green survives under the covering front at sixteen steps")
+  Assert.near(ob, 0, 0.06, "no probe blue survives under the covering front at sixteen steps")
   br, bg, bb = sampleAt(320, 144)
   Assert.near(br, 1, 0.06, "the saturated first side keeps full red at sixteen steps")
   Assert.near(bg, 29 / 31, 0.08, "the under keeps its green share at sixteen steps")
   -- The final step retires to the raw top pixel on both pairs.
   advance(movie, 15)
   or_, og, ob = sampleAt(320, 48)
-  Assert.isTrue(or_ < 0.04, "the sprite stays untinted at the final tick")
-  Assert.near(og, 1, 0.06, "the sprite keeps full green at the final tick")
-  Assert.near(ob, 1, 0.06, "the sprite keeps full blue at the final tick")
+  Assert.near(or_, 1, 0.06, "the covered probe shows the raw front red at the final tick")
+  Assert.near(og, 0, 0.06, "no mid green survives under the covering front at the final tick")
+  Assert.near(ob, 0, 0.06, "no probe blue survives under the covering front at the final tick")
   br, bg, bb = sampleAt(320, 144)
   Assert.near(br, 1, 0.06, "the blend retires to the raw top red")
   Assert.near(bg, 0, 0.06, "no under green survives the final tick")
@@ -2934,10 +2943,7 @@ local function soulsilver_town_stays_on_main_and_stops_at_the_rival_beat(scope, 
   end
   local beatBytes = drawBytes(movie, scope, 512, 384)
   Assert.isTrue(paneLitCells(beatBytes, 0) > 3000, "the town beat lights the main-mapped upper pane")
-  Assert.isTrue(
-    lowerLitCells(beatBytes) < 50,
-    "the town beat holds the lower screen black before its reveal"
-  )
+  Assert.isTrue(lowerLitCells(beatBytes) < 50, "the town beat holds the lower screen black before its reveal")
   Assert.equal(movie.current.activeTown, "new-bark-town", "the town beat selects its stage")
   advance(movie, 5)
   local laterBytes = drawBytes(movie, scope, 512, 384)
@@ -3151,10 +3157,7 @@ local function scene4_close_retires_starters_and_holds_black_until_top_neutral(s
   movie:draw()
   local retiredMain = sourceBytes(scope, movie.mainCanvas)
   local retiredSub = sourceBytes(scope, movie.subCanvas)
-  Assert.isTrue(
-    regionLit(retiredMain, 256, 0, 255, 0, 191) < 0.02,
-    "the retired main target holds black into sparkle"
-  )
+  Assert.isTrue(regionLit(retiredMain, 256, 0, 255, 0, 191) < 0.02, "the retired main target holds black into sparkle")
   Assert.isTrue(
     regionLit(retiredSub, 256, 0, 255, 0, 191) < 0.02,
     "the retired sub target still holds black before the TOP reset"
@@ -3454,7 +3457,18 @@ local function single_screen_stages_show_the_authored_active_engine(scope, conte
     local mainR, mainG, mainB = pixelOf(sourceBytes(scope, single.mainCanvas), 256, 128, 96)
     local subR, subG, subB = pixelOf(sourceBytes(scope, single.subCanvas), 256, 128, 96)
     local hostR, hostG, hostB = pixelOf(hostBytes, layout.width, layout.center[1], layout.center[2])
-    assertPaneShowsEngine(hostR, hostG, hostB, mainR, mainG, mainB, subR, subG, subB, layout.name .. " town stage shows main")
+    assertPaneShowsEngine(
+      hostR,
+      hostG,
+      hostB,
+      mainR,
+      mainG,
+      mainB,
+      subR,
+      subG,
+      subB,
+      layout.name .. " town stage shows main"
+    )
   end
   advanceToSceneStep(single, 3, "panels", 20000)
   advance(single, 5)
@@ -3471,7 +3485,18 @@ local function single_screen_stages_show_the_authored_active_engine(scope, conte
     local subR, subG, subB = pixelOf(subBytes, 256, 96, 96)
     local hostPt = { layout.name == "wide" and 500 or 192, layout.name == "wide" and 300 or 192 }
     local hostR, hostG, hostB = pixelOf(hostBytes, layout.width, hostPt[1], hostPt[2])
-    assertPaneShowsEngine(hostR, hostG, hostB, subR, subG, subB, mainR, mainG, mainB, layout.name .. " rival stage shows sub")
+    assertPaneShowsEngine(
+      hostR,
+      hostG,
+      hostB,
+      subR,
+      subG,
+      subB,
+      mainR,
+      mainG,
+      mainB,
+      layout.name .. " rival stage shows sub"
+    )
   end
   single:dispose()
   local dual = openMovie(scope, versionId, 512, 384, "dual")
@@ -3501,8 +3526,30 @@ local function single_screen_stages_show_the_authored_active_engine(scope, conte
       secondMappedR, secondMappedG, secondMappedB = mainR, mainG, mainB
       secondOtherR, secondOtherG, secondOtherB = subR, subG, subB
     end
-    assertPaneShowsEngine(firstR, firstG, firstB, firstMappedR, firstMappedG, firstMappedB, firstOtherR, firstOtherG, firstOtherB, sceneLabel .. ": first pane shows its mapped engine")
-    assertPaneShowsEngine(secondR, secondG, secondB, secondMappedR, secondMappedG, secondMappedB, secondOtherR, secondOtherG, secondOtherB, sceneLabel .. ": second pane shows its mapped engine")
+    assertPaneShowsEngine(
+      firstR,
+      firstG,
+      firstB,
+      firstMappedR,
+      firstMappedG,
+      firstMappedB,
+      firstOtherR,
+      firstOtherG,
+      firstOtherB,
+      sceneLabel .. ": first pane shows its mapped engine"
+    )
+    assertPaneShowsEngine(
+      secondR,
+      secondG,
+      secondB,
+      secondMappedR,
+      secondMappedG,
+      secondMappedB,
+      secondOtherR,
+      secondOtherG,
+      secondOtherB,
+      sceneLabel .. ": second pane shows its mapped engine"
+    )
   end
   waited = 0
   while waited < 20000 and (dual:sceneNumber() ~= 3 or dual.current.activeTown == nil) do
@@ -3655,8 +3702,18 @@ end
 ---@param firstMask integer required first-target plane mask
 ---@param secondMask integer required second-target plane mask
 ---@return table? decisive sample with quantized top/under channels and plane slots
-local function sunriseDecisivePixel(scope, cacheFs, slot, engine, spriteRects, firstWeight, secondWeight,
-  minSeparation, firstMask, secondMask)
+local function sunriseDecisivePixel(
+  scope,
+  cacheFs,
+  slot,
+  engine,
+  spriteRects,
+  firstWeight,
+  secondWeight,
+  minSeparation,
+  firstMask,
+  secondMask
+)
   local stack = sunriseStack(scope, cacheFs, slot, engine)
   for y = 0, 191, 4 do
     for x = 0, 255, 4 do
@@ -3863,19 +3920,18 @@ local function sunrise_blend_uses_both_source_masks(scope, versionId)
   local mainProgram = assert(slot.blendPrograms.main, "the sunrise blends the main engine")
   local mainEv = math.min(31, math.floor(mainProgram.elapsed * 31 / mainProgram.ticks))
   Assert.equal(mainEv, 15, "the main blend sits mid-transition at forty steps")
-  local mainSample =
-    sunriseDecisivePixel(
-      scope,
-      cacheFs,
-      slot,
-      "main",
-      sunriseSpriteRects(slot, "main"),
-      16,
-      15,
-      5,
-      mainProgram.firstMask,
-      mainProgram.secondMask
-    )
+  local mainSample = sunriseDecisivePixel(
+    scope,
+    cacheFs,
+    slot,
+    "main",
+    sunriseSpriteRects(slot, "main"),
+    16,
+    15,
+    5,
+    mainProgram.firstMask,
+    mainProgram.secondMask
+  )
   Assert.notNil(mainSample, "the main stack holds a decisive mid-blend pixel")
   mainSample = assert(mainSample, "the main stack holds a decisive mid-blend pixel")
   movie:draw()
@@ -3907,7 +3963,6 @@ local function heartgold_sunrise_blend_is_blocked_without_a_dump(scope, context)
   sunrise_blend_uses_both_source_masks(scope, "heartgold")
 end
 
-
 ---@param scope table
 ---@param versionId string selected edition identity
 local function sourced_panorama_pixels_match_wrapped_source_art(scope, versionId)
@@ -3924,10 +3979,7 @@ local function sourced_panorama_pixels_match_wrapped_source_art(scope, versionId
   end
   movie:draw()
   local startMain = sourceBytes(scope, movie.mainCanvas)
-  Assert.isTrue(
-    regionLit(startMain, 256, 0, 255, 0, 191) > 0.2,
-    "the scroll beat lights the main source target"
-  )
+  Assert.isTrue(regionLit(startMain, 256, 0, 255, 0, 191) > 0.2, "the scroll beat lights the main source target")
   -- The sourced panorama pans every voiced panel across its run; sample
   -- the moved frame while the scroll programs still own the targets.
   for _ = 1, 10 do
@@ -3995,11 +4047,7 @@ local function sourced_panorama_pixels_match_wrapped_source_art(scope, versionId
   Assert.isTrue(decisive > 96, "most sampled viewport pixels rest on decisive art")
   Assert.isTrue(matched / decisive > 0.9, "viewport pixels match the wrapped source art")
   movie:draw()
-  Assert.equal(
-    sourceBytes(scope, movie.mainCanvas),
-    endMain,
-    "a repeated draw paints the identical source frame"
-  )
+  Assert.equal(sourceBytes(scope, movie.mainCanvas), endMain, "a repeated draw paints the identical source frame")
   movie:dispose()
 end
 
@@ -4620,7 +4668,10 @@ local function soulsilver_source_town_wipe_slopes_with_the_scanline(scope, conte
   end
   -- The late edge has passed column 156 on row 96, flipping that fixed
   -- pixel from cover to town while the sub target sits byte-identical.
-  Assert.isFalse(coverIsWhite(late, 156, 96), "the cover edge travels with the source tick instead of freezing mid-wipe")
+  Assert.isFalse(
+    coverIsWhite(late, 156, 96),
+    "the cover edge travels with the source tick instead of freezing mid-wipe"
+  )
   Assert.equal(earlySub, lateSub, "the town wipe never spills onto the other engine")
   movie:dispose()
 end
@@ -4645,6 +4696,12 @@ end
 ---@param clipId string staged sprite clip identity
 ---@param tick integer counted source ticks since the clip showed
 ---@return integer expected 1-based frame index
+-- Source-clocked frame probe for one-shot forward clips: the controller
+-- advances two sequence units per source tick and each draw latches the
+-- cell entered before that tick's advance, so after `ticks` updates since
+-- the clip dispatch the screen shows the cell holding `2 * (ticks - 1)`
+-- elapsed units; past the terminal cell the wait completes instead of
+-- wrapping, so the age clamps at the final frame.
 local function expectedClipFrame(manifest, clipId, tick)
   local clip = nil
   for _, candidate in ipairs(manifest.spriteClips) do
@@ -4654,12 +4711,13 @@ local function expectedClipFrame(manifest, clipId, tick)
     end
   end
   Assert.notNil(clip, "the starter clip resolves: " .. tostring(clipId))
+  Assert.equal(clip.playMode, "forward", "the probe covers a one-shot forward clip")
   local total = 0
   for _, frame in ipairs(clip.frames) do
     total = total + (frame.duration or 1)
   end
   total = math.max(total, 1)
-  local elapsed = tick % total
+  local elapsed = math.min(2 * math.max(tick - 1, 0), total - 1)
   for index, frame in ipairs(clip.frames) do
     local duration = frame.duration or 1
     if elapsed < duration then
@@ -4678,7 +4736,9 @@ local function soulsilver_source_starter_paints_its_authored_frame(scope, contex
   advance(movie, 3)
   Assert.equal(currentStepId(movie), "run-chikorita", "the first starter holds its emitter beat")
   -- The clip shows at the appear dispatch two source ticks before the run
-  -- entry, so three more ticks land on the fifth animation tick.
+  -- entry, so run entry plus three ticks is five updates since dispatch:
+  -- the draw latches the cell after four advances, eight sequence units
+  -- into the thirteen single-unit head frames.
   local manifest = scenes[4]
   local placement = nil
   for _, event in ipairs(manifest.timeline.events) do
@@ -4819,9 +4879,11 @@ local function synthetic_wipe_kinds_paint_the_source_inside_outside_masks_and_ba
       indexes[#indexes + 1] = #events + 1
       events[#events + 1] = { op = "enableSkip", stepId = "wipe-0", atStepTick = 10 }
     end
-    steps[#steps + 1] = { id = "wipe-" .. kind, events = indexes, ["until"] = { kind = "effect", effect = "wipe-" .. kind } }
+    steps[#steps + 1] =
+      { id = "wipe-" .. kind, events = indexes, ["until"] = { kind = "effect", effect = "wipe-" .. kind } }
   end
-  steps[#steps + 1] = { id = "tail", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 10 } }
+  steps[#steps + 1] =
+    { id = "tail", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 10 } }
   events[#events + 1] = { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 10 }
   events[#events + 1] = { op = "finish", stepId = "tail", atStepTick = 0 }
   local custom = compositeScene(
@@ -4852,8 +4914,26 @@ local function synthetic_wipe_kinds_paint_the_source_inside_outside_masks_and_ba
       local lr, lg, lb = pixelOf(main, 256, boundary - 16, y)
       local rr, rg, rb = pixelOf(main, 256, boundary + 16, y)
       local wantLeft, wantRight = wants[kind + 1].left, wants[kind + 1].right
-      assertSameColor(lr, lg, lb, wantLeft[1], wantLeft[2], wantLeft[3], 0.08, "kind " .. kind .. " shows its source left at row " .. y)
-      assertSameColor(rr, rg, rb, wantRight[1], wantRight[2], wantRight[3], 0.08, "kind " .. kind .. " shows its source right at row " .. y)
+      assertSameColor(
+        lr,
+        lg,
+        lb,
+        wantLeft[1],
+        wantLeft[2],
+        wantLeft[3],
+        0.08,
+        "kind " .. kind .. " shows its source left at row " .. y
+      )
+      assertSameColor(
+        rr,
+        rg,
+        rb,
+        wantRight[1],
+        wantRight[2],
+        wantRight[3],
+        0.08,
+        "kind " .. kind .. " shows its source right at row " .. y
+      )
     end
     Assert.equal(
       sourceBytes(scope, movie.subCanvas),
@@ -4896,11 +4976,14 @@ local function synthetic_terminal_wipe_brightness_holds_only_for_the_retail_kind
       indexes[#indexes + 1] = #events + 1
       events[#events + 1] = { op = "enableSkip", stepId = "wipe-1", atStepTick = 5 }
     end
-    steps[#steps + 1] = { id = "wipe-" .. kind, events = indexes, ["until"] = { kind = "effect", effect = "wipe-" .. kind } }
-    steps[#steps + 1] = { id = "check-" .. kind, events = { #events + 1 }, ["until"] = { kind = "duration", ticks = 4 } }
+    steps[#steps + 1] =
+      { id = "wipe-" .. kind, events = indexes, ["until"] = { kind = "effect", effect = "wipe-" .. kind } }
+    steps[#steps + 1] =
+      { id = "check-" .. kind, events = { #events + 1 }, ["until"] = { kind = "duration", ticks = 4 } }
     events[#events + 1] = { op = "waitTicks", stepId = "check-" .. kind, atStepTick = 0, ticks = 4 }
   end
-  steps[#steps + 1] = { id = "tail", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 5 } }
+  steps[#steps + 1] =
+    { id = "tail", events = { #events + 1, #events + 2 }, ["until"] = { kind = "duration", ticks = 5 } }
   events[#events + 1] = { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 5 }
   events[#events + 1] = { op = "finish", stepId = "tail", atStepTick = 0 }
   local custom = compositeScene(
@@ -4921,11 +5004,29 @@ local function synthetic_terminal_wipe_brightness_holds_only_for_the_retail_kind
     movie:draw()
     local want = wants[kind]
     local fr, fg, fb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
-    assertSameColor(fr, fg, fb, want[1], want[2], want[3], 0.08, "kind " .. kind .. " finishes with its own source brightness")
+    assertSameColor(
+      fr,
+      fg,
+      fb,
+      want[1],
+      want[2],
+      want[3],
+      0.08,
+      "kind " .. kind .. " finishes with its own source brightness"
+    )
     advance(movie, 2)
     movie:draw()
     local hr, hg, hb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
-    assertSameColor(hr, hg, hb, want[1], want[2], want[3], 0.08, "kind " .. kind .. " keeps its finish across the step boundary")
+    assertSameColor(
+      hr,
+      hg,
+      hb,
+      want[1],
+      want[2],
+      want[3],
+      0.08,
+      "kind " .. kind .. " keeps its finish across the step boundary"
+    )
     Assert.equal(
       sourceBytes(scope, movie.subCanvas),
       subBefore,
@@ -5018,10 +5119,7 @@ local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bot
     gridAllBlack(mainShut, 256, columns, { 8, 48, 144, 180 }),
     "the dispatched shutter still masks the outer rows"
   )
-  Assert.isTrue(
-    gridHasNonBlack(mainShut, 256, columns, { 96 }),
-    "the first dispatched step opens the center band"
-  )
+  Assert.isTrue(gridHasNonBlack(mainShut, 256, columns, { 96 }), "the first dispatched step opens the center band")
   Assert.isTrue(
     gridAllBlack(subShut, 256, columns, { 8, 48, 96, 144, 180 }),
     "the shutter starts with sub fully masked black"
@@ -5034,10 +5132,7 @@ local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bot
   Assert.isFalse(gridHasNonBlack(mainMid, 256, columns, { 8 }), "no main art leaks through the masked top edge")
   Assert.isTrue(gridHasNonBlack(mainMid, 256, columns, { 96 }), "main opens its center band first")
   Assert.isTrue(gridAllBlack(mainMid, 256, columns, { 180 }), "main still masks its bottom edge mid-shutter")
-  Assert.isTrue(
-    gridAllBlack(subMid, 256, columns, { 8, 48, 96, 144, 180 }),
-    "sub stays fully masked while main runs"
-  )
+  Assert.isTrue(gridAllBlack(subMid, 256, columns, { 8, 48, 96, 144, 180 }), "sub stays fully masked while main runs")
   local upperR, upperG, upperB = samplePixel(scope, movie, 512, 384, 256, 96)
   assertSameColor(upperR, upperG, upperB, 1, 0, 0, 0.2, "the upper pane maps the already composed main engine")
   local lowerR, lowerG, lowerB = samplePixel(scope, movie, 512, 384, 256, 288)
@@ -5047,7 +5142,10 @@ local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bot
   movie:draw()
   local mainOpen = sourceBytes(scope, movie.mainCanvas)
   local subWaiting = sourceBytes(scope, movie.subCanvas)
-  Assert.isTrue(gridHasNonBlack(mainOpen, 256, columns, { 8, 48, 96, 144, 180 }), "main is fully revealed at its finish")
+  Assert.isTrue(
+    gridHasNonBlack(mainOpen, 256, columns, { 8, 48, 96, 144, 180 }),
+    "main is fully revealed at its finish"
+  )
   Assert.equal(subWaiting, subShut, "sub still waits fully masked at the main finish")
   local slot = assert(movie.current, "the running movie owns its current slot")
   Assert.isFalse(slot.effects["scene5-shutter"].done, "the shutter wait stays pending at the main finish")
@@ -5188,19 +5286,11 @@ local function soulsilver_scene_two_sub_blackout_holds_while_main_pans(scope, co
   -- The five-tick scrolls finish while the eight-tick fade still runs:
   -- the settle must not release its next pan yet.
   advance(movie, 1)
-  Assert.equal(
-    currentStepId(movie),
-    "settle-flyin",
-    "the settle still waits while the sub fade runs past its scrolls"
-  )
+  Assert.equal(currentStepId(movie), "settle-flyin", "the settle still waits while the sub fade runs past its scrolls")
   -- Once the fade completes the next pan begins with main art showing
   -- and sub at full black.
   advance(movie, 3)
-  Assert.equal(
-    currentStepId(movie),
-    "slow-pan-ethan",
-    "the next pan begins once the sub fade completes"
-  )
+  Assert.equal(currentStepId(movie), "slow-pan-ethan", "the next pan begins once the sub fade completes")
   movie:draw()
   local doneMain = sourceBytes(scope, movie.mainCanvas)
   local doneSub = sourceBytes(scope, movie.subCanvas)
@@ -5214,14 +5304,8 @@ local function soulsilver_scene_two_sub_blackout_holds_while_main_pans(scope, co
   local holdSub = sourceBytes(scope, movie.subCanvas)
   Assert.isTrue(regionLit(holdMain, 256, 0, 255, 0, 191) > 0.2, "main keeps its hero art across its pans")
   Assert.isTrue(regionLit(holdSub, 256, 0, 255, 0, 191) < 0.05, "sub holds black across the main hero pans")
-  Assert.isTrue(
-    changeFraction(doneMain, holdMain, 256, 192) > 0.02,
-    "main pans continue while sub holds black"
-  )
-  Assert.isTrue(
-    changeFraction(doneSub, holdSub, 256, 192) < 0.01,
-    "sub stays still while it holds black"
-  )
+  Assert.isTrue(changeFraction(doneMain, holdMain, 256, 192) > 0.02, "main pans continue while sub holds black")
+  Assert.isTrue(changeFraction(doneSub, holdSub, 256, 192) < 0.01, "sub stays still while it holds black")
   movie:dispose()
 end
 
@@ -5245,10 +5329,7 @@ local function soulsilver_scene_one_sunrise_shows_static_sun_before_scroll(scope
   Assert.equal(sun.animate, false, "the sunrise beat holds the sun paused")
   Assert.equal(sun.tick, 0, "the paused sun keeps its first authored frame")
   local first = sourceBytes(scope, movie.mainCanvas)
-  Assert.isTrue(
-    regionLit(first, 256, 112, 144, 80, 112) > 0.3,
-    "the sunrise beat paints sun pixels at its station"
-  )
+  Assert.isTrue(regionLit(first, 256, 112, 144, 80, 112) > 0.3, "the sunrise beat paints sun pixels at its station")
   movie:draw()
   Assert.equal(sourceBytes(scope, movie.mainCanvas), first, "a repeated draw keeps the identical static sun")
   movie:updateFixed()
@@ -5258,10 +5339,7 @@ local function soulsilver_scene_one_sunrise_shows_static_sun_before_scroll(scope
   movie:draw()
   Assert.isTrue((sun.tick or 0) > 0, "the scroll case advances the sun clip")
   local offsets = currentScrollOffsets(movie)
-  Assert.isTrue(
-    offsets.main1 ~= 0 or offsets.main2 ~= 0,
-    "the scroll case moves its sunrise backgrounds"
-  )
+  Assert.isTrue(offsets.main1 ~= 0 or offsets.main2 ~= 0, "the scroll case moves its sunrise backgrounds")
   Assert.isTrue(
     changeFraction(first, sourceBytes(scope, movie.mainCanvas), 256, 192) > 0.05,
     "the scroll case animates the sunrise beat"
@@ -5464,7 +5542,11 @@ local function soulsilver_scene_five_shutter_runs_main_then_sub_across_layouts(s
     movie:draw()
     local slot = assert(movie.current, "the running movie owns its current slot")
     Assert.isFalse(slot.effects["scene5-shutter"].done, "the sourced shutter waits past the main finish")
-    Assert.equal(changeFraction(shutSub, sourceBytes(scope, movie.subCanvas), 256, 192), 0, "sub still waits at the main finish")
+    Assert.equal(
+      changeFraction(shutSub, sourceBytes(scope, movie.subCanvas), 256, 192),
+      0,
+      "sub still waits at the main finish"
+    )
     local handedOff = false
     for _ = 1, 36 do
       movie:updateFixed()
@@ -5788,17 +5870,15 @@ local function soulsilver_scene_five_white_fade_starts_at_scroll_tick_twenty(sco
     -- Engine targets refresh only on draw, so each tick is composed
     -- before sampling the fade progression on both engines.
     movie:draw()
-    if firstFadeMoveAt == nil
+    if
+      firstFadeMoveAt == nil
       and changeFraction(fadingMain, sourceBytes(scope, movie.mainCanvas), 256, 192) > 0.05
       and changeFraction(fadingSub, sourceBytes(scope, movie.subCanvas), 256, 192) > 0.05
     then
       firstFadeMoveAt = tick
     end
   end
-  Assert.notNil(
-    firstFadeMoveAt,
-    "the white fade visibly progresses on both engines while scrolling"
-  )
+  Assert.notNil(firstFadeMoveAt, "the white fade visibly progresses on both engines while scrolling")
   local fading = assert(movie.current, "the running movie owns its current slot")
   Assert.isFalse(fading.effects["scroll-panorama"].done, "the panorama still runs late in the white fade")
   local finished = false
@@ -5944,9 +6024,27 @@ local function wrapped_backgrounds_match_the_modulo_oracle_without_per_draw_quad
       { { id = "show", events = { 1, 2, 3, 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
         { op = "setScroll", stepId = "show", atStepTick = 0, engine = "main", bgSlot = 0, dx = -1, dy = -1, ticks = 0 },
-        { op = "setScroll", stepId = "show", atStepTick = 0, engine = "main", bgSlot = 1, dx = 255, dy = 191, ticks = 0 },
+        {
+          op = "setScroll",
+          stepId = "show",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 1,
+          dx = 255,
+          dy = 191,
+          ticks = 0,
+        },
         { op = "setScroll", stepId = "show", atStepTick = 0, engine = "sub", bgSlot = 0, dx = 0, dy = 0, ticks = 0 },
-        { op = "setScroll", stepId = "show", atStepTick = 0, engine = "sub", bgSlot = 1, dx = 100000, dy = -100001, ticks = 0 },
+        {
+          op = "setScroll",
+          stepId = "show",
+          atStepTick = 0,
+          engine = "sub",
+          bgSlot = 1,
+          dx = 100000,
+          dy = -100001,
+          ticks = 0,
+        },
         { op = "enableSkip", stepId = "show", atStepTick = 10 },
         { op = "waitTicks", stepId = "show", atStepTick = 0, ticks = 40 },
         { op = "finish", stepId = "show", atStepTick = 40 },
@@ -5995,12 +6093,14 @@ local function swapped_alternates_and_window_sliced_pans_keep_wrap_pixels_withou
   local bandsImage = root .. "layers/slice-bands.png"
   local altImage = root .. "layers/slice-alt.png"
   local groundImage = root .. "layers/slice-ground.png"
+  local probeImage = root .. "sprites/slice-probe.g4sprite"
   local gray16 = solidPng(16, 16, 128, 128, 128)
   local art = {
     [chartImage] = quadrantPng(512, { 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 }, { 255, 255, 0 }),
     [bandsImage] = halvesPng(256, 512, { 0, 255, 255 }, { 255, 255, 0 }),
     [altImage] = halvesPng(256, 192, { 255, 0, 255 }, { 0, 255, 255 }),
     [groundImage] = solidPng(256, 192, 40, 40, 40),
+    [probeImage] = solidPng(16, 16, 255, 255, 0),
   }
   local scenes, cacheFs = compositePack(
     compositeScene(
@@ -6018,11 +6118,20 @@ local function swapped_alternates_and_window_sliced_pans_keep_wrap_pixels_withou
           initialVisible = true,
         },
       },
-      {},
+      { compositeClip(probeImage, { compositeFrame(0, 0, 16, 16, 0, 0, 40) }) },
       { seed = 0, emitters = {} },
-      { { id = "show", events = { 1, 2, 3, 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 40 } } },
+      { { id = "show", events = { 1, 2, 3, 4, 5, 6, 7, 8, 9 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
-        { op = "setScroll", stepId = "show", atStepTick = 0, engine = "main", bgSlot = 0, dx = -512, dy = 0, ticks = 8 },
+        {
+          op = "setScroll",
+          stepId = "show",
+          atStepTick = 0,
+          engine = "main",
+          bgSlot = 0,
+          dx = -512,
+          dy = 0,
+          ticks = 8,
+        },
         {
           op = "window",
           stepId = "show",
@@ -6035,8 +6144,45 @@ local function swapped_alternates_and_window_sliced_pans_keep_wrap_pixels_withou
           outsideMask = 19,
         },
         { op = "setScroll", stepId = "show", atStepTick = 0, engine = "sub", bgSlot = 0, dx = 0, dy = 0, ticks = 0 },
-        { op = "setLayer", stepId = "show", atStepTick = 20, engine = "sub", bgSlot = 0, image = altImage, visible = true, priority = 0 },
+        {
+          op = "setLayer",
+          stepId = "show",
+          atStepTick = 20,
+          engine = "sub",
+          bgSlot = 0,
+          image = altImage,
+          visible = true,
+          priority = 0,
+        },
         { op = "enableSkip", stepId = "show", atStepTick = 10 },
+        -- The probe keeps a sprite plane on the main engine so the window
+        -- clip still slices two main-canvas regions (background plus
+        -- sprite); the shared-priority tie keeps it visible and the wrap
+        -- comparison skips its box.
+        {
+          op = "setSpriteClip",
+          stepId = "show",
+          atStepTick = 0,
+          instanceId = "probe",
+          engine = "main",
+          x = 200,
+          y = 8,
+          drawOrder = 0,
+          objPriority = 0,
+          clipId = probeImage,
+          animate = true,
+        },
+        {
+          op = "spriteVisible",
+          stepId = "show",
+          atStepTick = 0,
+          instanceId = "probe",
+          engine = "main",
+          x = 200,
+          y = 8,
+          drawOrder = 0,
+          visible = true,
+        },
         { op = "waitTicks", stepId = "show", atStepTick = 0, ticks = 40 },
         { op = "finish", stepId = "show", atStepTick = 40 },
       }
@@ -6105,8 +6251,26 @@ local function sourced_wrap_stays_bounded_without_per_draw_quads(scope, versionI
   advanceToSceneStep(movie, 2, "flyin", 20000)
   advance(movie, 5)
   movie:draw()
-  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "main", "scene 2 flyin wrap", liveEngineOffsets(movie, "main"), {})
-  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "sub", "scene 2 flyin wrap", liveEngineOffsets(movie, "sub"), {})
+  assertEngineMatchesWrappedArt(
+    scope,
+    movie,
+    cacheFs,
+    scenes[2],
+    "main",
+    "scene 2 flyin wrap",
+    liveEngineOffsets(movie, "main"),
+    {}
+  )
+  assertEngineMatchesWrappedArt(
+    scope,
+    movie,
+    cacheFs,
+    scenes[2],
+    "sub",
+    "scene 2 flyin wrap",
+    liveEngineOffsets(movie, "sub"),
+    {}
+  )
   local counter = countingQuads(scope)
   movie:draw()
   local startMain = sourceBytes(scope, movie.mainCanvas)
@@ -6122,7 +6286,16 @@ local function sourced_wrap_stays_bounded_without_per_draw_quads(scope, versionI
   end
   Assert.isTrue(sourceBytes(scope, movie.mainCanvas) ~= startMain, "the scene 2 pan still moves source pixels")
   movie:draw()
-  assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "main", "scene 2 mid-pan wrap", liveEngineOffsets(movie, "main"), {})
+  assertEngineMatchesWrappedArt(
+    scope,
+    movie,
+    cacheFs,
+    scenes[2],
+    "main",
+    "scene 2 mid-pan wrap",
+    liveEngineOffsets(movie, "main"),
+    {}
+  )
   movie:dispose()
   local lateScenes, lateCache = loadRomPackWithFillers(versionId, { 3, 4 })
   local late = openMovieWithCache(scope, lateScenes, lateCache, versionId, 512, 384, "single")
@@ -6132,8 +6305,26 @@ local function sourced_wrap_stays_bounded_without_per_draw_quads(scope, versionI
   -- fade at the twentieth scroll tick washes the comparison.
   advance(late, 18)
   late:draw()
-  assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "main", "scene 5 late wrap", liveEngineOffsets(late, "main"), {})
-  assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "sub", "scene 5 late wrap", liveEngineOffsets(late, "sub"), {})
+  assertEngineMatchesWrappedArt(
+    scope,
+    late,
+    lateCache,
+    lateScenes[5],
+    "main",
+    "scene 5 late wrap",
+    liveEngineOffsets(late, "main"),
+    {}
+  )
+  assertEngineMatchesWrappedArt(
+    scope,
+    late,
+    lateCache,
+    lateScenes[5],
+    "sub",
+    "scene 5 late wrap",
+    liveEngineOffsets(late, "sub"),
+    {}
+  )
   local lateCounter = countingQuads(scope)
   late:draw()
   local lateStart = sourceBytes(scope, late.mainCanvas)
@@ -6264,13 +6455,8 @@ local function title_legend_carries_its_retail_placement(scope, versionId)
     scene:_camera().projection(),
     Matrix4.transformPoint(scene.legend.transform, 0, 0, 0)
   )
-  local laterExpectedX, laterExpectedY = titlePixel(
-    scene:_camera().view(),
-    scene:_camera().projection(),
-    TITLE_SOURCE_X,
-    TITLE_SOURCE_Y,
-    TITLE_SOURCE_Z
-  )
+  local laterExpectedX, laterExpectedY =
+    titlePixel(scene:_camera().view(), scene:_camera().projection(), TITLE_SOURCE_X, TITLE_SOURCE_Y, TITLE_SOURCE_Z)
   Assert.near(laterX, laterExpectedX, 1e-6, "the traveling legendary still projects onto its retail point")
   Assert.near(laterY, laterExpectedY, 1e-6, "the traveling legendary still projects onto its retail line")
   scene:_drawModel()
@@ -6294,11 +6480,7 @@ local function title_sparkle_shares_the_retail_placement(scope, versionId)
     want,
     "the " .. versionId .. " sparkle inherits the same retail object translation"
   )
-  Assert.deepEqual(
-    scene.sparkle.transform,
-    scene.legend.transform,
-    "legend and sparkle share one source placement"
-  )
+  Assert.deepEqual(scene.sparkle.transform, scene.legend.transform, "legend and sparkle share one source placement")
   Assert.isTrue(scene.legend ~= scene.sparkle, "legend and sparkle stay independent instances")
   Assert.isTrue(
     scene.legend.animationState ~= scene.sparkle.animationState,
@@ -6308,11 +6490,7 @@ local function title_sparkle_shares_the_retail_placement(scope, versionId)
   for _ = 1, 10 do
     scene:updateFixed()
   end
-  Assert.deepEqual(
-    scene.sparkle.transform,
-    want,
-    "advancing the title clock never moves the sparkle placement"
-  )
+  Assert.deepEqual(scene.sparkle.transform, want, "advancing the title clock never moves the sparkle placement")
   Assert.deepEqual(scene:_camera().view(), view, "the sparkle placement never moves the sourced camera")
   Assert.deepEqual(scene:_camera().projection(), projection, "the sparkle placement never retunes the sourced lens")
   scene:dispose()
@@ -6490,19 +6668,12 @@ local function source_cases_dispatch_one_per_fixed_update(scope)
   Assert.notNil(firstWait, "the wait case is current for its own update")
   Assert.notNil(firstFlip, "the flip case is current for its own update")
   Assert.notNil(firstEntry, "the next scene entry is current for its own update")
-  Assert.isFalse(
-    firstStart.mainScroll,
-    "the successor case starts undispatched on its selection update"
-  )
+  Assert.isFalse(firstStart.mainScroll, "the successor case starts undispatched on its selection update")
   Assert.isTrue(firstWait.mainScroll, "the dispatched start case runs its scroll")
   Assert.isTrue(firstWait.subScroll, "parallel starts within one case begin on the same update")
   Assert.equal(firstFlip.mapping, "upper", "the flip case applies its mapping only on its own dispatch")
   Assert.equal(firstEntry.step, "entry", "the finishing update hands off to the next scene entry")
-  Assert.equal(
-    firstEntry.mapping,
-    "upper",
-    "the next scene entry stays undispatched on the finishing update"
-  )
+  Assert.equal(firstEntry.mapping, "upper", "the next scene entry stays undispatched on the finishing update")
   movie:dispose()
 end
 
@@ -6610,11 +6781,7 @@ local function conjunctive_effect_guard_holds_mutation_until_both_effects_finish
   for index = 1, retileAt - 1 do
     local observation = seen[index]
     if observation.aDone and not observation.bDone then
-      Assert.equal(
-        observation.image,
-        base,
-        "the retile stays absent while only the first scroll has finished"
-      )
+      Assert.equal(observation.image, base, "the retile stays absent while only the first scroll has finished")
     end
   end
   Assert.equal(retile.step, "follow", "the guarded update selects the following case")
@@ -6919,6 +7086,10 @@ local function paused_sprite_clip_holds_its_first_frame_until_started(scope)
       x = 32,
       y = 64,
       drawOrder = 1,
+      -- The stage backdrop keeps background priority 0, so the hero
+      -- takes OBJ priority 0 and wins the shared-priority tie while
+      -- paused and after its start.
+      objPriority = 0,
       clipId = clipId,
       animate = false,
     },
@@ -6943,6 +7114,7 @@ local function paused_sprite_clip_holds_its_first_frame_until_started(scope)
       x = 32,
       y = 64,
       drawOrder = 1,
+      objPriority = 0,
       clipId = clipId,
       animate = true,
     },
@@ -6966,20 +7138,12 @@ local function paused_sprite_clip_holds_its_first_frame_until_started(scope)
     clipRows[#clipRows + 1] = firstHalf .. secondHalf
   end
   local scenes, cacheFs = compositePack(
-    compositeScene(
-      1,
-      { compositeLayer(0, stageImage, 256, 192) },
-      { compositeLayer(0, pitImage, 256, 192) },
-      {
-        compositeClip(clipId, {
-          compositeFrame(0, 0, 16, 16, 0, 0, 2),
-          compositeFrame(16, 0, 16, 16, 0, 0, 2),
-        }),
-      },
-      { seed = 0, emitters = {} },
-      steps,
-      events
-    ),
+    compositeScene(1, { compositeLayer(0, stageImage, 256, 192) }, { compositeLayer(0, pitImage, 256, 192) }, {
+      compositeClip(clipId, {
+        compositeFrame(0, 0, 16, 16, 0, 0, 2),
+        compositeFrame(16, 0, 16, 16, 0, 0, 2),
+      }),
+    }, { seed = 0, emitters = {} }, steps, events),
     {
       [stageImage] = solidPng(256, 192, 255, 0, 255),
       [pitImage] = solidPng(256, 192, 0, 255, 0),
@@ -7139,10 +7303,7 @@ local function beast_exits_guard_the_rocket_retile_at_the_absolute_origin(scope,
     -- The guard-satisfied update already carries the hide while naming
     -- the old case as its source, so only pending updates prove staging.
     if observation.before == "entei-exit" and observation.step == "entei-exit" then
-      Assert.isTrue(
-        observation.panels[1].visible,
-        "entei stays staged while its exit slide runs"
-      )
+      Assert.isTrue(observation.panels[1].visible, "entei stays staged while its exit slide runs")
       Assert.equal(
         observation.panels[1].image,
         entryPanels[1].image,
@@ -7317,16 +7478,8 @@ function EntryHolds.assertPhysicalEntry(slot, sceneNumber, mainPhysical, upper, 
     type(slot.physicalBrightness) == "table",
     "scene " .. sceneNumber .. " stages its physical holds before its first tick"
   )
-  Assert.equal(
-    slot.physicalBrightness.upper,
-    upper,
-    "scene " .. sceneNumber .. " holds physical upper " .. upper
-  )
-  Assert.equal(
-    slot.physicalBrightness.lower,
-    lower,
-    "scene " .. sceneNumber .. " holds physical lower " .. lower
-  )
+  Assert.equal(slot.physicalBrightness.upper, upper, "scene " .. sceneNumber .. " holds physical upper " .. upper)
+  Assert.equal(slot.physicalBrightness.lower, lower, "scene " .. sceneNumber .. " holds physical lower " .. lower)
 end
 
 ---@param raw table[] five scene manifests in retail order
@@ -7401,22 +7554,18 @@ function EntryHolds.entry_mapping_and_physical_holds_cover_the_handoff_before_th
   local secondMain = sceneArtRoot(2) .. "layers/hold-main.png"
   local secondSub = sceneArtRoot(2) .. "layers/hold-sub.png"
   local gray16 = solidPng(16, 16, 128, 128, 128)
-  local scenes, cacheFs = EntryHolds.packFive(
-    {
-      EntryHolds.entryHoldScene(1, firstMain, firstSub, "lower", "neutral", "neutral"),
-      EntryHolds.entryHoldScene(2, secondMain, secondSub, "upper", "white", "white"),
-      fillerScene(3),
-      fillerScene(4),
-      fillerScene(5),
-    },
-    {
-      [firstMain] = solidPng(256, 192, 255, 0, 0),
-      [firstSub] = solidPng(256, 192, 0, 255, 0),
-      [secondMain] = solidPng(256, 192, 255, 0, 0),
-      [secondSub] = solidPng(256, 192, 0, 0, 255),
-    },
-    gray16
-  )
+  local scenes, cacheFs = EntryHolds.packFive({
+    EntryHolds.entryHoldScene(1, firstMain, firstSub, "lower", "neutral", "neutral"),
+    EntryHolds.entryHoldScene(2, secondMain, secondSub, "upper", "white", "white"),
+    fillerScene(3),
+    fillerScene(4),
+    fillerScene(5),
+  }, {
+    [firstMain] = solidPng(256, 192, 255, 0, 0),
+    [firstSub] = solidPng(256, 192, 0, 255, 0),
+    [secondMain] = solidPng(256, 192, 255, 0, 0),
+    [secondSub] = solidPng(256, 192, 0, 0, 255),
+  }, gray16)
   local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
   local first = assert(movie.current, "the running movie owns its current slot")
   EntryHolds.assertPhysicalEntry(first, 1, "lower", "neutral", "neutral")
@@ -7474,6 +7623,7 @@ function EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_
         x = 120,
         y = 80,
         drawOrder = 1,
+        objPriority = 1,
         clipId = clipId,
         animate = true,
       },
@@ -7517,20 +7667,10 @@ function EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_
   -- The entry tick stages the rival; the black bottom hold still covers it.
   movie:updateFixed()
   local staged = assert(movie.current, "the running movie owns its current slot")
-  local silver = assert(
-    staged.spriteInstances["silver-silhouette"],
-    "the entry tick stages the rival instance"
-  )
+  local silver = assert(staged.spriteInstances["silver-silhouette"], "the entry tick stages the rival instance")
   Assert.isTrue(silver.visible, "the rival stays staged while hidden")
-  Assert.isTrue(
-    type(staged.physicalBrightness) == "table",
-    "the entry keeps its staged physical holds"
-  )
-  Assert.equal(
-    staged.physicalBrightness.lower,
-    "black",
-    "the staged rival does not lift the bottom hold"
-  )
+  Assert.isTrue(type(staged.physicalBrightness) == "table", "the entry keeps its staged physical holds")
+  Assert.equal(staged.physicalBrightness.lower, "black", "the staged rival does not lift the bottom hold")
   movie:draw()
   local hidden = drawBytes(movie, scope, 512, 384)
   local hiddenR, hiddenG, hiddenB = pixelOf(hidden, 512, 256, 288)
@@ -7539,24 +7679,14 @@ function EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_
   advanceToSceneStep(movie, 3, "reveal", 20000)
   advance(movie, 1)
   local released = assert(movie.current, "the running movie owns its current slot")
-  Assert.isTrue(
-    type(released.physicalBrightness) == "table",
-    "the reveal keeps its staged physical holds"
-  )
-  Assert.equal(
-    released.physicalBrightness.lower,
-    "neutral",
-    "the bottom wipe releases the bottom hold"
-  )
+  Assert.isTrue(type(released.physicalBrightness) == "table", "the reveal keeps its staged physical holds")
+  Assert.equal(released.physicalBrightness.lower, "neutral", "the bottom wipe releases the bottom hold")
   advanceToSceneStep(movie, 3, "tail", 20000)
   advance(movie, 1)
   Assert.equal(movie:sceneNumber(), 3, "the tail still plays the third scene after one tick")
   movie:draw()
   local revealed = drawBytes(movie, scope, 512, 384)
-  Assert.isTrue(
-    regionLit(revealed, 512, 0, 511, 200, 375) > 0.5,
-    "the revealed lower pane shows its staged art"
-  )
+  Assert.isTrue(regionLit(revealed, 512, 0, 511, 200, 375) > 0.5, "the revealed lower pane shows its staged art")
   movie:dispose()
 end
 
@@ -7606,20 +7736,9 @@ function EntryHolds.physical_holds_stay_pinned_across_mapping_flips_and_neutral_
   advance(movie, 1)
   local flipped = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(flipped.mainPhysical, "lower", "the authored flip moves the main engine")
-  Assert.isTrue(
-    type(flipped.physicalBrightness) == "table",
-    "the flip keeps the staged physical holds"
-  )
-  Assert.equal(
-    flipped.physicalBrightness.upper,
-    "white",
-    "the flip leaves the upper hold on the upper screen"
-  )
-  Assert.equal(
-    flipped.physicalBrightness.lower,
-    "black",
-    "the flip leaves the lower hold on the lower screen"
-  )
+  Assert.isTrue(type(flipped.physicalBrightness) == "table", "the flip keeps the staged physical holds")
+  Assert.equal(flipped.physicalBrightness.upper, "white", "the flip leaves the upper hold on the upper screen")
+  Assert.equal(flipped.physicalBrightness.lower, "black", "the flip leaves the lower hold on the lower screen")
   movie:draw()
   local held = drawBytes(movie, scope, 512, 384)
   local heldUpperR, heldUpperG, heldUpperB = pixelOf(held, 512, 256, 96)
@@ -7629,10 +7748,7 @@ function EntryHolds.physical_holds_stay_pinned_across_mapping_flips_and_neutral_
   advanceToSceneStep(movie, 1, "reset", 20000)
   advance(movie, 1)
   local reset = assert(movie.current, "the running movie owns its current slot")
-  Assert.isTrue(
-    type(reset.physicalBrightness) == "table",
-    "the reset keeps the staged physical holds"
-  )
+  Assert.isTrue(type(reset.physicalBrightness) == "table", "the reset keeps the staged physical holds")
   Assert.equal(reset.physicalBrightness.upper, "neutral", "the authored reset clears only the upper hold")
   Assert.equal(reset.physicalBrightness.lower, "black", "the authored reset keeps the lower hold")
   movie:draw()
@@ -7661,19 +7777,13 @@ function EntryHolds.scene_two_to_three_handoff_holds_black_bottom_for_edition(sc
   local slot = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(slot.stepElapsed, 0, "the incoming scene has not run its first tick")
   Assert.equal(slot.mainPhysical, "upper", "scene 3 maps main to physical upper")
-  Assert.isTrue(
-    type(slot.physicalBrightness) == "table",
-    "scene 3 stages its physical holds before its first tick"
-  )
+  Assert.isTrue(type(slot.physicalBrightness) == "table", "scene 3 stages its physical holds before its first tick")
   Assert.equal(slot.physicalBrightness.upper, "white", "scene 3 holds physical upper white")
   Assert.equal(slot.physicalBrightness.lower, "black", "scene 3 holds physical lower black")
   movie:draw()
   local host = drawBytes(movie, scope, 512, 384)
   Assert.near(regionLit(host, 512, 0, 511, 200, 375), 0, 0.01, "the lower pane stays black before the first tick")
-  Assert.isTrue(
-    regionLit(host, 512, 0, 511, 8, 183) > 0.9,
-    "the upper pane already holds white before the first tick"
-  )
+  Assert.isTrue(regionLit(host, 512, 0, 511, 8, 183) > 0.9, "the upper pane already holds white before the first tick")
   movie:dispose()
 end
 
@@ -7692,8 +7802,153 @@ function EntryHolds.heartgold_scene_two_to_three_handoff_is_blocked_without_a_du
   EntryHolds.scene_two_to_three_handoff_holds_black_bottom_for_edition(scope, "heartgold")
 end
 
+-- Foreground-background occlusion is a hardware plane order, not a sprite
+-- overlay pass: the solid path paints planes back-to-front while the blend
+-- path feeds every plane through the same compositor with OBJ identity 4.
+-- One scene runs under both programs; only the plane order changes what the
+-- decisive pixels show.
+---@param withBlend boolean true adds an active alpha program around the same planes
+---@return table custom scene manifest, table<string, string> staged art by generated path
+local OcclusionCases = {}
+
+---@param withBlend boolean true adds an active alpha program around the same planes
+function OcclusionCases.scene(withBlend)
+  local root = sceneArtRoot(2)
+  local backImage = root .. "layers/occlusion-back.png"
+  local frontImage = root .. "layers/occlusion-front.png"
+  local groundImage = root .. "layers/occlusion-ground.png"
+  local midClip = root .. "sprites/occlusion-mid.g4sprite"
+  local tieClip = root .. "sprites/occlusion-tie.g4sprite"
+  local art = {
+    [backImage] = solidPng(256, 192, 0, 0, 255),
+    [frontImage] = solidPng(256, 192, 255, 0, 0),
+    [groundImage] = solidPng(256, 192, 128, 128, 128),
+    [midClip] = solidPng(64, 64, 0, 255, 0),
+    [tieClip] = solidPng(64, 64, 255, 255, 0),
+  }
+  local events = {}
+  if withBlend then
+    -- The second mask names an undrawn background slot, so no pair blends:
+    -- every decisive pixel keeps its winning plane color exactly.
+    events[#events + 1] = {
+      op = "setBlend",
+      stepId = "hold",
+      atStepTick = 0,
+      engine = "main",
+      firstMask = 17,
+      secondMask = 4,
+      direction = 0,
+      effect = "occlusion-blend",
+      ticks = 40,
+    }
+  end
+  events[#events + 1] = {
+    op = "setSpriteClip",
+    stepId = "hold",
+    atStepTick = 0,
+    instanceId = "mid",
+    engine = "main",
+    x = 96,
+    y = 64,
+    drawOrder = 0,
+    objPriority = 1,
+    clipId = midClip,
+    animate = true,
+  }
+  events[#events + 1] = {
+    op = "spriteVisible",
+    stepId = "hold",
+    atStepTick = 0,
+    instanceId = "mid",
+    engine = "main",
+    x = 96,
+    y = 64,
+    drawOrder = 0,
+    visible = true,
+  }
+  events[#events + 1] = {
+    op = "setSpriteClip",
+    stepId = "hold",
+    atStepTick = 0,
+    instanceId = "tie",
+    engine = "main",
+    x = 180,
+    y = 64,
+    drawOrder = 1,
+    objPriority = 0,
+    clipId = tieClip,
+    animate = true,
+  }
+  events[#events + 1] = {
+    op = "spriteVisible",
+    stepId = "hold",
+    atStepTick = 0,
+    instanceId = "tie",
+    engine = "main",
+    x = 180,
+    y = 64,
+    drawOrder = 1,
+    visible = true,
+  }
+  events[#events + 1] = { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 40 }
+  events[#events + 1] = { op = "finish", stepId = "hold", atStepTick = 40 }
+  local owned = {}
+  for index = 1, #events do
+    owned[#owned + 1] = index
+  end
+  local custom = compositeScene(
+    2,
+    {
+      compositeLayer(1, backImage, 256, 192),
+      compositeLayer(0, frontImage, 256, 192),
+    },
+    { compositeLayer(0, groundImage, 256, 192) },
+    {
+      compositeClip(midClip, { compositeFrame(0, 0, 64, 64, 0, 0, 1) }),
+      compositeClip(tieClip, { compositeFrame(0, 0, 64, 64, 0, 0, 1) }),
+    },
+    { seed = 0, emitters = {} },
+    { { id = "hold", events = owned, ["until"] = { kind = "duration", ticks = 40 } } },
+    events
+  )
+  return custom, art
+end
+
+---@param scope table graphics smoke scope
+---@param withBlend boolean true runs the same planes through the alpha compositor
+---@param scope table graphics smoke scope
+---@param withBlend boolean true runs the same planes through the alpha compositor
+function OcclusionCases.sample(scope, withBlend)
+  local custom, art = OcclusionCases.scene(withBlend)
+  local scenes, cacheFs = compositePackAt(custom, 2, art, solidPng(16, 16, 128, 128, 128))
+  local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "single")
+  advance(movie, 10)
+  advance(movie, 3)
+  -- Source (128, 96) sits inside the lower-priority sprite under the
+  -- foreground background; source (212, 96) inside the tied sprite;
+  -- source (32, 160) on bare foreground background.
+  local r1, g1, b1 = samplePixel(scope, movie, 512, 384, 256, 192)
+  Assert.isTrue(
+    r1 > 0.9 and g1 < 0.1 and b1 < 0.1,
+    "the foreground background hides the lower-priority sprite it covers"
+  )
+  local r2, g2, b2 = samplePixel(scope, movie, 512, 384, 424, 192)
+  Assert.isTrue(r2 > 0.9 and g2 > 0.9 and b2 < 0.1, "the tied sprite draws over its same-priority background")
+  local r3, g3, b3 = samplePixel(scope, movie, 512, 384, 64, 320)
+  Assert.isTrue(r3 > 0.9 and g3 < 0.1 and b3 < 0.1, "the bare foreground background keeps its color")
+end
+
+local function solid_priority_occlusion_orders_planes_without_blending(scope)
+  OcclusionCases.sample(scope, false)
+end
+
+local function blend_priority_occlusion_orders_planes_through_the_compositor(scope)
+  OcclusionCases.sample(scope, true)
+end
+
 local T = GraphicsSmoke.suite({
-  ["starter groups replay bounded deterministic curves"] = starter_groups_replay_bounded_deterministic_curves,  ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
+  ["starter groups replay bounded deterministic curves"] = starter_groups_replay_bounded_deterministic_curves,
+  ["soulsilver movie plays five scenes with fixed timing"] = soulsilver_movie_plays_five_scenes_with_fixed_timing_under_variable_draw_rates,
   ["soulsilver towns and starter particles move"] = soulsilver_town_segments_and_starter_particles_move,
   ["soulsilver skip is gated and gpu stays bounded"] = soulsilver_skip_is_source_gated_and_gpu_stays_bounded,
   ["heartgold graphics are blocked without a dump"] = heartgold_opening_movie_graphics_are_blocked_without_a_dump,
@@ -7729,6 +7984,8 @@ local T = GraphicsSmoke.suite({
   ["sourced panorama pixels match wrapped source art"] = sourced_panorama_for_edition,
   ["heartgold panorama wrap is blocked without a dump"] = heartgold_panorama_wrap_is_blocked_without_a_dump,
   ["synthetic color overlap proves bg ordering"] = synthetic_color_overlap_proves_bg_ordering,
+  ["foreground background occludes lower priority sprites in the solid path"] = solid_priority_occlusion_orders_planes_without_blending,
+  ["foreground background occludes lower priority sprites in the blend path"] = blend_priority_occlusion_orders_planes_through_the_compositor,
   ["synthetic window masks isolate engine planes"] = synthetic_window_masks_isolate_engine_planes,
   ["synthetic dual coefficients saturate both weights per pixel"] = synthetic_dual_coefficients_saturate_both_weights_per_pixel,
   ["synthetic masked pairs use raw under pixels without cascading"] = synthetic_masked_pairs_use_raw_under_pixels_without_cascading,

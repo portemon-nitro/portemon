@@ -225,7 +225,9 @@ end
 -- IntroMovie_Scene3_CreateSprites); scene 4 holds hand1 at (128, 352)
 -- with hand2, sparkles, and all three starters at (128, 96)
 -- (src/intro_movie_scene_4.c IntroMovie_Scene4_CreateSprites); scene 5
--- creates no sprites. Engine follows the creation VRAM type
+-- creates no sprites. Each station also carries the source sprite header
+-- priority from the same creation calls: scene 2 heroes 1, every other
+-- instance 0. Engine follows the creation VRAM type
 -- (2DMAIN main, 2DSUB sub); flowers carry one instance per engine
 -- because their character data loads as 2DBOTH, the scene enables
 -- sprite pixels on both engines, and the renderer draws every sprite to
@@ -239,8 +241,8 @@ function OpeningMovieSceneSources.spriteInstances(sceneNumber)
   checkScene(sceneNumber)
   if sceneNumber == 1 then
     return {
-      { id = "sun", sprite = "sun", engine = "main", x = 128, y = 96, drawOrder = 1 },
-      { id = "bird", sprite = "bird", engine = "main", x = 128, y = 96, drawOrder = 2 },
+      { id = "sun", sprite = "sun", engine = "main", x = 128, y = 96, drawOrder = 1, objPriority = 0 },
+      { id = "bird", sprite = "bird", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
     }
   elseif sceneNumber == 2 then
     local instances = {}
@@ -252,6 +254,7 @@ function OpeningMovieSceneSources.spriteInstances(sceneNumber)
         x = 128,
         y = 192,
         drawOrder = flower,
+        objPriority = 0,
       }
       instances[#instances + 1] = {
         id = "flower" .. flower .. "-sub",
@@ -260,6 +263,7 @@ function OpeningMovieSceneSources.spriteInstances(sceneNumber)
         x = 128,
         y = 192,
         drawOrder = flower,
+        objPriority = 0,
       }
     end
     for hero = 0, 2 do
@@ -270,6 +274,7 @@ function OpeningMovieSceneSources.spriteInstances(sceneNumber)
         x = 64,
         y = -96,
         drawOrder = 11 + hero,
+        objPriority = 1,
       }
       instances[#instances + 1] = {
         id = "lyra" .. hero,
@@ -278,25 +283,34 @@ function OpeningMovieSceneSources.spriteInstances(sceneNumber)
         x = 320,
         y = -96,
         drawOrder = 14 + hero,
+        objPriority = 1,
       }
     end
     return instances
   elseif sceneNumber == 3 then
     return {
-      { id = "eusine", sprite = "eusine", engine = "sub", x = 32, y = 608, drawOrder = 1 },
-      { id = "unown0", sprite = "unown0", engine = "sub", x = 128, y = 544, drawOrder = 2 },
-      { id = "unown1", sprite = "unown1", engine = "sub", x = 128, y = 672, drawOrder = 3 },
-      { id = "unown2", sprite = "unown2", engine = "sub", x = 128, y = 608, drawOrder = 4 },
-      { id = "silver-silhouette", sprite = "silver-silhouette", engine = "sub", x = 128, y = 608, drawOrder = 5 },
+      { id = "eusine", sprite = "eusine", engine = "sub", x = 32, y = 608, drawOrder = 1, objPriority = 0 },
+      { id = "unown0", sprite = "unown0", engine = "sub", x = 128, y = 544, drawOrder = 2, objPriority = 0 },
+      { id = "unown1", sprite = "unown1", engine = "sub", x = 128, y = 672, drawOrder = 3, objPriority = 0 },
+      { id = "unown2", sprite = "unown2", engine = "sub", x = 128, y = 608, drawOrder = 4, objPriority = 0 },
+      {
+        id = "silver-silhouette",
+        sprite = "silver-silhouette",
+        engine = "sub",
+        x = 128,
+        y = 608,
+        drawOrder = 5,
+        objPriority = 0,
+      },
     }
   elseif sceneNumber == 4 then
     return {
-      { id = "hand1", sprite = "hand1", engine = "sub", x = 128, y = 352, drawOrder = 1 },
-      { id = "hand2", sprite = "hand2", engine = "main", x = 128, y = 96, drawOrder = 1 },
-      { id = "chikorita", sprite = "chikorita", engine = "main", x = 128, y = 96, drawOrder = 2 },
-      { id = "cyndaquil", sprite = "cyndaquil", engine = "main", x = 128, y = 96, drawOrder = 2 },
-      { id = "totodile", sprite = "totodile", engine = "main", x = 128, y = 96, drawOrder = 2 },
-      { id = "sparkles", sprite = "sparkles", engine = "main", x = 128, y = 96, drawOrder = 3 },
+      { id = "hand1", sprite = "hand1", engine = "sub", x = 128, y = 352, drawOrder = 1, objPriority = 0 },
+      { id = "hand2", sprite = "hand2", engine = "main", x = 128, y = 96, drawOrder = 1, objPriority = 0 },
+      { id = "chikorita", sprite = "chikorita", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
+      { id = "cyndaquil", sprite = "cyndaquil", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
+      { id = "totodile", sprite = "totodile", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
+      { id = "sparkles", sprite = "sparkles", engine = "main", x = 128, y = 96, drawOrder = 3, objPriority = 0 },
     }
   end
   return {}
