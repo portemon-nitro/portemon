@@ -1507,4 +1507,18 @@ function T.facade_effects_replace_canonical_handles_and_fades_do_not_touch_direc
   end
 end
 
+-- The music start reports the underlying voice admission while keeping its
+-- semantic identity: a rejected voice returns false yet still tracks the
+-- requested reference for field and radio callers.
+function T.music_start_reports_voice_admission_without_losing_semantic_identity()
+  local sound = newGameSound(rejectedBgmSequences(), { maxSequences = { [1] = 1 } })
+  sound:playMusic("SEQ_TEST_BGM")
+  local accepted = sound:playMusic("SEQ_TEST_BGM_B")
+  Assert.isFalse(accepted, "a rejected underlying voice must not report success")
+  Assert.equal(sound:currentMusic(), 4, "the semantic reference still tracks the request")
+  local readmitted = sound:playMusic("SEQ_TEST_BGM")
+  Assert.isTrue(readmitted, "an accepted voice reports success")
+  Assert.equal(sound:currentMusic(), 0, "the semantic reference follows the accepted request")
+end
+
 return { tests = T }

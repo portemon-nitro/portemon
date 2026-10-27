@@ -401,16 +401,16 @@ end
 -- after the admission attempt even when no instance is attached; allocation
 -- and semantic current-music bookkeeping are separate state domains.
 ---@param idOrSymbol integer|string
----@return boolean started true once the battle-music voice starts
+---@return boolean started true once the BGM voice starts
 function GameSound:playMusic(idOrSymbol)
   self._queuedMusicReplacement = nil
   -- Resolve once: the radio guard reads the incoming identity from the
   -- same record the start path plays, instead of resolving twice.
   local sequence = self._provider:sequence(idOrSymbol)
   self:_stopRadioForBgm(sequence.id)
-  self:_startResolvedSequence(sequence)
+  local accepted = self:_startResolvedSequence(sequence)
   self._currentMusic = sequence.id
-  return true
+  return accepted
 end
 
 -- Stops the current BGM, drops the reference, and cancels its fade (a

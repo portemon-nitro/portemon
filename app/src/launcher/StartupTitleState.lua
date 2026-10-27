@@ -429,6 +429,17 @@ function StartupTitleState:_confirmSoundtrackStart()
   return true
 end
 
+-- Records host-output loss during the active movie. Only the current movie
+-- adopts the diagnostic and stops ticking with its existing error display;
+-- title, menu, and other phases ignore the signal.
+function StartupTitleState:openingAudioFailed(reason)
+  if self.phase ~= "movie" or self.movie == nil then
+    return
+  end
+  self.audioError = reason or "startup audio unavailable"
+  self.phase = "error"
+end
+
 -- Retires the finished or skipped movie exactly once. An independently
 -- ready title follows; otherwise the retained loader stays visible rather
 -- than a black interstitial.
@@ -722,6 +733,9 @@ end
 
 function StartupTitleState:_tick()
   if self.phase == "movie" then
+    if self.audioError ~= nil then
+      return
+    end
     local movie = self.movie
     if movie == nil then
       self.phase = "loading"
@@ -801,18 +815,18 @@ function StartupTitleState:_status()
       detail = "Press Esc to return",
     }
   end
+  if self.audioError ~= nil and self.movie ~= nil and not self.movieCompleted then
+    return {
+      label = "Movie unavailable",
+      error = tostring(self.audioError),
+      detail = "Press Esc to return",
+    }
+  end
   if self.titleError ~= nil or self.phase == "error" then
     local detail = self.titleError or self.menuError or self.bootstrapError
     return {
       label = "Title unavailable",
       error = tostring(detail),
-      detail = "Press Esc to return",
-    }
-  end
-  if self.audioError ~= nil and self.movie ~= nil and not self.movieCompleted then
-    return {
-      label = "Movie unavailable",
-      error = tostring(self.audioError),
       detail = "Press Esc to return",
     }
   end

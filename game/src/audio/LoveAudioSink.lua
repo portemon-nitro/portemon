@@ -23,6 +23,7 @@
 ---@field private _started boolean
 ---@field private _underrunCount integer
 ---@field private _released boolean
+---@field private _queuedCurrentTrack integer successfully queued current-track buffers
 local LoveAudioSink = {}
 LoveAudioSink.__index = LoveAudioSink
 
@@ -60,6 +61,7 @@ function LoveAudioSink.new(opts)
     _started = false,
     _underrunCount = 0,
     _released = false,
+    _queuedCurrentTrack = 0,
   }, LoveAudioSink)
 end
 
@@ -75,10 +77,14 @@ end
 -- the chunk was rejected while the source itself stayed healthy, so the next
 -- update retries with the same source. Construction-time failures (the
 -- free-buffer query, buffer build, or start step) release a source that this
--- update acquired, exactly once.
+-- update acquired, exactly once. Reports primed output: true only when the
+-- current track owns at least one successfully submitted buffer and the host
+-- source confirms playback after play; an explicit play false is rejection
+-- even when a fake later reports playing. A released sink reports no priming.
+---@return boolean primed
 function LoveAudioSink:update()
   if self._released then
-    return
+    return false
   end
   local source = self._source
   local acquiredSource = source == nil
@@ -92,6 +98,7 @@ function LoveAudioSink:update()
   local chunk
   local queueStep = false
   local publishedToAcquiredSource = false
+  local playRejected = false
   local ok, err = pcall(function()
     local free = live:getFreeBufferCount()
     for _ = 1, free do
@@ -128,6 +135,7 @@ function LoveAudioSink:update()
       end
       queueStep = false
       publishedToAcquiredSource = true
+      self._queuedCurrentTrack = self._queuedCurrentTrack + 1
       self._pendingPcm = nil
       local queuedChunk = chunk
       chunk = nil
@@ -137,8 +145,12 @@ function LoveAudioSink:update()
       if self._started then
         self._underrunCount = self._underrunCount + 1
       end
-      live:play()
-      self._started = true
+      local playResult = live:play()
+      if playResult == false then
+        playRejected = true
+      else
+        self._started = true
+      end
     end
   end)
   if not ok then
@@ -155,6 +167,27 @@ function LoveAudioSink:update()
     end
     error(err, 0)
   end
+  if playRejected then
+    return false
+  end
+  if self._queuedCurrentTrack > 0 and live:isPlaying() then
+    return true
+  end
+  return false
+end
+
+-- Discards the current track queue without releasing the sink: releases the
+-- owned host source, clears pending PCM/started state and forgets prior
+-- queue evidence so a failed new queue cannot be acknowledged by old buffer
+-- occupancy. Retains the borrowed renderer and sink lifetime.
+function LoveAudioSink:resetForNewTrack()
+  if self._source ~= nil then
+    self._source:release()
+    self._source = nil
+  end
+  self._pendingPcm = nil
+  self._started = false
+  self._queuedCurrentTrack = 0
 end
 
 ---@return integer count number of unexpected stops after playback started

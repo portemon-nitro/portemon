@@ -653,4 +653,56 @@ function T.the_configured_queue_stays_within_the_latency_budget()
   )
 end
 
+-- A successfully queued and started chunk reports primed output: the host
+-- owns at least one submitted current-track buffer and the source plays.
+function T.successful_queue_and_start_reports_primed_output()
+  local host = fakeHost(1)
+  local renderer = rendererReturning(function()
+    return 0
+  end)
+  local sink = sinkFor(host, renderer)
+  local primed = sink:update()
+  Assert.isTrue(primed, "a queued and started chunk must report primed output")
+  Assert.isTrue(host.sources[1]:isPlaying(), "the host source plays after priming")
+end
+
+-- A host that refuses to start is never reported as primed, even when it
+-- later claims to play: the explicit start result decides, not a stale flag.
+function T.rejected_host_start_is_never_reported_as_primed()
+  local host = fakeHost(1)
+  local renderer = rendererReturning(function()
+    return 0
+  end)
+  local sink = sinkFor(host, renderer)
+  local source = nil
+  local originalNewSource = host.newQueueableSource
+  host.newQueueableSource = function(sampleRate, bitDepth, channels, bufferCount)
+    source = originalNewSource(sampleRate, bitDepth, channels, bufferCount)
+    function source:play()
+      self.playCalls = self.playCalls + 1
+      return false
+    end
+    return source
+  end
+  -- The fake host namespace doubles as both audio and sound namespaces, so
+  -- patch both aliases that the sink captured at construction.
+  local primed = sink:update()
+  Assert.equal(primed, false, "a refused host start must not report primed output")
+end
+
+-- Starting a new track discards prior queue evidence: a failed new queue
+-- cannot be acknowledged by old buffer occupancy.
+function T.new_track_reset_discards_prior_queue_evidence()
+  local host = fakeHost(1)
+  local renderer = rendererReturning(function()
+    return 0
+  end)
+  local sink = sinkFor(host, renderer)
+  Assert.isTrue(sink:update(), "the first track primes")
+  sink:resetForNewTrack()
+  host.refuseQueue = true
+  local ok, primed = pcall(sink.update, sink)
+  Assert.isFalse(ok and primed == true, "a refused new queue must not inherit the prior track")
+end
+
 return { tests = T }
