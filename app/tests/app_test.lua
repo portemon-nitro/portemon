@@ -1610,16 +1610,31 @@ function T.unknown_generation_waits_without_demands_during_title()
     result.firstPlayCurrent = true
     App.update(0.016)
     Assert.equal(#result.menus, 1, "the title keeps its staged product menu")
-    Assert.deepEqual(requests, {
-      { requestKind = "milestone", name = "new-game-intro", urgency = "near" },
-      { requestKind = "milestone", name = "field-planning", urgency = "near" },
-      { requestKind = "milestone", name = "field-runtime", urgency = "near" },
-      { requestKind = "battle-presentation", urgency = "near" },
-    }, "menu installation requests its intro prefetch, both field closures, and the shared battle catalog")
     Assert.deepEqual(
       result.firstPlayPublished,
       { { versionId = "heartgold", generationId = "test-generation" } },
       "the near coordinator publishes the validated generation"
+    )
+    finishStartupTitle(result)
+    local names, urgencies = requestedMilestones(requests)
+    Assert.deepEqual(
+      names,
+      { "field-planning", "field-runtime", "new-game-intro" },
+      "transfer demands the intro prefetch and both field closures"
+    )
+    for _, name in ipairs(names) do
+      Assert.equal(urgencies[name], "near", "transfer demand stays speculative for " .. name)
+    end
+    local battleDemands = {}
+    for _, selector in ipairs(requests) do
+      if selector.requestKind == "battle-presentation" then
+        battleDemands[#battleDemands + 1] = selector
+      end
+    end
+    Assert.deepEqual(
+      battleDemands,
+      { { requestKind = "battle-presentation", urgency = "near" } },
+      "transfer demands the shared battle catalog once at near urgency"
     )
   end)
 end

@@ -362,7 +362,17 @@ local function validateSelectors(params)
     then
       return "startup-walker request needs an integer pairIndex 1..32"
     end
-    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId", "effectKey", "sceneNumber" }) do
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "effectKey",
+      "sceneNumber",
+    }) do
       if params[field] ~= nil then
         return "startup-walker request carries no " .. field .. " selector"
       end
