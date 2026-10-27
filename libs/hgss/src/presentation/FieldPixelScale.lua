@@ -1,4 +1,4 @@
--- FieldPixelScale owns the integer field presentation scale and its camera projection.
+-- FieldPixelScale owns the integer field reference scale and its manual offset.
 
 ---@class FieldPixelScale
 ---@field _baseCameraZoom number
@@ -118,11 +118,6 @@ function FieldPixelScale:resolvedScale()
     return 1
   end
   return math.floor(clamp(self._automaticScale + self._manualOffset, self._minScale, self._maxScale))
-end
-
----@return number
-function FieldPixelScale:cameraZoom()
-  return self:resolvedScale() * 192 / self._height
 end
 
 function FieldPixelScale:zoomIn()

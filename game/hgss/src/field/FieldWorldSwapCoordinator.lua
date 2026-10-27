@@ -95,8 +95,7 @@ function FieldWorldSwapCoordinator:prepare(resolution, facing)
     "field camera cache has no camera type " .. runtimeMap.cameraType
   )
   local camera = FieldCamera.new(profile, { initialTarget = player:renderPosition() })
-  camera:setProjectionAspect(runtime.viewport:worldAspect())
-  camera:setZoom(runtime.fieldPixelScale:cameraZoom())
+  runtime:configureCameraProjection(camera)
   local playerVisual = FieldPlayerVisual.new({
     player = player,
     spriteId = assert(runtime.playerAvatar, "field runtime has no avatar transition owner"):currentSpriteId(),
