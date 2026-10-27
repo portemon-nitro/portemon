@@ -5344,6 +5344,36 @@ local function soulsilver_scene_one_sunrise_shows_static_sun_before_scroll(scope
     changeFraction(first, sourceBytes(scope, movie.mainCanvas), 256, 192) > 0.05,
     "the scroll case animates the sunrise beat"
   )
+  -- The wrapped scroll must not open a black seam: the static full-sky
+  -- underlay keeps the exposed top rows painted at the midpoint and at
+  -- the terminal source displacement, while both scrolled planes land on
+  -- their exact retail offsets and the copyright plane holds its reset.
+  local middleBytes = nil
+  for _ = 1, 400 do
+    if currentStepId(movie) ~= "scroll" then
+      break
+    end
+    movie:updateFixed()
+    if middleBytes == nil and currentScrollOffsets(movie).main1 <= -16 then
+      movie:draw()
+      middleBytes = sourceBytes(scope, movie.mainCanvas)
+    end
+  end
+  Assert.notNil(middleBytes, "the scroll midpoint is sampled before the scroll case ends")
+  Assert.isTrue(
+    regionLit(assert(middleBytes), 256, 0, 255, 0, 15) > 0.9,
+    "the scroll midpoint keeps sky across the wrapped top rows"
+  )
+  movie:draw()
+  local finished = sourceBytes(scope, movie.mainCanvas)
+  Assert.isTrue(
+    regionLit(finished, 256, 0, 255, 0, 31) > 0.9,
+    "the finished scroll keeps sky across the full wrapped band"
+  )
+  local finishedOffsets = currentScrollOffsets(movie)
+  Assert.equal(finishedOffsets.main1, -32, "the scrolled sunrise plane lands on its source displacement")
+  Assert.equal(finishedOffsets.main2, -16, "the companion plane lands on its source displacement")
+  Assert.equal(finishedOffsets.main0, 0, "the copyright plane still holds its reset origin at the scroll end")
   movie:dispose()
 end
 
