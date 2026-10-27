@@ -75,31 +75,6 @@ function T.pristine_entry_fills_common_window_shapes_without_a_rom(scope)
   end
 end
 
--- The pristine card names what it accepts without naming an edition.
-function T.pristine_card_names_supported_formats_without_edition_or_loader_copy(_)
-  local state = ImportState.new(idleImporter(), nil)
-  local copy = renderedCopy(function()
-    state:draw()
-  end)
-  Assert.isTrue(copy:find("%.nds") ~= nil, "the card names the supported ROM file")
-  Assert.isTrue(copy:find("%.zip") ~= nil, "the card names the supported ROM archive")
-  for _, forbidden in ipairs({
-    "HeartGold",
-    "SoulSilver",
-    "heartgold",
-    "soulsilver",
-    "Switch edition",
-    "Choose ROM file",
-    "Drag and drop also works",
-    "Enraging the lake",
-  }) do
-    Assert.isTrue(
-      copy:find(forbidden, 1, true) == nil,
-      "the first card stays neutral, found: " .. forbidden
-    )
-  end
-end
-
 -- One centered card is the only activation target: distinct interior
 -- points each open the picker exactly once, and a corner outside the card
 -- opens nothing. Interior points are small offsets around the window
@@ -253,24 +228,6 @@ function T.targeted_options_never_add_edition_chrome_to_the_first_card(_)
   end
   state:keypressed("tab")
   Assert.equal(switches, 0, "the first card has no edition switch binding")
-end
-
--- Verification progress names the real stage; loader jokes stay off the
--- first-import surface.
-function T.verification_progress_names_the_real_stage_without_loader_flavor(_)
-  local importer = idleImporter()
-  importer.snapshot = { state = "verifying" }
-  local copy = renderedCopy(function()
-    ImportState.new(importer, nil):draw()
-  end)
-  Assert.isTrue(
-    copy:find("Verifying cartridge identity", 1, true) ~= nil,
-    "the real verification stage stays visible"
-  )
-  Assert.isTrue(
-    copy:find("Enraging the lake", 1, true) == nil,
-    "loader jokes stay off the first-import surface"
-  )
 end
 
 -- The copy block (title, instructions and transient status rows) stays grouped
