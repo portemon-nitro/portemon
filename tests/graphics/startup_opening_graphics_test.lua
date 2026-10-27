@@ -8017,6 +8017,141 @@ local T = GraphicsSmoke.suite({
   ["foreground background occludes lower priority sprites in the solid path"] = solid_priority_occlusion_orders_planes_without_blending,
   ["foreground background occludes lower priority sprites in the blend path"] = blend_priority_occlusion_orders_planes_through_the_compositor,
   ["synthetic window masks isolate engine planes"] = synthetic_window_masks_isolate_engine_planes,
+  -- A full-width source assignment addresses two hardware registers: the
+  -- second window keeps only its single edge column while the first window
+  -- wraps around it, and a later pan rewrites both inside masks while
+  -- keeping an explicitly programmed second rectangle. Solid planes make
+  -- every register edge an exact pixel assertion.
+  ["full-width window registers keep a single-column second window"] = function(scope)
+    local function assertRegisterPixel(bytes, x, y, er, eg, eb, label)
+      local r, g, b = pixelOf(bytes, 256, x, y)
+      Assert.near(r, er, 0.05, label .. " carries its register red")
+      Assert.near(g, eg, 0.05, label .. " carries its register green")
+      Assert.near(b, eb, 0.05, label .. " carries its register blue")
+    end
+    local root = sceneArtRoot(1)
+    local frontImage = root .. "layers/register-front.png"
+    local midImage = root .. "layers/register-mid.png"
+    local backImage = root .. "layers/register-back.png"
+    local art = {
+      [frontImage] = solidPng(256, 192, 255, 0, 0),
+      [midImage] = solidPng(256, 192, 0, 255, 0),
+      [backImage] = solidPng(256, 192, 0, 0, 255),
+    }
+    local scenes, cacheFs = compositePack(
+      compositeScene(
+        1,
+        {
+          compositeLayer(0, frontImage, 256, 192, true, 0),
+          compositeLayer(1, midImage, 256, 192, true, 1),
+          compositeLayer(2, backImage, 256, 192, true, 2),
+        },
+        { compositeLayer(0, root .. "layers/register-lower.png", 256, 192) },
+        {},
+        { seed = 0, emitters = {} },
+        { { id = "reveal", events = { 1, 2, 3, 4, 5, 6 }, ["until"] = { kind = "duration", ticks = 20 } } },
+        {
+          {
+            op = "window",
+            stepId = "reveal",
+            atStepTick = 0,
+            engine = "main",
+            from = { x1 = 0, y1 = 0, x2 = 255, y2 = 192 },
+            to = { x1 = 0, y1 = 0, x2 = 255, y2 = 192 },
+            ticks = 0,
+            insideMask = 1,
+            outsideMask = 6,
+          },
+          {
+            op = "setWindowSecondary",
+            stepId = "reveal",
+            atStepTick = 0,
+            engine = "main",
+            rect = { x1 = 0, y1 = 0, x2 = 64, y2 = 192 },
+            insideMask = 2,
+          },
+          {
+            op = "window",
+            stepId = "reveal",
+            atStepTick = 5,
+            engine = "main",
+            from = { x1 = 100, y1 = 0, x2 = 200, y2 = 192 },
+            to = { x1 = 100, y1 = 0, x2 = 200, y2 = 192 },
+            ticks = 0,
+            insideMask = 4,
+            outsideMask = 1,
+          },
+          { op = "enableSkip", stepId = "reveal", atStepTick = 10 },
+          { op = "waitTicks", stepId = "reveal", atStepTick = 0, ticks = 20 },
+          { op = "finish", stepId = "reveal", atStepTick = 20 },
+        }
+      ),
+      art,
+      solidPng(16, 16, 128, 128, 128)
+    )
+    local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
+    advance(movie, 1)
+    movie:draw()
+    local first = sourceBytes(scope, movie.mainCanvas)
+    -- The wrapped first window owns every column past the edge pixel while
+    -- the second window keeps only x=0; the last source row still paints.
+    assertRegisterPixel(first, 0, 0, 0, 1, 0, "the edge column follows the second window")
+    assertRegisterPixel(first, 1, 0, 1, 0, 0, "the column past the edge follows the first window")
+    assertRegisterPixel(first, 127, 0, 1, 0, 0, "the left half stays under the first window")
+    assertRegisterPixel(first, 128, 0, 1, 0, 0, "the right half stays under the first window")
+    assertRegisterPixel(first, 254, 0, 1, 0, 0, "the late column stays under the first window")
+    assertRegisterPixel(first, 255, 0, 1, 0, 0, "the final column stays under the first window")
+    assertRegisterPixel(first, 0, 191, 0, 1, 0, "the edge column reaches the final row")
+    assertRegisterPixel(first, 255, 191, 1, 0, 0, "the final pixel stays under the first window")
+    -- The later pan rewrites both inside masks without moving the kept
+    -- second rectangle: its band turns blue while the uncovered column
+    -- falls back to the outside front plane.
+    advance(movie, 5)
+    movie:draw()
+    local second = sourceBytes(scope, movie.mainCanvas)
+    assertRegisterPixel(second, 0, 96, 0, 0, 1, "the kept band follows the rewritten mask")
+    assertRegisterPixel(second, 64, 96, 1, 0, 0, "the column past the kept band falls outside")
+    assertRegisterPixel(second, 150, 96, 0, 0, 1, "the later pan paints its own band")
+    assertRegisterPixel(second, 250, 96, 1, 0, 0, "the far column falls outside both windows")
+    movie:dispose()
+  end,
+  -- The scene-3 beast beat stages the rocket tilemaps behind a narrow
+  -- source window: the authored right and bottom edges exclude their end
+  -- pixel, so no inside stripe leaks past the exact retail bounds before
+  -- the sourced exit override.
+  ["sourced suicune window covers the rocket retile to its exact bounds"] = function(scope, context)
+    local versionId = selectedVersionId(context)
+    local scenes, cacheFs = loadRomPackWithFillers(versionId, {})
+    local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
+    advanceToSceneStep(movie, 3, "suicune", 20000)
+    for _ = 1, 12 do
+      movie:updateFixed()
+    end
+    Assert.equal(currentStepId(movie), "suicune", "the exit slide settles inside its hold")
+    movie:draw()
+    local hold = sourceBytes(scope, movie.subCanvas)
+    local function channelSum(x, y)
+      local r, g, b = pixelOf(hold, 256, x, y)
+      return r + g + b
+    end
+    -- The staged rocket band stays lit through the window while the
+    -- surrounding columns rest on the outside mask.
+    Assert.isTrue(channelSum(120, 96) > 0.2, "the staged rocket band stays lit through its window")
+    Assert.isTrue(channelSum(184, 96) > 0.2, "the inner edge column stays inside the window")
+    Assert.isTrue(channelSum(186, 96) < 0.15, "the column past the edge rests outside the window")
+    Assert.isTrue(channelSum(120, 129) < 0.15, "the row past the bottom edge rests outside the window")
+    -- The authored end pixels exclude themselves: they match the outside
+    -- region instead of extending the staged band by one stripe.
+    local function assertDark(x, y, label)
+      local r, g, b = pixelOf(hold, 256, x, y)
+      Assert.near(r, 0, 0.05, label .. " carries no register red")
+      Assert.near(g, 0, 0.05, label .. " carries no register green")
+      Assert.near(b, 0, 0.05, label .. " carries no register blue")
+    end
+    assertDark(185, 96, "the authored right edge excludes its end pixel")
+    assertDark(120, 128, "the authored bottom edge excludes its end pixel")
+    movie:dispose()
+  end,
   ["synthetic dual coefficients saturate both weights per pixel"] = synthetic_dual_coefficients_saturate_both_weights_per_pixel,
   ["synthetic masked pairs use raw under pixels without cascading"] = synthetic_masked_pairs_use_raw_under_pixels_without_cascading,
   ["soulsilver sunrise blend uses both source masks per engine"] = soulsilver_sunrise_blend_uses_both_source_masks,
