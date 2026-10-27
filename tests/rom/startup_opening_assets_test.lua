@@ -1869,7 +1869,10 @@ local PINNED_SS_EDGE_TOPOLOGY = {
     sub = { [0] = "TTTT", [1] = "TTTT", [3] = "OOOO" },
   },
   [2] = {
-    main = { [0] = "TTTT", [1] = "OTOO", [2] = "OOOO" },
+    -- Scene 2's aerial right edge stays transparent: the exact-ROM
+    -- decode leaves the wrap-seam column uncovered, which the topology
+    -- contract records as masked content rather than tile coverage.
+    main = { [0] = "TTTT", [1] = "OTOT", [2] = "OOOO" },
     sub = { [0] = "OOOO" },
   },
   [3] = {

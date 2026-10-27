@@ -121,25 +121,73 @@ function T.acquisition_failure_leaves_no_child_owning_input()
   flows:dispose()
 end
 
-function T.soulsilver_variant_stays_blocked_without_its_owned_cache(context)
+-- Every ready version replays the frozen failure-isolation flow through
+-- rosters drawn from its own owned mon catalog: the versioned catalog
+-- names the same EEVEE reserve, staged results still report once, stale
+-- requests never seal, and acquisition failure still leaves no child
+-- owning input. The catalog comes from the versioned cache, never from a
+-- shared fallback, so a version skew in species identities fails here
+-- instead of hiding behind the synthetic fixture.
+function T.versioned_rosters_replay_the_frozen_failure_isolation_flow(context)
   local GameVersion = require("romdump.src.source.GameVersion")
   local RomImporter = require("romdump.src.source.RomImporter")
-  local known = false
+  local MonBucket = require("tests.support.MonBucket")
+  local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if versionId == "soulsilver" then
-      known = true
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
     end
   end
-  Assert.isTrue(known, "setup: the second version is a known parity dimension")
-  if not RomImporter.isReady("soulsilver") then
-    context:skip(
-      "BLOCKED: no ready soulsilver user-owned ROM cache in this checkout; second-version failure parity is unverified"
-    )
+  if #versions == 0 then
+    context:skip("the versioned failure flow needs a ready user-owned dump with a derived cache")
   end
-  Assert.isTrue(
-    false,
-    "a ready soulsilver cache appeared: this probe must grow a real second-version comparison before it may pass"
-  )
+  for _, versionId in ipairs(versions) do
+    local catalog = MonBucket.openCatalogs(versionId)
+    local known, knownErr = pcall(function()
+      return catalog:species("EEVEE")
+    end)
+    Assert.isTrue(known, "the owned " .. versionId .. " catalog names the EEVEE reserve: " .. tostring(knownErr))
+    local roster = {
+      { combatant = 1, slot = 0, name = "EEVEE", level = 20, hp = 30, maxHp = 30 },
+      { combatant = 2, slot = 1, name = "EEVEE", level = 5, hp = 10, maxHp = 18 },
+    }
+    local flows = coordinator()
+    Assert.isTrue(flows:open(partyIntent({ party = roster })), "the party child opens on " .. versionId)
+    drive(flows, { type = "confirm" })
+    local staged = flows:takeResult()
+    Assert.notNil(staged, "confirming stages its reply on " .. versionId)
+    Assert.equal(staged.kind, "choice", "the staged result is a choice on " .. versionId)
+    Assert.isNil(flows:takeResult(), "a double collection seals nothing more on " .. versionId)
+    Assert.isTrue(
+      flows:open(partyIntent({ party = roster, requestId = 8, epoch = 9 })),
+      "the replacement request opens on " .. versionId
+    )
+    Assert.isNil(flows:takeResult(), "the stale request leaves no result behind on " .. versionId)
+    local foreign, foreignErr = flows:open(partyIntent({ party = roster, launchId = "foreign-launch" }))
+    Assert.isFalse(foreign, "a foreign launch never opens on " .. versionId .. ": " .. tostring(foreignErr))
+    Assert.isTrue(flows:status().active, "the foreign attempt keeps the owned child on " .. versionId)
+    flows:dispose()
+    local failed = coordinator()
+    local empty = {
+      requestId = 9,
+      epoch = 2,
+      controller = "player",
+      kind = "replacement",
+      actors = { { combatant = 1, activation = 5, kind = "replacement", choices = {} } },
+    }
+    local ok, openErr = failed:open(partyIntent({ party = roster, purpose = "replacement", cancellable = false, options = empty }))
+    Assert.isFalse(ok == true, "no invented reserve ever opens on " .. versionId)
+    Assert.isTrue(type(openErr) == "string" and openErr ~= "", "the failure names itself on " .. versionId)
+    Assert.isFalse(failed:status().active, "no child owns input after the failure on " .. versionId)
+    Assert.isNil(failed:takeResult(), "the failed acquisition stages nothing on " .. versionId)
+    failed:dispose()
+  end
 end
 
-return { tests = T }
+return {
+  tests = T,
+  metadata = {
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "mon-catalog:global", "items:global" },
+  },
+}

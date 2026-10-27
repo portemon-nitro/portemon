@@ -282,25 +282,62 @@ function T.opening_a_child_consumes_its_initiating_input()
   assert(composer ~= nil, "the composer loads")
 end
 
-function T.soulsilver_variant_stays_blocked_without_its_owned_cache(context)
+-- Every ready version replays the frozen continuity flow through rosters
+-- drawn from its own owned mon catalog: the versioned catalog names the
+-- same EEVEE reserve, closed children still drop stale pointer edges, and
+-- a held-press cancel still seals nothing while keeping the owned child.
+-- The catalog comes from the versioned cache, never from a shared
+-- fallback, so a version skew in species identities fails here instead
+-- of hiding behind the synthetic fixture.
+function T.versioned_rosters_replay_the_frozen_continuity_flow(context)
   local GameVersion = require("romdump.src.source.GameVersion")
   local RomImporter = require("romdump.src.source.RomImporter")
-  local known = false
+  local MonBucket = require("tests.support.MonBucket")
+  local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if versionId == "soulsilver" then
-      known = true
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
     end
   end
-  Assert.isTrue(known, "setup: the second version is a known parity dimension")
-  if not RomImporter.isReady("soulsilver") then
-    context:skip(
-      "BLOCKED: no ready soulsilver user-owned ROM cache in this checkout; second-version continuity parity is unverified"
-    )
+  if #versions == 0 then
+    context:skip("the versioned continuity flow needs a ready user-owned dump with a derived cache")
   end
-  Assert.isTrue(
-    false,
-    "a ready soulsilver cache appeared: this probe must grow a real second-version comparison before it may pass"
-  )
+  for _, versionId in ipairs(versions) do
+    local catalog = MonBucket.openCatalogs(versionId)
+    local known, knownErr = pcall(function()
+      return catalog:species("EEVEE")
+    end)
+    Assert.isTrue(known, "the owned " .. versionId .. " catalog names the EEVEE reserve: " .. tostring(knownErr))
+    local roster = {
+      { combatant = 1, slot = 0, name = "EEVEE", level = 20, hp = 30, maxHp = 30 },
+      { combatant = 2, slot = 1, name = "EEVEE", level = 5, hp = 10, maxHp = 18 },
+    }
+    local flows = coordinator()
+    Assert.isTrue(flows:open(partyIntent({ party = roster })), "the party child opens on " .. versionId)
+    flows:update({ { type = "pointer_down", pointerId = "stale", x = 8, y = 8 } })
+    flows:closeChild()
+    flows:update({ { type = "pointer_up", pointerId = "stale", x = 8, y = 8 } })
+    Assert.isNil(flows:takeResult(), "the stale release seals nothing on " .. versionId)
+    Assert.isFalse(flows:activateControl("party:1"), "taps miss the closed child on " .. versionId)
+    Assert.isTrue(
+      flows:open(partyIntent({ party = roster, requestId = 8, epoch = 9 })),
+      "the replacement child opens on " .. versionId
+    )
+    Assert.isTrue(flows:status().active, "the fresh child owns input on " .. versionId)
+    flows:dispose()
+    local held = coordinator()
+    Assert.isTrue(held:open(partyIntent({ party = roster })), "the party child opens for the hold on " .. versionId)
+    held:cancelPointerCapture()
+    Assert.isNil(held:takeResult(), "cancelling a held press seals nothing on " .. versionId)
+    Assert.isTrue(held:status().active, "the child keeps owning input after the cancel on " .. versionId)
+    held:dispose()
+  end
 end
 
-return { tests = T }
+return {
+  tests = T,
+  metadata = {
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "mon-catalog:global", "items:global" },
+  },
+}

@@ -5248,7 +5248,11 @@ local function decodeAnimationChars(archive, memberId, _, label)
 end
 
 local function decodeAnimationPalette(archive, memberId, _, label)
-  return paletteRecords(decodePalette(archive, memberId, label .. " palette"))
+  -- The runtime sprite task consumes its palette lease through the
+  -- decoded colors field, so the staged payload keeps the same record
+  -- shape as every other palette: colors under their field, never a
+  -- bare color list.
+  return { colors = paletteRecords(decodePalette(archive, memberId, label .. " palette")) }
 end
 
 local function decodeAnimationScreen(archive, memberId, _, label)
@@ -5822,7 +5826,11 @@ local function rasterizePendingCharacters(state, instructions)
     local paletteKey = pending.paletteKey or pairByCharacter[characterKey]
     local paletteDescriptor = paletteKey ~= nil and state.resolvedResources[paletteKey] or nil
     local palettePayload = paletteDescriptor ~= nil and state.resourcePayloads[paletteDescriptor.payload] or nil
-    if type(palettePayload) ~= "table" or type(palettePayload[1]) ~= "table" or palettePayload[1].r == nil then
+    -- Staged palettes carry their decoded colors field, the same record
+    -- shape the runtime sprite task consumes: unwrap once here instead
+    -- of publishing raw color lists beside wrapped records.
+    local paletteColors = type(palettePayload) == "table" and palettePayload.colors or nil
+    if type(paletteColors) ~= "table" or type(paletteColors[1]) ~= "table" or paletteColors[1].r == nil then
       error(
         Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "managed sprite character has no paired staged palette", {
           effectKey = state.effectKey,
@@ -5834,7 +5842,7 @@ local function rasterizePendingCharacters(state, instructions)
     end
     local tileSize = pending.chars.depth == 3 and 32 or 64
     local tileCount = math.floor(#pending.chars.tiles / tileSize)
-    local raster = G2dRasterizer.renderTileStrip(pending.chars, { colors = palettePayload }, 0, tileCount, 0, {
+    local raster = G2dRasterizer.renderTileStrip(pending.chars, { colors = paletteColors }, 0, tileCount, 0, {
       role = "battle effect " .. state.effectKey .. " " .. pending.role .. " characters",
     })
     state.resourcePayloads[pending.payloadPath] = {

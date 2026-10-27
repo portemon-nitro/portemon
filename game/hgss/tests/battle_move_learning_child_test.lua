@@ -174,25 +174,69 @@ function T.learning_child_view_carries_held_move_detail_facts()
   flows:dispose()
 end
 
-function T.soulsilver_variant_stays_blocked_without_its_owned_cache(context)
+-- Every ready version replays the frozen learning flow through move keys
+-- drawn from its own owned mon catalog: the versioned catalog names the
+-- same held and incoming moves, selecting a held row still stages its
+-- replace confirmation without sealing, and the decline row still needs
+-- its own confirmation. The catalog comes from the versioned cache,
+-- never from a shared fallback, so a version skew in move identities
+-- fails here instead of hiding behind the synthetic fixture.
+function T.versioned_move_keys_replay_the_frozen_learning_flow(context)
   local GameVersion = require("romdump.src.source.GameVersion")
   local RomImporter = require("romdump.src.source.RomImporter")
-  local known = false
+  local MonBucket = require("tests.support.MonBucket")
+  local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if versionId == "soulsilver" then
-      known = true
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
     end
   end
-  Assert.isTrue(known, "setup: the second version is a known parity dimension")
-  if not RomImporter.isReady("soulsilver") then
-    context:skip(
-      "BLOCKED: no ready soulsilver user-owned ROM cache in this checkout; second-version learning parity is unverified"
-    )
+  if #versions == 0 then
+    context:skip("the versioned learning flow needs a ready user-owned dump with a derived cache")
   end
-  Assert.isTrue(
-    false,
-    "a ready soulsilver cache appeared: this probe must grow a real second-version comparison before it may pass"
-  )
+  for _, versionId in ipairs(versions) do
+    local catalog = MonBucket.openCatalogs(versionId)
+    for _, moveKey in ipairs({ "TACKLE", "TAIL_WHIP", "GROWL", "LEER", "SAND_ATTACK" }) do
+      local known, knownErr = pcall(function()
+        return catalog:move(moveKey)
+      end)
+      Assert.isTrue(known, "the owned " .. versionId .. " catalog names " .. moveKey .. ": " .. tostring(knownErr))
+    end
+    local options = learnOptions(1)
+    local flows = coordinator()
+    Assert.isTrue(flows:open(learnIntent(1)), "learning opens for the held recipient on " .. versionId)
+    drive(flows, { type = "confirm" })
+    Assert.isNil(flows:takeResult(), "selecting a held row seals no reply on " .. versionId)
+    drive(flows, { type = "confirm" })
+    local result = flows:takeResult()
+    Assert.notNil(result, "confirming the staged replace seals its fragment on " .. versionId)
+    Assert.equal(result.kind, "choice", "the replace stages a choice on " .. versionId)
+    Assert.deepEqual(
+      result.reply.choices[1],
+      options.actors[1].choices[1].choice,
+      "the reply copies the projected slot fragment on " .. versionId
+    )
+    Assert.isNil(flows:takeResult(), "the staged reply reports once on " .. versionId)
+    flows:dispose()
+    local declined = coordinator()
+    Assert.isTrue(declined:open(learnIntent(1)), "learning opens for the decline on " .. versionId)
+    for _ = 1, 4 do
+      drive(declined, { type = "navigate", direction = "down" })
+    end
+    drive(declined, { type = "confirm" })
+    Assert.isNil(declined:takeResult(), "selecting the decline row seals no reply on " .. versionId)
+    drive(declined, { type = "confirm" })
+    local refused = declined:takeResult()
+    Assert.notNil(refused, "confirming the staged decline seals its fragment on " .. versionId)
+    Assert.equal(refused.reply.choices[1].payload.decision, "decline", "the reply declines without replacing on " .. versionId)
+    declined:dispose()
+  end
 end
 
-return { tests = T }
+return {
+  tests = T,
+  metadata = {
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "mon-catalog:global", "items:global" },
+  },
+}

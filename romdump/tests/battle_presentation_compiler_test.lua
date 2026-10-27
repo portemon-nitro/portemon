@@ -713,6 +713,46 @@ function T.lone_sprite_character_stages_exact_rgba_through_its_template_palette(
   Assert.deepEqual({ red, green, blue, alpha }, { 255, 0, 0, 255 }, "the lone character reads its template palette")
 end
 
+-- A separately loaded sprite palette stages the decoded color records
+-- the runtime sprite task consumes: the payload carries its colors
+-- field, never a bare color list, so admission never fails on a staged
+-- but unreadable palette.
+function T.separately_loaded_sprite_palette_stages_decoded_color_records()
+  local words = { Rgb555.encode(31, 0, 0) }
+  for _ = 2, 16 do
+    words[#words + 1] = Rgb555.encode(0, 0, 0)
+  end
+  local members = {
+    ["NARC_a_0_2_3"] = { [7] = paletteBank(words) },
+  }
+  local effect = assertProducerEffect(
+    compileManagedSpriteEffect("TACKLE", members, function(resolveSourceInput)
+      local palette = resolveSourceInput("sprite-palette", { 0, 7, 0 })
+      return {
+        {
+          op = "load-sprite-palette",
+          values = { 0, 0 },
+          resourceKeys = palette.resourceKeys,
+        },
+      }
+    end),
+    "the separately loaded sprite palette"
+  )
+  local paletteKey = nil
+  for key, descriptor in pairs(effect.resources) do
+    if key:find("sprite%-palette/palette/", 1) ~= nil then
+      paletteKey = key
+      Assert.equal(descriptor.kind, "palette", "the sprite palette keeps its decoded resource kind")
+    end
+  end
+  Assert.notNil(paletteKey, "the load stages its sprite palette key")
+  local payload = effect.resourcePayloads[effect.resources[paletteKey].payload]
+  Assert.equal(type(payload), "table", "the sprite palette stages its payload as a record")
+  Assert.equal(type(payload.colors), "table", "the sprite palette stages decoded color records")
+  Assert.equal(#payload.colors, 16, "the sprite palette stages one full palette")
+  Assert.equal(payload.colors[1].r, 255, "the first entry keeps its decoded red channel")
+end
+
 function T.unrecognized_emitter_flags_fail_the_effect_without_staging()
   local tackle = "battle/particle/tackle"
   local blob = apsMember({ apsEmitter(2 ^ 31) }, { apsResource() })

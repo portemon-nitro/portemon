@@ -1714,6 +1714,14 @@ return {
       "battle-scene:building_1/building/day",
       "battle-scene:general/grass/day",
       "battle-scene:general/plain/day",
+      -- Every executed move needs its staged program: the player strikes
+      -- with TACKLE, the wild CATERPIE answers with TACKLE or STRING_SHOT,
+      -- and the wild CHIKORITA answers with TACKLE or GROWL. An unstaged
+      -- key would pend behind a host that never stages instead of failing
+      -- with provenance, so the suite stages the full executed set.
+      "battle-effect:TACKLE",
+      "battle-effect:STRING_SHOT",
+      "battle-effect:GROWL",
     },
   },
 }

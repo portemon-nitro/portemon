@@ -236,14 +236,15 @@ end
 
 ---@param catalog table mon catalog under test preparation
 ---@param specs table<integer, table<string, unknown>> ordered party specs under building
+---@param game string? versioned game identity under ownership, heartgold when absent
 ---@return table live party owner holding the described members in order
-local function makePartyOwnerWith(catalog, specs)
+local function makePartyOwnerWith(catalog, specs, game)
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
   local owner = HgssMonService.new({
     catalog = catalog,
     bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture()),
     profile = CatalogFixture.profile(),
-    game = "heartgold",
+    game = game or "heartgold",
     language = "english",
     charmap = CatalogFixture.CHARMAP,
     games = CatalogFixture.GAMES,
@@ -410,7 +411,7 @@ local function openEvolutionRig(opts)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
   local catalog = assert(opts.catalog, "the evolution rig needs its mon catalog")
-  local party = makePartyOwnerWith(catalog, opts.partySpecs)
+  local party = makePartyOwnerWith(catalog, opts.partySpecs, opts.game)
   local bag = opts.bag
   local player = { trainerId = 99, trainerName = "MINT", language = "french" }
   local launchId = opts.launchId or "launch-postbattle-evolution"
@@ -1245,25 +1246,73 @@ function T.duplicate_capture_counts_nothing()
   rig.screen:dispose()
 end
 
-function T.soulsilver_variant_stays_blocked_without_its_owned_cache(context)
+-- Every ready version evolves its real level trigger through its own
+-- owned mon catalog: a SENTRET pinned one experience below 15 settles its
+-- bout as a win, queues its evolution, and publishes FURRET exactly once
+-- while the battle receipt survives untouched. The catalog and the game
+-- identity both come from the versioned cache, never from a shared
+-- fallback or a grafted fixture root, so a version skew in evolution
+-- tables fails here instead of hiding behind synthetic slots.
+function T.versioned_catalogs_evolve_real_level_triggers(context)
   local GameVersion = require("romdump.src.source.GameVersion")
   local RomImporter = require("romdump.src.source.RomImporter")
-  local known = false
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local ItemCache = require("libs.assets.src.ItemCache")
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local MonCache = require("libs.assets.src.MonCache")
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if versionId == "soulsilver" then
-      known = true
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
     end
   end
-  Assert.isTrue(known, "setup: the second version is a known parity dimension")
-  if not RomImporter.isReady("soulsilver") then
-    context:skip(
-      "BLOCKED: no ready soulsilver user-owned ROM cache in this checkout; second-version evolution parity is unverified"
-    )
+  if #versions == 0 then
+    context:skip("the versioned evolution flow needs a ready user-owned dump with a derived cache")
   end
-  Assert.isTrue(
-    false,
-    "a ready soulsilver cache appeared: this probe must grow a real second-version comparison before it may pass"
-  )
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local root = MonCache.loadCatalog(cacheFs)
+    Assert.equal(root.version.id, versionId, "the owned catalog names its own version, never a shared fallback")
+    local items = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))
+    local catalog = MonCatalog.new(root, items)
+    local trigger, triggerErr = pcall(function()
+      return catalog:species("SENTRET")
+    end)
+    Assert.isTrue(trigger, "the owned " .. versionId .. " catalog names the SENTRET trigger: " .. tostring(triggerErr))
+    local rig = openEvolutionRig({
+      launchId = "launch-real-level-evolves",
+      catalog = catalog,
+      game = versionId,
+      partySpecs = {
+        { species = "SENTRET", level = 14, below = true, moves = singleTackle() },
+      },
+      foeSpecies = "EEVEE",
+      foeLevel = 3,
+      evolutionContext = { timeOfDay = "day", mapId = 7 },
+    })
+    local committed = driveToCommitted(rig, 1500)
+    Assert.equal(committed.result, "win", "the lead settles the bout as a win on " .. versionId)
+    local receipt = assert(committed.outcomeReceipt, "completion carries its commit receipt on " .. versionId)
+    Assert.isTrue(receipt.committed, "the battle receipt commits before any evolution on " .. versionId)
+    local offered = driveToEvolution(rig, 1200)
+    Assert.equal(offered.kind, "evolution", "the offered completion names the evolution decision on " .. versionId)
+    runEvolutionHandsFree(rig, 1500)
+    Assert.equal(rig.battle:status().phase, "complete", "the evolved member still returns to the field on " .. versionId)
+    Assert.isNil(rig.screen:status().completion, "the finished evolution consumes its completion on " .. versionId)
+    Assert.equal(rig.party:partyMon(0).species, "FURRET", "the leveled member evolves once on " .. versionId)
+    Assert.equal(rig.party:partyCount(), 1, "the evolution publishes no extra party member on " .. versionId)
+    local survivor = rig.battle:status()
+    Assert.deepEqual(survivor.outcomeReceipt, receipt, "the evolution pass never rewrites the battle receipt on " .. versionId)
+    rig.battle:dispose()
+    rig.screen:dispose()
+  end
 end
 
-return { tests = T }
+return {
+  tests = T,
+  metadata = {
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "mon-catalog:global", "items:global" },
+  },
+}
