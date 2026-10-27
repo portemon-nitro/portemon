@@ -6000,6 +6000,11 @@ local function nitroModeScene()
     spriteClip(root .. "sprites/nitro-still.g4sprite", {
       clipFrame(0, 0, 16, 16, 200, 0, 6),
     }, "forward", 0),
+    spriteClip(root .. "sprites/nitro-revloop-nz.g4sprite", {
+      clipFrame(0, 0, 16, 16, 0, 0, 2),
+      clipFrame(16, 0, 16, 16, 40, 0, 2),
+      clipFrame(32, 0, 16, 16, 80, 0, 2),
+    }, "reverse_loop", 1),
   }
   local instances = {
     { id = "fwd", clip = 1, animate = true },
@@ -6007,6 +6012,7 @@ local function nitroModeScene()
     { id = "rev", clip = 3, animate = true },
     { id = "revloop", clip = 4, animate = true },
     { id = "still", clip = 5, animate = false },
+    { id = "revnz", clip = 6, animate = true },
   }
   local events = {}
   for order, instance in ipairs(instances) do
@@ -6098,8 +6104,8 @@ function T.nitro_play_modes_follow_source_edge_handling_at_double_speed()
     clipIds[#clipIds + 1] = clip.id
   end
   local origins = sampleClipOrigins(movie, graphics, clipIds, 14)
-  local fwd, loop, rev, revloop, still =
-    origins[clipIds[1]], origins[clipIds[2]], origins[clipIds[3]], origins[clipIds[4]], origins[clipIds[5]]
+  local fwd, loop, rev, revloop, still, revnz =
+    origins[clipIds[1]], origins[clipIds[2]], origins[clipIds[3]], origins[clipIds[4]], origins[clipIds[5]], origins[clipIds[6]]
   -- The forward one-shot latches its reset cell on the entry tick, advances
   -- two animation units per source tick, then clamps on its terminal cell.
   Assert.equal(fwd[1], 0, "the drawn frame latches the reset cell before the first advance")
@@ -6118,19 +6124,32 @@ function T.nitro_play_modes_follow_source_edge_handling_at_double_speed()
   for tick = 1, 14 do
     Assert.equal(still[tick], 200, "an animation-paused instance never leaves its first cell")
   end
-  -- The back-and-forth clip traverses to its far edge and back, then stops
-  -- on its start cell instead of wrapping.
-  local expectedRev = { 0, 40, 80, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+  -- The back-and-forth clip traverses to its far edge, dwells there for
+  -- the endpoint's authored timing, then traverses back and stops on its
+  -- start cell instead of wrapping.
+  local expectedRev = { 0, 40, 80, 80, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
   for tick = 1, 14 do
     Assert.equal(rev[tick], expectedRev[tick], "the back-and-forth one-shot plays its traverse on tick " .. tick)
   end
-  -- The looping back-and-forth clip keeps traversing without settling.
-  local expectedRevLoop = { 0, 40, 80, 40, 0, 40, 80, 40, 0, 40, 80, 40, 0, 40 }
+  -- The looping back-and-forth clip keeps traversing without settling,
+  -- dwelling on the far endpoint each pass.
+  local expectedRevLoop = { 0, 40, 80, 80, 40, 0, 40, 80, 80, 40, 0, 40, 80, 80 }
   for tick = 1, 14 do
     Assert.equal(
       revloop[tick],
       expectedRevLoop[tick],
       "the looping back-and-forth clip keeps traversing on tick " .. tick
+    )
+  end
+  -- The nonzero loop-start back-and-forth clip restarts its loop from
+  -- the loop head, dwelling on the far endpoint each pass without
+  -- emitting an extra fabricated frame at the loop edge.
+  local expectedRevNz = { 40, 80, 80, 40, 80, 80, 40, 80, 80, 40, 80, 80, 40, 80 }
+  for tick = 1, 14 do
+    Assert.equal(
+      revnz[tick],
+      expectedRevNz[tick],
+      "the nonzero loop-start back-and-forth clip replays its loop head on tick " .. tick
     )
   end
   -- Repeated host draws never advance the latched cells: two more frames

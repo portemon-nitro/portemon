@@ -914,10 +914,11 @@ local function pumpPlayback(state, clip)
     else
       local next = state.current + (state.forward and 1 or -1)
       if next >= count then
-        -- The far edge turns without reshowing its cell: the edge cell
-        -- already spent its duration on the way in.
+        -- The far edge turns and dwells on its endpoint: flip direction
+        -- and clamp to the edge cell so it keeps its authored timing for
+        -- the next source advance instead of stepping back early.
         state.forward = false
-        next = state.current - 1
+        next = count - 1
       elseif next < state.loopStart then
         if state.mode == "reverse" then
           state.active = false
