@@ -147,6 +147,29 @@ local function s32wrap(value)
   return wrapped
 end
 
+-- Exact 1/4096-unit round trip between the normalized world floats the
+-- slot stores and the integer raw values the retail fixed point steps.
+-- Stored velocities and normalized magnitudes with power-of-two
+-- denominators convert back exactly; field products round to nearest.
+---@param world number normalized world-unit value
+---@return integer raw value in 1/4096 units
+local function worldToRawFx(world)
+  if world >= 0 then
+    return math.floor(world * 4096 + 0.5)
+  end
+  return math.ceil(world * 4096 - 0.5)
+end
+
+-- One retail damping step: the signed raw velocity times the staged
+-- coefficient, wrapped to 32 bits, then shifted right keeping the sign,
+-- which floors negative quotients instead of truncating them toward zero.
+---@param rawVel integer raw velocity in 1/4096 units
+---@param airResist integer staged air resistance 0..255
+---@return integer damped raw velocity
+local function dampRawFx(rawVel, airResist)
+  return math.floor(s32wrap(rawVel * (airResist + 384)) / 512)
+end
+
 ---@class OpeningMovieSlot
 ---@field manifest table<string, unknown>
 ---@field sceneNumber integer
@@ -1160,11 +1183,11 @@ local function spawnChild(slot, runtime, parent)
   local record = runtime.record --[[@as table<string, unknown>]]
   local child = record.child --[[@as table<string, unknown>]]
   local velRatio = child.velRatio --[[@as integer]]
-  local spreadFx = child.initVelRandom --[[@as number]]
+  local spreadRawFx = worldToRawFx(child.initVelRandom --[[@as number]])
   local function spreadAxis(parentVel)
-    local scaled = parentVel * velRatio / 256
+    local scaled = math.floor(worldToRawFx(parentVel) * velRatio / 256)
     local draw = math.floor(rngNext(slot) / 8388608)
-    return scaled + math.floor((spreadFx * draw - spreadFx * 256) / 256)
+    return (scaled + math.floor((spreadRawFx * draw - spreadRawFx * 256) / 256)) / 4096
   end
   local scaledBase = math.floor(parent.baseScale --[[@as integer]] * parent.animScale --[[@as integer]] / 4096)
   local colorRgb = child.childColor --[[@as table<string, integer>]]
@@ -1227,20 +1250,24 @@ local function spinRotate(x, y, z, axis, rotation)
   return cosine * x - sine * y, sine * x + cosine * y, z
 end
 
--- Moves one particle for a source tick: rotation advance, air-resistance
--- damping with the retail shift rounding, field acceleration, and the
--- emitter-velocity carry (always zero for the observed scene).
+-- Moves one particle for a source tick: rotation advance, damping of the
+-- raw 1/4096-unit velocity with the retail signed shift, then field
+-- acceleration, then position integration. Damping first keeps sub-unit
+-- velocities significant instead of flooring world units to 0 or -1.
 ---@param particle table<string, unknown> live particle
 ---@param airResist integer staged air resistance 0..255
-local function moveParticle(particle, airResist)
+---@param accX number field acceleration in world units along x
+---@param accY number field acceleration in world units along y
+---@param accZ number field acceleration in world units along z
+local function moveParticle(particle, airResist, accX, accY, accZ)
   particle.rtt = (
     particle.rtt --[[@as integer]]
     + particle.rttVel --[[@as integer]]
   ) % 65536
-  local damp = airResist + 384
-  particle.vx = math.floor(particle.vx --[[@as number]] * damp / 512)
-  particle.vy = math.floor(particle.vy --[[@as number]] * damp / 512)
-  particle.vz = math.floor(particle.vz --[[@as number]] * damp / 512)
+  local vxFx = s32wrap(dampRawFx(worldToRawFx(particle.vx --[[@as number]]), airResist) + worldToRawFx(accX))
+  local vyFx = s32wrap(dampRawFx(worldToRawFx(particle.vy --[[@as number]]), airResist) + worldToRawFx(accY))
+  local vzFx = s32wrap(dampRawFx(worldToRawFx(particle.vz --[[@as number]]), airResist) + worldToRawFx(accZ))
+  particle.vx, particle.vy, particle.vz = vxFx / 4096, vyFx / 4096, vzFx / 4096
   particle.x = particle.x --[[@as number]] + particle.vx --[[@as number]]
   particle.y = particle.y --[[@as number]] + particle.vy --[[@as number]]
   particle.z = particle.z --[[@as number]] + particle.vz --[[@as number]]
@@ -1294,10 +1321,7 @@ local function updateParticle(slot, runtime, particle)
       )
     end
   end
-  particle.vx = particle.vx --[[@as number]] + accX
-  particle.vy = particle.vy --[[@as number]] + accY
-  particle.vz = particle.vz --[[@as number]] + accZ
-  moveParticle(particle, record.airResist --[[@as integer]])
+  moveParticle(particle, record.airResist --[[@as integer]], accX, accY, accZ)
   if record.child ~= nil then
     local child = record.child --[[@as table<string, unknown>]]
     local genStart = child.genStart --[[@as integer]]
@@ -1315,11 +1339,10 @@ local function updateParticle(slot, runtime, particle)
   particle.age = age + 1
 end
 
--- Runs one child particle for a source tick: its staged shrink/fade
--- curves (or none), emitter tracking, and motion. The retail
--- scale-out divisor is degenerate (255 minus 255), which the host
--- division fixup resolves to zero, so the child scale holds its staged
--- end stage for its whole life.
+-- Runs one child particle for a source tick: its life-rate scale/alpha
+-- curves (or none), emitter tracking, and motion. The animated scale
+-- stays in raw fx16 units, starting at unity and interpolating toward
+-- the staged end with truncating slopes; the renderer normalizes once.
 ---@param runtime table<string, unknown> live emitter runtime
 ---@param particle table<string, unknown> live child particle
 local function updateChild(runtime, particle)
@@ -1329,7 +1352,8 @@ local function updateChild(runtime, particle)
   local life = particle.life --[[@as integer]]
   local rate = math.floor(age * 256 / life)
   if child.useScaleAnm then
-    particle.animScale = child.scaleEnd --[[@as integer]]
+    local endRawFx = worldToRawFx(child.scaleEnd --[[@as number]])
+    particle.animScale = endRawFx + cdivTrunc((endRawFx - 4096) * (rate - 255), 255)
   end
   if child.useAlphaAnm then
     particle.animAlpha = cdivTrunc((255 - rate) * 31, 255)
@@ -1339,7 +1363,7 @@ local function updateChild(runtime, particle)
     particle.ey = runtime.y
     particle.ez = runtime.z
   end
-  moveParticle(particle, record.airResist --[[@as integer]])
+  moveParticle(particle, record.airResist --[[@as integer]], 0, 0, 0)
   particle.age = age + 1
 end
 

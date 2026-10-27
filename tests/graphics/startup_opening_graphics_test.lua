@@ -1334,6 +1334,96 @@ local function soulsilver_town_segments_and_starter_particles_move(scope, contex
   replay:dispose()
 end
 
+-- Emitter 1 carries a scale-animated child whose end is the source fx16
+-- value 5360: the live child starts at unity and follows the retail life
+-- interpolation, and the engine target keeps repainting while it grows.
+---@param scope table test scope owning GPU readbacks
+---@param context table runner context owning skip
+local function soulsilver_starter_child_scale_follows_its_life_curve(scope, context)
+  local versionId = selectedVersionId(context)
+  local scenes = loadScenes(versionId)
+  local emitterOne = nil
+  for _, record in ipairs(scenes[4].particles.emitters) do
+    if record.id == 1 then
+      emitterOne = record
+    end
+  end
+  Assert.notNil(emitterOne, "scene 4 keeps its source emitter 1")
+  local compiled = assert(emitterOne.child, "emitter 1 keeps its child block")
+  Assert.isTrue(compiled.useScaleAnm, "emitter 1 animates its child scale")
+  Assert.equal(compiled.life, 7, "emitter 1 keeps its child lifespan")
+  Assert.near(compiled.scaleEnd, 5360 / 4096, 1e-12, "the compiled child end keeps its source fx16 value")
+  local movie = openMovie(scope, versionId, 512, 384, "single")
+  local ticks = 0
+  while movie:sceneNumber() < 4 and ticks < 20000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 4, "playback reaches the starter scenes")
+  local runtime = nil
+  while ticks < 20000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+    if movie:sceneNumber() ~= 4 then
+      break
+    end
+    local slot = movie.current
+    Assert.notNil(slot, "the running movie owns its current slot")
+    for _, candidate in ipairs(slot.emitters) do
+      if candidate.id == 1 and #candidate.children > 0 then
+        runtime = candidate
+      end
+    end
+    if runtime ~= nil then
+      break
+    end
+  end
+  Assert.notNil(runtime, "emitter 1 spawns a live child")
+  local live = runtime.children[1]
+  live.age = 0
+  local function cdivTrunc(numerator, denominator)
+    local quotient = numerator / denominator
+    if quotient >= 0 then
+      return math.floor(quotient)
+    end
+    return math.ceil(quotient)
+  end
+  movie:draw()
+  local early = drawBytes(movie, scope, 512, 384)
+  for age = 0, 3 do
+    movie:updateFixed()
+    movie:draw()
+    local rate = math.floor(age * 256 / 7)
+    local expected = 5360 + cdivTrunc((5360 - 4096) * (rate - 255), 255)
+    Assert.equal(live.animScale, expected, "the real child scale follows its life rate at age " .. age)
+  end
+  Assert.equal(live.animScale, 4637, "the real child scale reaches its mid-life value")
+  local late = drawBytes(movie, scope, 512, 384)
+  Assert.isTrue(early ~= late, "the growing child repaints real stage pixels")
+  movie:dispose()
+end
+
+---@param scope table test scope owning GPU readbacks
+---@param context table runner context owning skip
+local function heartgold_starter_child_scale_is_blocked_without_a_dump(scope, context)
+  if not RomImporter.isReady("heartgold") then
+    context:skip(
+      "BLOCKED: HeartGold starter child scale needs a user-owned HeartGold dump; "
+        .. "only SoulSilver is ready here, so the sourced life-curve leg cannot run for HeartGold "
+        .. "and is never faked"
+    )
+  end
+  local scenes = loadScenes("heartgold")
+  local emitterOne = nil
+  for _, record in ipairs(scenes[4].particles.emitters) do
+    if record.id == 1 then
+      emitterOne = record
+    end
+  end
+  Assert.notNil(emitterOne, "HeartGold scene 4 keeps its source emitter 1")
+  Assert.notNil(emitterOne.child, "HeartGold emitter 1 keeps its child block")
+end
+
 local function soulsilver_skip_is_source_gated_and_gpu_stays_bounded(scope, context)
   local versionId = selectedVersionId(context)
   local baseline = love.graphics.getStats()
@@ -7199,6 +7289,8 @@ local T = GraphicsSmoke.suite({
   ["soulsilver source town wipe slopes with the scanline"] = soulsilver_source_town_wipe_slopes_with_the_scanline,
   ["heartgold town wipe is blocked without a dump"] = heartgold_town_wipe_is_blocked_without_a_dump,
   ["soulsilver source starter paints its authored frame"] = soulsilver_source_starter_paints_its_authored_frame,
+  ["soulsilver starter child scale follows its life curve"] = soulsilver_starter_child_scale_follows_its_life_curve,
+  ["heartgold starter child scale is blocked without a dump"] = heartgold_starter_child_scale_is_blocked_without_a_dump,
   ["heartgold starter frame is blocked without a dump"] = heartgold_starter_frame_is_blocked_without_a_dump,
   ["sourced panorama pixels match wrapped source art"] = sourced_panorama_for_edition,
   ["heartgold panorama wrap is blocked without a dump"] = heartgold_panorama_wrap_is_blocked_without_a_dump,
