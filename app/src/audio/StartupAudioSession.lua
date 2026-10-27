@@ -20,6 +20,7 @@ local GameAudio = require("game.hgss.src.audio.GameAudio")
 ---@field fadeStarted boolean
 ---@field disposed boolean
 ---@field diagnostic string|nil
+---@field private _openingVoiceAccepted boolean|nil
 local StartupAudioSession = {}
 StartupAudioSession.__index = StartupAudioSession
 
@@ -96,23 +97,30 @@ end
 
 -- Restarts the per-entry music/skip/fade latches for another movie/title
 -- pass without clearing the bound cry. Cancels a pending fade so its
--- delayed stop cannot fire after the next entry starts.
+-- delayed stop cannot fire after the next entry starts. Discards prior
+-- title output so the next movie admission primes its own track.
 function StartupAudioSession:beginMovieCycle()
   if self.disposed then
     return
   end
   self.openingStarted = false
+  self._openingVoiceAccepted = nil
   self.titleStarted = false
   self.skipNotified = false
   self.fadeStarted = false
   self.fadeTicks = nil
+  if self.sink ~= nil and type(self.sink.resetForNewTrack) == "function" then
+    self.sink:resetForNewTrack()
+  end
 end
 
 -- Starts the opening movie track exactly once. A session created after the
 -- movie already ended never replays it; the title entry replaces it below.
 -- Confirms only a successful start: a rejected play stays unlatched for
--- retry, a disposed or title-born session refuses.
+-- retry, an unprimed host stays unlatched without restarting the accepted
+-- voice, a disposed or title-born session refuses.
 ---@return boolean acknowledged
+---@return string? reason
 function StartupAudioSession:beginOpening()
   if self.disposed or self.titleStarted then
     return false
@@ -120,7 +128,20 @@ function StartupAudioSession:beginOpening()
   if self.openingStarted then
     return true
   end
-  self.sound:playMusic(OPENING_THEME)
+  if not self._openingVoiceAccepted then
+    local accepted = self.sound:playMusic(OPENING_THEME)
+    if accepted ~= true then
+      return false, "opening soundtrack voice not accepted"
+    end
+    self._openingVoiceAccepted = true
+  end
+  if self.sink == nil then
+    return false, "opening soundtrack output not primed"
+  end
+  local primed = self.sink:update()
+  if primed ~= true then
+    return false, "opening soundtrack output not primed"
+  end
   self.openingStarted = true
   return true
 end

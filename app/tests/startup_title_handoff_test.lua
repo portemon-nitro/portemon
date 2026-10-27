@@ -1699,4 +1699,432 @@ function T.tests.audio_failure_keeps_loader_visible_instead_of_silent_movie()
   runCase("rejected start")
 end
 
+-- Primed host output precedes the first movie tick: the admitted voice
+-- queues and starts before any source tick, a refused first queue holds
+-- the loader without a tick, and the retry reuses the accepted voice.
+function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
+  local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local MovieModule = require("libs.hgss.src.presentation.HgssOpeningMovie")
+  local LoveAudioSink = require("game.src.audio.LoveAudioSink")
+  local saved = {
+    forVersion = CacheFs.forVersion,
+    loadScenes = MovieModule.loadValidatedScenes,
+    movieNew = MovieModule.new,
+  }
+  local function fakeLoading()
+    local presentation = {}
+    function presentation:update() end
+    function presentation:resize() end
+    function presentation:draw() end
+    function presentation:dispose() end
+    function presentation:adoptGeneratedAssets()
+      return true
+    end
+    return presentation
+  end
+  local function fakeHostDrained(order)
+    local host = { sources = {}, soundData = {}, refuseQueue = false }
+    function host.newSoundData(frames, sampleRate, bitDepth, channels)
+      local data = {
+        frames = frames,
+        released = 0,
+      }
+      function data:getSample() return 0 end
+      function data:getSampleCount() return frames end
+      function data:getChannelCount() return channels end
+      function data:setSample() end
+      function data:release() self.released = self.released + 1 end
+      host.soundData[#host.soundData + 1] = data
+      return data
+    end
+    function host.newQueueableSource(sampleRate, bitDepth, channels, bufferCount)
+      local source = {
+        queueCalls = {},
+        playCalls = 0,
+        playing = false,
+        free = bufferCount,
+        released = 0,
+      }
+      function source:queue(data)
+        if host.refuseQueue then
+          return false
+        end
+        self.queueCalls[#self.queueCalls + 1] = data
+        order[#order + 1] = "primed"
+        self.free = self.free - 1
+      end
+      function source:play()
+        self.playCalls = self.playCalls + 1
+        self.playing = true
+        return true
+      end
+      function source:isPlaying() return self.playing end
+      function source:getFreeBufferCount() return self.free end
+      function source:release() self.released = self.released + 1 end
+      host.sources[#host.sources + 1] = source
+      return source
+    end
+    return host
+  end
+  local function buildSession(host, playCounter)
+    local sound = {}
+    function sound:playMusic(_)
+      playCounter.count = playCounter.count + 1
+      return true
+    end
+    function sound:play() end
+    function sound:playCry() end
+    function sound:fadeMusicOut() end
+    function sound:stopMusic() end
+    function sound:updateSoundFrame() end
+    local renderer = {}
+    function renderer:render(frames)
+      local out = {}
+      for _ = 1, frames * 2 do out[#out + 1] = 0 end
+      return out
+    end
+    local sink = LoveAudioSink.new({
+      audio = host,
+      sound = host,
+      renderer = renderer,
+      sampleRate = 32768,
+    })
+    return StartupAudioSession.new({
+      versionId = "heartgold",
+      titleRecord = { crySpeciesId = 250 },
+      audioComposition = { sound = sound, sink = sink },
+    }), sink
+  end
+  local function fakeHostMilestones()
+    local host = {}
+    function host.requestMilestone(name, _)
+      if name == "startup-audio" or name == "startup-loader" or name == "startup-title" then
+        return true, nil
+      end
+      return false, nil
+    end
+    function host.requestOpeningScene(_, _) return true, nil end
+    return host
+  end
+  local ok, err = xpcall(function()
+    -- Refused first queue holds the loader without a tick and without a
+    -- duplicated voice on retry.
+    do
+      local order = {}
+      local ticks = 0
+      local host = fakeHostDrained(order)
+      host.refuseQueue = true
+      local playCounter = { count = 0 }
+      local session, _ = buildSession(host, playCounter)
+      local movie = {}
+      function movie:updateFixed() ticks = ticks + 1 order[#order + 1] = "tick" end
+      function movie:draw() end
+      function movie:resize() end
+      function movie:skipAllowed() return false end
+      function movie:requestSkip() return false end
+      function movie:isFinished() return false end
+      function movie:sceneNumber() return 1 end
+      function movie:dispose() end
+      CacheFs.forVersion = function(_) return {} end
+      MovieModule.loadValidatedScenes = function() return { {}, {}, {}, {}, {} } end
+      MovieModule.new = function(_) return movie end
+      local state = StartupTitleState.new({
+        versionId = "heartgold",
+        epoch = 11,
+        derivedAssets = fakeHostMilestones(),
+        stageMenu = function() error("refused queue never stages a menu") end,
+        onFinished = function() error("refused queue never finishes") end,
+        onSwitchEdition = function() end,
+        isCurrent = function() return true end,
+        width = 800,
+        height = 600,
+        initialImport = false,
+        loading = fakeLoading(),
+        audio = { openingReady = function() return session:beginOpening() end },
+      })
+      for _ = 1, 5 do state:update(1 / 30) end
+      Assert.isFalse(state.phase == "movie", "a refused first queue never admits the movie")
+      Assert.equal(ticks, 0, "a refused first queue advances no source tick")
+      Assert.equal(playCounter.count, 1, "the refused priming still accepts the voice once")
+      host.refuseQueue = false
+      for _ = 1, 5 do state:update(1 / 30) end
+      Assert.isTrue(state.phase == "movie", "the retry primes and admits the movie")
+      Assert.isTrue(ticks > 0, "the admitted movie ticks")
+      Assert.equal(playCounter.count, 1, "the retry must not restart the accepted voice")
+      local firstPrimed, firstTick = nil, nil
+      for index, kind in ipairs(order) do
+        if kind == "primed" and firstPrimed == nil then firstPrimed = index end
+        if kind == "tick" and firstTick == nil then firstTick = index end
+      end
+      Assert.notNil(firstPrimed, "the retry queues host output")
+      Assert.notNil(firstTick, "the admitted movie ticks")
+      Assert.isTrue(firstPrimed < firstTick, "queue and start precede the first movie tick")
+      state:dispose()
+      session:dispose()
+    end
+  end, debug.traceback)
+  CacheFs.forVersion = saved.forVersion
+  MovieModule.loadValidatedScenes = saved.loadScenes
+  MovieModule.new = saved.movieNew
+  if not ok then error(err, 0) end
+end
+
+-- Output loss during an active movie is visible and bounded: the active
+-- movie stops ticking with its diagnostic, releases once, leaves other
+-- phases alone, and a replay primes a fresh track.
+function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_track()
+  local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local MovieModule = require("libs.hgss.src.presentation.HgssOpeningMovie")
+  local LoveAudioSink = require("game.src.audio.LoveAudioSink")
+  local saved = {
+    forVersion = CacheFs.forVersion,
+    loadScenes = MovieModule.loadValidatedScenes,
+    movieNew = MovieModule.new,
+    appState = App.state,
+    appAudio = App.startupAudioSession,
+    appError = App.startupAudioError,
+    appEpoch = App.epoch,
+    appVersion = App.selectedVersionId,
+    appService = App.service,
+    appImporter = App.importer,
+    appWarmup = App._startupWarmup,
+    appPending = App._pendingImport,
+    appProvisioner = App.provisioner,
+  }
+  local function fakeLoading()
+    local presentation = {}
+    function presentation:update() end
+    function presentation:resize() end
+    function presentation:draw() end
+    function presentation:dispose() end
+    function presentation:adoptGeneratedAssets() return true end
+    return presentation
+  end
+  local ok, err = xpcall(function()
+    -- Direct movie loss stops ticks and shows the movie diagnostic while a
+    -- title phase ignores the same signal.
+    local ticks = 0
+    local movie = {}
+    function movie:updateFixed() ticks = ticks + 1 end
+    function movie:draw() end
+    function movie:resize() end
+    function movie:skipAllowed() return false end
+    function movie:requestSkip() return false end
+    function movie:isFinished() return false end
+    function movie:sceneNumber() return 1 end
+    function movie:dispose() end
+    local milestones = {}
+    function milestones.requestMilestone(name, _)
+      if name == "startup-audio" or name == "startup-loader" or name == "startup-title" then
+        return true, nil
+      end
+      return false, nil
+    end
+    function milestones.requestOpeningScene(_, _) return true, nil end
+    CacheFs.forVersion = function(_) return {} end
+    MovieModule.loadValidatedScenes = function() return { {}, {}, {}, {}, {} } end
+    MovieModule.new = function(_) return movie end
+    local state = StartupTitleState.new({
+      versionId = "heartgold",
+      epoch = 23,
+      derivedAssets = milestones,
+      stageMenu = function() error("loss test never stages a menu") end,
+      onFinished = function() error("loss test never finishes") end,
+      onSwitchEdition = function() end,
+      isCurrent = function() return true end,
+      width = 800,
+      height = 600,
+      initialImport = false,
+      loading = fakeLoading(),
+      audio = { openingReady = function() return true end },
+    })
+    for _ = 1, 5 do state:update(1 / 30) end
+    Assert.equal(state.phase, "movie", "the movie admits before output loss")
+    local admittedTicks = ticks
+    Assert.isTrue(admittedTicks > 0, "the admitted movie ticks")
+    state:openingAudioFailed("synthetic output loss")
+    Assert.notNil(state.audioError, "the active movie records its output diagnostic")
+    for _ = 1, 5 do state:update(1 / 30) end
+    Assert.equal(ticks, admittedTicks, "no further movie ticks follow output loss")
+    local status = state:_status()
+    Assert.notNil(status, "the lost movie keeps a visible diagnostic")
+    -- A title phase never adopts a movie-phase loss.
+    local titleState = StartupTitleState.new({
+      versionId = "heartgold",
+      epoch = 24,
+      derivedAssets = milestones,
+      stageMenu = function() return { draw = function() end, dispose = function() end } end,
+      onFinished = function() end,
+      onSwitchEdition = function() end,
+      isCurrent = function() return true end,
+      width = 800,
+      height = 600,
+      initialImport = false,
+      loading = fakeLoading(),
+      audio = { openingReady = function() return true end },
+    })
+    titleState.phase = "title"
+    titleState:openingAudioFailed("synthetic output loss")
+    Assert.isNil(titleState.audioError, "title and menu never adopt a movie output loss")
+    state:dispose()
+    titleState:dispose()
+    -- Replay from title discards prior title output before priming the new movie track.
+    local host = {
+      sources = {},
+      refuseQueue = false,
+    }
+    function host.newSoundData(frames, sampleRate, bitDepth, channels)
+      local data = {}
+      function data:getSample() return 0 end
+      function data:getSampleCount() return frames end
+      function data:getChannelCount() return channels end
+      function data:setSample() end
+      function data:release() end
+      return data
+    end
+    function host.newQueueableSource(sampleRate, bitDepth, channels, bufferCount)
+      local source = { queueCalls = {}, playCalls = 0, playing = false, free = bufferCount, released = 0 }
+      function source:queue(data)
+        if host.refuseQueue then host.refuseQueue = false return false end
+        self.queueCalls[#self.queueCalls + 1] = data
+        self.free = self.free - 1
+      end
+      function source:play() self.playCalls = self.playCalls + 1 self.playing = true return true end
+      function source:isPlaying() return self.playing end
+      function source:getFreeBufferCount() return self.free end
+      function source:release() self.released = self.released + 1 end
+      host.sources[#host.sources + 1] = source
+      return source
+    end
+    local playCalls = 0
+    local sound = {}
+    function sound:playMusic(_)
+      playCalls = playCalls + 1
+      return true
+    end
+    function sound:play() end
+    function sound:playCry() end
+    function sound:fadeMusicOut() end
+    function sound:stopMusic() end
+    function sound:updateSoundFrame() end
+    local renderer = {}
+    function renderer:render(frames)
+      local out = {}
+      for _ = 1, frames * 2 do out[#out + 1] = 0 end
+      return out
+    end
+    local sink = LoveAudioSink.new({ audio = host, sound = host, renderer = renderer, sampleRate = 32768 })
+    local session = StartupAudioSession.new({
+      versionId = "heartgold",
+      titleRecord = { crySpeciesId = 250 },
+      audioComposition = { sound = sound, sink = sink },
+    })
+    Assert.isTrue(session:beginOpening(), "the first movie track primes")
+    local firstSource = host.sources[1]
+    Assert.notNil(firstSource, "the first track owns a host queue")
+    Assert.isTrue(#firstSource.queueCalls > 0, "the first track queues")
+    session:beginMovieCycle()
+    Assert.isTrue(firstSource.released == 1, "replay discards the prior title output queue")
+    host.refuseQueue = true
+    do
+      local ok, acknowledged = pcall(session.beginOpening, session)
+      Assert.isFalse(ok and acknowledged == true, "a refused new queue never inherits old buffers")
+    end
+    Assert.isTrue(session:beginOpening(), "the fresh track primes after its retry")
+    Assert.isTrue(#host.sources >= 2, "the fresh track owns a new host queue")
+    Assert.equal(playCalls, 2, "the replayed entry admits its own voice once despite the refused retry")
+    session:dispose()
+    -- App routes a failing sink only to its active movie epoch.
+    local releases = 0
+    local failingSink = {
+      updates = 0,
+    }
+    function failingSink:update()
+      self.updates = self.updates + 1
+      error("synthetic later output failure")
+    end
+    function failingSink:release() releases = releases + 1 end
+    function failingSink:resetForNewTrack() end
+    local appSound = {}
+    function appSound:playMusic(_)
+      return true
+    end
+    function appSound:play() end
+    function appSound:playCry() end
+    function appSound:fadeMusicOut() end
+    function appSound:stopMusic() end
+    function appSound:updateSoundFrame() end
+    local appSession = StartupAudioSession.new({
+      versionId = "soulsilver",
+      titleRecord = { crySpeciesId = 249 },
+      audioComposition = { sound = appSound, sink = failingSink },
+    })
+    local appTicks = 0
+    local appMovie = {}
+    function appMovie:updateFixed() appTicks = appTicks + 1 end
+    function appMovie:draw() end
+    function appMovie:resize() end
+    function appMovie:skipAllowed() return false end
+    function appMovie:requestSkip() return false end
+    function appMovie:isFinished() return false end
+    function appMovie:sceneNumber() return 1 end
+    function appMovie:dispose() end
+    MovieModule.new = function(_) return appMovie end
+    local appState = StartupTitleState.new({
+      versionId = "soulsilver",
+      epoch = 31,
+      derivedAssets = milestones,
+      stageMenu = function() error("app routing test never stages a menu") end,
+      onFinished = function() error("app routing test never finishes") end,
+      onSwitchEdition = function() end,
+      isCurrent = function(epoch) return epoch == 31 end,
+      width = 800,
+      height = 600,
+      initialImport = false,
+      loading = fakeLoading(),
+      audio = { openingReady = function() return true end },
+    })
+    for _ = 1, 5 do appState:update(1 / 30) end
+    Assert.equal(appState.phase, "movie", "the app movie admits before routing")
+    local ticksBeforeFailure = appTicks
+    App.state = appState
+    App.startupAudioSession = appSession
+    App.startupAudioError = nil
+    App.epoch = 31
+    App.selectedVersionId = "soulsilver"
+    App.service = nil
+    App.importer = nil
+    App._startupWarmup = nil
+    App._pendingImport = nil
+    App.provisioner = nil
+    App.update(1 / 30)
+    Assert.notNil(appState.audioError, "the active movie adopts the routed failure")
+    Assert.isNil(App.startupAudioSession, "the failed session releases exactly once")
+    Assert.equal(releases, 1, "the failed sink releases exactly once")
+    local ticksAfterFailure = appTicks
+    App.update(1 / 30)
+    Assert.equal(appTicks, ticksAfterFailure, "no further movie ticks follow the routed loss")
+    Assert.isTrue(ticksAfterFailure >= ticksBeforeFailure, "routing never rewinds admitted ticks")
+    appState:dispose()
+    if App.state == appState then App.state = nil end
+    App.startupAudioSession = nil
+  end, debug.traceback)
+  CacheFs.forVersion = saved.forVersion
+  MovieModule.loadValidatedScenes = saved.loadScenes
+  MovieModule.new = saved.movieNew
+  App.state = saved.appState
+  App.startupAudioSession = saved.appAudio
+  App.startupAudioError = saved.appError
+  App.epoch = saved.appEpoch
+  App.selectedVersionId = saved.appVersion
+  App.service = saved.appService
+  App.importer = saved.appImporter
+  App._startupWarmup = saved.appWarmup
+  App._pendingImport = saved.appPending
+  App.provisioner = saved.appProvisioner
+  if not ok then error(err, 0) end
+end
+
 return T

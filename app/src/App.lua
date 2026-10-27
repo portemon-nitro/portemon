@@ -1287,9 +1287,30 @@ function App.update(dt)
     local ok, failure = pcall(audio.update, audio, dt)
     if not ok then
       App._recordStartupAudioError(failure)
+      local state = App.state
+      if
+        state ~= nil
+        and getmetatable(state) == StartupTitleState
+        and state.phase == "movie"
+        and state.epoch == App.epoch
+        and App.selectedVersionId == state.versionId
+      then
+        pcall(state.openingAudioFailed, state, tostring(failure))
+      end
       App._releaseStartupAudio()
     elseif audio.diagnostic ~= nil then
       App._recordStartupAudioError(audio.diagnostic)
+      local state = App.state
+      if
+        state ~= nil
+        and getmetatable(state) == StartupTitleState
+        and state.phase == "movie"
+        and state.epoch == App.epoch
+        and App.selectedVersionId == state.versionId
+      then
+        pcall(state.openingAudioFailed, state, tostring(audio.diagnostic))
+        App._releaseStartupAudio()
+      end
     end
   end
 end

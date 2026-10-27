@@ -10,6 +10,7 @@ local function composition(failSinkUpdate)
   local sound = {}
   function sound:playMusic(sequence)
     events[#events + 1] = { "music", sequence }
+    return true
   end
   function sound:playCry(species, pattern)
     events[#events + 1] = { "cry", species, pattern }
@@ -32,6 +33,7 @@ local function composition(failSinkUpdate)
     if failSinkUpdate then
       error("synthetic host output failure")
     end
+    return true
   end
   function sink:release()
     self.releases = self.releases + 1
@@ -362,6 +364,7 @@ function T.tests.opening_start_confirms_only_a_successful_play()
       error("synthetic play failure")
     end
     played[#played + 1] = sequence
+    return true
   end
   function flaky:play(sequence)
     played[#played + 1] = sequence
@@ -370,10 +373,16 @@ function T.tests.opening_start_confirms_only_a_successful_play()
   function flaky:fadeMusicOut() end
   function flaky:stopMusic() end
   function flaky:updateSoundFrame() end
+  local retriedSink = { updates = 0 }
+  function retriedSink:update()
+    self.updates = self.updates + 1
+    return true
+  end
+  function retriedSink:release() end
   local retried = StartupAudioSession.new({
     versionId = "heartgold",
     titleRecord = { crySpeciesId = 250 },
-    audioComposition = { sound = flaky, sink = nil },
+    audioComposition = { sound = flaky, sink = retriedSink },
   })
   local failure = Assert.throws(function()
     retried:beginOpening()
@@ -395,6 +404,94 @@ function T.tests.opening_start_confirms_only_a_successful_play()
     { "music", "SEQ_GS_POKEMON_THEME" },
   }, "the title-born session keeps only its title track")
   titleSession:dispose()
+end
+
+-- A rejected underlying voice never admits the movie: the semantic identity
+-- still tracks the request, the start reports refusal, and no host output
+-- is claimed.
+function T.tests.rejected_opening_voice_holds_the_start_without_priming_output()
+  local playCalls = 0
+  local current = nil
+  local sound = {}
+  function sound:playMusic(sequence)
+    playCalls = playCalls + 1
+    current = 7
+    return false
+  end
+  function sound:play() end
+  function sound:playCry() end
+  function sound:fadeMusicOut() end
+  function sound:stopMusic() end
+  function sound:updateSoundFrame() end
+  function sound:currentMusic()
+    return current
+  end
+  local sink = { updates = 0, releases = 0 }
+  function sink:update()
+    self.updates = self.updates + 1
+    return true
+  end
+  function sink:release()
+    self.releases = self.releases + 1
+  end
+  local session = StartupAudioSession.new({
+    versionId = "soulsilver",
+    titleRecord = { crySpeciesId = 249 },
+    audioComposition = { sound = sound, sink = sink },
+  })
+  local acknowledged, reason = session:beginOpening()
+  Assert.isFalse(acknowledged, "a rejected voice must not acknowledge the opening")
+  Assert.notNil(reason, "the refusal carries a diagnostic")
+  Assert.equal(current, 7, "the semantic identity still tracks the request")
+  Assert.equal(session.openingStarted, false, "the opening latch stays clear")
+  Assert.equal(sink.updates, 0, "no host output is claimed without an accepted voice")
+  local second, _ = session:beginOpening()
+  Assert.isFalse(second, "the unlatched start stays unacknowledged")
+  Assert.equal(playCalls, 2, "an unaccepted voice retries instead of latching")
+  session:dispose()
+  Assert.equal(sink.releases, 1, "the borrowed sink releases exactly once")
+end
+
+-- An accepted voice without primed output holds the start for retry: the
+-- retry must not restart the voice, and only primed output acknowledges.
+function T.tests.accepted_voice_without_primed_output_holds_for_retry()
+  local playCalls = 0
+  local sound = {}
+  function sound:playMusic(_)
+    playCalls = playCalls + 1
+    return true
+  end
+  function sound:play() end
+  function sound:playCry() end
+  function sound:fadeMusicOut() end
+  function sound:stopMusic() end
+  function sound:updateSoundFrame() end
+  local primed = false
+  local sink = { updates = 0, releases = 0 }
+  function sink:update()
+    self.updates = self.updates + 1
+    return primed
+  end
+  function sink:release()
+    self.releases = self.releases + 1
+  end
+  function sink:resetForNewTrack() end
+  local session = StartupAudioSession.new({
+    versionId = "heartgold",
+    titleRecord = { crySpeciesId = 250 },
+    audioComposition = { sound = sound, sink = sink },
+  })
+  Assert.isFalse(session:beginOpening(), "unprimed output must not acknowledge the opening")
+  Assert.equal(session.openingStarted, false, "the opening latch stays clear without priming")
+  Assert.equal(playCalls, 1, "the voice is attempted once")
+  primed = true
+  Assert.isTrue(session:beginOpening(), "primed output acknowledges the opening")
+  Assert.equal(session.openingStarted, true, "the opening latch sets only after priming")
+  Assert.equal(playCalls, 1, "the retry must not restart the accepted voice")
+  Assert.isTrue(session:beginOpening(), "the admitted opening repeats as acknowledged")
+  Assert.equal(playCalls, 1, "repeats never replay the voice")
+  session:dispose()
+  Assert.equal(sink.releases, 1, "the borrowed sink releases exactly once")
 end
 
 return { tests = T.tests }
