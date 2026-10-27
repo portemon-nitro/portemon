@@ -3024,7 +3024,7 @@ function T.independent_engine_windows_mask_planes_through_flips()
   Assert.equal(#mainScissors, 3, "every main plane draws under its own clip")
   Assert.isTrue(hasScissor({ mainScissors[1] }, 0, 0, 256, 192), "main BG2 paints the whole target")
   Assert.isTrue(
-    hasScissor({ mainScissors[2] }, 128, 0, 128, 192),
+    hasScissor({ mainScissors[2] }, 128, 0, 127, 192),
     "main BG1 paints only its inside band from the authored right edge"
   )
   Assert.isTrue(hasScissor({ mainScissors[3] }, 0, 0, 256, 192), "main OBJ paints wherever the mask allows")
@@ -3036,7 +3036,7 @@ function T.independent_engine_windows_mask_planes_through_flips()
   Assert.equal(#subScissors, 3, "every sub plane draws under its own clip")
   Assert.isTrue(hasScissor({ subScissors[1] }, 0, 0, 256, 192), "sub BG2 paints the whole target")
   Assert.isTrue(
-    hasScissor({ subScissors[2] }, 0, 0, 128, 192),
+    hasScissor({ subScissors[2] }, 0, 0, 127, 192),
     "sub BG1 paints only its inside band from the authored left edge"
   )
   Assert.isTrue(hasScissor({ subScissors[3] }, 0, 0, 256, 192), "sub OBJ paints wherever the mask allows")
@@ -3050,9 +3050,9 @@ function T.independent_engine_windows_mask_planes_through_flips()
       "the flip preserves every main window region"
     )
   end
-  -- The manual second-register override splits the main target horizontally:
-  -- only its band edges can cut the BG1 rows the completed full-width pan
-  -- would otherwise paint whole.
+  -- The manual second-register override carries only the OBJ bit, so BG1
+  -- keeps the wrapped first window's full-height band and only the edge
+  -- column stays cut.
   for _ = 1, 8 do
     flipped:updateFixed()
   end
@@ -3060,8 +3060,8 @@ function T.independent_engine_windows_mask_planes_through_flips()
   flipped:draw()
   local overrideScissors = engineScissors(flipGraphics, flipped, "main", overrideBaseline)
   Assert.isTrue(
-    hasScissor(overrideScissors, 0, 64, 128, 64) or hasScissor(overrideScissors, 0, 64, 128, 65),
-    "the manual second-register override cuts its authored horizontal band"
+    hasScissor(overrideScissors, 1, 64, 255, 64),
+    "the manual second-register override keeps the wrapped first-window band row"
   )
   flipped:dispose()
   plain:dispose()
@@ -3187,7 +3187,7 @@ function T.window_sampling_truncates_toward_zero_and_applies_zero_ticks_immediat
   local sweepBaseline = #graphics.scissorIntersections
   movie:draw()
   local sweepScissors = engineScissors(graphics, movie, "main", sweepBaseline)
-  Assert.isTrue(hasScissor(sweepScissors, 136, 0, 120, 101), "negative window edges truncate toward zero")
+  Assert.isTrue(hasScissor(sweepScissors, 136, 0, 119, 100), "negative window edges truncate toward zero")
   -- A zero-duration assignment lands on its target rectangle immediately.
   for _ = 1, 3 do
     movie:updateFixed()
@@ -3195,7 +3195,7 @@ function T.window_sampling_truncates_toward_zero_and_applies_zero_ticks_immediat
   local snapBaseline = #graphics.scissorIntersections
   movie:draw()
   local snapScissors = engineScissors(graphics, movie, "main", snapBaseline)
-  Assert.isTrue(hasScissor(snapScissors, 10, 10, 11, 11), "a zero-tick window applies its target at once")
+  Assert.isTrue(hasScissor(snapScissors, 10, 10, 10, 10), "a zero-tick window applies its target at once")
   movie:dispose()
 end
 
@@ -3240,6 +3240,187 @@ function T.screen_flip_preserves_engine_window_state()
   end
   flipped:dispose()
   plain:dispose()
+end
+
+-- A full-width source assignment addresses two hardware registers: the
+-- second window keeps only its single edge column while the first window
+-- wraps around it, so each plane clips to its own register instead of an
+-- even half-screen split.
+function T.full_width_window_registers_isolate_a_single_column_second_window()
+  local root = sceneRoot(1)
+  local frontImage = root .. "layers/full-front.png"
+  local backImage = root .. "layers/full-back.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      { layer(0, frontImage, 256, 192, 0), layer(1, backImage, 256, 192, 1) },
+      { layer(0, root .. "layers/full-lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "reveal", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 20 } } },
+      {
+        windowEvent("reveal", 0, "main", windowRect(0, 0, 255, 192), windowRect(0, 0, 255, 192), 0, 1, 2),
+        {
+          op = "setWindowSecondary",
+          stepId = "reveal",
+          atStepTick = 0,
+          engine = "main",
+          rect = windowRect(0, 0, 64, 192),
+          insideMask = 2,
+        },
+        { op = "enableSkip", stepId = "reveal", atStepTick = 10 },
+        { op = "waitTicks", stepId = "reveal", atStepTick = 0, ticks = 20 },
+        { op = "finish", stepId = "reveal", atStepTick = 20 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 2 do
+    movie:updateFixed()
+  end
+  local baseline = #graphics.scissorIntersections
+  movie:draw()
+  local scissors = engineScissors(graphics, movie, "main", baseline)
+  -- The first window owns every column except the edge one, so the front
+  -- plane paints [1,256) while the second-window plane keeps only x=0:
+  -- the overlapped columns follow the first window, never the override.
+  Assert.isTrue(
+    hasScissor(scissors, 1, 0, 255, 192),
+    "the wrapped first window paints every column past the edge pixel"
+  )
+  Assert.isTrue(
+    hasScissor(scissors, 0, 0, 1, 192),
+    "the second window keeps only its single edge column"
+  )
+  movie:dispose()
+end
+
+-- A rectangle whose start edge lies past its end edge wraps across the
+-- right screen edge instead of vanishing: both disjoint spans clip.
+function T.wrapped_window_rectangles_split_across_the_screen_edge()
+  local root = sceneRoot(1)
+  local planeImage = root .. "layers/wrap-plane.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      { layer(1, planeImage, 256, 192, 1) },
+      { layer(0, root .. "layers/wrap-lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "hold", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 20 } } },
+      {
+        windowEvent("hold", 0, "main", windowRect(200, 0, 50, 192), windowRect(200, 0, 50, 192), 0, 3, 0),
+        { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 20 },
+        { op = "finish", stepId = "hold", atStepTick = 20 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 2 do
+    movie:updateFixed()
+  end
+  local baseline = #graphics.scissorIntersections
+  movie:draw()
+  local scissors = engineScissors(graphics, movie, "main", baseline)
+  Assert.isTrue(
+    hasScissor(scissors, 200, 0, 56, 192),
+    "the wrapped window paints its tail past the right edge"
+  )
+  Assert.isTrue(
+    hasScissor(scissors, 0, 0, 50, 192),
+    "the wrapped window paints its head from the left edge"
+  )
+  movie:dispose()
+end
+
+-- A zero-width rectangle covers no pixel: with clipping enabled and an
+-- outside mask that forbids the plane, nothing paints instead of falling
+-- back to one unrestricted full-target draw.
+function T.empty_window_rectangles_paint_nothing_under_clipping()
+  local root = sceneRoot(1)
+  local planeImage = root .. "layers/empty-plane.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      { layer(1, planeImage, 256, 192, 1) },
+      { layer(0, root .. "layers/empty-lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "hold", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 20 } } },
+      {
+        windowEvent("hold", 0, "main", windowRect(10, 0, 10, 192), windowRect(10, 0, 10, 192), 0, 31, 0),
+        { op = "enableSkip", stepId = "hold", atStepTick = 10 },
+        { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 20 },
+        { op = "finish", stepId = "hold", atStepTick = 20 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 2 do
+    movie:updateFixed()
+  end
+  local baseline = #graphics.scissorIntersections
+  movie:draw()
+  local scissors = engineScissors(graphics, movie, "main", baseline)
+  Assert.equal(#scissors, 0, "a zero-width window clips its plane away entirely")
+  movie:dispose()
+end
+
+-- A later pan rewrites both inside masks while leaving an explicitly
+-- programmed second rectangle where the source left it.
+function T.later_window_pans_rewrite_masks_without_resetting_the_second_rectangle()
+  local root = sceneRoot(1)
+  local frontImage = root .. "layers/rewrite-front.png"
+  local backImage = root .. "layers/rewrite-back.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      { layer(0, frontImage, 256, 192, 0), layer(1, backImage, 256, 192, 1) },
+      { layer(0, root .. "layers/rewrite-lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "reveal", events = { 1, 2, 3, 4, 5, 6 }, ["until"] = { kind = "duration", ticks = 20 } } },
+      {
+        windowEvent("reveal", 0, "main", windowRect(10, 0, 60, 100), windowRect(10, 0, 60, 100), 0, 1, 2),
+        {
+          op = "setWindowSecondary",
+          stepId = "reveal",
+          atStepTick = 0,
+          engine = "main",
+          rect = windowRect(0, 64, 255, 128),
+          insideMask = 2,
+        },
+        windowEvent("reveal", 5, "main", windowRect(100, 0, 200, 192), windowRect(100, 0, 200, 192), 0, 1, 2),
+        { op = "enableSkip", stepId = "reveal", atStepTick = 10 },
+        { op = "waitTicks", stepId = "reveal", atStepTick = 0, ticks = 20 },
+        { op = "finish", stepId = "reveal", atStepTick = 20 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 6 do
+    movie:updateFixed()
+  end
+  local baseline = #graphics.scissorIntersections
+  movie:draw()
+  local scissors = engineScissors(graphics, movie, "main", baseline)
+  -- The rewritten second-window mask now admits the front plane across
+  -- its whole authored band, while the back plane keeps its outside row.
+  -- The band ends at the exclusive edge, so its last column falls outside.
+  Assert.isTrue(
+    hasScissor(scissors, 0, 64, 255, 64),
+    "the later pan admits the front plane across the kept second rectangle"
+  )
+  Assert.isTrue(
+    hasScissor(scissors, 0, 0, 100, 64),
+    "the back plane keeps its outside row beside the later pan"
+  )
+  movie:dispose()
 end
 
 function T.failed_plane_draw_restores_scissor_state()

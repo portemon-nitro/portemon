@@ -213,10 +213,12 @@ end
 
 ---@class OpeningMovieWindow
 ---@field enabled boolean whether window clipping constrains the owning engine
----@field win0 table<string, unknown>? running WIN0 pan program with sampled rect
----@field win1 table<string, unknown>? WIN1 rectangle override with its inside mask
----@field win1Source string? "manual" once a direct override supersedes the helper span
+---@field win0Rect table<string, integer>? current first hardware rectangle in source coordinates
+---@field win1Rect table<string, integer>? current second hardware rectangle in source coordinates
+---@field win0InsideMask integer plane mask inside the first window
+---@field win1InsideMask integer plane mask inside the second window
 ---@field outsideMask integer plane mask where neither window covers
+---@field pan table<string, unknown>? running first-window pan program with staged endpoints
 
 ---@param manifest table<string, unknown> staged opening scene bundle
 ---@param sceneNumber integer expected 1..5 position
@@ -681,8 +683,24 @@ local function acquireSlot(self, manifest)
     blendPrograms = {},
     palette = nil,
     windows = {
-      main = { enabled = false, win0 = nil, win1 = nil, win1Source = nil, outsideMask = 0 },
-      sub = { enabled = false, win0 = nil, win1 = nil, win1Source = nil, outsideMask = 0 },
+      main = {
+        enabled = false,
+        win0Rect = nil,
+        win1Rect = nil,
+        win0InsideMask = 0,
+        win1InsideMask = 0,
+        outsideMask = 0,
+        pan = nil,
+      },
+      sub = {
+        enabled = false,
+        win0Rect = nil,
+        win1Rect = nil,
+        win0InsideMask = 0,
+        win1InsideMask = 0,
+        outsideMask = 0,
+        pan = nil,
+      },
     },
     townVisible = false,
     pool = nil,
@@ -1638,6 +1656,22 @@ local function copyWindowRect(rect)
   return { x1 = rect.x1, y1 = rect.y1, x2 = rect.x2, y2 = rect.y2 }
 end
 
+-- Retail position write shared by pan starts and sampled ticks: a
+-- full-width assignment addresses both registers (the second window keeps
+-- only its edge column while the first wraps around it); any other
+-- assignment moves only the first window and preserves the second
+-- rectangle the source left behind.
+---@param state OpeningMovieWindow engine window registers
+---@param rect table<string, integer> sampled source rectangle
+local function writeWindowPosition(state, rect)
+  if rect.x1 == 0 and rect.x2 == SOURCE_WIDTH - 1 then
+    state.win1Rect = { x1 = 0, y1 = rect.y1, x2 = 1, y2 = rect.y2 }
+    state.win0Rect = { x1 = 1, y1 = rect.y1, x2 = 0, y2 = rect.y2 }
+  else
+    state.win0Rect = copyWindowRect(rect)
+  end
+end
+
 -- Samples one rectangle edge the way the source pan task does: C integer
 -- division truncates toward zero, so a negative edge must round up, never
 -- down to the next whole pixel the way a floor would.
@@ -1665,36 +1699,42 @@ local function startWindowProgram(slot, event)
   -- A new assignment supersedes the running pan on the same engine: the
   -- superseded wait completes at once instead of hanging the step graph
   -- after the new rectangles take over.
-  local running = state.win0
+  local running = state.pan
   if running ~= nil and running.effect ~= nil then
     local effect = slot.effects[running.effect]
     if effect ~= nil then
       effect.done = true
     end
   end
+  -- Each assignment rewrites both inside masks and the outside mask the
+  -- way the source helper does; only the register geometry follows the
+  -- full-width rule below.
+  state.win0InsideMask = event.insideMask --[[@as integer]]
+  state.win1InsideMask = event.insideMask --[[@as integer]]
+  state.outsideMask = event.outsideMask --[[@as integer]]
+  state.enabled = true
   local program = {
     from = copyWindowRect(event.from),
     to = copyWindowRect(event.to),
     ticks = event.ticks,
     elapsed = 0,
-    rect = copyWindowRect(event.from),
-    insideMask = event.insideMask,
     effect = event.effect,
   }
+  state.pan = program
   if event.ticks == 0 then
-    program.rect = copyWindowRect(event.to)
+    writeWindowPosition(state, program.to)
     if event.effect ~= nil then
       slot.effects[event.effect] = { started = true, done = true }
     end
-  elseif event.effect ~= nil then
-    -- Completion is driven by the owning engine program in the continuous
-    -- step below, never by toggling display visibility, so only the engine
-    -- that runs the pan can retire its wait.
-    slot.effects[event.effect] = { started = true, done = false }
+  else
+    writeWindowPosition(state, program.from)
+    if event.effect ~= nil then
+      -- Completion is driven by the owning engine program in the continuous
+      -- step below, never by toggling display visibility, so only the engine
+      -- that runs the pan can retire its wait.
+      slot.effects[event.effect] = { started = true, done = false }
+    end
   end
-  state.win0 = program
-  state.outsideMask = event.outsideMask
-  state.enabled = true
 end
 
 ---@param self HgssOpeningMovie
@@ -1803,11 +1843,11 @@ local function applyEvent(self, slot, event)
     startWindowProgram(slot, event)
   elseif op == "setWindowSecondary" then
     -- A direct second-register override replaces only the second rectangle
-    -- and its mask on the same engine; the running WIN0 program and the
-    -- outside mask stay exactly as the source left them.
+    -- and its mask on the same engine; the running first-window program and
+    -- the outside mask stay exactly as the source left them.
     local state = windowState(slot, event.engine)
-    state.win1 = { rect = copyWindowRect(event.rect), insideMask = event.insideMask }
-    state.win1Source = "manual"
+    state.win1Rect = copyWindowRect(event.rect)
+    state.win1InsideMask = event.insideMask --[[@as integer]]
   elseif op == "setWindowVisible" then
     -- Display visibility only gates clipping; stored rectangles, masks, and
     -- running waits survive the toggle either way.
@@ -2037,7 +2077,7 @@ end
 ---@param engine string source engine owning the sampled program
 local function advanceWindowProgram(slot, engine)
   local state = slot.windows[engine]
-  local program = state.win0
+  local program = state.pan
   if program == nil or program.ticks == 0 or program.elapsed >= program.ticks then
     return
   end
@@ -2045,7 +2085,7 @@ local function advanceWindowProgram(slot, engine)
   -- and the final tick lands exactly on the authored target rectangle.
   program.elapsed = program.elapsed + 1
   if program.elapsed >= program.ticks then
-    program.rect = copyWindowRect(program.to)
+    writeWindowPosition(state, program.to)
     if program.effect ~= nil then
       local effect = slot.effects[program.effect]
       if effect ~= nil then
@@ -2054,12 +2094,12 @@ local function advanceWindowProgram(slot, engine)
     end
     return
   end
-  program.rect = {
+  writeWindowPosition(state, {
     x1 = sampleWindowEdge(program.from.x1, program.to.x1, program.elapsed, program.ticks),
     y1 = sampleWindowEdge(program.from.y1, program.to.y1, program.elapsed, program.ticks),
     x2 = sampleWindowEdge(program.from.x2, program.to.x2, program.elapsed, program.ticks),
     y2 = sampleWindowEdge(program.from.y2, program.to.y2, program.elapsed, program.ticks),
-  }
+  })
 end
 
 -- Retained full-engine brightness by kind: only the retail close kinds
@@ -2873,71 +2913,103 @@ local function maskAllows(mask, planeIndex)
   return math.floor(mask / (2 ^ planeIndex)) % 2 == 1
 end
 
----@param rect table<string, integer> source rectangle with inclusive edges
----@return integer x1, integer y1, integer x2, integer y2 half-open span clipped to the source canvas
-local function canvasSpan(rect)
-  return math.max(rect.x1, 0),
-    math.max(rect.y1, 0),
-    math.min(rect.x2 + 1, SOURCE_WIDTH),
-    math.min(rect.y2 + 1, SOURCE_HEIGHT)
+---@class OpeningMovieWindowSpanSet
+---@field spans number[][] disjoint half-open spans as {x1, y1, x2, y2}
+---@field mask integer plane mask inside the window
+
+---@class OpeningMovieWindowSpans
+---@field win0 OpeningMovieWindowSpanSet? resolved first-window spans with its inside mask
+---@field win1 OpeningMovieWindowSpanSet? resolved second-window spans with its inside mask
+---@field outside integer plane mask where neither window covers
+
+-- Projects one hardware rectangle onto the source canvas: end edges are
+-- exclusive, so equal endpoints cover nothing, and a start edge past the
+-- end edge wraps across the right screen edge into two disjoint spans.
+---@param rect table<string, integer> source rectangle with exclusive end edges
+---@return number[][]? disjoint half-open spans, or nil when the rectangle covers nothing
+local function rectSpans(rect)
+  local y1 = math.max(rect.y1, 0)
+  local y2 = math.min(rect.y2, SOURCE_HEIGHT)
+  if y1 >= y2 then
+    return nil
+  end
+  local x1, x2 = rect.x1, rect.x2
+  if x1 == x2 then
+    return nil
+  end
+  if x1 < x2 then
+    local clippedX1 = math.max(x1, 0)
+    local clippedX2 = math.min(x2, SOURCE_WIDTH)
+    if clippedX1 >= clippedX2 then
+      return nil
+    end
+    return { { clippedX1, y1, clippedX2, y2 } }
+  end
+  local spans = {}
+  if x1 < SOURCE_WIDTH then
+    spans[#spans + 1] = { math.max(x1, 0), y1, SOURCE_WIDTH, y2 }
+  end
+  if x2 > 0 then
+    spans[#spans + 1] = { 0, y1, math.min(x2, SOURCE_WIDTH), y2 }
+  end
+  if #spans == 0 then
+    return nil
+  end
+  return spans
 end
 
--- Resolves the two hardware spans for one engine: the running WIN0 pan and
--- the WIN1 override, each with its inside mask, plus the outside mask.
--- Returns nil while clipping is disabled or no span covers anything, so a
--- plane paints its whole target in one draw exactly as before.
+-- Resolves the two hardware register spans for one engine: the first and
+-- second rectangles, each with its inside mask, plus the outside mask.
+-- Returns nil only while clipping is disabled; an enabled engine whose
+-- rectangles cover nothing still honors its outside mask instead of
+-- painting its whole target in one draw.
 ---@param slot OpeningMovieSlot scene slot
 ---@param engine string source engine owning the window registers
----@return table<string, unknown>? spans with win0, win1, and outside mask
+---@return OpeningMovieWindowSpans? spans with win0, win1, and outside mask
 local function windowSpans(slot, engine)
   local state = slot.windows[engine]
   if state == nil or not state.enabled then
     return nil
   end
   local win0, win1 = nil, nil
-  local program = state.win0
-  if program ~= nil and program.rect ~= nil then
-    local outer = program.rect
-    local y1 = math.max(outer.y1, 0)
-    local y2 = math.min(outer.y2 + 1, SOURCE_HEIGHT)
-    if y1 < y2 then
-      if outer.x1 == 0 and outer.x2 == 255 then
-        -- Full-width helper: the source spans the display with two
-        -- touching rectangles carrying the same inside mask, so a later
-        -- direct override replaces exactly the second one.
-        win0 = { x1 = 0, y1 = y1, x2 = SOURCE_WIDTH / 2, y2 = y2, mask = program.insideMask }
-        if state.win1Source ~= "manual" then
-          win1 = { x1 = SOURCE_WIDTH / 2, y1 = y1, x2 = SOURCE_WIDTH, y2 = y2, mask = program.insideMask }
-        end
-      else
-        local x1 = math.max(outer.x1, 0)
-        local x2 = math.min(outer.x2 + 1, SOURCE_WIDTH)
-        if x1 < x2 then
-          win0 = { x1 = x1, y1 = y1, x2 = x2, y2 = y2, mask = program.insideMask }
-        end
-      end
+  if state.win0Rect ~= nil then
+    local spans = rectSpans(state.win0Rect)
+    if spans ~= nil then
+      win0 = { spans = spans, mask = state.win0InsideMask }
     end
   end
-  if state.win1Source == "manual" and state.win1 ~= nil then
-    local x1, y1, x2, y2 = canvasSpan(state.win1.rect)
-    if x1 < x2 and y1 < y2 then
-      win1 = { x1 = x1, y1 = y1, x2 = x2, y2 = y2, mask = state.win1.insideMask }
-    else
-      win1 = nil
+  if state.win1Rect ~= nil then
+    local spans = rectSpans(state.win1Rect)
+    if spans ~= nil then
+      win1 = { spans = spans, mask = state.win1InsideMask }
     end
-  end
-  if win0 == nil and win1 == nil then
-    return nil
   end
   return { win0 = win0, win1 = win1, outside = state.outsideMask }
 end
 
+-- Whether any disjoint span of one window fully covers a partition cell.
+---@param win OpeningMovieWindowSpanSet resolved window with half-open spans and its inside mask
+---@param x1 number cell left edge
+---@param x2 number cell right edge
+---@param y1 number cell top edge
+---@param y2 number cell bottom edge
+---@return boolean true when the cell lies inside the window
+local function spanCovers(win, x1, x2, y1, y2)
+  for _, span in ipairs(win.spans) do
+    if x1 >= span[1] and x2 <= span[3] and y1 >= span[2] and y2 <= span[4] then
+      return true
+    end
+  end
+  return false
+end
+
 -- Partitions the source canvas along the active span edges and merges each
--- row into the disjoint rectangles where one plane may paint. WIN0 wins
--- over WIN1 on overlap; anything else follows the outside mask.
----@param spans table<string, unknown>? resolved engine spans
+-- row into the disjoint rectangles where one plane may paint. The first
+-- window wins over the second on overlap; anything else follows the
+-- outside mask.
+---@param spans OpeningMovieWindowSpans? resolved engine spans
 ---@param planeIndex integer background slot 0..3, or 4 for OBJ pixels
----@return table<integer, integer[]>? allowed rectangles, or nil for one full draw
+---@return number[][]? allowed rectangles, or nil for one full draw
 local function maskRegions(spans, planeIndex)
   if spans == nil then
     return nil
@@ -2945,12 +3017,14 @@ local function maskRegions(spans, planeIndex)
   local win0, win1 = spans.win0, spans.win1
   local outside = spans.outside
   local xs, ys = { 0, SOURCE_WIDTH }, { 0, SOURCE_HEIGHT }
-  for _, span in ipairs({ win0, win1 }) do
-    if span ~= nil then
-      xs[#xs + 1] = span.x1
-      xs[#xs + 1] = span.x2
-      ys[#ys + 1] = span.y1
-      ys[#ys + 1] = span.y2
+  for _, win in ipairs({ win0, win1 }) do
+    if win ~= nil then
+      for _, span in ipairs(win.spans) do
+        xs[#xs + 1] = span[1]
+        xs[#xs + 1] = span[3]
+        ys[#ys + 1] = span[2]
+        ys[#ys + 1] = span[4]
+      end
     end
   end
   table.sort(xs)
@@ -2964,10 +3038,10 @@ local function maskRegions(spans, planeIndex)
         local x1, x2 = xs[x], xs[x + 1]
         if x1 < x2 then
           local mask = outside
-          if win1 ~= nil and x1 >= win1.x1 and x2 <= win1.x2 and y1 >= win1.y1 and y2 <= win1.y2 then
+          if win1 ~= nil and spanCovers(win1, x1, x2, y1, y2) then
             mask = win1.mask
           end
-          if win0 ~= nil and x1 >= win0.x1 and x2 <= win0.x2 and y1 >= win0.y1 and y2 <= win0.y2 then
+          if win0 ~= nil and spanCovers(win0, x1, x2, y1, y2) then
             mask = win0.mask
           end
           if maskAllows(mask, planeIndex) then
