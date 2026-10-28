@@ -3317,6 +3317,7 @@ local function scene4_authored_shutters_match_source_rows_on_both_engines(scope,
   movie:dispose()
 end
 
+
 -- The scene-4 slide-in runs one ten-tick window per engine in opposite
 -- directions: main reveals left to right, sub right to left. Between the
 -- midway and completed frames the still-scrolling background shifts both
@@ -8169,6 +8170,116 @@ local T = GraphicsSmoke.suite({
   ["scene 4 close retires starters and holds black until top neutral"] = scene4_close_retires_starters_and_holds_black_until_top_neutral,
   ["scene 4 starter beats hold emission and flip until their cases"] = scene4_starter_beats_hold_emission_and_flip_until_their_cases,
   ["scene 4 authored shutters match source rows on both engines"] = scene4_authored_shutters_match_source_rows_on_both_engines,
+-- Scene 4 opens both hands on the same tick as both portrait pans: the
+-- decoded hand sequences give each hand one-tick opening frames followed
+-- by a long dwell frame that covers the whole hold, so the two hands stay
+-- on the same cell while the portrait backgrounds pan in mirror and the
+-- composed engines move together, hold still together, and retire together.
+  ["scene four hands stay together with their portrait pans"] = function(scope, context)
+    local versionId = selectedVersionId(context)
+    local movie = openMovie(scope, versionId, 512, 384, "dual")
+    -- Both hands share one entrance beat with both pans: same placement,
+    -- same clip cell, mirrored background offsets, and windows revealing on
+    -- both engines while the entry mapping keeps the main engine lowered.
+    local function assertHandsTogether(label)
+      local slot = assert(movie.current, "the running movie owns its current slot")
+      local hand1 = assert(slot.spriteInstances["hand1"], label .. " keeps its first hand")
+      local hand2 = assert(slot.spriteInstances["hand2"], label .. " keeps its second hand")
+      Assert.equal(hand1.x, hand2.x, label .. " places both hands at the same x")
+      Assert.equal(hand1.y, hand2.y, label .. " places both hands at the same y")
+      Assert.isTrue(hand1.visible == true, label .. " shows the first hand")
+      Assert.isTrue(hand2.visible == true, label .. " shows the second hand")
+      Assert.equal(hand1.displayFrame, hand2.displayFrame, label .. " paints both hands from the same frame")
+      local first = assert(hand1.playback, label .. " runs the first hand")
+      local second = assert(hand2.playback, label .. " runs the second hand")
+      Assert.equal(first.cell, second.cell, label .. " holds both hands on the same clip cell")
+      Assert.equal(first.current, second.current, label .. " advances both hands in lockstep")
+      Assert.equal(first.elapsed, second.elapsed, label .. " shares dwell time across both hands")
+      local mainPan = assert(slot.backgrounds.main[1], label .. " pans the main portrait")
+      local subPan = assert(slot.backgrounds.sub[1], label .. " pans the sub portrait")
+      Assert.equal(mainPan.scrollX, -subPan.scrollX, label .. " mirrors the portrait pans")
+      Assert.equal(mainPan.scrollY, 0, label .. " keeps the main portrait level")
+      Assert.equal(subPan.scrollY, 0, label .. " keeps the sub portrait level")
+      Assert.equal(slot.mainPhysical, "lower", label .. " keeps the main engine lowered")
+    end
+    advanceToSceneStep(movie, 4, "slide-in", 20000)
+    movie:updateFixed()
+    assertHandsTogether("the first entrance tick")
+    -- The dispatch tick runs two animation units, consuming the two
+    -- one-tick opening frames both decoded hand sequences start with, so
+    -- both hands already show the third frame together.
+    local slot = assert(movie.current, "the running movie owns its current slot")
+    Assert.equal(slot.spriteInstances["hand1"].playback.cell, 3, "both hands open on the third frame together")
+    movie:draw()
+    local mainFirst = sourceBytes(scope, movie.mainCanvas)
+    local subFirst = sourceBytes(scope, movie.subCanvas)
+    advance(movie, 8)
+    assertHandsTogether("the ninth entrance tick")
+    -- Both hands rest on the long dwell frame the decoded sequences give
+    -- them after ten one-tick steps.
+    slot = assert(movie.current, "the running movie owns its current slot")
+    Assert.equal(slot.spriteInstances["hand1"].playback.cell, 11, "both hands settle on the dwell frame together")
+    movie:draw()
+    local mainNinth = sourceBytes(scope, movie.mainCanvas)
+    local subNinth = sourceBytes(scope, movie.subCanvas)
+    Assert.isTrue(
+      changeFraction(mainFirst, mainNinth, 256, 192) > 0.05,
+      "the main portrait and hand move together"
+    )
+    Assert.isTrue(
+      changeFraction(subFirst, subNinth, 256, 192) > 0.05,
+      "the sub portrait and hand move together"
+    )
+    movie:updateFixed()
+    Assert.equal(currentStepId(movie), "hold", "the completed slide hands off to the hold")
+    assertHandsTogether("the settled hold")
+    slot = assert(movie.current, "the running movie owns its current slot")
+    Assert.equal(slot.backgrounds.main[1].scrollX, 0, "the main portrait lands centered")
+    Assert.equal(slot.backgrounds.sub[1].scrollX, 0, "the sub portrait lands centered")
+    Assert.isTrue(slot.windows.main.enabled, "the main reveal stays open through the hold")
+    Assert.isTrue(slot.windows.sub.enabled, "the sub reveal stays open through the hold")
+    movie:draw()
+    local mainHold = sourceBytes(scope, movie.mainCanvas)
+    local subHold = sourceBytes(scope, movie.subCanvas)
+    advance(movie, 10)
+    assertHandsTogether("mid-hold")
+    Assert.equal(currentStepId(movie), "hold", "the hold outlasts the dwell frame")
+    movie:draw()
+    Assert.equal(sourceBytes(scope, movie.mainCanvas), mainHold, "the held main portrait paints no drift")
+    Assert.equal(sourceBytes(scope, movie.subCanvas), subHold, "the held sub portrait paints no drift")
+    advanceToSceneStep(movie, 4, "slide-out", 20000)
+    assertHandsTogether("the exit onset")
+    movie:updateFixed()
+    movie:draw()
+    local mainOutFirst = sourceBytes(scope, movie.mainCanvas)
+    local subOutFirst = sourceBytes(scope, movie.subCanvas)
+    advance(movie, 8)
+    Assert.equal(currentStepId(movie), "slide-out", "the exit slide spans its ten ticks")
+    assertHandsTogether("the ninth exit tick")
+    movie:draw()
+    Assert.isTrue(
+      changeFraction(mainOutFirst, sourceBytes(scope, movie.mainCanvas), 256, 192) > 0.05,
+      "the main portrait slides out"
+    )
+    Assert.isTrue(
+      changeFraction(subOutFirst, sourceBytes(scope, movie.subCanvas), 256, 192) > 0.05,
+      "the sub portrait slides out"
+    )
+    advanceToSceneStep(movie, 4, "appear-chikorita", 20000)
+    movie:updateFixed()
+    slot = assert(movie.current, "the running movie owns its current slot")
+    Assert.isTrue(slot.spriteInstances["hand1"].visible == false, "the first hand retires with the slide")
+    Assert.isTrue(slot.spriteInstances["hand2"].visible == false, "the second hand retires with the slide")
+    Assert.isTrue(slot.backgrounds.main[1].visible == false, "the main portrait retires with the hands")
+    Assert.isTrue(slot.backgrounds.sub[1].visible == false, "the sub portrait retires with the hands")
+    Assert.isFalse(slot.windows.main.enabled, "the main reveal closes with the hands")
+    Assert.isFalse(slot.windows.sub.enabled, "the sub reveal closes with the hands")
+    Assert.isTrue(
+      slot.spriteInstances["chikorita"].visible == true,
+      "the retired slide hands off to the first starter"
+    )
+    movie:dispose()
+  end,
   ["slide-in windows reveal opposite halves on each engine"] = slide_in_windows_reveal_opposite_halves_on_each_engine,
   ["every scene paints its authored beat on both engines"] = every_scene_paints_its_authored_beat_on_both_engines,
   ["single-screen stages show the authored active engine"] = single_screen_stages_show_the_authored_active_engine,
