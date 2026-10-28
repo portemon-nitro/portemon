@@ -314,6 +314,8 @@ function T.boxed_summary_past_party_range_keeps_demand_on_the_selected_subject()
   Assert.equal(demand.portraitSelectors[1], status.facts.portraitSelector, "boxed demand follows the selection")
   Assert.deepEqual(demand.iconKeys, { status.facts.iconKey }, "boxed preparation carries only the selected icon")
   Assert.equal(demand.revision, mons:boxRevision(), "boxed demand keys off the box revision")
+  local subjectChrome = assert(demand.chrome, "boxed demand carries its chrome paths")
+  Assert.isTrue(#subjectChrome >= 1, "boxed demand names at least the selected ball visual")
   state:dispose()
 end
 

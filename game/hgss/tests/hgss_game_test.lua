@@ -799,7 +799,7 @@ function T.oak_boot_survives_preparation_demand_failure()
     context.oakState = disposableState("oak")
     local host = readyHost()
     host.requestMilestone = function(name, _)
-      if name == "new-game-intro" then
+      if name == "new-game-intro" or name == "field-planning" or name == "field-runtime" then
         return true
       end
       error("injected preparation demand failure", 0)

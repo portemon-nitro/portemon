@@ -389,8 +389,8 @@ end
 -- Only the pages behind the given icon keys become compilation and image
 -- work: two slots sharing a page deduplicate to one request, egg and form
 -- variants on another page share that page, and the unrelated third page
--- is never requested, borrowed, or adopted. Adoption stays bounded to
--- one new page lease per preparation update.
+-- is never requested, borrowed, or adopted. Every ready page adopts
+-- together.
 function T.preparation_requests_only_the_pages_behind_the_given_keys()
   local compiled = {}
   local pool, inner, requested = iconPool()
@@ -406,7 +406,7 @@ function T.preparation_requests_only_the_pages_behind_the_given_keys()
   Assert.equal(#requested, 2, "only demanded pages reach image enrollment")
   Assert.isTrue(ready == true or ready == false, "preparation reports its readiness")
   Assert.isNil(failure, "no failure while demanded pages prepare: " .. tostring(failure))
-  Assert.isTrue(inner.uploads - uploadsBefore <= 1, "one preparation update adopts at most one new page lease")
+  Assert.equal(inner.uploads - uploadsBefore, 2, "both ready pages adopt together on one preparation update")
   provider:release()
 end
 

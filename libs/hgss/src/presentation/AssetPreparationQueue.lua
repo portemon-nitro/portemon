@@ -17,6 +17,8 @@
 ---@field _tokens table<integer, table<string, unknown>>
 ---@field _demand integer[]
 ---@field _prefetch integer[]
+---@field _inflight table<string, integer> identical queued-or-running job key to owning primary token
+---@field _forwarded table<integer, integer> dispatched token to promoted owner after a running primary is cancelled
 ---@field _workerBusyToken integer?
 ---@field _workerFailure string?
 ---@field _nextToken integer
@@ -99,6 +101,8 @@ function AssetPreparationQueue.new(cacheFs, options)
     _tokens = {},
     _demand = {},
     _prefetch = {},
+    _inflight = {},
+    _forwarded = {},
     _workerBusyToken = nil,
     _workerFailure = nil,
     _nextToken = 0,
@@ -239,13 +243,16 @@ function AssetPreparationQueue:_enterTerminalFailure(cause)
   end
   self._workerFailure = "asset preparation worker stopped: " .. tostring(cause)
   for _, record in pairs(self._tokens) do
-    if record.state == "queued" or record.state == "running" then
+    if record.state == "queued" or record.state == "running" or record.state == "linked" then
       record.state = "failed"
       record.failure = self._workerFailure
+      record.link = nil
     end
   end
   self._demand = {}
   self._prefetch = {}
+  self._inflight = {}
+  self._forwarded = {}
   self._workerBusyToken = nil
 end
 
@@ -284,7 +291,8 @@ end
 -- the logical token was cancelled and no longer exists), then publish or
 -- discard the logical result. Replacement dispatch is left to the public
 -- operation that observes the freed slot. Already resolved tokens are never
--- overwritten by late replies.
+-- overwritten by late replies. A reply for a cancelled primary fans out to
+-- the promoted follower through the forwarding table instead.
 ---@param response unknown
 function AssetPreparationQueue:_absorb(response)
   if type(response) ~= "table" then
@@ -293,7 +301,16 @@ function AssetPreparationQueue:_absorb(response)
   if self._workerBusyToken == response.token then
     self._workerBusyToken = nil
   end
-  local record = self._tokens[response.token]
+  local token = self._forwarded[response.token]
+  if token ~= nil then
+    self._forwarded[response.token] = nil
+    if self._workerBusyToken == token then
+      self._workerBusyToken = nil
+    end
+  else
+    token = response.token
+  end
+  local record = self._tokens[token]
   if record == nil then
     return
   end
@@ -301,55 +318,106 @@ function AssetPreparationQueue:_absorb(response)
     return
   end
   if response.ok then
-    record.state = "ready"
-    if record.kind == "audio-sample" then
-      record.payload = {
-        byteData = response.byteData,
-        size = response.size,
-        path = response.path,
-      }
-      record.payloadBytes = self:_payloadByteSize(record.kind, record.payload)
-      self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
-      return
-    end
-    if record.kind == "image-derivative" then
-      record.payload = {
-        sourceHash = response.sourceHash,
-        pixelHash = response.pixelHash,
-        width = response.width,
-        height = response.height,
-        kind = response.representation,
-        colors = response.colors,
-        indexData = response.indexData,
-        paletteData = response.paletteData,
-      }
-      record.payloadBytes = self:_payloadByteSize(record.kind, record.payload)
-      self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
-      return
-    end
-    record.payload = {
-      vertexData = response.vertexData,
-      indexData = response.indexData,
-      vertexCount = response.vertexCount,
-      indexCount = response.indexCount,
-      indexType = response.indexType,
-      centerX = response.centerX,
-      centerY = response.centerY,
-      centerZ = response.centerZ,
-      minX = response.minX,
-      maxX = response.maxX,
-      minY = response.minY,
-      maxY = response.maxY,
-      minZ = response.minZ,
-      maxZ = response.maxZ,
-      imageData = response.imageData,
-    }
-    record.payloadBytes = self:_payloadByteSize(record.kind, record.payload)
-    self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
+    self:_publishOk(record, response)
   else
     record.state = "failed"
     record.failure = response.error
   end
+  self:_detachFollowers(token, record, response)
+end
+
+---@param record table<string, unknown>
+---@param response table<string, unknown>
+function AssetPreparationQueue:_publishOk(record, response)
+  record.state = "ready"
+  if record.kind == "audio-sample" then
+    record.payload = {
+      byteData = response.byteData,
+      size = response.size,
+      path = response.path,
+    }
+    record.payloadBytes = self:_payloadByteSize(record.kind, record.payload)
+    self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
+    return
+  end
+  if record.kind == "image-derivative" then
+    record.payload = {
+      sourceHash = response.sourceHash,
+      pixelHash = response.pixelHash,
+      width = response.width,
+      height = response.height,
+      kind = response.representation,
+      colors = response.colors,
+      indexData = response.indexData,
+      paletteData = response.paletteData,
+    }
+    record.payloadBytes = self:_payloadByteSize(record.kind, record.payload)
+    self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
+    return
+  end
+  record.payload = {
+    vertexData = response.vertexData,
+    indexData = response.indexData,
+    vertexCount = response.vertexCount,
+    indexCount = response.indexCount,
+    indexType = response.indexType,
+    centerX = response.centerX,
+    centerY = response.centerY,
+    centerZ = response.centerZ,
+    minX = response.minX,
+    maxX = response.maxX,
+    minY = response.minY,
+    maxY = response.maxY,
+    minZ = response.minZ,
+    maxZ = response.maxZ,
+    imageData = response.imageData,
+  }
+  record.payloadBytes = self:_payloadByteSize(record.kind, record.payload)
+  self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
+end
+
+-- Detach every follower linked to a settled primary: each follower
+-- observes the same outcome through its own payload copy, so take-once
+-- and cancellation semantics stay per-token while the worker ran once.
+---@param primary integer settled primary token
+---@param record table<string, unknown> settled primary record
+---@param response table<string, unknown> worker reply behind the outcome
+function AssetPreparationQueue:_detachFollowers(primary, record, response)
+  local key = record.kind .. "\0" .. record.path
+  if self._inflight[key] == primary then
+    self._inflight[key] = nil
+  end
+  for _, otherRecord in pairs(self._tokens) do
+    if otherRecord.link == primary then
+      otherRecord.link = nil
+      if response.ok then
+        self:_publishOk(otherRecord, response)
+      else
+        otherRecord.state = "failed"
+        otherRecord.failure = response.error
+      end
+    end
+  end
+end
+
+-- Upgrade a queued job to demand priority without dispatching it again.
+-- A running job is never preempted; the upgrade only affects list order.
+---@param primary integer owning primary token
+function AssetPreparationQueue:_ensureDemand(primary)
+  local record = self._tokens[primary]
+  if record == nil or record.priority == "demand" or record.state ~= "queued" then
+    return
+  end
+  record.priority = "demand"
+  for _, pending in ipairs({ self._demand, self._prefetch }) do
+    for index, queued in ipairs(pending) do
+      if queued == primary then
+        table.remove(pending, index)
+        break
+      end
+    end
+  end
+  self._demand[#self._demand + 1] = primary
 end
 
 -- Drain every pending worker reply without blocking.
@@ -378,10 +446,32 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
     error(self._workerFailure, 0)
   end
   local resolved = self._cacheFs:resolve(logicalPath)
+  local key = kind .. "\0" .. resolved
   self._nextToken = self._nextToken + 1
   local token = self._nextToken
+  -- An identical queued-or-running job runs once: the duplicate links to
+  -- it and observes the shared outcome through its own token, so
+  -- per-frame re-requests never stack duplicate worker decodes.
+  local primary = self._inflight[key]
+  local primaryRecord = primary ~= nil and self._tokens[primary] or nil
+  if primaryRecord ~= nil and (primaryRecord.state == "queued" or primaryRecord.state == "running") then
+    self._tokens[token] = {
+      kind = kind,
+      logicalPath = logicalPath,
+      path = resolved,
+      priority = priority,
+      state = "linked",
+      link = primary,
+    }
+    if priority == "demand" then
+      self:_ensureDemand(primary)
+    end
+    self:_dispatch()
+    return token
+  end
   self._tokens[token] =
     { kind = kind, logicalPath = logicalPath, path = resolved, priority = priority, state = "queued" }
+  self._inflight[key] = token
   if priority == "demand" then
     self._demand[#self._demand + 1] = token
   else
@@ -446,6 +536,45 @@ function AssetPreparationQueue:cancel(token)
       end
     end
   end
+  if record.link ~= nil then
+    return
+  end
+  -- A cancelled primary hands its job to its oldest follower instead of
+  -- abandoning the shared work: the worker runs once either way.
+  local key = record.kind .. "\0" .. record.path
+  if self._inflight[key] ~= token then
+    return
+  end
+  self._inflight[key] = nil
+  local heir = nil
+  for other, otherRecord in pairs(self._tokens) do
+    if otherRecord.link == token and (heir == nil or other < heir) then
+      heir = other
+    end
+  end
+  if heir == nil then
+    return
+  end
+  local heirRecord = assert(self._tokens[heir], "promoted follower is missing")
+  heirRecord.link = nil
+  self._inflight[key] = heir
+  for _, otherRecord in pairs(self._tokens) do
+    if otherRecord.link == token then
+      otherRecord.link = heir
+    end
+  end
+  if record.state == "running" then
+    heirRecord.state = "running"
+    self._forwarded[token] = heir
+    self._workerBusyToken = heir
+  else
+    heirRecord.state = "queued"
+    if heirRecord.priority == "demand" then
+      self._demand[#self._demand + 1] = heir
+    else
+      self._prefetch[#self._prefetch + 1] = heir
+    end
+  end
 end
 
 -- Upgrade a queued prefetch token to demand without dispatching it again:
@@ -460,6 +589,10 @@ function AssetPreparationQueue:promote(token, priority)
   assert(priority == "demand", "unknown preparation priority " .. tostring(priority))
   local record = self._tokens[token]
   assert(record, "unknown preparation token")
+  if record.link ~= nil then
+    self:_ensureDemand(record.link)
+    return
+  end
   if record.state ~= "queued" or record.priority == "demand" then
     return
   end
@@ -513,6 +646,8 @@ function AssetPreparationQueue:release()
   self._tokens = {}
   self._demand = {}
   self._prefetch = {}
+  self._inflight = {}
+  self._forwarded = {}
   self._workerBusyToken = nil
   self._readyPayloadBytes = 0
   pcall(function()

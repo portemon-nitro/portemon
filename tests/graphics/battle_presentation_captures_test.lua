@@ -2860,6 +2860,118 @@ function T.compact_active_lead_draws_its_exact_canonical_portrait(scope, context
   end
 end
 
+-- An indexed portrait page resolves through its staged palette in the
+-- picture pass: the shared page texture plus its palette image renders
+-- the palette colors, never the raw index bytes. A non-zero frame
+-- origin crops the same page window the pooled renderer submits, so
+-- shared page uploads never crop on the game thread. Fully synthetic,
+-- so it needs no user-owned dump.
+function T.indexed_portrait_page_resolves_through_its_staged_palette(scope, _)
+  local BattlePicturePass = require("libs.hgss.src.presentation.BattlePicturePass")
+  local indexBytes = string.char(0, 0, 1, 1, 1, 1, 0, 0)
+  local pageData = love.image.newImageData(4, 2, "r8", indexBytes)
+  local pageImage = scope:own(love.graphics.newImage(pageData))
+  local paletteBytes = string.char(255, 0, 0, 255, 0, 0, 255, 255)
+  local paletteData = love.image.newImageData(2, 1, "rgba8", paletteBytes)
+  local paletteImage = scope:own(love.graphics.newImage(paletteData))
+  paletteImage:setFilter("nearest", "nearest")
+  local pass = BattlePicturePass.new(love.graphics)
+  local layer = pass:render(love.graphics, {
+    {
+      image = pageImage,
+      palette = paletteImage,
+      centerX = 128,
+      centerY = 96,
+      zCenter = 0,
+      pictureVisible = true,
+      width = 4,
+      height = 2,
+      tintR = 1,
+      tintG = 1,
+      tintB = 1,
+      alpha = 1,
+      xOffset = 0,
+      yOffset = 0,
+      xOffset2 = 0,
+      yOffset2 = 0,
+      frameX = 0,
+      frameY = 0,
+      frameW = 4,
+      frameH = 2,
+    },
+  })
+  local data = scope:own(layer:newImageData())
+  -- The pooled renderer submits a non-zero frame origin with its cell
+  -- size: the same page cropped to columns 1-2 renders only those
+  -- palette texels at the same destination origin.
+  local cropLayer = pass:render(love.graphics, {
+    {
+      image = pageImage,
+      palette = paletteImage,
+      centerX = 128,
+      centerY = 96,
+      zCenter = 0,
+      pictureVisible = true,
+      width = 2,
+      height = 2,
+      tintR = 1,
+      tintG = 1,
+      tintB = 1,
+      alpha = 1,
+      xOffset = 0,
+      yOffset = 0,
+      xOffset2 = 0,
+      yOffset2 = 0,
+      frameX = 1,
+      frameY = 0,
+      frameW = 2,
+      frameH = 2,
+    },
+  })
+  local cropData = scope:own(cropLayer:newImageData())
+  pass:release()
+  local expected = {
+    { 255, 0, 0 },
+    { 255, 0, 0 },
+    { 0, 0, 255 },
+    { 0, 0, 255 },
+    { 0, 0, 255 },
+    { 0, 0, 255 },
+    { 255, 0, 0 },
+    { 255, 0, 0 },
+  }
+  local slot = 0
+  for y = 0, 1 do
+    for x = 0, 3 do
+      slot = slot + 1
+      local red, green, blue, alpha = data:getPixel(88 + x, 56 + y)
+      local want = expected[slot]
+      Assert.equal(quantize(red), want[1], "the indexed page resolves its palette red at " .. x .. "," .. y)
+      Assert.equal(quantize(green), want[2], "the indexed page resolves its palette green at " .. x .. "," .. y)
+      Assert.equal(quantize(blue), want[3], "the indexed page resolves its palette blue at " .. x .. "," .. y)
+      Assert.equal(quantize(alpha), 255, "the indexed page stays opaque at " .. x .. "," .. y)
+    end
+  end
+  local cropExpected = {
+    { 255, 0, 0 },
+    { 0, 0, 255 },
+    { 0, 0, 255 },
+    { 255, 0, 0 },
+  }
+  local cropSlot = 0
+  for y = 0, 1 do
+    for x = 0, 1 do
+      cropSlot = cropSlot + 1
+      local red, green, blue, alpha = cropData:getPixel(88 + x, 56 + y)
+      local want = cropExpected[cropSlot]
+      Assert.equal(quantize(red), want[1], "the frame window crops its palette red at " .. x .. "," .. y)
+      Assert.equal(quantize(green), want[2], "the frame window crops its palette green at " .. x .. "," .. y)
+      Assert.equal(quantize(blue), want[3], "the frame window crops its palette blue at " .. x .. "," .. y)
+      Assert.equal(quantize(alpha), 255, "the frame window stays opaque at " .. x .. "," .. y)
+    end
+  end
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {
@@ -2869,6 +2981,7 @@ suite.metadata.derivedAssets = {
   "field-ui:global",
   "move-icons:global",
   "mon-icon-page:4",
+  "mon-portrait-page:0",
   "mon-portrait-page:34",
   "mon-portrait-page:86",
   "mon-portrait-page:164",

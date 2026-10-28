@@ -23,6 +23,7 @@ local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 ---@field onCancel fun()?
 ---@field isCurrent fun(epoch: integer): boolean
 ---@field onTitleReady fun()?
+---@field beginWarmup fun()?
 ---@field audio table<string, function>?
 ---@field initialImport boolean
 ---@field phase string
@@ -90,6 +91,7 @@ local OPENING_SCENE_COUNT = 5
 ---@field onCancel fun()? returns to the edition selector
 ---@field isCurrent fun(epoch: integer): boolean
 ---@field onTitleReady (fun())?
+---@field beginWarmup (fun())? fires the save-agnostic near/sweep prefetch once at title entry
 ---@field audio table<string, function>? borrowed App-owned callbacks
 ---@field initialImport boolean?
 ---@field loading StartupTitleLoading? one transferred C02 presentation; a default is built only on test/special paths
@@ -114,6 +116,9 @@ function StartupTitleState.new(options)
   assert(type(options.onFinished) == "function", "startup title requires the menu transfer")
   assert(type(options.onSwitchEdition) == "function", "startup title requires edition routing")
   assert(type(options.isCurrent) == "function", "startup title requires an epoch guard")
+  if options.beginWarmup ~= nil then
+    assert(type(options.beginWarmup) == "function", "startup title begins its warmup through a function")
+  end
   assert(type(options.width) == "number" and type(options.height) == "number")
   -- The normal App path transfers the single live boot presentation; only
   -- test and special selection paths that never pass C02 build a default.
@@ -140,6 +145,7 @@ function StartupTitleState.new(options)
     onCancel = options.onCancel,
     isCurrent = options.isCurrent,
     onTitleReady = options.onTitleReady,
+    beginWarmup = options.beginWarmup,
     audio = options.audio,
     initialImport = options.initialImport == true,
     phase = "loading",
@@ -270,6 +276,14 @@ function StartupTitleState:_startRequests()
   elseif audioFailure ~= nil then
     self.audioObserved = true
     self.audioError = audioFailure
+  end
+  -- Save-agnostic gameplay prefetch starts while the cinematic still
+  -- plays: the opening scenes above stay ahead on required/near
+  -- priority, so the movie covers the first worker rounds instead of
+  -- the menu. The product owner supplies the hook; without one the
+  -- title simply plays with no head start.
+  if type(self.beginWarmup) == "function" then
+    self.beginWarmup()
   end
   self:_notifyTitleReady()
   self:_maybeStartAudio()

@@ -3,10 +3,18 @@
 local FakeStartupTitleState = {}
 
 function FakeStartupTitleState.new(options)
-  local state = { kind = "startup-title", titleReady = false, finished = false, failure = nil }
+  local state = { kind = "startup-title", titleReady = false, finished = false, failure = nil, warmed = false }
   function state:update()
     if self.finished then
       return
+    end
+    -- Mirrors the production title contract: the save-agnostic warmup
+    -- fires once at title entry, before readiness and transfer.
+    if not self.warmed then
+      self.warmed = true
+      if options.beginWarmup ~= nil then
+        options.beginWarmup()
+      end
     end
     if not self.titleReady then
       self.titleReady = true

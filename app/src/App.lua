@@ -357,35 +357,54 @@ local function installMenu(versionId)
   App.setState(assert(menu))
 end
 
--- Installs the selected-version product menu and starts the one-time
--- speculative work that is useful while it remains open.
+-- Save-agnostic gameplay warmup fired once at opening title entry:
+-- near-priority milestones, the shared battle presentation, and
+-- background corpus authorization all enroll while the cinematic still
+-- plays, so the menu opens onto already-warming work. The optional
+-- first-play closure keeps its own title-readiness gate and starts
+-- separately. Every step is contained so warmup only records
+-- diagnostics, never throws back into the title journey. A stale entry
+-- enrolls nothing.
+---@param versionId string
+---@param epoch integer
+function App._beginSaveAgnosticWarmup(versionId, epoch)
+  if App.epoch ~= epoch or App.selectedVersionId ~= versionId then
+    return
+  end
+  local provisioner = App.provisioner
+  if provisioner == nil then
+    return
+  end
+  local hostOk, host = pcall(provisioner.gameHost, provisioner)
+  if hostOk and type(host) == "table" then
+    for _, name in ipairs({ "new-game-intro", "field-planning", "field-runtime" }) do
+      local ok, failure = pcall(host.requestMilestone, name, "near")
+      if not ok then
+        App.startupWarmupError = tostring(failure)
+      end
+    end
+    local battleOk, battleFailure = pcall(host.requestBattlePresentation, "near")
+    if not battleOk then
+      App.startupWarmupError = tostring(battleFailure)
+    end
+  end
+  local warmupOk, warmupFailure = pcall(provisioner.startBackgroundWarmup, provisioner)
+  if not warmupOk then
+    App.startupWarmupError = tostring(warmupFailure)
+  end
+end
+
+-- Installs the selected-version product menu. Save-agnostic warmup no
+-- longer starts here: the opening title entry fires it while the
+-- cinematic still plays, so the installed menu never re-enrolls it.
 ---@param versionId string
 ---@param stagedMenu table<string, unknown>?
 function App._launchMenuWithProvisioner(versionId, stagedMenu)
-  local provisioner = assert(App.provisioner, "selection has no provisioner")
   if stagedMenu == nil then
     installMenu(versionId)
   else
     assert(type(stagedMenu) == "table" and type(stagedMenu.dispose) == "function")
     App.setState(stagedMenu)
-  end
-  -- The transfer above is committed: every optional step below is
-  -- individually contained so it can only record a diagnostic, never throw
-  -- back into a rollback of the installed menu.
-  local host = provisioner:gameHost()
-  for _, name in ipairs({ "new-game-intro", "field-planning", "field-runtime" }) do
-    local ok, failure = pcall(host.requestMilestone, name, "near")
-    if not ok then
-      App.startupWarmupError = tostring(failure)
-    end
-  end
-  local battleOk, battleFailure = pcall(host.requestBattlePresentation, "near")
-  if not battleOk then
-    App.startupWarmupError = tostring(battleFailure)
-  end
-  local warmupOk, warmupFailure = pcall(provisioner.startBackgroundWarmup, provisioner)
-  if not warmupOk then
-    App.startupWarmupError = tostring(warmupFailure)
   end
 end
 
@@ -724,6 +743,9 @@ function App._continueSelectedVersion(versionId, options)
     end,
     onTitleReady = function()
       App._maybeStartFirstPlayWarmup(versionId, epoch)
+    end,
+    beginWarmup = function()
+      App._beginSaveAgnosticWarmup(versionId, epoch)
     end,
   }))
 end

@@ -694,9 +694,40 @@ local function battlerPicture(assets, battler, row)
   if battler.substitute == true then
     return nil
   end
-  local image = pictureImage(battlerImage(assets, battler))
+  local cell = battlerImage(assets, battler)
+  if cell == nil then
+    return nil
+  end
+  local image = pictureImage(cell)
   if image == nil then
     return nil
+  end
+  -- Pooled portrait cells draw a window of their shared atlas page:
+  -- the frame origin and size ride the picture so the isolated pass
+  -- crops the page to the staged cell. Owned crops, test images, and
+  -- headless descriptors carry no frame and keep their full-image
+  -- windows exactly.
+  local frameX, frameY, frameW, frameH, palette = 0, 0, nil, nil, nil
+  if type(cell) == "table" then
+    if type(cell.frameX) == "number" then
+      frameX = cell.frameX
+    end
+    if type(cell.frameY) == "number" then
+      frameY = cell.frameY
+    end
+    if type(cell.frameW) == "number" then
+      frameW = cell.frameW
+    end
+    if type(cell.frameH) == "number" then
+      frameH = cell.frameH
+    end
+    -- Indexed page borrows resolve through their palette image in the
+    -- isolated pass; owned crops and test images carry no palette and
+    -- sample straight.
+    local lease = cell.lease
+    if type(lease) == "table" and lease.palette ~= nil then
+      palette = lease.palette
+    end
   end
   local sourceHeight = numberOr(battler.height, 0) + numberOr(battler.sourceHeight, 0)
   local scaleX = numberOr(battler.scaleX, 1)
@@ -716,6 +747,11 @@ local function battlerPicture(assets, battler, row)
     centerX = row.settledX + numberOr(battler.entryDx, 0) + numberOr(battler.shakeDx, 0),
     centerY = row.settledY + sourceHeight + numberOr(battler.entryDy, 0),
     zCenter = row.depth,
+    frameX = frameX,
+    frameY = frameY,
+    frameW = frameW,
+    frameH = frameH,
+    palette = palette,
     pictureVisible = pictureVisible,
     width = pictureVisible and numberOr(battler.pictureWidth, 80) or 80 * scaleX,
     height = pictureVisible and numberOr(battler.pictureHeight, 80) or 80 * scaleY,

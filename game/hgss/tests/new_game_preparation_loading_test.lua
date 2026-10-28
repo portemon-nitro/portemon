@@ -15,6 +15,10 @@ local function keyedHost(overrides)
   local behavior = {
     introReady = false,
     introFailure = nil,
+    planningReady = false,
+    planningFailure = nil,
+    runtimeReady = false,
+    runtimeFailure = nil,
     walkerReady = false,
     walkerFailure = nil,
   }
@@ -46,10 +50,28 @@ local function keyedHost(overrides)
       end
       return behavior.introReady == true
     end
+    if name == "field-planning" then
+      if behavior.planningFailure ~= nil then
+        return false, behavior.planningFailure
+      end
+      return behavior.planningReady == true
+    end
+    if name == "field-runtime" then
+      if behavior.runtimeFailure ~= nil then
+        return false, behavior.runtimeFailure
+      end
+      return behavior.runtimeReady == true
+    end
     return false
   end
   function host.milestoneStatus(name)
     if name == "new-game-intro" and behavior.introReady then
+      return { state = "ready", ready = 1, total = 1 }
+    end
+    if name == "field-planning" and behavior.planningReady then
+      return { state = "ready", ready = 1, total = 1 }
+    end
+    if name == "field-runtime" and behavior.runtimeReady then
       return { state = "ready", ready = 1, total = 1 }
     end
     return { state = "pending", ready = 0, total = nil }
@@ -105,7 +127,7 @@ local function assertSharedDecorativeDemand(calls)
 end
 
 function T.draws_one_loader_frame_before_an_otherwise_ready_transfer()
-  local host = keyedHost({ introReady = true })
+  local host = keyedHost({ introReady = true, planningReady = true, runtimeReady = true })
   local readyCalls = 0
   local state = newEntry(host, function()
     readyCalls = readyCalls + 1
@@ -132,7 +154,12 @@ function T.requests_only_the_selected_pair_and_never_the_legacy_global_milestone
 end
 
 function T.failed_pair_art_stays_cosmetic_while_the_intro_gate_transfers()
-  local host = keyedHost({ introReady = true, walkerFailure = "injected walker failure" })
+  local host = keyedHost({
+    introReady = true,
+    planningReady = true,
+    runtimeReady = true,
+    walkerFailure = "injected walker failure",
+  })
   local readyCalls = 0
   local state = newEntry(host, function()
     readyCalls = readyCalls + 1

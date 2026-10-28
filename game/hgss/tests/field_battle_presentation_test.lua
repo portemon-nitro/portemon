@@ -1446,6 +1446,291 @@ function T.battle_ball_demands_wait_for_the_selected_game_host()
   envelope:dispose()
 end
 
+-- Admitting a launch enrolls its scene image on the shared owner
+-- while the required scene demand still stages. A consumed launch
+-- takes over the staged ticket instead of enrolling again and never
+-- cancels it; a launch torn down before its scene image is drawn
+-- cancels its unconsumed ticket exactly once instead of leaking
+-- worker interest.
+function T.admission_scene_ticket_takes_over_or_cancels_exactly_once()
+  local sceneKey = "general/plain/day"
+  local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)
+  local function newPool(state)
+    local pool = {}
+    function pool:request(path, _, _)
+      state.requests[#state.requests + 1] = path
+      return #state.requests
+    end
+    function pool:poll(_)
+      if state.gateOpen then
+        return "ready"
+      end
+      return "pending"
+    end
+    function pool:acquire(_)
+      return { image = {}, width = 8, height = 8 }
+    end
+    function pool:cancel(token)
+      state.cancels[#state.cancels + 1] = token
+    end
+    function pool:release(_) end
+    return pool
+  end
+  local function newEnvelope(pool, version)
+    local cacheFs = { versionId = version }
+    function cacheFs:loadLua(_)
+      return nil
+    end
+    return FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      windows = recordingWindows(),
+      text = recordingText(),
+      measureDisplay = function()
+        return dualMeasurement(version .. ":dual")
+      end,
+      graphics = {},
+      derivedAssets = {
+        requestBattleScene = function(_, _)
+          return false
+        end,
+      },
+      imagePool = pool,
+    })
+  end
+  local taken = { requests = {}, cancels = {}, gateOpen = false }
+  local envelope = newEnvelope(newPool(taken), "scene-takeover-probe")
+  local factory = envelope:factory()
+  factory({ launchId = "scene-takeover", environment = { sceneKey = sceneKey } })
+  Assert.deepEqual(taken.requests, { imagePath }, "admission enrolls the scene image before the build")
+  taken.gateOpen = true
+  local services = envelope:_preparationServices()
+  assert(services.drawable("scene:" .. sceneKey), "the drawable takes over the staged ticket once it is ready")
+  Assert.equal(#taken.requests, 1, "takeover enrolls nothing new")
+  envelope:dispose()
+  Assert.deepEqual(taken.cancels, {}, "a consumed ticket is never cancelled")
+  local dropped = { requests = {}, cancels = {}, gateOpen = false }
+  local droppedEnvelope = newEnvelope(newPool(dropped), "scene-drop-probe")
+  local droppedFactory = droppedEnvelope:factory()
+  droppedFactory({ launchId = "scene-drop", environment = { sceneKey = sceneKey } })
+  Assert.deepEqual(dropped.requests, { imagePath }, "admission enrolls the scene image before the build")
+  droppedEnvelope:dispose()
+  Assert.deepEqual(dropped.cancels, { 1 }, "teardown cancels the unconsumed staged ticket exactly once")
+end
+
+-- Fixed battle chrome pins at the envelope lifetime: a released HUD
+-- composite resolves from the pin without re-enrolling worker or GPU
+-- work, and the shared owner sees no return while the pin stands.
+function T.warm_fixed_drawables_survive_release_without_re_enrolling()
+  local versionId = readyVersions()[1]
+  local cacheFs = CacheFs.forVersion(versionId)
+  local requests, releases = {}, {}
+  local pool = {}
+  function pool:request(path, _, _)
+    requests[#requests + 1] = path
+    return #requests
+  end
+  function pool:poll(_)
+    return "ready"
+  end
+  function pool:acquire(_)
+    return { image = {}, width = 8, height = 8 }
+  end
+  function pool:cancel(_) end
+  function pool:release(lease)
+    releases[#releases + 1] = lease
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("warm-pin:dual")
+    end,
+    graphics = {},
+    imagePool = pool,
+  })
+  local services = envelope:_preparationServices()
+  local first = assert(services.drawable("hud:enemy"), "the HUD composite resolves")
+  Assert.equal(#requests, 1, "the first resolution enrolls once")
+  services.release("hud:enemy")
+  Assert.equal(#releases, 0, "release keeps the pinned borrow instead of returning it")
+  local second = assert(services.drawable("hud:enemy"), "the pinned composite resolves again")
+  Assert.isTrue(first == second, "the repeat battle reuses the pinned borrow")
+  Assert.equal(#requests, 1, "the repeat battle enrolls nothing new")
+  envelope:dispose()
+  Assert.equal(#releases, 1, "disposal returns the pinned borrow exactly once")
+end
+
+-- Staged documents parse once per envelope: repeat preparation shares
+-- the single battle manifest parse instead of re-reading it per round.
+function T.battle_manifest_documents_load_once_per_envelope()
+  local SceneCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local manifestPath = SceneCache.manifestPath()
+  local loads = 0
+  local cache = {
+    versionId = "battle-manifest-memo-probe",
+    lua = {
+      [manifestPath] = {
+        trainerPictures = {
+          entries = {
+            ["front:YOUNGSTER"] = {
+              drawableKey = "trainer:front:YOUNGSTER",
+              image = "assets/generated/battle/trainer-youngster.png",
+              width = 80,
+              height = 80,
+            },
+          },
+        },
+      },
+    },
+  }
+  function cache:loadLua(path)
+    if path == manifestPath then
+      loads = loads + 1
+    end
+    return self.lua[path]
+  end
+  function cache:exists()
+    return true
+  end
+  local host = { derivedAssets = {} }
+  function host.derivedAssets.requestBattleTrainerPicture(_, _)
+    return true, nil
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("manifest-memo:dual")
+    end,
+    derivedAssets = host.derivedAssets,
+  })
+  local services = envelope:_preparationServices()
+  -- Construction loads the manifest for its own staged decision; only
+  -- preparation rounds must share the single parse afterwards.
+  loads = 0
+  local demand = {
+    launchId = "manifest-memo",
+    scenes = {},
+    pages = {},
+    trainerPictures = { "front:YOUNGSTER" },
+    audio = { roles = {}, banks = {}, cries = {} },
+  }
+  Assert.isTrue(services.prepare(demand), "the staged trainer picture prepares")
+  Assert.isTrue(services.prepare(demand), "the repeat launch prepares")
+  Assert.equal(loads, 1, "repeat preparation shares the single manifest parse")
+  envelope:dispose()
+end
+
+-- Battler portraits borrow their shared atlas page once per envelope:
+-- two selectors on the same staged page enroll a single page decode,
+-- and each drawable resolves its own frame cell pairing the page lease
+-- with its frame quad. Releasing both borrows returns each exactly
+-- once without leaking worker interest.
+function T.pooled_portrait_cells_share_one_page_upload_across_selectors()
+  local MonCache = require("libs.assets.src.MonCache")
+  local versionId = readyVersions()[1]
+  local cacheFs = CacheFs.forVersion(versionId)
+  local portraits = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "staged portraits are planned")
+  -- Discover two staged selectors sharing one atlas page instead of
+  -- naming a fixed pair: the manifest stays free to repack pages.
+  local firstSelector, firstEntry, secondSelector, secondEntry
+  do
+    local names = {}
+    for name in pairs(assert(portraits.entries, "staged portraits carry entries")) do
+      names[#names + 1] = name
+    end
+    table.sort(names)
+    local byPage = {}
+    for _, name in ipairs(names) do
+      local entry = portraits.entries[name]
+      if
+        type(entry) == "table" and type(entry.pageId) == "number" and type(entry.frames) == "table"
+        and #entry.frames == 2
+      then
+        local seen = byPage[entry.pageId]
+        if seen ~= nil then
+          firstSelector, firstEntry = seen.name, seen.entry
+          secondSelector, secondEntry = name, entry
+          break
+        end
+        byPage[entry.pageId] = { name = name, entry = entry }
+      end
+    end
+  end
+  Assert.notNil(firstSelector, "the staged manifest packs two portraits onto one page")
+  local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
+  local shared, poolInner = SummaryAcceptanceFixture.sizedImagePool()
+  local requests, releases = {}, {}
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    requests[#requests + 1] = path
+    return shared:request(path, sampler, priority)
+  end
+  function pool:poll(token)
+    return shared:poll(token)
+  end
+  function pool:acquire(token)
+    return shared:acquire(token)
+  end
+  function pool:cancel(token)
+    return shared:cancel(token)
+  end
+  function pool:release(lease)
+    releases[#releases + 1] = lease
+    return shared:release(lease)
+  end
+  local graphics = {}
+  function graphics.newQuad(x, y, w, h, imgW, imgH)
+    return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("portrait-pool:dual")
+    end,
+    graphics = graphics,
+    imagePool = pool,
+  })
+  local services = envelope:_preparationServices()
+  local first = assert(services.drawable("mon:" .. firstSelector), "the first battler portrait resolves")
+  local second = assert(services.drawable("mon:" .. secondSelector), "the second battler portrait resolves")
+  local pagePath = MonCache.pageImagePath("portraits", firstEntry.pageId)
+  local pageRequests = 0
+  for _, path in ipairs(requests) do
+    if path == pagePath then
+      pageRequests = pageRequests + 1
+    end
+  end
+  Assert.equal(pageRequests, 2, "each battler enrolls its own borrow of the shared page")
+  Assert.equal(poolInner.uploads, 1, "both selectors share one page upload")
+  Assert.equal(#first.frames, 2, "the first portrait carries both staged frames")
+  Assert.equal(#second.frames, 2, "the second portrait carries both staged frames")
+  -- One representative frame per portrait proves the page lease pairs
+  -- with its frame quad; the exact origin mapping for every frame is
+  -- owned by the renderer unit below, not repeated here.
+  for _, member in ipairs({
+    { portrait = first, entry = firstEntry },
+    { portrait = second, entry = secondEntry },
+  }) do
+    local frame = assert(member.entry.frames[1], "the staged portrait frames its first cell")
+    local cell = assert(member.portrait.frames[1], "the battler portrait carries its first frame cell")
+    Assert.equal(cell.frameX, frame.x, "the portrait cell frames at its staged origin")
+    Assert.equal(cell.frameY, frame.y, "the portrait cell frames at its staged origin")
+    Assert.equal(cell.quad.x, frame.x, "the portrait quad views its staged origin")
+    Assert.equal(cell.quad.y, frame.y, "the portrait quad views its staged origin")
+    Assert.equal(cell.quad.w, frame.width, "the portrait quad spans its staged frame")
+    Assert.equal(cell.quad.h, frame.height, "the portrait quad spans its staged frame")
+  end
+  services.release("mon:" .. firstSelector)
+  services.release("mon:" .. secondSelector)
+  Assert.equal(#releases, 2, "releasing both portraits returns each borrow exactly once")
+  envelope:dispose()
+end
+
 -- A staged scene whose shared-owner classification fails reports a
 -- terminal keyed failure instead of an unusable nil: the failed key is
 -- attempted once, later polls replay the latched error without

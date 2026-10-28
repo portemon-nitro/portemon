@@ -484,6 +484,39 @@ local function sortedBanks(banks)
   return list
 end
 
+-- Resolves one stored ball id to its generated chrome image through the
+-- family's ball sprite roles.
+---@param self SummaryScreenState
+---@param ball string stored ball id
+---@return string generated chrome image path
+local function chromeImageForBall(self, ball)
+  local sprites = assert(self._manifest.sprites, "the summary family carries its sprite roles")
+  local ballIcons = assert(sprites.ballIcons, "sprite roles carry ball icons")
+  local icons = assert(ballIcons.icons, "ball icons name their visuals")
+  local visual = assert(icons[ball], "ball icons cover the displayed ball: " .. tostring(ball))
+  local visuals = assert(self._manifest.visuals, "the summary family carries its visuals")
+  local record = assert(visuals[visual], "ball icons name a known visual: " .. tostring(visual))
+  return assert(record.image, "ball visuals carry their image")
+end
+
+---@param paths table<string, boolean> accumulating set
+---@param path string generated chrome image path
+local function addChromePath(paths, path)
+  assert(type(path) == "string" and path ~= "", "demand-selected chrome arrives as paths")
+  paths[path] = true
+end
+
+---@param paths table<string, boolean> accumulating set
+---@return string[] sorted unique chrome image paths
+local function sortedChrome(paths)
+  local list = {}
+  for path in pairs(paths) do
+    list[#list + 1] = path
+  end
+  table.sort(list)
+  return list
+end
+
 -- Builds the bounded demand behind the current selection from the
 -- already-reconciled controller facts. Party demand carries one full
 -- portrait identity per non-egg roster member in slot order with the
@@ -525,6 +558,13 @@ local function currentDemand(self)
     local iconKey = assert(facts.iconKey, "subjects carry their icon key")
     local key = string.format("%d:%d:%d", revision, selected, pictureEpoch)
     local cryBanks = {}
+    local chrome = {}
+    local info = assert(facts.info, "facts carry their info section")
+    addChromePath(chrome, chromeImageForBall(self, assert(info.ball, "facts carry the subject ball")))
+    for _, ribbon in ipairs(assert(facts.ribbons, "facts carry their ribbon records")) do
+      local art = assert(ribbon.art, "earned ribbons carry art")
+      addChromePath(chrome, assert(art.image, "ribbon art carries its image"))
+    end
     if facts.isEgg ~= true then
       local identity = assert(facts.identity, "facts carry their identity")
       cryBanks[cryBankFor(
@@ -541,13 +581,19 @@ local function currentDemand(self)
       portraitSelectors = selectors,
       iconKeys = { iconKey },
       cryBanks = sortedBanks(cryBanks),
+      chrome = sortedChrome(chrome),
     }
   end
   local selectors = {}
   local iconKeys = {}
   local cryBanks = {}
+  local chrome = {}
   for _, row in ipairs(assert(facts.roster, "facts carry the party roster")) do
     iconKeys[#iconKeys + 1] = assert(row.iconKey, "roster rows carry their icon key")
+    addChromePath(chrome, chromeImageForBall(self, assert(row.ball, "roster rows carry their ball")))
+    for _, path in ipairs(assert(row.ribbonImages, "roster rows carry their ribbon images")) do
+      addChromePath(chrome, path)
+    end
     if row.isEgg ~= true then
       selectors[#selectors + 1] = assert(row.portraitSelector, "non-egg roster rows carry their portrait identity")
       cryBanks[cryBankFor(
@@ -566,6 +612,7 @@ local function currentDemand(self)
     portraitSelectors = selectors,
     iconKeys = iconKeys,
     cryBanks = sortedBanks(cryBanks),
+    chrome = sortedChrome(chrome),
   }
 end
 

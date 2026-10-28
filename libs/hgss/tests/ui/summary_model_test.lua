@@ -828,6 +828,35 @@ function T.roster_and_selected_facts_carry_exact_portrait_selectors()
   )
 end
 
+function T.roster_rows_carry_ball_and_ribbon_images_for_chrome_demand()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xC0FFEE01)
+  gift(service, "CHIKORITA", 5)
+  setMon(service, 0, function(mon)
+    mon.origin.ball = "GREAT_BALL"
+    mon.ribbons.ds1 = 1
+  end)
+  local manifest = SummaryPresentationFixture.manifest()
+  local context = SummaryPresentationFixture.context(1)
+  local facts = SummaryModel.build(service, 0, context, manifest)
+  Assert.equal(facts.roster[1].ball, "GREAT_BALL", "roster rows carry their ball for chrome demand")
+  local earnedRibbon = nil
+  for _, entry in ipairs(assert(manifest.ribbons.entries, "the fixture family carries ribbon definitions")) do
+    if entry.bitGroup == "ds1" and entry.bit == 0 then
+      earnedRibbon = assert(entry.art.image, "ribbon entries carry their visuals")
+    end
+  end
+  Assert.isTrue(
+    type(earnedRibbon) == "string",
+    "the fixture family plans the earned ds1 ribbon"
+  )
+  Assert.deepEqual(
+    facts.roster[1].ribbonImages,
+    { earnedRibbon },
+    "roster rows carry their earned ribbon images for chrome demand"
+  )
+end
+
 function T.shiny_variants_change_only_the_finish_suffix()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0xE5E5E5E5)

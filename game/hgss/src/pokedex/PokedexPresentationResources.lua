@@ -2092,10 +2092,17 @@ local function prepareBundle(owner, lease, demand)
     return nil, manifestFailure
   end
   local manifest = assert(owner._manifest, "prepared bundles carry their manifest")
-  local allowance = { remaining = 1 }
-  -- The six serial surfaces realize across separate prepare calls under
-  -- the same single admission budget before any chrome or canvas work
-  -- runs. Headless seams without host canvases skip this family.
+  -- One shared admission budget per prepare round across surfaces,
+  -- chrome, icons, portraits, canvases, and footprints. Sized to admit a
+  -- whole page closure at once: game-thread uploads measured negligible,
+  -- so the worker queue paces readiness instead of per-round enrollment,
+  -- while same-frame canvas realization and Spinda composition may hitch
+  -- on first open. Overflow still paces across rounds; the budget never
+  -- gates correctness, only admission density.
+  local allowance = { remaining = 64 }
+  -- The six serial surfaces realize under the same shared admission
+  -- budget before any chrome or canvas work runs. Headless seams without
+  -- host canvases skip this family.
   local surfacesReady, surfacesFailure = prepareSurfaces(lease, allowance)
   if surfacesFailure ~= nil then
     return nil, surfacesFailure

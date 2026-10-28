@@ -677,6 +677,15 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
       )
       portraitSelector = SummaryModel.portraitSelectorFor(catalog, member)
     end
+    -- Chrome union behind the demand: the selected ball visual and every
+    -- earned ribbon image, so preparation enrolls only displayed chrome
+    -- instead of the whole family. projectRibbons covers eggs as well.
+    local memberOrigin = assert(member.origin, "stored mons carry their origin")
+    assert(type(memberOrigin) == "table", "origins are records")
+    local ribbonImages = {}
+    for _, ribbon in ipairs(projectRibbons(member, context, manifest)) do
+      ribbonImages[#ribbonImages + 1] = assert(ribbon.art.image, "earned ribbons carry their image")
+    end
     roster[#roster + 1] = {
       slot = slot,
       isEgg = memberIsEgg,
@@ -684,6 +693,8 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
       portraitSelector = portraitSelector,
       species = member.species,
       form = member.form,
+      ball = assert(memberOrigin.ball, "origins carry the ball"),
+      ribbonImages = ribbonImages,
     }
   end
 

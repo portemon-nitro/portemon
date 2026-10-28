@@ -47,10 +47,12 @@ local CAPTIONS = {
   "Enraging the lake...",
   "Poisoning Amphy...",
   "Reviving Team Rocket...",
+  "Dry cleaning kimonos...",
   "Disposing of Kris...",
   "Placing Sudowoodo...",
   "Burning the tower...",
   "Warming the shoes...",
+  "Deleting Magnezone...",
 }
 local CAPTION_SECONDS = 4
 local CAPTION_TRANSITION_SECONDS = 0.4

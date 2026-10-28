@@ -1605,7 +1605,14 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   local brokenAgain, brokenErrAgain = stagedServices.drawable("mon:" .. leadBack)
   Assert.isNil(brokenAgain, "the undecodable portrait stays failed without a substitute")
   Assert.equal(brokenErrAgain, brokenReason, "the undecodable failure replays identically")
-  Assert.equal(driverAttempts, 1, "the undecodable upload is attempted once, never retried per tick")
+  local pageDecodes = 0
+  for _, path in ipairs(pool.paths) do
+    if path == missingImage then
+      pageDecodes = pageDecodes + 1
+    end
+  end
+  Assert.equal(pageDecodes, 1, "the undecodable page decodes once, never retried per tick")
+  Assert.equal(driverAttempts, 0, "the undecodable page never reaches the image driver")
   Assert.equal(#throwing.images, 0, "the undecodable page leaves no staged handle behind")
   stagedEnvelope:dispose()
 end

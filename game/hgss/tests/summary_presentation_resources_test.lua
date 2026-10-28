@@ -52,6 +52,36 @@ local function twoMemberSetup(versionId)
   return service, context, manifest
 end
 
+---@param manifest table<string, unknown>
+---@param ball string stored ball id
+---@return string generated chrome image path
+local function chromeImageForBall(manifest, ball)
+  local sprites = assert(manifest.sprites, "the fixture family carries its sprite roles")
+  local icons = assert(sprites.ballIcons.icons, "ball icons name their visuals")
+  local visual = assert(icons[ball], "ball icons cover the displayed ball: " .. tostring(ball))
+  local visuals = assert(manifest.visuals, "the fixture family carries its visuals")
+  return assert(visuals[visual].image, "ball visuals carry their image")
+end
+
+---@param manifest table<string, unknown>
+---@param facts table<string, unknown>
+---@return string[] sorted unique demand-selected chrome paths
+local function chromeForRoster(manifest, facts)
+  local selected = {}
+  for _, row in ipairs(assert(facts.roster, "facts carry the party roster")) do
+    selected[chromeImageForBall(manifest, assert(row.ball, "roster rows carry their ball"))] = true
+    for _, path in ipairs(assert(row.ribbonImages, "roster rows carry their ribbon images")) do
+      selected[path] = true
+    end
+  end
+  local list = {}
+  for path in pairs(selected) do
+    list[#list + 1] = path
+  end
+  table.sort(list)
+  return list
+end
+
 ---@param service table<string, unknown>
 ---@param context table<string, unknown>
 ---@param manifest table<string, unknown>
@@ -77,13 +107,15 @@ local function demandFor(service, context, manifest, key, epoch)
     portraitSelectors = selectors,
     iconKeys = iconKeys,
     cryBanks = cryBanks,
+    chrome = chromeForRoster(manifest, facts),
   }
 end
 
 -- Fixed chrome borrows at most one new pair per prepare call over the
--- full chrome path set (synthetic families enumerate 137 distinct
--- paths), so settling loops allow one round per path plus slack for the
--- parallel portrait, icon, and cry prerequisites. Rounds are fake-driven
+-- core-plus-demanded chrome path set (synthetic families enumerate 139
+-- distinct paths in the full set, of which ribbon art and ball visuals
+-- stay deferred until demanded), so settling loops allow one round per
+-- path plus slack for the parallel portrait, icon, and cry prerequisites. Rounds are fake-driven
 -- and complete promptly; the bound is plumbing, not a timing threshold.
 local SETTLE_ROUNDS = 256
 
@@ -100,6 +132,28 @@ local function prepareUntilSettled(lease, demand)
     end
   end
   error("preparation never settles for demand " .. tostring(demand.key), 0)
+end
+
+---@param manifest table<string, unknown> summary family
+---@return integer deferred visual count: earned ribbon art plus ball visuals
+local function deferredChromeCount(manifest)
+  local seen = {}
+  local count = 0
+  for _, entry in ipairs(assert(manifest.ribbons, "the fixture family carries ribbon definitions").entries) do
+    local path = assert(entry.art, "ribbon entries carry their visuals").image
+    if seen[path] ~= true then
+      seen[path] = true
+      count = count + 1
+    end
+  end
+  for _, name in pairs(assert(manifest.sprites, "the fixture family carries sprite roles").ballIcons.icons) do
+    local path = assert(manifest.visuals[name], "ball icons name a known visual").image
+    if seen[path] ~= true then
+      seen[path] = true
+      count = count + 1
+    end
+  end
+  return count
 end
 
 ---@param pages { pageId: integer }[]
@@ -158,8 +212,9 @@ function T.preparation_leases_bound_portrait_demand_and_release_exactly_once()
     second:release()
     second:release()
     local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
-    local chromeCount = #SummaryCache.referencedPaths(manifest)
+    local fullChromeCount = #SummaryCache.referencedPaths(manifest)
       + #MoveIconCache.referencedPaths(MoveIconCache.loadManifest(CacheFs.forVersion(versionId)))
+    local chromeCount = fullChromeCount - deferredChromeCount(manifest) + #demand.chrome
     Assert.equal(
       poolInner:stats().outstandingLeases,
       chromeCount,
@@ -300,6 +355,10 @@ local function syntheticDemand(key, epoch)
     },
     iconKeys = { "CHIKORITA/f0", "TOTODILE/f0" },
     cryBanks = { 152, 158 },
+    chrome = {
+      "assets/generated/summary/syn-ball.png",
+      "assets/generated/summary/syn-ribbon-syn_ds1_00.png",
+    },
   }
 end
 
@@ -375,7 +434,7 @@ function T.constructor_and_demand_shapes_fail_loudly()
       pcall(
         lease.prepare,
         lease,
-        { key = "", revision = 1, pictureEpoch = 0, portraitSelectors = {}, iconKeys = {}, cryBanks = {} }
+        { key = "", revision = 1, pictureEpoch = 0, portraitSelectors = {}, iconKeys = {}, cryBanks = {}, chrome = {} }
       ),
       versionId .. " demands carry a non-empty key"
     )
@@ -388,6 +447,7 @@ function T.constructor_and_demand_shapes_fail_loudly()
         portraitSelectors = many,
         iconKeys = {},
         cryBanks = {},
+        chrome = {},
       }),
       versionId .. " keeps portrait demand within the current party"
     )
@@ -399,8 +459,21 @@ function T.constructor_and_demand_shapes_fail_loudly()
         portraitSelectors = { "MISSINGNO" },
         iconKeys = {},
         cryBanks = {},
+        chrome = {},
       }),
       versionId .. " fails unknown selectors instead of demanding blindly"
+    )
+    Assert.isFalse(
+      pcall(lease.prepare, lease, {
+        key = "unknown-chrome",
+        revision = 1,
+        pictureEpoch = 0,
+        portraitSelectors = {},
+        iconKeys = {},
+        cryBanks = {},
+        chrome = { "assets/generated/summary/absent.png" },
+      }),
+      versionId .. " fails unknown chrome instead of enrolling blindly"
     )
     lease:release()
     owner:release()
@@ -631,6 +704,10 @@ local function exactDemand(key, selectors)
     portraitSelectors = selectors,
     iconKeys = icons,
     cryBanks = {},
+    chrome = {
+      "assets/generated/summary/syn-ball.png",
+      "assets/generated/summary/syn-ribbon-syn_ds1_00.png",
+    },
   }
 end
 
@@ -829,10 +906,11 @@ function T.shared_paths_resolve_one_canonical_image()
   local lease = setup.owner:acquire()
   local ready = prepareToTerminal(lease, exactDemand("shared-path", { selector }))
   Assert.equal(ready.kind, "ready", "the shared-path demand prepares")
+  local fullChrome = #SummaryCache.referencedPaths(family) + #MoveIconCache.referencedPaths(MoveIconFixture.manifest())
   Assert.equal(
     poolInner.uploads,
-    #SummaryCache.referencedPaths(family) + #MoveIconCache.referencedPaths(MoveIconFixture.manifest()) + 1,
-    "one path borrows one physical image no matter how many records name it, plus the portrait page"
+    fullChrome - deferredChromeCount(family) + 2 + 1,
+    "one path borrows one physical image no matter how many records name it, plus demanded chrome and the portrait page"
   )
   local assets = assert(ready.assets, "ready preparation carries its bundle")
   Assert.isTrue(
@@ -868,12 +946,13 @@ function T.last_lease_release_returns_pages_while_family_visuals_stay_pinned()
   local setup = exactComposition({ [selector] = portraitEntry(3) })
   local owner = setup.owner
   local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
-  local chromeCount = #SummaryCache.referencedPaths(setup.manifest)
-    + #MoveIconCache.referencedPaths(MoveIconFixture.manifest())
   Assert.equal(poolInner:stats().physicalImages, 0, "construction stages no image before the first demand")
   local first = owner:acquire()
   local second = owner:acquire()
   local demand = exactDemand("shared-lifetime", { selector })
+  local fullChrome = #SummaryCache.referencedPaths(setup.manifest)
+    + #MoveIconCache.referencedPaths(MoveIconFixture.manifest())
+  local chromeCount = fullChrome - deferredChromeCount(setup.manifest) + #demand.chrome
   local ready = prepareToTerminal(first, demand)
   Assert.equal(ready.kind, "ready", "the first lease prepares")
   local shader = assert(ready.assets.shader, "ready preparation carries its picture shader")
@@ -939,16 +1018,15 @@ function T.egg_only_demand_requests_no_portrait_page()
   setup.owner:release()
 end
 
-function T.one_new_portrait_page_realizes_per_prepare_call()
+function T.every_demanded_portrait_page_realizes_in_the_first_round()
   local one = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
   local other = MonCache.portraitSelector("CHIKORITA", 0, "female", false)
   local setup = exactComposition({ [one] = portraitEntry(3), [other] = portraitEntry(9) })
   local lease = setup.owner:acquire()
   local demand = exactDemand("two-pages", { one, other })
   local outcome = assert(lease:prepare(demand), "prepare reports its lease state")
-  Assert.equal(outcome.kind, "pending", "a cold two-page demand waits after one realization")
-  local ready = prepareToTerminal(lease, demand)
-  Assert.equal(ready.kind, "ready", "both pages settle")
+  Assert.equal(outcome.kind, "ready", "both pages realize in the first round")
+  local ready = outcome
   local seen = {}
   for _, record in ipairs(setup.helper.calls.portraitPages) do
     seen[record.pageId] = (seen[record.pageId] or 0) + 1
@@ -1079,7 +1157,7 @@ function T.concurrent_picture_epochs_share_one_portrait_image_and_enroll_before_
   Assert.equal(poolInner:stats().physicalImages, 0, "construction stages no image before the first demand")
   Assert.equal(#helper.graphics.shaders, 1, "construction keeps the non-image picture shader resident")
 
-  local function demand(key, epoch, selectors, banks)
+  local function demand(key, epoch, selectors, banks, chrome)
     return {
       key = key,
       revision = 7,
@@ -1087,6 +1165,10 @@ function T.concurrent_picture_epochs_share_one_portrait_image_and_enroll_before_
       portraitSelectors = selectors,
       iconKeys = { "test-icon-a", "test-icon-b" },
       cryBanks = banks,
+      chrome = chrome or {
+        "assets/generated/summary/syn-ball.png",
+        "assets/generated/summary/syn-ribbon-syn_ds1_00.png",
+      },
     }
   end
   local function requestedIds(records)
@@ -1100,6 +1182,10 @@ function T.concurrent_picture_epochs_share_one_portrait_image_and_enroll_before_
   local firstPath = MonCache.portraitPagePath(9)
 
   local demandA = demand("first-picture", 1, { shared, firstOnly }, { 152, 158 })
+  local pinnedChrome = #SummaryCache.referencedPaths(family)
+    + #MoveIconCache.referencedPaths(MoveIconFixture.manifest())
+    - deferredChromeCount(family)
+    + 2
   local first = owner:acquire()
   local waiting = assert(first:prepare(demandA), "prepare reports its lease state")
   Assert.equal(waiting.kind, "pending", "the first round waits on the icon pages")
@@ -1111,22 +1197,31 @@ function T.concurrent_picture_epochs_share_one_portrait_image_and_enroll_before_
   Assert.equal(enrolledBanks[158], 1, "the second cry bank enrolls before the first pending answer")
   Assert.equal(decodeRequests[sharedPath], 1, "the shared page enrolls before the first pending answer")
   Assert.equal(decodeRequests[firstPath], 1, "the first-only page enrolls before the first pending answer")
-  -- Fixed chrome progresses in parallel with portraits: each round borrows
-  -- at most one new chrome pair alongside at most one portrait pair, so
-  -- the first round holds one chrome plus one portrait lease.
-  Assert.equal(poolInner.uploads, 2, "the first round borrows at most one chrome plus one portrait pair")
+  -- Fixed chrome progresses in parallel with portraits: the first round
+  -- borrows every ready chrome pair alongside every ready portrait pair,
+  -- so the first round holds the full chrome set plus both portrait
+  -- leases while icons are still pending.
+  Assert.equal(
+    poolInner.uploads,
+    pinnedChrome + 2,
+    "the first round borrows the full chrome set plus both portrait pairs"
+  )
   Assert.equal(
     poolInner:stats().outstandingLeases,
-    2,
-    "the first round adopts one chrome pair plus one portrait page while icons are still pending"
+    pinnedChrome + 2,
+    "the first round adopts the chrome set plus both portrait pages while icons are still pending"
   )
   local waitingAgain = assert(first:prepare(demandA), "prepare reports its lease state")
   Assert.equal(waitingAgain.kind, "pending", "the second round still waits on the icon pages")
-  Assert.equal(poolInner.uploads, 4, "the second round borrows at most one further chrome plus portrait pair")
+  Assert.equal(
+    poolInner.uploads,
+    pinnedChrome + 2,
+    "the second round borrows nothing new beside pinned chrome"
+  )
   Assert.equal(
     poolInner:stats().outstandingLeases,
-    4,
-    "both portrait leases land beside two chrome pairs while icons are still pending"
+    pinnedChrome + 2,
+    "both portrait leases stay beside the pinned chrome set while icons are still pending"
   )
   local readyA = prepareToTerminal(first, demandA)
   Assert.equal(readyA.kind, "ready", "the first picture settles once its icons arrive")
@@ -1151,9 +1246,10 @@ function T.concurrent_picture_epochs_share_one_portrait_image_and_enroll_before_
   Assert.equal(settledPages[12], 1, "the second-only page compiles once")
   Assert.equal(poolInner.uploads - uploadsAfterA, 1, "the overlapping picture borrows only its new second-only page")
   local chromeCount = #SummaryCache.referencedPaths(family) + #MoveIconCache.referencedPaths(MoveIconFixture.manifest())
+  local pinnedChrome = chromeCount - deferredChromeCount(family) + 2
   Assert.equal(
     uploadsAfterA,
-    chromeCount + 2,
+    pinnedChrome + 2,
     "the first picture pins chrome plus its two portrait pages with no duplicates"
   )
 
@@ -1223,8 +1319,8 @@ function T.concurrent_picture_epochs_share_one_portrait_image_and_enroll_before_
 end
 
 -- Progressive chrome admission below: fixed chrome enrolls on the first
--- preparation round while icons and portraits are still pending, admits at
--- most one new chrome pair per round alongside at most one portrait pair,
+-- preparation round while icons and portraits are still pending, admits
+-- every ready pair per round alongside at most one portrait pair,
 -- and never performs pool work through bundle reads or pinned reprepares.
 -- Every chrome path enrolls exactly once no matter how many records name
 -- it.
@@ -1301,6 +1397,11 @@ function T.fixed_chrome_enrolls_while_portraits_compile_and_admits_one_pair_per_
     derivedAssets = helper.derivedAssets,
     manifest = family,
   })
+  local demand = exactDemand("admission", { one, other })
+  local demanded = {}
+  for _, path in ipairs(demand.chrome) do
+    demanded[path] = true
+  end
   local chromeSet = {}
   for _, path in ipairs(SummaryCache.referencedPaths(family)) do
     chromeSet[path] = true
@@ -1308,37 +1409,47 @@ function T.fixed_chrome_enrolls_while_portraits_compile_and_admits_one_pair_per_
   for _, path in ipairs(MoveIconCache.referencedPaths(MoveIconFixture.manifest())) do
     chromeSet[path] = true
   end
+  -- Deferred family art enrolls only when demanded: the rest of the
+  -- ribbon and ball walls stay out of the first rounds.
+  for _, entry in ipairs(family.ribbons.entries) do
+    if demanded[entry.art.image] ~= true then
+      chromeSet[entry.art.image] = nil
+    end
+  end
+  for _, name in pairs(family.sprites.ballIcons.icons) do
+    local path = family.visuals[name].image
+    if demanded[path] ~= true then
+      chromeSet[path] = nil
+    end
+  end
   local chromeCount = countKeys(chromeSet)
   Assert.isTrue(chromeCount >= 2, "the synthetic family carries at least two chrome images")
   local lease = owner:acquire()
-  local demand = exactDemand("admission", { one, other })
-  -- The first round enrolls every chrome path even though icons and
-  -- portraits are still pending, and returns pending without stalling.
+  -- The first round enrolls every core and demanded chrome path even
+  -- though icons and portraits are still pending, and returns pending
+  -- without stalling.
   local first = assert(lease:prepare(demand))
   Assert.equal(first.kind, "pending", "the first round waits on icons and portraits")
-  Assert.equal(countKeys(chromeRequests), chromeCount, "every chrome path enrolls on the first round")
+  Assert.equal(countKeys(chromeRequests), chromeCount, "core and demanded chrome enrolls on the first round")
   for path in pairs(chromeSet) do
     Assert.equal(chromeRequests[path], 1, "chrome enrolls once per canonical path: " .. path)
   end
-  Assert.isTrue(poolInner.uploads <= 1, "the first round admits at most one chrome pair")
-  -- While portraits stay uncompiled only chrome may admit, one pair per
-  -- round; icons clearing changes nothing about the chrome bound.
+  Assert.isNil(
+    chromeRequests["assets/generated/summary/syn-ribbon-syn_ds1_01.png"],
+    "un-demanded ribbon art never enrolls"
+  )
+  Assert.isTrue(poolInner.uploads >= chromeCount, "the first round admits the ready chrome set at once")
+  -- While portraits stay uncompiled only chrome may admit; icons clearing
+  -- changes nothing about the admission bound.
   local outcome = first
   local rounds = 0
   while outcome.kind == "pending" do
     rounds = rounds + 1
-    Assert.isTrue(rounds <= chromeCount + 12, "admission settles within one pair per round plus slack")
+    Assert.isTrue(rounds <= 12, "admission settles within a few rounds once prerequisites arrive")
     if rounds == 4 then
       gates.portraitsCompiled = true
     end
-    local before = poolInner.uploads
     outcome = assert(lease:prepare(demand))
-    local admitted = poolInner.uploads - before
-    if gates.portraitsCompiled then
-      Assert.isTrue(admitted <= 2, "one chrome pair plus one portrait pair per round at most")
-    else
-      Assert.isTrue(admitted <= 1, "only chrome admits while portraits still compile")
-    end
   end
   Assert.equal(outcome.kind, "ready", "the demand settles once every prerequisite arrives")
   Assert.equal(outcome.key, "admission", "readiness carries the demand key")

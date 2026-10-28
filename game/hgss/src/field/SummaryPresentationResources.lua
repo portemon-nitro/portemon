@@ -10,7 +10,7 @@
 -- party portrait identities; eggs resolve to small Summary-owned visuals
 -- and demand no portrait page. Shared pages are coalesced across leases;
 -- releasing one lease never cancels a replacement lease's work. Portrait
--- pages adopt at most one new lease per prepare call while the borrowed
+-- pages adopt up to ten new leases per prepare call while the borrowed
 -- icon provider keeps its own independent bound. Every realized image is
 -- borrowed from the session image owner under its canonical
 -- cache-relative path; semantic names and page ids resolve to that borrow
@@ -29,6 +29,11 @@ local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 
 local SHADER_PATH = "libs/hgss/src/ui/shaders/summary_picture.glsl"
 local MAX_PORTRAIT_PAGES = 6
+
+-- Portrait pairs admitted per prepare round. Six covers the whole party,
+-- so one warm round settles every demanded page beside the bulk chrome
+-- set; the bound only paces pathological demand growth, never the party.
+local MAX_PORTRAIT_ADOPTS_PER_ROUND = 10
 
 -- Summary visuals sample point-filtered and clamped, matching the retired
 -- direct construction, so pooled leases draw identically.
@@ -64,10 +69,10 @@ end
 ---@field _manifest table<string, unknown>
 ---@field _moveIcons table<string, unknown> the shared move-icons manifest
 ---@field _portraitEntries table<string, table<string, unknown>>
----@field _chromePaths string[] unique canonical chrome paths pinned on first demand
+---@field _chromePaths string[] always-drawn core chrome paths pinned on first demand
+---@field _knownChrome table<string, boolean> every chrome path the family publishes, core or demand-selected
 ---@field _chrome table<string, table<string, unknown>> field-lifetime chrome leases by canonical path
 ---@field _chromeTokens table<string, integer> unconsumed shared-owner tokens by canonical path
----@field _chromeReady boolean true once chrome leases are installed
 ---@field _pages table<integer, table<string, unknown>> portrait demand records by page id
 ---@field _leasedPortraits table<string, table<string, unknown>> adopted portrait leases by canonical path
 ---@field _quads table<string, unknown> realized quads by selector and frame
@@ -115,12 +120,41 @@ function SummaryPresentationResources.new(opts)
   local manifest = assert(opts.manifest, "summary preparation needs the summary family")
   SummaryCache.validateManifest(manifest)
   local moveIcons = MoveIconCache.loadManifest(cacheFs)
+  -- Chrome splits into always-drawn core and demand-selected extras: every
+  -- earned-ribbon image and every ball visual enrolls only when the
+  -- current demand names it, instead of decoding the whole family on
+  -- first open. Anything else (windows, bars, marks, move icons) is on
+  -- the always-visible path and stays eager.
+  local deferred = {}
+  local sprites = assert(manifest.sprites, "the summary family carries its sprite roles")
+  assert(type(sprites) == "table", "sprite roles arrive as a record")
+  local ballIcons = assert(sprites.ballIcons, "sprite roles carry ball icons")
+  assert(type(ballIcons) == "table" and type(ballIcons.icons) == "table", "ball icons name their visuals")
+  local visuals = assert(manifest.visuals, "the summary family carries its visuals")
+  assert(type(visuals) == "table", "visuals arrive as a record")
+  for _, name in pairs(ballIcons.icons) do
+    local visual = assert(visuals[name], "ball icons name a known visual: " .. tostring(name))
+    assert(type(visual) == "table", "visuals are records")
+    deferred[assert(visual.image, "ball visuals carry their image")] = true
+  end
+  local ribbons = assert(manifest.ribbons, "the summary family carries ribbon definitions")
+  assert(type(ribbons) == "table" and type(ribbons.entries) == "table", "ribbon definitions carry entries")
+  for _, entry in ipairs(ribbons.entries) do
+    assert(type(entry) == "table", "ribbon entries are records")
+    local art = assert(entry.art, "ribbon entries carry their visuals")
+    assert(type(art) == "table", "ribbon visuals are records")
+    deferred[assert(art.image, "ribbon visuals carry their image")] = true
+  end
   local seen = {}
+  local knownChrome = {}
   local chromePaths = {}
   local function addChrome(path)
     if seen[path] ~= true then
       seen[path] = true
-      chromePaths[#chromePaths + 1] = path
+      knownChrome[path] = true
+      if deferred[path] ~= true then
+        chromePaths[#chromePaths + 1] = path
+      end
     end
   end
   for _, path in ipairs(SummaryCache.referencedPaths(manifest)) do
@@ -143,9 +177,9 @@ function SummaryPresentationResources.new(opts)
     _portraitEntries = portraitManifest.entries,
     _moveIcons = moveIcons,
     _chromePaths = chromePaths,
+    _knownChrome = knownChrome,
     _chrome = {},
     _chromeTokens = {},
-    _chromeReady = false,
     _pages = {},
     _leasedPortraits = {},
     _quads = {},
@@ -197,43 +231,68 @@ local function cancelChromeTokens(self)
   end
 end
 
--- Returns the incomplete chrome group after a failed round: every lease
--- adopted while the chrome set was still incomplete goes back to the
--- shared owner, while complete chrome published elsewhere stays valid.
--- Only runs while the set is incomplete; pinned complete chrome never
--- passes through here.
+-- Returns one round's adopted chrome after a failed round: every lease
+-- adopted by that round goes back to the shared owner, while chrome
+-- pinned by earlier successful rounds stays drawable.
 ---@param self SummaryPresentationResources
-local function releasePartialChrome(self)
-  assert(not self._chromeReady, "complete chrome stays pinned through a failed round")
+---@param adopted string[] paths adopted by the failed round
+local function releaseRoundChrome(self, adopted)
   local pool = assert(self._pool, "summary preparation borrows its shared image owner")
-  for path, lease in pairs(self._chrome) do
-    pool:release(lease)
-    self._chrome[path] = nil
+  for _, path in ipairs(adopted) do
+    local lease = self._chrome[path]
+    if lease ~= nil then
+      pool:release(lease)
+      self._chrome[path] = nil
+    end
   end
 end
 
 -- Progresses the field-lifetime chrome leases without sleeping or
 -- spinning: the first round enrolls one shared-owner token per still-
--- unborrowed chrome path while icons, portraits, and cry banks make
--- their own progress, and each round borrows at most one newly ready
--- pair through its single-use token. A failed path cancels every
--- remaining token, returns the incomplete group, and names its path
--- instead of pinning chrome the field lifetime cannot draw. Once every
--- listed path is borrowed the set stays pinned for the field lifetime.
+-- unborrowed core or demanded path while icons, portraits, and cry banks
+-- make their own progress, and each round borrows every newly ready pair
+-- through its single-use token. Chrome tiles are small and game-thread
+-- uploads measured negligible, so chrome admits in bulk while portrait
+-- pages keep their one-pair-per-round bound for large uploads. A failed path cancels every
+-- remaining token, returns the round's adoptions, and names its path
+-- instead of pinning chrome the field lifetime cannot draw. The lease is
+-- ready once every core and demanded path is borrowed; pinned chrome
+-- stays drawable for the field lifetime.
 ---@param self SummaryPresentationResources
----@return boolean ready true once every chrome path is borrowed
+---@param demanded table<string, boolean> demand-selected chrome paths beyond the core set
+---@return boolean ready true once every core and demanded path is borrowed
 ---@return string? failure named cause when a chrome path cannot be borrowed
-local function advanceChrome(self)
-  if self._chromeReady then
-    return true, nil
-  end
+local function advanceChrome(self, demanded)
   local pool = assert(self._pool, "summary preparation borrows its shared image owner")
-  for _, path in ipairs(self._chromePaths) do
-    if self._chrome[path] == nil and self._chromeTokens[path] == nil then
-      self._chromeTokens[path] = pool:request(path, POOLED_SAMPLER, "demand")
+  local knownChrome = assert(self._knownChrome, "summary preparation keeps its chrome inventory")
+  local wantedSet = {}
+  local wanted = {}
+  local function want(path)
+    if knownChrome[path] ~= true then
+      error("summary demand names unknown chrome at " .. tostring(path), 0)
+    end
+    if wantedSet[path] ~= true then
+      wantedSet[path] = true
+      wanted[#wanted + 1] = path
     end
   end
   for _, path in ipairs(self._chromePaths) do
+    want(path)
+  end
+  for path in pairs(demanded) do
+    want(path)
+  end
+  local function enroll(path)
+    if self._chrome[path] ~= nil or self._chromeTokens[path] ~= nil then
+      return
+    end
+    self._chromeTokens[path] = pool:request(path, POOLED_SAMPLER, "demand")
+  end
+  for _, path in ipairs(wanted) do
+    enroll(path)
+  end
+  local adopted = {}
+  for _, path in ipairs(wanted) do
     if self._chrome[path] == nil then
       local token = self._chromeTokens[path]
       if token ~= nil then
@@ -241,7 +300,7 @@ local function advanceChrome(self)
         if status == "failed" then
           local failure = "compiled Summary image missing at " .. path .. ": " .. tostring(cause)
           cancelChromeTokens(self)
-          releasePartialChrome(self)
+          releaseRoundChrome(self, adopted)
           return false, failure
         elseif status == "ready" then
           local ok, lease = pcall(pool.acquire, pool, token)
@@ -250,24 +309,23 @@ local function advanceChrome(self)
             self._chromeTokens[path] = nil
             pool:cancel(token)
             cancelChromeTokens(self)
-            releasePartialChrome(self)
+            releaseRoundChrome(self, adopted)
             return false, failure
           end
           self._chromeTokens[path] = nil
           self._chrome[path] = lease
-          break
+          adopted[#adopted + 1] = path
         else
           assert(status == "pending", "summary preparation reports pending or ready")
         end
       end
     end
   end
-  for _, path in ipairs(self._chromePaths) do
+  for _, path in ipairs(wanted) do
     if self._chrome[path] == nil then
       return false, nil
     end
   end
-  self._chromeReady = true
   return true, nil
 end
 
@@ -309,6 +367,10 @@ local function checkDemand(demand)
   assert(type(demand.iconKeys) == "table", "demands carry roster icon keys")
   for _, key in ipairs(demand.iconKeys) do
     assert(type(key) == "string" and key ~= "", "roster icon keys arrive as strings")
+  end
+  assert(type(demand.chrome) == "table", "demands carry their demand-selected chrome paths")
+  for _, path in ipairs(demand.chrome) do
+    assert(type(path) == "string" and path ~= "", "demand-selected chrome arrives as paths")
   end
 end
 
@@ -533,10 +595,16 @@ local function pageRecord(self, pageId)
   return record
 end
 
----@param self SummaryPresentationResources
----@param lease table<string, unknown>
 ---@param demand table<string, unknown>
----@return table<string, unknown> prepare outcome
+---@return table<string, boolean> demand-selected chrome paths as a set
+local function demandChrome(demand)
+  local selected = {}
+  for _, path in ipairs(assert(demand.chrome, "demands carry their demand-selected chrome paths")) do
+    selected[path] = true
+  end
+  return selected
+end
+
 local function prepareLease(self, lease, demand)
   assert(not self._released, "summary preparation is released")
   assert(lease._released ~= true, "the preparation lease is released")
@@ -554,8 +622,8 @@ local function prepareLease(self, lease, demand)
   -- Fixed chrome enrolls before any prerequisite-specific early return:
   -- every still-unborrowed family visual takes one shared-owner token
   -- on the first round while the icon, portrait, and cry work below
-  -- makes its own progress, borrowing at most one new pair per call.
-  local chromeReady, chromeFailure = advanceChrome(self)
+  -- makes its own progress, admitting every ready pair per round.
+  local chromeReady, chromeFailure = advanceChrome(self, demandChrome(demand))
   -- Every independent prerequisite enrolls before the first pending
   -- answer: roster icons through the borrowed provider, portrait page
   -- compilation and cry bank readiness through the provisioner seam, and
@@ -666,15 +734,15 @@ local function prepareLease(self, lease, demand)
     end
   end
   local pending = portraitPending or cryPending
-  -- Portrait pages adopt at most one new lease per call so a cold open
-  -- never uploads the party at once. A failed request forgets its token
-  -- and names its cause; the next round re-enrolls it.
-  local adopted = false
+  -- Portrait pages adopt up to ten new leases per call so a warm open
+  -- settles the whole party in one round. A failed request forgets its
+  -- token and names its cause; the next round re-enrolls it.
+  local adopted = 0
   for _, pageId in ipairs(pages) do
     local record = self._pages[pageId]
     if record == nil then
       pending = true
-    elseif record.lease == nil and record.token ~= nil and not adopted then
+    elseif record.lease == nil and record.token ~= nil and adopted < MAX_PORTRAIT_ADOPTS_PER_ROUND then
       local status, cause = pool:poll(record.token)
       if status == "failed" then
         pool:cancel(record.token)
@@ -690,7 +758,7 @@ local function prepareLease(self, lease, demand)
         record.token = nil
         record.lease = adoptedLease
         self._leasedPortraits[MonCache.portraitPagePath(pageId)] = adoptedLease
-        adopted = true
+        adopted = adopted + 1
       else
         pending = true
       end
@@ -789,7 +857,6 @@ function SummaryPresentationResources:release()
     pool:release(lease)
     self._chrome[path] = nil
   end
-  self._chromeReady = false
   for cacheKey, quad in pairs(self._quads) do
     releaseBorrowed(quad)
     self._quads[cacheKey] = nil

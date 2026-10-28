@@ -1,5 +1,7 @@
 -- Projects the source Pokepic quad into an isolated color/depth layer.
 
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
+
 local BattlePicturePass = {}
 BattlePicturePass.__index = BattlePicturePass
 
@@ -26,11 +28,12 @@ vec4 position(mat4 transform_projection, vec4 vertex_position)
 
 #ifdef PIXEL
 varying vec2 vTexCoord;
+/*__portemon_shared_image_sampling__*/
 uniform vec3 paletteFadeColor;
 uniform float paletteFadeAmount;
 vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords)
 {
-  vec4 pixel = Texel(image, vTexCoord);
+  vec4 pixel = resolveExactTexel(Texel(image, vTexCoord));
   if (pixel.a <= 0.0) discard;
   if (paletteFadeAmount > 0.0) {
     vec3 source5 = floor(pixel.rgb * 31.0 + 0.5);
@@ -85,6 +88,14 @@ local function vertices(item)
   local xOffset, yOffset = item.xOffset or 0, item.yOffset or 0
   local xOffset2, yOffset2 = 0, 0
   local u0, v0, u1, v1 = 0, 0, 1, 1
+  -- Battler portrait frames address a window of their shared atlas
+  -- page: the frame origin offsets the UV window while the rectangle
+  -- keeps its submitted geometry, so pooled pages draw through the
+  -- same crop math as owned crops. Items without a frame keep their
+  -- exact existing windows.
+  local frameX, frameY = item.frameX or 0, item.frameY or 0
+  local frameW, frameH = item.frameW, item.frameH
+  local hasFrame = type(frameW) == "number" and type(frameH) == "number"
   -- Source cell bands crop their staged tile strip through an exact
   -- pixel origin instead of the battler portrait frame: the rectangle
   -- stays centered on the submitted native center while only the UV
@@ -124,12 +135,29 @@ local function vertices(item)
         and yOffset2 >= 0
         and width > 0
         and height > 0
-        and xOffset2 + width <= imageWidth
-        and yOffset2 + height <= imageHeight,
+        and frameX + xOffset2 >= 0
+        and frameY + yOffset2 >= 0
+        and frameX + xOffset2 + width <= imageWidth
+        and frameY + yOffset2 + height <= imageHeight,
       "Pokepic crop stays inside its staged selector frame"
     )
-    u0, v0 = xOffset2 / imageWidth, yOffset2 / imageHeight
-    u1, v1 = (xOffset2 + width) / imageWidth, (yOffset2 + height) / imageHeight
+    u0, v0 = (frameX + xOffset2) / imageWidth, (frameY + yOffset2) / imageHeight
+    u1, v1 = (frameX + xOffset2 + width) / imageWidth, (frameY + yOffset2 + height) / imageHeight
+  elseif hasFrame then
+    -- A submitted frame without a visible animation still addresses
+    -- its page window: the shared page never draws whole behind a
+    -- framed portrait.
+    assert(
+      frameX >= 0
+        and frameY >= 0
+        and frameW > 0
+        and frameH > 0
+        and frameX + frameW <= imageWidth
+        and frameY + frameH <= imageHeight,
+      "portrait frame stays inside its staged page"
+    )
+    u0, v0 = frameX / imageWidth, frameY / imageHeight
+    u1, v1 = (frameX + frameW) / imageWidth, (frameY + frameH) / imageHeight
   end
   local left, right = -width / 2, width / 2
   local top, bottom = -height / 2, height / 2
@@ -186,7 +214,10 @@ function BattlePicturePass.new(graphics)
       vertex(40, 40, 0, 1, 1),
       vertex(-40, 40, 0, 0, 1),
     }, "fan", "dynamic")
-    shader = graphics.newShader(SHADER)
+    -- Indexed staged pages resolve through the shared exact-sampling
+    -- rule: the source stays the mesh texture while the palette rides
+    -- per-item uniforms, exactly like the map renderer borrows.
+    shader = graphics.newShader(ImageSampling.withSharedSampling(SHADER))
   end)
   if not ok then
     if shader then
@@ -234,6 +265,18 @@ function BattlePicturePass:render(graphics, items)
       local fadeColor, fadeAmount = paletteFade(item.paletteFade)
       self.shader:send("paletteFadeColor", fadeColor)
       self.shader:send("paletteFadeAmount", fadeAmount)
+      -- The palette image rides per item beside the mesh texture:
+      -- indexed pages resolve their slot through it while straight
+      -- sources sample unchanged. The flag sends on every item so no
+      -- stale palette state leaks across pictures.
+      local palette = item.palette
+      if palette ~= nil then
+        self.shader:send("u_usePalette", true)
+        self.shader:send("u_paletteCount", palette:getWidth())
+        self.shader:send("u_palette", palette)
+      else
+        self.shader:send("u_usePalette", false)
+      end
       graphics.setDepthMode("less", item.alpha >= 1)
       graphics.draw(self.mesh)
     end

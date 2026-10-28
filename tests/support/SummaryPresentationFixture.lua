@@ -162,6 +162,18 @@ function SummaryPresentationFixture.chromeVisuals()
       height = 16,
       offset = { x = -8, y = -8 },
     },
+    ["ballIcon_POKE_BALL"] = {
+      image = "assets/generated/summary/syn-ball-poke-ball.png",
+      width = 16,
+      height = 16,
+      offset = { x = -8, y = -8 },
+    },
+    ["ballIcon_GREAT_BALL"] = {
+      image = "assets/generated/summary/syn-ball-great-ball.png",
+      width = 16,
+      height = 16,
+      offset = { x = -8, y = -8 },
+    },
   }
   for _, name in ipairs(CHROME_ANIMATIONS) do
     visuals["syn-" .. name] = { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
@@ -230,7 +242,14 @@ function SummaryPresentationFixture.chromeSprites()
       { center = { x = 232, y = 150 }, unset = "marking5Unset", set = "marking5Set" },
       { center = { x = 240, y = 150 }, unset = "marking6Unset", set = "marking6Set" },
     },
-    ballIcons = { center = { x = 168, y = 39 }, icons = { ["SYN-BALL"] = "ballIcon_SYN-BALL" } },
+    ballIcons = {
+      center = { x = 168, y = 39 },
+      icons = {
+        ["SYN-BALL"] = "ballIcon_SYN-BALL",
+        ["POKE_BALL"] = "ballIcon_POKE_BALL",
+        ["GREAT_BALL"] = "ballIcon_GREAT_BALL",
+      },
+    },
     moveIcons = {
       infoSingle = { x = 108, y = 48 },
       infoPair = { { x = 91, y = 48 }, { x = 125, y = 48 } },

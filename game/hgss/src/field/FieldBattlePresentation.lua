@@ -31,6 +31,12 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _monIconProvider table<string, unknown>? field-owned icon page provider borrowed for battle command icons
 ---@field _battleMenus table<string, unknown> borrowed field-owned bag and party presentation services
 ---@field _imageFailures table<string, string> terminal upload failures by key, latched for the envelope lifetime
+---@field _pendingSceneImage { path: string, token: integer }? pre-enrolled scene image ticket behind the pending build
+---@field _pendingUploads table<string, integer> pre-enrolled pool tickets by staged image path behind the pending build
+---@field _enrolledUploads table<string, boolean> staged image paths already enrolled this launch
+---@field _warmPinned table<string, FieldBattlePresentation.PooledHandle> scene-independent borrows kept across launches
+---@field _manifestDocs table<string, table<string, unknown>> parsed staged documents by cache-relative path
+---@field _stagedMembersOk boolean true once the staged menu, HUD, font, and audio membership validated
 ---@field _measureDisplay fun(): table<string, unknown> live display facts
 ---@field _graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
 ---@field _manifest table<string, unknown> staged or planning presentation manifest
@@ -154,6 +160,104 @@ local function stagedManifest(manifest)
   return manifest --[[@as FieldBattlePresentation.StagedManifest]]
 end
 
+-- Battle visuals sample point-filtered and clamped, matching the direct
+-- construction below, so pooled borrows draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Fixed drawables every graphical launch reaches for, pinned at the
+-- envelope lifetime: HUD composites, command surfaces, and the shadow
+-- never vary by scene, so a repeat battle reuses the same borrow
+-- instead of re-enrolling worker and GPU work.
+local WARM_PINNED_KEYS = {
+  ["hud:enemy"] = true,
+  ["hud:player"] = true,
+  ["menu:command"] = true,
+  ["menu:moves"] = true,
+  ["menu:target"] = true,
+  ["shadow"] = true,
+}
+
+-- Parses one staged Lua document once per envelope lifetime: manifests
+-- never change under a live envelope, so repeat launches share the
+-- single parse instead of re-reading and re-compiling the same chunk
+-- on every preparation round. Missing documents stay uncached and keep
+-- retrying instead of pinning an absence.
+---@param envelope FieldBattlePresentation
+---@param path string cache-relative Lua document path
+---@return table<string, unknown>? parsed document, nil when the document is missing
+local function stagedDoc(envelope, path)
+  local cached = envelope._manifestDocs[path]
+  if cached ~= nil then
+    return cached
+  end
+  local doc = envelope._cacheFs:loadLua(path)
+  if type(doc) ~= "table" then
+    return nil
+  end
+  envelope._manifestDocs[path] = doc
+  return doc
+end
+
+-- Pins one resolved pooled borrow at the envelope lifetime: fixed
+-- drawables and the most recent scene image survive launch disposal,
+-- while any other pinned scene image is evicted first so the pin set
+-- stays bounded by the fixed keys plus one scene.
+---@param envelope FieldBattlePresentation
+---@param key string drawable key behind the installed borrow
+local function pinWarm(envelope, key)
+  if WARM_PINNED_KEYS[key] == true then
+    envelope._warmPinned[key] = envelope._leases[key]
+    return
+  end
+  local sceneKey = key:match("^scene:(.+)$")
+  if sceneKey == nil or BattlePresentationCache.parseSceneKey(sceneKey) == nil then
+    return
+  end
+  for pinnedKey, record in pairs(envelope._warmPinned) do
+    if pinnedKey ~= key and pinnedKey:match("^scene:") ~= nil then
+      envelope._warmPinned[pinnedKey] = nil
+      local pool = envelope._pool
+      if pool ~= nil then
+        pcall(pool.release, pool, record.lease)
+      end
+    end
+  end
+  envelope._warmPinned[key] = envelope._leases[key]
+end
+
+-- Enrolls one staged image decode on the shared owner without waiting:
+-- preparation overlaps worker work for art the pending build will draw,
+-- and the drawable takes over the ticket instead of enrolling again.
+-- Each path enrolls once per launch; consumed or dropped tickets leave
+-- through the drawable takeover or the launch teardown.
+---@param envelope FieldBattlePresentation
+---@param path string cache-relative staged image path
+local function enrollUpload(envelope, path)
+  local pool = envelope._pool
+  if pool == nil then
+    return
+  end
+  if envelope._enrolledUploads[path] == true or envelope._pendingUploads[path] ~= nil then
+    return
+  end
+  envelope._enrolledUploads[path] = true
+  envelope._pendingUploads[path] = pool:request(path, POOLED_SAMPLER, "demand")
+end
+
+-- Takes over one pre-enrolled upload ticket for the staged path, if the
+-- pending build enrolled it: the drawable awaits the shared decode
+-- instead of stacking a second enrollment behind it.
+---@param envelope FieldBattlePresentation
+---@param path string cache-relative staged image path
+---@return integer? pre-enrolled pool ticket, nil when preparation enrolled nothing
+local function takePendingUpload(envelope, path)
+  local token = envelope._pendingUploads[path]
+  if token ~= nil then
+    envelope._pendingUploads[path] = nil
+  end
+  return token
+end
+
 ---@param manifest table<string, unknown> staged or planning presentation manifest
 ---@param sceneKey string semantic scene key under admission
 ---@return boolean true when the manifest inventories the scene
@@ -202,7 +306,7 @@ local function checkPortraitPages(envelope, selectors)
     return true
   end
   local cacheFs = envelope._cacheFs
-  local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
+  local portraits = stagedDoc(envelope, MonCache.portraitManifestPath())
   if type(portraits) ~= "table" or type(portraits.entries) ~= "table" then
     return nil, "battle demand needs its staged portrait manifest: " .. tostring(selectors[1])
   end
@@ -286,7 +390,7 @@ local function checkTrainerPictures(envelope, selectors)
   if #selectors == 0 then
     return true
   end
-  local manifest = envelope._cacheFs:loadLua(BattlePresentationCache.manifestPath())
+  local manifest = stagedDoc(envelope, BattlePresentationCache.manifestPath())
   local pictures = type(manifest) == "table" and manifest.trainerPictures or nil
   local entries = type(pictures) == "table" and pictures.entries or nil
   if type(entries) ~= "table" then
@@ -345,7 +449,7 @@ local function checkBattleBalls(envelope, selectors)
   if #selectors == 0 then
     return true
   end
-  local manifest = envelope._cacheFs:loadLua(BattlePresentationCache.manifestPath())
+  local manifest = stagedDoc(envelope, BattlePresentationCache.manifestPath())
   local balls = type(manifest) == "table" and manifest.battleBalls or nil
   local entries = type(balls) == "table" and balls.entries or nil
   if type(entries) ~= "table" then
@@ -468,6 +572,12 @@ function FieldBattlePresentation.new(opts)
     _disposed = false,
     _images = {},
     _imageFailures = {},
+    _pendingSceneImage = nil,
+    _pendingUploads = {},
+    _enrolledUploads = {},
+    _warmPinned = {},
+    _manifestDocs = {},
+    _stagedMembersOk = false,
     _pool = opts.imagePool,
     _leases = {},
   }, FieldBattlePresentation)
@@ -485,10 +595,6 @@ function FieldBattlePresentation.new(opts)
   return envelope
 end
 
--- Battle visuals sample point-filtered and clamped, matching the direct
--- construction below, so pooled borrows draw identically.
-local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
-
 -- Borrows one staged page through the shared owner under a drawable key:
 -- the same bounded stall and keyed terminal failure as a whole-image
 -- borrow, answering the raw lease so cell drawables can pair the pooled
@@ -496,11 +602,14 @@ local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest"
 ---@param envelope FieldBattlePresentation
 ---@param key string drawable key behind diagnostics
 ---@param path string cache-relative staged page path behind diagnostics
+---@param token integer? already-enrolled pool ticket to await instead of requesting again
 ---@return table<string, unknown>? resolved page lease, nil on terminal failure
 ---@return string? terminal failure naming the key and path, nil on success
-local function borrowPage(envelope, key, path)
+local function borrowPage(envelope, key, path, token)
   local pool = assert(envelope._pool, "pooled battle uploads borrow the shared image owner")
-  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  if token == nil then
+    token = pool:request(path, POOLED_SAMPLER, "demand")
+  end
   local stalled = 0
   while true do
     local status, failure = pool:poll(token)
@@ -530,19 +639,30 @@ local function borrowPage(envelope, key, path)
 end
 
 -- Borrows one staged whole battle visual through the shared owner,
--- installing the resolved image as the drawable behind the key.
+-- installing the resolved image as the drawable behind the key. A
+-- pre-enrolled ticket (scene image enrolled at admission) rides instead
+-- of a fresh request so the worker decodes concurrently with the
+-- pending build.
 ---@param envelope FieldBattlePresentation
 ---@param key string drawable key behind diagnostics
 ---@param path string cache-relative staged image path behind diagnostics
+---@param token integer? already-enrolled pool ticket to await instead of requesting again
 ---@return table<string, unknown>? resolved drawable lease, nil on terminal failure
 ---@return string? terminal failure naming the key and path, nil on success
-local function acquirePooled(envelope, key, path)
-  local lease, failure = borrowPage(envelope, key, path)
+local function acquirePooled(envelope, key, path, token)
+  -- A pre-enrolled ticket from preparation rides instead of a fresh
+  -- request so the drawable awaits the shared decode instead of
+  -- stacking a second enrollment behind it.
+  if token == nil then
+    token = takePendingUpload(envelope, path)
+  end
+  local lease, failure = borrowPage(envelope, key, path, token)
   if lease == nil then
     return nil, failure
   end
   assert(lease.image, "shared borrows carry their resolved image")
   envelope._leases[key] = { lease = lease, handle = lease }
+  pinWarm(envelope, key)
   return lease
 end
 
@@ -651,19 +771,25 @@ end
 -- pending wait without touching the image driver; staged bytes that
 -- fail decoding or GPU upload answer a terminal failure naming the
 -- canonical selector and its page path.
----@param graphics table<string, unknown> host graphics namespace enabling GPU upload
----@param cacheFs table<string, unknown> versioned derived cache behind demand validation
+---@param graphics table<string, unknown>? host graphics namespace captured by the preparation services
+---@param envelope FieldBattlePresentation envelope carrying the versioned derived cache
 ---@param selector string canonical staged portrait selector
 ---@return table<string, unknown>? owned image handle, nil while pending or on terminal failure
 ---@return string? terminal failure naming the selector and page path, nil while pending or on success
-local function uploadPortraitCell(graphics, cacheFs, selector)
+local function uploadPortraitCell(graphics, envelope, selector)
+  -- Graphics nil-checks live inside the upload pcall below: a headless
+  -- envelope reports the same staged terminal failure instead of
+  -- escaping as a host error, matching the pool-less production path.
+  -- The namespace arrives from the services closure (construction-time),
+  -- never the live envelope field the audio suite nils to force headless.
+  local cacheFs = envelope._cacheFs
   local pagePath = nil
   local entry = nil
   do
     -- Only a worker-attested page decodes: an unstaged page waits for
     -- preparation instead of decoding missing bytes or standing in
     -- another image. Structural manifest problems still fail below.
-    local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
+    local portraits = stagedDoc(envelope, MonCache.portraitManifestPath())
     if type(portraits) == "table" and type(portraits.entries) == "table" then
       local entries = portraits.entries --[[@as table<string, table<string, unknown>>]]
       entry = entries[selector]
@@ -678,6 +804,8 @@ local function uploadPortraitCell(graphics, cacheFs, selector)
     end
   end
   local ok, handleOrErr = pcall(function()
+    assert(graphics ~= nil, "portrait upload stages through its host graphics namespace")
+    assert(type(graphics.newImage) == "function", "portrait upload needs host image construction")
     assert(type(entry) == "table", "the staged manifest plans no such portrait: " .. tostring(selector))
     assert(type(entry.pageId) == "number", "the staged portrait names its page: " .. tostring(selector))
     assert(type(entry.frames) == "table" and #entry.frames == 2, "the staged battle portrait names both Pokepic frames")
@@ -706,6 +834,104 @@ local function uploadPortraitCell(graphics, cacheFs, selector)
     label = label .. " " .. tostring(pagePath)
   end
   return nil, "battle image " .. label .. " upload failed: " .. cause
+end
+
+-- Borrows one staged portrait cell through the shared image owner:
+-- the whole atlas page decodes on the worker and uploads once while
+-- every battler on the page resolves its own frame cell pairing the
+-- page lease with its frame quad. Quads need host quad construction;
+-- callers pair at most one cell per staged frame. An unstaged page
+-- waits without touching the pool; a failed decode or upload latches
+-- the keyed terminal failure instead of hanging the cue.
+---@param envelope FieldBattlePresentation envelope carrying the versioned derived cache
+---@param graphics table<string, unknown> host graphics namespace captured by the preparation services
+---@param key string drawable key behind diagnostics
+---@param selector string canonical staged portrait selector
+---@return table<string, unknown>? portrait cell handle, nil while pending or on terminal failure
+---@return string? terminal failure naming the selector and page path, nil while pending or on success
+local function borrowPortraitCell(envelope, graphics, key, selector)
+  local pool = assert(envelope._pool, "pooled battler portraits borrow the shared image owner")
+  assert(type(graphics.newQuad) == "function", "pooled battler portraits need host quad construction")
+  local entry = nil
+  local pagePath = nil
+  local pageId = nil
+  do
+    -- Only a worker-attested page borrows: an unstaged page waits for
+    -- preparation instead of decoding missing bytes or standing in
+    -- another image. Structural manifest problems still fail below.
+    local portraits = stagedDoc(envelope, MonCache.portraitManifestPath())
+    if type(portraits) == "table" and type(portraits.entries) == "table" then
+      entry = portraits.entries[selector]
+    end
+    pageId = type(entry) == "table" and entry.pageId or nil
+    if type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0 then
+      if
+        checkStagedPortraitPage(envelope._cacheFs, pageId --[[@as integer]]) ~= nil
+      then
+        return nil, nil
+      end
+      pagePath = MonCache.pageImagePath("portraits", pageId --[[@as integer]])
+    end
+  end
+  assert(type(entry) == "table", "the staged manifest plans no such portrait: " .. tostring(selector))
+  assert(type(entry.frames) == "table" and #entry.frames == 2, "the staged battle portrait names both Pokepic frames")
+  assert(type(pagePath) == "string", "the staged portrait names its page: " .. tostring(selector))
+  -- A pre-enrolled ticket rides when preparation staged one; a second
+  -- battler on the same page enrolls its own borrow instead of
+  -- starving behind the consumed ticket, exactly like whole-image
+  -- borrows fall back to a fresh request.
+  local token = takePendingUpload(envelope, pagePath)
+  if token == nil then
+    token = pool:request(pagePath, POOLED_SAMPLER, "demand")
+  end
+  local status, cause = pool:poll(token)
+  if status == "failed" then
+    return nil,
+      "battle image mon:" .. tostring(selector) .. " " .. tostring(pagePath) .. " upload failed: " .. tostring(cause)
+  end
+  if status ~= "ready" then
+    assert(status == "pending", "portrait preparation reports pending or ready")
+    envelope._pendingUploads[pagePath] = token
+    return nil, nil
+  end
+  local ok, leaseOrCause = pcall(pool.acquire, pool, token)
+  if not ok then
+    return nil,
+      "battle image mon:" .. tostring(selector) .. " " .. tostring(pagePath) .. " upload failed: " .. tostring(
+        leaseOrCause
+      )
+  end
+  local lease = leaseOrCause
+  assert(lease.image, "shared borrows carry their resolved image")
+  local pageWidth, pageHeight = lease.width, lease.height
+  assert(
+    type(pageWidth) == "number" and type(pageHeight) == "number",
+    "shared portrait pages carry their staged dimensions"
+  )
+  local frames = {}
+  for index, frame in ipairs(entry.frames) do
+    assert(type(frame.x) == "number" and type(frame.y) == "number", "the staged battle portrait frames its origin")
+    assert(
+      type(frame.width) == "number" and type(frame.height) == "number",
+      "the staged battle portrait frames its size"
+    )
+    frames[index] = {
+      image = lease.image,
+      lease = lease,
+      quad = graphics.newQuad(frame.x, frame.y, frame.width, frame.height, pageWidth, pageHeight),
+      width = frame.width,
+      height = frame.height,
+      frameX = frame.x,
+      frameY = frame.y,
+      frameW = frame.width,
+      frameH = frame.height,
+    }
+  end
+  -- Battler portraits stay launch-owned: pages vary per battle while
+  -- the shared owner keeps idle pages resident under its own budget,
+  -- so no envelope pin grows without bound here.
+  envelope._leases[key] = { lease = lease, handle = { frames = frames } }
+  return envelope._leases[key].handle
 end
 
 -- Menu layout names inside drawable keys, by manifest menu section.
@@ -1100,6 +1326,22 @@ function FieldBattlePresentation:_preparationServices()
     if portraitsOk == false then
       return false, nil
     end
+    -- Staged portrait pages decode while icons and audio still pend:
+    -- the battler drawables take over each page ticket instead of
+    -- decoding the shared atlas behind the remaining build.
+    if envelope._pool ~= nil then
+      local portraitsDoc = stagedDoc(envelope, MonCache.portraitManifestPath())
+      local entries = type(portraitsDoc) == "table" and portraitsDoc.entries or nil
+      if type(entries) == "table" then
+        for _, selector in ipairs(demand.pages or {}) do
+          local entry = entries[selector]
+          local pageId = type(entry) == "table" and entry.pageId or nil
+          if type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0 then
+            enrollUpload(envelope, MonCache.pageImagePath("portraits", pageId --[[@as integer]]))
+          end
+        end
+      end
+    end
     local trainerOk, trainerErr = checkTrainerPictures(envelope, demand.trainerPictures or {})
     if trainerOk == nil then
       return nil, trainerErr
@@ -1108,7 +1350,21 @@ function FieldBattlePresentation:_preparationServices()
       return false, nil
     end
     if #(demand.trainerPictures or {}) > 0 then
-      trainerPictureManifest = cacheFs:loadLua(BattlePresentationCache.manifestPath()).trainerPictures
+      local battleDoc = assert(
+        stagedDoc(envelope, BattlePresentationCache.manifestPath()),
+        "trainer picture demand needs its staged battle manifest"
+      )
+      trainerPictureManifest =
+        assert(battleDoc.trainerPictures, "trainer picture demand needs its staged trainer pictures")
+      -- Staged trainer art decodes while portraits and audio still
+      -- pend: the drawable takes over each ticket instead of waiting
+      -- behind the remaining build.
+      for _, selector in ipairs(demand.trainerPictures or {}) do
+        local entry = trainerPictureManifest.entries[selector]
+        if type(entry) == "table" and type(entry.image) == "string" then
+          enrollUpload(envelope, entry.image)
+        end
+      end
     end
     local battleBallsOk, battleBallsErr = checkBattleBalls(envelope, demand.battleBalls or {})
     if battleBallsOk == nil then
@@ -1118,7 +1374,24 @@ function FieldBattlePresentation:_preparationServices()
       return false, nil
     end
     if #(demand.battleBalls or {}) > 0 then
-      battleBallManifest = cacheFs:loadLua(BattlePresentationCache.manifestPath()).battleBalls
+      local battleDoc = assert(
+        stagedDoc(envelope, BattlePresentationCache.manifestPath()),
+        "battle ball demand needs its staged battle manifest"
+      )
+      battleBallManifest = assert(battleDoc.battleBalls, "battle ball demand needs its staged battle balls")
+      -- Staged ball frames decode while the rest of the build still
+      -- pends, like trainer art above.
+      for _, selector in ipairs(demand.battleBalls or {}) do
+        local entry = battleBallManifest.entries[selector]
+        local frames = type(entry) == "table" and entry.frames or nil
+        if type(frames) == "table" then
+          for _, frame in ipairs(frames) do
+            if type(frame) == "table" and type(frame.image) == "string" then
+              enrollUpload(envelope, frame.image)
+            end
+          end
+        end
+      end
     end
     local iconKeys = demand.iconKeys or {}
     if envelope._monIconProvider ~= nil or #iconKeys > 0 then
@@ -1139,13 +1412,30 @@ function FieldBattlePresentation:_preparationServices()
       if staged == nil then
         return nil, NOT_STAGED
       end
-      local stagedErr = checkStagedMembers(cacheFs, staged)
-      if stagedErr ~= nil then
-        return nil, stagedErr
+      -- Membership validates once per envelope: staged files never
+      -- un-stage under a live envelope, so repeat launches skip the
+      -- full manifest and art reads the first launch already proved.
+      -- A failure always re-checks instead of pinning a stale answer.
+      if not envelope._stagedMembersOk then
+        local stagedErr = checkStagedMembers(cacheFs, staged)
+        if stagedErr ~= nil then
+          return nil, stagedErr
+        end
+        envelope._stagedMembersOk = true
       end
       local audioErr = checkAudioMembers(staged, envelope._musicRole, demand)
       if audioErr ~= nil then
         return nil, audioErr
+      end
+      -- Fixed art decodes while the remaining launch-specific members
+      -- still pend: every graphical launch draws these paths, so the
+      -- first validation enrolls them once per launch and the drawables
+      -- take over each ticket instead of serializing behind the build.
+      for _, key in ipairs(REQUIRED_FIXED_ART) do
+        local path = fixedArt(staged, FIXED_ART[key])
+        if type(path) == "string" then
+          enrollUpload(envelope, path)
+        end
       end
     end
     return true
@@ -1192,6 +1482,14 @@ function FieldBattlePresentation:_preparationServices()
     end
     if images[key] ~= nil then
       return images[key]
+    end
+    -- A pinned warm borrow answers without touching the shared owner:
+    -- the envelope owns the borrow across launches, so the holder
+    -- borrows it back without enrolling worker or GPU work. The pin
+    -- stays envelope-owned and is never installed as a launch lease.
+    local pinned = envelope._warmPinned[key]
+    if pinned ~= nil then
+      return pinned.handle
     end
     -- A terminal upload failure replays identically without re-entering
     -- the driver: the decode already proved deterministic for this
@@ -1256,7 +1554,16 @@ function FieldBattlePresentation:_preparationServices()
       -- host provides one; without a pool the envelope uploads and owns
       -- the staged bytes directly so pool-less production draws resolve.
       if envelope._pool ~= nil then
-        local image, failure = acquirePooled(envelope, key, path)
+        -- A scene ticket enrolled at admission decodes while the required
+        -- scene demand still stages: taking it over here avoids a second
+        -- enrollment and the serial worker wait behind the build.
+        local staged = envelope._pendingSceneImage
+        local stagedToken = nil
+        if staged ~= nil and staged.path == path then
+          envelope._pendingSceneImage = nil
+          stagedToken = staged.token
+        end
+        local image, failure = acquirePooled(envelope, key, path, stagedToken)
         if image == nil then
           assert(type(failure) == "string", "staged upload failures carry their reason")
           failures[key] = failure --[[@as string]]
@@ -1366,7 +1673,24 @@ function FieldBattlePresentation:_preparationServices()
     end
     local selector = exactPortraitSelector(key)
     if selector ~= nil then
-      local cell, failure = uploadPortraitCell(graphics, cacheFs, selector)
+      -- A shared owner borrows the whole atlas page once per envelope
+      -- while every battler on the page resolves its own frame cell:
+      -- worker decode and GPU upload leave the game thread, and the
+      -- drawables draw through the page lease plus their frame quad.
+      -- Without a pool the envelope still crops and owns its cells
+      -- directly, so pool-less production draws resolve.
+      if envelope._pool ~= nil then
+        local handle, failure = borrowPortraitCell(envelope, graphics, key, selector)
+        if handle == nil then
+          if failure == nil then
+            return nil
+          end
+          failures[key] = failure --[[@as string]]
+          return nil, failure
+        end
+        return handle
+      end
+      local cell, failure = uploadPortraitCell(graphics, envelope, selector)
       if cell == nil then
         if failure == nil then
           return nil
@@ -1447,8 +1771,13 @@ function FieldBattlePresentation:_preparationServices()
     local pooled = leases[key]
     if pooled ~= nil then
       leases[key] = nil
-      local pool = assert(envelope._pool, "pooled battle borrows return to the shared image owner")
-      pool:release(pooled.lease)
+      -- A pinned warm borrow stays envelope-owned across launches:
+      -- the launch forgets it here without returning it, so the next
+      -- launch reuses the same borrow instead of re-enrolling.
+      if envelope._warmPinned[key] == nil then
+        local pool = assert(envelope._pool, "pooled battle borrows return to the shared image owner")
+        pool:release(pooled.lease)
+      end
     end
     if key == "battle-background" and backgroundImage ~= nil and type(backgroundImage.release) == "function" then
       backgroundImage:release()
@@ -1660,6 +1989,8 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._launchId = descriptor.launchId
   self._descriptor = descriptor
   self._pendingFailed = false
+  self._enrolledUploads = {}
+  assert(next(self._pendingUploads) == nil, "a launch never inherits pre-enrolled upload tickets")
   self._pendingBuild = false
   self._portDisposed = false
   self._screen = nil
@@ -1676,6 +2007,18 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._transitionCapture = nil
   self._transitionFailed = false
   self:_startTransition(descriptor)
+  -- Enroll the scene image on the shared owner while the transition
+  -- and the required scene demand still run: the worker decodes
+  -- concurrently instead of serializing behind the build, and the
+  -- drawable takes over this ticket instead of requesting again. No
+  -- draw happens here; the ticket is cancelled with the launch when the
+  -- build never needs it.
+  assert(self._pendingSceneImage == nil, "a launch never inherits a staged scene ticket")
+  local pool = self._pool
+  if pool ~= nil then
+    local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)
+    self._pendingSceneImage = { path = imagePath, token = pool:request(imagePath, POOLED_SAMPLER, "demand") }
+  end
   local derived = self._derivedAssets
   local scheduled = self._graphics ~= nil
     and type(derived) == "table"
@@ -2747,6 +3090,23 @@ end
 -- observation or full disposal, never from port disposal.
 function FieldBattlePresentation:_dropLaunch()
   self:_disposeTransition()
+  local staged = self._pendingSceneImage
+  self._pendingSceneImage = nil
+  if staged ~= nil and self._pool ~= nil then
+    pcall(self._pool.cancel, self._pool, staged.token)
+  end
+  -- Pre-enrolled upload tickets never outlive their launch: the worker
+  -- interest behind an undrawn ticket is discarded instead of retained
+  -- unclaimed, and the next launch enrolls its own paths.
+  if self._pool ~= nil then
+    for path, token in pairs(self._pendingUploads) do
+      self._pendingUploads[path] = nil
+      pcall(self._pool.cancel, self._pool, token)
+    end
+  else
+    self._pendingUploads = {}
+  end
+  self._enrolledUploads = {}
   self._launchId = nil
   self._descriptor = nil
   self._pendingFailed = false
@@ -2799,11 +3159,20 @@ function FieldBattlePresentation:dispose()
   end
   -- Battle closure returns every shared borrow exactly once; the shared
   -- owner alone frees physical images, so no raw image release runs here.
+  -- Launch leases go back unless a warm pin still owns them; pins
+  -- release separately below so a mid-launch disposal never frees a
+  -- pinned borrow twice.
   local pool = self._pool
   for key, pooled in pairs(self._leases) do
     self._leases[key] = nil
-    if pool ~= nil then
+    if pool ~= nil and self._warmPinned[key] == nil then
       pool:release(pooled.lease)
+    end
+  end
+  for key, pinned in pairs(self._warmPinned) do
+    self._warmPinned[key] = nil
+    if pool ~= nil then
+      pool:release(pinned.lease)
     end
   end
   for key, _ in pairs(self._imageFailures) do
