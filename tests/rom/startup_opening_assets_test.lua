@@ -3430,6 +3430,82 @@ local function starterSparkleClipsMatchDecodedNanr(romFs, versionId)
   )
 end
 
+-- Every town material binds its source texture to one staged image with
+-- matching dimensions, and every texel run that names only palette entry
+-- zero decodes to exactly that entry through the hardware color path,
+-- without consulting the production decoder: uniform shadow texels stay
+-- source-dark instead of hiding a wrong palette bind.
+local function townShadowTexelsDecodeFromTheirSourcePaletteEntry(romFs, versionId)
+  local SceneSources = requireProducer("OpeningMovieSceneSources")
+  local decoderOk, Nsbmd = pcall(require, "libs.nds.src.nitro.g3d.Nsbmd")
+  Assert.isTrue(decoderOk, "the model decoder is available for independent observation")
+  local packOk, Nsbtx = pcall(require, "libs.nds.src.nitro.g3d.Nsbtx")
+  Assert.isTrue(packOk, "the texture pack reader is available for independent observation")
+  local materialOk, MaterialCompiler = pcall(require, "romdump.src.digest.model.MaterialCompiler")
+  Assert.isTrue(materialOk, "the shared material resolver is available for independent observation")
+  local pngOk, PngReader = pcall(require, "tests.support.PngReader")
+  Assert.isTrue(pngOk, "the staged pixel reader is available for independent observation")
+  local fixedOk, FixedPoint = pcall(require, "libs.math.src.FixedPoint")
+  Assert.isTrue(fixedOk, "the hardware color conversion is available for independent observation")
+  local archive, archiveErr = romFs:openNarc(SceneSources.ARCHIVE)
+  Assert.notNil(archive, "the opening source archive opens: " .. tostring(archiveErr))
+  assert(archive ~= nil)
+  local bundle = compileScene(romFs, versionId, 3)
+  local manifest = strictManifest(bundle, versionId, 3)
+  Assert.isTrue(type(manifest.models) == "table" and #manifest.models == 3, "scene 3 keeps its three town models")
+  local indexed = { [1] = true, [2] = true, [3] = true, [4] = true, [6] = true }
+  local checked = 0
+  for _, town in ipairs(SceneSources.townSet().models) do
+    local memberBytes = assert(archive:readMember(town.model))
+    local decoded = assert(Nsbmd.decode(memberBytes, { alias = SceneSources.ARCHIVE, memberId = town.model }))
+    local modelData = assert(decoded.models[1])
+    local pack = assert(decoded.embeddedTextures)
+    local textures = {}
+    for _, material in ipairs(modelData.materials or {}) do
+      if material.textureName ~= nil then
+        local resolved = MaterialCompiler.resolveTexture(material, pack, textures, nil, {})
+        local where = town.name .. " " .. tostring(material.name)
+        Assert.notNil(resolved.texture, where .. " binds its source texture")
+        local tex = pack.textureByName[material.textureName]
+        Assert.notNil(tex, where .. " names a packed texture")
+        local staged = bundle.files["assets/generated/startup/opening/3/textures/" .. resolved.texture .. ".png"]
+        Assert.notNil(staged, where .. " stages its decoded texture")
+        local bytes = staged
+        if type(bytes) ~= "string" then
+          local ok, str = pcall(function()
+            return bytes:getString()
+          end)
+          Assert.isTrue(ok and type(str) == "string", where .. " staged texture reads back as bytes")
+          bytes = (ok and str) or ""
+        end
+        local width, height, rgba = PngReader.rgba(bytes)
+        Assert.equal(width, tex.width, where .. " keeps its source width")
+        Assert.equal(height, tex.height, where .. " keeps its source height")
+        if indexed[tex.formatRaw] == true then
+          local palette = material.paletteName ~= nil and pack.paletteByName[material.paletteName] or nil
+          local opts = Nsbtx.decoderOpts(pack, tex, palette)
+          local allZero = #opts.texel > 0
+          for offset = 1, #opts.texel do
+            if string.byte(opts.texel, offset) ~= 0 then
+              allZero = false
+              break
+            end
+          end
+          if allZero and opts.palette ~= nil and #opts.palette >= 2 then
+            local word = string.byte(opts.palette, 1) + string.byte(opts.palette, 2) * 256
+            local er, eg, eb = FixedPoint.rgb555(word)
+            local ea = tex.color0Transparent and 0 or 255
+            local expected = string.rep(string.char(er, eg, eb, ea), width * height)
+            Assert.equal(rgba, expected, where .. " shadow texels match their source palette entry")
+            checked = checked + 1
+          end
+        end
+      end
+    end
+  end
+  Assert.isTrue(checked >= 1, "scene 3 stages palette-entry shadow texels with decoded proof")
+end
+
 return RomSuite.fromFacts({
   ["source opening scenes compile to five independent versioned bundles"] = sourceOpeningScenesCompileToFiveIndependentVersionedBundles,
   ["source opening timeline keeps its five-scene transitions and skip gate"] = sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate,
@@ -3462,4 +3538,5 @@ return RomSuite.fromFacts({
   ["scene 2 heroes pause while flowers animate and pans move"] = scene2HeroesPauseWhileFlowersAnimate,
   ["scene 2 hardware priority separates foreground and sprites"] = scene2HardwarePrioritySeparatesForegroundAndSprites,
   ["starter and sparkle clips match decoded animation records"] = starterSparkleClipsMatchDecodedNanr,
+  ["town shadow texels decode from their source palette entry"] = townShadowTexelsDecodeFromTheirSourcePaletteEntry,
 })

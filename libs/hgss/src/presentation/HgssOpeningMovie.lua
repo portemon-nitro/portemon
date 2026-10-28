@@ -3179,6 +3179,13 @@ local function townEnvironment(slot)
   local vectors = (type(record) == "table") and record.vectors or nil
   local colors = (type(record) == "table") and record.colors or nil
   if slot.townEnvKey ~= activeTownIndex(slot) or slot.townEnv == nil then
+    local edgeSource = (type(lighting) == "table") and lighting.edgeColors or nil
+    assert(type(edgeSource) == "table" and #edgeSource == 8, "town stage carries no eight-entry edge table")
+    local edgeColors = {}
+    for edgeIndex = 1, 8 do
+      assert(type(edgeSource[edgeIndex]) == "table", "town edge slot carries no color triple")
+      edgeColors[edgeIndex - 1] = toRgb555(edgeSource[edgeIndex])
+    end
     local lights = {}
     for index = 1, 4 do
       local rawVector = (type(vectors) == "table") and vectors[index] or nil
@@ -3211,7 +3218,7 @@ local function townEnvironment(slot)
           },
         },
       },
-      edgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 },
+      edgeColors = edgeColors,
       fog = {
         enabled = false,
         color = 0,
