@@ -44,6 +44,15 @@ local function newPartyOwner(count)
     mapSection = 7,
     date = CatalogFixture.metDate(),
   })
+  local names = {}
+  for box = 0, owner:boxCount() - 1 do
+    names[#names + 1] = { box = box, name = "BOX " .. tostring(box + 1) }
+  end
+  local namedBoxes = assert(owner:preparePcChanges({
+    partyRevision = owner:partyRevision(),
+    boxRevision = owner:boxRevision(),
+  }, { metadata = names }))
+  namedBoxes.publish()
   local species = { "CHIKORITA", "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE", "EEVEE" }
   local factory = CatalogFixture.makeFactory(0x55555555, catalog)
   for index = 1, count do

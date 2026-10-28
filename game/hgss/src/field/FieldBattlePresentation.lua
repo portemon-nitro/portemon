@@ -21,7 +21,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 
 ---@class FieldBattlePresentation
 ---@field _cacheFs table<string, unknown> versioned derived cache behind demand validation
----@field _derivedAssets table<string, function>? borrowed scene-demand host, never disposed here
+---@field _derivedAssets table<string, function>? borrowed staged battle-art demand host, never disposed here
 ---@field _text table<string, unknown> borrowed text services behind plan rendering
 ---@field _windows table<string, unknown> borrowed window services behind plan rendering
 ---@field _screenAudio table<string, unknown> semantic cue-audio boundary behind the screen
@@ -80,7 +80,7 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@field audio table<string, unknown>? semantic cue-audio boundary behind the screen
 ---@field pokedex table<string, unknown>? borrowed field presentation resource owner behind the registration card
 ---@field measureDisplay fun(): table<string, unknown> live display facts
----@field derivedAssets table<string, function>? borrowed scene-demand host behind lazy scene waits
+---@field derivedAssets table<string, function>? borrowed staged battle-art demand host
 ---@field graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
@@ -266,6 +266,138 @@ local function checkPortraitPages(envelope, selectors)
           reason = reason .. ": portrait:" .. tostring(group.pageId)
         end
         return nil, reason
+      end
+    end
+  end
+  if waiting then
+    return false
+  end
+  return true
+end
+
+-- Validates and queues the exact semantic trainer pictures behind an
+-- opening demand. The selected-game host owns generation; staged manifest
+-- entries alone never claim readiness while a host says they are pending.
+---@param envelope FieldBattlePresentation
+---@param selectors string[] semantic `front:<class>` / `back:<class>` selectors
+---@return boolean? ready true when every picture is staged, false while building
+---@return string? terminal failure naming the exact selector
+local function checkTrainerPictures(envelope, selectors)
+  if #selectors == 0 then
+    return true
+  end
+  local manifest = envelope._cacheFs:loadLua(BattlePresentationCache.manifestPath())
+  local pictures = type(manifest) == "table" and manifest.trainerPictures or nil
+  local entries = type(pictures) == "table" and pictures.entries or nil
+  if type(entries) ~= "table" then
+    return nil, "battle demand needs its staged trainer picture manifest: " .. tostring(selectors[1])
+  end
+  local host = envelope._derivedAssets
+  local requestPicture = type(host) == "table" and host.requestBattleTrainerPicture or nil
+  local waiting = false
+  for _, selector in ipairs(selectors) do
+    if type(selector) ~= "string" then
+      return nil, "trainer picture selectors must name a front/back class"
+    end
+    local role, classKey = selector:match("^(front):([%w_]+)$")
+    if role == nil then
+      role, classKey = selector:match("^(back):([%w_]+)$")
+    end
+    if role == nil or classKey == nil then
+      return nil, "trainer picture selectors must name a front/back class: " .. tostring(selector)
+    end
+    local entry = entries[selector]
+    if
+      type(entry) ~= "table"
+      or entry.drawableKey ~= ("trainer:" .. role .. ":" .. classKey)
+      or entry.width ~= 80
+      or entry.height ~= 80
+      or type(entry.image) ~= "string"
+      or entry.image == ""
+    then
+      return nil, "battle demand names an unstaged trainer picture: " .. selector
+    end
+    if type(requestPicture) == "function" then
+      local ready, failure = requestPicture(selector, "required")
+      if failure ~= nil then
+        return nil, "trainer picture " .. selector .. ": " .. tostring(failure)
+      end
+      if ready ~= true then
+        waiting = true
+      elseif envelope._graphics ~= nil and not envelope._cacheFs:exists(entry.image, "file") then
+        return nil, "trainer picture image is not staged: " .. selector .. ": " .. entry.image
+      end
+    elseif envelope._graphics ~= nil and not envelope._cacheFs:exists(entry.image, "file") then
+      return nil, "trainer picture image is not staged: " .. selector .. ": " .. entry.image
+    end
+  end
+  if waiting then
+    return false
+  end
+  return true
+end
+
+---@param envelope FieldBattlePresentation
+---@param selectors string[] semantic `ball:<key>` selectors
+---@return boolean? ready true when every ball frame is staged, false while building
+---@return string? terminal failure naming the exact selector
+local function checkBattleBalls(envelope, selectors)
+  if #selectors == 0 then
+    return true
+  end
+  local manifest = envelope._cacheFs:loadLua(BattlePresentationCache.manifestPath())
+  local balls = type(manifest) == "table" and manifest.battleBalls or nil
+  local entries = type(balls) == "table" and balls.entries or nil
+  if type(entries) ~= "table" then
+    return nil, "battle demand needs its staged ball manifest: " .. tostring(selectors[1])
+  end
+  local host = envelope._derivedAssets
+  local requestBalls = type(host) == "table" and host.requestBattleBalls or nil
+  local waiting = false
+  for _, selector in ipairs(selectors) do
+    if type(selector) ~= "string" or selector:match("^ball:[%w_]+$") == nil then
+      return nil, "battle ball selectors must name semantic balls: " .. tostring(selector)
+    end
+    local ballKey = selector:match("^ball:([%w_]+)$")
+    local entry = entries[selector]
+    local frames = type(entry) == "table" and entry.frames or nil
+    if type(frames) ~= "table" or #frames == 0 then
+      return nil, "battle demand names an unstaged ball: " .. selector
+    end
+    for frameIndex, frame in ipairs(frames) do
+      local drawableKey = "battle-ball:" .. ballKey .. ":" .. tostring(frameIndex - 1)
+      if
+        type(frame) ~= "table"
+        or frame.drawableKey ~= drawableKey
+        or type(frame.image) ~= "string"
+        or frame.image == ""
+        or type(frame.width) ~= "number"
+        or frame.width <= 0
+        or type(frame.height) ~= "number"
+        or frame.height <= 0
+      then
+        return nil, "battle demand names an invalid ball frame: " .. selector .. ":" .. tostring(frameIndex - 1)
+      end
+    end
+    if type(requestBalls) == "function" then
+      local ready, failure = requestBalls({ selector }, "required")
+      if failure ~= nil then
+        return nil, "battle ball " .. selector .. ": " .. tostring(failure)
+      end
+      if ready ~= true then
+        waiting = true
+      elseif envelope._graphics ~= nil then
+        for _, frame in ipairs(frames) do
+          if not envelope._cacheFs:exists(frame.image, "file") then
+            return nil, "battle ball image is not staged: " .. selector .. ": " .. frame.image
+          end
+        end
+      end
+    elseif envelope._graphics ~= nil then
+      for _, frame in ipairs(frames) do
+        if not envelope._cacheFs:exists(frame.image, "file") then
+          return nil, "battle ball image is not staged: " .. selector .. ": " .. frame.image
+        end
       end
     end
   end
@@ -753,6 +885,9 @@ local function checkAudioMembers(manifest, musicRole, demand)
   for _, role in ipairs(ORDINARY_AUDIO_ROLES) do
     stagedRoles[manifest.audioRoles[role]] = true
   end
+  for _, symbol in pairs(BattleAudio.SINK_SOUNDS) do
+    stagedRoles[symbol] = true
+  end
   -- The launch's chosen battle-music track is legitimate by
   -- construction from the source selector beside the staged interface
   -- roles: special-species and class tracks name staged sequences
@@ -891,6 +1026,8 @@ function FieldBattlePresentation:_preparationServices()
   local graphics = self._graphics
   local images = self._images --[[@as table<string, unknown>]]
   local moveIconManifest = nil
+  local trainerPictureManifest = nil
+  local battleBallManifest = nil
   local stagedSceneKey = nil
   local stagedSceneLayer = nil
   local backgroundPixels = nil
@@ -962,6 +1099,26 @@ function FieldBattlePresentation:_preparationServices()
     end
     if portraitsOk == false then
       return false, nil
+    end
+    local trainerOk, trainerErr = checkTrainerPictures(envelope, demand.trainerPictures or {})
+    if trainerOk == nil then
+      return nil, trainerErr
+    end
+    if trainerOk == false then
+      return false, nil
+    end
+    if #(demand.trainerPictures or {}) > 0 then
+      trainerPictureManifest = cacheFs:loadLua(BattlePresentationCache.manifestPath()).trainerPictures
+    end
+    local battleBallsOk, battleBallsErr = checkBattleBalls(envelope, demand.battleBalls or {})
+    if battleBallsOk == nil then
+      return nil, battleBallsErr
+    end
+    if battleBallsOk == false then
+      return false, nil
+    end
+    if #(demand.battleBalls or {}) > 0 then
+      battleBallManifest = cacheFs:loadLua(BattlePresentationCache.manifestPath()).battleBalls
     end
     local iconKeys = demand.iconKeys or {}
     if envelope._monIconProvider ~= nil or #iconKeys > 0 then
@@ -1219,6 +1376,66 @@ function FieldBattlePresentation:_preparationServices()
       end
       images[key] = cell
       return cell
+    end
+    local trainerRole, classKey = key:match("^trainer:(front):([%w_]+)$")
+    if trainerRole == nil then
+      trainerRole, classKey = key:match("^trainer:(back):([%w_]+)$")
+    end
+    if trainerRole ~= nil and classKey ~= nil and trainerPictureManifest ~= nil then
+      local selectorKey = trainerRole .. ":" .. classKey
+      local entry = trainerPictureManifest.entries[selectorKey]
+      if type(entry) ~= "table" then
+        return nil
+      end
+      local path = entry.image --[[@as string]]
+      local image = nil
+      local failure = nil
+      if envelope._pool ~= nil then
+        image, failure = acquirePooled(envelope, key, path)
+      else
+        local bytes = cacheFs:read(path)
+        if type(bytes) == "string" then
+          image, failure = uploadStaged(graphics, key, path, bytes)
+        end
+      end
+      if image == nil then
+        if failure ~= nil then
+          failures[key] = failure
+        end
+        return nil, failure
+      end
+      images[key] = image
+      return image
+    end
+    local ballKey, frameText = key:match("^battle%-ball:([%w_]+):(%d+)$")
+    if ballKey ~= nil and battleBallManifest ~= nil then
+      local selectorKey = "ball:" .. ballKey
+      local entry = battleBallManifest.entries[selectorKey]
+      local frames = type(entry) == "table" and entry.frames or nil
+      local frameIndex = assert(tonumber(frameText), "battle ball drawable names a numeric frame") + 1
+      local frame = type(frames) == "table" and frames[frameIndex] or nil
+      if type(frame) ~= "table" or frame.drawableKey ~= key then
+        return nil
+      end
+      local path = frame.image --[[@as string]]
+      local image = nil
+      local failure = nil
+      if envelope._pool ~= nil then
+        image, failure = acquirePooled(envelope, key, path)
+      else
+        local bytes = cacheFs:read(path)
+        if type(bytes) == "string" then
+          image, failure = uploadStaged(graphics, key, path, bytes)
+        end
+      end
+      if image == nil then
+        if failure ~= nil then
+          failures[key] = failure
+        end
+        return nil, failure
+      end
+      images[key] = image
+      return image
     end
     return nil
   end
@@ -1850,7 +2067,7 @@ function FieldBattlePresentation:_buildPort(descriptor)
     manifest = manifest,
     model = BattlePresentationModel,
     musicRole = self._musicRole,
-    musicBanks = self:_musicBanks(),
+    musicBanks = self:_audioBanks(),
     textSpeed = launchSpeed,
     submit = submit,
     onResultMusic = onResultMusic,
@@ -2000,16 +2217,10 @@ function FieldBattlePresentation:drawBattle(resources)
   return true
 end
 
--- Resolves the chosen battle-music track to its audio bank closure
--- through the staged audio index: the exact demand stages only the
--- chosen track's bank beside the interface role. A cold or unstaged
--- index stages nothing instead of guessing.
----@return integer[] chosen track bank identities, empty without a staged index
-function FieldBattlePresentation:_musicBanks()
-  local role = self._musicRole
-  if type(role) ~= "string" or role == "" then
-    return {}
-  end
+-- Resolves battle music and emitted sound effects to their bank closure
+-- through the staged audio index. A cold or unstaged index stages nothing.
+---@return integer[] battle audio bank identities, empty without a staged index
+function FieldBattlePresentation:_audioBanks()
   local ok, index = pcall(function()
     return self._cacheFs:loadLua(AudioCache.indexPath())
   end)
@@ -2021,14 +2232,25 @@ function FieldBattlePresentation:_musicBanks()
   if type(sequences) ~= "table" or type(bySymbol) ~= "table" then
     return {}
   end
-  local id = bySymbol[role]
-  local entry = type(id) == "number" and sequences[id] or nil
-  if type(entry) == "table" and type(entry.bankId) == "number" then
-    return {
-      entry.bankId --[[@as integer]],
-    }
+  local roles = {}
+  if type(self._musicRole) == "string" and self._musicRole ~= "" then
+    roles[#roles + 1] = self._musicRole
   end
-  return {}
+  for _, symbol in pairs(BattleAudio.SINK_SOUNDS) do
+    roles[#roles + 1] = symbol
+  end
+  local banks, seen = {}, {}
+  for _, role in ipairs(roles) do
+    local id = type(role) == "string" and bySymbol[role] or nil
+    local entry = type(id) == "number" and sequences[id] or nil
+    local bank = type(entry) == "table" and entry.bankId or nil
+    if type(bank) == "number" and not seen[bank] then
+      seen[bank] = true
+      banks[#banks + 1] = bank
+    end
+  end
+  table.sort(banks)
+  return banks
 end
 
 ---@return string? battle-music start note, nil until the staged track voices

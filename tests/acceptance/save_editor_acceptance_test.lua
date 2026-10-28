@@ -109,6 +109,7 @@ function T.tests.production_editor_saves_an_edit(context)
     state = State.new({
       versionId = fixture.initial.versionId,
       saveId = fixture.saveId,
+      startupPairIndex = 1,
       width = 640,
       height = 480,
       derivedAssets = readyHost(),

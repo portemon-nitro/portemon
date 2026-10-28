@@ -413,8 +413,8 @@ DerivedAssetContract.trainerCatalog = {
 -- per-effect program catalog; effect v3 voices name shared audio sequence
 -- symbols instead of staging private sound payloads).
 DerivedAssetContract.battlePresentation = {
-  cacheFormat = "battle-presentation-cache-v3",
-  schema = "g4-battle-presentation-v5",
+  cacheFormat = "battle-presentation-cache-v4",
+  schema = "g4-battle-presentation-v7",
   sceneSchema = "g4-battle-scene-v2",
   effectSchema = "g4-battle-effect-v3",
 }

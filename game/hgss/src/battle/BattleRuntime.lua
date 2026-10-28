@@ -120,6 +120,7 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@field _prepared table<string, unknown>?
 ---@field _receipt table<string, unknown>?
 ---@field _result string?
+---@field _terminalRewards table<string, unknown>? reward plan shared by terminal narration facts and commit
 ---@field _sourceResult integer
 ---@field _postTicks integer
 ---@field _runTicks integer
@@ -467,6 +468,7 @@ function BattleRuntime.new(args)
     _prepared = nil,
     _receipt = nil,
     _result = nil,
+    _terminalRewards = nil,
     _sourceResult = BattleTask.SOURCE_NOT_WON,
     _postTicks = 0,
     _runTicks = 0,
@@ -631,7 +633,28 @@ function BattleRuntime:_publishFrame(frame, exposed)
     self._publishedRequest = key
   end
   if terminal then
-    context.result = { word = self:_mapOutcome() }
+    local word = self:_mapOutcome()
+    self._terminalRewards = self:_commitRewards(word)
+    context.result = { word = word }
+    if word == "loss" then
+      context.result.moneyLost = type(self._terminalRewards.amount) == "number" and self._terminalRewards.amount or 0
+    elseif word == "win" and self._request.kind == "trainer" then
+      -- msg_0197_00033 follows PayPrizeMoney, before the separate Pay Day
+      -- pickup message. Reuse each trainer's already-planned share so the
+      -- narration never reports scattered Pay Day cash as a trainer prize.
+      local prize = 0
+      for _, trainer in
+        ipairs(self._terminalRewards.trainers --[[@as table<integer, table<string, unknown>>]])
+      do
+        local amount = trainer.amount
+        assert(
+          type(amount) == "number" and amount % 1 == 0 and amount >= 0,
+          "planned trainer shares carry integer prizes"
+        )
+        prize = prize + amount
+      end
+      context.result.moneyGained = prize
+    end
     if self._dexRegistration ~= nil then
       context.result.registration = copyValue(self._dexRegistration)
     end
@@ -2191,7 +2214,7 @@ function BattleRuntime:_prepareCommit()
   local updates = self:_partyUpdates()
   local captures = self:_commitCaptures()
   self._stagedCaptures = captures
-  local rewards = self:_commitRewards(result)
+  local rewards = self._terminalRewards or self:_commitRewards(result)
   local args = {
     outcome = { id = self._request.id, result = result },
     rewards = rewards,
@@ -2776,6 +2799,11 @@ function BattleRuntime:_buildCompletions(receipt)
   -- the pending rename reads as stale against these instead of the
   -- drifting current revision.
   local party = self._party --[[@as BattlePartyOwner?]]
+  local playerContext = type(self._scenario) == "table" and self._scenario.playerContext or nil
+  local metBill = nil
+  if type(playerContext) == "table" then
+    metBill = playerContext.metBill
+  end
   local partyRevision = nil
   local boxRevision = nil
   if party ~= nil then
@@ -2790,10 +2818,14 @@ function BattleRuntime:_buildCompletions(receipt)
     local spot = placement --[[@as table<string, unknown>]]
     if type(mon) == "table" then
       local key = spot.captureId ~= nil and tostring(spot.captureId) or tostring(index)
+      if spot.destination == "box" then
+        assert(type(metBill) == "boolean", "PC transfer narration reads the launch save's Bill flag")
+      end
       queue[#queue + 1] = {
         completionId = self._request.id .. ":nickname:" .. key,
         kind = "capture_nickname",
         placement = copyValue(spot),
+        metBill = metBill,
         subject = copyValue(mon),
         partyRevision = partyRevision,
         boxRevision = boxRevision,
@@ -2885,6 +2917,10 @@ function BattleRuntime:_pollCompletion()
       kind = pending.kind,
       subject = copyValue(pending.subject),
     }
+    if pending.kind == "capture_nickname" then
+      intent.placement = copyValue(assert(pending.placement, "capture completions retain their receipt placement"))
+      intent.metBill = pending.metBill == true
+    end
     if pending.kind == "evolution" then
       intent.partySlot = pending.partySlot
       intent.context = copyValue(pending.context)

@@ -13,7 +13,7 @@ local StubLease = require("tests.support.StubLease")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
-local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
@@ -272,6 +272,10 @@ local function captureServices(scope, cacheFs, versionId)
   end
   images["scene:" .. SCENE_KEY] =
     stagedImage(scope, cacheFs, BattlePresentationCache.sceneImagePath(SCENE_KEY), versionId .. " battle scene")
+  local pokeBall = assert(manifest.battleBalls.entries["ball:POKE_BALL"], versionId .. " stages the fixture ball")
+  for _, frame in ipairs(pokeBall.frames) do
+    images[frame.drawableKey] = stagedImage(scope, cacheFs, frame.image, versionId .. " fixture ball frame")
+  end
   images["hud:enemy"] = stagedImage(
     scope,
     cacheFs,
@@ -729,6 +733,20 @@ local function waitForMenuInput(screen, versionId)
   Assert.isTrue(screen:view().menuInputEnabled, versionId .. " arms its menu input")
 end
 
+---@param screen table live battle screen acknowledging source narration
+local function acknowledgeNarration(screen)
+  local mode = screen:status().mode
+  if
+    mode == "intro"
+    or mode == "narration"
+    or mode == "outcome"
+    or screen._timeline:messageActive()
+    or screen._timeline:levelUpStats() ~= nil
+  then
+    screen:input({ { type = "confirm" } })
+  end
+end
+
 -- Pumps one screen through its opening cues with the given packet until
 -- the command request is exposed and armed: the send-out cue holds on
 -- the player-side portrait, so arrival proves the mon drawables
@@ -736,19 +754,37 @@ end
 ---@param screen table live battle screen under driving
 ---@param versionId string ready game version under capture
 ---@param packet table delivery packet opening the staged battle
-local function drivePacketToCommand(screen, versionId, packet)
+---@param kind "wild"|"trainer"? encounter kind under capture
+local function drivePacketToCommand(screen, versionId, packet, kind)
   local port = screen:presentationPort()
   for _ = 1, 5 do
     screen:updateFixed(TICK)
   end
-  Assert.isTrue(port.enter({ launchId = "battle-capture", kind = "wild" }), versionId .. " enters its staged scene")
+  Assert.isTrue(
+    port.enter({ launchId = "battle-capture", kind = kind or "wild" }),
+    versionId .. " enters its staged scene"
+  )
   port.present(packet)
   local ticks = 0
   while screen:status().request == nil and ticks < DRIVE_BUDGET do
+    acknowledgeNarration(screen)
     screen:updateFixed(TICK)
     ticks = ticks + 1
   end
-  Assert.notNil(screen:status().request, versionId .. " exposes its command request")
+  local status = screen:status()
+  Assert.notNil(
+    status.request,
+    versionId
+      .. " exposes its command request (mode="
+      .. tostring(status.mode)
+      .. ", error="
+      .. tostring(status.error)
+      .. ", message="
+      .. tostring(screen._timeline:message())
+      .. ", timelineBusy="
+      .. tostring(screen._timeline:busy())
+      .. ")"
+  )
   Assert.equal(screen:status().mode, "command", versionId .. " rests on the command view")
   waitForMenuInput(screen, versionId)
 end
@@ -765,9 +801,13 @@ end
 local function doubledBattlePacket()
   local packet = openingPacket()
   packet.after.own[2].active = true
+  packet.after.own[1].position = 1
+  packet.after.own[2].position = 2
+  packet.after.foes[1].position = 3
   packet.after.foes[2] = {
     combatant = 3,
     side = 2,
+    position = 4,
     species = FOE_SPECIES,
     form = 0,
     selector = "front",
@@ -1585,7 +1625,7 @@ function T.native_doubles_draws_the_four_staged_source_hud_cells(scope, context)
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local screen = captureScreen(scope, cacheFs, versionId, dualMeasurement())
-    drivePacketToCommand(screen, versionId, doubledBattlePacket())
+    drivePacketToCommand(screen, versionId, doubledBattlePacket(), "trainer")
     local plan = livePlan(screen, versionId)
     local detailFrame
     for _, pane in ipairs(plan.panes) do
@@ -1749,7 +1789,7 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
       },
       { kind = "command", choices = { moveChoice("move:0", "TACKLE", 35, 35, "NORMAL", 0) } },
     }
-    drivePacketToCommand(screen, versionId, packet)
+    drivePacketToCommand(screen, versionId, packet, "trainer")
 
     local function assertCapture(mode, captureName)
       Assert.equal(screen:status().mode, mode, versionId .. " reaches the " .. mode .. " compact dock")
@@ -1803,7 +1843,7 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
         Assert.notNil(labelRegion, versionId .. " publishes a name region for each panel")
         Assert.isTrue(
           countSceneChanges(first, sceneSource, hostRect(frame, labelRegion), scene.x, scene.y) > 10,
-          versionId .. " prints the " .. tostring(box.name) .. " panel name"
+          versionId .. " prints the " .. tostring(labelRegion.text) .. " panel name"
         )
         if type(box.bar) == "table" then
           Assert.isTrue(
@@ -2556,7 +2596,9 @@ function T.compact_settled_return_shows_the_result_word(scope, context)
           },
         },
       },
-      events = {},
+      events = {
+        { kind = "fainted", sequence = 1, payload = { combatant = 2 } },
+      },
       result = { word = "win" },
     })
     local ticks = 0

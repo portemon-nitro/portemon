@@ -8,6 +8,7 @@ local Assert = require("tests.support.Assert")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
@@ -24,7 +25,24 @@ local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 local T = {}
 local TICK = 1 / 60
 
-local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
+function T.child_titles_and_learn_prompts_use_staged_source_labels()
+  Assert.equal(
+    BattleChildText.title({ kind = "party", sourceTitle = "Choose a Pokémon." }),
+    "Choose a Pokémon.",
+    "party prompt uses the staged battle party message"
+  )
+  Assert.equal(
+    BattleChildText.title({ kind = "target", sourceTitle = "Use on which Pokémon?" }),
+    "Use on which Pokémon?",
+    "target prompt uses the staged battle target message"
+  )
+  Assert.equal(
+    BattleChildText.subtitle({ kind = "learn", sourcePrompt = "Which move should be forgotten?" }),
+    "Which move should be forgotten?",
+    "learn prompt uses the staged battle choice message"
+  )
+end
+
 local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
 local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
@@ -481,7 +499,7 @@ end
 ---@return table live screen-only rig with an accepting submit boundary
 local function openInterfaceRig(opts)
   opts = opts or {}
-  local BattleScreenState = require(STATE_MODULE)
+  local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local Model = require(MODEL_MODULE)
   local rig = { submits = {}, measurement = interfaceDualMeasurement(), text = nil }
   rig.text = {
@@ -500,6 +518,21 @@ local function openInterfaceRig(opts)
   rig.audio = { plays = {} }
   function rig.audio.play(name)
     rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  function rig.audio.playPanned(_, name, pan)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    rig.audio.pans = rig.audio.pans or {}
+    rig.audio.pans[#rig.audio.pans + 1] = { name = name, pan = pan }
+    return true
+  end
+  function rig.audio.playFanfare(_, name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  function rig.audio.stop(_, name)
+    rig.audio.stops = rig.audio.stops or {}
+    rig.audio.stops[#rig.audio.stops + 1] = name
     return true
   end
   rig.assets = { hold = {}, images = {}, prepared = {}, released = {} }
@@ -636,7 +669,7 @@ local function openInterfaceRig(opts)
     request = decision,
     result = nil,
   })
-  for _ = 1, 600 do
+  for _ = 1, 1200 do
     rig.pump(1)
     local status = rig.screen:status()
     if status.mode == "failed" then
@@ -790,7 +823,7 @@ end
 ---@return table live rig with the runtime, screen, stocked bag, and submit log
 local function openChildRig(opts)
   local BattleRuntime = require(RUNTIME_MODULE)
-  local BattleScreenState = require(STATE_MODULE)
+  local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local Model = require(MODEL_MODULE)
   local ScenarioFactory = require(SCENARIO_FACTORY_MODULE)
   local holder = {}
@@ -817,6 +850,21 @@ local function openChildRig(opts)
   end
   function rig.audio.play(name)
     rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  function rig.audio.playPanned(_, name, pan)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    rig.audio.pans = rig.audio.pans or {}
+    rig.audio.pans[#rig.audio.pans + 1] = { name = name, pan = pan }
+    return true
+  end
+  function rig.audio.playFanfare(_, name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  function rig.audio.stop(_, name)
+    rig.audio.stops = rig.audio.stops or {}
+    rig.audio.stops[#rig.audio.stops + 1] = name
     return true
   end
   rig.assets = { prepared = {}, released = {} }
@@ -865,7 +913,7 @@ local function openChildRig(opts)
   local foe = makeFoe(foeSpec)
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local launch = {
     id = launchId,
@@ -936,7 +984,7 @@ end
 ---@param mode string awaited controller mode under test driving
 ---@return table the screen status once the mode is reached
 local function driveToMode(rig, mode)
-  for _ = 1, 600 do
+  for _ = 1, 1200 do
     rig.pump(1)
     local status = rig.screen:status()
     if status.mode == "failed" then
@@ -962,7 +1010,9 @@ end
 ---@param rig table live screen rig under test driving
 local function ackNarration(rig)
   local mode = rig.screen:status().mode
-  if mode == "intro" or mode == "narration" or mode == "outcome" then
+  if mode == "intro" or mode == "narration" or mode == "outcome"
+    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  then
     rig.screen:input({ { type = "confirm" } })
   end
 end
@@ -1147,7 +1197,7 @@ function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
     end
     Assert.isTrue(matched, "the serving matches its native fragment" .. tag)
     Assert.equal(rig.bag:quantity("POTION"), 5, "native execution takes no field stock mid-battle" .. tag)
-    for _ = 1, 60 do
+    for _ = 1, 120 do
       local current = rig.battle:status()
       if current.phase == "complete" or current.phase == "failed" then
         break
@@ -1165,7 +1215,13 @@ function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
       ackNarration(rig)
       rig.pump(20)
     end
-    Assert.equal(rig.battle:status().phase, "complete", "the serving battle settles" .. tag)
+    local battleStatus = rig.battle:status()
+    local screenStatus = rig.screen:status()
+    Assert.equal(
+      battleStatus.phase,
+      "complete",
+      "the serving battle settles" .. tag .. " (screen error=" .. tostring(screenStatus.error) .. ")"
+    )
     Assert.equal(rig.bag:quantity("POTION"), 4, "the accepted serving publishes exactly once" .. tag)
     rig.screen:dispose()
     rig.battle:dispose()
@@ -1266,7 +1322,10 @@ function T.native_battle_party_waits_for_its_icon_pages()
   for _, kind in ipairs({ "party", "target" }) do
     state = "pending"
     local child = { kind = kind, native = { open = true, layout = {} } }
-    Assert.isTrue(BattleRenderer.drawNativeChild(resources, child, placement), "the pending " .. kind .. " stays native")
+    Assert.isTrue(
+      BattleRenderer.drawNativeChild(resources, child, placement),
+      "the pending " .. kind .. " stays native"
+    )
     Assert.equal(draws, 0, "the " .. kind .. " picker draws no icon before its page is prepared")
     state = "ready"
     Assert.isTrue(BattleRenderer.drawNativeChild(resources, child, placement), "the ready " .. kind .. " is rendered")

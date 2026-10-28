@@ -1362,13 +1362,14 @@ end
 
 function T.same_version_reselection_reuses_one_service_with_fresh_interest(context)
   withLiveApp(context, function(App, harness)
-    -- One production route: a cold boot-menu entry waits through selection
-    -- instead of launching the game directly.
+    -- One production route: a cold boot-menu entry remains at the boot
+    -- source gate until its required source and selected pair are admitted.
     App._bootMainMenu({ VERSION })
     attachWorker(harness)
     pumpApp(App, harness, 4)
     Assert.equal(#harness.launches, 0, "a cold boot-menu entry must wait for preparation, not launch directly")
-    Assert.equal(App.state.kind, "startup-title", "a cold boot-menu entry waits in the title handoff")
+    Assert.equal(getmetatable(App.state).__index, CachePreparationState, "cold boot keeps its preparation owner")
+    Assert.equal(App.state.kind, "boot-source", "cold boot waits at its source gate before the title handoff")
     local pool = controllerPool(harness)
     local firstEpoch = assert(App.epoch, "selection must mint an epoch")
     local firstHost = assert(App.provisioner, "selection must attach a provisioner"):gameHost()

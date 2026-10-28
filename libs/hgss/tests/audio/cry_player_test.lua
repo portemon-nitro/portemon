@@ -330,6 +330,15 @@ local function sequenceControls(state)
   return controls
 end
 
+function T.battle_faint_cry_uses_source_pan_volume_and_pitch()
+  local cry, state = newPatternRecordingCry()
+  cry:play(183, 5, 0, 117, 127)
+  local controls = sequenceControls(state)[1]
+  Assert.equal(controls.pitch, -224, "the faint cry uses the source pattern pitch")
+  Assert.equal(controls.pan, 117, "the foe's faint cry carries the source pan")
+  Assert.equal(controls.initialVolume, 127, "the battle cry starts at its source volume")
+end
+
 local function recordPatternFailure(failures, pattern, check)
   local ok, err = pcall(check)
   if not ok then

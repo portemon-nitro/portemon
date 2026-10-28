@@ -1154,7 +1154,7 @@ local function stepStockpileRelease(ctx, frame)
     if healed.after == healed.before then
       return { kind = "complete", result = "failed" }
     end
-    ctx:emit("healed", causeFor(record), { target = user, restored = healed.after - healed.before })
+    ctx:emit("healed", causeFor(record), { target = user, restored = healed.after - healed.before, noBlink = true })
   end
   ctx:emit("move-used", causeFor(record), { user = user, targets = #record.targets })
   return { kind = "complete", result = "hit" }

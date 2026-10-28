@@ -17,9 +17,137 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local T = {}
-local TICK = 1 / 30
+
+function T.trainer_slide_renderer_uses_the_staged_picture_and_source_position()
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local graphics = FakeGraphics.new({})
+  local requested = {}
+  local picture = {
+    getWidth = function()
+      return 80
+    end,
+    getHeight = function()
+      return 80
+    end,
+  }
+  local resources = {
+    graphics = graphics,
+    text = {
+      measure = function()
+        return { width = 0, height = 0 }
+      end,
+      drawText = function() end,
+    },
+    windows = { drawWindow = function() end },
+    assets = {
+      drawable = function(_, key)
+        requested[#requested + 1] = key
+        if key == "trainer:back:ethan" or key == "trainer:front:YOUNGSTER" then
+          return picture
+        end
+        return nil
+      end,
+    },
+    sceneImageKey = "unused",
+    frameKey = "frame",
+  }
+  local view = {
+    battlers = {},
+    effectInstances = {},
+    openingPresentation = {
+      playerTrainerVisible = false,
+      foeTrainerVisible = false,
+      trainerSlides = {
+        { role = "player", selector = "back:ethan", x = 42, y = 18, frame = 0, phase = "intro-slide", visible = true },
+        {
+          role = "foe",
+          selector = "front:YOUNGSTER",
+          x = 82,
+          y = 18,
+          frame = 0,
+          phase = "intro-slide",
+          visible = true,
+        },
+      },
+    },
+  }
+  BattleRenderer.drawPane(resources, view, "detail", {}, {})
+  Assert.equal(requested[2], "trainer:back:ethan", "the player slide resolves its exact backpic key first")
+  Assert.equal(graphics.draws[1].x, 42, "the player trainer uses its source-pixel x")
+  Assert.equal(graphics.draws[1].y, 18, "the player trainer uses its source-pixel y")
+  Assert.equal(requested[3], "trainer:front:YOUNGSTER", "the foe slide resolves after the player slide")
+  Assert.equal(graphics.draws[2].x, 82, "the foe trainer uses its source-pixel x")
+  Assert.equal(graphics.draws[2].y, 18, "the foe trainer uses its source-pixel y")
+  view.openingPresentation.trainerSlides[1].visible = false
+  view.openingPresentation.trainerSlides[2].visible = false
+  requested = {}
+  for index = #graphics.draws, 1, -1 do
+    table.remove(graphics.draws, index)
+  end
+  BattleRenderer.drawPane(resources, view, "detail", {}, {})
+  Assert.equal(#requested, 1, "hidden slides do not resolve their pictures")
+  Assert.equal(#graphics.draws, 0, "a hidden trainer slide draws no sprite")
+end
+
+function T.ball_throw_renderer_uses_the_staged_frame_and_source_position()
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local graphics = FakeGraphics.new({})
+  local requested = {}
+  local image = {
+    getWidth = function()
+      return 16
+    end,
+    getHeight = function()
+      return 16
+    end,
+  }
+  local resources = {
+    graphics = graphics,
+    text = {
+      measure = function()
+        return { width = 0, height = 0 }
+      end,
+      drawText = function() end,
+    },
+    windows = { drawWindow = function() end },
+    assets = {
+      drawable = function(_, key)
+        requested[#requested + 1] = key
+        if key == "battle-ball:ULTRA_BALL:3" then
+          return image
+        end
+        return nil
+      end,
+    },
+    sceneImageKey = "unused",
+    frameKey = "frame",
+  }
+  local view = {
+    battlers = {},
+    effectInstances = {},
+    openingPresentation = {
+      playerTrainerVisible = false,
+      foeTrainerVisible = false,
+      ballThrow = { selector = "ball:ULTRA_BALL", x = 74, y = 103, frame = 3, visible = true },
+    },
+  }
+  BattleRenderer.drawPane(resources, view, "detail", {}, {})
+  Assert.equal(requested[2], "battle-ball:ULTRA_BALL:3", "the source frame resolves its exact staged image")
+  Assert.equal(graphics.draws[1].x, 74, "the ball uses the cue's source-pixel x")
+  Assert.equal(graphics.draws[1].y, 103, "the ball uses the cue's source-pixel y")
+  view.openingPresentation.ballThrow.visible = false
+  requested = {}
+  for index = #graphics.draws, 1, -1 do
+    table.remove(graphics.draws, index)
+  end
+  BattleRenderer.drawPane(resources, view, "detail", {}, {})
+  Assert.isFalse(requested[2] == "battle-ball:ULTRA_BALL:3", "a hidden ball does not resolve its frame")
+  Assert.equal(#graphics.draws, 0, "a hidden ball draws no sprite")
+end
+local TICK = SourceTick.DT
 
 local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
 local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
@@ -178,6 +306,19 @@ local function openRig(opts)
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end
+  function rig.audio.playPanned(_, symbol, pan)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    rig.audio.pans = rig.audio.pans or {}
+    rig.audio.pans[#rig.audio.pans + 1] = pan
+    return true
+  end
+  function rig.audio.playFanfare(_, symbol)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    return true
+  end
+  function rig.audio.stop(_, _)
+    return true
+  end
   rig.assets = { hold = {}, images = {}, prepared = {}, released = {} }
   function rig.assets.prepare(demand)
     rig.assets.prepared[#rig.assets.prepared + 1] = demand
@@ -228,7 +369,16 @@ local function openRig(opts)
   local ScenarioFactory = require(SCENARIO_FACTORY_MODULE)
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foeRecord("EEVEE", 20, 0x5EED0002) },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    {
+      party = party,
+      bag = bag,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        language = "french",
+      },
+    }
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
@@ -954,6 +1104,19 @@ function openSealingScreen(launchId, specs, requestId)
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end
+  function rig.audio.playPanned(_, symbol, pan)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    rig.audio.pans = rig.audio.pans or {}
+    rig.audio.pans[#rig.audio.pans + 1] = pan
+    return true
+  end
+  function rig.audio.playFanfare(_, symbol)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    return true
+  end
+  function rig.audio.stop(_, _)
+    return true
+  end
   rig.assets = { hold = {}, images = {}, prepared = {}, released = {} }
   function rig.assets.prepare(demand)
     rig.assets.prepared[#rig.assets.prepared + 1] = demand
@@ -1051,6 +1214,7 @@ function openSealingScreen(launchId, specs, requestId)
       name = "LEAD",
       level = 20,
       selector = "back",
+      ballKey = "POKE_BALL",
       moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
     }
   end
@@ -1068,6 +1232,7 @@ function openSealingScreen(launchId, specs, requestId)
       name = "FOE",
       level = 20,
       selector = "front",
+      ballKey = "POKE_BALL",
     }
   end
   rig.expectedChoice = rig.expectedById[specs[1].id]
@@ -1075,8 +1240,8 @@ function openSealingScreen(launchId, specs, requestId)
     launchId = launchId,
     packetId = 4242,
     events = {},
-    before = { own = { ownRecord() }, foes = { foeRecordEntry() } },
-    after = { own = { ownRecord() }, foes = { foeRecordEntry() } },
+    before = { playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" }, own = { ownRecord() }, foes = { foeRecordEntry() } },
+    after = { playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" }, own = { ownRecord() }, foes = { foeRecordEntry() } },
     request = decision,
     result = nil,
   })
@@ -1148,11 +1313,10 @@ end
 function T.command_root_keeps_the_framed_select_prompt()
   local rig = openRig({})
   driveToMode(rig, "command")
-  Assert.equal(
-    rig.screen:view().message,
-    "What will EEVEE do?",
-    "the settled command root keeps the framed select prompt"
-  )
+  local prompt = rig.screen:view().message
+  Assert.isTrue(prompt ~= "", "the settled command root keeps the staged prompt")
+  Assert.isTrue(string.find(prompt, "EEVEE", 1, true) ~= nil, "the staged prompt substitutes the acting battler")
+  Assert.isTrue(string.find(prompt, "YESNO", 1, true) == nil, "the command child draws its own choice controls")
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -1913,6 +2077,69 @@ function T.native_gauges_use_source_cells_by_roster_visibility()
   Assert.equal(enemy[5].quad.x, 0, "unrevealed foes keep the absent cell")
 end
 
+function T.opening_presentation_gates_party_gauge_rows()
+  local drawn = drawNativePane(
+    "interaction",
+    nativeView({
+      battleKind = "trainer",
+      openingPresentation = {
+        playerTrainerVisible = false,
+        foeTrainerVisible = false,
+        playerGaugeVisible = false,
+        enemyGaugeVisible = false,
+      },
+    }),
+    "command",
+    {}
+  )
+  Assert.equal(#drawsOf(drawn.graphics, "gauges:player"), 0, "the player row waits for its source entry task")
+  Assert.equal(#drawsOf(drawn.graphics, "gauges:enemy"), 0, "the enemy row waits for its source entry task")
+end
+
+function T.opening_presentation_draws_only_visible_trainer_pictures()
+  local hidden = drawNativePane(
+    "detail",
+    nativeView({
+      battleKind = "trainer",
+      playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" },
+      foeTrainers = { { classKey = "YOUNGSTER" } },
+      openingPresentation = {
+        playerTrainerVisible = false,
+        foeTrainerVisible = false,
+        playerGaugeVisible = false,
+        enemyGaugeVisible = false,
+      },
+    }),
+    nil,
+    {}
+  )
+  Assert.equal(
+    #drawsOf(hidden.graphics, "trainer:back:PKMN_TRAINER_ETHAN"),
+    0,
+    "hidden player trainer art is not requested"
+  )
+  Assert.equal(#drawsOf(hidden.graphics, "trainer:front:YOUNGSTER"), 0, "hidden foe trainer art is not requested")
+
+  local shown = drawNativePane(
+    "detail",
+    nativeView({
+      battleKind = "trainer",
+      playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" },
+      foeTrainers = { { classKey = "YOUNGSTER" } },
+      openingPresentation = {
+        playerTrainerVisible = true,
+        foeTrainerVisible = true,
+        playerGaugeVisible = false,
+        enemyGaugeVisible = false,
+      },
+    }),
+    nil,
+    {}
+  )
+  Assert.equal(#drawsOf(shown.graphics, "trainer:back:PKMN_TRAINER_ETHAN"), 1, "visible player backpic is drawn")
+  Assert.equal(#drawsOf(shown.graphics, "trainer:front:YOUNGSTER"), 1, "visible foe front pic is drawn")
+end
+
 function T.native_menu_draws_generated_layers_in_priority_order()
   local drawn = drawNativePane(
     "interaction",
@@ -2247,6 +2474,19 @@ local function openWeakTerminalRig(launchId)
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end
+  function rig.audio.playPanned(_, symbol, pan)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    rig.audio.pans = rig.audio.pans or {}
+    rig.audio.pans[#rig.audio.pans + 1] = pan
+    return true
+  end
+  function rig.audio.playFanfare(_, symbol)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    return true
+  end
+  function rig.audio.stop(_, _)
+    return true
+  end
   rig.assets = { hold = {}, images = {}, prepared = {}, released = {} }
   function rig.assets.prepare(demand)
     rig.assets.prepared[#rig.assets.prepared + 1] = demand
@@ -2281,7 +2521,16 @@ local function openWeakTerminalRig(launchId)
   local ScenarioFactory = require(SCENARIO_FACTORY_MODULE)
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foeRecord("EEVEE", 4, 0x5EED0002) },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    {
+      party = party,
+      bag = bag,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        language = "french",
+      },
+    }
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
@@ -2320,7 +2569,7 @@ local function openWeakTerminalRig(launchId)
   return rig
 end
 
-function T.terminal_narration_holds_until_an_explicit_acknowledgment()
+function T.terminal_outcome_returns_after_its_source_waits_without_acknowledgment()
   local rig = openWeakTerminalRig("launch-terminal-hold-local")
   local reached = false
   for _ = 1, 40 do
@@ -2360,32 +2609,17 @@ function T.terminal_narration_holds_until_an_explicit_acknowledgment()
     end
   end
   Assert.isTrue(reached, "the winning route presents its terminal narration")
-  local shown = assert(rig.screen:view().message, "the terminal page stays readable")
-  Assert.isTrue(shown ~= "", "the terminal page stays readable without input")
   for _ = 1, 600 do
     rig.pump(1)
   end
-  Assert.equal(rig.screen:status().mode, "outcome", "hundreds of ticks without input keep the outcome")
-  local held = assert(rig.screen:view().message, "the held outcome stays readable")
-  Assert.isTrue(held ~= "", "the held outcome stays readable without input")
-  Assert.isFalse(rig.port.leave({ kind = "wild" }), "leave refuses before the final acknowledgment")
-  Assert.isFalse(rig.port.ready(), "readiness waits for the final acknowledgment")
-  Assert.isTrue(rig.battle:status().phase ~= "complete", "the runtime does not return before acknowledgment")
-  rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  for _ = 1, 120 do
-    rig.pump(1)
-  end
-  Assert.isTrue(rig.port.leave({ kind = "wild" }), "one explicit acknowledgment releases the terminal page")
-  Assert.isTrue(rig.port.ready(), "the acknowledged outcome settles")
-  for _ = 1, 120 do
-    rig.pump(1)
-  end
-  Assert.equal(rig.battle:status().phase, "complete", "the acknowledged battle returns through its normal phase")
+  Assert.equal(rig.screen:status().mode, "outcome", "the settled wild result stays observable until host teardown")
+  Assert.isTrue(rig.port.leave({ kind = "wild" }), "the wild result returns after its source cues settle")
+  Assert.isTrue(rig.port.ready(), "the settled outcome releases readiness")
+  Assert.equal(rig.battle:status().phase, "complete", "the battle returns without an outcome acknowledgment")
   local sealed = #rig.submits
   rig.screen:input({ { type = "confirm" } })
   rig.pump(1)
-  Assert.equal(#rig.submits, sealed, "a repeated edge after the terminal ack seals nothing more")
+  Assert.equal(#rig.submits, sealed, "a terminal edge seals no extra battle reply")
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -2403,6 +2637,19 @@ local function openLongOutcomeRig(launchId)
   rig.audio = { plays = {} }
   function rig.audio.play(name)
     rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  function rig.audio.playPanned(_, symbol, pan)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    rig.audio.pans = rig.audio.pans or {}
+    rig.audio.pans[#rig.audio.pans + 1] = pan
+    return true
+  end
+  function rig.audio.playFanfare(_, symbol)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    return true
+  end
+  function rig.audio.stop(_, _)
     return true
   end
   rig.assets = { hold = {}, images = {}, prepared = {}, released = {} }
@@ -2457,6 +2704,7 @@ local function openLongOutcomeRig(launchId)
       name = "LEAD",
       level = 20,
       selector = "back",
+      ballKey = "POKE_BALL",
       moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
     }
   end
@@ -2480,19 +2728,15 @@ local function openLongOutcomeRig(launchId)
     launchId = launchId,
     packetId = 1,
     events = {},
-    before = { own = { ownRecord() }, foes = { foeEntry() } },
-    after = { own = { ownRecord() }, foes = { foeEntry() } },
+    before = { playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" }, own = { ownRecord() }, foes = { foeEntry() } },
+    after = { playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" }, own = { ownRecord() }, foes = { foeEntry() } },
     request = nil,
     result = { word = "win" },
   })
   return rig
 end
 
--- A two-page terminal narration consumes one edge per stage: an early
--- edge only finishes the running reveal, the next edge turns the page,
--- and only the final revealed page acknowledges without spilling into
--- another decision.
-function T.multipage_terminal_acknowledgment_consumes_each_edge_once()
+function T.wild_win_has_no_terminal_result_page_or_acknowledgment_gate()
   local rig = openLongOutcomeRig("launch-outcome-pages-local")
   local reached = false
   for _ = 1, 1200 do
@@ -2507,97 +2751,17 @@ function T.multipage_terminal_acknowledgment_consumes_each_edge_once()
     end
   end
   Assert.isTrue(reached, "the long terminal narration reaches its outcome")
-  rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "outcome", "an early edge keeps the outcome")
-  Assert.isFalse(rig.port.leave({ kind = "wild" }), "an early accelerate never releases")
-  Assert.isFalse(rig.port.ready(), "an early accelerate never settles")
-  Assert.equal(#rig.submits, 0, "an early accelerate seals nothing")
-  rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "outcome", "a page turn keeps the outcome")
-  Assert.isFalse(rig.port.leave({ kind = "wild" }), "a page turn never releases")
-  Assert.isFalse(rig.port.ready(), "a page turn never settles")
-  Assert.equal(#rig.submits, 0, "a page turn seals nothing")
   for _ = 1, 300 do
     rig.pump(1)
   end
-  Assert.equal(rig.screen:status().mode, "outcome", "the final page holds before its acknowledgment")
-  Assert.isFalse(rig.port.leave({ kind = "wild" }), "the final page holds before its acknowledgment")
-  Assert.isFalse(rig.port.ready(), "the final page stays unsettled before its acknowledgment")
-  rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  for _ = 1, 120 do
-    rig.pump(1)
-  end
-  Assert.isTrue(rig.port.leave({ kind = "wild" }), "the final acknowledgment releases the outcome")
-  Assert.isTrue(rig.port.ready(), "the final acknowledgment settles")
+  Assert.equal(rig.screen:status().mode, "outcome", "the no-text outcome remains observable")
+  Assert.isTrue(rig.port.leave({ kind = "wild" }), "the no-text wild result leaves without a page")
+  Assert.isTrue(rig.port.ready(), "the no-text outcome releases readiness")
   local sealed = #rig.submits
   rig.screen:input({ { type = "confirm" } })
   rig.pump(1)
-  Assert.equal(#rig.submits, sealed, "a repeated edge after the final ack seals nothing more")
+  Assert.equal(#rig.submits, sealed, "a repeated terminal edge seals nothing more")
   Assert.equal(rig.screen:status().mode, "outcome", "a repeated edge never leaves the outcome")
-  rig.screen:dispose()
-end
-
--- Matched dialogue taps advance the terminal page through the real input
--- boundary, while a foreign pointer release cannot acknowledge it.
-function T.matched_dialogue_taps_acknowledge_the_terminal_page()
-  local rig = openLongOutcomeRig("launch-outcome-tap-local")
-  local reached = false
-  for _ = 1, 1200 do
-    rig.pump(1)
-    local status = rig.screen:status()
-    if status.mode == "failed" then
-      error("the tapped outcome failed: " .. tostring(status.error), 0)
-    end
-    if status.mode == "outcome" then
-      reached = true
-      break
-    end
-  end
-  Assert.isTrue(reached, "the long terminal narration reaches its outcome")
-  local function tap(id, downX, downY, upX, upY)
-    rig.screen:input({ { type = "pointer_down", pointerId = id, x = downX, y = downY } })
-    rig.screen:input({ { type = "pointer_up", pointerId = id, x = upX, y = upY } })
-    rig.pump(1)
-  end
-  rig.screen:input({ { type = "pointer_up", pointerId = "touch:tap-orphan", x = 128, y = 288 } })
-  rig.pump(1)
-  Assert.isFalse(rig.port.leave({ kind = "wild" }), "a release with no press never releases")
-  Assert.isFalse(rig.port.ready(), "a release with no press never settles")
-  tap("touch:tap-early", 128, 288, 128, 288)
-  Assert.equal(rig.screen:status().mode, "outcome", "an early tap keeps the outcome")
-  Assert.isFalse(rig.port.leave({ kind = "wild" }), "an early tap only accelerates")
-  Assert.isFalse(rig.port.ready(), "an early tap never settles")
-  tap("touch:tap-turn", 128, 288, 128, 288)
-  Assert.equal(rig.screen:status().mode, "outcome", "a page-turn tap keeps the outcome")
-  Assert.isFalse(rig.port.leave({ kind = "wild" }), "a page-turn tap never releases")
-  for _ = 1, 300 do
-    rig.pump(1)
-  end
-  Assert.equal(rig.screen:status().mode, "outcome", "the final page holds before its pointer input")
-  Assert.isFalse(rig.port.leave({ kind = "wild" }), "the final page holds before its pointer input")
-  rig.screen:input({ { type = "pointer_down", pointerId = "touch:A", x = 128, y = 288 } })
-  rig.screen:input({ { type = "pointer_up", pointerId = "touch:B", x = 128, y = 288 } })
-  rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "outcome", "a foreign pointer cannot acknowledge the final page")
-  Assert.isFalse(rig.port.leave({ kind = "wild" }), "a foreign pointer never releases the outcome")
-  Assert.isFalse(rig.port.ready(), "a foreign pointer never settles the battle")
-  -- ApplicationPresentation retains A's capture after dropping B's up.
-  -- Release A outside the pane to cancel that capture before fresh taps.
-  rig.screen:input({ { type = "pointer_up", pointerId = "touch:A", x = 300, y = 300 } })
-  rig.screen:input({ { type = "pointer_down", pointerId = "touch:tap-drag", x = 128, y = 288 } })
-  rig.screen:input({ { type = "pointer_up", pointerId = "touch:tap-drag", x = 300, y = 300 } })
-  rig.pump(1)
-  Assert.isFalse(rig.port.leave({ kind = "wild" }), "a release dragged off the pane never acknowledges")
-  tap("touch:tap-final", 128, 288, 128, 288)
-  for _ = 1, 120 do
-    rig.pump(1)
-  end
-  Assert.isTrue(rig.port.leave({ kind = "wild" }), "the final matched tap acknowledges the outcome")
-  Assert.isTrue(rig.port.ready(), "the tapped acknowledgment settles")
-  Assert.equal(#rig.submits, 0, "dialogue taps seal no decision")
   rig.screen:dispose()
 end
 
@@ -2615,6 +2779,19 @@ local function openPacedScreen(launchId, speed)
   rig.audio = { plays = {} }
   function rig.audio.play(name)
     rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  function rig.audio.playPanned(_, symbol, pan)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    rig.audio.pans = rig.audio.pans or {}
+    rig.audio.pans[#rig.audio.pans + 1] = pan
+    return true
+  end
+  function rig.audio.playFanfare(_, symbol)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    return true
+  end
+  function rig.audio.stop(_, _)
     return true
   end
   rig.assets = { hold = {}, images = {}, prepared = {}, released = {} }
@@ -2672,6 +2849,7 @@ local function openPacedScreen(launchId, speed)
       name = "LEAD",
       level = 20,
       selector = "back",
+      ballKey = "POKE_BALL",
       moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
     }
   end
@@ -2689,14 +2867,15 @@ local function openPacedScreen(launchId, speed)
       name = "FOE",
       level = 20,
       selector = "front",
+      ballKey = "POKE_BALL",
     }
   end
   rig.port.present({
     launchId = launchId,
     packetId = 4242,
     events = {},
-    before = { own = { ownRecord() }, foes = { foeRecordEntry() } },
-    after = { own = { ownRecord() }, foes = { foeRecordEntry() } },
+    before = { playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" }, own = { ownRecord() }, foes = { foeRecordEntry() } },
+    after = { playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" }, own = { ownRecord() }, foes = { foeRecordEntry() } },
     request = nil,
     result = nil,
   })
@@ -2710,7 +2889,7 @@ end
 -- cadence.
 function T.launches_keep_their_own_narration_pace_and_edges()
   local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
-  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
   local function glyphCount(shown)
     local total = 0
     for _ in Utf8Glyphs.iter(shown) do
@@ -2718,17 +2897,41 @@ function T.launches_keep_their_own_narration_pace_and_edges()
     end
     return total
   end
+  local function waitForNarration(rig)
+    for _ = 1, 300 do
+      local message = rig.screen:view().message
+      if message ~= "" then
+        return glyphCount(message)
+      end
+      rig.pump(1)
+    end
+    error("the opening reaches its first staged narration")
+  end
   local slow = openPacedScreen("launch-paced-slow-local", "slow")
   local quickest = openPacedScreen("launch-paced-quickest-local", "fastest")
-  slow.pump(2)
-  quickest.pump(2)
-  Assert.equal(glyphCount(slow.screen:view().message), 1, "the unhurried launch shows one glyph after two ticks")
-  Assert.equal(glyphCount(quickest.screen:view().message), 4, "the hurried launch shows four glyphs after two ticks")
+  local slowInitial = waitForNarration(slow)
+  local quickestInitial = waitForNarration(quickest)
+  slow.pump(1)
+  quickest.pump(1)
+  Assert.equal(glyphCount(slow.screen:view().message), slowInitial, "the unhurried launch retains its printer delay")
+  Assert.equal(
+    glyphCount(quickest.screen:view().message),
+    quickestInitial + 2,
+    "the hurried launch keeps its two-glyph source-tick budget"
+  )
   local badOk, _ = pcall(openPacedScreen, "launch-paced-bad-local", "warp")
   Assert.isFalse(badOk, "an unknown launch pace fails instead of guessing")
   local plain = openPacedScreen("launch-paced-plain-local", nil)
+  local middle = openPacedScreen("launch-paced-middle-local", "mid")
+  waitForNarration(plain)
+  waitForNarration(middle)
   plain.pump(5)
-  Assert.equal(glyphCount(plain.screen:view().message), 2, "omitting the launch pace keeps the middle cadence")
+  middle.pump(5)
+  Assert.equal(
+    glyphCount(plain.screen:view().message),
+    glyphCount(middle.screen:view().message),
+    "omitting the launch pace keeps the middle cadence"
+  )
   local narration = BattleTimeline.new({ sound = function(_) end, textSpeed = "slow" })
   narration:announce("ABCDEFGHIJKLMNOPQRST", true)
   narration:update(TICK, function(_)

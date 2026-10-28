@@ -4171,7 +4171,10 @@ end
 -- from the staged native bytes under modular arithmetic. Visible authored
 -- sprites are excluded by their live slot boxes, never by output.
 local function soulsilver_source_pan_edges_match_wrapped_native_art(scope, context)
-  local versionId = selectedVersionId(context)
+  if not RomImporter.isReady("soulsilver") then
+    context:skip("SoulSilver panorama edges need a user-owned SoulSilver dump")
+  end
+  local versionId = "soulsilver"
   local scenes, cacheFs = loadRomPackWithFillers(versionId, { 3 })
   local movie = openMovieWithCache(scope, scenes, cacheFs, versionId, 512, 384, "single")
   advanceToSceneStep(movie, 2, "flyin", 20000)

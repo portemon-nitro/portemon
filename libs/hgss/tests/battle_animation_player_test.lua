@@ -928,6 +928,65 @@ local function startWithSides(program, attacker, targets)
   return player, handle, helpers
 end
 
+function T.positioned_sound_pan_follows_both_battler_sides()
+  local cases = {
+    { 0, 1, 45, 45 },
+    { 1, 0, 45, -45 },
+    { 0, 2, 45, -45 },
+    { 1, 3, -45, 45 },
+  }
+  for _, case in ipairs(cases) do
+    local parts = collaborators()
+    local pans = {}
+    function parts.audio.play(_, pan)
+      pans[#pans + 1] = pan
+    end
+    local player = assert(BattleAnimationPlayer.new({
+      scene = {},
+      audio = parts.audio,
+      resources = parts.resources,
+      tasks = parts.tasks,
+    }))
+    local handle = assert(
+      player:start(
+        sidePacket(sideBattler(nil, case[1]), { sideBattler(nil, case[2], 2, 2) }),
+        programOf({ { op = "play-positioned-sound", sound = "pan-probe", values = { case[3] } } })
+      )
+    )
+    player:stepSourceTick({ tick = 1 })
+    Assert.equal(player:status(handle), "waiting", "the positioned sound starts")
+    Assert.equal(pans[1], case[4], "the source side combination resolves the sound pan")
+  end
+end
+
+function T.animation_cry_carries_source_parameters_and_attacker()
+  local parts = collaborators()
+  local voice = nil
+  function parts.audio.play(_, detail)
+    voice = detail
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = parts.audio,
+    resources = parts.resources,
+    tasks = parts.tasks,
+  }))
+  local handle = assert(
+    player:start(
+      sidePacket(sideBattler("solo-enemy", 1, 3, 9), { sideBattler("solo-player", 0, 1, 7) }),
+      programOf({ { op = "play-cry", values = { 5, 45, 127 } } })
+    )
+  )
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "the animation owns its cry")
+  Assert.notNil(voice, "the source cry is sent with its battler and voice parameters")
+  Assert.equal(voice.kind, "cry", "the source cue addresses the cry player")
+  Assert.equal(voice.combatant, 3, "the attacker voices its own cry")
+  Assert.equal(voice.pattern, 5, "the script selects the cry pattern")
+  Assert.equal(voice.pan, -45, "the source side conversion applies to cry pan")
+  Assert.equal(voice.volume, 127, "the script's volume reaches the voice")
+end
+
 function T.side_equality_takes_the_equal_target_on_matching_sides()
   local player, handle, helpers = startWithSides(
     programOf({
@@ -1191,7 +1250,12 @@ function T.serial_completed_occurrences_leave_no_retained_records()
       return true
     end,
   }
-  local timeline = BattleTimeline.new({ effects = effects })
+  local timeline = BattleTimeline.new({
+    effects = effects,
+    messageText = function(_, key)
+      return key
+    end,
+  })
   local function timelineView(foeHp)
     return {
       own = {

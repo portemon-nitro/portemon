@@ -223,7 +223,7 @@ function T.production_deliveries_replay_exactly_once_end_to_end()
   local ScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
   local SessionFixture = require("libs.battle.tests.session_fixture")
   local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
-  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
   local HgssBagService = require("libs.hgss.src.items.HgssBagService")
   local ItemFixture = require("libs.items.tests.item_fixture")
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -250,7 +250,7 @@ function T.production_deliveries_replay_exactly_once_end_to_end()
   }
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local held = { ready = true, packets = {} }
   local port = {
@@ -337,8 +337,7 @@ function T.production_deliveries_replay_exactly_once_end_to_end()
       for key, value in pairs(packet) do
         replay[key] = value
       end
-      replay.packetId = packet.packetId --[[@as integer]]
-        + 5000
+      replay.packetId = packet.packetId --[[@as integer]] + 5000
       Assert.isTrue(player:present(replay) == false, "a replay under a new packet identity queues nothing more")
     end
   end
@@ -375,9 +374,10 @@ end
 -- Legacy emissions without playback facts still play through the cue
 -- player instead of vanishing behind a diagnostic.
 function T.legacy_emissions_without_facts_still_play()
-  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
   local player = BattleTimeline.new({})
   local view = views().after
+  player:reset(views().before)
   Assert.isTrue(
     player:present({
       launchId = "launch-packets-legacy",

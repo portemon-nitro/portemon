@@ -74,7 +74,9 @@ function T.empty_staging_loads_a_planning_manifest_but_never_reads_ready()
       manifest,
       { background = "general", terrain = "grass", time = "day" },
       { MonCache.portraitSelector("CHIKORITA", 0, "male", false, "back") },
-      nil
+      nil,
+      {},
+      {}
     )
   )
   Assert.isTrue(BattlePresentationSchema.isValidDemand(demand), "a planning demand keeps its shape")
@@ -89,8 +91,8 @@ function T.single_battle_demands_stay_exact_deterministic_and_deduplicated()
     MonCache.portraitSelector("CHIKORITA", 0, "male", false, "back"),
     MonCache.portraitSelector("CHIKORITA", 0, "male", false, "back"),
   }
-  local first = assert(BattlePresentationCache.requirements(manifest, context, selectors, nil))
-  local second = assert(BattlePresentationCache.requirements(manifest, context, selectors, nil))
+  local first = assert(BattlePresentationCache.requirements(manifest, context, selectors, nil, {}, {}))
+  local second = assert(BattlePresentationCache.requirements(manifest, context, selectors, nil, {}, {}))
   Assert.deepEqual(first, second, "demands are deterministic")
   Assert.deepEqual(first.scenes, { "general/grass/day" }, "one battle demands exactly one scene")
   Assert.deepEqual(first.pages, {
@@ -101,7 +103,9 @@ function T.single_battle_demands_stay_exact_deterministic_and_deduplicated()
     manifest,
     { background = "effect", terrain = "flash", time = "day" },
     selectors,
-    nil
+    nil,
+    {},
+    {}
   )
   Assert.isNil(unknown, "an effect background never yields a demand")
   Assert.notNil(err, "the rejected context explains itself")
@@ -225,6 +229,30 @@ local function stageBattle(cache, manifest, sceneKey)
   stagePng(cache, BattlePresentationCache.sceneImagePath(sceneKey), 512, 256)
 end
 
+function T.battle_ball_frames_are_part_of_the_exact_readiness_closure()
+  local manifest = validManifest()
+  local selector = "ball:POKE_BALL"
+  local portraitSelector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
+  local demand = assert(
+    BattlePresentationCache.requirements(
+      manifest,
+      { background = "general", terrain = "grass", time = "day" },
+      { portraitSelector },
+      nil,
+      {},
+      { selector }
+    )
+  )
+  Assert.deepEqual(demand.battleBalls, { selector }, "the exact ball selector reaches the launch demand")
+  local cache = staging()
+  stageBattle(cache, manifest, "general/grass/day")
+  stageMonPage(cache, portraitSelector)
+  stagePng(cache, manifest.battleBalls.entries[selector].frames[1].image, 16, 16)
+  Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "every requested frame is staged")
+  cache:write(manifest.battleBalls.entries[selector].frames[1].image, "truncated")
+  Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a broken requested frame is never ready")
+end
+
 function T.fully_staged_demands_read_ready_and_breakages_do_not()
   local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false, "back")
   local manifest = validManifest()
@@ -238,7 +266,9 @@ function T.fully_staged_demands_read_ready_and_breakages_do_not()
       manifest,
       { background = "general", terrain = "grass", time = "day" },
       { selector },
-      nil
+      nil,
+      {},
+      {}
     )
   )
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "a fully staged demand reads ready")
@@ -254,10 +284,7 @@ function T.fully_staged_demands_read_ready_and_breakages_do_not()
     BattlePresentationCache.isSceneReady(cache, "general/grass/day", "marker"),
     "a header-only scene audit never reads as ready"
   )
-  cache:write(
-    BattlePresentationCache.sceneImagePath("general/grass/day"),
-    stagedScene:sub(1, #stagedScene - 12)
-  )
+  cache:write(BattlePresentationCache.sceneImagePath("general/grass/day"), stagedScene:sub(1, #stagedScene - 12))
   Assert.isFalse(
     BattlePresentationCache.isReady(cache, demand),
     "a scene image without its terminal marker never reads as ready"
@@ -315,7 +342,9 @@ function T.delayed_pages_keep_readiness_pending()
       manifest,
       { background = "general", terrain = "grass", time = "day" },
       { selector },
-      nil
+      nil,
+      {},
+      {}
     )
   )
   Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a delayed portrait page stays pending")

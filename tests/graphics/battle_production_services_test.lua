@@ -323,6 +323,8 @@ end
 
 local function openingPacket(launchId, portraits)
   local after = {
+    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "ETHAN" },
+    foeTrainers = {},
     own = {
       {
         combatant = 0,
@@ -332,6 +334,7 @@ local function openingPacket(launchId, portraits)
         selector = "back",
         portraitSelector = portraits.leadBack,
         name = LEAD_SPECIES,
+        ballKey = "POKE_BALL",
         level = 9,
         hp = 30,
         maxHp = 30,
@@ -345,6 +348,7 @@ local function openingPacket(launchId, portraits)
         selector = "back",
         portraitSelector = portraits.leadBack,
         name = LEAD_SPECIES,
+        ballKey = "POKE_BALL",
         level = 9,
         hp = 28,
         maxHp = 28,
@@ -435,9 +439,18 @@ local function driveToCommand(envelope, port, launchId, versionId, portraits)
   port.present(openingPacket(launchId, portraits))
   local ticks = 0
   while ticks < DRIVE_BUDGET do
+    local screen = envelope:liveScreen()
+    if screen ~= nil then
+      local mode = screen:status().mode
+      if mode == "intro" or mode == "narration" or mode == "outcome"
+        or screen._timeline:messageActive() or screen._timeline:levelUpStats() ~= nil
+      then
+        screen:input({ { type = "confirm" } })
+      end
+    end
     envelope:updateFixed(TICK)
     ticks = ticks + 1
-    local screen = envelope:liveScreen()
+    screen = envelope:liveScreen()
     local status = screen ~= nil and screen:status() or nil
     if status ~= nil and status.request ~= nil then
       Assert.equal(status.mode, "command", versionId .. " rests on the command view")
@@ -685,7 +698,7 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
     local realNew = BattleScreenState.new
     local constructions = {}
     BattleScreenState.new = function(opts)
-      constructions[#constructions + 1] = opts ~= nil and opts.manifest or nil
+      constructions[#constructions + 1] = { manifest = opts ~= nil and opts.manifest or nil }
       return realNew(opts)
     end
     local ok, failure = xpcall(function()
@@ -742,9 +755,15 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
       revealed = true
       worker.ready = true
       driveToEnter(envelope, port, launchId, versionId)
-      Assert.equal(#constructions, 1, versionId .. " constructs exactly one screen")
+      Assert.equal(
+        #constructions,
+        1,
+        versionId .. " constructs exactly one screen (got " .. tostring(#constructions) .. ")"
+      )
       Assert.isTrue(
-        type(constructions[1]) == "table" and constructions[1].verified == true,
+        type(constructions[1]) == "table"
+          and type(constructions[1].manifest) == "table"
+          and constructions[1].manifest.verified == true,
         versionId .. " backs its screen with the staged global"
       )
       local demands = envelope:preparedDemands()

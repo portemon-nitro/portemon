@@ -17,12 +17,23 @@ local ItemSources = require("romdump.src.config.ItemSources")
 local BattleSources = require("romdump.src.config.BattleSources")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
+local Hashing = require("romdump.src.digest.Hashing")
 
 ---@class TrainerCatalogCompiler
 local TrainerCatalogCompiler = {}
 
 local SOURCES = BattleSources.trainerSources
 local SUPPORTED_VERSIONS = { heartgold = true, soulsilver = true }
+
+---@param trainerIndex integer producer-side trainer index
+---@return string opaque semantic selector for this trainer's lose speech
+function TrainerCatalogCompiler.loseSpeechSelector(trainerIndex)
+  assert(
+    type(trainerIndex) == "number" and trainerIndex % 1 == 0 and trainerIndex >= 0,
+    "trainer selectors use valid source identities"
+  )
+  return "trainer-speech:" .. Hashing.hashLua({ trainerIndex = trainerIndex, messageKind = "lose" })
+end
 
 ---@generic T
 ---@param value T?
@@ -289,6 +300,7 @@ function TrainerCatalogCompiler.compile(nativeInput)
         items = items,
         prizeMoney = { trainerClass = header.trainerClass, classRate = classRate },
         messageSelectors = { intro = 0, lose = 1, after = 2 },
+        loseSpeechSelector = TrainerCatalogCompiler.loseSpeechSelector(trainerIndex),
       }
     end
     local compiled = {

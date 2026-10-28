@@ -22,6 +22,7 @@ local BattleChildApplications = require("game.hgss.src.battle.BattleChildApplica
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 ---@class BattleScreenState.GraphicsScope
 ---@field host table<string, unknown> borrowed host graphics namespace
@@ -46,6 +47,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _player table<string, unknown> battle-private native animation interpreter over the live scene
 ---@field _nativeHandles table<table<string, unknown>, table<string, unknown>> native occurrence tracks by player handle or pending token
 ---@field _nativeVoices table<string, table<string, unknown>> staged player voices by name behind launch-owned stops
+---@field _waitingCueVoice table<string, unknown>? cry handle blocking the next timeline cue
 ---@field _nativeRouting boolean true while the effects collaborator routes native cues
 ---@field _liveEffectHandle table<string, unknown>? player handle behind the running occurrence
 ---@field _liveEffectRecord table<string, unknown>? loaded effect record behind the running occurrence
@@ -68,6 +70,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _pendingFinal table<string, unknown>? retained final view behind playing cues
 ---@field _pendingRequest table<string, unknown>? retained request behind playing cues
 ---@field _pendingResult table<string, unknown>? retained terminal result behind playing cues
+---@field _outcomeMessages table<integer, table<string, unknown>>? source-selected terminal messages and waits
 ---@field _pendingRegistration table<string, unknown>? detached frozen first-catch facts behind the card
 ---@field _registrationChild table<string, unknown>? open battle-owned registration presentation
 ---@field _graphicsScope BattleScreenState.GraphicsScope? persistent scope-counting forwarder over the host graphics
@@ -98,15 +101,15 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _scene table<string, unknown> native visual-state owner for entry travel and scroll
 ---@field _gaugeVisuals table<string, { sideType: integer, kind: string }> active native HUD gauge task destinations
 ---@field _sceneHasBackground boolean true after staged BG3 state installs
----@field _outcomeAcked boolean terminal narration acknowledged once
+---@field _outcomeDone boolean terminal narration and timed holds have settled
+---@field _lastPlayerName string? source player trainer name retained from detached views
 ---@field _error string? failure context
 ---@field _disposed boolean
 local BattleScreenState = {}
 BattleScreenState.__index = BattleScreenState
 
--- One accepted source tick in seconds: the nominal 30 Hz presentation
--- cadence shared with the field session and the battle envelope.
-BattleScreenState.SOURCE_FRAME = 1 / 30
+-- One accepted HGSS source tick shared with the field session.
+BattleScreenState.SOURCE_FRAME = SourceTick.DT
 
 -- Native command navigation follows the source touch topology, not a
 -- compact grid order.
@@ -193,6 +196,10 @@ local function stagedAudioRoles(manifest, musicRole)
     then
       roles[#roles + 1] = manifest.audioRoles.select
     end
+    for _, symbol in pairs(BattleAudio.SINK_SOUNDS) do
+      roles[#roles + 1] = symbol
+    end
+    table.sort(roles)
     return roles
   end
   local roles = {}
@@ -202,7 +209,11 @@ local function stagedAudioRoles(manifest, musicRole)
         roles[#roles + 1] = manifest.audioRoles[role]
       end
     end
+    for _, symbol in pairs(BattleAudio.SINK_SOUNDS) do
+      roles[#roles + 1] = symbol
+    end
   end
+  table.sort(roles)
   return roles
 end
 
@@ -217,6 +228,43 @@ local function copyValue(value)
     out[key] = copyValue(item)
   end
   return out
+end
+
+---@param manifest table<string, unknown> planning manifest with staged message entries
+---@param key string semantic message key
+---@param substitutions string[] values for source string-variable tokens
+---@return string decoded source message with its source tokens preserved
+local function stagedBattleText(manifest, key, substitutions)
+  local messages = assert(manifest.messages, "battle narration requires staged message entries")
+  local entries = assert(messages.entries, "battle narration requires semantic message entries")
+  local record = assert(entries[key], "battle narration message is staged: " .. key)
+  local sourceTokens = record.tokens --[[@as table<integer, table<string, unknown>>]]
+  local tokens = {}
+  local substitutionIndex = 1
+  for _, token in ipairs(sourceTokens) do
+    if token.kind == "substitution" then
+      local value = assert(substitutions[substitutionIndex], "source message substitution is supplied: " .. key)
+      tokens[#tokens + 1] = { kind = "glyph", text = value }
+      substitutionIndex = substitutionIndex + 1
+    elseif token.kind == "focus_indicator" then
+      -- The command child draws its own Yes/No choices over this source prompt.
+    else
+      tokens[#tokens + 1] = token
+    end
+  end
+  assert(
+    substitutionIndex == #substitutions + 1,
+    "source message " .. key .. " consumes " .. (substitutionIndex - 1) .. " substitutions, got " .. #substitutions
+  )
+  return FieldMessageText.tokensToText(tokens)
+end
+
+---@param screen BattleScreenState screen owning the staged message manifest
+---@param key string semantic battle message key
+---@param substitutions string[] source substitutions in message order
+---@return string decoded source battle text
+local function resolveBattleText(screen, key, substitutions)
+  return stagedBattleText(screen._manifest, key, substitutions)
 end
 
 ---@class BattleScreenState.Options
@@ -256,9 +304,38 @@ end
 ---@param extra unknown? voice operands behind playback
 ---@return string staged voice key under monitoring
 local function nativeVoicePlay(screen, name, extra)
-  local _ = extra
   assert(type(name) == "string" and name ~= "", "player voices play by name")
-  local handle = screen._battleAudio:playEffect(name)
+  local handle
+  if type(extra) == "table" and extra.kind == "cry" then
+    assert(type(extra.combatant) == "number", "animation cries name their attacker")
+    local battler = nil
+    for _, record in ipairs(screen._timeline:battlers()) do
+      if record.combatant == extra.combatant then
+        battler = record
+        break
+      end
+    end
+    assert(battler ~= nil and type(battler.species) == "string", "animation cries need the attacker's species")
+    if screen._legacyAudio then
+      screen._nativeVoices[name] = screen._battleAudio:playEffect("cry:" .. battler.species)
+      return name
+    end
+    handle = screen._battleAudio:playCry({
+      species = screen:_crySpecies(battler),
+      speciesKey = battler.species,
+      form = battler.form,
+      pattern = extra.pattern,
+      pan = extra.pan,
+      volume = extra.volume,
+    })
+  elseif type(extra) == "number" then
+    handle = screen._battleAudio:playEffect(name, extra --[[@as integer]])
+  else
+    -- Sound-task operand records (pan motion, repeats) drive the task
+    -- itself; the voice starts unpanned.
+    assert(extra == nil or type(extra) == "table", "player voice operands are a pan or a task record")
+    handle = screen._battleAudio:playEffect(name)
+  end
   screen._nativeVoices[name] = handle
   return name
 end
@@ -893,6 +970,7 @@ function BattleScreenState.new(opts)
     _nativeRouting = false,
     _nativeHandles = {},
     _nativeVoices = {},
+    _waitingCueVoice = nil,
     _liveEffectHandle = nil,
     _liveEffectRecord = nil,
     _session = nil,
@@ -919,6 +997,7 @@ function BattleScreenState.new(opts)
     _pendingFinal = nil,
     _pendingRequest = nil,
     _pendingResult = nil,
+    _outcomeMessages = nil,
     _pendingRegistration = nil,
     _registrationChild = nil,
     _registrationComplete = false,
@@ -949,7 +1028,8 @@ function BattleScreenState.new(opts)
     _gaugeVisuals = {},
     _sceneHasBackground = false,
     _sceneAccum = 0,
-    _outcomeAcked = false,
+    _outcomeDone = false,
+    _lastPlayerName = nil,
     _error = nil,
     _disposed = false,
   }, BattleScreenState)
@@ -957,6 +1037,7 @@ function BattleScreenState.new(opts)
   -- resolves display names through the borrowed mon catalog. The
   -- resolver stays optional: views and raw identities cover its absence.
   local moveNameOf = nil
+  local speciesNameOf = nil
   if type(opts.monCatalog) == "table" and type(opts.monCatalog.move) == "function" then
     local catalog = opts.monCatalog
     local lookup = opts.monCatalog.move --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
@@ -968,6 +1049,15 @@ function BattleScreenState.new(opts)
       return nil
     end
     moveNameOf = resolveMoveName
+  end
+  if type(opts.monCatalog) == "table" and type(opts.monCatalog.species) == "function" then
+    local catalog = opts.monCatalog --[[@as table<string, unknown>]]
+    local lookup = opts.monCatalog.species --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
+    local function resolveSpeciesName(species)
+      local facts = lookup(catalog, species)
+      return type(facts.name) == "string" and facts.name or nil
+    end
+    speciesNameOf = resolveSpeciesName
   end
   local itemNameOf = nil
   local battleItemUseOf = nil
@@ -1016,12 +1106,35 @@ function BattleScreenState.new(opts)
   -- vocabulary instead of wedging effect-keyed cues behind a
   -- collaborator that will never arrive.
   self._nativeRouting = effects ~= nil
+  local function faintAppearance(battler)
+    if type(battler.portraitSelector) ~= "string" then
+      return nil
+    end
+    local attributes = BattleScene.pictureAttributes(self._manifest, battler.portraitSelector)
+    if attributes == nil or type(attributes.height) ~= "number" then
+      return nil
+    end
+    local picture = self._scene:pictureState(battler)
+    local shadow = attributes.shadow --[[@as table<string, integer>?]]
+    local height = battler.side ~= 1 and shadow and shadow.height or 0
+    if picture ~= nil and type(picture.shadowHeight) == "number" then
+      height = picture.shadowHeight
+    end
+    return {
+      height = attributes.height --[[@as integer]],
+      shadowHeight = height --[[@as integer]],
+    }
+  end
   self._timeline = BattleTimeline.new({
     moveName = moveNameOf,
+    speciesName = speciesNameOf,
     itemName = itemNameOf,
     battleItemUse = battleItemUseOf,
+    messageText = resolveBattleText,
+    messageTextContext = self,
     textSpeed = opts.textSpeed or "mid",
     effects = effects,
+    faintAppearance = faintAppearance,
   })
   local cases = nil
   if type(overrides.cases) == "table" then
@@ -1171,7 +1284,19 @@ local function enrichScene(self, battlers)
       local pictureState = self._scene:pictureState(battler)
       if pictureState ~= nil then
         for key, value in pairs(pictureState) do
-          battler[key] = value
+          local faintOwned = battler.fainting == true
+            and (
+              key == "pictureVisible"
+              or key == "pictureWidth"
+              or key == "pictureHeight"
+              or key == "pictureXOffset2"
+              or key == "pictureYOffset2"
+              or key == "pictureYOffset"
+              or key == "shadowHeight"
+            )
+          if not faintOwned then
+            battler[key] = value
+          end
         end
       end
       if type(battler.portraitSelector) == "string" then
@@ -1465,19 +1590,27 @@ local function menuLabelText(tokens)
   return table.concat(glyphs)
 end
 
--- Names the nickname question for one caught mon: the default explicit
--- name when the catch carries one, else its caught species key.
+-- Resolves the source nickname question through the staged battle message bank.
+---@param manifest table<string, unknown> staged battle manifest
+---@param catalog table<string, unknown>? borrowed mon catalog
 ---@param subject table<string, unknown> exact committed caught mon under naming
 ---@return string question wording for the Yes/No decision
-local function completionQuestionText(subject)
+local function completionQuestionText(manifest, catalog, subject)
   local name = subject.nickname
   if type(name) ~= "string" or name == "" then
-    name = subject.species
+    local species = subject.species
+    local facts = nil
+    if type(species) == "string" then
+      facts = assert(catalog, "nickname questions resolve species through the borrowed mon catalog"):species(species)
+    elseif type(species) == "number" then
+      facts = assert(catalog, "nickname questions resolve species through the borrowed mon catalog"):speciesByNativeId(
+        species
+      )
+    end
+    name = type(facts) == "table" and facts.name or nil
   end
-  if type(name) ~= "string" or name == "" then
-    name = "the caught mon"
-  end
-  return "Give a nickname to the caught " .. tostring(name) .. "?"
+  assert(type(name) == "string" and name ~= "", "nickname questions carry the caught mon's visible name")
+  return stagedBattleText(manifest, "battle/narration/caught-nickname-question", { name })
 end
 
 ---@param child table<string, unknown>? detached current child view
@@ -1541,12 +1674,50 @@ function BattleScreenState:_commandPrompt(names)
   if type(battler) ~= "table" or type(battler.name) ~= "string" or battler.name == "" then
     return nil
   end
-  return "What will " .. battler.name --[[@as string]] .. " do?"
+  return stagedBattleText(self._manifest, "battle/child/command-prompt", {
+    battler.name --[[@as string]],
+  })
 end
 
 ---@return table<string, unknown> internal semantic snapshot for resolvers and renderers
 function BattleScreenState:_snapshot()
   local battlers = self._timeline:battlers()
+  local openingPresentation = self._timeline:openingPresentation()
+  if openingPresentation ~= nil then
+    local trainerPictures = {} ---@type string[]
+    local latestView = self._pendingFinal or self._latestView
+    if openingPresentation.playerTrainerVisible == true and type(latestView) == "table" then
+      local playerTrainer = latestView.playerTrainer
+      if type(playerTrainer) == "table" and type(playerTrainer.classKey) == "string" then
+        trainerPictures[#trainerPictures + 1] = "back:" .. playerTrainer.classKey
+      end
+    end
+    if openingPresentation.foeTrainerVisible == true and type(latestView) == "table" then
+      local foeTrainers = latestView.foeTrainers
+      if type(foeTrainers) == "table" then
+        for _, trainer in ipairs(foeTrainers) do
+          if type(trainer) == "table" and type(trainer.classKey) == "string" then
+            trainerPictures[#trainerPictures + 1] = "front:" .. trainer.classKey
+          end
+        end
+      end
+    end
+    self._assets:addTrainerPictures(trainerPictures)
+    local battleBalls = {} ---@type string[]
+    if type(latestView) == "table" then
+      for _, groupName in ipairs({ "own", "foes" }) do
+        local group = latestView[groupName]
+        if type(group) == "table" then
+          for _, record in ipairs(group) do
+            if type(record) == "table" and record.active ~= false and type(record.ballKey) == "string" then
+              battleBalls[#battleBalls + 1] = "ball:" .. record.ballKey
+            end
+          end
+        end
+      end
+    end
+    self._assets:addBattleBalls(battleBalls)
+  end
   for _, battler in ipairs(battlers) do
     battler.shakeDx = self._timeline:shake(battler.combatant --[[@as integer]])
   end
@@ -1573,9 +1744,11 @@ function BattleScreenState:_snapshot()
   end
   local commandPrompt = self:_commandPrompt(names)
   local timelineMessage = self._timeline:message()
+  local timelineMessageActive = self._timeline:messageActive()
+  local levelUpStats = self._timeline:levelUpStats()
   local message = self._notice
   if message == nil or message == "" then
-    if self._showTimelineMessage and timelineMessage ~= "" then
+    if (self._showTimelineMessage or timelineMessageActive) and timelineMessage ~= "" then
       message = timelineMessage
     else
       message = commandPrompt or timelineMessage
@@ -1724,11 +1897,24 @@ function BattleScreenState:_snapshot()
     side[visual.kind] = self._scene:gaugeTaskPatchTiles(self._manifest.hud.patchSpans, key, visual.sideType)
   end
   local childView = self:_completionChildView(self:_twoOptionChildView(copyValue(self._subflows:status().childView)))
+  if type(childView) == "table" then
+    if childView.kind == "party" then
+      childView.sourceTitle = stagedBattleText(self._manifest, "battle/child/party-title", {})
+    elseif childView.kind == "target" then
+      childView.sourceTitle = stagedBattleText(self._manifest, "battle/child/target-title", {})
+    elseif childView.kind == "learn" and childView.twoOption == nil then
+      childView.sourcePrompt = stagedBattleText(self._manifest, "battle/child/learn-prompt", {})
+    end
+  end
   -- While the nickname question waits for its answer, the prompt names
   -- the decision instead of the settled terminal cue behind it.
   local completionPrompt = nil
-  if self._completion ~= nil and self._outcomeAcked and self._completion.stage == "question" then
-    completionPrompt = completionQuestionText(self._completion.subject --[[@as table<string, unknown>]])
+  if self._completion ~= nil and self._outcomeDone and self._completion.stage == "question" then
+    completionPrompt = completionQuestionText(
+      self._manifest,
+      self._monCatalog,
+      self._completion.subject --[[@as table<string, unknown>]]
+    )
   end
   return {
     battleKind = self._kind,
@@ -1757,6 +1943,10 @@ function BattleScreenState:_snapshot()
       player = copyValue(self._manifest.hud.partyGauges[2]),
       enemy = copyValue(self._manifest.hud.partyGauges[1]),
     },
+    openingPresentation = openingPresentation,
+    playerTrainer = type(latest) == "table" and latest.playerTrainer or nil,
+    foeTrainers = type(latest) == "table" and latest.foeTrainers or nil,
+    levelUpStats = levelUpStats,
     menuLayers = {
       command = self._manifest.menus.command.screens,
       moves = self._manifest.menus.moves.screens,
@@ -2058,6 +2248,9 @@ function BattleScreenState:view()
     commandIcon = copyValue(snapshot.commandIcon),
     cursorVisible = snapshot.cursorVisible,
     battlers = battlers,
+    openingPresentation = copyValue(snapshot.openingPresentation),
+    playerTrainer = copyValue((self._pendingFinal or self._latestView or {}).playerTrainer),
+    foeTrainers = copyValue((self._pendingFinal or self._latestView or {}).foeTrainers),
     actor = copyValue(snapshot.actor),
     targets = copyValue(snapshot.targetCandidates),
     staged = copyValue(snapshot.stagedChoices),
@@ -2097,10 +2290,9 @@ function BattleScreenState:status()
       plan = published
     end
   end
-  -- The decision is offered only after the terminal narration page was
-  -- explicitly acknowledged.
+  -- Postbattle choices open after the terminal narration and its waits settle.
   local completion = nil
-  if self._completion ~= nil and self._completionResult == nil and self._outcomeAcked then
+  if self._completion ~= nil and self._completionResult == nil and self._outcomeDone then
     local open = self._completion --[[@as table<string, unknown>]]
     completion = {
       completionId = open.completionId,
@@ -2170,6 +2362,21 @@ function BattleScreenState:openCompletion(intent)
     if type(intent.partySlot) ~= "number" or type(intent.context) ~= "table" then
       return false
     end
+  elseif intent.placement ~= nil then
+    local placement = intent.placement --[[@as table<string, unknown>?]]
+    if type(placement) ~= "table" or (placement.destination ~= "party" and placement.destination ~= "box") then
+      return false
+    end
+    if placement.destination == "box" then
+      if
+        type(placement.pcHasSpace) ~= "boolean"
+        or type(placement.boxName) ~= "string"
+        or type(placement.previousBoxName) ~= "string"
+        or type(intent.metBill) ~= "boolean"
+      then
+        return false
+      end
+    end
   end
   if self._consumedCompletions[intent.completionId] then
     return false
@@ -2197,6 +2404,8 @@ function BattleScreenState:openCompletion(intent)
       completionId = intent.completionId,
       kind = "capture_nickname",
       subject = copyValue(intent.subject),
+      placement = type(intent.placement) == "table" and copyValue(intent.placement) or nil,
+      metBill = intent.metBill,
       stage = "question",
       answer = 1,
     }
@@ -2237,10 +2446,49 @@ function BattleScreenState:_sealCompletion(result)
   self._completionResult = copyValue(result)
 end
 
+---@param completion table<string, unknown> answered capture completion
+---@return string? source PC-transfer text, nil when the catch stayed in the party
+function BattleScreenState:_pcTransferText(completion)
+  local placement = completion.placement --[[@as table<string, unknown>?]]
+  if type(placement) ~= "table" or placement.destination ~= "box" then
+    return nil
+  end
+  local subject = completion.subject --[[@as table<string, unknown>]]
+  local nickname = subject.nickname
+  if type(nickname) ~= "string" or nickname == "" then
+    local catalog = assert(self._monCatalog, "PC transfer names uncensored species through the mon catalog")
+    local species = assert(subject.species, "PC transfer subjects carry their species")
+    local facts = catalog:species(species --[[@as string]])
+    nickname = assert(facts.name, "PC transfer species carry their localized display name")
+  end
+  local metBill = completion.metBill
+  assert(type(metBill) == "boolean", "PC transfer narration carries the save's Bill flag")
+  local pcHasSpace = placement.pcHasSpace
+  assert(type(pcHasSpace) == "boolean", "PC transfer narration carries the active-box space fact")
+  local boxName = placement.boxName
+  assert(type(boxName) == "string", "PC transfer placement carries its destination box name")
+  local owner = metBill and "bill" or "someone"
+  if pcHasSpace then
+    return stagedBattleText(self._manifest, "battle/pc-transfer/has-space/" .. owner, { nickname, boxName })
+  end
+  local previousBoxName = placement.previousBoxName
+  assert(type(previousBoxName) == "string", "PC transfer placement carries the full active box name")
+  return stagedBattleText(self._manifest, "battle/pc-transfer/box-full/" .. owner, {
+    nickname,
+    previousBoxName,
+    boxName,
+  })
+end
+
 ---@param declined boolean true for an explicit No instead of a typed name
 function BattleScreenState:_answerCompletionQuestion(declined)
   local completion = assert(self._completion, "answers bind the open completion")
   if declined then
+    local transferText = self:_pcTransferText(completion)
+    if transferText ~= nil then
+      self._timeline:announce(transferText, false, 30)
+      self._mode = "outcome"
+    end
     self:_sealCompletion({
       launchId = completion.launchId,
       completionId = completion.completionId,
@@ -2410,7 +2658,7 @@ end
 -- reply parser or the battle-action child poll.
 ---@param completion table<string, unknown> open evolution completion under advancing
 function BattleScreenState:_drainEvolutionCompletion(completion)
-  if not self._outcomeAcked then
+  if not self._outcomeDone then
     return
   end
   if self._completionChild == nil then
@@ -2478,9 +2726,8 @@ function BattleScreenState:_consumeCompletion(event)
   if completion == nil or self._completionResult ~= nil then
     return false
   end
-  -- Postbattle choices run only after the terminal narration page was
-  -- explicitly acknowledged.
-  if not self._outcomeAcked then
+  -- Postbattle choices run after the terminal narration and its waits settle.
+  if not self._outcomeDone then
     return false
   end
   if completion.kind == "evolution" then
@@ -2567,7 +2814,7 @@ end
 ---@return table<string, unknown>? action child view with the completion question, naming, or evolution state
 function BattleScreenState:_completionChildView(current)
   local completion = self._completion
-  if completion == nil or not self._outcomeAcked then
+  if completion == nil or not self._outcomeDone then
     return current
   end
   if completion.kind == "evolution" then
@@ -2605,7 +2852,11 @@ function BattleScreenState:_completionChildView(current)
         { id = "no", label = "No", detail = "", enabled = true },
       },
       focusId = completion.answer == 1 and "yes" or "no",
-      prompt = completionQuestionText(completion.subject --[[@as table<string, unknown>]]),
+      prompt = completionQuestionText(
+        self._manifest,
+        self._monCatalog,
+        completion.subject --[[@as table<string, unknown>]]
+      ),
       application = "naming",
     } --[[@as table<string, unknown>]]
     local menus = self._manifest.menus
@@ -2821,7 +3072,49 @@ function BattleScreenState:_portPresent(packet)
   end
   local sourceMessages = {}
   for _, event in ipairs(packet.events or {}) do
-    if type(event) == "table" and event.kind == "broke_free" then
+    local payload = type(event) == "table" and event.payload or nil
+    local cause = type(event) == "table" and event.cause or nil
+    if
+      type(event) == "table"
+      and event.kind == "move-used"
+      and type(payload) == "table"
+      and payload.phase == "release"
+      and type(cause) == "table"
+      and cause.key == "BIDE"
+    then
+      local args = assert(event.messageArgs, "Bide release requires named message arguments")
+      local name = assert(args.userName, "Bide release names its battler")
+      assert(type(name) == "string", "Bide release battler name is text")
+      -- TAG_NICKNAME selects msg_0197_00335 + 1 for an enemy battler and
+      -- + 2 against a trainer.
+      local actors = event.actors --[[@as table<integer, table<string, unknown>>?]]
+      local user = type(actors) == "table" and type(actors[1]) == "table" and actors[1].combatant or cause.combatant
+      local key = "battle/bide-release"
+      for _, view in ipairs({ packet.before, packet.after }) do
+        if type(view) == "table" and type(view.foes) == "table" then
+          for _, foe in ipairs(view.foes) do
+            if type(foe) == "table" and foe.combatant == user then
+              key = foe.controller == "wild" and "battle/bide-release/wild" or "battle/bide-release/foe"
+            end
+          end
+        end
+      end
+      local record = assert(self._manifest.messages.entries[key], "Bide release message is staged: " .. key)
+      local tokens = {}
+      local substitutions = 0
+      for _, token in ipairs(record.tokens) do
+        if token.kind == "substitution" then
+          substitutions = substitutions + 1
+          tokens[#tokens + 1] = { kind = "glyph", text = name }
+        else
+          tokens[#tokens + 1] = token
+        end
+      end
+      assert(substitutions == 1, "Bide release substitutes one battler name")
+      sourceMessages[
+        event.sequence --[[@as integer]]
+      ] = FieldMessageText.tokensToText(tokens)
+    elseif type(event) == "table" and event.kind == "broke_free" then
       local args = event.messageArgs --[[@as table<string, unknown>?]]
       local shakes = type(args) == "table" and args.shakes or nil
       local messages = assert(self._manifest.messages, "capture outcomes require staged messages") --[[@as table<string, unknown>]]
@@ -2880,6 +3173,9 @@ function BattleScreenState:_portPresent(packet)
     self._assets:addSelectors(demanded)
   end
   for _, view in ipairs(provenances) do
+    if self._lastPlayerName == nil and type(view.playerName) == "string" then
+      self._lastPlayerName = view.playerName --[[@as string]]
+    end
     if type(view.foes) == "table" then
       for _, foe in ipairs(view.foes) do
         if type(foe) == "table" and type(foe.name) == "string" and self._lastFoeName == nil then
@@ -2893,6 +3189,21 @@ function BattleScreenState:_portPresent(packet)
   end
   if packet.result ~= nil then
     self._pendingResult = copyValue(packet.result)
+    if packet.result.word == "flee" then
+      for _, event in ipairs(packet.events or {}) do
+        local payload = type(event) == "table" and event.payload or nil
+        if type(event) == "table" and event.kind == "flee" and type(payload) == "table" and payload.escaped == true then
+          local source = payload.escapeSource
+          if source ~= nil then
+            self._pendingResult.escapeSource = copyValue(source)
+            local args = event.messageArgs --[[@as table<string, unknown>?]]
+            self._pendingResult.escapeName = type(args) == "table" and args.combatantName or nil
+          end
+          break
+        end
+      end
+    end
+    self._outcomeMessages = nil
     local registration = packet.result.registration --[[@as table<string, unknown>?]]
     if type(registration) == "table" then
       self._pendingRegistration = copyValue(registration)
@@ -2914,11 +3225,14 @@ function BattleScreenState:_portLeave(plan)
   if self._disposed or self._mode == "failed" then
     return false
   end
-  -- Leave cover is permitted only after the terminal narration's final
-  -- page was explicitly acknowledged and its cues fully settled; the
-  -- mode stays on the outcome until host teardown so the shown result
-  -- and the completed lifetime can be observed together.
-  if self._outcomeAcked and self._timeline:settled() then
+  -- Terminal source waits drain on their own; leave follows the last page
+  -- and any registration card without an outcome acknowledgment gate.
+  if
+    self._outcomeDone
+    and self._timeline:settled()
+    and self._pendingRegistration == nil
+    and (self._registrationChild == nil or self._registrationComplete == true)
+  then
     return true
   end
   return false
@@ -3061,6 +3375,9 @@ local function cueRole(cue)
   if cue.kind == "effect" then
     return tostring(cue.symbol)
   end
+  if cue.kind == "fanfare" then
+    return tostring(cue.symbol)
+  end
   if cue.kind == "cry" then
     return "cry:" .. tostring(cue.species)
   end
@@ -3123,7 +3440,25 @@ function BattleScreenState:_playCue(cue)
       self._battleAudio:playEffect(self:_selectSymbol())
     elseif cue.kind == "effect" then
       assert(type(cue.symbol) == "string" and cue.symbol ~= "", "effect cues name their staged symbol")
-      self._battleAudio:playEffect(cue.symbol --[[@as string]])
+      -- Legacy string-role sinks carry no mix; they voice the role alone.
+      local pan = not self._legacyAudio and cue.pan or nil
+      local handle = self._battleAudio:playEffect(cue.symbol --[[@as string]], pan --[[@as integer?]])
+      if type(cue.voiceKey) == "string" then
+        self._nativeVoices[cue.voiceKey] = handle
+      end
+    elseif cue.kind == "stop-effect" then
+      local voiceKey = assert(cue.voiceKey, "effect stops name their started voice") --[[@as string]]
+      local handle = assert(self._nativeVoices[voiceKey], "effect stops own a started voice")
+      self._battleAudio:stopVoice(handle)
+      self._nativeVoices[voiceKey] = nil
+    elseif cue.kind == "fanfare" then
+      assert(type(cue.symbol) == "string" and cue.symbol ~= "", "fanfare cues name their staged symbol")
+      local handle = self._battleAudio:playFanfare(cue.symbol --[[@as string]])
+      if cue.waitForVoice == true then
+        self._waitingCueVoice = handle
+      end
+    elseif cue.kind == "music" then
+      self:_notifyResultMusic("win")
     elseif cue.kind == "cry" then
       self:_playCryCue(cue --[[@as table<string, unknown>]])
     else
@@ -3162,16 +3497,43 @@ function BattleScreenState:_playCryCue(cue)
     pan = BattleAudio.SIDE_PAN.foe
   end
   local defaults = BattleAudio.DEFAULT_CRY
-  self._battleAudio:playCry({
+  local pattern = cue.pattern
+  if type(pattern) ~= "number" then
+    pattern = defaults.pattern
+  end
+  local handle = self._battleAudio:playCry({
     species = species,
     speciesKey = speciesKey,
-    pattern = defaults.pattern,
+    pattern = pattern,
     form = form,
     mode = defaults.mode,
     pan = pan,
     volume = defaults.volume,
     pitch = defaults.pitch,
   })
+  if cue.waitForVoice == true then
+    self._waitingCueVoice = handle
+  end
+end
+
+---@param cue table<string, unknown> active held audio cue
+---@return boolean complete true once its owned voice finishes
+function BattleScreenState:_soundCueComplete(cue)
+  if cue.waitForVoice ~= true or self._legacyAudio then
+    return true
+  end
+  local handle = self._waitingCueVoice
+  if handle == nil then
+    return false
+  end
+  local ok, done = pcall(function()
+    return self._battleAudio:voiceComplete(handle)
+  end)
+  if ok and done == true then
+    self._waitingCueVoice = nil
+    return true
+  end
+  return false
 end
 
 -- Records one menu-cancel feedback voice behind the backing-out edge.
@@ -3690,8 +4052,7 @@ end
 -- mirrored request, and a stale identity discards without sealing. A
 -- refused seal keeps the child open for another selection.
 -- Polls the open registration card after the parent timeline: a card
--- failure fails the screen exactly once, completion sets the terminal
--- acknowledgment once and releases the readiness hold, and the active
+-- failure fails the screen exactly once, completion releases the readiness hold, and the active
 -- card steps on accepted time. Never replays the creating edge into the
 -- card and never advances battle choices behind it.
 ---@param dt number accepted presentation seconds
@@ -3720,7 +4081,6 @@ function BattleScreenState:_pollRegistrationChild(dt)
   end
   if status.complete == true then
     if self._registrationComplete ~= true then
-      self._outcomeAcked = true
       self._registrationComplete = true
     end
     return
@@ -3738,7 +4098,6 @@ function BattleScreenState:_pollRegistrationChild(dt)
     return
   end
   if okDone and type(done) == "table" and done.complete == true and self._registrationComplete ~= true then
-    self._outcomeAcked = true
     self._registrationComplete = true
   end
 end
@@ -3926,13 +4285,7 @@ function BattleScreenState:_consume(event)
       if self._mode == "narration" or self._mode == "outcome" then
         local control = event.control --[[@as table<string, unknown>?]]
         if type(control) == "table" and control.scope == self._mode then
-          local _, completedFinalPage = self._timeline:ack()
-          if self._mode == "outcome" and completedFinalPage == true then
-            self:_acknowledgeOutcomeFinal()
-            if self._registrationChild ~= nil then
-              return
-            end
-          end
+          self._timeline:ack()
         end
       else
         self:_sealControl(event.control, armed)
@@ -3955,7 +4308,9 @@ function BattleScreenState:_consume(event)
 end
 
 function BattleScreenState:_confirm()
-  if self._mode == "command" and type(self._selection) == "string" then
+  if self._timeline:levelUpStats() ~= nil or self._timeline:messageActive() then
+    self._timeline:ack()
+  elseif self._mode == "command" and type(self._selection) == "string" then
     self:_activateCommand(self._selection --[[@as string]])
   elseif self._mode == "moves" and type(self._selection) == "string" then
     local selection = self._selection --[[@as string]]
@@ -3980,26 +4335,7 @@ function BattleScreenState:_confirm()
   elseif self._mode == "narration" or self._mode == "intro" then
     self._timeline:ack()
   elseif self._mode == "outcome" then
-    local _, completedFinalPage = self._timeline:ack()
-    if completedFinalPage == true then
-      self:_acknowledgeOutcomeFinal()
-    end
-  end
-end
-
--- Applies one consumed terminal-page acknowledgment: with no registration
--- it sets the current outcome acknowledgment as before, while a retained
--- registration consumes the edge, cancels pointers, drops the rest of the
--- batch, and constructs the battle-owned card exactly once. The creating
--- edge never also dismisses the card.
-function BattleScreenState:_acknowledgeOutcomeFinal()
-  if self._pendingRegistration ~= nil and self._registrationChild == nil then
-    self:cancelPointerCapture()
-    self:_openRegistrationChild()
-    return
-  end
-  if self._pendingRegistration == nil and self._registrationChild == nil then
-    self._outcomeAcked = true
+    self._timeline:ack()
   end
 end
 
@@ -4200,28 +4536,99 @@ function BattleScreenState:_modeForOptions(options)
   return "command"
 end
 
----@return string product-owned terminal narration for the result word
-function BattleScreenState:_outcomeText()
-  local word = self._pendingResult ~= nil and self._pendingResult.word or nil
-  local foeName = self._lastFoeName
-  if word == "win" then
-    if type(foeName) == "string" then
-      return "Defeated the foe " .. foeName .. "!"
+---@return table<integer, table<string, unknown>> source-selected terminal messages and holds
+function BattleScreenState:_outcomeTexts()
+  local result = assert(self._pendingResult, "terminal text reads its retained result")
+  if result.word == "flee" then
+    local escapeSource = result.escapeSource --[[@as table<string, unknown>?]]
+    if escapeSource == nil then
+      return { { text = stagedBattleText(self._manifest, "battle/narration/got-away", {}), holdTicks = 30 } }
     end
-    return "The foe was defeated!"
-  elseif word == "loss" then
-    return "Your party can no longer battle!"
-  elseif word == "flee" then
-    return "Got away safely!"
-  elseif word == "capture" then
-    if type(foeName) == "string" then
-      return "Gotcha! " .. foeName .. " was caught!"
+    local runnerName = assert(result.escapeName, "item and ability flight narration names its runner")
+    local key = escapeSource.key
+    assert(type(key) == "string", "flight source carries its catalog key")
+    if escapeSource.kind == "item" then
+      local item = assert(self._monCatalog, "flight item names resolve through the mon catalog"):item(key)
+      local itemName = item.name
+      assert(type(itemName) == "string", "flight items carry a localized name")
+      return {
+        {
+          text = stagedBattleText(self._manifest, "battle/narration/fled-with-item", { runnerName, itemName }),
+          holdTicks = 30,
+        },
+      }
     end
-    return "Gotcha! The catch succeeded!"
-  elseif word == "draw" then
-    return "The battle ended in a draw."
+    assert(escapeSource.kind == "ability", "flight source is an item or ability")
+    local ability = assert(self._monCatalog, "flight abilities resolve through the mon catalog"):ability(key)
+    local abilityName = ability.name
+    assert(type(abilityName) == "string", "flight abilities carry a localized name")
+    return {
+      {
+        text = stagedBattleText(self._manifest, "battle/narration/fled-run-away", { runnerName, abilityName }),
+        holdTicks = 30,
+      },
+    }
   end
-  return "The battle ended."
+  if result.word == "win" and self._kind == "trainer" then
+    local latest = self._pendingFinal or self._latestView
+    local trainers = type(latest) == "table" and latest.foeTrainers or nil
+    local trainer = type(trainers) == "table" and trainers[1] or nil
+    assert(type(trainer) == "table", "trainer victory narration reads its trainer facts")
+    local classKey = trainer.classKey
+    local trainerName = trainer.name
+    assert(type(classKey) == "string", "trainer victory carries the class key")
+    assert(type(trainerName) == "string", "trainer victory carries the trainer name")
+    local className = stagedBattleText(self._manifest, "battle/trainer-class/" .. classKey, {})
+    local messages = {
+      {
+        text = stagedBattleText(self._manifest, "battle/narration/trainer-victory", { className, trainerName }),
+        holdTicks = 15,
+      },
+    }
+    local loseSpeechKey = trainer.loseSpeechKey
+    local messageEntries = self._manifest.messages.entries --[[@as table<string, unknown>]]
+    if type(loseSpeechKey) == "string" and type(messageEntries[loseSpeechKey]) == "table" then
+      messages[#messages + 1] = {
+        text = resolveBattleText(self, loseSpeechKey, {}),
+        holdTicks = 60,
+      }
+    end
+    local moneyGained = result.moneyGained
+    assert(
+      type(moneyGained) == "number" and moneyGained % 1 == 0 and moneyGained >= 0,
+      "trainer victory carries its planned payout"
+    )
+    if moneyGained > 0 then
+      local playerName = assert(self._lastPlayerName, "trainer payout narration names the player")
+      messages[#messages + 1] = {
+        text = stagedBattleText(self._manifest, "battle/narration/won-money", { playerName, tostring(moneyGained) }),
+        holdTicks = 60,
+      }
+    end
+    return messages
+  end
+  if result.word ~= "loss" then
+    return {}
+  end
+  local playerName = assert(self._lastPlayerName, "loss narration names the player")
+  local messages = {
+    { text = stagedBattleText(self._manifest, "battle/narration/defeated-last-mon", { playerName }), holdTicks = 30 },
+  }
+  local moneyLost = assert(result.moneyLost, "loss narration carries its planned prize penalty")
+  assert(type(moneyLost) == "number" and moneyLost % 1 == 0 and moneyLost >= 0, "loss money stays nonnegative")
+  if moneyLost > 0 then
+    local key = self._kind == "trainer" and "battle/narration/trainer-lost-money" or "battle/narration/wild-lost-money"
+    messages[#messages + 1] = {
+      text = stagedBattleText(self._manifest, key, { playerName, tostring(moneyLost) }),
+      holdTicks = 30,
+    }
+  end
+  messages[#messages + 1] = { text = stagedBattleText(self._manifest, "battle/narration/ellipsis", {}), holdTicks = 30 }
+  messages[#messages + 1] = {
+    text = stagedBattleText(self._manifest, "battle/narration/player-blacked-out", { playerName }),
+    holdTicks = 30,
+  }
+  return messages
 end
 
 -- Fires the bound terminal-music beat once at the outcome narration
@@ -4257,6 +4664,9 @@ end
 -- same tick as, the earlier cues finishing.
 ---@param settledTick boolean true when no cue played on this update
 function BattleScreenState:_drain(settledTick)
+  if self._mode == "failed" then
+    return
+  end
   if not self._timeline:settled() then
     return
   end
@@ -4269,9 +4679,27 @@ function BattleScreenState:_drain(settledTick)
   end
   if self._pendingResult ~= nil then
     local word = self._pendingResult.word
-    self._timeline:announce(self:_outcomeText(), true)
     self:_notifyResultMusic(word)
+    if self._outcomeMessages == nil then
+      self._outcomeMessages = self:_outcomeTexts()
+    end
+    local nextMessage = table.remove(self._outcomeMessages, 1)
+    if nextMessage ~= nil then
+      local record = nextMessage --[[@as table<string, unknown>]]
+      self._timeline:announce(
+        assert(record.text, "terminal entries carry staged wording") --[[@as string]],
+        false,
+        assert(record.holdTicks, "terminal entries carry source holds") --[[@as integer]]
+      )
+      self._mode = "outcome"
+      return
+    end
     self._pendingResult = nil
+    self._outcomeMessages = nil
+    self._outcomeDone = true
+    if self._pendingRegistration ~= nil then
+      self:_openRegistrationChild()
+    end
     self._pendingRequest = nil
     -- The terminal request identity stays behind for the completion
     -- barrier: post-commit nickname children bind this settled decision
@@ -4369,7 +4797,7 @@ function BattleScreenState:updateFixed(dt)
   if self._session ~= nil and self._mode ~= "failed" then
     self._session:resolve(measurement, self:_snapshot())
   end
-  -- One accepted 30 Hz source tick advances the cue player, the
+  -- One accepted HGSS source tick advances the cue player, the
   -- native animation player, and the visual scene exactly once,
   -- with the menu reveal gate and the selection arrow riding the same
   -- quantum. Phase order per tick is stable: cue admission (a native
@@ -4393,7 +4821,9 @@ function BattleScreenState:updateFixed(dt)
       if self._mode == "failed" then
         break
       end
-      self._timeline:update(BattleScreenState.SOURCE_FRAME, isAvailable)
+      self._timeline:update(BattleScreenState.SOURCE_FRAME, isAvailable, function(cue)
+        return self:_soundCueComplete(cue)
+      end)
       for _, name in ipairs(self._timeline:drainSounds()) do
         if not self:_playCue(name) then
           break
@@ -4458,9 +4888,9 @@ function BattleScreenState:updateFixed(dt)
   end
   -- The parent timeline advances exactly once above before the card is
   -- polled or stepped; no battle choice or other subflow advances while
-  -- the card is open. Completion sets the terminal acknowledgment once
-  -- and releases the readiness hold, keeping the static final view and
-  -- its lease until disposal. A card failure fails the screen once.
+  -- the card is open. Completion releases the readiness hold, keeping the
+  -- static final view and its lease until disposal. A card failure fails
+  -- the screen once.
   if self._registrationChild ~= nil and self._mode ~= "failed" then
     self:_pollRegistrationChild(dt)
   end

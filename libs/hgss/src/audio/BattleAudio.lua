@@ -19,7 +19,7 @@ local Errors = require("libs.errors.src.Errors")
 ---@field _sequence integer operation sequence behind handle identity
 ---@field new fun(opts: { sink: table<string, unknown>, launchId: string, generation: string? }): BattleAudio
 ---@field startMusic fun(self: BattleAudio, symbol: string): table<string, unknown>
----@field playEffect fun(self: BattleAudio, symbol: string): table<string, unknown>
+---@field playEffect fun(self: BattleAudio, symbol: string, pan: integer?): table<string, unknown>
 ---@field playFanfare fun(self: BattleAudio, symbol: string): table<string, unknown>
 ---@field playCry fun(self: BattleAudio, spec: table<string, unknown>): table<string, unknown>
 ---@field stopVoice fun(self: BattleAudio, handle: table<string, unknown>): boolean
@@ -35,12 +35,16 @@ BattleAudio.CODE = "BATTLE_AUDIO_REJECTED"
 -- progression jingles the result flows record.
 BattleAudio.SINK_SOUNDS = {
   slide = "SEQ_SE_DP_SLIDEIN",
+  faint = "SEQ_SE_DP_POKE_DEAD3",
   escape = "SEQ_SE_DP_NIGERU2",
   impact = "SEQ_SE_DP_KOUKA_M",
-  effectiveness = "SEQ_SE_GS_KOUKAEFFECT",
+  impactSuper = "SEQ_SE_DP_KOUKA_H",
+  impactWeak = "SEQ_SE_DP_KOUKA_L",
   shake = "SEQ_SE_DP_KON",
   caught = "SEQ_ME_POKEGET",
   levelUp = "SEQ_ME_LVUP",
+  experience = "SEQ_SE_DP_EXP",
+  experienceMax = "SEQ_SE_DP_EXPMAX",
 }
 
 -- Cry voice defaults behind send-out dispatch: the plain pattern the
@@ -51,16 +55,15 @@ BattleAudio.DEFAULT_CRY = {
   form = 0,
   mode = 0,
   pan = 0,
-  volume = 100,
+  volume = 127,
   pitch = 0,
 }
 
--- Send-out pan convention by side: the foe voices left of center, the
--- player voices right of center. Per-cue controller values arrive with
--- the native animation program routes through this same contract.
+-- Retail battle controllers voice player cries at -117 and foe cries
+-- at +117. Per-cue controller values arrive with native animation routes.
 BattleAudio.SIDE_PAN = {
-  foe = -16,
-  player = 16,
+  foe = 117,
+  player = -117,
 }
 
 ---@param opts { sink: table<string, unknown>, launchId: string, generation: string? }
@@ -197,11 +200,17 @@ end
 
 ---@param self BattleAudio
 ---@param symbol string effect sequence symbol under staging
+---@param pan integer? source track-pan offset when the retail cue sets one
 ---@return table<string, unknown> launch-scoped effect voice handle
-function BattleAudio:playEffect(symbol)
+function BattleAudio:playEffect(symbol, pan)
   local cue = checkSymbol(symbol)
-  self:_dispatch("effect-start", "play", cue, cue)
-  return self:_handle("effect", { symbol = cue })
+  if pan == nil then
+    self:_dispatch("effect-start", "play", cue, cue)
+  else
+    assert(type(pan) == "number" and pan % 1 == 0, "battle effects carry source pan as an integer offset")
+    self:_dispatch("effect-start", "playPanned", cue, cue, pan)
+  end
+  return self:_handle("effect", { symbol = cue, pan = pan })
 end
 
 ---@param self BattleAudio

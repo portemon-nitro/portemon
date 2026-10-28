@@ -23,6 +23,43 @@ function T.transition_routes_require_semantic_context_and_staged_resources()
   Assert.isFalse(Schema.isValidManifest(nativeInput), "transition routes must not expose native selector indexes")
 end
 
+function T.trainer_pictures_validate_semantic_role_selectors_and_staged_images()
+  local valid = manifest()
+  valid.trainerPictures = {
+    entries = {
+      ["front:YOUNGSTER"] = {
+        drawableKey = "trainer:front:YOUNGSTER",
+        image = "assets/generated/battle/trainer-front-YOUNGSTER.png",
+        width = 80,
+        height = 80,
+      },
+      ["back:PKMN_TRAINER_ETHAN"] = {
+        drawableKey = "trainer:back:PKMN_TRAINER_ETHAN",
+        image = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png",
+        width = 80,
+        height = 80,
+      },
+    },
+  }
+  valid.menus.images[valid.trainerPictures.entries["front:YOUNGSTER"].image] = { width = 80, height = 80 }
+  valid.menus.images[valid.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"].image] = { width = 80, height = 80 }
+  Assert.isTrue(Schema.isValidManifest(valid), "semantic front and back trainer images validate")
+
+  valid.trainerPictures.entries["front:YOUNGSTER"].drawableKey = "trainer:front:POKEBALL"
+  Assert.isFalse(Schema.isValidManifest(valid), "a trainer selector cannot point at another drawable identity")
+end
+
+function T.battle_ball_frames_validate_ordered_semantic_drawables_and_staged_images()
+  local valid = manifest()
+  Assert.isTrue(Schema.isValidManifest(valid), "the source-shaped ball frame manifest validates")
+  local missingImage = manifest()
+  missingImage.battleBalls.entries["ball:POKE_BALL"].frames[1].image = "assets/generated/battle/missing.png"
+  Assert.isFalse(Schema.isValidManifest(missingImage), "ball frames must reference staged images")
+  local wrongFrame = manifest()
+  wrongFrame.battleBalls.entries["ball:POKE_BALL"].frames[1].drawableKey = "battle-ball:POKE_BALL:1"
+  Assert.isFalse(Schema.isValidManifest(wrongFrame), "ball frame drawables follow the zero-based source order")
+end
+
 function T.transition_routes_accept_strict_normalized_camera_task_data()
   local valid = manifest()
   local poses = {}
@@ -769,14 +806,29 @@ function T.launch_demands_carry_exact_deduplicated_members()
   local demand = {
     scenes = { "general/grass/day" },
     pages = { "CHIKORITA/f0/male/plain/back" },
+    trainerPictures = { "front:YOUNGSTER", "back:PKMN_TRAINER_ETHAN" },
+    battleBalls = { "ball:POKE_BALL" },
+    iconKeys = {},
     audio = { roles = { "SEQ_GS_VS_NORAPOKE" }, banks = {}, cries = { "cry:CHIKORITA" } },
   }
   Assert.isTrue(Schema.isValidDemand(demand), "an exact launch demand validates")
-  local empty = { scenes = {}, pages = {}, audio = { roles = {}, banks = {}, cries = {} } }
+  demand.trainerPictures[1] = "front:3"
+  Assert.isFalse(Schema.isValidDemand(demand), "trainer demand cannot leak a raw class identifier")
+  local empty = {
+    scenes = {},
+    pages = {},
+    trainerPictures = {},
+    battleBalls = {},
+    iconKeys = {},
+    audio = { roles = {}, banks = {}, cries = {} },
+  }
   Assert.isFalse(Schema.isValidDemand(empty), "an empty demand never validates")
   local duplicated = {
     scenes = { "general/grass/day", "general/grass/day" },
     pages = {},
+    trainerPictures = {},
+    battleBalls = {},
+    iconKeys = {},
     audio = { roles = {}, banks = {}, cries = {} },
   }
   Assert.isFalse(Schema.isValidDemand(duplicated), "a duplicated scene demand never validates")

@@ -6,7 +6,7 @@
 -- scenario drives a real runtime and screen through an ordinary turn.
 
 local Assert = require("tests.support.Assert")
-local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 
 local T = {}
 
@@ -143,7 +143,9 @@ end
 function T.missed_attack_narrates_a_miss()
   local timeline = BattleTimeline.new({})
   timeline:reset(openingView())
-  timeline:present(packet(1, { event("missed", { target = 3 }, { [1] = 52, [3] = 57 }) }))
+  local missed = event("missed", { target = 3 }, { [1] = 52, [3] = 57 })
+  missed.actors = { { combatant = 1 } }
+  timeline:present(packet(1, { missed }))
   local messages = collectMessages(timeline)
   Assert.isTrue(messages:find("miss", 1, true) ~= nil, "a missed attack narrates its miss: " .. messages)
   Assert.isTrue(
@@ -312,7 +314,7 @@ function T.status_gate_block_and_release_narrate_their_moment()
   assertNoPlaceholder(timeline, "status-gate")
 end
 
-function T.forcing_and_item_moves_hit_their_target()
+function T.forcing_and_item_intents_stay_silent_until_their_result()
   local timeline = BattleTimeline.new({})
   timeline:reset(openingView())
   local roar = event("switch-intent", { target = 1 }, { [1] = 52, [3] = 57 })
@@ -321,7 +323,7 @@ function T.forcing_and_item_moves_hit_their_target()
   trick.cause = { key = "TRICK" }
   timeline:present(packet(1, { roar, trick }))
   local messages = collectMessages(timeline)
-  Assert.isTrue(messages:find("LEAD", 1, true) ~= nil, "the intents name their target: " .. messages)
+  Assert.equal(messages, "", "intent narration belongs to the following source result")
   assertNoPlaceholder(timeline, "intent")
 end
 
@@ -433,7 +435,7 @@ function T.ordinary_production_turns_never_show_the_placeholder()
   }
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = vocabularyFoe("EEVEE", 5, 0x33333333) },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local record = { packets = {} }
   local port = {

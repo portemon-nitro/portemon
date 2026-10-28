@@ -10,8 +10,8 @@
 -- silent. Synthetic fixtures only: no dump capability is needed.
 
 local Assert = require("tests.support.Assert")
-local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
-local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
+local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 

@@ -70,6 +70,49 @@ function T.shadow_size_selects_the_published_source_uv_rectangle()
   assets:dispose()
 end
 
+-- Trainer picture selectors grow the exact preparation demand and keep
+-- class keys separate from portrait-page selectors.
+function T.trainer_picture_demand_is_semantic_and_deduplicated()
+  local observed = nil
+  local assets = stubAssets({})
+  function assets.prepare(demand)
+    observed = demand
+    return true
+  end
+  local battle = holder(nil, assets)
+  battle:addTrainerPictures({ "front:ACE_TRAINER_M", "back:PKMN_TRAINER_ETHAN" })
+  battle:addTrainerPictures({ "front:ACE_TRAINER_M" })
+  battle:update()
+  Assert.deepEqual(
+    observed.trainerPictures,
+    { "back:PKMN_TRAINER_ETHAN", "front:ACE_TRAINER_M" },
+    "the exact front and back trainer pictures are demanded once"
+  )
+  Assert.deepEqual(observed.pages, {}, "trainer classes do not become mon portrait selectors")
+  battle:dispose()
+end
+
+function T.battle_ball_demand_is_semantic_and_deduplicated()
+  local observed = nil
+  local assets = stubAssets({})
+  function assets.prepare(demand)
+    observed = demand
+    return true
+  end
+  local battle = holder(nil, assets)
+  battle:addBattleBalls({ "ball:POKE_BALL", "ball:ULTRA_BALL" })
+  battle:addBattleBalls({ "ball:POKE_BALL" })
+  battle:update()
+  Assert.deepEqual(
+    observed.battleBalls,
+    { "ball:POKE_BALL", "ball:ULTRA_BALL" },
+    "the exact battle ball sprites are demanded once"
+  )
+  local invalid = pcall(battle.addBattleBalls, battle, { "ball:poke_ball" })
+  Assert.isFalse(invalid, "ball selectors follow the uppercase manifest item-key grammar")
+  battle:dispose()
+end
+
 -- The default frame and a declared custom frame both prepare; their
 -- selected images stay drawable through the holder.
 function T.known_frames_prepare()
@@ -294,13 +337,12 @@ end
 
 -- A switch and a foe replacement rebind the exact image identity: the
 -- screen demands canonical selectors for the active own battler and
--- only the revealed foe, the cue clock asks for "mon:" plus the exact
--- incoming selector at its reveal, generic side keys are never
--- requested, and the benched reserve stays undemanded until its switch
--- packet makes it active.
+-- only the revealed foe, waits through the source-timed opening send-outs,
+-- asks for "mon:" plus the exact incoming selector at reveal, and keeps
+-- the benched reserve undemanded until its switch packet makes it active.
 function T.switch_and_foe_reveal_rebind_the_exact_image_key()
   local MonCache = require("libs.assets.src.MonCache")
-  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
   local leadBack = MonCache.portraitSelector("EEVEE", 0, "male", false, "back")
   local reserveBack = MonCache.portraitSelector("TOTODILE", 0, "female", false, "back")
@@ -375,6 +417,7 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
       maxHp = 20,
       species = species,
       form = 0,
+      ballKey = "POKE_BALL",
       name = name,
       level = 9,
       selector = side == 1 and "back" or "front",
@@ -429,6 +472,7 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
   end
   local function openingAfter()
     return {
+      playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" },
       own = {
         battlerRecord(1, 1, true, "EEVEE", "LEADA", leadBack),
         battlerRecord(2, 1, false, "TOTODILE", "RESERVE", reserveBack),
@@ -437,12 +481,27 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
     }
   end
   port.present({ launchId = launchId, packetId = 1, events = {}, before = openingAfter(), after = openingAfter() })
-  pump(400)
+  pump(900)
   Assert.isTrue(hasPage(leadBack), "the opening demands the exact active lead back selector")
   Assert.isFalse(hasPage(reserveBack), "the benched reserve stays undemanded before its switch packet makes it active")
   Assert.isTrue(hasPage(foeFront), "the opening demands the exact revealed foe selector")
   Assert.isFalse(hasShorthand(), "no demand falls back to a shorthand species/form/facing key")
-  Assert.isTrue(drewKey("mon:" .. leadBack), "the first draw asks for the exact lead image key")
+  local openingStatus = screen:status()
+  local activeCue = screen._timeline._active --[[@as table<string, unknown>?]]
+  Assert.isTrue(
+    drewKey("mon:" .. leadBack),
+    "the draw asks for the exact lead image key after "
+      .. tostring(openingStatus.mode)
+      .. ": "
+      .. tostring(screen:view().message)
+      .. " (cue="
+      .. tostring(type(activeCue) == "table" and activeCue.kind)
+      .. ", hold="
+      .. tostring(type(activeCue) == "table" and activeCue.hold)
+      .. ", elapsed="
+      .. tostring(type(activeCue) == "table" and activeCue.elapsed)
+      .. ")"
+  )
   Assert.isFalse(drewKey("mon:player:back"), "no frame aliases the lead through a generic side key")
   Assert.isFalse(drewKey("mon:enemy:front"), "no frame aliases the foe through a generic side key")
   local switchedAfter = {
@@ -485,7 +544,7 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
       {
         sequence = 2,
         kind = "switch",
-        cause = { key = "TACKLE" },
+        cause = { kind = "faint", key = "TACKLE" },
         audience = "public",
         payload = { from = 3, to = 4 },
       },
@@ -781,6 +840,14 @@ local function layoutOnlyCache(portraitEntries)
   cache.files[PORTRAIT_MENU_IMAGE] = solidPortraitPng(8, 8)
   cache.files[PORTRAIT_FONT_PATH] = "staged-font"
   local stagedManifest = stagedPortraitBattleManifest()
+  for _, entry in pairs(stagedManifest.trainerPictures.entries) do
+    cache.files[entry.image] = solidPortraitPng(entry.width, entry.height)
+  end
+  for _, entry in pairs(stagedManifest.battleBalls.entries) do
+    for _, frame in ipairs(entry.frames) do
+      cache.files[frame.image] = solidPortraitPng(frame.width, frame.height)
+    end
+  end
   for _, menu in ipairs({ "command", "moves", "target" }) do
     local image = stagedManifest.menus[menu].image
     cache.files[image] = solidPortraitPng(8, 8)
@@ -1041,6 +1108,7 @@ local function demandBattler(combatant, side, active, species, name, portrait)
     maxHp = 20,
     species = species,
     form = 0,
+    ballKey = "POKE_BALL",
     name = name,
     level = 9,
     selector = side == 1 and "back" or "front",
@@ -1054,7 +1122,7 @@ end
 ---@param services table preparation services under test driving
 ---@return table live battle screen over the real resource holder
 local function demandScreen(launchId, services)
-  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
   local text = {}
   function text.measure(content)
@@ -1304,6 +1372,7 @@ function T.opening_demand_names_only_visible_battlers_then_grows_on_switch()
   port.enter({ launchId = launchId, kind = "wild" })
   local function openingAfter()
     return {
+      playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" },
       own = {
         demandBattler(1, 1, true, "EEVEE", "LEADA", leadBack),
         demandBattler(2, 1, false, "TOTODILE", "RESERVE", reserveBack),
@@ -1412,6 +1481,7 @@ function T.portrait_page_worker_failure_names_its_selector_and_page_once()
   port.enter({ launchId = launchId, kind = "wild" })
   local function doomedAfter()
     return {
+      playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" },
       own = { demandBattler(1, 1, true, "EEVEE", "LEADA", leadBack) },
       foes = { demandBattler(3, 2, true, "RATTATA", "FOEX", foeFront) },
     }

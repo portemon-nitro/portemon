@@ -9,13 +9,14 @@
 
 local Assert = require("tests.support.Assert")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
-local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local T = {}
 
@@ -188,7 +189,7 @@ function T.spread_move_in_doubles_names_each_target_with_stable_activation()
         doubleBattle = true,
       },
     },
-  }, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  }, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } })
   local record = {
     ready = true,
     enters = 0,
@@ -275,7 +276,7 @@ end
 function T.duplicate_packets_execute_once_and_stale_activations_never_unblock()
   local ScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
   local SessionFixture = require("libs.battle.tests.session_fixture")
-  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
   local party = makeParty({
     { species = "EEVEE", level = 20, seed = 0x33333333 },
     { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
@@ -295,7 +296,7 @@ function T.duplicate_packets_execute_once_and_stale_activations_never_unblock()
   }
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foeRecord("EEVEE", 4, 0x5EED0042) },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local record = {
     ready = true,
@@ -350,14 +351,12 @@ function T.duplicate_packets_execute_once_and_stale_activations_never_unblock()
   for key, value in pairs(source) do
     replay[key] = value
   end
-  replay.packetId = source.packetId --[[@as integer]]
-    + 1000
+  replay.packetId = source.packetId --[[@as integer]] + 1000
   Assert.isTrue(player:present(replay) == false, "the same event identity delivered again executes once")
   Assert.equal(cueCount(), firstCues, "the replayed delivery queues no further visible cues")
   local stale = {
     launchId = launch.id,
-    packetId = source.packetId --[[@as integer]]
-      + 1001,
+    packetId = source.packetId --[[@as integer]] + 1001,
     events = {
       {
         sequence = 9999,
@@ -402,7 +401,7 @@ function T.identical_seeds_keep_mechanics_identical_across_presentation_pacing_w
     }
     local twinScenario = ScenarioFactory.fromEncounter(
       { attemptId = launch.id .. "-attempt", mon = foe },
-      { party = twinParty, bag = twinBag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+      { party = twinParty, bag = twinBag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
     )
     local held = {
       ready = not delayed,
@@ -513,7 +512,7 @@ function T.trainer_payloads_expose_only_visible_battler_facts()
         aiPasses = {},
       },
     },
-  }, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  }, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } })
   local record = {
     ready = true,
     enters = 0,
@@ -590,7 +589,7 @@ function T.trainer_payloads_expose_only_visible_battler_facts()
   battle:dispose()
 end
 
-local BRANCH_TICK = 1 / 30
+local BRANCH_TICK = SourceTick.DT
 
 local function branchView()
   return {
@@ -691,9 +690,10 @@ end
 -- branch outcome. Returns the start records and the drained texts.
 ---@param name string branch name under diagnosis
 ---@param events table[] production-shaped events for the branch action
+---@param expectsVisual boolean? true when the source branch starts its move program
 ---@return table[] start records in start order
 ---@return table[] drained narration texts in completion order
-local function runBranch(name, events)
+local function runBranch(name, events, expectsVisual)
   local view = branchView()
   local started = {}
   local handles = {}
@@ -732,7 +732,7 @@ local function runBranch(name, events)
   local seen = {}
   local texts = {}
   local tick = 0
-  while tick < 6000 and (not timeline:settled() or #started == 0) do
+  while tick < 6000 and not timeline:settled() do
     tick = tick + 1
     timeline:update(BRANCH_TICK, function(_)
       return true
@@ -754,13 +754,17 @@ local function runBranch(name, events)
       end
     end
   end
-  Assert.notNil(firstStartTick, name .. " admits its documented visual")
   Assert.notNil(announcementTick, name .. " narrates its branch outcome")
-  Assert.isTrue(announcementTick < firstStartTick, name .. " narrates before its visual starts")
-  for _, record in ipairs(started) do
-    Assert.isTrue(record.message ~= "", name .. " visual starts behind readable narration")
+  if expectsVisual ~= false then
+    Assert.notNil(firstStartTick, name .. " admits its documented visual")
+    Assert.isTrue(announcementTick < firstStartTick, name .. " narrates before its visual starts")
+    for _, record in ipairs(started) do
+      Assert.isTrue(record.message ~= "", name .. " visual starts behind readable narration")
+    end
+  else
+    Assert.isNil(firstStartTick, name .. " does not admit a visual")
   end
-  Assert.isTrue(timeline:settled(), name .. " drains fully once its visual completes")
+  Assert.isTrue(timeline:settled(), name .. " drains fully")
   return started, texts
 end
 
@@ -783,9 +787,59 @@ local function textsContain(texts, needle)
   return false
 end
 
--- Failure, replay, and called-move branches stay single-shot: missed and
--- protected attempts keep their own documented program without a
--- successful-hit visual, charge and strike halves of one action stay
+function T.missed_attack_announces_before_the_result_without_a_move_animation()
+  local view = branchView()
+  local starts = 0
+  local timeline = BattleTimeline.new({
+    effects = {
+      start = function(_)
+        starts = starts + 1
+        return { phase = "complete" }
+      end,
+      status = function(handle)
+        return handle.phase
+      end,
+    },
+  })
+  timeline:reset(view)
+  local event = branchEvent({
+    sequence = 1,
+    kind = "missed",
+    cause = "TACKLE",
+    actionId = 12,
+    effectKey = "TACKLE",
+    move = tackleMove(),
+    payload = { target = 2 },
+    suppression = { missed = true },
+  })
+  Assert.isTrue(
+    timeline:present(BattlePresentationModel.packet(view, { events = { event } }, view, {
+      launchId = "miss-probe",
+      packetId = 1,
+    })),
+    "the missed attack is accepted"
+  )
+  local seen, texts = {}, {}
+  for _ = 1, 3000 do
+    timeline:update(BRANCH_TICK)
+    local id = timeline:messageId()
+    if id ~= 0 and not seen[id] and timeline:ack() then
+      seen[id] = true
+      texts[#texts + 1] = timeline:message()
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.equal(#texts, 2, "the miss prints an attack announcement and a result")
+  Assert.isTrue(texts[1]:find("used Tackle", 1, true) ~= nil, "the attack announcement comes first")
+  Assert.isTrue(texts[2]:find("missed", 1, true) ~= nil, "the miss result follows")
+  Assert.equal(starts, 0, "a missed move does not play its animation")
+end
+
+-- Failure, replay, and called-move branches stay single-shot: misses
+-- announce and wait without starting a move animation, protected attempts
+-- keep their documented program, charge and strike halves of one action stay
 -- distinct, spread and repeated deliveries play once, and a called move
 -- visualizes its executed identity.
 function T.failure_replay_and_called_move_branches_stay_single_shot()
@@ -818,8 +872,8 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         suppression = { missed = true },
         seed = 102,
       }),
-    })
-    Assert.equal(countStarts(started, "TACKLE"), 1, "the miss keeps its documented program")
+    }, false)
+    Assert.equal(countStarts(started, "TACKLE"), 0, "the miss does not start a move animation")
     Assert.isTrue(textsContain(texts, "missed"), "the miss narrates its outcome")
   end
   do
@@ -864,8 +918,8 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
       }),
     })
     Assert.equal(countStarts(started, "RAZOR_WIND"), 2, "charge and strike halves stay distinct")
-    Assert.isTrue(textsContain(texts, "charge"), "the charge half narrates its setup")
-    Assert.isTrue(textsContain(texts, "used RAZOR_WIND"), "the strike half announces its attack")
+    Assert.isTrue(textsContain(texts, "charging power"), "the charge half narrates its setup")
+    Assert.isTrue(textsContain(texts, "used Razor Wind"), "the strike half announces its attack")
   end
   do
     local started, texts = runBranch("spread", {
@@ -975,6 +1029,19 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
     Assert.equal(countStarts(started, "METRONOME"), 0, "the called move never visualizes its selected identity")
     Assert.isTrue(textsContain(texts, "used Tackle"), "the called move announces its executed attack")
   end
+end
+
+function T.presentation_view_carries_semantic_foe_trainer_identity()
+  local view = BattlePresentationModel.view({
+    combatants = {},
+    combatantOrder = {},
+    participants = {},
+  }, {
+    trainer = { { class = 2, name = "WHITNEY" } },
+    playerContext = { trainerClassKey = "PKMN_TRAINER_ETHAN", trainerName = "ETHAN" },
+  })
+  Assert.deepEqual(view.foeTrainers, { { classKey = "YOUNGSTER", name = "WHITNEY" } })
+  Assert.deepEqual(view.playerTrainer, { classKey = "PKMN_TRAINER_ETHAN", name = "ETHAN" })
 end
 
 return { tests = T }

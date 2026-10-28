@@ -12,7 +12,7 @@
 
 local Assert = require("tests.support.Assert")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
-local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 
 local T = {}
 local TICK = 1 / 30
@@ -542,6 +542,82 @@ local function visualStrike(sequence, foeHp)
   }
 end
 
+function T.move_use_and_strike_of_one_action_announce_only_once()
+  for _, animations in ipairs({ true, false }) do
+    local view = openingView()
+    local starts = 0
+    local timeline = BattleTimeline.new({
+      effects = {
+        start = function(_)
+          starts = starts + 1
+          return { phase = "complete" }
+        end,
+        status = function(handle)
+          return handle.phase
+        end,
+      },
+    })
+    timeline:reset(view)
+    local use = visualStrike(2, 43)
+    use.kind = "move-used"
+    use.payload = { user = 1, targets = 1 }
+    local after = openingView()
+    after.foes[1].hp = 43
+    local packet = BattlePresentationModel.packet(view, { events = { visualStrike(1, 43), use } }, after, {
+      launchId = "use-and-strike",
+      packetId = 1,
+    })
+    if not animations then
+      for _, event in ipairs(packet.events) do
+        event.effectKey = nil
+      end
+    end
+    Assert.isTrue(timeline:present(packet), "the action is accepted")
+    local texts = collectMessages(timeline)
+    Assert.isTrue(timeline:settled(), "the action drains")
+    Assert.equal(countContaining(texts, "used Tackle"), 1, "the action announces only once")
+    Assert.equal(starts, animations and 1 or 0, "the action respects the animation setting")
+    Assert.equal(battler(timeline:battlers(), 3).hp, 43, "the strike updates the target's health")
+  end
+end
+
+function T.bide_release_uses_selected_message_before_damage()
+  local view = openingView()
+  local timeline = BattleTimeline.new({
+    effects = {
+      start = function(_)
+        return { phase = "complete" }
+      end,
+      status = function(handle)
+        return handle.phase
+      end,
+    },
+  })
+  timeline:reset(view)
+  local use = visualStrike(1, 57)
+  use.kind = "move-used"
+  use.cause.key = "BIDE"
+  use.effectKey = "BIDE"
+  use.move.selected = "BIDE"
+  use.move.executed = "BIDE"
+  use.payload = { user = 1, targets = 1, phase = "release" }
+  local strike = visualStrike(2, 43)
+  strike.cause.key = "BIDE"
+  strike.effectKey = "BIDE"
+  strike.move.selected = "BIDE"
+  strike.move.executed = "BIDE"
+  local packet = BattlePresentationModel.packet(view, { events = { use, strike } }, view, {
+    launchId = "bide-release",
+    packetId = 1,
+  })
+  Assert.isTrue(timeline:present(packet, { [1] = "source-release-text" }), "the Bide release is accepted")
+  local texts = collectMessages(timeline)
+  Assert.isTrue(timeline:settled(), "the release drains")
+  Assert.equal(countContaining(texts, "source-release-text"), 1, "the selected source release message is shown once")
+  Assert.equal(countContaining(texts, "used BIDE"), 0, "the release does not repeat the move-use announcement")
+  Assert.equal(battler(timeline:battlers(), 3).hp, 43, "the stored damage follows the release")
+end
+
 function T.multi_hit_strike_announces_once_before_its_single_visual()
   local before = openingView()
   local after = openingView()
@@ -696,6 +772,42 @@ function T.split_action_across_packets_claims_one_visual_and_narrates_once()
   Assert.isTrue(timeline:settled(), "the second half drains fully")
   Assert.equal(#started, 1, "the split action starts exactly one visual")
   Assert.equal(battler(timeline:battlers(), 3).hp, 30, "both halves move their checkpoints")
+end
+
+function T.repeated_move_in_later_round_announces_and_animates_again()
+  local view = openingView()
+  view.round = 1
+  local started = 0
+  local timeline = BattleTimeline.new({
+    effects = {
+      start = function(_)
+        started = started + 1
+        return { phase = "complete" }
+      end,
+      status = function(handle)
+        return handle.phase
+      end,
+    },
+  })
+  timeline:reset(view)
+  for round = 1, 2 do
+    local before = openingView()
+    before.round = round
+    local after = openingView()
+    -- The round-ending delivery may already expose the next round in
+    -- its after view. Its event still belongs to the before round.
+    after.round = round == 1 and 2 or round
+    local strike = visualStrike(round, 43)
+    local packet = BattlePresentationModel.packet(before, { events = { strike } }, after, {
+      launchId = "repeat-move-probe",
+      packetId = round,
+    })
+    Assert.isTrue(timeline:present(packet), "each turn's strike is accepted")
+    local texts = collectMessages(timeline)
+    Assert.equal(countContaining(texts, "used Tackle"), 1, "each turn announces its attack")
+    Assert.isTrue(timeline:settled(), "each turn finishes playback")
+  end
+  Assert.equal(started, 2, "each turn plays its attack animation")
 end
 
 -- A mistyped source action identity claims nothing: the outcome still

@@ -66,6 +66,7 @@ local PlayerFaderTimeline = require("libs.hgss.src.audio.PlayerFaderTimeline")
 ---@field play fun(self: GameSound, idOrSymbol: integer|string, initialVolume: integer?)
 ---@field stop fun(self: GameSound, idOrSymbol: integer|string)
 ---@field play fun(self: GameSound, idOrSymbol: integer|string): boolean
+---@field playPanned fun(self: GameSound, idOrSymbol: integer|string, pan: integer): boolean
 ---@field stop fun(self: GameSound, idOrSymbol: integer|string): boolean
 ---@field isEffectPlaying fun(self: GameSound, idOrSymbol: integer|string): boolean
 ---@field isEffectWaitComplete fun(self: GameSound, idOrSymbol: integer|string): boolean
@@ -74,7 +75,7 @@ local PlayerFaderTimeline = require("libs.hgss.src.audio.PlayerFaderTimeline")
 ---@field currentMusic fun(self: GameSound): integer?
 ---@field playFanfare fun(self: GameSound, idOrSymbol: integer|string): boolean
 ---@field isFanfarePlaying fun(self: GameSound): boolean
----@field playCry fun(self: GameSound, species: integer, pattern: integer, form: integer?): boolean
+---@field playCry fun(self: GameSound, species: integer, pattern: integer, form: integer?, mode: integer?, pan: integer?, volume: integer?, pitch: integer?): boolean
 ---@field isCryFinished fun(self: GameSound): boolean
 ---@field playRadio fun(self: GameSound, sequenceKey: integer|string): boolean
 ---@field stopRadio fun(self: GameSound, fadeFrames: integer?)
@@ -344,6 +345,20 @@ function GameSound:play(idOrSymbol, initialVolume)
   return accepted
 end
 
+-- Starts one effect and applies the source's signed handle pan to its
+-- player, matching PlaySE_SetPan after PlaySE starts the sequence.
+---@param idOrSymbol integer|string
+---@param pan integer signed NNS track-pan offset
+---@return boolean accepted true when the engine starts the sequence
+function GameSound:playPanned(idOrSymbol, pan)
+  assert(type(pan) == "number" and pan % 1 == 0, "effect pan must be an integer track offset")
+  local sequence, accepted = self:_startSequence(idOrSymbol)
+  if accepted then
+    self._player:setHandleTrackPan(self:_handleForPlayer(sequence.player.id), pan)
+  end
+  return accepted
+end
+
 -- Stops every instance of the requested sequence ID. Effect waits remain
 -- player-scoped, so a surviving sibling keeps the logical player busy. A
 -- surviving canonical attachment also keeps its fader record and ramp.
@@ -489,15 +504,20 @@ end
 ---@param species integer
 ---@param pattern integer
 ---@param form integer? the mon's form; nil plays the species cry
+---@param mode integer? Chatot/default-cry routing mode
+---@param pan integer? signed NNS track-pan offset
+---@param volume integer? initial primary player level
+---@param pitch integer? signed NNS track-pitch offset
 ---@return boolean started true once the cry voice starts
-function GameSound:playCry(species, pattern, form)
+function GameSound:playCry(species, pattern, form, mode, pan, volume, pitch)
   if self._cry == nil then
     Errors.raise(AudioErrors.AUDIO_CRY_UNAVAILABLE, "no cry subsystem is available", {
       species = species,
       pattern = pattern,
     })
   end
-  self._cry:play(species, pattern, form)
+  local _ = mode
+  self._cry:play(species, pattern, form, pan, volume, pitch)
   self._cryActive = true
   return true
 end

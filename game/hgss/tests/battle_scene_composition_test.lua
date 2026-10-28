@@ -1032,4 +1032,46 @@ function T.compact_bars_declare_their_vertical_adaptation()
   Assert.equal(pairedTiles, 4, "the paired view draws the same four partial tiles unscaled")
 end
 
+function T.fainted_picture_leaves_its_sliding_health_box_in_the_paired_view()
+  local normal = snapshot()
+  local baseline = drawnDetail(normal)
+  local sliding = snapshot()
+  sliding.battlers[2].visible = false
+  sliding.battlers[2].hudVisible = true
+  sliding.battlers[2].hudOffsetX = -24
+  local result = drawnDetail(sliding)
+  local function firstHudX(graphics)
+    for _, draw in ipairs(graphics.draws) do
+      if type(draw.image) == "table" and draw.image.handle == "hud:enemy" then
+        return draw.x
+      end
+    end
+  end
+  local baseX = firstHudX(baseline)
+  local shiftedX = firstHudX(result)
+  Assert.notNil(shiftedX, "the enemy health box remains while its picture is hidden")
+  Assert.equal(shiftedX, baseX - 24, "the paired health box follows its native leftward slide")
+end
+
+function T.fainting_picture_preserves_source_crop_in_the_paired_view()
+  local view = snapshot()
+  local foe = view.battlers[2]
+  foe.pictureVisible = true
+  foe.pictureWidth = 80
+  foe.pictureHeight = 64
+  foe.pictureYOffset = 8
+  local graphics = drawnDetail(view)
+  local picture = nil
+  for _, item in ipairs(graphics.pictureItems) do
+    if item.kind ~= "shadow" and item.image.handle == "mon:FOE/0/male/plain/front" then
+      picture = item
+      break
+    end
+  end
+  Assert.notNil(picture, "the partially visible foe reaches the picture pass")
+  Assert.isTrue(picture.pictureVisible, "the picture pass uses the native crop")
+  Assert.equal(picture.height, 64, "the picture pass preserves the remaining height")
+  Assert.equal(picture.yOffset, 8, "the picture pass moves the picture down")
+end
+
 return { tests = T }

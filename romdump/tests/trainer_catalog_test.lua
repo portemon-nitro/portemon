@@ -247,6 +247,7 @@ function T.trainer_catalogs_carry_only_compact_real_item_lists()
           items = items,
           prizeMoney = { trainerClass = CLASS_YOUNGSTER, classRate = 4 },
           messageSelectors = { intro = 0, lose = 1, after = 2 },
+          loseSpeechSelector = TrainerCatalogCompiler.loseSpeechSelector(8),
         },
       },
     }
@@ -301,6 +302,11 @@ function T.trainer_prize_and_message_selectors_survive_projection()
   Assert.equal(trainer.prizeMoney.trainerClass, CLASS_YOUNGSTER, "the prize record keeps its class")
   Assert.equal(trainer.prizeMoney.classRate, 4, "the prize record carries the pinned class rate")
   Assert.isTrue(type(trainer.messageSelectors) == "table", "message selectors survive projection")
+  Assert.isTrue(
+    type(trainer.loseSpeechSelector) == "string"
+      and trainer.loseSpeechSelector:match("^trainer%-speech:[0-9a-f]+$") ~= nil,
+    "trainer dialogue publishes an opaque semantic selector"
+  )
   Assert.deepEqual(trainer.items, { "POTION" }, "held trainer items resolve to item keys in source order without gaps")
 end
 

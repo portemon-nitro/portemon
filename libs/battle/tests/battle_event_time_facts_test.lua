@@ -217,6 +217,12 @@ function T.cause_source_and_targets_name_the_true_origin_for_every_variant()
     Assert.isTrue(type(move.executed) == "string", "the executed visual move identity is explicit")
     local cause = event.cause --[[@as table<string, unknown>]]
     Assert.isTrue(type(cause.kind) == "string", "every variant carries its typed cause")
+    local payload = event.payload --[[@as table<string, unknown>]]
+    Assert.isTrue(type(payload.critical) == "boolean", "typed strikes tell whether they were critical")
+    Assert.isTrue(
+      payload.effectiveness == "neutral" or payload.effectiveness == "super" or payload.effectiveness == "weak",
+      "typed strikes classify their chart effectiveness"
+    )
   end
   local before = session:capture()
   local recoilSeen = false
@@ -241,8 +247,8 @@ function T.cause_source_and_targets_name_the_true_origin_for_every_variant()
 end
 
 -- Multi-hit sequences and multi-level gains expose every material
--- checkpoint in exact source order: per-hit health with hit ordinals
--- and counts, then per-level experience crossings. A terminal snapshot
+-- checkpoint in exact source order: per-hit health with sequence-local
+-- ordinals and actual counts, then per-level experience crossings. A terminal snapshot
 -- alone never satisfies this probe.
 function T.multi_hit_and_multi_level_gains_keep_every_checkpoint_in_order()
   local Executor = executorOwner()
@@ -282,7 +288,25 @@ function T.multi_hit_and_multi_level_gains_keep_every_checkpoint_in_order()
     Assert.isTrue(type(move) == "table", "every hit names its move phase facts")
     Assert.isTrue(type(move.hitOrdinal) == "number", "every hit names its one-based ordinal")
     Assert.isTrue(type(move.hitCount) == "number", "every hit names its total count")
-    ordinals[#ordinals + 1] = move.hitOrdinal
+    local payload = event.payload --[[@as table<string, unknown>]]
+    if payload.sequenceHitIndex ~= nil then
+      Assert.equal(move.hitOrdinal, payload.sequenceHitIndex, "move facts preserve the local hit ordinal")
+      Assert.equal(
+        move.hitCount,
+        payload.sequenceHitTotal,
+        "move facts preserve the actual sequence total: "
+          .. tostring(move.hitCount)
+          .. " / "
+          .. tostring(payload.sequenceHitTotal)
+      )
+    else
+      Assert.equal(move.hitOrdinal, 1, "single-hit mechanics start at their local ordinal")
+      Assert.equal(move.hitCount, 1, "single-hit mechanics carry one strike")
+    end
+    local actor = event.actors[1] --[[@as table<string, unknown>]]
+    local key = tostring(actor.combatant) .. "\0" .. move.executed
+    ordinals[key] = ordinals[key] or {}
+    ordinals[key][#ordinals[key] + 1] = move.hitOrdinal
     local checkpoints = event.checkpoints --[[@as table<string, unknown>?]]
     Assert.isTrue(type(checkpoints) == "table" and #checkpoints >= 1, "every hit keeps its ordered display checkpoints")
     for _, point in
@@ -293,8 +317,10 @@ function T.multi_hit_and_multi_level_gains_keep_every_checkpoint_in_order()
       Assert.isTrue(type(entry.maxHp) == "number", "checkpoints record the health ceiling")
     end
   end
-  for index, ordinal in ipairs(ordinals) do
-    Assert.equal(ordinal, index, "hit ordinals increase without gaps in source order")
+  for _, sequenceOrdinals in pairs(ordinals) do
+    for index, ordinal in ipairs(sequenceOrdinals) do
+      Assert.equal(ordinal, index, "hit ordinals restart for each executed sequence")
+    end
   end
   local gains = {}
   for _, event in ipairs(turn.events) do

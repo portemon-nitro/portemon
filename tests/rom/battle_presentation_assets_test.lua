@@ -328,6 +328,17 @@ function T.global_catalog_compiles_without_per_effect_closures(romFs, versionId)
   Assert.notNil(bundle, versionId .. ": the global catalog compiles from the dump (" .. tostring(compileErr) .. ")")
   local valid, schemaErr = Schema.isValidManifest(bundle.manifest)
   Assert.isTrue(valid, versionId .. ": the global manifest validates (" .. tostring(schemaErr) .. ")")
+  for _, key in ipairs({ "battle/bide-release", "battle/bide-release/wild", "battle/bide-release/foe" }) do
+    local release = bundle.manifest.messages.entries[key]
+    Assert.notNil(release, versionId .. ": " .. key .. " is staged from the battle message bank")
+    local substitutions = 0
+    for _, token in ipairs(release.tokens) do
+      if token.kind == "substitution" then
+        substitutions = substitutions + 1
+      end
+    end
+    Assert.equal(substitutions, 1, versionId .. ": " .. key .. " takes one battler name")
+  end
 end
 
 return RomSuite.fromFacts(T)

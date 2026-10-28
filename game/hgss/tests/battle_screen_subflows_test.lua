@@ -23,13 +23,14 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local T = {}
-local TICK = 1 / 30
+local TICK = SourceTick.DT
 
 local CHILD_OWNER_MODULE = "game.hgss.src.battle.BattleSubflows"
 local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
-local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
+local STATE_MODULE = "game.hgss.tests.support.BattleScreenFixture"
 local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
 
@@ -221,6 +222,21 @@ local function openRig(opts)
     rig.audio.plays[#rig.audio.plays + 1] = second ~= nil and second or first
     return true
   end
+  function rig.audio.playPanned(_, symbol, pan)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    rig.audio.pans = rig.audio.pans or {}
+    rig.audio.pans[#rig.audio.pans + 1] = pan
+    return true
+  end
+  function rig.audio.playFanfare(_, symbol)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    return true
+  end
+  function rig.audio.stop(_, symbol)
+    rig.audio.stops = rig.audio.stops or {}
+    rig.audio.stops[#rig.audio.stops + 1] = symbol
+    return true
+  end
   function rig.assets.prepare(demand)
     rig.assets.prepared[#rig.assets.prepared + 1] = demand
     return rig.assetsReady
@@ -264,7 +280,7 @@ local function openRig(opts)
   local launchId = opts.launchId or "launch-battle-child"
   local foeSpec = opts.foe or { species = "EEVEE", level = 4, seed = 0x5EED0002 }
   local foe = makeFoe(foeSpec)
-  local player = { trainerId = 99, trainerName = "MINT", language = "french" }
+  local player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" }
   local launch = nil
   local scenario = nil
   if opts.trainer == true then
@@ -274,6 +290,7 @@ local function openRig(opts)
       trainers = {
         {
           id = trainerId,
+          name = "WHITNEY",
           class = 2,
           party = { foe },
           partyLevels = { foeSpec.level },
@@ -317,6 +334,7 @@ local function openRig(opts)
     -- The battle screen borrows the immutable
     -- item catalog so its bag child can group stocked items by pocket.
     itemCatalog = ItemFixture.makeCatalog(),
+    monCatalog = CatalogFixture.makeCatalog(),
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,
@@ -343,10 +361,22 @@ local function openRig(opts)
 end
 
 ---@param rig table live screen rig under test driving
+-- Advances one currently visible narration wait through real screen input.
+local function ackNarration(rig)
+  local mode = rig.screen:status().mode
+  if mode == "intro" or mode == "narration" or mode == "outcome"
+    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  then
+    rig.screen:input({ { type = "confirm" } })
+  end
+end
+
+---@param rig table live screen rig under test driving
 ---@param mode string awaited controller mode under test driving
 ---@return table the screen status once the mode is reached
 local function driveToMode(rig, mode)
   for _ = 1, 600 do
+    ackNarration(rig)
     rig.pump(1)
     local status = rig.screen:status()
     if status.mode == "failed" then
@@ -356,7 +386,22 @@ local function driveToMode(rig, mode)
       return status
     end
   end
-  error("the battle screen never reached " .. mode .. " (" .. rig.layout .. ")", 0)
+  local screenStatus = rig.screen:status()
+  local battleStatus = rig.battle:status()
+  error(
+    "the battle screen never reached "
+      .. mode
+      .. " ("
+      .. rig.layout
+      .. ", screen "
+      .. tostring(screenStatus.mode)
+      .. ", battle "
+      .. tostring(battleStatus.phase)
+      .. ", "
+      .. tostring(battleStatus.error)
+      .. ")",
+    0
+  )
 end
 
 ---@param rig table live screen rig under test driving
@@ -372,17 +417,6 @@ local function useNativeBattleBagItem(rig)
   rig.pump(1)
   press(rig, { type = "confirm" })
   rig.pump(8)
-end
-
--- Terminal leave carries an explicit final-page acknowledgment: while
--- narration plays, one genuine confirm through the real screen path
--- advances it exactly as a player would, so the battle can settle.
----@param rig table live screen rig under test driving
-local function ackNarration(rig)
-  local mode = rig.screen:status().mode
-  if mode == "intro" or mode == "narration" or mode == "outcome" then
-    rig.screen:input({ { type = "confirm" } })
-  end
 end
 
 ---@param rig table live screen rig under test driving, resting on its command prompt
@@ -555,6 +589,7 @@ end
 local function waitForBattleDecision(rig, wanted)
   for _ = 1, 60 do
     for _ = 1, 40 do
+      ackNarration(rig)
       rig.pump(1)
       local status = rig.battle:status()
       if status.phase == "failed" then
@@ -587,7 +622,8 @@ end
 local function waitForScreenDecision(rig, wanted)
   -- Match the live battle request, not a
   -- retired decision of the same kind the screen has not drained yet.
-  for _ = 1, 600 do
+  for _ = 1, 1200 do
+    ackNarration(rig)
     rig.pump(1)
     local status = rig.screen:status()
     if status.mode == "failed" then
@@ -777,11 +813,14 @@ function T.voluntary_switch_and_forced_replacement_keep_field_order()
       if current.request ~= nil and requestKind(current.request) == "action" then
         submitFirstEnabledMove(wiped, current.request)
       end
-      ackNarration(wiped)
+      if wiped.screen:status().mode ~= "outcome" then
+        ackNarration(wiped)
+      end
       wiped.pump(20)
     end
     Assert.equal(wiped.battle:status().phase, "complete", "the wiped side settles the battle" .. tag)
     Assert.equal(wiped.battle:status().result, "loss", "the wiped side reports its loss" .. tag)
+    Assert.isTrue(wiped.screen:_portLeave({}), "the loss completes its timed outcome without an acknowledgment" .. tag)
     Assert.equal(#wiped.submits, 0, "no invented reserve reply ever seals" .. tag)
     wiped.screen:dispose()
     wiped.battle:dispose()
@@ -933,17 +972,36 @@ function T.bag_selection_consumes_only_through_native_execution()
     useNativeBattleBagItem(capture)
     Assert.equal(#capture.submits, 1, "throwing the ball seals exactly one reply" .. tag)
     Assert.deepEqual(capture.submits[1].choices[1], ballFragment, "the throw matches its native fragment" .. tag)
-    -- Pump through the terminal narration.
-    -- The capture narration drains at the launch pace across about a
-    -- thousand fixed ticks; the authored budget stops mid-drain.
+    -- Pump through the terminal narration and decline the optional
+    -- nickname question so the launch reaches its terminal result.
     for _ = 1, 1200 do
       ackNarration(capture)
       capture.pump(1)
+      local completion = capture.screen:status().completion
+      if completion ~= nil and completion.kind == "capture_nickname" and completion.stage == "question" then
+        capture.screen:input({ { type = "navigate", direction = "down" } })
+        capture.screen:input({ { type = "confirm" } })
+      end
       if capture.battle:status().phase == "complete" or capture.battle:status().phase == "failed" then
         break
       end
     end
-    Assert.equal(capture.battle:status().phase, "complete", "the throw settles the battle" .. tag)
+    local settledStatus = capture.battle:status()
+    Assert.equal(
+      settledStatus.phase,
+      "complete",
+      "the throw settles the battle"
+        .. tag
+        .. " ("
+        .. tostring(settledStatus.error)
+        .. ", request "
+        .. tostring(settledStatus.request and requestKind(settledStatus.request))
+        .. ", screen "
+        .. tostring(capture.screen:status().mode)
+        .. ", completion "
+        .. tostring(capture.screen:status().completion and capture.screen:status().completion.stage)
+        .. ")"
+    )
     Assert.equal(capture.battle:status().result, "capture", "the guaranteed ball reports its capture" .. tag)
     Assert.equal(capture.bag:quantity("MASTER_BALL"), 0, "the thrown ball publishes exactly once" .. tag)
     local replayed = capture.battle:submit(capture.submits[1])
@@ -1888,7 +1946,7 @@ function T.forced_replacement_holds_cancel_and_seals_one_reply()
     Assert.equal(rig.screen:status().mode, "child", "the faint opens the replacement child" .. tag)
     local _, expectedReplacement = projectedReserveSwitch(rig, replacementRequest)
     local replacementInk = renderedContents(rig)
-    Assert.isTrue(replacementInk["Choose a replacement!"] ~= nil, "replacement titles its modal" .. tag)
+    Assert.isTrue(replacementInk["Choose a Pokémon."] ~= nil, "replacement titles its modal" .. tag)
     Assert.isTrue(replacementInk["2/6"] ~= nil, "replacement lists both roster slots" .. tag)
     press(rig, { type = "cancel" })
     Assert.equal(#rig.submits, 0, "forced cancel seals nothing" .. tag)

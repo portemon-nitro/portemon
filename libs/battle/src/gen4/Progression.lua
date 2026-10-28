@@ -70,6 +70,16 @@ local function currentLevel(mon, catalog)
   return Experience.level(catalog:growthCurve(species.growthCurve), mon.experience)
 end
 
+---@param curve integer[] cumulative growth curve
+---@param level integer displayed level owning the EXP bar segment
+---@param experience integer total experience inside that level
+---@return integer filled pixels in the native 96-pixel bar
+local function experienceBarPixels(curve, level, experience)
+  local lower = Experience.expFor(curve, level)
+  local upper = Experience.expFor(curve, level + 1)
+  return math.floor((experience - lower) * 96 / (upper - lower))
+end
+
 ---@param mon table<string, unknown>
 ---@param move string
 ---@return boolean
@@ -115,6 +125,7 @@ local function checkStartInput(input)
     assert(isPositiveInt(entry.combatant), "reward entry " .. index .. " names its combatant")
     assert(type(entry.mon) == "table", "reward entry " .. index .. " carries its battle-owned mon")
     assert(isNonNegativeInt(entry.expAward), "reward entry " .. index .. " carries a non-negative experience award")
+    assert(type(entry.boosted) == "boolean", "reward entry " .. index .. " classifies traded experience")
     normalizeEvAward(entry.evAward)
   end
 end
@@ -152,22 +163,61 @@ function Progression.start(input)
     local eligible = mon.isEgg ~= true and health > 0 and level < 100
     local applied = 0
     local crossed = {}
+    local levelUps = {}
+    local expSegments = {}
     local opportunities = {}
+    local experienceBefore = mon.experience
     local maxHpBefore = MonStats.derive(mon, catalog).maxHp
     local maxHpAfter = maxHpBefore
     if eligible then
+      mon.evs = Effort.apply(mon.evs, normalizeEvAward(entry.evAward), {
+        fainted = false,
+        isEgg = false,
+        level = level,
+      })
       local result = LevelProgression.award(mon, entry.expAward, catalog)
       mon = result.mon
       applied = entry.expAward
       crossed = result.crossedLevels
       opportunities = result.learningOpportunities
       maxHpAfter = result.maxHpAfter
-      mon.evs = Effort.apply(mon.evs, normalizeEvAward(entry.evAward), {
-        fainted = false,
-        isEgg = false,
-        level = level,
-      })
       mon.hp = MonStats.adjustHpForMaxChange(maxHpBefore, maxHpAfter, health)
+      local species = catalog:species(mon.species)
+      local curve = catalog:growthCurve(species.growthCurve)
+      for _, crossedLevel in ipairs(crossed) do
+        local beforeLevel = copyValue(mon)
+        beforeLevel.experience = Experience.expFor(curve, crossedLevel - 1)
+        local afterLevel = copyValue(mon)
+        afterLevel.experience = Experience.expFor(curve, crossedLevel)
+        levelUps[#levelUps + 1] = {
+          level = crossedLevel,
+          statsBefore = MonStats.derive(beforeLevel, catalog),
+          statsAfter = MonStats.derive(afterLevel, catalog),
+        }
+      end
+      local cursor = experienceBefore
+      local cursorLevel = Experience.level(curve, cursor)
+      for _, crossedLevel in ipairs(crossed) do
+        local boundary = Experience.expFor(curve, crossedLevel)
+        expSegments[#expSegments + 1] = {
+          level = cursorLevel,
+          startExp = cursor,
+          targetExp = boundary,
+          fromPixels = experienceBarPixels(curve, cursorLevel, cursor),
+          toPixels = 96,
+        }
+        cursor = boundary
+        cursorLevel = crossedLevel
+      end
+      if cursor < mon.experience and cursorLevel < 100 then
+        expSegments[#expSegments + 1] = {
+          level = cursorLevel,
+          startExp = cursor,
+          targetExp = mon.experience,
+          fromPixels = experienceBarPixels(curve, cursorLevel, cursor),
+          toPixels = experienceBarPixels(curve, cursorLevel, mon.experience),
+        }
+      end
       if #crossed > 0 then
         evolutionEligible[#evolutionEligible + 1] = entry.combatant
       end
@@ -179,7 +229,13 @@ function Progression.start(input)
       opportunities = opportunities,
       cursor = 1,
       touched = false,
+      boosted = entry.boosted,
       expAward = applied,
+      experienceBefore = experienceBefore,
+      experienceAfter = mon.experience,
+      crossedLevels = crossed,
+      expSegments = expSegments,
+      levelUps = levelUps,
       maxHpBefore = maxHpBefore,
       maxHpAfter = maxHpAfter,
     }
@@ -223,7 +279,31 @@ function Progression.validateFrame(frame)
       what .. " names the learning cursor within its chances"
     )
     assert(type(recipient.touched) == "boolean", what .. " records whether its facts were reported")
+    assert(type(recipient.boosted) == "boolean", what .. " records its traded-experience message")
     assert(isNonNegativeInt(recipient.expAward), what .. " records its landed experience")
+    assert(isNonNegativeInt(recipient.experienceBefore), what .. " records its starting experience")
+    assert(isNonNegativeInt(recipient.experienceAfter), what .. " records its ending experience")
+    assert(type(recipient.crossedLevels) == "table", what .. " carries crossed levels")
+    assert(type(recipient.expSegments) == "table", what .. " carries native EXP-bar segments")
+    assert(type(recipient.levelUps) == "table", what .. " carries per-level stat snapshots")
+    assert(#recipient.crossedLevels == #recipient.levelUps, what .. " aligns levels with stat snapshots")
+    for levelIndex, level in ipairs(recipient.crossedLevels) do
+      local levelUp = recipient.levelUps[levelIndex]
+      assert(type(level) == "number" and level % 1 == 0 and level >= 2, what .. " names crossed levels")
+      assert(type(levelUp) == "table" and levelUp.level == level, what .. " aligns each level snapshot")
+      assert(type(levelUp.statsBefore) == "table", what .. " records previous-level stats")
+      assert(type(levelUp.statsAfter) == "table", what .. " records new-level stats")
+    end
+    for segmentIndex, segment in ipairs(recipient.expSegments) do
+      assert(type(segment) == "table", what .. " segment " .. segmentIndex .. " is a record")
+      assert(isPositiveInt(segment.level), what .. " segments name the current level")
+      assert(isNonNegativeInt(segment.startExp), what .. " segments name starting experience")
+      assert(isNonNegativeInt(segment.targetExp), what .. " segments name target experience")
+      assert(isNonNegativeInt(segment.fromPixels), what .. " segments name their starting bar pixel")
+      assert(isNonNegativeInt(segment.toPixels), what .. " segments name their target bar pixel")
+      assert(segment.fromPixels <= 96 and segment.toPixels <= 96, what .. " segments fit the native bar")
+      assert(segment.fromPixels <= segment.toPixels, what .. " segments advance without reversing")
+    end
     assert(isPositiveInt(recipient.maxHpBefore), what .. " records its previous maximum")
     assert(isPositiveInt(recipient.maxHpAfter), what .. " records its recalculated maximum")
   end
@@ -255,7 +335,13 @@ local function copyRecipient(recipient)
     opportunities = recipient.opportunities,
     cursor = recipient.cursor,
     touched = recipient.touched,
+    boosted = recipient.boosted,
     expAward = recipient.expAward,
+    experienceBefore = recipient.experienceBefore,
+    experienceAfter = recipient.experienceAfter,
+    crossedLevels = copyValue(recipient.crossedLevels),
+    expSegments = copyValue(recipient.expSegments),
+    levelUps = copyValue(recipient.levelUps),
     maxHpBefore = recipient.maxHpBefore,
     maxHpAfter = recipient.maxHpAfter,
   }
@@ -333,7 +419,17 @@ function Progression.step(flow, frame, reply)
       return
     end
     recipient.touched = true
-    events[#events + 1] = { kind = "exp", combatant = recipient.combatant, gained = recipient.expAward }
+    events[#events + 1] = {
+      kind = "exp",
+      combatant = recipient.combatant,
+      gained = recipient.expAward,
+      boosted = recipient.boosted,
+      experienceBefore = recipient.experienceBefore,
+      experienceAfter = recipient.experienceAfter,
+      crossedLevels = copyValue(recipient.crossedLevels),
+      expSegments = copyValue(recipient.expSegments),
+      levelUps = copyValue(recipient.levelUps),
+    }
     events[#events + 1] = {
       kind = "stats",
       combatant = recipient.combatant,

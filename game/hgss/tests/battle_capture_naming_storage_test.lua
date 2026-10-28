@@ -188,6 +188,17 @@ local function makePartyOwner(speciesList, catalog, game)
     mapSection = 7,
     date = CatalogFixture.metDate(),
   })
+  local boxNames = {}
+  for box = 0, owner:boxCount() - 1 do
+    boxNames[#boxNames + 1] = { box = box, name = "BOX " .. tostring(box + 1) }
+  end
+  local metadata, metadataErr = owner:preparePcChanges({
+    partyRevision = owner:partyRevision(),
+    boxRevision = owner:boxRevision(),
+  }, { metadata = boxNames })
+  Assert.notNil(metadata, "the live save fixture stages its default PC names")
+  Assert.isNil(metadataErr, "the default box names do not race their owner")
+  metadata.publish()
   local factory = CatalogFixture.makeFactory(0xCA900001, catalog)
   for _, key in ipairs(speciesList) do
     local record = factory:createNormal(CatalogFixture.normalRequest({ species = key, level = 9 }))
@@ -247,6 +258,14 @@ local function openCaptureRig(opts)
     rig.audio.plays[#rig.audio.plays + 1] = second ~= nil and second or first
     return true
   end
+  function rig.audio.playPanned(_, symbol)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    return true
+  end
+  function rig.audio.playFanfare(_, symbol)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    return true
+  end
   function rig.assets.prepare(_)
     rig.assets.prepared[#rig.assets.prepared + 1] = true
     return true
@@ -263,7 +282,13 @@ local function openCaptureRig(opts)
   local catalog = opts.catalog or CatalogFixture.makeCatalog()
   local party = makePartyOwner(opts.party, opts.catalog, opts.game)
   local bag = opts.bag
-  local player = { trainerId = 99, trainerName = "MINT", language = "french" }
+  local player = {
+    trainerId = 99,
+    trainerName = "MINT",
+    language = "french",
+    trainerClassKey = "PKMN_TRAINER_ETHAN",
+    metBill = opts.metBill == true,
+  }
   local launchId = opts.launchId or "launch-capture-naming"
   local foe = makeFoe(opts.foeSpecies or "EEVEE", opts.foeLevel or 3, 0x5EED0002, opts.catalog)
   local scenario = ScenarioFactory.fromEncounter(
@@ -357,7 +382,9 @@ end
 ---@param rig table live capture rig under test driving
 local function ackNarration(rig)
   local mode = rig.screen:status().mode
-  if mode == "intro" or mode == "narration" or mode == "outcome" then
+  if mode == "intro" or mode == "narration"
+    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  then
     rig.screen:input({ { type = "confirm" } })
   end
 end
@@ -394,7 +421,17 @@ local function driveToNicknameQuestion(rig, budget)
       return completion
     end
   end
-  error("the committed capture never offered its nickname question")
+  local screen = rig.screen:status()
+  local battle = rig.battle:status()
+  error(
+    "the committed capture never offered its nickname question (screen="
+      .. tostring(screen.mode)
+      .. ", completion="
+      .. tostring(screen.completion and screen.completion.stage)
+      .. ", phase="
+      .. tostring(battle.phase)
+      .. ")"
+  )
 end
 
 -- A caught mon keeps its exact identity through the native nickname
@@ -497,6 +534,93 @@ function T.caught_mon_keeps_typed_nickname_through_save_and_reload()
   rig.screen:dispose()
 end
 
+function T.declined_full_party_catch_shows_the_saved_pc_transfer_message()
+  local rig = openCaptureRig({
+    launchId = "launch-declined-pc-transfer",
+    party = { "CHIKORITA", "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE", "EEVEE" },
+    bag = makeBallBag(),
+    metBill = false,
+  })
+  local opening = driveToDecision(rig, 600)
+  local request = assert(opening.request, "the transfer battle opens its item decision")
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local options = assert(rig.battle:decisionOptions(request.requestId), "the item decision carries choices")
+  local ball = nil
+  for _, actor in ipairs(options.actors) do
+    for _, choice in ipairs(actor.choices or {}) do
+      local payload = type(choice.choice) == "table" and choice.choice.payload or nil
+      if choice.enabled == true and type(payload) == "table" and payload.item == "MASTER_BALL" then
+        ball = choice.choice
+      end
+    end
+  end
+  Assert.notNil(ball, "the full-party transfer test can catch with its stocked ball")
+  local ballChoice = assert(ball, "the stocked ball choice exists")
+  local caught, catchErr = rig.battle:submit(SessionFixture.replyFor(request, { ballChoice }))
+  Assert.isTrue(caught, "the capture is accepted: " .. tostring(catchErr))
+  local committed = driveToCommitted(rig, 1200)
+  Assert.equal(committed.result, "capture", "the full-party battle settles as a capture")
+  Assert.equal(committed.outcomeReceipt.placements[1].destination, "box", "the caught mon transfers to storage")
+  Assert.isTrue(committed.outcomeReceipt.placements[1].pcHasSpace, "the active box had an empty slot")
+  driveToNicknameQuestion(rig, 1200)
+  rig.screen:input({ { type = "cancel" } })
+  rig.pump(120)
+  local message = rig.screen:view().message
+  Assert.isTrue(message:find("PC", 1, true) ~= nil, "declining displays the source PC transfer line")
+  Assert.isTrue(message:find(rig.party:boxMetadata(0).name, 1, true) ~= nil, "the transfer names the destination box")
+  for _ = 1, 600 do
+    if rig.battle:status().phase == "complete" then
+      break
+    end
+    rig.pump(1)
+  end
+  Assert.equal(rig.battle:status().phase, "complete", "the transfer wait auto-advances before field return")
+  Assert.isTrue(rig.screen:_portLeave({}), "the source transfer line releases the battle without acknowledgment")
+  rig.battle:dispose()
+  rig.screen:dispose()
+end
+
+function T.pc_transfer_message_uses_bill_and_box_capacity_facts()
+  local BattleScreenState = require(STATE_MODULE)
+  local entries = {}
+  for _, key in ipairs({
+    "battle/pc-transfer/has-space/someone",
+    "battle/pc-transfer/has-space/bill",
+    "battle/pc-transfer/box-full/someone",
+    "battle/pc-transfer/box-full/bill",
+  }) do
+    local substitutions = key:find("box-full", 1, true) and 3 or 2
+    local tokens = { { kind = "glyph", text = key .. ":" } }
+    for index = 1, substitutions do
+      tokens[#tokens + 1] = { kind = "substitution" }
+      if index < substitutions then
+        tokens[#tokens + 1] = { kind = "glyph", text = "|" }
+      end
+    end
+    entries[key] = { tokens = tokens }
+  end
+  local screen = { _manifest = { messages = { entries = entries } } }
+  local variants = {
+    { metBill = false, pcHasSpace = true, key = "battle/pc-transfer/has-space/someone" },
+    { metBill = true, pcHasSpace = true, key = "battle/pc-transfer/has-space/bill" },
+    { metBill = false, pcHasSpace = false, key = "battle/pc-transfer/box-full/someone" },
+    { metBill = true, pcHasSpace = false, key = "battle/pc-transfer/box-full/bill" },
+  }
+  for _, variant in ipairs(variants) do
+    local text = assert(BattleScreenState._pcTransferText(screen, {
+      subject = { nickname = "EEVEE" },
+      metBill = variant.metBill,
+      placement = {
+        destination = "box",
+        pcHasSpace = variant.pcHasSpace,
+        previousBoxName = "OLD BOX",
+        boxName = "NEW BOX",
+      },
+    }))
+    Assert.isTrue(text:find(variant.key, 1, true) == 1, "the source route selects " .. variant.key)
+  end
+end
+
 ---@return table headless seven-operation port answering decline explicitly
 local function decliningPort(record)
   return {
@@ -582,6 +706,17 @@ function T.full_party_catch_spills_to_first_empty_box_slot()
   Assert.equal(spilled.placements[1].destination, "box", "a full party spills the catch into storage")
   Assert.equal(spilled.placements[1].box, 0, "the spillover scans from the active box")
   Assert.equal(spilled.placements[1].slot, 1, "the spillover takes the first empty slot in order")
+  Assert.isTrue(spilled.placements[1].pcHasSpace, "the original active box had room for the transfer")
+  Assert.equal(
+    spilled.placements[1].boxName,
+    party:boxMetadata(0).name,
+    "the transfer carries its destination box name"
+  )
+  Assert.equal(
+    spilled.placements[1].previousBoxName,
+    party:boxMetadata(0).name,
+    "the transfer retains the original active box name"
+  )
   Assert.equal(party:partyCount(), 6, "the spillover leaves the party untouched")
   Assert.equal(party:partyRevision(), partyRevision, "the spillover publishes no party change")
   local stored = assert(party:boxMon(0, 1), "the spilled catch is readable in its box slot")
@@ -622,6 +757,13 @@ function T.full_active_box_scans_forward_cyclically()
   Assert.equal(receipt.placements[1].destination, "box", "the capture lands in storage")
   Assert.equal(receipt.placements[1].box, 1, "a full active box scans to the next box")
   Assert.equal(receipt.placements[1].slot, 0, "slots ascend from the next box start")
+  Assert.isFalse(receipt.placements[1].pcHasSpace, "the original active box had no room")
+  Assert.equal(
+    receipt.placements[1].previousBoxName,
+    party:boxMetadata(0).name,
+    "the full-box transfer names the original active box"
+  )
+  Assert.equal(receipt.placements[1].boxName, party:boxMetadata(1).name, "the full-box transfer names its destination")
   local stored = assert(party:boxMon(1, 0), "the catch is readable in the next box")
   Assert.equal(stored.personality, caughtPersonality, "the boxed mon keeps its caught identity")
 end
@@ -646,7 +788,7 @@ function T.declined_nickname_keeps_default_name_and_finished_battle()
   local launchId = "launch-declined-nickname"
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foe },
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } }
   )
   local record = { enters = 0, packets = {}, leaves = 0, disposed = 0, opened = {}, answered = {} }
   local battle = BattleRuntime.new({
@@ -678,6 +820,13 @@ function T.declined_nickname_keeps_default_name_and_finished_battle()
   end
   Assert.equal(battle:status().phase, "complete", "the declined capture still returns to the field")
   Assert.isTrue(#record.opened > 0, "the runtime routes the nickname decision through its completion port")
+  Assert.isFalse(record.opened[1].metBill, "the source save flag selects someone's PC")
+  Assert.isTrue(record.opened[1].placement.pcHasSpace, "the completion retains original-box capacity")
+  Assert.equal(
+    record.opened[1].placement.boxName,
+    party:boxMetadata(0).name,
+    "the completion carries the destination box name"
+  )
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
   Assert.isTrue(receipt.committed, "the declined capture commits")
   Assert.equal(#receipt.placements, 1, "the declined capture reports its placement")
@@ -714,7 +863,7 @@ function T.stale_revision_before_rename_keeps_committed_mon()
   local launchId = "launch-stale-rename"
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foe },
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local record = { enters = 0, packets = {}, leaves = 0, disposed = 0, opened = {}, answered = {} }
   local port = decliningPort(record)
@@ -834,7 +983,7 @@ function T.versioned_species_replay_the_capture_naming_and_storage_flow(context)
       end
     end
     Assert.notNil(fragment, "the opening decision offers the stocked ball on " .. versionId)
-    local thrown, throwErr = rig.battle:submit(SessionFixture.replyFor(request, { fragment })) 
+    local thrown, throwErr = rig.battle:submit(SessionFixture.replyFor(request, { fragment }))
     Assert.isTrue(thrown, "the thrown ball is accepted on " .. versionId .. ": " .. tostring(throwErr))
     local committed = driveToCommitted(rig, 1200)
     Assert.equal(committed.result, "capture", "the thrown ball settles as a capture on " .. versionId)
@@ -843,7 +992,11 @@ function T.versioned_species_replay_the_capture_naming_and_storage_flow(context)
     Assert.equal(receipt.placements[1].destination, "party", "a fitting capture stays in the party on " .. versionId)
     Assert.equal(receipt.placements[1].partySlot, 5, "the fifth slot holds the newcomer on " .. versionId)
     local question = driveToNicknameQuestion(rig, 1200)
-    Assert.equal(question.kind, "capture_nickname", "the offered completion names the nickname decision on " .. versionId)
+    Assert.equal(
+      question.kind,
+      "capture_nickname",
+      "the offered completion names the nickname decision on " .. versionId
+    )
     rig.screen:input({ { type = "confirm" } })
     rig.pump(3)
     local naming = rig.screen:status().completion
@@ -872,7 +1025,6 @@ function T.versioned_species_replay_the_capture_naming_and_storage_flow(context)
     rig.screen:dispose()
   end
 end
-
 
 return {
   tests = T,

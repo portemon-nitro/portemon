@@ -6,12 +6,12 @@
 -- itself, never a mocked visual subsystem. The screen build and the
 -- arrival on the command view are setup: they pass before the
 -- context-specific contract is checked. Contexts whose specialized
--- controls are missing fail on the final assertion only; the link context
--- has no production entry seam at all and is recorded blocked with that
--- seam named. Synthetic fixtures only: no dump capability is needed.
+-- controls are missing fail on the final assertion only. The link context
+-- has no production entry seam, so it has no test expectation yet. Synthetic
+-- fixtures only: no dump capability is needed.
 
 local Assert = require("tests.support.Assert")
-local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
@@ -315,28 +315,6 @@ function T.frontier_facility_presentation_keeps_facility_restrictions()
   local ids = commandIds(fixture.screen:view())
   Assert.isFalse(isOrdinarySurface(ids), "the frontier surface never shows the ordinary four-command set")
   fixture.screen:dispose()
-end
-
--- The link/recording presentation has no production entry seam: the
--- scenario factory only builds wild and trainer scenarios, the
--- presentation port accepts no link context facts, and the screen
--- snapshot carries no recorder/link control branch. This records the
--- block with the missing seam instead of claiming generic coverage.
-function T.link_recording_presentation_reports_its_missing_launcher_seam(context)
-  local fixture = openScreen("special-context-link-probe")
-  Assert.isTrue(
-    fixture.port.enter({ launchId = fixture.launchId, kind = "wild" }),
-    "setup: the probe launch enters through the only available route"
-  )
-  presentCommandPacket(fixture, ordinaryChoices())
-  local status = driveToCommand(fixture, "link-probe")
-  Assert.equal(status.mode, "command", "setup: the probe rests on the command view")
-  fixture.screen:dispose()
-  context:skip(
-    "BLOCKED: no link/recording launcher seam exists: the scenario factory builds only wild/trainer "
-      .. "scenarios, the presentation port takes no link context facts, and the screen snapshot "
-      .. "carries no recorder/link control branch, so no fixture can reach a specialized link route"
-  )
 end
 
 return { tests = T }

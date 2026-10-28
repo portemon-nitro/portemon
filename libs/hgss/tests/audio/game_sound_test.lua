@@ -473,6 +473,26 @@ function T.effects_overlap_bgm_and_report_player_completion()
   Assert.isTrue(sound:isEffectPlaying("SEQ_TEST_BGM"), "the bgm outlives the effect")
 end
 
+function T.panned_effects_apply_the_source_track_pan()
+  local sound, player = newGameSound()
+  for _, pan in ipairs({ 117, -117 }) do
+    sound:playPanned("SEQ_TEST_EFFECT", pan)
+    local pcm = player:render(4000)
+    local leftEnergy, rightEnergy = 0, 0
+    for frame = 0, 3999 do
+      leftEnergy = leftEnergy + math.abs(pcm[frame * 2 + 1])
+      rightEnergy = rightEnergy + math.abs(pcm[frame * 2 + 2])
+    end
+    Assert.isTrue(leftEnergy + rightEnergy > 0, "the panned effect is audible")
+    if pan > 0 then
+      Assert.isTrue(rightEnergy > leftEnergy, "positive source pan routes toward the right channel")
+    else
+      Assert.isTrue(leftEnergy > rightEnergy, "negative source pan routes toward the left channel")
+    end
+    sound:stop("SEQ_TEST_EFFECT")
+  end
+end
+
 -- The HGSS wait model (IsSEPlaying): resolve the sequence's player and test
 -- that player's playback state, not an individual host-source token.
 function T.effect_waits_follow_the_sequence_player_state()
@@ -756,8 +776,15 @@ function T.cry_with_a_subsystem_reports_completion()
   local cryState = { finished = false }
   local updates = 0
   local cry = {
-    play = function(_, species, pattern, form)
-      played[#played + 1] = { species = species, pattern = pattern, form = form }
+    play = function(_, species, pattern, form, pan, volume, pitch)
+      played[#played + 1] = {
+        species = species,
+        pattern = pattern,
+        form = form,
+        pan = pan,
+        volume = volume,
+        pitch = pitch,
+      }
     end,
     update = function()
       updates = updates + 1
@@ -767,8 +794,8 @@ function T.cry_with_a_subsystem_reports_completion()
     end,
   }
   local sound = newGameSound(nil, { cry = cry })
-  sound:playCry(133, 1, 2)
-  Assert.deepEqual(played, { { species = 133, pattern = 1, form = 2 } })
+  sound:playCry(133, 5, 2, 0, 117, 127, 0)
+  Assert.deepEqual(played, { { species = 133, pattern = 5, form = 2, pan = 117, volume = 127, pitch = 0 } })
   sound:updateSoundFrame()
   Assert.equal(updates, 1, "the sound frame advances the cry cleanup owner")
   Assert.isFalse(sound:isCryFinished(), "the cry is still active")

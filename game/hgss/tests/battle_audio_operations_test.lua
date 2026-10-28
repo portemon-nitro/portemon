@@ -19,10 +19,11 @@
 -- repository.
 
 local Assert = require("tests.support.Assert")
+local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local AudioAssetProvider = require("libs.hgss.src.audio.AudioAssetProvider")
 local AudioFixture = require("tests.support.AudioFixture")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
@@ -95,6 +96,24 @@ local function richCueDouble(log)
     log[#log + 1] = { method = "play", receiver = self, symbol = symbol }
     return true
   end
+  function controller:playPanned(symbol, pan)
+    log[#log + 1] = { method = "playPanned", receiver = self, symbol = symbol, pan = pan }
+    return true
+  end
+  function controller:stop(symbol)
+    log[#log + 1] = { method = "stop", receiver = self, symbol = symbol }
+    return true
+  end
+  function controller:playFanfare(symbol)
+    log[#log + 1] = { method = "playFanfare", receiver = self, symbol = symbol }
+    return true
+  end
+  function controller:isCryFinished()
+    return true
+  end
+  function controller:isFanfarePlaying()
+    return false
+  end
   function controller:playCry(species, pattern, form, mode, pan, volume, pitch)
     log[#log + 1] = {
       method = "playCry",
@@ -124,6 +143,21 @@ local function flatCueDouble(log, answer)
   function controller:play(symbol)
     log[#log + 1] = { method = "play", receiver = self, symbol = symbol }
     return answer
+  end
+  function controller:playPanned(symbol, pan)
+    log[#log + 1] = { method = "playPanned", receiver = self, symbol = symbol, pan = pan }
+    return answer
+  end
+  function controller:stop(symbol)
+    log[#log + 1] = { method = "stop", receiver = self, symbol = symbol }
+    return true
+  end
+  function controller:playFanfare(symbol)
+    log[#log + 1] = { method = "playFanfare", receiver = self, symbol = symbol }
+    return answer
+  end
+  function controller:isCryFinished()
+    return true
   end
   function controller:playCry(species, pattern, form, mode, pan, volume, pitch)
     log[#log + 1] = {
@@ -957,6 +991,11 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
     -- staged index resolves still count as unknown, exactly like the quiet
     -- journey below.
     local stagedProvider = AudioAssetProvider.new(CacheFs.forVersion(versionId))
+    local faintSequence = stagedProvider:sequence(BattleAudio.SINK_SOUNDS.faint)
+    local faintBankReady = pcall(function()
+      stagedProvider:bank(faintSequence.bankId)
+    end)
+    check(problems, faintBankReady, "the faint effect's source bank is staged on " .. versionId)
     local function stagedSymbol(symbol)
       return (pcall(function()
         return stagedProvider:sequence(symbol)
@@ -998,6 +1037,21 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
       local ok, legErr = xpcall(function()
         runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
         local screen = driveToCommand(runtime, envelope)
+        local faintSequence = stagedProvider:sequence(BattleAudio.SINK_SOUNDS.faint)
+        local faintRoleStaged, faintBankStaged = false, false
+        for _, demand in ipairs(envelope:preparedDemands()) do
+          local audio = type(demand) == "table" and demand.audio or nil
+          if type(audio) == "table" then
+            for _, role in ipairs(audio.roles or {}) do
+              faintRoleStaged = faintRoleStaged or role == BattleAudio.SINK_SOUNDS.faint
+            end
+            for _, bankId in ipairs(audio.banks or {}) do
+              faintBankStaged = faintBankStaged or bankId == faintSequence.bankId
+            end
+          end
+        end
+        check(problems, faintRoleStaged, "the faint effect is in the battle audio demand on " .. versionId)
+        check(problems, faintBankStaged, "the faint effect bank is in the battle audio demand on " .. versionId)
         waitMenuInput(runtime, envelope)
         screen:input({ { type = "confirm" } })
         pump(runtime, envelope, 2)
@@ -1019,7 +1073,11 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
         check(problems, countCries(log, foeCry) == 2, "the wild foe cries at send-out and at faint on " .. versionId)
         local programVoices, unstagedVoices = 0, {}
         for _, entry in ipairs(log) do
-          if entry.method == "play" and entry.symbol ~= selectSymbol then
+          if
+            (entry.method == "play" or entry.method == "playPanned")
+            and entry.symbol ~= selectSymbol
+            and entry.symbol ~= BattleAudio.SINK_SOUNDS.faint
+          then
             if stagedSymbol(entry.symbol) then
               programVoices = programVoices + 1
             else
@@ -1147,11 +1205,21 @@ function T.source_mix_parameters_and_overlapping_voices_keep_their_owned_timing(
         for _, entry in ipairs(leadOps) do
           check(
             problems,
+            entry.pan == -117 and entry.volume == 127,
+            "the lead cry uses its source-side mix on " .. versionId
+          )
+          check(
+            problems,
             entry.form ~= nil and entry.mode ~= nil and entry.pan ~= nil and entry.volume ~= nil and entry.pitch ~= nil,
             "the lead cry carries its source mix parameters on " .. versionId
           )
         end
         for _, entry in ipairs(foeOps) do
+          check(
+            problems,
+            entry.pan == 117 and entry.volume == 127,
+            "the foe cry uses its source-side mix on " .. versionId
+          )
           check(
             problems,
             entry.form ~= nil and entry.mode ~= nil and entry.pan ~= nil and entry.volume ~= nil and entry.pitch ~= nil,
@@ -1623,7 +1691,7 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
         pump(runtime, envelope, 2)
         settle(runtime, envelope, sparringChoose, 6000)
         Assert.equal(runtime:lastBattleResult().result, "win", "the " .. journey.name .. " wins its words")
-        local observed = { lead = 0, foe = 0, selects = 0, staged = 0, winMusic = 0, unknown = {} }
+        local observed = { lead = 0, foe = 0, faint = 0, selects = 0, staged = 0, winMusic = 0, unknown = {} }
         for _, start in ipairs(trace.starts) do
           if type(start) == "table" and start.symbol == "SEQ_GS_WIN2" then
             observed.winMusic = observed.winMusic + 1
@@ -1636,12 +1704,21 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
             observed.foe = observed.foe + 1
           elseif entry.method == "play" and entry.symbol == selectSymbol then
             observed.selects = observed.selects + 1
-          elseif entry.method == "play" and stagedSymbol(entry.symbol) then
+          elseif entry.method == "playPanned" and entry.symbol == BattleAudio.SINK_SOUNDS.faint then
+            observed.faint = observed.faint + 1
+            check(
+              problems,
+              entry.pan == BattleAudio.SIDE_PAN.foe,
+              "the " .. journey.name .. " pans the faint sound from the source foe side on " .. versionId
+            )
+          elseif (entry.method == "play" or entry.method == "playPanned") and stagedSymbol(entry.symbol) then
             observed.staged = observed.staged + 1
           elseif entry.method == "play" then
             observed.unknown[#observed.unknown + 1] = tostring(entry.symbol)
           elseif entry.method == "playCry" then
             observed.unknown[#observed.unknown + 1] = "cry:" .. tostring(entry.species)
+          elseif entry.method == "stop" and stagedSymbol(entry.symbol) then
+            observed.staged = observed.staged + 1
           else
             observed.unknown[#observed.unknown + 1] = tostring(entry.method)
           end
@@ -1658,6 +1735,7 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
           "the " .. journey.name .. " keeps its interface feedback on " .. versionId
         )
         check(problems, observed.winMusic == 1, "the " .. journey.name .. " swaps its wild-win BGM on " .. versionId)
+        check(problems, observed.faint == 1, "the " .. journey.name .. " plays one panned faint sound on " .. versionId)
         check(
           problems,
           #observed.unknown == 0,
@@ -1690,7 +1768,10 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
       local quiet = counts["quiet path"]
       check(
         problems,
-        quiet.lead == ordinary.lead and quiet.foe == ordinary.foe and quiet.winMusic == ordinary.winMusic,
+        quiet.lead == ordinary.lead
+          and quiet.foe == ordinary.foe
+          and quiet.faint == ordinary.faint
+          and quiet.winMusic == ordinary.winMusic,
         "quiet modes keep the identical mandatory set as the ordinary path on " .. versionId
       )
     end

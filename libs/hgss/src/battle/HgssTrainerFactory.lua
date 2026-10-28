@@ -541,6 +541,7 @@ function HgssTrainerFactory:build(context)
     mons = mons,
     trainerKey = context.trainerKey,
     trainerClass = record.trainerClass,
+    loseSpeechSelector = record.loseSpeechSelector,
     partyLevels = partyLevels,
     prizeMoney = prizeMoney,
     doubleBattle = record.doubleBattle == true,

@@ -494,7 +494,19 @@ function BattleAnimationPlayer:_exec(occurrence)
       .. tostring(values[2])
       .. "-"
       .. tostring(values[3])
-    local ok, err = pcall(player._audio.play, key)
+    local topology = exec.topology()
+    local attacker = type(topology) == "table" and topology.attacker or nil
+    if type(attacker) ~= "table" or type(attacker.combatant) ~= "number" then
+      failOccurrence(player, occurrence, "cry playback requires the attacker identity")
+      return nil
+    end
+    local ok, err = pcall(player._audio.play, key, {
+      kind = "cry",
+      combatant = attacker.combatant,
+      pattern = values[1],
+      pan = values[2],
+      volume = values[3],
+    })
     if not ok then
       failOccurrence(player, occurrence, "cry playback failure: " .. tostring(err))
       return nil

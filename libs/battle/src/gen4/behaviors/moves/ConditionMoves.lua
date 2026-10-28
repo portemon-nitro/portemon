@@ -1001,7 +1001,7 @@ local function stepRecover(ctx, frame)
     return { kind = "complete", result = "failed" }
   end
   local outcome = ctx:heal(user, math.floor(entry.maxHp --[[@as integer]] / 2), causeFor(record))
-  ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before })
+  ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before, noBlink = true })
   emitUsed(ctx, record)
   return { kind = "complete", result = "hit" }
 end
@@ -1023,7 +1023,7 @@ local function stepRoost(ctx, frame)
     return { kind = "complete", result = "failed" }
   end
   local outcome = ctx:heal(user, math.floor(entry.maxHp --[[@as integer]] / 2), causeFor(record))
-  ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before })
+  ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before, noBlink = true })
   return { kind = "complete", result = "hit" }
 end
 
@@ -1436,7 +1436,7 @@ local function stepRest(ctx, frame)
   end
   ctx:applyStatus(user, "sleep", { turns = 2 }, causeFor(record))
   local outcome = ctx:heal(user, entry.maxHp --[[@as integer]], causeFor(record))
-  ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before })
+  ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before, noBlink = true })
   emitUsed(ctx, record)
   return { kind = "complete", result = "hit" }
 end
@@ -1468,7 +1468,7 @@ local function stepDawnHeal(ctx, frame)
     amount = math.floor(ceiling / 4)
   end
   local outcome = ctx:heal(user, amount, causeFor(record))
-  ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before })
+  ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before, noBlink = true })
   emitUsed(ctx, record)
   return { kind = "complete", result = "hit" }
 end

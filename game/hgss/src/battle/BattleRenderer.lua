@@ -786,7 +786,7 @@ local function drawPicturePlanes(graphics, assets, view, players, enemies, singl
   end
   for _, record in ipairs(pictureRecords(view, players, enemies, singles)) do
     local battler = record.battler
-    if battler.vanished ~= true and battler.dontDraw ~= true then
+    if battler.visible ~= false and battler.vanished ~= true and battler.dontDraw ~= true then
       submit(shadowPicture(assets, battler, record.row))
       submit(battlerPicture(assets, battler, record.row))
     end
@@ -1192,50 +1192,56 @@ local function drawDoublesDetail(graphics, text, assets, sections, view, players
   for _, record in ipairs(hudRecords) do
     local row = record.row --[[@as BattleRenderer.SlotGeometry]]
     local art = record.art --[[@as string]]
-    local cell, section = drawDoublesHudCell(graphics, assets, sections, art, { x = row.hudX, y = row.hudY })
     local battler = record.battler --[[@as table<string, unknown>]]
-    local componentBase = assert(section.componentBase, "doubled HUD strips publish their native component tile base")
-    if cell ~= nil then
-      local patchSpans = assert(view.hudPatchSpans, "battle manifest carries source HUD patch spans")
-      local playerMode = battler.side == 1 and (battler.healthBoxMode or "gauge") or nil
-      if playerMode ~= nil then
-        drawBarTiles(
+    if battler.hudVisible ~= false then
+      local anchor = {
+        x = row.hudX + numberOr(battler.hudOffsetX, 0),
+        y = row.hudY + numberOr(battler.hudOffsetY, 0),
+      }
+      local cell, section = drawDoublesHudCell(graphics, assets, sections, art, anchor)
+      local componentBase = assert(section.componentBase, "doubled HUD strips publish their native component tile base")
+      if cell ~= nil then
+        local patchSpans = assert(view.hudPatchSpans, "battle manifest carries source HUD patch spans")
+        local playerMode = battler.side == 1 and (battler.healthBoxMode or "gauge") or nil
+        if playerMode ~= nil then
+          drawBarTiles(
+            graphics,
+            assets,
+            art,
+            anchor,
+            cell.objs,
+            componentBase,
+            BattleScene.healthBoxModePatchTiles(patchSpans, row.sideType, playerMode)
+          )
+        end
+        if playerMode ~= "numbers" then
+          local patches = gaugeTaskTiles(view.gaugePatchTiles, row.sideType, "health")
+            or BattleScene.hpPatchTiles(patchSpans, row.sideType, battler.hp, battler.maxHp)
+          -- Bar patches name component-relative source tiles like the
+          -- icons below, so they ride the same staged component base.
+          drawBarTiles(graphics, assets, art, anchor, cell.objs, componentBase, patches)
+        end
+        local caught = nil
+        if view.battleKind == "wild" and battler.side == 2 then
+          caught = battler.caught
+        end
+        local iconPatches =
+          BattleScene.hudIconPatchTiles(patchSpans, row.sideType, battler.condition, battler.gender, caught)
+        drawBarTiles(graphics, assets, art, anchor, cell.objs, componentBase, iconPatches)
+        drawHudPrinters(
           graphics,
+          text,
           assets,
+          view,
           art,
-          { x = row.hudX, y = row.hudY },
+          section,
+          anchor,
           cell.objs,
-          componentBase,
-          BattleScene.healthBoxModePatchTiles(patchSpans, row.sideType, playerMode)
+          battler,
+          row.sideType,
+          playerMode == "numbers"
         )
       end
-      if playerMode ~= "numbers" then
-        local patches = gaugeTaskTiles(view.gaugePatchTiles, row.sideType, "health")
-          or BattleScene.hpPatchTiles(patchSpans, row.sideType, battler.hp, battler.maxHp)
-        -- Bar patches name component-relative source tiles like the
-        -- icons below, so they ride the same staged component base.
-        drawBarTiles(graphics, assets, art, { x = row.hudX, y = row.hudY }, cell.objs, componentBase, patches)
-      end
-      local caught = nil
-      if view.battleKind == "wild" and battler.side == 2 then
-        caught = battler.caught
-      end
-      local iconPatches =
-        BattleScene.hudIconPatchTiles(patchSpans, row.sideType, battler.condition, battler.gender, caught)
-      drawBarTiles(graphics, assets, art, { x = row.hudX, y = row.hudY }, cell.objs, componentBase, iconPatches)
-      drawHudPrinters(
-        graphics,
-        text,
-        assets,
-        view,
-        art,
-        section,
-        { x = row.hudX, y = row.hudY },
-        cell.objs,
-        battler,
-        row.sideType,
-        playerMode == "numbers"
-      )
     end
   end
 end
@@ -1408,18 +1414,24 @@ local function drawSinglesDetail(graphics, text, assets, view, players, enemies)
     if battler ~= nil then
       assert(sections ~= nil, "the battle view carries staged single HUD cells")
       local row = sourceSlotGeometry(view, hud.sideType)
-      drawSingleHud(
-        graphics,
-        text,
-        assets,
-        view,
-        battler,
-        hud.art,
-        { x = row.hudX, y = row.hudY },
-        sections[hud.section],
-        hud.playerBox,
-        row.sideType
-      )
+      local anchor = {
+        x = row.hudX + numberOr(battler.hudOffsetX, 0),
+        y = row.hudY + numberOr(battler.hudOffsetY, 0),
+      }
+      if battler.hudVisible ~= false then
+        drawSingleHud(
+          graphics,
+          text,
+          assets,
+          view,
+          battler,
+          hud.art,
+          anchor,
+          sections[hud.section],
+          hud.playerBox,
+          row.sideType
+        )
+      end
     end
   end
 end
@@ -1451,6 +1463,118 @@ end
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
+local function drawLevelUpStats(resources, view)
+  local stats = view.levelUpStats --[[@as table<string, unknown>?]]
+  if stats == nil then
+    return
+  end
+  local graphics = resources.graphics --[[@as table<string, unknown>]]
+  local text = resources.text --[[@as table<string, unknown>]]
+  local windows = resources.windows --[[@as table<string, unknown>]]
+  local box = { x = 136, y = 56, width = 112, height = 96 }
+  local palette = sourcePalette(view, "narration", 0, 1, 2, 15)
+  windows.drawWindow(box, resources.frameKey, { 1, 1, 1, 1 })
+  LogicalSurface.clip(graphics, box, function()
+    local rows = stats.rows --[[@as table[] ]]
+    for index, row in ipairs(rows) do
+      local y = box.y + (index - 1) * 16
+      drawRoleText(text, "narration", row.label --[[@as string]], box.x, y, palette)
+      local value = row.value --[[@as string]]
+      drawRoleText(text, "narration", value, box.x + 80, y, palette)
+    end
+  end)
+end
+
+-- Opening trainer portraits are separate source assets from the player
+-- and foe Pokepics. Their side-specific cue gates also keep the player
+-- backpic available for wild encounter intros.
+---@param graphics table<string, unknown> borrowed host graphics
+---@param assets table<string, unknown> borrowed battle asset holder
+---@param view table<string, unknown> internal semantic snapshot
+local function drawTrainerPictures(graphics, assets, view)
+  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
+  if opening == nil then
+    return
+  end
+  assert(type(opening) == "table", "opening visibility arrives as a record")
+  assert(type(opening.playerTrainerVisible) == "boolean", "opening visibility names the player trainer backpic")
+  assert(type(opening.foeTrainerVisible) == "boolean", "opening visibility names the foe trainer front pic")
+  local slides = opening.trainerSlides
+  if slides ~= nil then
+    assert(type(slides) == "table", "trainer slide cues arrive as an array")
+    for _, slide in ipairs(slides) do
+      assert(type(slide) == "table", "trainer slide cues arrive as records")
+      assert(slide.role == "player" or slide.role == "foe", "trainer slide cues name their side")
+      local selector = assert(slide.selector, "trainer slide cues name their semantic picture") --[[@as string]]
+      local x = assert(slide.x, "trainer slide cues carry their source-pixel x") --[[@as number]]
+      local y = assert(slide.y, "trainer slide cues carry their source-pixel y") --[[@as number]]
+      local frame = assert(slide.frame, "trainer slide cues carry their animation frame") --[[@as integer]]
+      assert(type(frame) == "number" and frame % 1 == 0 and frame >= 0, "trainer frames are zero-based integers")
+      assert(
+        slide.phase == "intro-delay" or slide.phase == "intro-slide" or slide.phase == "intro-settle",
+        "trainer slide cues name their source phase"
+      )
+      assert(type(slide.visible) == "boolean", "trainer slide cues state their visibility")
+      assert(
+        selector:match("^front:[%w_]+$") ~= nil or selector:match("^back:[%w_]+$") ~= nil,
+        "trainer slide selectors name a semantic front/back picture"
+      )
+      if slide.visible then
+        local image = assets:drawable("trainer:" .. selector)
+        if image ~= nil then
+          drawArtwork(graphics, image, nil, x, y)
+        end
+      end
+    end
+  else
+    if opening.playerTrainerVisible == true then
+      local player = view.playerTrainer --[[@as table<string, unknown>?]]
+      local classKey = type(player) == "table" and player.classKey or nil
+      if type(classKey) == "string" and classKey ~= "" then
+        local image = assets:drawable("trainer:back:" .. classKey)
+        if image ~= nil then
+          drawArtwork(graphics, image, nil, 8, 56)
+        end
+      end
+    end
+    if opening.foeTrainerVisible == true then
+      local trainers = view.foeTrainers --[[@as table<integer, table<string, unknown>>?]]
+      if type(trainers) == "table" then
+        local count = #trainers
+        for index, trainer in ipairs(trainers) do
+          local classKey = trainer.classKey
+          if type(classKey) == "string" and classKey ~= "" then
+            local image = assets:drawable("trainer:front:" .. classKey)
+            if image ~= nil then
+              drawArtwork(graphics, image, nil, 168 - (count - index) * 40, 8)
+            end
+          end
+        end
+      end
+    end
+  end
+  local ball = opening.ballThrow
+  if ball ~= nil then
+    assert(type(ball) == "table", "ball throw cues arrive as records")
+    local selector = assert(ball.selector, "ball throw cues name their semantic ball") --[[@as string]]
+    local ballKey = selector:match("^ball:([%w_]+)$")
+    assert(ballKey ~= nil, "ball throw selectors name a semantic ball key")
+    local x = assert(ball.x, "ball throw cues carry their source-pixel x") --[[@as number]]
+    local y = assert(ball.y, "ball throw cues carry their source-pixel y") --[[@as number]]
+    local frame = assert(ball.frame, "ball throw cues select a source animation frame") --[[@as integer]]
+    assert(type(frame) == "number" and frame % 1 == 0 and frame >= 0, "ball frames are zero-based integers")
+    assert(type(ball.visible) == "boolean", "ball throw cues state their visibility")
+    if ball.visible then
+      local image = assets:drawable("battle-ball:" .. ballKey .. ":" .. tostring(frame))
+      if image ~= nil then
+        drawArtwork(graphics, image, nil, x, y)
+      end
+    end
+  end
+end
+
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot
 local function drawDetail(resources, view)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local text = assert(resources.text, "the battle render borrows its text services")
@@ -1469,6 +1593,7 @@ local function drawDetail(resources, view)
     local scrollX, scrollY = bgScrollOf(view)
     drawSceneLayer(graphics, scene, scrollX, scrollY)
   end
+  drawTrainerPictures(graphics, assets, view)
   local players, enemies = BattleViewRoster.liveSides(view)
   local singles = not doublesFormat(view, players, enemies)
   drawPicturePlanes(graphics, assets, view, players, enemies, singles)
@@ -1487,6 +1612,7 @@ local function drawDetail(resources, view)
     )
   end
   drawNarration(resources, view)
+  drawLevelUpStats(resources, view)
   restoreColor(graphics, r, g, b, a)
 end
 
@@ -1705,13 +1831,22 @@ local function drawGauges(resources, view)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
   local families = assert(view.gaugeFamilies, "the battle view carries detached source gauge families")
+  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
+  if opening ~= nil then
+    assert(type(opening) == "table", "opening presentation visibility arrives as a record")
+    assert(type(opening.playerGaugeVisible) == "boolean", "opening visibility names the player gauge row")
+    assert(type(opening.enemyGaugeVisible) == "boolean", "opening visibility names the enemy gauge row")
+    assert(type(opening.playerTrainerVisible) == "boolean", "opening visibility names the player trainer sprite")
+    assert(type(opening.foeTrainerVisible) == "boolean", "opening visibility names the foe trainer sprite")
+  end
   local roster = {}
   if type(view.partyRoster) == "table" then
     roster = view.partyRoster --[[@as table[] ]]
   end
-  local playerArt = assets:drawable("gauges:player")
-  local playerFamily = assert(families.player, "the battle view carries the player gauge family")
+  local playerGaugeVisible = opening == nil or opening.playerGaugeVisible == true
+  local playerArt = playerGaugeVisible and assets:drawable("gauges:player") or nil
   if playerArt ~= nil then
+    local playerFamily = assert(families.player, "the battle view carries the player gauge family")
     for index = 0, 5 do
       local entry = roster[index + 1]
       local state = 0
@@ -1734,6 +1869,9 @@ local function drawGauges(resources, view)
   -- BattleInput_EnableBallGauge shows the opponent row only in trainer
   -- battles; a wild encounter draws the player row alone.
   if view.battleKind == "wild" then
+    return
+  end
+  if opening ~= nil and opening.enemyGaugeVisible ~= true then
     return
   end
   local enemyArt = assets:drawable("gauges:enemy")
@@ -2046,15 +2184,33 @@ local function drawCompactSlots(graphics, assets, view, spots)
   for _, spot in ipairs(spots) do
     local battler = live[spot.position]
     local image = battler ~= nil and battlerImage(assets, battler) or nil
-    if image ~= nil then
-      local dx = numberOr(battler.shakeDx, 0) + numberOr(battler.pictureXOffset, 0)
+    if image ~= nil and battler.visible ~= false then
+      local dx = numberOr(battler.shakeDx, 0)
+      local crop = battler.pictureVisible == true
+      local pictureWidth = crop and numberOr(battler.pictureWidth, 80) or 80
+      local pictureHeight = crop and numberOr(battler.pictureHeight, 80) or 80
+      local pictureX = numberOr(battler.pictureXOffset, 0)
+      local pictureY = numberOr(battler.pictureYOffset, 0)
       local scale = assert(spot.scale, "compact doubles portraits carry their authored presentation scale")
       local allocation = { x = spot.x, y = spot.y, width = spot.width, height = spot.height }
       LogicalSurface.clip(graphics, allocation, function()
         -- Lease-paired cells draw through the shared sampler so the
         -- recorded draw carries the staged cell exactly; owned and
         -- test images draw directly.
-        drawArtwork(graphics, image, image.quad, spot.x + dx * scale, spot.y, 0, scale, scale)
+        local x = spot.x + (dx + pictureX) * scale
+        local y = spot.y + pictureY * scale
+        if crop then
+          LogicalSurface.clip(graphics, {
+            x = x,
+            y = y,
+            width = pictureWidth * scale,
+            height = pictureHeight * scale,
+          }, function()
+            drawArtwork(graphics, image, image.quad, x, y, 0, scale, scale)
+          end)
+        else
+          drawArtwork(graphics, image, image.quad, x, y, 0, scale, scale)
+        end
       end)
     end
   end
@@ -2072,7 +2228,21 @@ local function drawCompactSingle(graphics, assets, battler, center)
   end
   local image = battlerImage(assets, battler)
   if image ~= nil then
-    drawArtwork(graphics, image, image.quad, center.x + numberOr(battler.shakeDx, 0), center.y)
+    local crop = battler.pictureVisible == true
+    local x = center.x + numberOr(battler.shakeDx, 0) + numberOr(battler.pictureXOffset, 0)
+    local y = center.y + numberOr(battler.pictureYOffset, 0)
+    if crop then
+      LogicalSurface.clip(graphics, {
+        x = x,
+        y = y,
+        width = numberOr(battler.pictureWidth, 80),
+        height = numberOr(battler.pictureHeight, 80),
+      }, function()
+        drawArtwork(graphics, image, image.quad, x, y)
+      end)
+    else
+      drawArtwork(graphics, image, image.quad, center.x + numberOr(battler.shakeDx, 0), center.y)
+    end
   end
 end
 

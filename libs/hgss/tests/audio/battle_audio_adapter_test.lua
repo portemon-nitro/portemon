@@ -29,6 +29,11 @@ local function fullSink(log)
     sink.playing[symbol] = true
     return true
   end
+  function sink:playPanned(symbol, pan)
+    log[#log + 1] = { op = "playPanned", receiver = self, symbol = symbol, pan = pan }
+    sink.playing[symbol] = true
+    return true
+  end
   function sink:playCry(species, pattern, form, mode, pan, volume, pitch)
     log[#log + 1] = {
       op = "playCry",
@@ -102,6 +107,14 @@ function T.accepted_operations_return_scoped_handles_in_order()
   Assert.equal(cry.detail.species, 152, "cry handles carry their voice identity")
 end
 
+function T.source_panned_effects_use_the_panned_audio_port()
+  local voice, log = adapterOverDouble("launch-pan")
+  voice:playEffect("SEQ_SE_DP_POKE_DEAD3", 117)
+  Assert.equal(log[1].op, "playPanned", "source panned effects reach the dedicated panned port")
+  Assert.equal(log[1].symbol, "SEQ_SE_DP_POKE_DEAD3", "the panned port receives the exact effect symbol")
+  Assert.equal(log[1].pan, 117, "the panned port receives the source pan")
+end
+
 function T.distinct_generations_scope_their_handles()
   local log = {}
   local sink = fullSink(log)
@@ -157,7 +170,7 @@ function T.cry_ranges_normalize_once_with_documented_defaults()
   Assert.equal(entry.form, 0, "cries default to the species bank")
   Assert.equal(entry.mode, 0, "cries default to the voice mode slot")
   Assert.equal(entry.pan, 0, "cries default to the centered track pan")
-  Assert.equal(entry.volume, 100, "cries default to the subsystem primary volume")
+  Assert.equal(entry.volume, 127, "cries default to the source primary volume")
   Assert.equal(entry.pitch, 0, "cries default to the unshifted pitch")
   voice:playCry({ species = 152, pattern = 12, form = 1, mode = 3, pan = -16, volume = 90, pitch = -44 })
   local varied = log[2]
@@ -359,6 +372,27 @@ function T.adapter_dispatch_voices_audible_samples_through_the_shared_engine()
     end
     Assert.isTrue(peakAbs(left) > 0, "the dispatched operation voices audibly: " .. symbol)
     Assert.isTrue(voice:stopVoice(handle), "the voiced operation releases through its handle")
+  end
+end
+
+function T.panned_effects_reach_the_correct_stereo_channel()
+  local symbol = "synthetic-operation-impact"
+  for _, pan in ipairs({ 117, -117 }) do
+    local voice, player = adapterOverEngine({ symbol })
+    local handle = voice:playEffect(symbol, pan)
+    local samples = player:render(4000)
+    local left, right = 0, 0
+    for index = 1, 4000 do
+      left = left + math.abs(samples[index * 2 - 1])
+      right = right + math.abs(samples[index * 2])
+    end
+    Assert.isTrue(left + right > 0, "the panned effect is audible")
+    if pan > 0 then
+      Assert.isTrue(right > left, "positive source pan voices the foe effect on the right")
+    else
+      Assert.isTrue(left > right, "negative source pan voices the player effect on the left")
+    end
+    Assert.isTrue(voice:stopVoice(handle), "the effect stops before the opposite-side test")
   end
 end
 

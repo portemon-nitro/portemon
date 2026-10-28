@@ -22,6 +22,7 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local T = {}
 
@@ -35,7 +36,7 @@ local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
 local PRESENTATION_CACHE_MODULE = "libs.assets.src.battle.BattlePresentationCache"
 
-local TICK = 1 / 30
+local TICK = SourceTick.DT
 
 ---@param behavior string the missing screen responsibility naming this red
 ---@param primary string the scenario's own missing owner, loaded first so the red names it
@@ -205,7 +206,7 @@ end
 ---@param muted boolean? when true playback stays silent while still recording
 ---@return table recording semantic sound boundary with per-name counts
 local function recordingAudio(muted)
-  local audio = { plays = {}, muted = muted == true }
+  local audio = { plays = {}, stops = {}, muted = muted == true }
   function audio.play(first, second)
     -- The production voice subsystem dispatches sink ports colon-style,
     -- so the recorded semantic cue is the second argument when present.
@@ -213,6 +214,20 @@ local function recordingAudio(muted)
     -- is modeled by absent ports, never by a muted answer, so muted
     -- cues drain instead of failing the screen.
     audio.plays[#audio.plays + 1] = second ~= nil and second or first
+    return true
+  end
+  function audio.playPanned(_, symbol, pan)
+    audio.plays[#audio.plays + 1] = symbol
+    audio.pans = audio.pans or {}
+    audio.pans[#audio.pans + 1] = { symbol = symbol, pan = pan }
+    return true
+  end
+  function audio.playFanfare(_, symbol)
+    audio.plays[#audio.plays + 1] = symbol
+    return true
+  end
+  function audio.stop(_, symbol)
+    audio.stops[#audio.stops + 1] = symbol
     return true
   end
   function audio.count(name)
@@ -336,15 +351,6 @@ end
 
 ---@param sceneKey string semantic scene identity under test preparation
 ---@return table planning manifest carrying the scene inventory without staged files
-local function planningManifest(sceneKey)
-  return {
-    schema = "test-battle-manifest",
-    version = { id = "test", language = "english" },
-    verified = false,
-    scenes = { { key = sceneKey } },
-  }
-end
-
 ---@param value unknown value under test preparation
 ---@return unknown a detached copy sharing no table with the source
 local function deepCopy(value)
@@ -410,6 +416,7 @@ local function openRig(modules, opts)
     -- The battle screen borrows the immutable item catalog so its bag
     -- child can group stocked items by pocket, exactly like production.
     itemCatalog = ItemFixture.makeCatalog(),
+    monCatalog = CatalogFixture.makeCatalog(),
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,
@@ -439,7 +446,16 @@ end
 ---@param rig table live screen rig under test driving
 ---@return table the real wild scenario context for the rig parties
 local function wildContext(rig)
-  return { party = rig.party, bag = rig.bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+  return {
+    party = rig.party,
+    bag = rig.bag,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      language = "french",
+    },
+  }
 end
 
 ---@param modules table loaded screen owners under test driving
@@ -455,10 +471,16 @@ local function openWildRig(modules, id, leadSpec, reserveSpec, foe, opts)
   local party = makeParty(leadSpec, reserveSpec)
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local launch = wildLaunch(id)
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+    party = party,
+    bag = bag,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      language = "french",
+    },
+  })
   local rig = openRig(modules, {
     launchId = id,
     launch = launch,
@@ -604,7 +626,9 @@ end
 ---@param rig table live screen rig under test driving
 local function ackNarration(rig)
   local mode = rig.screen:status().mode
-  if mode == "intro" or mode == "narration" or mode == "outcome" then
+  if mode == "intro" or mode == "narration" or mode == "outcome"
+    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  then
     rig.screen:input({ { type = "confirm" } })
   end
 end
@@ -665,7 +689,8 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
   -- top-screen narration names the acting lead while the command menu
   -- stays open over it, so the view never goes chrome-only mid-decision.
   local openingView = rig.screen:view()
-  Assert.equal(openingView.message, "What will EEVEE do?", "the settled command root keeps the framed select prompt")
+  Assert.isTrue(openingView.message ~= "", "the settled command root keeps its staged prompt")
+  Assert.isTrue(string.find(openingView.message, "EEVEE", 1, true) ~= nil, "the staged prompt names its acting battler")
   Assert.equal(openingView.selection, "fight", "the command prompt rests on the first command")
   local commands = assert(openingView.commands, "the command prompt lists its four commands")
   Assert.equal(#commands, 4, "Fight, Bag, Pokemon and Run stay reachable")
@@ -682,10 +707,10 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
   rig.screen:input({ { type = "cancel" } })
   rig.pump(1)
   Assert.equal(rig.screen:status().mode, "command", "cancel from moves returns to command")
-  Assert.equal(
-    rig.screen:view().message,
-    "What will EEVEE do?",
-    "returning to command restores the framed select prompt"
+  Assert.isTrue(rig.screen:view().message ~= "", "returning to command restores the staged prompt")
+  Assert.isTrue(
+    string.find(rig.screen:view().message, "EEVEE", 1, true) ~= nil,
+    "the restored prompt still names its acting battler"
   )
   Assert.equal(#rig.submits, 0, "cancelling spends no turn")
 
@@ -778,11 +803,18 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
     )
     local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
     local foe = foeRecord("TOTODILE", 4, 0x5EED000B)
-    local trainers = { { id = "trainer-screen-run", party = { foe }, aiPasses = {} } }
+    local trainers = {
+      { id = "trainer-screen-run", class = "YOUNGSTER", name = "TRAINER", party = { foe }, aiPasses = {} },
+    }
     local scenario = ScenarioFactory.fromTrainer({ id = "trainer-screen-run", trainers = trainers }, {
       party = party,
       bag = bag,
-      player = { trainerId = 99, trainerName = "MINT", language = "french" },
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        language = "french",
+      },
     })
     local trainerRig = openRig(modules, {
       launchId = "launch-screen-trainer-run",
@@ -795,7 +827,7 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
     trainerRig.party = party
     trainerRig.bag = bag
     trainerRig.scenario = scenario
-    driveToMode(trainerRig, "command", 600)
+    driveToMode(trainerRig, "command", 1200)
     local trainerRequest =
       assert(trainerRig.screen:status().request, "the trainer battle mirrors its open request").requestId
     local trainerCommands = assert(trainerRig.screen:view().commands, "the trainer prompt lists its commands")
@@ -1110,7 +1142,7 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
     if playerMovedAt == nil and view.battlers[1].hp ~= openingPlayer then
       playerMovedAt = tick
     end
-    if faintAt == nil and view.battlers[1].visible == false then
+    if faintAt == nil and view.battlers[1].hp == 0 and view.battlers[1].visible == false then
       faintAt = tick
     end
     local status = rig.screen:status()
@@ -1127,7 +1159,7 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
   local firstMove = math.min(enemyMovedAt --[[@as integer]], playerMovedAt --[[@as integer]])
   local lastMove = math.max(enemyMovedAt --[[@as integer]], playerMovedAt --[[@as integer]])
   Assert.isTrue(firstMove < lastMove, "the earlier checkpoint is shown strictly before the later one")
-  Assert.notNil(faintAt, "the knockout hides its battler through an explicit faint cue")
+  Assert.notNil(faintAt, "the knockout hides the zero-health battler")
   Assert.isTrue(faintAt --[[@as integer]] >= lastMove, "the faint cue never precedes its health checkpoint")
   Assert.notNil(requestAt, "the knockout opens its replacement obligation")
   Assert.isTrue(
@@ -1151,14 +1183,14 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
     return twin, drawsPerTick
   end
   local function settleTwin(twin, drawsPerTick)
-    driveToMode(twin, "command", 600)
+    driveToMode(twin, "command", 1200)
     tap(twin, 128, 83 + 192)
     twin.pump(1)
     tap(twin, 64, 45 + 192)
     twin.pump(1)
     twin.screen:input({ { type = "confirm" } })
     local graphics = FakeGraphics.new({})
-    for _ = 1, 900 do
+    for _ = 1, 1800 do
       ackNarration(twin)
       twin.pump(1)
       for _ = 1, drawsPerTick do
@@ -1174,7 +1206,17 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
   local sparse = settleTwin(quickWinRig(sparseAudio, 0))
   local denseAudio = recordingAudio(false)
   local dense = settleTwin(quickWinRig(denseAudio, 3))
-  Assert.equal(sparse.battle:status().phase, "complete", "the sparsely drawn twin settles")
+  local sparseStatus = sparse.battle:status()
+  local sparseScreenStatus = sparse.screen:status()
+  Assert.equal(
+    sparseStatus.phase,
+    "complete",
+    "the sparsely drawn twin settles (screen="
+      .. tostring(sparseScreenStatus.mode)
+      .. ", error="
+      .. tostring(sparseScreenStatus.error)
+      .. ")"
+  )
   Assert.equal(dense.battle:status().phase, "complete", "the densely drawn twin settles")
   Assert.deepEqual(
     { sparse.screen:view().battlers[1].hp, sparse.screen:view().battlers[2].hp },
@@ -1253,29 +1295,33 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
     tap(twin, 64, 45 + 192)
     twin.pump(1)
     twin.screen:input({ { type = "confirm" } })
-    local outcomeId = nil
-    local outcomePages = 0
-    for _ = 1, 1200 do
+    for _ = 1, 2400 do
       ackNarration(twin)
       twin.pump(1)
-      local view = twin.screen:view()
-      if twin.battle:status().phase == "complete" and twin.screen:status().mode == "outcome" then
-        if outcomeId == nil then
-          outcomeId = view.messageId
-          Assert.notNil(view.message, "the terminal result is narrated")
-        elseif view.messageId == outcomeId then
-          outcomePages = outcomePages + 0
-        else
-          outcomePages = outcomePages + 1
-        end
-      end
-      if twin.screen:status().mode == "outcome" and twin.battle:status().phase == "complete" then
-        twin.pump(30)
+      if twin.battle:status().phase == "complete" then
         break
       end
     end
-    Assert.notNil(outcomeId, "the win reaches its outcome narration")
-    Assert.equal(outcomePages, 0, "the terminal result is narrated once, never re-emitted")
+    local outcomeStatus = twin.screen:status()
+    Assert.equal(
+      twin.battle:status().phase,
+      "complete",
+      "the wild win completes without a result page (screen="
+        .. tostring(outcomeStatus.mode)
+        .. ", error="
+        .. tostring(outcomeStatus.error)
+        .. ", settled="
+        .. tostring(twin.screen._timeline:settled())
+        .. ", outcomeDone="
+        .. tostring(twin.screen._outcomeDone)
+        .. ", registration="
+        .. tostring(twin.screen._pendingRegistration ~= nil or twin.screen._registrationChild ~= nil)
+        .. ")"
+    )
+    Assert.isTrue(
+      twin.screen:_portLeave({}),
+      "the wild win leaves after its final cues settle without an acknowledgment"
+    )
     return twin
   end
   local sounding = narratedOutcome(recordingAudio(false))
@@ -1362,10 +1408,12 @@ function T.definitions_and_leases_follow_single_ownership()
   -- the planning manifest yields a nonempty bounded demand.
   do
     local demand, bounded = Cache.requirements(
-      planningManifest(sceneKey),
+      screenManifest(sceneKey),
       { background = Cache.BACKGROUNDS[4], terrain = Cache.TERRAINS[3], time = Cache.TIMES[1] },
       { "EEVEE/back", "EEVEE/front" },
-      nil
+      nil,
+      { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
+      { "ball:POKE_BALL" }
     )
     Assert.notNil(demand, "the planning manifest yields its resource demand through the real inventory")
     Assert.isTrue(bounded == true or bounded == false, "the demand reports its bounded readiness")
@@ -1657,6 +1705,7 @@ local function nativeOwnRecord()
     maxHp = 52,
     species = "EEVEE",
     form = 0,
+    ballKey = "POKE_BALL",
     name = "LEAD",
     level = 20,
     selector = "back",
@@ -1677,6 +1726,7 @@ local function nativeFoeRecord(hp)
     maxHp = 57,
     species = "EEVEE",
     form = 0,
+    ballKey = "POKE_BALL",
     name = "FOE",
     level = 20,
     selector = "front",
@@ -1686,7 +1736,103 @@ end
 ---@param foeHp integer foe health after the view under test driving
 ---@return table detached dynamic view under test driving
 local function nativeView(foeHp)
-  return { own = { nativeOwnRecord() }, foes = { nativeFoeRecord(foeHp) } }
+  return {
+    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "MINT" },
+    own = { nativeOwnRecord() },
+    foes = { nativeFoeRecord(foeHp) },
+  }
+end
+
+function T.native_animation_positioned_sound_reaches_screen_audio()
+  local modules = battleScreenModules("positioned native effect audio", STATE_MODULE)
+  local audio = recordingAudio(false)
+  local screen = modules.state.new({
+    launchId = "positioned-effect-sound",
+    manifest = screenManifest(testSceneKey()),
+    model = modules.model,
+    submit = function(_)
+      return true
+    end,
+    measureDisplay = dualMeasurement,
+    assets = stubAssets({}),
+    text = recordingText(),
+    windows = recordingWindows(),
+    audio = audio,
+  })
+  local player = screen._player
+  local handle = assert(player:start({
+    launchId = "positioned-effect-sound",
+    packetId = 1,
+    topology = {
+      attacker = { combatant = 3, activation = 9, sideType = 1 },
+      targets = { { combatant = 1, activation = 7, sideType = 0 } },
+    },
+  }, {
+    entry = "main",
+    subprograms = {},
+    taskKinds = {},
+    instructions = { { op = "play-positioned-sound", sound = "effect-probe", values = { 45 } } },
+  }))
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "the production player starts its sound")
+  Assert.notNil(audio.pans, "the screen forwards positioned effects to panned audio")
+  Assert.equal(audio.pans[1].symbol, "effect-probe", "the screen voices the named effect")
+  Assert.equal(audio.pans[1].pan, -45, "the screen preserves source-relative pan")
+  screen:dispose()
+end
+
+function T.native_animation_cry_reaches_the_attacker_voice()
+  local modules = battleScreenModules("native effect cry", STATE_MODULE)
+  local audio = recordingAudio(false)
+  function audio:playCry(species, pattern, form, mode, pan, volume, pitch)
+    self.cry =
+      { species = species, pattern = pattern, form = form, mode = mode, pan = pan, volume = volume, pitch = pitch }
+    return true
+  end
+  function audio:isCryFinished()
+    return true
+  end
+  local catalog = {}
+  function catalog:species(_)
+    return { nativeId = 133 }
+  end
+  local screen = modules.state.new({
+    launchId = "animation-cry",
+    manifest = screenManifest(testSceneKey()),
+    model = modules.model,
+    submit = function(_)
+      return true
+    end,
+    measureDisplay = dualMeasurement,
+    assets = stubAssets({}),
+    text = recordingText(),
+    windows = recordingWindows(),
+    audio = audio,
+    monCatalog = catalog,
+  })
+  screen._timeline:reset(nativeView(57))
+  local player = screen._player
+  local handle = assert(player:start({
+    launchId = "animation-cry",
+    packetId = 1,
+    topology = {
+      attacker = { combatant = 3, activation = 9, sideType = 1 },
+      targets = { { combatant = 1, activation = 7, sideType = 0 } },
+    },
+  }, {
+    entry = "main",
+    subprograms = {},
+    taskKinds = {},
+    instructions = { { op = "play-cry", values = { 5, 45, 127 } } },
+  }))
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "the screen owns the attacker's cry")
+  Assert.notNil(audio.cry, "animation cry uses the actual cry player")
+  Assert.equal(audio.cry.species, 133, "the attacker's visible species selects the cry")
+  Assert.equal(audio.cry.pattern, 5, "the native cry pattern is preserved")
+  Assert.equal(audio.cry.pan, -45, "the native cry pan is converted for the attacker")
+  Assert.equal(audio.cry.volume, 127, "the native cry volume is preserved")
+  screen:dispose()
 end
 
 ---@return table detached active own lead record carrying real event-time slot facts
@@ -1720,6 +1866,7 @@ end
 ---@return table detached production-shaped dynamic view picturing a full own roster
 local function rosterView(foeHp)
   return {
+    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "MINT" },
     own = { activeLeadRecord(), reserveRecord(2), reserveRecord(4) },
     foes = { activeFoeRecord(foeHp) },
   }
@@ -1741,10 +1888,10 @@ end
 -- that exact effect, runs the selected program through the screen-owned
 -- player before the health checkpoint, holds readiness until real
 -- completion, then applies the exact checkpoint and releases its
--- occurrence exactly once on disposal. The fixed source tick stays 30 Hz.
+-- occurrence exactly once on disposal. The fixed source tick follows HGSS.
 function T.live_tackle_strike_runs_its_selected_program_before_health()
   local modules = battleScreenModules("live native effects through one screen-owned player", STATE_MODULE)
-  Assert.equal(modules.state.SOURCE_FRAME, 1 / 30, "the battle source tick is one accepted 30 Hz quantum")
+  Assert.equal(modules.state.SOURCE_FRAME, SourceTick.DT, "the battle source tick matches the shared HGSS cadence")
   local launchId = "launch-screen-native-tackle"
   local staging = stagedTackle(launchId)
   local Model = modules.model
@@ -1801,7 +1948,9 @@ function T.live_tackle_strike_runs_its_selected_program_before_health()
   })
   for _ = 1, 900 do
     local mode = screen:status().mode
-    if mode == "intro" or mode == "narration" or mode == "outcome" then
+    if mode == "intro" or mode == "narration" or mode == "outcome"
+    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  then
       screen:input({ { type = "confirm" } })
     end
     screen:updateFixed(TICK)
@@ -1814,7 +1963,9 @@ function T.live_tackle_strike_runs_its_selected_program_before_health()
   local settledHp = nil
   for _ = 1, 1200 do
     local mode = screen:status().mode
-    if mode == "intro" or mode == "narration" or mode == "outcome" then
+    if mode == "intro" or mode == "narration" or mode == "outcome"
+    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  then
       screen:input({ { type = "confirm" } })
     end
     screen:updateFixed(TICK)
@@ -1904,7 +2055,9 @@ function T.benched_reserves_contribute_no_live_side_positions()
   })
   for _ = 1, 900 do
     local mode = screen:status().mode
-    if mode == "intro" or mode == "narration" or mode == "outcome" then
+    if mode == "intro" or mode == "narration" or mode == "outcome"
+    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  then
       screen:input({ { type = "confirm" } })
     end
     screen:updateFixed(TICK)
@@ -1917,7 +2070,9 @@ function T.benched_reserves_contribute_no_live_side_positions()
   local settledHp = nil
   for _ = 1, 1200 do
     local mode = screen:status().mode
-    if mode == "intro" or mode == "narration" or mode == "outcome" then
+    if mode == "intro" or mode == "narration" or mode == "outcome"
+    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  then
       screen:input({ { type = "confirm" } })
     end
     screen:updateFixed(TICK)

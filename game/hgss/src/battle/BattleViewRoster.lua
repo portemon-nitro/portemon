@@ -11,10 +11,9 @@ local BattleViewRoster = {}
 ---@param record table<string, unknown> displayed battler facts under projection
 ---@return boolean true when the record owns a live battlefield slot
 local function liveSlot(record)
-  -- Only live active records count: hidden (cue-withdrawn, fainted,
-  -- unrevealed), inactive (benched) and historic records never own a
-  -- current sprite or HUD.
-  return type(record) == "table" and record.visible ~= false and record.active ~= false
+  -- A faint can hide its picture while the health box finishes sliding
+  -- away. Such a record still owns its stable battlefield row.
+  return type(record) == "table" and record.active ~= false and (record.visible ~= false or record.hudVisible == true)
 end
 
 ---@param records table<integer, table<string, unknown>> one side live records under ordering

@@ -43,6 +43,8 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 ---@field _prepared boolean preparation accepted for the current demand
 ---@field _selectors string[] portrait selectors named so far
 ---@field _iconKeys string[] party icon selectors named so far
+---@field _trainerPictures string[] semantic trainer picture class keys named so far
+---@field _battleBalls string[] semantic ball selectors needed by this launch
 ---@field _owned table<string, boolean> image keys acquired through this holder
 ---@field _imageErrors table<string, string> terminal upload failures by key, latched without retry
 ---@field _effects table<string, BattlePresentationAssets.EffectState> per-effect demand/load/lease state by flat effect key
@@ -65,6 +67,8 @@ BattlePresentationAssets.DEFAULT_FRAME = "default"
 ---@field frameKey string? selected window frame key, the built-in default when absent
 ---@field frames table<string, table<string, unknown>>? per-instance frame declarations
 ---@field shadowRegions table<integer, table<string, unknown>> normalized Pokepic shadow source rectangles
+---@field trainerPictures string[]? semantic trainer picture class keys named for this launch
+---@field battleBalls string[]? semantic ball selectors needed by this launch
 
 ---@param opts BattlePresentationAssets.Options
 ---@return BattlePresentationAssets
@@ -108,6 +112,8 @@ function BattlePresentationAssets.new(opts)
     _prepared = false,
     _selectors = {},
     _iconKeys = {},
+    _trainerPictures = {},
+    _battleBalls = {},
     _owned = {},
     _imageErrors = {},
     _effects = {},
@@ -197,13 +203,80 @@ function BattlePresentationAssets:_demand()
   for _, key in ipairs(self._iconKeys) do
     iconKeys[#iconKeys + 1] = key
   end
+  local trainerPictures = {}
+  for _, classKey in ipairs(self._trainerPictures) do
+    trainerPictures[#trainerPictures + 1] = classKey
+  end
+  local battleBalls = {}
+  for _, selector in ipairs(self._battleBalls) do
+    battleBalls[#battleBalls + 1] = selector
+  end
   return {
     launchId = self._launchId,
     scenes = { self._sceneKey },
     pages = selectors,
     iconKeys = iconKeys,
+    trainerPictures = trainerPictures,
+    battleBalls = battleBalls,
     audio = { roles = roles, banks = banks, cries = cries },
   }
+end
+
+-- Names semantic trainer-class pictures needed by the opening scene.
+-- New classes reopen the exact launch demand while retaining existing
+-- staged handles.
+---@param classKeys string[] semantic trainer class keys
+function BattlePresentationAssets:addTrainerPictures(classKeys)
+  assert(type(classKeys) == "table", "trainer picture class keys arrive as an array")
+  local known = {}
+  for _, classKey in ipairs(self._trainerPictures) do
+    known[classKey] = true
+  end
+  local grown = false
+  for _, classKey in ipairs(classKeys) do
+    assert(type(classKey) == "string", "trainer pictures name semantic selectors")
+    local isFront = classKey:match("^front:[A-Z][A-Z0-9_]*$") ~= nil
+    local isBack = classKey:match("^back:[%w_]+$") ~= nil
+    assert(isFront or isBack, "trainer pictures name front/back plus a semantic class key")
+    if not known[classKey] then
+      known[classKey] = true
+      self._trainerPictures[#self._trainerPictures + 1] = classKey
+      grown = true
+    end
+  end
+  table.sort(self._trainerPictures)
+  if grown and self._state ~= "failed" then
+    self._state = "pending"
+    self._prepared = false
+  end
+end
+
+-- Names the exact semantic ball sprites needed by active send-out cues.
+-- A new ball reopens the launch demand while keeping already staged handles.
+---@param selectors string[] semantic `ball:<key>` selectors
+function BattlePresentationAssets:addBattleBalls(selectors)
+  assert(type(selectors) == "table", "battle ball selectors arrive as an array")
+  local known = {}
+  for _, selector in ipairs(self._battleBalls) do
+    known[selector] = true
+  end
+  local grown = false
+  for _, selector in ipairs(selectors) do
+    assert(
+      type(selector) == "string" and selector:match("^ball:[A-Z][A-Z0-9_]*$") ~= nil,
+      "battle ball selectors name semantic keys"
+    )
+    if not known[selector] then
+      known[selector] = true
+      self._battleBalls[#self._battleBalls + 1] = selector
+      grown = true
+    end
+  end
+  table.sort(self._battleBalls)
+  if grown and self._state ~= "failed" then
+    self._state = "pending"
+    self._prepared = false
+  end
 end
 
 -- Names the party icon pages needed by the command menu. Like portraits,

@@ -397,6 +397,17 @@ local function openEvolutionRig(opts)
     rig.audio.plays[#rig.audio.plays + 1] = second ~= nil and second or first
     return true
   end
+  function rig.audio.playPanned(_, symbol)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    return true
+  end
+  function rig.audio.playFanfare(_, symbol)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    return true
+  end
+  function rig.audio.stop(_, _)
+    return true
+  end
   function rig.assets.prepare(_)
     rig.assets.prepared[#rig.assets.prepared + 1] = true
     return true
@@ -413,7 +424,7 @@ local function openEvolutionRig(opts)
   local catalog = assert(opts.catalog, "the evolution rig needs its mon catalog")
   local party = makePartyOwnerWith(catalog, opts.partySpecs, opts.game)
   local bag = opts.bag
-  local player = { trainerId = 99, trainerName = "MINT", language = "french" }
+  local player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" }
   local launchId = opts.launchId or "launch-postbattle-evolution"
   local foe = makeFoe(catalog, opts.foeSpecies or "EEVEE", opts.foeLevel or 3)
   local scenario = ScenarioFactory.fromEncounter(
@@ -490,7 +501,9 @@ end
 ---@param rig table live evolution rig under test driving
 local function ackNarration(rig)
   local mode = rig.screen:status().mode
-  if mode == "intro" or mode == "narration" or mode == "outcome" then
+  if mode == "intro" or mode == "narration" or mode == "outcome"
+    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  then
     rig.screen:input({ { type = "confirm" } })
   end
 end
@@ -543,7 +556,10 @@ local function driveToCommitted(rig, budget)
       return current
     end
   end
-  error("the evolution battle never published its commit receipt")
+  local status = rig.battle:status()
+  error("the evolution battle never published its commit receipt (phase=" .. tostring(status.phase)
+    .. ", request=" .. tostring(status.request and status.request.kind)
+    .. ", result=" .. tostring(status.result) .. ")")
 end
 
 -- Waits for the postbattle evolution decision through the real completion
@@ -785,10 +801,7 @@ function T.evolution_registers_the_evolved_mon_and_its_side_product_as_caught()
   Assert.equal(rig.party:partyCount(), 2, "the permitted extra joins the party exactly once")
   Assert.isTrue(dex:isCaught("NINJASK"), "publication registers the evolved mon as caught")
   Assert.isTrue(dex:isCaught("SHEDINJA"), "publication registers the shed side product as caught")
-  Assert.isFalse(
-    dex:isCaught("NINCADA"),
-    "publication registers only the evolved mon and its side product"
-  )
+  Assert.isFalse(dex:isCaught("NINCADA"), "publication registers only the evolved mon and its side product")
   rig.battle:dispose()
   rig.screen:dispose()
 end
@@ -1298,12 +1311,20 @@ function T.versioned_catalogs_evolve_real_level_triggers(context)
     local offered = driveToEvolution(rig, 1200)
     Assert.equal(offered.kind, "evolution", "the offered completion names the evolution decision on " .. versionId)
     runEvolutionHandsFree(rig, 1500)
-    Assert.equal(rig.battle:status().phase, "complete", "the evolved member still returns to the field on " .. versionId)
+    Assert.equal(
+      rig.battle:status().phase,
+      "complete",
+      "the evolved member still returns to the field on " .. versionId
+    )
     Assert.isNil(rig.screen:status().completion, "the finished evolution consumes its completion on " .. versionId)
     Assert.equal(rig.party:partyMon(0).species, "FURRET", "the leveled member evolves once on " .. versionId)
     Assert.equal(rig.party:partyCount(), 1, "the evolution publishes no extra party member on " .. versionId)
     local survivor = rig.battle:status()
-    Assert.deepEqual(survivor.outcomeReceipt, receipt, "the evolution pass never rewrites the battle receipt on " .. versionId)
+    Assert.deepEqual(
+      survivor.outcomeReceipt,
+      receipt,
+      "the evolution pass never rewrites the battle receipt on " .. versionId
+    )
     rig.battle:dispose()
     rig.screen:dispose()
   end

@@ -3056,7 +3056,15 @@ function FieldRuntime:buildBattleScenario(request)
   if self.playerData ~= nil and self.playerData.profile ~= nil and self.monLanguage ~= nil then
     local profile = self.playerData.profile --[[@as table<string, unknown>]]
     if type(profile.trainerId) == "number" and type(profile.name) == "string" then
-      live.player = { trainerId = profile.trainerId, trainerName = profile.name, language = self.monLanguage }
+      local playerClassKey = ({ [0] = "PKMN_TRAINER_ETHAN", [1] = "PKMN_TRAINER_LYRA" })[profile.gender]
+      assert(type(playerClassKey) == "string", "the validated player profile selects Ethan or Lyra")
+      live.player = {
+        trainerId = profile.trainerId,
+        trainerName = profile.name,
+        language = self.monLanguage,
+        trainerClassKey = playerClassKey,
+        metBill = self.eventState:isFlagSet(FieldScriptSymbols.flagsByName.FLAG_SYS_MET_BILL),
+      }
     end
   end
   if request.kind == "wild" then
@@ -3271,6 +3279,7 @@ function FieldRuntime:_trainerPayload(payload)
         id = id,
         class = bundle.trainerClass,
         name = bundle.name,
+        loseSpeechSelector = bundle.loseSpeechSelector,
         party = bundle.mons,
         partyLevels = bundle.partyLevels,
         prizeMoney = bundle.prizeMoney,

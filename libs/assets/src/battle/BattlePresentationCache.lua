@@ -461,13 +461,22 @@ end
 -- roles/banks/cries the launch reaches. Returns whether all planning
 -- prerequisites are known: a planning manifest yields a shapely but
 -- incomplete demand, never readiness.
----@param manifest { scenes: { key: string }[], verified?: boolean, audioRoles?: { wild?: string, trainer?: string, rival?: string, select?: string } } global or planning manifest
+---@param manifest { scenes: { key: string }[], verified?: boolean, audioRoles?: { wild?: string, trainer?: string, rival?: string, select?: string }, battleBalls?: { entries: table<string, unknown> } } global or planning manifest
 ---@param context { background: string, terrain: string, time: string }
 ---@param portraitSelectors string[]
 ---@param audioPlan { index?: { sequences?: { bankId?: integer }[], sequenceBySymbol?: table<string, integer> } }|nil adopted normalized audio membership
----@return { scenes: string[], pages: string[], audio: { roles: string[], banks: integer[], cries: string[] } }|nil demand
+---@param trainerSelectors string[] semantic front/back trainer selectors
+---@param battleBallSelectors string[] semantic `ball:<item>` selectors required by active send-outs
+---@return { scenes: string[], pages: string[], trainerPictures: string[], battleBalls: string[], iconKeys: string[], audio: { roles: string[], banks: integer[], cries: string[] } }|nil demand
 ---@return unknown|nil second value is the planning-complete flag or the rejection reason
-function BattlePresentationCache.requirements(manifest, context, portraitSelectors, audioPlan)
+function BattlePresentationCache.requirements(
+  manifest,
+  context,
+  portraitSelectors,
+  audioPlan,
+  trainerSelectors,
+  battleBallSelectors
+)
   if type(manifest) ~= "table" or type(manifest.scenes) ~= "table" then
     return nil, "battle demands require a manifest with its scene inventory"
   end
@@ -489,6 +498,49 @@ function BattlePresentationCache.requirements(manifest, context, portraitSelecto
   if pages == nil then
     return nil, pagesErr
   end
+  if type(trainerSelectors) ~= "table" then
+    return nil, "battle demands require semantic trainer selectors"
+  end
+  local trainerPictures = {}
+  local seenTrainerSelectors = {}
+  for _, selector in ipairs(trainerSelectors) do
+    if type(selector) ~= "string" then
+      return nil, "trainer selectors must be semantic strings"
+    end
+    local validFront = selector:match("^front:[A-Z0-9_]+$") ~= nil
+    local validBack = selector == "back:PKMN_TRAINER_ETHAN" or selector == "back:PKMN_TRAINER_LYRA"
+    if not validFront and not validBack then
+      return nil, "unknown trainer picture selector: " .. selector
+    end
+    if not seenTrainerSelectors[selector] then
+      seenTrainerSelectors[selector] = true
+      trainerPictures[#trainerPictures + 1] = selector
+    end
+  end
+  table.sort(trainerPictures)
+  if type(battleBallSelectors) ~= "table" then
+    return nil, "battle demands require semantic ball selectors"
+  end
+  local ballSection = manifest.battleBalls
+  local ballEntries = type(ballSection) == "table" and ballSection.entries or nil
+  if #battleBallSelectors > 0 and type(ballEntries) ~= "table" then
+    return nil, "battle demands require a ball inventory"
+  end
+  local battleBalls = {}
+  local seenBattleBalls = {}
+  for _, selector in ipairs(battleBallSelectors) do
+    if type(selector) ~= "string" or selector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
+      return nil, "unknown battle ball selector: " .. tostring(selector)
+    end
+    if type(ballEntries) ~= "table" or type(ballEntries[selector]) ~= "table" then
+      return nil, "unknown battle ball selector: " .. selector
+    end
+    if not seenBattleBalls[selector] then
+      seenBattleBalls[selector] = true
+      battleBalls[#battleBalls + 1] = selector
+    end
+  end
+  table.sort(battleBalls)
   local roles = {}
   if manifest.verified == true and type(manifest.audioRoles) == "table" then
     for _, role in ipairs({ "wild", "trainer", "rival", "select" }) do
@@ -511,6 +563,9 @@ function BattlePresentationCache.requirements(manifest, context, portraitSelecto
   local demand = {
     scenes = { resolved },
     pages = pages,
+    trainerPictures = trainerPictures,
+    battleBalls = battleBalls,
+    iconKeys = {},
     audio = { roles = roles, banks = resolveBanks(roles, audioPlan), cries = cries },
   }
   local ok = pcall(BattlePresentationSchema.assertDemand, demand)
@@ -521,7 +576,7 @@ function BattlePresentationCache.requirements(manifest, context, portraitSelecto
 end
 
 ---@param cacheFs CacheFs
----@param demand { scenes: string[], pages: string[], audio: { roles: string[], banks: integer[], cries: string[] } } exact launch demand
+---@param demand { scenes: string[], pages: string[], trainerPictures: string[], battleBalls: string[], iconKeys: string[], audio: { roles: string[], banks: integer[], cries: string[] } } exact launch demand
 ---@return boolean true only when every named artifact validates
 function BattlePresentationCache.isReady(cacheFs, demand)
   assert(cacheFs ~= nil, "readiness requires a cache filesystem")
@@ -576,6 +631,34 @@ function BattlePresentationCache.isReady(cacheFs, demand)
     local marker = index.portraitPages[entry.pageId + 1]
     if type(marker) ~= "string" or not MonCache.isPageReady(cacheFs, "portraits", entry.pageId, marker) then
       return false
+    end
+  end
+  for _, selector in ipairs(demand.trainerPictures) do
+    local entry = staged.trainerPictures.entries[selector]
+    if type(entry) ~= "table" or type(entry.image) ~= "string" then
+      return false
+    end
+    local width, height = PngWriter.completeDimensions(cacheFs:read(entry.image))
+    if width ~= entry.width or height ~= entry.height then
+      return false
+    end
+  end
+  for _, selector in ipairs(demand.battleBalls) do
+    local entry = staged.battleBalls.entries[selector]
+    if type(entry) ~= "table" or type(entry.frames) ~= "table" or #entry.frames == 0 then
+      return false
+    end
+    for frameIndex, frame in ipairs(entry.frames) do
+      if
+        type(frame) ~= "table"
+        or frame.drawableKey ~= ("battle-ball:" .. selector:sub(6) .. ":" .. tostring(frameIndex - 1))
+      then
+        return false
+      end
+      local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
+      if width ~= frame.width or height ~= frame.height then
+        return false
+      end
     end
   end
   return true

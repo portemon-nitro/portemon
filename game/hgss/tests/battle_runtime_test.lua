@@ -242,7 +242,7 @@ function T.completion_and_disposal_commit_exactly_once_and_release_once()
   local foe = foeRecord("TOTODILE", 4, 0x5EED0003)
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = BattleRuntime.new({
@@ -510,7 +510,7 @@ local function healingBattle(species, level, seed)
   local foe = foeRecord(species, level, seed)
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = "attempt-item-" .. seed, mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = BattleRuntime.new({
