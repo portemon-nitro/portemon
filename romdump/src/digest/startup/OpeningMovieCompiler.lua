@@ -792,6 +792,34 @@ local function windowNumber(value)
   return value
 end
 
+-- The retail main loop spans two VBlanks (NitroMain waits twice per game
+-- iteration while the VBlank handler runs the VBlank task queue every
+-- interrupt): scene timers, Main-queue tasks, palette fades, sprites,
+-- particles, and sound advance once per main frame (the bundle tick), but
+-- VBlank-queue tasks (IntroMovie_StartBgScroll_VBlank,
+-- IntroMovie_StartWindowPanEffect) advance twice per main frame. A VBlank
+-- duration of D completes during main frame ceil(D / 2), so bundles record
+-- the halved count; even durations sample identically to the source,
+-- odd ones land within one VBlank step of it.
+---@param duration integer retail VBlank-queue duration in VBlanks
+---@return integer bundle duration in main-frame ticks
+local function vblankTicks(duration)
+  assert(
+    type(duration) == "number" and duration >= 0 and duration % 1 == 0,
+    "opening scene VBlank duration must be a non-negative integer"
+  )
+  return math.floor((duration + 1) / 2)
+end
+
+-- A perpetual (negative-duration) VBlank scroll adds its displacement on
+-- every VBlank, hence twice per bundle tick.
+---@param displacement integer retail per-VBlank displacement
+---@return integer equivalent displacement per main-frame tick
+local function vblankDrift(displacement)
+  assert(type(displacement) == "number", "opening scene VBlank drift must be numeric")
+  return 2 * displacement
+end
+
 -- Engine-local v3 window record from one declared source pan. whichScreen
 -- 0 writes the sub-engine registers, nonzero the main-engine registers.
 ---@param events table<string, unknown>[]
@@ -821,7 +849,9 @@ local function emitWindow(events, sceneNumber, panId, stepId, atStepTick, effect
       x2 = windowNumber(pan.x2End),
       y2 = windowNumber(pan.y2End),
     },
-    ticks = duration,
+    -- Every intro window pan runs through IntroMovie_StartWindowPanEffect
+    -- on the VBlank queue, so its duration is halved into bundle ticks.
+    ticks = vblankTicks(duration),
     insideMask = windowNumber(pan.winIn),
     outsideMask = windowNumber(pan.winOut),
   }
@@ -1007,6 +1037,20 @@ local function scene1Program(clips, layers)
   setup[#setup + 1] = #events
   setup[#setup + 1] = nextIndex(events)
   events[#events + 1] = event("setScrollPosition", "setup", 20, { engine = "main", bgSlot = 0, x = 0, y = 0 })
+  -- The source restores the main-engine blend registers on the same tick
+  -- (G2_SetBlendAlpha over the copyright first-target mask against the
+  -- backdrop at full weight), so the staged logo paints opaque instead
+  -- of inheriting the finished copyright fade until the sunrise scroll
+  -- starts its own program. The restore lands at once and starts no wait.
+  setup[#setup + 1] = nextIndex(events)
+  events[#events + 1] = event("setBlend", "setup", 20, {
+    engine = "main",
+    firstMask = 1,
+    secondMask = 32,
+    ticks = 0,
+    eva = 31,
+    evb = 0,
+  })
   step(steps, "setup", setup, { kind = "duration", ticks = 20 })
   local logo = { nextIndex(events) }
   events[#events + 1] = event("waitTicks", "logo", 0, { ticks = 110 })
@@ -1052,14 +1096,16 @@ local function scene1Program(clips, layers)
     "setScroll",
     "scroll",
     0,
-    { engine = "main", bgSlot = 1, dx = 0, dy = -0x20, ticks = 240, effect = "scroll-sunrise" }
+    -- The sunrise scrolls run through IntroMovie_StartBgScroll_VBlank,
+    -- so the 240-VBlank source programs become 120 bundle ticks.
+    { engine = "main", bgSlot = 1, dx = 0, dy = -0x20, ticks = vblankTicks(240), effect = "scroll-sunrise" }
   )
   scroll[#scroll + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
     "scroll",
     0,
-    { engine = "main", bgSlot = 2, dx = 0, dy = -0x10, ticks = 240, effect = "scroll-sunrise" }
+    { engine = "main", bgSlot = 2, dx = 0, dy = -0x10, ticks = vblankTicks(240), effect = "scroll-sunrise" }
   )
   showSprite(events, 1, instances, clips, "scroll", 0, "sun", "bird", 0)
   scroll[#scroll + 1] = #events - 1
@@ -1181,9 +1227,13 @@ local function scene2Program(clips)
   flyin[#flyin + 1] = nextIndex(events)
   events[#events + 1] = event("setScroll", "flyin", 0, { engine = "main", bgSlot = 0, dx = 0, dy = 192, ticks = 0 })
   flyin[#flyin + 1] = nextIndex(events)
-  events[#events + 1] = event("setScroll", "flyin", 0, { engine = "main", bgSlot = 2, dx = 0, dy = 64, ticks = -1 })
+  -- The perpetual flyover scrolls run on the VBlank queue, adding their
+  -- displacement twice per bundle tick.
+  events[#events + 1] =
+    event("setScroll", "flyin", 0, { engine = "main", bgSlot = 2, dx = 0, dy = vblankDrift(64), ticks = -1 })
   flyin[#flyin + 1] = nextIndex(events)
-  events[#events + 1] = event("setScroll", "flyin", 0, { engine = "sub", bgSlot = 0, dx = 0, dy = 64, ticks = -1 })
+  events[#events + 1] =
+    event("setScroll", "flyin", 0, { engine = "sub", bgSlot = 0, dx = 0, dy = vblankDrift(64), ticks = -1 })
   flyin[#flyin + 1] = nextIndex(events)
   events[#events + 1] = event("setFade", "flyin", 0, {
     scope = "both",
@@ -1429,7 +1479,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "aspect",
     44,
-    { engine = "sub", bgSlot = 0, dx = -256, dy = 0, ticks = 7, effect = "scroll-sub0" }
+    { engine = "sub", bgSlot = 0, dx = -256, dy = 0, ticks = vblankTicks(7), effect = "scroll-sub0" }
   )
   setPlaneVisible(events, planes, layers, "aspect", 44, "sub", 0, true)
   aspect[#aspect + 1] = #events
@@ -1442,7 +1492,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "appear-entei",
     0,
-    { engine = "sub", bgSlot = 1, dx = 256, dy = 0, ticks = 7, effect = "scroll-sub1" }
+    { engine = "sub", bgSlot = 1, dx = 256, dy = 0, ticks = vblankTicks(7), effect = "scroll-sub1" }
   )
   setPlaneVisible(events, planes, layers, "appear-entei", 0, "sub", 1, true)
   appearEntei[#appearEntei + 1] = #events
@@ -1455,7 +1505,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "appear-raikou",
     0,
-    { engine = "sub", bgSlot = 2, dx = -256, dy = 0, ticks = 1, effect = "scroll-sub2" }
+    { engine = "sub", bgSlot = 2, dx = -256, dy = 0, ticks = vblankTicks(1), effect = "scroll-sub2" }
   )
   setPlaneVisible(events, planes, layers, "appear-raikou", 0, "sub", 2, true)
   appearRaikou[#appearRaikou + 1] = #events
@@ -1489,7 +1539,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "sprites",
     145,
-    { engine = "sub", bgSlot = 1, dx = -116, dy = 0, ticks = 10, effect = "scroll-sub1" }
+    { engine = "sub", bgSlot = 1, dx = -116, dy = 0, ticks = vblankTicks(10), effect = "scroll-sub1" }
   )
   step(steps, "sprites", sprites, { kind = "duration", ticks = 145 })
   local enteiDone = {}
@@ -1511,7 +1561,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "raikou",
     10,
-    { engine = "sub", bgSlot = 2, dx = -116, dy = 0, ticks = 10, effect = "scroll-sub2" }
+    { engine = "sub", bgSlot = 2, dx = -116, dy = 0, ticks = vblankTicks(10), effect = "scroll-sub2" }
   )
   step(steps, "raikou", raikou, { kind = "duration", ticks = 10 })
   local rocketsDone = {}
@@ -1549,7 +1599,7 @@ local function scene3Program(clips, layers)
     "setScroll",
     "suicune",
     30,
-    { engine = "sub", bgSlot = 0, dx = 0x74, dy = 0, ticks = 10, effect = "scroll-sub0" }
+    { engine = "sub", bgSlot = 0, dx = 0x74, dy = 0, ticks = vblankTicks(10), effect = "scroll-sub0" }
   )
   step(steps, "suicune", suicune, { kind = "duration", ticks = 30 })
   local viewportDone = {}
@@ -1559,24 +1609,31 @@ local function scene3Program(clips, layers)
   viewportDone[#viewportDone + 1] = #events
   viewportDone[#viewportDone + 1] = nextIndex(events)
   events[#events + 1] =
-    event("setScroll", "viewport", 0, { engine = "sub", bgSlot = 1, dx = 0, dy = -0x30, ticks = 254 })
+    -- The tail scrolls run on the VBlank queue: 254 VBlanks complete
+    -- during bundle tick 127. The SUB_1 tail scroll carries its own
+    -- waitable identity so the admins wait below binds this program,
+    -- never the stale beast-exit scroll sharing the slot.
+    event(
+      "setScroll",
+      "viewport",
+      0,
+      { engine = "sub", bgSlot = 1, dx = 0, dy = -0x30, ticks = vblankTicks(254), effect = "scroll-sub1-admins" }
+    )
   events[#events + 1] =
-    event("setScroll", "viewport", 0, { engine = "sub", bgSlot = 2, dx = 0, dy = -0x20, ticks = 254 })
+    event("setScroll", "viewport", 0, { engine = "sub", bgSlot = 2, dx = 0, dy = -0x20, ticks = vblankTicks(254) })
   viewportDone[#viewportDone + 1] = #events
   -- The viewport mutations run once the closing beast slide finishes; the
   -- tail scroll started by the next step runs under its own guard.
   step(steps, "viewport", {}, { kind = "effect", effect = "scroll-sub0" }, viewportDone)
   local viewportTail = { nextIndex(events) }
-  events[#events + 1] = event(
-    "setScroll",
-    "viewport-tail",
-    0,
-    { engine = "sub", bgSlot = 3, dx = 0, dy = -0x08, ticks = 254, effect = "scroll-sub3" }
-  )
-  step(steps, "viewport-tail", viewportTail, { kind = "effect", effect = "scroll-sub3" })
+  events[#events + 1] =
+    event("setScroll", "viewport-tail", 0, { engine = "sub", bgSlot = 3, dx = 0, dy = -0x08, ticks = vblankTicks(254) })
+  -- Retail EXPAND_ROCKET_VIEWPORT starts its programs and hands off in
+  -- one dispatch; only WAIT_ADMINS waits, on the SUB_1 tail scroll.
+  step(steps, "viewport-tail", viewportTail, { kind = "duration", ticks = 1 })
   local adminsFinish = nextIndex(events)
   events[#events + 1] = event("finish", "admins", 0)
-  step(steps, "admins", {}, { kind = "effect", effect = "scroll-sub1" }, { adminsFinish })
+  step(steps, "admins", {}, { kind = "effect", effect = "scroll-sub1-admins" }, { adminsFinish })
   return steps, events
 end
 
@@ -1617,14 +1674,16 @@ local function scene4Program(clips, layers)
     "setScroll",
     "slide-in",
     0,
-    { engine = "sub", bgSlot = 1, dx = 0xC0, dy = 0, ticks = 10, effect = "scroll-slide-in" }
+    -- The hero slides run through IntroMovie_StartBgScroll_VBlank: ten
+    -- VBlanks complete during bundle tick five.
+    { engine = "sub", bgSlot = 1, dx = 0xC0, dy = 0, ticks = vblankTicks(10), effect = "scroll-slide-in" }
   )
   slideIn[#slideIn + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
     "slide-in",
     0,
-    { engine = "main", bgSlot = 1, dx = -0xC0, dy = 0, ticks = 10, effect = "scroll-slide-in" }
+    { engine = "main", bgSlot = 1, dx = -0xC0, dy = 0, ticks = vblankTicks(10), effect = "scroll-slide-in" }
   )
   showSprite(events, 4, instances, clips, "slide-in", 0, "hand1", "hands", 0)
   slideIn[#slideIn + 1] = #events - 1
@@ -1650,14 +1709,14 @@ local function scene4Program(clips, layers)
     "setScroll",
     "slide-out",
     0,
-    { engine = "sub", bgSlot = 1, dx = 0xC0, dy = 0, ticks = 10, effect = "scroll-slide-out" }
+    { engine = "sub", bgSlot = 1, dx = 0xC0, dy = 0, ticks = vblankTicks(10), effect = "scroll-slide-out" }
   )
   slideOut[#slideOut + 1] = nextIndex(events)
   events[#events + 1] = event(
     "setScroll",
     "slide-out",
     0,
-    { engine = "main", bgSlot = 1, dx = -0xC0, dy = 0, ticks = 10, effect = "scroll-slide-out" }
+    { engine = "main", bgSlot = 1, dx = -0xC0, dy = 0, ticks = vblankTicks(10), effect = "scroll-slide-out" }
   )
   step(steps, "slide-out", slideOut, { kind = "effect", effect = "scroll-slide-out" })
   local hide = {}
@@ -1746,11 +1805,13 @@ local function scene4Program(clips, layers)
   step(steps, "finish-totodile", {}, { kind = "effect", effect = "fade-close" }, retire)
   -- The closing sparkle waits on its own compiled clip: the animation's
   -- frame durations bound the wait, with no separate named effect.
-  -- Physical TOP alone returns to neutral for the sparkle; the other
-  -- engine keeps its close hold behind the retired art.
+  -- Brightness registers are engine-bound, so the source neutral reset of
+  -- the TOP screen releases the main engine (which the flipped mapping
+  -- shows below): the sparkles paint over the retired art while the sub
+  -- engine keeps its close hold behind the black upper screen.
   local sparkleClip = clipPath(clips, "hands", 2)
   local sparkle = { nextIndex(events) }
-  events[#events + 1] = event("setBrightness", "sparkle", 0, { physical = "upper", value = "neutral" })
+  events[#events + 1] = event("setBrightness", "sparkle", 0, { engine = "main", value = "neutral" })
   showSprite(events, 4, instances, clips, "sparkle", 0, "sparkles", "hands", 2)
   sparkle[#sparkle + 1] = #events - 1
   sparkle[#sparkle + 1] = #events
@@ -1794,7 +1855,10 @@ local function scene5Program(versionId)
     "setScroll",
     "begin-scroll",
     0,
-    { engine = "main", bgSlot = 1, dx = 0, dy = -0x40, ticks = 73, effect = "scroll-panorama" }
+    -- The panorama scrolls run through IntroMovie_StartBgScroll_VBlank
+    -- (fire-and-forget under the twenty-tick scroll wait): 73 VBlanks
+    -- cover bundle tick 37.
+    { engine = "main", bgSlot = 1, dx = 0, dy = -0x40, ticks = vblankTicks(73), effect = "scroll-panorama" }
   )
   local paired = { { engine = "main", bgSlot = 2 }, { engine = "sub", bgSlot = 1 }, { engine = "sub", bgSlot = 2 } }
   for _, slot in ipairs(paired) do
@@ -1804,13 +1868,15 @@ local function scene5Program(versionId)
       bgSlot = slot.bgSlot,
       dx = 0,
       dy = direction == "left" and -0x40 or 0x40,
-      ticks = 73,
+      ticks = vblankTicks(73),
       effect = "scroll-panorama",
     })
   end
   step(steps, "begin-scroll", beginScroll, { kind = "duration", ticks = 1 })
   -- The white fade is the scroll wait's guarded action: it starts at the
-  -- twentieth scroll tick while the 73-tick panorama keeps running.
+  -- twentieth scroll tick while the 73-tick panorama keeps running. The
+  -- source brightness register is sticky, so the completed fade holds
+  -- white behind the handoff instead of uncovering the art.
   local whiteOut = nextIndex(events)
   events[#events + 1] = event("setFade", "wait-bg-scroll", 0, {
     scope = "both",
@@ -1818,7 +1884,7 @@ local function scene5Program(versionId)
     color = "white",
     direction = "out",
     ticks = 50,
-    terminal = "neutral",
+    terminal = "hold",
     effect = "fade-white",
   })
   step(steps, "wait-bg-scroll", {}, { kind = "duration", ticks = 20 }, { whiteOut })

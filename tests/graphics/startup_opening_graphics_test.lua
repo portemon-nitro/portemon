@@ -450,7 +450,7 @@ local function compositeScene(sceneNumber, main, sub, clips, particles, steps, e
     generationId = COMPOSITE_GENERATION,
     sceneNumber = sceneNumber,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
-    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+    initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
     layers = { main = main, sub = sub },
     spriteClips = clips,
     models = {},
@@ -1050,7 +1050,7 @@ local function fillerRomScene(versionId, generationId, sceneNumber, art)
     generationId = generationId,
     sceneNumber = sceneNumber,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
-    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+    initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
     layers = {
       main = { compositeLayer(0, upperImage, 256, 192) },
       sub = { compositeLayer(0, lowerImage, 256, 192) },
@@ -3160,7 +3160,7 @@ local function scene4_close_retires_starters_and_holds_black_until_top_neutral(s
   Assert.isTrue(regionLit(retiredMain, 256, 0, 255, 0, 191) < 0.02, "the retired main target holds black into sparkle")
   Assert.isTrue(
     regionLit(retiredSub, 256, 0, 255, 0, 191) < 0.02,
-    "the retired sub target still holds black before the TOP reset"
+    "the retired sub target still holds black before the engine reset"
   )
   movie:updateFixed()
   Assert.equal(currentStepId(movie), "sparkle", "the sparkle dispatches on the tick after retirement")
@@ -3168,10 +3168,13 @@ local function scene4_close_retires_starters_and_holds_black_until_top_neutral(s
   local sparkleMain = sourceBytes(scope, movie.mainCanvas)
   local sparkleSub = sourceBytes(scope, movie.subCanvas)
   Assert.isTrue(
-    regionLit(sparkleMain, 256, 0, 255, 0, 191) < 0.02,
-    "the bottom pane retains black while the sparkle plays"
+    regionLit(sparkleMain, 256, 110, 146, 78, 114) > 0.02,
+    "the freed main engine paints the closing sparkles below"
   )
-  Assert.isTrue(sparkleSub ~= retiredSub, "resetting physical TOP releases only the top target")
+  Assert.isTrue(
+    regionLit(sparkleSub, 256, 0, 255, 0, 191) < 0.02,
+    "the sub engine keeps its close hold behind black above"
+  )
   movie:dispose()
 end
 
@@ -3318,11 +3321,11 @@ local function scene4_authored_shutters_match_source_rows_on_both_engines(scope,
 end
 
 
--- The scene-4 slide-in runs one ten-tick window per engine in opposite
--- directions: main reveals left to right, sub right to left. Between the
--- midway and completed frames the still-scrolling background shifts both
--- halves alike, so the half that changes more is the half the window
--- finishes revealing.
+-- The scene-4 slide-in runs one five-tick window per engine (ten VBlanks)
+-- in opposite directions: main reveals left to right, sub right to left.
+-- Between the midway and completed frames the still-scrolling background
+-- shifts both halves alike, so the half that changes more is the half the
+-- window finishes revealing.
 local function slide_in_windows_reveal_opposite_halves_on_each_engine(scope, context)
   local versionId = selectedVersionId(context)
   local movie = openMovie(scope, versionId, 512, 384, "dual")
@@ -3330,8 +3333,8 @@ local function slide_in_windows_reveal_opposite_halves_on_each_engine(scope, con
   movie:draw()
   local mainEarly = sourceBytes(scope, movie.mainCanvas)
   local subEarly = sourceBytes(scope, movie.subCanvas)
-  advance(movie, 5)
-  Assert.equal(currentStepId(movie), "slide-in", "the slide still runs at its fifth tick")
+  advance(movie, 2)
+  Assert.equal(currentStepId(movie), "slide-in", "the slide still runs on its third tick")
   movie:draw()
   local mainMid = sourceBytes(scope, movie.mainCanvas)
   local subMid = sourceBytes(scope, movie.subCanvas)
@@ -3341,10 +3344,15 @@ local function slide_in_windows_reveal_opposite_halves_on_each_engine(scope, con
     guard = guard + 1
   end
   movie:draw()
+  -- The drawn pose lags the logical clip cell by one tick, so the hands
+  -- settle into their dwell frame on the first hold update; sample the
+  -- settled reveal there.
+  movie:updateFixed()
+  Assert.equal(currentStepId(movie), "hold", "the hold follows the completed slide")
+  movie:draw()
   local mainDone = sourceBytes(scope, movie.mainCanvas)
   local subDone = sourceBytes(scope, movie.subCanvas)
-  advance(movie, 10)
-  Assert.equal(currentStepId(movie), "hold", "the hold follows the completed slide")
+  advance(movie, 9)
   movie:draw()
   local mainHold = sourceBytes(scope, movie.mainCanvas)
   local subHold = sourceBytes(scope, movie.subCanvas)
@@ -3589,11 +3597,11 @@ local function sourced_scroll_offsets_follow_absolute_source_ticks(scope, versio
   movie:updateFixed()
   -- The sourced flyin opens with two immediate placements plus one
   -- open-ended drift tick: main BG0 sits 192 down, main BG1 320 down,
-  -- and both drifts add 64 every fixed tick.
+  -- and both VBlank-queue drifts add twice the source step every tick.
   local entry = currentScrollOffsets(movie)
   Assert.equal(entry.main0, 192, "the immediate main BG0 placement lands on the first frame")
   Assert.equal(entry.main1, 320, "the immediate main BG1 placement lands on the first frame")
-  Assert.equal(entry.main2, 64, "the open-ended drift advances on its dispatch update")
+  Assert.equal(entry.main2, 128, "the open-ended drift advances on its dispatch update")
   movie:draw()
   local drawn = currentScrollOffsets(movie)
   Assert.equal(drawn.main0, 192, "a host draw never resamples the immediate placement")
@@ -3603,8 +3611,8 @@ local function sourced_scroll_offsets_follow_absolute_source_ticks(scope, versio
   end
   local tenth = currentScrollOffsets(movie)
   Assert.equal(tenth.main0, 192, "the timed replacement has not fired yet")
-  Assert.equal(tenth.main2, 640, "the main open-ended drift adds its step every fixed tick")
-  Assert.equal(tenth.sub0, 640, "the sub open-ended drift advances on its own engine clock")
+  Assert.equal(tenth.main2, 1280, "the main open-ended drift adds its step every fixed tick")
+  Assert.equal(tenth.sub0, 1280, "the sub open-ended drift advances on its own engine clock")
   -- At the fifty-sixth flyin tick both voiced panels start a five-tick
   -- -192 replacement: the middle sample truncates toward zero and the
   -- final tick lands exactly on the combined displacement.
@@ -4330,28 +4338,30 @@ local function soulsilver_source_pan_edges_match_wrapped_native_art(scope, conte
   local slot = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(slot.backgrounds.main[0].scrollY, 192, "the flyin holds its main BG0 placement")
   Assert.equal(slot.backgrounds.main[1].scrollY, 320, "the flyin holds its main BG1 placement")
-  Assert.equal(slot.backgrounds.main[2].scrollY, 320, "the main drift adds 64 per fixed tick")
-  Assert.equal(slot.backgrounds.sub[0].scrollY, 320, "the sub drift advances on its own engine clock")
+  -- The perpetual flyover scrolls run on the VBlank queue, adding twice
+  -- the per-VBlank source step every bundle tick.
+  Assert.equal(slot.backgrounds.main[2].scrollY, 640, "the main drift adds 128 per fixed tick")
+  Assert.equal(slot.backgrounds.sub[0].scrollY, 640, "the sub drift advances on its own engine clock")
   movie:draw()
   assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "main", "scene 2 first", {
     [0] = { 0, 192 },
     [1] = { 0, 320 },
-    [2] = { 0, 320 },
+    [2] = { 0, 640 },
   }, {})
   assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "sub", "scene 2 first", {
-    [0] = { 0, 320 },
+    [0] = { 0, 640 },
   }, {})
   -- Mid: thirty drift ticks, still before the timed replacement.
   advance(movie, 25)
-  Assert.equal(slot.backgrounds.main[2].scrollY, 1920, "the main drift keeps adding 64 per fixed tick")
+  Assert.equal(slot.backgrounds.main[2].scrollY, 3840, "the main drift keeps adding 128 per fixed tick")
   movie:draw()
   assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "main", "scene 2 mid", {
     [0] = { 0, 192 },
     [1] = { 0, 320 },
-    [2] = { 0, 1920 },
+    [2] = { 0, 3840 },
   }, {})
   assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "sub", "scene 2 mid", {
-    [0] = { 0, 1920 },
+    [0] = { 0, 3840 },
   }, {})
   -- End: the slow ethan pan samples horizontal wrap at x 16 with the
   -- settled vertical origins. Visible authored sprites are excluded by
@@ -4368,13 +4378,13 @@ local function soulsilver_source_pan_edges_match_wrapped_native_art(scope, conte
   Assert.equal(slot.backgrounds.main[1].scrollX, 16, "the end pan holds its horizontal offset on main BG1")
   Assert.equal(slot.backgrounds.main[0].scrollY, 0, "the replaced BG0 settles at its origin")
   Assert.equal(slot.backgrounds.main[1].scrollY, 128, "the replaced BG1 settles at 320 minus 192")
-  Assert.equal(slot.backgrounds.main[2].scrollY, 64 * elapsed, "the main drift accumulates every fixed tick")
-  Assert.equal(slot.backgrounds.sub[0].scrollY, 64 * elapsed, "the sub drift accumulates every fixed tick")
+  Assert.equal(slot.backgrounds.main[2].scrollY, 128 * elapsed, "the main drift accumulates every fixed tick")
+  Assert.equal(slot.backgrounds.sub[0].scrollY, 128 * elapsed, "the sub drift accumulates every fixed tick")
   movie:draw()
   assertEngineMatchesWrappedArt(scope, movie, cacheFs, scenes[2], "main", "scene 2 end", {
     [0] = { 16, 0 },
     [1] = { 16, 128 },
-    [2] = { 0, 64 * elapsed },
+    [2] = { 0, 128 * elapsed },
   }, {})
   -- The end pan runs under the retained sub black-out, so the sub target
   -- carries held black instead of wrapped art.
@@ -4385,10 +4395,14 @@ local function soulsilver_source_pan_edges_match_wrapped_native_art(scope, conte
   -- Scene 4: the slide carries opposing offsets before settling. Live
   -- hand sprites are excluded by their slot boxes.
   advanceToSceneStep(movie, 4, "slide-in", 20000)
-  advance(movie, 5)
+  advance(movie, 2)
   slot = assert(movie.current, "scene 4 owns its current slot")
-  Assert.equal(slot.backgrounds.main[1].scrollX, 96, "the main slide holds half its negative run")
-  Assert.equal(slot.backgrounds.sub[1].scrollX, -96, "the sub slide holds half its positive run")
+  Assert.equal(currentStepId(movie), "slide-in", "the slide still runs on its third tick")
+  -- The five-tick slide programs sample the even VBlank states of the
+  -- ten-VBlank source slides, so the second tick holds the staged 192
+  -- offset plus two fifths of the mirrored run.
+  Assert.equal(slot.backgrounds.main[1].scrollX, 116, "the main slide holds its second-tick run")
+  Assert.equal(slot.backgrounds.sub[1].scrollX, -116, "the sub slide holds its second-tick run")
   Assert.equal(movie.current.mainPhysical, "lower", "scene 4 opens with main on the lower screen")
   advanceToSceneStep(movie, 4, "hold", 20000)
   advance(movie, 5)
@@ -4414,18 +4428,21 @@ local function soulsilver_source_pan_edges_match_wrapped_native_art(scope, conte
   -- scroll ticks and is still unfaded.
   advance(late, 18)
   local lateSlot = assert(late.current, "the late movie owns its current slot")
-  Assert.equal(lateSlot.backgrounds.main[1].scrollY, -16, "the late main BG1 holds its upward run")
-  Assert.equal(lateSlot.backgrounds.main[2].scrollY, 176, "the late main BG2 holds 160 plus its downward run")
-  Assert.equal(lateSlot.backgrounds.sub[1].scrollY, 16, "the late sub BG1 holds its downward run")
-  Assert.equal(lateSlot.backgrounds.sub[2].scrollY, 176, "the late sub BG2 holds 160 plus its downward run")
+  -- Nineteen ticks into the 37-tick panorama programs (the 73-VBlank
+  -- source scrolls halved into bundle ticks, landing within one VBlank
+  -- step of the source sampling).
+  Assert.equal(lateSlot.backgrounds.main[1].scrollY, -32, "the late main BG1 holds its upward run")
+  Assert.equal(lateSlot.backgrounds.main[2].scrollY, 192, "the late main BG2 holds 160 plus its downward run")
+  Assert.equal(lateSlot.backgrounds.sub[1].scrollY, 32, "the late sub BG1 holds its downward run")
+  Assert.equal(lateSlot.backgrounds.sub[2].scrollY, 192, "the late sub BG2 holds 160 plus its downward run")
   late:draw()
   assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "main", "scene 5 late", {
-    [1] = { 0, -16 },
-    [2] = { 0, 176 },
+    [1] = { 0, -32 },
+    [2] = { 0, 192 },
   }, {})
   assertEngineMatchesWrappedArt(scope, late, lateCache, lateScenes[5], "sub", "scene 5 late", {
-    [1] = { 0, 16 },
-    [2] = { 0, 16 + 160 },
+    [1] = { 0, 32 },
+    [2] = { 0, 32 + 160 },
   }, {})
   late:dispose()
 end
@@ -5848,10 +5865,10 @@ local function soulsilver_scene_five_scroll_starts_only_after_both_shutter_clean
 end
 
 -- The fifth scene starts its 50-step white fade at the twentieth scroll
--- tick while the 73-tick panorama keeps running: no fade exists for the
--- first nineteen scroll ticks, white appears on both engines at the
--- boundary while offsets keep changing, and the scene exits when the fade
--- finishes even though the scroll programs have not.
+-- tick while the 37-tick panorama (73 VBlanks) keeps running: no fade
+-- exists for the first nineteen scroll ticks, white appears on both
+-- engines at the boundary while offsets keep changing, and the scene
+-- exits when the fade finishes after the scroll programs have.
 local function soulsilver_scene_five_white_fade_starts_at_scroll_tick_twenty(scope, context)
   if not RomImporter.isReady("soulsilver") then
     context:skip("SoulSilver panorama fade needs a user-owned SoulSilver ROM")
@@ -5911,7 +5928,7 @@ local function soulsilver_scene_five_white_fade_starts_at_scroll_tick_twenty(sco
   end
   Assert.notNil(firstFadeMoveAt, "the white fade visibly progresses on both engines while scrolling")
   local fading = assert(movie.current, "the running movie owns its current slot")
-  Assert.isFalse(fading.effects["scroll-panorama"].done, "the panorama still runs late in the white fade")
+  Assert.isTrue(fading.effects["scroll-panorama"].done, "the panorama finishes mid-fade")
   local finished = false
   for _ = 1, 120 do
     movie:updateFixed()
@@ -5922,7 +5939,7 @@ local function soulsilver_scene_five_white_fade_starts_at_scroll_tick_twenty(sco
   end
   Assert.isTrue(finished, "the fifty-step white fade completes")
   local closing = assert(movie.current, "the running movie owns its current slot")
-  Assert.isFalse(closing.effects["scroll-panorama"].done, "the panorama has not finished when the fade does")
+  Assert.isTrue(closing.effects["scroll-panorama"].done, "the panorama finishes before the fade does")
   for _ = 1, 10 do
     movie:updateFixed()
     if movie:isFinished() then
@@ -7200,10 +7217,10 @@ local function paused_sprite_clip_holds_its_first_frame_until_started(scope)
   movie:dispose()
 end
 
--- Physical-screen brightness resets resolve the live engine mapping: with
--- the main engine flipped to the lower screen, resetting the upper screen
--- clears only the sub hold while the main hold survives.
-local function physical_top_neutral_resets_only_the_mapped_engine(scope)
+-- Engine brightness resets follow the named engine across the live
+-- mapping: with the main engine flipped to the lower screen, resetting
+-- the sub engine clears only the sub hold while the main hold survives.
+local function sub_engine_neutral_resets_only_the_sub_engine(scope)
   local root = sceneArtRoot(1)
   local mainImage = root .. "layers/top-main.png"
   local subImage = root .. "layers/top-sub.png"
@@ -7232,7 +7249,7 @@ local function physical_top_neutral_resets_only_the_mapped_engine(scope)
       effect = "fade-both",
     },
     { op = "setScreenMapping", stepId = "flip", atStepTick = 0, mainPhysical = "lower" },
-    { op = "setBrightness", stepId = "reset", atStepTick = 0, physical = "upper", value = "neutral" },
+    { op = "setBrightness", stepId = "reset", atStepTick = 0, engine = "sub", value = "neutral" },
     { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 2 },
     { op = "finish", stepId = "tail", atStepTick = 0 },
   }
@@ -7265,9 +7282,9 @@ local function physical_top_neutral_resets_only_the_mapped_engine(scope)
   advance(movie, 1)
   movie:draw()
   local hr, hg, hb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
-  assertSameColor(hr, hg, hb, 0, 0, 0, 0.08, "the main hold survives the upper-screen reset")
+  assertSameColor(hr, hg, hb, 0, 0, 0, 0.08, "the main hold survives the sub-engine reset")
   local qr, qg, qb = pixelOf(sourceBytes(scope, movie.subCanvas), 256, 128, 96)
-  assertSameColor(qr, qg, qb, 0, 1, 0, 0.08, "the upper-screen reset clears only the mapped sub engine")
+  assertSameColor(qr, qg, qb, 0, 1, 0, 0.08, "the sub-engine reset clears only the sub engine")
   movie:dispose()
 end
 
@@ -7499,18 +7516,18 @@ end
 ---@param upper string authored physical upper hold
 ---@param lower string authored physical lower hold
 local EntryHolds = {}
-function EntryHolds.assertPhysicalEntry(slot, sceneNumber, mainPhysical, upper, lower)
+function EntryHolds.assertPhysicalEntry(slot, sceneNumber, mainPhysical, mainHold, subHold)
   Assert.equal(
     slot.mainPhysical,
     mainPhysical,
     "scene " .. sceneNumber .. " maps main to physical " .. mainPhysical .. " before its first tick"
   )
   Assert.isTrue(
-    type(slot.physicalBrightness) == "table",
-    "scene " .. sceneNumber .. " stages its physical holds before its first tick"
+    type(slot.brightness) == "table",
+    "scene " .. sceneNumber .. " stages its engine holds before its first tick"
   )
-  Assert.equal(slot.physicalBrightness.upper, upper, "scene " .. sceneNumber .. " holds physical upper " .. upper)
-  Assert.equal(slot.physicalBrightness.lower, lower, "scene " .. sceneNumber .. " holds physical lower " .. lower)
+  Assert.equal(slot.brightness.main, mainHold, "scene " .. sceneNumber .. " holds the main engine " .. mainHold)
+  Assert.equal(slot.brightness.sub, subHold, "scene " .. sceneNumber .. " holds the sub engine " .. subHold)
 end
 
 ---@param raw table[] five scene manifests in retail order
@@ -7546,10 +7563,10 @@ end
 ---@param mainImage string staged main background path
 ---@param subImage string staged sub background path
 ---@param mainPhysical string authored screen carrying the main engine output
----@param upper string authored physical upper hold
----@param lower string authored physical lower hold
+---@param mainHold string authored main engine hold
+---@param subHold string authored sub engine hold
 ---@return table strict synthetic scene with staged entry holds and a short fill program
-function EntryHolds.entryHoldScene(sceneNumber, mainImage, subImage, mainPhysical, upper, lower)
+function EntryHolds.entryHoldScene(sceneNumber, mainImage, subImage, mainPhysical, mainHold, subHold)
   local events = {
     { op = "waitTicks", stepId = "fill", atStepTick = 0, ticks = 10 },
     { op = "finish", stepId = "fill", atStepTick = 0 },
@@ -7571,7 +7588,7 @@ function EntryHolds.entryHoldScene(sceneNumber, mainImage, subImage, mainPhysica
   )
   scene.initialDisplay = {
     mainPhysical = mainPhysical,
-    physicalBrightness = { upper = upper, lower = lower },
+    brightness = { main = mainHold, sub = subHold },
   }
   return scene
 end
@@ -7678,7 +7695,7 @@ function EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_
   )
   scene.initialDisplay = {
     mainPhysical = "upper",
-    physicalBrightness = { upper = "white", lower = "black" },
+    brightness = { main = "white", sub = "black" },
   }
   local scenes, cacheFs = compositePackAt(scene, 3, {
     [mainImage] = solidPng(256, 192, 255, 0, 0),
@@ -7700,8 +7717,8 @@ function EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_
   local staged = assert(movie.current, "the running movie owns its current slot")
   local silver = assert(staged.spriteInstances["silver-silhouette"], "the entry tick stages the rival instance")
   Assert.isTrue(silver.visible, "the rival stays staged while hidden")
-  Assert.isTrue(type(staged.physicalBrightness) == "table", "the entry keeps its staged physical holds")
-  Assert.equal(staged.physicalBrightness.lower, "black", "the staged rival does not lift the bottom hold")
+  Assert.isTrue(type(staged.brightness) == "table", "the entry keeps its staged engine holds")
+  Assert.equal(staged.brightness.sub, "black", "the staged rival does not lift the sub hold")
   movie:draw()
   local hidden = drawBytes(movie, scope, 512, 384)
   local hiddenR, hiddenG, hiddenB = pixelOf(hidden, 512, 256, 288)
@@ -7710,8 +7727,8 @@ function EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_
   advanceToSceneStep(movie, 3, "reveal", 20000)
   advance(movie, 1)
   local released = assert(movie.current, "the running movie owns its current slot")
-  Assert.isTrue(type(released.physicalBrightness) == "table", "the reveal keeps its staged physical holds")
-  Assert.equal(released.physicalBrightness.lower, "neutral", "the bottom wipe releases the bottom hold")
+  Assert.isTrue(type(released.brightness) == "table", "the reveal keeps its staged engine holds")
+  Assert.equal(released.brightness.sub, "neutral", "the sub wipe releases the sub hold")
   advanceToSceneStep(movie, 3, "tail", 20000)
   advance(movie, 1)
   Assert.equal(movie:sceneNumber(), 3, "the tail still plays the third scene after one tick")
@@ -7721,10 +7738,10 @@ function EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_
   movie:dispose()
 end
 
--- Physical holds stay pinned to the physical screen across mapping flips
--- and fade effects: the flip reroutes engines without carrying a hold,
--- and only the authored neutral reset clears one.
-function EntryHolds.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets(scope)
+-- Engine holds follow their engine across mapping flips and fade
+-- effects: the flip reroutes engines with their holds, and only the
+-- authored neutral reset clears one.
+function EntryHolds.engine_holds_follow_their_engine_across_mapping_flips_and_neutral_resets(scope)
   local root = sceneArtRoot(1)
   local mainImage = root .. "layers/pin-main.png"
   local subImage = root .. "layers/pin-sub.png"
@@ -7746,7 +7763,7 @@ function EntryHolds.physical_holds_stay_pinned_across_mapping_flips_and_neutral_
       { op = "enableSkip", stepId = "setup", atStepTick = 1 },
       { op = "setScreenMapping", stepId = "flip", atStepTick = 0, mainPhysical = "lower" },
       { op = "waitTicks", stepId = "flip", atStepTick = 0, ticks = 4 },
-      { op = "setBrightness", stepId = "reset", atStepTick = 0, physical = "upper", value = "neutral" },
+      { op = "setBrightness", stepId = "reset", atStepTick = 0, engine = "main", value = "neutral" },
       { op = "waitTicks", stepId = "reset", atStepTick = 0, ticks = 4 },
       { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 2 },
       { op = "finish", stepId = "tail", atStepTick = 0 },
@@ -7754,7 +7771,7 @@ function EntryHolds.physical_holds_stay_pinned_across_mapping_flips_and_neutral_
   )
   scene.initialDisplay = {
     mainPhysical = "upper",
-    physicalBrightness = { upper = "white", lower = "black" },
+    brightness = { main = "white", sub = "black" },
   }
   local scenes, cacheFs = compositePack(scene, {
     [mainImage] = solidPng(256, 192, 255, 0, 0),
@@ -7767,27 +7784,27 @@ function EntryHolds.physical_holds_stay_pinned_across_mapping_flips_and_neutral_
   advance(movie, 1)
   local flipped = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(flipped.mainPhysical, "lower", "the authored flip moves the main engine")
-  Assert.isTrue(type(flipped.physicalBrightness) == "table", "the flip keeps the staged physical holds")
-  Assert.equal(flipped.physicalBrightness.upper, "white", "the flip leaves the upper hold on the upper screen")
-  Assert.equal(flipped.physicalBrightness.lower, "black", "the flip leaves the lower hold on the lower screen")
+  Assert.isTrue(type(flipped.brightness) == "table", "the flip keeps the staged engine holds")
+  Assert.equal(flipped.brightness.main, "white", "the flip keeps the white hold on the main engine")
+  Assert.equal(flipped.brightness.sub, "black", "the flip keeps the black hold on the sub engine")
   movie:draw()
   local held = drawBytes(movie, scope, 512, 384)
   local heldUpperR, heldUpperG, heldUpperB = pixelOf(held, 512, 256, 96)
-  assertSameColor(heldUpperR, heldUpperG, heldUpperB, 1, 1, 1, 0.08, "the upper pane keeps its hold across the flip")
+  assertSameColor(heldUpperR, heldUpperG, heldUpperB, 0, 0, 0, 0.08, "the upper pane follows the sub hold across the flip")
   local heldLowerR, heldLowerG, heldLowerB = pixelOf(held, 512, 256, 288)
-  assertSameColor(heldLowerR, heldLowerG, heldLowerB, 0, 0, 0, 0.08, "the lower pane keeps its hold across the flip")
+  assertSameColor(heldLowerR, heldLowerG, heldLowerB, 1, 1, 1, 0.08, "the lower pane follows the main hold across the flip")
   advanceToSceneStep(movie, 1, "reset", 20000)
   advance(movie, 1)
   local reset = assert(movie.current, "the running movie owns its current slot")
-  Assert.isTrue(type(reset.physicalBrightness) == "table", "the reset keeps the staged physical holds")
-  Assert.equal(reset.physicalBrightness.upper, "neutral", "the authored reset clears only the upper hold")
-  Assert.equal(reset.physicalBrightness.lower, "black", "the authored reset keeps the lower hold")
+  Assert.isTrue(type(reset.brightness) == "table", "the reset keeps the staged engine holds")
+  Assert.equal(reset.brightness.main, "neutral", "the authored reset clears only the main hold")
+  Assert.equal(reset.brightness.sub, "black", "the authored reset keeps the sub hold")
   movie:draw()
   local cleared = drawBytes(movie, scope, 512, 384)
   local clearedR, clearedG, clearedB = pixelOf(cleared, 512, 256, 96)
-  assertSameColor(clearedR, clearedG, clearedB, 0, 1, 0, 0.08, "the cleared upper pane shows its mapped engine")
+  assertSameColor(clearedR, clearedG, clearedB, 0, 0, 0, 0.08, "the upper pane keeps the sub hold after the main reset")
   local keptR, keptG, keptB = pixelOf(cleared, 512, 256, 288)
-  assertSameColor(keptR, keptG, keptB, 0, 0, 0, 0.08, "the lower pane keeps its hold after the upper reset")
+  assertSameColor(keptR, keptG, keptB, 1, 0, 0, 0.08, "the lower pane shows the main engine after the main reset")
   movie:dispose()
 end
 
@@ -7808,9 +7825,9 @@ function EntryHolds.scene_two_to_three_handoff_holds_black_bottom_for_edition(sc
   local slot = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(slot.stepElapsed, 0, "the incoming scene has not run its first tick")
   Assert.equal(slot.mainPhysical, "upper", "scene 3 maps main to physical upper")
-  Assert.isTrue(type(slot.physicalBrightness) == "table", "scene 3 stages its physical holds before its first tick")
-  Assert.equal(slot.physicalBrightness.upper, "white", "scene 3 holds physical upper white")
-  Assert.equal(slot.physicalBrightness.lower, "black", "scene 3 holds physical lower black")
+  Assert.isTrue(type(slot.brightness) == "table", "scene 3 stages its engine holds before its first tick")
+  Assert.equal(slot.brightness.main, "white", "scene 3 holds the main engine white")
+  Assert.equal(slot.brightness.sub, "black", "scene 3 holds the sub engine black")
   movie:draw()
   local host = drawBytes(movie, scope, 512, 384)
   Assert.near(regionLit(host, 512, 0, 511, 200, 375), 0, 0.01, "the lower pane stays black before the first tick")
@@ -8003,7 +8020,7 @@ local T = GraphicsSmoke.suite({
   ["heartgold copyright blend and fade are blocked without a dump"] = heartgold_copyright_blend_and_fade_are_blocked_without_a_dump,
   ["entry mapping and physical holds cover the handoff before the first tick"] = EntryHolds.entry_mapping_and_physical_holds_cover_the_handoff_before_the_first_tick,
   ["staged sprites stay visible while the physical bottom holds black until its wipe"] = EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_black_until_its_wipe,
-  ["physical holds stay pinned across mapping flips and neutral resets"] = EntryHolds.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets,
+  ["engine holds follow their engine across mapping flips and neutral resets"] = EntryHolds.engine_holds_follow_their_engine_across_mapping_flips_and_neutral_resets,
   ["soulsilver scene two to three handoff holds black bottom before the first tick"] = EntryHolds.soulsilver_scene_two_to_three_handoff_holds_black_bottom_before_the_first_tick,
   ["heartgold scene two to three handoff is blocked without a dump"] = EntryHolds.heartgold_scene_two_to_three_handoff_is_blocked_without_a_dump,
   ["soulsilver source town wipe slopes with the scanline"] = soulsilver_source_town_wipe_slopes_with_the_scanline,
@@ -8167,7 +8184,7 @@ local T = GraphicsSmoke.suite({
   ["composited town pixels stay visible and animate across hold ticks"] = composited_town_pixels_stay_visible_and_animate_across_hold_ticks,
   ["real starter flips map each source engine onto its authored host pane"] = real_starter_flips_map_each_source_engine_onto_its_authored_host_pane,
   ["starter particles move only the main source target"] = starter_particles_move_only_the_main_source_target,
-  ["scene 4 close retires starters and holds black until top neutral"] = scene4_close_retires_starters_and_holds_black_until_top_neutral,
+  ["scene 4 close retires starters and frees the main engine below black above"] = scene4_close_retires_starters_and_holds_black_until_top_neutral,
   ["scene 4 starter beats hold emission and flip until their cases"] = scene4_starter_beats_hold_emission_and_flip_until_their_cases,
   ["scene 4 authored shutters match source rows on both engines"] = scene4_authored_shutters_match_source_rows_on_both_engines,
 -- Scene 4 opens both hands on the same tick as both portrait pans: the
@@ -8213,12 +8230,15 @@ local T = GraphicsSmoke.suite({
     movie:draw()
     local mainFirst = sourceBytes(scope, movie.mainCanvas)
     local subFirst = sourceBytes(scope, movie.subCanvas)
-    advance(movie, 8)
-    assertHandsTogether("the ninth entrance tick")
-    -- Both hands rest on the long dwell frame the decoded sequences give
-    -- them after ten one-tick steps.
+    -- The five-tick slide advances the hands two animation units per
+    -- tick through ten one-tick opening frames, so the fourth entrance
+    -- tick (eight units) shows the ninth frame of the decoded sequences.
+    advance(movie, 3)
+    assertHandsTogether("the fourth entrance tick")
+    -- Both hands keep stepping through the one-tick opening frames the
+    -- decoded sequences give them before the long dwell.
     slot = assert(movie.current, "the running movie owns its current slot")
-    Assert.equal(slot.spriteInstances["hand1"].playback.cell, 11, "both hands settle on the dwell frame together")
+    Assert.equal(slot.spriteInstances["hand1"].playback.cell, 9, "both hands reach the ninth frame together")
     movie:draw()
     local mainNinth = sourceBytes(scope, movie.mainCanvas)
     local subNinth = sourceBytes(scope, movie.subCanvas)
@@ -8233,6 +8253,10 @@ local T = GraphicsSmoke.suite({
     movie:updateFixed()
     Assert.equal(currentStepId(movie), "hold", "the completed slide hands off to the hold")
     assertHandsTogether("the settled hold")
+    -- The drawn pose lags the logical clip cell by one tick: capture the
+    -- held portraits once the hands show their dwell frame.
+    movie:updateFixed()
+    movie:draw()
     slot = assert(movie.current, "the running movie owns its current slot")
     Assert.equal(slot.backgrounds.main[1].scrollX, 0, "the main portrait lands centered")
     Assert.equal(slot.backgrounds.sub[1].scrollX, 0, "the sub portrait lands centered")
@@ -8253,9 +8277,9 @@ local T = GraphicsSmoke.suite({
     movie:draw()
     local mainOutFirst = sourceBytes(scope, movie.mainCanvas)
     local subOutFirst = sourceBytes(scope, movie.subCanvas)
-    advance(movie, 8)
-    Assert.equal(currentStepId(movie), "slide-out", "the exit slide spans its ten ticks")
-    assertHandsTogether("the ninth exit tick")
+    advance(movie, 3)
+    Assert.equal(currentStepId(movie), "slide-out", "the exit slide spans its five ticks")
+    assertHandsTogether("the fourth exit tick")
     movie:draw()
     Assert.isTrue(
       changeFraction(mainOutFirst, sourceBytes(scope, movie.mainCanvas), 256, 192) > 0.05,
@@ -8292,12 +8316,63 @@ local T = GraphicsSmoke.suite({
   ["both engine line shutters sample source rows not uniform alpha"] = both_engine_line_shutters_sample_source_rows_not_uniform_alpha,
   ["absolute scroll position overwrites and cancels the running scroll"] = absolute_scroll_position_overwrites_and_cancels_the_running_scroll,
   ["paused sprite clip holds its first frame until started"] = paused_sprite_clip_holds_its_first_frame_until_started,
-  ["physical top neutral resets only the mapped engine"] = physical_top_neutral_resets_only_the_mapped_engine,
+  ["sub engine neutral resets only the sub engine"] = sub_engine_neutral_resets_only_the_sub_engine,
   ["synthetic scene five shutter opens main center out before sub bottom up"] = synthetic_scene_five_shutter_opens_main_center_out_before_sub_bottom_up,
   ["soulsilver scene two final wipe keeps its source kind and white hold"] = soulsilver_scene_two_final_wipe_keeps_its_source_kind_and_white_hold,
   ["soulsilver scene two sub blackout holds while main pans"] = soulsilver_scene_two_sub_blackout_holds_while_main_pans,
   ["soulsilver scene one sunrise shows its static sun before scrolling"] = soulsilver_scene_one_sunrise_shows_static_sun_before_scroll,
   ["soulsilver scene three closes retire town drawing before the rival reveal"] = soulsilver_scene_three_closes_retire_town_drawing_before_the_rival_reveal,
+  -- The source advances only the town it currently shows: sibling stages
+  -- keep their staged first frame until their own show case starts, and a
+  -- hidden stage freezes exactly like the retail map that stops animating
+  -- once the wipe closes over it. Goldenrod therefore opens on its first
+  -- frame instead of inheriting New Bark's hold, and Ecruteak opens on its
+  -- first frame instead of wrapping its loop.
+  ["soulsilver scene three towns advance only while shown"] = function(scope, context)
+    if not RomImporter.isReady("soulsilver") then
+      context:skip("SoulSilver town stages need a user-owned SoulSilver ROM")
+    end
+    local AnimationClip = require("libs.assets.src.model.AnimationClip")
+    local unit = assert(AnimationClip.FRAME_UNIT, "town stages advance in fixed-point frames")
+    local function jointFrame(slot, townName)
+      for _, town in ipairs(assert(slot.towns, "the running movie stages its towns")) do
+        if town.name == townName then
+          local joints = town.instance.animationState:attachments(AnimationClip.CATEGORIES.joint)
+          Assert.isTrue(#joints > 0, townName .. " binds its joint stage")
+          local player = assert(joints[1].player, townName .. " plays its joint stage")
+          return player.frameFx
+        end
+      end
+      error(townName .. " names no staged town", 0)
+    end
+    local movie = openMovie(scope, "soulsilver", 512, 384, "single")
+    advanceToSceneStep(movie, 3, "show-goldenrod-city", 20000)
+    local slot = assert(movie.current, "the running movie owns its current slot")
+    local idleBark = jointFrame(slot, "new-bark-town")
+    Assert.equal(jointFrame(slot, "goldenrod-city"), 0, "goldenrod opens on its staged first frame")
+    Assert.equal(jointFrame(slot, "ecruteak-city"), 0, "ecruteak waits on its staged first frame")
+    advance(movie, 10)
+    slot = assert(movie.current, "the running movie owns its current slot")
+    Assert.equal(jointFrame(slot, "goldenrod-city"), 10 * unit, "goldenrod advances its own hold")
+    Assert.equal(jointFrame(slot, "new-bark-town"), idleBark, "new bark freezes after its close")
+    Assert.equal(jointFrame(slot, "ecruteak-city"), 0, "ecruteak still waits on its staged first frame")
+    movie:draw()
+    local goldenrod = sourceBytes(scope, movie.mainCanvas)
+    Assert.isTrue(
+      regionLit(goldenrod, 256, 0, 80, 120, 191) > 0.5,
+      "goldenrod opens over ground instead of past its map edge"
+    )
+    advanceToSceneStep(movie, 3, "show-ecruteak-city", 20000)
+    slot = assert(movie.current, "the running movie owns its current slot")
+    local idleGold = jointFrame(slot, "goldenrod-city")
+    Assert.equal(jointFrame(slot, "ecruteak-city"), 0, "ecruteak opens on its staged first frame")
+    advance(movie, 10)
+    slot = assert(movie.current, "the running movie owns its current slot")
+    Assert.equal(jointFrame(slot, "ecruteak-city"), 10 * unit, "ecruteak advances its own hold")
+    Assert.equal(jointFrame(slot, "goldenrod-city"), idleGold, "goldenrod freezes after its close")
+    Assert.equal(jointFrame(slot, "new-bark-town"), idleBark, "new bark stays frozen")
+    movie:dispose()
+  end,
   ["soulsilver scene five shutter runs main then sub across layouts"] = soulsilver_scene_five_shutter_runs_main_then_sub_across_layouts,
   ["soulsilver scene five scroll starts only after both shutter cleanups"] = soulsilver_scene_five_scroll_starts_only_after_both_shutter_cleanups,
   ["soulsilver scene five white fade starts at scroll tick twenty"] = soulsilver_scene_five_white_fade_starts_at_scroll_tick_twenty,

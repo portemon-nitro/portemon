@@ -6,7 +6,7 @@ local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v10"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v11"
 local SOURCE_TICK_RATE = 30
 
 local CLOSED_OPS = {
@@ -265,7 +265,9 @@ end
 local function sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate(romFs, versionId)
   local first = checkSceneBundle(compileScene(romFs, versionId, 1), versionId, 1)
   local firstEvents = opsInOrder(first, timelineEvents(first, 1))
-  for _, landmark in ipairs({ 30, 60, 20, 110, 240, 128, 90, 65 }) do
+  -- The 240-VBlank sunrise scrolls run on the VBlank queue and complete
+  -- in 120 bundle ticks.
+  for _, landmark in ipairs({ 30, 60, 20, 110, 120, 128, 90, 65 }) do
     local seen = false
     for _, event in ipairs(firstEvents) do
       if eventMentions(event, landmark) then
@@ -326,7 +328,7 @@ local function sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate(romF
   end
   local longHold = false
   for _, event in ipairs(thirdEvents) do
-    if eventMentions(event, 98) or eventMentions(event, 254) then
+    if eventMentions(event, 98) or eventMentions(event, 127) then
       longHold = true
       break
     end
@@ -386,7 +388,7 @@ local function sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate(romF
       wipeAt = stepPosition(fifth, event.stepId)
     elseif event.op == "circleWipe" then
       circleWipes = circleWipes + 1
-    elseif event.op == "setScroll" and eventMentions(event, 73) and scrollAt == nil then
+    elseif event.op == "setScroll" and eventMentions(event, 37) and scrollAt == nil then
       scrollAt = stepPosition(fifth, event.stepId)
     elseif event.op == "setFade" and eventMentions(event, 50) and fadeAt == nil then
       fadeAt = stepPosition(fifth, event.stepId)
@@ -394,7 +396,7 @@ local function sourceOpeningTimelineKeepsItsFiveSceneTransitionsAndSkipGate(romF
   end
   Assert.notNil(wipeAt, "scene 5 keeps its 18-step sequential line shutter")
   Assert.equal(circleWipes, 0, "scene 5 carries no circle wipe")
-  Assert.notNil(scrollAt, "scene 5 keeps its 73-tick parallel scroll")
+  Assert.notNil(scrollAt, "scene 5 keeps its 37-tick parallel scroll")
   Assert.notNil(fadeAt, "scene 5 keeps its closing 50-tick white fade")
   Assert.isTrue(
     (wipeAt or 0) <= (scrollAt or 0) and (scrollAt or 0) <= (fadeAt or 0),
@@ -486,7 +488,7 @@ end
 -- below reads the exact compiled bundles and fails until the producer
 -- emits that contract and the central reader enforces it.
 
-local STRICT_SCHEMA = "g4-startup-opening-scene-v10"
+local STRICT_SCHEMA = "g4-startup-opening-scene-v11"
 
 local function strictManifest(bundle, versionId, sceneNumber)
   local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
@@ -1109,17 +1111,17 @@ local function strictValidationAcceptsOnlyCompleteContracts(romFs, versionId)
   -- manifest carries one immutable per-scene record the slot applies
   -- before its first draw, distinct from later timeline mapping events.
   local entryHolds = {
-    [1] = { mainPhysical = "lower", physicalBrightness = { upper = "neutral", lower = "neutral" } },
-    [2] = { mainPhysical = "upper", physicalBrightness = { upper = "white", lower = "white" } },
-    [3] = { mainPhysical = "upper", physicalBrightness = { upper = "white", lower = "black" } },
-    [4] = { mainPhysical = "lower", physicalBrightness = { upper = "black", lower = "black" } },
-    [5] = { mainPhysical = "lower", physicalBrightness = { upper = "black", lower = "black" } },
+    [1] = { mainPhysical = "lower", brightness = { main = "neutral", sub = "neutral" } },
+    [2] = { mainPhysical = "upper", brightness = { main = "white", sub = "white" } },
+    [3] = { mainPhysical = "upper", brightness = { main = "white", sub = "black" } },
+    [4] = { mainPhysical = "lower", brightness = { main = "black", sub = "black" } },
+    [5] = { mainPhysical = "lower", brightness = { main = "black", sub = "black" } },
   }
   for sceneNumber = 1, 5 do
     local entryManifest = assert(compiled[sceneNumber].manifest, "scene " .. sceneNumber .. " publishes its manifest")
     Assert.equal(
       entryManifest.schema,
-      "g4-startup-opening-scene-v10",
+      "g4-startup-opening-scene-v11",
       "scene " .. sceneNumber .. " carries the entry-mapping scene schema"
     )
     Assert.deepEqual(
@@ -1134,7 +1136,7 @@ local function strictValidationAcceptsOnlyCompleteContracts(romFs, versionId)
   Assert.isNil(omittedLoaded, "a scene without its entry mapping and holds never validates")
   Assert.notNil(omittedErr, "a missing entry mapping reports its cause")
   local badHold = deepCopyManifest(compiled[2].manifest)
-  badHold.initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "gray", lower = "white" } }
+  badHold.initialDisplay = { mainPhysical = "upper", brightness = { main = "gray", sub = "white" } }
   local badHoldLoaded, badHoldErr = strictLoad(versionId, 2, badHold, compiled[2].files, nil)
   Assert.isNil(badHoldLoaded, "a scene with an unknown hold never validates")
   Assert.notNil(badHoldErr, "an unknown hold reports its cause")
@@ -1217,7 +1219,7 @@ end
 -- gates on the live group, and only the finish cases move the physical
 -- mapping. The water run starts the 08 close the tick its emitters
 -- retire, the totodile finish retires art on the fade-completed tick,
--- and sparkle resets only physical TOP before its clip ends the scene.
+-- and the sparkle resets the main engine before its clip ends the scene.
 local function scene4SplitsStarterAppearStartRunFinishWithDeferredFlipAndGuardedClose(romFs, versionId)
   local manifest = strictManifest(compileScene(romFs, versionId, 4), versionId, 4)
   local function eventsOf(op, stepId)
@@ -1364,7 +1366,7 @@ local function scene4SplitsStarterAppearStartRunFinishWithDeferredFlipAndGuarded
   local brightness = eventsOf("setBrightness", nil)
   Assert.equal(#brightness, 1, "scene 4 resets brightness exactly once")
   Assert.equal(brightness[1].stepId, "sparkle", "only the sparkle resets brightness")
-  Assert.equal(brightness[1].physical, "upper", "the sparkle resets physical TOP")
+  Assert.equal(brightness[1].engine, "main", "the sparkle resets the main engine")
   Assert.equal(brightness[1].value, "neutral", "the sparkle reset is neutral")
   local sparkle = stepRecord("sparkle")
   Assert.isTrue(entryHas(sparkle, "setSpriteClip"), "the sparkle starts its clip")
@@ -1501,7 +1503,9 @@ local function engineWindowRecordsReplaceTheSyntheticKindShapes(romFs, versionId
   for _, window in ipairs(windows) do
     Assert.isTrue(window.target == nil and window.kind == nil, "windows carry no synthetic shape")
     Assert.isTrue(window.engine == "main" or window.engine == "sub", "windows name their source engine")
-    Assert.equal(window.ticks, 10, "scene 4 slides run ten source frames")
+    -- The slide pans run through IntroMovie_StartWindowPanEffect on the
+    -- VBlank queue, so the ten-VBlank source pans complete in five ticks.
+    Assert.equal(window.ticks, 5, "scene 4 slides run five ticks for ten source VBlanks")
     Assert.equal(window.insideMask, 30, "scene 4 slides keep their inside mask")
     Assert.equal(window.outsideMask, 28, "scene 4 slides keep their outside mask")
   end
@@ -1538,7 +1542,7 @@ local function engineWindowRecordsReplaceTheSyntheticKindShapes(romFs, versionId
     if event.op == "window" then
       Assert.equal(event.engine, "sub", "every scene 3 pan addresses the sub engine")
       Assert.isTrue(event.target == nil and event.kind == nil, "scene 3 windows carry no synthetic shape")
-      if event.ticks == 5 then
+      if event.ticks == 3 then
         narrow = event
       end
       if event.atStepTick == 44 then
@@ -1557,9 +1561,11 @@ local function engineWindowRecordsReplaceTheSyntheticKindShapes(romFs, versionId
       end
     end
   end
-  Assert.notNil(narrow, "scene 3 keeps its five-frame narrow pan")
+  -- Both pans run through IntroMovie_StartWindowPanEffect on the VBlank
+  -- queue: five VBlanks complete in three ticks, seven in four.
+  Assert.notNil(narrow, "scene 3 keeps its three-tick narrow pan")
   Assert.notNil(widen, "scene 3 keeps its widening pan at tick 44")
-  Assert.equal(widen.ticks, 7, "the widening pan runs seven source frames")
+  Assert.equal(widen.ticks, 4, "the widening pan runs four ticks for seven source VBlanks")
   Assert.isTrue(secondaries >= 3, "scene 3 keeps its manual window overrides")
   Assert.isTrue(subVisibilities >= 3, "scene 3 keeps its window visibility toggles")
   Assert.equal(mainDisables, 1, "scene 3 disables the never-shown main window once")
@@ -1689,8 +1695,11 @@ local function openingProgramsStartFromTheirSourceOrigins(romFs, versionId)
   end
   requireInitScroll(compiled[2], 2, "main", 1, 0, 0, 320)
   requireInitScroll(compiled[2], 2, "main", 0, 0, 0, 192)
-  requireInitScroll(compiled[2], 2, "main", 2, -1, 0, 64)
-  requireInitScroll(compiled[2], 2, "sub", 0, -1, 0, 64)
+  -- The perpetual flyover scrolls run on the VBlank queue, adding their
+  -- displacement twice per bundle tick, so the bundle doubles the
+  -- per-VBlank source step.
+  requireInitScroll(compiled[2], 2, "main", 2, -1, 0, 128)
+  requireInitScroll(compiled[2], 2, "sub", 0, -1, 0, 128)
   requireInitScroll(compiled[4], 4, "sub", 1, 0, -192, 0)
   requireInitScroll(compiled[4], 4, "main", 1, 0, 192, 0)
   -- The copyright offset is an absolute placement, not a same-tick
@@ -1726,7 +1735,7 @@ local function openingProgramsStartFromTheirSourceOrigins(romFs, versionId)
   requireInitScroll(compiled[5], 5, "sub", 2, 0, 0, 160)
   local sawPanorama = false
   for _, event in ipairs(compiled[5].timeline.events) do
-    if event.op == "setScroll" and event.ticks == 73 and math.abs(event.dy) == 64 then
+    if event.op == "setScroll" and event.ticks == 37 and math.abs(event.dy) == 64 then
       sawPanorama = true
     end
   end
@@ -1758,11 +1767,24 @@ local function engineBlendsAndWipesCarrySourceOperands(romFs, versionId)
             where .. " selects source planes with a six-bit mask"
           )
         end
-        Assert.isTrue(event.direction == 0 or event.direction == 1, where .. " animates in one source direction")
-        Assert.isTrue(
-          type(event.ticks) == "number" and event.ticks % 1 == 0 and event.ticks > 0,
-          where .. " runs a positive source duration"
-        )
+        if event.ticks == 0 then
+          Assert.isTrue(event.direction == nil, where .. " instant restore carries no direction")
+          Assert.isTrue(
+            type(event.eva) == "number" and event.eva % 1 == 0 and event.eva >= 0 and event.eva <= 31,
+            where .. " instant restore carries a source first weight"
+          )
+          Assert.isTrue(
+            type(event.evb) == "number" and event.evb % 1 == 0 and event.evb >= 0 and event.evb <= 31,
+            where .. " instant restore carries a source second weight"
+          )
+          Assert.isTrue(event.effect == nil, where .. " instant restore starts no effect wait")
+        else
+          Assert.isTrue(event.direction == 0 or event.direction == 1, where .. " animates in one source direction")
+          Assert.isTrue(
+            type(event.ticks) == "number" and event.ticks % 1 == 0 and event.ticks > 0,
+            where .. " runs a positive source duration"
+          )
+        end
         if type(event.effect) == "string" then
           local owner = blendOwners[event.stepId .. "\0" .. event.effect]
           if owner == nil then
@@ -2152,6 +2174,36 @@ end
 -- only the following scroll case restarts its clip: the paused assignment
 -- and the animated reassignment reference the same compiled clip, and the
 -- setup beat carries no sun of its own.
+-- The GameFreak logo beat restores the main-engine blend registers the
+-- way the source does on its twentieth setup tick (G2_SetBlendAlpha with
+-- the copyright first-target mask against the backdrop at full weight),
+-- so the staged logo screen paints opaque instead of staying blended out
+-- until the sunrise scroll starts its own fade.
+local function scene1SetupRestoresMainBlendBeforeSunrise(romFs, versionId)
+  local manifest = strictManifest(compileScene(romFs, versionId, 1), versionId, 1)
+  local _, events = strictTimeline(manifest, 1)
+  local setupBlends = {}
+  for _, event in ipairs(events) do
+    if event.op == "setBlend" and event.stepId == "setup" then
+      setupBlends[#setupBlends + 1] = event
+    end
+  end
+  Assert.equal(#setupBlends, 1, "the setup beat restores the main blend once")
+  local reset = setupBlends[1]
+  Assert.equal(reset.atStepTick, 20, "the main blend restores with the GameFreak layers")
+  Assert.equal(reset.engine, "main", "the restore addresses the main engine")
+  Assert.equal(reset.firstMask, 1, "the restore keeps the copyright first-target mask")
+  Assert.equal(reset.secondMask, 32, "the restore keeps the backdrop second-target mask")
+  Assert.equal(reset.ticks, 0, "the restore lands at once with no timed program")
+  Assert.equal(reset.eva, 31, "the restore carries the source full first weight")
+  Assert.equal(reset.evb, 0, "the restore carries the source zero second weight")
+  Assert.isTrue(reset.effect == nil, "the instant restore starts no effect wait")
+  Assert.isTrue(
+    stepPosition(manifest, "setup") < stepPosition(manifest, "sunrise"),
+    "the blend restore lands before the sunrise background"
+  )
+end
+
 local function scene1SunriseStagesPausedSunBeforeAnimatedScroll(romFs, versionId)
   local manifest = strictManifest(compileScene(romFs, versionId, 1), versionId, 1)
   local _, events = strictTimeline(manifest, 1)
@@ -2259,8 +2311,8 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=20 engine=main bgSlot=0 x=0 y=0",
   })
   assertExactEvents(first, 1, "setScroll", "scroll", SCROLL_KEYS, {
-    "atStepTick=0 engine=main bgSlot=1 dx=0 dy=-32 ticks=240 effect=scroll-sunrise",
-    "atStepTick=0 engine=main bgSlot=2 dx=0 dy=-16 ticks=240 effect=scroll-sunrise",
+    "atStepTick=0 engine=main bgSlot=1 dx=0 dy=-32 ticks=120 effect=scroll-sunrise",
+    "atStepTick=0 engine=main bgSlot=2 dx=0 dy=-16 ticks=120 effect=scroll-sunrise",
   })
   assertExactEvents(first, 1, "setBlend", "fades", BLEND_KEYS, {
     "atStepTick=0 engine=main firstMask=1 secondMask=32 direction=1 ticks=60 effect=blend-copyright-main",
@@ -2276,8 +2328,8 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
   assertExactEvents(second, 2, "setScroll", "flyin", SCROLL_KEYS, {
     "atStepTick=0 engine=main bgSlot=0 dx=0 dy=192 ticks=0 effect=nil",
     "atStepTick=0 engine=main bgSlot=1 dx=0 dy=320 ticks=0 effect=nil",
-    "atStepTick=0 engine=main bgSlot=2 dx=0 dy=64 ticks=-1 effect=nil",
-    "atStepTick=0 engine=sub bgSlot=0 dx=0 dy=64 ticks=-1 effect=nil",
+    "atStepTick=0 engine=main bgSlot=2 dx=0 dy=128 ticks=-1 effect=nil",
+    "atStepTick=0 engine=sub bgSlot=0 dx=0 dy=128 ticks=-1 effect=nil",
     "atStepTick=56 engine=main bgSlot=0 dx=0 dy=-192 ticks=5 effect=scroll-settle-flyin",
     "atStepTick=56 engine=main bgSlot=1 dx=0 dy=-192 ticks=5 effect=scroll-settle-flyin",
   })
@@ -2309,12 +2361,12 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=0 engine=sub bgSlot=1 dx=-192 dy=0 ticks=0 effect=nil",
   })
   assertExactEvents(fourth, 4, "setScroll", "slide-in", SCROLL_KEYS, {
-    "atStepTick=0 engine=main bgSlot=1 dx=-192 dy=0 ticks=10 effect=scroll-slide-in",
-    "atStepTick=0 engine=sub bgSlot=1 dx=192 dy=0 ticks=10 effect=scroll-slide-in",
+    "atStepTick=0 engine=main bgSlot=1 dx=-192 dy=0 ticks=5 effect=scroll-slide-in",
+    "atStepTick=0 engine=sub bgSlot=1 dx=192 dy=0 ticks=5 effect=scroll-slide-in",
   })
   assertExactEvents(fourth, 4, "setScroll", "slide-out", SCROLL_KEYS, {
-    "atStepTick=0 engine=main bgSlot=1 dx=-192 dy=0 ticks=10 effect=scroll-slide-out",
-    "atStepTick=0 engine=sub bgSlot=1 dx=192 dy=0 ticks=10 effect=scroll-slide-out",
+    "atStepTick=0 engine=main bgSlot=1 dx=-192 dy=0 ticks=5 effect=scroll-slide-out",
+    "atStepTick=0 engine=sub bgSlot=1 dx=192 dy=0 ticks=5 effect=scroll-slide-out",
   })
   assertExactEvents(fourth, 4, "setFade", "fade-in", FADE_KEYS, {
     "atStepTick=0 scope=both mode=line-shutter color=black direction=in ticks=10 terminal=neutral shape=center-out effect=fade-in",
@@ -2328,17 +2380,17 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=0 engine=sub bgSlot=2 dx=0 dy=160 ticks=0 effect=nil",
   })
   assertExactEvents(fifth, 5, "setScroll", "begin-scroll", SCROLL_KEYS, {
-    "atStepTick=0 engine=main bgSlot=1 dx=0 dy=-64 ticks=73 effect=scroll-panorama",
-    "atStepTick=0 engine=main bgSlot=2 dx=0 dy=" .. pairedDy .. " ticks=73 effect=scroll-panorama",
-    "atStepTick=0 engine=sub bgSlot=1 dx=0 dy=" .. pairedDy .. " ticks=73 effect=scroll-panorama",
-    "atStepTick=0 engine=sub bgSlot=2 dx=0 dy=" .. pairedDy .. " ticks=73 effect=scroll-panorama",
+    "atStepTick=0 engine=main bgSlot=1 dx=0 dy=-64 ticks=37 effect=scroll-panorama",
+    "atStepTick=0 engine=main bgSlot=2 dx=0 dy=" .. pairedDy .. " ticks=37 effect=scroll-panorama",
+    "atStepTick=0 engine=sub bgSlot=1 dx=0 dy=" .. pairedDy .. " ticks=37 effect=scroll-panorama",
+    "atStepTick=0 engine=sub bgSlot=2 dx=0 dy=" .. pairedDy .. " ticks=37 effect=scroll-panorama",
   })
   assertExactEvents(fifth, 5, "shutterFade", "wipe", SHUTTER_KEYS, {
     "atStepTick=0 order=main-then-sub mainPattern=center-out subPattern=bottom-up color=black steps=18 framesPerStep=1 effect=scene5-shutter",
   })
   Assert.equal(#collectEvents(fifth, "circleWipe", nil), 0, "scene 5 carries no circle wipe")
   assertExactEvents(fifth, 5, "setFade", "wait-bg-scroll", FADE_KEYS, {
-    "atStepTick=0 scope=both mode=brightness color=white direction=out ticks=50 terminal=neutral shape=nil effect=fade-white",
+    "atStepTick=0 scope=both mode=brightness color=white direction=out ticks=50 terminal=hold shape=nil effect=fade-white",
   })
   local third = manifests[3]
   checkScene3SevenWipesWithGates(third)
@@ -2353,7 +2405,7 @@ local function movieTickRateRemainsRetail30Hz(romFs, versionId)
     local manifest = strictManifest(bundle, versionId, sceneNumber)
     Assert.equal(
       manifest.schema,
-      "g4-startup-opening-scene-v10",
+      "g4-startup-opening-scene-v11",
       "scene " .. sceneNumber .. " carries the current scene schema"
     )
     Assert.equal(manifest.sourceTickRate, 30, "scene " .. sceneNumber .. " runs at the retail 30 Hz tick rate")
@@ -2481,8 +2533,8 @@ end
 
 -- Scene 5 follows its five retail cases in order: the wipe dispatches the
 -- ordered shutter, a pure effect wait holds the next case until both engine
--- cleanups finish, the begin-scroll case fires all four 73-tick panorama
--- programs together, the 20-tick scroll wait starts the 50-step white fade
+-- cleanups finish, the begin-scroll case fires all four panorama programs
+-- together (37 ticks for the 73-VBlank source scrolls), the 20-tick scroll wait starts the 50-step white fade
 -- as its guarded action while scrolling continues, and the closing wait
 -- finishes on the fade alone with no scroll dependency.
 local function sceneFiveRunsShutterScrollAndWhiteFadeInSourceOrder(romFs, versionId)
@@ -2509,7 +2561,7 @@ local function sceneFiveRunsShutterScrollAndWhiteFadeInSourceOrder(romFs, versio
   Assert.equal(#scrolls, 4, "all four panorama programs start together in the begin-scroll case")
   for _, scroll in ipairs(scrolls) do
     Assert.equal(scroll.atStepTick, 0, "each panorama program starts on the begin-scroll dispatch")
-    Assert.equal(scroll.ticks, 73, "each panorama program runs its 73 source ticks")
+    Assert.equal(scroll.ticks, 37, "each panorama program runs 37 ticks for its 73 source VBlanks")
     Assert.equal(scroll.effect, "scroll-panorama", "each panorama program shares the scroll wait identity")
   end
   Assert.deepEqual(waitBgScroll.events, {}, "the scroll wait starts no effect on entry")
@@ -2525,6 +2577,11 @@ local function sceneFiveRunsShutterScrollAndWhiteFadeInSourceOrder(romFs, versio
   Assert.equal(fade.direction, "out", "the closing fade runs out")
   Assert.equal(fade.ticks, 50, "the closing fade runs its 50 source steps")
   Assert.equal(fade.effect, "fade-white", "the white fade owns the closing wait identity")
+  Assert.equal(
+    fade.terminal,
+    "hold",
+    "the closing fade holds white like the sticky source brightness register"
+  )
   Assert.deepEqual(waitFadeOut.events, {}, "the closing wait starts no effect on entry")
   Assert.equal(waitFadeOut["until"].kind, "effect", "scene completion waits on the fade task")
   Assert.equal(waitFadeOut["until"].effect, "fade-white", "scene completion waits on the white fade alone")
@@ -2536,7 +2593,7 @@ end
 -- The visual primitive grammar stays closed: a line shutter without its
 -- source shape, a fade naming no source scope, a brightness fade carrying a
 -- shape, a position with nonfinite coordinates, a sprite clip without its
--- animation flag, a brightness reset naming no physical screen, and a
+-- animation flag, a brightness reset naming no source engine, and a
 -- legacy kind-string fade all fail the strict reader with their own cause.
 local function strictVisualPrimitivesRejectMalformedRecords(romFs, versionId)
   local bundle = compileScene(romFs, versionId, 1)
@@ -2625,8 +2682,8 @@ local function strictVisualPrimitivesRejectMalformedRecords(romFs, versionId)
   fade.op = "setBrightness"
   fade.scope, fade.mode, fade.color, fade.direction, fade.ticks, fade.terminal, fade.effect, fade.kind =
     nil, nil, nil, nil, nil, nil, nil, nil
-  fade.physical, fade.value = "middle", "neutral"
-  assertRejected(screenless, "physical screen", "a brightness reset naming no physical screen never validates")
+  fade.engine, fade.value = "middle", "neutral"
+  assertRejected(screenless, "source engine", "a brightness reset naming no source engine never validates")
   local legacyKind = deepCopyManifest(bundle.manifest)
   fade = firstFade(legacyKind)
   fade.scope, fade.mode, fade.color, fade.direction, fade.terminal, fade.shape = nil, nil, nil, nil, nil, nil
@@ -2638,8 +2695,9 @@ end
 -- together: the entei wait hides the first plane only in its completion,
 -- the rocket wait joins both exit slides and swaps all three beast panels
 -- before resetting every rocket origin to the absolute zero the new
--- tilemaps are staged at, and the suicune/viewport tail keeps its own
--- guards while the three 254-tick pans start on the viewport beat.
+-- tilemaps are staged at, and the viewport beat starts the three
+-- 254-VBlank tail pans on completion while the tail hands off in one
+-- dispatch and the admins wait on the SUB_1 tail scroll alone.
 local function scene3BeastExitsGuardTheRocketRetileAtAbsoluteOrigin(romFs, versionId)
   local manifest = strictManifest(compileScene(romFs, versionId, 3), versionId, 3)
   local _, events = strictTimeline(manifest, 3)
@@ -2707,8 +2765,11 @@ local function scene3BeastExitsGuardTheRocketRetileAtAbsoluteOrigin(romFs, versi
   Assert.equal(viewport["until"].kind, "effect", "the viewport beat waits on the suicune slide")
   Assert.equal(viewport["until"].effect, "scroll-sub0", "the viewport beat waits on the suicune slide")
   local viewportTail = stepById(manifest, 3, "viewport-tail")
-  Assert.equal(viewportTail["until"].kind, "effect", "the viewport tail keeps its own scroll guard")
-  Assert.equal(viewportTail["until"].effect, "scroll-sub3", "the viewport tail keeps its own scroll guard")
+  Assert.equal(viewportTail["until"].kind, "duration", "the viewport tail hands off without a scroll guard")
+  Assert.equal(viewportTail["until"].ticks, 1, "the viewport tail hands off in one dispatch")
+  local admins = stepById(manifest, 3, "admins")
+  Assert.equal(admins["until"].kind, "effect", "the admins wait on the tail scroll alone")
+  Assert.equal(admins["until"].effect, "scroll-sub1-admins", "the admins wait names the SUB_1 tail scroll")
 end
 
 -- The nine starter emitter records keep their exact staged animation and
@@ -3525,6 +3586,7 @@ return RomSuite.fromFacts({
   ["opening programs start from their source origins with immediate and continuous scrolls"] = openingProgramsStartFromTheirSourceOrigins,
   ["engine blends and wipes carry their source operands per stage engine"] = engineBlendsAndWipesCarrySourceOperands,
   ["pinned native extents reproduce decoded art with pinned wrap edges"] = pinnedNativeExtentsAndWrapEdgeTopology,
+  ["scene 1 setup restores the main blend before the sunrise"] = scene1SetupRestoresMainBlendBeforeSunrise,
   ["scene 1 sunrise stages its paused sun before the animated scroll"] = scene1SunriseStagesPausedSunBeforeAnimatedScroll,
   ["scene 2 settle and pan guards use their source effects"] = scene2SettleAndPanGuardsUseSourceEffects,
   ["pinned scroll blend wipe and fade operands match retail calls"] = pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls,

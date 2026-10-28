@@ -190,7 +190,7 @@ end
 ---@field clipIds table<string, table<string, unknown>> compiled sprite clips by staged identity
 ---@field clipStarts table<string, integer> latest assignment tick by compiled clip identity
 ---@field mainPhysical string physical screen carrying the main engine output
----@field physicalBrightness table<string, string> staged physical upper/lower holds owned by the slot
+---@field brightness table<string, string> staged per-engine brightness holds owned by the slot
 ---@field emitters table[] live emitter runtimes with their record-driven particles
 ---@field emitterRecords table<integer, table<string, unknown>> compiled emitter records by source id
 ---@field activeTown string?
@@ -533,7 +533,10 @@ local function buildTownModel(self, slot, model, position)
   for _, clip in ipairs(definition.animations) do
     local name = type(clip) == "table" and (clip.id or clip.name)
     if name ~= nil then
-      local clipOk = pcall(instance.play, instance, name, { loopMode = "loop" })
+      -- Town stages play once and clamp on their terminal frame the way
+      -- the source map animation stops advancing at its frame count;
+      -- every hold is shorter than its stage, so the clamp never shows.
+      local clipOk = pcall(instance.play, instance, name, { loopMode = "once" })
       if clipOk then
         played = played + 1
       end
@@ -592,9 +595,9 @@ end
 
 -- Stages the slot entry display from the required manifest record: the
 -- physical screen carrying the main engine plus a private mutable copy of
--- the physical upper/lower holds. The holds stay pinned to the physical
--- screens across engine mapping flips; only authored brightness, wipe,
--- fade, and shutter transitions release them.
+-- the per-engine holds. The holds follow their engines across mapping
+-- flips; only authored brightness, wipe, fade, and shutter transitions
+-- release them.
 ---@param manifest table<string, unknown> validated scene bundle
 ---@return string physical screen carrying the main engine output
 local function entryMainPhysical(manifest)
@@ -605,40 +608,38 @@ local function entryMainPhysical(manifest)
   return entry.mainPhysical
 end
 
+-- Stages the slot entry brightness from the required manifest record: the
+-- per-engine holds the source Init leaves behind. Brightness registers are
+-- engine-bound on the hardware, so the holds follow engines across
+-- physical screen flips instead of sticking to one LCD.
 ---@param manifest table<string, unknown> validated scene bundle
----@return table<string, string> private mutable physical upper/lower holds
-local function entryPhysicalBrightness(manifest)
+---@return table<string, string> private mutable per-engine holds
+local function entryEngineBrightness(manifest)
   local entry = manifest.initialDisplay
-  local holds = type(entry) == "table" and entry.physicalBrightness or nil
+  local holds = type(entry) == "table" and entry.brightness or nil
   if type(holds) ~= "table" then
     error(invalid("opening scene stages no entry holds", { scene = manifest.sceneNumber }), 0)
   end
   local staged = {}
-  for _, role in ipairs({ "upper", "lower" }) do
-    if holds[role] ~= "neutral" and holds[role] ~= "white" and holds[role] ~= "black" then
+  for _, engine in ipairs({ "main", "sub" }) do
+    if holds[engine] ~= "neutral" and holds[engine] ~= "white" and holds[engine] ~= "black" then
       error(invalid("opening scene stages no entry hold", { scene = manifest.sceneNumber }), 0)
     end
-    staged[role] = holds[role]
+    staged[engine] = holds[engine]
   end
   return staged
 end
 
--- Releases the physical hold on the screen the named source engine
--- currently drives, so a flip reroutes engines without carrying a hold
--- to the other screen. Engine fade tasks and holds are untouched.
+-- Releases the brightness hold the named source engine carries. Engine
+-- fade tasks are untouched; only the staged hold retires.
 ---@param slot OpeningMovieSlot scene slot
----@param engine string source engine owning the released output
-local function releasePhysicalHold(slot, engine)
-  local holds = assert(slot.physicalBrightness, "movie slot keeps its staged physical holds")
-  local physical
-  if engine == "main" then
-    physical = slot.mainPhysical
-  elseif engine == "sub" then
-    physical = (slot.mainPhysical == "upper") and "lower" or "upper"
-  else
+---@param engine string source engine owning the released hold
+local function releaseEngineHold(slot, engine)
+  local holds = assert(slot.brightness, "movie slot keeps its staged engine holds")
+  if engine ~= "main" and engine ~= "sub" then
     error(invalid("opening scene transition names no source engine", { engine = engine }), 0)
   end
-  holds[physical] = "neutral"
+  holds[engine] = "neutral"
 end
 
 ---@param self HgssOpeningMovie
@@ -666,7 +667,7 @@ local function acquireSlot(self, manifest)
     clipIds = {},
     clipStarts = {},
     mainPhysical = entryMainPhysical(manifest),
-    physicalBrightness = entryPhysicalBrightness(manifest),
+    brightness = entryEngineBrightness(manifest),
     emitters = {},
     emitterRecords = {},
     activeTown = nil,
@@ -1831,15 +1832,28 @@ local function applyEvent(self, slot, event)
     -- second plane masks, the direction, and the elapsed source ticks. A
     -- later start on the same engine replaces the running program while
     -- the named effect gates its own wait; starts on the other engine
-    -- never touch this slot.
-    slot.blendPrograms[event.engine] = {
-      firstMask = event.firstMask,
-      secondMask = event.secondMask,
-      direction = event.direction,
-      ticks = event.ticks,
-      elapsed = 0,
-    }
-    startTimedEffect(slot, event.effect, event.ticks)
+    -- never touch this slot. A zero-duration start restores the constant
+    -- source register weights at once and starts no timed program.
+    if event.ticks == 0 then
+      slot.blendPrograms[event.engine] = {
+        firstMask = event.firstMask,
+        secondMask = event.secondMask,
+        direction = event.direction,
+        ticks = 0,
+        elapsed = 0,
+        eva = event.eva,
+        evb = event.evb,
+      }
+    else
+      slot.blendPrograms[event.engine] = {
+        firstMask = event.firstMask,
+        secondMask = event.secondMask,
+        direction = event.direction,
+        ticks = event.ticks,
+        elapsed = 0,
+      }
+      startTimedEffect(slot, event.effect, event.ticks)
+    end
   elseif op == "window" then
     startWindowProgram(slot, event)
   elseif op == "setWindowSecondary" then
@@ -1870,9 +1884,9 @@ local function applyEvent(self, slot, event)
         slot.wipeHold = { main = nil, sub = nil }
       end
       slot.wipeHold[event.engine] = nil
-      -- An opening wipe releases the physical hold on the screen its
-      -- engine currently drives; the staged sprite and layer state stays.
-      releasePhysicalHold(slot, event.engine)
+      -- An opening wipe releases the hold on its owning engine; the
+      -- staged sprite and layer state stays.
+      releaseEngineHold(slot, event.engine)
     end
     startTimedEffect(slot, event.effect, event.ticks)
   elseif op == "shutterFade" then
@@ -1891,8 +1905,8 @@ local function applyEvent(self, slot, event)
     }
     -- The ordered shutter covers both engines, so both entry holds retire
     -- with its masks rather than painting over the reveal.
-    releasePhysicalHold(slot, "main")
-    releasePhysicalHold(slot, "sub")
+    releaseEngineHold(slot, "main")
+    releaseEngineHold(slot, "sub")
     slot.effects[event.effect] = { started = true, done = false }
   elseif op == "setSpriteClip" then
     local instance = slot.spriteInstances[event.instanceId]
@@ -1966,34 +1980,31 @@ local function applyEvent(self, slot, event)
     background.scrollY = event.y
     slot.scrolls[event.engine .. ":" .. event.bgSlot] = nil
   elseif op == "setBrightness" then
-    -- A physical reset clears the staged hold on that screen plus the
-    -- fade task and hold of the source engine currently driving it; the
-    -- other engine keeps its own hold or task.
+    -- An engine reset clears the staged hold on that engine plus its
+    -- fade task and hold; the other engine keeps its own hold or task.
+    -- Brightness registers are engine-bound on the hardware, so the reset
+    -- follows the named engine across physical screen flips.
     if event.value ~= "neutral" then
       error(
         invalid("opening scene brightness carries no neutral reset", {
           scene = slot.sceneNumber,
-          physical = event.physical,
+          engine = event.engine,
         }),
         0
       )
     end
-    if event.physical ~= "upper" and event.physical ~= "lower" then
+    if event.engine ~= "main" and event.engine ~= "sub" then
       error(
-        invalid("opening scene brightness names no physical screen", {
+        invalid("opening scene brightness names no source engine", {
           scene = slot.sceneNumber,
-          physical = event.physical,
+          engine = event.engine,
         }),
         0
       )
     end
-    local holds = assert(slot.physicalBrightness, "movie slot keeps its staged physical holds")
-    holds[event.physical] = "neutral"
-    local engine = "sub"
-    if (event.physical == "upper") == (slot.mainPhysical == "upper") then
-      engine = "main"
-    end
-    local state = slot.fadeByEngine[engine]
+    local holds = assert(slot.brightness, "movie slot keeps its staged engine holds")
+    holds[event.engine] = "neutral"
+    local state = slot.fadeByEngine[event.engine]
     assert(state ~= nil, "movie slot keeps a fade record per source engine")
     state.task = nil
     state.hold = nil
@@ -2026,9 +2037,9 @@ local function applyEvent(self, slot, event)
           0
         )
       end
-      -- The authored fade replaces the entry hold on the screens it
+      -- The authored fade replaces the entry hold on the engines it
       -- drives; the fade task itself covers the transition.
-      releasePhysicalHold(slot, engine)
+      releaseEngineHold(slot, engine)
       state.task = {
         mode = event.mode,
         color = event.color,
@@ -2149,7 +2160,9 @@ local function advanceContinuous(slot)
     end
   end
   for _, program in pairs(slot.blendPrograms) do
-    if program.elapsed < program.ticks then
+    -- A constant register restore never advances; timed programs climb
+    -- their own engine clock.
+    if program.ticks > 0 and program.elapsed < program.ticks then
       program.elapsed = program.elapsed + 1
     end
   end
@@ -2250,9 +2263,16 @@ local function advanceContinuous(slot)
       advanceEmitters(slot, group)
     end
   end
+  -- The source advances only the town it currently shows: sibling stages
+  -- keep their staged first frame until their own show case starts, and a
+  -- hidden stage freezes on its last frame exactly like the retail map
+  -- that stops animating once the wipe closes over it.
+  local stagedName = (slot.townVisible and slot.activeTown) or nil
   for _, town in ipairs(slot.towns) do
-    town.instance:updateFixed()
-    town.instance:evaluatePose()
+    if stagedName ~= nil and town.name == stagedName then
+      town.instance:updateFixed()
+      town.instance:evaluatePose()
+    end
   end
 end
 
@@ -2889,12 +2909,16 @@ end
 -- Source step-clock dual coefficients with independent hardware saturation:
 -- the raw count climbs floor(elapsed*31/ticks) capped at 31, the direction
 -- selects which end starts full, and each side saturates at sixteen
--- instead of complementing the other.
+-- instead of complementing the other. A zero-duration program is a
+-- constant register restore carrying its staged weights directly.
 ---@param program table<string, unknown> engine alpha program
 ---@return integer effective first-target coefficient 0..16
 ---@return integer effective second-target coefficient 0..16
 local function blendCoefficients(program)
   local ticks = program.ticks --[[@as integer]]
+  if ticks == 0 then
+    return math.min(program.eva --[[@as integer]], 16), math.min(program.evb --[[@as integer]], 16)
+  end
   assert(ticks > 0, "engine alpha program carries no source tick count")
   local elapsed = math.min(program.elapsed --[[@as integer]], ticks)
   local ev = math.min(31, math.floor(elapsed * 31 / ticks))
@@ -4191,9 +4215,13 @@ function HgssOpeningMovie:_render()
   local lowerCanvas = (roleEngine(slot, "upper") == "main") and self.subCanvas or self.mainCanvas
   assert(upperCanvas ~= nil, "movie role targets are missing")
   assert(lowerCanvas ~= nil, "movie role targets are missing")
-  local holds = slot.physicalBrightness
-  local upperHold = type(holds) == "table" and holds.upper or nil
-  local lowerHold = type(holds) == "table" and holds.lower or nil
+  -- Brightness holds ride the engines, so each physical pane paints the
+  -- hold of whichever engine the current mapping routes to it.
+  local holds = slot.brightness
+  local upperEngine = roleEngine(slot, "upper")
+  local lowerEngine = (upperEngine == "main") and "sub" or "main"
+  local upperHold = type(holds) == "table" and holds[upperEngine] or nil
+  local lowerHold = type(holds) == "table" and holds[lowerEngine] or nil
   graphics.clear(0, 0, 0, 1)
   if configuration == "dualDisplay" and selection.secondary ~= nil and selection.secondary.usableBounds ~= nil then
     -- Each physical surface is its own source screen: fill it like the
@@ -4257,13 +4285,8 @@ function HgssOpeningMovie:_render()
   local activeCanvas = (active == "main") and self.mainCanvas or self.subCanvas
   assert(activeCanvas ~= nil, "movie role targets are missing")
   -- The single stage shows the authored active engine on its own physical
-  -- screen, so a staged hold on that screen still covers the output.
-  local activeHold
-  if active == "main" then
-    activeHold = (slot.mainPhysical == "upper") and upperHold or lowerHold
-  else
-    activeHold = (slot.mainPhysical == "upper") and lowerHold or upperHold
-  end
+  -- screen, so the staged hold of that engine still covers the output.
+  local activeHold = type(holds) == "table" and holds[active] or nil
   blitPhysicalRole(self, activeCanvas, copyRect(primary), false, activeHold)
 end
 

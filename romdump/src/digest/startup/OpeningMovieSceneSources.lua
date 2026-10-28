@@ -335,8 +335,12 @@ function OpeningMovieSceneSources.townSet()
     camera = {
       distance = 410.922119140625,
       angle = { 0xD602, 0x0000, 0x0000, 0 },
-      perspective = 0,
-      perspectiveType = 0x05C1,
+      -- The retail CameraParam packs the perspective type before the
+      -- perspective angle: type 0 selects the perspective projection and
+      -- the staged 0x05C1 angle is superseded by the retail
+      -- Camera_SetPerspectiveAngle(0x981) call, staged here as fovAngle.
+      perspectiveType = 0,
+      perspective = 0x05C1,
       target = { 0, 0, 96 },
       fovAngle = 0x981,
     },
@@ -473,16 +477,19 @@ local INITIAL_VISIBLE = {
 -- Source entry display facts: the retail IntroMovie_SceneN_Init mapping
 -- and brightness each scene holds before its first Main update. Scenes 1,
 -- 4, and 5 flip the main engine onto the physical lower screen; scenes 2
--- and 3 keep it on the physical upper screen. Scene 2 opens both screens
--- white, scene 3 keeps the inherited upper white while holding the lower
--- screen black, and scenes 4 and 5 hold both screens black. The compiler
--- publishes these verbatim; the runtime stages them on slot acquisition.
+-- and 3 keep it on the physical upper screen. Brightness registers are
+-- engine-bound (PM_LCD_TOP drives the main engine, PM_LCD_BOTTOM the sub
+-- engine) regardless of that mapping, so the holds are recorded per
+-- engine: scene 2 opens both engines white, scene 3 keeps the inherited
+-- main-engine white while holding the sub engine black, and scenes 4 and
+-- 5 hold both engines black. The compiler publishes these verbatim; the
+-- runtime stages them on slot acquisition.
 local INITIAL_DISPLAY = {
-  [1] = { mainPhysical = "lower", physicalBrightness = { upper = "neutral", lower = "neutral" } },
-  [2] = { mainPhysical = "upper", physicalBrightness = { upper = "white", lower = "white" } },
-  [3] = { mainPhysical = "upper", physicalBrightness = { upper = "white", lower = "black" } },
-  [4] = { mainPhysical = "lower", physicalBrightness = { upper = "black", lower = "black" } },
-  [5] = { mainPhysical = "lower", physicalBrightness = { upper = "black", lower = "black" } },
+  [1] = { mainPhysical = "lower", brightness = { main = "neutral", sub = "neutral" } },
+  [2] = { mainPhysical = "upper", brightness = { main = "white", sub = "white" } },
+  [3] = { mainPhysical = "upper", brightness = { main = "white", sub = "black" } },
+  [4] = { mainPhysical = "lower", brightness = { main = "black", sub = "black" } },
+  [5] = { mainPhysical = "lower", brightness = { main = "black", sub = "black" } },
 }
 
 ---@param sceneNumber integer
@@ -492,9 +499,9 @@ function OpeningMovieSceneSources.initialDisplay(sceneNumber)
   local entry = assert(INITIAL_DISPLAY[sceneNumber], "opening scene entry display names a compiled scene")
   return {
     mainPhysical = entry.mainPhysical,
-    physicalBrightness = {
-      upper = entry.physicalBrightness.upper,
-      lower = entry.physicalBrightness.lower,
+    brightness = {
+      main = entry.brightness.main,
+      sub = entry.brightness.sub,
     },
   }
 end

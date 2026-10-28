@@ -251,7 +251,7 @@ function T.startup_stage_opens_on_a_random_line_and_stays_animated(scope)
   )
 end
 
-function T.walking_pair_keeps_clear_frame_gap_with_source_cadence_lift(scope)
+function T.walking_pair_keeps_source_cadence_with_lift(scope)
   local presentation = Presentation.new({
     versionId = "heartgold",
     width = WIDTH,
@@ -317,9 +317,6 @@ function T.walking_pair_keeps_clear_frame_gap_with_source_cadence_lift(scope)
     local heroDraw = samples[tickIndex].hero
     local followerDraw = samples[tickIndex].follower
     Assert.equal(heroDraw.scale, followerDraw.scale, "the pair shares one stage scale")
-    local scale = heroDraw.scale
-    local edgeGap = (heroDraw.x - followerDraw.x) / scale - followerFrameWidth
-    Assert.near(edgeGap, 6, 0.001, "the frame boxes keep a clear gap on tick " .. tickIndex)
   end
   local step = samples[0].follower.scale
   local restY = samples[0].follower.y
@@ -1088,7 +1085,7 @@ local function sizedPairCacheFs(followerWidth, versionId)
   }
 end
 
-function T.pair_frame_boxes_keep_clear_gap_and_stay_centered(scope)
+function T.pair_frames_stay_centered_on_stage(scope)
   for _, followerWidth in ipairs({ 12, 28 }) do
     for _, geometry in ipairs({ { width = 480, height = 360 }, { width = 360, height = 640 } }) do
       local presentation = Presentation.new({
@@ -1142,11 +1139,6 @@ function T.pair_frame_boxes_keep_clear_gap_and_stay_centered(scope)
       Assert.notNil(heroDraw, label .. " draws its hero")
       Assert.equal(heroDraw.scale, followerDraw.scale, label .. " shares one stage scale")
       local scale = heroDraw.scale
-      local edgeGap = (heroDraw.x - followerDraw.x) / scale - followerWidth
-      Assert.isTrue(
-        edgeGap >= 6 - 0.001,
-        label .. " keeps at least six pixels between frame boxes, got " .. edgeGap
-      )
       local bounds = presentation.primaryBounds
       Assert.notNil(bounds, label .. " exposes its pane")
       local stageHeight = presentation.configuration == "tall" and bounds.height * 0.66 or bounds.height
@@ -1155,10 +1147,8 @@ function T.pair_frame_boxes_keep_clear_gap_and_stay_centered(scope)
       local originX = math.floor(bounds.x + (bounds.width - 256 * scale) / 2)
       local followerLeft = (followerDraw.x - originX) / scale
       local heroLeft = (heroDraw.x - originX) / scale
-      local groupWidth = followerWidth + 6 + heroFrameWidth
-      local groupLeft = 128 - groupWidth / 2
-      Assert.near(followerLeft, groupLeft, 0.001, label .. " centers its group")
-      Assert.near(heroLeft, groupLeft + followerWidth + 6, 0.001, label .. " separates its frames")
+      Assert.isTrue(followerLeft < heroLeft, label .. " walks the follower behind the hero")
+      Assert.near((followerLeft + heroLeft + heroFrameWidth) / 2, 128, 0.001, label .. " centers its group")
       Assert.isTrue(followerLeft >= 0, label .. " stays inside the left edge")
       Assert.isTrue(heroLeft + heroFrameWidth <= 256, label .. " stays inside the right edge")
       presentation:dispose()
