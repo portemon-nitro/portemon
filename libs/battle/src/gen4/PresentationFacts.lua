@@ -23,6 +23,7 @@ local FLOW_KEYS = {
   struck = "strike",
   strike = "strike",
   missed = "miss",
+  ["move-failed"] = "miss",
   protected = "protect",
   charged = "charge",
   delayed = "delay",
@@ -41,6 +42,9 @@ local FLOW_KEYS = {
   cured = "cure",
   stage = "stage",
   ["status-gate"] = "status-gate",
+  blocked = "status-gate",
+  immune = "miss",
+  ["multi-hit"] = "multi-hit",
   switch = "switch",
   ["switch-intent"] = "switch-intent",
   ["item-intent"] = "item-intent",
@@ -69,6 +73,8 @@ local MOVE_ROUTES = {
   charged = true,
   delayed = true,
   mimicked = true,
+  immune = true,
+  ["multi-hit"] = true,
 }
 
 ---@param kind unknown event kind under route selection
@@ -305,24 +311,12 @@ local function targetsFor(state, kind, cause, payload, scope)
   return out
 end
 
----@param state table<string, unknown> live battle state owning the turn strike tally
----@return integer one-based ordinal of this strike among the turn strikes in source order
-local function nextStrikeOrdinal(state)
-  local tally = state.turnStrikeOrdinal
-  if type(tally) ~= "number" or tally % 1 ~= 0 or tally < 0 then
-    tally = 0
-  end
-  tally = tally --[[@as integer]] + 1
-  state.turnStrikeOrdinal = tally
-  return tally --[[@as integer]]
-end
-
 ---@param cause table<string, unknown> semantic cause carrying the executed move identity
 ---@param kind unknown event kind selecting the phase fact
 ---@param scope table<string, unknown>? executing strike scope carrying the requested move
----@param state table<string, unknown> live battle state owning the turn strike tally
+---@param payload table<string, unknown> event-time semantic data
 ---@return table<string, unknown>? detached move facts, nil for non-move causes
-local function moveFor(cause, kind, scope, state)
+local function moveFor(cause, kind, scope, payload)
   if type(cause.key) ~= "string" or cause.key == "" then
     return nil
   end
@@ -355,13 +349,14 @@ local function moveFor(cause, kind, scope, state)
     move.power = resolved --[[@as integer]]
   end
   if kind == "struck" then
-    -- The turn-global strike tally is the occurrence identity: every
-    -- hit of a multi-hit sequence and every recipient of a spread move
-    -- emits in source order, so the tally increases without gaps while
-    -- the last strike of the turn carries the true total.
-    local ordinal = nextStrikeOrdinal(state)
+    -- Sequence ordinals come from the move interpreter, so each target's
+    -- multi-hit chain starts at one and carries its actual connected total.
+    local ordinal = payload.sequenceHitIndex or payload.hitIndex or 1
+    local total = payload.sequenceHitTotal or ordinal
+    assert(type(ordinal) == "number" and ordinal % 1 == 0 and ordinal >= 1, "strike ordinals stay one-based")
+    assert(type(total) == "number" and total % 1 == 0 and total >= ordinal, "strike totals cover their ordinal")
     move.hitOrdinal = ordinal
-    move.hitCount = ordinal
+    move.hitCount = total
   end
   return move
 end
@@ -463,7 +458,7 @@ function PresentationFacts.decorate(state, event, scope)
     event.targets = targetsFor(state, kind, cause, payload, liveScope)
   end
   if event.move == nil then
-    local move = moveFor(cause, kind, liveScope, state)
+    local move = moveFor(cause, kind, liveScope, payload)
     if move ~= nil then
       event.move = move
     end

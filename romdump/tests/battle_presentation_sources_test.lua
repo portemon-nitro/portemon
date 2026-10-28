@@ -29,6 +29,41 @@ function T.pokepic_shadow_source_reconstructs_the_native_texture_copy_geometry()
   })
 end
 
+function T.battle_narration_records_keep_semantic_keys_and_source_bank_ids()
+  local records = sources().MESSAGE_RECORDS
+  local expected = {
+    ["battle/narration/wild-appeared"] = 965,
+    ["battle/narration/trainer-challenged"] = 969,
+    ["battle/narration/trainer-sent-out"] = 972,
+    ["battle/narration/player-sent-out"] = 979,
+    ["battle/narration/trainer-withdrew"] = 989,
+    ["battle/narration/trainer-used-item"] = 858,
+    ["battle/child/party-title"] = 6,
+    ["battle/child/target-title"] = 7,
+    ["battle/child/learn-prompt"] = 1183,
+    ["battle/child/command-prompt"] = 921,
+    ["battle/narration/trainer-victory"] = 839,
+    ["battle/narration/defeated-last-mon"] = 36,
+    ["battle/narration/wild-lost-money"] = 34,
+    ["battle/narration/trainer-lost-money"] = 35,
+    ["battle/narration/player-blacked-out"] = 37,
+    ["battle/narration/ellipsis"] = 38,
+    ["battle/narration/got-away"] = 781,
+    ["battle/narration/fled-with-item"] = 782,
+    ["battle/narration/fled-run-away"] = 783,
+  }
+  local banks = {
+    ["battle/child/party-title"] = "partyResult",
+    ["battle/child/target-title"] = "partyResult",
+  }
+  for key, messageId in pairs(expected) do
+    local record = assert(records[key], key .. " is a staged battle message")
+    Assert.equal(record.bank, banks[key] or "scriptController", key .. " uses its source message bank")
+    Assert.equal(record.messageId, messageId, key .. " selects its retail message record")
+  end
+  Assert.equal(records["battle/move-use/STRUGGLE/own"].messageId, 495, "the full retail move bank includes Struggle")
+end
+
 function T.ordinary_backgrounds_keep_their_source_order()
   local Sources = sources()
   Assert.deepEqual(Sources.BACKGROUNDS, {
@@ -484,6 +519,8 @@ function T.menu_and_message_sources_keep_semantic_keys_separate_from_selector_id
   Assert.equal(Sources.MENU_ROUTES["menu/bug-contest/initial"].phase, "initial")
   Assert.equal(Sources.MENU_ROUTES["menu/bug-contest/ordinary"].phase, "ordinary")
   Assert.equal(Sources.MENU_MESSAGES["label/fight"], 924, "the Fight label binds its source message")
+  Assert.equal(Sources.MENU_MESSAGES["label/forget-move"], 1181, "the forget choice uses its native battle label")
+  Assert.equal(Sources.MENU_MESSAGES["label/keep-move"], 1182, "the keep choice uses its native battle label")
   Assert.equal(Sources.MENU_MESSAGES["label/yes"], 940, "yes/no text binds source message records")
   Assert.isNil(Sources.MENU_MESSAGES[924], "message IDs are not runtime catalog keys")
 end
@@ -1399,6 +1436,40 @@ function T.audio_roles_cover_source_selected_heartgold_battle_music()
     kantoWild = "SEQ_GS_VS_NORAPOKE_KANTO",
     kantoTrainer = "SEQ_GS_VS_TRAINER_KANTO",
     kantoGymLeader = "SEQ_GS_VS_GYMREADER_KANTO",
+  })
+end
+
+function T.trainer_pictures_follow_native_front_and_player_backpic_selection()
+  local Sources = sources()
+  local trainerPictures = Sources.TRAINER_PICTURES
+  Assert.equal(trainerPictures.source.symbol, "GetTrainerPicFileIds")
+  Assert.equal(trainerPictures.backpicSource.symbol, "TrainerClassToBackpicID")
+  Assert.equal(trainerPictures.frontArchive, "NARC_a_0_5_8")
+  Assert.equal(trainerPictures.backArchive, "NARC_a_0_0_6")
+  Assert.equal(trainerPictures.membersPerClass, 5)
+  Assert.equal(trainerPictures.memberOffsets.character, 0)
+  Assert.equal(trainerPictures.memberOffsets.palette, 1)
+  Assert.equal(trainerPictures.memberOffsets.cell, 2)
+  Assert.equal(trainerPictures.memberOffsets.animation, 3)
+  Assert.deepEqual(trainerPictures.backClasses, { PKMN_TRAINER_ETHAN = 0, PKMN_TRAINER_LYRA = 1 })
+end
+
+function T.battle_ball_pictures_follow_ball_anim_sprite_resource_members()
+  local ballPictures = sources().BALL_PICTURES
+  Assert.equal(ballPictures.archive, "NARC_a_0_0_8")
+  Assert.equal(ballPictures.source.symbol, "BallAnim_GetSpriteResource")
+  Assert.deepEqual(ballPictures.memberOffsets, {
+    animation = 0,
+    cell = 1,
+    character = 2,
+    palette = 0,
+  })
+  Assert.deepEqual(ballPictures.entries.POKE_BALL, {
+    ballId = 4,
+    animationMember = 268,
+    cellMember = 269,
+    characterMember = 270,
+    paletteMember = 86,
   })
 end
 

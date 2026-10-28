@@ -133,6 +133,7 @@ local function withAppHarness(opts, ready, fn)
   fresh()
   local originalOpts = App.opts
   local originalIsReady = RomImporter.isReady
+  local originalIsRegistered = RomImporter.isRegistered
   local originalNew = HgssGame.new
   local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local originalMenuNew = MainMenuComposition.new
@@ -172,6 +173,7 @@ local function withAppHarness(opts, ready, fn)
     cannedGeneration = "test-generation",
     firstPlayCurrent = true,
     firstPlayStored = true,
+    alreadyRegistered = false,
     firstPlayPublished = {},
   }
   local epoch = 0
@@ -253,6 +255,9 @@ local function withAppHarness(opts, ready, fn)
   })
   App.service = service
   RomImporter.isReady = ready
+  RomImporter.isRegistered = function(_, _)
+    return result.alreadyRegistered
+  end
   local originalIsCurrent = FirstPlayCompletion.isCurrent
   local originalHasStored = FirstPlayCompletion.hasStored
   local originalPublish = FirstPlayCompletion.publish
@@ -372,6 +377,7 @@ local function withAppHarness(opts, ready, fn)
   local ok, err = pcall(fn, result)
   App.opts = originalOpts
   RomImporter.isReady = originalIsReady
+  RomImporter.isRegistered = originalIsRegistered
   FirstPlayCompletion.isCurrent = originalIsCurrent
   FirstPlayCompletion.hasStored = originalHasStored
   FirstPlayCompletion.publish = originalPublish
@@ -2491,6 +2497,7 @@ function T.registered_reimport_stays_warm_while_true_first_import_stays_cold()
     withAppHarness({ dev = false }, function(id)
       return id == "soulsilver"
     end, function(result)
+      result.alreadyRegistered = true
       result.firstPlayCurrent = true
       result.firstPlayStored = true
       App._rebindVersionId = nil

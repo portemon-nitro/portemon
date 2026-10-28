@@ -83,6 +83,23 @@ local function recordingAudio()
     audio.plays[#audio.plays + 1] = name
     return true
   end
+  function audio.playPanned(_, name)
+    audio.plays[#audio.plays + 1] = name
+    return true
+  end
+  function audio.playFanfare(_, name)
+    audio.plays[#audio.plays + 1] = name
+    return true
+  end
+  function audio.playEffect(_, name)
+    audio.plays[#audio.plays + 1] = name
+    return true
+  end
+  function audio.stop(_, name)
+    audio.stops = audio.stops or {}
+    audio.stops[#audio.stops + 1] = name
+    return true
+  end
   return audio
 end
 
@@ -415,7 +432,9 @@ local function settle(runtime, envelope, choose, budget)
     local screen = envelope:liveScreen()
     if screen ~= nil then
       local shown = screen:status()
-      if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+      if shown.mode == "outcome" and type(shown.completion) == "table" and shown.completion.stage == "question" then
+        envelope:input({ { type = "navigate", direction = "down" }, { type = "confirm" } })
+      elseif shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
         envelope:input({ { type = "confirm" } })
       end
     end
@@ -1284,6 +1303,146 @@ function T.portrait_demands_speak_exact_canonical_selectors()
     type(missingErr) == "string" and missingErr:find("NOPE/f9/female/plain", 1, true) ~= nil,
     "the unknown selector failure names its exact selector"
   )
+  envelope:dispose()
+end
+
+-- Opening trainer pictures demand their exact semantic class through
+-- the selected-game host and keep launch preparation pending while the
+-- generated sprite is still being built.
+function T.trainer_picture_demands_wait_for_the_selected_game_host()
+  local SceneCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local cache = {
+    versionId = "trainer-picture-demand-probe",
+    lua = {
+      [SceneCache.manifestPath()] = {
+        trainerPictures = {
+          entries = {
+            ["front:YOUNGSTER"] = {
+              drawableKey = "trainer:front:YOUNGSTER",
+              image = "assets/generated/battle/trainer-youngster.png",
+              width = 80,
+              height = 80,
+            },
+          },
+        },
+      },
+    },
+  }
+  function cache:loadLua(path)
+    return self.lua[path]
+  end
+  local requested = {}
+  local staged = false
+  local host = { derivedAssets = {} }
+  function host.derivedAssets.requestBattleTrainerPicture(selector, urgency)
+    requested[#requested + 1] = { selector = selector, urgency = urgency }
+    return staged, nil
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("trainer-picture-demand:dual")
+    end,
+    derivedAssets = host.derivedAssets,
+  })
+  local services = envelope:_preparationServices()
+  local ready, failure = services.prepare({
+    launchId = "trainer-picture-demand",
+    scenes = {},
+    pages = {},
+    trainerPictures = { "front:YOUNGSTER" },
+    audio = { roles = {}, banks = {}, cries = {} },
+  })
+  Assert.isFalse(ready, "the opening stays pending while trainer art builds")
+  Assert.isNil(failure, "a queued trainer picture has no failure")
+  Assert.deepEqual(
+    requested,
+    { { selector = "front:YOUNGSTER", urgency = "required" } },
+    "the host receives the exact front-pic selector"
+  )
+  staged = true
+  Assert.isTrue(
+    services.prepare({
+      launchId = "trainer-picture-demand",
+      scenes = {},
+      pages = {},
+      trainerPictures = { "front:YOUNGSTER" },
+      audio = { roles = {}, banks = {}, cries = {} },
+    }),
+    "the exact staged trainer picture completes preparation"
+  )
+  local drawable = assert(services.drawable("trainer:front:YOUNGSTER"), "the staged front pic resolves")
+  Assert.equal(drawable.key, "trainer:front:YOUNGSTER", "headless resolution keeps the semantic drawable key")
+  envelope:dispose()
+end
+
+function T.battle_ball_demands_wait_for_the_selected_game_host()
+  local SceneCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local cache = {
+    versionId = "battle-ball-demand-probe",
+    lua = {
+      [SceneCache.manifestPath()] = {
+        battleBalls = {
+          entries = {
+            ["ball:ULTRA_BALL"] = {
+              frames = {
+                {
+                  drawableKey = "battle-ball:ULTRA_BALL:0",
+                  image = "assets/generated/battle/balls/ultra-0.png",
+                  width = 16,
+                  height = 16,
+                },
+                {
+                  drawableKey = "battle-ball:ULTRA_BALL:1",
+                  image = "assets/generated/battle/balls/ultra-1.png",
+                  width = 16,
+                  height = 16,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }
+  function cache:loadLua(path)
+    return self.lua[path]
+  end
+  local requested = {}
+  local staged = false
+  local host = { derivedAssets = {} }
+  function host.derivedAssets.requestBattleBalls(selectors, urgency)
+    requested[#requested + 1] = selectors
+    Assert.equal(urgency, "required", "the active frame requests required battle art")
+    return staged, nil
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("battle-ball-demand:dual")
+    end,
+    derivedAssets = host.derivedAssets,
+  })
+  local services = envelope:_preparationServices()
+  local demand = {
+    launchId = "battle-ball-demand",
+    scenes = {},
+    pages = {},
+    battleBalls = { "ball:ULTRA_BALL" },
+    audio = { roles = {}, banks = {}, cries = {} },
+  }
+  local ready, failure = services.prepare(demand)
+  Assert.isFalse(ready, "the opening stays pending while battle ball art builds")
+  Assert.isNil(failure, "a queued battle ball has no failure")
+  Assert.deepEqual(requested, { { "ball:ULTRA_BALL" } }, "the host receives the exact semantic selector")
+  staged = true
+  Assert.isTrue(services.prepare(demand), "the exact staged ball completes preparation")
+  local drawable = assert(services.drawable("battle-ball:ULTRA_BALL:1"), "the staged zero-based frame resolves")
+  Assert.equal(drawable.key, "battle-ball:ULTRA_BALL:1", "headless resolution keeps the frame drawable key")
   envelope:dispose()
 end
 
@@ -2560,6 +2719,8 @@ local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOv
     windows = doubles.windows,
     text = doubles.text,
     audio = doubles.audio,
+    itemCatalog = runtime.itemCatalog,
+    monCatalog = runtime.monCatalog,
     measureDisplay = function()
       return measurement
     end,

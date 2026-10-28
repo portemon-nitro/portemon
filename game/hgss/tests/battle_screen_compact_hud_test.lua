@@ -232,6 +232,45 @@ function T.enemy_composite_draws_unscaled_at_left_top_bounds()
   Assert.notNil(composites[1].quad, "the enemy composite samples its source strip through quads, never a whole strip")
 end
 
+function T.fainted_picture_can_hide_while_its_health_box_slides()
+  local baseline = snapshot()
+  local baseDraw = drawnHud(baseline, {})
+  local base = drawsOf(baseDraw.graphics, "hud:enemy")
+  Assert.isTrue(#base > 0, "the enemy health box is drawn")
+  local sliding = snapshot()
+  sliding.battlers[2].visible = false
+  sliding.battlers[2].hudVisible = true
+  sliding.battlers[2].hudOffsetX = -24
+  local result = drawnHud(sliding, {})
+  local shifted = drawsOf(result.graphics, "hud:enemy")
+  Assert.isTrue(#shifted > 0, "the sliding health box remains after its picture disappears")
+  Assert.equal(shifted[1].x, base[1].x - 24 * 0.5625, "the enemy health box moves left at its compact scale")
+end
+
+function T.fainting_picture_moves_down_and_clips_in_compact_view()
+  local normal = snapshot()
+  local base = drawnHud(normal, {})
+  local art = "mon:" .. normal.battlers[2].portraitSelector
+  local original = drawsOf(base.graphics, art)
+  Assert.isTrue(#original > 0, "the foe portrait is drawn")
+  local sinking = snapshot()
+  sinking.battlers[2].pictureVisible = true
+  sinking.battlers[2].pictureWidth = 80
+  sinking.battlers[2].pictureHeight = 64
+  sinking.battlers[2].pictureYOffset = 8
+  local result = drawnHud(sinking, {})
+  local moved = drawsOf(result.graphics, art)
+  Assert.isTrue(#moved > 0, "the partially visible foe portrait is drawn")
+  Assert.equal(moved[1].y, original[1].y + 8, "the faint task moves the foe portrait down")
+  local cropped = false
+  for _, clip in ipairs(result.graphics.scissorIntersections) do
+    if clip.requested[3] == 80 and clip.requested[4] == 64 then
+      cropped = true
+    end
+  end
+  Assert.isTrue(cropped, "the faint task clips the picture to its remaining height")
+end
+
 -- The player composite samples its source artwork through quads with its
 -- complete bounds right-aligned above the foe picture and beside the enemy HUD.
 function T.player_composite_right_and_top_edges_clear_battle_art()

@@ -59,7 +59,7 @@ end
 ---@param evAward table<string, integer> hand-specified effort award under test
 ---@return table reward input for one recipient
 local function entry(mon, expAward, evAward)
-  return { combatant = 1, mon = mon, expAward = expAward, evAward = evAward }
+  return { combatant = 1, mon = mon, expAward = expAward, evAward = evAward, boosted = false }
 end
 
 ---@param entries table[] reward inputs under test
@@ -109,6 +109,19 @@ function T.a_full_set_pauses_on_its_learning_prompt_until_replaced()
   Assert.notNil(stats, "the pause reports its explicit stat reload")
   Assert.equal(stats.maxHpBefore, 28, "the reload opens from the level-nine maximum")
   Assert.equal(stats.maxHpAfter, 34, "the reload lands on the level-twelve maximum")
+  local experience = findEvent(paused.events, "exp")
+  Assert.notNil(experience, "the recipient event carries its experience display facts")
+  Assert.isFalse(experience.boosted, "locally owned experience uses the ordinary message")
+  Assert.equal(experience.experienceBefore, 419, "the bar starts from the stored experience")
+  Assert.equal(experience.experienceAfter, 1019, "the bar ends at the awarded experience")
+  Assert.equal(experience.levelUps[1].level, 10, "the event names the first crossed level")
+  Assert.equal(experience.levelUps[1].statsBefore.level, 9, "the stat window starts at the prior level")
+  Assert.equal(experience.levelUps[1].statsAfter.level, 10, "the stat window ends at the crossed level")
+  experience.levelUps[1].statsAfter.maxHp = 0
+  Assert.isTrue(
+    paused.frame.recipients[1].levelUps[1].statsAfter.maxHp > 0,
+    "detached narration facts cannot mutate the resumable reward frame"
+  )
   local decided = Progression.step(
     paused.flow,
     Progression.validateFrame(paused.frame),
@@ -122,6 +135,28 @@ function T.a_full_set_pauses_on_its_learning_prompt_until_replaced()
   Assert.equal(moves[4].ppUps, 0, "a learned move carries no power-point ups")
   Assert.equal(decided.flow.mons[1].experience, 1019, "the award applies exactly once")
   Assert.equal(decided.flow.mons[1].evs.defense, 4, "the effort award applies exactly once")
+end
+
+function T.traded_experience_reports_each_level_and_stat_snapshot()
+  local Progression = progressionOwner("experience events expose retail level boundaries")
+  local mon = makeMon(13, {})
+  pinProgressionBaseline(mon, 419, 28)
+  local recipient = entry(mon, 600, { defense = 4 })
+  recipient.boosted = true
+  local opened = Progression.start(startInput({ recipient }))
+  local result = Progression.step(opened.flow, opened.frame, nil)
+  local experience = findEvent(result.events, "exp")
+  Assert.notNil(experience, "the reward reports its experience display facts")
+  Assert.isTrue(experience.boosted, "traded recipients select the boosted source message")
+  Assert.equal(#experience.crossedLevels, 3, "the award exposes each crossed level in order")
+  Assert.equal(experience.crossedLevels[1], 10, "the first segment ends at level ten")
+  Assert.equal(experience.crossedLevels[3], 12, "the final segment ends at level twelve")
+  Assert.equal(#experience.expSegments, 4, "the display facts split progress at each level boundary")
+  Assert.equal(experience.expSegments[1].toPixels, 96, "the first segment fills to the level boundary")
+  Assert.equal(experience.expSegments[2].fromPixels, 0, "the next level starts with an empty bar")
+  Assert.equal(experience.levelUps[2].statsBefore.level, 10, "the middle stat page starts at level ten")
+  Assert.equal(experience.levelUps[2].statsAfter.level, 11, "the middle stat page ends at level eleven")
+  Assert.equal(experience.levelUps[2].statsAfter.maxHp, 32, "the page carries recalculated maximum HP")
 end
 
 -- Free slots fill without prompting, declines stick, and stale replies
@@ -463,6 +498,7 @@ function T.shared_and_traded_portions_combine_from_player_and_mon_facts()
   local tradedProfile = { name = "BLUE", gender = 0, trainerId = 12345678 }
   ---@param language string player language carried by the scenario context
   ---@return table settled experience gains per recipient after one shared knockout
+  ---@return table settled boosted-message facts per recipient
   local function runSharedKnockout(language)
     local lead = tackleSeed(1, 11)
     lead.mon.heldItem = "EXP__SHARE"
@@ -511,17 +547,29 @@ function T.shared_and_traded_portions_combine_from_player_and_mon_facts()
     local ended, closing = drainEvents(session)
     Assert.equal(ended.status, "ended", "the lone foe ends the battle once it falls")
     local gains = expGains(closing)
+    local boosted = {}
+    for _, event in ipairs(closing) do
+      if event.kind == "exp" then
+        boosted[event.combatant] = event.boosted
+      end
+    end
     session:dispose()
-    return gains
+    return gains, boosted
   end
-  local home = runSharedKnockout("english")
+  local home, homeBoosted = runSharedKnockout("english")
   Assert.deepEqual(home[1], { 40 }, "the participating holder keeps both halves unmultiplied")
   Assert.deepEqual(home[5], { 30 }, "the benched holder takes the same-language trade lift")
   Assert.deepEqual(home[3], { 30 }, "the switched-in battler takes the same-language trade lift")
-  local away = runSharedKnockout("french")
+  Assert.isFalse(homeBoosted[1], "the original trainer gets the ordinary experience message")
+  Assert.isTrue(homeBoosted[5], "the traded same-language holder gets the boosted message")
+  Assert.isTrue(homeBoosted[3], "the traded switched-in battler gets the boosted message")
+  local away, awayBoosted = runSharedKnockout("french")
   Assert.deepEqual(away[1], { 40 }, "matching ownership stays flat even under a foreign context")
   Assert.deepEqual(away[5], { 34 }, "the benched holder takes the foreign lift")
   Assert.deepEqual(away[3], { 34 }, "the switched-in battler takes the foreign lift")
+  Assert.isFalse(awayBoosted[1], "the original trainer keeps the ordinary message under a foreign context")
+  Assert.isTrue(awayBoosted[5], "a foreign traded holder gets the boosted message")
+  Assert.isTrue(awayBoosted[3], "a foreign traded battler gets the boosted message")
 end
 
 ---@param playerContext table<string, unknown> player participant context under reward

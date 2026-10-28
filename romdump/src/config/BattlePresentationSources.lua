@@ -9,6 +9,8 @@
 
 ---@class BattlePresentationSources
 local BattlePresentationSources = {}
+local BattleSources = require("romdump.src.config.BattleSources")
+local MonSources = require("romdump.src.config.MonSources")
 
 BattlePresentationSources.provenance = {
   repo = "retail ROM",
@@ -736,6 +738,64 @@ BattlePresentationSources.BUG_CONTEST_SPRITES = {
   bugNet = { x = 88, y = 8, palette = 4, animation = 1 },
 }
 
+-- BallThrow loads four G2D resources selected by BallAnim_GetSpriteResource
+-- from sBallSpriteResources in battle_anim_data.s.  The table is indexed by
+-- ballId - 1 for IDs 1..24; each family advances its member IDs by the
+-- source stride shown here.
+local ballPictureKeys = {
+  "MASTER_BALL",
+  "ULTRA_BALL",
+  "GREAT_BALL",
+  "POKE_BALL",
+  "SAFARI_BALL",
+  "NET_BALL",
+  "DIVE_BALL",
+  "NEST_BALL",
+  "REPEAT_BALL",
+  "TIMER_BALL",
+  "LUXURY_BALL",
+  "PREMIER_BALL",
+  "DUSK_BALL",
+  "HEAL_BALL",
+  "QUICK_BALL",
+  "CHERISH_BALL",
+  "FAST_BALL",
+  "LEVEL_BALL",
+  "LURE_BALL",
+  "HEAVY_BALL",
+  "LOVE_BALL",
+  "FRIEND_BALL",
+  "MOON_BALL",
+  "SPORT_BALL",
+}
+local ballPictures = {}
+for ballId, itemKey in ipairs(ballPictureKeys) do
+  local resourceBase = 259 + (ballId - 1) * 3
+  ballPictures[itemKey] = {
+    ballId = ballId,
+    animationMember = resourceBase,
+    cellMember = resourceBase + 1,
+    characterMember = resourceBase + 2,
+    paletteMember = 83 + ballId - 1,
+  }
+end
+
+BattlePresentationSources.BALL_PICTURES = {
+  archive = "NARC_a_0_0_8",
+  source = {
+    symbol = "BallAnim_GetSpriteResource",
+    table = "sBallSpriteResources",
+    index = "BallAnim_GetBallTableIndex(ballId)",
+  },
+  memberOffsets = {
+    animation = 0,
+    cell = 1,
+    character = 2,
+    palette = 0,
+  },
+  entries = ballPictures,
+}
+
 -- Exact battle-menu text selectors from battle_input.c's message-bank
 -- constructors. Dynamic mon/move names and other battle dialogue are
 -- published by their own source routes, not guessed into this static set.
@@ -830,6 +890,9 @@ BattlePresentationSources.TRANSITION_MESSAGE_SOURCE_ROUTES = {
 -- remain build inputs; the manifest uses only these semantic role keys.
 BattlePresentationSources.MESSAGE_BANKS = {
   scriptController = 197,
+  attackMessage = 3,
+  itemFeedback = 5,
+  partyResult = 6,
   frontierTrainerProfileZero = 723,
   frontierTrainerProfileFallback = 724,
   trainerPairLookup = 728,
@@ -864,6 +927,9 @@ BattlePresentationSources.MESSAGE_BANKS = {
 }
 BattlePresentationSources.MESSAGE_BANK_RESOURCE_KEYS = {
   scriptController = "message-bank/battle-script-controller",
+  attackMessage = "message-bank/attack-message",
+  itemFeedback = "message-bank/battle-item-feedback",
+  partyResult = "message-bank/battle-party-result",
   frontierTrainerProfileZero = "message-bank/trainer-profile-zero",
   frontierTrainerProfileFallback = "message-bank/trainer-profile-fallback",
   trainerPairLookup = "message-bank/trainer-pair-lookup",
@@ -1282,8 +1348,259 @@ BattlePresentationSources.MESSAGE_TEMPLATE_EXPANSION = {
 BattlePresentationSources.MESSAGE_RECORDS = {
   ["tutorial/author/male-player"] = { bank = "tutorialAuthor", messageId = 1 },
   ["tutorial/author/female-player"] = { bank = "tutorialAuthor", messageId = 0 },
+  ["battle/narration/wild-appeared"] = { bank = "scriptController", messageId = 965 },
+  ["battle/narration/trainer-challenged"] = { bank = "scriptController", messageId = 969 },
+  ["battle/narration/player-sent-out"] = { bank = "scriptController", messageId = 979 },
+  ["battle/narration/trainer-withdrew"] = { bank = "scriptController", messageId = 989 },
+  ["battle/narration/trainer-sent-out"] = { bank = "scriptController", messageId = 972 },
+  ["battle/narration/player-withdrew/switch-out"] = { bank = "scriptController", messageId = 984 },
+  ["battle/narration/player-withdrew/come-back"] = { bank = "scriptController", messageId = 985 },
+  ["battle/narration/player-withdrew/ok"] = { bank = "scriptController", messageId = 986 },
+  ["battle/narration/player-withdrew/enough"] = { bank = "scriptController", messageId = 987 },
+  ["battle/narration/player-withdrew/good"] = { bank = "scriptController", messageId = 988 },
+  ["battle/narration/trainer-used-item"] = { bank = "scriptController", messageId = 858 },
+  ["battle/narration/throw-ball"] = { bank = "scriptController", messageId = 857 },
+  ["battle/child/party-title"] = { bank = "partyResult", messageId = 6 },
+  ["battle/child/target-title"] = { bank = "partyResult", messageId = 7 },
+  ["battle/child/command-prompt"] = { bank = "scriptController", messageId = 921 },
+  ["battle/child/learn-prompt"] = { bank = "scriptController", messageId = 1183 },
+  ["battle/narration/trainer-victory"] = { bank = "scriptController", messageId = 839 },
+  ["battle/narration/won-money"] = { bank = "scriptController", messageId = 33 },
+  ["battle/narration/defeated-last-mon"] = { bank = "scriptController", messageId = 36 },
+  ["battle/narration/wild-lost-money"] = { bank = "scriptController", messageId = 34 },
+  ["battle/narration/trainer-lost-money"] = { bank = "scriptController", messageId = 35 },
+  ["battle/narration/player-blacked-out"] = { bank = "scriptController", messageId = 37 },
+  ["battle/narration/ellipsis"] = { bank = "scriptController", messageId = 38 },
+  ["battle/narration/got-away"] = { bank = "scriptController", messageId = 781 },
+  ["battle/narration/fled-with-item"] = { bank = "scriptController", messageId = 782 },
+  ["battle/narration/fled-run-away"] = { bank = "scriptController", messageId = 783 },
+  ["battle/narration/cannot-escape"] = { bank = "scriptController", messageId = 42 },
+  ["battle/narration/player-sent-out/foe-weak"] = { bank = "scriptController", messageId = 982 },
+  ["battle/narration/player-sent-out/foe-hurt"] = { bank = "scriptController", messageId = 983 },
+  ["battle/narration/player-sent-out/go-for-it"] = { bank = "scriptController", messageId = 981 },
+  ["battle/narration/player-sent-out/in-charge"] = { bank = "scriptController", messageId = 980 },
+  ["battle/narration/critical-hit"] = { bank = "scriptController", messageId = 774 },
+  ["battle/narration/recoil/own"] = { bank = "scriptController", messageId = 279 },
+  ["battle/narration/recoil/wild"] = { bank = "scriptController", messageId = 280 },
+  ["battle/narration/recoil/foe"] = { bank = "scriptController", messageId = 281 },
+  ["battle/narration/drained/own"] = { bank = "scriptController", messageId = 82 },
+  ["battle/narration/drained/wild"] = { bank = "scriptController", messageId = 83 },
+  ["battle/narration/drained/foe"] = { bank = "scriptController", messageId = 84 },
+  ["battle/narration/multi-hit"] = { bank = "scriptController", messageId = 46 },
+  ["battle/narration/move-failed"] = { bank = "scriptController", messageId = 796 },
+  ["battle/narration/super-effective"] = { bank = "scriptController", messageId = 780 },
+  ["battle/narration/not-very-effective"] = { bank = "scriptController", messageId = 779 },
+  ["battle/narration/fainted/own"] = { bank = "scriptController", messageId = 30 },
+  ["battle/narration/fainted/wild"] = { bank = "scriptController", messageId = 31 },
+  ["battle/narration/fainted/foe"] = { bank = "scriptController", messageId = 32 },
+  ["battle/narration/missed/own"] = { bank = "scriptController", messageId = 12 },
+  ["battle/narration/missed/wild"] = { bank = "scriptController", messageId = 13 },
+  ["battle/narration/missed/foe"] = { bank = "scriptController", messageId = 14 },
+  ["battle/narration/avoided/own"] = { bank = "scriptController", messageId = 24 },
+  ["battle/narration/avoided/wild"] = { bank = "scriptController", messageId = 25 },
+  ["battle/narration/avoided/foe"] = { bank = "scriptController", messageId = 26 },
+  ["battle/narration/immune/own"] = { bank = "scriptController", messageId = 27 },
+  ["battle/narration/immune/wild"] = { bank = "scriptController", messageId = 28 },
+  ["battle/narration/immune/foe"] = { bank = "scriptController", messageId = 29 },
+  ["battle/narration/protected/own"] = { bank = "scriptController", messageId = 15 },
+  ["battle/narration/protected/wild"] = { bank = "scriptController", messageId = 16 },
+  ["battle/narration/protected/foe"] = { bank = "scriptController", messageId = 17 },
+  ["battle/narration/experience"] = { bank = "scriptController", messageId = 1 },
+  ["battle/narration/experience/boosted"] = { bank = "scriptController", messageId = 2 },
+  ["battle/narration/level-up"] = { bank = "scriptController", messageId = 3 },
+  ["battle/level-up/stat-name"] = { bank = "scriptController", messageId = 947 },
+  ["battle/level-up/stat-delta"] = { bank = "scriptController", messageId = 948 },
+  ["battle/level-up/stat-total"] = { bank = "scriptController", messageId = 949 },
+  ["battle/narration/learn-move"] = { bank = "scriptController", messageId = 4 },
+  ["battle/narration/gotcha"] = { bank = "scriptController", messageId = 867 },
+  ["battle/narration/caught-nickname-question"] = { bank = "scriptController", messageId = 868 },
+  ["battle/narration/bag-used-item"] = { bank = "scriptController", messageId = 1206 },
+  ["battle/narration/bag-stat-up"] = { bank = "scriptController", messageId = 1203 },
+  ["battle/narration/bag-woke-up"] = { bank = "scriptController", messageId = 1210 },
+  ["battle/narration/bag-cured-poison"] = { bank = "scriptController", messageId = 1207 },
+  ["battle/narration/bag-cured-paralysis"] = { bank = "scriptController", messageId = 1208 },
+  ["battle/narration/bag-healed-burn"] = { bank = "scriptController", messageId = 1209 },
+  ["battle/narration/bag-thawed"] = { bank = "scriptController", messageId = 1211 },
+  ["battle/narration/bag-snapped-out"] = { bank = "scriptController", messageId = 1212 },
+  ["battle/narration/bag-restored-hp"] = { bank = "scriptController", messageId = 1214 },
+  ["battle/narration/bag-guard-spec"] = { bank = "scriptController", messageId = 1204 },
+  ["battle/narration/bag-getting-pumped"] = { bank = "scriptController", messageId = 1205 },
+  ["battle/narration/item-could-not-be-used"] = { bank = "scriptController", messageId = 593 },
+  ["battle/narration/item-no-effect"] = { bank = "itemFeedback", messageId = 34 },
+  ["battle/narration/pp-restored"] = { bank = "partyResult", messageId = 87 },
+  ["battle/narration/transformed"] = { bank = "scriptController", messageId = 345 },
+  ["battle/narration/foretold/own"] = { bank = "scriptController", messageId = 472 },
+  ["battle/narration/foretold/wild"] = { bank = "scriptController", messageId = 473 },
+  ["battle/narration/foretold/foe"] = { bank = "scriptController", messageId = 474 },
+  ["battle/narration/did-not-learn"] = { bank = "scriptController", messageId = 10 },
+  ["battle/narration/charged/own"] = { bank = "scriptController", messageId = 487 },
+  ["battle/narration/charged/wild"] = { bank = "scriptController", messageId = 488 },
+  ["battle/narration/charged/foe"] = { bank = "scriptController", messageId = 489 },
+  ["battle/narration/substitute-broke/own"] = { bank = "scriptController", messageId = 357 },
+  ["battle/narration/substitute-broke/wild"] = { bank = "scriptController", messageId = 358 },
+  ["battle/narration/substitute-broke/foe"] = { bank = "scriptController", messageId = 359 },
+  ["battle/narration/sketched/own"] = { bank = "scriptController", messageId = 385 },
+  ["battle/narration/sketched/wild"] = { bank = "scriptController", messageId = 386 },
+  ["battle/narration/sketched/foe"] = { bank = "scriptController", messageId = 387 },
+  ["battle/narration/bide-release"] = { bank = "scriptController", messageId = 335 },
+  ["battle/narration/bide-release/wild"] = { bank = "scriptController", messageId = 336 },
+  ["battle/narration/bide-release/foe"] = { bank = "scriptController", messageId = 337 },
+}
+local STATUS_VARIANT_RECORDS = {
+  sleep = { own = 47, wild = 48, foe = 49 },
+  poison = { own = 63, wild = 64, foe = 65 },
+  toxic = { own = 79, wild = 80, foe = 81 },
+  burn = { own = 85, wild = 86, foe = 87 },
+  freeze = { own = 101, wild = 102, foe = 103 },
+  paralysis = { own = 120, wild = 121, foe = 122 },
+  confusion = { own = 156, wild = 157, foe = 158 },
+}
+for status, variants in pairs(STATUS_VARIANT_RECORDS) do
+  for side, messageId in pairs(variants) do
+    BattlePresentationSources.MESSAGE_RECORDS["battle/narration/status/" .. status .. "/" .. side] = {
+      bank = "scriptController",
+      messageId = messageId,
+    }
+  end
+end
+local RESIDUAL_VARIANT_RECORDS = {
+  poison = { own = 73, wild = 74, foe = 75 },
+  toxic = { own = 73, wild = 74, foe = 75 },
+  burn = { own = 95, wild = 96, foe = 97 },
+}
+for condition, variants in pairs(RESIDUAL_VARIANT_RECORDS) do
+  for side, messageId in pairs(variants) do
+    BattlePresentationSources.MESSAGE_RECORDS["battle/narration/residual/" .. condition .. "/" .. side] = {
+      bank = "scriptController",
+      messageId = messageId,
+    }
+  end
+end
+local STATUS_GATE_RECORDS = {
+  ["asleep/own"] = 299,
+  ["asleep/wild"] = 300,
+  ["asleep/foe"] = 301,
+  ["paralysis/wild"] = 131,
+  ["paralysis/foe"] = 132,
+  ["paralysis/own"] = 130,
+  ["freeze/wild"] = 112,
+  ["freeze/foe"] = 113,
+  ["freeze/own"] = 111,
+  ["woke/own"] = 302,
+  ["woke/wild"] = 303,
+  ["woke/foe"] = 304,
+  ["thawed/own"] = 114,
+  ["thawed/wild"] = 115,
+  ["thawed/foe"] = 116,
+}
+for route, messageId in pairs(STATUS_GATE_RECORDS) do
+  BattlePresentationSources.MESSAGE_RECORDS["battle/narration/status-gate/" .. route] = {
+    bank = "scriptController",
+    messageId = messageId,
+  }
+end
+local CURED_RECORDS = {
+  ["thawed/own"] = 114,
+  ["thawed/wild"] = 115,
+  ["thawed/foe"] = 116,
+  ["paralysis-healed/own"] = 136,
+  ["paralysis-healed/wild"] = 137,
+  ["paralysis-healed/foe"] = 138,
+  ["confusion-cured/own"] = 153,
+  ["confusion-cured/wild"] = 154,
+  ["confusion-cured/foe"] = 155,
+}
+for route, messageId in pairs(CURED_RECORDS) do
+  BattlePresentationSources.MESSAGE_RECORDS["battle/narration/cured/" .. route] = {
+    bank = "scriptController",
+    messageId = messageId,
+  }
+end
+for classId, classKey in pairs(BattleSources.trainerClassKeys) do
+  BattlePresentationSources.MESSAGE_RECORDS["battle/trainer-class/" .. classKey] = {
+    bank = "trainerClassPlaceholder",
+    messageId = classId,
+  }
+end
+local ATTACK_MESSAGE_OFFSETS = { own = 0, wild = 1, foe = 2 }
+for moveId, moveKey in pairs(MonSources.moveKeys) do
+  if moveId > 0 then
+    for side, offset in pairs(ATTACK_MESSAGE_OFFSETS) do
+      BattlePresentationSources.MESSAGE_RECORDS["battle/move-use/" .. moveKey .. "/" .. side] = {
+        bank = "attackMessage",
+        messageId = moveId * 3 + offset,
+      }
+    end
+  end
+end
+local STAT_PLACEHOLDER_IDS = {
+  hp = 0,
+  attack = 1,
+  defense = 2,
+  speed = 3,
+  specialAttack = 4,
+  specialDefense = 5,
+  accuracy = 6,
+  evasion = 7,
+}
+for statKey, statId in pairs(STAT_PLACEHOLDER_IDS) do
+  BattlePresentationSources.MESSAGE_RECORDS["battle/stat/" .. statKey] = {
+    bank = "statPlaceholder",
+    messageId = statId,
+  }
+end
+local STAGE_MESSAGE_IDS = {
+  ["up/normal"] = { own = 750, wild = 751, foe = 752 },
+  ["up/sharp"] = { own = 753, wild = 754, foe = 755 },
+  ["down/normal"] = { own = 762, wild = 763, foe = 764 },
+  ["down/harsh"] = { own = 765, wild = 766, foe = 767 },
+  ["max-up"] = { own = 142, wild = 143, foe = 144 },
+  ["max-down"] = { own = 145, wild = 146, foe = 147 },
+}
+for action, variants in pairs(STAGE_MESSAGE_IDS) do
+  for side, messageId in pairs(variants) do
+    BattlePresentationSources.MESSAGE_RECORDS["battle/narration/stage/" .. action .. "/" .. side] = {
+      bank = "scriptController",
+      messageId = messageId,
+    }
+  end
+end
+local ITEM_STAGE_MESSAGE_IDS = {
+  normal = { own = 756, wild = 757, foe = 758 },
+  sharp = { own = 759, wild = 760, foe = 761 },
+}
+for strength, variants in pairs(ITEM_STAGE_MESSAGE_IDS) do
+  for side, messageId in pairs(variants) do
+    BattlePresentationSources.MESSAGE_RECORDS["battle/narration/trainer-stat-raised/" .. strength .. "/" .. side] = {
+      bank = "scriptController",
+      messageId = messageId,
+    }
+  end
+end
+-- Front trainer portraits follow GetTrainerPicFileIds with battlerPosition
+-- 2 in pokemon.c. Keep the physical member formula here; published keys
+-- are trainer:<semantic class key> and never expose class/member numbers.
+BattlePresentationSources.TRAINER_PICTURES = {
+  source = {
+    file = "src/pokemon.c",
+    symbol = "GetTrainerPicFileIds",
+  },
+  backpicSource = {
+    file = "src/pokemon.c",
+    symbol = "TrainerClassToBackpicID",
+  },
+  frontArchive = "NARC_a_0_5_8",
+  backArchive = "NARC_a_0_0_6",
+  frontClasses = BattleSources.trainerClassKeys,
+  backClasses = { PKMN_TRAINER_ETHAN = 0, PKMN_TRAINER_LYRA = 1 },
+  membersPerClass = 5,
+  memberOffsets = { character = 0, palette = 1, cell = 2, animation = 3, auxiliary = 4 },
+  outputPrefix = "trainer:",
 }
 BattlePresentationSources.MENU_MESSAGES = {
+  ["battle/bide-release"] = 335,
+  ["battle/bide-release/wild"] = 336,
+  ["battle/bide-release/foe"] = 337,
   ["battle/capture-shakes/0"] = 863,
   ["battle/capture-shakes/1"] = 864,
   ["battle/capture-shakes/2"] = 865,
@@ -1323,8 +1640,8 @@ BattlePresentationSources.MENU_MESSAGES = {
   ["status/recorder-5"] = 1266,
   ["label/bug-contest-ball"] = 1270,
   ["template/bug-contest-remaining-balls"] = 1271,
-  ["label/keep-move"] = 1181,
-  ["label/forget-move"] = 1182,
+  ["label/forget-move"] = 1181,
+  ["label/keep-move"] = 1182,
   ["prompt/give-up"] = 1186,
   ["prompt/keep-battling"] = 1187,
   ["label/safari-balls"] = 950,

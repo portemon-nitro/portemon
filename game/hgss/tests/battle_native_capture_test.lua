@@ -12,7 +12,7 @@
 -- lands.
 
 local Assert = require("tests.support.Assert")
-local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 
 local T = {}
 local TICK = 1 / 30
@@ -203,6 +203,13 @@ function T.capture_choreography_emits_its_ordered_audio_intents()
   Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
   drain(timeline, 3000)
   Assert.isTrue(#sounds.played >= 1, "throw, shake and success sounds play through the ordered audio sink")
+  local fanfare = false
+  for _, cue in ipairs(sounds.played) do
+    if type(cue) == "table" and cue.symbol == "SEQ_ME_POKEGET" and cue.kind == "fanfare" then
+      fanfare = true
+    end
+  end
+  Assert.isTrue(fanfare, "capture plays the source fanfare so battle music pauses")
 end
 
 function T.capture_effects_run_through_the_animation_player()

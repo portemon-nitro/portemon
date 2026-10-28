@@ -1,22 +1,23 @@
 -- First-catch registration presentation through the battle-owned child:
 -- the announcement holds its explicit post-text wait while the default
 -- cue keeps its short hold, the child runs the source phase sequence on
--- a thirty-hertz clock with separate fades, a once-only cry, and fresh
+-- the HGSS source clock with separate fades, a once-only cry, and fresh
 -- dismissal input, and every failure or disposal path releases its
 -- borrowed lease exactly once. The real battle timeline drives the
 -- announcement clock; preparation and audio stay recording doubles. No
 -- renderer, GPU, ROM, or save is involved.
 
 local Assert = require("tests.support.Assert")
-local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local Fixture = require("tests.support.PokedexPresentationFixture")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local CHILD_MODULE = "game.hgss.src.pokedex.PokedexRegistrationState"
 
 local T = {}
 
-local TICK = 1 / BattleTimeline.TICKS_PER_SECOND
+local TICK = SourceTick.DT
 
 ---@param behavior string missing child behavior under test
 ---@return table the loaded battle-owned registration state
@@ -304,12 +305,12 @@ local function checkLockedDemand(demands, registration)
   end
 end
 
--- The child runs its source phase sequence on accepted thirty-hertz
+-- The child runs its source phase sequence on accepted HGSS-source
 -- quanta: preparation gates the announcement, the real borrowed timeline
 -- carries the sixty-tick wait, the cry plays once with its fixed
 -- pattern only after the entry fades, and completion freezes a drawable
 -- final view while keeping the lease until disposal.
-function T.registration_child_runs_source_phases_on_a_thirty_hz_clock()
+function T.registration_child_runs_source_phases_on_the_shared_clock()
   local Child = requirePresent("one complete battle-owned registration sequence")
   local registration = frozenRegistration()
   local pokedex = newPokedexFake({ "pending", "pending", "ready" })

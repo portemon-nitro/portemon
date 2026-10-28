@@ -24,6 +24,7 @@ local UiMessageBank = require("romdump.src.digest.ui.UiMessageBank")
 local charmap = require("romdump.src.catalog.hgss.charmap")
 local BattlePresentationSources = require("romdump.src.config.BattlePresentationSources")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local Spl = require("libs.nds.src.nitro.particle.Spl")
 local Rgb555 = require("libs.codec.src.Rgb555")
@@ -1183,6 +1184,36 @@ local function decodeAnimation(archive, memberId, label)
   return mustDecode(decoded, err, label, memberId)
 end
 
+---@param archive Narc trainer resource archive selected by GetTrainerPicFileIds
+---@param memberBase integer first of the five source picture members
+---@param label string semantic producer diagnostic context
+---@return { width: integer, height: integer, pixels: string, offset: { x: number, y: number } }
+local function compileTrainerPicture(archive, memberBase, label)
+  local sources = Sources.TRAINER_PICTURES
+  local offsets = sources.memberOffsets
+  local charData = decodeChars(archive, memberBase + offsets.character, label .. " characters")
+  local paletteData = decodePalette(archive, memberBase + offsets.palette, label .. " palette")
+  local cellData = decodeCells(archive, memberBase + offsets.cell, label .. " cells")
+  local animationData = decodeAnimation(archive, memberBase + offsets.animation, label .. " animation")
+  local animation = assert(animationData.anims[1], "trainer picture has its source animation")
+  local raster = G2dRasterizer.renderAnimationFrame(charData, paletteData, cellData, animation, 1, {
+    asset = "trainer-pictures",
+    member = memberBase + offsets.animation,
+    role = label,
+  })
+  if raster.width > 128 or raster.height > 128 then
+    error(
+      Errors.new("BATTLE_TRAINER_PICTURE_INVALID", "trainer picture exceeds the supported raster bounds", {
+        label = label,
+        width = raster.width,
+        height = raster.height,
+      }),
+      0
+    )
+  end
+  return raster
+end
+
 ---@param decoded { depth: integer, tiles: string }|{ colors: table[] }|{ width: integer, height: integer, entries: table[] }|{ cells: table[] }|{ anims: table[] }
 ---@return { depth: integer, tiles: string }
 local function requireMenuCharacters(decoded)
@@ -2033,6 +2064,10 @@ end
 ---@class BattleGlobalStaging
 ---@field catalog table<string, { kind: string, contentIdentity: string, format: string, geometry: table<string, unknown>, path: string }>
 ---@field payloads table<string, unknown>
+---@field trainerPictures table<string, { drawableKey: string, image: string, width: integer, height: integer }>? semantic trainer portrait entries during global compilation
+---@field trainerImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only trainer portrait pixels
+---@field battleBalls table<string, { frames: { drawableKey: string, image: string, width: integer, height: integer }[] }>? semantic ball animation frames during global compilation
+---@field ballImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only ball animation pixels
 
 ---@param staging BattleGlobalStaging
 ---@param resourceKey string semantic catalog key
@@ -2055,6 +2090,8 @@ end
 ---@param romFs RomFs
 ---@param staging BattleGlobalStaging
 ---@return table<string, table<string, unknown>> provenance offsets/pairs source coordinates and identities
+---@return integer[] trainerOffsets
+---@return { trainerIndex: integer, messageKind: integer }[] trainerPairs
 local function stageTrainerMessageTables(romFs, staging)
   local trainerTables = Sources.TRAINER_MESSAGE_TABLES
   local offsetArchive = openArchive(romFs, trainerTables.offsetsArchive, "trainer message offsets")
@@ -2118,7 +2155,9 @@ local function stageTrainerMessageTables(romFs, staging)
       contentIdentity = Hashing.sha1hex(pairBytes),
       recordCount = #trainerPairs,
     },
-  }
+  },
+    trainerOffsets,
+    trainerPairs
 end
 
 ---@param decoded { cells: { objs: { x: integer, y: integer, width: integer, height: integer }[] }[] }
@@ -3283,8 +3322,35 @@ local function compileBattleMessages(romFs, staging)
       stageMessageBank(staging, menuMessageArchive, role, messageDependencies)
   end
   local trainerTables = Sources.TRAINER_MESSAGE_TABLES
-  local trainerTableProvenance = stageTrainerMessageTables(romFs, staging)
+  local trainerTableProvenance, _, trainerPairs = stageTrainerMessageTables(romFs, staging)
   local messageEntries, messageProvenance = tokenizeMessageEntries(decodedMessageBanks)
+  local trainerPairRecords = {}
+  for pairIndex, pair in ipairs(trainerPairs) do
+    if pair.messageKind == 1 and trainerPairRecords[pair.trainerIndex] == nil then
+      trainerPairRecords[pair.trainerIndex] = pairIndex - 1
+    end
+  end
+  for trainerIndex, messageId in pairs(trainerPairRecords) do
+    local key = "battle/trainer-speech/" .. TrainerCatalogCompiler.loseSpeechSelector(trainerIndex)
+    local tokens, tokenFailure = UiMessageBank.tokens(
+      decodedMessageBanks.trainerPairLookup,
+      Sources.MESSAGE_BANKS.trainerPairLookup,
+      messageId,
+      charmap
+    )
+    if tokens == nil then
+      error(
+        Errors.new("BATTLE_MENU_MESSAGE_INVALID", "trainer lose speech record is absent or malformed", {
+          trainerIndex = trainerIndex,
+          messageId = messageId,
+          cause = tokenFailure and tokenFailure.message or "unknown tokenizer failure",
+        }),
+        0
+      )
+    end
+    messageEntries[key] = { tokens = tokens }
+    messageProvenance[key] = { bankRole = "trainerPairLookup", messageId = messageId }
+  end
 
   local messageRoutes = {}
   for routeKey, route in pairs(Sources.MENU_MESSAGE_ROUTES) do
@@ -3414,9 +3480,98 @@ end
 -- supported scene inventory. Returns the verified manifest, the staged
 -- image buffers by slice name, and the producer provenance beside it.
 ---@param romFs RomFs
----@param opts? { versionId?: string }
----@return { manifest: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, resourcePayloads: table<string, table<string, unknown>>, provenance: table<string, unknown>, blockers: string[] }|nil bundle
----@return unknown|nil reason
+---@return table<string, { drawableKey: string, image: string, width: integer, height: integer }> entries keyed by semantic front/back selector
+---@return table<string, { width: integer, height: integer, pixels: string }> image slices keyed by generated image name
+function BattlePresentationCompiler.compileTrainerPictures(romFs)
+  local source = Sources.TRAINER_PICTURES
+  local entries = {}
+  local imageSlices = {}
+  local frontArchive = openArchive(romFs, source.frontArchive, "front trainer portraits")
+  local frontClassIds = {}
+  for classId in pairs(source.frontClasses) do
+    frontClassIds[#frontClassIds + 1] = classId
+  end
+  table.sort(frontClassIds)
+  for _, classId in ipairs(frontClassIds) do
+    local classKey = assert(source.frontClasses[classId], "trainer class id has a semantic key")
+    assert(type(classKey) == "string" and classKey ~= "", "trainer front keys are semantic strings")
+    local memberBase = classId * source.membersPerClass
+    local imageName = "trainer-front-" .. classKey
+    local raster = compileTrainerPicture(frontArchive, memberBase, "trainer front " .. classKey)
+    imageSlices[imageName] = raster
+    local selector = "front:" .. classKey
+    entries[selector] = {
+      drawableKey = source.outputPrefix .. selector,
+      image = BattlePresentationCache.globalImagePath(imageName),
+      width = raster.width,
+      height = raster.height,
+    }
+  end
+  local backArchive = openArchive(romFs, source.backArchive, "player trainer portraits")
+  for classKey, backpicId in pairs(source.backClasses) do
+    assert(
+      type(classKey) == "string" and type(backpicId) == "number",
+      "player backpic map is semantic and source-owned"
+    )
+    local memberBase = backpicId * source.membersPerClass
+    local imageName = "trainer-back-" .. classKey
+    local raster = compileTrainerPicture(backArchive, memberBase, "player trainer back " .. classKey)
+    imageSlices[imageName] = raster
+    local selector = "back:" .. classKey
+    entries[selector] = {
+      drawableKey = source.outputPrefix .. selector,
+      image = BattlePresentationCache.globalImagePath(imageName),
+      width = raster.width,
+      height = raster.height,
+    }
+  end
+  return entries, imageSlices
+end
+
+---@param romFs RomFs
+---@return table<string, { frames: { drawableKey: string, image: string, width: integer, height: integer }[] }> entries keyed by semantic ball selector
+---@return table<string, { width: integer, height: integer, pixels: string }> image slices keyed by generated image name
+function BattlePresentationCompiler.compileBattleBalls(romFs)
+  local source = Sources.BALL_PICTURES
+  local archive = openArchive(romFs, source.archive, "ball sprites")
+  local entries = {}
+  local imageSlices = {}
+  for itemKey, resource in pairs(source.entries) do
+    local ballId = resource.ballId
+    local label = "battle ball " .. itemKey
+    local charData = decodeChars(archive, resource.characterMember, label .. " characters")
+    local paletteData = decodePalette(archive, resource.paletteMember, label .. " palette")
+    local cellData = decodeCells(archive, resource.cellMember, label .. " cells")
+    local animationData = decodeAnimation(archive, resource.animationMember, label .. " animation")
+    local animation = assert(animationData.anims[1], label .. " has its source animation")
+    local selector = "ball:" .. itemKey
+    local frames = {}
+    for sourceFrameIndex = 1, #animation.frames do
+      local raster = G2dRasterizer.renderAnimationFrame(
+        charData,
+        paletteData,
+        cellData,
+        animation,
+        sourceFrameIndex,
+        { asset = "battle-balls", member = resource.animationMember, role = label, frame = sourceFrameIndex - 1 }
+      )
+      local frameIndex = sourceFrameIndex - 1
+      local imageName = "battle-ball-" .. itemKey .. "-" .. frameIndex
+      local drawableKey = "battle-ball:" .. itemKey .. ":" .. frameIndex
+      imageSlices[imageName] = raster
+      frames[#frames + 1] = {
+        drawableKey = drawableKey,
+        image = BattlePresentationCache.globalImagePath(imageName),
+        width = raster.width,
+        height = raster.height,
+      }
+    end
+    assert(#frames > 0, "ball animation exposes at least one rendered frame for ball " .. tostring(ballId))
+    entries[selector] = { frames = frames }
+  end
+  return entries, imageSlices
+end
+
 function BattlePresentationCompiler.compileGlobal(romFs, opts)
   opts = opts or {}
   local versionId = opts.versionId or romFs:version()
@@ -3450,6 +3605,14 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     local menuTilemapProvenance = {}
     local function stageSlice(name, pixels, width, height)
       images[name] = { width = width, height = height, pixels = pixels }
+    end
+    staging.trainerPictures, staging.trainerImageSlices = BattlePresentationCompiler.compileTrainerPictures(romFs)
+    for imageName, raster in pairs(staging.trainerImageSlices) do
+      stageSlice(imageName, raster.pixels, raster.width, raster.height)
+    end
+    staging.battleBalls, staging.ballImageSlices = BattlePresentationCompiler.compileBattleBalls(romFs)
+    for imageName, raster in pairs(staging.ballImageSlices) do
+      stageSlice(imageName, raster.pixels, raster.width, raster.height)
     end
     local shadowArchive = openArchive(romFs, Sources.POKE_SHADOW.archive, "Pokepic shadow art")
     local shadowCharacterBytes =
@@ -4051,6 +4214,8 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           regions = shadowRegions,
         },
       },
+      trainerPictures = { entries = staging.trainerPictures },
+      battleBalls = { entries = staging.battleBalls },
       menus = {
         images = imageManifest,
         layouts = menuLayouts,

@@ -389,7 +389,7 @@ end
 ---@param staging table staged-effect fixture under test driving
 ---@return table live screen behind the staged effect services
 local function openOverlapScreen(launchId, staging)
-  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")

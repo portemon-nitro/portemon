@@ -141,6 +141,11 @@ function T.wild_descriptors_copy_once_without_rerolling()
   Assert.equal(scenario.kind, "wild")
   Assert.equal(scenario.mon.personality, 0x12345678)
   Assert.equal(scenario.mon.species, "TOTODILE")
+  Assert.equal(
+    scenario.participants[2].roster[1].mon.origin.ball,
+    "POKE_BALL",
+    "descriptor combatants carry the source default ball"
+  )
   payload.level = 99
   payload.personality = 0x1
   Assert.equal(scenario.mon.level, 4, "later caller mutations never reach the scenario")

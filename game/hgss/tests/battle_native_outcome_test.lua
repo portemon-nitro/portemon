@@ -13,9 +13,10 @@
 local Assert = require("tests.support.Assert")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
-local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
@@ -174,7 +175,7 @@ function T.won_result_plays_its_ordered_terminal_sequence_once()
   Assert.isTrue(timeline:present(resultPacket(1, {}, { word = "win" })), "the win result delivery is accepted")
   local texts = collectMessages(timeline)
   Assert.isTrue(timeline:settled(), "the result sequence drains fully")
-  Assert.isTrue(#texts >= 1, "the native result message plays through ordered playback")
+  Assert.equal(#texts, 0, "wild victory text is carried by earlier faint messages only")
   -- Native victory is a plain BGM swap (PlayBGM SEQ_GS_WIN2 for wild wins,
   -- battle_controller_player.c / battle_command.c), never a fanfare: the
   -- wild win voices its victory music through a music cue.
@@ -187,12 +188,6 @@ function T.won_result_plays_its_ordered_terminal_sequence_once()
   Assert.notNil(music, "the wild win voices its victory music cue")
   Assert.equal(music.symbol, "SEQ_GS_WIN2", "the wild victory keeps its native wild-win symbol")
   Assert.isFalse(timeline:present(resultPacket(1, {}, { word = "win" })), "the same result never plays twice")
-end
-
-function T.result_sequencing_is_owned_by_the_flow_owner()
-  local ok, Flow = pcall(require, "game.hgss.src.battle.BattlePresentationFlow")
-  Assert.isTrue(ok, "the ordered battle flow owner resolves through the battle boundary")
-  Assert.notNil(Flow, "the flow owner loads")
 end
 
 ---@return table caller-owned dual-surface display facts
@@ -276,12 +271,13 @@ end
 ---@param kind string launch kind behind the BGM lookup
 ---@param trainerClass string? trainer class key behind the class route
 ---@return table live rig with the real envelope, screen, port, and recording audio
-local function openPresentedLaunch(kind, trainerClass)
+local function openPresentedLaunch(kind, trainerClass, textSpeed)
   local cache = FieldStatePresentationFixture.cache()
   cache:writeLua(BattlePresentationCache.manifestPath(), BattlePresentationManifestFixture.manifest())
   local fieldAudio = recordingFieldAudio()
   local envelope = FieldBattlePresentation.new({
     cacheFs = cache,
+    monCatalog = CatalogFixture.makeCatalog(),
     windows = recordingWindows(),
     text = recordingText(),
     audio = silentScreenAudio(),
@@ -298,21 +294,34 @@ local function openPresentedLaunch(kind, trainerClass)
     audio = fieldAudio,
     kind = kind,
     trainerClass = trainerClass,
-    textSpeed = "mid",
+    textSpeed = textSpeed or "mid",
   })
   Assert.notNil(port, "the envelope admits its presented launch")
+  port.enter({ kind = kind })
   local screen = envelope:liveScreen()
   Assert.notNil(screen, "the envelope owns its live screen")
-  return { envelope = envelope, screen = screen, port = port, host = host, fieldAudio = fieldAudio }
+  return {
+    envelope = envelope,
+    screen = screen,
+    port = port,
+    host = host,
+    fieldAudio = fieldAudio,
+    kind = kind,
+    trainerClass = trainerClass,
+  }
 end
 
 ---@param word string terminal result word behind the fabricated delivery
+---@param trainerClass string? opponent class for trainer result messages
+---@param money integer? detached reward/penalty amount from the commit owner
 ---@return table detached terminal delivery picturing the settled views
-local function terminalPacket(launchId, packetId, word)
+local function terminalPacket(launchId, packetId, word, events, trainerClass, money)
   local function side(records)
     return records
   end
   local view = {
+    playerName = "MINT",
+    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "MINT" },
     own = side({
       {
         combatant = 1,
@@ -321,6 +330,7 @@ local function terminalPacket(launchId, packetId, word)
         position = 1,
         name = "LEAD",
         species = "EEVEE",
+        ballKey = "POKE_BALL",
         level = 5,
         hp = 20,
         maxHp = 20,
@@ -335,27 +345,60 @@ local function terminalPacket(launchId, packetId, word)
         position = 2,
         name = "Wild CHIKORITA",
         species = "CHIKORITA",
+        ballKey = "POKE_BALL",
         level = 3,
         hp = 0,
         maxHp = 18,
         active = true,
       },
     }),
+    foeTrainers = trainerClass ~= nil and {
+      {
+        classKey = trainerClass,
+        name = "JACK",
+        loseSpeechKey = "battle/trainer-speech/trainer-speech:596c78eb41b3a00c1ffb497f476cfa0a92d5ef7e",
+      },
+    } or {},
   }
+  local result = { word = word }
+  if word == "loss" then
+    result.moneyLost = money or 0
+  elseif word == "win" and trainerClass ~= nil then
+    result.moneyGained = money or 0
+  end
   return {
     launchId = launchId,
     packetId = packetId,
-    events = {},
+    events = events or {},
     before = view,
     after = view,
-    result = { word = word },
+    result = result,
+  }
+end
+
+---@param source table? source item or ability fact, absent for ordinary flight
+---@return table successful escaped event with its source narration facts
+local function successfulEscape(source)
+  local payload = { combatant = 1, activation = 1, escaped = true, reason = "guaranteed", attempts = 0 }
+  if source ~= nil then
+    payload.escapeSource = source
+  end
+  return {
+    sequence = 1,
+    kind = "flee",
+    cause = { key = "FLEE", combatant = 1 },
+    audience = "public",
+    payload = payload,
+    messageArgs = { combatantName = "LEAD" },
+    after = { hp = { [1] = 52, [3] = 57 } },
   }
 end
 
 ---@param rig table live rig under test driving
 ---@param word string terminal result word under test driving
 local function driveToOutcome(rig, word)
-  rig.port.present(terminalPacket(rig.host.launchId, 1, word))
+  local trainerClass = rig.kind == "trainer" and (rig.trainerClass or "YOUNGSTER") or nil
+  rig.port.present(terminalPacket(rig.host.launchId, 1, word, nil, trainerClass, 250))
   for _ = 1, 900 do
     rig.screen:updateFixed(TICK)
     if rig.screen:status().mode == "outcome" then
@@ -367,6 +410,38 @@ local function driveToOutcome(rig, word)
     )
   end
   error("the presented screen never reached its outcome for " .. tostring(word), 0)
+end
+
+---@param rig table live screen under a timed terminal message
+---@param ending string visible final text fragment identifying the completed page
+---@param afterId integer? preceding message identity that the page must follow
+---@return integer message identity after its final glyph is printed
+local function waitForCompleteOutcomeMessage(rig, ending, afterId)
+  local pages, previousId = {}, nil
+  for _ = 1, 180 do
+    local message = rig.screen:view().message
+    local id = rig.screen._timeline:messageId()
+    if id ~= previousId then
+      pages[#pages + 1] = tostring(id) .. ": " .. message
+      previousId = id
+    elseif #pages > 0 then
+      pages[#pages] = tostring(id) .. ": " .. message
+    end
+    if (afterId == nil or id > afterId) and message:find(ending, 1, true) ~= nil then
+      return rig.screen._timeline:messageId()
+    end
+    rig.screen:updateFixed(TICK)
+  end
+  error(
+    "terminal outcome never printed "
+      .. ending
+      .. ": "
+      .. tostring(rig.screen:view().message)
+      .. " ["
+      .. table.concat(pages, " | ")
+      .. "]",
+    0
+  )
 end
 
 -- Victory and capture BGM swaps fire on the terminal presentation beat:
@@ -385,16 +460,188 @@ function T.won_and_captured_launches_swap_their_victory_bgm_before_ack()
     Assert.equal(#rig.fieldAudio.music, 1, case.word .. " voices exactly one victory BGM")
     Assert.equal(rig.fieldAudio.music[1], case.symbol, case.word .. " keeps its source victory track")
     Assert.isTrue(
-      type(rig.screen:view().message) == "string" and rig.screen:view().message ~= "",
-      "the terminal narration stays visible while the BGM already plays"
+      type(rig.screen:view().message) == "string",
+      "the presented screen retains a message view while the BGM already plays"
     )
-    Assert.isFalse(rig.port.leave({}), "the terminal text still waits for its explicit acknowledgement")
+    if case.kind == "trainer" then
+      Assert.isFalse(rig.port.leave({}), "the trainer source sequence remains timed without acknowledgment")
+    else
+      Assert.isTrue(rig.port.leave({}), "wild wins and captures need no extra terminal page")
+    end
     for _ = 1, 30 do
       rig.screen:updateFixed(TICK)
     end
     Assert.equal(#rig.fieldAudio.music, 1, "the unacknowledged terminal replays no BGM")
+    if case.kind == "trainer" then
+      Assert.isFalse(rig.port.leave({}), "trainer speech and payout remain in the source sequence")
+    else
+      Assert.isTrue(rig.port.leave({}), "no-text terminal results return without acknowledgment")
+    end
     rig.envelope:dispose()
   end
+end
+
+function T.successful_flight_uses_source_variant_and_auto_advances_after_30_ticks()
+  local cases = {
+    { source = nil, fragments = { "Got away safely" } },
+    { source = { kind = "item", key = "SMOKE_BALL" }, fragments = { "LEAD", "Smoke Ball" } },
+    { source = { kind = "ability", key = "RUN_AWAY" }, fragments = { "LEAD", "Run Away" } },
+  }
+  for _, case in ipairs(cases) do
+    local rig = openPresentedLaunch("wild", nil, "fastest")
+    rig.port.present(terminalPacket(rig.host.launchId, 1, "flee", { successfulEscape(case.source) }))
+    for _ = 1, 900 do
+      rig.screen:updateFixed(TICK)
+      if rig.screen:status().mode == "outcome" then
+        break
+      end
+    end
+    Assert.equal(rig.screen:status().mode, "outcome", "successful flight opens its terminal source message")
+    for _ = 1, 120 do
+      local page = rig.screen:view().message
+      local complete = true
+      for _, fragment in ipairs(case.fragments) do
+        if page:find(fragment, 1, true) == nil then
+          complete = false
+          break
+        end
+      end
+      if complete and page:find("!", 1, true) ~= nil then
+        break
+      end
+      rig.screen:updateFixed(TICK)
+    end
+    local message = rig.screen:view().message
+    for _, fragment in ipairs(case.fragments) do
+      Assert.isTrue(
+        message:find(fragment, 1, true) ~= nil,
+        "the source flight variant includes " .. fragment .. " in " .. tostring(message)
+      )
+    end
+    Assert.isFalse(rig.port.leave({}), "successful flight waits for its source interval")
+    for _ = 1, 28 do
+      rig.screen:updateFixed(TICK)
+    end
+    Assert.isFalse(rig.port.leave({}), "the final source wait tick has not elapsed early")
+    rig.screen:updateFixed(TICK)
+    Assert.isFalse(rig.port.leave({}), "field return waits until the settled source frame")
+    rig.screen:updateFixed(TICK)
+    Assert.isTrue(rig.port.leave({}), "successful flight returns without an acknowledgment")
+    rig.envelope:dispose()
+  end
+end
+
+function T.trainer_loss_uses_ordered_bank_pages_and_exact_source_waits()
+  local rig = openPresentedLaunch("trainer", "YOUNGSTER", "fastest")
+  rig.port.present(terminalPacket(rig.host.launchId, 1, "loss", nil, "YOUNGSTER", 250))
+  for _ = 1, 900 do
+    rig.screen:updateFixed(TICK)
+    if rig.screen:status().mode == "outcome" then
+      break
+    end
+  end
+  Assert.equal(rig.screen:status().mode, "outcome", "the committed loss opens its source sequence")
+  local firstId = waitForCompleteOutcomeMessage(rig, "usable Pokémon!")
+  Assert.isTrue(rig.screen:view().message:find("MINT", 1, true) ~= nil, "the first loss line names the player")
+  for _ = 1, 29 do
+    rig.screen:updateFixed(TICK)
+  end
+  Assert.equal(rig.screen._timeline:messageId(), firstId, "the first loss line holds for 30 source ticks")
+  Assert.isFalse(rig.port.leave({}), "the loss sequence never leaves before its final page")
+  rig.screen:updateFixed(TICK)
+  rig.screen:updateFixed(TICK)
+  local moneyId = waitForCompleteOutcomeMessage(rig, "to the winner.", firstId)
+  Assert.isTrue(moneyId > firstId, "the trainer payout follows the defeat line")
+  Assert.isTrue(rig.screen:view().message:find("$250", 1, true) ~= nil, "trainer payout uses the committed exact money")
+  for _ = 1, 29 do
+    rig.screen:updateFixed(TICK)
+  end
+  Assert.equal(rig.screen._timeline:messageId(), moneyId, "the payout line holds for 30 source ticks")
+  rig.screen:updateFixed(TICK)
+  rig.screen:updateFixed(TICK)
+  local ellipsisId = waitForCompleteOutcomeMessage(rig, "... ... ... ...", moneyId)
+  Assert.isTrue(ellipsisId > moneyId, "ellipsis follows the payout")
+  for _ = 1, 29 do
+    rig.screen:updateFixed(TICK)
+  end
+  Assert.equal(rig.screen._timeline:messageId(), ellipsisId, "ellipsis holds for 30 source ticks")
+  rig.screen:updateFixed(TICK)
+  rig.screen:updateFixed(TICK)
+  local blackoutId = waitForCompleteOutcomeMessage(rig, "blacked out!", ellipsisId)
+  Assert.isTrue(blackoutId > ellipsisId, "blackout follows ellipsis")
+  Assert.isTrue(rig.screen:view().message:find("MINT", 1, true) ~= nil, "the blackout line uses the player-name token")
+  for _ = 1, 29 do
+    rig.screen:updateFixed(TICK)
+  end
+  Assert.equal(rig.screen._timeline:messageId(), blackoutId, "blackout holds for 30 source ticks")
+  Assert.isFalse(rig.port.leave({}), "the final source wait has not elapsed early")
+  rig.screen:updateFixed(TICK)
+  Assert.isTrue(rig.port.leave({}), "the settled trainer loss returns without an outcome acknowledgment")
+  rig.envelope:dispose()
+end
+
+function T.trainer_win_uses_lose_speech_then_the_planned_prize()
+  local rig = openPresentedLaunch("trainer", "YOUNGSTER", "fastest")
+  rig.port.present(terminalPacket(rig.host.launchId, 1, "win", nil, "YOUNGSTER", 250))
+  for _ = 1, 900 do
+    rig.screen:updateFixed(TICK)
+    if rig.screen:status().mode == "outcome" then
+      break
+    end
+  end
+  Assert.equal(rig.screen:status().mode, "outcome", "the trainer win opens its source sequence")
+  local defeatedId = waitForCompleteOutcomeMessage(rig, "JACK!")
+  Assert.isTrue(rig.screen:view().message:find("Youngster", 1, true) ~= nil, "msg 839 names the trainer class")
+  for _ = 1, 14 do
+    rig.screen:updateFixed(TICK)
+  end
+  Assert.equal(rig.screen._timeline:messageId(), defeatedId, "msg 839 holds for 15 source ticks")
+  Assert.isFalse(rig.port.leave({}), "the trainer win cannot leave before its response")
+  local speechId = waitForCompleteOutcomeMessage(rig, "Trainer reacts to defeat.", defeatedId)
+  Assert.isTrue(speechId > defeatedId, "the source trainer loss speech follows msg 839")
+  for _ = 1, 59 do
+    rig.screen:updateFixed(TICK)
+  end
+  Assert.equal(rig.screen._timeline:messageId(), speechId, "trainer loss speech holds for 60 source ticks")
+  local payoutId = waitForCompleteOutcomeMessage(rig, "for winning!", speechId)
+  Assert.isTrue(payoutId > speechId, "the trainer prize follows the source loss speech")
+  Assert.isTrue(rig.screen:view().message:find("$250", 1, true) ~= nil, "msg 33 uses the committed trainer prize")
+  Assert.isTrue(rig.screen:view().message:find("MINT", 1, true) ~= nil, "msg 33 names the player")
+  for _ = 1, 59 do
+    rig.screen:updateFixed(TICK)
+  end
+  Assert.equal(rig.screen._timeline:messageId(), payoutId, "the trainer prize holds for 60 source ticks")
+  Assert.isFalse(rig.port.leave({}), "the prize wait is required")
+  rig.screen:updateFixed(TICK)
+  Assert.isTrue(rig.port.leave({}), "the settled trainer win returns without an acknowledgment")
+  rig.envelope:dispose()
+end
+
+function T.capture_result_does_not_repeat_the_caught_event_gotcha()
+  local timeline = BattleTimeline.new({})
+  timeline:reset(openingView())
+  local caught = {
+    sequence = 1,
+    kind = "caught",
+    cause = { key = "CAPTURE" },
+    audience = "public",
+    targets = { { combatant = 2 } },
+    payload = { shakes = 3 },
+    after = { hp = { [1] = 52, [2] = 0 } },
+  }
+  Assert.isTrue(
+    timeline:present(resultPacket(1, { caught }, { word = "capture" })),
+    "the successful capture event and terminal receipt share one delivery"
+  )
+  local messages = collectMessages(timeline)
+  local gotchaCount = 0
+  for _, message in ipairs(messages) do
+    if message:find("Gotcha!", 1, true) ~= nil then
+      gotchaCount = gotchaCount + 1
+    end
+  end
+  Assert.equal(gotchaCount, 1, "the caught event carries one Gotcha line and the result repeats none")
+  Assert.isTrue(timeline:settled(), "the capture receipt drains without an additional terminal page")
 end
 
 return { tests = T }

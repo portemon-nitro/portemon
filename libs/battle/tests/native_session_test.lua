@@ -1727,6 +1727,172 @@ local function playOpeningTurn(session)
   return turn.events or {}
 end
 
+function T.multi_hit_strikes_publish_the_actual_sequence_total_after_the_last_hit()
+  local striker = singleMoveCombatant(1, 11, "EEVEE", "DOUBLE_SLAP")
+  striker.mon.ability = "SKILL_LINK"
+  local defender = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+  local facts = {
+    DOUBLE_SLAP = strikeFacts(0, "normal", 1),
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "EEVEE", types = { "normal" } },
+    { species = "CHIKORITA", types = { "grass" } },
+  })
+  local session = projectionDuel(striker, defender, facts, species, NATIVE_SEED)
+  local events = playOpeningTurn(session)
+  local hitEvents = {}
+  local summary = nil
+  for _, event in ipairs(events) do
+    local cause = event.cause --[[@as table<string, unknown>]]
+    if event.kind == "struck" and cause.key == "DOUBLE_SLAP" then
+      hitEvents[#hitEvents + 1] = event
+    elseif event.kind == "multi-hit" and cause.key == "DOUBLE_SLAP" then
+      summary = event
+    end
+  end
+  Assert.equal(#hitEvents, 5, "Skill Link lands all five Double Slap strikes")
+  Assert.notNil(summary, "a completed multi-hit move emits a sequence summary")
+  Assert.equal(summary.payload.hits, #hitEvents, "the summary counts connected strikes")
+  Assert.isTrue(summary.sequence > hitEvents[#hitEvents].sequence, "the summary follows the final hit")
+  for index, event in ipairs(hitEvents) do
+    Assert.equal(event.payload.sequenceHitIndex, index, "each strike names its sequence-local ordinal")
+    Assert.equal(event.payload.sequenceHitTotal, #hitEvents, "each strike names its sequence total")
+  end
+  session:dispose()
+end
+
+function T.type_immunity_publishes_the_target_and_reason_without_a_strike()
+  local striker = singleMoveCombatant(1, 11, "EEVEE", "TACKLE")
+  local defender = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 40),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "EEVEE", types = { "normal" } },
+    { species = "CHIKORITA", types = { "ghost" } },
+  })
+  local session = projectionDuel(striker, defender, facts, species, NATIVE_SEED)
+  local events = playOpeningTurn(session)
+  local immune = nil
+  local tackleStrike = false
+  for _, event in ipairs(events) do
+    local cause = event.cause --[[@as table<string, unknown>]]
+    if cause.key == "TACKLE" and event.kind == "immune" then
+      immune = event
+    elseif cause.key == "TACKLE" and event.kind == "struck" and event.payload.target == 2 then
+      tackleStrike = true
+    end
+  end
+  Assert.notNil(immune, "type immunity is a visible battle event")
+  Assert.equal(immune.payload.target, 2, "immunity identifies its target")
+  Assert.equal(immune.payload.reason, "chart_immunity", "immunity preserves its source reason")
+  Assert.isFalse(tackleStrike, "an immune move does not emit a landed strike")
+  session:dispose()
+end
+
+function T.hp_change_events_preserve_the_native_no_blink_decision()
+  local facts = {
+    TAKE_DOWN = strikeFacts(0, "normal", 40),
+    GIGA_DRAIN = strikeFacts(0, "grass", 40),
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "EEVEE", types = { "normal" } },
+    { species = "CHIKORITA", types = { "grass" } },
+  })
+
+  local recoil = projectionDuel(
+    singleMoveCombatant(1, 11, "EEVEE", "TAKE_DOWN"),
+    singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"),
+    facts,
+    species,
+    NATIVE_SEED
+  )
+  local recoilEvent = nil
+  local directHit = nil
+  for _, event in ipairs(playOpeningTurn(recoil)) do
+    if event.kind == "recoil" then
+      recoilEvent = event
+    elseif event.kind == "struck" and event.payload.target == 2 then
+      directHit = event
+    end
+  end
+  Assert.notNil(recoilEvent, "Take Down publishes its recoil health change")
+  Assert.isTrue(recoilEvent.payload.noBlink, "native recoil skips the strike flicker")
+  Assert.notNil(directHit, "Take Down publishes its direct hit")
+  Assert.isNil(directHit.payload.noBlink, "the ordinary direct hit keeps the source flicker")
+  recoil:dispose()
+
+  local drain = projectionDuel(
+    singleMoveCombatant(1, 11, "CHIKORITA", "GIGA_DRAIN"),
+    singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
+    facts,
+    species,
+    NATIVE_SEED
+  )
+  local drainEvent = nil
+  for _, event in ipairs(playOpeningTurn(drain)) do
+    if event.kind == "drained" then
+      drainEvent = event
+    end
+  end
+  Assert.notNil(drainEvent, "Giga Drain publishes its recovery health change")
+  Assert.isTrue(drainEvent.payload.noBlink, "native drain skips the strike flicker")
+  drain:dispose()
+
+  for _, condition in ipairs({ "poison", "toxic", "burn" }) do
+    local statusUser = singleMoveCombatant(1, 11, "EEVEE", "TACKLE")
+    statusUser.mon.condition.effects = {
+      { key = condition, version = 1, state = condition == "toxic" and { counter = 0 } or {} },
+    }
+    local status =
+      projectionDuel(statusUser, singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, NATIVE_SEED)
+    local statusTick = nil
+    for _, event in ipairs(playOpeningTurn(status)) do
+      if event.kind == "tick" and event.payload.key == condition then
+        statusTick = event
+      end
+    end
+    Assert.notNil(statusTick, condition .. " publishes its residual health change")
+    Assert.isTrue(statusTick.payload.noBlink, condition .. " skips the residual flicker")
+    status:dispose()
+  end
+
+  local healedUser = singleMoveCombatant(1, 11, "EEVEE", "TACKLE")
+  healedUser.mon.ability = "POISON_HEAL"
+  healedUser.mon.condition.currentHp = 20
+  healedUser.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  local poisonHeal =
+    projectionDuel(healedUser, singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, NATIVE_SEED)
+  local poisonHealEvent = nil
+  for _, event in ipairs(playOpeningTurn(poisonHeal)) do
+    if event.kind == "healed" and event.payload.target == 1 then
+      poisonHealEvent = event
+    end
+  end
+  Assert.notNil(poisonHealEvent, "Poison Heal publishes its residual recovery")
+  Assert.isTrue(poisonHealEvent.payload.noBlink, "Poison Heal skips the recovery flicker")
+  poisonHeal:dispose()
+
+  local weatherUser = singleMoveCombatant(1, 11, "EEVEE", "TACKLE")
+  weatherUser.mon.ability = "SNOW_WARNING"
+  local weather =
+    projectionDuel(weatherUser, singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, NATIVE_SEED)
+  local weatherTick = nil
+  for _, event in ipairs(playOpeningTurn(weather)) do
+    if event.kind == "tick" and event.payload.key == "hail" then
+      weatherTick = event
+    end
+  end
+  Assert.notNil(weatherTick, "hail publishes its residual health change")
+  Assert.isNil(weatherTick.payload.noBlink, "damaging weather keeps the native flicker")
+  weather:dispose()
+end
+
 ---@param events table[] emitted events in execution order
 ---@return string|nil move identity behind the first landed strike
 local function firstStriker(events)
@@ -2748,14 +2914,24 @@ function T.bide_forces_its_release_against_the_live_attacker_once()
   end
   local secondTurn, secondEvents = advanceCollecting(session, 64)
   local bideDamage = nil
+  local bideRelease = nil
+  local bideStrike = nil
   for _, event in ipairs(secondEvents) do
     local cause = event.cause --[[@as table<string, unknown>]]
     local payload = event.payload --[[@as table<string, unknown>]]
     if event.kind == "struck" and cause.key == "BIDE" and payload.target == 2 then
       bideDamage = payload.damage --[[@as integer]]
+      bideStrike = event
+    elseif event.kind == "move-used" and cause.key == "BIDE" then
+      bideRelease = event
     end
   end
   Assert.equal(bideDamage, incomingDamage * 2, "Bide releases twice the stored damage on its live attacker")
+  Assert.notNil(bideRelease, "Bide's forced release announces its own phase")
+  Assert.equal(bideRelease.payload.phase, "release", "the release is distinct from Bide's starting use")
+  Assert.notNil(bideRelease.actionId, "the release has a stable action identity")
+  Assert.equal(bideStrike.actionId, bideRelease.actionId, "release and damage belong to one action")
+  Assert.equal(bideStrike.actors[1].combatant, 1, "the release strike names its actual attacker")
   Assert.equal(session:capture().combatants[1].mon.moves[1].pp, 9, "the forced release spends no extra Bide PP")
   Assert.isTrue(secondTurn.status == "waiting" or secondTurn.status == "ended", "the release settles the next turn")
   session:dispose()
@@ -3311,13 +3487,10 @@ function T.run_attempts_follow_escape_law_and_trainer_flight_stays_refused()
   Assert.equal(settled.rng.calls, callsBefore + 5, "the failed attempt spends exactly one roll")
   slow:dispose()
 
+  local swiftRunner = leveledCombatant(1, 11, "CHIKORITA", 20)
+  swiftRunner.mon.ability = "RUN_AWAY"
   local swift = contracts.Battle.newSession(
-    actionScenario(
-      WILD_FORMAT,
-      { leveledCombatant(1, 11, "CHIKORITA", 20) },
-      { leveledCombatant(2, 13, "CHIKORITA", 5) },
-      nil
-    ),
+    actionScenario(WILD_FORMAT, { swiftRunner }, { leveledCombatant(2, 13, "CHIKORITA", 5) }, nil),
     content
   )
   local dash = SessionFixture.driveUntilSettled(swift)
@@ -3339,6 +3512,15 @@ function T.run_attempts_follow_escape_law_and_trainer_flight_stays_refused()
   Assert.isNil(chasedErr, "accepted strikes carry no input error")
   local flight = swift:advance(64)
   Assert.equal(countKind(flight.events, "struck"), 0, "the escape preempts the queued strike")
+  local swiftFlee = nil
+  for _, event in ipairs(flight.events) do
+    if event.kind == "flee" then
+      swiftFlee = event
+    end
+  end
+  Assert.notNil(swiftFlee, "the swift flight emits its terminal flight fact")
+  Assert.equal(swiftFlee.payload.escapeSource.kind, "ability", "Run Away identifies its source kind")
+  Assert.equal(swiftFlee.payload.escapeSource.key, "RUN_AWAY", "Run Away identifies the ability key")
   local escaped = SessionFixture.driveUntilSettled(swift)
   Assert.equal(escaped.status, "ended", "the successful wild run ends the battle")
   Assert.notNil(escaped.outcome, "the escape names its terminal result")
@@ -3441,6 +3623,15 @@ function T.smoke_ball_guarantees_wild_flight_for_slower_leads()
   local smokedHp = smoked:capture().combatants[1].hp
   local smokedEvents = fleeTurn(smoked)
   Assert.equal(countKind(smokedEvents, "struck"), 0, "the escape preempts the queued strike")
+  local smokeFlee = nil
+  for _, event in ipairs(smokedEvents) do
+    if event.kind == "flee" then
+      smokeFlee = event
+    end
+  end
+  Assert.notNil(smokeFlee, "the Smoke Ball flight emits its terminal flight fact")
+  Assert.equal(smokeFlee.payload.escapeSource.kind, "item", "Smoke Ball identifies its source kind")
+  Assert.equal(smokeFlee.payload.escapeSource.key, "SMOKE_BALL", "Smoke Ball identifies the item key")
   local escaped = SessionFixture.driveUntilSettled(smoked)
   Assert.equal(escaped.status, "ended", "the smoked flight ends the battle")
   Assert.notNil(escaped.outcome, "the escape names its terminal result")
@@ -7162,6 +7353,9 @@ function T.liquid_ooze_turns_leech_seed_recovery_into_damage()
       and payload.combatant == 1
     then
       oozeTick = true
+      Assert.isTrue(payload.noBlink, "Liquid Ooze skips the Leech Seed recovery flicker")
+    elseif event.kind == "tick" and type(payload) == "table" and payload.key == "leechseed" then
+      Assert.isTrue(payload.noBlink, "Leech Seed damage skips its residual flicker")
     end
   end
   Assert.isTrue(oozeTick, "Liquid Ooze damages the seeding attacker instead of healing it")

@@ -87,6 +87,11 @@ local function fakeRuntime(overrides)
         },
       },
     },
+    eventState = {
+      isFlagSet = function()
+        return false
+      end,
+    },
     localClock = {
       nowLocal = function()
         return { year = 2026, month = 10, day = 9, hour = 12 }
@@ -219,7 +224,7 @@ function T.startBattle_commits_trick_held_item_exchange_to_the_party()
   local request = { id = "launch-trick-items", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(
     request.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle =
@@ -249,7 +254,7 @@ function T.startBattle_runs_the_owned_lifetime_to_commit_and_return()
   -- identity the resolution suites use.
   local scenario = ScenarioFactory.fromEncounter(
     request.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local battle = runtime:startBattle({
     request = request,
@@ -1640,7 +1645,7 @@ function T.owned_battle_interval_stays_suppressed_through_return()
     { id = "launch-owned-interval", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(
     request.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local battle = runtime:startBattle({
     request = request,

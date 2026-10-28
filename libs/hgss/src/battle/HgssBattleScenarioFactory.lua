@@ -98,6 +98,7 @@ local function descriptorMon(descriptor)
     species = species,
     level = level,
     form = descriptor.form or 0,
+    origin = { ball = descriptor.ball or "POKE_BALL" },
     condition = { currentHp = HgssBattleScenarioFactory.DESCRIPTOR_ENTRY_HP },
   }
   if descriptor.personality ~= nil then
@@ -272,6 +273,7 @@ local function playerRoster(snapshot, required)
         species = "UNKNOWN",
         level = HgssBattleScenarioFactory.DESCRIPTOR_LEVEL,
         form = 0,
+        origin = { ball = "POKE_BALL" },
         condition = { currentHp = HgssBattleScenarioFactory.DESCRIPTOR_ENTRY_HP },
       },
       source = { kind = "placeholder", owner = "field", key = "placeholder" },
@@ -446,6 +448,12 @@ local function playerRewardContext(ctx, isProduction)
   base.trainerId = record.trainerId
   base.trainerName = record.trainerName
   base.language = record.language
+  if type(record.trainerClassKey) == "string" then
+    base.trainerClassKey = record.trainerClassKey
+  end
+  if type(record.metBill) == "boolean" then
+    base.metBill = record.metBill
+  end
   return base
 end
 
@@ -465,6 +473,7 @@ local function kernelShape(fragment)
     formatState = fragment.formatState,
     mon = fragment.mon,
     trainer = fragment.trainer,
+    playerContext = copyValue(fragment.playerContext),
   }
 end
 
@@ -537,6 +546,7 @@ local function assemble(payload, heart)
     formatState = copyValue(payload.formatState) or {},
     mon = heart.mon,
     trainer = heart.trainer,
+    playerContext = heart.playerContext,
   })
 end
 

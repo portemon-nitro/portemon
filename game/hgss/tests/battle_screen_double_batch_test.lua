@@ -30,7 +30,7 @@ end
 local TICK = 1 / 60
 
 local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
-local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
+local STATE_MODULE = "game.hgss.tests.support.BattleScreenFixture"
 local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
 
@@ -119,6 +119,11 @@ local function openDoubleRig(opts)
   end
   function rig.audio.play(name)
     rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  function rig.audio.stop(_, name)
+    rig.audio.stops = rig.audio.stops or {}
+    rig.audio.stops[#rig.audio.stops + 1] = name
     return true
   end
   function rig.assets.prepare(demand)
@@ -231,7 +236,7 @@ local function openDoubleRig(opts)
         doubleBattle = true,
       },
     },
-  }, { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
+  }, { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } })
   local manifest = battleManifest()
   manifest.hud.doubles = testDoublesHud()
   if opts.missingHud then
@@ -275,10 +280,20 @@ local function openDoubleRig(opts)
 end
 
 ---@param rig table live screen rig under test driving
+-- Acknowledges the source opening until the screen reaches its command state.
+local function acknowledgeOpening(rig)
+  local mode = rig.screen:status().mode
+  if mode == "intro" or mode == "narration" or rig.screen._timeline:messageActive() then
+    rig.screen:input({ { type = "confirm" } })
+  end
+end
+
+---@param rig table live screen rig under test driving
 ---@param mode string awaited controller mode under test driving
 ---@return table the screen status once the mode is reached
 local function driveToMode(rig, mode)
-  for _ = 1, 600 do
+  for _ = 1, 1800 do
+    acknowledgeOpening(rig)
     rig.pump(1)
     local status = rig.screen:status()
     if status.mode == "failed" then
@@ -633,6 +648,11 @@ function T.two_fainted_leads_are_replaced_without_partial_submit()
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end
+  function rig.audio.stop(_, name)
+    rig.audio.stops = rig.audio.stops or {}
+    rig.audio.stops[#rig.audio.stops + 1] = name
+    return true
+  end
   function rig.assets.prepare(demand)
     rig.assets.prepared[#rig.assets.prepared + 1] = demand
     return true
@@ -780,7 +800,8 @@ function T.two_fainted_leads_are_replaced_without_partial_submit()
     inventory = {},
     result = nil,
   })
-  for _ = 1, 600 do
+  for _ = 1, 1800 do
+    acknowledgeOpening(rig)
     rig.pump(1)
     local status = rig.screen:status()
     if status.mode == "failed" then
@@ -1007,6 +1028,11 @@ local function openTargetLabelRig(layout, launchId, requestId)
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end
+  function rig.audio.stop(_, name)
+    rig.audio.stops = rig.audio.stops or {}
+    rig.audio.stops[#rig.audio.stops + 1] = name
+    return true
+  end
   function rig.assets.prepare(demand)
     rig.assets.prepared[#rig.assets.prepared + 1] = demand
     return true
@@ -1163,7 +1189,7 @@ local function openTargetLabelRig(layout, launchId, requestId)
     request = decision,
     result = nil,
   })
-  for _ = 1, 600 do
+  for _ = 1, 1800 do
     rig.pump(1)
     local status = rig.screen:status()
     if status.mode == "failed" then

@@ -854,8 +854,18 @@ end
 ---@param defender integer defender combatant under the hit
 ---@param hitIndex integer ordinal of the hit in the sequence
 ---@param amount integer staged damage amount under application
-local function emitStruck(ctx, frame, defender, hitIndex, amount)
-  ctx:emit("struck", causeFor(frame), { target = defender, hitIndex = hitIndex, damage = amount })
+---@param facts { critical: boolean, effectiveness: "super"|"weak"|"neutral" }? presentation facts of a typed strike
+---@param sequenceEvents table[]? event records to annotate after the sequence finishes
+local function emitStruck(ctx, frame, defender, hitIndex, amount, facts, sequenceEvents)
+  local payload = { target = defender, hitIndex = hitIndex, damage = amount }
+  if facts ~= nil then
+    payload.critical = facts.critical
+    payload.effectiveness = facts.effectiveness
+  end
+  local event = ctx:emit("struck", causeFor(frame), payload)
+  if sequenceEvents ~= nil then
+    sequenceEvents[#sequenceEvents + 1] = event
+  end
 end
 
 -- Landed hits bill the live doll before touching health: only connecting
@@ -868,8 +878,9 @@ end
 ---@param defender integer defender combatant under the hit
 ---@param amount integer staged damage amount under application
 ---@param hitIndex integer ordinal of the hit in the sequence
+---@param sequenceEvents table[]? event records to annotate after the sequence finishes
 ---@return boolean true when a live doll absorbed the hit
-local function substituteTakesHit(ctx, frame, defender, amount, hitIndex)
+local function substituteTakesHit(ctx, frame, defender, amount, hitIndex, sequenceEvents)
   local outcome = ctx:updateBattleEffect(defender, NativeEffectHandlers.definitionFor("substitute"), function(state)
     local remaining = state.hp --[[@as integer]] - amount
     if remaining > 0 then
@@ -881,9 +892,12 @@ local function substituteTakesHit(ctx, frame, defender, amount, hitIndex)
     return false
   end
   if outcome == "removed" then
-    ctx:emit("substitute-broke", causeFor(frame), { target = defender, hitIndex = hitIndex })
+    local event = ctx:emit("substitute-broke", causeFor(frame), { target = defender, hitIndex = hitIndex })
+    if sequenceEvents ~= nil then
+      sequenceEvents[#sequenceEvents + 1] = event
+    end
   else
-    emitStruck(ctx, frame, defender, hitIndex, amount)
+    emitStruck(ctx, frame, defender, hitIndex, amount, nil, sequenceEvents)
   end
   return true
 end
@@ -1664,8 +1678,9 @@ end
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the miss
-local function emitMissed(ctx, frame, defender)
-  ctx:emit("missed", causeFor(frame), { target = defender })
+---@param reason string source outcome explaining why the hit did not connect
+local function emitMissed(ctx, frame, defender, reason)
+  ctx:emit("missed", causeFor(frame), { target = defender, reason = reason })
 end
 
 -- Native critical stages for one strike: the curated move bonus, two
@@ -1767,17 +1782,17 @@ end
 ---@param power integer curated move power under the staged arithmetic
 ---@param moveType string striking move type under the immunity read
 ---@param effectiveness table<string, unknown> exact effectiveness rational for the strike
----@return boolean true when the strike is warded off
+---@return string? ability key when the strike is warded off
 local function strikeWarded(ctx, frame, defender, power, moveType, effectiveness)
   local record = frame --[[@as table<string, unknown>]]
   local foeAbility = liveAbility(abilitiesOf(frame, defender).foe)
   if foeAbility == nil then
-    return false
+    return nil
   end
   -- Typeless strikes bypass ability immunities beside the chart: with
   -- no striking type the ward has no effectiveness to answer.
   if moveType == "typeless" then
-    return false
+    return nil
   end
   local numerator = effectiveness.numerator
   local denominator = effectiveness.denominator
@@ -1810,10 +1825,10 @@ local function strikeWarded(ctx, frame, defender, power, moveType, effectiveness
       local selfTarget = userOf(frame) == defender
       local movePower = move.power --[[@as integer]]
       if (foeAbility == "VOLT_ABSORB" or foeAbility == "MOTOR_DRIVE") and selfTarget then
-        return false
+        return nil
       end
       if (foeAbility == "WATER_ABSORB" or foeAbility == "DRY_SKIN") and (movePower <= 0 or charging) then
-        return false
+        return nil
       end
       if
         foeAbility == "FLASH_FIRE"
@@ -1823,13 +1838,17 @@ local function strikeWarded(ctx, frame, defender, power, moveType, effectiveness
           or (movePower <= 0 and record.executingMove ~= "WILL_O_WISP")
         )
       then
-        return false
+        return nil
       end
       if foeAbility == "WATER_ABSORB" or foeAbility == "VOLT_ABSORB" or foeAbility == "DRY_SKIN" then
         local maximum = ctx:entryOf(defender).maxHp
         if type(maximum) == "number" then
           local restored = ctx:heal(defender, math.floor(maximum / 4), causeFor(frame))
-          ctx:emit("healed", causeFor(frame), { target = defender, restored = restored.after - restored.before })
+          ctx:emit("healed", causeFor(frame), {
+            target = defender,
+            restored = restored.after - restored.before,
+            noBlink = true,
+          })
         end
       elseif foeAbility == "MOTOR_DRIVE" then
         local stat = "speed"
@@ -1848,13 +1867,13 @@ local function strikeWarded(ctx, frame, defender, power, moveType, effectiveness
           )
         end
       end
-      return true
+      return foeAbility
     end
     if bareImmunity(event, defender) then
-      return true
+      return foeAbility
     end
   end
-  return false
+  return nil
 end
 
 ---@param ctx BattleContext battle context under the active strike
@@ -1983,7 +2002,7 @@ local function applyShellBell(ctx, frame, user, dealt)
       local gain = math.floor(dealt / 8)
       if gain > 0 then
         local healed = ctx:heal(user, gain, causeFor(frame))
-        ctx:emit("healed", causeFor(frame), { target = user, restored = healed.after - healed.before })
+        ctx:emit("healed", causeFor(frame), { target = user, restored = healed.after - healed.before, noBlink = true })
       end
     end
   end
@@ -2191,8 +2210,10 @@ end
 ---@param hitIndex integer ordinal of the hit in the sequence
 ---@param targetCount integer sampled target count scaling the spread stage
 ---@param params table<string, unknown>? curated strike controls owning the hit
+---@param sequenceEvents table[]? event records to annotate after the sequence finishes
 ---@return integer damage dealt by this hit
-local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, params)
+---@return boolean landed true when the hit connected or was absorbed by a substitute
+local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, params, sequenceEvents)
   local controls = params or {}
   local combat = combatOf(frame, defender)
   local stream = checkStream(frame.stream)
@@ -2271,10 +2292,23 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   if abilityPair.user == "ADAPTABILITY" and stab.numerator > stab.denominator then
     stab = { numerator = 2, denominator = 1 }
   end
-  -- Wards stop the hit before any roll; a resisted hit pierces
-  -- through the striking ability before the same rolls.
-  if strikeWarded(ctx, frame, defender, power, moveType, effectiveness) then
-    return 0
+  -- Type immunities publish their source reason before any critical or
+  -- damage draw. The opponent controller routes this through
+  -- subscript_0007_Miss instead of presenting a zero-damage strike.
+  if effectiveness.immune == true then
+    ctx:emit("immune", causeFor(frame), { target = defender, reason = effectiveness.reason })
+    return 0, false
+  end
+  -- Ability wards stop the hit before any roll and preserve the ability
+  -- that selected the native miss-message branch.
+  local wardAbility = strikeWarded(ctx, frame, defender, power, moveType, effectiveness)
+  if wardAbility ~= nil then
+    ctx:emit("immune", causeFor(frame), {
+      target = defender,
+      reason = "ability_immunity",
+      ability = wardAbility,
+    })
+    return 0, false
   end
   power = abilityPower(ctx, frame, defender, power, moveType)
   local effectivenessModifier = { numerator = 1, denominator = 1 }
@@ -2352,11 +2386,22 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   -- Doll damage still counts as dealt for the strike follow-ups: drain
   -- and recoil answer the inflicted amount, while only bodily harm arms
   -- the revenge ledger.
-  if substituteTakesHit(ctx, frame, defender, amount, hitIndex) then
-    return amount
+  if substituteTakesHit(ctx, frame, defender, amount, hitIndex, sequenceEvents) then
+    return amount, true
   end
   local dealt = applyHit(ctx, frame, defender, amount)
-  emitStruck(ctx, frame, defender, hitIndex, dealt)
+  -- MOVE_STATUS_SUPER_EFFECTIVE / NOT_VERY_EFFECTIVE follow the chart
+  -- product; post-chart ability ratios do not reclassify the hit.
+  local classification = "neutral"
+  if numerator > denominator then
+    classification = "super"
+  elseif numerator < denominator then
+    classification = "weak"
+  end
+  emitStruck(ctx, frame, defender, hitIndex, dealt, {
+    critical = critical.multiplier > 1,
+    effectiveness = classification,
+  }, sequenceEvents)
   noteStrikeDamage(ctx, frame, defender, dealt)
   applyAfterHitAbilities(
     ctx,
@@ -2371,7 +2416,7 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   -- Strike recovery answers the inflicted amount behind the effective
   -- holding once the hit lands.
   applyShellBell(ctx, frame, userOf(frame), dealt)
-  return dealt
+  return dealt, true
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -2396,6 +2441,7 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
     and semiInvulnerable ~= false
     and not (hitFly == true and (semiInvulnerable == "fly" or semiInvulnerable == "bounce"))
   then
+    emitMissed(ctx, frame, defender, "semi_invulnerable")
     return false
   end
   local userStages = ctx:entryOf(userOf(frame)).stages --[[@as table<string, integer>]]
@@ -2508,7 +2554,7 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
   if resolution.kind == "protected" then
     emitProtected(ctx, frame, defender)
   else
-    emitMissed(ctx, frame, defender)
+    emitMissed(ctx, frame, defender, resolution.reason)
   end
   return false
 end
@@ -2536,7 +2582,7 @@ local function applyRecoil(ctx, frame, dealt, fraction)
     recoil = 1
   end
   ctx:damage(userOf(frame), recoil, causeFor(frame))
-  ctx:emit("recoil", causeFor(frame), { target = userOf(frame), damage = recoil })
+  ctx:emit("recoil", causeFor(frame), { target = userOf(frame), damage = recoil, noBlink = true })
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -2555,7 +2601,7 @@ local function applyDrain(ctx, frame, defender, dealt)
     return
   end
   ctx:heal(userOf(frame), restored, causeFor(frame))
-  ctx:emit("drained", causeFor(frame), { target = userOf(frame), restored = restored })
+  ctx:emit("drained", causeFor(frame), { target = userOf(frame), restored = restored, noBlink = true })
 end
 
 -- Sport-weakened power follows the native damage calculation: halved
@@ -2641,18 +2687,42 @@ local function runStriker(ctx, frame, params)
   local hits = owned.hits or 1
   assert(type(hits) == "number" and hits % 1 == 0 and hits >= 1, "fixed hit counts stay positive integers")
   local connected, dealtTotal = false, 0
-  for hitIndex = 1, #targets do
-    local defender = targetOf(targets[hitIndex])
+  for targetIndex = 1, #targets do
+    local defender = targetOf(targets[targetIndex])
     if accuracyGate(ctx, frame, defender, accuracy, owned.hitFly == true) then
-      for _ = 1, hits --[[@as integer]] do
-        dealtTotal = dealtTotal + stagedHit(ctx, frame, defender, power, hitIndex, #targets, owned)
+      local sequenceEvents = {} ---@type table[]
+      local sequenceHits = 0
+      for hitIndex = 1, hits --[[@as integer]] do
+        local damage, landed = stagedHit(ctx, frame, defender, power, hitIndex, #targets, owned, sequenceEvents)
+        if not landed then
+          break
+        end
+        sequenceHits = sequenceHits + 1
+        dealtTotal = dealtTotal + damage
         applySecondaries(ctx, frame, defender, owned.secondaries --[[@as table<integer, table<string, unknown>>?]])
         local health = ctx:damage(defender, 0, causeFor(frame))
         if health.after == 0 then
           break
         end
       end
-      connected = true
+      if sequenceHits > 0 then
+        connected = true
+        for index, event in ipairs(sequenceEvents) do
+          local payload = event.payload --[[@as table<string, unknown>]]
+          payload.sequenceHitIndex = index
+          payload.sequenceHitTotal = sequenceHits
+          local move = event.move
+          if type(move) == "table" then
+            move.hitOrdinal = index
+            move.hitCount = sequenceHits
+          end
+        end
+        if sequenceHits > 1 then
+          -- subscript_0017_MultiHit prints after the move's final
+          -- connected hit, using the number of hits that actually landed.
+          ctx:emit("multi-hit", causeFor(frame), { target = defender, hits = sequenceHits })
+        end
+      end
     elseif owned.crash == true then
       ctx:damage(userOf(frame), 1, causeFor(frame))
     end
@@ -2806,7 +2876,7 @@ local function runFriendship(ctx, frame, power)
       connected = true
       stagedHit(ctx, record, defender, power, hitIndex, #targets)
     else
-      emitMissed(ctx, record, defender)
+      emitMissed(ctx, record, defender, resolution.reason)
     end
   end
   if not connected then
@@ -3390,7 +3460,7 @@ local function stepOhko(ctx, frame)
   if not ctx:hasBattleEffect(defender, "lockon") then
     local stream = checkStream(record.stream)
     if stream:nextU16("ohko_hit", causeFor(record)) % 100 >= hitChance then
-      emitMissed(ctx, record, defender)
+      emitMissed(ctx, record, defender, "accuracy_miss")
       return { kind = "complete", result = "missed" }
     end
   end
@@ -3780,7 +3850,11 @@ local function stepPresent(ctx, frame)
       amount = 1
     end
     local outcome = ctx:heal(defender, amount, causeFor(record))
-    ctx:emit("healed", causeFor(record), { target = defender, restored = outcome.after - outcome.before })
+    ctx:emit("healed", causeFor(record), {
+      target = defender,
+      restored = outcome.after - outcome.before,
+      noBlink = true,
+    })
     return { kind = "complete", result = "hit" }
   end
   local power = 40
@@ -4064,7 +4138,7 @@ local function applyFlingEffectImpl(ctx, frame, target, effect, effectId, item)
     if type(amount) == "number" and amount > 0 then
       local healed = ctx:heal(target, amount, cause)
       if healed.after > healed.before then
-        ctx:emit("healed", cause, { target = target, restored = healed.after - healed.before })
+        ctx:emit("healed", cause, { target = target, restored = healed.after - healed.before, noBlink = true })
       end
     end
     if dislikedFlavor then
@@ -4240,7 +4314,7 @@ local function stepStruggle(ctx, frame)
     recoil = 1
   end
   ctx:damage(user, recoil, causeFor(record))
-  ctx:emit("recoil", causeFor(record), { target = user, damage = recoil })
+  ctx:emit("recoil", causeFor(record), { target = user, damage = recoil, noBlink = true })
   return outcome
 end
 

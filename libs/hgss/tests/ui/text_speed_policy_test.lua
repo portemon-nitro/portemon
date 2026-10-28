@@ -5,17 +5,17 @@ local T = {}
 
 function T.exposes_one_strict_policy_for_every_field_speed()
   Assert.deepEqual(TextSpeedPolicy.forSpeed("slow"), {
-    interGlyphDelay = 7,
+    interGlyphDelay = 8,
     glyphBudget = 1,
     abAcceleration = true,
   })
   Assert.deepEqual(TextSpeedPolicy.forSpeed("mid"), {
-    interGlyphDelay = 3,
+    interGlyphDelay = 4,
     glyphBudget = 1,
     abAcceleration = true,
   })
   Assert.deepEqual(TextSpeedPolicy.forSpeed("fast"), {
-    interGlyphDelay = 0,
+    interGlyphDelay = 1,
     glyphBudget = 1,
     abAcceleration = true,
   })

@@ -312,7 +312,7 @@ function T.opening_decisions_project_pure_selectable_options()
   local launch = wildLaunch("launch-presentation-options")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
@@ -396,7 +396,7 @@ function T.opening_decisions_project_pure_selectable_options()
     wildLaunch("launch-presentation-twin"),
     ScenarioFactory.fromEncounter(
       { attemptId = "twin-attempt", mon = foeRecord("EEVEE", 20, 0x5EED0002) },
-      { party = twinParty, bag = twinBag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+      { party = twinParty, bag = twinBag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
     ),
     twinParty,
     twinBag,
@@ -459,7 +459,7 @@ function T.rejected_replies_keep_the_open_request()
   local launch = wildLaunch("launch-presentation-latch")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
@@ -518,7 +518,7 @@ function T.forced_replacement_options_cover_only_eligible_reserves()
   local launch = wildLaunch("launch-presentation-replacement")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
@@ -625,7 +625,7 @@ function T.learning_options_address_the_held_recipient()
   local launch = wildLaunch("launch-presentation-learning")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
@@ -723,7 +723,7 @@ function T.packets_deliver_once_in_order_with_back_pressure()
   local launch = wildLaunch("launch-presentation-packets")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local held = {
     ready = false,
@@ -891,7 +891,7 @@ function T.packets_deliver_once_in_order_with_back_pressure()
     local twinLaunch = wildLaunch(useHold and "launch-twin-held" or "launch-twin-direct")
     local twinScenario = ScenarioFactory.fromEncounter(
       { attemptId = twinLaunch.id .. "-attempt", mon = twinFoe },
-      { party = twinParty, bag = twinBag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+      { party = twinParty, bag = twinBag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
     )
     local record = {
       ready = not useHold,
@@ -979,7 +979,7 @@ function T.capture_and_escape_settle_as_continuing_outcomes()
     local launch = wildLaunch("launch-presentation-capture")
     local scenario = ScenarioFactory.fromEncounter(
       { attemptId = launch.id .. "-attempt", mon = foe },
-      { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+      { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
     )
     local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
     local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
@@ -1029,7 +1029,7 @@ function T.capture_and_escape_settle_as_continuing_outcomes()
     local launch = wildLaunch("launch-presentation-escape")
     local scenario = ScenarioFactory.fromEncounter(
       { attemptId = launch.id .. "-attempt", mon = foe },
-      { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+      { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
     )
     local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
     local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)

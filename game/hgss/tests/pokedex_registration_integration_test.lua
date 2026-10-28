@@ -248,7 +248,7 @@ function T.opening_and_switch_appearances_replace_unused_roster_sightings()
   }
   local scenario = ScenarioFactory.fromTrainer({ id = "launch-appearance", trainers = trainers }, {
     party = party,
-    player = { trainerId = 99, trainerName = "MINT", language = "french" },
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
   })
   local portRecord = newPortRecord()
   local battle = BattleRuntime.new({
@@ -307,7 +307,7 @@ function T.opening_and_switch_appearances_replace_unused_roster_sightings()
   }
   local repeatScenario = ScenarioFactory.fromEncounter(
     { attemptId = repeatLaunch.payload.attemptId, mon = repeatFoe },
-    { party = freshParty, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = freshParty, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local repeatRecord = newPortRecord()
   local repeatBattle = BattleRuntime.new({
@@ -380,7 +380,7 @@ function T.first_capture_freezes_a_detached_identity_and_waits_for_readiness()
   }
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.payload.attemptId, mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = newPortRecord()
   local battle = BattleRuntime.new({
@@ -493,7 +493,7 @@ local function captureWild(species, foeSeed, battleSeed, party, bag, dex)
   }
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.payload.attemptId, mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = newPortRecord()
   local battle = BattleRuntime.new({
@@ -570,7 +570,7 @@ function T.repeat_and_failed_captures_extend_history_without_replaying_the_card(
     }
     local scenario = ScenarioFactory.fromEncounter(
       { attemptId = launch.payload.attemptId, mon = foe },
-      { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+      { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
     )
     local portRecord = newPortRecord()
     local battle = BattleRuntime.new({
@@ -700,7 +700,7 @@ function T.stale_dex_revision_between_eligibility_and_preparation_fails_without_
   }
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.payload.attemptId, mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = newPortRecord()
   local battle = BattleRuntime.new({
@@ -818,7 +818,7 @@ function T.stale_dex_revision_between_eligibility_and_preparation_fails_without_
     }
     local fullScenario = ScenarioFactory.fromEncounter(
       fullLaunch.payload,
-      { party = fullParty, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+      { party = fullParty, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
     )
     local fullRecord = newPortRecord()
     local fullBattle = BattleRuntime.new({

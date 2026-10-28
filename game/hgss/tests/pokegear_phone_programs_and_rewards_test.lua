@@ -1361,7 +1361,7 @@ function T.tests.trainer_win_commits_mom_savings_with_the_prize()
   }
   local scenario = ScenarioFactory.fromTrainer(
     { id = "trainer-prize-mom", trainers = trainers },
-    { party = owner, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = owner, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local pokegearState = PokegearState.new({ seed = 82 }, catalogRefs(record))
   local battle = BattleRuntime.new({

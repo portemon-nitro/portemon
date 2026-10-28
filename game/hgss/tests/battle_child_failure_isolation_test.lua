@@ -158,7 +158,12 @@ function T.versioned_rosters_replay_the_frozen_failure_isolation_flow(context)
     }
     local flows = coordinator()
     Assert.isTrue(flows:open(partyIntent({ party = roster })), "the party child opens on " .. versionId)
+    drive(flows, { type = "navigate", direction = "down" })
     drive(flows, { type = "confirm" })
+    drive(flows, { type = "confirm" })
+    for _ = 1, 12 do
+      flows:tick()
+    end
     local staged = flows:takeResult()
     Assert.notNil(staged, "confirming stages its reply on " .. versionId)
     Assert.equal(staged.kind, "choice", "the staged result is a choice on " .. versionId)

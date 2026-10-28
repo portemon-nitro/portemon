@@ -185,8 +185,19 @@ function T.versioned_item_catalogs_replay_the_stocked_bag_flow(context)
     Assert.notNil(view, "the open bag exposes its child view on " .. versionId)
     Assert.equal(view.application, "bag", "the bag view carries its native application receipt on " .. versionId)
     drive(flows, { type = "confirm" })
+    flows:tick()
+    drive(flows, { type = "confirm" })
+    for _ = 1, 8 do
+      flows:tick()
+    end
     Assert.isNil(flows:takeResult(), "staging the serving seals no reply on " .. versionId)
-    Assert.equal(flows:status().stagedItem, "POTION", "the staged key is remembered on " .. versionId)
+    local staged = flows:status()
+    Assert.equal(
+      staged.stagedItem,
+      "POTION",
+      "the staged key is remembered on " .. versionId
+        .. ")"
+    )
     Assert.deepEqual(inventory, { POTION = 5 }, "browsing never mutates the detached stock on " .. versionId)
     drive(flows, { type = "cancel" })
     Assert.isNil(flows:takeResult(), "the restored browser seals nothing on its own on " .. versionId)

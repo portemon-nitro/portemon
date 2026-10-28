@@ -15,7 +15,7 @@
 local Assert = require("tests.support.Assert")
 local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
-local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattleAnimationSources = require("romdump.src.config.BattleAnimationSources")
 local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
@@ -699,13 +699,13 @@ function T.successful_status_and_stage_execution_admits_one_visual_after_announc
   local _, waveEvents = statusPlayTurn(session, answerFor(1))
   session:dispose()
   checkStatusTurn(danceEvents, 1, "SWORDS_DANCE", "Swords Dance", "rose")
-  checkStatusTurn(waveEvents, 2, "THUNDER_WAVE", "Thunder Wave", "afflicted")
+  checkStatusTurn(waveEvents, 2, "THUNDER_WAVE", "Thunder Wave", "paralyzed")
 end
 
--- A missed status attempt through the production packet path keeps its
--- own documented program without afflicting anyone: the miss narrates
--- before the visual starts, and exactly one program runs.
-function T.missed_status_attempt_keeps_its_program_without_afflicting()
+-- A missed status attempt through the production packet path follows
+-- HGSS subscript_0007_Miss: it announces the attack and the miss without
+-- starting the move's program or afflicting anyone.
+function T.missed_status_attempt_plays_no_program_and_afflicts_no_one()
   local view = statusTimelineView()
   local started = {}
   local handles = {}
@@ -751,7 +751,7 @@ function T.missed_status_attempt_keeps_its_program_without_afflicting()
   local seen = {}
   local texts = {}
   local tick = 0
-  while tick < 6000 and (not timeline:settled() or #started == 0) do
+  while tick < 6000 and not timeline:settled() do
     tick = tick + 1
     timeline:update(STATUS_TICK, function(_)
       return true
@@ -773,23 +773,22 @@ function T.missed_status_attempt_keeps_its_program_without_afflicting()
       end
     end
   end
-  Assert.notNil(startTick, "the miss admits its documented program")
+  Assert.isNil(startTick, "the miss starts no move program")
   Assert.notNil(announcementTick, "the miss narrates its outcome")
-  Assert.isTrue(announcementTick < startTick, "the miss narrates before its program starts")
-  Assert.equal(#started, 1, "the miss plays exactly one program")
+  Assert.equal(#started, 0, "the miss plays no program")
   local missed = false
   local afflicted = false
   for _, text in ipairs(texts) do
     if tostring(text):find("missed", 1, true) ~= nil then
       missed = true
     end
-    if tostring(text):find("afflicted", 1, true) ~= nil then
+    if tostring(text):find("paralyzed", 1, true) ~= nil then
       afflicted = true
     end
   end
   Assert.isTrue(missed, "the miss narration reaches the player")
   Assert.isFalse(afflicted, "the miss afflicts no one")
-  Assert.isTrue(timeline:settled(), "the miss drains fully once its program completes")
+  Assert.isTrue(timeline:settled(), "the miss drains fully")
 end
 
 return { tests = T }

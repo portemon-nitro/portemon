@@ -90,6 +90,12 @@ local T = {
 local TICK = 1 / 60
 local PRESENTATION_OWNER = "game.hgss.src.field.FieldBattlePresentation"
 
+---@param screen table live battle screen under inspection
+---@return boolean true while a source message or stats window awaits input
+local function hasAwaitingNarration(screen)
+  return screen._timeline:messageActive() or screen._timeline:levelUpStats() ~= nil
+end
+
 ---@param behavior string the missing envelope responsibility naming this red
 ---@return table the field-local presented-battle envelope owner
 local function requirePresentationOwner(behavior)
@@ -122,6 +128,18 @@ local function recordingAudio()
   local audio = { plays = {} }
   function audio.play(name)
     audio.plays[#audio.plays + 1] = name
+    return true
+  end
+  function audio.playPanned(_, name)
+    audio.plays[#audio.plays + 1] = name
+    return true
+  end
+  function audio.playFanfare(_, name)
+    audio.plays[#audio.plays + 1] = name
+    return true
+  end
+  function audio.stop(_, name)
+    audio.stops = (audio.stops or 0) + 1
     return true
   end
   -- The recording double carries no playback clock, so effect waits
@@ -373,6 +391,8 @@ local function bindEnvelope(game, versionId, measurement, overrides)
     windows = doubles.windows,
     text = doubles.text,
     audio = doubles.audio,
+    itemCatalog = game.runtime.itemCatalog,
+    monCatalog = game.runtime.monCatalog,
     measureDisplay = function()
       return measurement
     end,
@@ -560,7 +580,9 @@ local function settleBattle(game, envelope, choose, budget)
       local screen = envelope:liveScreen()
       if screen ~= nil then
         local shown = screen:status()
-        if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+        if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome"
+          or hasAwaitingNarration(screen)
+        then
           envelope:input({ { type = "confirm" } })
         end
       end
@@ -1090,7 +1112,9 @@ function T.tests.host_lifetime_survives_schedules_and_second_launches()
       local screen = envelope:liveScreen()
       if screen ~= nil then
         local shown = screen:status()
-        if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+        if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome"
+          or hasAwaitingNarration(screen)
+        then
           envelope:input({ { type = "confirm" } })
         end
       end
@@ -1241,7 +1265,7 @@ function T.tests.opening_walk_reaches_playable_battles()
     -- Native paired views: the command root and the Fight move list draw
     -- through the selected frame before any decision is answered.
     local ticks = 0
-    while ticks < 600 do
+    while ticks < 1800 do
       game:step()
       envelope:updateFixed(TICK)
       local screen = envelope:liveScreen()
@@ -1325,7 +1349,7 @@ end
 -- exit declines exactly once, a consumed decision never reopens, and
 -- disposal refuses late decisions and seals nothing late.
 function T.tests.completion_port_rejects_stale_and_replayed_results()
-  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
   local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
@@ -1356,6 +1380,9 @@ function T.tests.completion_port_rejects_stale_and_replayed_results()
   }
   local audio = {
     play = function(_, _)
+      return true
+    end,
+    stop = function(_, _)
       return true
     end,
   }
@@ -1390,8 +1417,7 @@ function T.tests.completion_port_rejects_stale_and_replayed_results()
       subject = subject,
     }
   end
-  -- The terminal capture narration plays first: the decision is stored
-  -- but unoffered until its page is acknowledged.
+  -- Terminal flow settles itself, then exposes the bound capture decision.
   local view = {
     own = {
       {
@@ -1431,28 +1457,20 @@ function T.tests.completion_port_rejects_stale_and_replayed_results()
     result = { word = "capture" },
   })
   local settled = false
-  for _ = 1, 600 do
+  for _ = 1, 1800 do
     screen:updateFixed(TICK)
+    if hasAwaitingNarration(screen) then
+      screen:input({ { type = "confirm" } })
+    end
     if screen:status().mode == "outcome" then
       settled = true
       break
     end
   end
   Assert.isTrue(settled, "the terminal capture narration reaches its outcome")
-  Assert.isNil(screen:status().completion, "the unacknowledged terminal offers no nickname yet")
   Assert.isTrue(port.openCompletion(intentFor("nickname-1")), "the live port stores its nickname decision")
-  Assert.isNil(screen:status().completion, "the stored decision waits for its acknowledgment")
-  -- The terminal page reveals then acknowledges through genuine edges.
-  local offered = nil
-  for _ = 1, 30 do
-    screen:input({ { type = "confirm" } })
-    screen:updateFixed(TICK)
-    if screen:status().completion ~= nil then
-      offered = screen:status().completion
-      break
-    end
-  end
-  Assert.notNil(offered, "the acknowledged terminal offers the nickname decision")
+  local offered = screen:status().completion
+  Assert.notNil(offered, "the settled terminal offers the nickname decision")
   Assert.notNil(offered, "the acknowledged terminal offers the nickname decision")
   assert(offered ~= nil, "the nickname decision is offered")
   Assert.equal(offered.stage, "question", "the offered decision asks first")
@@ -1651,7 +1669,7 @@ end
 -- the battle-action child poll. The terminal outcome view is restored
 -- after each decision and disposal releases the lane exactly once.
 function T.tests.evolution_completion_runs_its_exclusive_lane_to_terminal_restore()
-  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
   local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
@@ -1682,6 +1700,9 @@ function T.tests.evolution_completion_runs_its_exclusive_lane_to_terminal_restor
   }
   local audio = {
     play = function(_, _)
+      return true
+    end,
+    stop = function(_, _)
       return true
     end,
   }
@@ -1754,8 +1775,11 @@ function T.tests.evolution_completion_runs_its_exclusive_lane_to_terminal_restor
     result = { word = "win" },
   })
   local settled = false
-  for _ = 1, 600 do
+  for _ = 1, 1800 do
     screen:updateFixed(TICK)
+    if hasAwaitingNarration(screen) then
+      screen:input({ { type = "confirm" } })
+    end
     if screen:status().mode == "outcome" then
       settled = true
       break
@@ -1763,17 +1787,8 @@ function T.tests.evolution_completion_runs_its_exclusive_lane_to_terminal_restor
   end
   Assert.isTrue(settled, "the terminal win narration reaches its outcome")
   Assert.isTrue(port.openCompletion(intentFor("evolution-1")), "the live port stores its evolution decision")
-  Assert.isNil(screen:status().completion, "the stored decision waits for its acknowledgment")
-  local offered = nil
-  for _ = 1, 30 do
-    screen:input({ { type = "confirm" } })
-    screen:updateFixed(TICK)
-    if screen:status().completion ~= nil then
-      offered = screen:status().completion
-      break
-    end
-  end
-  Assert.notNil(offered, "the acknowledged terminal offers the evolution decision")
+  local offered = screen:status().completion
+  Assert.notNil(offered, "the settled terminal offers the evolution decision")
   assert(offered ~= nil, "the evolution decision is offered")
   Assert.equal(offered.kind, "evolution", "the offered decision names its evolution lane")
   Assert.isFalse(

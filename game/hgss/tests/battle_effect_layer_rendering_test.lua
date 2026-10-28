@@ -626,7 +626,7 @@ end
 -- retail battler order through sorted position order within each side,
 -- so the second player-side battler binds slot 2 in doubles.
 function T.blend_coefficients_map_to_slot_scoped_battler_alpha()
-  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local screen = BattleScreenState.new({
     launchId = "blend-mapping-probe",
     manifest = ManifestFixture.manifest(),

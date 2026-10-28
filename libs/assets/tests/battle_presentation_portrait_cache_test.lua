@@ -109,7 +109,7 @@ function T.single_battle_demand_names_exactly_its_pages()
   local manifest = cache.load(CacheFs.forVersion("heartgold", FakeCache.new()))
   Assert.isTrue(type(manifest) == "table", "the staged global manifest loads through the cache boundary")
   local demand = assert(
-    cache.requirements(manifest, { background = "general", terrain = "grass", time = "day" }, { backSelector() }, nil),
+    cache.requirements(manifest, { background = "general", terrain = "grass", time = "day" }, { backSelector() }, nil, {}, {}),
     "one battle context yields one exact demand"
   )
   Assert.isTrue(type(demand.scenes) == "table" and #demand.scenes == 1, "one battle demands exactly one scene")
@@ -134,7 +134,7 @@ function T.delayed_corrupt_and_stale_readiness_never_reads_as_ready()
   local staging = CacheFs.forVersion("heartgold", FakeCache.new())
   local manifest = cache.load(staging)
   local demand = assert(
-    cache.requirements(manifest, { background = "general", terrain = "grass", time = "day" }, { backSelector() }, nil),
+    cache.requirements(manifest, { background = "general", terrain = "grass", time = "day" }, { backSelector() }, nil, {}, {}),
     "one battle context yields one exact demand"
   )
   Assert.isFalse(cache.isReady(staging, demand), "an empty staging area is not a ready battle")

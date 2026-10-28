@@ -10,6 +10,9 @@ local BattleChildText = {}
 ---@param child table<string, unknown> detached child view under titling
 ---@return string modal title wording
 function BattleChildText.title(child)
+  if type(child.sourceTitle) == "string" then
+    return child.sourceTitle
+  end
   local kind = child.kind
   if kind == "target" then
     return "Use " .. tostring(child.stagedItem or "the item") .. " on whom?"
@@ -25,6 +28,9 @@ function BattleChildText.title(child)
     return "BAG: " .. tostring(child.currentPocket or "?") .. paging
   elseif kind == "learn" then
     return "Forget a move for " .. tostring(child.incomingMove or "?") .. "?"
+  elseif kind == "move" then
+    assert(type(child.holderName) == "string" and child.holderName ~= "", "move selection names its holder")
+    return child.holderName
   end
   if child.cancellable == true then
     return "Choose a Pokemon!"
@@ -35,6 +41,9 @@ end
 ---@param child table<string, unknown> detached child view under guidance wording
 ---@return string footer guidance wording
 function BattleChildText.subtitle(child)
+  if type(child.sourcePrompt) == "string" then
+    return child.sourcePrompt
+  end
   if child.kind == "target" then
     return "Select the target."
   elseif child.kind == "bag" then

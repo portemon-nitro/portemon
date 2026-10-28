@@ -216,7 +216,12 @@ function T.versioned_rosters_replay_the_frozen_party_flows(context)
     local flows = coordinator()
     local intent = partyIntent({ options = options, party = roster })
     Assert.isTrue(flows:open(intent), "the voluntary party child opens on " .. versionId)
+    drive(flows, { type = "navigate", direction = "down" })
     drive(flows, { type = "confirm" })
+    drive(flows, { type = "confirm" })
+    for _ = 1, 12 do
+      flows:tick()
+    end
     local result = flows:takeResult()
     Assert.notNil(result, "confirming the reserve stages its reply on " .. versionId)
     Assert.equal(result.kind, "choice", "the reserve stages a choice on " .. versionId)
@@ -236,6 +241,10 @@ function T.versioned_rosters_replay_the_frozen_party_flows(context)
     drive(forced, { type = "cancel" })
     Assert.isNil(forced:takeResult(), "a forced replacement has no cancel result on " .. versionId)
     drive(forced, { type = "confirm" })
+    drive(forced, { type = "confirm" })
+    for _ = 1, 12 do
+      forced:tick()
+    end
     local sealed = forced:takeResult()
     Assert.notNil(sealed, "confirming the forced reserve stages its reply on " .. versionId)
     Assert.equal(sealed.kind, "choice", "the forced reserve stages a choice on " .. versionId)

@@ -841,9 +841,35 @@ local function handleStopSound(exec, instruction, index)
 end
 Handlers["stop-sound"] = handleStopSound
 
+local function sourcePan(exec, pan)
+  local topology = lockedTopology(exec)
+  local attacker = sideClassOf(type(topology) == "table" and topology.attacker or nil)
+  local targets = type(topology) == "table" and topology.targets or nil
+  local defender = sideClassOf(type(targets) == "table" and targets[1] or nil)
+  if attacker == nil or defender == nil then
+    exec.fail("positioned voices require attacker and defender sides")
+    return nil
+  end
+  if
+    (attacker == "enemy" and defender == "player")
+    or (attacker == "player" and defender == "player" and pan > 0)
+    or (attacker == "enemy" and defender == "enemy" and pan < 0)
+  then
+    pan = -pan
+  end
+  if exec.contestMode() == 1 then
+    pan = -pan
+  end
+  return pan
+end
+
 local function handlePlayPositionedSound(exec, instruction, index)
   local values = instruction.values --[[@as table<integer, integer>]]
-  if exec.play(instruction.sound, values[1]) == nil then
+  local pan = sourcePan(exec, values[1])
+  if pan == nil then
+    return "done"
+  end
+  if exec.play(instruction.sound, pan) == nil then
     return "done"
   end
   exec.note({ op = "play-positioned-sound", index = index, sound = instruction.sound })
@@ -865,7 +891,8 @@ Handlers["stop-positioned-sound"] = handleStopPositionedSound
 
 local function handlePlayCry(exec, instruction, index)
   local values = instruction.values --[[@as table<integer, integer>]]
-  if exec.playCry(values) == nil then
+  local pan = sourcePan(exec, values[2])
+  if pan == nil or exec.playCry({ values[1], pan, values[3] }) == nil then
     return "done"
   end
   exec.note({ op = "play-cry", index = index })

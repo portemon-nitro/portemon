@@ -73,6 +73,15 @@ local function newPartyOwner()
     mapSection = 7,
     date = CatalogFixture.metDate(),
   })
+  local boxNames = {}
+  for box = 0, owner:boxCount() - 1 do
+    boxNames[#boxNames + 1] = { box = box, name = "BOX " .. tostring(box + 1) }
+  end
+  local namedBoxes = assert(owner:preparePcChanges({
+    partyRevision = owner:partyRevision(),
+    boxRevision = owner:boxRevision(),
+  }, { metadata = boxNames }))
+  namedBoxes.publish()
   local factory = CatalogFixture.makeFactory(0x33333333, catalog)
   Assert.isTrue(owner:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
   return owner

@@ -11,7 +11,7 @@
 -- dedicated flow owner lands.
 
 local Assert = require("tests.support.Assert")
-local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 
 local T = {}
 local TICK = 1 / 30

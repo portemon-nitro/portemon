@@ -366,6 +366,21 @@ function T.focused_slot_release_stays_a_scoped_activation()
   Assert.equal(aimRelease.control.id, "target:0", "the focused target release names its own row")
 end
 
+function T.native_child_tap_preserves_the_release_point()
+  local view = snapshot("child", {
+    childView = { kind = "bag", native = { layout = {} }, rows = {}, focusId = nil },
+  })
+  local plan = resolve(singleMeasurement(256, 192, "compact-plan-test:native-child-point"), view)
+  local down = plan.mapInput({ type = "pointer_down", pointerId = "touch:native", x = 72, y = 48 }, view, plan)
+  local up = plan.mapInput({ type = "pointer_up", pointerId = "touch:native", x = 72, y = 48 }, view, plan)
+  Assert.notNil(down, "the native child accepts a compact touch press")
+  Assert.notNil(up, "the native child accepts a compact touch release")
+  Assert.equal(up.type, "child_activate", "the native child release stays a child activation")
+  Assert.equal(up.control.id, "native", "the compact viewport dispatches through the native child owner")
+  Assert.equal(up.x, 72, "native activation carries the release x coordinate")
+  Assert.equal(up.y, 48, "native activation carries the release y coordinate")
+end
+
 -- Disabled options stay focusable while empty slots stay blank: the grid
 -- never drops a slot identity, and the empty cell draws no name.
 function T.disabled_focusable_absent_blank()

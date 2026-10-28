@@ -13,6 +13,7 @@ local Experience = require("libs.mons.src.gen4.Experience")
 local Mon = require("libs.mons.src.Mon")
 local MonCache = require("libs.assets.src.MonCache")
 local Personality = require("libs.mons.src.gen4.Personality")
+local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
 
 ---@class BattlePresentationModel
 local BattlePresentationModel = {}
@@ -359,6 +360,10 @@ local function combatantRecord(deps, snapshot, id, own)
   if portrait ~= nil then
     record.portraitSelector = portrait
   end
+  local origin = mon.origin --[[@as table<string, unknown>?]]
+  if type(origin) == "table" and type(origin.ball) == "string" then
+    record.ballKey = origin.ball
+  end
   if own then
     -- The owning side reads its own roster in full: party-slot mapping,
     -- move power points, progression, and holdings. Opponents never
@@ -446,8 +451,41 @@ function BattlePresentationModel.view(snapshot, scenario, deps)
     end
   end
   local environment = {}
-  if type(scenario) == "table" and type(scenario.environment) == "table" then
-    environment = copyValue(scenario.environment)
+  local playerName = nil
+  local foeTrainers = {} ---@type table<integer, table<string, string>>
+  local playerTrainer = nil ---@type table<string, string>?
+  if type(scenario) == "table" then
+    if type(scenario.environment) == "table" then
+      environment = copyValue(scenario.environment)
+    end
+    local playerContext = scenario.playerContext
+    if type(playerContext) == "table" and type(playerContext.trainerName) == "string" then
+      playerName = playerContext.trainerName
+    end
+    if type(playerContext) == "table" and type(playerContext.trainerClassKey) == "string" then
+      playerTrainer = { classKey = playerContext.trainerClassKey }
+      if type(playerContext.trainerName) == "string" then
+        playerTrainer.name = playerContext.trainerName
+      end
+    end
+    if type(scenario.trainer) == "table" then
+      for _, trainer in ipairs(scenario.trainer) do
+        assert(type(trainer) == "table", "trainer presentation entries are records")
+        local classKey = trainer.class
+        if type(classKey) == "number" then
+          classKey = BattleMusicSelection.trainerClassName(classKey)
+        end
+        assert(type(classKey) == "string" and classKey ~= "", "trainer presentation resolves a semantic class key")
+        local entry = { classKey = classKey }
+        if type(trainer.name) == "string" and trainer.name ~= "" then
+          entry.name = trainer.name
+        end
+        if type(trainer.loseSpeechSelector) == "string" then
+          entry.loseSpeechKey = "battle/trainer-speech/" .. trainer.loseSpeechSelector
+        end
+        foeTrainers[#foeTrainers + 1] = entry
+      end
+    end
   end
   return {
     round = snapshot.round,
@@ -456,6 +494,9 @@ function BattlePresentationModel.view(snapshot, scenario, deps)
     foes = foes,
     participants = participants,
     environment = environment,
+    playerName = playerName,
+    playerTrainer = playerTrainer,
+    foeTrainers = foeTrainers,
   }
 end
 

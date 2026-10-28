@@ -4,9 +4,9 @@
 local TextSpeedPolicy = {}
 
 local POLICIES = {
-  slow = { interGlyphDelay = 7, glyphBudget = 1, abAcceleration = true },
-  mid = { interGlyphDelay = 3, glyphBudget = 1, abAcceleration = true },
-  fast = { interGlyphDelay = 0, glyphBudget = 1, abAcceleration = true },
+  slow = { interGlyphDelay = 8, glyphBudget = 1, abAcceleration = true },
+  mid = { interGlyphDelay = 4, glyphBudget = 1, abAcceleration = true },
+  fast = { interGlyphDelay = 1, glyphBudget = 1, abAcceleration = true },
   fastest = { interGlyphDelay = 0, glyphBudget = 2, abAcceleration = false },
 }
 

@@ -835,6 +835,13 @@ function FieldAudioController:play(idOrSymbol)
   return self._sound:play(idOrSymbol)
 end
 
+---@param idOrSymbol integer|string effect sequence reference under staging
+---@param pan integer signed NNS track-pan offset
+---@return boolean started true when the effect voice starts
+function FieldAudioController:playPanned(idOrSymbol, pan)
+  return self._sound:playPanned(idOrSymbol, pan)
+end
+
 ---@param idOrSymbol integer|string effect sequence reference under release
 ---@return boolean stopped true once the stop reaches the engine player
 function FieldAudioController:stop(idOrSymbol)
@@ -901,9 +908,13 @@ end
 ---@param species integer numeric species identity behind the cry voice
 ---@param pattern integer cry pattern behind the voice family
 ---@param form integer? the mon's form; nil plays the species bank
+---@param mode integer? Chatot/default-cry routing mode
+---@param pan integer? signed NNS track-pan offset
+---@param volume integer? initial primary player level
+---@param pitch integer? signed NNS track-pitch offset
 ---@return boolean started true once the cry voice starts
-function FieldAudioController:playCry(species, pattern, form)
-  return self._sound:playCry(species, pattern, form)
+function FieldAudioController:playCry(species, pattern, form, mode, pan, volume, pitch)
+  return self._sound:playCry(species, pattern, form, mode, pan, volume, pitch)
 end
 
 function FieldAudioController:isCryFinished()

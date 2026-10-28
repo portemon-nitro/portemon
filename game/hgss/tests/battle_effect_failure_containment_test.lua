@@ -320,7 +320,7 @@ end
 ---@param staging table staged-effect fixture under test driving
 ---@return table live screen behind the failing effect services plus its port
 local function openFailingScreen(launchId, staging)
-  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -401,6 +401,13 @@ local function presentFailingStrike(screen, launchId)
     before = failingView(57),
     after = failingView(43),
   })
+  if not screen._disposed then
+    for _, battler in ipairs(screen:view().battlers) do
+      if battler.side == 2 then
+        Assert.equal(battler.hp, 57, "accepting a strike never applies its checkpoint immediately")
+      end
+    end
+  end
 end
 
 ---@param view table displayed screen view under inspection
@@ -412,6 +419,24 @@ local function failingDisplayedFoeHp(view)
     end
   end
   error("the displayed view names its foe", 0)
+end
+
+---@param screen table failing screen under timed inspection
+---@param ticks integer accepted update count under inspection
+local function updateFailingScreen(screen, ticks)
+  for tick = 1, ticks do
+    screen:updateFixed(1 / 30)
+    local hp = failingDisplayedFoeHp(screen:view())
+    if hp ~= 57 then
+      error(
+        "the failing screen changed checkpoint HP at tick "
+          .. tick
+          .. " while "
+          .. tostring(screen:status().mode),
+        0
+      )
+    end
+  end
 end
 
 -- A terminal worker failure for the selected effect fails the live
@@ -426,9 +451,7 @@ function T.missing_native_effect_request_fails_the_live_screen_with_provenance()
   staging:failEffect("TACKLE", "worker exploded")
   local screen = openFailingScreen(launchId, staging)
   presentFailingStrike(screen, launchId)
-  for _ = 1, 600 do
-    screen:updateFixed(1 / 30)
-  end
+  updateFailingScreen(screen, 600)
   local status = screen:status()
   Assert.equal(status.mode, "failed", "the missing native dependency fails the screen, never a silent hit")
   Assert.isTrue(
@@ -439,14 +462,27 @@ function T.missing_native_effect_request_fails_the_live_screen_with_provenance()
     tostring(status.error):find(launchId, 1, true) ~= nil,
     "the failure names its launch: " .. tostring(status.error)
   )
-  Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the failed cue applies no health early")
+  local displayedHp = failingDisplayedFoeHp(screen:view())
+  Assert.equal(
+    displayedHp,
+    57,
+    "the failed cue applies no health early ("
+      .. displayedHp
+      .. "; mode="
+      .. status.mode
+      .. "; error="
+      .. tostring(status.error)
+      .. "; timeline="
+      .. table.concat(screen._timeline:diagnostics(), "; ")
+      .. ")"
+  )
   Assert.isNil(status.request, "the failed screen exposes no new decision")
   Assert.isFalse(status.ready, "the failed screen reports unready, never settled")
   Assert.equal(#screen:view().effectInstances, 0, "no failed effect record lingers in the live scene")
   screen:dispose()
   Assert.equal(screen:status().mode, "failed", "disposal keeps the diagnosed failure")
-  local ok = pcall(presentFailingStrike, screen, launchId)
-  Assert.isTrue(ok, "a stale delivery after disposal raises nothing")
+  local ok, failure = pcall(presentFailingStrike, screen, launchId)
+  Assert.isTrue(ok, "a stale delivery after disposal raises nothing: " .. tostring(failure))
   Assert.equal(screen:status().mode, "failed", "a stale delivery never revives the failed screen")
 end
 
@@ -530,7 +566,8 @@ function T.failed_effect_image_upload_releases_partial_leases_without_orphans()
     tostring(status.error):find("probe-spark", 1, true) ~= nil,
     "the failure names its resource: " .. tostring(status.error)
   )
-  Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the failed closure applies no health early")
+  local displayedHp = failingDisplayedFoeHp(screen:view())
+  Assert.equal(displayedHp, 57, "the failed closure applies no health early (" .. displayedHp .. ")")
   Assert.isNil(status.request, "the failed screen exposes no new decision")
   Assert.equal(#screen:view().effectInstances, 0, "no failed effect record lingers in the live scene")
   screen:dispose()
@@ -572,7 +609,8 @@ function T.unknown_program_task_kind_fails_the_live_screen_with_provenance()
     tostring(status.error):find(launchId, 1, true) ~= nil,
     "the failure names its launch: " .. tostring(status.error)
   )
-  Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the rejected program applies no health early")
+  local displayedHp = failingDisplayedFoeHp(screen:view())
+  Assert.equal(displayedHp, 57, "the rejected program applies no health early (" .. displayedHp .. ")")
   Assert.isNil(status.request, "the failed screen exposes no new decision")
   Assert.isFalse(status.ready, "the failed screen reports unready, never settled")
   Assert.equal(#screen:view().effectInstances, 0, "no rejected effect record lingers in the live scene")
@@ -664,7 +702,8 @@ function T.missing_or_malformed_move_power_refuses_admission_before_playback()
       tostring(status.error):find("movePower", 1, true) ~= nil,
       "the failure names the missing context: " .. tostring(status.error)
     )
-    Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the refused cue applies no health early")
+    local displayedHp = failingDisplayedFoeHp(screen:view())
+    Assert.equal(displayedHp, 57, "the refused cue applies no health early (" .. displayedHp .. ")")
     Assert.isNil(status.request, "the failed screen exposes no new decision")
     Assert.equal(#screen:view().effectInstances, 0, "no refused effect record lingers in the live scene")
     screen:dispose()
@@ -706,7 +745,7 @@ end
 -- provenance, applies no health early, and keeps the diagnosis through
 -- disposal with no live work left.
 function T.faulted_occurrences_keep_provenance_until_the_owner_releases_them()
-  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
   local BattleAnimationPlayer = require("libs.hgss.src.presentation.BattleAnimationPlayer")
   local audio = { played = {}, stopped = {} }
   function audio.play(name)
@@ -870,7 +909,8 @@ function T.faulted_occurrences_keep_provenance_until_the_owner_releases_them()
     tostring(status.error):find(launchId, 1, true) ~= nil,
     "the failure names its launch: " .. tostring(status.error)
   )
-  Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the failed cue applies no health early")
+  local displayedHp = failingDisplayedFoeHp(screen:view())
+  Assert.equal(displayedHp, 57, "the failed cue applies no health early (" .. displayedHp .. ")")
   local live = 0
   for _, occurrence in ipairs(screen._player._occurrences) do
     if occurrence.phase == "preparing" or occurrence.phase == "running" or occurrence.phase == "waiting" then

@@ -137,30 +137,6 @@ function BattlePresentationFlow.transformDonor(event)
 end
 
 ---@param word string terminal result word carried by the committed receipt
----@param foeName string? visible foe name for terminal wording
----@return string native result narration for the committed word
-function BattlePresentationFlow.resultText(word, foeName)
-  if word == "win" then
-    if type(foeName) == "string" and foeName ~= "" then
-      return "Defeated the foe " .. foeName .. "!"
-    end
-    return "The foe was defeated!"
-  elseif word == "loss" then
-    return "Your party can no longer battle!"
-  elseif word == "flee" then
-    return "Got away safely!"
-  elseif word == "capture" then
-    if type(foeName) == "string" and foeName ~= "" then
-      return "Gotcha! " .. foeName .. " was caught!"
-    end
-    return "Gotcha! The catch succeeded!"
-  elseif word == "draw" then
-    return "The battle ended in a draw."
-  end
-  return "The battle ended."
-end
-
----@param word string terminal result word carried by the committed receipt
 ---@param wild boolean true while the victory answers a wild encounter
 ---@return string? staged victory BGM symbol for wins, nil when the word carries no music
 function BattlePresentationFlow.resultMusicSymbol(word, wild)

@@ -259,6 +259,7 @@ local function assertTrainerRecord(trainerIndex, record)
     items = true,
     prizeMoney = true,
     messageSelectors = true,
+    loseSpeechSelector = true,
   }, context, "BATTLE_DATA_INVALID", "trainer " .. tostring(trainerIndex))
   checkInt(record.trainerClass, 0, nil, context, "BATTLE_DATA_INVALID", "trainer class")
   assertNameReference(record.nameReference, context)
@@ -291,6 +292,14 @@ local function assertTrainerRecord(trainerIndex, record)
   end
   checkRecord(record.prizeMoney, nil, context, "BATTLE_DATA_INVALID", "trainer prizeMoney")
   checkRecord(record.messageSelectors, nil, context, "BATTLE_DATA_INVALID", "trainer messageSelectors")
+  if
+    type(record.loseSpeechSelector) ~= "string"
+    or #record.loseSpeechSelector ~= 55
+    or record.loseSpeechSelector:sub(1, 15) ~= "trainer-speech:"
+    or record.loseSpeechSelector:sub(16):match("^[0-9a-f]+$") == nil
+  then
+    fail("BATTLE_DATA_INVALID", "trainer lose speech uses an opaque semantic selector", context)
+  end
 end
 
 -- Projected trainer catalog: one version plus every trainer record keyed by

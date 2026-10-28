@@ -89,6 +89,10 @@ local function methodAudio()
     controller.calls[#controller.calls + 1] = { method = "play", receiver = self, symbol = symbol }
     return true
   end
+  function controller:stop(symbol)
+    controller.calls[#controller.calls + 1] = { method = "stop", receiver = self, symbol = symbol }
+    return true
+  end
   function controller:playCry(species, pattern, form, mode, pan, volume, pitch)
     controller.calls[#controller.calls + 1] = {
       method = "playCry",
@@ -466,6 +470,10 @@ local function openBattle(state, stock)
   local holder = {}
   local host = stubHost(holder)
   local launchId = "launch-production-audio"
+  -- This suite verifies audio routing through the live field battle host;
+  -- keep its envelope headless so trainer and scene pixels are not part of
+  -- the audio contract.
+  state.battleEnvelope._graphics = nil
   local port = state.battleEnvelope:factory()({
     launchId = launchId,
     environment = { sceneKey = SCENE_KEY },
@@ -485,7 +493,7 @@ local function openBattle(state, stock)
   local ScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foeRecord(FOE_SPECIES, 3, 0x5EED0002) },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   holder.battle = BattleRuntime.new({
     request = launch,
@@ -523,6 +531,12 @@ end
 ---@param rig table live rig under test driving
 local function driveToCommand(rig)
   for _ = 1, 900 do
+    local mode = rig.screen:status().mode
+    if mode == "intro" or mode == "narration" or mode == "outcome"
+      or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+    then
+      rig.screen:input({ { type = "confirm" } })
+    end
     pump(rig)
     local status = rig.screen:status()
     if status.mode == "failed" then
@@ -797,6 +811,7 @@ local function openMusicLaunch(fieldAudio, kind, launchTag)
         return true
       end,
     },
+    monCatalog = CatalogFixture.makeCatalog(),
     measureDisplay = function()
       return musicDualMeasurement()
     end,
@@ -821,6 +836,9 @@ end
 ---@return table detached terminal delivery picturing the settled views
 local function musicTerminalPacket(launchId, packetId, word)
   local view = {
+    playerName = "MINT",
+    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "MINT" },
+    foeTrainers = {},
     own = {
       {
         combatant = 1,
@@ -828,6 +846,7 @@ local function musicTerminalPacket(launchId, packetId, word)
         side = 1,
         position = 1,
         name = "LEAD",
+        ballKey = "POKE_BALL",
         species = "EEVEE",
         level = 5,
         hp = 20,
@@ -842,6 +861,7 @@ local function musicTerminalPacket(launchId, packetId, word)
         side = 2,
         position = 2,
         name = "Wild CHIKORITA",
+        ballKey = "POKE_BALL",
         species = "CHIKORITA",
         level = 3,
         hp = 0,
@@ -856,7 +876,7 @@ local function musicTerminalPacket(launchId, packetId, word)
     events = {},
     before = view,
     after = view,
-    result = { word = word },
+    result = { word = word, moneyLost = 0 },
   }
 end
 
@@ -866,6 +886,12 @@ end
 local function driveMusicToOutcome(rig, word, packetId)
   rig.port.present(musicTerminalPacket(rig.host.launchId, packetId, word))
   for _ = 1, 900 do
+    local mode = rig.screen:status().mode
+    if mode == "intro" or mode == "narration" or mode == "outcome"
+      or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+    then
+      rig.screen:input({ { type = "confirm" } })
+    end
     rig.screen:updateFixed(TICK)
     if rig.screen:status().mode == "outcome" then
       return
@@ -879,21 +905,24 @@ local function driveMusicToOutcome(rig, word, packetId)
 end
 
 ---@param rig table live rig under test driving
-local function acknowledgeOutcome(rig)
-  for _ = 1, 30 do
-    rig.screen:input({ { type = "confirm" } })
+local function waitForOutcomeReturn(rig)
+  for _ = 1, 300 do
+    local mode = rig.screen:status().mode
+    if mode == "outcome" or rig.screen._timeline:messageActive() then
+      rig.screen:input({ { type = "confirm" } })
+    end
     rig.screen:updateFixed(TICK)
     if rig.port.leave({}) then
       return
     end
   end
-  error("the terminal narration never acknowledged", 0)
+  error("the terminal source waits never drained", 0)
 end
 
 -- Nonvictory terminals, replays, and a rejecting music sink stay safe:
 -- loss, flee, and draw voice no BGM, a duplicated terminal delivery
 -- replays no BGM, and a rejected win BGM reports once with its launch
--- identity while the committed result still acknowledges and returns.
+-- identity while the committed result still returns after its source waits.
 -- A later nickname decision and launch teardown replay nothing.
 function T.nonvictory_duplicate_and_rejected_result_music_stays_single_and_safe()
   for _, word in ipairs({ "loss", "flee", "draw" }) do
@@ -903,9 +932,9 @@ function T.nonvictory_duplicate_and_rejected_result_music_stays_single_and_safe(
       rig.envelope:updateFixed(TICK)
     end
     Assert.equal(#rig.fieldAudio.music, 0, word .. " voices no victory BGM")
-    acknowledgeOutcome(rig)
-    Assert.equal(#rig.fieldAudio.music, 0, word .. " still voices no victory BGM after ack")
-    Assert.isTrue(rig.port.leave({}), "the acknowledged " .. word .. " terminal returns")
+    waitForOutcomeReturn(rig)
+    Assert.equal(#rig.fieldAudio.music, 0, word .. " still voices no victory BGM after settling")
+    Assert.isTrue(rig.port.leave({}), "the settled " .. word .. " terminal returns")
     rig.envelope:dispose()
   end
   do
@@ -919,8 +948,8 @@ function T.nonvictory_duplicate_and_rejected_result_music_stays_single_and_safe(
     end
     Assert.equal(#rig.fieldAudio.music, 1, "the duplicated terminal replays no BGM")
     Assert.equal(rig.fieldAudio.attempts, 1, "the duplicated terminal retries no BGM start")
-    acknowledgeOutcome(rig)
-    Assert.equal(#rig.fieldAudio.music, 1, "the acknowledged win replays no BGM")
+    waitForOutcomeReturn(rig)
+    Assert.equal(#rig.fieldAudio.music, 1, "the settled win replays no BGM")
     rig.envelope:dispose()
   end
   do
@@ -950,7 +979,7 @@ function T.nonvictory_duplicate_and_rejected_result_music_stays_single_and_safe(
       end
     end
     Assert.equal(refailed, 1, "the rejected BGM reports nothing twice")
-    acknowledgeOutcome(rig)
+    waitForOutcomeReturn(rig)
     Assert.isTrue(rig.port.leave({}), "the committed win still returns after its rejected BGM")
     rig.envelope:dispose()
   end
@@ -958,7 +987,7 @@ function T.nonvictory_duplicate_and_rejected_result_music_stays_single_and_safe(
     local rig = openMusicLaunch(strictMusicAudio(), "wild", "completion")
     driveMusicToOutcome(rig, "win", 1)
     Assert.equal(#rig.fieldAudio.music, 1, "the win voices its BGM once")
-    acknowledgeOutcome(rig)
+    waitForOutcomeReturn(rig)
     local catalog = CatalogFixture.makeCatalog()
     local factory = CatalogFixture.makeFactory(0x1D000001, catalog)
     local subject = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 4 }))
@@ -969,7 +998,7 @@ function T.nonvictory_duplicate_and_rejected_result_music_stays_single_and_safe(
         kind = "capture_nickname",
         subject = subject,
       }),
-      "the acknowledged terminal stores its nickname decision"
+      "the settled terminal stores its nickname decision"
     )
     for _ = 1, 30 do
       rig.screen:updateFixed(TICK)

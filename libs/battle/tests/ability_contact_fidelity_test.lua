@@ -40,7 +40,7 @@ local function chart()
   return chartCache
 end
 
-local function strike(state, moveName, moveType, ability, flags, userAbility, weather)
+local function strike(state, moveName, moveType, ability, flags, userAbility, weather, expectedResult)
   local loaded, execution = pcall(require, "libs.battle.src.gen4.MoveExecution")
   Assert.isTrue(loaded, "the shared continuation loads: " .. tostring(execution))
   local Execution = execution --[[@as table]]
@@ -91,7 +91,7 @@ local function strike(state, moveName, moveType, ability, flags, userAbility, we
       break
     end
   end
-  Assert.equal(node.result, "hit", "the strike completes")
+  Assert.equal(node.result, expectedResult or "hit", "the strike reaches its expected terminal result")
   return ctx
 end
 
@@ -121,7 +121,7 @@ end
 
 function T.tests.flash_fire_persists_after_absorbing_fire()
   local state = liveState()
-  local ctx = strike(state, "TACKLE", "fire", "FLASH_FIRE")
+  local ctx = strike(state, "TACKLE", "fire", "FLASH_FIRE", nil, nil, nil, "missed")
   local found = false
   for _, effect in ipairs(state.effectBag:capture()) do
     if effect.key == "flashfire" and effect.scope.combatant == 2 then

@@ -41,6 +41,7 @@ local function isBoxOwner(owner)
     and type(owner.partyMon) == "function"
     and type(owner.boxCount) == "function"
     and type(owner.activeBox) == "function"
+    and type(owner.boxMetadata) == "function"
     and type(owner.boxMon) == "function"
     and type(owner.boxRevision) == "function"
     and type(owner.preparePcChanges) == "function"
@@ -274,6 +275,9 @@ function HgssBattleCommitter.prepare(args)
         error("battle commit captures exceed free party slots without storage", 0)
       end
       local freeSlots = collectFreeBoxSlots(owner, capacity, #captures - capacity, #captures)
+      local activeBox = owner:activeBox()
+      local activeMetadata = owner:boxMetadata(activeBox)
+      assert(type(activeMetadata.name) == "string", "the active PC box carries its displayed name")
       local roster = {}
       for slot = 0, owner:partyCount() - 1 do
         roster[#roster + 1] = owner:partyMon(slot)
@@ -294,12 +298,17 @@ function HgssBattleCommitter.prepare(args)
       local boxUpdates = {}
       for position = capacity + 1, #captures do
         local free = freeSlots[position - capacity]
+        local boxMetadata = owner:boxMetadata(free.box)
+        assert(type(boxMetadata.name) == "string", "the destination PC box carries its displayed name")
         boxUpdates[#boxUpdates + 1] = { box = free.box, slot = free.slot, mon = captures[position].mon }
         destinations[#destinations + 1] = {
           captureId = captures[position].captureId,
           destination = "box",
           box = free.box,
           slot = free.slot,
+          pcHasSpace = free.box == activeBox,
+          previousBoxName = activeMetadata.name,
+          boxName = boxMetadata.name,
           mon = captures[position].mon,
         }
       end
@@ -474,6 +483,9 @@ function HgssBattleCommitter.commit(prepared)
         destination = "box",
         box = record.box,
         slot = record.slot,
+        pcHasSpace = record.pcHasSpace,
+        previousBoxName = record.previousBoxName,
+        boxName = record.boxName,
         reason = "retained",
       }
     else

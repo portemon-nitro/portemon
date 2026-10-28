@@ -115,7 +115,13 @@ local function effectivenessOf(chart, moveType, defenderTypes, immunityContext)
     defenderTypes --[[@as string[] ]],
     immunityContext
   )
-  return { numerator = resolved.numerator, denominator = resolved.denominator, factors = resolved.factors }
+  return {
+    numerator = resolved.numerator,
+    denominator = resolved.denominator,
+    immune = resolved.immune,
+    reason = resolved.reason,
+    factors = resolved.factors,
+  }
 end
 
 -- Strike immunity modifiers beside the chart: magnet rise grounds

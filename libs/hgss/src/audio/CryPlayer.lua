@@ -13,7 +13,6 @@ local MAX_STANDARD_SPECIES = 493
 local SHAYMIN = 492
 local SHAYMIN_SKY_BANK = 494
 local PRIMARY_VOLUME = 100
-local SECONDARY_VOLUME = 70
 
 local function isInteger(value)
   return type(value) == "number"
@@ -28,28 +27,28 @@ end
 local PATTERNS = {
   [0] = { primary = {} },
   [1] = { primary = {}, cleanupTicks = 20 },
-  [2] = { primary = { pitch = 64 }, secondary = { pitch = 20, initialVolume = SECONDARY_VOLUME } },
+  [2] = { primary = { pitch = 64 }, secondary = { pitch = 20, volumeOffset = -30 } },
   [3] = {
     primary = { pitch = 192 },
-    secondary = { pitch = 16, initialVolume = SECONDARY_VOLUME },
+    secondary = { pitch = 16, volumeOffset = -30 },
     cleanupTicks = 30,
   },
   [4] = {
     waveOut = {
-      { channel = 14, volume = 100, speed = 0x8600 },
-      { channel = 15, volume = SECONDARY_VOLUME, speed = 0x8600 },
+      { channel = 14, speed = 0x8600 },
+      { channel = 15, speed = 0x8600 },
     },
     cleanupTicks = 15,
   },
   [5] = { primary = { pitch = -224 } },
-  [6] = { primary = { pitch = 44 }, secondary = { pitch = -64, initialVolume = SECONDARY_VOLUME } },
+  [6] = { primary = { pitch = 44 }, secondary = { pitch = -64, volumeOffset = -30 } },
   [7] = { primary = { pitch = -128 }, cleanupTicks = 11 },
   [8] = { primary = { pitch = 60 }, cleanupTicks = 60 },
-  [9] = { waveOut = { { channel = 14, volume = 100, speed = 0x6800 } }, cleanupTicks = 13 },
+  [9] = { waveOut = { { channel = 14, speed = 0x6800 } }, cleanupTicks = 13 },
   [10] = { primary = { pitch = -44 }, cleanupTicks = 100 },
   [11] = { primary = { pitch = -96 } },
   [12] = { primary = { pitch = -96 }, cleanupTicks = 20 },
-  [13] = { primary = { initialVolume = 127 }, secondary = { pitch = 20, moveVolume = 100 } },
+  [13] = { primary = { initialVolume = 127 }, secondary = { pitch = 20, moveVolume = true } },
   [14] = { primary = {} },
 }
 
@@ -138,17 +137,25 @@ function CryPlayer:_stopOwned()
   self._cleanupTicks = nil
 end
 
-local function startSequence(self, handle, sequence, bank, action, species, pattern)
+local function startSequence(self, handle, sequence, bank, action, species, pattern, pan, volume, pitch)
   local accepted = self._player:playWithBankOverride(handle, sequence, bank)
   if not accepted then
     unavailable(species, pattern, "the cry was rejected by the audio player")
   end
   self:_resetHandle(handle)
-  if action.initialVolume ~= nil then
-    self._player:setHandleInitialVolume(handle, action.initialVolume)
+  self._player:setHandleTrackPan(handle, pan)
+  local initialVolume = action.initialVolume
+  if type(action.volumeOffset) == "number" then
+    initialVolume = math.max(1, volume + action.volumeOffset)
+  elseif initialVolume == nil then
+    initialVolume = volume
   end
-  if action.pitch ~= nil then
-    self._player:setHandleTrackPitch(handle, action.pitch)
+  if initialVolume ~= nil then
+    self._player:setHandleInitialVolume(handle, initialVolume)
+  end
+  local trackPitch = (action.pitch or 0) + pitch
+  if trackPitch ~= 0 then
+    self._player:setHandleTrackPitch(handle, trackPitch)
   end
 end
 
@@ -167,10 +174,25 @@ end
 ---@param species integer
 ---@param pattern integer|nil
 ---@param form integer|nil form id; nil plays the species bank, as callers passing form 0 do
-function CryPlayer:play(species, pattern, form)
+---@param pan integer? signed NNS track-pan offset
+---@param volume integer? initial primary player level
+---@param pitch integer? signed NNS track-pitch offset added to the pattern pitch
+function CryPlayer:play(species, pattern, form, pan, volume, pitch)
   if pattern == nil then
     pattern = 0
   end
+  if pan == nil then
+    pan = 0
+  end
+  if volume == nil then
+    volume = PRIMARY_VOLUME
+  end
+  if pitch == nil then
+    pitch = 0
+  end
+  assert(isInteger(pan), "cry pan must be an integer track offset")
+  assert(isInteger(volume) and volume >= 0 and volume <= 127, "cry volume must be an integer in 0..127")
+  assert(isInteger(pitch), "cry pitch must be an integer track offset")
   if not isInteger(species) or species < 1 or species > MAX_STANDARD_SPECIES then
     unavailable(species, pattern, "standard cry species must be a supported integer")
   end
@@ -205,22 +227,35 @@ function CryPlayer:play(species, pattern, form)
   local ok, err = xpcall(function()
     if descriptor.primary ~= nil then
       owned.primary = self._primaryHandle
-      startSequence(self, self._primaryHandle, sequence, bank, descriptor.primary, species, pattern)
+      startSequence(self, self._primaryHandle, sequence, bank, descriptor.primary, species, pattern, pan, volume, pitch)
     end
     if descriptor.secondary ~= nil then
       owned.secondary = self._secondaryHandle
-      startSequence(self, self._secondaryHandle, sequence, bank, descriptor.secondary, species, pattern)
+      startSequence(
+        self,
+        self._secondaryHandle,
+        sequence,
+        bank,
+        descriptor.secondary,
+        species,
+        pattern,
+        pan,
+        volume,
+        pitch
+      )
       if descriptor.secondary.moveVolume ~= nil then
-        self._timeline:replace(self._secondaryHandle, descriptor.secondary.moveVolume, 0, function(level)
+        self._timeline:replace(self._secondaryHandle, volume, 0, function(level)
           return handleApply(self, self._secondaryHandle, level)
         end)
       end
     end
     if descriptor.waveOut ~= nil then
       for _, action in ipairs(descriptor.waveOut) do
+        local wavePan = pan >= 0 and math.floor(pan / 2) or math.ceil(pan / 2)
+        local waveVolume = action.channel == 15 and math.max(1, volume - 30) or volume
         local handle = self._waveOut:start(action.channel, sample, {
-          volume = action.volume,
-          pan = 64,
+          volume = waveVolume,
+          pan = math.max(0, math.min(127, 64 + wavePan)),
           speed = action.speed,
           reverse = true,
         })

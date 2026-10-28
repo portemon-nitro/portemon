@@ -42,6 +42,7 @@ local KNOWN = {
   -- avoids displacing the ITEM_1 placeholder other suites stock; battle capture keys balls by semantic key, so no
   -- behavior depends on it. Production catalogs carry the retail identity.
   MASTER_BALL = { nativeId = 7, pocket = "balls", isBall = true },
+  SMOKE_BALL = { nativeId = 228, pocket = "items", name = "Smoke Ball" },
   POTION = {
     nativeId = 17,
     pocket = "medicine",

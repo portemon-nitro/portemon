@@ -26,6 +26,7 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local T = {}
 
@@ -44,7 +45,7 @@ local function fakeImage(key)
     setFilter = function() end,
   }
 end
-local TICK = 1 / 30
+local TICK = SourceTick.DT
 
 local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
 local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
@@ -822,6 +823,19 @@ local function openRig(opts)
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end
+  function rig.audio.playPanned(_, name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  function rig.audio.playFanfare(_, name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  function rig.audio.stop(_, name)
+    rig.audio.stops = rig.audio.stops or {}
+    rig.audio.stops[#rig.audio.stops + 1] = name
+    return true
+  end
   rig.assets = { images = {}, prepared = {}, released = {} }
   function rig.assets.prepare(demand)
     rig.assets.prepared[#rig.assets.prepared + 1] = demand
@@ -861,7 +875,7 @@ local function openRig(opts)
   local ScenarioFactory = require(SCENARIO_FACTORY_MODULE)
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foeRecord("EEVEE", 20, 0x5EED0002) },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
@@ -1029,7 +1043,7 @@ end
 ---@param wanted string awaited battle decision kind under test driving
 ---@return table the mirrored screen request once the screen catches up
 local function waitForScreenDecision(rig, wanted)
-  for _ = 1, 600 do
+  for _ = 1, 1200 do
     rig.pump(1)
     local status = rig.screen:status()
     if status.mode == "failed" then
@@ -1040,6 +1054,11 @@ local function waitForScreenDecision(rig, wanted)
       if current.request == nil or current.request.requestId == status.request.requestId then
         return status.request
       end
+    end
+    if status.mode == "intro" or status.mode == "narration" or status.mode == "outcome"
+      or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+    then
+      rig.screen:input({ { type = "confirm" } })
     end
   end
   error("the screen never mirrored " .. wanted, 0)
@@ -1132,6 +1151,19 @@ local function openLearnRig(layout)
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end
+  function rig.audio.playPanned(_, name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  function rig.audio.playFanfare(_, name)
+    rig.audio.plays[#rig.audio.plays + 1] = name
+    return true
+  end
+  function rig.audio.stop(_, name)
+    rig.audio.stops = rig.audio.stops or {}
+    rig.audio.stops[#rig.audio.stops + 1] = name
+    return true
+  end
   rig.assets = { images = {}, prepared = {}, released = {} }
   function rig.assets.prepare(demand)
     rig.assets.prepared[#rig.assets.prepared + 1] = demand
@@ -1153,12 +1185,13 @@ local function openLearnRig(layout)
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foe },
-    { party = owner, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = owner, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
     manifest = BattlePresentationManifestFixture.manifest(),
     model = Model,
+    monCatalog = catalog,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
       return holder.battle:submit(reply)

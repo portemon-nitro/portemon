@@ -1,23 +1,23 @@
 local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 -- Bounded visible-cue player for one battle launch. Translates the
 -- detached delivery packets of the battle runtime into an ordered queue
 -- of small typed cues (messages, health interpolation, hit recoil,
 -- fainting, withdrawal, reveal, experience, waits, one-shot sounds) over
 -- a displayed-state model, advanced only by accepted presentation time
--- at thirty ticks per second. The screen feeds packets in, ticks the
+-- at the shared HGSS source cadence. The screen feeds packets in, ticks the
 -- clock, and reads the displayed facts; drawing and input never advance
--- it. Unknown required effects play an explicit diagnostic cue instead
--- of vanishing. Message wording here is product-owned interim narration,
--- never a claim about original-game sentences.
+-- it. Unknown required effects are recorded only in the diagnostic channel.
+-- Every narration cue resolves through the staged source bank.
 
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 ---@class BattleTimeline
 ---@field _effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire
----@field _nativeSeen table<string, boolean> claimed visual occurrences by launch, action, executed effect key, and source phase
+---@field _nativeSeen table<string, boolean> claimed visual occurrences by launch, round, action, effect key, and source phase
 ---@field _announced table<string, boolean> narrated attack occurrences by the same occurrence identity
 ---@field _pendingSounds table<integer, table<string, unknown>> queued one-shot sound cues for the screen drain
 ---@field _battlers table<integer, table<string, unknown>> displayed facts by combatant identity
@@ -30,26 +30,49 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _lastPacketId integer highest accepted per-launch packet identity
 ---@field _seen table<string, boolean> played event identities by launch and sequence
 ---@field _latest table<string, unknown>? newest after view for name and move facts
+---@field _openingPresentation table<string, unknown>? detached opening-stage presentation facts
+---@field _trainerSlideTracks table<integer, { delay: integer, elapsed: integer, direction: integer, targetX: integer, speed: integer }> source timing for concurrent opening trainer slides
 ---@field _names table<integer, string> visible names by combatant identity across packets
+---@field _addressing table<integer, "own"|"wild"|"foe"> source nickname-tag variant by combatant identity
+---@field _lastStruck integer? most recent strike recipient, the source of a following drain
+---@field _playerName string? player trainer name from the views
+---@field _inBall integer? capture target drawn into the thrown ball, awaiting its outcome
+---@field _foeHpMark integer? lead foe health at the last switch-in (source hpTemp)
 ---@field _ownMoves table<string, string> own move display names by combatant and move identity
 ---@field _moveName (fun(move: string): string?)? borrowed move display-name resolver for foe narration
+---@field _speciesName (fun(species: string): string?)? borrowed species display-name resolver for tagged narration
 ---@field _itemName (fun(item: string): string?)? borrowed item display-name resolver for use narration
 ---@field _battleItemUse (fun(item: string): table<string, unknown>?)? borrowed generated battle-use facts
+---@field _faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts
+---@field _messageText fun(context: unknown, key: string, substitutions: string[]): string source text resolver supplied by the battle screen or test fixture
+---@field _messageTextContext unknown? owner passed to the source text resolver
 ---@field _revealPolicy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean } per-launch narration cadence copied from the shared pace table
 ---@field _accum number fractional accepted seconds awaiting their tick
 ---@field _diagnostics string[] recorded unknown-effect occurrences
 local BattleTimeline = {}
 BattleTimeline.__index = BattleTimeline
 
-BattleTimeline.TICKS_PER_SECOND = 30
+BattleTimeline.TICKS_PER_SECOND = SourceTick.HZ
 BattleTimeline.MESSAGE_HOLD_TICKS = 12
 BattleTimeline.HIT_TICKS = 6
 BattleTimeline.HIT_DISPLACEMENT = 2
 BattleTimeline.VANISH_TICKS = 12
-BattleTimeline.EXP_TICKS_PER_SEGMENT = 24
 BattleTimeline.HP_BAR_PIXELS = 48
-BattleTimeline.HP_MAX_TICKS = 30
+BattleTimeline.EXP_BAR_PIXELS = 96
 BattleTimeline.PAGE_GLYPHS = 54
+-- A battle line ending in \r auto-waits 100 printer updates (two per
+-- source tick) before its script's own WaitButtonABTime; A/B skips both.
+BattleTimeline.AUTO_SCROLL_TICKS = 50
+local SOURCE_TICK_EPSILON = 1e-12
+
+local LEVEL_UP_STATS = {
+  { key = "hp", field = "maxHp", label = "HP" },
+  { key = "attack", field = "attack", label = "Attack" },
+  { key = "defense", field = "defense", label = "Defense" },
+  { key = "specialAttack", field = "specialAttack", label = "Sp. Atk" },
+  { key = "specialDefense", field = "specialDefense", label = "Sp. Def" },
+  { key = "speed", field = "speed", label = "Speed" },
+}
 
 ---@param text string
 ---@return string[] pages of at most PAGE_GLYPHS glyphs, never empty
@@ -94,28 +117,38 @@ end
 ---@class BattleTimeline.Options
 ---@field sound (fun(cue: table<string, unknown>))? sound-cue sink, drained immediately when supplied
 ---@field moveName (fun(move: string): string?)? display-name resolver for move identities the views never name
+---@field speciesName (fun(species: string): string?)? display-name resolver for species identities in source tags
 ---@field itemName (fun(item: string): string?)? display-name resolver for item identities
 ---@field battleItemUse (fun(item: string): table<string, unknown>?)? generated battle-use facts for item narration
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
 ---@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire, absent without a screen owner
+---@field faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts for fainting
+---@field messageText fun(context: unknown, key: string, substitutions: string[]): string staged retail battle message resolver
+---@field messageTextContext unknown? explicit owner passed to the staged retail message resolver
 
 ---@param opts BattleTimeline.Options?
 ---@return BattleTimeline
 function BattleTimeline.new(opts)
   opts = opts or {}
   assert(type(opts) == "table", "the cue player requires options")
+  assert(type(opts.messageText) == "function", "battle narration requires its staged message resolver")
   local revealPolicy = TextSpeedPolicy.forSpeed(opts.textSpeed or "mid")
   return setmetatable({
     _sound = opts.sound,
     _moveName = opts.moveName,
+    _speciesName = opts.speciesName,
     _itemName = opts.itemName,
     _battleItemUse = opts.battleItemUse,
+    _faintAppearance = opts.faintAppearance,
+    _messageText = opts.messageText,
+    _messageTextContext = opts.messageTextContext,
     _revealPolicy = revealPolicy,
     _effects = opts.effects,
     _nativeSeen = {},
     _announced = {},
     _pendingSounds = {},
     _names = {},
+    _addressing = {},
     _ownMoves = {},
     _battlers = {},
     _order = {},
@@ -127,6 +160,9 @@ function BattleTimeline.new(opts)
     _lastPacketId = 0,
     _seen = {},
     _latest = nil,
+    _openingPresentation = nil,
+    _trainerSlideTracks = {},
+    _wildVictoryMusicStarted = false,
     _accum = 0,
     _diagnostics = {},
     _flowIntroDone = false,
@@ -141,13 +177,23 @@ local function indexFacts(self, view)
   if type(view) ~= "table" then
     return
   end
-  for _, group in ipairs({ view.own, view.foes }) do
+  if type(view.playerName) == "string" and view.playerName ~= "" then
+    self._playerName = view.playerName --[[@as string]]
+  end
+  for groupIndex, group in ipairs({ view.own, view.foes }) do
     if type(group) == "table" then
       for _, record in ipairs(group) do
         if type(record) == "table" and type(record.combatant) == "number" then
           local id = record.combatant --[[@as integer]]
           if type(record.name) == "string" and self._names[id] == nil then
             self._names[id] = record.name --[[@as string]]
+          end
+          if groupIndex == 1 then
+            self._addressing[id] = "own"
+          elseif record.controller == "wild" or record.controller == nil then
+            self._addressing[id] = "wild"
+          else
+            self._addressing[id] = "foe"
           end
           if type(record.moves) == "table" then
             for _, entry in ipairs(record.moves) do
@@ -269,10 +315,10 @@ end
 ---@return boolean gated
 local function slotGated(self, id)
   local function gates(cue)
-    if type(cue) ~= "table" or cue.combatant ~= id then
+    if type(cue) ~= "table" or (cue.combatant ~= id and cue.slideCombatant ~= id) then
       return false
     end
-    return cue.kind == "withdraw" or cue.kind == "reveal" or cue.kind == "faint"
+    return cue.kind == "withdraw" or cue.kind == "reveal" or cue.kind == "faint" or cue.slideCombatant == id
   end
   if gates(self._active) then
     return true
@@ -317,6 +363,7 @@ function BattleTimeline:reset(view)
   self._queue = {}
   self._active = nil
   self._flowIntroDone = false
+  self._wildVictoryMusicStarted = false
   -- A fresh opening starts new actions: occurrence and narration claims
   -- never leak from the previous launch into the next one.
   self._nativeSeen = {}
@@ -328,6 +375,99 @@ local function enqueue(self, cue)
   cue.elapsed = 0
   cue.started = false
   self._queue[#self._queue + 1] = cue
+end
+
+---@param self BattleTimeline
+---@param changes table<string, boolean> visibility values for one native opening stage
+local function enqueueOpeningPresentation(self, changes)
+  enqueue(self, { kind = "opening-presentation", changes = changes })
+end
+
+---@param self BattleTimeline
+---@param combatant integer battler receiving the source send-out
+---@param role "player"|"foe" source side selected for the opening throw
+local function enqueueBallThrow(self, combatant, role)
+  if self._openingPresentation == nil then
+    return
+  end
+  local view = assert(self._latest, "send-out ball selection uses the newest detached battle view")
+  local record = nil
+  for _, group in ipairs({ view.own, view.foes }) do
+    if type(group) == "table" then
+      for _, candidate in ipairs(group) do
+        if type(candidate) == "table" and candidate.combatant == combatant then
+          record = candidate
+        end
+      end
+    end
+  end
+  local ballKey = assert(
+    type(record) == "table" and type(record.ballKey) == "string" and record.ballKey,
+    "send-out records carry their semantic ball key"
+  )
+  local startX, startY, targetX, targetY, arcHeight = 192, 88, 192, 88, 0
+  if role == "player" then
+    startX, startY, targetX, targetY, arcHeight = 10, 100, 64, 144, 48
+  end
+  local selector = "ball:" .. ballKey
+  enqueue(self, {
+    kind = "ball-throw",
+    selector = selector,
+    startX = startX,
+    startY = startY,
+    targetX = targetX,
+    targetY = targetY,
+    arcHeight = arcHeight,
+    throwTicks = 12,
+    duration = 29,
+    requiresImage = "battle-ball:" .. ballKey .. ":0",
+  })
+end
+
+---@param view table<string, unknown> detached view carrying semantic trainer keys
+---@param wild boolean
+---@return table<integer, table<string, unknown>> public trainer slide states
+---@return table<integer, { delay: integer, elapsed: integer, direction: integer, targetX: integer, speed: integer }> source slide tracks
+local function openingTrainerSlides(view, wild)
+  local slides = {}
+  local tracks = {}
+  local playerTrainerValue = view.playerTrainer
+  assert(type(playerTrainerValue) == "table", "opening views carry the player's semantic trainer class")
+  local playerTrainer = playerTrainerValue --[[@as table<string, unknown>]]
+  local playerClassKey = playerTrainer.classKey
+  assert(type(playerClassKey) == "string", "opening player trainer class is semantic")
+  assert(playerClassKey ~= "", "opening player trainer class is semantic")
+  slides[#slides + 1] = {
+    role = "player",
+    selector = "back:" .. playerClassKey,
+    x = 336,
+    y = 112,
+    frame = 0,
+    visible = true,
+    phase = "intro-delay",
+  }
+  tracks[#tracks + 1] = { delay = 28, elapsed = 0, direction = -1, targetX = 64, speed = 8 }
+  if not wild then
+    local trainers = view.foeTrainers --[[@as table<integer, table<string, unknown>>]]
+    assert(type(trainers) == "table", "trainer openings carry foe class records")
+    local trainerRecord = trainers[1]
+    assert(type(trainerRecord) == "table", "trainer openings carry a lead trainer")
+    local trainer = trainerRecord --[[@as table<string, unknown>]]
+    local classKey = trainer.classKey
+    assert(type(classKey) == "string", "foe trainer class is semantic")
+    assert(classKey ~= "", "foe trainer class is semantic")
+    slides[#slides + 1] = {
+      role = "foe",
+      selector = "front:" .. classKey,
+      x = -80,
+      y = 50,
+      frame = 0,
+      visible = true,
+      phase = "intro-delay",
+    }
+    tracks[#tracks + 1] = { delay = 28, elapsed = 0, direction = 1, targetX = 192, speed = 8 }
+  end
+  return slides, tracks
 end
 
 ---@param cue table<string, unknown> typed one-shot sound cue under queueing
@@ -348,10 +488,17 @@ end
 
 -- One staged effect cue behind battle flows.
 ---@param symbol string staged effect sequence symbol
+---@param mix table<string, unknown>? optional source mix facts
 ---@return table<string, unknown> typed effect cue
-local function effectCue(symbol)
+local function effectCue(symbol, mix)
   assert(type(symbol) == "string" and symbol ~= "", "effect cues name their staged symbol")
-  return { kind = "effect", symbol = symbol }
+  local cue = { kind = "effect", symbol = symbol }
+  if mix ~= nil then
+    for key, value in pairs(mix) do
+      cue[key] = value
+    end
+  end
+  return cue
 end
 
 -- One staged victory-music cue behind terminal results. Unlike effect
@@ -363,16 +510,33 @@ local function musicCue(symbol)
   return { kind = "music", symbol = symbol }
 end
 
+---@param symbol string staged fanfare sequence symbol
+---@param waitForVoice boolean? hold following cues until the fanfare completes
+---@return table<string, unknown> typed fanfare cue
+local function fanfareCue(symbol, waitForVoice)
+  assert(type(symbol) == "string" and symbol ~= "", "fanfare cues name their staged symbol")
+  return { kind = "fanfare", symbol = symbol, waitForVoice = waitForVoice == true }
+end
+
 -- One send-out cry cue for a battler: the view-carried species and
 -- form with its player/foe side. The screen resolves the numeric cry
 -- identity and the side mix convention at dispatch.
 ---@param species string view-carried species key
 ---@param form integer|nil view-carried form, nil reads as the species bank
 ---@param foe boolean true for the foe send-out, false for the player send-out
+---@param pattern integer? source cry pattern, absent for ordinary send-out
+---@param waitForVoice boolean? hold following cues until this cry ends
 ---@return table<string, unknown> typed cry cue
-local function cryCue(species, form, foe)
+local function cryCue(species, form, foe, pattern, waitForVoice)
   assert(type(species) == "string" and species ~= "", "cry cues name their view species")
-  return { kind = "cry", species = species, form = form, foe = foe == true }
+  return {
+    kind = "cry",
+    species = species,
+    form = form,
+    foe = foe == true,
+    pattern = pattern,
+    waitForVoice = waitForVoice == true,
+  }
 end
 
 ---@param sequence unknown event sequence ordinal under visual seeding
@@ -399,7 +563,7 @@ local function nativeEffectKeyOf(event)
 end
 
 --- One visual occurrence belongs to one action and one source phase: the
---- launch, the action identity, the executed effect key, and the move
+--- launch, round, action identity, executed effect key, and move
 --- phase. Every hit of a multi-hit sequence and every recipient of a
 --- spread move shares the source action identity, while a distinct action
 --- identity starts its own occurrence. The charged and struck halves of a
@@ -410,8 +574,9 @@ end
 --- claims nothing rather than silently visualizing another user's action.
 ---@param launch string owning launch identity under emission
 ---@param event table<string, unknown> sanitized kernel event under emission
+---@param packet table<string, unknown> delivery carrying event-time views
 ---@return string? action-scoped occurrence identity, nil when the source action identity is malformed
-local function occurrenceIdentityOf(launch, event)
+local function occurrenceIdentityOf(launch, event, packet)
   local action = event.actionId
   if type(action) ~= "number" and type(action) ~= "string" then
     if action ~= nil then
@@ -424,7 +589,21 @@ local function occurrenceIdentityOf(launch, event)
   if type(move) == "table" and type(move.phase) == "string" then
     phase = move.phase
   end
-  return launch .. "\0" .. tostring(action) .. "\0" .. tostring(event.effectKey) .. "\0" .. tostring(phase)
+  local before = packet.before --[[@as table<string, unknown>?]]
+  local after = packet.after --[[@as table<string, unknown>?]]
+  local round = type(before) == "table" and before.round or nil
+  if round == nil and type(after) == "table" then
+    round = after.round
+  end
+  return launch
+    .. "\0"
+    .. tostring(round)
+    .. "\0"
+    .. tostring(action)
+    .. "\0"
+    .. tostring(event.effectKey)
+    .. "\0"
+    .. tostring(phase)
 end
 
 ---@param packet table<string, unknown> delivery carrying launch identity
@@ -498,7 +677,7 @@ end
 ---@param packet table<string, unknown> delivery carrying launch identity and event-time views
 local function enqueueNativeEffect(self, event, packet)
   local launch = launchOf(packet)
-  local identity = occurrenceIdentityOf(launch, event)
+  local identity = occurrenceIdentityOf(launch, event, packet)
   if identity == nil then
     self._diagnostics[#self._diagnostics + 1] = "native effect "
       .. tostring(event.effectKey)
@@ -541,9 +720,11 @@ end
 ---@param text string narration wording under presentation
 ---@param ackable boolean true when the page waits for acknowledgement instead of holding
 ---@param holdTicks integer? explicit post-text hold in internal ticks, defaulting to the narration hold
-local function enqueueMessage(self, text, ackable, holdTicks)
+---@param ackSkipsHold boolean? whether acknowledgement skips this explicit hold
+---@return table<string, unknown> queued narration cue
+local function enqueueMessage(self, text, ackable, holdTicks, ackSkipsHold)
   self._messageSeq = self._messageSeq + 1
-  enqueue(self, {
+  local cue = {
     kind = "message",
     text = text,
     id = self._messageSeq,
@@ -552,12 +733,82 @@ local function enqueueMessage(self, text, ackable, holdTicks)
     revealed = 0,
     hold = 0,
     holdTicks = holdTicks,
+    ackSkipsHold = ackSkipsHold == true,
     ackable = ackable == true,
-  })
+  }
+  enqueue(self, cue)
+  return cue
 end
 
--- Queues the headless opening flow in native order: the encounter
--- narration, the foe cry, the send-out, then the own cry. The screen
+---@param self BattleTimeline
+---@param key string semantic key for a staged retail message
+---@param substitutions string[] ordered text substitutions for the source record
+---@return string staged text resolved from the source message bank
+local function messageText(self, key, substitutions)
+  return self._messageText(self._messageTextContext, key, substitutions)
+end
+
+-- Flow helpers defined beside the translators that share them.
+local eventObservation
+local foeHealthAt, recallText, enqueueSendOut, speciesOf, enqueueEncounterMessage
+local combatName, moveName
+
+---@param self BattleTimeline
+---@return table<string, unknown>? first trainer semantic key and name from the current view
+local function firstTrainer(self)
+  local trainers = type(self._latest) == "table" and self._latest.foeTrainers or nil
+  local trainer = type(trainers) == "table" and trainers[1] or nil
+  if type(trainer) == "table" then
+    return trainer
+  end
+  return nil
+end
+
+---@param self BattleTimeline
+---@param trainer table<string, unknown> trainer identity under narration
+---@return string staged class label
+local function trainerClassText(self, trainer)
+  local classKey = trainer.classKey
+  assert(type(classKey) == "string", "trainer narration resolves a semantic class")
+  return messageText(self, "battle/trainer-class/" .. classKey, {})
+end
+
+local function moveUseText(self, user, move)
+  local combatant = assert(user, "move-use narration names its user")
+  local address = self._addressing[combatant]
+  local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  local name = combatName(self, combatant)
+  return messageText(self, "battle/move-use/" .. move .. "/" .. side, { name })
+end
+
+-- The encounter line: msg_0197_00965 ends in \r, then WaitButtonABTime 30.
+---@param self BattleTimeline
+---@param wild boolean true for a wild encounter
+---@param foeName string lead foe name
+function enqueueEncounterMessage(self, wild, foeName)
+  if wild then
+    enqueueMessage(
+      self,
+      messageText(self, "battle/narration/wild-appeared", { foeName }),
+      false,
+      BattleTimeline.AUTO_SCROLL_TICKS + 30,
+      true
+    )
+  else
+    local trainer = assert(firstTrainer(self), "trainer encounters name their opponent")
+    local trainerName = assert(trainer.name, "trainer encounters carry the opponent name")
+    enqueueMessage(
+      self,
+      messageText(self, "battle/narration/trainer-challenged", { trainerClassText(self, trainer), trainerName }),
+      false,
+      BattleTimeline.AUTO_SCROLL_TICKS + 30,
+      true
+    )
+  end
+end
+
+-- Queues the headless opening flow in native order: encounter narration,
+-- foe cry, the player ball and send-out, then the own cry. The screen
 -- entry already queued this sequence through its explicit opening, so
 -- this helper runs only for direct timeline drivers behind the same
 -- packet identity.
@@ -566,54 +817,56 @@ end
 local function queueOpening(self, view)
   local wild = BattlePresentationFlow.isWild(view)
   local foe = BattlePresentationFlow.firstFoe(view)
+  assert(type(foe) == "table", "the opening needs its lead foe")
+  local foeRecord = foe --[[@as table<string, unknown>]]
   local lead = BattlePresentationFlow.activeLead(view)
   assert(lead ~= nil, "the opening needs its active lead")
-  local foeName = "The foe"
+  local foeName = foeRecord.name
+  assert(type(foeName) == "string", "opening foe view carries its display name")
+  foeName = foeName --[[@as string]]
   local foeSpecies = nil
   local foeForm = nil
-  if foe ~= nil then
-    if type(foe.name) == "string" then
-      foeName = foe.name --[[@as string]]
-    end
-    if type(foe.species) == "string" then
-      foeSpecies = foe.species --[[@as string]]
-    end
-    if type(foe.form) == "number" then
-      foeForm = foe.form --[[@as integer]]
-    end
+  if type(foeRecord.species) == "string" then
+    foeSpecies = foeRecord.species --[[@as string]]
+  end
+  if type(foeRecord.form) == "number" then
+    foeForm = foeRecord.form --[[@as integer]]
   end
   local own = lead --[[@as table<string, unknown>]]
-  local ownName = "Go"
+  local ownName = own.name
+  assert(type(ownName) == "string", "opening player lead carries its display name")
   local ownSpecies = nil
   local ownForm = nil
-  if type(own.name) == "string" then
-    ownName = own.name --[[@as string]]
-  end
   if type(own.species) == "string" then
     ownSpecies = own.species --[[@as string]]
   end
   if type(own.form) == "number" then
     ownForm = own.form --[[@as integer]]
   end
-  if wild then
-    enqueueMessage(self, "Wild " .. foeName .. " appeared!", false)
-  else
-    enqueueMessage(self, "The foe wants to battle!", false)
-  end
+  self._foeHpMark = foeHealthAt(self, nil)
+  local trainerSlides, trainerTracks = openingTrainerSlides(view, wild)
+  self._openingPresentation = {
+    playerTrainerVisible = true,
+    foeTrainerVisible = not wild,
+    playerGaugeVisible = false,
+    enemyGaugeVisible = false,
+    trainerSlides = trainerSlides,
+  }
+  self._trainerSlideTracks = trainerTracks
   if type(foeSpecies) == "string" then
     enqueue(self, { kind = "sound", cue = cryCue(foeSpecies, foeForm, true), duration = 0 })
   end
-  enqueueMessage(self, "Go! " .. ownName .. "!", false)
+  enqueueEncounterMessage(self, wild, foeName)
+  enqueueMessage(self, messageText(self, "battle/narration/player-sent-out", { ownName }), false)
+  enqueueBallThrow(self, own.combatant --[[@as integer]], "player")
   if type(ownSpecies) == "string" then
     enqueue(self, { kind = "sound", cue = cryCue(ownSpecies, ownForm, false), duration = 0 })
   end
   self._flowIntroDone = true
 end
 
--- Queues the headless terminal result in native order: its message
--- then its victory fanfare where the source voices one. The screen
--- already exposes the committed receipt through its outcome drain, so
--- this helper runs only for direct timeline drivers.
+-- Queues only the terminal victory music cue. Outcome narration belongs
+-- to the screen's committed-receipt lifecycle, never a second timeline page.
 ---@param self BattleTimeline
 ---@param packet table<string, unknown> detached delivery packet carrying its committed result
 local function queueResult(self, packet)
@@ -627,16 +880,8 @@ local function queueResult(self, packet)
   if type(view) == "table" then
     wild = BattlePresentationFlow.isWild(view --[[@as table<string, unknown>]])
   end
-  local foeName = nil
-  if type(view) == "table" then
-    local foe = BattlePresentationFlow.firstFoe(view --[[@as table<string, unknown>]])
-    if foe ~= nil and type(foe.name) == "string" then
-      foeName = foe.name --[[@as string]]
-    end
-  end
-  enqueueMessage(self, BattlePresentationFlow.resultText(word, foeName), false)
   local victory = BattlePresentationFlow.resultMusicSymbol(word, wild)
-  if type(victory) == "string" and victory ~= "" then
+  if type(victory) == "string" and victory ~= "" and not (wild and self._wildVictoryMusicStarted) then
     enqueue(self, { kind = "sound", cue = musicCue(victory), duration = 0 })
   end
 end
@@ -649,47 +894,39 @@ end
 
 ---@param self BattleTimeline
 ---@param combatant integer combatant identity under lookup
----@return string visible name when a delivery named it, else a plain combatant fallback
-local function combatName(self, combatant)
+---@return string visible name required by source-tagged narration
+function combatName(self, combatant)
   local known = self._names[combatant]
-  if type(known) == "string" then
-    return known
-  end
-  return "combatant " .. tostring(combatant)
+  assert(type(known) == "string", "source-tagged battle narration names combatant " .. tostring(combatant))
+  assert(known ~= "", "source-tagged battle narration names combatant " .. tostring(combatant))
+  return known
 end
 
 ---@param self BattleTimeline
 ---@param combatant integer striking combatant under lookup
 ---@param move string move identity under lookup
----@return string display name when a view or the resolver named it, else the raw identity
-local function moveName(self, combatant, move)
+---@return string catalog display name for the move identity
+function moveName(self, combatant, move)
   local known = self._ownMoves[tostring(combatant) .. "\0" .. move]
   if type(known) == "string" then
     return known
   end
-  -- Foe move sets never enter the views, so foe narration resolves
-  -- through the borrowed catalog names when the screen threaded one.
-  -- The raw identity stays the honest fallback, never a guessed name.
-  if type(self._moveName) == "function" then
-    local ok, name = pcall(self._moveName, move)
-    if ok and type(name) == "string" and name ~= "" then
-      return name
-    end
-  end
-  return move
+  assert(type(self._moveName) == "function", "source move tags resolve through the move catalog")
+  local name = self._moveName(move)
+  assert(type(name) == "string", "move catalog provides its display name")
+  assert(name ~= "", "move catalog provides its display name")
+  return name
 end
 
 ---@param self BattleTimeline
 ---@param item string item identity under display lookup
----@return string display name when the borrowed catalog resolves it, else the honest identity
+---@return string catalog display name for the item identity
 local function itemName(self, item)
-  if type(self._itemName) == "function" then
-    local name = self._itemName(item)
-    if type(name) == "string" and name ~= "" then
-      return name
-    end
-  end
-  return item
+  assert(type(self._itemName) == "function", "source item tags resolve through the item catalog")
+  local name = self._itemName(item)
+  assert(type(name) == "string", "item catalog provides its display name")
+  assert(name ~= "", "item catalog provides its display name")
+  return name
 end
 
 ---@param view unknown battle view under condition lookup
@@ -735,18 +972,35 @@ end
 ---@param self BattleTimeline
 ---@param target integer damaged combatant under translation
 ---@param to integer checkpoint health under translation
-local function enqueueHealth(self, target, to)
+---@param noBlink boolean? suppress health-box flicker for source reloads
+local function enqueueHealth(self, target, to, noBlink)
   local shown = self:_shown(target)
   local maxHp = to
   if shown ~= nil and type(shown.maxHp) == "number" then
     maxHp = shown.maxHp --[[@as integer]]
   end
-  local pixels = BattleTimeline.HP_BAR_PIXELS
+  -- BattleHpBar_CalculatePixelsChangeFrame steps once per source tick:
+  -- one HP at a time from 48 max HP up, otherwise one bar pixel at a time.
+  local ticks = BattleTimeline.HP_BAR_PIXELS
   if shown ~= nil and type(shown.hp) == "number" then
-    pixels = math.abs(shown.hp --[[@as integer]] - to) * BattleTimeline.HP_BAR_PIXELS / math.max(1, maxHp)
+    local delta = math.abs(shown.hp --[[@as integer]] - to)
+    if maxHp >= BattleTimeline.HP_BAR_PIXELS then
+      ticks = delta
+    else
+      ticks = math.ceil(delta * BattleTimeline.HP_BAR_PIXELS / math.max(1, maxHp))
+    end
   end
-  local ticks = math.max(1, math.min(BattleTimeline.HP_MAX_TICKS, math.ceil(pixels)))
-  enqueue(self, { kind = "hp", combatant = target, to = to, from = nil, duration = ticks, requiresImage = false })
+  ticks = math.max(1, ticks)
+  enqueue(self, {
+    kind = "hp",
+    combatant = target,
+    to = to,
+    from = nil,
+    duration = ticks,
+    flicker = noBlink ~= true,
+    flickerToggles = 0,
+    requiresImage = self:_imageKeyFor(target),
+  })
 end
 
 -- Forward declaration: explicit playback readers below fall back to the
@@ -812,6 +1066,7 @@ local function translateStruck(self, event, packet, narrated)
     target = payload.target --[[@as integer]]
   end
   assert(type(target) == "number", "strikes name their recipient")
+  self._lastStruck = target
   local attacker = explicitActor(event)
   if attacker == nil then
     for _, id in ipairs(self._order) do
@@ -825,30 +1080,31 @@ local function translateStruck(self, event, packet, narrated)
     end
   end
   local moveKey = explicitMove(event)
-  local attackerName = attacker ~= nil and combatName(self, attacker) or "The foe"
-  local wording = attackerName .. " used " .. moveName(self, attacker or -1, moveKey) .. "!"
+  local wording = moveUseText(self, attacker, moveKey)
   -- One attack occurrence narrates once across its hits: the first
   -- strike voices the attack while later hits keep their impact,
   -- sound, and checkpoint motion in native order. The announcement
   -- runs before the visual, and the visual runs once per action and
-  -- phase behind that announcement. EffectKey-less strikes keep the
-  -- legacy generic voices and per-delivery narration exactly as before.
+  -- phase behind that announcement. Strikes without an effect key
+  -- keep generic voices; their action identity still scopes narration.
   local nativeKey = nativeEffectKeyOf(event)
   local occurrence = nil
-  if nativeKey ~= nil then
-    occurrence = occurrenceIdentityOf(launchOf(packet), event)
+  if nativeKey ~= nil or event.actionId ~= nil then
+    occurrence = occurrenceIdentityOf(launchOf(packet), event, packet)
   end
   if occurrence ~= nil then
     if self._announced[occurrence] ~= true then
       self._announced[occurrence] = true
-      enqueueMessage(self, wording, false)
+      enqueueMessage(self, wording, false, 0)
     end
-    enqueueNativeEffect(self, event, packet)
+    if nativeKey ~= nil then
+      enqueueNativeEffect(self, event, packet)
+    end
   else
     local narrationKey = BattlePresentationFlow.attackKey(attacker, moveKey)
     local already = narrated ~= nil and narrated[narrationKey] == true
     if not already then
-      enqueueMessage(self, wording, false)
+      enqueueMessage(self, wording, false, 0)
       if narrated ~= nil then
         narrated[narrationKey] = true
       end
@@ -857,32 +1113,43 @@ local function translateStruck(self, event, packet, narrated)
       enqueueNativeEffect(self, event, packet)
     end
   end
-  enqueue(self, {
-    kind = "hit",
-    combatant = target,
-    duration = BattleTimeline.HIT_TICKS,
-    requiresImage = self:_imageKeyFor(target),
-  })
-  if nativeKey == nil then
-    -- Each damaging turn records its impact and effectiveness voices at
-    -- the hit moment: the exact per-move route arrives with the native
-    -- animation programs through this same sink, while the timing and
-    -- ownership proof rides these staged battle-domain cues.
-    enqueue(self, {
-      kind = "sound",
-      cue = effectCue(BattleAudio.SINK_SOUNDS.impact),
-      duration = 0,
-    })
-    enqueue(self, {
-      kind = "sound",
-      cue = effectCue(BattleAudio.SINK_SOUNDS.effectiveness),
-      duration = 0,
-    })
+  -- subscript_0002_UpdateHp: every landed hit plays one impact voice
+  -- chosen by effectiveness and panned toward the struck side
+  -- (OpponentData_PlayMoveSE), whether or not the move has a program.
+  local effectiveness = payload.effectiveness
+  local impact = BattleAudio.SINK_SOUNDS.impact
+  if effectiveness == "super" then
+    impact = BattleAudio.SINK_SOUNDS.impactSuper
+  elseif effectiveness == "weak" then
+    impact = BattleAudio.SINK_SOUNDS.impactWeak
   end
+  local struckFoe = self._addressing[target] ~= "own"
+  enqueue(self, {
+    kind = "sound",
+    cue = effectCue(impact, {
+      pan = struckFoe and BattleAudio.SIDE_PAN.foe or BattleAudio.SIDE_PAN.player,
+      foe = struckFoe,
+    }),
+    duration = 0,
+  })
   local after = event.after --[[@as table<string, unknown>]]
   local hp = after.hp --[[@as table<string, unknown>?]]
   if type(hp) == "table" and type(hp[target]) == "number" then
-    enqueueHealth(self, target, hp[target] --[[@as integer]])
+    enqueueHealth(self, target, hp[target] --[[@as integer]], payload.noBlink == true)
+  end
+  -- subscript_0016_CriticalHit, then subscript_0021_MoveFollowupMessage
+  -- (WaitButtonABTime 15 before the effectiveness line).
+  if payload.critical == true then
+    enqueueMessage(self, messageText(self, "battle/narration/critical-hit", {}), false, 30, true)
+  end
+  local sequenceHitIndex = payload.sequenceHitIndex
+  local sequenceHitTotal = payload.sequenceHitTotal
+  local finalHit = type(sequenceHitTotal) ~= "number" or sequenceHitIndex == sequenceHitTotal
+  if finalHit and (effectiveness == "super" or effectiveness == "weak") then
+    enqueue(self, { kind = "wait", duration = 15 })
+    local key = effectiveness == "super" and "battle/narration/super-effective" or "battle/narration/not-very-effective"
+    local line = messageText(self, key, {})
+    enqueueMessage(self, line, false, 30, true)
   end
 end
 
@@ -925,9 +1192,8 @@ end
 local function translateFaint(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
   local target = payload.combatant --[[@as integer]]
-  enqueueMessage(self, combatName(self, target) .. " fainted!", false)
-  -- The faint voices its battler cry before the vanish completes, so
-  -- the picture task and its voice stay ordered behind the checkpoint.
+  -- The faint cry belongs to the animation; the retail flow announces
+  -- the knockout after the battler's faint animation completes.
   local shown = self:_shown(target)
   local species = shown ~= nil and shown.species or nil
   local form = shown ~= nil and shown.form or nil
@@ -935,16 +1201,35 @@ local function translateFaint(self, event)
     local foe = shown ~= nil and shown.side == 2
     enqueue(self, {
       kind = "sound",
-      cue = cryCue(species, type(form) == "number" and form or nil, foe),
+      cue = cryCue(species, type(form) == "number" and form or nil, foe, 5, true),
       duration = 0,
     })
   end
+  local foe = shown ~= nil and shown.side == 2
+  enqueue(self, {
+    kind = "sound",
+    cue = effectCue(BattleAudio.SINK_SOUNDS.faint, {
+      pan = foe and BattleAudio.SIDE_PAN.foe or BattleAudio.SIDE_PAN.player,
+      foe = foe,
+    }),
+    duration = 0,
+  })
   enqueue(self, {
     kind = "faint",
     combatant = target,
     duration = BattleTimeline.VANISH_TICKS,
     requiresImage = self:_imageKeyFor(target),
   })
+  local address = self._addressing[target]
+  local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  local message = enqueueMessage(
+    self,
+    messageText(self, "battle/narration/fainted/" .. side, { combatName(self, target) }),
+    false,
+    BattleTimeline.AUTO_SCROLL_TICKS + 30,
+    true
+  )
+  message.slideCombatant = target
 end
 
 ---@param view table<string, unknown>? detached view carrying progression facts
@@ -968,53 +1253,168 @@ local function progressionOf(view, combatant)
 end
 
 ---@param self BattleTimeline
+---@param levelUp table<string, unknown> boundary snapshot from the reward event
+local function enqueueLevelUpStats(self, levelUp)
+  local before = assert(levelUp.statsBefore, "level-up windows carry prior stats") --[[@as table<string, unknown>]]
+  local after = assert(levelUp.statsAfter, "level-up windows carry recalculated stats") --[[@as table<string, unknown>]]
+  local deltaRows, totalRows = {}, {}
+  for _, stat in ipairs(LEVEL_UP_STATS) do
+    local beforeValue = stat.field == "maxHp" and (before.maxHp or before.hp) or before[stat.field]
+    local afterValue = stat.field == "maxHp" and (after.maxHp or after.hp) or after[stat.field]
+    assert(type(beforeValue) == "number" and type(afterValue) == "number", "level-up snapshots carry all six stats")
+    local beforeStat = beforeValue --[[@as number]]
+    local afterStat = afterValue --[[@as number]]
+    local delta = afterStat - beforeStat
+    assert(delta >= 0, "level-up stat gains are non-negative")
+    local sourceLabel = messageText(self, "battle/stat/" .. stat.key, {})
+    local label = messageText(self, "battle/level-up/stat-name", { sourceLabel })
+    deltaRows[#deltaRows + 1] = {
+      label = label,
+      value = messageText(self, "battle/level-up/stat-delta", { tostring(delta) }),
+    }
+    totalRows[#totalRows + 1] = {
+      label = label,
+      value = messageText(self, "battle/level-up/stat-total", { tostring(afterValue) }),
+    }
+  end
+  local level = assert(levelUp.level, "level-up windows name their new level") --[[@as integer]]
+  enqueue(self, { kind = "stats-window", level = level, page = "delta", rows = deltaRows, acknowledged = false })
+  enqueue(self, { kind = "stats-window", level = level, page = "total", rows = totalRows, acknowledged = false })
+end
+
+---@param packet table<string, unknown> event delivery under inspection
+---@param target integer recipient whose reward is being shown
+---@return boolean true if the after view is a surviving player's wild victory
+local function wildVictoryAtExperience(packet, target)
+  local view = packet.after
+  if
+    type(view) ~= "table" or not BattlePresentationFlow.isWild(view --[[@as table<string, unknown>]])
+  then
+    return false
+  end
+  local foes = view.foes --[[@as table[]?]]
+  local own = view.own --[[@as table[]?]]
+  if type(foes) ~= "table" or #foes == 0 or type(own) ~= "table" then
+    return false
+  end
+  local livingFoe = false
+  for _, foe in ipairs(foes) do
+    if type(foe.hp) == "number" and foe.hp > 0 then
+      livingFoe = true
+      break
+    end
+  end
+  if livingFoe then
+    return false
+  end
+  for _, mon in ipairs(own) do
+    if mon.combatant == target and type(mon.hp) == "number" and mon.hp > 0 then
+      return true
+    end
+  end
+  return false
+end
+
+---@param self BattleTimeline
 ---@param event table<string, unknown> sanitized kernel event under translation
 ---@param packet table<string, unknown> delivery carrying the before and after views
 local function translateExp(self, event, packet)
   local payload = event.payload --[[@as table<string, unknown>]]
   local target = payload.combatant --[[@as integer]]
   local gained = payload.gained --[[@as integer]]
-  if type(gained) ~= "number" then
-    gained = 0
-  end
   local _, beforeLevel = progressionOf(packet.before, target)
   local afterExp, afterLevel = progressionOf(packet.after, target)
-  enqueueMessage(self, combatName(self, target) .. " gained " .. tostring(gained) .. " EXP points!", false)
-  enqueue(self, {
-    kind = "exp",
-    combatant = target,
-    targetExp = afterExp,
-    targetLevel = afterLevel or beforeLevel,
-    startExp = nil,
-    startLevel = nil,
-    duration = nil,
-  })
+  assert(type(gained) == "number" and gained >= 0, "experience events carry a non-negative award")
+  if gained == 0 then
+    return
+  end
+  if not self._wildVictoryMusicStarted and wildVictoryAtExperience(packet, target) then
+    local music = BattlePresentationFlow.resultMusicSymbol("win", true)
+    if music ~= nil then
+      self._wildVictoryMusicStarted = true
+      enqueue(self, { kind = "sound", cue = musicCue(music), duration = 0 })
+    end
+  end
+  local boosted = payload.boosted == true
+  local experienceKey = boosted and "battle/narration/experience/boosted" or "battle/narration/experience"
+  enqueueMessage(
+    self,
+    messageText(self, experienceKey, { combatName(self, target), tostring(gained) }),
+    false,
+    BattleTimeline.AUTO_SCROLL_TICKS + 7,
+    true
+  )
+  local levelUps = payload.levelUps --[[@as table[]?]]
+  local levelUpByLevel = {}
+  for _, levelUp in ipairs(levelUps or {}) do
+    levelUpByLevel[levelUp.level] = levelUp
+  end
+  local segments = payload.expSegments --[[@as table[]?]]
+  if type(segments) ~= "table" or #segments == 0 then
+    local startExp = payload.experienceBefore or select(1, progressionOf(packet.before, target))
+    local endExp = payload.experienceAfter or afterExp
+    segments = {
+      {
+        level = beforeLevel or afterLevel or 1,
+        startExp = startExp,
+        targetExp = endExp,
+        fromPixels = 0,
+        toPixels = BattleTimeline.EXP_BAR_PIXELS,
+      },
+    }
+  end
+  for index, segment in ipairs(segments) do
+    local level = assert(segment.level, "experience segments name their current level") --[[@as integer]]
+    local startExp = assert(segment.startExp, "experience segments name their stored start") --[[@as integer]]
+    local targetExp = assert(segment.targetExp, "experience segments name their exact end") --[[@as integer]]
+    local fromPixels = assert(segment.fromPixels, "experience segments name their start pixel") --[[@as integer]]
+    local toPixels = assert(segment.toPixels, "experience segments name their end pixel") --[[@as integer]]
+    local levelUp = levelUpByLevel[level + 1]
+    enqueue(self, {
+      kind = "exp",
+      combatant = target,
+      targetExp = targetExp,
+      targetLevel = levelUp ~= nil and levelUp.level or afterLevel or level,
+      startExp = startExp,
+      startLevel = level,
+      duration = math.max(1, toPixels - fromPixels),
+      soundStopTicks = math.max(8, toPixels - fromPixels),
+      soundKey = "battle-exp:" .. tostring(target) .. ":" .. tostring(self._messageSeq) .. ":" .. tostring(index),
+      levelUp = levelUp,
+    })
+    if levelUp ~= nil then
+      local nextLevel = levelUp.level --[[@as integer]]
+      enqueueMessage(
+        self,
+        messageText(self, "battle/narration/level-up", { combatName(self, target), tostring(nextLevel) }),
+        false,
+        0,
+        true
+      )
+      enqueue(self, {
+        kind = "sound",
+        cue = fanfareCue(BattleAudio.SINK_SOUNDS.levelUp, true),
+        duration = 0,
+      })
+      enqueueLevelUpStats(self, levelUp)
+    end
+  end
 end
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown> sanitized kernel event under translation
----@param packet table<string, unknown> delivery carrying the before and after views
-local function translateStats(self, event, packet)
+local function translateStats(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
   local target = payload.combatant --[[@as integer]]
-  local _, beforeLevel = progressionOf(packet.before, target)
-  local _, afterLevel = progressionOf(packet.after, target)
-  if beforeLevel ~= nil and afterLevel ~= nil and afterLevel > beforeLevel then
-    enqueueMessage(self, combatName(self, target) .. " grew to level " .. tostring(afterLevel) .. "!", false)
-    enqueue(self, {
-      kind = "sound",
-      cue = effectCue(BattleAudio.SINK_SOUNDS.levelUp),
-      duration = 0,
-    })
-    enqueue(self, { kind = "wait", duration = BattleTimeline.MESSAGE_HOLD_TICKS })
+  local shown = self:_shown(target)
+  if shown ~= nil and type(payload.maxHpAfter) == "number" then
+    shown.maxHp = payload.maxHpAfter
   end
-  -- A stat recompute without a visible change carries no presentation:
-  -- the experience cue already showed the bar motion.
 end
 
 ---@param event table<string, unknown> event carrying its event-time checkpoint
 ---@return table<string, unknown>? event-time checkpoint exposed by the event
-local function eventObservation(event)
+function eventObservation(event)
   local observation = event.observation
   if type(observation) == "table" then
     return observation --[[@as table<string, unknown>]]
@@ -1031,7 +1431,8 @@ local function enqueueCheckpointHealth(self, target, event)
   local observation = eventObservation(event)
   local hp = type(observation) == "table" and observation.hp or nil
   if type(hp) == "table" and type(hp[target]) == "number" then
-    enqueueHealth(self, target, hp[target] --[[@as integer]])
+    local payload = event.payload --[[@as table<string, unknown>?]] or {}
+    enqueueHealth(self, target, hp[target] --[[@as integer]], payload.noBlink == true)
   end
 end
 
@@ -1048,19 +1449,37 @@ local function translateFainted(self, event)
   if type(target) ~= "number" then
     return
   end
-  enqueueMessage(self, combatName(self, target --[[@as integer]]) .. " fainted!", false)
   enqueue(self, {
     kind = "faint",
     combatant = target,
     duration = BattleTimeline.VANISH_TICKS,
     requiresImage = self:_imageKeyFor(target),
   })
+  local address = self._addressing[target]
+  local variant = address == "own" and "own" or address == "wild" and "wild" or "foe"
+  local message = enqueueMessage(
+    self,
+    messageText(self, "battle/narration/fainted/" .. variant, {
+      combatName(self, target --[[@as integer]]),
+    }),
+    false,
+    BattleTimeline.AUTO_SCROLL_TICKS + 30,
+    true
+  )
+  message.slideCombatant = target
 end
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown> sanitized kernel event under translation
-local function translateMoveUsed(self, event)
+---@param holdTicks integer? explicit move-announcement hold
+---@param ackSkipsHold boolean? whether acknowledgement skips the explicit hold
+local function translateMoveUsed(self, event, holdTicks, ackSkipsHold)
   local payload = event.payload --[[@as table<string, unknown>]]
+  if payload.phase == "release" and explicitMove(event) == "BIDE" then
+    assert(type(event.sourceText) == "string", "Bide release requires its selected source message")
+    enqueueMessage(self, event.sourceText --[[@as string]], false, 30, true)
+    return
+  end
   local moveKey = explicitMove(event)
   local user = explicitActor(event)
   if user == nil and type(payload.user) == "number" then
@@ -1069,22 +1488,16 @@ local function translateMoveUsed(self, event)
   if user == nil then
     user = moveOwner(self, moveKey)
   end
-  local userName = type(user) == "number" and combatName(self, user --[[@as integer]]) or "The foe"
-  enqueueMessage(self, userName .. " used " .. moveName(self, user or -1, moveKey) .. "!", false)
-end
-
----@param self BattleTimeline
----@param target unknown combatant identity from an event payload
----@return string
-local function nameOrBattler(self, target)
-  return type(target) == "number" and combatName(self, target --[[@as integer]]) or "The battler"
+  local narration = moveUseText(self, user, moveKey)
+  enqueueMessage(self, narration, false, holdTicks, ackSkipsHold)
 end
 
 ---@param event table<string, unknown> sanitized kernel event
 ---@return string
 function causeMoveKey(event)
   local cause = event.cause --[[@as table<string, unknown>]]
-  return type(cause.key) == "string" and cause.key or "strike"
+  assert(type(cause.key) == "string" and cause.key ~= "", "move narration has a semantic cause key")
+  return cause.key
 end
 
 ---@param self BattleTimeline
@@ -1098,33 +1511,160 @@ local function enqueueReveal(self, combatant)
   })
 end
 
--- Narrates one target-addressed event and follows it with the checkpoint
--- health motion; an event without a numeric target stays silent.
----@param field string payload field naming the target combatant
----@param suffix string narration appended to the target's name
----@return fun(self: BattleTimeline, event: table<string, unknown>)
-local function hurtOrHealed(field, suffix)
-  local function translate(self, event)
-    local target = (event.payload --[[@as table<string, unknown>]])[field]
-    if type(target) == "number" then
-      enqueueMessage(self, combatName(self, target --[[@as integer]]) .. suffix, false)
-      enqueueCheckpointHealth(self, target --[[@as integer]], event)
-    end
+---@param self BattleTimeline
+---@param event table<string, unknown>? event whose checkpoint carries health, nil for the latest view
+---@return integer? hp, integer? maxHp of the lead foe
+function foeHealthAt(self, event)
+  local view = self._latest
+  local foes = type(view) == "table" and view.foes or nil
+  local foe = type(foes) == "table" and foes[1] or nil
+  if type(foe) ~= "table" or type(foe.combatant) ~= "number" then
+    return nil, nil
   end
-  return translate
+  local hp = foe.hp
+  local observation = event ~= nil and eventObservation(event) or nil
+  local checkpoint = type(observation) == "table" and observation.hp or nil
+  if type(checkpoint) == "table" and type(checkpoint[foe.combatant]) == "number" then
+    hp = checkpoint[foe.combatant]
+  end
+  return hp, --[[@as integer?]]
+    foe.maxHp --[[@as integer?]]
 end
 
--- Narrates a target-addressed event whose sentence is the target's name
--- followed by a fixed suffix.
----@param field string payload field naming the target combatant
----@param suffix string
----@return fun(self: BattleTimeline, event: table<string, unknown>)
-local function targetMessage(field, suffix)
-  local function translate(self, event)
-    local target = (event.payload --[[@as table<string, unknown>]])[field]
-    enqueueMessage(self, nameOrBattler(self, target) .. suffix, false)
+---@param self BattleTimeline
+---@return boolean true when the player fields more than one battler
+local function playerDoubles(self)
+  local view = self._latest
+  local own = type(view) == "table" and view.own or nil
+  local active = 0
+  if type(own) == "table" then
+    for _, record in ipairs(own) do
+      if type(record) == "table" and record.active ~= false and record.position ~= nil then
+        active = active + 1
+      end
+    end
   end
-  return translate
+  return active > 1
+end
+
+-- BattleControllerOpponent_GetReturnMessage: a single player recall scales
+-- its line by the foe health lost since the last switch-in.
+---@param self BattleTimeline
+---@param departed integer withdrawing combatant
+---@param event table<string, unknown> switch event carrying its checkpoint
+---@return string
+function recallText(self, departed, event)
+  local name = combatName(self, departed)
+  if self._addressing[departed] ~= "own" then
+    local trainer = assert(firstTrainer(self), "opponent recall carries its trainer identity")
+    local trainerName = assert(trainer.name, "trainer recall carries the opponent name")
+    return messageText(
+      self,
+      "battle/narration/trainer-withdrew",
+      { trainerClassText(self, trainer), trainerName, name }
+    )
+  end
+  local mark = self._foeHpMark
+  local hp = foeHealthAt(self, event)
+  local key = "battle/narration/player-withdrew/come-back"
+  if playerDoubles(self) or type(mark) ~= "number" or mark <= 0 or type(hp) ~= "number" then
+    return messageText(self, key, { name })
+  end
+  local value = math.floor(100 * (mark - hp) / mark)
+  if value <= 0 then
+    key = "battle/narration/player-withdrew/switch-out"
+  elseif value < 25 then
+    key = "battle/narration/player-withdrew/come-back"
+  elseif value < 50 then
+    key = "battle/narration/player-withdrew/good"
+  elseif value < 75 then
+    key = "battle/narration/player-withdrew/ok"
+  else
+    key = "battle/narration/player-withdrew/enough"
+  end
+  return messageText(self, key, { name })
+end
+
+-- BattleControllerOpponent_GetSendOutMessage for the player side, then the
+-- arrival with its cry (subscript_0009_SwitchMon).
+---@param self BattleTimeline
+---@param incoming integer arriving combatant
+---@param event table<string, unknown>? arrival event carrying its checkpoint
+function enqueueSendOut(self, incoming, event)
+  if self._addressing[incoming] == "own" then
+    local name = combatName(self, incoming)
+    local key = "battle/narration/player-sent-out"
+    local hp, maxHp = foeHealthAt(self, event)
+    if not playerDoubles(self) and type(hp) == "number" and type(maxHp) == "number" and maxHp > 0 then
+      local value = hp == 0 and 1000 or math.floor(1000 * hp / maxHp)
+      if value < 100 then
+        key = "battle/narration/player-sent-out/foe-weak"
+      elseif value < 325 then
+        key = "battle/narration/player-sent-out/foe-hurt"
+      elseif value < 550 then
+        key = "battle/narration/player-sent-out/go-for-it"
+      elseif value < 775 then
+        key = "battle/narration/player-sent-out/in-charge"
+      end
+    end
+    enqueueMessage(self, messageText(self, key, { name }), false, 0)
+  else
+    local trainer = firstTrainer(self)
+    if trainer ~= nil then
+      local trainerName = assert(trainer.name, "trainer send-outs carry the opponent name")
+      local monName = combatName(self, incoming)
+      enqueueMessage(
+        self,
+        messageText(
+          self,
+          "battle/narration/trainer-sent-out",
+          { trainerClassText(self, trainer), trainerName, monName }
+        ),
+        false,
+        0
+      )
+    end
+  end
+  enqueueBallThrow(self, incoming, self._addressing[incoming] == "own" and "player" or "foe")
+  local species, form = speciesOf(self, incoming)
+  if species ~= nil then
+    enqueue(self, {
+      kind = "sound",
+      cue = cryCue(species, form, self._addressing[incoming] ~= "own"),
+      duration = 0,
+    })
+  end
+  enqueueReveal(self, incoming)
+end
+
+---@param self BattleTimeline
+---@param combatant integer battler under lookup
+---@return string? species, integer? form from the newest view naming it
+function speciesOf(self, combatant)
+  local view = self._latest
+  if type(view) == "table" then
+    for _, group in ipairs({ view.own, view.foes }) do
+      if type(group) == "table" then
+        for _, record in ipairs(group) do
+          if type(record) == "table" and record.combatant == combatant and type(record.species) == "string" then
+            local form = type(record.form) == "number" and record.form or nil
+            return record.species, --[[@as string]]
+              form --[[@as integer?]]
+          end
+        end
+      end
+    end
+  end
+  return nil, nil
+end
+
+-- Health facts drive the bar without inventing narration absent a native
+-- message record; source scripts emit their own message events where needed.
+local function translateHealed(self, event)
+  local target = (event.payload --[[@as table<string, unknown>]]).target
+  if type(target) == "number" then
+    enqueueCheckpointHealth(self, target, event)
+  end
 end
 
 ---@param self BattleTimeline
@@ -1139,9 +1679,15 @@ local function translateFlee(self, event)
       cue = effectCue(BattleAudio.SINK_SOUNDS.escape),
       duration = 0,
     })
-    enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
   else
-    enqueueMessage(self, nameOrBattler(self, payload.combatant) .. " could not escape!", false)
+    -- subscript_0008_RunAwayFail: msg 42 (ending in \r), WaitButtonABTime 30.
+    enqueueMessage(
+      self,
+      messageText(self, "battle/narration/cannot-escape", {}),
+      false,
+      BattleTimeline.AUTO_SCROLL_TICKS + 30,
+      true
+    )
   end
 end
 
@@ -1149,28 +1695,48 @@ end
 ---@param event table<string, unknown>
 local function translateStage(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
-  local who = nameOrBattler(self, payload.target)
   local before = payload.before
   local after = payload.after
+  local statKey = payload.stat
+  assert(type(statKey) == "string" and statKey ~= "", "stage changes name a battle stat")
+  local stat = messageText(self, "battle/stat/" .. tostring(statKey), {})
+  local target = type(payload.target) == "number" and payload.target or explicitTarget(event)
+  local address = target ~= nil and self._addressing[target] or "own"
+  local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  local cause = event.cause --[[@as table<string, unknown>?]]
   if type(before) == "number" and type(after) == "number" and after ~= before then
-    local direction = after > before and "rose" or "fell"
-    local cause = event.cause --[[@as table<string, unknown>?]]
+    local shown = type(payload.target) == "number" and self:_shown(payload.target --[[@as integer]]) or nil
     if type(cause) == "table" and cause.kind == "item" and type(cause.item) == "string" then
-      local statNames = {
-        attack = "Attack",
-        defense = "Defense",
-        specialAttack = "Special Attack",
-        specialDefense = "Special Defense",
-        speed = "Speed",
-        accuracy = "accuracy",
-      }
-      local stat = (type(payload.stat) == "string" and statNames[payload.stat]) or tostring(payload.stat)
-      enqueueMessage(self, "The " .. itemName(self, cause.item) .. " raised " .. who .. "’s " .. stat .. "!", false)
-    else
-      enqueueMessage(self, who .. "'s " .. tostring(payload.stat) .. " " .. direction .. ".", false)
+      local name = combatName(self, assert(target, "stage narration names its target"))
+      if shown ~= nil and shown.side == 1 then
+        -- The player's bag task prints msg_0197_01203.
+        enqueueMessage(self, messageText(self, "battle/narration/bag-stat-up", { name, stat }), false)
+      else
+        local strength = math.abs(after - before) >= 2 and "sharp" or "normal"
+        enqueueMessage(
+          self,
+          messageText(
+            self,
+            "battle/narration/trainer-stat-raised/" .. strength .. "/" .. side,
+            { itemName(self, cause.item), name, stat }
+          ),
+          false
+        )
+      end
+      return
     end
-  else
-    enqueueMessage(self, who .. " felt the effect.", false)
+    local action = after > before and (math.abs(after - before) >= 2 and "up/sharp" or "up/normal")
+      or (math.abs(after - before) >= 2 and "down/harsh" or "down/normal")
+    local key = "battle/narration/stage/" .. action .. "/" .. side
+    local name = combatName(self, assert(target, "stage narration names its target"))
+    -- subscript_0012_UpdateStatStage holds each stat line for 30 frames.
+    enqueueMessage(self, messageText(self, key, { name, stat }), false, 30, true)
+  elseif before == 6 then
+    local name = combatName(self, assert(target, "stage narration names its target"))
+    enqueueMessage(self, messageText(self, "battle/narration/stage/max-up/" .. side, { name, stat }), false, 30, true)
+  elseif before == -6 then
+    local name = combatName(self, assert(target, "stage narration names its target"))
+    enqueueMessage(self, messageText(self, "battle/narration/stage/max-down/" .. side, { name, stat }), false, 30, true)
   end
 end
 
@@ -1181,17 +1747,35 @@ local function translateItem(self, event, packet)
   local payload = event.payload --[[@as table<string, unknown>]]
   if type(payload.refused) == "string" then
     if payload.refused == "no_effect" or payload.refused == "invalid_target" then
-      enqueueMessage(self, "It won’t do any good to use that!", false)
+      enqueueMessage(self, messageText(self, "battle/narration/item-no-effect", {}), false)
     else
-      enqueueMessage(self, "The item could not be used.", false)
+      enqueueMessage(self, messageText(self, "battle/narration/item-could-not-be-used", {}), false)
     end
     return
   end
-  local itemText = type(payload.item) == "string" and itemName(self, payload.item) or "an item"
+  local itemKey = payload.item
+  assert(type(itemKey) == "string", "item narration carries its item identity")
+  itemKey = itemKey --[[@as string]]
+  local itemText = itemName(self, itemKey)
   local actor = explicitActor(event)
   local shown = actor ~= nil and self:_shown(actor) or nil
-  local user = type(shown) == "table" and shown.side == 2 and "The opposing Trainer" or "You"
-  enqueueMessage(self, user .. " used one " .. itemText .. "!", false)
+  local playerUse = not (type(shown) == "table" and shown.side == 2)
+  if playerUse then
+    -- The player's bag task narrates msg_0197_01206.
+    enqueueMessage(self, messageText(self, "battle/narration/bag-used-item", { itemText }), false)
+  else
+    local trainer = assert(firstTrainer(self), "trainer item use carries its trainer identity")
+    local trainerName = assert(trainer.name, "trainer item use carries the trainer name")
+    enqueueMessage(
+      self,
+      messageText(
+        self,
+        "battle/narration/trainer-used-item",
+        { trainerClassText(self, trainer), trainerName, itemText }
+      ),
+      false
+    )
+  end
   local target = type(payload.target) == "table" and payload.target.combatant or nil
   if type(target) ~= "number" then
     local cause = event.cause --[[@as table<string, unknown>?]]
@@ -1206,47 +1790,80 @@ local function translateItem(self, event, packet)
     local checkpointTarget = type(checkpointCombatants) == "table" and checkpointCombatants[target] or nil
     local afterCondition = type(checkpointTarget) == "table" and checkpointTarget.condition or nil
     if type(beforeCondition) == "string" and afterCondition ~= beforeCondition then
-      enqueueMessage(self, who .. "'s " .. itemText .. " cured its " .. beforeCondition .. "!", false)
+      local cureKeys = {
+        sleep = "bag-woke-up",
+        poison = "bag-cured-poison",
+        toxic = "bag-cured-poison",
+        burn = "bag-healed-burn",
+        freeze = "bag-thawed",
+        paralysis = "bag-cured-paralysis",
+        confusion = "bag-snapped-out",
+      }
+      local cureKey = cureKeys[beforeCondition]
+      if playerUse and cureKey ~= nil then
+        enqueueMessage(self, messageText(self, "battle/narration/" .. cureKey, { who }), false)
+      end
     end
     if type(payload.restored) == "number" and payload.restored > 0 then
       enqueueCheckpointHealth(self, target, event)
+      if playerUse then
+        enqueueMessage(
+          self,
+          messageText(self, "battle/narration/bag-restored-hp", { who, tostring(payload.restored) }),
+          false
+        )
+      end
     end
   end
   if type(payload.restoredPp) == "number" and payload.restoredPp > 0 then
     -- Battle party-menu result for PP servings (msg_0006_00087).
-    enqueueMessage(self, "PP was restored.", false)
+    enqueueMessage(self, messageText(self, "battle/narration/pp-restored", {}), false)
   end
   if type(payload.item) == "string" and type(self._battleItemUse) == "function" then
     local effects = self._battleItemUse(payload.item)
     if type(effects) == "table" then
       if effects.guardSpec == true then
-        enqueueMessage(self, "Your team became shrouded in mist!", false)
+        if playerUse then
+          enqueueMessage(self, messageText(self, "battle/narration/bag-guard-spec", {}), false)
+        end
       end
       local stages = effects.stages
-      if type(stages) == "table" and type(stages.critical) == "number" and stages.critical > 0 then
-        local targetName = type(target) == "number" and target % 1 == 0 and combatName(self, target --[[@as integer]])
-          or "your Pokémon"
-        enqueueMessage(self, "The " .. itemText .. " raised " .. targetName .. "’s critical-hit ratio!", false)
+      if
+        type(stages) == "table"
+        and type(stages.critical) == "number"
+        and stages.critical > 0
+        and type(target) == "number"
+        and target % 1 == 0
+      then
+        enqueueMessage(
+          self,
+          messageText(self, "battle/narration/bag-getting-pumped", {
+            combatName(self, target --[[@as integer]]),
+          }),
+          false
+        )
       end
     end
   end
 end
 
--- Narrates a move learn-or-decline outcome named by the payload field
--- holding the move key.
----@param moveField string payload field naming the move
----@param verb string past-tense outcome phrase
----@param ender string closing punctuation
+-- Narrates a source move-learning record with its ordered source tags.
+---@param messageKey string semantic key for the retail message record
 ---@param targetField string payload field naming the combatant
+---@param moveField string payload field naming the move
 ---@return fun(self: BattleTimeline, event: table<string, unknown>)
-local function moveOutcome(targetField, moveField, verb, ender)
+local function moveOutcome(messageKey, targetField, moveField)
   local function translate(self, event)
     local payload = event.payload --[[@as table<string, unknown>]]
     local target = payload[targetField]
-    local move = type(payload[moveField]) == "string" and payload[moveField] or "a move"
+    assert(type(target) == "number", "move outcome names its battler")
+    target = target --[[@as integer]]
+    local move = payload[moveField]
+    assert(type(move) == "string", "move outcome names its move")
+    move = move --[[@as string]]
     enqueueMessage(
       self,
-      nameOrBattler(self, target) .. " " .. verb .. " " .. moveName(self, target or -1, move --[[@as string]]) .. ender,
+      messageText(self, messageKey, { combatName(self, target), moveName(self, target, move) }),
       false
     )
   end
@@ -1262,12 +1879,17 @@ local function translateTransformed(self, event, packet)
   -- the visual update is never silenced, even on paths where optional
   -- artwork is suppressed.
   local payload = event.payload --[[@as table<string, unknown>]]
-  local who = nameOrBattler(self, payload.target)
+  local target = payload.target
+  assert(type(target) == "number", "transform target is named")
+  target = target --[[@as integer]]
+  local who = combatName(self, target)
   local copied = payload.copiedFrom
   if type(copied) == "number" then
-    enqueueMessage(self, who .. " transformed into " .. combatName(self, copied --[[@as integer]]) .. "!", false)
-  else
-    enqueueMessage(self, who .. " transformed.", false)
+    local donor = assert(self:_shown(copied --[[@as integer]]), "transform donor is visible")
+    local speciesKey = assert(donor.species, "transform donor view carries its species")
+    local speciesName = type(self._speciesName) == "function" and self._speciesName(speciesKey) or nil
+    assert(type(speciesName) == "string" and speciesName ~= "", "transform source tags resolve the species name")
+    enqueueMessage(self, messageText(self, "battle/narration/transformed", { who, speciesName }), false)
   end
   if nativeEffectKeyOf(event) ~= nil then
     enqueueNativeEffect(self, event, packet)
@@ -1276,8 +1898,7 @@ local function translateTransformed(self, event, packet)
   -- effects are suppressed: the disabled animation path still applies
   -- the essential visual update behind its native wait.
   local donorId = BattlePresentationFlow.transformDonor(event)
-  local target = type(payload.target) == "number" and payload.target or nil
-  if donorId ~= nil and target ~= nil then
+  if donorId ~= nil then
     local donor = self:_shown(donorId --[[@as integer]])
     local shown = self:_shown(target --[[@as integer]])
     if donor ~= nil and shown ~= nil and type(donor.species) == "string" then
@@ -1304,12 +1925,14 @@ end
 ---@param event table<string, unknown>
 local function translateSwitch(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
+  local cause = event.cause --[[@as table<string, unknown>?]]
+  local replacesFaint = type(cause) == "table" and cause.kind == "faint"
   local departed = payload.from
   if type(departed) ~= "number" then
     departed = payload.combatant
   end
-  if type(departed) == "number" then
-    enqueueMessage(self, combatName(self, departed --[[@as integer]]) .. " was withdrawn.", false)
+  if type(departed) == "number" and not replacesFaint then
+    enqueueMessage(self, recallText(self, departed --[[@as integer]], event), false, 0)
     enqueue(self, {
       kind = "withdraw",
       combatant = departed,
@@ -1325,41 +1948,47 @@ local function translateSwitch(self, event)
     incoming = payload.incoming
   end
   if type(incoming) == "number" then
-    enqueueReveal(self, incoming --[[@as integer]])
+    enqueueSendOut(self, incoming --[[@as integer]], event)
   end
+  -- SwitchAndUpdateMon re-marks the foe health behind recall wording.
+  self._foeHpMark = foeHealthAt(self, event)
 end
-
-local STATUS_GATE_MESSAGES = {
-  sleep = " is fast asleep.",
-  paralysis = " is paralyzed and cannot move.",
-  freeze = " is frozen solid.",
-}
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown>
 local function translateStatusGate(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
-  local who = nameOrBattler(self, payload.combatant)
-  local outcome = payload.outcome
-  local text
-  if outcome == "woke" then
-    text = " woke up."
-  elseif outcome == "thawed" then
-    text = " thawed out."
+  local target = nil
+  if type(payload.combatant) == "number" then
+    target = payload.combatant --[[@as integer]]
   else
-    text = STATUS_GATE_MESSAGES[tostring(payload.key)] or " cannot move."
+    target = explicitTarget(event)
   end
-  enqueueMessage(self, who .. text, false)
+  local address = target ~= nil and self._addressing[target] or "own"
+  local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  local outcome = payload.outcome == "woke" and "woke" or payload.outcome == "thawed" and "thawed" or nil
+  local condition = payload.key == "sleep" and "asleep" or payload.key
+  local route = outcome or (condition == "paralysis" and "paralysis" or condition == "freeze" and "freeze" or "asleep")
+  local key = "battle/narration/status-gate/" .. tostring(route) .. "/" .. side
+  assert(type(target) == "number", "status gate narration names its battler")
+  local name = combatName(self, target)
+  enqueueMessage(self, messageText(self, key, { name }), false)
 end
 
 -- Forcing and item moves narrate through their target: any following
 -- switch event owns the withdrawal/reveal presentation.
+-- Pure action bookkeeping with no observable change: the matching strike,
+-- switch, item, or flee event already carries the moment.
+local function translateSilent(_, event)
+  local _ = event
+end
+
 ---@param self BattleTimeline
 ---@param event table<string, unknown>
 local function translateIntent(self, event)
-  local target = (event.payload --[[@as table<string, unknown>]]).target
-  local who = nameOrBattler(self, target)
-  enqueueMessage(self, who .. " was hit by " .. moveName(self, target or -1, causeMoveKey(event)) .. ".", false)
+  -- Intent packets carry mechanical targeting facts. The native script's
+  -- message event owns the retail narration and its placeholder tags.
+  translateSilent(self, event)
 end
 
 -- Reserve arrivals outside the replacement switch path still reveal their
@@ -1373,23 +2002,58 @@ local function translateJoin(self, event)
   end
 end
 
--- Pure action bookkeeping with no observable change: the matching strike,
--- switch, item, or flee event already carries the moment.
-local function translateSilent() end
+local function translateMissed(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  if payload.reason == "failed" then
+    enqueueMessage(self, messageText(self, "battle/narration/move-failed", {}), false, 30, true)
+    return
+  end
+  translateMoveUsed(self, event, 30, true)
+  -- subscript_0007_Miss names the attacker (msg_0197_00012-00014).
+  local attacker = explicitActor(event)
+  local address = attacker ~= nil and self._addressing[attacker] or "own"
+  local variant = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  local key = "battle/narration/missed/" .. variant
+  local name = combatName(self, assert(attacker, "miss narration names its attacker"))
+  local text = messageText(self, key, { name })
+  enqueueMessage(self, text, false, 30, true)
+end
 
-local function translateMissed(self)
-  enqueueMessage(self, "The attack missed!", false)
+local function translateMultiHit(self, event)
+  local hits = (event.payload --[[@as table<string, unknown>]]).hits
+  assert(type(hits) == "number" and hits > 1 and hits % 1 == 0, "multi-hit summary carries connected hit count")
+  enqueueMessage(self, messageText(self, "battle/narration/multi-hit", { tostring(hits) }), false, 30, true)
+end
+
+local function translateAvoided(self, event)
+  local target = explicitTarget(event)
+  local address = target ~= nil and self._addressing[target] or "own"
+  local variant = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  local name = combatName(self, assert(target, "miss avoidance narration names its battler"))
+  enqueueMessage(self, messageText(self, "battle/narration/avoided/" .. variant, { name }), false, 30, true)
+end
+
+local function translateImmune(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local target = type(payload.target) == "number" and payload.target or explicitTarget(event)
+  local address = target ~= nil and self._addressing[target] or "own"
+  local variant = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  local name = combatName(self, assert(target, "immunity narration names its battler"))
+  enqueueMessage(self, messageText(self, "battle/narration/immune/" .. variant, { name }), false, 30, true)
 end
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown>
 local function translateStatus(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
-  enqueueMessage(
-    self,
-    nameOrBattler(self, payload.target) .. " was afflicted with " .. tostring(payload.key) .. ".",
-    false
-  )
+  local target = type(payload.target) == "number" and payload.target or explicitTarget(event)
+  local address = target ~= nil and self._addressing[target] or "own"
+  local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  local status = tostring(payload.key)
+  local key = "battle/narration/status/" .. status .. "/" .. side
+  assert(type(target) == "number", "status narration names its target")
+  local name = combatName(self, target)
+  enqueueMessage(self, messageText(self, key, { name }), false, 30, true)
 end
 
 ---@param self BattleTimeline
@@ -1400,7 +2064,24 @@ local function translateCured(self, event)
   if type(cause) == "table" and cause.kind == "item" then
     return
   end
-  enqueueMessage(self, nameOrBattler(self, payload.target) .. " recovered from " .. tostring(payload.key) .. ".", false)
+  local target = nil
+  if type(payload.target) == "number" then
+    target = payload.target --[[@as integer]]
+  else
+    target = explicitTarget(event)
+  end
+  local key = tostring(payload.key)
+  local address = target ~= nil and self._addressing[target] or "own"
+  local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  local route = key == "freeze" and "thawed"
+    or key == "paralysis" and "paralysis-healed"
+    or key == "confusion" and "confusion-cured"
+    or nil
+  if route ~= nil then
+    local messageKey = "battle/narration/cured/" .. route .. "/" .. side
+    assert(type(target) == "number", "cured-status narration names its target")
+    enqueueMessage(self, messageText(self, messageKey, { combatName(self, target) }), false)
+  end
 end
 
 ---@param self BattleTimeline
@@ -1409,59 +2090,177 @@ local function translateTick(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
   local target = payload.combatant
   if type(target) == "number" then
+    local address = self._addressing[target]
+    local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+    local key = "battle/narration/residual/" .. tostring(payload.key) .. "/" .. side
     enqueueMessage(
       self,
-      combatName(self, target --[[@as integer]]) .. " is hurt by " .. tostring(payload.key) .. ".",
-      false
+      messageText(self, key, {
+        combatName(self, target --[[@as integer]]),
+      }),
+      false,
+      30,
+      true
     )
     enqueueCheckpointHealth(self, target --[[@as integer]], event)
   end
 end
 
-local translateRegained = hurtOrHealed("target", " regained health.")
-local translateRecoil = hurtOrHealed("target", " was hurt by recoil.")
-local translateDrained = hurtOrHealed("target", " absorbed health.")
-local translateLeveled = hurtOrHealed("target", "'s health was evened out.")
-local translateLearn = moveOutcome("combatant", "move", "learned", "!")
-local translateDeclined = moveOutcome("combatant", "move", "did not learn", ".")
-local translateSketched = moveOutcome("target", "copied", "sketched", ".")
-local translateMimicked = moveOutcome("user", "copied", "mimicked", "!")
-local translateCharged = targetMessage("target", " began to charge.")
-local translateProtected = targetMessage("target", " protected itself.")
-local translateSubstituteBroke = targetMessage("target", "'s substitute broke.")
+-- subscript_0063_Recoil_1_4: the attacker's bar moves, then its line holds.
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateRecoil(self, event)
+  local target = (event.payload --[[@as table<string, unknown>]]).target
+  if type(target) == "number" then
+    enqueueCheckpointHealth(self, target --[[@as integer]], event)
+    local address = self._addressing[target]
+    local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+    enqueueMessage(
+      self,
+      messageText(self, "battle/narration/recoil/" .. side, {
+        combatName(self, target --[[@as integer]]),
+      }),
+      false,
+      30,
+      true
+    )
+  end
+end
+
+-- subscript_0024_DrainHalfDamageDealt: the drainer's bar fills, then the
+-- line names the battler the energy came from.
+---@param self BattleTimeline
+---@param event table<string, unknown>
+local function translateDrained(self, event)
+  local drainer = (event.payload --[[@as table<string, unknown>]]).target
+  if type(drainer) ~= "number" then
+    return
+  end
+  enqueueCheckpointHealth(self, drainer --[[@as integer]], event)
+  local source = self._lastStruck
+  if type(source) == "number" and source ~= drainer then
+    local address = self._addressing[source]
+    local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+    enqueueMessage(
+      self,
+      messageText(self, "battle/narration/drained/" .. side, {
+        combatName(self, source --[[@as integer]]),
+      }),
+      false,
+      30,
+      true
+    )
+  end
+end
+local translateLeveled = translateHealed
+local translateLearn = moveOutcome("battle/narration/learn-move", "combatant", "move")
+local translateDeclined = moveOutcome("battle/narration/did-not-learn", "combatant", "move")
+local function translateSketched(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local targetValue = payload.target
+  assert(type(targetValue) == "number", "Sketch event names its user")
+  local target = targetValue --[[@as integer]]
+  local copiedValue = payload.copied
+  assert(type(copiedValue) == "string", "Sketch event names its copied move")
+  local copied = copiedValue --[[@as string]]
+  local address = self._addressing[target]
+  local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  enqueueMessage(
+    self,
+    messageText(
+      self,
+      "battle/narration/sketched/" .. side,
+      { combatName(self, target), moveName(self, target, copied) }
+    ),
+    false
+  )
+end
+local translateMimicked = translateSilent
+local function translateCharged(self, event)
+  local targetValue = (event.payload --[[@as table<string, unknown>]]).target
+  assert(type(targetValue) == "number", "charged event names its battler")
+  local target = targetValue --[[@as integer]]
+  local address = self._addressing[target]
+  local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  enqueueMessage(self, messageText(self, "battle/narration/charged/" .. side, { combatName(self, target) }), false)
+end
+local function translateProtected(self, event)
+  local target = (event.payload --[[@as table<string, unknown>]]).target
+  local address = type(target) == "number" and self._addressing[target] or "own"
+  local variant = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  local key = "battle/narration/protected/" .. variant
+  assert(type(target) == "number", "protection narration names its battler")
+  local name = combatName(self, target)
+  enqueueMessage(self, messageText(self, key, { name }), false)
+end
+local function translateSubstituteBroke(self, event)
+  local target = (event.payload --[[@as table<string, unknown>]]).target
+  assert(type(target) == "number", "substitute event names its battler")
+  local address = self._addressing[target]
+  local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+  enqueueMessage(
+    self,
+    messageText(self, "battle/narration/substitute-broke/" .. side, { combatName(self, target) }),
+    false
+  )
+end
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown>
 local function translateDelayed(self, event)
   local target = (event.payload --[[@as table<string, unknown>]]).target
-  enqueueMessage(self, "An attack was foretold for " .. nameOrBattler(self, target) .. ".", false)
+  if type(target) == "number" then
+    local address = self._addressing[target]
+    local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
+    enqueueMessage(self, messageText(self, "battle/narration/foretold/" .. side, { combatName(self, target) }), false)
+  end
+end
+
+---@param self BattleTimeline
+---@param event table<string, unknown> capture event under translation
+---@return integer? the single wild foe under capture
+local function captureTargetOf(self, event)
+  local target = BattlePresentationFlow.captureTarget(event)
+  if target == nil then
+    target = explicitTarget(event)
+  end
+  if target == nil and self._latest ~= nil then
+    local foes = (self._latest --[[@as table<string, unknown>]]).foes
+    local first = type(foes) == "table" and foes[1] or nil
+    if type(first) == "table" and type(first.combatant) == "number" then
+      target = first.combatant --[[@as integer]]
+    end
+  end
+  return target
 end
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown> capture throw event under translation
 local function translateThrow(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
-  local user = explicitActor(event)
-  if user == nil and type(payload.user) == "number" then
-    user = payload.user --[[@as integer]]
+  assert(type(payload.ball) == "string", "capture throws name their ball")
+  local ball = itemName(self, payload.ball --[[@as string]])
+  -- subscript_0011_ThrowBall: msg_0197_00857 names the throwing trainer.
+  local who = assert(self._playerName, "capture narration carries the player trainer name")
+  enqueueMessage(self, messageText(self, "battle/narration/throw-ball", { who, ball }), false, 0)
+  -- Task_GetPokemon draws the target into the ball before any shake.
+  local target = captureTargetOf(self, event)
+  if target ~= nil then
+    self._inBall = target
+    enqueue(self, {
+      kind = "withdraw",
+      combatant = target,
+      duration = BattleTimeline.VANISH_TICKS,
+      requiresImage = self:_imageKeyFor(target),
+    })
   end
-  local ball = type(payload.ball) == "string" and payload.ball or "a ball"
-  local who = user ~= nil and combatName(self, user --[[@as integer]]) or "The battler"
-  enqueueMessage(self, who .. " threw a " .. ball .. ".", false)
-  enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
 end
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown> capture shake event under translation
 local function translateShake(self, event)
-  local payload = event.payload --[[@as table<string, unknown>]]
-  local index = payload.index
-  if type(index) == "number" then
-    local times = index --[[@as integer]] == 1 and " time." or " times."
-    enqueueMessage(self, "The ball shook " .. tostring(index) .. times, false)
-  else
-    enqueueMessage(self, "The ball is shaking.", false)
-  end
+  local _ = event
+  -- The source shakes the ball with its sound only; no line prints.
   enqueue(self, {
     kind = "sound",
     cue = effectCue(BattleAudio.SINK_SOUNDS.shake),
@@ -1475,35 +2274,34 @@ end
 local function captureFoeName(self)
   -- Captures only run in single wild encounters, so the one visible
   -- foe is structural, never a display-order guess among several.
-  if self._latest ~= nil then
-    local foes = (self._latest --[[@as table<string, unknown>]]).foes
-    if type(foes) == "table" and type(foes[1]) == "table" then
-      local foe = (foes --[[@as table<integer, table<string, unknown>>]])[1]
-      if type(foe.name) == "string" then
-        return foe.name --[[@as string]]
-      end
-    end
-  end
-  return "The foe"
+  local view = assert(self._latest, "capture narration has a current battle view")
+  local foes = view.foes --[[@as table<integer, table<string, unknown>>]]
+  local foeValue = foes[1]
+  assert(type(foeValue) == "table", "capture narration names its single foe")
+  local foe = foeValue --[[@as table<string, unknown>]]
+  local name = foe.name
+  assert(type(name) == "string", "capture narration uses the visible foe name")
+  return name
 end
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown> native capture success event under translation
 local function translateCaught(self, event)
-  enqueueMessage(self, "Gotcha! " .. captureFoeName(self) .. " was caught!", false)
+  -- msg_0197_00867 opens with {WAIT 3}: the capture fanfare starts as
+  -- the Gotcha line begins printing.
   enqueue(self, {
     kind = "sound",
-    cue = effectCue(BattleAudio.SINK_SOUNDS.caught),
+    cue = fanfareCue(BattleAudio.SINK_SOUNDS.caught, true),
     duration = 0,
   })
-  -- The caught target disappears through its ordered disappearance
-  -- task: the thrower stays displayed while only the affected
-  -- activation hides at its visual boundary.
-  local target = BattlePresentationFlow.captureTarget(event)
-  if target == nil then
-    target = explicitTarget(event)
-  end
-  if target ~= nil then
+  local caughtName = captureFoeName(self)
+  enqueueMessage(self, messageText(self, "battle/narration/gotcha", { caughtName }), false)
+  -- The target already entered the ball at the throw; a capture that
+  -- never threw still hides it here.
+  local target = captureTargetOf(self, event)
+  local inBall = target ~= nil and self._inBall == target
+  self._inBall = nil
+  if target ~= nil and not inBall then
     enqueue(self, {
       kind = "withdraw",
       combatant = target,
@@ -1519,6 +2317,12 @@ end
 local function translateBrokeFree(self, event)
   local sourceText = assert(event.sourceText, "capture outcomes require selected native source text")
   assert(type(sourceText) == "string", "capture outcome source text is a string")
+  -- BREAK_OUT sends the target back out before its line prints.
+  local target = captureTargetOf(self, event)
+  if target ~= nil and self._inBall == target then
+    enqueueReveal(self, target)
+  end
+  self._inBall = nil
   enqueueMessage(self, sourceText, false)
   enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
 end
@@ -1527,9 +2331,6 @@ end
 ---@param event table<string, unknown> generic scripted-kernel strike under translation
 local function translateStrike(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
-  local user = explicitActor(event)
-  local who = user ~= nil and combatName(self, user --[[@as integer]]) or "The battler"
-  enqueueMessage(self, who .. " struck with " .. explicitMove(event) .. ".", false)
   local target = explicitTarget(event)
   if target == nil and type(payload.resolved) == "number" then
     target = payload.resolved --[[@as integer]]
@@ -1552,7 +2353,7 @@ local OTHER_TRANSLATORS = {
   status = translateStatus,
   cured = translateCured,
   stage = translateStage,
-  healed = translateRegained,
+  healed = translateHealed,
   tick = translateTick,
   recoil = translateRecoil,
   drained = translateDrained,
@@ -1564,6 +2365,9 @@ local OTHER_TRANSLATORS = {
   charged = translateCharged,
   delayed = translateDelayed,
   protected = translateProtected,
+  ["multi-hit"] = translateMultiHit,
+  avoided = translateAvoided,
+  immune = translateImmune,
   transformed = translateTransformed,
   sketched = translateSketched,
   mimicked = translateMimicked,
@@ -1591,8 +2395,17 @@ local function translateOther(self, event, packet)
     -- use announcement. A striking action owns the same occurrence
     -- through its strike, so whichever event claims it first wins and
     -- the other stays silent: one action still plays one visual.
-    translateMoveUsed(self, event)
-    if nativeEffectKeyOf(event) ~= nil then
+    local nativeKey = nativeEffectKeyOf(event)
+    local occurrence = (nativeKey ~= nil or event.actionId ~= nil)
+        and occurrenceIdentityOf(launchOf(packet), event, packet)
+      or nil
+    if occurrence == nil or self._announced[occurrence] ~= true then
+      translateMoveUsed(self, event)
+      if occurrence ~= nil then
+        self._announced[occurrence] = true
+      end
+    end
+    if nativeKey ~= nil then
       enqueueNativeEffect(self, event, packet)
     end
     return
@@ -1601,22 +2414,20 @@ local function translateOther(self, event, packet)
     translateTransformed(self, event, packet)
     return
   end
-  -- Any other effect-keyed source event narrates before its selected
-  -- native program: missed, protected, charged, delayed, and future
-  -- source-attributed kinds visualize where the source names an
-  -- effect instead of collapsing onto a generic hit. Later cues still
-  -- wait for real completion.
+  -- Any effect-keyed source event narrates before its selected native
+  -- program, except misses: HGSS subscript_0007 announces and waits but
+  -- does not start a move animation. Other source-attributed kinds keep
+  -- their selected programs instead of collapsing onto a generic hit.
   local translate = OTHER_TRANSLATORS[kind]
   if translate == nil then
     self._diagnostics[#self._diagnostics + 1] = "unrepresentable effect: " .. kind
-    enqueueMessage(self, "Something unrepresentable happened (" .. kind .. ").", false)
     if nativeEffectKeyOf(event) ~= nil then
       enqueueNativeEffect(self, event, packet)
     end
     return
   end
   translate(self, event, packet)
-  if nativeEffectKeyOf(event) ~= nil then
+  if kind ~= "missed" and nativeEffectKeyOf(event) ~= nil then
     enqueueNativeEffect(self, event, packet)
   end
 end
@@ -1755,7 +2566,7 @@ function BattleTimeline:present(packet, sourceMessages)
       elseif kind == "exp" then
         translateExp(self, event, packet)
       elseif kind == "stats" then
-        translateStats(self, event, packet)
+        translateStats(self, event)
       else
         translateOther(self, event, packet)
       end
@@ -1780,25 +2591,25 @@ function BattleTimeline:present(packet, sourceMessages)
   return true
 end
 
--- Queues the opening presentation: enemy cry and encounter narration,
--- then the player send-out with its cry. Both battlers are already
--- shown; the send-out cue holds on the missing back image instead of
--- skipping ahead.
+-- Queues the source opening: trainer slides run alongside the encounter
+-- lead-in, battlers stay hidden until their send-out cues, and the staged
+-- ball image holds the cue until its exact asset is ready.
 ---@param view table<string, unknown> detached opening dynamic view
 ---@param wild boolean true for a wild encounter, false for a trainer challenge
 function BattleTimeline:intro(view, wild)
   assert(type(view) == "table", "the opening needs its view")
   indexFacts(self, view)
   self._latest = view
-  local foeName = "The foe"
-  local ownName = "Go"
-  local ownSpecies = nil
-  local ownForm = nil
+  local foeName = nil
   local foeSpecies = nil
   local foeForm = nil
-  local leadSelector = nil
-  if type(view.foes) == "table" and type(view.foes[1]) == "table" then
-    local foe = view.foes[1] --[[@as table<string, unknown>]]
+  local foeRecord = nil
+  local openingFoes = view.foes
+  if type(openingFoes) == "table" then
+    foeRecord = openingFoes[1]
+  end
+  if type(foeRecord) == "table" then
+    local foe = foeRecord --[[@as table<string, unknown>]]
     if type(foe.name) == "string" then
       foeName = foe.name --[[@as string]]
     end
@@ -1809,6 +2620,8 @@ function BattleTimeline:intro(view, wild)
       foeForm = foe.form --[[@as integer]]
     end
   end
+  assert(type(foeName) == "string", "opening foe view carries its display name")
+  foeName = foeName --[[@as string]]
   -- The send-out names the actual active lead, never the first party
   -- slot: a benched fainted slot stays silent while the live lead
   -- walks out. Records that predate the active flag read as active,
@@ -1819,59 +2632,83 @@ function BattleTimeline:intro(view, wild)
   if type(view.own) == "table" then
     for _, record in ipairs(view.own) do
       if type(record) == "table" and record.active ~= false then
-        lead = record
+        lead = record --[[@as table<string, unknown>]]
         break
       end
     end
   end
   assert(lead ~= nil, "the opening needs its active lead")
   local own = lead --[[@as table<string, unknown>]]
-  if type(own.name) == "string" then
-    ownName = own.name --[[@as string]]
-  end
-  if type(own.species) == "string" then
-    ownSpecies = own.species --[[@as string]]
-  end
-  if type(own.form) == "number" then
-    ownForm = own.form --[[@as integer]]
-  end
-  if type(own.portraitSelector) == "string" and own.portraitSelector ~= "" then
-    leadSelector = "mon:" .. own.portraitSelector --[[@as string]]
-  end
-  -- The encounter narration shows the real active enemy; the foe cry
-  -- voices beside the encounter and the player send-out cry follows
-  -- beside its back image, so same-species pairings keep one sound
-  -- identity per battler start.
-  if wild then
-    enqueueMessage(self, "Wild " .. foeName .. " appeared!", false)
-  else
-    enqueueMessage(self, "The foe wants to battle!", false)
-  end
-  -- The foe cry sounds before the own send-out, matching the native
-  -- entry tasks that present the enemy before the player lead walks
-  -- out.
-  if type(foeSpecies) == "string" then
-    enqueue(self, { kind = "sound", cue = cryCue(foeSpecies, foeForm, true), duration = 0 })
-  end
-  if type(ownSpecies) == "string" then
-    enqueue(self, { kind = "sound", cue = cryCue(ownSpecies, ownForm, false), duration = 0 })
-  end
-  local sendOut = {
-    kind = "message",
-    text = "Go! " .. ownName .. "!",
-    id = self._messageSeq + 1,
-    pages = {},
-    page = 1,
-    revealed = 0,
-    hold = 0,
-    ackable = false,
-    requiresImage = leadSelector or false,
+  -- subscript_0000_StartEncounter: the foe cries as its encounter slide
+  -- settles, before the encounter line; the lead cries on its send-out
+  -- after "Go!".
+  self._foeHpMark = foeHealthAt(self, nil)
+  local trainerSlides, trainerTracks = openingTrainerSlides(view, wild)
+  self._openingPresentation = {
+    playerTrainerVisible = true,
+    foeTrainerVisible = not wild,
+    playerGaugeVisible = false,
+    enemyGaugeVisible = false,
+    trainerSlides = trainerSlides,
   }
-  self._messageSeq = self._messageSeq + 1
-  sendOut.pages = paginate(sendOut.text --[[@as string]])
-  sendOut.elapsed = 0
-  sendOut.started = false
-  self._queue[#self._queue + 1] = sendOut
+  self._trainerSlideTracks = trainerTracks
+  for _, battler in ipairs(self:battlers()) do
+    local shown = self:_shown(battler.combatant --[[@as integer]])
+    if shown ~= nil then
+      shown.visible = false
+      shown.hudVisible = false
+    end
+  end
+  if wild then
+    enqueue(self, { kind = "wait", duration = 122 })
+    if type(foeSpecies) == "string" then
+      enqueue(self, { kind = "sound", cue = cryCue(foeSpecies, foeForm, true), duration = 0 })
+    end
+    local wildFoe = foeRecord --[[@as table<string, unknown>]]
+    assert(type(wildFoe) == "table", "wild openings carry one foe")
+    assert(type(wildFoe.combatant) == "number", "wild openings carry one foe")
+    enqueueReveal(self, wildFoe.combatant)
+    enqueueEncounterMessage(self, true, foeName)
+  else
+    enqueue(self, { kind = "wait", duration = 96 })
+    enqueueOpeningPresentation(self, { playerGaugeVisible = true, enemyGaugeVisible = true })
+    enqueueEncounterMessage(self, false, foeName)
+    enqueueOpeningPresentation(self, { enemyGaugeVisible = false })
+    local trainerValue = firstTrainer(self)
+    assert(type(trainerValue) == "table", "trainer send-out carries its class and name")
+    local foesValue = view.foes
+    assert(type(foesValue) == "table", "trainer opening carries its lead foe")
+    local foes = foesValue --[[@as table<integer, table<string, unknown>>]]
+    local sentOutFoe = false
+    for _, foe in ipairs(foes) do
+      if foe.active ~= false then
+        enqueueSendOut(self, foe.combatant --[[@as integer]], nil)
+        enqueue(self, { kind = "wait", duration = 112 })
+        sentOutFoe = true
+      end
+    end
+    assert(sentOutFoe, "trainer openings send out an active foe")
+  end
+  if wild then
+    enqueue(self, { kind = "wait", duration = 96 })
+  else
+    enqueueOpeningPresentation(self, { playerGaugeVisible = false })
+  end
+  enqueueSendOut(self, own.combatant --[[@as integer]], nil)
+  if type(view.own) == "table" then
+    for _, partner in ipairs(view.own) do
+      if partner.active ~= false and partner.combatant ~= own.combatant then
+        enqueueSendOut(self, partner.combatant --[[@as integer]], nil)
+      end
+    end
+  end
+  enqueue(self, { kind = "wait", duration = 96 })
+  enqueueOpeningPresentation(self, {
+    playerTrainerVisible = false,
+    foeTrainerVisible = false,
+    playerGaugeVisible = wild,
+    enemyGaugeVisible = false,
+  })
   self._flowIntroDone = true
 end
 
@@ -1884,6 +2721,34 @@ local function cueReady(cue, isAvailable)
     return false
   end
   return true
+end
+
+---@param self BattleTimeline
+local function tickTrainerSlides(self)
+  local presentation = self._openingPresentation
+  if presentation == nil then
+    return
+  end
+  local slides = presentation.trainerSlides --[[@as table<integer, table<string, unknown>>]]
+  for index, track in ipairs(self._trainerSlideTracks) do
+    local slide = assert(slides[index], "trainer slide tracks stay aligned with their public states")
+    if slide.visible == true and slide.phase ~= "intro-settle" then
+      if track.elapsed < track.delay then
+        track.elapsed = track.elapsed + 1
+      else
+        local x = assert(type(slide.x) == "number" and slide.x, "trainer slides carry a source x position")
+        local nextX = x + track.direction * track.speed
+        if (track.direction < 0 and nextX <= track.targetX) or (track.direction > 0 and nextX >= track.targetX) then
+          nextX = track.targetX
+          slide.phase = "intro-settle"
+        else
+          slide.phase = "intro-slide"
+        end
+        slide.x = nextX
+        track.elapsed = track.elapsed + 1
+      end
+    end
+  end
 end
 
 ---@param self BattleTimeline
@@ -1967,8 +2832,54 @@ end
 ---@param cue table<string, unknown> cue consuming its first tick
 local function startCue(self, cue)
   cue.started = true
-  if cue.kind == "sound" then
+  if cue.kind == "opening-presentation" then
+    local changes = cue.changes --[[@as table<string, boolean>]]
+    local state = assert(self._openingPresentation, "opening stages follow an installed opening")
+    for key, value in pairs(changes) do
+      assert(type(state[key]) == "boolean", "opening stages update known visibility fields")
+      state[key] = value
+      if key == "playerTrainerVisible" or key == "foeTrainerVisible" then
+        local role = key == "playerTrainerVisible" and "player" or "foe"
+        local slides = state.trainerSlides --[[@as table<integer, table<string, unknown>>]]
+        for _, slide in ipairs(slides) do
+          if slide.role == role then
+            slide.visible = value
+          end
+        end
+      end
+    end
+  elseif cue.kind == "ball-throw" then
+    local state = assert(self._openingPresentation, "opening ball throws follow an installed opening")
+    state.ballThrow = {
+      selector = cue.selector,
+      x = cue.startX,
+      y = cue.startY,
+      frame = 0,
+      visible = true,
+    }
+  elseif cue.kind == "sound" then
     emitSound(self, cue.cue --[[@as table<string, unknown>]])
+  elseif cue.kind == "exp" then
+    emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.experience, { voiceKey = cue.soundKey }))
+  elseif cue.kind == "faint" then
+    local shown = self:_shown(cue.combatant --[[@as integer]])
+    if shown ~= nil then
+      shown.fainting = true
+      local appearance = self._faintAppearance and self._faintAppearance(shown) or nil
+      cue.sourceHeight = appearance and appearance.height or shown.height
+      cue.elevation = appearance and math.max(0, appearance.shadowHeight) or 0
+      if appearance ~= nil then
+        shown.shadowHeight = cue.elevation
+      end
+      shown.pictureVisible = cue.elevation == 0
+      shown.pictureWidth = 80
+      shown.pictureXOffset2 = 0
+      shown.pictureYOffset2 = 0
+      shown.pictureHeight = math.max(0, 80 - (type(cue.sourceHeight) == "number" and cue.sourceHeight or 0))
+      shown.pictureYOffset = 0
+      shown.hudVisible = true
+      shown.hudOffsetX = 0
+    end
   elseif cue.kind == "message" then
     cue.revealedCount = 0
     cue.delayCounter = 0
@@ -1977,16 +2888,10 @@ local function startCue(self, cue)
   elseif cue.kind == "hp" and cue.from == nil then
     local shown = self:_shown(cue.combatant --[[@as integer]])
     cue.from = (shown ~= nil and type(shown.hp) == "number") and shown.hp or cue.to
-  elseif cue.kind == "exp" and cue.startExp == nil then
-    local shown = self:_shown(cue.combatant --[[@as integer]])
-    cue.startExp = (shown ~= nil and type(shown.exp) == "number") and shown.exp or cue.targetExp
-    cue.startLevel = (shown ~= nil and type(shown.level) == "number") and shown.level or cue.targetLevel
-    local segments = 1
-    if type(cue.targetLevel) == "number" and type(cue.startLevel) == "number" and cue.targetLevel > cue.startLevel then
-      segments = cue.targetLevel - cue.startLevel
+    if cue.flicker == true and shown ~= nil then
+      shown.visible = not shown.visible
+      cue.flickerToggles = 1
     end
-    cue.segments = segments
-    cue.duration = BattleTimeline.EXP_TICKS_PER_SEGMENT * segments
   elseif cue.kind == "reveal" then
     self:_installReveal(cue.combatant --[[@as integer]])
   elseif cue.kind == "native-effect" then
@@ -2013,7 +2918,12 @@ function BattleTimeline:_installReveal(id)
     end
   end
   if record ~= nil then
-    self._battlers[id] = displayedOf(record --[[@as table<string, unknown>]])
+    local displayed = displayedOf(record --[[@as table<string, unknown>]])
+    local current = self._battlers[id]
+    if current ~= nil and type(current.hp) == "number" then
+      displayed.hp = current.hp
+    end
+    self._battlers[id] = displayed
     self._battlers[id].visible = false
     checkSlotClaims(self)
     local seen = false
@@ -2055,27 +2965,32 @@ local function tickMessage(self, cue)
   end
   local shown = cue.revealedCount --[[@as integer]]
   if shown < full then
-    -- Each eligible tick prints at most the pace budget of glyphs, then
-    -- waits out the blank-tick pause. A zero pause still prints only its
-    -- budget, never the whole page. A fast-forwarded reveal persists: an
-    -- accelerated page never collapses back into its paced run on the
-    -- next tick, so the following edge can turn the page instead of
-    -- accelerating again.
-    if
-      cue.delayCounter --[[@as integer]]
-      > 0
-    then
-      cue.delayCounter = cue.delayCounter --[[@as integer]] - 1
+    -- NitroMain runs the print-task queue twice per battle source tick.
+    -- Keep those printer updates inside the tick so reveal speed matches
+    -- retail while waits and animation cues remain on the source cadence.
+    local updates = 0
+    local printed = 0
+    while updates < 2 and shown < full do
+      updates = updates + 1
+      if
+        cue.delayCounter --[[@as integer]]
+        > 0
+      then
+        cue.delayCounter = cue.delayCounter --[[@as integer]] - 1
+      elseif printed < policy.glyphBudget then
+        local glyphCount = math.min(policy.glyphBudget - printed, full - shown)
+        local target = shown + glyphCount
+        cue.revealedCount = target
+        cue.delayCounter = policy.interGlyphDelay
+        shown = target
+        printed = printed + glyphCount
+        self._message = table.concat(glyphs, "", 1, target)
+        self._messageId = cue.id --[[@as integer]]
+      end
+    end
+    if shown < full then
       self._message = table.concat(glyphs, "", 1, shown)
       self._messageId = cue.id --[[@as integer]]
-      return false
-    end
-    local target = math.min(full, shown + policy.glyphBudget)
-    cue.revealedCount = target
-    cue.delayCounter = policy.interGlyphDelay
-    self._message = table.concat(glyphs, "", 1, target)
-    self._messageId = cue.id --[[@as integer]]
-    if target < full then
       return false
     end
   else
@@ -2114,17 +3029,78 @@ local function tickMessage(self, cue)
 end
 
 ---@param self BattleTimeline
----@param cue table<string, unknown> active cue under advancement
+---@param cue table<string, unknown> narration cue with concurrent health-box exit
 ---@return boolean finished
-local function tickCue(self, cue)
+local function tickHealthBoxExit(self, cue)
+  local id = cue.slideCombatant
+  if type(id) ~= "number" or cue.slideDone == true then
+    return true
+  end
+  local shown = self:_shown(id --[[@as integer]])
+  if shown == nil then
+    return true
+  end
+  local offset = (
+    shown.hudOffsetX --[[@as integer?]]
+    or 0
+  ) + (shown.side == 1 and 24 or -24)
+  shown.hudOffsetX = shown.side == 1 and math.min(160, offset) or math.max(-24, offset)
+  if (shown.side ~= 1 or shown.hudOffsetX == 160) and cue.slideStarted == true then
+    shown.hudVisible = false
+    cue.slideDone = true
+    return true
+  end
+  cue.slideStarted = true
+  return false
+end
+
+---@param self BattleTimeline
+---@param cue table<string, unknown> active cue under advancement
+---@param soundComplete (fun(cue: table<string, unknown>): boolean)? held sound cue completion probe
+---@return boolean finished
+local function tickCue(self, cue, soundComplete)
   if cue.kind == "native-effect" then
     -- Only the player occurrence's real completion releases the cue;
     -- every other phase holds without consuming invented timers.
     return pollNativeEffect(self, cue)
   elseif cue.kind == "message" then
-    return tickMessage(self, cue)
+    local slideDone = tickHealthBoxExit(self, cue)
+    local previousHold = cue.hold
+    local messageDone = tickMessage(self, cue)
+    if not slideDone then
+      cue.hold = previousHold
+    end
+    return slideDone and messageDone
   elseif cue.kind == "sound" then
+    local sound = cue.cue --[[@as table<string, unknown>?]]
+    if type(sound) == "table" and sound.waitForVoice == true and soundComplete ~= nil then
+      return soundComplete(sound) == true
+    end
     return true
+  elseif cue.kind == "stats-window" then
+    return cue.acknowledged == true
+  elseif cue.kind == "opening-presentation" then
+    return true
+  elseif cue.kind == "ball-throw" then
+    local ball =
+      assert(self._openingPresentation and self._openingPresentation.ballThrow, "active throws publish a ball sprite")
+    local elapsed = cue.elapsed --[[@as integer]]
+    local throwTicks = cue.throwTicks --[[@as integer]]
+    local progress = math.min(1, (elapsed - 1) / throwTicks)
+    local startX = cue.startX --[[@as number]]
+    local startY = cue.startY --[[@as number]]
+    local targetX = cue.targetX --[[@as number]]
+    local targetY = cue.targetY --[[@as number]]
+    local arcHeight = cue.arcHeight --[[@as number]]
+    ball.x = math.floor(startX + (targetX - startX) * progress + 0.5)
+    ball.y = math.floor(startY + (targetY - startY) * progress - math.sin(math.pi * progress) * arcHeight + 0.5)
+    if
+      elapsed >= cue.duration --[[@as integer]]
+    then
+      ball.visible = false
+      return true
+    end
+    return false
   elseif cue.kind == "wait" then
     local elapsed = cue.elapsed --[[@as integer]]
     local duration = cue.duration --[[@as integer]]
@@ -2144,11 +3120,56 @@ local function tickCue(self, cue)
     end
     if shown ~= nil then
       shown.hp = value
+      if cue.flicker == true then
+        local toggles = cue.flickerToggles --[[@as integer]]
+        if
+          toggles < 6
+          and cue.elapsed --[[@as integer]]
+            == toggles * 3 + 1
+        then
+          shown.visible = not shown.visible
+          cue.flickerToggles = toggles + 1
+        elseif
+          cue.elapsed --[[@as integer]]
+          >= 17
+        then
+          shown.visible = true
+        end
+      end
     end
-    return cue.elapsed --[[@as integer]] >= duration
+    return cue.elapsed --[[@as integer]] >= math.max(duration, cue.flicker == true and 17 or 0)
   elseif cue.kind == "hit" then
     return cue.elapsed --[[@as integer]] >= BattleTimeline.HIT_TICKS
-  elseif cue.kind == "faint" or cue.kind == "withdraw" then
+  elseif cue.kind == "faint" then
+    local shown = self:_shown(cue.combatant --[[@as integer]])
+    if shown == nil then
+      return true
+    end
+    if
+      cue.elevation --[[@as integer]]
+      > 0
+    then
+      cue.elevation = math.max(0, cue.elevation --[[@as integer]] - 8)
+      shown.shadowHeight = cue.elevation
+      if cue.elevation > 0 then
+        return false
+      end
+      shown.pictureVisible = true
+      cue.sinkElapsed = 0
+      return false
+    end
+    cue.sinkElapsed = (cue.sinkElapsed or 0) + 1
+    local initialPictureHeight = math.max(0, 80 - (type(cue.sourceHeight) == "number" and cue.sourceHeight or 0))
+    local pictureHeight = math.max(0, initialPictureHeight - cue.sinkElapsed * 8)
+    shown.pictureHeight = pictureHeight
+    shown.pictureYOffset = cue.sinkElapsed * 8
+    if pictureHeight == 0 then
+      shown.visible = false
+      shown.pictureVisible = false
+      return true
+    end
+    return false
+  elseif cue.kind == "withdraw" then
     if
       cue.elapsed --[[@as integer]]
       >= BattleTimeline.VANISH_TICKS
@@ -2174,51 +3195,50 @@ local function tickCue(self, cue)
     return false
   elseif cue.kind == "exp" then
     local shown = self:_shown(cue.combatant --[[@as integer]])
-    local duration = cue.duration or BattleTimeline.EXP_TICKS_PER_SEGMENT
-    local segments = cue.segments or 1
+    local duration = cue.duration --[[@as integer]]
     local progress = math.min(1, cue.elapsed --[[@as integer]] / math.max(1, duration --[[@as integer]]))
     local startExp = cue.startExp --[[@as integer]]
     local targetExp = cue.targetExp --[[@as integer]]
-    local startLevel = cue.startLevel --[[@as integer]]
     local targetLevel = cue.targetLevel --[[@as integer]]
     if type(startExp) ~= "number" or type(targetExp) ~= "number" then
       return cue.elapsed --[[@as integer]] >= duration
     end
-    -- Each represented level segment animates its own share and resets
-    -- at its boundary; the shares are display interpolation while the
-    -- final facts stay exact.
-    local segmentFloat = math.min(segments, progress * segments)
-    local whole = math.floor(segmentFloat)
-    local fraction = segmentFloat - whole
-    local share = (targetExp - startExp) / math.max(1, segments)
-    local value = startExp + whole * share + fraction * share
+    local value = startExp + (targetExp - startExp) * progress
     if progress >= 1 then
       value = targetExp
     end
     if shown ~= nil then
       shown.exp = math.floor(value + 0.5)
-      if type(startLevel) == "number" and type(targetLevel) == "number" then
-        shown.level = math.min(targetLevel, startLevel + whole + (fraction > 0 and 1 or 0))
-        if progress >= 1 then
-          shown.level = targetLevel
-        end
+      if progress >= 1 and type(targetLevel) == "number" then
+        shown.level = targetLevel
       end
     end
-    return progress >= 1
+    if
+      cue.elapsed --[[@as integer]]
+      >= cue.soundStopTicks --[[@as integer]]
+    then
+      emitSound(self, { kind = "stop-effect", voiceKey = cue.soundKey })
+      if cue.levelUp ~= nil then
+        emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.experienceMax))
+      end
+      return true
+    end
+    return false
   end
   return true
 end
 
 -- Advances the player by accepted presentation seconds. Only whole
--- sixtieth ticks run cues, one cue at a time; a cue needing an
+-- source ticks run cues, one cue at a time; a cue needing an
 -- unavailable image holds the clock without advancing.
 ---@param dt number accepted presentation seconds
 ---@param isAvailable (fun(key: string): boolean)? image availability probe, all available when absent
-function BattleTimeline:update(dt, isAvailable)
+---@param soundComplete (fun(cue: table<string, unknown>): boolean)? completion probe for held sound cues
+function BattleTimeline:update(dt, isAvailable, soundComplete)
   assert(type(dt) == "number" and dt == dt and dt >= 0, "the cue player advances on accepted seconds")
   self._accum = self._accum + dt
-  local step = 1 / BattleTimeline.TICKS_PER_SECOND
-  while self._accum >= step do
+  local step = SourceTick.DT
+  while self._accum + SOURCE_TICK_EPSILON >= step do
     if self._active == nil then
       local next = self._queue[1]
       if next == nil then
@@ -2229,13 +3249,25 @@ function BattleTimeline:update(dt, isAvailable)
         self._accum = 0
         break
       end
+      tickTrainerSlides(self)
       table.remove(self._queue, 1)
       self._active = next
       startCue(self, next)
-      if next.kind == "sound" then
+      local nextSound = next.kind == "sound" and next.cue or nil
+      if type(nextSound) == "table" and nextSound.waitForVoice == true and soundComplete ~= nil then
+        self._accum = self._accum - step
+        if math.abs(self._accum) < SOURCE_TICK_EPSILON then
+          self._accum = 0
+        end
+        next.elapsed = 1
+        break
+      elseif next.kind == "sound" or next.kind == "opening-presentation" then
         self._active = nil
       else
         self._accum = self._accum - step
+        if math.abs(self._accum) < SOURCE_TICK_EPSILON then
+          self._accum = 0
+        end
         next.elapsed = (next.elapsed or 0) + 1
         if tickCue(self, next) then
           self._active = nil
@@ -2247,12 +3279,29 @@ function BattleTimeline:update(dt, isAvailable)
         self._accum = 0
         break
       end
-      self._accum = self._accum - step
-      local elapsed = current.elapsed
-      assert(type(elapsed) == "number", "active cues carry their elapsed ticks")
-      current.elapsed = elapsed + 1
-      if tickCue(self, current) then
+      tickTrainerSlides(self)
+      local currentSound = current.kind == "sound" and current.cue or nil
+      if type(currentSound) == "table" and currentSound.waitForVoice == true then
+        if soundComplete ~= nil and soundComplete(currentSound) ~= true then
+          self._accum = 0
+          break
+        end
+        self._accum = self._accum - step
+        if math.abs(self._accum) < SOURCE_TICK_EPSILON then
+          self._accum = 0
+        end
         self._active = nil
+      else
+        self._accum = self._accum - step
+        if math.abs(self._accum) < SOURCE_TICK_EPSILON then
+          self._accum = 0
+        end
+        local elapsed = current.elapsed
+        assert(type(elapsed) == "number", "active cues carry their elapsed ticks")
+        current.elapsed = elapsed + 1
+        if tickCue(self, current, soundComplete) then
+          self._active = nil
+        end
       end
     end
   end
@@ -2271,13 +3320,24 @@ function BattleTimeline:ack()
     -- An edge arriving before the clock starts its narration still
     -- belongs to that page when the page is already queued first.
     local head = self._queue[1]
-    if head == nil or head.kind ~= "message" then
+    if head ~= nil and head.kind == "stats-window" then
+      table.remove(self._queue, 1)
+      self._active = head
+      current = head
+    elseif head == nil or head.kind ~= "message" then
       return false, false
+    else
+      table.remove(self._queue, 1)
+      self._active = head
+      startCue(self, head)
+      current = head
     end
-    table.remove(self._queue, 1)
-    self._active = head
-    startCue(self, head)
-    current = head
+  end
+  if current.kind == "stats-window" then
+    current.acknowledged = true
+    local finalPage = current.page == "total"
+    self._active = nil
+    return true, finalPage
   end
   if current.kind ~= "message" then
     return false, false
@@ -2320,11 +3380,12 @@ function BattleTimeline:ack()
     current.acknowledged = true
     return true, true
   end
-  -- An edge on a fully revealed non-acknowledged message with an
-  -- explicit hold consumes without touching the timer: it neither
-  -- shortens the wait to the default nor restarts it. Ordinary
-  -- no-override narration keeps its exact previous fast-forward.
-  if current.holdTicks == nil then
+  -- Explicit source waits usually ignore dialogue input, but a native
+  -- WaitButtonABTime-style hold ends early on acknowledgement.
+  if current.ackSkipsHold == true and (current.slideCombatant == nil or current.slideDone == true) then
+    current.hold = current.holdTicks --[[@as integer]]
+  elseif current.holdTicks == nil then
+    -- Ordinary narration keeps its existing fast-forward behavior.
     current.hold = BattleTimeline.MESSAGE_HOLD_TICKS
   end
   return true, false
@@ -2352,6 +3413,11 @@ function BattleTimeline:battlers()
   return out
 end
 
+---@return table<string, boolean>? detached visibility facts for the current intro stage
+function BattleTimeline:openingPresentation()
+  return self._openingPresentation ~= nil and copyValue(self._openingPresentation) or nil
+end
+
 ---@return string currently displayed narration page, possibly empty
 function BattleTimeline:message()
   return self._message
@@ -2360,6 +3426,20 @@ end
 ---@return integer stable identity of the displayed narration
 function BattleTimeline:messageId()
   return self._messageId
+end
+
+---@return boolean true while an event narration cue owns the message line
+function BattleTimeline:messageActive()
+  return self._active ~= nil and self._active.kind == "message"
+end
+
+---@return table<string, unknown>? detached active level-up page
+function BattleTimeline:levelUpStats()
+  local current = self._active
+  if current == nil or current.kind ~= "stats-window" then
+    return nil
+  end
+  return { level = current.level, page = current.page, rows = copyValue(current.rows) }
 end
 
 ---@param id integer combatant identity under recoil

@@ -227,7 +227,7 @@ function T.condition_only_change_publishes_without_touching_health()
   local launch = wildLaunch("launch-writeback-condition-only")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { enters = 0, packets = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
@@ -421,7 +421,7 @@ function T.pp_only_change_publishes_without_leaking_volatile_stages()
   local launch = wildLaunch("launch-writeback-pp-only")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { enters = 0, packets = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
@@ -492,7 +492,7 @@ function T.untouched_battle_publishes_no_writeback()
   local launch = wildLaunch("launch-writeback-untouched")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { enters = 0, packets = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
@@ -523,7 +523,7 @@ function T.delivery_packets_are_detached_at_every_nested_record()
   local launch = wildLaunch("launch-writeback-detached")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { enters = 0, packets = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
@@ -641,7 +641,7 @@ function T.effect_less_serving_refuses_at_execution_without_consuming()
   local launch = wildLaunch("launch-writeback-refused-serving")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { enters = 0, packets = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
@@ -715,7 +715,7 @@ function T.withheld_leave_holds_returning_until_released()
   local launch = wildLaunch("launch-writeback-leave")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local record = { release = false, leaves = 0, disposed = 0 }
   local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
@@ -789,7 +789,7 @@ function T.product_boundary_filters_private_state_from_packets()
   local launch = wildLaunch("launch-writeback-filtering")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { enters = 0, packets = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
@@ -860,7 +860,7 @@ function T.progression_change_publishes_beside_untouched_health()
   local launch = wildLaunch("launch-writeback-progression")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } }
+    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
   )
   local portRecord = { enters = 0, packets = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)

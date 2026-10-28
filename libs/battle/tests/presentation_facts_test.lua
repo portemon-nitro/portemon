@@ -187,9 +187,9 @@ function T.stale_scopes_never_lend_their_user()
   Assert.equal(event.move.executed, "EMBER", "the execution follows the ordering cause")
 end
 
--- Multi-hit occurrences receive gapless turn-global ordinals in source
--- order, while the payload keeps its native target indexing untouched.
-function T.multi_hit_occurrences_take_gapless_turn_ordinals()
+-- Sequence ordinals are local to their move, while the payload preserves
+-- the native target hit index and the actual sequence total.
+function T.multi_hit_occurrences_keep_sequence_local_ordinals_and_totals()
   local state = twoUpState()
   local scope = {
     actor = { combatant = 1, activation = 7 },
@@ -199,12 +199,29 @@ function T.multi_hit_occurrences_take_gapless_turn_ordinals()
   }
   local ordinals = {}
   for index = 1, 3 do
-    local event = bareEvent("struck", { key = "BULLET_SEED" }, { target = 2, hitIndex = 1, damage = 1 }, 20 + index)
+    local event = bareEvent("struck", { key = "BULLET_SEED" }, {
+      target = 2,
+      hitIndex = 1,
+      damage = 1,
+      sequenceHitIndex = index,
+      sequenceHitTotal = 3,
+    }, 20 + index)
     PresentationFacts.decorate(state, event, scope)
     ordinals[#ordinals + 1] = event.move.hitOrdinal
+    Assert.equal(event.move.hitCount, 3, "each hit names the full local sequence length")
     Assert.equal(event.payload.hitIndex, 1, "the native target index stays untouched")
   end
   Assert.deepEqual(ordinals, { 1, 2, 3 }, "occurrences increase without gaps in source order")
+
+  local nextSequence = bareEvent(
+    "struck",
+    { key = "BULLET_SEED" },
+    { target = 2, hitIndex = 1, damage = 1, sequenceHitIndex = 1, sequenceHitTotal = 2 },
+    24
+  )
+  PresentationFacts.decorate(state, nextSequence, scope)
+  Assert.equal(nextSequence.move.hitOrdinal, 1, "the next action starts its local ordinal again")
+  Assert.equal(nextSequence.move.hitCount, 2, "the next action owns its own total")
 end
 
 -- Replacements name their arrival as the actor and their departure as

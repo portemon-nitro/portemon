@@ -911,7 +911,7 @@ function BattleCompactInterface.mapInput(event, view, plan)
       return nil
     end
     local control = region ~= nil and { scope = region.scope, id = region.id } or nil
-    return { type = gesture, control = control, pointerId = event.pointerId }
+    return { type = gesture, control = control, pointerId = event.pointerId, x = event.x, y = event.y }
   end
   if eventType == "confirm" or eventType == "cancel" then
     return { type = eventType }
@@ -1403,17 +1403,38 @@ local function drawHudSide(graphics, assets, text, artKey, battler, side, sectio
   if type(side) ~= "table" then
     return
   end
-  if battler == nil or battler.visible == false then
+  if battler == nil or battler.hudVisible == false or (battler.visible == false and battler.hudVisible ~= true) then
     return
   end
   local r, g, b, a = graphics.getColor()
   graphics.setColor(1, 1, 1, 1)
   local art = assets:drawable(artKey)
   local printerReady = false
+  local animation = assert(section.animation, "compact HUD section carries its source animation")
+  local frame = assert(animation.frames[1], "compact HUD animation carries its opening frame")
+  local cell = assert(section.cells[frame.cell + 1], "compact HUD animation selects its opening cell")
+  local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+  for _, object in ipairs(cell.objs) do
+    if not object.disabled then
+      left = math.min(left, object.x)
+      top = math.min(top, object.y)
+      right = math.max(right, object.x + object.width)
+      bottom = math.max(bottom, object.y + object.height)
+    end
+  end
+  local scale = math.min(side.width / (right - left), side.height / (bottom - top))
+  local offsetX = (type(battler.hudOffsetX) == "number" and battler.hudOffsetX or 0) * scale
+  local offsetY = (type(battler.hudOffsetY) == "number" and battler.hudOffsetY or 0) * scale
   if art ~= nil then
     local source = art.image or (art.lease and art.lease.image) or art
     printerReady = type(source.getWidth) == "function"
-    drawCompactHudCell(graphics, text, assets, art, section, side, battler, view, artKey, sideType, wildEnemy)
+    local shiftedSide = {
+      x = side.x + offsetX,
+      y = side.y + offsetY,
+      width = side.width,
+      height = side.height,
+    }
+    drawCompactHudCell(graphics, text, assets, art, section, shiftedSide, battler, view, artKey, sideType, wildEnemy)
   end
   if type(side.regions) == "table" then
     for _, region in ipairs(side.regions) do
@@ -1426,7 +1447,7 @@ local function drawHudSide(graphics, assets, text, artKey, battler, side, sectio
         -- neighboring marks: the paired doubles panels fit the same
         -- way, so an overlong name truncates instead of painting over
         -- the gender and caught facts.
-        text.drawText(fitText(text, region.text, region.width), region.x, region.y)
+        text.drawText(fitText(text, region.text, region.width), region.x + offsetX, region.y + offsetY)
       end
     end
   end
@@ -1435,19 +1456,48 @@ end
 
 ---@param resources table<string, unknown> borrowed presentation services
 ---@param box table<string, unknown> one live, position-matched compact doubles panel
-local function drawCompactDoublesPanel(resources, box)
+---@param battler table<string, unknown> displayed battler supplying the slide pose
+local function drawCompactDoublesPanel(resources, box, battler)
   local graphics = assert(resources.graphics, "the compact render borrows its host graphics")
   local text = assert(resources.text, "the compact render borrows its text services")
   local windows = assert(resources.windows, "the compact render borrows its window services")
   local background = backgroundOf(resources)
-  LogicalSurface.clip(graphics, box, function()
-    fillBox(graphics, background, box)
-    for _, region in ipairs(box.regions) do
-      if not (box.side == 2 and region.id == "hp") and type(region.text) == "string" and region.text ~= "" then
+  local scale = math.min(box.width / 128, box.height / 64)
+  local offsetX = (type(battler.hudOffsetX) == "number" and battler.hudOffsetX or 0) * scale
+  local offsetY = (type(battler.hudOffsetY) == "number" and battler.hudOffsetY or 0) * scale
+  local shifted = {}
+  for key, value in pairs(box) do
+    shifted[key] = value
+  end
+  shifted.x = box.x + offsetX
+  shifted.y = box.y + offsetY
+  shifted.regions = {}
+  for index, region in ipairs(box.regions) do
+    shifted.regions[index] = {
+      id = region.id,
+      x = region.x + offsetX,
+      y = region.y + offsetY,
+      width = region.width,
+      height = region.height,
+      text = region.text,
+    }
+  end
+  local sourceBar = box.bar
+  shifted.bar = {
+    x = sourceBar.x + offsetX,
+    y = sourceBar.y + offsetY,
+    width = sourceBar.width,
+    height = sourceBar.height,
+    fraction = sourceBar.fraction,
+  }
+  LogicalSurface.clip(graphics, shifted, function()
+    fillBox(graphics, background, shifted)
+    for _, region in ipairs(shifted.regions) do
+      if not (shifted.side == 2 and region.id == "hp") and type(region.text) == "string" and region.text ~= "" then
         drawLabel(text, fitText(text, region.text, region.width), region.x, region.y)
       end
     end
-    local bar = box.bar
+    local bar = shifted.bar
     local fraction = assert(bar.fraction, "a compact doubles bar carries its own fraction")
     local r, g, b, a = graphics.getColor()
     if fraction > 0.5 then
@@ -1459,7 +1509,7 @@ local function drawCompactDoublesPanel(resources, box)
     end
     graphics.rectangle("fill", bar.x, bar.y, bar.width, bar.height)
     graphics.setColor(r, g, b, a)
-    windows.drawApplicationFrame(contentOf(box), resources.frameKey)
+    windows.drawApplicationFrame(contentOf(shifted), resources.frameKey)
   end)
 end
 
@@ -1489,8 +1539,9 @@ local function drawCompactHud(resources, view, content)
     -- same resolved bounds drive paint; hidden slots draw nothing.
     local live = livePositions(BattleViewRoster.liveSides(view))
     for _, box in ipairs(boxes) do
-      if live[box.position] ~= nil then
-        drawCompactDoublesPanel(resources, box)
+      local battler = live[box.position]
+      if battler ~= nil and battler.hudVisible ~= false then
+        drawCompactDoublesPanel(resources, box, battler)
       end
     end
     return

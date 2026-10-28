@@ -3542,6 +3542,7 @@ local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
         foreign = foreign,
       }),
       evAward = RewardEffort.calculate(evYield, effortModifiers),
+      boosted = traded,
     }
   end
   return {
@@ -4260,7 +4261,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           view:cureStatus(target, status, cause)
         end
         local healed = view:heal(target, entrant.maxHp --[[@as integer]], cause)
-        view:emit("healed", cause, { target = target, restored = healed.after - healed.before })
+        view:emit("healed", cause, { target = target, restored = healed.after - healed.before, noBlink = true })
         if mode == "lunar" then
           local mon = BattleState.combatant(state, target).mon --[[@as table<string, unknown>]]
           local slots = mon.moves --[[@as table<integer, table<string, unknown>>]]
@@ -4404,19 +4405,21 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           end
         end
       end
-      local cause = { key = "BIDE" }
+      local cause = { key = "BIDE", combatant = actor.combatant, activation = actor.activation }
       executor:_observeTrainerMove(state, actor.combatant --[[@as integer]], "BIDE")
       StrikeFacts.recordHistory(state, actor, {
         requestedMove = "BIDE",
         executingMove = "BIDE",
         locals = { moveFacts = moveFacts },
       }, { { combatant = target or actor.combatant } })
-      context:emit("move-used", cause, { user = actor.combatant, targets = 1 })
+      local release = context:emit("move-used", cause, { user = actor.combatant, targets = 1, phase = "release" })
+      release.actionId = ordinal
       if target ~= nil then
         local outcome = context:damage(target --[[@as integer]], storedDamage * 2, cause)
         local dealt = outcome.before - outcome.after
         context:noteDamageTaken(target --[[@as integer]], actor.combatant --[[@as integer]], "physical", dealt)
-        context:emit("struck", cause, { target = target, hitIndex = 1, damage = dealt })
+        local strike = context:emit("struck", cause, { target = target, hitIndex = 1, damage = dealt })
+        strike.actionId = ordinal
       end
       context:removeBattleEffect(actor.combatant --[[@as integer]], "bide")
       return
@@ -4751,6 +4754,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         break
       end
     end
+    if type(node) == "table" and node.result == "failed" then
+      context:emit("move-failed", { kind = "move", key = moveName, combatant = executionActorId }, {
+        user = executionActorId,
+        target = targetIds[1],
+        reason = "failed",
+      })
+    end
     -- Scattered pay day coins total into the battle payout through the
     -- move outcome; the committer scales and caps the scatter.
     if type(node) == "table" and type(node.payday) == "number" then
@@ -5041,16 +5051,24 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- outright while suppressed holdings fall back to the odds roll, so
     -- neither holds the runner.
     local assured = false
+    local runAwaySource = nil
+    local itemSource = nil
     local Bridge = require("libs.battle.src.gen4.NativePassiveBridge")
     local flight = Bridge.wrap(state):invoke("beforeAction", actor.combatant --[[@as integer]], {
       flee = true,
       actionCheck = true,
     })
     for _, event in ipairs(flight.events) do
-      if
-        (event --[[@as table<string, unknown>]]).escape == "assured"
-      then
+      local passive = event --[[@as table<string, unknown>]]
+      if passive.escape == "assured" then
         assured = true
+        local key = passive.key
+        assert(type(key) == "string", "assured flight identifies its passive source")
+        if key == "RUN_AWAY" then
+          runAwaySource = { kind = "ability", key = key }
+        else
+          itemSource = { kind = "item", key = key }
+        end
       end
     end
     if assured then
@@ -5065,13 +5083,18 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       stream = state.rng,
     })
     if result.escaped == true then
-      local fled = context:emit("flee", cause, {
+      local payload = {
         combatant = actor.combatant,
         activation = actor.activation,
         escaped = true,
         reason = result.reason,
         attempts = result.attempts,
-      })
+      } --[[@as table<string, unknown>]]
+      -- BattleTryRun checks the effective flee-item holding before the
+      -- Run Away ability. Preserve that exact source precedence for the
+      -- successful result message selected by the presentation owner.
+      payload.escapeSource = itemSource or runAwaySource
+      local fled = context:emit("flee", cause, payload)
       fled.actionId = ordinal
       endBattleEarly(state, { kind = "escaped", rounds = state.round })
       return
@@ -5250,6 +5273,20 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     end
   end
 
+  local NO_BLINK_RESIDUAL_TICKS = {
+    BAD_DREAMS = true,
+    bind = true,
+    burn = true,
+    curse = true,
+    leechseed = true,
+    ["liquid-ooze"] = true,
+    nightmare = true,
+    poison = true,
+    spikes = true,
+    stealthrock = true,
+    toxic = true,
+  } ---@type table<string, boolean>
+
   local function applyResiduals()
     local state = executor:_live()
     local bag = liveEffectBag(state)
@@ -5389,16 +5426,26 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           context:emit("healed", { kind = "residual", key = record.key }, {
             target = record.target,
             restored = record.restored,
+            noBlink = true,
           })
         elseif record.origin == "innate" then
           local payload = copyValue(record) --[[@as table<string, unknown>]]
           payload.origin = nil
+          local key = record.key
+          if
+            (record.kind == "tick" and type(key) == "string" and NO_BLINK_RESIDUAL_TICKS[key] == true)
+            or (record.kind == "hazard" and record.key == "spikes")
+          then
+            payload.noBlink = true
+          end
           context:emit(record.kind --[[@as string]], { kind = "residual", key = record.key }, payload)
         elseif record.origin == "condition" then
+          local noBlink = type(record.key) == "string" and NO_BLINK_RESIDUAL_TICKS[record.key] == true
           context:emit("tick", { kind = "residual", key = record.key }, {
             combatant = record.combatant,
             key = record.key,
             amount = record.amount,
+            noBlink = noBlink and true or nil,
           })
         else
           local cause = { kind = record.kind }
@@ -5421,6 +5468,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           end
           local payload = copyValue(record) --[[@as table<string, unknown>]]
           payload.cause = nil
+          if record.kind == "tick" and type(record.key) == "string" and NO_BLINK_RESIDUAL_TICKS[record.key] == true then
+            payload.noBlink = true
+          end
           context:emit(record.kind --[[@as string]], cause, payload)
         end
       end

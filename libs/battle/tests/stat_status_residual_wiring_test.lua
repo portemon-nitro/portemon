@@ -1183,7 +1183,15 @@ function T.fly_spends_pp_while_charging_and_strikes_on_its_next_action()
   )
   Assert.equal(firstTurn.status, "waiting", "the charge turn settles")
   local firstStrikes = strikeKeys(firstEvents)
-  Assert.equal(#firstStrikes, 0, "Fly's charge turn avoids ordinary incoming attacks")
+  Assert.deepEqual(firstStrikes, { "TACKLE" }, "Fly's charge turn records the ordinary attack as a miss")
+  local incoming = nil
+  for _, event in ipairs(firstEvents) do
+    if event.cause.key == "TACKLE" then
+      incoming = event
+    end
+  end
+  Assert.notNil(incoming, "the incoming Tackle records its charge-turn result")
+  Assert.equal(incoming.kind, "missed", "the ordinary attack fails against Fly's semi-invulnerability")
   Assert.equal(
     combatantOf(session:capture(), 13).hp,
     flyer.mon.condition.currentHp,

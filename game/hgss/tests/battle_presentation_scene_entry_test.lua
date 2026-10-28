@@ -120,7 +120,7 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   local CacheFs = require("libs.storage.src.CacheFs")
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
   local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
-  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
   local versionId = ready[1]
   local cacheFs = CacheFs.forVersion(versionId)

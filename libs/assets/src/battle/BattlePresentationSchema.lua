@@ -10,7 +10,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattlePresentationSchema
 local BattlePresentationSchema = {}
 
-BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v5"
+BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v7"
 BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v2"
 
 local fail = SchemaCheck.fail
@@ -2689,6 +2689,8 @@ local function checkManifestHeader(manifest, context)
     battlefield = true,
     hud = true,
     pictures = true,
+    trainerPictures = true,
+    battleBalls = true,
     menus = true,
     messages = true,
     transitions = true,
@@ -3171,6 +3173,74 @@ local function checkPictures(manifest, context)
   checkPictureShadow(pictures.shadow, manifest.menus.images, context)
 end
 
+local function checkTrainerPictures(manifest, context)
+  local section = manifest.trainerPictures
+  SchemaCheck.checkRecord(section, { entries = true }, context, CODE_MANIFEST, "manifest trainerPictures")
+  SchemaCheck.checkRecord(section.entries, nil, context, CODE_MANIFEST, "manifest trainerPictures.entries")
+  if next(section.entries) == nil then
+    fail(CODE_MANIFEST, "manifest trainerPictures.entries must inventory source trainer art", context)
+  end
+  for selector, record in pairs(section.entries) do
+    local validFront = type(selector) == "string" and selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil
+    local validBack = selector == "back:PKMN_TRAINER_ETHAN" or selector == "back:PKMN_TRAINER_LYRA"
+    if not validFront and not validBack then
+      fail(CODE_MANIFEST, "manifest trainer picture selector is not semantic", context)
+    end
+    local field = "manifest trainerPictures.entries[" .. selector .. "]"
+    SchemaCheck.checkRecord(
+      record,
+      { drawableKey = true, image = true, width = true, height = true },
+      context,
+      CODE_MANIFEST,
+      field
+    )
+    if record.drawableKey ~= "trainer:" .. selector then
+      fail(CODE_MANIFEST, field .. ".drawableKey must match its role selector", context)
+    end
+    checkImagePath(record.image, context, CODE_MANIFEST, field .. ".image")
+    checkInt(record.width, 1, 128, context, CODE_MANIFEST, field .. ".width")
+    checkInt(record.height, 1, 128, context, CODE_MANIFEST, field .. ".height")
+    checkImageRef(manifest.menus.images, record.image, context, field .. ".image")
+  end
+end
+
+local function checkBattleBalls(manifest, context)
+  local section = manifest.battleBalls
+  SchemaCheck.checkRecord(section, { entries = true }, context, CODE_MANIFEST, "manifest battleBalls")
+  SchemaCheck.checkRecord(section.entries, nil, context, CODE_MANIFEST, "manifest battleBalls.entries")
+  if next(section.entries) == nil then
+    fail(CODE_MANIFEST, "manifest battleBalls.entries must inventory source ball art", context)
+  end
+  for selector, record in pairs(section.entries) do
+    if type(selector) ~= "string" or selector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
+      fail(CODE_MANIFEST, "manifest battle ball selector is not semantic", context)
+    end
+    local field = "manifest battleBalls.entries[" .. selector .. "]"
+    SchemaCheck.checkRecord(record, { frames = true }, context, CODE_MANIFEST, field)
+    if not Validate.isArray(record.frames) or #record.frames == 0 then
+      fail(CODE_MANIFEST, field .. ".frames must carry ordered animation frames", context)
+    end
+    for frameIndex, frame in ipairs(record.frames) do
+      local frameField = field .. ".frames[" .. frameIndex .. "]"
+      SchemaCheck.checkRecord(
+        frame,
+        { drawableKey = true, image = true, width = true, height = true },
+        context,
+        CODE_MANIFEST,
+        frameField
+      )
+      local itemKey = selector:sub(6)
+      if frame.drawableKey ~= "battle-ball:" .. itemKey .. ":" .. (frameIndex - 1) then
+        fail(CODE_MANIFEST, frameField .. ".drawableKey must match its ordered animation frame", context)
+      end
+      checkImagePath(frame.image, context, CODE_MANIFEST, frameField .. ".image")
+      checkInt(frame.width, 1, 128, context, CODE_MANIFEST, frameField .. ".width")
+      checkInt(frame.height, 1, 128, context, CODE_MANIFEST, frameField .. ".height")
+      checkImageRef(manifest.menus.images, frame.image, context, frameField .. ".image")
+    end
+  end
+end
+
 local function checkTagSchemas(tagSchemas, context)
   checkCatalogTable(tagSchemas, context, CODE_MANIFEST, "manifest messages.tagSchemas")
   for tag, slots in pairs(tagSchemas) do
@@ -3391,6 +3461,8 @@ function BattlePresentationSchema.assertManifest(manifest)
   checkHud(manifest, context)
   checkScreenImageRefs(manifest, context)
   checkPictures(manifest, context)
+  checkTrainerPictures(manifest, context)
+  checkBattleBalls(manifest, context)
   checkMessages(manifest, context)
   checkTransitions(manifest, context)
   checkAudioRoles(manifest.audioRoles, context, CODE_MANIFEST, "manifest audioRoles")
@@ -3500,7 +3572,13 @@ end
 -- duplicated demands never validate.
 function BattlePresentationSchema.assertDemand(demand)
   local context = {}
-  SchemaCheck.checkRecord(demand, { scenes = true, pages = true, audio = true }, context, CODE_DEMAND, "demand")
+  SchemaCheck.checkRecord(
+    demand,
+    { scenes = true, pages = true, audio = true, trainerPictures = true, battleBalls = true, iconKeys = true },
+    context,
+    CODE_DEMAND,
+    "demand"
+  )
   checkStringList(demand.scenes, context, CODE_DEMAND, "demand scenes", false)
   for _, key in ipairs(demand.scenes) do
     local background, terrain, time = key:match("^([^/]+)/([^/]+)/([^/]+)$")
@@ -3509,6 +3587,21 @@ function BattlePresentationSchema.assertDemand(demand)
     end
   end
   checkStringList(demand.pages, context, CODE_DEMAND, "demand pages", true)
+  checkStringList(demand.trainerPictures, context, CODE_DEMAND, "demand trainerPictures", true)
+  for _, selector in ipairs(demand.trainerPictures) do
+    local validFront = selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil
+    local validBack = selector == "back:PKMN_TRAINER_ETHAN" or selector == "back:PKMN_TRAINER_LYRA"
+    if not validFront and not validBack then
+      fail(CODE_DEMAND, "demand trainer picture selector is not semantic: " .. selector, context)
+    end
+  end
+  checkStringList(demand.battleBalls, context, CODE_DEMAND, "demand battleBalls", true)
+  for _, selector in ipairs(demand.battleBalls) do
+    if selector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
+      fail(CODE_DEMAND, "demand battle ball selector is not semantic", context)
+    end
+  end
+  checkStringList(demand.iconKeys, context, CODE_DEMAND, "demand iconKeys", true)
   SchemaCheck.checkRecord(
     demand.audio,
     { roles = true, banks = true, cries = true },

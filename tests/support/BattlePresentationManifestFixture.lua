@@ -39,6 +39,31 @@ local function menuLabel(text)
   return { tokens = tokens }
 end
 
+---@param parts (string|false)[] synthetic glyph chunks and substitution slots
+---@return table source-shaped token record for message-resolver consumers
+local function messageRecord(parts)
+  local tokens = {}
+  for _, part in ipairs(parts) do
+    if part == false then
+      tokens[#tokens + 1] = { kind = "substitution" }
+    else
+      for index = 1, #part do
+        local character = part:sub(index, index)
+        tokens[#tokens + 1] = { kind = "glyph", code = character:byte(), text = character }
+      end
+    end
+  end
+  tokens[#tokens + 1] = { kind = "eos" }
+  return { tokens = tokens }
+end
+
+---@return table source-shaped command prompt record with its yes/no marker
+local function commandPromptRecord()
+  local record = messageRecord({ "What will ", false, " do?" })
+  table.insert(record.tokens, #record.tokens, { kind = "focus_indicator", control = 0x0200, args = { 0 } })
+  return record
+end
+
 ---@return table sprite descriptor with one cell and one frame
 local function spriteSection(image)
   return {
@@ -202,7 +227,7 @@ local function manifest()
     end
   end
   local old = {
-    schema = "g4-battle-presentation-v5",
+    schema = "g4-battle-presentation-v7",
     version = { id = "soulsilver", language = "en" },
     scenes = {
       { key = "general/grass/day", background = "general", terrain = "grass", time = "day" },
@@ -224,6 +249,7 @@ local function manifest()
       ["assets/generated/battle/gauges-0-chars.png"] = { width = 128, height = 8 },
       ["assets/generated/battle/gauges-1-chars.png"] = { width = 512, height = 8 },
       ["assets/generated/battle/pokepic-shadow.png"] = { width = 64, height = 64 },
+      ["assets/generated/battle/battle-ball-POKE_BALL-0.png"] = { width = 16, height = 16 },
     },
     command = menuSection(),
     moves = menuSection(),
@@ -458,6 +484,9 @@ local function manifest()
       },
     },
   }
+  old.images["assets/generated/battle/trainer-front-YOUNGSTER.png"] = { width = 80, height = 80 }
+  old.images["assets/generated/battle/trainer-front-LEADER_FALKNER.png"] = { width = 80, height = 80 }
+  old.images["assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png"] = { width = 80, height = 80 }
   return {
     schema = old.schema,
     version = old.version,
@@ -574,6 +603,42 @@ local function manifest()
           { size = 1, x = 0, y = 16, width = 64, height = 16 },
           { size = 2, x = 0, y = 32, width = 64, height = 16 },
           { size = 3, x = 0, y = 48, width = 64, height = 16 },
+        },
+      },
+    },
+    trainerPictures = {
+      entries = {
+        ["front:YOUNGSTER"] = {
+          drawableKey = "trainer:front:YOUNGSTER",
+          image = "assets/generated/battle/trainer-front-YOUNGSTER.png",
+          width = 80,
+          height = 80,
+        },
+        ["front:LEADER_FALKNER"] = {
+          drawableKey = "trainer:front:LEADER_FALKNER",
+          image = "assets/generated/battle/trainer-front-LEADER_FALKNER.png",
+          width = 80,
+          height = 80,
+        },
+        ["back:PKMN_TRAINER_ETHAN"] = {
+          drawableKey = "trainer:back:PKMN_TRAINER_ETHAN",
+          image = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png",
+          width = 80,
+          height = 80,
+        },
+      },
+    },
+    battleBalls = {
+      entries = {
+        ["ball:POKE_BALL"] = {
+          frames = {
+            {
+              drawableKey = "battle-ball:POKE_BALL:0",
+              image = "assets/generated/battle/battle-ball-POKE_BALL-0.png",
+              width = 16,
+              height = 16,
+            },
+          },
         },
       },
     },
@@ -829,15 +894,187 @@ local function manifest()
       templateInputs = { nickname = { input = "battlerAndPartySlot", dependency = "partyBoxMon" } },
       templateExpansion = { input = "tagSelectedBuffers" },
       entries = {
+        ["battle/narration/wild-appeared"] = messageRecord({ "A wild ", false, " appeared!" }),
+        ["battle/narration/trainer-challenged"] = messageRecord({ false, " ", false, " wants to battle!" }),
+        ["battle/narration/trainer-victory"] = messageRecord({ "Player defeated ", false, " ", false, "!" }),
+        ["battle/narration/won-money"] = messageRecord({ false, " got $", false, " for winning!" }),
+        ["battle/trainer-speech/trainer-speech:684c5ef81ff6b4b3f804415f786cf50f7d6ccca1"] = messageRecord({}),
+        ["battle/trainer-speech/trainer-speech:596c78eb41b3a00c1ffb497f476cfa0a92d5ef7e"] = messageRecord({
+          "Trainer reacts to defeat.",
+        }),
+        ["battle/narration/trainer-sent-out"] = messageRecord({ false, " ", false, " sent out ", false, "!" }),
+        ["battle/narration/trainer-used-item"] = messageRecord({ false, " ", false, " used one ", false, "!" }),
+        ["battle/narration/player-sent-out"] = messageRecord({ "Go! ", false, "!" }),
+        ["battle/narration/player-sent-out/foe-weak"] = messageRecord({ "Your foe's weak! Get 'em, ", false, "!" }),
+        ["battle/narration/player-sent-out/foe-hurt"] = messageRecord({
+          "Just a little more! Hang in there, ",
+          false,
+          "!",
+        }),
+        ["battle/narration/player-sent-out/go-for-it"] = messageRecord({ "Go for it, ", false, "!" }),
+        ["battle/narration/player-sent-out/in-charge"] = messageRecord({ "You're in charge, ", false, "!" }),
+        ["battle/narration/trainer-withdrew"] = messageRecord({ false, " ", false, " withdrew ", false, "!" }),
+        ["battle/narration/fainted/own"] = messageRecord({ false, " fainted!" }),
+        ["battle/narration/fainted/wild"] = messageRecord({ "The wild ", false, " fainted!" }),
+        ["battle/narration/fainted/foe"] = messageRecord({ "The foe’s ", false, " fainted!" }),
+        ["battle/narration/missed/own"] = messageRecord({ false, "'s attack missed!" }),
+        ["battle/narration/missed/wild"] = messageRecord({ "The wild ", false, "'s attack missed!" }),
+        ["battle/narration/missed/foe"] = messageRecord({ "The attack of the foe's ", false, " missed!" }),
+        ["battle/narration/avoided/own"] = messageRecord({ false, " avoided the attack!" }),
+        ["battle/narration/avoided/wild"] = messageRecord({ "The wild ", false, " avoided the attack!" }),
+        ["battle/narration/avoided/foe"] = messageRecord({ "The foe's ", false, " avoided the attack!" }),
+        ["battle/narration/immune/own"] = messageRecord({ "It doesn't affect ", false, "..." }),
+        ["battle/narration/immune/wild"] = messageRecord({ "It doesn't affect the wild ", false, "..." }),
+        ["battle/narration/immune/foe"] = messageRecord({ "It doesn't affect the foe's ", false, "..." }),
+        ["battle/narration/protected/own"] = messageRecord({ false, " protected itself!" }),
+        ["battle/narration/protected/wild"] = messageRecord({ "The wild ", false, " protected itself!" }),
+        ["battle/narration/protected/foe"] = messageRecord({ "The foe's ", false, " protected itself!" }),
+        ["battle/narration/status/poison/wild"] = messageRecord({ "The wild ", false, " was poisoned!" }),
+        ["battle/narration/status/paralysis/own"] = messageRecord({ false, " is paralyzed!" }),
+        ["battle/narration/status/paralysis/wild"] = messageRecord({ "The wild ", false, " is paralyzed!" }),
+        ["battle/narration/residual/poison/own"] = messageRecord({ false, " was hurt by poison!" }),
+        ["battle/narration/status-gate/paralysis/wild"] = messageRecord({ "The wild ", false, " is paralyzed!" }),
+        ["battle/narration/status-gate/woke/wild"] = messageRecord({ "The wild ", false, " woke up!" }),
+        ["battle/narration/stage/down/normal/own"] = messageRecord({ false, "'s ", false, " fell!" }),
+        ["battle/narration/stage/down/normal/wild"] = messageRecord({ "The wild ", false, "'s ", false, " fell!" }),
+        ["battle/narration/stage/down/normal/foe"] = messageRecord({ "The foe's ", false, "'s ", false, " fell!" }),
+        ["battle/narration/stage/up/normal/own"] = messageRecord({ false, "'s ", false, " rose!" }),
+        ["battle/narration/stage/up/normal/wild"] = messageRecord({ "The wild ", false, "'s ", false, " rose!" }),
+        ["battle/narration/stage/up/normal/foe"] = messageRecord({ "The foe's ", false, "'s ", false, " rose!" }),
+        ["battle/narration/critical-hit"] = messageRecord({ "A critical hit!" }),
+        ["battle/narration/super-effective"] = messageRecord({ "It’s super effective!" }),
+        ["battle/narration/not-very-effective"] = messageRecord({ "It's not very effective..." }),
+        ["battle/narration/cannot-escape"] = messageRecord({ "Can't escape!" }),
+        ["battle/narration/defeated-last-mon"] = messageRecord({ false, " is out of usable Pokémon!" }),
+        ["battle/narration/wild-lost-money"] = messageRecord({ false, " dropped $", false, " in panic!" }),
+        ["battle/narration/trainer-lost-money"] = messageRecord({ false, " paid out $", false, " to the winner." }),
+        ["battle/narration/ellipsis"] = messageRecord({ "... ... ... ..." }),
+        ["battle/narration/player-blacked-out"] = messageRecord({ false, " blacked out!" }),
+        ["battle/narration/got-away"] = messageRecord({ "Got away safely!" }),
+        ["battle/child/party-title"] = messageRecord({ "Choose a Pokémon." }),
+        ["battle/child/target-title"] = messageRecord({ "Use on which Pokémon?" }),
+        ["battle/child/command-prompt"] = commandPromptRecord(),
+        ["battle/child/learn-prompt"] = messageRecord({ "Which move should be forgotten?" }),
+        ["battle/narration/experience"] = messageRecord({ false, " gained ", false, " Exp. Points!" }),
+        ["battle/narration/experience/boosted"] = messageRecord({ false, " gained a boosted ", false, " Exp. Points!" }),
+        ["battle/narration/level-up"] = messageRecord({ false, " grew to Lv. ", false, "!" }),
+        ["battle/level-up/stat-name"] = messageRecord({ false }),
+        ["battle/level-up/stat-delta"] = messageRecord({ "+", false }),
+        ["battle/level-up/stat-total"] = messageRecord({ false }),
+        ["battle/stat/hp"] = messageRecord({ "HP" }),
+        ["battle/stat/attack"] = messageRecord({ "Attack" }),
+        ["battle/stat/defense"] = messageRecord({ "Defense" }),
+        ["battle/stat/speed"] = messageRecord({ "Speed" }),
+        ["battle/stat/specialAttack"] = messageRecord({ "Sp. Atk" }),
+        ["battle/stat/specialDefense"] = messageRecord({ "Sp. Def" }),
+        ["battle/stat/accuracy"] = messageRecord({ "Accuracy" }),
+        ["battle/stat/evasion"] = messageRecord({ "Evasion" }),
+        ["battle/narration/stage/up/sharp/own"] = messageRecord({ false, "’s ", false, " sharply rose!" }),
+        ["battle/narration/stage/down/normal/wild"] = messageRecord({ "The wild ", false, "’s ", false, " fell!" }),
+        ["battle/narration/stage/down/normal/foe"] = messageRecord({ "The foe’s ", false, "’s ", false, " fell!" }),
+        ["battle/narration/stage/max-up/own"] = messageRecord({ false, "’s ", false, " won’t go higher!" }),
+        ["battle/narration/fled-with-item"] = messageRecord({ false, " fled using its ", false, "!" }),
+        ["battle/narration/fled-run-away"] = messageRecord({ false, " fled using ", false, "!" }),
+        ["battle/narration/gotcha"] = messageRecord({ "Gotcha! ", false, " was caught!" }),
+        ["battle/narration/caught-nickname-question"] = messageRecord({ "Give a nickname to the caught ", false, "?" }),
+        ["battle/narration/throw-ball"] = messageRecord({ false, " used one ", false, "!" }),
+        ["battle/narration/item-no-effect"] = messageRecord({ "It won’t do any good to use that!" }),
+        ["battle/narration/item-could-not-be-used"] = messageRecord({ "Items can’t be used here." }),
+        ["battle/narration/pp-restored"] = messageRecord({ "PP was restored." }),
+        ["battle/narration/bag-woke-up"] = messageRecord({ false, " woke up." }),
+        ["battle/narration/bag-cured-poison"] = messageRecord({ false, " was cured of its poisoning." }),
+        ["battle/narration/bag-cured-paralysis"] = messageRecord({ false, " was cured of paralysis." }),
+        ["battle/narration/bag-healed-burn"] = messageRecord({ false, "’s burn was healed." }),
+        ["battle/narration/bag-thawed"] = messageRecord({ false, " was thawed out." }),
+        ["battle/narration/bag-snapped-out"] = messageRecord({ false, " snapped out of its confusion." }),
+        ["battle/narration/bag-restored-hp"] = messageRecord({ false, "’s HP was restored by ", false, " point(s)." }),
+        ["battle/narration/bag-guard-spec"] = messageRecord({ "Your team became shrouded in a white mist!" }),
+        ["battle/narration/bag-getting-pumped"] = messageRecord({ false, " is getting pumped!" }),
+        ["battle/narration/transformed"] = messageRecord({ false, " transformed into ", false, "!" }),
+        ["battle/narration/foretold/own"] = messageRecord({ false, " foresaw an attack!" }),
+        ["battle/narration/foretold/wild"] = messageRecord({ "The wild ", false, " foresaw an attack!" }),
+        ["battle/narration/foretold/foe"] = messageRecord({ "The foe’s ", false, " foresaw an attack!" }),
+        ["battle/narration/did-not-learn"] = messageRecord({ false, " did not learn ", false, "." }),
+        ["battle/narration/learn-move"] = messageRecord({ false, " learned ", false, "!" }),
+        ["battle/narration/charged/own"] = messageRecord({ false, " began charging power!" }),
+        ["battle/narration/charged/wild"] = messageRecord({ "The wild ", false, " began charging power!" }),
+        ["battle/narration/charged/foe"] = messageRecord({ "The foe’s ", false, " began charging power!" }),
+        ["battle/narration/substitute-broke/own"] = messageRecord({ false, "’s substitute faded!" }),
+        ["battle/narration/substitute-broke/wild"] = messageRecord({ "The wild ", false, "’s substitute faded!" }),
+        ["battle/narration/substitute-broke/foe"] = messageRecord({ "The foe’s ", false, "’s substitute faded!" }),
+        ["battle/narration/sketched/own"] = messageRecord({ false, " sketched ", false, "!" }),
+        ["battle/narration/sketched/wild"] = messageRecord({ "The wild ", false, " sketched ", false, "!" }),
+        ["battle/narration/sketched/foe"] = messageRecord({ "The foe’s ", false, " sketched ", false, "!" }),
+        ["battle/narration/bag-used-item"] = messageRecord({ "Used the ", false, "!" }),
+        ["battle/narration/player-withdrew/switch-out"] = messageRecord({ false, ", switch out! Come back!" }),
+        ["battle/narration/player-withdrew/come-back"] = messageRecord({ false, ", come back!" }),
+        ["battle/narration/player-withdrew/ok"] = messageRecord({ false, ", OK! Come back!" }),
+        ["battle/narration/player-withdrew/enough"] = messageRecord({ false, ", enough! Get back!" }),
+        ["battle/narration/player-withdrew/good"] = messageRecord({ false, ", good! Come back!" }),
+        ["battle/trainer-class/YOUNGSTER"] = messageRecord({ "Youngster" }),
+        ["battle/trainer-class/LEADER_FALKNER"] = messageRecord({ "Leader" }),
+        ["battle/trainer-class/PKMN_TRAINER_ETHAN"] = messageRecord({ "Trainer" }),
+        ["battle/trainer-class/PKMN_TRAINER_LYRA"] = messageRecord({ "Trainer" }),
+        ["battle/move-use/TACKLE/own"] = messageRecord({ false, " used Tackle!" }),
+        ["battle/move-use/TACKLE/wild"] = messageRecord({ "The wild ", false, " used Tackle!" }),
+        ["battle/move-use/TACKLE/foe"] = messageRecord({ "The foe’s ", false, " used Tackle!" }),
+        ["battle/move-use/MAGNITUDE/own"] = messageRecord({ false, " used Magnitude!" }),
+        ["battle/move-use/SLOW/own"] = messageRecord({ false, " used Slow!" }),
+        ["battle/move-use/RAZOR_WIND/own"] = messageRecord({ false, " used Razor Wind!" }),
+        ["battle/move-use/TAIL_WHIP/own"] = messageRecord({ false, " used Tail Whip!" }),
+        ["battle/move-use/QUICK_ATTACK/own"] = messageRecord({ false, " used Quick Attack!" }),
+        ["battle/move-use/QUICK_ATTACK/wild"] = messageRecord({ "The wild ", false, " used Quick Attack!" }),
+        ["battle/move-use/QUICK_ATTACK/foe"] = messageRecord({ "The foe’s ", false, " used Quick Attack!" }),
+        ["battle/move-use/GROWL/own"] = messageRecord({ false, " used Growl!" }),
+        ["battle/move-use/GROWL/wild"] = messageRecord({ "The wild ", false, " used Growl!" }),
+        ["battle/move-use/GROWL/foe"] = messageRecord({ "The foe’s ", false, " used Growl!" }),
+        ["battle/move-use/FLY/own"] = messageRecord({ false, " used\nFly!" }),
+        ["battle/move-use/FLY/wild"] = messageRecord({ "The wild ", false, " used\nFly!" }),
+        ["battle/move-use/FLY/foe"] = messageRecord({ "The foe’s ", false, " used\nFly!" }),
+        ["battle/move-use/STRUGGLE/own"] = messageRecord({ false, " used Struggle!" }),
+        ["battle/move-use/STRUGGLE/wild"] = messageRecord({ "The wild ", false, " used Struggle!" }),
+        ["battle/move-use/STRUGGLE/foe"] = messageRecord({ "The foe’s ", false, " used Struggle!" }),
+        ["battle/move-use/TAIL_WHIP/wild"] = messageRecord({ "The wild ", false, " used Tail Whip!" }),
+        ["battle/move-use/THUNDER_WAVE/own"] = messageRecord({ false, " used Thunder Wave!" }),
+        ["battle/move-use/SWORDS_DANCE/own"] = messageRecord({ false, " used Swords Dance!" }),
+        ["battle/move-use/BIDE/own"] = messageRecord({ false, " used Bide!" }),
+        ["battle/narration/multi-hit"] = messageRecord({ "Hit ", false, " time(s)!" }),
+        ["battle/narration/recoil/own"] = messageRecord({ false, " is hit\nwith recoil!" }),
+        ["battle/narration/recoil/wild"] = messageRecord({ "The wild ", false, " is hit\nwith recoil!" }),
+        ["battle/narration/recoil/foe"] = messageRecord({ "The foe’s ", false, " is hit\nwith recoil!" }),
         ["battle/capture-shakes/0"] = { tokens = {} },
         ["battle/capture-shakes/1"] = { tokens = {} },
         ["battle/capture-shakes/2"] = { tokens = {} },
         ["battle/capture-shakes/3"] = { tokens = {} },
         ["battle/capture-shakes/4"] = { tokens = {} },
-        ["battle/pc-transfer/has-space/someone"] = { tokens = {} },
-        ["battle/pc-transfer/has-space/bill"] = { tokens = {} },
-        ["battle/pc-transfer/box-full/someone"] = { tokens = {} },
-        ["battle/pc-transfer/box-full/bill"] = { tokens = {} },
+        ["battle/pc-transfer/has-space/someone"] = messageRecord({
+          false,
+          " was transferred to ",
+          false,
+          " in someone's PC!",
+        }),
+        ["battle/pc-transfer/has-space/bill"] = messageRecord({
+          false,
+          " was transferred to ",
+          false,
+          " in Bill's PC!",
+        }),
+        ["battle/pc-transfer/box-full/someone"] = messageRecord({
+          false,
+          " in someone's PC is full. ",
+          false,
+          " was transferred to ",
+          false,
+          " instead!",
+        }),
+        ["battle/pc-transfer/box-full/bill"] = messageRecord({
+          false,
+          " in Bill's PC is full. ",
+          false,
+          " was transferred to ",
+          false,
+          " instead!",
+        }),
         ["label/fight"] = menuLabel("FIGHT"),
         ["label/bag"] = menuLabel("BAG"),
         ["label/pokemon"] = menuLabel("POKEMON"),
@@ -852,8 +1089,8 @@ local function manifest()
         ["label/target-cancel"] = menuLabel("CANCEL"),
         ["label/yes"] = menuLabel("Yes"),
         ["label/no"] = menuLabel("No"),
-        ["label/keep-move"] = menuLabel("Keep Move"),
-        ["label/forget-move"] = menuLabel("Forget Move"),
+        ["label/keep-move"] = menuLabel("Keep old moves!"),
+        ["label/forget-move"] = menuLabel("Forget a move!"),
         ["label/recorder-stop"] = { tokens = {} },
         ["template/bug-contest-level"] = { tokens = {} },
         ["template/bug-contest-remaining-balls"] = { tokens = {} },
