@@ -58,11 +58,11 @@ local FRAME_SECONDS = 1 / 30
 local STAGE_WIDTH, STAGE_HEIGHT = 256, 192
 -- Shared ground-plane foot baseline in stage space: both sprites rest on
 -- the same line, with each top-left derived from its source pivot so
--- differently sized atlases stay aligned. The follower walks behind the
--- hero exactly one tile back.
+-- differently sized atlases stay aligned. The pair is centered as one
+-- frame-box group with a small clear gap between the boxes.
 local GROUND_STAGE_Y = 150
-local FOLLOWER_CENTER_X = 117
-local HERO_CENTER_X = 133
+local PAIR_FRAME_GAP = 6
+local PAIR_GROUP_CENTER_X = 128
 local CAPTION_GAP_SOURCE_PX = 12
 local CAPTION_FONT_SIZES = { 16, 18, 20, 24 }
 local GROUND_DASHES = {
@@ -102,6 +102,7 @@ local SKY_SPARKS = {
 ---@field hero HgssLoadingSprite?
 ---@field heroId "ethan"|"lyra"?
 ---@field follower HgssLoadingSprite?
+---@field adoptedGenerationId string? generation of the currently owned duo
 ---@field captionFont love.Font?
 ---@field artFailure unknown?
 ---@field disposed boolean
@@ -200,6 +201,7 @@ function HgssLoadingPresentation.new(options)
     hero = nil,
     heroId = nil,
     follower = nil,
+    adoptedGenerationId = nil,
     captionFont = nil,
     artFailure = nil,
     disposed = false,
@@ -260,9 +262,6 @@ end
 
 function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
   assert(not self.disposed, "disposed loading presentation cannot adopt art")
-  if self.hero ~= nil then
-    return true
-  end
   if self.pairIndex == nil then
     local missing = "walking pair selection is unavailable"
     self.artFailure = missing
@@ -285,6 +284,11 @@ function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
     local missing = "selected walking subjects are unavailable"
     self.artFailure = missing
     return false, missing
+  end
+  local generationId = manifest.generationId
+  if self.hero ~= nil and self.adoptedGenerationId == generationId then
+    self.artFailure = nil
+    return true
   end
   local staged = {}
   local ok, result = pcall(function()
@@ -326,6 +330,8 @@ function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
     return false, result
   end
   self.heroId = choice.heroId
+  local previousHero = self.hero
+  local previousFollower = self.follower
   self.hero = { visual = hero.visual, image = result.heroImage, quads = result.heroQuads }
   self.follower = {
     speciesId = choice.followerSpeciesId,
@@ -333,7 +339,13 @@ function HgssLoadingPresentation:adoptGeneratedAssets(cacheFs)
     image = result.followerImage,
     quads = result.followerQuads,
   }
+  self.adoptedGenerationId = generationId
   self.artFailure = nil
+  for _, previous in ipairs({ previousHero, previousFollower }) do
+    if previous ~= nil and previous.image ~= nil then
+      pcall(previous.image.release, previous.image)
+    end
+  end
   return true
 end
 
@@ -472,8 +484,14 @@ function HgssLoadingPresentation:draw(_)
         graphics.draw(sprite.image, quad, originX + topLeftX * scale, originY + topLeftY * scale, 0, scale, scale)
       end
       local followerLift = sampleFollowerWalkBob(self.follower.visual, self.elapsed)
-      drawSprite(self.follower, followerFrame, FOLLOWER_CENTER_X, followerLift)
-      drawSprite(self.hero, heroFrame, HERO_CENTER_X, 0)
+      local followerWidth = self.follower.visual.render.frameWidth
+      local heroWidth = self.hero.visual.render.frameWidth
+      local groupWidth = followerWidth + PAIR_FRAME_GAP + heroWidth
+      local groupLeft = PAIR_GROUP_CENTER_X - groupWidth / 2
+      local followerCenterX = groupLeft + followerWidth / 2
+      local heroCenterX = groupLeft + followerWidth + PAIR_FRAME_GAP + heroWidth / 2
+      drawSprite(self.follower, followerFrame, followerCenterX, followerLift)
+      drawSprite(self.hero, heroFrame, heroCenterX, 0)
     end)
   end
   self:_drawCopy()
@@ -497,6 +515,7 @@ function HgssLoadingPresentation:dispose()
   local images = { self.hero and self.hero.image, self.follower and self.follower.image }
   local font = self.captionFont
   self.hero, self.follower, self.heroId, self.captionFont = nil, nil, nil, nil
+  self.adoptedGenerationId = nil
   for _, image in ipairs(images) do
     if image ~= nil then
       image:release()
