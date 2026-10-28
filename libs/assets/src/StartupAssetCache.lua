@@ -1173,8 +1173,11 @@ local function validateOpeningEventOperands(event, sceneNumber)
       return nil, "opening scene position carries no integer source coordinates"
     end
   elseif op == "setBrightness" then
-    if event.physical ~= "upper" and event.physical ~= "lower" then
-      return nil, "opening scene brightness names no physical screen"
+    -- Brightness registers are engine-bound (the TOP screen reset drives
+    -- the main engine), so the reset names its engine directly; only the
+    -- source neutral reset exists.
+    if OPENING_ENGINES[event.engine] ~= true then
+      return nil, "opening scene brightness names no source engine"
     end
     if event.value ~= "neutral" then
       return nil, "opening scene brightness carries no neutral reset"
@@ -1189,14 +1192,35 @@ local function validateOpeningEventOperands(event, sceneNumber)
     if not isSixBitMask(event.secondMask) then
       return nil, "opening scene blend carries no six-bit second plane mask"
     end
-    if event.direction ~= 0 and event.direction ~= 1 then
-      return nil, "opening scene blend carries no source direction"
-    end
-    if not isPositiveInteger(event.ticks) then
-      return nil, "opening scene blend carries no source tick count"
-    end
-    if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
-      return nil, "opening scene blend start names no effect"
+    if event.ticks == 0 then
+      -- An instant register restore carries the constant source weights
+      -- and starts no timed program or effect wait; the timed direction
+      -- has no meaning on a constant program.
+      if event.direction ~= nil then
+        return nil, "opening scene immediate blend carries no source direction"
+      end
+      if event.effect ~= nil then
+        return nil, "opening scene immediate blend schedules no permanent wait"
+      end
+      if not isNonnegativeInteger(event.eva) or event.eva > 31 then
+        return nil, "opening scene immediate blend carries no source first weight"
+      end
+      if not isNonnegativeInteger(event.evb) or event.evb > 31 then
+        return nil, "opening scene immediate blend carries no source second weight"
+      end
+    else
+      if event.direction ~= 0 and event.direction ~= 1 then
+        return nil, "opening scene blend carries no source direction"
+      end
+      if not isPositiveInteger(event.ticks) then
+        return nil, "opening scene blend carries no source tick count"
+      end
+      if event.eva ~= nil or event.evb ~= nil then
+        return nil, "opening scene timed blend derives its weights from its direction"
+      end
+      if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
+        return nil, "opening scene blend start names no effect"
+      end
     end
   elseif op == "setScroll" then
     if OPENING_ENGINES[event.engine] ~= true then
@@ -1421,7 +1445,7 @@ local OPENING_EVENT_KEYS = {
     effect = true,
   },
   setScrollPosition = { engine = true, bgSlot = true, x = true, y = true },
-  setBrightness = { physical = true, value = true },
+  setBrightness = { engine = true, value = true },
   setBlend = {
     ticks = true,
     effect = true,
@@ -1429,6 +1453,8 @@ local OPENING_EVENT_KEYS = {
     firstMask = true,
     secondMask = true,
     direction = true,
+    eva = true,
+    evb = true,
   },
   setScroll = {
     ticks = true,
@@ -1729,19 +1755,19 @@ function StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, versionId)
     return nil, invalid("opening scene manifest runs outside the source frame rate", path)
   end
   local entry = record.initialDisplay
-  if type(entry) ~= "table" or not onlyKeys(entry, { mainPhysical = true, physicalBrightness = true }) then
+  if type(entry) ~= "table" or not onlyKeys(entry, { mainPhysical = true, brightness = true }) then
     return nil, invalid("opening scene entry display is malformed", path)
   end
   if entry.mainPhysical ~= "upper" and entry.mainPhysical ~= "lower" then
     return nil, invalid("opening scene entry display names no physical screen", path)
   end
-  local holds = entry.physicalBrightness
-  if type(holds) ~= "table" or not onlyKeys(holds, { upper = true, lower = true }) then
+  local holds = entry.brightness
+  if type(holds) ~= "table" or not onlyKeys(holds, { main = true, sub = true }) then
     return nil, invalid("opening scene entry holds are malformed", path)
   end
-  for _, role in ipairs({ "upper", "lower" }) do
-    if holds[role] ~= "neutral" and holds[role] ~= "white" and holds[role] ~= "black" then
-      return nil, invalid("opening scene entry hold names no physical brightness", path)
+  for _, engine in ipairs({ "main", "sub" }) do
+    if holds[engine] ~= "neutral" and holds[engine] ~= "white" and holds[engine] ~= "black" then
+      return nil, invalid("opening scene entry hold names no source brightness", path)
     end
   end
   if type(record.layers) ~= "table" or not onlyKeys(record.layers, { main = true, sub = true }) then

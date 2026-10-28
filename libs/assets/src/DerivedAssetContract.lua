@@ -609,8 +609,13 @@ DerivedAssetContract.startupTitle = {
 -- playback facts on every clip (play mode with its loop start frame) and
 -- the hardware sprite priority on every clip assignment; older bundles
 -- never validate.
+-- The v11 record keeps the v10 grammar and records brightness on its
+-- source engines instead of its physical screens: the entry display
+-- carries the per-engine holds staged before the first source case, the
+-- brightness reset names its engine, and an instant blend names its
+-- constant coefficients; physical screens never own brightness state.
 DerivedAssetContract.startupOpeningScene = {
-  schema = "g4-startup-opening-scene-v10",
+  schema = "g4-startup-opening-scene-v11",
   tickRate = 30,
 }
 

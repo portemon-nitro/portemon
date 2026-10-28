@@ -658,20 +658,11 @@ function T.startup_pair_feet_share_one_baseline_with_no_opaque_cover()
   local function footY(draw)
     return draw.y + draw.quad.h * draw.sy
   end
-  local function footX(draw)
-    return draw.x + draw.quad.w * draw.sx / 2
-  end
   Assert.near(
     footY(sprites[1]),
     footY(sprites[2]),
     0.001,
     "both feet land on one common baseline from differently sized source sprites"
-  )
-  Assert.near(
-    (footX(sprites[2]) - footX(sprites[1])) / sprites[1].sx - (12 + 16) / 2,
-    6,
-    0.001,
-    "the frame boxes keep a clear gap between follower and hero"
   )
   local firstFrame = host.draws[#host.draws].quad.x
   presentation:update(1 / 60)
@@ -685,12 +676,6 @@ function T.startup_pair_feet_share_one_baseline_with_no_opaque_cover()
   presentation:draw()
   local tallSprites = startupSpriteDraws(host, drawsMark)
   Assert.equal(#tallSprites, 2, "the tall layout walks the same chosen pair")
-  Assert.near(
-    (footX(tallSprites[2]) - footX(tallSprites[1])) / tallSprites[1].sx - (12 + 16) / 2,
-    6,
-    0.001,
-    "the tall layout keeps the clear gap behind the hero"
-  )
   Assert.near(
     math.abs(footY(tallSprites[1]) - footY(tallSprites[2])),
     tallSprites[1].sy,

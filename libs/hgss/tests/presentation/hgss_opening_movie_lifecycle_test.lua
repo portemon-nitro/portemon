@@ -280,7 +280,7 @@ local function manifestFor(sceneNumber)
     generationId = "movie-test-generation",
     sceneNumber = sceneNumber,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
-    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+    initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
     layers = {
       main = { layer(0, upperImage) },
       sub = { layer(0, lowerImage) },
@@ -378,7 +378,7 @@ local function neutralSceneFive()
     generationId = "movie-test-generation",
     sceneNumber = 5,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
-    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+    initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
     layers = {
       main = { layer(0, upperImage) },
       sub = { layer(0, lowerImage) },
@@ -1150,7 +1150,7 @@ function T.finished_wipe_brightness_holds_only_for_the_retail_kinds_until_the_ne
       generationId = "movie-test-generation",
       sceneNumber = 1,
       sourceTickRate = Contract.startupOpeningScene.tickRate,
-      initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+      initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
       layers = {
         main = { layer(0, root .. "layers/hold-upper.png") },
         sub = { layer(0, root .. "layers/hold-lower.png") },
@@ -1280,7 +1280,7 @@ function T.scene_five_shutter_opens_main_center_out_before_sub_bottom_up_and_wai
       generationId = "movie-test-generation",
       sceneNumber = 5,
       sourceTickRate = Contract.startupOpeningScene.tickRate,
-      initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+      initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
       layers = {
         main = { layer(0, upperImage) },
         sub = { layer(0, lowerImage) },
@@ -1450,7 +1450,7 @@ local function blendScene()
     generationId = "movie-test-generation",
     sceneNumber = 1,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
-    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+    initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
     layers = {
       main = { layer(0, upperImage), layer(1, midImage) },
       sub = { layer(0, lowerImage) },

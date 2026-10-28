@@ -61,7 +61,7 @@ local STAGE_WIDTH, STAGE_HEIGHT = 256, 192
 -- differently sized atlases stay aligned. The pair is centered as one
 -- frame-box group with a small clear gap between the boxes.
 local GROUND_STAGE_Y = 150
-local PAIR_FRAME_GAP = 6
+local PAIR_FRAME_GAP = -8
 local PAIR_GROUP_CENTER_X = 128
 local CAPTION_GAP_SOURCE_PX = 12
 local CAPTION_FONT_SIZES = { 16, 18, 20, 24 }

@@ -308,7 +308,7 @@ local function manifestFor(sceneNumber, buildEmitters)
     generationId = "movie-test-generation",
     sceneNumber = sceneNumber,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
-    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+    initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
     layers = {
       main = { layer(0, upperImage, 256, 192) },
       sub = { layer(0, lowerImage, 256, 192) },
@@ -912,7 +912,7 @@ local function compositeManifest(sceneNumber, upper, lower, clips, steps, events
     generationId = COMPOSITE_GENERATION,
     sceneNumber = sceneNumber,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
-    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+    initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
     layers = { main = upper, sub = lower },
     spriteClips = clips,
     models = {},
@@ -1885,7 +1885,7 @@ local function townScene(models)
     generationId = "movie-test-generation",
     sceneNumber = 3,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
-    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+    initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
     layers = {
       main = { layer(0, upperImage, 256, 192) },
       sub = { layer(0, lowerImage, 256, 192) },
@@ -2651,7 +2651,7 @@ local function particleScene(steps, events)
     generationId = "movie-test-generation",
     sceneNumber = 4,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
-    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+    initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
     layers = {
       main = { layer(0, upperImage, 256, 192) },
       sub = { layer(0, lowerImage, 256, 192) },
@@ -2679,7 +2679,7 @@ local function townSceneCustom(models, steps, events, mainVisible)
     generationId = "movie-test-generation",
     sceneNumber = 3,
     sourceTickRate = Contract.startupOpeningScene.tickRate,
-    initialDisplay = { mainPhysical = "upper", physicalBrightness = { upper = "neutral", lower = "neutral" } },
+    initialDisplay = { mainPhysical = "upper", brightness = { main = "neutral", sub = "neutral" } },
     layers = {
       main = { layer(0, upperImage, 256, 192, 0, mainVisible) },
       sub = { layer(0, lowerImage, 256, 192) },
@@ -4015,6 +4015,80 @@ function T.blend_coefficients_follow_exact_sixteenth_steps()
   assertNativeScratchDraws(compositorDrawsOf(graphics, movie, frontHandle, 0), "excluded front")
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the coefficient movie releases every handle")
+end
+
+-- An instant blend restores the constant source register weights at once:
+-- after a timed fade retires the first-target plane, the zero-duration
+-- reset paints that plane opaque again with no timed program and no
+-- effect wait, exactly like the source register write behind it.
+function T.instant_blend_reset_restores_constant_source_weights()
+  local root = sceneRoot(1)
+  local logoImage = root .. "layers/logo-main.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      { layer(0, logoImage, 256, 192) },
+      { layer(0, root .. "layers/logo-sub.png", 256, 192) },
+      {},
+      {
+        { id = "fades", events = { 1 }, ["until"] = { kind = "effect", effect = "logo-fade" } },
+        { id = "logo", events = { 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 4 } },
+      },
+      {
+        {
+          op = "setBlend",
+          stepId = "fades",
+          atStepTick = 0,
+          engine = "main",
+          firstMask = 1,
+          secondMask = 32,
+          direction = 1,
+          effect = "logo-fade",
+          ticks = 4,
+        },
+        {
+          op = "setBlend",
+          stepId = "logo",
+          atStepTick = 2,
+          engine = "main",
+          firstMask = 1,
+          secondMask = 32,
+          ticks = 0,
+          eva = 31,
+          evb = 0,
+        },
+
+        { op = "waitTicks", stepId = "logo", atStepTick = 0, ticks = 4 },
+        { op = "enableSkip", stepId = "logo", atStepTick = 1 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 4 do
+    movie:updateFixed()
+  end
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(slot.stepIndex, 2, "playback reaches the logo beat after the fade")
+  movie:updateFixed()
+  movie:updateFixed()
+  slot = assert(movie.current, "the running movie owns its current slot")
+  local program = assert(slot.blendPrograms.main, "the instant reset replaces the main program")
+  Assert.equal(program.ticks, 0, "the reset carries no timed program")
+  Assert.equal(program.firstMask, 1, "the reset keeps the first-target mask")
+  Assert.equal(program.secondMask, 32, "the reset keeps the second-target mask")
+  Assert.equal(program.eva, 31, "the reset carries the source full first weight")
+  Assert.equal(program.evb, 0, "the reset carries the source zero second weight")
+  movie:draw()
+  local evas = uniformSendsSince(graphics, "eva", 0)
+  local evbs = uniformSendsSince(graphics, "evb", 0)
+  Assert.isTrue(#evas > 0, "the reset frame drives the first-weight uniform")
+  Assert.isTrue(#evbs > 0, "the reset frame drives the second-weight uniform")
+  Assert.equal(evas[#evas], 16, "the constant restore saturates the first side")
+  Assert.equal(evbs[#evbs], 0, "the constant restore retires the second side")
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "the reset movie releases every handle")
 end
 
 -- Independent engine clocks retire their own named waits: the shorter main
@@ -5713,17 +5787,19 @@ function T.starter_emitter_count_stays_within_its_scene_bound()
   movie:dispose()
 end
 
--- Source entry mapping and physical holds are staged on acquisition:
+-- Source entry mapping and engine holds are staged on acquisition:
 -- every freshly acquired slot already routes main to its authored
--- screen with the authored upper/lower holds, before any source tick
+-- screen with the authored per-engine holds, before any source tick
 -- runs on it. Handoffs carry the same guarantee: the incoming slot is
--- correct while its clock still reads zero.
+-- correct while its clock still reads zero. Brightness registers are
+-- engine-bound on the hardware, so the holds follow engines across
+-- physical screen flips instead of sticking to one LCD.
 local ENTRY_HOLDS = {
-  [1] = { mainPhysical = "lower", upper = "neutral", lower = "neutral" },
-  [2] = { mainPhysical = "upper", upper = "white", lower = "white" },
-  [3] = { mainPhysical = "upper", upper = "white", lower = "black" },
-  [4] = { mainPhysical = "lower", upper = "black", lower = "black" },
-  [5] = { mainPhysical = "lower", upper = "black", lower = "black" },
+  [1] = { mainPhysical = "lower", main = "neutral", sub = "neutral" },
+  [2] = { mainPhysical = "upper", main = "white", sub = "white" },
+  [3] = { mainPhysical = "upper", main = "white", sub = "black" },
+  [4] = { mainPhysical = "lower", main = "black", sub = "black" },
+  [5] = { mainPhysical = "lower", main = "black", sub = "black" },
 }
 
 ---@param sceneNumber integer retail scene position
@@ -5733,7 +5809,7 @@ local function manifestWithEntry(sceneNumber)
   local entry = assert(ENTRY_HOLDS[sceneNumber], "every scene stages its source entry holds")
   manifest.initialDisplay = {
     mainPhysical = entry.mainPhysical,
-    physicalBrightness = { upper = entry.upper, lower = entry.lower },
+    brightness = { main = entry.main, sub = entry.sub },
   }
   return manifest
 end
@@ -5748,18 +5824,18 @@ local function checkEntryHolds(slot, sceneNumber)
     "scene " .. sceneNumber .. " maps main to physical " .. entry.mainPhysical .. " before its first tick"
   )
   Assert.isTrue(
-    type(slot.physicalBrightness) == "table",
-    "scene " .. sceneNumber .. " stages its physical holds before its first tick"
+    type(slot.brightness) == "table",
+    "scene " .. sceneNumber .. " stages its engine holds before its first tick"
   )
   Assert.equal(
-    slot.physicalBrightness.upper,
-    entry.upper,
-    "scene " .. sceneNumber .. " holds physical upper " .. entry.upper
+    slot.brightness.main,
+    entry.main,
+    "scene " .. sceneNumber .. " holds the main engine " .. entry.main
   )
   Assert.equal(
-    slot.physicalBrightness.lower,
-    entry.lower,
-    "scene " .. sceneNumber .. " holds physical lower " .. entry.lower
+    slot.brightness.sub,
+    entry.sub,
+    "scene " .. sceneNumber .. " holds the sub engine " .. entry.sub
   )
 end
 
@@ -5870,8 +5946,8 @@ function T.staged_sprites_stay_visible_while_the_physical_bottom_holds_black_unt
   local staged = assert(movie.current, "the running movie owns its current slot")
   local silver = assert(staged.spriteInstances["silver-silhouette"], "the entry tick stages the rival instance")
   Assert.isTrue(silver.visible, "the rival stays staged while hidden")
-  Assert.isTrue(type(staged.physicalBrightness) == "table", "the entry keeps its staged physical holds")
-  Assert.equal(staged.physicalBrightness.lower, "black", "the staged rival does not lift the bottom hold")
+  Assert.isTrue(type(staged.brightness) == "table", "the entry keeps its staged engine holds")
+  Assert.equal(staged.brightness.sub, "black", "the staged rival does not lift the sub hold")
   -- The authored bottom wipe releases the hold while keeping the rival.
   local waited = 0
   while movie.current.stepIndex < 2 and waited < 200 do
@@ -5881,17 +5957,17 @@ function T.staged_sprites_stay_visible_while_the_physical_bottom_holds_black_unt
   Assert.equal(movie.current.stepIndex, 2, "playback reaches the bottom reveal")
   movie:updateFixed()
   local revealed = assert(movie.current, "the running movie owns its current slot")
-  Assert.isTrue(type(revealed.physicalBrightness) == "table", "the reveal keeps its staged physical holds")
-  Assert.equal(revealed.physicalBrightness.lower, "neutral", "the bottom wipe releases the bottom hold")
+  Assert.isTrue(type(revealed.brightness) == "table", "the reveal keeps its staged engine holds")
+  Assert.equal(revealed.brightness.sub, "neutral", "the sub wipe releases the sub hold")
   Assert.isTrue(revealed.spriteInstances["silver-silhouette"].visible, "the reveal keeps the rival staged")
   movie:dispose()
 end
 
-function T.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets()
+function T.engine_holds_follow_their_engine_across_mapping_flips_and_neutral_resets()
   local first = manifestWithEntry(1)
   first.initialDisplay = {
     mainPhysical = "upper",
-    physicalBrightness = { upper = "white", lower = "black" },
+    brightness = { main = "white", sub = "black" },
   }
   first.timeline = {
     steps = {
@@ -5905,7 +5981,7 @@ function T.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets()
       { op = "enableSkip", stepId = "setup", atStepTick = 1 },
       { op = "setScreenMapping", stepId = "flip", atStepTick = 0, mainPhysical = "lower" },
       { op = "waitTicks", stepId = "flip", atStepTick = 0, ticks = 4 },
-      { op = "setBrightness", stepId = "reset", atStepTick = 0, physical = "upper", value = "neutral" },
+      { op = "setBrightness", stepId = "reset", atStepTick = 0, engine = "main", value = "neutral" },
       { op = "waitTicks", stepId = "reset", atStepTick = 0, ticks = 4 },
       { op = "waitTicks", stepId = "tail", atStepTick = 0, ticks = 2 },
       { op = "finish", stepId = "tail", atStepTick = 0 },
@@ -5923,9 +5999,9 @@ function T.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets()
   local movie = openMovie(scenes, cacheFs, graphics)
   local setup = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(setup.mainPhysical, "upper", "the scene maps main to physical upper before its first tick")
-  Assert.isTrue(type(setup.physicalBrightness) == "table", "the scene stages its physical holds before its first tick")
-  Assert.equal(setup.physicalBrightness.upper, "white", "the scene holds physical upper white")
-  Assert.equal(setup.physicalBrightness.lower, "black", "the scene holds physical lower black")
+  Assert.isTrue(type(setup.brightness) == "table", "the scene stages its engine holds before its first tick")
+  Assert.equal(setup.brightness.main, "white", "the scene holds the main engine white")
+  Assert.equal(setup.brightness.sub, "black", "the scene holds the sub engine black")
   local waited = 0
   while movie.current.stepIndex < 2 and waited < 200 do
     movie:updateFixed()
@@ -5935,9 +6011,9 @@ function T.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets()
   movie:updateFixed()
   local flipped = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(flipped.mainPhysical, "lower", "the authored flip moves the main engine")
-  Assert.isTrue(type(flipped.physicalBrightness) == "table", "the flip keeps the staged physical holds")
-  Assert.equal(flipped.physicalBrightness.upper, "white", "the flip leaves the upper hold on the upper screen")
-  Assert.equal(flipped.physicalBrightness.lower, "black", "the flip leaves the lower hold on the lower screen")
+  Assert.isTrue(type(flipped.brightness) == "table", "the flip keeps the staged engine holds")
+  Assert.equal(flipped.brightness.main, "white", "the flip keeps the white hold on the main engine")
+  Assert.equal(flipped.brightness.sub, "black", "the flip keeps the black hold on the sub engine")
   waited = 0
   while movie.current.stepIndex < 3 and waited < 200 do
     movie:updateFixed()
@@ -5946,9 +6022,70 @@ function T.physical_holds_stay_pinned_across_mapping_flips_and_neutral_resets()
   Assert.equal(movie.current.stepIndex, 3, "playback reaches the authored reset")
   movie:updateFixed()
   local reset = assert(movie.current, "the running movie owns its current slot")
-  Assert.isTrue(type(reset.physicalBrightness) == "table", "the reset keeps the staged physical holds")
-  Assert.equal(reset.physicalBrightness.upper, "neutral", "the authored reset clears only the upper hold")
-  Assert.equal(reset.physicalBrightness.lower, "black", "the authored reset keeps the lower hold")
+  Assert.isTrue(type(reset.brightness) == "table", "the reset keeps the staged engine holds")
+  Assert.equal(reset.brightness.main, "neutral", "the authored reset clears only the main hold")
+  Assert.equal(reset.brightness.sub, "black", "the authored reset keeps the sub hold")
+  movie:dispose()
+end
+
+-- Brightness resets name their engine directly: with the main engine
+-- flipped below, resetting the sub engine clears only the sub hold
+-- while the main hold survives, so the sparkle beat can free the main
+-- output without lifting the black upper screen.
+function T.engine_brightness_reset_clears_only_its_named_engine()
+  local first = manifestWithEntry(1)
+  first.initialDisplay = {
+    mainPhysical = "lower",
+    brightness = { main = "black", sub = "black" },
+  }
+  first.timeline = {
+    steps = {
+      { id = "fade", events = { 1 }, ["until"] = { kind = "effect", effect = "close-both" } },
+      { id = "sparkle", events = { 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 2 } },
+    },
+    events = {
+      {
+        op = "setFade",
+        stepId = "fade",
+        atStepTick = 0,
+        scope = "both",
+        mode = "brightness",
+        color = "black",
+        direction = "out",
+        ticks = 2,
+        terminal = "hold",
+        effect = "close-both",
+      },
+      { op = "setBrightness", stepId = "sparkle", atStepTick = 0, engine = "main", value = "neutral" },
+      { op = "enableSkip", stepId = "sparkle", atStepTick = 1 },
+      { op = "waitTicks", stepId = "sparkle", atStepTick = 0, ticks = 2 },
+    },
+  }
+  local raw = { first, manifestWithEntry(2), manifestWithEntry(3), manifestWithEntry(4), manifestWithEntry(5) }
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local waited = 0
+  while movie.current.stepIndex < 2 and waited < 200 do
+    movie:updateFixed()
+    waited = waited + 1
+  end
+  Assert.equal(movie.current.stepIndex, 2, "playback reaches the sparkle reset")
+  local faded = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(faded.fadeByEngine.main.hold, "black", "the close holds the main engine")
+  Assert.equal(faded.fadeByEngine.sub.hold, "black", "the close holds the sub engine")
+  movie:updateFixed()
+  local reset = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(reset.mainPhysical, "lower", "the main engine stays mapped below")
+  Assert.isTrue(reset.fadeByEngine.main.task == nil, "the reset retires the main fade task")
+  Assert.isTrue(reset.fadeByEngine.main.hold == nil, "the reset frees the main engine")
+  Assert.equal(reset.fadeByEngine.sub.hold, "black", "the reset keeps the sub hold behind black")
   movie:dispose()
 end
 
