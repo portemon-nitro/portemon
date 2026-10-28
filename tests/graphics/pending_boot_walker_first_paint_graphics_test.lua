@@ -80,10 +80,26 @@ local function pending_gate_paints_adopted_walker_pixels_without_transfer(scope,
   local script = { bootPolls = 0, walkerDemands = 0, fired = 0 }
   local state = pendingBootWaitWithReadyWalker(pairIndex, script)
   local ok, err = xpcall(function()
-    local pre = renderWait(state, scope)
+    local preSprites = 0
+    local originalPreDraw = love.graphics.draw
+    local pre
+    local preOk, preErr = xpcall(function()
+      love.graphics.draw = function(drawable, quad, ...)
+        if quad ~= nil then
+          preSprites = preSprites + 1
+        end
+        return originalPreDraw(drawable, quad, ...)
+      end
+      pre = renderWait(state, scope)
+    end, debug.traceback)
+    love.graphics.draw = originalPreDraw
+    if not preOk then
+      error(preErr, 0)
+    end
     Assert.equal(script.bootPolls, 0, "the first draw never waits on the boot-source gate")
-    -- A zero tick keeps the themed stage identical so only adopted walker
-    -- pixels can differ between the two frames.
+    Assert.isTrue(preSprites >= 1, "the first frame already paints hero or follower sprite draws")
+    -- A zero tick keeps the themed stage identical; the cached pair
+    -- stays on screen while the gate is observed without admission.
     state:update(0)
     Assert.isTrue(script.bootPolls >= 1, "the pending wait observes the gate without admission")
     Assert.isTrue(script.walkerDemands >= 1, "the pending wait demands the selected pair while verifying")
@@ -111,19 +127,7 @@ local function pending_gate_paints_adopted_walker_pixels_without_transfer(scope,
     local preBytes = pre:getString()
     local postBytes = assert(post, "the pending wait renders its adopted frame"):getString()
     Assert.equal(#preBytes, #postBytes, "compared frames share their dimensions")
-    local changedBytes = 0
-    local firstPixel = nil
-    for index = 1, #preBytes do
-      if preBytes:byte(index) ~= postBytes:byte(index) then
-        changedBytes = changedBytes + 1
-        if firstPixel == nil then
-          firstPixel = math.floor((index - 1) / 4)
-        end
-      end
-    end
-    Assert.isTrue(changedBytes > 0, "the adopted pair changes real frame pixels while the gate is pending")
-    local alpha = postBytes:byte(assert(firstPixel, "a changed pixel was counted") * 4 + 4)
-    Assert.isTrue(alpha ~= nil and alpha ~= 0, "the first changed walker pixel is nontransparent")
+    Assert.isTrue(preBytes == postBytes, "the cached pair stays stable across a zero tick")
     Assert.equal(script.fired, 0, "a pending gate never transfers even with walker pixels on screen")
     Assert.throws(function()
       state:takeLoading()

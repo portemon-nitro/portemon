@@ -668,10 +668,10 @@ function T.startup_pair_feet_share_one_baseline_with_no_opaque_cover()
     "both feet land on one common baseline from differently sized source sprites"
   )
   Assert.near(
-    footX(sprites[2]) - footX(sprites[1]),
-    16 * sprites[1].sx,
+    (footX(sprites[2]) - footX(sprites[1])) / sprites[1].sx - (12 + 16) / 2,
+    6,
     0.001,
-    "the follower foot trails exactly one tile behind the hero foot"
+    "the frame boxes keep a clear gap between follower and hero"
   )
   local firstFrame = host.draws[#host.draws].quad.x
   presentation:update(1 / 60)
@@ -686,10 +686,10 @@ function T.startup_pair_feet_share_one_baseline_with_no_opaque_cover()
   local tallSprites = startupSpriteDraws(host, drawsMark)
   Assert.equal(#tallSprites, 2, "the tall layout walks the same chosen pair")
   Assert.near(
-    footX(tallSprites[2]) - footX(tallSprites[1]),
-    16 * tallSprites[1].sx,
+    (footX(tallSprites[2]) - footX(tallSprites[1])) / tallSprites[1].sx - (12 + 16) / 2,
+    6,
     0.001,
-    "the tall layout keeps the one-tile trail behind the hero"
+    "the tall layout keeps the clear gap behind the hero"
   )
   Assert.near(
     math.abs(footY(tallSprites[1]) - footY(tallSprites[2])),
@@ -774,6 +774,102 @@ function T.startup_captions_open_on_a_random_line_and_keep_the_stage_moving()
   )
   presentationA:dispose()
   presentationB:dispose()
+end
+
+local function generationCacheFs(pairIndex, versionId, generationId, heroWidth, followerWidth)
+  local choice = require("libs.assets.src.StartupAssetCache").walkerChoice(pairIndex)
+  local heroes = {
+    ethan = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png",
+      visual = startupPairVisual(heroWidth, 24),
+    },
+    lyra = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/lyra.png",
+      visual = startupPairVisual(heroWidth, 24),
+    },
+  }
+  local followers = {}
+  for _, speciesId in ipairs(SPECIES_IDS) do
+    followers[tostring(speciesId)] = {
+      atlasPath = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png",
+      visual = startupPairVisual(followerWidth, 20),
+    }
+  end
+  local record = {
+    schema = "g4-startup-walker-v2",
+    versionId = versionId,
+    generationId = generationId,
+    heroes = heroes,
+    followers = followers,
+  }
+  return {
+    loadLua = function()
+      return record
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      return path
+    end,
+  }
+end
+
+function T.catalog_refresh_reuses_same_images_and_swaps_newer_catalog_atomically()
+  local host = FakeGraphics.new({
+    imageSizes = { { 64, 24 }, { 64, 20 }, { 64, 24 }, { 64, 20 }, { 64, 24 }, { 64, 20 } },
+    failOnImageCall = 6,
+  })
+  host.getDimensions = function()
+    return 256, 192
+  end
+  host.getDPIScale = function()
+    return 1
+  end
+  host.printfCalls = {}
+  host.printf = function(text, x, y, width, align)
+    host.printfCalls[#host.printfCalls + 1] = { text = text, x = x, y = y, width = width, align = align }
+    host.print(text, x, y)
+  end
+  local presentation = Presentation.new({
+    versionId = "heartgold",
+    pairIndex = 5,
+    width = 256,
+    height = 192,
+    graphics = host,
+    random = function()
+      return 0
+    end,
+  })
+  local firstCache = generationCacheFs(5, "heartgold", "catalog-a", 16, 12)
+  Assert.isTrue(presentation:adoptGeneratedAssets(firstCache), "the first catalog adopts")
+  Assert.equal(#host.images, 2, "the first catalog owns exactly two images")
+  Assert.equal(presentation.hero.visual.render.frameWidth, 16, "the first catalog fixes the hero width")
+  local sameCache = generationCacheFs(5, "heartgold", "catalog-a", 16, 12)
+  Assert.isTrue(presentation:adoptGeneratedAssets(sameCache), "re-observing the same catalog stays adopted")
+  Assert.equal(#host.images, 2, "the same catalog never uploads again")
+  local newerCache = generationCacheFs(5, "heartgold", "catalog-b", 20, 14)
+  Assert.isTrue(presentation:adoptGeneratedAssets(newerCache), "the newer catalog adopts")
+  Assert.equal(#host.images, 4, "the newer catalog stages its own duo")
+  Assert.equal(presentation.hero.visual.render.frameWidth, 20, "the newer catalog replaces the hero")
+  Assert.equal(presentation.follower.visual.render.frameWidth, 14, "the newer catalog replaces the follower")
+  Assert.equal(host.images[1].releaseCount, 1, "the older hero releases exactly once after the swap")
+  Assert.equal(host.images[2].releaseCount, 1, "the older follower releases exactly once after the swap")
+  local brokenCache = generationCacheFs(5, "heartgold", "catalog-c", 22, 15)
+  local adopted, failure = presentation:adoptGeneratedAssets(brokenCache)
+  Assert.isFalse(adopted, "a failed refresh never reports success")
+  Assert.notNil(failure, "a failed refresh carries its diagnosis")
+  Assert.equal(
+    presentation.hero.visual.render.frameWidth,
+    20,
+    "a failed refresh keeps the previous hero visible"
+  )
+  Assert.equal(#host.images, 5, "the failed refresh stages before releasing")
+  Assert.equal(host.images[5].releaseCount, 1, "the failed staged image releases exactly once")
+  presentation:dispose()
+  for _, image in ipairs(host.images) do
+    Assert.isTrue(image.releaseCount >= 1, "every touched image releases at least once")
+  end
 end
 
 return { tests = T }

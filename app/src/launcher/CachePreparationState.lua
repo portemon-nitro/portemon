@@ -175,6 +175,7 @@ function CachePreparationState.new(options)
   -- The themed stage is installed at selection, before any controller
   -- reply: the first visible warm frame already animates, and the cold
   -- card keeps this same presentation ready for its later adoption.
+  ---@type BootLoadingPresentation|nil
   local bootLoading = nil
   if options.kind == "boot-source" then
     local width, height = drawableSize()
@@ -183,7 +184,7 @@ function CachePreparationState.new(options)
       pairIndex = options.pairIndex,
       width = width,
       height = height,
-    })
+    }) --[[@as BootLoadingPresentation]]
   end
   local self = setmetatable({
     kind = options.kind,
@@ -216,6 +217,16 @@ function CachePreparationState.new(options)
     _receiptPainted = nil,
     _importView = nil,
   }, CachePreparationState)
+  if options.kind == "boot-source" and bootLoading ~= nil then
+    if type(options.versionId) == "string" and options.versionId ~= "" and validPairIndex(options.pairIndex) then
+      pcall(function()
+        local cacheFs = CacheFs.forVersion(options.versionId)
+        pcall(function()
+          bootLoading:adoptGeneratedAssets(cacheFs)
+        end)
+      end)
+    end
+  end
   if options.kind == "boot-source" and self.freshImport then
     self._importView = self:_coldImportView()
   end
@@ -327,9 +338,9 @@ function CachePreparationState:_pollWalker()
       requestKind = "startup-walker",
     })
     if ready == true then
-      self.walkerReady = true
       local adopted, adoptFailure = self:_adoptSelectedPair()
       if adopted then
+        self.walkerReady = true
         self.artFailure = nil
         self.artFailureOrigin = nil
         if self.bootAdmitted then

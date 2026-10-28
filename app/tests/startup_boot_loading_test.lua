@@ -362,7 +362,8 @@ function T.warm_boot_holds_transfer_until_the_selected_pair_is_adopted()
     for _, urgency in ipairs(script.pairUrgencies) do
       Assert.equal(urgency, "required", "the shared visuals are a required demand, never best-effort interest")
     end
-    Assert.isFalse(loading.adopted, "nothing is adopted before the pair job answers")
+    Assert.isTrue(loading.adopted, "cached art may paint before the pair job answers")
+    Assert.isFalse(state.walkerReady, "cached art never marks the pair job ready")
     script.walkerReady = true
     loading.adoptResult = true
     state:update(0.016)
@@ -441,7 +442,7 @@ function T.warm_pair_adoption_failure_holds_transfer_until_a_successful_retry()
     Assert.throws(function()
       state:takeLoading()
     end, "nothing detaches before a successful adoption")
-    Assert.equal(loading.adoptions, 1, "the first ready answer attempts the adoption exactly once")
+    Assert.equal(loading.adoptions, 2, "construction plus the first ready answer attempt adoption")
     local copy = captureCopy(800, 600, function()
       state:draw()
     end)
@@ -453,7 +454,7 @@ function T.warm_pair_adoption_failure_holds_transfer_until_a_successful_retry()
     state:update(0.016)
     state:update(0.016)
     Assert.equal(script.fired or 0, 0, "the latched adoption never transfers on its own")
-    Assert.equal(loading.adoptions, 1, "no automatic adoption follows the latched failure")
+    Assert.equal(loading.adoptions, 2, "no automatic adoption follows the latched failure")
     state:keypressed("r")
     loading.adoptResult = true
     state:update(0.016)
@@ -509,7 +510,7 @@ function T.warm_pair_retry_issues_one_demand_per_update_without_transfer()
     end
     Assert.equal(script.fired or 0, 0, "a persistently failing adoption never transfers")
     Assert.equal(#script.pairRequests, 1, "the latched adoption issues no further shared demands")
-    Assert.equal(loading.adoptions, 1, "the latched adoption attempts no automatic retry")
+    Assert.equal(loading.adoptions, 2, "construction plus the first ready answer attempt adoption")
     for _, demand in ipairs(script.pairRequests) do
       Assert.isNil(demand.pairIndex, "every retry keeps the shared demand without a pair identity")
     end
@@ -524,7 +525,7 @@ function T.warm_pair_retry_issues_one_demand_per_update_without_transfer()
     state:keypressed("r")
     state:update(0.016)
     Assert.equal(#script.pairRequests, 2, "one explicit key re-issues the shared demand once")
-    Assert.equal(loading.adoptions, 2, "one explicit key re-attempts the adoption once")
+    Assert.equal(loading.adoptions, 3, "construction plus two ready attempts re-attempts adoption once")
     Assert.equal(script.fired or 0, 0, "the renewed failure latches again without transfer")
     state:dispose()
     Assert.equal(loading.disposals, 1, "the failed wait releases its stage once")
@@ -591,8 +592,8 @@ function T.cancelled_or_retired_selection_releases_loading_once_and_never_transf
 end
 
 -- The selected pair is demanded while the source gate is still blocked:
--- the worker compiles during the wait, but nothing is adopted and nothing
--- transfers until the gate admits the epoch.
+-- the worker compiles during the wait, but nothing transfers until the
+-- gate admits the epoch. Cached art may already paint while blocked.
 function T.blocked_boot_demands_the_selected_pair_before_admission()
   local loading = fakeLoading()
   local record = {}
@@ -606,7 +607,8 @@ function T.blocked_boot_demands_the_selected_pair_before_admission()
       Assert.isNil(demand.pairIndex, "the early demand carries no pair identity")
     end
     Assert.equal(script.fired or 0, 0, "the blocked gate never transfers")
-    Assert.isFalse(loading.adopted, "nothing is adopted before the gate admits the epoch")
+    Assert.isTrue(loading.adopted, "cached art may paint even while the gate blocks transfer")
+    Assert.isFalse(state.walkerReady, "blocked art never marks the pair job ready")
     Assert.throws(function()
       state:takeLoading()
     end, "nothing detaches before admission and adoption")
@@ -730,6 +732,32 @@ function T.confirmed_block_with_staged_art_never_transfers_and_releases_once()
     end, "a retired wait detaches nothing")
     state:dispose()
     Assert.equal(retiredLoading.disposals, 1, "retiring the stale wait releases its stage once")
+  end)
+end
+
+function T.warm_construction_shows_cached_art_before_any_worker_reply()
+  local loading = fakeLoading()
+  local record = {}
+  withPatchedLoading(loading, record, function()
+    local script = {}
+    local state = bootWait(script)
+    Assert.equal(
+      loading.adoptions,
+      1,
+      "construction tries cached art once before the first paint"
+    )
+    Assert.isTrue(loading.adopted, "cached art is visible on the first frame")
+    Assert.isFalse(state.walkerReady, "cached art never marks the pair job ready")
+    Assert.isFalse(state.bootAdmitted, "cached art never admits the source gate")
+    Assert.equal(script.fired or 0, 0, "cached art never transfers before admission")
+    Assert.isNil(state.artFailure, "a best-effort miss leaves no latched failure")
+    Assert.isNil(state.artFailureOrigin, "a best-effort miss leaves no failure provenance")
+    local copy = captureCopy(800, 600, function()
+      state:draw()
+    end)
+    Assert.isTrue(loading.draws >= 1, "the first draw paints the stage")
+    Assert.isTrue(copy:find("Preparing", 1, true) == nil, "no plaintext headline is the first frame")
+    state:dispose()
   end)
 end
 

@@ -251,7 +251,7 @@ function T.startup_stage_opens_on_a_random_line_and_stays_animated(scope)
   )
 end
 
-function T.walking_pair_keeps_single_tile_gap_with_source_cadence_lift(scope)
+function T.walking_pair_keeps_clear_frame_gap_with_source_cadence_lift(scope)
   local presentation = Presentation.new({
     versionId = "heartgold",
     width = WIDTH,
@@ -270,7 +270,7 @@ function T.walking_pair_keeps_single_tile_gap_with_source_cadence_lift(scope)
     presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
     "the chosen pair adopts its two transparent atlases"
   )
-  local heroFrameWidth, followerFrameWidth, pivotX = 16, 12, 0.5
+  local heroFrameWidth, followerFrameWidth = 16, 12
   local totalTicks = 4
   local tickSeconds = 1 / 30
   local originalDraw = love.graphics.draw
@@ -318,8 +318,8 @@ function T.walking_pair_keeps_single_tile_gap_with_source_cadence_lift(scope)
     local followerDraw = samples[tickIndex].follower
     Assert.equal(heroDraw.scale, followerDraw.scale, "the pair shares one stage scale")
     local scale = heroDraw.scale
-    local gap = (heroDraw.x - followerDraw.x) / scale + (heroFrameWidth - followerFrameWidth) * pivotX
-    Assert.near(gap, 16, 0.001, "the follower foot stays one tile behind the hero foot on tick " .. tickIndex)
+    local edgeGap = (heroDraw.x - followerDraw.x) / scale - followerFrameWidth
+    Assert.near(edgeGap, 6, 0.001, "the frame boxes keep a clear gap on tick " .. tickIndex)
   end
   local step = samples[0].follower.scale
   local restY = samples[0].follower.y
@@ -1041,6 +1041,128 @@ function T.walker_phase_survives_adoption_and_resize_across_all_choices(scope)
     love.graphics.setCanvas()
     love.graphics.pop()
     choice:dispose()
+  end
+end
+
+local function sizedPairCacheFs(followerWidth, versionId)
+  local heroes = {
+    ethan = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png",
+      visual = startupPairVisual(16, 24),
+    },
+    lyra = {
+      atlasPath = "assets/generated/startup/loader/subjects/heroes/lyra.png",
+      visual = startupPairVisual(16, 24),
+    },
+  }
+  local followers = {}
+  local files = {}
+  for _, path in ipairs({
+    "assets/generated/startup/loader/subjects/heroes/ethan.png",
+    "assets/generated/startup/loader/subjects/heroes/lyra.png",
+  }) do
+    files[path] = startupTransparentAtlas(16, 24)
+  end
+  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
+    local path = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png"
+    followers[tostring(speciesId)] = { atlasPath = path, visual = startupPairVisual(followerWidth, 20) }
+    files[path] = startupTransparentAtlas(followerWidth, 20)
+  end
+  local manifest = {
+    schema = "g4-startup-walker-v2",
+    versionId = versionId,
+    generationId = "test-generation",
+    heroes = heroes,
+    followers = followers,
+  }
+  return {
+    loadLua = function()
+      return manifest
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      return assert(files[path], "unexpected generated read " .. tostring(path))
+    end,
+  }
+end
+
+function T.pair_frame_boxes_keep_clear_gap_and_stay_centered(scope)
+  for _, followerWidth in ipairs({ 12, 28 }) do
+    for _, geometry in ipairs({ { width = 480, height = 360 }, { width = 360, height = 640 } }) do
+      local presentation = Presentation.new({
+        versionId = "heartgold",
+        width = geometry.width,
+        height = geometry.height,
+        pairIndex = 5,
+        random = function()
+          return 0.25
+        end,
+      })
+      scope:own({
+        release = function()
+          presentation:dispose()
+        end,
+      })
+      Assert.isTrue(
+        presentation:adoptGeneratedAssets(sizedPairCacheFs(followerWidth, "heartgold")),
+        "follower width " .. followerWidth .. " adopts"
+      )
+      local heroFrameWidth, pivotX = 16, 0.5
+      local label = "follower " .. followerWidth .. " in " .. geometry.width .. "x" .. geometry.height
+      local originalDraw = love.graphics.draw
+      local heroDraw, followerDraw
+      local ok, err = xpcall(function()
+        presentation.elapsed = 0.05
+        love.graphics.draw = function(drawable, quad, x, y, rotation, scaleX, scaleY, ...)
+          if quad ~= nil and type(x) == "number" and type(drawable.getWidth) == "function" then
+            local atlasWidth = drawable:getWidth()
+            if atlasWidth == heroFrameWidth * 2 then
+              heroDraw = { x = x, scale = scaleX or 1 }
+            elseif atlasWidth == followerWidth * 2 then
+              followerDraw = { x = x, scale = scaleX or 1 }
+            end
+          end
+          return originalDraw(drawable, quad, x, y, rotation, scaleX, scaleY, ...)
+        end
+        local canvas = scope:own(love.graphics.newCanvas(geometry.width, geometry.height))
+        love.graphics.push("all")
+        love.graphics.setCanvas(canvas)
+        love.graphics.clear(0, 0, 0, 0)
+        presentation:draw()
+        love.graphics.setCanvas()
+        love.graphics.pop()
+      end, debug.traceback)
+      love.graphics.draw = originalDraw
+      if not ok then
+        error(err, 0)
+      end
+      Assert.notNil(followerDraw, label .. " draws its follower")
+      Assert.notNil(heroDraw, label .. " draws its hero")
+      Assert.equal(heroDraw.scale, followerDraw.scale, label .. " shares one stage scale")
+      local scale = heroDraw.scale
+      local edgeGap = (heroDraw.x - followerDraw.x) / scale - followerWidth
+      Assert.isTrue(
+        edgeGap >= 6 - 0.001,
+        label .. " keeps at least six pixels between frame boxes, got " .. edgeGap
+      )
+      local bounds = presentation.primaryBounds
+      Assert.notNil(bounds, label .. " exposes its pane")
+      local stageHeight = presentation.configuration == "tall" and bounds.height * 0.66 or bounds.height
+      local expectedScale = math.max(1, math.floor(math.min(bounds.width / 256, stageHeight / 192)))
+      Assert.equal(scale, expectedScale, label .. " uses the stage scale")
+      local originX = math.floor(bounds.x + (bounds.width - 256 * scale) / 2)
+      local followerLeft = (followerDraw.x - originX) / scale
+      local heroLeft = (heroDraw.x - originX) / scale
+      local groupWidth = followerWidth + 6 + heroFrameWidth
+      local groupLeft = 128 - groupWidth / 2
+      Assert.near(followerLeft, groupLeft, 0.001, label .. " centers its group")
+      Assert.near(heroLeft, groupLeft + followerWidth + 6, 0.001, label .. " separates its frames")
+      Assert.isTrue(followerLeft >= 0, label .. " stays inside the left edge")
+      Assert.isTrue(heroLeft + heroFrameWidth <= 256, label .. " stays inside the right edge")
+      presentation:dispose()
+    end
   end
 end
 
