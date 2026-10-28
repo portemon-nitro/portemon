@@ -1021,7 +1021,7 @@ function T.boot_existing_with_one_ready_version_stages_the_menu_under_startup_ti
     Assert.equal(App.state.phase, "loading", "missing title assets keep the loading presentation visible")
     Assert.equal(App.state.stagedMenu, result.menus[1], "bootstrap constructs the product menu under title ownership")
     Assert.equal(result.provisionerDisposals, 0, "staging does not dispose its selected provisioner")
-    Assert.equal(result.warmups, 0, "near-priority prewarm waits until title readiness")
+    Assert.equal(result.warmups, 1, "the title entry authorizes background completion before readiness")
   end)
 end
 
@@ -1366,7 +1366,7 @@ end
 
 -- A fresh import stages the menu under the startup title; optional near
 -- work is deferred until the title assets become ready.
-function T.fresh_import_stages_menu_before_near_warmup()
+function T.fresh_import_authorizes_sweep_at_title_entry()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
@@ -1374,7 +1374,7 @@ function T.fresh_import_stages_menu_before_near_warmup()
     App.update(0.016)
     assertStagedStartupMenu(result)
     Assert.isTrue(App.state.initialImport, "the title knows this selection came from import")
-    Assert.equal(result.warmups, 0, "background sweep waits until menu handoff")
+    Assert.equal(result.warmups, 1, "the title entry authorizes background completion before the menu")
     result.startupTitleReady = true
     App.update(0.016)
     Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
@@ -1586,9 +1586,10 @@ function T.first_play_near_completion_publishes_only_on_success()
   end)
 end
 
--- Unknown generation leaves the title usable and waits without closure
--- requests; a later validated generation lets the near coordinator publish.
-function T.unknown_generation_waits_without_demands_during_title()
+-- Unknown generation leaves the title usable and gates only the first-play
+-- coordinator: speculative closure demands still issue at title entry, and
+-- a later validated generation lets the near coordinator publish.
+function T.unknown_generation_gates_first_play_but_not_speculative_demands()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
@@ -1605,7 +1606,15 @@ function T.unknown_generation_waits_without_demands_during_title()
     App.update(0.016)
     assertStagedStartupMenu(result)
     Assert.equal(#result.launches, 0, "title startup does not launch retail")
-    Assert.equal(#requests, 0, "no closure demand issues while the generation is unknown")
+    local entryNames, entryUrgencies = requestedMilestones(requests)
+    Assert.deepEqual(
+      entryNames,
+      { "field-planning", "field-runtime", "new-game-intro" },
+      "title entry issues the speculative intro and field closures without waiting on the generation"
+    )
+    for _, name in ipairs(entryNames) do
+      Assert.equal(entryUrgencies[name], "near", "title entry demand stays speculative for " .. name)
+    end
     result.startupTitleReady = true
     App.update(0.016)
     Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
@@ -1623,7 +1632,7 @@ function T.unknown_generation_waits_without_demands_during_title()
     Assert.deepEqual(
       names,
       { "field-planning", "field-runtime", "new-game-intro" },
-      "transfer demands the intro prefetch and both field closures"
+      "transfer adds no closure demand beyond the title entry set"
     )
     for _, name in ipairs(names) do
       Assert.equal(urgencies[name], "near", "transfer demand stays speculative for " .. name)
@@ -1712,9 +1721,9 @@ function T.fresh_import_menu_reuses_the_near_warmup_epoch()
   end)
 end
 
--- The title starts near work only after readiness; the menu handoff starts
+-- The title starts near work only after readiness; the title entry starts
 -- the one-time corpus sweep.
-function T.fresh_import_defers_near_work_until_title_and_sweep_until_menu()
+function T.fresh_import_defers_near_work_until_title_and_sweeps_from_title_entry()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
@@ -1728,7 +1737,7 @@ function T.fresh_import_defers_near_work_until_title_and_sweep_until_menu()
       App.update(0.016)
       assertStagedStartupMenu(result)
       Assert.equal(script.constructions, nil, "near coordinator waits for title readiness")
-      Assert.equal(result.warmups, 0, "background sweep waits until menu handoff")
+      Assert.equal(result.warmups, 1, "the title entry authorizes background completion")
       for _, selector in ipairs(requests) do
         Assert.isFalse(
           selector.requestKind == "complete",
@@ -1739,7 +1748,7 @@ function T.fresh_import_defers_near_work_until_title_and_sweep_until_menu()
       App.update(0.016)
       Assert.equal(script.constructions, 1, "title readiness starts near preparation")
       Assert.equal(#result.launches, 0, "title readiness does not launch retail")
-      Assert.equal(result.warmups, 0, "near preparation does not authorize corpus sweep")
+      Assert.equal(result.warmups, 1, "near preparation adds no second sweep authorization")
       finishStartupTitle(result)
       Assert.equal(#result.menus, 1)
       Assert.equal(result.warmups, 1, "menu handoff authorizes background completion exactly once")
@@ -1843,7 +1852,7 @@ function T.boot_existing_with_a_current_cache_and_no_source_skips_the_import()
       App.update(0.016)
       Assert.isNil(App.importer, "a current derived cache never prompts for its ROM")
       assertStagedStartupMenu(result)
-      Assert.equal(result.warmups, 0, "near-priority preparation waits until title readiness")
+      Assert.equal(result.warmups, 1, "the title entry authorizes background completion before readiness")
       Assert.equal(#result.launches, 0, "selecting a version installs the menu without starting retail")
     end)
   end)

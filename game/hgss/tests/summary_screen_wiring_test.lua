@@ -337,6 +337,16 @@ function T.preparation_demand_carries_exact_roster_portrait_selectors()
   Assert.deepEqual(demand.portraitSelectors, expected, "demand carries the exact roster portrait identities")
   Assert.deepEqual(demand.iconKeys, icons, "demand keeps its roster icon keys")
   Assert.isNil(demand.rosterPictureKeys, "demand no longer keys portraits by picture")
+  local chrome = assert(demand.chrome, "demand carries its chrome paths")
+  Assert.isTrue(#chrome >= 1, "roster demand names at least the selected ball visual")
+  local seen = {}
+  for _, path in ipairs(chrome) do
+    Assert.isTrue(type(path) == "string", "chrome paths arrive as strings")
+    Assert.isNil(seen[path], "chrome paths stay deduplicated: " .. path)
+    seen[path] = true
+  end
+  local ballVisual = "assets/generated/summary/syn-ball-poke-ball.png"
+  Assert.isTrue(seen[ballVisual] == true, "roster demand covers the party ball visual")
   state:dispose()
 end
 
@@ -364,6 +374,12 @@ function T.egg_only_demand_carries_no_portrait_selector()
   local demand = assert(captured[#captured], "the wrapper records its demand")
   Assert.deepEqual(demand.portraitSelectors, {}, "eggs request zero portrait pages")
   Assert.deepEqual(demand.iconKeys, { MonCache.iconSelector("EGG", 0, true) }, "egg demand keeps its icon key")
+  local eggChrome = assert(demand.chrome, "egg demand carries its chrome paths")
+  Assert.deepEqual(
+    eggChrome,
+    { "assets/generated/summary/syn-ball-poke-ball.png" },
+    "egg demand names only its ball visual"
+  )
   state:dispose()
 end
 

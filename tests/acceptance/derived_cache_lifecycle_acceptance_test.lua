@@ -505,7 +505,12 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
             "the explicit New Game entry requests its intro closure as required"
           )
           Assert.isNil(game.state.view, "New Game waits in preparation while the intro closure is pending")
+          -- The entry gate covers the intro, planning, and runtime
+          -- closures Oak and the handoff need eagerly; only the
+          -- map-geometry edge stays pending until the black handoff.
           introReady = true
+          planningReady = true
+          runtimeReady = true
           local oakState = nil
           local waited = 0
           while oakState == nil and waited < 120 do

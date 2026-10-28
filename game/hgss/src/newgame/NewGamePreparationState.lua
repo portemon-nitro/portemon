@@ -1,7 +1,14 @@
 -- Pending New Game ownership between the Main Menu intent and Oak
--- composition. It requests the semantic New Game intro milestone as
--- required, then transfers to the already-registered ready callback exactly
--- once. A reported failure raises directly: this state owns no error
+-- composition. It requests the semantic New Game intro milestone plus the
+-- field-planning and field-runtime milestones as required, then transfers
+-- to the already-registered ready callback exactly once. Planning is
+-- required because Oak eagerly stages the opening bedroom entry at
+-- composition, and that entry reads the world catalog planning publishes:
+-- gating on the intro alone lets Oak compose while the world is still
+-- pending and fails the handoff. Runtime is required because the field
+-- installs directly behind the handoff with no second preparation
+-- screen, and field construction eagerly reads runtime families such as
+-- the summary manifest. A reported failure raises directly: this state owns no error
 -- presentation of its own. Cancellation remains available while pending and
 -- returns to the menu without composing Oak or reserving a candidate; it
 -- never retires the selected generation's compiled output.
@@ -129,21 +136,50 @@ function NewGamePreparationState:update(dt)
   end
   self:_pollLoaderArt()
   -- The semantic host is a plain function table (dot calls, no self).
-  local ready, failure = self.derivedAssets.requestMilestone("new-game-intro", "required")
-  -- Progress is a read-only observation of the same milestone: it never
-  -- enrolls work and never substitutes for the readiness request above.
-  local progress = self.derivedAssets.milestoneStatus("new-game-intro")
-  assert(type(progress) == "table", "derived-asset progress is unavailable")
-  self.progress = {
-    state = progress.state,
-    ready = progress.ready,
-    total = progress.total,
-    failure = progress.failure,
-  }
-  if failure ~= nil then
-    error(failure, 0)
+  -- All three milestones gate the transfer: the intro covers Oak assets,
+  -- planning covers the world catalog the staged bedroom entry reads,
+  -- and runtime covers the families field construction eagerly loads
+  -- behind the handoff, which installs the field directly.
+  local introReady, introFailure = self.derivedAssets.requestMilestone("new-game-intro", "required")
+  local planningReady, planningFailure = self.derivedAssets.requestMilestone("field-planning", "required")
+  local runtimeReady, runtimeFailure = self.derivedAssets.requestMilestone("field-runtime", "required")
+  -- Progress is a read-only observation of the same milestones: it never
+  -- enrolls work and never substitutes for the readiness requests above.
+  -- The bar aggregates both closures; an unknown denominator on either
+  -- side carries no fraction.
+  local introProgress = self.derivedAssets.milestoneStatus("new-game-intro")
+  local planningProgress = self.derivedAssets.milestoneStatus("field-planning")
+  local runtimeProgress = self.derivedAssets.milestoneStatus("field-runtime")
+  assert(type(introProgress) == "table", "derived-asset progress is unavailable")
+  assert(type(planningProgress) == "table", "derived-asset progress is unavailable")
+  assert(type(runtimeProgress) == "table", "derived-asset progress is unavailable")
+  local readyCount = (type(introProgress.ready) == "number" and introProgress.ready or 0)
+    + (type(planningProgress.ready) == "number" and planningProgress.ready or 0)
+    + (type(runtimeProgress.ready) == "number" and runtimeProgress.ready or 0)
+  local totalCount = nil
+  if
+    type(introProgress.total) == "number"
+    and type(planningProgress.total) == "number"
+    and type(runtimeProgress.total) == "number"
+  then
+    totalCount = introProgress.total + planningProgress.total + runtimeProgress.total
   end
-  if ready then
+  self.progress = {
+    state = (introReady and planningReady and runtimeReady) and "ready" or "pending",
+    ready = readyCount,
+    total = totalCount,
+    failure = introFailure or planningFailure or runtimeFailure,
+  }
+  if introFailure ~= nil then
+    error(introFailure, 0)
+  end
+  if planningFailure ~= nil then
+    error(planningFailure, 0)
+  end
+  if runtimeFailure ~= nil then
+    error(runtimeFailure, 0)
+  end
+  if introReady and planningReady and runtimeReady then
     -- One genuine loader frame precedes the transfer: an otherwise ready
     -- entry never skips its visible stage. This latches only successful
     -- readiness, never readiness itself, and never delays requirement

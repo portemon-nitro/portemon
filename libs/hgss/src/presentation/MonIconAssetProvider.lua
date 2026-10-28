@@ -257,17 +257,16 @@ local function releaseUndemandedLeases(self, pages)
   end
 end
 
--- Adopts one staged page without enforcing the per-advance budget: the
--- caller polls progressively and stops after the first adoption, so at
--- most one new GPU page lands per preparation update while pending pages
--- keep polling without staging.
+-- Adopts every staged page whose worker payload is ready: the caller
+-- polls progressively and adopts all ready pages, so small icon atlases
+-- land together while pending pages keep polling without staging.
 
 -- Advances the demanded pages one step: every independent page enrolls
 -- its compilation readiness plus its shared-owner image request first, then
--- enrolled requests poll progressively with at most one new page adoption
--- per call. Returns whether the full key set is ready and the first page
--- failure, if any. Unknown keys fail the round as a visible error instead
--- of enrolling partial work. Pending rounds keep every adopted lease (last
+-- enrolled requests poll progressively and every ready page adopts.
+-- Returns whether the full key set is ready and the first page failure, if
+-- any. Unknown keys fail the round as a visible error instead of
+-- enrolling partial work. Pending rounds keep every adopted lease (last
 -- known good) and failed rounds change nothing, so replacing demand never
 -- strands a borrower mid-transition.
 ---@param iconKeys string[]
@@ -287,7 +286,6 @@ function MonIconAssetProvider:prepareKeys(iconKeys)
   end
   local allReady = true
   local firstFailure = nil
-  local adopted = false
   for _, pageId in ipairs(pages) do
     local state = assert(self._pages[pageId], "demand enrolls every page before polling")
     if self._leases[pageId] ~= nil then
@@ -297,7 +295,7 @@ function MonIconAssetProvider:prepareKeys(iconKeys)
       if firstFailure == nil then
         firstFailure = state.failure
       end
-    elseif state.token ~= nil and not adopted then
+    elseif state.token ~= nil then
       local status, cause = pool:poll(state.token)
       if status == "failed" then
         pool:cancel(state.token)
@@ -330,7 +328,6 @@ function MonIconAssetProvider:prepareKeys(iconKeys)
             width = lease.width,
             height = lease.height,
           }, ImageAssetPool.Lease)
-          adopted = true
         end
       else
         allReady = false

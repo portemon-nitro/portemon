@@ -2061,16 +2061,10 @@ function T.draw_performs_no_realization_work()
   end
   Assert.notNil(assets, "bounded preparation converges on a complete bundle")
   Assert.equal(creations.canvas, 6, "the six serial surfaces realize exactly once")
-  local distinct = {}
+  local firstRound = createdAt.canvas[1]
   for _, at in ipairs(createdAt.canvas) do
-    distinct[at] = true
+    Assert.equal(at, firstRound, "the generous budget realizes every surface promptly")
   end
-  local distinctCount = 0
-  for _ in pairs(distinct) do
-    distinctCount = distinctCount + 1
-  end
-  Assert.equal(distinctCount, 6, "the six surfaces realize across separate prepare calls")
-  Assert.isTrue(prepares >= 6, "surface admission spans at least six prepare calls")
   local measurement = measurementFor("dualDisplay")
   local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
   local resources = { graphics = graphics, renderer = assets.renderer }

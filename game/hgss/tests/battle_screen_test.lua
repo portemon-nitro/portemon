@@ -2113,4 +2113,98 @@ function T.keypad_focus_cursor_hides_after_pointer_input()
   rig.screen:dispose()
 end
 
+-- A pooled portrait cell flows its page window into the submitted
+-- picture: the detail pane draws the shared page texture while the
+-- picture record carries the cell's frame origin, size, and palette,
+-- so the isolated pass crops the staged cell instead of the whole page.
+function T.pooled_portrait_cells_submit_their_frame_window()
+  local modules = battleScreenModules("battler pictures carry their staged cell frame", RENDERER_MODULE)
+  local BattleRenderer = modules.renderer
+  local frame = { x = 320, y = 64, width = 80, height = 80 }
+  local submitted = {}
+  local pageImage = fakeDrawable("page")
+  local pagePalette = { handle = "page-palette" }
+  local cell = {
+    image = pageImage,
+    lease = { drawQuad = function() end, palette = pagePalette },
+    quad = { handle = "quad:mon" },
+    width = 80,
+    height = 80,
+    frameX = frame.x,
+    frameY = frame.y,
+    frameW = frame.width,
+    frameH = frame.height,
+  }
+  local assets = stubAssets({})
+  assets.images = {
+    ["mon:LEADMON"] = { frames = { cell } },
+    ["scene:test"] = fakeDrawable("scene:test"),
+  }
+  -- The renderer borrows with colon calls while the shared double
+  -- answers dot calls, so this composition names its borrower
+  -- explicitly.
+  function assets.drawable(_, key)
+    if assets.hold[key] then
+      return nil
+    end
+    if assets.images[key] == nil then
+      assets.images[key] = fakeDrawable(key)
+    end
+    return assets.images[key]
+  end
+  function assets.renderPictures(_, _, pictures)
+    for _, picture in ipairs(pictures) do
+      submitted[#submitted + 1] = picture
+    end
+    return { drawn = "layer" }
+  end
+  local graphics = FakeGraphics.new({})
+  local view = {
+    mode = "message",
+    battlers = {
+      {
+        combatant = 0,
+        side = 1,
+        position = 0,
+        active = true,
+        visible = true,
+        hudVisible = false,
+        portraitSelector = "LEADMON",
+        pictureVisible = true,
+        height = 0,
+        sourceHeight = 0,
+      },
+    },
+    slotGeometry = {
+      { sideType = 0, settledX = 192, settledY = 56, depth = 0, hudX = 58, hudY = 36 },
+      { sideType = 1, settledX = 64, settledY = 112, depth = 0, hudX = 192, hudY = 116 },
+    },
+    hudSections = {},
+    effectInstances = {},
+  }
+  BattleRenderer.drawPane({
+    graphics = graphics,
+    text = {},
+    windows = {},
+    assets = assets,
+    sceneImageKey = "scene:test",
+  }, view, "detail", {}, nil)
+  local pictures = {}
+  for _, picture in ipairs(submitted) do
+    if picture.image == pageImage then
+      pictures[#pictures + 1] = picture
+    end
+  end
+  Assert.equal(#pictures, 1, "the lead battler submits its portrait picture")
+  local picture = pictures[1]
+  local frameFields = { frameX = "x", frameY = "y", frameW = "width", frameH = "height" }
+  for _, field in ipairs({ "frameX", "frameY", "frameW", "frameH" }) do
+    Assert.equal(picture[field], frame[frameFields[field]], "the submitted picture carries the cell " .. field)
+  end
+  Assert.isTrue(
+    picture.palette == pagePalette,
+    "the submitted picture carries the page palette for indexed sampling"
+  )
+end
+
 return { tests = T }

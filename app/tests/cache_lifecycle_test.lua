@@ -231,7 +231,7 @@ local function newMenuService(events)
   end
   function service:request(_, selector)
     if selector.requestKind == "milestone" and selector.name == "new-game-intro" then
-      events[#events + 1] = "menu:near-prefetch"
+      events[#events + 1] = "warmup:near-prefetch"
     end
   end
   function service:observe(_, _)
@@ -727,10 +727,7 @@ function T.provisioner_wraps_a_selected_service_with_string_urgencies_and_retire
   end
 end
 
--- Menu installation authorizes background completion exactly once after the
--- Menu publication precedes the one-time prefetch and warmup authorization.
--- A failed menu constructor recovers to the selector without authorizing.
-function T.menu_installation_authorizes_warmup_only_after_publication()
+function T.menu_installation_starts_no_prefetch_or_warmup()
   local App = require("app.src.App")
   local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local Provisioner = require("app.src.DerivedAssetProvisioner")
@@ -793,8 +790,8 @@ function T.menu_installation_authorizes_warmup_only_after_publication()
   Assert.equal(launchedState, menu, "the app-owned menu becomes the process state")
   Assert.deepEqual(
     launchedEvents,
-    { "menu:new", "app:setState", "menu:near-prefetch", "provisioner:startBackgroundWarmup" },
-    "menu publication precedes prefetch and warmup authorization"
+    { "menu:new", "app:setState" },
+    "menu installation enrolls no prefetch: the title entry already warmed up"
   )
   Assert.isFalse(failOk, "a failed game constructor still surfaces its error")
   Assert.isTrue(
@@ -804,9 +801,9 @@ function T.menu_installation_authorizes_warmup_only_after_publication()
   Assert.equal(failedSelectorShown, 1, "a failed launch recovers to the version selector")
 end
 
--- Menu installation authorizes background warmup after the state handoff
--- through the owner-only seam. The game host never carries the control.
-function T.menu_installation_authorizes_background_warmup_after_state_handoff()
+-- Menu installation performs no background authorization: the title entry
+-- owns the owner-only warmup seam. The game host never carries the control.
+function T.menu_installation_starts_no_background_warmup()
   local App = require("app.src.App")
   local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local Provisioner = require("app.src.DerivedAssetProvisioner")
@@ -856,10 +853,10 @@ function T.menu_installation_authorizes_background_warmup_after_state_handoff()
   Assert.equal(launchedState, menu, "the app-owned menu becomes the process state")
   Assert.deepEqual(
     events,
-    { "menu:new", "app:setState", "menu:near-prefetch", "provisioner:startBackgroundWarmup" },
-    "menu publication precedes prefetch and warmup authorization"
+    { "menu:new", "app:setState" },
+    "menu installation authorizes no background work: the title entry owns it"
   )
-  Assert.equal(enabled, 1, "a successful launch authorizes the background cursor once")
+  Assert.equal(enabled, 0, "a successful menu install authorizes no background cursor")
 end
 
 -- Selection/import ownership through the real production composition: the
