@@ -2022,6 +2022,11 @@ end
 ---@return table upload-capable graphics namespace
 local function uploadCapableGraphics()
   local graphics = {}
+  -- Pooled portrait cells address a window of their shared page, so the
+  -- collaborator answers host quad construction like the real driver.
+  function graphics.newQuad(x, y, w, h, imgW, imgH)
+    return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
+  end
   function graphics.newImage(_)
     local handle = {}
     function handle.setFilter(...) end
@@ -3013,10 +3018,11 @@ end
 ---@param versionId string
 ---@param measurement table
 ---@param graphicsOverride table? failing graphics namespace under fault driving
+---@param poolOverride table? failing shared image owner under fault driving
 ---@return table envelope
 ---@return integer binding
 ---@return table doubles
-local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOverride)
+local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOverride, poolOverride)
   local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
   local worker = { ready = true, failure = nil }
   local derivedAssets = {}
@@ -3034,7 +3040,7 @@ local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOv
       return measurement
     end,
     graphics = graphicsOverride or uploadCapableGraphics(),
-    imagePool = scriptedPool(),
+    imagePool = poolOverride or scriptedPool(),
     derivedAssets = derivedAssets,
   })
   local ports = {}
@@ -3316,22 +3322,22 @@ end
 -- Deferred pre-commit faults fault the runtime with their original cause:
 -- a construction failure, an asset-upload failure, and a port-present
 -- exception each raise through the field update instead of restoring the
--- field. Real screen draw failures are covered at active and terminal phases
--- by failed_screen_faults_the_runtime.
+-- field. The upload failure is injected at the shared image owner, which
+-- owns every staged decode and upload behind a presented launch. Real
+-- screen draw failures are covered at active and terminal phases by
+-- failed_screen_faults_the_runtime.
 function T.scheduled_precommit_faults_raise_their_original_cause()
   local points = { "construction", "upload", "present" }
   for _, versionId in ipairs(readyVersions()) do
     for _, point in ipairs(points) do
       local runtime = bootRuntime(versionId)
       local graphics = uploadCapableGraphics()
+      local pool = nil
       if point == "upload" then
-        graphics = {}
-        function graphics.newImage(_)
-          error("probe upload failure", 0)
-        end
+        pool = scriptedPool("probe upload failure")
       end
       local envelope, binding, _ =
-        bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-precommit:" .. point), graphics)
+        bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-precommit:" .. point), graphics, pool)
       local ScreenState = require("game.hgss.src.battle.BattleScreenState")
       local realNew = ScreenState.new
       if point == "construction" then

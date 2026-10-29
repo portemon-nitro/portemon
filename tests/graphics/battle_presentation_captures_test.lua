@@ -3009,6 +3009,7 @@ function T.indexed_portrait_page_resolves_through_its_staged_palette(scope, _)
   local layer = pass:render(love.graphics, {
     {
       image = pageImage,
+      imageKind = "r8",
       palette = paletteImage,
       centerX = 128,
       centerY = 96,
@@ -3037,6 +3038,7 @@ function T.indexed_portrait_page_resolves_through_its_staged_palette(scope, _)
   local cropLayer = pass:render(love.graphics, {
     {
       image = pageImage,
+      imageKind = "r8",
       palette = paletteImage,
       centerX = 128,
       centerY = 96,

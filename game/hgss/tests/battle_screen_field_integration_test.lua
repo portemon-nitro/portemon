@@ -348,6 +348,11 @@ end
 ---@return table upload-capable graphics namespace
 local function uploadCapableGraphics()
   local graphics = {}
+  -- Pooled portrait cells address a window of their shared page, so the
+  -- collaborator answers host quad construction like the real driver.
+  function graphics.newQuad(x, y, w, h, imgW, imgH)
+    return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
+  end
   function graphics.newImage(source)
     local handle = {}
     function handle.setFilter(...) end
