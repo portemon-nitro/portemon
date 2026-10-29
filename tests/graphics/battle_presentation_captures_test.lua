@@ -954,6 +954,189 @@ local function renderCapture(scope, screen, width, height)
   return scope:own(canvas:newImageData())
 end
 
+local function withCondition(packet, condition, packetId)
+  packet.packetId = packetId
+  packet.after.foes[1].condition = condition
+  packet.events = {
+    {
+      sequence = packetId,
+      kind = "status",
+      payload = { target = packet.after.foes[1].combatant, key = condition },
+    },
+  }
+  return packet
+end
+
+local function presentCondition(screen, packet, condition, packetId)
+  screen:presentationPort().present(withCondition(packet, condition, packetId))
+  local target = packet.after.foes[1].combatant
+  for _ = 1, 240 do
+    screen:updateFixed(TICK)
+    for _, battler in ipairs(screen:_snapshot().battlers) do
+      if battler.combatant == target and battler.condition == condition then
+        return
+      end
+    end
+  end
+  Assert.isTrue(false, "the displayed battler condition commits as " .. condition .. " before HUD capture")
+end
+
+local function assertStatusSourceFamilies(cacheFs, versionId)
+  local manifest = BattlePresentationCache.load(cacheFs)
+  local patchSpans = assert(manifest.hud.patchSpans, versionId .. " carries source HUD patch spans")
+  local firstStatusSpan = assert(patchSpans.status[1], versionId .. " carries status component destinations")
+  local expected = {
+    { key = "sleep", tiles = { 53, 54, 55 } },
+    { key = "burn", tiles = { 41, 42, 43 } },
+  }
+  for _, status in ipairs(expected) do
+    local patches = BattleScene.hudIconPatchTiles(patchSpans, firstStatusSpan.sideType, status.key, nil, nil)
+    Assert.equal(#patches, #status.tiles, versionId .. " selects three source status tiles for " .. status.key)
+    for index, tile in ipairs(status.tiles) do
+      Assert.equal(
+        patches[index].sourceTile,
+        tile,
+        versionId .. " selects the " .. status.key .. " source tile " .. tostring(tile)
+      )
+    end
+  end
+end
+
+local function statusTileDistance(data, componentBase, firstTile, secondTile)
+  local changed = 0
+  for y = 0, 7 do
+    for x = 0, 7 do
+      local r1, g1, b1, a1 = data:getPixel((componentBase + firstTile) * 8 + x, y)
+      local r2, g2, b2, a2 = data:getPixel((componentBase + secondTile) * 8 + x, y)
+      if
+        quantize(r1) ~= quantize(r2)
+        or quantize(g1) ~= quantize(g2)
+        or quantize(b1) ~= quantize(b2)
+        or quantize(a1) ~= quantize(a2)
+      then
+        changed = changed + 1
+      end
+    end
+  end
+  return changed
+end
+
+local function assertStatusStripPixels(scope, cacheFs, versionId)
+  local manifest = BattlePresentationCache.load(cacheFs)
+  local strips = {
+    { key = "single", section = manifest.hud.enemy },
+    { key = "double", section = manifest.hud.doubles.enemyLeft },
+  }
+  for _, strip in ipairs(strips) do
+    local section = assert(strip.section, versionId .. " carries its " .. strip.key .. " enemy HUD strip")
+    local data = decodeData(scope, cacheFs, section.image, versionId .. " " .. strip.key .. " enemy HUD strip")
+    local componentBase = assert(section.componentBase, versionId .. " stages HUD source components")
+    local changes = 0
+    for offset = 0, 2 do
+      changes = changes + statusTileDistance(data, componentBase, 53 + offset, 41 + offset)
+    end
+    Assert.isTrue(changes > 0, versionId .. " stages distinct sleep and burn pixels in the " .. strip.key .. " HUD")
+  end
+end
+
+local function patchRect(section, tile, anchorX, anchorY, scale)
+  local animation = assert(section.animation, "HUD section carries its source animation")
+  local firstFrame = assert(animation.frames[1], "HUD animation carries its opening frame")
+  local cell = assert(section.cells[firstFrame.cell + 1], "HUD opening frame selects a source cell")
+  for _, object in ipairs(cell.objs) do
+    if not object.disabled then
+      local columns = object.width / 8
+      local offset = tile - object.tile
+      if offset >= 0 and offset < columns * (object.height / 8) then
+        return {
+          x = anchorX + (object.x + offset % columns * 8) * scale,
+          y = anchorY + (object.y + math.floor(offset / columns) * 8) * scale,
+          width = 8 * scale,
+          height = 8 * scale,
+        }
+      end
+    end
+  end
+  error("status destination tile belongs to an enabled source HUD object", 0)
+end
+
+local function statusPatchCrop(section, patches, anchorX, anchorY, scale)
+  local crop = { x = math.huge, y = math.huge, width = 0, height = 0 }
+  local right, bottom = -math.huge, -math.huge
+  for _, patch in ipairs(patches) do
+    local rect = patchRect(section, patch.tile, anchorX, anchorY, scale)
+    crop.x = math.min(crop.x, rect.x)
+    crop.y = math.min(crop.y, rect.y)
+    right = math.max(right, rect.x + rect.width)
+    bottom = math.max(bottom, rect.y + rect.height)
+  end
+  crop.width = right - crop.x
+  crop.height = bottom - crop.y
+  return crop
+end
+
+local function assertNativeStatusCrop(screen, cacheFs, detailFrame, condition, versionId)
+  local snapshot = screen:_snapshot()
+  local manifest = BattlePresentationCache.load(cacheFs)
+  local battler
+  for _, candidate in ipairs(snapshot.battlers) do
+    if candidate.combatant == 2 then
+      battler = candidate
+      break
+    end
+  end
+  local sideType = assert(battler and battler.sideType, versionId .. " publishes native foe side type")
+  local row
+  for _, candidate in ipairs(snapshot.slotGeometry) do
+    if candidate.sideType == sideType then
+      row = candidate
+      break
+    end
+  end
+  local section = assert(manifest.hud.doubles.enemyLeft, versionId .. " stages the left foe HUD")
+  local patches = BattleScene.hudIconPatchTiles(manifest.hud.patchSpans, sideType, condition, nil, nil)
+  Assert.equal(#patches, 3, versionId .. " emits all three native status tile patches")
+  assert(row ~= nil, versionId .. " resolves native foe slot geometry")
+  local crop = statusPatchCrop(section, patches, detailFrame.x + row.hudX, detailFrame.y + row.hudY, 1)
+  Assert.isTrue(
+    crop.x >= detailFrame.x
+      and crop.y >= detailFrame.y
+      and crop.x + crop.width <= detailFrame.x + detailFrame.width
+      and crop.y + crop.height <= detailFrame.y + detailFrame.height,
+    versionId .. " native status destinations fit inside the detail pane"
+  )
+  return crop
+end
+
+local function assertCompactStatusCrop(screen, cacheFs, condition, versionId)
+  local snapshot = screen:_snapshot()
+  local plan = livePlan(screen, versionId)
+  local manifest = BattlePresentationCache.load(cacheFs)
+  local side = assert(plan.content.hud.enemy, versionId .. " plans compact foe HUD")
+  local section = assert(manifest.hud.enemy, versionId .. " stages compact foe HUD")
+  local cell = assert(section.cells[section.animation.frames[1].cell + 1], "compact HUD selects its opening cell")
+  local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+  for _, object in ipairs(cell.objs) do
+    if not object.disabled then
+      left = math.min(left, object.x)
+      top = math.min(top, object.y)
+      right = math.max(right, object.x + object.width)
+      bottom = math.max(bottom, object.y + object.height)
+    end
+  end
+  local scale = math.min(side.width / (right - left), side.height / (bottom - top))
+  local originX = side.x + (side.width - (right - left) * scale) / 2 - left * scale
+  local originY = side.y + (side.height - (bottom - top) * scale) / 2 - top * scale
+  local patches = BattleScene.hudIconPatchTiles(manifest.hud.patchSpans, 1, condition, nil, nil)
+  Assert.equal(#patches, 3, versionId .. " emits all three compact status tile patches")
+  local crop = statusPatchCrop(section, patches, originX, originY, scale)
+  Assert.isTrue(
+    crop.x >= 0 and crop.y >= 0 and crop.x + crop.width <= 256 and crop.y + crop.height <= 192,
+    versionId .. " compact status destinations fit inside the captured screen"
+  )
+  return crop
+end
+
 local function captureRoot()
   local runDir = os.getenv("PORTEMON_TEST_RUN_DIR")
   if runDir ~= nil and runDir ~= "" then
@@ -1381,6 +1564,56 @@ end
 -- their staged source strips, and every published HUD wording prints ink
 -- inside its own region while pixels outside the published regions still
 -- match only scene, strip, or portrait sources.
+function T.sleep_and_burn_render_distinct_native_and_compact_status_pixels(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("status pixel comparison needs a ready user-owned ROM with staged battle assets")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    assertStatusSourceFamilies(cacheFs, versionId)
+    assertStatusStripPixels(scope, cacheFs, versionId)
+    local native = captureScreen(scope, cacheFs, versionId, dualMeasurement())
+    drivePacketToCommand(native, versionId, doubledBattlePacket(), "trainer")
+    presentCondition(native, doubledBattlePacket(), "sleep", 2)
+    local nativeSleep = renderCapture(scope, native, 256, 384)
+    presentCondition(native, doubledBattlePacket(), "burn", 3)
+    local nativeBurn = renderCapture(scope, native, 256, 384)
+    local nativePlan = livePlan(native, versionId)
+    local detailFrame
+    for _, pane in ipairs(nativePlan.panes) do
+      if pane.id == "detail" then
+        detailFrame = assert(pane.placement.frame, versionId .. " places its native detail pane")
+      end
+    end
+    assert(detailFrame ~= nil, versionId .. " publishes its native detail pane")
+    local nativeStatusCrop = assertNativeStatusCrop(native, cacheFs, detailFrame, "sleep", versionId)
+    assertNativeStatusCrop(native, cacheFs, detailFrame, "burn", versionId)
+    local nativeChanged = regionDistance(nativeSleep, nativeBurn, nativeStatusCrop, 1)
+    native:dispose()
+
+    local compact = captureScreen(scope, cacheFs, versionId, compactMeasurement())
+    drivePacketToCommand(compact, versionId, openingPacket())
+    presentCondition(compact, openingPacket(), "sleep", 2)
+    local compactStatusCrop = assertCompactStatusCrop(compact, cacheFs, "sleep", versionId)
+    local compactSleep = renderCapture(scope, compact, 256, 192)
+    presentCondition(compact, openingPacket(), "burn", 3)
+    assertCompactStatusCrop(compact, cacheFs, "burn", versionId)
+    local compactBurn = renderCapture(scope, compact, 256, 192)
+    local compactChanged = regionDistance(compactSleep, compactBurn, compactStatusCrop, 1)
+    Assert.isTrue(
+      nativeChanged > 8 and compactChanged > 2,
+      versionId
+        .. " renders distinct SLP and BRN status pixels (native "
+        .. tostring(nativeChanged)
+        .. ", compact "
+        .. tostring(compactChanged)
+        .. ")"
+    )
+    compact:dispose()
+  end
+end
+
 function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, context)
   local versions = readyVersions()
   if #versions == 0 then
