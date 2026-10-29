@@ -1053,6 +1053,51 @@ function FieldBattleCoordinator:_fieldBattleEnvironment()
   }
 end
 
+-- Publishes the already computed battle-scene prediction for idle
+-- presentation warmup: the memoized key survives only while the
+-- committed map, tile, and surface still match the prefetch snapshot
+-- and no accepted launch owns the field. Read-only: it never
+-- recomputes the environment, never queues derived work, and never
+-- synthesizes a scene before the first prefetch.
+---@return string? memoized valid scene key, nil when stale, launched, or absent
+function FieldBattleCoordinator:predictedSceneKey()
+  if self._disposed then
+    return nil
+  end
+  if self._battleLaunch ~= nil then
+    return nil
+  end
+  local memo = self._prefetchSceneKey
+  if type(memo) ~= "string" or memo == "" then
+    return nil
+  end
+  local runtime = self.runtime
+  if type(runtime) ~= "table" then
+    return nil
+  end
+  local session = runtime.session
+  local player = runtime.player
+  if type(session) ~= "table" or type(player) ~= "table" then
+    return nil
+  end
+  if session.currentMap == nil then
+    return nil
+  end
+  if
+    self._prefetchMap ~= session.currentMap
+    or self._prefetchX ~= player.fieldX
+    or self._prefetchZ ~= player.fieldZ
+    or self._prefetchSurface ~= player.surfaceId
+  then
+    return nil
+  end
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  if BattlePresentationCache.parseSceneKey(memo) == nil then
+    return nil
+  end
+  return memo
+end
+
 -- Queues the battle scene the next encounter at the committed tile would
 -- launch at near urgency, so the shared battle catalog behind every scene
 -- builds before an encounter holds the field. Only presented battles need

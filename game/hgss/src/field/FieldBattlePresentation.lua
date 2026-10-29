@@ -35,6 +35,13 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _pendingUploads table<string, integer> pre-enrolled pool tickets by staged image path behind the pending build
 ---@field _enrolledUploads table<string, boolean> staged image paths already enrolled this launch
 ---@field _warmPinned table<string, FieldBattlePresentation.PooledHandle> scene-independent borrows kept across launches
+---@field _warmPaths table<string, string> staged image path behind each warm pin, for exact reuse matching
+---@field _warmTickets { key: string, path: string, token: integer }[] pending speculative pool tickets in enrollment order
+---@field _warmDesired string? predicted scene key the speculative ledger currently serves
+---@field _warmFailed table<string, string> latched speculative failures by staged image path for the desired scene
+---@field _warmBg3Key string? scene key behind the staged speculative BG3 source values
+---@field _warmBg3 table<string, unknown>? staged speculative BG3 characters/map/palette source values by exact scene
+---@field _warmFailure string? last attributable idle warmup diagnostic, never raised into field update
 ---@field _manifestDocs table<string, table<string, unknown>> parsed staged documents by cache-relative path
 ---@field _stagedMembersOk boolean true once the staged menu, HUD, font, and audio membership validated
 ---@field _measureDisplay fun(): table<string, unknown> live display facts
@@ -198,10 +205,90 @@ local function stagedDoc(envelope, path)
   return doc
 end
 
+-- The exact drawable keys forming one predicted scene group, in stable
+-- adoption order: the scene image first, then its intro and terrain art.
+-- These are the same keys the launch preparation resolves, so a warmed
+-- group answers through the canonical drawable without a second owner.
+---@param sceneKey string validated scene key behind the group
+---@return string[] exact scene-group drawable keys in adoption order
+local function warmSceneKeys(sceneKey)
+  return {
+    "scene:" .. sceneKey,
+    "scene-intro:" .. sceneKey,
+    "scene-terrain:" .. sceneKey .. ":player",
+    "scene-terrain:" .. sceneKey .. ":foe",
+  }
+end
+
+-- Names the scene behind one scene-group drawable key, or nil for fixed
+-- and foreign keys. Only exact canonical shapes resolve, so a guessed
+-- variant never retires or reuses another scene's pins.
+---@param key string drawable key under inspection
+---@return string? owning scene key, nil unless the key names one exactly
+local function warmSceneOfKey(key)
+  local text = tostring(key)
+  local scene = text:match("^scene:(.+)$")
+  if scene ~= nil and BattlePresentationCache.parseSceneKey(scene) ~= nil then
+    return scene
+  end
+  scene = text:match("^scene%-intro:(.+)$")
+  if scene ~= nil and BattlePresentationCache.parseSceneKey(scene) ~= nil then
+    return scene
+  end
+  local playerScene = text:match("^scene%-terrain:(.+):player$")
+  if playerScene ~= nil and BattlePresentationCache.parseSceneKey(playerScene) ~= nil then
+    return playerScene
+  end
+  local foeScene = text:match("^scene%-terrain:(.+):foe$")
+  if foeScene ~= nil and BattlePresentationCache.parseSceneKey(foeScene) ~= nil then
+    return foeScene
+  end
+  return nil
+end
+
+-- Whether one scene group reads fully warm: every exact group key holds
+-- its pin. Only a complete successor retires its predecessor, so a
+-- pending replacement never deletes the last usable scene record.
+---@param envelope FieldBattlePresentation
+---@param sceneKey string predicted scene key under inspection
+---@return boolean complete
+local function warmGroupComplete(envelope, sceneKey)
+  for _, groupKey in ipairs(warmSceneKeys(sceneKey)) do
+    if envelope._warmPinned[groupKey] == nil then
+      return false
+    end
+  end
+  return true
+end
+
+-- Retires every other scene's group pins once the kept scene reads fully
+-- warm: each superseded lease returns to the shared owner exactly once.
+-- Fixed art stays scene-independent. Runs only from idle adoption, never
+-- while a real launch owns the envelope.
+---@param envelope FieldBattlePresentation
+---@param keepScene string completed scene group surviving the retirement
+local function retireWarmGroups(envelope, keepScene)
+  local pool = envelope._pool
+  for key, record in pairs(envelope._warmPinned) do
+    local scene = warmSceneOfKey(key)
+    if scene ~= nil and scene ~= keepScene then
+      envelope._warmPinned[key] = nil
+      if envelope._warmPaths ~= nil then
+        envelope._warmPaths[key] = nil
+      end
+      if pool ~= nil and record ~= nil then
+        pcall(pool.release, pool, record.lease)
+      end
+    end
+  end
+end
+
 -- Pins one resolved pooled borrow at the envelope lifetime: fixed
--- drawables and the most recent scene image survive launch disposal,
--- while any other pinned scene image is evicted first so the pin set
--- stays bounded by the fixed keys plus one scene.
+-- drawables and one complete scene group survive launch disposal. A
+-- newly pinned scene key never evicts its predecessor on its own: the
+-- prior scene's group retires only once the successor group reads
+-- fully warm, so a mid-replacement launch never strands a split group
+-- of half-old, half-new scene art.
 ---@param envelope FieldBattlePresentation
 ---@param key string drawable key behind the installed borrow
 local function pinWarm(envelope, key)
@@ -209,20 +296,62 @@ local function pinWarm(envelope, key)
     envelope._warmPinned[key] = envelope._leases[key]
     return
   end
-  local sceneKey = key:match("^scene:(.+)$")
-  if sceneKey == nil or BattlePresentationCache.parseSceneKey(sceneKey) == nil then
+  local scene = warmSceneOfKey(key)
+  if scene == nil then
     return
   end
-  for pinnedKey, record in pairs(envelope._warmPinned) do
-    if pinnedKey ~= key and pinnedKey:match("^scene:") ~= nil then
-      envelope._warmPinned[pinnedKey] = nil
-      local pool = envelope._pool
-      if pool ~= nil then
-        pcall(pool.release, pool, record.lease)
-      end
+  envelope._warmPinned[key] = envelope._leases[key]
+  if warmGroupComplete(envelope, scene) then
+    retireWarmGroups(envelope, scene)
+  end
+end
+
+-- Enrolls one prefetch ticket per missing entry; adopted pins and live
+-- tickets never re-enroll, and latched failures stay quiet until the
+-- prediction changes. A pin behind a changed path releases once here
+-- before its replacement enrolls. Enrolled paths mark the launch
+-- enrollment ledger so the matching foreground demand takes over the
+-- ticket instead of stacking a second enrollment behind it.
+---@param envelope FieldBattlePresentation
+---@param pool table<string, unknown> borrowed shared generated-image owner
+---@param entries { key: string, path: string }[] key/path pairs in adoption order
+---@param ticketed table<string, boolean> keys already holding a live ticket
+local function enrollWarmEntries(envelope, pool, entries, ticketed)
+  for _, entry in ipairs(entries) do
+    local pinned = envelope._warmPinned[entry.key] ---@type FieldBattlePresentation.PooledHandle?
+    if pinned ~= nil and envelope._warmPaths[entry.key] ~= entry.path then
+      envelope._warmPinned[entry.key] = nil
+      envelope._warmPaths[entry.key] = nil
+      pcall(pool.release, pool, pinned.lease)
+      pinned = nil
+    end
+    if pinned == nil and ticketed[entry.key] ~= true and envelope._warmFailed[entry.path] == nil then
+      local token = pool:request(entry.path, POOLED_SAMPLER, "prefetch")
+      envelope._warmTickets[#envelope._warmTickets + 1] = { key = entry.key, path = entry.path, token = token }
+      ticketed[entry.key] = true
+      envelope._enrolledUploads[entry.path] = true
     end
   end
-  envelope._warmPinned[key] = envelope._leases[key]
+end
+
+-- Cancels every outstanding speculative ticket exactly once and forgets
+-- it: a late worker response for an abandoned ticket can never publish
+-- into a newer prediction, and a cancelled token is never consumed.
+-- Adopted pins and launch tickets are untouched.
+---@param envelope FieldBattlePresentation
+local function cancelWarmTickets(envelope)
+  local tickets = envelope._warmTickets
+  envelope._warmTickets = {}
+  if tickets == nil then
+    return
+  end
+  local pool = envelope._pool
+  if pool == nil then
+    return
+  end
+  for _, ticket in ipairs(tickets) do
+    pcall(pool.cancel, pool, ticket.token)
+  end
 end
 
 -- Enrolls one staged image decode on the shared owner without waiting:
@@ -616,6 +745,8 @@ function FieldBattlePresentation.new(opts)
     _pendingUploads = {},
     _enrolledUploads = {},
     _warmPinned = {},
+    _warmPaths = {},
+    _warmTickets = {},
     _manifestDocs = {},
     _stagedMembersOk = false,
     _pool = opts.imagePool,
@@ -690,6 +821,21 @@ end
 ---@return table<string, unknown>? resolved drawable lease, nil on terminal failure
 ---@return string? terminal failure naming the key and path, nil on success
 local function acquirePooled(envelope, key, path, token)
+  -- A matching warm pin answers with no new borrow: the envelope owns
+  -- the borrow across launches, and the scene staging closure calls
+  -- here directly instead of through the drawable fast path. An
+  -- orphaned launch ticket behind the hit is cancelled instead of
+  -- retained unclaimed.
+  local pinned = envelope._warmPinned[key]
+  if pinned ~= nil and envelope._warmPaths ~= nil and envelope._warmPaths[key] == path then
+    if token ~= nil then
+      local pool = envelope._pool
+      if pool ~= nil then
+        pcall(pool.cancel, pool, token)
+      end
+    end
+    return pinned.handle
+  end
   -- A pre-enrolled ticket from preparation rides instead of a fresh
   -- request so the drawable awaits the shared decode instead of
   -- stacking a second enrollment behind it.
@@ -703,6 +849,10 @@ local function acquirePooled(envelope, key, path, token)
   assert(lease.image, "shared borrows carry their resolved image")
   envelope._leases[key] = { lease = lease, handle = lease }
   pinWarm(envelope, key)
+  if envelope._warmPinned[key] ~= nil then
+    envelope._warmPaths = envelope._warmPaths or {}
+    envelope._warmPaths[key] = path
+  end
   return lease
 end
 
@@ -1345,9 +1495,28 @@ function FieldBattlePresentation:_preparationServices()
         if stagedSceneKey ~= sceneKey then
           local previousSceneKey = stagedSceneKey
           local layer = record.layers[1]
-          local characters = cacheFs:read(layer.characters.path)
-          local map = cacheFs:loadLua(layer.map.path)
-          local palette = cacheFs:loadLua(layer.palette.path)
+          -- An idle-warmed exact scene reuses its staged BG3 source
+          -- values instead of rereading them; anything else takes the
+          -- original read path with its validation intact. The key match
+          -- is never trusted alone: the staged values revalidate below.
+          local warmStage = envelope._warmBg3
+          local characters, map, palette ---@type string?, table?, table?
+          if
+            warmStage ~= nil
+            and envelope._warmBg3Key == sceneKey
+            and warmStage.sceneKey == sceneKey
+            and type(warmStage.characters) == "string"
+            and type(warmStage.map) == "table"
+            and type(warmStage.palette) == "table"
+          then
+            characters = warmStage.characters --[[@as string]]
+            map = warmStage.map --[[@as table]]
+            palette = warmStage.palette --[[@as table]]
+          else
+            characters = cacheFs:read(layer.characters.path)
+            map = cacheFs:loadLua(layer.map.path)
+            palette = cacheFs:loadLua(layer.palette.path)
+          end
           if type(characters) ~= "string" or type(map) ~= "table" or type(palette) ~= "table" then
             return nil, "battle scene BG3 payload is not staged: " .. tostring(sceneKey)
           end
@@ -1360,6 +1529,16 @@ function FieldBattlePresentation:_preparationServices()
             end
           end
           local introKey = "scene-intro:" .. sceneKey
+          -- The warm pins this attempt did not create: a failed attempt
+          -- below drops only pins it installed itself, so a pre-existing
+          -- complete group survives while partial debris from the failure
+          -- returns to the shared owner exactly once. A failed launch is
+          -- never a valid successor, so its partial group must not linger
+          -- as warm state.
+          local warmBefore = {} ---@type table<string, boolean>
+          for pinnedKey in pairs(envelope._warmPinned) do
+            warmBefore[pinnedKey] = true
+          end
           local introDrawable, introFailure = acquirePooled(envelope, introKey, intro.image)
           if introDrawable == nil then
             return nil, assert(introFailure, "scene intro lease failures carry a reason")
@@ -1367,14 +1546,44 @@ function FieldBattlePresentation:_preparationServices()
           local playerKey = "scene-terrain:" .. sceneKey .. ":player"
           local playerDrawable, playerFailure = acquirePooled(envelope, playerKey, sprites.player.image)
           if playerDrawable == nil then
-            services.release(introKey)
+            -- A failed attempt returns its own partial pins to the shared
+            -- owner: services.release forgets the launch lease but retains
+            -- the pin by design, so an attempt-installed pin is dropped
+            -- here before its borrow is returned. Pins the attempt only
+            -- reused (already present above) stay warm.
+            for _, key in ipairs({ introKey }) do
+              services.release(key)
+              local attemptPin = envelope._warmPinned[key]
+              if attemptPin ~= nil and warmBefore[key] == nil then
+                envelope._warmPinned[key] = nil
+                if envelope._warmPaths ~= nil then
+                  envelope._warmPaths[key] = nil
+                end
+                local attemptPool = envelope._pool
+                if attemptPool ~= nil then
+                  pcall(attemptPool.release, attemptPool, attemptPin.lease)
+                end
+              end
+            end
             return nil, assert(playerFailure, "player terrain lease failures carry a reason")
           end
           local foeKey = "scene-terrain:" .. sceneKey .. ":foe"
           local foeDrawable, foeFailure = acquirePooled(envelope, foeKey, sprites.foe.image)
           if foeDrawable == nil then
-            services.release(introKey)
-            services.release(playerKey)
+            for _, key in ipairs({ introKey, playerKey }) do
+              services.release(key)
+              local attemptPin = envelope._warmPinned[key]
+              if attemptPin ~= nil and warmBefore[key] == nil then
+                envelope._warmPinned[key] = nil
+                if envelope._warmPaths ~= nil then
+                  envelope._warmPaths[key] = nil
+                end
+                local attemptPool = envelope._pool
+                if attemptPool ~= nil then
+                  pcall(attemptPool.release, attemptPool, attemptPin.lease)
+                end
+              end
+            end
             return nil, assert(foeFailure, "foe terrain lease failures carry a reason")
           end
           stagedSceneKey = sceneKey
@@ -2093,6 +2302,248 @@ function FieldBattlePresentation:preparedDemands()
   return self._preparedDemands
 end
 
+-- Advances idle speculation for one predicted scene without blocking the
+-- field: near-urgency semantic demand, bounded prefetch tickets, and at
+-- most one pool adoption per granted GPU allowance. Answers whether this
+-- call consumed the one shared idle realization, plus an attributable
+-- failure naming scene, key, and path. Settles quietly when prerequisites
+-- are missing or the group reads fully warm; never raises into the field
+-- update. Never enrolls synchronous borrows: tickets request and poll
+-- explicitly, and adoption publishes the canonical warm-pin record.
+---@param sceneKey string predicted scene key under warming
+---@param gpuAllowance integer 1 when the shared idle slot is still free, 0 otherwise
+---@return boolean usedGpu true once a ready image pair was adopted
+---@return string? failure attributable idle diagnostic, nil when quiet
+function FieldBattlePresentation:advanceWarmup(sceneKey, gpuAllowance)
+  local ok, used, failure = pcall(FieldBattlePresentation._advanceWarmupInner, self, sceneKey, gpuAllowance)
+  if ok then
+    if failure ~= nil then
+      self._warmFailure = failure
+    end
+    return used == true, failure
+  end
+  local cause = "battle warmup " .. tostring(sceneKey) .. " failed: " .. tostring(used)
+  self._warmFailure = cause
+  return false, cause
+end
+
+---@param sceneKey string predicted scene key under warming
+---@param gpuAllowance integer shared idle realization allowance
+---@return boolean usedGpu
+---@return string? failure
+function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowance)
+  if self._disposed then
+    return false, nil
+  end
+  if self._launchId ~= nil then
+    return false, nil
+  end
+  local pool = self._pool
+  if self._graphics == nil or pool == nil then
+    return false, nil
+  end
+  if type(sceneKey) ~= "string" or BattlePresentationCache.parseSceneKey(sceneKey) == nil then
+    return false, nil
+  end
+  local host = self._derivedAssets
+  if type(host) ~= "table" then
+    return false, nil
+  end
+  local requestPresentation = host.requestBattlePresentation
+  local requestScene = host.requestBattleScene
+  if type(requestPresentation) ~= "function" or type(requestScene) ~= "function" then
+    return false, nil
+  end
+  local allowance = (type(gpuAllowance) == "number" and gpuAllowance >= 1) and 1 or 0
+  if self._warmTickets == nil then
+    self._warmTickets = {}
+  end
+  if self._warmPaths == nil then
+    self._warmPaths = {}
+  end
+  if self._warmDesired ~= sceneKey then
+    cancelWarmTickets(self)
+    self._warmDesired = sceneKey
+    self._warmFailed = {}
+  end
+  if self._warmFailed == nil then
+    self._warmFailed = {}
+  end
+  -- Semantic demand stays below the foreground: near compilation only,
+  -- and a pending source waits without touching missing files.
+  local okPresentation, readyPresentation, failurePresentation = pcall(requestPresentation, "near")
+  if not okPresentation then
+    return false, "battle warmup " .. sceneKey .. " presentation demand failed: " .. tostring(readyPresentation)
+  end
+  if failurePresentation ~= nil then
+    return false, "battle warmup " .. sceneKey .. " presentation demand failed: " .. tostring(failurePresentation)
+  end
+  if readyPresentation ~= true then
+    return false, nil
+  end
+  local okScene, readyScene, failureScene = pcall(requestScene, sceneKey, "near")
+  if not okScene then
+    return false, "battle warmup " .. sceneKey .. " scene demand failed: " .. tostring(readyScene)
+  end
+  if failureScene ~= nil then
+    return false, "battle warmup " .. sceneKey .. " scene demand failed: " .. tostring(failureScene)
+  end
+  if readyScene ~= true then
+    return false, nil
+  end
+  -- The scene record resolves first and its group enrolls before the
+  -- slower global validation below: the worker decodes the priority
+  -- scene image while the field validates the shared manifest.
+  local record, recordErr = BattlePresentationCache.loadScene(self._cacheFs, sceneKey)
+  if record == nil then
+    return false, "battle warmup " .. sceneKey .. " scene is not staged: " .. tostring(recordErr)
+  end
+  local introLayer = record.introLayer
+  local terrainSprites = record.terrainSprites
+  if type(introLayer) ~= "table" or type(introLayer.image) ~= "string" or introLayer.image == "" then
+    return false, "battle warmup " .. sceneKey .. " scene has no staged intro art"
+  end
+  if
+    type(terrainSprites) ~= "table"
+    or type(terrainSprites.player) ~= "table"
+    or type(terrainSprites.player.image) ~= "string"
+    or terrainSprites.player.image == ""
+    or type(terrainSprites.foe) ~= "table"
+    or type(terrainSprites.foe.image) ~= "string"
+    or terrainSprites.foe.image == ""
+  then
+    return false, "battle warmup " .. sceneKey .. " scene has no staged terrain art"
+  end
+  local grouped = {} ---@type { key: string, path: string }[]
+  local groupKeys = warmSceneKeys(sceneKey)
+  grouped[#grouped + 1] = { key = groupKeys[1], path = BattlePresentationCache.sceneImagePath(sceneKey) }
+  grouped[#grouped + 1] = { key = groupKeys[2], path = introLayer.image }
+  grouped[#grouped + 1] = { key = groupKeys[3], path = terrainSprites.player.image }
+  grouped[#grouped + 1] = { key = groupKeys[4], path = terrainSprites.foe.image }
+  local ticketed = {} ---@type table<string, boolean>
+  for _, ticket in ipairs(self._warmTickets) do
+    ticketed[ticket.key] = true
+  end
+  enrollWarmEntries(self, pool, grouped, ticketed)
+  -- A ready global refreshes the envelope manifest the same way the
+  -- pending build does; an unvalidated answer keeps the current one.
+  local refreshed = loadManifest(self._cacheFs)
+  if stagedManifest(refreshed) ~= nil then
+    self._manifest = refreshed
+  end
+  local staged = stagedManifest(self._manifest)
+  if staged == nil then
+    return false, nil
+  end
+  local ordered = {} ---@type { key: string, path: string }[]
+  for _, entry in ipairs(grouped) do
+    ordered[#ordered + 1] = entry
+  end
+  local fixedKeys = {} ---@type string[]
+  for fixedKey in pairs(WARM_PINNED_KEYS) do
+    fixedKeys[#fixedKeys + 1] = fixedKey
+  end
+  table.sort(fixedKeys)
+  for _, fixedKey in ipairs(fixedKeys) do
+    local artPath = stagedArtPath(staged, fixedKey)
+    if type(artPath) ~= "string" or artPath == "" then
+      return false, "battle warmup " .. sceneKey .. " fixed art is not staged: " .. fixedKey
+    end
+    ordered[#ordered + 1] = { key = fixedKey, path = artPath }
+  end
+  -- The BG3 source values stage once per predicted scene as pure cache
+  -- reads under any allowance; a pending replacement keeps the preceding
+  -- usable record until its own successor stages.
+  if self._warmBg3Key ~= sceneKey then
+    local layers = record.layers
+    local layer = type(layers) == "table" and layers[1] or nil
+    local charactersEntry = type(layer) == "table" and layer.characters or nil
+    local mapEntry = type(layer) == "table" and layer.map or nil
+    local paletteEntry = type(layer) == "table" and layer.palette or nil
+    if type(charactersEntry) ~= "table" or type(mapEntry) ~= "table" or type(paletteEntry) ~= "table" then
+      return false, "battle warmup " .. sceneKey .. " BG3 source paths are not staged"
+    end
+    if charactersEntry.format ~= "indexed8" then
+      return false, "battle warmup " .. sceneKey .. " BG3 keeps the staged 8bpp character format"
+    end
+    local charactersPath = charactersEntry.path
+    local mapPath = mapEntry.path
+    local palettePath = paletteEntry.path
+    if type(charactersPath) ~= "string" or type(mapPath) ~= "string" or type(palettePath) ~= "string" then
+      return false, "battle warmup " .. sceneKey .. " BG3 source paths are not staged"
+    end
+    local characters = self._cacheFs:read(charactersPath)
+    local map = self._cacheFs:loadLua(mapPath)
+    local palette = self._cacheFs:loadLua(palettePath)
+    if type(characters) ~= "string" or type(map) ~= "table" or type(palette) ~= "table" then
+      return false, "battle warmup " .. sceneKey .. " BG3 payload is not staged"
+    end
+    self._warmBg3 = { sceneKey = sceneKey, characters = characters, map = map, palette = palette }
+    self._warmBg3Key = sceneKey
+  end
+  -- A fully warm group settles without touching the hosts again.
+  local settled = self._warmBg3Key == sceneKey
+  if settled then
+    for _, entry in ipairs(ordered) do
+      if self._warmPinned[entry.key] == nil or self._warmPaths[entry.key] ~= entry.path then
+        settled = false
+        break
+      end
+    end
+  end
+  if settled then
+    return false, nil
+  end
+  enrollWarmEntries(self, pool, ordered, ticketed)
+  -- Poll every ticket without blocking; the first failure names its
+  -- scene, key, and path while the remaining tickets stay pending.
+  local readyTicket = nil ---@type { key: string, path: string, token: integer }?
+  local index = 1
+  while index <= #self._warmTickets do
+    local ticket = self._warmTickets[index]
+    local okPoll, status, cause = pcall(pool.poll, pool, ticket.token)
+    if okPoll and status == "ready" then
+      if readyTicket == nil then
+        readyTicket = ticket
+      end
+      index = index + 1
+    elseif okPoll and status == "pending" then
+      index = index + 1
+    else
+      table.remove(self._warmTickets, index)
+      local reason = okPoll and tostring(cause) or tostring(status)
+      self._warmFailed[ticket.path] = reason
+      return false,
+        "battle warmup " .. sceneKey .. " image " .. ticket.key .. " upload failed: " .. ticket.path .. ": " .. reason
+    end
+  end
+  if allowance < 1 or readyTicket == nil then
+    return false, nil
+  end
+  -- One pool adoption per granted allowance: the source and palette
+  -- pair behind the ticket counts as the single operation.
+  local ticketKey, ticketPath, ticketToken = readyTicket.key, readyTicket.path, readyTicket.token
+  local okAcquire, lease = pcall(pool.acquire, pool, ticketToken)
+  for position, ticket in ipairs(self._warmTickets) do
+    if ticket.token == ticketToken then
+      table.remove(self._warmTickets, position)
+      break
+    end
+  end
+  if not okAcquire or type(lease) ~= "table" or lease.image == nil then
+    local reason = okAcquire and "empty image lease" or tostring(lease)
+    self._warmFailed[ticketPath] = reason
+    return false,
+      "battle warmup " .. sceneKey .. " image " .. ticketKey .. " upload failed: " .. ticketPath .. ": " .. reason
+  end
+  self._warmPinned[ticketKey] = { lease = lease, handle = lease }
+  self._warmPaths[ticketKey] = ticketPath
+  if warmGroupComplete(self, sceneKey) then
+    retireWarmGroups(self, sceneKey)
+  end
+  return true, nil
+end
+
 -- The bindable per-launch factory: each descriptor admits one launch and
 -- returns one fresh five-operation port. Descriptor-only composition keeps
 -- its synchronous screen; a launch with a scene scheduler behind it gets
@@ -2156,6 +2607,9 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   -- drawable takes over this ticket instead of requesting again. No
   -- draw happens here; the ticket is cancelled with the launch when the
   -- build never needs it.
+  -- An accepted launch preempts speculation: pending warm tickets
+  -- cancel while adopted warm pins stay for exact-key reuse.
+  cancelWarmTickets(self)
   assert(self._pendingSceneImage == nil, "a launch never inherits a staged scene ticket")
   local pool = self._pool
   if pool ~= nil then
@@ -3314,6 +3768,9 @@ function FieldBattlePresentation:dispose()
   end
   for key, pinned in pairs(self._warmPinned) do
     self._warmPinned[key] = nil
+    if self._warmPaths ~= nil then
+      self._warmPaths[key] = nil
+    end
     if pool ~= nil then
       pool:release(pinned.lease)
     end
@@ -3321,6 +3778,12 @@ function FieldBattlePresentation:dispose()
   for key, _ in pairs(self._imageFailures) do
     self._imageFailures[key] = nil
   end
+  cancelWarmTickets(self)
+  self._warmDesired = nil
+  self._warmFailed = {}
+  self._warmBg3Key = nil
+  self._warmBg3 = nil
+  self._warmFailure = nil
   self:_dropLaunch()
   self._cover = 0
   self._accumulator = 0
