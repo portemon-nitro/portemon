@@ -513,51 +513,6 @@ function T.tests.white_handoff_draws_owned_frames_and_consumes_the_title_pointer
   end)
 end
 
-function T.tests.edition_switch_uses_the_opposite_safe_corner_and_missing_version_import_route()
-  withStartup(function()
-    local RomImporter = require("romdump.src.source.RomImporter")
-    RomImporter.isReady = function(_)
-      return true
-    end
-    local hgTitle = startTitle("heartgold")
-    Assert.isTrue(isStartupTitle(hgTitle), "HeartGold starts in its selected epoch")
-    App.mousepressed(790, 590, 1, false, 1)
-    Assert.equal(App.selectedVersionId, "soulsilver", "HeartGold's lower-right control selects SoulSilver")
-    Assert.isTrue(App.epoch > 1, "an installed alternate edition starts a fresh source-gated epoch")
-    Assert.isFalse(hgTitle.skipRequested, "edition preview does not become a title skip")
-  end)
-
-  withStartup(function()
-    local RomImporter = require("romdump.src.source.RomImporter")
-    RomImporter.isReady = function()
-      return true
-    end
-    local ssTitle = startTitle("soulsilver")
-    Assert.isTrue(isStartupTitle(ssTitle), "SoulSilver starts in its selected epoch")
-    App.resize(256, 192)
-    App.resize(1200, 600)
-    App.resize(600, 1000)
-    App.resize(512, 384)
-    Assert.equal(#active.scenes[1].resizes, 4, "physical, wide, tall and 4:3 resizes reach the current title scene")
-    App.mousepressed(10, 590, 1, false, 1)
-    Assert.equal(App.selectedVersionId, "heartgold", "SoulSilver's lower-left control selects HeartGold")
-    Assert.isTrue(App.epoch > 1, "the installed HeartGold edition passes through source admission")
-  end)
-
-  withStartup(function()
-    local RomImporter = require("romdump.src.source.RomImporter")
-    RomImporter.isReady = function(versionId)
-      return versionId == "heartgold"
-    end
-    local state = startTitle("heartgold")
-    Assert.isTrue(isStartupTitle(state), "the current edition title remains active")
-    App.mousepressed(790, 590, 1, false, 1)
-    Assert.equal(App.selectedVersionId, "heartgold", "an unavailable alternate does not become the selected game")
-    Assert.equal(App.state.targetVersion, "soulsilver", "the unavailable edition opens targeted import")
-    Assert.isFalse(state.skipRequested, "the edition control is not also a title skip")
-  end)
-end
-
 function T.tests.title_and_staged_menu_dispose_once_when_the_selection_quits()
   withStartup(function()
     local state = startTitle()
@@ -1173,19 +1128,6 @@ function T.tests.title_skip_honors_the_full_input_family_with_exact_pointer_iden
   end)
 
   withStartup(function()
-    local RomImporter = require("romdump.src.source.RomImporter")
-    RomImporter.isReady = function(_)
-      return true
-    end
-    App._swallowedPointers = {}
-    local state = startTitle("heartgold")
-    Assert.isTrue(isStartupTitle(state), "the current edition title remains active")
-    App.mousepressed(790, 590, 1, false, 1)
-    Assert.equal(App.selectedVersionId, "soulsilver", "the corner control selects the alternate edition")
-    Assert.isFalse(state.skipRequested, "the edition control is not also a title skip")
-  end)
-
-  withStartup(function()
     App._swallowedPointers = {}
     local state = startTitle()
     App.mousepressed(400, 300, 1, false, 1)
@@ -1265,7 +1207,6 @@ function T.tests.throwing_transfer_callback_propagates_without_resurrecting_the_
         transfers = transfers + 1
         error("synthetic commit failure after install")
       end,
-      onSwitchEdition = function() end,
       isCurrent = function()
         return true
       end,
@@ -1385,8 +1326,6 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
       end,
       onFinished = function()
         error("the movie beat test never finishes")
-      end,
-      onSwitchEdition = function()
       end,
       isCurrent = function()
         return true
@@ -1537,7 +1476,6 @@ function T.tests.movie_holds_loader_until_soundtrack_start_is_confirmed()
       onFinished = function()
         error("the soundtrack hold test never finishes")
       end,
-      onSwitchEdition = function() end,
       isCurrent = function()
         return true
       end,
@@ -1686,8 +1624,7 @@ function T.tests.audio_failure_keeps_loader_visible_instead_of_silent_movie()
         onFinished = function()
           error("the " .. mode .. " case never finishes")
         end,
-        onSwitchEdition = function() end,
-        onCancel = function()
+          onCancel = function()
           cancelled = true
         end,
         isCurrent = function()
@@ -1860,8 +1797,7 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
         derivedAssets = fakeHostMilestones(),
         stageMenu = function() error("refused queue never stages a menu") end,
         onFinished = function() error("refused queue never finishes") end,
-        onSwitchEdition = function() end,
-        isCurrent = function() return true end,
+          isCurrent = function() return true end,
         width = 800,
         height = 600,
         initialImport = false,
@@ -1957,7 +1893,6 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       derivedAssets = milestones,
       stageMenu = function() error("loss test never stages a menu") end,
       onFinished = function() error("loss test never finishes") end,
-      onSwitchEdition = function() end,
       isCurrent = function() return true end,
       width = 800,
       height = 600,
@@ -1982,7 +1917,6 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       derivedAssets = milestones,
       stageMenu = function() return { draw = function() end, dispose = function() end } end,
       onFinished = function() end,
-      onSwitchEdition = function() end,
       isCurrent = function() return true end,
       width = 800,
       height = 600,
@@ -2103,7 +2037,6 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       derivedAssets = milestones,
       stageMenu = function() error("app routing test never stages a menu") end,
       onFinished = function() error("app routing test never finishes") end,
-      onSwitchEdition = function() end,
       isCurrent = function(epoch) return epoch == 31 end,
       width = 800,
       height = 600,

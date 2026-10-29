@@ -208,26 +208,19 @@ function T.import_errors_show_verifier_detail_without_a_picker_strip(_)
   )
 end
 
--- Edition targeting never adds edition chrome to the first card, and the
--- edition switch affordance is gone from this surface.
+-- Edition targeting never adds edition chrome to the first card.
 function T.targeted_options_never_add_edition_chrome_to_the_first_card(_)
-  local switches = 0
   local state = ImportState.new(idleImporter(), nil, {
     targetVersion = "heartgold",
     pickerAvailable = true,
     onPick = function() end,
-    onSwitchEdition = function()
-      switches = switches + 1
-    end,
   })
   local copy = renderedCopy(function()
     state:draw()
   end)
-  for _, forbidden in ipairs({ "HeartGold", "heartgold", "Switch edition" }) do
+  for _, forbidden in ipairs({ "HeartGold", "heartgold" }) do
     Assert.isTrue(copy:find(forbidden, 1, true) == nil, "no edition chrome, found: " .. forbidden)
   end
-  state:keypressed("tab")
-  Assert.equal(switches, 0, "the first card has no edition switch binding")
 end
 
 -- The copy block (title, instructions and transient status rows) stays grouped
