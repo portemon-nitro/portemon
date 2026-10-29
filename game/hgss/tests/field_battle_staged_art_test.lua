@@ -10,6 +10,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
 
 local T = {}
 
@@ -66,7 +67,7 @@ end
 
 ---@return table<string, unknown> shared image owner double recording requested paths by key
 local function recordingPool()
-  local pool = { paths = {} }
+  local pool = { paths = {}, acquired = {} }
   function pool:request(path, _, _)
     self.paths[#self.paths + 1] = path
     return path
@@ -75,6 +76,7 @@ local function recordingPool()
     return "ready"
   end
   function pool:acquire(token)
+    self.acquired[#self.acquired + 1] = token
     return { image = {}, path = token }
   end
   function pool:release(_) end
@@ -84,18 +86,28 @@ end
 ---@param staged table<string, unknown>? staged manifest the cache answers, nil for the planning inventory
 ---@return FieldBattlePresentation
 ---@return table<string, unknown> recording pool
-local function envelopeFor(staged)
+local function envelopeFor(staged, headless)
   local cacheFs = { versionId = "staged-art-probe" }
   function cacheFs:loadLua(path)
     if path == BattlePresentationCache.manifestPath() then
       return staged
     end
+    if path == MoveIconCache.manifestPath() then
+      return { schema = MoveIconCache.SCHEMA, types = {}, categories = {} }
+    end
     return nil
   end
   function cacheFs:read(_)
-    return nil
+    return "staged"
+  end
+  function cacheFs:exists(_, _)
+    return true
   end
   local pool = recordingPool()
+  local graphics = {}
+  if headless then
+    graphics = nil
+  end
   local envelope = FieldBattlePresentation.new({
     cacheFs = cacheFs,
     windows = {},
@@ -103,7 +115,7 @@ local function envelopeFor(staged)
     measureDisplay = function()
       return {}
     end,
-    graphics = {},
+    graphics = graphics,
     imagePool = pool,
   })
   return envelope, pool
@@ -181,6 +193,88 @@ function T.staged_keys_resolve_to_their_verified_manifest_paths()
   }) do
     Assert.isNil(resolvedPath(envelope, pool, key), "key without staged art resolves to nothing: " .. key)
   end
+  envelope:dispose()
+end
+
+function T.trainer_sequence_drawable_resolves_its_exact_staged_image()
+  local manifest = stagedManifest()
+  local selector = "back:PKMN_TRAINER_ETHAN"
+  local drawableKey = "trainer:" .. selector
+  local sequenceImage = ART .. "trainer-ethan-sequence-1-frame-0.png"
+  local firstFrame = {
+    drawableKey = drawableKey,
+    image = ART .. "trainer-ethan.png",
+    rasterOffset = { x = -40, y = -40 },
+    durationTicks = 1,
+    sourceFrame = 0,
+    userAttr = 0,
+  }
+  local sequenceFrame = {
+    drawableKey = drawableKey .. ":sequence:1:frame:0",
+    image = sequenceImage,
+    rasterOffset = { x = -40, y = -40 },
+    durationTicks = 3,
+    sourceFrame = 0,
+    userAttr = 1,
+  }
+  manifest.trainerPictures.entries[selector] = {
+    drawableKey = drawableKey,
+    image = firstFrame.image,
+    width = 80,
+    height = 80,
+    rasterOffset = firstFrame.rasterOffset,
+    animation = {
+      sourceSequence = 0,
+      playMode = "forward_loop",
+      loopStartFrameIdx = 0,
+      frames = { firstFrame },
+      sequences = {
+        { sourceSequence = 0, playMode = "forward_loop", loopStartFrameIdx = 0, frames = { firstFrame } },
+        { sourceSequence = 1, playMode = "forward", loopStartFrameIdx = 0, frames = { sequenceFrame } },
+      },
+    },
+    throwOffsets = {
+      { x = 0, y = 128 },
+      { x = -34, y = 4 },
+      { x = -28, y = -11 },
+      { x = 50, y = -12 },
+      { x = 32767, y = 32767 },
+      { x = 32767, y = 32767 },
+    },
+  }
+  manifest.menus.images[firstFrame.image] = { width = 80, height = 80 }
+  manifest.menus.images[sequenceImage] = { width = 80, height = 80 }
+  BattlePresentationSchema.assertManifest(manifest)
+
+  local envelope, pool = envelopeFor(manifest)
+  local ready, failure = envelope._services.prepare({
+    scenes = {},
+    pages = {},
+    trainerPictures = { selector },
+    battleBalls = {},
+    iconKeys = {},
+    audio = { roles = {}, banks = {}, cries = {} },
+  })
+  Assert.isTrue(ready, "all source-sequence images are enrolled before trainer drawing: " .. tostring(failure))
+  Assert.isTrue(
+    table.concat(pool.paths, "\n"):find(sequenceImage, 1, true) ~= nil,
+    "source sequence images are enrolled before a renderer asks for them"
+  )
+  local handle, drawableFailure = envelope._services.drawable(sequenceFrame.drawableKey)
+  Assert.isNil(drawableFailure, "a valid source-sequence drawable resolves without failure")
+  Assert.notNil(handle, "a valid source-sequence drawable hands out its image")
+  local handleFields = {}
+  for key, value in pairs(handle) do
+    handleFields[#handleFields + 1] = tostring(key) .. "=" .. tostring(value)
+  end
+  Assert.isTrue(
+    table.concat(pool.acquired, "\n"):find(sequenceImage, 1, true) ~= nil,
+    "sequence keys acquire their exact staged image: "
+      .. table.concat(pool.acquired, ", ")
+      .. " ("
+      .. table.concat(handleFields, ", ")
+      .. ")"
+  )
   envelope:dispose()
 end
 

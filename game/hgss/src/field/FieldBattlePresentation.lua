@@ -421,6 +421,46 @@ local function checkTrainerPictures(envelope, selectors)
     then
       return nil, "battle demand names an unstaged trainer picture: " .. selector
     end
+    local sequences = type(entry.animation) == "table" and entry.animation.sequences or nil
+    if entry.animation ~= nil and sequences == nil then
+      return nil, "battle demand names a trainer picture without source sequences: " .. selector
+    end
+    if sequences ~= nil then
+      if type(sequences) ~= "table" or #sequences == 0 then
+        return nil, "battle demand names a trainer picture without source sequences: " .. selector
+      end
+      for sequenceIndex, sequence in ipairs(sequences) do
+        if type(sequence) ~= "table" or sequence.sourceSequence ~= sequenceIndex - 1 then
+          return nil, "battle demand names an invalid trainer source sequence: " .. selector
+        end
+        local frames = sequence.frames
+        if type(frames) ~= "table" or #frames == 0 then
+          return nil, "battle demand names a trainer sequence without source frames: " .. selector
+        end
+        for frameIndex, frame in ipairs(frames) do
+          local expectedKey
+          if sequence.sourceSequence == 0 then
+            expectedKey = frameIndex == 1 and entry.drawableKey
+              or (entry.drawableKey .. ":frame:" .. tostring(frameIndex - 1))
+          else
+            expectedKey = entry.drawableKey
+              .. ":sequence:"
+              .. tostring(sequence.sourceSequence)
+              .. ":frame:"
+              .. tostring(frameIndex - 1)
+          end
+          if
+            type(frame) ~= "table"
+            or frame.sourceFrame ~= frameIndex - 1
+            or frame.drawableKey ~= expectedKey
+            or type(frame.image) ~= "string"
+            or frame.image == ""
+          then
+            return nil, "battle demand names an invalid trainer source frame: " .. selector
+          end
+        end
+      end
+    end
     if type(requestPicture) == "function" then
       local ready, failure = requestPicture(selector, "required")
       if failure ~= nil then
@@ -1417,7 +1457,15 @@ function FieldBattlePresentation:_preparationServices()
       -- behind the remaining build.
       for _, selector in ipairs(demand.trainerPictures or {}) do
         local entry = trainerPictureManifest.entries[selector]
-        if type(entry) == "table" and type(entry.image) == "string" then
+        local animation = type(entry) == "table" and entry.animation or nil
+        local sequences = type(animation) == "table" and animation.sequences or nil
+        if type(sequences) == "table" then
+          for _, sequence in ipairs(sequences) do
+            for _, frame in ipairs(sequence.frames) do
+              enrollUpload(envelope, frame.image)
+            end
+          end
+        elseif type(entry) == "table" and type(entry.image) == "string" then
           enrollUpload(envelope, entry.image)
         end
       end
@@ -1757,7 +1805,20 @@ function FieldBattlePresentation:_preparationServices()
       images[key] = cell
       return cell
     end
-    local trainerRole, classKey = key:match("^trainer:(front):([%w_]+)$")
+    local trainerRole, classKey, sequenceText, frameText =
+      key:match("^trainer:(front):([%w_]+):sequence:(%d+):frame:(%d+)$")
+    if trainerRole == nil then
+      trainerRole, classKey, sequenceText, frameText = key:match("^trainer:(back):([%w_]+):sequence:(%d+):frame:(%d+)$")
+    end
+    if trainerRole == nil then
+      trainerRole, classKey, frameText = key:match("^trainer:(front):([%w_]+):frame:(%d+)$")
+    end
+    if trainerRole == nil then
+      trainerRole, classKey, frameText = key:match("^trainer:(back):([%w_]+):frame:(%d+)$")
+    end
+    if trainerRole == nil then
+      trainerRole, classKey = key:match("^trainer:(front):([%w_]+)$")
+    end
     if trainerRole == nil then
       trainerRole, classKey = key:match("^trainer:(back):([%w_]+)$")
     end
@@ -1768,6 +1829,32 @@ function FieldBattlePresentation:_preparationServices()
         return nil
       end
       local path = entry.image --[[@as string]]
+      if sequenceText ~= nil then
+        local sourceSequence = assert(tonumber(sequenceText), "trainer drawable names an integer source sequence")
+        local sourceFrame = assert(tonumber(frameText), "trainer drawable names an integer source frame")
+        local sequences = type(entry.animation) == "table" and entry.animation.sequences or nil
+        local sequence = type(sequences) == "table" and sequences[sourceSequence + 1] or nil
+        local frames = type(sequence) == "table" and sequence.frames or nil
+        local frame = type(frames) == "table" and frames[sourceFrame + 1] or nil
+        if
+          type(sequence) ~= "table"
+          or sequence.sourceSequence ~= sourceSequence
+          or type(frame) ~= "table"
+          or frame.sourceFrame ~= sourceFrame
+          or frame.drawableKey ~= key
+        then
+          return nil
+        end
+        path = frame.image
+      elseif frameText ~= nil then
+        local sourceFrame = assert(tonumber(frameText), "trainer drawable names an integer source frame")
+        local frames = type(entry.animation) == "table" and entry.animation.frames or nil
+        local frame = type(frames) == "table" and frames[sourceFrame + 1] or nil
+        if type(frame) ~= "table" or frame.sourceFrame ~= sourceFrame or frame.drawableKey ~= key then
+          return nil
+        end
+        path = frame.image
+      end
       local image = nil
       local failure = nil
       if envelope._pool ~= nil then
@@ -1787,12 +1874,12 @@ function FieldBattlePresentation:_preparationServices()
       images[key] = image
       return image
     end
-    local ballKey, frameText = key:match("^battle%-ball:([%w_]+):(%d+)$")
+    local ballKey, ballFrameText = key:match("^battle%-ball:([%w_]+):(%d+)$")
     if ballKey ~= nil and battleBallManifest ~= nil then
       local selectorKey = "ball:" .. ballKey
       local entry = battleBallManifest.entries[selectorKey]
       local frames = type(entry) == "table" and entry.frames or nil
-      local frameIndex = assert(tonumber(frameText), "battle ball drawable names a numeric frame") + 1
+      local frameIndex = assert(tonumber(ballFrameText), "battle ball drawable names a numeric frame") + 1
       local frame = type(frames) == "table" and frames[frameIndex] or nil
       if type(frame) ~= "table" or frame.drawableKey ~= key then
         return nil

@@ -92,6 +92,49 @@ function T.trainer_picture_demand_is_semantic_and_deduplicated()
   battle:dispose()
 end
 
+function T.trainer_animation_images_are_held_for_requested_classes_and_released_once()
+  local observed = nil
+  local assets = stubAssets({})
+  function assets.prepare(demand)
+    observed = demand
+    return true
+  end
+  local battle = holder(nil, assets)
+  battle:addTrainerPictures({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" })
+  battle:addTrainerPictures({ "back:PKMN_TRAINER_ETHAN" })
+  battle:update()
+  Assert.deepEqual(
+    observed.trainerPictures,
+    { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
+    "only the two requested class closures are prepared once"
+  )
+
+  local frameKeys = {
+    "trainer:back:PKMN_TRAINER_ETHAN",
+    "trainer:back:PKMN_TRAINER_ETHAN:frame:1",
+    "trainer:back:PKMN_TRAINER_ETHAN:sequence:1:frame:0",
+    "trainer:front:YOUNGSTER",
+    "trainer:front:YOUNGSTER:frame:1",
+    "trainer:front:YOUNGSTER:sequence:2:frame:0",
+  }
+  local handles = {}
+  for _, key in ipairs(frameKeys) do
+    handles[key] = assert(battle:drawable(key), "each staged source frame resolves through its owner")
+  end
+  Assert.isFalse(handles[frameKeys[1]] == handles[frameKeys[2]], "different source frames keep distinct drawables")
+  Assert.isFalse(handles[frameKeys[2]] == handles[frameKeys[3]], "source sequence identity keeps frames distinct")
+  Assert.isFalse(handles[frameKeys[4]] == handles[frameKeys[5]], "the second class keeps distinct source frames")
+  Assert.isFalse(handles[frameKeys[5]] == handles[frameKeys[6]], "front entry frames keep source sequence identity")
+  Assert.isNil(assets.images["trainer:back:PKMN_TRAINER_LYRA"], "unrequested trainer frames stay unloaded")
+
+  battle:dispose()
+  battle:dispose()
+  for _, key in ipairs(frameKeys) do
+    Assert.equal(assets.released[key], 1, "each acquired source frame lease is released exactly once")
+  end
+  Assert.isNil(assets.released["trainer:back:PKMN_TRAINER_LYRA"], "disposal does not release an unowned frame")
+end
+
 function T.battle_ball_demand_is_semantic_and_deduplicated()
   local observed = nil
   local assets = stubAssets({})
@@ -1606,10 +1649,7 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   local stagedEnvelope = demandEnvelope(staged, stagedHost, throwing, pool)
   local stagedServices = stagedEnvelope:_preparationServices()
   local stagedReady, stagedFailure = stagedServices.prepare(portraitDemand({ leadBack }))
-  Assert.isTrue(
-    stagedReady == true,
-    "the staged page validates before its pixels decode: " .. tostring(stagedFailure)
-  )
+  Assert.isTrue(stagedReady == true, "the staged page validates before its pixels decode: " .. tostring(stagedFailure))
   local driverAttempts = 0
   local driverNewImage = throwing.newImage
   throwing.newImage = function(...)

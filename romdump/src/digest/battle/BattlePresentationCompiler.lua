@@ -1189,7 +1189,7 @@ end
 ---@param archive Narc trainer resource archive selected by GetTrainerPicFileIds
 ---@param memberBase integer first of the five source picture members
 ---@param label string semantic producer diagnostic context
----@return { width: integer, height: integer, pixels: string, offset: { x: number, y: number } }
+---@return { sourceSequence: integer, playMode: string, loopStartFrameIdx: integer, frames: { raster: { width: integer, height: integer, pixels: string, offset: { x: number, y: number } }, durationTicks: integer, sourceFrame: integer, userAttr: integer }[] }[]
 local function compileTrainerPicture(archive, memberBase, label)
   local sources = Sources.TRAINER_PICTURES
   local offsets = sources.memberOffsets
@@ -1202,23 +1202,74 @@ local function compileTrainerPicture(archive, memberBase, label)
   local mapping, mappingErr = G2dDecoder.decodeCellMapping(cellBytes, { label = label .. " cells" })
   mapping = mustDecode(mapping, mappingErr, label .. " cell mapping", cellMember)
   local animationData = decodeAnimation(archive, memberBase + offsets.animation, label .. " animation")
-  local animation = assert(animationData.anims[1], "trainer picture has its source animation")
-  local raster = G2dRasterizer.renderAnimationFrame(charData, paletteData, cellData, animation, 1, {
-    asset = "trainer-pictures",
-    member = memberBase + offsets.animation,
-    role = label,
-  }, nil, mapping)
-  if raster.width > 128 or raster.height > 128 then
-    error(
-      Errors.new("BATTLE_TRAINER_PICTURE_INVALID", "trainer picture exceeds the supported raster bounds", {
-        label = label,
-        width = raster.width,
-        height = raster.height,
-      }),
-      0
-    )
+  local sequences = {}
+  for sequenceIndex, animation in ipairs(animationData.anims) do
+    if #animation.frames == 0 then
+      error(
+        Errors.new("BATTLE_TRAINER_PICTURE_INVALID", "trainer picture animation has no frames", {
+          label = label,
+          member = memberBase + offsets.animation,
+          sequence = sequenceIndex - 1,
+        }),
+        0
+      )
+    end
+    local frames = {}
+    for sourceFrame, source in ipairs(animation.frames) do
+      if type(source.duration) ~= "number" or source.duration % 1 ~= 0 or source.duration < 0 then
+        error(
+          Errors.new("BATTLE_TRAINER_PICTURE_INVALID", "trainer picture frame has an invalid duration", {
+            label = label,
+            member = memberBase + offsets.animation,
+            sequence = sequenceIndex - 1,
+            frame = sourceFrame - 1,
+            duration = source.duration,
+          }),
+          0
+        )
+      end
+      local cell = cellData.cells[source.cell + 1]
+      local raster
+      if cell ~= nil and type(cell.objs) == "table" and #cell.objs == 0 then
+        -- Retail blanking frames reference an objectless cell. Preserve the
+        -- frame duration and sequence position with a transparent drawable.
+        raster = { width = 1, height = 1, pixels = string.rep("\0", 4), offset = { x = 0, y = 0 } }
+      else
+        raster = G2dRasterizer.renderAnimationFrame(charData, paletteData, cellData, animation, sourceFrame, {
+          asset = "trainer-pictures",
+          member = memberBase + offsets.animation,
+          role = label,
+        }, nil, mapping)
+      end
+      if raster.width > 128 or raster.height > 128 then
+        error(
+          Errors.new("BATTLE_TRAINER_PICTURE_INVALID", "trainer picture exceeds the supported raster bounds", {
+            label = label,
+            member = memberBase + offsets.animation,
+            sequence = sequenceIndex - 1,
+            frame = sourceFrame - 1,
+            width = raster.width,
+            height = raster.height,
+          }),
+          0
+        )
+      end
+      frames[#frames + 1] = {
+        raster = raster,
+        durationTicks = source.duration,
+        sourceFrame = sourceFrame - 1,
+        userAttr = source.userAttr or 0,
+      }
+    end
+    sequences[#sequences + 1] = {
+      sourceSequence = sequenceIndex - 1,
+      playMode = animation.playMode,
+      loopStartFrameIdx = animation.loopStartFrameIdx,
+      frames = frames,
+    }
   end
-  return raster
+  assert(sequences[1] ~= nil, "trainer picture has its legacy source sequence")
+  return sequences
 end
 
 ---@param decoded { depth: integer, tiles: string }|{ colors: table[] }|{ width: integer, height: integer, entries: table[] }|{ cells: table[] }|{ anims: table[] }
@@ -2068,10 +2119,27 @@ end
 
 -- Global catalog staging: one semantic key per decoded payload. `staging`
 -- pairs the manifest resource catalog with the payloads staged beside it.
+---@class BattleTrainerPictureFrame
+---@field drawableKey string semantic key for this source animation frame
+---@field image string staged frame image path
+---@field rasterOffset { x: number, y: number } source raster origin
+---@field durationTicks integer source frame duration
+---@field sourceFrame integer zero-based source frame index
+---@field userAttr integer source animation-frame user attribute
+
+---@class BattleTrainerPictureEntry
+---@field drawableKey string semantic trainer portrait key
+---@field image string legacy first-frame image path
+---@field width integer first-frame raster width
+---@field height integer first-frame raster height
+---@field rasterOffset { x: number, y: number } first-frame source raster origin
+---@field animation { sourceSequence: integer, playMode: string, loopStartFrameIdx: integer, frames: BattleTrainerPictureFrame[], sequences: { sourceSequence: integer, playMode: string, loopStartFrameIdx: integer, frames: BattleTrainerPictureFrame[] }[] } source animation sequences and legacy sequence-zero frames
+---@field throwOffsets { x: integer, y: integer }[]? source throw attachment points for back portraits
+
 ---@class BattleGlobalStaging
 ---@field catalog table<string, { kind: string, contentIdentity: string, format: string, geometry: table<string, unknown>, path: string }>
 ---@field payloads table<string, unknown>
----@field trainerPictures table<string, { drawableKey: string, image: string, width: integer, height: integer, rasterOffset: { x: number, y: number } }>? semantic trainer portrait entries during global compilation
+---@field trainerPictures table<string, BattleTrainerPictureEntry>? semantic trainer portrait entries during global compilation
 ---@field trainerImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only trainer portrait pixels
 ---@field battleBalls table<string, { frames: { drawableKey: string, image: string, width: integer, height: integer }[], fadeColor: integer }>? semantic ball animation frames during global compilation
 ---@field ballImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only ball animation pixels
@@ -3505,12 +3573,13 @@ end
 -- supported scene inventory. Returns the verified manifest, the staged
 -- image buffers by slice name, and the producer provenance beside it.
 ---@param romFs RomFs
----@return table<string, { drawableKey: string, image: string, width: integer, height: integer, rasterOffset: { x: number, y: number } }> entries keyed by semantic front/back selector
+---@return table<string, BattleTrainerPictureEntry> entries keyed by semantic front/back selector
 ---@return table<string, { width: integer, height: integer, pixels: string }> image slices keyed by generated image name
 function BattlePresentationCompiler.compileTrainerPictures(romFs)
   local source = Sources.TRAINER_PICTURES
   local entries = {}
   local imageSlices = {}
+  local imageByRaster = {}
   local frontArchive = openArchive(romFs, source.frontArchive, "front trainer portraits")
   local frontClassIds = {}
   for classId in pairs(source.frontClasses) do
@@ -3522,15 +3591,73 @@ function BattlePresentationCompiler.compileTrainerPictures(romFs)
     assert(type(classKey) == "string" and classKey ~= "", "trainer front keys are semantic strings")
     local memberBase = classId * source.membersPerClass
     local imageName = "trainer-front-" .. classKey
-    local raster = compileTrainerPicture(frontArchive, memberBase, "trainer front " .. classKey)
-    imageSlices[imageName] = raster
+    local sourceSequences = compileTrainerPicture(frontArchive, memberBase, "trainer front " .. classKey)
     local selector = "front:" .. classKey
+    local drawableKey = source.outputPrefix .. selector
+    local publishedSequences = {}
+    for _, sequence in ipairs(sourceSequences) do
+      local publishedFrames = {}
+      for frameIndex, frame in ipairs(sequence.frames) do
+        local raster = frame.raster
+        local contentKey = raster.width .. "x" .. raster.height .. ":" .. raster.pixels
+        local stagedImageName = imageByRaster[contentKey]
+        if stagedImageName == nil then
+          if sequence.sourceSequence == 0 and frameIndex == 1 then
+            stagedImageName = imageName
+          elseif sequence.sourceSequence == 0 then
+            stagedImageName = imageName .. "-frame-" .. tostring(frame.sourceFrame)
+          else
+            stagedImageName = imageName
+              .. "-sequence-"
+              .. tostring(sequence.sourceSequence)
+              .. "-frame-"
+              .. tostring(frame.sourceFrame)
+          end
+          imageByRaster[contentKey] = stagedImageName
+          imageSlices[stagedImageName] = raster
+        end
+        local frameDrawableKey
+        if sequence.sourceSequence == 0 then
+          frameDrawableKey = frameIndex == 1 and drawableKey
+            or (drawableKey .. ":frame:" .. tostring(frame.sourceFrame))
+        else
+          frameDrawableKey = drawableKey
+            .. ":sequence:"
+            .. tostring(sequence.sourceSequence)
+            .. ":frame:"
+            .. tostring(frame.sourceFrame)
+        end
+        publishedFrames[#publishedFrames + 1] = {
+          drawableKey = frameDrawableKey,
+          image = BattlePresentationCache.globalImagePath(stagedImageName),
+          rasterOffset = raster.offset,
+          durationTicks = frame.durationTicks,
+          sourceFrame = frame.sourceFrame,
+          userAttr = frame.userAttr,
+        }
+      end
+      publishedSequences[#publishedSequences + 1] = {
+        sourceSequence = sequence.sourceSequence,
+        playMode = sequence.playMode,
+        loopStartFrameIdx = sequence.loopStartFrameIdx,
+        frames = publishedFrames,
+      }
+    end
+    local publishedFrames = assert(publishedSequences[1]).frames
+    local firstRaster = sourceSequences[1].frames[1].raster
     entries[selector] = {
-      drawableKey = source.outputPrefix .. selector,
-      image = BattlePresentationCache.globalImagePath(imageName),
-      width = raster.width,
-      height = raster.height,
-      rasterOffset = raster.offset,
+      drawableKey = drawableKey,
+      image = publishedFrames[1].image,
+      width = firstRaster.width,
+      height = firstRaster.height,
+      rasterOffset = firstRaster.offset,
+      animation = {
+        sourceSequence = 0,
+        playMode = publishedSequences[1].playMode,
+        loopStartFrameIdx = publishedSequences[1].loopStartFrameIdx,
+        frames = publishedFrames,
+        sequences = publishedSequences,
+      },
     }
   end
   local backArchive = openArchive(romFs, source.backArchive, "player trainer portraits")
@@ -3541,15 +3668,79 @@ function BattlePresentationCompiler.compileTrainerPictures(romFs)
     )
     local memberBase = backpicId * source.membersPerClass
     local imageName = "trainer-back-" .. classKey
-    local raster = compileTrainerPicture(backArchive, memberBase, "player trainer back " .. classKey)
-    imageSlices[imageName] = raster
+    local sourceSequences = compileTrainerPicture(backArchive, memberBase, "player trainer back " .. classKey)
     local selector = "back:" .. classKey
+    local drawableKey = source.outputPrefix .. selector
+    local publishedSequences = {}
+    for _, sequence in ipairs(sourceSequences) do
+      local publishedFrames = {}
+      for frameIndex, frame in ipairs(sequence.frames) do
+        local raster = frame.raster
+        local contentKey = raster.width .. "x" .. raster.height .. ":" .. raster.pixels
+        local stagedImageName = imageByRaster[contentKey]
+        if stagedImageName == nil then
+          if sequence.sourceSequence == 0 and frameIndex == 1 then
+            stagedImageName = imageName
+          elseif sequence.sourceSequence == 0 then
+            stagedImageName = imageName .. "-frame-" .. tostring(frame.sourceFrame)
+          else
+            stagedImageName = imageName
+              .. "-sequence-"
+              .. tostring(sequence.sourceSequence)
+              .. "-frame-"
+              .. tostring(frame.sourceFrame)
+          end
+          imageByRaster[contentKey] = stagedImageName
+          imageSlices[stagedImageName] = raster
+        end
+        local frameDrawableKey
+        if sequence.sourceSequence == 0 then
+          frameDrawableKey = frameIndex == 1 and drawableKey
+            or (drawableKey .. ":frame:" .. tostring(frame.sourceFrame))
+        else
+          frameDrawableKey = drawableKey
+            .. ":sequence:"
+            .. tostring(sequence.sourceSequence)
+            .. ":frame:"
+            .. tostring(frame.sourceFrame)
+        end
+        publishedFrames[#publishedFrames + 1] = {
+          drawableKey = frameDrawableKey,
+          image = BattlePresentationCache.globalImagePath(stagedImageName),
+          rasterOffset = raster.offset,
+          durationTicks = frame.durationTicks,
+          sourceFrame = frame.sourceFrame,
+          userAttr = frame.userAttr,
+        }
+      end
+      publishedSequences[#publishedSequences + 1] = {
+        sourceSequence = sequence.sourceSequence,
+        playMode = sequence.playMode,
+        loopStartFrameIdx = sequence.loopStartFrameIdx,
+        frames = publishedFrames,
+      }
+    end
+    local publishedFrames = assert(publishedSequences[1]).frames
+    local firstRaster = sourceSequences[1].frames[1].raster
+    local sourceThrowOffsets = assert(source.throwOffsets[backpicId], "trainer backpic has source throw offsets")
+    local throwOffsets = {}
+    for _, offset in ipairs(sourceThrowOffsets) do
+      throwOffsets[#throwOffsets + 1] = { x = offset.x, y = offset.y }
+    end
     entries[selector] = {
-      drawableKey = source.outputPrefix .. selector,
-      image = BattlePresentationCache.globalImagePath(imageName),
-      width = raster.width,
-      height = raster.height,
-      rasterOffset = raster.offset,
+      drawableKey = drawableKey,
+      image = publishedFrames[1].image,
+      width = firstRaster.width,
+      height = firstRaster.height,
+      rasterOffset = firstRaster.offset,
+      animation = {
+        sourceSequence = 0,
+        playMode = publishedSequences[1].playMode,
+        loopStartFrameIdx = publishedSequences[1].loopStartFrameIdx,
+        frames = publishedFrames,
+        sequences = publishedSequences,
+      },
+      throwOffsets = throwOffsets,
     }
   end
   return entries, imageSlices

@@ -363,6 +363,46 @@ function T.animation_chunk_reports_frames_with_durations()
   })
 end
 
+-- UAAT lives behind the ANIM extended-data pointer. Each sequence maps its
+-- frame records to a value array; the first attribute channel is the native
+-- ManagedSprite user attribute used by trainer encounter tasks.
+function T.animation_chunk_decodes_user_attributes_from_uaat()
+  local animPayload = u16(1) .. u16(2) .. u32(0x18) .. u32(0x28) .. u32(0x38) .. u32(0) .. u32(0x3C)
+  local anim = u16(2) .. u16(0) .. u32(0x00010000) .. u32(2) .. u32(0)
+  local frames = u32(0) .. u16(2) .. u16(0) .. u32(2) .. u16(5) .. u16(0)
+  local frameData = u16(0) .. u16(1)
+  local bank = u16(1)
+    .. u16(1)
+    .. u32(8)
+    .. u16(2)
+    .. u16(0)
+    .. u32(20)
+    .. u32(24)
+    .. u32(0)
+    .. u32(32)
+    .. u32(36)
+    .. u32(1)
+    .. u32(0xFFF)
+  local uaat = u32(0x55414154) .. u32(8 + #bank) .. bank
+  local data = container("RNAN", { block("ABNK", animPayload .. anim .. frames .. frameData .. uaat) })
+  local decoded = assert(G2dDecoder.decodeAnimation(data))
+  Assert.equal(decoded.anims[1].frames[1].userAttr, 1)
+  Assert.equal(decoded.anims[1].frames[2].userAttr, 0xFFF)
+end
+
+function T.animation_chunk_rejects_uaat_frame_value_outside_extension()
+  local animPayload = u16(1) .. u16(1) .. u32(0x18) .. u32(0x28) .. u32(0x30) .. u32(0) .. u32(0x32)
+  local anim = u16(1) .. u16(0) .. u32(0x00010000) .. u32(2) .. u32(0)
+  local frames = u32(0) .. u16(2) .. u16(0)
+  local frameData = u16(0)
+  local bank = u16(1) .. u16(1) .. u32(8) .. u16(1) .. u16(0) .. u32(20) .. u32(24) .. u32(0) .. u32(0xFFFF) -- malformed frame value offset
+  local uaat = u32(0x55414154) .. u32(8 + #bank) .. bank
+  local data = container("RNAN", { block("ABNK", animPayload .. anim .. frames .. frameData .. uaat) })
+  local out, err = G2dDecoder.decodeAnimation(data)
+  Assert.isNil(out)
+  Assert.equal(assert(err).code, G2dDecoder.ERROR.CHUNK_INVALID)
+end
+
 -- Loop start and play mode are independent sequence header fields: the frame
 -- count stays exact when loop start is nonzero, and the numeric mode is
 -- normalized to its source-independent meaning. Frame payloads decode exactly

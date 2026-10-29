@@ -378,6 +378,16 @@ local function uploadCapableGraphics()
     end
     return handle
   end
+  function graphics.newQuad(x, y, width, height, imageWidth, imageHeight)
+    return {
+      x = x,
+      y = y,
+      width = width,
+      height = height,
+      imageWidth = imageWidth,
+      imageHeight = imageHeight,
+    }
+  end
   return graphics
 end
 

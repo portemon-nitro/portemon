@@ -33,6 +33,98 @@ local function trainerMappingAnimation()
   return g2dContainer("RNAN", { g2dBlock("ABNK", header .. animation .. frame) })
 end
 
+local function trainerTwoFrameCells()
+  local first = u16(0x00D8) .. u16(0x01D8) .. u16(32)
+  local second = u16(0x00D8) .. u16(0x01E8) .. u16(0)
+  local cell = u16(3)
+    .. u16(0)
+    .. u32(0x18)
+    .. u32(1)
+    .. u32(0)
+    .. string.rep("\0", 8)
+    .. u16(1)
+    .. u16(0)
+    .. u32(0)
+    .. u16(1)
+    .. u16(0)
+    .. u32(6)
+    .. u16(0)
+    .. u16(0)
+    .. u32(12)
+    .. first
+    .. second
+  return g2dContainer("RECN", { g2dBlock("CEBK", cell) })
+end
+
+local function trainerTwoFrameAnimation()
+  local header = u16(1) .. u16(2) .. u32(0x18) .. u32(0x28) .. u32(0x38) .. string.rep("\0", 8)
+  local animation = u16(2) .. u16(0) .. u32(0x00010000) .. u32(2) .. u32(0)
+  local frames = u32(0) .. u16(2) .. u16(0) .. u32(2) .. u16(5) .. u16(0)
+  local frameData = u16(0) .. u16(1)
+  return g2dContainer("RNAN", { g2dBlock("ABNK", header .. animation .. frames .. frameData) })
+end
+
+local function trainerSourceSequencesAnimation()
+  local extensionOffset = 0xC0
+  local header = u16(3) .. u16(10) .. u32(0x18) .. u32(0x48) .. u32(0x98) .. u32(0) .. u32(extensionOffset)
+  local sequenceZero = u16(2) .. u16(0) .. u32(0x00010000) .. u32(2) .. u32(0)
+  local sequenceOne = u16(6) .. u16(0) .. u32(0x00010000) .. u32(2) .. u32(16)
+  local sequenceTwo = u16(2) .. u16(0) .. u32(0x00010000) .. u32(1) .. u32(64)
+  local frames = {}
+  local durations = { 2, 5, 3, 4, 5, 6, 7, 8, 9, 10 }
+  for frameIndex, duration in ipairs(durations) do
+    frames[#frames + 1] = u32((frameIndex - 1) * 4) .. u16(duration) .. u16(0)
+  end
+  local frameData = {}
+  for frameIndex = 1, #durations do
+    local cell = (frameIndex == 3 or frameIndex == 9) and 2 or (frameIndex - 1) % 2
+    frameData[#frameData + 1] = u16(cell) .. u16(0)
+  end
+  local attributeValues = { 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 }
+  local firstAttributeOffset = 96
+  local frameAttributePointers = {}
+  for frameIndex = 0, #attributeValues - 1 do
+    frameAttributePointers[#frameAttributePointers + 1] = u32(firstAttributeOffset + frameIndex * 4)
+  end
+  local userAttributes = {}
+  for _, value in ipairs(attributeValues) do
+    userAttributes[#userAttributes + 1] = u32(value)
+  end
+  local bank = u16(3)
+    .. u16(1)
+    .. u32(8)
+    .. u16(2)
+    .. u16(0)
+    .. u32(44)
+    .. u32(56)
+    .. u16(6)
+    .. u16(0)
+    .. u32(48)
+    .. u32(64)
+    .. u16(2)
+    .. u16(0)
+    .. u32(52)
+    .. u32(88)
+    .. u32(0)
+    .. u32(0)
+    .. u32(0)
+    .. table.concat(frameAttributePointers)
+    .. table.concat(userAttributes)
+  local extension = u32(0x55414154) .. u32(8 + #bank) .. bank
+  return g2dContainer("RNAN", {
+    g2dBlock(
+      "ABNK",
+      header
+        .. sequenceZero
+        .. sequenceOne
+        .. sequenceTwo
+        .. table.concat(frames)
+        .. table.concat(frameData)
+        .. extension
+    ),
+  })
+end
+
 local function trainerMappingCharacters()
   local bytes = {}
   for tile = 0, 64 do
@@ -82,6 +174,86 @@ function T.trainer_picture_rasterizer_uses_the_cell_bank_mapping()
   Assert.deepEqual({ red, green, blue, alpha }, { 0, 255, 0, 255 }, "tile 32 samples character tile 64 in mapping 1")
   Assert.equal(entries["back:PKMN_TRAINER_ETHAN"].width, 8)
   Assert.deepEqual(entries["back:PKMN_TRAINER_ETHAN"].rasterOffset, { x = -40, y = -40 })
+end
+
+function T.trainer_picture_compilation_preserves_each_source_animation_frame()
+  local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local sources = require("romdump.src.config.BattlePresentationSources")
+  local trainerPictures = sources.TRAINER_PICTURES
+  local previousFrontClasses = trainerPictures.frontClasses
+  local previousBackClasses = trainerPictures.backClasses
+  trainerPictures.frontClasses = {}
+  trainerPictures.backClasses = { PKMN_TRAINER_ETHAN = 0 }
+  local members = {
+    ["NARC_a_0_0_6:0"] = trainerMappingCharacters(),
+    ["NARC_a_0_0_6:1"] = trainerMappingPalette(),
+    ["NARC_a_0_0_6:2"] = trainerTwoFrameCells(),
+    ["NARC_a_0_0_6:3"] = trainerSourceSequencesAnimation(),
+  }
+  local romFs = {
+    openNarc = function(_, archiveName)
+      return {
+        readMember = function(_, memberId)
+          return members[archiveName .. ":" .. memberId]
+        end,
+      }
+    end,
+  }
+
+  local ok, entries, slices = pcall(compiler.compileTrainerPictures, romFs)
+  trainerPictures.frontClasses = previousFrontClasses
+  trainerPictures.backClasses = previousBackClasses
+  Assert.isTrue(ok, "source-shaped two-frame trainer resources compile: " .. tostring(entries))
+  local entry = assert(entries["back:PKMN_TRAINER_ETHAN"])
+  local frames =
+    assert(entry.animation and entry.animation.frames, "the compiled trainer publishes its source sequence")
+  Assert.equal(#frames, 2, "every source frame is retained in order")
+  Assert.equal(frames[1].sourceFrame, 0, "the first frame keeps its zero-based source index")
+  Assert.equal(frames[1].durationTicks, 2, "the first frame keeps its source tick duration")
+  Assert.equal(frames[2].sourceFrame, 1, "the second frame keeps its zero-based source index")
+  Assert.equal(frames[2].durationTicks, 5, "the second frame keeps its source tick duration")
+  Assert.deepEqual(frames[1].rasterOffset, entry.rasterOffset, "the legacy image fields still describe frame zero")
+  Assert.equal(frames[1].drawableKey, entry.drawableKey, "the legacy drawable key still resolves frame zero")
+  Assert.equal(frames[1].image, entry.image, "the legacy image path still resolves frame zero")
+  Assert.isFalse(frames[1].image == frames[2].image, "visibly different frames receive distinct image paths")
+  Assert.deepEqual(frames[2].rasterOffset, { x = -24, y = -40 }, "the next cell keeps its source raster origin")
+  local animation = assert(entry.animation)
+  Assert.equal(animation.sourceSequence, 0, "the compatibility frame list identifies source sequence zero")
+  Assert.equal(animation.playMode, "forward_loop", "sequence zero keeps its source playback mode")
+  Assert.equal(animation.loopStartFrameIdx, 0, "sequence zero keeps its source loop start")
+  local sequences = assert(animation.sequences)
+  Assert.equal(#sequences, 3, "all source animation sequences are staged")
+  Assert.equal(sequences[1].sourceSequence, 0, "the first descriptor keeps source sequence zero")
+  Assert.equal(sequences[2].sourceSequence, 1, "the throw descriptor keeps source sequence one")
+  Assert.equal(#sequences[2].frames, 6, "throw anchors address every staged source frame")
+  Assert.equal(sequences[2].frames[4].durationTicks, 6, "the throw sequence retains source frame duration")
+  Assert.equal(sequences[2].frames[4].userAttr, 1, "the throw frame retains its source UAAT user attribute")
+  Assert.equal(sequences[2].frames[1].durationTicks, 3, "an objectless source frame retains its timing")
+  Assert.equal(
+    sequences[2].frames[1].drawableKey,
+    entry.drawableKey .. ":sequence:1:frame:0",
+    "additional source sequences have stable selector-scoped frame keys"
+  )
+  Assert.equal(sequences[3].sourceSequence, 2, "the entry descriptor keeps source sequence two")
+  Assert.equal(#sequences[3].frames, 2, "the entry sequence retains its source frames")
+  Assert.equal(sequences[3].frames[1].userAttr, 0, "UAAT attributes remain sequence-scoped")
+  Assert.equal(sequences[3].frames[1].durationTicks, 9, "entry blanking frames retain their source timing")
+  for _, frame in ipairs({ sequences[2].frames[1], sequences[3].frames[1] }) do
+    Assert.deepEqual(frame.rasterOffset, { x = 0, y = 0 }, "objectless cells have no geometric origin")
+    local imageName = assert(frame.image:match("([^/]+)%.png$"))
+    local transparent = assert(slices[imageName])
+    Assert.deepEqual({ transparent.width, transparent.height, transparent.pixels }, { 1, 1, string.rep("\0", 4) })
+  end
+  Assert.equal(
+    sequences[3].frames[1].drawableKey,
+    entry.drawableKey .. ":sequence:2:frame:0",
+    "entry frames keep their source sequence identity"
+  )
+  local firstName = assert(frames[1].image:match("([^/]+)%.png$"))
+  local secondName = assert(frames[2].image:match("([^/]+)%.png$"))
+  local first = assert(slices[firstName])
+  local second = assert(slices[secondName])
+  Assert.isFalse(first.pixels == second.pixels, "the distinct source cells retain distinct decoded pixels")
 end
 
 function T.move_power_callback_declares_its_event_time_context()
