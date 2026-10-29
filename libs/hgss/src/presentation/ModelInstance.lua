@@ -132,16 +132,22 @@ end
 
 local IDENTITY_TEX_MATRIX = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }
 
-local function isTranslationOnly(transform)
-  return transform[1] == 1
-    and transform[2] == 0
-    and transform[3] == 0
-    and transform[5] == 0
-    and transform[6] == 1
-    and transform[7] == 0
-    and transform[9] == 0
-    and transform[10] == 0
-    and transform[11] == 1
+-- Whether a typed model matrix carries no rotation, scale, or skew: the
+-- translation-only fast path for item normals, read straight from the
+-- zero-based buffer so the draw path never roundtrips through Lua.
+---@param transformBuffer Matrix4.Buffer
+---@return boolean
+local function isTranslationOnlyBuffer(transformBuffer)
+  local m = transformBuffer.m
+  return m[0] == 1
+    and m[1] == 0
+    and m[2] == 0
+    and m[4] == 0
+    and m[5] == 1
+    and m[6] == 0
+    and m[8] == 0
+    and m[9] == 0
+    and m[10] == 1
 end
 
 -- Load a 16-number Lua matrix into a reusable matrix buffer. Plain element
@@ -163,19 +169,17 @@ local function identityNormalInto(out)
   out[7], out[8], out[9] = 0, 0, 1
 end
 
--- The item normal for a composed item transform: identity for
--- translation-only transforms and for singular (zero-scale hidden)
--- geometry, which renders nothing, so its normals are moot; otherwise the
--- inverse-transpose model normal. Broken programs still raise at their own
--- sites.
+-- The item normal for a composed item transform, computed in one pass
+-- straight from the typed slot buffer: identity for translation-only
+-- transforms and for singular (zero-scale hidden) geometry, which renders
+-- nothing, so its normals are moot; otherwise the inverse-transpose model
+-- normal. Broken programs still raise at their own sites.
 ---@param out number[]
----@param transform number[]
-local function writeNormalInto(out, transform)
-  if isTranslationOnly(transform) then
+---@param transformBuffer Matrix4.Buffer
+local function writeNormalInto(out, transformBuffer)
+  if isTranslationOnlyBuffer(transformBuffer) then
     identityNormalInto(out)
-  elseif Matrix3.inverse(Matrix3.from4x4(transform)) ~= nil then
-    Matrix3.modelNormalInto(out, transform)
-  else
+  elseif not Matrix3.tryModelNormalBufferInto(out, transformBuffer) then
     identityNormalInto(out)
   end
 end
@@ -543,7 +547,7 @@ function ModelInstance:drawItems(renderMeshesById)
           item.billboardBase = nil
           item.billboardCenter = nil
           item.billboardScale = nil
-          writeNormalInto(item.modelNormal, item.transform)
+          writeNormalInto(item.modelNormal, slot.transformBuffer)
         end
       else
         if pose and pose.nodeMatrices[mesh.nodeIndex] then
@@ -556,7 +560,7 @@ function ModelInstance:drawItems(renderMeshesById)
         item.billboardBase = nil
         item.billboardCenter = nil
         item.billboardScale = nil
-        writeNormalInto(item.modelNormal, item.transform)
+        writeNormalInto(item.modelNormal, slot.transformBuffer)
       end
       item.straddle = draw and draw.straddle or nil
       local meshState = backendMeshes[mesh.id]

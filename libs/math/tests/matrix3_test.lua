@@ -147,6 +147,71 @@ function T.model_normal_into_rejects_a_singular_transform()
   end)
 end
 
+local function toBuffer(m)
+  local buf = Matrix4.newBuffer()
+  local raw = buf.m
+  for i = 0, 15 do
+    raw[i] = m[i + 1]
+  end
+  return buf
+end
+
+function T.buffer_normal_matches_reference_for_common_transforms()
+  local models = {
+    Matrix4.identity(),
+    Matrix4.translate(7, -3, 11),
+    Matrix4.rotateY(math.pi / 4),
+    Matrix4.scale(2, 3, 4),
+    Matrix4.multiply(Matrix4.rotateY(-0.58), Matrix4.scale(2, 3, 4)),
+    Matrix4.multiply(Matrix4.rotateZ(0.83), Matrix4.translate(-4, 9, 2)),
+  }
+  for _, model in ipairs(models) do
+    local out = { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+    local ok = Matrix3.tryModelNormalBufferInto(out, toBuffer(model))
+    Assert.isTrue(ok, "nonsingular transform reports success")
+    local expected = Matrix3.modelNormal(model)
+    for i = 1, 9 do
+      Assert.isTrue(approx(out[i], expected[i]), "buffer normal matches reference at cell " .. i)
+    end
+  end
+end
+
+function T.buffer_normal_matches_reference_for_skew_and_negative_scale()
+  local skew = Matrix4.identity()
+  skew[2] = 0.5
+  local models = {
+    Matrix4.scale(-2, 3, -1),
+    Matrix4.multiply(Matrix4.rotateX(0.41), Matrix4.scale(-2, 3, -1)),
+    skew,
+    Matrix4.multiply(Matrix4.rotateY(-0.3), skew),
+  }
+  for _, model in ipairs(models) do
+    local out = { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+    local slot = out
+    local ok = Matrix3.tryModelNormalBufferInto(out, toBuffer(model))
+    Assert.isTrue(ok, "nonsingular skew/scale reports success")
+    Assert.isTrue(out == slot, "the helper writes into the caller output")
+    local expected = Matrix3.modelNormal(model)
+    for i = 1, 9 do
+      Assert.isTrue(approx(out[i], expected[i]), "skewed buffer normal matches reference at cell " .. i)
+    end
+  end
+end
+
+function T.buffer_normal_leaves_output_untouched_when_singular()
+  local singulars = {
+    Matrix4.scale(0, 1, 1),
+    Matrix4.scale(1e-13, 1, 1),
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 },
+  }
+  for _, model in ipairs(singulars) do
+    local out = { 9, 8, 7, 6, 5, 4, 3, 2, 1 }
+    local ok = Matrix3.tryModelNormalBufferInto(out, toBuffer(model))
+    Assert.isFalse(ok, "singular transform reports failure")
+    Assert.deepEqual(out, { 9, 8, 7, 6, 5, 4, 3, 2, 1 }, "singular output is left untouched")
+  end
+end
+
 function T.warmed_model_normal_into_reuses_output_without_heap_growth()
   local models = {
     Matrix4.identity(),

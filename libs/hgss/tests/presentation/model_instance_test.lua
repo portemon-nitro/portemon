@@ -639,4 +639,31 @@ function T.construction_admits_mesh_backend_records_and_centers()
   Assert.deepEqual(items[1].center, { 1, 0, 1 }, "the admitted center reaches the item")
 end
 
+-- Animated draws keep reference normals over successive frames: the static
+-- draw tracks its composed transform while the billboard draw keeps the
+-- identity normal, and hidden-geometry policy is unchanged.
+function T.animated_draws_keep_reference_normals_across_frames()
+  local instance = ModelInstance.new(mixedStaticBillboardDefinition({ NitroModelFixture.doorOpenClip() }))
+  local renders = { stat = {}, bb = {} }
+  instance:evaluatePose()
+  instance:drawItems(renders)
+  instance:play("DoorOpen")
+  for frame = 1, 4 do
+    instance:updateFixed()
+    instance:evaluatePose()
+    local items = instance:drawItems(renders)
+    Assert.equal(#items, 2, "frame " .. frame .. " publishes both draws")
+    Assert.deepEqual(
+      items[1].modelNormal,
+      Matrix3.modelNormal(items[1].transform),
+      "frame " .. frame .. " static normal tracks its transform"
+    )
+    Assert.deepEqual(
+      items[2].modelNormal,
+      { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
+      "frame " .. frame .. " billboard normal stays identity"
+    )
+  end
+end
+
 return { tests = T }
