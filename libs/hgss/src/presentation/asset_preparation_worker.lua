@@ -20,7 +20,40 @@ function Worker.run(requestChannel, replyChannel)
   pcall(require, "love.image")
 
   local Errors = require("libs.errors.src.Errors")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local CompressedAssetCatalog = require("libs.hgss.src.presentation.CompressedAssetCatalog")
   local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+
+  -- One worker-local versioned cache for every job kind. The backend's
+  -- physical read is decorated once with the retained-byte catalog; every
+  -- confined CacheFs read below shares those bytes while logical decoding,
+  -- confinement, and payload replies stay exactly as before. Lazily built
+  -- on the first job so requiring this module never touches love, the
+  -- filesystem, or any thread.
+  local workerCacheFs = nil
+  local workerVersionId = nil
+  ---@param versionId string
+  ---@return CacheFs
+  local function cacheFor(versionId)
+    assert(type(versionId) == "string" and versionId ~= "", "preparation worker requires a version identity")
+    if workerCacheFs == nil then
+      local ScopedFs = require("libs.storage.src.ScopedFs")
+      local backend = ScopedFs.loveBackend()
+      local readPhysical = backend.read
+      local catalog = CompressedAssetCatalog.new(function(fullPath)
+        return readPhysical(backend, fullPath)
+      end, versionId, 64 * 1024 * 1024)
+      local function catalogRead(_, fullPath)
+        return catalog:read(fullPath)
+      end
+      backend.read = catalogRead
+      workerCacheFs = CacheFs.forVersion(versionId, backend)
+      workerVersionId = versionId
+    elseif versionId ~= workerVersionId then
+      error("preparation worker version changed mid-lifetime: " .. tostring(versionId), 0)
+    end
+    return workerCacheFs --[[@as CacheFs]]
+  end
 
   local function fail(token, kind, path, cause)
     local text = Errors.is(cause) and Errors.format(cause) or tostring(cause)
@@ -34,8 +67,7 @@ function Worker.run(requestChannel, replyChannel)
   local function readMeshBytes(versionId, logicalPath, path)
     assert(type(versionId) == "string" and versionId ~= "", "mesh preparation requires a version identity")
     assert(type(logicalPath) == "string" and logicalPath ~= "", "mesh preparation requires a logical path")
-    local CacheFs = require("libs.storage.src.CacheFs")
-    local cache = CacheFs.forVersion(versionId)
+    local cache = cacheFor(versionId)
     if cache:resolve(logicalPath) ~= path then
       error("mesh preparation path escapes its confined cache entry", 0)
     end
@@ -95,10 +127,9 @@ function Worker.run(requestChannel, replyChannel)
         type(logicalPath) == "string" and logicalPath ~= "",
         "image-derivative preparation requires a logical path"
       )
-      local CacheFs = require("libs.storage.src.CacheFs")
       local RuntimeImageCache = require("libs.assets.src.image.RuntimeImageCache")
       local ImageDerivative = require("libs.hgss.src.presentation.ImageDerivative")
-      local cache = CacheFs.forVersion(versionId)
+      local cache = cacheFor(versionId)
       if cache:resolve(logicalPath) ~= path then
         error("image-derivative preparation path escapes its confined cache entry", 0)
       end
@@ -195,8 +226,7 @@ function Worker.run(requestChannel, replyChannel)
     local function work()
       assert(type(versionId) == "string" and versionId ~= "", "audio-sample preparation requires a version identity")
       assert(type(logicalPath) == "string" and logicalPath ~= "", "audio-sample preparation requires a logical path")
-      local CacheFs = require("libs.storage.src.CacheFs")
-      local cache = CacheFs.forVersion(versionId)
+      local cache = cacheFor(versionId)
       if cache:resolve(logicalPath) ~= path then
         error("audio-sample preparation path escapes its confined cache entry", 0)
       end
@@ -220,20 +250,34 @@ function Worker.run(requestChannel, replyChannel)
     end
   end
 
-  local function prepareImage(token, path)
-    local bytes, readError = love.filesystem.read(path)
-    if bytes == nil then
-      fail(token, "image", path, "unreadable cache file: " .. tostring(readError))
-      return
+  -- Plain images travel through the same confined versioned cache as every
+  -- other job kind, so their physical bytes share worker retention while the
+  -- PNG decode and the reply shape stay exactly as before.
+  local function prepareImage(token, versionId, logicalPath, path)
+    local function work()
+      assert(type(versionId) == "string" and versionId ~= "", "image preparation requires a version identity")
+      assert(type(logicalPath) == "string" and logicalPath ~= "", "image preparation requires a logical path")
+      local cache = cacheFor(versionId)
+      if cache:resolve(logicalPath) ~= path then
+        error("image preparation path escapes its confined cache entry", 0)
+      end
+      local bytes = cache:read(logicalPath)
+      if bytes == nil then
+        error("unreadable cache file: " .. tostring(path), 0)
+      end
+      local fileData, fileError = love.filesystem.newFileData(bytes, "prepared.png")
+      if fileData == nil then
+        error("unreadable image source: " .. tostring(path) .. ": " .. tostring(fileError), 0)
+      end
+      local imageData, imageError = love.image.newImageData(fileData)
+      if imageData == nil then
+        error("unreadable image source: " .. tostring(path) .. ": " .. tostring(imageError), 0)
+      end
+      return imageData
     end
-    local fileData, fileError = love.filesystem.newFileData(bytes, "prepared.png")
-    if fileData == nil then
-      fail(token, "image", path, fileError)
-      return
-    end
-    local imageData, imageError = love.image.newImageData(fileData)
-    if imageData == nil then
-      fail(token, "image", path, imageError)
+    local ok, imageData = pcall(work)
+    if not ok then
+      fail(token, "image", path, imageData)
       return
     end
     replyChannel:push({ token = token, ok = true, kind = "image", path = path, imageData = imageData })
@@ -250,7 +294,7 @@ function Worker.run(requestChannel, replyChannel)
         fail(job.token, job.kind, job.path, err)
       end
     elseif job.op == "prepare" and job.kind == "image" then
-      local ok, err = pcall(prepareImage, job.token, job.path)
+      local ok, err = pcall(prepareImage, job.token, job.versionId, job.logicalPath, job.path)
       if not ok then
         fail(job.token, job.kind, job.path, err)
       end
