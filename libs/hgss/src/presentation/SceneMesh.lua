@@ -1,8 +1,10 @@
 -- Decoder for the project's binary mesh batches (see libs/assets/src/MeshWriter),
 -- the inverse of that encoder. Splits cleanly: decode() is pure and validates a
 -- batch into plain vertex/index arrays (usable under bare LuaJIT and testable
--- without love); build() turns a decoded batch into a persistent love Mesh and
--- is the only love-coupled entry point.
+-- without love); build() turns a decoded batch into a persistent love Mesh.
+-- prepareUpload() fills the same floats and indices straight into Data upload
+-- buffers in one pass, without building any per-vertex table, and is the
+-- entry point the asset preparation worker uses.
 --
 -- Vertices come out in the render vertex layout order (x,y,z, u,v, nx,ny,nz,
 -- r,g,b,a, colorSource) with colors normalized to 0..1 and colorSource kept
@@ -24,10 +26,15 @@ local MAGIC = G4MeshFormat.MAGIC
 local VERSION = G4MeshFormat.VERSION
 local STRIDE = G4MeshFormat.STRIDE
 
--- Validate and unpack a G4M2 batch into { format, vertexCount, indexCount,
--- vertices, indices }. Raises a structured error on any malformed field. Pure.
-function SceneMesh.decode(bytes, context)
-  assert(type(bytes) == "string", "SceneMesh.decode requires a string")
+-- The one shared G4M2 header guard: checks magic, version, stride, index
+-- width, triangularity and exact body length, and hands both decoding routes
+-- the validated counts plus the reader positioned over the same bytes.
+-- Raises the same structured error on any malformed field. Pure.
+---@param bytes string
+---@param context unknown?
+---@return { reader: BinaryReader, vertexCount: integer, indexCount: integer, indexWidth: integer }
+local function readHeader(bytes, context)
+  assert(type(bytes) == "string", "SceneMesh requires a string batch")
   if #bytes < HEADER then
     Errors.raise(FieldErrors.MESH_TOO_SMALL, "mesh shorter than header", { size = #bytes, source = context })
   end
@@ -66,6 +73,15 @@ function SceneMesh.decode(bytes, context)
   if expected ~= #bytes then
     Errors.raise(FieldErrors.MESH_BAD_LENGTH, "expected " .. expected .. " bytes, got " .. #bytes, { source = context })
   end
+  return { reader = r, vertexCount = vertexCount, indexCount = indexCount, indexWidth = indexWidth }
+end
+
+-- Validate and unpack a G4M2 batch into { format, vertexCount, indexCount,
+-- vertices, indices }. Raises a structured error on any malformed field. Pure.
+function SceneMesh.decode(bytes, context)
+  local header = readHeader(bytes, context)
+  local r = header.reader
+  local vertexCount, indexCount, indexWidth = header.vertexCount, header.indexCount, header.indexWidth
 
   local vertices = {}
   local off = HEADER
@@ -157,44 +173,114 @@ end
 ---@param context unknown?
 ---@return SceneMesh.PreparedMesh
 function SceneMesh.prepareUpload(bytes, context)
-  local decoded = SceneMesh.decode(bytes, context)
-  local components = layoutComponents()
-  local vertexData = love.data.newByteData(decoded.vertexCount * components * ffi.sizeof("float"))
-  local floats = ffi.cast("float *", vertexData:getFFIPointer())
-  for vertexIndex = 1, decoded.vertexCount do
-    local vertex = decoded.vertices[vertexIndex]
-    for component = 1, components do
-      floats[(vertexIndex - 1) * components + (component - 1)] = vertex[component]
-    end
+  local header = readHeader(bytes, context)
+  local vertexCount, indexCount, indexWidth = header.vertexCount, header.indexCount, header.indexWidth
+  -- An empty batch carries no vertices to fold, so the shared geometry fold
+  -- reports it exactly like the synchronous pool path instead of letting
+  -- the empty upload allocation fail with a host error.
+  if vertexCount == 0 then
+    SceneDescriptor.meshGeometry({})
   end
-  local indexData = love.data.newByteData(decoded.indexCount * decoded.indexWidth)
-  if decoded.indexWidth == 2 then
+  local components = layoutComponents()
+  local vertexData = love.data.newByteData(vertexCount * components * ffi.sizeof("float"))
+  local indexData = love.data.newByteData(indexCount * indexWidth)
+  -- The input string stays referenced as a parameter for the whole call,
+  -- so this borrowed byte view and the two owned upload buffers below are
+  -- alive for every read and write. No pointer survives the return.
+  local source = ffi.cast("const uint8_t *", bytes)
+  local floats = ffi.cast("float *", vertexData:getFFIPointer())
+  local r = header.reader
+  local minx, miny, minz = math.huge, math.huge, math.huge
+  local maxx, maxy, maxz = -math.huge, -math.huge, -math.huge
+  for vertexIndex = 0, vertexCount - 1 do
+    local off = HEADER + vertexIndex * STRIDE
+    -- Floats come from the bounds-checked little-endian reader (exact and
+    -- safe on unaligned packed offsets); the single bytes below are plain
+    -- aligned-safe byte loads through the borrowed view.
+    local x, y, z = r:f32le(off), r:f32le(off + 4), r:f32le(off + 8)
+    local u, v = r:f32le(off + 12), r:f32le(off + 16)
+    local nx, ny, nz = r:f32le(off + 20), r:f32le(off + 24), r:f32le(off + 28)
+    local red = source[off + 32] / 255
+    local green = source[off + 33] / 255
+    local blue = source[off + 34] / 255
+    local alpha = source[off + 35] / 255
+    local colorSource = source[off + 36]
+    if colorSource > 2 then
+      Errors.raise(FieldErrors.MESH_BAD_COLOR_SOURCE, "color source out of range at vertex " .. (vertexIndex + 1), {
+        source = context,
+      })
+    end
+    local base = vertexIndex * components
+    floats[base] = x
+    floats[base + 1] = y
+    floats[base + 2] = z
+    floats[base + 3] = u
+    floats[base + 4] = v
+    floats[base + 5] = nx
+    floats[base + 6] = ny
+    floats[base + 7] = nz
+    floats[base + 8] = red
+    floats[base + 9] = green
+    floats[base + 10] = blue
+    floats[base + 11] = alpha
+    floats[base + 12] = colorSource
+    -- Same fold order as the shared geometry helper so non-finite
+    -- positions settle identically.
+    minx = math.min(minx, x)
+    maxx = math.max(maxx, x)
+    miny = math.min(miny, y)
+    maxy = math.max(maxy, y)
+    minz = math.min(minz, z)
+    maxz = math.max(maxz, z)
+  end
+  local indexBase = HEADER + vertexCount * STRIDE
+  if indexWidth == 2 then
     local indices = ffi.cast("uint16_t *", indexData:getFFIPointer())
-    for i = 1, decoded.indexCount do
-      indices[i - 1] = decoded.indices[i]
+    for i = 0, indexCount - 1 do
+      local off = indexBase + i * 2
+      local value = tonumber(source[off]) + tonumber(source[off + 1]) * 0x100
+      if value >= vertexCount then
+        Errors.raise(
+          FieldErrors.MESH_INDEX_OUT_OF_RANGE,
+          "index " .. value .. " >= vertex count " .. vertexCount,
+          { source = context }
+        )
+      end
+      indices[i] = value
     end
   else
     local indices = ffi.cast("uint32_t *", indexData:getFFIPointer())
-    for i = 1, decoded.indexCount do
-      indices[i - 1] = decoded.indices[i]
+    for i = 0, indexCount - 1 do
+      local off = indexBase + i * 4
+      local value = tonumber(source[off])
+        + tonumber(source[off + 1]) * 0x100
+        + tonumber(source[off + 2]) * 0x10000
+        + tonumber(source[off + 3]) * 0x1000000
+      if value >= vertexCount then
+        Errors.raise(
+          FieldErrors.MESH_INDEX_OUT_OF_RANGE,
+          "index " .. value .. " >= vertex count " .. vertexCount,
+          { source = context }
+        )
+      end
+      indices[i] = value
     end
   end
-  local geometry = SceneDescriptor.meshGeometry(decoded.vertices)
   return {
     vertexData = vertexData,
     indexData = indexData,
-    vertexCount = decoded.vertexCount,
-    indexCount = decoded.indexCount,
-    indexType = decoded.indexWidth == 2 and "uint16" or "uint32",
-    centerX = geometry.center[1],
-    centerY = geometry.center[2],
-    centerZ = geometry.center[3],
-    minX = geometry.bounds.minX,
-    maxX = geometry.bounds.maxX,
-    minY = geometry.bounds.minY,
-    maxY = geometry.bounds.maxY,
-    minZ = geometry.bounds.minZ,
-    maxZ = geometry.bounds.maxZ,
+    vertexCount = vertexCount,
+    indexCount = indexCount,
+    indexType = indexWidth == 2 and "uint16" or "uint32",
+    centerX = (minx + maxx) / 2,
+    centerY = (miny + maxy) / 2,
+    centerZ = (minz + maxz) / 2,
+    minX = minx,
+    maxX = maxx,
+    minY = miny,
+    maxY = maxy,
+    minZ = minz,
+    maxZ = maxz,
   }
 end
 
