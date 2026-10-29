@@ -28,6 +28,7 @@
 -- production build routes through them.
 
 local Errors = require("libs.errors.src.Errors")
+local ffi = require("ffi")
 local U32 = require("libs.codec.src.U32")
 local MonSources = require("romdump.src.config.MonSources")
 local MonCache = require("libs.assets.src.MonCache")
@@ -291,15 +292,22 @@ local function unscanPortraitBytes(charTiles, label)
         }
       )
   end
-  local seed = string.byte(charTiles, 1) + string.byte(charTiles, 2) * 256
-  local parts = {}
+  -- The validated length bounds every typed access below: the highest
+  -- source word ends at byte 6399 and the destination holds exactly
+  -- PORTRAIT_BYTES. The caller-owned string outlives the borrowed view.
+  -- The seed recurrence keeps the exact unsigned arithmetic; only the
+  -- storage is typed, with explicit little-endian byte stores.
+  local source = ffi.cast("const uint8_t *", charTiles)
+  local dest = ffi.new("uint8_t[?]", PORTRAIT_BYTES)
+  local seed = source[0] + source[1] * 256
   for i = 0, PORTRAIT_WORDS - 1 do
-    local word = string.byte(charTiles, i * 2 + 1) + string.byte(charTiles, i * 2 + 2) * 256
+    local word = source[i * 2] + source[i * 2 + 1] * 256
     local plain = bit.bxor(word, seed % 65536)
-    parts[#parts + 1] = string.char(plain % 256, math.floor(plain / 256) % 256)
+    dest[i * 2] = plain % 256
+    dest[i * 2 + 1] = math.floor(plain / 256) % 256
     seed = U32.add(U32.mul(seed, UNSCAN_MULTIPLIER), UNSCAN_INCREMENT)
   end
-  return table.concat(parts)
+  return ffi.string(dest, PORTRAIT_BYTES)
 end
 
 -- Raster the two authored 80x80 frames from the unscanned row-major
@@ -310,18 +318,23 @@ end
 -- table built by the caller.
 local function rasterizePortraitFrames(unscanned, expansions, label)
   assert(#unscanned == PORTRAIT_BYTES, label .. " portrait bytes must be unscanned before rastering")
+  -- The asserted length bounds every typed access: the highest source
+  -- byte is 79*80+39 and each frame buffer holds exactly 80*80*4 bytes.
+  -- Each packed source byte contributes its precomputed 8-byte expansion
+  -- pair (two RGBA pixels) in row-major source order.
+  local source = ffi.cast("const uint8_t *", unscanned)
+  local frameBytes = PORTRAIT_CELL * PORTRAIT_CELL * 4
   local frames = {}
   for frame = 0, PORTRAIT_FRAMES - 1 do
-    local rows = {}
+    local dest = ffi.new("uint8_t[?]", frameBytes)
     for y = 0, PORTRAIT_CELL - 1 do
       local frameBase = y * PORTRAIT_ROW_BYTES + frame * PORTRAIT_FRAME_ROW_BYTES
-      local parts = {}
       for byteX = 0, PORTRAIT_FRAME_ROW_BYTES - 1 do
-        parts[#parts + 1] = expansions[string.byte(unscanned, frameBase + byteX + 1)]
+        local pair = expansions[source[frameBase + byteX]]
+        ffi.copy(dest + (y * PORTRAIT_CELL + byteX * 2) * 4, pair, #pair)
       end
-      rows[#rows + 1] = table.concat(parts)
     end
-    frames[#frames + 1] = table.concat(rows)
+    frames[#frames + 1] = ffi.string(dest, frameBytes)
   end
   return frames
 end
@@ -342,28 +355,28 @@ local function rasterizeFrames(charTiles, expansions, tilesWide, tilesHigh, fram
         }
       )
   end
+  -- The validated tile length bounds every typed access: the highest
+  -- source byte is expected-1 and each frame buffer holds exactly
+  -- width*height*4 bytes.
+  local source = ffi.cast("const uint8_t *", charTiles)
+  local width, height = tilesWide * 8, tilesHigh * 8
+  local frameBytes = width * height * 4
   local frames = {}
   for frame = 0, frameCount - 1 do
-    local rows = {}
-    for y = 0, tilesHigh * 8 - 1 do
+    local dest = ffi.new("uint8_t[?]", frameBytes)
+    for y = 0, height - 1 do
       local tileRow = math.floor(y / 8)
       local rowInTile = y % 8
-      local parts = {}
       for tx = 0, tilesWide - 1 do
         local tile = frame * tilesPerFrame + tileRow * tilesWide + tx
         local base = tile * 32 + rowInTile * 4
         for col = 0, 3 do
-          local byte = string.byte(charTiles, base + col + 1)
-          if byte == nil then
-            return nil,
-              Errors.new("MON_IMAGE_SHORT_TILES", label .. " tile data ends mid-frame", { frame = frame, tile = tile })
-          end
-          parts[#parts + 1] = expansions[byte]
+          local pair = expansions[source[base + col]]
+          ffi.copy(dest + (y * width + (tx * 8 + col * 2)) * 4, pair, #pair)
         end
       end
-      rows[#rows + 1] = table.concat(parts)
     end
-    frames[#frames + 1] = table.concat(rows)
+    frames[#frames + 1] = ffi.string(dest, frameBytes)
   end
   return frames
 end
@@ -376,23 +389,30 @@ local function packPage(cells, cellSize)
   local cols = PAGE_COLUMNS
   local rows = (VISUALS_PER_PAGE * 2) / cols
   local width, height = cols * cellSize, rows * cellSize
-  local pixels = {}
+  local rowBytes = cellSize * 4
+  local total = width * height * 4
+  local dest = ffi.new("uint8_t[?]", total)
+  -- One destination buffer for the whole page; each occupied cell copies
+  -- one row at a time and missing cells stay RGBA zero. The local cell
+  -- keeps its string alive across all of its row copies.
   for row = 0, rows - 1 do
-    for y = 0, cellSize - 1 do
-      local parts = {}
-      for col = 0, cols - 1 do
-        local index = row * cols + col + 1
-        local cell = cells[index]
-        if cell == nil then
-          parts[#parts + 1] = string.rep("\0", cellSize * 4)
-        else
-          parts[#parts + 1] = cell:sub(y * cellSize * 4 + 1, (y + 1) * cellSize * 4)
+    for col = 0, cols - 1 do
+      local index = row * cols + col + 1
+      local cell = cells[index]
+      if cell == nil then
+        for y = 0, cellSize - 1 do
+          ffi.fill(dest + ((row * cellSize + y) * width + col * cellSize) * 4, rowBytes, 0)
+        end
+      else
+        assert(#cell == cellSize * rowBytes, "page cells carry exactly one frame cell")
+        local source = ffi.cast("const uint8_t *", cell)
+        for y = 0, cellSize - 1 do
+          ffi.copy(dest + ((row * cellSize + y) * width + col * cellSize) * 4, source + y * rowBytes, rowBytes)
         end
       end
-      pixels[#pixels + 1] = table.concat(parts)
     end
   end
-  return { width = width, height = height, pixels = table.concat(pixels) }
+  return { width = width, height = height, pixels = ffi.string(dest, total) }
 end
 
 -- Page-local origin of one frame cell: visual slot s (zero-based within
@@ -418,26 +438,32 @@ local function packAtlas(cells, cellSize)
   local cols = math.max(1, math.ceil(math.sqrt(count)))
   local rows = math.max(1, math.ceil(count / cols))
   local width, height = cols * cellSize, rows * cellSize
-  local pixels = {}
+  local rowBytes = cellSize * 4
+  local total = width * height * 4
+  local dest = ffi.new("uint8_t[?]", total)
+  -- Same row-copy packing as the bounded pages; missing cells stay RGBA
+  -- zero and each local cell outlives its own row copies.
   for row = 0, rows - 1 do
-    for y = 0, cellSize - 1 do
-      local parts = {}
-      for col = 0, cols - 1 do
-        local index = row * cols + col + 1
-        local cell = cells[index]
-        if cell == nil then
-          parts[#parts + 1] = string.rep("\0", cellSize * 4)
-        else
-          parts[#parts + 1] = cell:sub(y * cellSize * 4 + 1, (y + 1) * cellSize * 4)
+    for col = 0, cols - 1 do
+      local index = row * cols + col + 1
+      local cell = cells[index]
+      if cell == nil then
+        for y = 0, cellSize - 1 do
+          ffi.fill(dest + ((row * cellSize + y) * width + col * cellSize) * 4, rowBytes, 0)
+        end
+      else
+        assert(#cell == cellSize * rowBytes, "atlas cells carry exactly one frame cell")
+        local source = ffi.cast("const uint8_t *", cell)
+        for y = 0, cellSize - 1 do
+          ffi.copy(dest + ((row * cellSize + y) * width + col * cellSize) * 4, source + y * rowBytes, rowBytes)
         end
       end
-      pixels[#pixels + 1] = table.concat(parts)
     end
   end
   return {
     width = width,
     height = height,
-    pixels = table.concat(pixels),
+    pixels = ffi.string(dest, total),
     cols = cols,
   }
 end
@@ -889,17 +915,24 @@ function MonPresentationCompiler.compileFrontIndexedFrames(romFs, speciesId, for
       palMemberId = ids.palMemberId,
     }))
     assert(#decoded.unscanned == PORTRAIT_BYTES, "indexed portrait bytes must be unscanned before unpacking")
+    -- The asserted length bounds every typed access: the highest source
+    -- byte is 79*80+39 and each plane holds exactly 80*80 indices.
+    -- Nibbles pack low then high with no RGBA intermediate on this path.
+    local source = ffi.cast("const uint8_t *", decoded.unscanned)
+    local planeBytes = PORTRAIT_CELL * PORTRAIT_CELL
     local planes = {}
     for frame = 0, PORTRAIT_FRAMES - 1 do
-      local indices = {}
+      local dest = ffi.new("uint8_t[?]", planeBytes)
       for y = 0, PORTRAIT_CELL - 1 do
         local frameBase = y * PORTRAIT_ROW_BYTES + frame * PORTRAIT_FRAME_ROW_BYTES
+        local rowBase = y * PORTRAIT_CELL
         for byteX = 0, PORTRAIT_FRAME_ROW_BYTES - 1 do
-          local byte = string.byte(decoded.unscanned, frameBase + byteX + 1)
-          indices[#indices + 1] = string.char(byte % 16, math.floor(byte / 16))
+          local byte = source[frameBase + byteX]
+          dest[rowBase + byteX * 2] = byte % 16
+          dest[rowBase + byteX * 2 + 1] = math.floor(byte / 16)
         end
       end
-      planes[#planes + 1] = table.concat(indices)
+      planes[#planes + 1] = ffi.string(dest, planeBytes)
     end
     local palette = {}
     for index, color in ipairs(decoded.colors) do
