@@ -11,7 +11,13 @@
 -- frames); waves without a loop flag (or with the loop at the header) get
 -- the full-range window {0, frames}. Pure domain module.
 
+local ffi = require("ffi")
+
 local Errors = require("libs.errors.src.Errors")
+
+-- The packed PCM16LE output shares the runtime Pcm16 little-endian policy:
+-- raw output bytes are only meaningful on a little-endian host.
+assert(ffi.abi("le"), "packed SWAV PCM output requires a little-endian host")
 
 local Swav = {}
 
@@ -142,37 +148,44 @@ local function clamp(value, low, high)
   return value
 end
 
--- Appends a signed 16-bit sample in little-endian order to `parts`.
-local function pushSample(parts, value)
-  if value < 0 then
-    value = value + 0x10000
-  end
-  parts[#parts + 1] = string.char(value % 256, math.floor(value / 256) % 256)
-end
-
-local function decodePcm8(bytes, dataOffset, frames, source)
-  local parts = {}
+local function decodePcm8(bytes, dataOffset, frames, _)
+  assert(
+    type(frames) == "number" and frames % 1 == 0 and frames > 0 and dataOffset + frames <= #bytes,
+    "PCM8 payload must hold every decoded frame"
+  )
+  local out = ffi.new("int16_t[?]", frames)
+  -- `bytes` owns the view for the whole loop below.
+  local view = ffi.cast("const uint8_t *", bytes)
   for i = 0, frames - 1 do
-    local byte = u8At(bytes, dataOffset + i, source)
+    local byte = view[dataOffset + i]
     local sample = byte * 256
     if byte >= 128 then
       sample = sample - 65536
     end
-    pushSample(parts, sample)
+    out[i] = sample
   end
-  return table.concat(parts)
+  return ffi.string(out, frames * 2)
 end
 
-local function decodePcm16(bytes, dataOffset, frames, source)
-  local parts = {}
+local function decodePcm16(bytes, dataOffset, frames, _)
+  assert(
+    type(frames) == "number" and frames % 1 == 0 and frames > 0 and dataOffset + frames * 2 <= #bytes,
+    "PCM16 payload must hold every decoded frame"
+  )
+  local out = ffi.new("int16_t[?]", frames)
+  -- `bytes` owns the view for the whole loop below. Source words are
+  -- combined byte by byte in little-endian order; the source is never read
+  -- through a native 16-bit pointer, so unaligned offsets stay safe.
+  local view = ffi.cast("const uint8_t *", bytes)
   for i = 0, frames - 1 do
-    local value = u16At(bytes, dataOffset + i * 2, source)
+    local base = dataOffset + i * 2
+    local value = view[base] + view[base + 1] * 256
     if value >= 0x8000 then
       value = value - 0x10000
     end
-    pushSample(parts, value)
+    out[i] = value
   end
-  return table.concat(parts)
+  return ffi.string(out, frames * 2)
 end
 
 -- GBATEK "IMA-ADPCM Format" with the DS rounding and clamping quirks:
@@ -183,9 +196,18 @@ local function decodeAdpcm(bytes, dataOffset, frames, source)
     predictor = predictor - 0x10000
   end
   local index = clamp(u8At(bytes, dataOffset + 2, source), 0, 88)
-  local parts = {}
+  assert(
+    type(frames) == "number"
+      and frames % 1 == 0
+      and frames > 0
+      and dataOffset + 4 + math.floor((frames - 1) / 2) < #bytes,
+    "ADPCM payload must hold every decoded nibble"
+  )
+  local out = ffi.new("int16_t[?]", frames)
+  -- `bytes` owns the view for the whole loop below.
+  local view = ffi.cast("const uint8_t *", bytes)
   for i = 0, frames - 1 do
-    local byte = u8At(bytes, dataOffset + 4 + math.floor(i / 2), source)
+    local byte = view[dataOffset + 4 + math.floor(i / 2)]
     local nibble = i % 2 == 0 and byte % 16 or math.floor(byte / 16)
     local step = STEP_TABLE[index + 1]
     local diff = math.floor(step / 8)
@@ -210,9 +232,9 @@ local function decodeAdpcm(bytes, dataOffset, frames, source)
       end
     end
     index = clamp(index + INDEX_TABLE[nibble % 8 + 1], 0, 88)
-    pushSample(parts, predictor)
+    out[i] = predictor
   end
-  return table.concat(parts)
+  return ffi.string(out, frames * 2)
 end
 
 local function _decode(bytes, context)

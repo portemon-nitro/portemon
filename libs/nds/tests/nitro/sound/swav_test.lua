@@ -128,6 +128,56 @@ function T.swav_decodes_adpcm_exact_nibbles()
   Assert.deepEqual(pcm16Samples(wave.pcm16le), { 1001, 1012, 1008, 1009, 1010, 1011, 1012, 1012 })
 end
 
+-- The decoded PCM16 payload is little-endian on the wire: a positive word
+-- stores its low byte first and a sign-extended PCM8 byte stores its nonzero
+-- high byte second.
+function T.swav_emits_little_endian_pcm_bytes()
+  local pcm16 = decodeOrFail(SwarFixture.pcm16({ 0x0201, -2 }, { sampleRate = 22050 }))
+  Assert.equal(pcm16.pcm16le, "\1\2\254\255")
+  local pcm8 = decodeOrFail(SwarFixture.pcm8({ 1 }, { sampleRate = 16000 }))
+  Assert.equal(pcm8.pcm16le, "\0\1\0\0\0\0\0\0")
+end
+
+-- Decoding never mutates the source member bytes.
+function T.swav_leaves_source_bytes_unchanged()
+  local members = {
+    SwarFixture.pcm8({ -128, -1, 0, 127 }),
+    SwarFixture.pcm16({ -32768, -1, 32767, 1000 }),
+    SwarFixture.adpcmRaw(1000, 4, string.char(0x40, 0x09, 0x00, 0x00)),
+  }
+  for _, bytes in ipairs(members) do
+    local snapshot = bytes
+    decodeOrFail(bytes)
+    Assert.equal(bytes, snapshot)
+  end
+end
+
+-- An ADPCM header index above the table clamps to the loudest step, so an
+-- out-of-range header decodes exactly like an index-88 header.
+function T.swav_clamps_adpcm_header_index()
+  local nibbles = string.rep("\0", 4)
+  local clamped = decodeOrFail(SwarFixture.adpcmRaw(0, 200, nibbles, { sampleRate = 22050 }))
+  local loudest = decodeOrFail(SwarFixture.adpcmRaw(0, 88, nibbles, { sampleRate = 22050 }))
+  Assert.equal(clamped.pcm16le, loudest.pcm16le)
+  Assert.equal(pcm16Samples(clamped.pcm16le)[1], 4095)
+end
+
+-- The ADPCM predictor pins at the signed bounds instead of wrapping: a
+-- loud positive run sticks at 0x7FFF and a loud negative run at -0x7FFF.
+function T.swav_clips_adpcm_predictor_at_signed_bounds()
+  local loud = decodeOrFail(SwarFixture.adpcmRaw(32760, 88, string.rep("\a", 4), { sampleRate = 22050 }))
+  Assert.deepEqual(
+    pcm16Samples(loud.pcm16le),
+    { 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767 }
+  )
+  local quiet =
+    decodeOrFail(SwarFixture.adpcmRaw(-32760, 88, string.rep("\255", 4), { sampleRate = 22050 }))
+  Assert.deepEqual(
+    pcm16Samples(quiet.pcm16le),
+    { -32767, -32767, -32767, -32767, -32767, -32767, -32767, -32767 }
+  )
+end
+
 -- The greedy encoder round-trips exactly for constant signals (zero
 -- difference nibbles are lossless; transient jumps are quantized).
 function T.swav_round_trips_adpcm()
