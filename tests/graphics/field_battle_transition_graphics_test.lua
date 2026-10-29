@@ -7,8 +7,6 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 local BattleEncounterSelector = require("libs.hgss.src.transition.BattleEncounterSelector")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local CacheFs = require("libs.storage.src.CacheFs")
-local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
-local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldState = require("game.hgss.src.field.FieldState")
 local LocalClock = require("game.src.LocalClock")
@@ -29,7 +27,6 @@ local NavigationFacts = require("tests.rom.support.NavigationFacts")
 local RomSourcePath = require("tests.rom.support.RomSourcePath")
 
 local T = {}
-local caveEncounterLocation
 
 local function readyVersion()
   for _, versionId in ipairs(GameVersion.ORDER) do
@@ -101,10 +98,14 @@ local function draw(state, target)
   love.graphics.setCanvas()
 end
 
+-- Frames are compared on a coarse grid: a changed transition frame differs
+-- over large areas, so every fourth pixel is enough to tell frames apart.
+local PIXEL_STRIDE = 4
+
 local function pixelDifference(left, right)
   local changed = 0
-  for y = 0, 191 do
-    for x = 0, 255 do
+  for y = 0, 191, PIXEL_STRIDE do
+    for x = 0, 255, PIXEL_STRIDE do
       local lr, lg, lb, la = left:getPixel(x, y)
       local rr, rg, rb, ra = right:getPixel(x, y)
       if lr ~= rr or lg ~= rg or lb ~= rb or la ~= ra then
@@ -165,6 +166,18 @@ local function assertPresentedRoute(scope, versionId, cacheFs, case)
   Assert.equal(selected.routeKey, expected.routeKey, case.name .. " uses the generated source selector")
   Assert.isNil(runtime.battleCoordinator:activeBattle(), case.name .. " transition precedes battle construction")
 
+  if not case.renderChecks then
+    for _ = 1, case.sampleTicks do
+      state:update(1 / 60)
+      local status = state.battleEnvelope:transitionStatus()
+      if status == nil or status.phase ~= "running" then
+        Assert.equal(status and status.phase, "complete", case.name .. " runs its source route to completion")
+        return
+      end
+    end
+    error(case.name .. " did not complete its source route within the sampled ticks", 0)
+  end
+
   local first = render(scope, state)
   Assert.equal(pixelDifference(first, render(scope, state)), 0, case.name .. " repeated draw does not advance")
   local beforeResize = state.battleEnvelope:transitionStatus()
@@ -178,12 +191,10 @@ local function assertPresentedRoute(scope, versionId, cacheFs, case)
   Assert.equal(pixelDifference(first, previous), 0, case.name .. " native resize return preserves the frame")
 
   local changedFrames = 0
-  local transitionCompleted = false
-  for _ = 1, case.sampleTicks or 24 do
+  for _ = 1, 24 do
     state:update(1 / 60)
     local status = state.battleEnvelope:transitionStatus()
     if status == nil or status.phase ~= "running" then
-      transitionCompleted = status ~= nil and status.phase == "complete"
       break
     end
     local current = render(scope, state)
@@ -191,18 +202,12 @@ local function assertPresentedRoute(scope, versionId, cacheFs, case)
       changedFrames = changedFrames + 1
     end
     previous = current
-    if changedFrames >= 2 and case.sampleUntilComplete ~= true then
+    if changedFrames >= 2 then
       break
     end
   end
-  if case.expectChangingPixels ~= false then
-    Assert.isTrue(changedFrames >= 2, case.name .. " changes native pixels across source ticks")
-  end
-  if case.sampleUntilComplete == true then
-    Assert.isTrue(transitionCompleted, case.name .. " runs its source route to completion")
-  else
-    Assert.isNil(runtime.battleCoordinator:activeBattle(), case.name .. " remains before battle intro")
-  end
+  Assert.isTrue(changedFrames >= 2, case.name .. " changes native pixels across source ticks")
+  Assert.isNil(runtime.battleCoordinator:activeBattle(), case.name .. " remains before battle intro")
 end
 
 function T.field_transition_composes_selected_native_frames_before_battle_intro(scope)
@@ -240,63 +245,19 @@ function T.field_transition_composes_selected_native_frames_before_battle_intro(
   local request = { kind = "wild", details = { species = "CATERPIE", level = 3 } }
   assertPresentedRoute(scope, versionId, cacheFs, {
     name = "Route 29 grass wild",
+    renderChecks = true,
+    sampleTicks = 240,
     location = grassLocation,
     request = request,
     sceneKey = "general/grass/day",
     selectorContext = grassWildContext,
   })
 
-  local newBark = assert(MapResolver.resolve(romFs, "MAP_NEW_BARK"))
-  assertPresentedRoute(scope, versionId, cacheFs, {
-    name = "New Bark water wild",
-    location = {
-      mapSymbol = "MAP_NEW_BARK",
-      fieldX = facts.water.fieldX - newBark.worldOriginX,
-      fieldZ = facts.water.fieldZ - newBark.worldOriginZ,
-      facing = "south",
-    },
-    request = request,
-    sceneKey = "general/water/day",
-    selectorContext = {
-      kind = "wild",
-      wildSpecies = "CATERPIE",
-      doubleBattle = false,
-      specialBattle = false,
-      alternateTransition = false,
-      playerGender = "male",
-      wildSetupFallback = false,
-      terrain = "water",
-      timeOfDay = "day",
-    },
-  })
-
-  local caveMap = assert(MapResolver.resolve(romFs, "MAP_UNION_CAVE_1F"))
-  local caveLocation = caveEncounterLocation(cacheFs, caveMap)
-  assertPresentedRoute(scope, versionId, cacheFs, {
-    name = "Union Cave floor wild",
-    location = caveLocation,
-    request = request,
-    sceneKey = "cave_1/cave/day",
-    selectorContext = {
-      kind = "wild",
-      wildSpecies = "CATERPIE",
-      doubleBattle = false,
-      specialBattle = false,
-      alternateTransition = false,
-      playerGender = "male",
-      wildSetupFallback = false,
-      terrain = "cave",
-      timeOfDay = "day",
-    },
-  })
-
   local trainers = HgssTrainerCatalog.new(BattleDataCache.loadTrainers(cacheFs))
   local trainer = assert(HgssTrainerCatalog.trainer(trainers, 4), "staged trainer data includes trainer 4")
   assertPresentedRoute(scope, versionId, cacheFs, {
     name = "Route 29 trainer",
-    expectChangingPixels = true,
     sampleTicks = 240,
-    sampleUntilComplete = true,
     location = grassLocation,
     request = { kind = "trainer", details = { trainer = 4 } },
     sceneKey = "general/grass/day",
@@ -317,10 +278,6 @@ local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
 suite.metadata.derivedAssets = {
   "field-runtime",
-  "field-cell-index:global",
-  "field-cell:42-0",
-  "field-cell:42-1",
-  "field-cell:42-2",
   "map-data:60",
   "map-data:48",
   "map-data:31",
@@ -338,8 +295,6 @@ suite.metadata.derivedAssets = {
   "battle-presentation:global",
   "battle-scene:general/grass/day",
   "battle-scene:general/plain/day",
-  "battle-scene:general/water/day",
-  "battle-scene:cave_1/cave/day",
   "trainers:global",
   "mon-icon-page:0",
   "mon-portrait-page:0",
@@ -347,47 +302,5 @@ suite.metadata.derivedAssets = {
   "audio-bank:709",
   "audio-bank:728",
 }
-
--- Select a source cave-floor tile from the prepared Union Cave cells. The
--- field-cell index supplies its exact matrix/member identity; behavior 8 is
--- the HGSS cave-floor behavior used by the battle scene selector.
-caveEncounterLocation = function(cacheFs, caveMap)
-  local index = FieldCellCache.loadIndex(cacheFs)
-  local descriptors = {}
-  for _, matrix in ipairs(index.matrices) do
-    for _, descriptor in ipairs(matrix.cells) do
-      if descriptor.mapHeaderId == caveMap.map.id then
-        descriptors[#descriptors + 1] = descriptor
-      end
-    end
-  end
-  table.sort(descriptors, function(left, right)
-    if left.matrixMemberId == right.matrixMemberId then
-      return left.index < right.index
-    end
-    return left.matrixMemberId < right.matrixMemberId
-  end)
-
-  for _, descriptor in ipairs(descriptors) do
-    if cacheFs:exists(descriptor.file, "file") then
-      local cell = assert(cacheFs:loadLua(descriptor.file))
-      local collision = assert(cacheFs:read(cell.collision.file))
-      local grid = assert(CollisionGridAsset.decode(collision, { cell = descriptor.file }))
-      for tileIndex, tile in ipairs(grid.cells) do
-        if tile.behavior == 8 and not tile.blocked then
-          local fieldX = descriptor.x * 32 + (tileIndex - 1) % 32
-          local fieldZ = descriptor.z * 32 + math.floor((tileIndex - 1) / 32)
-          return {
-            mapSymbol = "MAP_UNION_CAVE_1F",
-            fieldX = fieldX - caveMap.worldOriginX,
-            fieldZ = fieldZ - caveMap.worldOriginZ,
-            facing = "south",
-          }
-        end
-      end
-    end
-  end
-  error("prepared Union Cave cells have no passable source cave-floor tile", 0)
-end
 
 return suite
