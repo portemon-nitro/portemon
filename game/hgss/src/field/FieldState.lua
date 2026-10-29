@@ -44,6 +44,7 @@ local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear
 ---@field initialFadeIn boolean? one-shot covered entry: first frame fully black, then reveal
 ---@field topologyProvider (fun(width: number, height: number): ScreenTopology)?
 ---@field displayContext DisplayContext? shared actual-display measurement owner (defaults to a state-owned context)
+---@field localClock LocalClock? injectable host-local civil-time boundary
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field saveStore table<string, unknown>? global GameSaveStore
 ---@field audioOutput table<string, unknown>? audio-output host namespace for deterministic runtime audio
@@ -186,6 +187,7 @@ function FieldState.new(game, options)
     derivedAssets = options.derivedAssets,
     martStockResolver = options.martStockResolver,
     displayContext = displayContext,
+    localClock = options.localClock,
     presentationOverrides = options.presentationOverrides,
   }
   -- Construction is binary: FieldRuntime.new either raised (boot failed) or
