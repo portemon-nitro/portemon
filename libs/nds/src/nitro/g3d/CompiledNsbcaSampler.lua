@@ -19,6 +19,7 @@
 -- (asserted at compile), so the sampling paths never see a frame past the
 -- last key. Pure domain module.
 
+local ffi = require("ffi")
 local JointAnimBlend = require("libs.nds.src.nitro.g3d.JointAnimBlend")
 
 local CompiledNsbcaSampler = {}
@@ -58,24 +59,27 @@ local function wrap32(v)
 end
 
 -- Cross product for the third row (cells 6-8 = row 0 x row 1), as the asm
--- computes it: 32-bit wraps, arithmetic shift by 12.
+-- computes it: 32-bit wraps, arithmetic shift by 12. Cells live in a
+-- zero-based typed scratch array; every stored value is an fx32 word.
 local function computeCross(cells)
-  cells[7] = asr(wrap32(mul32(cells[2], cells[6]) - mul32(cells[3], cells[5])), 12)
-  cells[8] = asr(wrap32(mul32(cells[3], cells[4]) - mul32(cells[1], cells[6])), 12)
-  cells[9] = asr(wrap32(mul32(cells[1], cells[5]) - mul32(cells[2], cells[4])), 12)
+  cells[6] = asr(wrap32(mul32(cells[1], cells[5]) - mul32(cells[2], cells[4])), 12)
+  cells[7] = asr(wrap32(mul32(cells[2], cells[3]) - mul32(cells[0], cells[5])), 12)
+  cells[8] = asr(wrap32(mul32(cells[0], cells[4]) - mul32(cells[1], cells[3])), 12)
 end
 
 -- Double-precision row normalization (VEC_Normalize stand-in; the SDK's
 -- exact implementation is unavailable, within the bind-pose tolerance).
-local function normalizeRow(cells, offset)
-  local x, y, z = cells[offset + 1], cells[offset + 2], cells[offset + 3]
+-- Row is the zero-based row number into the typed scratch array.
+local function normalizeRow(cells, row)
+  local base = row * 3
+  local x, y, z = cells[base], cells[base + 1], cells[base + 2]
   local length = math.sqrt(x * x + y * y + z * z)
   if length == 0 then
     return
   end
-  cells[offset + 1] = math.floor(x * FX_UNIT / length)
-  cells[offset + 2] = math.floor(y * FX_UNIT / length)
-  cells[offset + 3] = math.floor(z * FX_UNIT / length)
+  cells[base] = math.floor(x * FX_UNIT / length)
+  cells[base + 1] = math.floor(y * FX_UNIT / length)
+  cells[base + 2] = math.floor(z * FX_UNIT / length)
 end
 
 -- ---- rotation reconstruction (NitroRotation over compiled tables) ----
@@ -92,10 +96,11 @@ local PIVOT_UTIL = {
   { 0, 1, 3, 4 },
 }
 
--- Reconstruct the nine cells of one rotation key (u16 value) into `out`.
--- Returns true for compressed entries, false for pivot entries.
+-- Reconstruct the nine cells of one rotation key (u16 value) into `out`,
+-- a zero-based typed scratch array. Returns true for compressed entries,
+-- false for pivot entries.
 local function reconstructInto(clip, key, out)
-  for i = 1, 9 do
+  for i = 0, 8 do
     out[i] = 0
   end
   local index = key % 32768
@@ -114,12 +119,12 @@ local function reconstructInto(clip, key, out)
     if pivot > 8 then
       error("pivot index " .. tostring(pivot) .. " exceeds the 0..8 pivotUtil table")
     end
-    out[pivot + 1] = bitSet(entry.control, 0x10) and -FX_UNIT or FX_UNIT
+    out[pivot] = bitSet(entry.control, 0x10) and -FX_UNIT or FX_UNIT
     local u = PIVOT_UTIL[pivot + 1]
-    out[u[1] + 1] = entry.a
-    out[u[2] + 1] = entry.b
-    out[u[3] + 1] = bitSet(entry.control, 0x20) and -entry.b or entry.b
-    out[u[4] + 1] = bitSet(entry.control, 0x40) and -entry.a or entry.a
+    out[u[1]] = entry.a
+    out[u[2]] = entry.b
+    out[u[3]] = bitSet(entry.control, 0x20) and -entry.b or entry.b
+    out[u[4]] = bitSet(entry.control, 0x40) and -entry.a or entry.a
     return false
   end
   local e = clip.compiled.pivotData[index + 1]
@@ -132,8 +137,8 @@ local function reconstructInto(clip, key, out)
         .. ", beyond the compiled table"
     )
   end
-  for i = 1, 5 do
-    out[i] = asr(e[i], 3)
+  for i = 0, 4 do
+    out[i] = asr(e[i + 1], 3)
   end
   -- All five low-3-bit remainders feed cell 5, narrowed to the low 13
   -- bits sign-extended (the asm's trailing lsl #19 / asr #19 in
@@ -141,7 +146,7 @@ local function reconstructInto(clip, key, out)
   -- in lockstep with NitroRotation.reconstruct over the raw bytes.
   local packed = (e[4] % 8) + (e[3] % 8) * 8 + (e[2] % 8) * 64 + (e[1] % 8) * 512 + (e[5] % 8) * 4096
   local low13 = packed % 8192
-  out[6] = low13 >= 4096 and low13 - 8192 or low13
+  out[5] = low13 >= 4096 and low13 - 8192 or low13
   return true
 end
 
@@ -158,15 +163,15 @@ end
 local function mergeKeysInto(clip, keyA, keyB, weight, out, workA, workB)
   local compressedA = reconstructInto(clip, keyA, workA)
   local compressedB = reconstructInto(clip, keyB, workB)
-  for i = 1, 9 do
+  for i = 0, 8 do
     out[i] = workA[i] * weight + workB[i]
   end
   if compressedA or compressedB then
     computeCross(out)
   else
     normalizeRow(out, 0)
-    normalizeRow(out, 3)
-    normalizeRow(out, 6)
+    normalizeRow(out, 1)
+    normalizeRow(out, 2)
   end
   return out
 end
@@ -177,18 +182,18 @@ end
 local function lerpKeysInto(clip, keyA, keyB, frac, step, out, workA, workB)
   local compressedA = reconstructInto(clip, keyA, workA)
   local compressedB = reconstructInto(clip, keyB, workB)
-  for i = 1, 6 do
+  for i = 0, 5 do
     out[i] = workA[i] * step + asr(mul32(workB[i] - workA[i], frac), 12)
   end
   if compressedA or compressedB then
     computeCross(out)
   else
-    for i = 7, 9 do
+    for i = 6, 8 do
       out[i] = workA[i] * step + asr(mul32(workB[i] - workA[i], frac), 12)
     end
     normalizeRow(out, 0)
-    normalizeRow(out, 3)
-    normalizeRow(out, 6)
+    normalizeRow(out, 1)
+    normalizeRow(out, 2)
   end
   return out
 end
@@ -446,13 +451,24 @@ end
 
 -- ---- target sampling ----
 
+-- Copies one sampled typed rotation row into the public 1-based result
+-- array. The typed scratch stays internal; only plain numbers cross.
+local function publishRot(result, rot)
+  for i = 0, 8 do
+    result[i + 1] = rot[i]
+  end
+end
+
 ---@class NsbcaSamplerScratch
 ---@field result JointAnimResult -- the reusable sampled result
----@field workA number[] -- 9-cell rotation reconstruction workspace
----@field workB number[] -- 9-cell rotation reconstruction workspace
+---@field workA ffi.cdata* -- 9-cell rotation reconstruction workspace
+---@field workB ffi.cdata* -- 9-cell rotation reconstruction workspace
+---@field rotOut ffi.cdata* -- 9-cell typed rotation channel output
 
 -- Owner-held reusable sampling storage: one persistent result with stable
--- nested arrays plus two 9-cell rotation work arrays.
+-- nested arrays plus three 9-cell typed rotation work arrays. The typed
+-- arrays carry fx32 words through reconstruction and interpolation; the
+-- public result keeps plain 1-based numbers.
 ---@return NsbcaSamplerScratch
 function CompiledNsbcaSampler.newScratch()
   return {
@@ -463,8 +479,9 @@ function CompiledNsbcaSampler.newScratch()
       rot = { 0, 0, 0, 0, 0, 0, 0, 0, 0 },
       trans = { 0, 0, 0 },
     },
-    workA = { 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-    workB = { 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    workA = ffi.new("int32_t[9]"),
+    workB = ffi.new("int32_t[9]"),
+    rotOut = ffi.new("int32_t[9]"),
   }
 end
 
@@ -535,9 +552,10 @@ function CompiledNsbcaSampler.sampleInto(scratch, clip, targetIndex, frameFx)
     end
     result.rot[1], result.rot[5], result.rot[9] = FX_UNIT, FX_UNIT, FX_UNIT
   elseif rc.source == "constant" then
-    reconstructFinalInto(clip, rc.value, result.rot)
+    publishRot(result.rot, reconstructFinalInto(clip, rc.value, scratch.rotOut))
   else
-    sampleRotInto(clip, rc, frameFx, clip.frameCount, result.rot, scratch.workA, scratch.workB)
+    sampleRotInto(clip, rc, frameFx, clip.frameCount, scratch.rotOut, scratch.workA, scratch.workB)
+    publishRot(result.rot, scratch.rotOut)
   end
   if rotFromModel then
     flags = flags + FROM_MODEL.rot
