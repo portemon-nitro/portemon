@@ -674,7 +674,7 @@ function T.visual_duration_prefers_compiled_ticks_over_the_fallback()
   local explicit = assert(
     BattleEffectTasks.create(
       "pokemon-picture-position-path-transition",
-      { parameters = { positionPath = "all-battler-positions", durationTicks = 7 } },
+      { parameters = { positionPath = "all-battler-positions", stepMultiplier = 1, durationTicks = 7 } },
       occurrenceContext(),
       services
     )
@@ -702,6 +702,157 @@ function T.visual_duration_prefers_compiled_ticks_over_the_fallback()
   Assert.equal(swept:status(), "complete", "the run completes at its step product")
   swept:dispose()
   Assert.equal(#journal.released, #journal.acquired, "parameterized runs borrow without acquiring")
+end
+
+function T.battle_animation_position_path_runs_source_sine_and_restores_picture_offsets()
+  -- Source behavior: src/battle/battle_anim_funcs.c::BattleAnimFunc_MoveBattlerSin and
+  -- src/battle/battle_anim_util.c::BattleAnimUtil_InitCircleMotion.
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local task = assert(BattleEffectTasks.create("pokemon-picture-position-path-transition", {
+    parameters = {
+      positionPath = "all-battler-positions",
+      stepMultiplier = 2,
+      durationTicks = 3,
+    },
+  }, occurrenceContext(), services))
+  local attacker = { combatant = 1, activation = 1 }
+  local target = { combatant = 3, activation = 3 }
+
+  task:stepSourceTick({ tick = 1 })
+  task:stepSourceTick({ tick = 2 })
+  Assert.equal(task:status(), "running", "the source multiplier extends the base circle duration")
+  Assert.equal(scene:pictureState(attacker).pictureXOffset, -1, "the source sine reaches its native negative pixel")
+  Assert.equal(scene:pictureState(attacker).pictureYOffset, 8, "the source task keeps its eight-pixel baseline")
+  Assert.equal(scene:pictureState(target).pictureXOffset, -1, "the source role mask moves every selected picture")
+
+  for tick = 3, 6 do
+    task:stepSourceTick({ tick = tick })
+  end
+  Assert.equal(task:status(), "complete", "the task ends after duration times multiplier")
+  Assert.isNil(scene:pictureState(attacker), "completion restores the attacker's picture")
+  Assert.isNil(scene:pictureState(target), "completion restores the target's picture")
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "the source picture task stages no resources")
+end
+
+function T.battle_animation_battler_sprite_slot_persists_until_source_delete()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local context = occurrenceContext()
+  context.topology = {
+    attacker = { combatant = 1, activation = 1 },
+    targets = { { combatant = 3, activation = 3 } },
+  }
+  context.sourceBattlers = {
+    { combatant = 1, activation = 1, sideType = 0 },
+    { combatant = 3, activation = 3, sideType = 1 },
+  }
+  local create = assert(BattleEffectTasks.create("pokemon-battler-sprite-slot", {
+    operation = "create",
+    battlerTarget = "first-battler-state-one-or-three",
+    spriteSlot = 1,
+    follow = false,
+    runtimeSelection = "battler-pokemon-picture-resource",
+  }, context, services))
+  create:stepSourceTick({ tick = 1 })
+  Assert.equal(create:status(), "complete", "source sprite creation is a synchronous slot publication")
+  local views = scene:effectViews()
+  Assert.equal(#views, 1, "the source slot keeps its battler picture in the scene")
+  Assert.equal(views[1].picture.spriteSlot, 1, "the scene preserves the source slot identity")
+  Assert.equal(views[1].picture.battlerActivation.combatant, 3, "the role resolves to the event target")
+  Assert.equal(views[1].picture.follow, false, "the source follow flag stays explicit")
+  Assert.throws(function()
+    scene:setBattlerSpriteSlot("native-task-probe:1:native-task-probe", 1, { combatant = 3, activation = 3 }, false)
+  end, "source sprite slots reject a second create before the matching delete")
+  Assert.equal(#scene:effectViews(), 1, "a rejected duplicate leaves the original source slot intact")
+  create:dispose()
+  Assert.equal(#scene:effectViews(), 1, "retiring the one-tick command leaves scene-owned slot state")
+
+  local delete = assert(BattleEffectTasks.create("pokemon-battler-sprite-slot", {
+    operation = "delete",
+    spriteSlot = 1,
+  }, context, services))
+  delete:stepSourceTick({ tick = 2 })
+  Assert.equal(delete:status(), "complete", "source deletion is synchronous")
+  Assert.equal(#scene:effectViews(), 0, "opcode 60 releases the exact created slot")
+  delete:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "slot commands acquire no duplicate source resource")
+end
+
+function T.battle_animation_battler_sprite_role_four_and_five_use_native_fallbacks()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local context = occurrenceContext()
+  context.sourceBattlers = {
+    { combatant = 1, activation = 1, sideType = 0 },
+    { combatant = 3, activation = 3, sideType = 1 },
+    { combatant = 5, activation = 5, sideType = 4 },
+    { combatant = 7, activation = 7, sideType = 5 },
+  }
+  local function create(role, slot)
+    local task = assert(BattleEffectTasks.create("pokemon-battler-sprite-slot", {
+      operation = "create",
+      battlerTarget = role,
+      spriteSlot = slot,
+      follow = false,
+      runtimeSelection = "battler-pokemon-picture-resource",
+    }, context, services))
+    task:stepSourceTick({ tick = 1 })
+  end
+  create("first-battler-state-four", 6)
+  create("first-battler-state-five", 7)
+  local views = scene:effectViews()
+  Assert.equal(views[1].picture.battlerActivation.combatant, 5, "state-four roles choose source type four")
+  Assert.equal(views[2].picture.battlerActivation.combatant, 7, "state-five roles choose source type five")
+  scene:releaseBattlerSpriteSlots("native-task-probe:1:native-task-probe")
+  context.sourceBattlers = {
+    { combatant = 1, activation = 1, sideType = 0 },
+    { combatant = 3, activation = 3, sideType = 1 },
+  }
+  create("first-battler-state-four", 6)
+  create("first-battler-state-five", 7)
+  views = scene:effectViews()
+  Assert.equal(views[1].picture.battlerActivation.combatant, 1, "missing state-four roles use source battler zero")
+  Assert.equal(views[2].picture.battlerActivation.combatant, 1, "missing state-five roles use source battler zero")
+  scene:release()
+  Assert.equal(#scene:effectViews(), 0, "scene settlement retires both source fallback copies")
+  Assert.equal(#journal.released, #journal.acquired, "role selection stages no duplicate resources")
+end
+
+function T.battler_sprite_active_position_roles_follow_attacker_and_defender_partners()
+  local scene = sceneWithPair()
+  local services = journalServices(scene)
+  local context = occurrenceContext()
+  context.topology = {
+    attacker = { combatant = 3, activation = 3, sideType = 3 },
+    targets = { { combatant = 1, activation = 1, sideType = 2 } },
+  }
+  context.sourceBattlers = {
+    { combatant = 1, activation = 1, sideType = 2 },
+    { combatant = 2, activation = 2, sideType = 4 },
+    { combatant = 3, activation = 3, sideType = 3 },
+    { combatant = 4, activation = 4, sideType = 5 },
+  }
+  local function create(role, slot)
+    local task = assert(BattleEffectTasks.create("pokemon-battler-sprite-slot", {
+      operation = "create",
+      battlerTarget = role,
+      spriteSlot = slot,
+      follow = false,
+      runtimeSelection = "battler-pokemon-picture-resource",
+    }, context, services))
+    task:stepSourceTick({ tick = 1 })
+  end
+
+  create("first-battler-for-active-position-first", 0)
+  create("first-battler-for-active-position-second", 1)
+
+  local views = scene:effectViews()
+  Assert.equal(views[1].picture.battlerActivation.combatant, 4, "the first role resolves the attacker's partner")
+  Assert.equal(views[2].picture.battlerActivation.combatant, 2, "the second role resolves the defender's partner")
+  scene:releaseBattlerSpriteSlots("native-task-probe:1:native-task-probe")
+  scene:release()
 end
 
 function T.palette_pulse_accepts_a_compiled_zero_frame_interval()

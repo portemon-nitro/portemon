@@ -48,6 +48,7 @@ local TASK_KINDS = {
   ["repeated-sound-playback"] = true,
   ["delayed-sound-playback"] = true,
   ["pokemon-picture-animation"] = true,
+  ["pokemon-battler-sprite-slot"] = true,
   ["battle-background-blend-transition"] = true,
   ["battle-palette-fade"] = true,
   ["battle-presentation-state-reset"] = true,
@@ -1390,6 +1391,17 @@ local function checkCallbackInvocation(instruction, context, code, field)
   checkParameters(instruction.parameters, profile.parameters, context, code, field)
 end
 
+local function checkBattlerSpriteSlot(instruction, context, code, field)
+  if instruction.op == "create-pokemon-sprite" then
+    SchemaCheck.checkInteger(instruction.spriteSlot, context, code, field .. ".spriteSlot", 0)
+  elseif instruction.values ~= nil then
+    SchemaCheck.checkInteger(instruction.values[1], context, code, field .. ".values[1]", 0)
+  end
+  if instruction.taskKind ~= "pokemon-battler-sprite-slot" then
+    fail(code, field .. ".taskKind does not preserve the battler sprite slot operation", context)
+  end
+end
+
 local function checkCounterWait(instruction, context, code, field)
   if instruction.cursorRule ~= COUNTER_WAIT_CURSOR_RULE then
     fail(code, field .. ".cursorRule does not preserve both counter wait paths", context)
@@ -1551,7 +1563,11 @@ local OPERATIONS = {
   ["copy-main-background-palette-to-fade-buffer"] = {},
   ["grayscale-main-background-fade-buffer"] = {},
   ["set-pokemon-picture-vanished"] = { fields = { "pictureSets", "vanished" }, check = checkPictureVanished },
-  ["delete-managed-sprite"] = { values = 1 },
+  ["delete-managed-sprite"] = {
+    values = 1,
+    fields = { "taskKind" },
+    check = checkBattlerSpriteSlot,
+  },
   ["clear-parameters"] = {},
   ["create-sprite-manager"] = { values = 8 },
   ["dispose-sprite-manager"] = { values = 1 },
@@ -1613,7 +1629,8 @@ local OPERATIONS = {
   },
   ["create-pokemon-sprite"] = {
     values = 1,
-    fields = { "taskKind", "taskStartRule", "runtimeSelection", "battlerTarget" },
+    fields = { "taskKind", "spriteSlot", "runtimeSelection", "battlerTarget" },
+    check = checkBattlerSpriteSlot,
   },
   ["dispose-shared-sprite-manager"] = {},
   ["destroy-effect-slot"] = { values = true },

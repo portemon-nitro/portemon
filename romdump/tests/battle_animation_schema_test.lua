@@ -1215,7 +1215,8 @@ function T.operation_fields_reject_values_outside_their_declared_kind()
       valid = {
         op = "create-pokemon-sprite",
         values = { 0 },
-        taskKind = "battle-palette-fade",
+        taskKind = "pokemon-battler-sprite-slot",
+        spriteSlot = 0,
         battlerTarget = "attacker",
       },
       field = "battlerTarget",
