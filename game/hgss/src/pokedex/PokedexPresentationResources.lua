@@ -27,6 +27,9 @@ local PokedexRenderer = require("libs.hgss.src.ui.PokedexRenderer")
 ---@field _renderer table<string, unknown> the one shared prepared rasterizer
 ---@field _manifest table<string, unknown>? loaded presentation manifest, synthetic when no cache backs the seam
 ---@field _manifestReady boolean
+---@field _warmChromeTokens table<string, integer> unconsumed shared-owner prefetch tokens by canonical path
+---@field _warmChromeLeases table<string, table<string, unknown>> owner-held prefetch leases by canonical path
+---@field _idleSurfaces table<string, unknown>? reusable six-canvas compositor group on loan to at most one lease
 ---@field _leases table<string, unknown>[] live per-open leases in acquisition order
 ---@field _released boolean
 local PokedexPresentationResources = {}
@@ -95,6 +98,9 @@ function PokedexPresentationResources.new(opts)
     _renderer = nil,
     _manifest = nil,
     _manifestReady = false,
+    _warmChromeTokens = {},
+    _warmChromeLeases = {},
+    _idleSurfaces = nil,
     _portraitManifest = nil,
     _leases = {},
     _released = false,
@@ -106,11 +112,14 @@ end
 -- Loads the presentation manifest only after the presentation scope
 -- reports ready through the semantic seam. The cache filesystem is a
 -- required collaborator: scopes without one fail with attribution instead
--- of publishing a synthetic manifest.
+-- of publishing a synthetic manifest. Foreground demands use required
+-- urgency; idle staging uses near urgency and never invents page art.
 ---@param owner PokedexPresentationResources
+---@param urgency string? compilation urgency, required for foreground
 ---@return boolean ready
 ---@return string? failure nonempty cause when the published scope cannot be read
-local function ensureManifest(owner)
+local function ensureManifest(owner, urgency)
+  local level = urgency or "required"
   if owner._manifestReady then
     return true
   end
@@ -121,7 +130,7 @@ local function ensureManifest(owner)
   if type(request) ~= "function" then
     return false, "pokedex presentation compilation is unavailable"
   end
-  local ok, ready, failure = pcall(request, "required")
+  local ok, ready, failure = pcall(request, level)
   if not ok then
     return false, tostring(ready)
   end
@@ -2419,13 +2428,21 @@ local function releaseLeaseInterests(owner, lease)
   lease._spindaRetired = {}
   lease._committedPaths = nil
   lease._committedBanks = nil
+  -- A released canvas group returns to the owner idle slot only while the
+  -- slot is vacant and the owner lives; otherwise its canvases release
+  -- exactly once like any other excess group. Never hoard spare groups.
   if type(lease._surfaces) == "table" then
-    for _, surface in ipairs(lease._surfaces) do
-      if type(surface) == "table" and surface.canvas ~= nil then
-        if type(surface.canvas.release) == "function" then
-          surface.canvas:release()
+    if not owner._released and owner._idleSurfaces == nil then
+      owner._idleSurfaces = lease._surfaces
+      lease._surfaces = {}
+    else
+      for _, surface in ipairs(lease._surfaces) do
+        if type(surface) == "table" and surface.canvas ~= nil then
+          if type(surface.canvas.release) == "function" then
+            surface.canvas:release()
+          end
+          surface.canvas = nil
         end
-        surface.canvas = nil
       end
     end
   end
@@ -2606,6 +2623,129 @@ local function prepareLease(owner, lease, demand)
   return { kind = "ready", key = demand.key, assets = bundle }
 end
 
+-- Stages the common cover, grid, and registration chrome plus one reusable
+-- six-canvas compositor group across idle updates without publishing a
+-- page. At most one speculative pool adoption or canvas realization runs
+-- per call under the shared admission budget. Failures name their cause
+-- without crashing the field; per-open leases reuse warmed art through
+-- shared pool identity and the loaned canvas group.
+---@param remainingGpu integer 0 or 1 speculative GPU realizations for the call
+---@return boolean usedGpu true when the call realized a new pool lease or canvas
+---@return string? failure nonempty cause when idle staging cannot proceed
+function PokedexPresentationResources:advanceWarmup(remainingGpu)
+  assert(not self._released, "pokedex preparation is released")
+  assert(remainingGpu == 0 or remainingGpu == 1, "idle staging spends at most one GPU realization")
+  local allowance = remainingGpu
+  local used = false
+  local ready, failure = ensureManifest(self, "near")
+  if failure ~= nil then
+    return used, failure
+  end
+  if not ready then
+    return used, nil
+  end
+  local manifest = assert(self._manifest, "prepared bundles carry their manifest")
+  local wantedRoles, seenRoles = {}, {}
+  for _, pageRole in ipairs({ "cover", "grid", "registration" }) do
+    local roles, closureFailure = requiredChromeRoles(manifest, pageRole)
+    if roles == nil then
+      return used, closureFailure
+    end
+    for _, role in ipairs(roles) do
+      if not seenRoles[role] then
+        seenRoles[role] = true
+        wantedRoles[#wantedRoles + 1] = role
+      end
+    end
+  end
+  table.sort(wantedRoles)
+  local chromeInventory = manifest.chrome
+  if type(chromeInventory) ~= "table" then
+    return used, "prepared bundles carry their chrome inventory"
+  end
+  local wantedPaths, seenPaths = {}, {}
+  for _, role in ipairs(wantedRoles) do
+    local record = chromeInventory[role]
+    if type(record) ~= "table" then
+      return used, "chrome role " .. tostring(role) .. " is not a record"
+    end
+    local path = record.path
+    if type(path) ~= "string" or path == "" then
+      return used, "chrome role " .. tostring(role) .. " carries no path"
+    end
+    if not seenPaths[path] then
+      seenPaths[path] = true
+      wantedPaths[#wantedPaths + 1] = path
+    end
+  end
+  table.sort(wantedPaths)
+  local pool = self._pool
+  for _, path in ipairs(wantedPaths) do
+    if self._warmChromeLeases[path] == nil and self._warmChromeTokens[path] == nil then
+      self._warmChromeTokens[path] = pool:request(path, POOLED_SAMPLER, "prefetch")
+    end
+  end
+  for _, path in ipairs(wantedPaths) do
+    local token = self._warmChromeTokens[path]
+    if token ~= nil and self._warmChromeLeases[path] == nil then
+      local status, cause = pool:poll(token)
+      if status == "failed" then
+        pool:cancel(token)
+        self._warmChromeTokens[path] = nil
+        return used, "compiled Pokedex chrome missing at " .. path .. ": " .. tostring(cause)
+      end
+    end
+  end
+  if allowance > 0 then
+    for _, path in ipairs(wantedPaths) do
+      local token = self._warmChromeTokens[path]
+      if token ~= nil and self._warmChromeLeases[path] == nil then
+        local status = pool:poll(token)
+        if status == "ready" then
+          local ok, adopted = pcall(pool.acquire, pool, token)
+          if not ok then
+            self._warmChromeTokens[path] = nil
+            pool:cancel(token)
+            return used, "compiled Pokedex chrome missing at " .. path .. ": " .. tostring(adopted)
+          end
+          self._warmChromeTokens[path] = nil
+          self._warmChromeLeases[path] = adopted
+          allowance = allowance - 1
+          used = true
+          break
+        else
+          assert(status == "pending", "chrome preparation reports pending or ready")
+        end
+      end
+    end
+  end
+  local graphics = self._graphics
+  if type(graphics) == "table" and type(graphics.newCanvas) == "function" then
+    if self._idleSurfaces == nil then
+      local group = {}
+      for _, name in ipairs(SURFACE_NAMES) do
+        group[#group + 1] = { name = name, canvas = nil, width = SURFACE_WIDTH, height = SURFACE_HEIGHT }
+      end
+      self._idleSurfaces = group
+    end
+    if allowance > 0 then
+      for _, surface in ipairs(assert(self._idleSurfaces, "the idle canvas group is staged")) do
+        if surface.canvas == nil then
+          local ok, canvas = pcall(graphics.newCanvas, SURFACE_WIDTH, SURFACE_HEIGHT)
+          if not ok then
+            return used, "the pokedex compositor cannot realize its serial surfaces: " .. tostring(canvas)
+          end
+          surface.canvas = canvas
+          allowance = allowance - 1
+          used = true
+          break
+        end
+      end
+    end
+  end
+  return used, nil
+end
+
 -- Acquires one opaque per-open preparation lease. Leases own only demand
 -- membership; release is idempotent and never touches borrowed owners.
 -- The purpose is fixed for the lease lifetime.
@@ -2639,10 +2779,17 @@ function PokedexPresentationResources:acquire(opts)
   }
   -- The six serial compositor surfaces start bound-only; prepare
   -- realizes their canvases across separate calls under the shared
-  -- allowance wherever host canvases back the seam.
-  for _, name in ipairs(SURFACE_NAMES) do
-    lease._surfaces[#lease._surfaces + 1] =
-      { name = name, canvas = nil, width = SURFACE_WIDTH, height = SURFACE_HEIGHT }
+  -- allowance wherever host canvases back the seam. A warmed idle group
+  -- transfers its sole ownership to exactly one lease, partial or whole;
+  -- a second simultaneously alive lease builds its own group.
+  if owner._idleSurfaces ~= nil then
+    lease._surfaces = owner._idleSurfaces
+    owner._idleSurfaces = nil
+  else
+    for _, name in ipairs(SURFACE_NAMES) do
+      lease._surfaces[#lease._surfaces + 1] =
+        { name = name, canvas = nil, width = SURFACE_WIDTH, height = SURFACE_HEIGHT }
+    end
   end
   lease._icons = newIconDemand(lease)
   function lease:prepare(demand)
@@ -2690,6 +2837,26 @@ function PokedexPresentationResources:release()
   self._renderer = nil
   if renderer ~= nil then
     renderer:release()
+  end
+  local pool = self._pool
+  for _, token in pairs(self._warmChromeTokens) do
+    pool:cancel(token)
+  end
+  self._warmChromeTokens = {}
+  for _, adopted in pairs(self._warmChromeLeases) do
+    pool:release(adopted)
+  end
+  self._warmChromeLeases = {}
+  if self._idleSurfaces ~= nil then
+    for _, surface in ipairs(self._idleSurfaces) do
+      if type(surface) == "table" and surface.canvas ~= nil then
+        if type(surface.canvas.release) == "function" then
+          surface.canvas:release()
+        end
+        surface.canvas = nil
+      end
+    end
+    self._idleSurfaces = nil
   end
   self._manifest = nil
   self._manifestReady = false

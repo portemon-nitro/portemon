@@ -1590,4 +1590,273 @@ function T.staged_slider_quantities_expand_through_their_borrowed_templates()
   Assert.equal(pool:stats().outstandingLeases, 0, "measurement text returns every image interest")
 end
 
+-- Idle warmup stages exactly the long-lived common page roles behind one
+-- reusable six-canvas group: each staged page carries a single authored
+-- background so the staged set proves role closure without inventing page
+-- art, and the first real browser lease reuses warmed canvases and chrome
+-- instead of rebuilding them.
+local function idleClosureManifest()
+  local PokedexCache = require("libs.assets.src.PokedexCache")
+  local function background(chrome)
+    return { chrome = chrome, layer = 0, x = 0, y = 0, priority = 0, paletteGroup = "group" }
+  end
+  local function page(bgRole)
+    return {
+      backdrop = {
+        information = { r = 0, g = 0, b = 0, a = 255 },
+        controls = { r = 0, g = 0, b = 0, a = 255 },
+      },
+      backgrounds = { information = { background(bgRole) }, controls = {} },
+      cells = {},
+      sprites = {},
+      windows = {},
+    }
+  end
+  return {
+    schema = PokedexCache.SCHEMA,
+    fonts = { body = 0, header = 4 },
+    chrome = {
+      ["cover.bg"] = { path = "pokedex/chrome/cover-bg", width = 256, height = 192 },
+      ["grid.bg"] = { path = "pokedex/chrome/grid-bg", width = 256, height = 192 },
+      ["registration.bg"] = { path = "pokedex/chrome/registration-bg", width = 256, height = 192 },
+    },
+    cells = {},
+    animations = {},
+    sprites = {},
+    windows = {},
+    text = {
+      ui = { bankId = 802 },
+      entryByLanguage = { native = { nameBankId = 237, categoryBankId = 816, flavorBankId = 803 } },
+      measureByProfile = { base = { heightBankId = 815, weightBankId = 813 } },
+      registrationAnnouncement = { bankId = 197, messageId = 871 },
+    },
+    pages = {
+      cover = page("cover.bg"),
+      grid = page("grid.bg"),
+      registration = page("registration.bg"),
+    },
+  }
+end
+
+---@param pool table shared image pool double under test
+---@param graphics table fake graphics namespace recording canvas construction
+---@return table owner construction arguments over the common-role closure
+local function idleOwnerArgs(pool, graphics)
+  local args = ownerArgs(pool)
+  local manifest = idleClosureManifest()
+  args.cacheFs = {
+    loadLua = function(_)
+      return manifest
+    end,
+  }
+  args.graphics = graphics
+  return args
+end
+
+---@param owner table per-open resource owner under test
+---@param allowance integer remaining speculative GPU realizations for the call
+---@return boolean whether speculative work remains after the call
+local function settleWarmup(owner, allowance)
+  local settled = false
+  for _ = 1, 128 do
+    local used, failure = owner:advanceWarmup(allowance)
+    Assert.isNil(failure, "idle staging reports no failure on synthetic chrome")
+    if used == false then
+      settled = true
+      break
+    end
+  end
+  Assert.isTrue(settled, "idle rounds finish the common chrome and canvas group work")
+  return settled
+end
+
+-- Common role art and exactly one six-canvas compositor group are staged
+-- across idle rounds; the first browser lease reuses them without new
+-- canvas construction or chrome re-upload, and a repeated open reuses
+-- them again while page state still waits on its own dynamic content.
+function T.idle_rounds_stage_common_chrome_and_the_canvas_group_for_first_open()
+  local Owner = requirePresent("idle common chrome and canvas staging")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local pool = SharedImagePoolFake.new()
+  local graphics = FakeGraphics.new()
+  local owner = Owner.new(idleOwnerArgs(pool, graphics))
+  Assert.isTrue(
+    type(owner.advanceWarmup) == "function",
+    "the dex owner stages its common chrome and canvas group across idle rounds"
+  )
+  local maxDelta = 0
+  local before = pool.uploads + #graphics.canvases
+  local settled = false
+  for _ = 1, 128 do
+    local used, failure = owner:advanceWarmup(1)
+    Assert.isNil(failure, "idle staging reports no failure on synthetic chrome")
+    local delta = (pool.uploads + #graphics.canvases) - before
+    before = pool.uploads + #graphics.canvases
+    if delta > maxDelta then
+      maxDelta = delta
+    end
+    if used == false then
+      settled = true
+      break
+    end
+  end
+  Assert.isTrue(settled, "idle rounds finish the common chrome and canvas group work")
+  Assert.equal(#graphics.canvases, 6, "idle rounds prepare exactly one reusable six-canvas group")
+  Assert.isTrue(maxDelta <= 1, "one idle round realizes at most one image pair or canvas")
+  local warmed = {}
+  for _, canvas in ipairs(graphics.canvases) do
+    warmed[canvas] = true
+  end
+  local lease = owner:acquire({ purpose = "browser" })
+  local ready = pumpReady(lease, pageDemand("grid", "idle-grid"))
+  Assert.equal(#graphics.canvases, 6, "the first open creates no new canvases")
+  local surfaces = assert(ready.assets.surfaces, "the ready bundle carries its serial surfaces")
+  Assert.equal(#surfaces, 6, "the lease owns four BG planes plus OBJ color and metadata")
+  for index, surface in ipairs(surfaces) do
+    Assert.isTrue(surface.canvas ~= nil, "first-open surface " .. index .. " realizes its canvas")
+    Assert.isTrue(warmed[surface.canvas], "first-open surface " .. index .. " reuses the warmed canvas group")
+    Assert.equal(surface.width, 256, "warmed surfaces stay 256 wide")
+    Assert.equal(surface.height, 192, "warmed surfaces stay 192 tall")
+  end
+  local uploadsAfterOpen = pool.uploads
+  lease:release()
+  local second = owner:acquire({ purpose = "browser" })
+  pumpReady(second, pageDemand("grid", "idle-grid-again"))
+  Assert.equal(#graphics.canvases, 6, "a repeated open creates no new canvases")
+  Assert.equal(pool.uploads, uploadsAfterOpen, "a repeated open re-uploads no common chrome")
+  second:release()
+  second:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "close returns every adopted image interest")
+end
+
+-- Independent browser and registration leases never draw into the same
+-- canvas group: the first takes the warmed spare, the second builds its
+-- own, each group is released or returned exactly once, and a later open
+-- reuses the surviving spare without new construction.
+function T.overlapping_leases_hold_independent_canvas_groups()
+  local Owner = requirePresent("independent per-lease canvas ownership")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local pool = SharedImagePoolFake.new()
+  local graphics = FakeGraphics.new()
+  local owner = Owner.new(idleOwnerArgs(pool, graphics))
+  Assert.isTrue(
+    type(owner.advanceWarmup) == "function",
+    "the dex owner loans its warmed canvas group to exactly one lease"
+  )
+  settleWarmup(owner, 1)
+  Assert.equal(#graphics.canvases, 6, "idle rounds prepare exactly one spare group")
+  local first = owner:acquire({ purpose = "browser" })
+  local second = owner:acquire({ purpose = "registration" })
+  local readyFirst = pumpReady(first, pageDemand("grid", "overlap-grid"))
+  local monCatalog, catalog = Fixture.catalogs()
+  local dexOwner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local snapshot = Fixture.registrationSnapshot(dexOwner, monCatalog, "TOTODILE", 0)
+  local readySecond = pumpReady(second, Fixture.registrationDemand(snapshot, "overlap-card"))
+  local firstCanvases = assert(readyFirst.assets.surfaces, "the browser bundle carries its surfaces")
+  local secondCanvases = assert(readySecond.assets.surfaces, "the card bundle carries its surfaces")
+  Assert.equal(#firstCanvases, 6, "the browser lease owns its six surfaces")
+  Assert.equal(#secondCanvases, 6, "the registration lease owns its six surfaces")
+  Assert.equal(#graphics.canvases, 12, "the second live lease builds its own group")
+  for firstIndex, firstSurface in ipairs(firstCanvases) do
+    for secondIndex, secondSurface in ipairs(secondCanvases) do
+      Assert.isTrue(
+        firstSurface.canvas ~= secondSurface.canvas,
+        "no canvas is shared between live leases: browser surface "
+          .. firstIndex
+          .. " registration surface "
+          .. secondIndex
+      )
+    end
+  end
+  local seen = {}
+  for _, surface in ipairs(firstCanvases) do
+    Assert.isNil(seen[surface.canvas], "the browser group holds six distinct canvases")
+    seen[surface.canvas] = true
+  end
+  for _, surface in ipairs(secondCanvases) do
+    Assert.isNil(seen[surface.canvas], "the registration group holds six distinct canvases")
+    seen[surface.canvas] = true
+  end
+  second:release()
+  first:release()
+  for _, canvas in ipairs(graphics.canvases) do
+    Assert.isTrue(
+      canvas.releaseCount <= 1,
+      "every canvas group is released or returned exactly once"
+    )
+  end
+  local third = owner:acquire({ purpose = "browser" })
+  pumpReady(third, pageDemand("grid", "overlap-grid-again"))
+  Assert.equal(#graphics.canvases, 12, "a later open reuses the surviving spare without new canvases")
+  third:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "overlapping close returns every image interest")
+end
+
+-- When one canvas construction raises, only the failed round unwinds: the
+-- previously completed warm chrome and canvases stay usable, no created
+-- canvas is released twice, and the later foreground preparation still
+-- reports the authoritative failure instead of publishing.
+function T.failed_canvas_round_keeps_completed_chrome_and_reports_authoritatively()
+  local Owner = requirePresent("partial canvas failure ownership")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local pool = SharedImagePoolFake.new()
+  -- A persistent outage from the third canvas construction on: the idle
+  -- round surfaces it, and the later foreground completion re-hits it
+  -- when filling the remaining group slots instead of publishing.
+  local graphics = FakeGraphics.new()
+  local canvasCalls = 0
+  local realNewCanvas = graphics.newCanvas
+  graphics.newCanvas = function(width, height)
+    canvasCalls = canvasCalls + 1
+    if canvasCalls >= 3 then
+      error("injected newCanvas failure")
+    end
+    return realNewCanvas(width, height)
+  end
+  local owner = Owner.new(idleOwnerArgs(pool, graphics))
+  Assert.isTrue(
+    type(owner.advanceWarmup) == "function",
+    "the dex owner isolates a failed canvas round from completed warm work"
+  )
+  local sawFailure = nil
+  for _ = 1, 128 do
+    local used, failure = owner:advanceWarmup(1)
+    if failure ~= nil then
+      Assert.isTrue(type(failure) == "string" and failure ~= "", "the failed round names its cause")
+      sawFailure = failure
+      break
+    end
+    if used == false then
+      break
+    end
+  end
+  Assert.notNil(sawFailure, "the failed canvas round surfaces instead of publishing")
+  for _, canvas in ipairs(graphics.canvases) do
+    Assert.isTrue(canvas.releaseCount <= 1, "no canvas is released twice by the failed round")
+  end
+  local lease = owner:acquire({ purpose = "browser" })
+  local failed = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(pageDemand("grid", "failed-canvas-grid"))
+    if outcome.kind == "failed" then
+      failed = outcome
+      break
+    end
+    Assert.isTrue(outcome.kind == "pending", "the doomed generation never publishes")
+  end
+  Assert.notNil(failed, "foreground preparation still reports the authoritative canvas failure")
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error ~= "",
+    "the authoritative failure carries its original cause"
+  )
+  lease:release()
+  owner:release()
+  for _, canvas in ipairs(graphics.canvases) do
+    Assert.isTrue(canvas.releaseCount <= 1, "teardown never double-frees a canvas")
+  end
+  Assert.equal(pool:stats().outstandingLeases, 0, "failure and disposal return every image interest")
+end
+
 return { tests = T }

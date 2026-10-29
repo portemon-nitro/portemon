@@ -1759,6 +1759,172 @@ function T.runtime_summary_binding_is_identity_qualified()
   Assert.isTrue(second ~= first, "rebinding mints a fresh identity")
 end
 
+-- Idle staging borrows the same shared chrome and portrait pages a later
+-- foreground open resolves, so the first real open builds no new physical
+-- images for its static inventory. Each idle round adopts at most one
+-- speculative image pair.
+function T.idle_rounds_stage_static_chrome_before_the_first_open()
+  local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
+  local setup = exactComposition({ [selector] = portraitEntry(3) })
+  local owner = setup.owner
+  Assert.isTrue(
+    type(owner.advanceWarmup) == "function",
+    "the summary owner stages its static chrome across idle rounds"
+  )
+  local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
+  Assert.equal(poolInner:stats().physicalImages, 0, "construction stages no image before idle work")
+  local settled = false
+  local maxDelta = 0
+  local before = poolInner.uploads
+  for _ = 1, SETTLE_ROUNDS do
+    local used, failure = owner:advanceWarmup({ selector }, 1)
+    Assert.isNil(failure, "idle staging reports no failure on synthetic chrome")
+    local delta = poolInner.uploads - before
+    before = poolInner.uploads
+    if delta > maxDelta then
+      maxDelta = delta
+    end
+    if used == false then
+      settled = true
+      break
+    end
+  end
+  Assert.isTrue(settled, "idle rounds finish the static chrome and portrait page work")
+  Assert.isTrue(poolInner.uploads > 0, "idle rounds realize the static inventory")
+  Assert.isTrue(maxDelta <= 1, "one idle round adopts at most one speculative image pair")
+  local idleUploads = poolInner.uploads
+  local lease = owner:acquire()
+  -- The guarantee scopes to static inventory: deferred ball and ribbon
+  -- art stays demand-driven, so the first open below demands no
+  -- demand-selected chrome and must build nothing new.
+  local firstDemand = exactDemand("first-open", { selector })
+  firstDemand.chrome = {}
+  local ready = prepareToTerminal(lease, firstDemand)
+  Assert.equal(ready.kind, "ready", "the first open still prepares through its ordinary demand path")
+  Assert.equal(
+    poolInner.uploads,
+    idleUploads,
+    "the first open builds no new physical images for already-staged chrome"
+  )
+  lease:release()
+  owner:release()
+end
+
+-- A party revision predicts the new roster pages while a live lease still
+-- watches the old ones: the new pages are resident before they open, the
+-- watched pictures stay drawable throughout, and stale art frees exactly
+-- once only after its watchers leave, never replacing a current picture.
+function T.revision_change_warms_new_portraits_without_evicting_watched_pages()
+  local first = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
+  local second = MonCache.portraitSelector("TOTODILE", 0, "male", false)
+  local setup = exactComposition({ [first] = portraitEntry(3), [second] = portraitEntry(12) })
+  local owner = setup.owner
+  Assert.isTrue(
+    type(owner.advanceWarmup) == "function",
+    "the summary owner predicts the live party across idle rounds"
+  )
+  local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
+  local function settleWarm(selectors)
+    local settled = false
+    for _ = 1, SETTLE_ROUNDS do
+      local used, failure = owner:advanceWarmup(selectors, 1)
+      Assert.isNil(failure, "idle staging reports no failure on synthetic portraits")
+      if used == false then
+        settled = true
+        break
+      end
+    end
+    Assert.isTrue(settled, "idle rounds finish the predicted portrait work")
+  end
+  settleWarm({ first })
+  local leaseA = owner:acquire()
+  local readyA = prepareToTerminal(leaseA, exactDemand("party-a", { first }))
+  Assert.equal(readyA.kind, "ready", "party A opens through its ordinary demand path")
+  local pageA = readyA.assets.portraits:image(first)
+  settleWarm({ second })
+  local uploadsBeforeB = poolInner.uploads
+  local leaseB = owner:acquire()
+  local readyB = prepareToTerminal(leaseB, exactDemand("party-b", { second }))
+  Assert.equal(readyB.kind, "ready", "party B opens through its ordinary demand path")
+  Assert.equal(poolInner.uploads, uploadsBeforeB, "party B was already resident before it opened")
+  Assert.isTrue(
+    readyA.assets.portraits:image(first) == pageA,
+    "the watched party A picture stays drawable while leased"
+  )
+  leaseA:release()
+  settleWarm({ second })
+  poolInner:prune()
+  Assert.equal(pageA.releaseCount, 1, "the stale page frees exactly once after its watchers leave")
+  poolInner:prune()
+  Assert.equal(pageA.releaseCount, 1, "a second trim never double-frees the stale page")
+  local pageB = readyB.assets.portraits:image(second)
+  leaseB:release()
+  owner:release()
+  poolInner:prune()
+  Assert.equal(pageB.releaseCount, 1, "the current page frees exactly once with its owner")
+  Assert.equal(
+    poolInner:stats().physicalImages,
+    0,
+    "every staged image reclaims with no leak and no double free"
+  )
+end
+
+-- Staging never evicts a page a live lease watches, even after the party
+-- revision moves on: the watched picture keeps its identity across idle
+-- rounds, and the predicted page is adopted without rebuilding.
+function T.staging_never_evicts_pages_a_live_lease_watches()
+  local one = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
+  local other = MonCache.portraitSelector("TOTODILE", 0, "male", false)
+  local setup = exactComposition({ [one] = portraitEntry(3), [other] = portraitEntry(12) })
+  local owner = setup.owner
+  Assert.isTrue(
+    type(owner.advanceWarmup) == "function",
+    "the summary owner keeps watched pages resident across idle rounds"
+  )
+  local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
+  local function settleWarm(selectors)
+    for _ = 1, SETTLE_ROUNDS do
+      local used, failure = owner:advanceWarmup(selectors, 1)
+      Assert.isNil(failure, "idle staging reports no failure on synthetic portraits")
+      if used == false then
+        return
+      end
+    end
+    error("idle staging never settles", 0)
+  end
+  settleWarm({ one })
+  local lease = owner:acquire()
+  local ready = prepareToTerminal(lease, exactDemand("watched", { one }))
+  Assert.equal(ready.kind, "ready", "the watched demand prepares through its ordinary path")
+  local watched = ready.assets.portraits:image(one)
+  settleWarm({ other })
+  local again = prepareToTerminal(lease, exactDemand("watched", { one }))
+  Assert.equal(again.kind, "ready", "the watched lease stays usable after unrelated staging")
+  Assert.isTrue(
+    again.assets.portraits:image(one) == watched,
+    "unrelated staging never swaps the watched picture"
+  )
+  local uploadsBeforeAdoption = poolInner.uploads
+  local predicted = owner:acquire()
+  local predictedReady = prepareToTerminal(predicted, exactDemand("predicted", { other }))
+  Assert.equal(predictedReady.kind, "ready", "the predicted demand prepares through its ordinary path")
+  Assert.equal(
+    poolInner.uploads,
+    uploadsBeforeAdoption,
+    "the predicted page is adopted without rebuilding"
+  )
+  lease:release()
+  predicted:release()
+  owner:release()
+  poolInner:prune()
+  Assert.equal(watched.releaseCount, 1, "the watched page frees exactly once after its watchers leave")
+  Assert.equal(
+    poolInner:stats().physicalImages,
+    0,
+    "staging retains no portrait past its watchers and owner"
+  )
+end
+
 return {
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },

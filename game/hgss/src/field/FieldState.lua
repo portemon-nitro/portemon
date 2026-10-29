@@ -377,7 +377,112 @@ function FieldState:update(dt)
   self._actorDesiredReady =
     assert(self.actorPresentation, "field actor presentation is unavailable"):sync(self:_continuesWorld())
   self:_updateGameplayHold()
+  self:_advanceApplicationWarmup()
   self:_sampleOverlayFps(dt)
+end
+
+-- Whether the presented field is idle for speculative work: no entry
+-- cover, battle hold, gameplay visual hold, or active modal owns the
+-- foreground. Reuses the existing hold and host state; never consults a
+-- separate application registry.
+---@return boolean
+function FieldState:_fieldPresentationIsIdle()
+  if self._entryFade ~= nil then
+    return false
+  end
+  local envelope = self.battleEnvelope
+  if envelope ~= nil and type(envelope.ownsInput) == "function" then
+    local ok, owns = pcall(function()
+      return envelope:ownsInput()
+    end)
+    if ok and owns then
+      return false
+    end
+  end
+  if self:_isGameplayVisualHold() then
+    return false
+  end
+  local runtime = self.runtime
+  if runtime ~= nil then
+    local hosts = {
+      runtime.applicationHost,
+      runtime.pcApplicationHost,
+      runtime.martHost,
+      runtime.kurtBoxHost,
+    }
+    for _, host in ipairs(hosts) do
+      if host ~= nil and type(host.isActive) == "function" then
+        local ok, active = pcall(function()
+          return host:isActive()
+        end)
+        if ok and active then
+          return false
+        end
+      end
+    end
+    local naming = runtime.monNaming
+    if naming ~= nil and type(naming.isActive) == "function" then
+      local ok, active = pcall(function()
+        return naming:isActive()
+      end)
+      if ok and active then
+        return false
+      end
+    end
+    local starter = runtime.starterChoice
+    if starter ~= nil and type(starter.isActive) == "function" then
+      local ok, active = pcall(function()
+        return starter:isActive()
+      end)
+      if ok and active then
+        return false
+      end
+    end
+  end
+  return true
+end
+
+-- Advances the one-slot field-owned idle application warmup after all
+-- active foreground preparation. Never blocks, never draws, and never
+-- runs before the active leaves.
+function FieldState:_advanceApplicationWarmup()
+  local resources = self.presentationResources
+  if resources == nil or type(resources.advanceApplicationWarmup) ~= "function" then
+    return
+  end
+  local idle = self:_fieldPresentationIsIdle()
+  local remaining = idle and 1 or 0
+  local used = resources:advanceApplicationWarmup(remaining)
+  if idle and used ~= true then
+    self:_advanceBattleWarmup()
+  end
+end
+
+-- Spends only the leftover shared idle realization on the predicted
+-- battle scene after the application warmup: one guarded envelope call
+-- with the full remaining allowance. Never blocks, never raises, and
+-- never runs while the foreground is held or a battle owns the field.
+function FieldState:_advanceBattleWarmup()
+  local runtime = self.runtime
+  local envelope = self.battleEnvelope
+  if runtime == nil or envelope == nil or type(envelope.advanceWarmup) ~= "function" then
+    return
+  end
+  local coordinator = runtime.battleCoordinator
+  if coordinator == nil or type(coordinator.predictedSceneKey) ~= "function" then
+    return
+  end
+  local okKey, sceneKey = pcall(function()
+    return coordinator:predictedSceneKey()
+  end)
+  if not okKey or type(sceneKey) ~= "string" or sceneKey == "" then
+    return
+  end
+  -- The envelope records its own attributable diagnostic; the idle
+  -- field never faults on a speculative miss.
+  pcall(function()
+    envelope:advanceWarmup(sceneKey, 1)
+  end)
 end
 
 -- Accumulates active-overlay time and publishes one fps sample per window.

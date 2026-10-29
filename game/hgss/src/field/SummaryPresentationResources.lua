@@ -73,6 +73,8 @@ end
 ---@field _knownChrome table<string, boolean> every chrome path the family publishes, core or demand-selected
 ---@field _chrome table<string, table<string, unknown>> field-lifetime chrome leases by canonical path
 ---@field _chromeTokens table<string, integer> unconsumed shared-owner tokens by canonical path
+---@field _chromePriority table<string, string> request priority behind each unconsumed chrome token
+---@field _warmWanted table<string, boolean> canonical portrait page paths predicted for the live party
 ---@field _pages table<integer, table<string, unknown>> portrait demand records by page id
 ---@field _leasedPortraits table<string, table<string, unknown>> adopted portrait leases by canonical path
 ---@field _quads table<string, unknown> realized quads by selector and frame
@@ -180,6 +182,8 @@ function SummaryPresentationResources.new(opts)
     _knownChrome = knownChrome,
     _chrome = {},
     _chromeTokens = {},
+    _chromePriority = {},
+    _warmWanted = {},
     _pages = {},
     _leasedPortraits = {},
     _quads = {},
@@ -228,6 +232,7 @@ local function cancelChromeTokens(self)
   for path, token in pairs(self._chromeTokens) do
     pool:cancel(token)
     self._chromeTokens[path] = nil
+    self._chromePriority[path] = nil
   end
 end
 
@@ -250,21 +255,25 @@ end
 -- Progresses the field-lifetime chrome leases without sleeping or
 -- spinning: the first round enrolls one shared-owner token per still-
 -- unborrowed core or demanded path while icons, portraits, and cry banks
--- make their own progress, and each round borrows every newly ready pair
--- through its single-use token. Chrome tiles are small and game-thread
--- uploads measured negligible, so chrome admits in bulk while portrait
--- pages keep their one-pair-per-round bound for large uploads. A failed path cancels every
--- remaining token, returns the round's adoptions, and names its path
--- instead of pinning chrome the field lifetime cannot draw. The lease is
--- ready once every core and demanded path is borrowed; pinned chrome
--- stays drawable for the field lifetime.
+-- make their own progress, and each round borrows newly ready pairs
+-- through their single-use tokens. Foreground demand borrows every ready
+-- pair at once; idle staging borrows at most the shared admission budget.
+-- A failed path cancels every remaining token, returns the round's
+-- adoptions, and names its path instead of pinning chrome the field
+-- lifetime cannot draw. The lease is ready once every core and demanded
+-- path is borrowed; pinned chrome stays drawable for the field lifetime.
+-- A recorded prefetch token promotes to demand priority before its
+-- cancellation so the shared queue keeps its coalesced worker work.
 ---@param self SummaryPresentationResources
 ---@param demanded table<string, boolean> demand-selected chrome paths beyond the core set
+---@param priority string? shared-owner request priority, demand for foreground
+---@param allowance { remaining: integer }? shared per-round admission budget, nil for unbounded foreground
 ---@return boolean ready true once every core and demanded path is borrowed
 ---@return string? failure named cause when a chrome path cannot be borrowed
-local function advanceChrome(self, demanded)
+local function advanceChrome(self, demanded, priority, allowance)
   local pool = assert(self._pool, "summary preparation borrows its shared image owner")
   local knownChrome = assert(self._knownChrome, "summary preparation keeps its chrome inventory")
+  local level = priority or "demand"
   local wantedSet = {}
   local wanted = {}
   local function want(path)
@@ -283,10 +292,19 @@ local function advanceChrome(self, demanded)
     want(path)
   end
   local function enroll(path)
-    if self._chrome[path] ~= nil or self._chromeTokens[path] ~= nil then
+    if self._chrome[path] ~= nil then
       return
     end
-    self._chromeTokens[path] = pool:request(path, POOLED_SAMPLER, "demand")
+    local existing = self._chromeTokens[path]
+    if existing == nil then
+      self._chromeTokens[path] = pool:request(path, POOLED_SAMPLER, level)
+      self._chromePriority[path] = level
+    elseif level == "demand" and self._chromePriority[path] == "prefetch" then
+      local promoted = pool:request(path, POOLED_SAMPLER, "demand")
+      pool:cancel(existing)
+      self._chromeTokens[path] = promoted
+      self._chromePriority[path] = "demand"
+    end
   end
   for _, path in ipairs(wanted) do
     enroll(path)
@@ -303,18 +321,27 @@ local function advanceChrome(self, demanded)
           releaseRoundChrome(self, adopted)
           return false, failure
         elseif status == "ready" then
-          local ok, lease = pcall(pool.acquire, pool, token)
-          if not ok then
-            local failure = "compiled Summary image missing at " .. path .. ": " .. tostring(lease)
+          if allowance ~= nil and allowance.remaining <= 0 then
+            -- The admission budget is spent; the ready pair waits for a later round.
+          else
+            local ok, lease = pcall(pool.acquire, pool, token)
+            if not ok then
+              local failure = "compiled Summary image missing at " .. path .. ": " .. tostring(lease)
+              self._chromeTokens[path] = nil
+              self._chromePriority[path] = nil
+              pool:cancel(token)
+              cancelChromeTokens(self)
+              releaseRoundChrome(self, adopted)
+              return false, failure
+            end
             self._chromeTokens[path] = nil
-            pool:cancel(token)
-            cancelChromeTokens(self)
-            releaseRoundChrome(self, adopted)
-            return false, failure
+            self._chromePriority[path] = nil
+            self._chrome[path] = lease
+            adopted[#adopted + 1] = path
+            if allowance ~= nil then
+              allowance.remaining = allowance.remaining - 1
+            end
           end
-          self._chromeTokens[path] = nil
-          self._chrome[path] = lease
-          adopted[#adopted + 1] = path
         else
           assert(status == "pending", "summary preparation reports pending or ready")
         end
@@ -420,6 +447,9 @@ local function liveWatchedPaths(self)
         watched[path] = true
       end
     end
+  end
+  for path in pairs(self._warmWanted or {}) do
+    watched[path] = true
   end
   return watched
 end
@@ -644,6 +674,22 @@ local function prepareLease(self, lease, demand)
       iconsReady = ready
     end
   end
+  -- A first visible demand takes over a recorded idle prefetch token:
+  -- the equivalent demand request enrolls first so the shared queue
+  -- keeps its coalesced worker work, then the speculative token cancels.
+  do
+    local poolOwner = assert(self._pool, "summary preparation borrows its shared image owner")
+    for _, pageId in ipairs(pages) do
+      local record = self._pages[pageId]
+      if record ~= nil and record.token ~= nil and record.warm == true then
+        local path = MonCache.portraitPagePath(pageId)
+        local promoted = poolOwner:request(path, POOLED_SAMPLER, "demand")
+        poolOwner:cancel(record.token)
+        record.token = promoted
+        record.warm = nil
+      end
+    end
+  end
   -- Portrait compilation through the existing provisioner seam: a named
   -- failure surfaces, an unready page waits, and dispatched jobs are
   -- never cancelled from here. A missing seam fails visibly instead of
@@ -789,6 +835,110 @@ local function prepareLease(self, lease, demand)
   return { kind = "ready", key = demand.key, assets = readyBundle(self) }
 end
 
+-- Stages the always-drawn core chrome and the predicted portrait pages
+-- across idle updates without opening a Summary screen. Chrome enrolls
+-- at prefetch priority and portraits compile at near urgency; at most one
+-- new pool lease adopts per call under the shared admission budget.
+-- Failures name their path or page without crashing the field, and stale
+-- predictions release only once no live lease watches them.
+---@param selectors string[] roster portrait identities in slot order
+---@param remainingGpu integer 0 or 1 speculative GPU realizations for the call
+---@return boolean usedGpu true when the call realized a new pool lease
+---@return string? failure named path or page cause when idle staging cannot proceed
+function SummaryPresentationResources:advanceWarmup(selectors, remainingGpu)
+  assert(not self._released, "summary preparation is released")
+  assert(type(selectors) == "table", "idle staging reads its roster selectors")
+  assert(remainingGpu == 0 or remainingGpu == 1, "idle staging spends at most one GPU realization")
+  local allowance = { remaining = remainingGpu }
+  local chromeReady, chromeFailure = advanceChrome(self, {}, "prefetch", allowance)
+  if chromeFailure ~= nil then
+    return (remainingGpu - allowance.remaining) > 0, chromeFailure
+  end
+  local seen, pageIds = {}, {}
+  for _, selector in ipairs(selectors) do
+    if type(selector) ~= "string" or selector:find("/", 1, true) == nil then
+      return (remainingGpu - allowance.remaining) > 0,
+        "the portrait manifest carries no page for " .. tostring(selector)
+    end
+    local pageId, cause = pageForSelector(self, selector)
+    if pageId == nil then
+      return (remainingGpu - allowance.remaining) > 0, tostring(cause)
+    end
+    if not seen[pageId] then
+      seen[pageId] = true
+      pageIds[#pageIds + 1] = pageId
+    end
+  end
+  table.sort(pageIds)
+  local wanted = {}
+  for _, pageId in ipairs(pageIds) do
+    wanted[MonCache.portraitPagePath(pageId)] = true
+  end
+  self._warmWanted = wanted
+  local pool = assert(self._pool, "summary preparation borrows its shared image owner")
+  local requestPage = self._derivedAssets.requestMonPortraitPage
+  if type(requestPage) ~= "function" then
+    return (remainingGpu - allowance.remaining) > 0, "portrait compilation is unavailable"
+  end
+  for _, pageId in ipairs(pageIds) do
+    local record = pageRecord(self, pageId)
+    if record.lease == nil and record.token == nil then
+      local ok, ready, failure = pcall(requestPage, pageId, "near")
+      if not ok then
+        return (remainingGpu - allowance.remaining) > 0, tostring(ready)
+      elseif failure ~= nil then
+        return (remainingGpu - allowance.remaining) > 0, tostring(failure)
+      elseif ready then
+        record.token = pool:request(MonCache.portraitPagePath(pageId), POOLED_SAMPLER, "prefetch")
+        record.warm = true
+      end
+    end
+  end
+  for _, pageId in ipairs(pageIds) do
+    local record = self._pages[pageId]
+    if record ~= nil and record.lease == nil and record.token ~= nil then
+      local path = MonCache.portraitPagePath(pageId)
+      local status, cause = pool:poll(record.token)
+      if status == "failed" then
+        pool:cancel(record.token)
+        record.token = nil
+        record.warm = nil
+        return (remainingGpu - allowance.remaining) > 0,
+          "compiled Summary portrait missing at " .. path .. ": " .. tostring(cause)
+      elseif status == "ready" then
+        if allowance.remaining > 0 then
+          local okAdopt, adopted = pcall(pool.acquire, pool, record.token)
+          if not okAdopt then
+            pool:cancel(record.token)
+            record.token = nil
+            record.warm = nil
+            return (remainingGpu - allowance.remaining) > 0,
+              "compiled Summary portrait missing at " .. path .. ": " .. tostring(adopted)
+          end
+          record.token = nil
+          record.warm = nil
+          record.lease = adopted
+          self._leasedPortraits[path] = adopted
+          allowance.remaining = allowance.remaining - 1
+        end
+      else
+        assert(status == "pending", "summary preparation reports pending or ready")
+      end
+    end
+  end
+  dropUnwatchedPortraits(self, liveWatchedPaths(self))
+  if not chromeReady then
+    return (remainingGpu - allowance.remaining) > 0, nil
+  end
+  for _, pageId in ipairs(pageIds) do
+    local record = self._pages[pageId]
+    if record == nil or record.lease == nil then
+      return (remainingGpu - allowance.remaining) > 0, nil
+    end
+  end
+  return (remainingGpu - allowance.remaining) > 0, nil
+end
+
 -- Acquires one opaque per-open preparation lease. Leases own only demand
 -- membership; release is idempotent and never touches borrowed owners.
 ---@return table<string, unknown> lease with prepare and release
@@ -851,7 +1001,9 @@ function SummaryPresentationResources:release()
   for path, token in pairs(self._chromeTokens) do
     pool:cancel(token)
     self._chromeTokens[path] = nil
+    self._chromePriority[path] = nil
   end
+  self._warmWanted = {}
   self._leasedPortraits = {}
   for path, lease in pairs(self._chrome) do
     pool:release(lease)
