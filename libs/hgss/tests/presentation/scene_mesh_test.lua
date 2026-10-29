@@ -206,6 +206,65 @@ return {
       end)
     end,
 
+    ["prepareUpload rejects every malformed shape decode rejects with the same code"] = function()
+      local valid = MeshWriter.encode(sampleBatch())
+      local indexAt = G4MeshFormat.HEADER_SIZE + 4 * G4MeshFormat.STRIDE
+      local header = G4MeshFormat.HEADER_SIZE
+      local miscounted = patchByte(valid, 12, 4):sub(1, #valid - 4)
+      local malformed = {
+        "XXXX" .. valid:sub(5),
+        patchByte(valid, 4, 9),
+        patchByte(valid, 16, 41),
+        patchByte(valid, 18, 8),
+        valid:sub(1, #valid - 4),
+        valid .. "\0",
+        valid:sub(1, 10),
+        patchByte(valid, indexAt, 4),
+        patchByte(valid, header + 36, 7),
+        patchByte(patchByte(patchByte(patchByte(valid, 8, 255), 9, 255), 10, 255), 11, 255),
+        miscounted,
+      }
+      for caseIndex, malformedBytes in ipairs(malformed) do
+        local decodeOk, decodeErr = pcall(SceneMesh.decode, malformedBytes)
+        Assert.isFalse(decodeOk, "decode rejects malformed case " .. caseIndex)
+        local decodeCode = type(decodeErr) == "table" and decodeErr.code or decodeErr
+        local prepareOk, prepareErr = pcall(SceneMesh.prepareUpload, malformedBytes)
+        Assert.isFalse(prepareOk, "direct preparation rejects malformed case " .. caseIndex)
+        local prepareCode = type(prepareErr) == "table" and prepareErr.code or prepareErr
+        Assert.equal(prepareCode, decodeCode, "direct preparation keeps the decode error for case " .. caseIndex)
+      end
+      Assert.equal(#malformed, 11, "every malformed shape stays covered")
+    end,
+
+    ["prepareUpload keeps non-finite positions exactly like decode"] = function()
+      local bytes = MeshWriter.encode(sampleBatch())
+      local at = G4MeshFormat.HEADER_SIZE + 1
+      local patched = bytes:sub(1, at - 1) .. string.char(0, 0, 0x80, 0x7F) .. bytes:sub(at + 4)
+      local decoded = SceneMesh.decode(patched)
+      Assert.equal(decoded.vertices[1][1], math.huge)
+      local prepared = SceneMesh.prepareUpload(patched)
+      Assert.equal(prepared.vertexCount, decoded.vertexCount)
+      Assert.equal(prepared.minX, 1)
+      Assert.equal(prepared.maxX, math.huge)
+      Assert.equal(prepared.centerX, math.huge)
+      Assert.equal(prepared.minY, 0)
+      Assert.equal(prepared.maxY, 6)
+      Assert.equal(prepared.centerY, 3)
+      local floats = ffi.cast("float *", prepared.vertexData:getFFIPointer())
+      Assert.equal(floats[0], math.huge, "the packed x of the patched vertex stays infinite")
+    end,
+
+    ["prepareUpload rejects an empty batch with the geometry error"] = function()
+      local headerBytes = "G4M2" .. string.char(2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 40, 0, 2, 0, 0, 0, 0, 0)
+      Assert.equal(#headerBytes, G4MeshFormat.HEADER_SIZE)
+      local decoded = SceneMesh.decode(headerBytes)
+      Assert.equal(decoded.vertexCount, 0)
+      Assert.equal(decoded.indexCount, 0)
+      throwsCode("SCENE_DESC_EMPTY_MESH", function()
+        SceneMesh.prepareUpload(headerBytes)
+      end)
+    end,
+
     ["decode trusts producer-validated vertices without a per-vertex finiteness rescan"] = function()
       local bytes = MeshWriter.encode(sampleBatch())
       -- Patch vertex 1 x (first float of the vertex payload) to +inf bits.
