@@ -1024,18 +1024,21 @@ end
 ---@return table live presented-battle envelope under test driving
 -- A scripted stand-in for the shared generated-image owner behind
 -- portrait demand: answers ready borrows immediately, or one terminal
--- failure for every request when constructed with a cause.
----@param failure string? terminal classification cause behind every request, nil answers ready
+-- failure for every request when constructed with a cause, or only for
+-- the named staged path when the cause names one.
+---@param failure string? terminal classification cause behind failed requests, nil answers ready
+---@param failurePath string? staged path whose request fails terminally, nil fails every request
 ---@return table scripted pool behind the envelope under test
-local function scriptedPool(failure)
-  local pool = { requests = 0, paths = {} }
+local function scriptedPool(failure, failurePath)
+  local pool = { requests = 0, paths = {}, requestedPaths = {} }
   function pool:request(path, _, _)
     self.requests = self.requests + 1
     self.paths[#self.paths + 1] = path
+    self.requestedPaths[self.requests] = path
     return self.requests
   end
-  function pool:poll(_)
-    if failure ~= nil then
+  function pool:poll(token)
+    if failure ~= nil and (failurePath == nil or self.requestedPaths[token] == failurePath) then
       return "failed", failure
     end
     return "ready"
@@ -1598,8 +1601,8 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   stagePortraitPage(staged, 17)
   local stagedHost = portraitPageHost()
   stagedHost.answers[17] = { ready = true }
-  local pool = scriptedPool()
-  local throwing = FakeGraphics.new()
+  local pool = scriptedPool("probe-decode-boom", missingImage)
+  local throwing = FakeGraphics.new({ failOnImageCall = 1 })
   local stagedEnvelope = demandEnvelope(staged, stagedHost, throwing, pool)
   local stagedServices = stagedEnvelope:_preparationServices()
   local stagedReady, stagedFailure = stagedServices.prepare(portraitDemand({ leadBack }))
@@ -1611,9 +1614,6 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   local driverNewImage = throwing.newImage
   throwing.newImage = function(...)
     driverAttempts = driverAttempts + 1
-    if driverAttempts == 1 then
-      error("probe-decode-boom", 0)
-    end
     return driverNewImage(...)
   end
   local broken, brokenErr = stagedServices.drawable("mon:" .. leadBack)

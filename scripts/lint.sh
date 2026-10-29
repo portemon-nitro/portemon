@@ -92,3 +92,5 @@ if [ "$luals_status" -ne 0 ]; then
   echo "lint: LuaLS check failed" >&2
   exit 1
 fi
+
+echo "ALL CLEAN!"
