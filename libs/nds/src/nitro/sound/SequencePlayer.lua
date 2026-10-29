@@ -133,6 +133,7 @@ local bit = require("bit")
 ---@field private _handleAttachments table<table<string, unknown>, table<string, unknown>?> current instance per handle
 ---@field private _soundPhase integer the one global 192 Hz sound-interval phase accumulator
 ---@field new fun(opts: { sampleRate: integer, mixer: VoiceMixer, provider: NdsSoundProvider, observer: table<string, unknown>? }): SequencePlayer
+---@field renderIntoInt16 fun(self: SequencePlayer, ptr: ffi.cdata*, frames: integer)
 ---@field createHandle fun(self: SequencePlayer): table<string, unknown>
 ---@field play fun(self: SequencePlayer, handle: table<string, unknown>, sequence: table<string, unknown>, bank: table<string, unknown>): boolean
 ---@field playSynthetic fun(self: SequencePlayer, handle: table<string, unknown>, sequence: table<string, unknown>, bank: table<string, unknown>): boolean
@@ -1869,26 +1870,30 @@ local function spanLength(self, remaining)
   return math.min(remaining, framesToBoundary)
 end
 
--- Renders `frames` output frames of interleaved stereo int16 PCM. The
--- renderer is a span scheduler around the pure PCM mixer: it renders up to
--- the next global 192 Hz sound-interval boundary, advances the global phase
--- by the span, and -- when the phase reaches the sample rate -- subtracts
--- the sample rate once and processes that interval (sequence ticks, then
--- one mixer control step, then the periodic RNG draw). The mixer is asked
--- for PCM even when no active sequence exists, so idle frames and detached
--- release tails keep the global clock and the periodic RNG running (the
--- mixer renders silence when no voices exist). Physical slots and tracks
--- process ascending over the fixed NNS domains. Instance-carried tempoCounter/wait
+-- The one span scheduler behind both renderers: it renders up to the next
+-- global 192 Hz sound-interval boundary per span through
+-- `emitSpan(offsetFrames, span)`, advances the global phase by the span,
+-- and -- when the phase reaches the sample rate -- subtracts the sample
+-- rate once and processes that interval (sequence ticks, then one mixer
+-- control step, then the periodic RNG draw). The mixer is asked for PCM
+-- even when no active sequence exists, so idle frames and detached release
+-- tails keep the global clock and the periodic RNG running (the mixer
+-- renders silence when no voices exist). Physical slots and tracks process
+-- ascending over the fixed NNS domains. Instance-carried tempoCounter/wait
 -- state and the global phase keep rendering independent of chunk size.
 ---@param frames integer
----@return integer[]
-function SequencePlayer:render(frames)
-  local out = {}
+---@param emitSpan fun(offsetFrames: integer, span: integer)
+local function renderScheduled(self, frames, emitSpan)
+  assert(
+    type(frames) == "number" and frames % 1 == 0 and frames >= 0,
+    "render requires a non-negative integer frame count"
+  )
   local remaining = frames
+  local offsetFrames = 0
   while remaining > 0 do
     local span = spanLength(self, remaining)
     assert(span >= 1, "a render span must advance the frame count")
-    self._mixer:renderInto(out, span)
+    emitSpan(offsetFrames, span)
     self._soundPhase = self._soundPhase + SOUND_INTERVAL_HZ * span
     if self._soundPhase >= self._sampleRate then
       -- One rendered frame adds 192 units, so a span cannot cross more than
@@ -1896,9 +1901,44 @@ function SequencePlayer:render(frames)
       self._soundPhase = self._soundPhase - self._sampleRate
       processSoundInterval(self)
     end
+    offsetFrames = offsetFrames + span
     remaining = remaining - span
   end
+end
+
+-- Renders `frames` output frames of interleaved stereo int16 PCM. The
+-- renderer is a span scheduler around the pure PCM mixer: it renders up to
+-- the next global 192 Hz sound-interval boundary, advances the global phase
+-- by the span, and -- when the phase reaches the sample rate -- subtracts
+-- the sample rate once and processes that interval (sequence ticks, then
+-- one mixer control step, then the periodic RNG draw). The mixer spans
+-- write into a caller-visible table through the mixer's table facade, so
+-- recording mixer doubles keep working.
+---@param frames integer
+---@return integer[]
+function SequencePlayer:render(frames)
+  local out = {}
+  local mixer = self._mixer
+  renderScheduled(self, frames, function(_, span)
+    mixer:renderInto(out, span)
+  end)
   return out
+end
+
+-- Renders `frames` output frames of interleaved stereo int16 PCM into the
+-- caller's buffer at frame offset zero: the production destination
+-- entrypoint. Each span mixes through the mixer's typed span with the
+-- running frame offset, so one call advances exactly the original sound
+-- phase and global interval state. The pointer is borrowed only for the
+-- call; the caller keeps the owning buffer alive and guarantees its size.
+---@param ptr ffi.cdata* interleaved stereo int16 destination, owned by the caller
+---@param frames integer
+function SequencePlayer:renderIntoInt16(ptr, frames)
+  assert(ptr ~= nil and type(ptr) == "cdata", "typed render requires an int16 destination pointer")
+  local mixer = self._mixer
+  renderScheduled(self, frames, function(offsetFrames, span)
+    mixer:renderIntoInt16(ptr, offsetFrames, span)
+  end)
 end
 
 -- Releases every voice of every active sequence and clears the players.

@@ -15,7 +15,7 @@ local GameAudio = {}
 
 ---@class GameAudioComposition
 ---@field sound GameSound
----@field renderer { render: fun(self: table<string, unknown>, frames: integer): integer[] }
+---@field renderer { render: fun(self: table<string, unknown>, frames: integer): integer[], renderIntoInt16: fun(self: table<string, unknown>, ptr: ffi.cdata*, frames: integer) }
 ---@field fieldService FieldAudioController?
 ---@field sink LoveAudioSink|nil
 

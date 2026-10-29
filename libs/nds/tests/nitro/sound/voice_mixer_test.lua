@@ -1147,4 +1147,53 @@ function T.non_auto_sweep_advances_only_on_sequence_ticks_and_auto_sweep_only_on
   Assert.equal(leftAt(autoOut, 1251), 500, "the auto sweep completed at the capped counter")
 end
 
+-- Span rendering appends identical frames however the window is split: one
+-- render and several consecutive span renders over identically prepared
+-- mixers produce the same interleaved samples.
+function T.split_table_spans_match_a_single_render()
+  local function soundingMixer()
+    local mixer = newMixer()
+    mixer:noteOn(spec({ pcm = { 1000, -2000, 3000, -4000, 5000, -6000, 7000, -8000 }, pan = 100 }))
+    mixer:controlStep()
+    return mixer
+  end
+  local expected = soundingMixer():render(512)
+  Assert.equal(#expected, 1024)
+  local mixer = soundingMixer()
+  local chunked = {}
+  mixer:renderInto(chunked, 170)
+  mixer:renderInto(chunked, 171)
+  mixer:renderInto(chunked, 171)
+  Assert.deepEqual(chunked, expected, "span splits never change the mixed samples")
+end
+
+-- The typed destination entrypoint mixes the same frames as the table
+-- renderers: a single pointer span and consecutive offset pointer spans
+-- match the table render sample for sample.
+function T.typed_pointer_spans_match_table_renders()
+  local ffi = require("ffi")
+  local function soundingMixer()
+    local mixer = newMixer()
+    mixer:noteOn(spec({ pcm = { 1000, -2000, 3000, -4000, 5000, -6000, 7000, -8000 }, pan = 100 }))
+    mixer:controlStep()
+    return mixer
+  end
+  local frames = 512
+  local expected = soundingMixer():render(frames)
+  local mixer = soundingMixer()
+  local backing = ffi.new("int16_t[?]", frames * 2)
+  mixer:renderIntoInt16(backing, 0, frames)
+  for index = 1, frames * 2 do
+    Assert.equal(tonumber(backing[index - 1]), expected[index], "pointer sample " .. index .. " matches")
+  end
+  local split = soundingMixer()
+  local splitBacking = ffi.new("int16_t[?]", frames * 2)
+  split:renderIntoInt16(splitBacking, 0, 170)
+  split:renderIntoInt16(splitBacking, 170, 171)
+  split:renderIntoInt16(splitBacking, 341, 171)
+  for index = 1, frames * 2 do
+    Assert.equal(tonumber(splitBacking[index - 1]), expected[index], "offset split sample " .. index .. " matches")
+  end
+end
+
 return { tests = T }

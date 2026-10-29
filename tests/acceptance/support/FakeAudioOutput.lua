@@ -6,7 +6,9 @@
 --     real LÖVE allocates frames * bytesPerSample * channels), so
 --     getSampleCount() reports frames per channel -- never the interleaved
 --     scalar total -- and `sound` buffers that silent second half would have
---     no room for.
+--     no room for. Samples live in one stable int16 backing with an exact
+--     byte size and a live-pointer accessor, the way the real host memory
+--     the sink renders into behaves.
 --   * The queueable source takes an explicit buffer count (omitted buffer
 --     counts silently adopt LÖVE's default of 8 buffers; the double refuses
 --     that so the explicit-buffer-count contract fails loudly). getFreeBufferCount
@@ -20,13 +22,17 @@
 -- device; the non-silence probes read the queued samples the way the host
 -- would decode them.
 
+local ffi = require("ffi")
+
 local FakeAudioOutput = {}
 FakeAudioOutput.__index = FakeAudioOutput
 
 -- The SoundData-shaped record the `sound` namespace creates. `frames` is the
 -- per-channel sample/frame count (real love.sound.newSoundData allocates
 -- frames * bytesPerSample * channels); channels are 1-based; sample values are
--- floats in [-1, 1].
+-- floats in [-1, 1]. The samples live in one stable int16 backing the
+-- production sink writes through the live-pointer accessor; setSample writes
+-- the same words so doubles that populate the buffer by hand stay exact.
 local SoundData = {}
 SoundData.__index = SoundData
 
@@ -48,14 +54,22 @@ function SoundData:getSampleCount()
   return self.sampleCount
 end
 
+function SoundData:getSize()
+  return self.sampleCount * self.channels * 2
+end
+
+function SoundData:getFFIPointer()
+  return self.backing
+end
+
 function SoundData:getSample(i, channel)
   assert(self:_inRange(i, channel), "sample out of range")
-  return self.samples[i * self.channels + (channel - 1)] or 0
+  return tonumber(self.backing[i * self.channels + (channel - 1)]) / 32768
 end
 
 function SoundData:setSample(i, channel, sample)
   assert(self:_inRange(i, channel), "sample out of range")
-  self.samples[i * self.channels + (channel - 1)] = sample
+  self.backing[i * self.channels + (channel - 1)] = math.floor(sample * 32768 + 0.5)
 end
 
 function SoundData:_inRange(i, channel)
@@ -140,7 +154,7 @@ function FakeAudioOutput.new()
         bitDepth = bitDepth,
         channels = channels,
         sampleCount = frames,
-        samples = {},
+        backing = ffi.new("int16_t[?]", frames * channels),
       }, SoundData)
     end,
   }
