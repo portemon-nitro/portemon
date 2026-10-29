@@ -5,6 +5,7 @@
 -- Pure module: no love dependency, no I/O.
 
 local Errors = require("libs.errors.src.Errors")
+local ffi = require("ffi")
 
 ---@class RgbaImage
 local RgbaImage = {}
@@ -15,42 +16,30 @@ RgbaImage.ERROR = {
   GEOMETRY_INVALID = "BAG_GEOMETRY_INVALID",
 }
 
-local function rgbaBuffer(pixels)
-  local buffer = {}
-  for index = 1, #pixels do
-    buffer[index] = string.byte(pixels, index)
-  end
-  return buffer
-end
-
-local function rgbaPixels(buffer)
-  local bytes = {}
-  for index, value in ipairs(buffer) do
-    bytes[index] = string.char(value)
-  end
-  return table.concat(bytes)
-end
-
+-- Blends one straight-alpha source pixel over the destination buffer at a
+-- zero-based byte offset. Transparent sources leave the destination intact,
+-- opaque sources replace it, and partial alpha follows the shared integer
+-- rounding stages. Operates directly on the typed destination buffer.
 local function blendOver(buffer, offset, sourceR, sourceG, sourceB, sourceA)
   if sourceA == 0 then
     return
   end
   if sourceA == 255 then
-    buffer[offset + 1], buffer[offset + 2], buffer[offset + 3], buffer[offset + 4] = sourceR, sourceG, sourceB, 255
+    buffer[offset], buffer[offset + 1], buffer[offset + 2], buffer[offset + 3] = sourceR, sourceG, sourceB, 255
     return
   end
-  local destinationA = buffer[offset + 4]
+  local destinationA = buffer[offset + 3]
   local outputA = sourceA + math.floor(destinationA * (255 - sourceA) / 255 + 0.5)
   if outputA == 0 then
     return
   end
+  buffer[offset] =
+    math.floor((sourceR * sourceA + buffer[offset] * destinationA * (255 - sourceA) / 255) / outputA + 0.5)
   buffer[offset + 1] =
-    math.floor((sourceR * sourceA + buffer[offset + 1] * destinationA * (255 - sourceA) / 255) / outputA + 0.5)
+    math.floor((sourceG * sourceA + buffer[offset + 1] * destinationA * (255 - sourceA) / 255) / outputA + 0.5)
   buffer[offset + 2] =
-    math.floor((sourceG * sourceA + buffer[offset + 2] * destinationA * (255 - sourceA) / 255) / outputA + 0.5)
-  buffer[offset + 3] =
-    math.floor((sourceB * sourceA + buffer[offset + 3] * destinationA * (255 - sourceA) / 255) / outputA + 0.5)
-  buffer[offset + 4] = outputA
+    math.floor((sourceB * sourceA + buffer[offset + 2] * destinationA * (255 - sourceA) / 255) / outputA + 0.5)
+  buffer[offset + 3] = outputA
 end
 
 ---@param image { width: integer, height: integer, pixels: string }
@@ -83,7 +72,10 @@ function RgbaImage.compose(layers, role)
   local first = layers[1]
   checkImage(first, role .. " has a malformed source layer")
   local width, height = first.width, first.height
-  local output = rgbaBuffer(first.pixels)
+  local total = width * height * 4
+  assert(total == #first.pixels, "checkImage validates the byte length")
+  local output = ffi.new("uint8_t[?]", total)
+  ffi.copy(output, first.pixels, total)
   for layerIndex = 2, #layers do
     local layer = layers[layerIndex]
     if
@@ -91,23 +83,17 @@ function RgbaImage.compose(layers, role)
       or layer.width ~= width
       or layer.height ~= height
       or type(layer.pixels) ~= "string"
-      or #layer.pixels ~= width * height * 4
+      or #layer.pixels ~= total
     then
       Errors.raise(RgbaImage.ERROR.GEOMETRY_INVALID, role .. " has incompatible source layers", { layer = layerIndex })
     end
-    for pixel = 0, width * height - 1 do
-      local sourceOffset = pixel * 4
-      blendOver(
-        output,
-        sourceOffset,
-        string.byte(layer.pixels, sourceOffset + 1),
-        string.byte(layer.pixels, sourceOffset + 2),
-        string.byte(layer.pixels, sourceOffset + 3),
-        string.byte(layer.pixels, sourceOffset + 4)
-      )
+    local sourcePixels = layer.pixels
+    local source = ffi.cast("const uint8_t *", sourcePixels)
+    for offset = 0, total - 4, 4 do
+      blendOver(output, offset, source[offset], source[offset + 1], source[offset + 2], source[offset + 3])
     end
   end
-  return { width = width, height = height, pixels = rgbaPixels(output) }
+  return { width = width, height = height, pixels = ffi.string(output, total) }
 end
 
 -- Crop an integer in-bounds rectangle out of a source image. The source row
@@ -140,12 +126,18 @@ function RgbaImage.crop(image, rect, role)
     Errors.raise(RgbaImage.ERROR.GEOMETRY_INVALID, role .. " cannot be cropped to the requested rectangle", {})
   end
   assert(rect ~= nil, "the rectangle validates above")
-  local rows = {}
+  local rowBytes = rect.width * 4
+  local outputBytes = rowBytes * rect.height
+  local output = ffi.new("uint8_t[?]", outputBytes)
+  local sourcePixels = image.pixels
+  local source = ffi.cast("const uint8_t *", sourcePixels)
   for y = 0, rect.height - 1 do
-    local first = ((rect.y + y) * image.width + rect.x) * 4 + 1
-    rows[#rows + 1] = image.pixels:sub(first, first + rect.width * 4 - 1)
+    local sourceOffset = ((rect.y + y) * image.width + rect.x) * 4
+    assert(sourceOffset >= 0, "the rectangle validates above")
+    assert(sourceOffset + rowBytes <= #sourcePixels, "the rectangle validates above")
+    ffi.copy(output + y * rowBytes, source + sourceOffset, rowBytes)
   end
-  return { width = rect.width, height = rect.height, pixels = table.concat(rows) }
+  return { width = rect.width, height = rect.height, pixels = ffi.string(output, outputBytes) }
 end
 
 return RgbaImage
