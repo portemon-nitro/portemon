@@ -3772,10 +3772,10 @@ function T.interruption_captures_preserve_item_facts_for_restored_servings()
   twin:dispose()
 end
 
--- Thrown balls refuse trainer targets before anything moves: the reply
--- is rejected as invalid input, the shared stack keeps its ball, both
--- leads stay put, no capture is ledgered, and the stream spends nothing.
-function T.thrown_balls_refuse_trainer_targets_without_spending()
+-- Thrown balls deflect off trainer targets like BtlCmd_ThrowPokeball: the
+-- throw takes the turn, the stack keeps its ball, nothing is rolled, no
+-- capture is ledgered, and the throw event reports the block.
+function T.thrown_balls_deflect_off_trainer_targets_without_spending()
   local contracts = SessionFixture.sessionContracts()
   local content = actionContent()
   local session = contracts.Battle.newSession(
@@ -3789,26 +3789,26 @@ function T.thrown_balls_refuse_trainer_targets_without_spending()
   )
   local opening = SessionFixture.driveUntilSettled(session)
   Assert.equal(opening.status, "waiting", "the trainer turn asks for decisions")
-  local callsBefore = session:capture().rng.calls
   local alpha = requestFor(opening, "alpha")
   local actor = assert(alpha.actors[1], "the owning request addresses its lead")
-  local refused, refuseErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "MASTER_BALL", 2) }))
-  Assert.isFalse(refused, "a throw at a trainer target is refused")
-  Assert.notNil(refuseErr, "the refused throw reports its input error")
-  local waiting = SessionFixture.driveUntilSettled(session)
-  Assert.equal(waiting.status, "waiting", "the refused throw leaves the turn open")
-  Assert.equal(
-    requestFor(waiting, "alpha").requestId,
-    alpha.requestId,
-    "the owning side is asked again with the same request"
+  local roundBefore = session:capture().round
+  local beta = requestFor(opening, "beta")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local accepted, err = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "MASTER_BALL", 2) }))
+  Assert.isTrue(accepted, "a throw at a trainer target is accepted: " .. tostring(err))
+  local answered = session:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(foe, 0, SessionFixture.positionTarget(1)) })
   )
+  Assert.isTrue(answered, "the foe still answers its own turn")
+  local waiting = SessionFixture.driveUntilSettled(session)
+  Assert.equal(waiting.status, "waiting", "the deflected throw leaves the battle running")
   local settled = session:capture()
-  Assert.equal(settled.positions[1].occupant, 1, "the refused lead stays on the field")
+  Assert.equal(settled.round, roundBefore + 1, "the deflected throw spent the turn")
+  Assert.isTrue(settled.combatants[1].hp < settled.combatants[1].maxHp, "the foe acted after the throw")
   Assert.equal(settled.positions[2].occupant, 2, "the opposing lead stays on the field")
   Assert.equal(settled.inventories.party.quantities.MASTER_BALL, 1, "the shared stack keeps its ball")
-  Assert.equal(#settled.captures, 0, "the refused throw ledgers no capture")
-  Assert.equal(settled.rng.calls, callsBefore, "the refused throw draws nothing")
-  Assert.isNil(settled.outcome, "the refused throw names no terminal result")
+  Assert.equal(#settled.captures, 0, "the deflected throw ledgers no capture")
+  Assert.isNil(settled.outcome, "the deflected throw names no terminal result")
   session:dispose()
 end
 

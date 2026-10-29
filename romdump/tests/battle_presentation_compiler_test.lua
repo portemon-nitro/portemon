@@ -3,6 +3,87 @@
 local Assert = require("tests.support.Assert")
 local T = {}
 
+local function u16(value)
+  return string.char(value % 256, math.floor(value / 256) % 256)
+end
+
+local function u32(value)
+  return u16(value % 65536) .. u16(math.floor(value / 65536))
+end
+
+local function g2dBlock(magic, payload)
+  return magic:reverse() .. u32(8 + #payload) .. payload
+end
+
+local function g2dContainer(magic, chunks)
+  local body = table.concat(chunks)
+  return magic .. "\255\254" .. u16(0x0100) .. u32(0x10 + #body) .. u16(0x10) .. u16(#chunks) .. body
+end
+
+local function trainerMappingCell()
+  local object = u16(0x00D8) .. u16(0x01D8) .. u16(32)
+  local cell = u16(1) .. u16(0) .. u32(0x18) .. u32(1) .. string.rep("\0", 12) .. u16(1) .. u16(0) .. u32(0) .. object
+  return g2dContainer("RECN", { g2dBlock("CEBK", cell) })
+end
+
+local function trainerMappingAnimation()
+  local header = u16(1) .. u16(1) .. u32(0x18) .. u32(0x28) .. u32(0x30) .. string.rep("\0", 8)
+  local animation = u32(1) .. u16(0) .. u16(1) .. u32(1) .. u32(0)
+  local frame = u32(0) .. u16(1) .. u16(0) .. u16(0)
+  return g2dContainer("RNAN", { g2dBlock("ABNK", header .. animation .. frame) })
+end
+
+local function trainerMappingCharacters()
+  local bytes = {}
+  for tile = 0, 64 do
+    local nibble = tile == 32 and 1 or (tile == 64 and 2 or 0)
+    bytes[#bytes + 1] = string.rep(string.char(nibble * 17), 32)
+  end
+  local tiles = table.concat(bytes)
+  local payload = u16(8) .. u16(0x20) .. u32(3) .. u16(0) .. u16(0) .. u32(0) .. u32(#tiles) .. u32(0x18) .. tiles
+  return g2dContainer("RGCN", { g2dBlock("CHAR", payload) })
+end
+
+local function trainerMappingPalette()
+  local colors = u16(0) .. u16(31) .. u16(31 * 32)
+  local payload = string.char(3, 0) .. u16(3) .. u32(0) .. u32(12) .. colors
+  return g2dContainer("NCLR", { g2dBlock("PLTT", payload) })
+end
+
+function T.trainer_picture_rasterizer_uses_the_cell_bank_mapping()
+  local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local sources = require("romdump.src.config.BattlePresentationSources")
+  local trainerPictures = sources.TRAINER_PICTURES
+  local previousFrontClasses = trainerPictures.frontClasses
+  local previousBackClasses = trainerPictures.backClasses
+  trainerPictures.frontClasses = {}
+  trainerPictures.backClasses = { PKMN_TRAINER_ETHAN = 0 }
+  local members = {
+    ["NARC_a_0_0_6:0"] = trainerMappingCharacters(),
+    ["NARC_a_0_0_6:1"] = trainerMappingPalette(),
+    ["NARC_a_0_0_6:2"] = trainerMappingCell(),
+    ["NARC_a_0_0_6:3"] = trainerMappingAnimation(),
+  }
+  local romFs = {
+    openNarc = function(_, archiveName)
+      return {
+        readMember = function(_, memberId)
+          return members[archiveName .. ":" .. memberId]
+        end,
+      }
+    end,
+  }
+  local ok, entries, slices = pcall(compiler.compileTrainerPictures, romFs)
+  trainerPictures.frontClasses = previousFrontClasses
+  trainerPictures.backClasses = previousBackClasses
+  Assert.isTrue(ok, "synthetic mapping-1 trainer resources compile: " .. tostring(entries))
+  local raster = assert(slices["trainer-back-PKMN_TRAINER_ETHAN"])
+  local red, green, blue, alpha = string.byte(raster.pixels, 1, 4)
+  Assert.deepEqual({ red, green, blue, alpha }, { 0, 255, 0, 255 }, "tile 32 samples character tile 64 in mapping 1")
+  Assert.equal(entries["back:PKMN_TRAINER_ETHAN"].width, 8)
+  Assert.deepEqual(entries["back:PKMN_TRAINER_ETHAN"].rasterOffset, { x = -40, y = -40 })
+end
+
 function T.move_power_callback_declares_its_event_time_context()
   local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
   local sources = require("romdump.src.config.BattleAnimationSources")

@@ -879,6 +879,9 @@ local function layoutOnlyCache(portraitEntries)
   end
   cache.files[stagedManifest.pictures.shadow.image] = solidPortraitPng(64, 64)
   cache.files[sceneImage] = solidPortraitPng(512, 256)
+  cache.files[BattlePresentationCache.sceneIntroImagePath(PORTRAIT_SCENE_KEY)] = solidPortraitPng(512, 256)
+  cache.files[BattlePresentationCache.sceneTerrainSpritePath(PORTRAIT_SCENE_KEY, "player")] = solidPortraitPng(80, 80)
+  cache.files[BattlePresentationCache.sceneTerrainSpritePath(PORTRAIT_SCENE_KEY, "foe")] = solidPortraitPng(80, 80)
   cache.files[charactersPath] = string.rep("\0", 65536)
   local mapEntries = {}
   for index = 1, 2048 do
@@ -892,7 +895,7 @@ local function layoutOnlyCache(portraitEntries)
   cache.lua[mapPath] = { width = 512, height = 256, entries = mapEntries }
   cache.lua[palettePath] = { colors = paletteColors }
   cache.lua[BattlePresentationCache.scenePath(PORTRAIT_SCENE_KEY)] = {
-    schema = "g4-battle-scene-v2",
+    schema = "g4-battle-scene-v3",
     key = PORTRAIT_SCENE_KEY,
     background = "general",
     terrain = "grass",
@@ -924,6 +927,25 @@ local function layoutOnlyCache(portraitEntries)
       },
     },
     imagePath = sceneImage,
+    introLayer = {
+      image = BattlePresentationCache.sceneIntroImagePath(PORTRAIT_SCENE_KEY),
+      width = 512,
+      height = 256,
+    },
+    terrainSprites = {
+      player = {
+        image = BattlePresentationCache.sceneTerrainSpritePath(PORTRAIT_SCENE_KEY, "player"),
+        width = 80,
+        height = 80,
+        origin = { x = -40, y = -40 },
+      },
+      foe = {
+        image = BattlePresentationCache.sceneTerrainSpritePath(PORTRAIT_SCENE_KEY, "foe"),
+        width = 80,
+        height = 80,
+        origin = { x = -40, y = -40 },
+      },
+    },
   }
   cache.lua[MonCache.portraitManifestPath()] = { entries = portraitEntries }
   function cache:loadLua(path)
@@ -1576,20 +1598,24 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   stagePortraitPage(staged, 17)
   local stagedHost = portraitPageHost()
   stagedHost.answers[17] = { ready = true }
-  local pool = scriptedPool("probe-decode-boom")
-  local throwing = FakeGraphics.new({ failOnImageCall = 1 })
+  local pool = scriptedPool()
+  local throwing = FakeGraphics.new()
+  local stagedEnvelope = demandEnvelope(staged, stagedHost, throwing, pool)
+  local stagedServices = stagedEnvelope:_preparationServices()
+  local stagedReady, stagedFailure = stagedServices.prepare(portraitDemand({ leadBack }))
+  Assert.isTrue(
+    stagedReady == true,
+    "the staged page validates before its pixels decode: " .. tostring(stagedFailure)
+  )
   local driverAttempts = 0
   local driverNewImage = throwing.newImage
   throwing.newImage = function(...)
     driverAttempts = driverAttempts + 1
+    if driverAttempts == 1 then
+      error("probe-decode-boom", 0)
+    end
     return driverNewImage(...)
   end
-  local stagedEnvelope = demandEnvelope(staged, stagedHost, throwing, pool)
-  local stagedServices = stagedEnvelope:_preparationServices()
-  Assert.isTrue(
-    stagedServices.prepare(portraitDemand({ leadBack })),
-    "the staged page validates before its pixels decode"
-  )
   local broken, brokenErr = stagedServices.drawable("mon:" .. leadBack)
   Assert.isNil(broken, "the undecodable portrait hands out no sprite")
   Assert.isTrue(type(brokenErr) == "string" and brokenErr ~= "", "the undecodable portrait carries its reason")

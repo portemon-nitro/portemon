@@ -135,6 +135,9 @@ function FieldAudioController:resumeFieldPolicy(ownerToken, restoreMusic)
       self._sound:stopMusic()
     end
   elseif effective ~= current then
+    if current ~= nil then
+      self._sound:stopMusic()
+    end
     self._sound:playMusic(effective)
   end
   self:updateField()
@@ -860,6 +863,9 @@ end
 ---@return boolean started true once the battle-music voice starts
 function FieldAudioController:playMusic(idOrSymbol)
   self._pendingFieldMusicPolicy = nil
+  if self._policySuspendedBy ~= nil and self._sound:currentMusic() ~= nil then
+    self._sound:stopMusic()
+  end
   return self._sound:playMusic(idOrSymbol)
 end
 

@@ -1302,21 +1302,77 @@ function FieldBattlePresentation:_preparationServices()
           end
           return nil, "battle scene image is not staged: " .. tostring(sceneKey)
         end
-        local layer = record.layers[1]
-        local characters = cacheFs:read(layer.characters.path)
-        local map = cacheFs:loadLua(layer.map.path)
-        local palette = cacheFs:loadLua(layer.palette.path)
-        if type(characters) ~= "string" or type(map) ~= "table" or type(palette) ~= "table" then
-          return nil, "battle scene BG3 payload is not staged: " .. tostring(sceneKey)
+        if stagedSceneKey ~= sceneKey then
+          local previousSceneKey = stagedSceneKey
+          local layer = record.layers[1]
+          local characters = cacheFs:read(layer.characters.path)
+          local map = cacheFs:loadLua(layer.map.path)
+          local palette = cacheFs:loadLua(layer.palette.path)
+          if type(characters) ~= "string" or type(map) ~= "table" or type(palette) ~= "table" then
+            return nil, "battle scene BG3 payload is not staged: " .. tostring(sceneKey)
+          end
+          assert(layer.characters.format == "indexed8", "persistent BG3 uses the staged 8bpp character format")
+          local intro = record.introLayer
+          local sprites = record.terrainSprites
+          for _, imagePath in ipairs({ intro.image, sprites.player.image, sprites.foe.image }) do
+            if not cacheFs:exists(imagePath, "file") then
+              return nil, "battle scene intro art is not staged: " .. tostring(sceneKey) .. ": " .. imagePath
+            end
+          end
+          local introKey = "scene-intro:" .. sceneKey
+          local introDrawable, introFailure = acquirePooled(envelope, introKey, intro.image)
+          if introDrawable == nil then
+            return nil, assert(introFailure, "scene intro lease failures carry a reason")
+          end
+          local playerKey = "scene-terrain:" .. sceneKey .. ":player"
+          local playerDrawable, playerFailure = acquirePooled(envelope, playerKey, sprites.player.image)
+          if playerDrawable == nil then
+            services.release(introKey)
+            return nil, assert(playerFailure, "player terrain lease failures carry a reason")
+          end
+          local foeKey = "scene-terrain:" .. sceneKey .. ":foe"
+          local foeDrawable, foeFailure = acquirePooled(envelope, foeKey, sprites.foe.image)
+          if foeDrawable == nil then
+            services.release(introKey)
+            services.release(playerKey)
+            return nil, assert(foeFailure, "foe terrain lease failures carry a reason")
+          end
+          stagedSceneKey = sceneKey
+          stagedSceneLayer = {
+            characters = characters,
+            map = map,
+            palette = palette,
+            colorMode = "8bpp",
+            introLayer = {
+              drawable = introDrawable,
+              width = intro.width,
+              height = intro.height,
+            },
+            terrainSprites = {
+              player = {
+                drawable = playerDrawable,
+                width = sprites.player.width,
+                height = sprites.player.height,
+                origin = { x = sprites.player.origin.x, y = sprites.player.origin.y },
+              },
+              foe = {
+                drawable = foeDrawable,
+                width = sprites.foe.width,
+                height = sprites.foe.height,
+                origin = { x = sprites.foe.origin.x, y = sprites.foe.origin.y },
+              },
+            },
+          }
+          if previousSceneKey ~= nil then
+            for _, key in ipairs({
+              "scene-intro:" .. previousSceneKey,
+              "scene-terrain:" .. previousSceneKey .. ":player",
+              "scene-terrain:" .. previousSceneKey .. ":foe",
+            }) do
+              services.release(key)
+            end
+          end
         end
-        stagedSceneKey = sceneKey
-        assert(layer.characters.format == "indexed8", "persistent BG3 uses the staged 8bpp character format")
-        stagedSceneLayer = {
-          characters = characters,
-          map = map,
-          palette = palette,
-          colorMode = "8bpp",
-        }
       end
     end
     local portraitsOk, portraitsErr = checkPortraitPages(envelope, demand.pages or {})

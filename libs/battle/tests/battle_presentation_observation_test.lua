@@ -436,10 +436,10 @@ function T.decision_options_disable_spent_moves_and_project_struggle()
   session:dispose()
 end
 
--- Trainer encounters refuse flight and capture through the projection:
--- the run and ball options disable with reasons instead of vanishing,
--- so the interface never invents an illegal selection.
-function T.decision_options_refuse_trainer_flight_and_capture()
+-- Trainer encounters refuse flight through the projection: the run option
+-- disables with a reason instead of vanishing, while stocked balls remain
+-- selectable because retail lets the throw happen and deflects it.
+function T.decision_options_refuse_trainer_flight_but_keep_balls()
   local alpha = tackleCombatant(1, 11)
   local beta = tackleCombatant(2, 23)
   local pack = SessionFixture.inventory("alpha-bag", { 1 }, { POKE_BALL = 2 })
@@ -464,8 +464,7 @@ function T.decision_options_refuse_trainer_flight_and_capture()
   Assert.isFalse(run.enabled --[[@as boolean]], "trainer flight disables")
   Assert.isTrue(type(run.reason) == "string", "trainer flight names its reason")
   ball = assert(ball, "the stocked ball still projects its option in trainer battles")
-  Assert.isFalse(ball.enabled --[[@as boolean]], "trainer capture disables")
-  Assert.isTrue(type(ball.reason) == "string", "trainer capture names its reason")
+  Assert.isTrue(ball.enabled --[[@as boolean]], "the ball stays selectable; the trainer deflects it")
   session:dispose()
 end
 

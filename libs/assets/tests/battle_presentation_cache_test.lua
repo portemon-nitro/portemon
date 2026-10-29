@@ -40,6 +40,16 @@ function T.canonical_paths_keep_global_and_scene_roots_apart()
     "scene images live beside the scene record name"
   )
   Assert.equal(
+    BattlePresentationCache.sceneIntroImagePath("general/grass/day"),
+    "assets/generated/battle/scenes/general-grass-day-intro.png",
+    "unbaked intro images have a dedicated scene path"
+  )
+  Assert.equal(
+    BattlePresentationCache.sceneTerrainSpritePath("general/grass/day", "foe"),
+    "assets/generated/battle/scenes/general-grass-day-terrain-foe.png",
+    "terrain OBJ images have side-specific scene paths"
+  )
+  Assert.equal(
     BattlePresentationCache.sceneMarkerPath("general/grass/day"),
     "data/generated/battle/scenes/general-grass-day.complete",
     "scene markers live beside the scene record"
@@ -180,7 +190,7 @@ local function stageBattle(cache, manifest, sceneKey)
     stagePng(cache, path, geometry.width, geometry.height)
   end
   local record = {
-    schema = "g4-battle-scene-v2",
+    schema = "g4-battle-scene-v3",
     key = sceneKey,
     background = "general",
     terrain = "grass",
@@ -212,6 +222,25 @@ local function stageBattle(cache, manifest, sceneKey)
       },
     },
     imagePath = BattlePresentationCache.sceneImagePath(sceneKey),
+    introLayer = {
+      image = BattlePresentationCache.sceneIntroImagePath(sceneKey),
+      width = 512,
+      height = 256,
+    },
+    terrainSprites = {
+      player = {
+        image = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player"),
+        width = 80,
+        height = 80,
+        origin = { x = -40, y = -40 },
+      },
+      foe = {
+        image = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe"),
+        width = 80,
+        height = 80,
+        origin = { x = -40, y = -40 },
+      },
+    },
   }
   cache:writeLua(BattlePresentationCache.scenePath(sceneKey), record)
   cache:write(BattlePresentationCache.sceneMarkerPath(sceneKey), "marker")
@@ -227,6 +256,9 @@ local function stageBattle(cache, manifest, sceneKey)
   end
   cache:writeLua(BattlePresentationCache.scenePalettePath(sceneKey), { colors = colors })
   stagePng(cache, BattlePresentationCache.sceneImagePath(sceneKey), 512, 256)
+  stagePng(cache, BattlePresentationCache.sceneIntroImagePath(sceneKey), 512, 256)
+  stagePng(cache, BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player"), 80, 80)
+  stagePng(cache, BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe"), 80, 80)
 end
 
 function T.battle_ball_frames_are_part_of_the_exact_readiness_closure()

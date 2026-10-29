@@ -90,8 +90,12 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field _notice string? transient refusal banner
 ---@field _showTimelineMessage boolean whether a source-selected event message temporarily replaces the command prompt
 ---@field _signature string? measurement signature behind the published plan
----@field _arrowTick integer selection arrow clock in presentation ticks
----@field _sourceAccum number accepted seconds banked toward the next arrow tick
+---@field _cursorTick integer keypad corner animation clock in presentation ticks
+---@field _cursorWasVisible boolean whether the previous published cursor was visible
+---@field _cursorSelection string? selection owning the current corner animation
+---@field _activeEffectTick integer active player bob clock in presentation ticks
+---@field _activeEffectRunning boolean whether the player selection bob is active
+---@field _sourceAccum number accepted seconds banked toward the next source tick
 ---@field _menuRevealStep integer source menu reveal frame, 0 through 4
 ---@field _menuGateTicks integer source ticks until menu input opens
 ---@field _messageScrollY integer source BG1 message-window scroll from -51 to 0
@@ -166,12 +170,8 @@ local MOVE_NAV = {
   cancel = { up = "move:2", down = "cancel", left = "cancel", right = "cancel" },
 }
 
--- Six-cell arrow cycle: the zero-time entry never displays, the rest
--- hold their authored counts. A bounded scan skips the empty entry.
-local ARROW_DURATIONS = { 0, 4, 4, 4, 16, 6 }
-
 -- Float slack so an accepted-time sum landing exactly on a source-tick
--- boundary never strands a stale full tick in the arrow accumulator.
+-- boundary never strands a stale full tick in the source accumulator.
 local SOURCE_TICK_EPSILON = 1e-12
 
 -- Collects the staged battle-music and interface role symbols behind the
@@ -233,30 +233,34 @@ end
 ---@param manifest table<string, unknown> planning manifest with staged message entries
 ---@param key string semantic message key
 ---@param substitutions string[] values for source string-variable tokens
----@return string decoded source message with its source tokens preserved
+---@return string printable source message: glyphs and line breaks only
 local function stagedBattleText(manifest, key, substitutions)
   local messages = assert(manifest.messages, "battle narration requires staged message entries")
   local entries = assert(messages.entries, "battle narration requires semantic message entries")
   local record = assert(entries[key], "battle narration message is staged: " .. key)
   local sourceTokens = record.tokens --[[@as table<integer, table<string, unknown>>]]
-  local tokens = {}
+  local out = {}
   local substitutionIndex = 1
   for _, token in ipairs(sourceTokens) do
-    if token.kind == "substitution" then
-      local value = assert(substitutions[substitutionIndex], "source message substitution is supplied: " .. key)
-      tokens[#tokens + 1] = { kind = "glyph", text = value }
+    if token.kind == "eos" then
+      break
+    elseif token.kind == "glyph" then
+      out[#out + 1] = token.text
+    elseif token.kind == "line_break" then
+      out[#out + 1] = "\n"
+    elseif token.kind == "substitution" then
+      out[#out + 1] = assert(substitutions[substitutionIndex], "source message substitution is supplied: " .. key)
       substitutionIndex = substitutionIndex + 1
-    elseif token.kind == "focus_indicator" then
-      -- The command child draws its own Yes/No choices over this source prompt.
-    else
-      tokens[#tokens + 1] = token
     end
+    -- Style, pause, printer-callback, continuation, page/prompt-break and
+    -- focus tokens have no glyphs: narration paces itself on the timeline and
+    -- the command child draws its own Yes/No choices.
   end
   assert(
     substitutionIndex == #substitutions + 1,
     "source message " .. key .. " consumes " .. (substitutionIndex - 1) .. " substitutions, got " .. #substitutions
   )
-  return FieldMessageText.tokensToText(tokens)
+  return table.concat(out)
 end
 
 ---@param screen BattleScreenState screen owning the staged message manifest
@@ -1016,7 +1020,11 @@ function BattleScreenState.new(opts)
     _notice = nil,
     _showTimelineMessage = false,
     _signature = nil,
-    _arrowTick = 0,
+    _cursorTick = 0,
+    _cursorWasVisible = false,
+    _cursorSelection = nil,
+    _activeEffectTick = 0,
+    _activeEffectRunning = false,
     _sourceAccum = 0,
     _menuRevealStep = 4,
     _menuGateTicks = 0,
@@ -1125,7 +1133,13 @@ function BattleScreenState.new(opts)
       shadowHeight = height --[[@as integer]],
     }
   end
+  local function ballFadeColor(ballKey)
+    local balls = assert(self._manifest.battleBalls, "battle manifests inventory ball art")
+    local entry = assert(balls.entries["ball:" .. ballKey], "recall and send-out balls are in the ball inventory")
+    return entry.fadeColor
+  end
   self._timeline = BattleTimeline.new({
+    ballFadeColor = ballFadeColor,
     moveName = moveNameOf,
     speciesName = speciesNameOf,
     itemName = itemNameOf,
@@ -1295,7 +1309,11 @@ local function enrichScene(self, battlers)
               or key == "shadowHeight"
             )
           if not faintOwned then
-            battler[key] = value
+            if key == "pictureXOffset" and type(battler.pictureXOffset) == "number" then
+              battler[key] = battler.pictureXOffset + value
+            else
+              battler[key] = value
+            end
           end
         end
       end
@@ -1683,7 +1701,20 @@ end
 function BattleScreenState:_snapshot()
   local battlers = self._timeline:battlers()
   local openingPresentation = self._timeline:openingPresentation()
+  local sceneAssets = self._assets:sceneLayer()
+  local introLayer = type(sceneAssets) == "table" and sceneAssets.introLayer or nil
+  local terrainSprites = type(sceneAssets) == "table" and sceneAssets.terrainSprites or nil
   if openingPresentation ~= nil then
+    local trainerEntries = self._manifest.trainerPictures.entries
+    for _, slide in ipairs(openingPresentation.trainerSlides or {}) do
+      local selector =
+        assert(type(slide.selector) == "string" and slide.selector, "trainer slides name a staged picture")
+      local entry = assert(trainerEntries[selector], "trainer slides resolve to staged picture metadata")
+      local offset = entry.rasterOffset
+      assert(type(offset) == "table", "trainer picture metadata includes its raster origin")
+      slide.x = assert(type(slide.x) == "number" and slide.x, "trainer slides carry an origin x") + offset.x
+      slide.y = assert(type(slide.y) == "number" and slide.y, "trainer slides carry an origin y") + offset.y
+    end
     local trainerPictures = {} ---@type string[]
     local latestView = self._pendingFinal or self._latestView
     if openingPresentation.playerTrainerVisible == true and type(latestView) == "table" then
@@ -1755,11 +1786,14 @@ function BattleScreenState:_snapshot()
     end
   end
   local acting = nil
+  local activeBattler = nil
+  local addressedActor = false
   if self._request ~= nil and type(self._request.actors) == "table" then
     local actors = self._request.actors --[[@as table<integer, table<string, unknown>>]]
     local addressed = actors[self._actorIndex]
     if type(addressed) == "table" then
-      local activeBattler = type(addressed.combatant) == "number" and names[addressed.combatant] or nil
+      addressedActor = true
+      activeBattler = type(addressed.combatant) == "number" and names[addressed.combatant] or nil
       if activeBattler == nil and type(addressed.combatant) ~= "number" then
         -- A command actor that names no combatant still acts for the
         -- near side: resolve the lead live player-side record so the
@@ -1783,6 +1817,31 @@ function BattleScreenState:_snapshot()
         activation = addressed.activation,
         sideType = type(activeBattler) == "table" and activeBattler.sideType or nil,
       }
+    end
+  end
+  if
+    activeBattler == nil
+    and not addressedActor
+    and (self._mode == "command" or self._mode == "moves" or self._mode == "target")
+  then
+    for _, battler in ipairs(battlers) do
+      if battler.side == 1 and battler.visible ~= false then
+        activeBattler = battler
+        break
+      end
+    end
+  end
+  if
+    activeBattler ~= nil
+    and activeBattler.side == 1
+    and (self._mode == "command" or self._mode == "moves" or self._mode == "target")
+  then
+    local angle = math.rad(20 * self._activeEffectTick)
+    activeBattler.hudOffsetY = math.modf(1.5 * math.sin(angle))
+    if self._kind ~= "safari" and self._kind ~= "pal-park" then
+      activeBattler.pictureYOffset = (
+        type(activeBattler.pictureYOffset) == "number" and activeBattler.pictureYOffset or 0
+      ) + math.modf(1.5 * math.sin(math.rad(180 + 20 * self._activeEffectTick)))
     end
   end
   local commandIcon = nil
@@ -1927,6 +1986,7 @@ function BattleScreenState:_snapshot()
     menuInputEnabled = self._menuGateTicks == 0,
     selection = self._selection,
     cursorVisible = self._keyboardFocus and self._mode ~= "child",
+    cursorTick = self._cursorTick,
     armed = self._armed ~= nil and { scope = self._armed.scope, id = self._armed.id } or nil,
     touchFeedback = self._armed ~= nil and self._armed.id == "dialogue" and self._armed.pointerId ~= nil or false,
     requestId = self._request ~= nil and self._request.requestId or 0,
@@ -1944,6 +2004,8 @@ function BattleScreenState:_snapshot()
       enemy = copyValue(self._manifest.hud.partyGauges[1]),
     },
     openingPresentation = openingPresentation,
+    introScene = type(introLayer) == "table" and introLayer.drawable or nil,
+    terrainSprites = terrainSprites,
     playerTrainer = type(latest) == "table" and latest.playerTrainer or nil,
     foeTrainers = type(latest) == "table" and latest.foeTrainers or nil,
     levelUpStats = levelUpStats,
@@ -1966,7 +2028,6 @@ function BattleScreenState:_snapshot()
     moves = self:_moves(),
     partyRoster = roster,
     foeCount = foes,
-    arrowFrame = self:_arrowFrame(),
     actor = acting,
     commandIcon = self._mode == "command" and commandIcon or nil,
     targetCandidates = targets,
@@ -1974,26 +2035,6 @@ function BattleScreenState:_snapshot()
     childIntent = self._child ~= nil and copyValue(self._child) or nil,
     childView = childView,
   }
-end
-
----@return integer arrow cell for the current selection clock
-function BattleScreenState:_arrowFrame()
-  local total = 0
-  for _, duration in ipairs(ARROW_DURATIONS) do
-    total = total + duration
-  end
-  if total <= 0 then
-    return 0
-  end
-  local tick = self._arrowTick % total
-  local elapsed = 0
-  for index, duration in ipairs(ARROW_DURATIONS) do
-    if duration > 0 and tick < elapsed + duration then
-      return index - 1
-    end
-    elapsed = elapsed + duration
-  end
-  return 0
 end
 
 ---@return table<string, unknown>? options entry for the acting request position, nil without an open request
@@ -2247,8 +2288,11 @@ function BattleScreenState:view()
     moves = copyValue(snapshot.moves),
     commandIcon = copyValue(snapshot.commandIcon),
     cursorVisible = snapshot.cursorVisible,
+    cursorTick = snapshot.cursorTick,
     battlers = battlers,
     openingPresentation = copyValue(snapshot.openingPresentation),
+    introScene = snapshot.introScene,
+    terrainSprites = snapshot.terrainSprites,
     playerTrainer = copyValue((self._pendingFinal or self._latestView or {}).playerTrainer),
     foeTrainers = copyValue((self._pendingFinal or self._latestView or {}).foeTrainers),
     actor = copyValue(snapshot.actor),
@@ -3099,21 +3143,9 @@ function BattleScreenState:_portPresent(packet)
           end
         end
       end
-      local record = assert(self._manifest.messages.entries[key], "Bide release message is staged: " .. key)
-      local tokens = {}
-      local substitutions = 0
-      for _, token in ipairs(record.tokens) do
-        if token.kind == "substitution" then
-          substitutions = substitutions + 1
-          tokens[#tokens + 1] = { kind = "glyph", text = name }
-        else
-          tokens[#tokens + 1] = token
-        end
-      end
-      assert(substitutions == 1, "Bide release substitutes one battler name")
       sourceMessages[
         event.sequence --[[@as integer]]
-      ] = FieldMessageText.tokensToText(tokens)
+      ] = stagedBattleText(self._manifest, key, { name })
     elseif type(event) == "table" and event.kind == "broke_free" then
       local args = event.messageArgs --[[@as table<string, unknown>?]]
       local shakes = type(args) == "table" and args.shakes or nil
@@ -3129,12 +3161,10 @@ function BattleScreenState:_portPresent(packet)
       )
       local firstRecord = route.firstRecord --[[@as string]]
       local messageKey = firstRecord:gsub("0$", tostring(shakes))
-      local entries = messages.entries --[[@as table<string, table<string, unknown>>]]
-      local record = assert(entries[messageKey], "the selected capture message is staged")
       sourceMessages[
         event.sequence --[[@as integer]]
       ] =
-        FieldMessageText.tokensToText(record.tokens --[[@as table<integer, table<string, unknown>>]])
+        stagedBattleText(self._manifest, messageKey, {})
     end
   end
   if not self._timeline:present(packet, sourceMessages) then
@@ -3224,6 +3254,16 @@ function BattleScreenState:_portLeave(plan)
   local _ = plan
   if self._disposed or self._mode == "failed" then
     return false
+  end
+  if
+    not self._outcomeDone
+    and self._kind == "trainer"
+    and self._pendingResult ~= nil
+    and self._outcomeMessages ~= nil
+    and #self._outcomeMessages == 0
+    and self._timeline:settled()
+  then
+    self:_drain(true)
   end
   -- Terminal source waits drain on their own; leave follows the last page
   -- and any registration card without an outcome acknowledgment gate.
@@ -4898,15 +4938,25 @@ function BattleScreenState:updateFixed(dt)
     self:_disposeRegistrationChild()
   end
   self:_drainCompletion()
-  -- The selection arrow consumes accepted source ticks, never host calls:
-  -- whole ticks advance the cycle while a frame carrying less than one
-  -- tick banks its fraction, and the frame mapping already skips
-  -- zero-duration cells.
-  if self._mode == "command" or self._mode == "moves" then
-    self._arrowTick = self._arrowTick + sourceTicks
+  local activeEffectMode = self._mode == "command" or self._mode == "moves" or self._mode == "target"
+  if activeEffectMode then
+    if not self._activeEffectRunning then
+      self._activeEffectTick = 0
+    end
+    self._activeEffectTick = self._activeEffectTick + sourceTicks
+    self._activeEffectRunning = true
   else
-    self._arrowTick = 0
+    self._activeEffectTick = 0
+    self._activeEffectRunning = false
   end
+  local cursorVisible = self._keyboardFocus and self._mode ~= "child"
+  if not cursorVisible or not self._cursorWasVisible or self._cursorSelection ~= self._selection then
+    self._cursorTick = 0
+  else
+    self._cursorTick = self._cursorTick + sourceTicks
+  end
+  self._cursorWasVisible = cursorVisible
+  self._cursorSelection = cursorVisible and self._selection or nil
   if self._session ~= nil then
     pcall(function()
       self._session:resolve(measurement, self:_snapshot())

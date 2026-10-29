@@ -453,6 +453,9 @@ function T.render_restores_borrowed_state()
       drawable = function(_, key)
         return image(key)
       end,
+      renderPictures = function()
+        return { handle = "picture-composite" }
+      end,
       menuBlendTargets = function(self, blendGraphics)
         if self.menuBlend == nil then
           self.menuBlend = BattleMenuPresenter.newBlendTargets(blendGraphics)
@@ -561,6 +564,9 @@ local function openInterfaceRig(opts)
       return { lease = stored, quad = { handle = "quad:" .. key } }
     end
     return stored
+  end
+  function rig.assets.renderPictures()
+    return { handle = "picture-composite" }
   end
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
@@ -897,6 +903,9 @@ local function openChildRig(opts)
     end
     return stored
   end
+  function rig.assets.renderPictures()
+    return { handle = "picture-composite" }
+  end
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
@@ -911,10 +920,11 @@ local function openChildRig(opts)
   local launchId = opts.launchId or "launch-battle-bag"
   local foeSpec = opts.foe or { species = "EEVEE", level = 4, seed = 0x5EED0002 }
   local foe = makeFoe(foeSpec)
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launchId .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launchId .. "-attempt", mon = foe }, {
+    party = party,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local launch = {
     id = launchId,
     kind = "wild",
@@ -1010,8 +1020,12 @@ end
 ---@param rig table live screen rig under test driving
 local function ackNarration(rig)
   local mode = rig.screen:status().mode
-  if mode == "intro" or mode == "narration" or mode == "outcome"
-    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  if
+    mode == "intro"
+    or mode == "narration"
+    or mode == "outcome"
+    or rig.screen._timeline:messageActive()
+    or rig.screen._timeline:levelUpStats() ~= nil
   then
     rig.screen:input({ { type = "confirm" } })
   end

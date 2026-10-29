@@ -22,6 +22,7 @@ local NATIVE_VIEWPORT = {
 ---@field whiteFadeAlpha number? source white palette fade within 0..1
 ---@field screenBrightness number? source engine master-brightness value, -16..16
 ---@field brightness number|table<string, unknown>? source engine master-brightness value or an opaque native task record
+---@field scanlineOffsets integer[]? source HBlank BG0 horizontal offsets, one per native scanline
 
 ---@class FieldRenderer.MotionBlur
 ---@field previous GxRenderer.Canvas
@@ -274,7 +275,51 @@ function FieldRenderer:drawTransition(capture, transitionFrame, destination)
       graphics.setBlendMode("alpha", "alphamultiply")
     else
       graphics.setColor(1, 1, 1, 1)
-      graphics.draw(capture.world, destination.x, destination.y, 0, scaleX, scaleY)
+      local scanlineOffsets = transitionFrame.scanlineOffsets
+      if scanlineOffsets ~= nil then
+        assert(
+          type(scanlineOffsets) == "table" and #scanlineOffsets == NativeDisplay.HEIGHT,
+          "source HBlank transitions carry one horizontal offset per native scanline"
+        )
+        local imageWidth = capture.world:getWidth()
+        local y = 1
+        while y <= NativeDisplay.HEIGHT do
+          local offset = scanlineOffsets[y]
+          assert(type(offset) == "number" and offset % 1 == 0, "source scanline offsets are integer pixels")
+          local sourceX = offset % imageWidth
+          local endY = y + 1
+          while endY <= NativeDisplay.HEIGHT do
+            local nextOffset = scanlineOffsets[endY]
+            assert(type(nextOffset) == "number" and nextOffset % 1 == 0, "source scanline offsets are integer pixels")
+            if nextOffset % imageWidth ~= sourceX then
+              break
+            end
+            endY = endY + 1
+          end
+          local sourceY = y - 1
+          local groupHeight = endY - y
+          local firstWidth = imageWidth - sourceX
+          local firstQuad =
+            graphics.newQuad(sourceX, sourceY, firstWidth, groupHeight, imageWidth, NativeDisplay.HEIGHT)
+          local destinationY = destination.y + sourceY * scaleY
+          graphics.draw(capture.world, firstQuad, destination.x, destinationY, 0, scaleX, scaleY)
+          if sourceX > 0 then
+            local secondQuad = graphics.newQuad(0, sourceY, sourceX, groupHeight, imageWidth, NativeDisplay.HEIGHT)
+            graphics.draw(
+              capture.world,
+              secondQuad,
+              destination.x + firstWidth * scaleX,
+              destinationY,
+              0,
+              scaleX,
+              scaleY
+            )
+          end
+          y = endY
+        end
+      else
+        graphics.draw(capture.world, destination.x, destination.y, 0, scaleX, scaleY)
+      end
       if capture.objects ~= nil then
         graphics.setColor(1, 1, 1, 1)
         graphics.draw(capture.objects, destination.x, destination.y, 0, scaleX, scaleY)

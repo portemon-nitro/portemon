@@ -1009,8 +1009,8 @@ function T.bag_selection_consumes_only_through_native_execution()
     capture.screen:dispose()
     capture.battle:dispose()
 
-    -- Trainer capture stays refused with its reason before any selection
-    -- result could consume stock.
+    -- Trainer battles keep the ball selectable: retail deflects the throw
+    -- without consuming stock.
     local trainer = openRig({
       layout = layout,
       launchId = "launch-child-trainerball-" .. layout,
@@ -1040,21 +1040,17 @@ function T.bag_selection_consumes_only_through_native_execution()
           and choice.choice.payload.item == "POKE_BALL"
         then
           ballChoices = ballChoices + 1
-          Assert.isFalse(choice.enabled == true, "the trainer ball stays unavailable" .. tag)
-          Assert.isTrue(type(choice.reason) == "string" and choice.reason ~= "", "the refusal names its reason" .. tag)
+          Assert.isTrue(choice.enabled == true, "the trainer ball stays selectable" .. tag)
         end
       end
     end
     Assert.isTrue(ballChoices >= 1, "the trainer bag still lists its balls" .. tag)
-    requireChildOwner("trainer capture refusal")
+    requireChildOwner("trainer ball deflection")
     openBagFromCommand(trainer)
     walkToBallsFirstCell(trainer)
-    press(trainer, { type = "confirm" })
-    Assert.equal(#trainer.submits, 0, "confirming a refused ball seals no reply" .. tag)
-    Assert.equal(trainer.bag:quantity("POKE_BALL"), 5, "the refused ball takes no stock" .. tag)
-    press(trainer, { type = "cancel" })
-    press(trainer, { type = "cancel" })
-    Assert.equal(#trainer.submits, 0, "leaving the refused bag seals no reply" .. tag)
+    useNativeBattleBagItem(trainer)
+    Assert.equal(#trainer.submits, 1, "throwing at a trainer seals exactly one reply" .. tag)
+    Assert.equal(trainer.bag:quantity("POKE_BALL"), 5, "the deflected ball takes no stock" .. tag)
     trainer.screen:dispose()
     trainer.battle:dispose()
   end

@@ -97,6 +97,8 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field viewport { x: integer, y: integer, width: integer, height: integer }
 ---@field layers BattlePresentationCache.SceneLayer[]
 ---@field imagePath string
+---@field introLayer { image: string, width: integer, height: integer }
+---@field terrainSprites table<string, { image: string, width: integer, height: integer, origin: { x: integer, y: integer } }>
 
 ---@return string
 function BattlePresentationCache.dir()
@@ -158,6 +160,20 @@ end
 ---@return string cache-relative staged scene image path
 function BattlePresentationCache.sceneImagePath(sceneKey)
   return ASSET_DIR .. "/scenes/" .. sceneStem(sceneKey) .. ".png"
+end
+
+---@param sceneKey string semantic scene key
+---@return string cache-relative staged unbaked intro BG3 image path
+function BattlePresentationCache.sceneIntroImagePath(sceneKey)
+  return ASSET_DIR .. "/scenes/" .. sceneStem(sceneKey) .. "-intro.png"
+end
+
+---@param sceneKey string semantic scene key
+---@param side "player"|"foe" terrain OBJ side
+---@return string cache-relative staged terrain OBJ image path
+function BattlePresentationCache.sceneTerrainSpritePath(sceneKey, side)
+  assert(side == "player" or side == "foe", "terrain sprite side is player or foe")
+  return ASSET_DIR .. "/scenes/" .. sceneStem(sceneKey) .. "-terrain-" .. side .. ".png"
 end
 
 ---@param sceneKey string semantic scene key
@@ -403,6 +419,21 @@ local function hasSceneLayerClosure(cacheFs, record)
   return true
 end
 
+local function hasSceneImageClosure(cacheFs, record)
+  local intro = record.introLayer
+  local width, height = PngWriter.completeDimensions(cacheFs:read(intro.image))
+  if width ~= intro.width or height ~= intro.height then
+    return false
+  end
+  for _, sprite in pairs(record.terrainSprites) do
+    width, height = PngWriter.completeDimensions(cacheFs:read(sprite.image))
+    if width ~= sprite.width or height ~= sprite.height then
+      return false
+    end
+  end
+  return true
+end
+
 ---@param selectors unknown
 ---@return string[]|nil sorted deduplicated portrait selectors
 ---@return string|nil reason
@@ -609,6 +640,7 @@ function BattlePresentationCache.isReady(cacheFs, demand)
       imageWidth ~= record.canvasWidth
       or imageHeight ~= record.canvasHeight
       or not hasSceneLayerClosure(cacheFs, record)
+      or not hasSceneImageClosure(cacheFs, record)
     then
       return false
     end
@@ -696,6 +728,7 @@ function BattlePresentationCache.isSceneReady(cacheFs, sceneKey, expectedMarker)
   return imageWidth == record.canvasWidth
     and imageHeight == record.canvasHeight
     and hasSceneLayerClosure(cacheFs, record)
+    and hasSceneImageClosure(cacheFs, record)
 end
 
 -- Load one staged effect record: the record must validate and name exactly

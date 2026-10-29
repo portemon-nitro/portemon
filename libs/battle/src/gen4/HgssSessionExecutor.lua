@@ -4925,11 +4925,21 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   ---@param ordinal integer commit order of this action
   ---@param cause table<string, unknown> semantic reason carried by the emitted events
   local function executeBall(state, context, action, plan, choice, ordinal, cause)
-    if battleKind ~= "wild" then
-      error(BattleErrors.invalidState("committed throws keep their wild encounter kind", {}))
-    end
     local actor = action.actor --[[@as table<string, unknown>]]
     local target = choice.target --[[@as table<string, unknown>]]
+    if battleKind ~= "wild" then
+      -- BtlCmd_ThrowPokeball deflects the ball off a trainer's Pokemon,
+      -- and the player's ball selection skips Bag_TakeItem in trainer
+      -- battles: the throw takes the turn but spends no stock, rolls
+      -- nothing, and ledgers no capture.
+      local blocked = context:emit("throw", cause, {
+        ball = plan.item,
+        target = target.combatant,
+        blocked = true,
+      })
+      blocked.actionId = ordinal
+      return
+    end
     local planRecord = plan --[[@as table<string, unknown>]]
     local outcome = Capture.execute({
       actor = actor.combatant,
@@ -6729,11 +6739,6 @@ local function checkChoiceBinding(state, choice, admitted, battleKind, staged, m
       ][
         payload.item --[[@as string]]
       ] or 0
-    end
-    if
-      CaptureContext.isBall(payload.item --[[@as string]]) and battleKind ~= "wild"
-    then
-      return BattleErrors.input("thrown balls refuse trainer battles", {})
     end
     -- Bag choices bind through the item owner: unknown stock, spent
     -- stacks, and holders that are not on the field refuse here with the

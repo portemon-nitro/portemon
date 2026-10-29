@@ -32,6 +32,8 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _latest table<string, unknown>? newest after view for name and move facts
 ---@field _openingPresentation table<string, unknown>? detached opening-stage presentation facts
 ---@field _trainerSlideTracks table<integer, { delay: integer, elapsed: integer, direction: integer, targetX: integer, speed: integer }> source timing for concurrent opening trainer slides
+---@field _terrainSlideTracks table<integer, { role: "player"|"foe", delay: integer, elapsed: integer, direction: integer, targetX: integer, speed: integer }> source timing for both terrain bases
+---@field _wildIntroTrack { combatant: integer, delay: integer, elapsed: integer, x: integer, targetX: integer, speed: integer, arrived: boolean, fadeElapsed: integer }? source timing for the wild foe entrance
 ---@field _names table<integer, string> visible names by combatant identity across packets
 ---@field _addressing table<integer, "own"|"wild"|"foe"> source nickname-tag variant by combatant identity
 ---@field _lastStruck integer? most recent strike recipient, the source of a following drain
@@ -43,6 +45,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _speciesName (fun(species: string): string?)? borrowed species display-name resolver for tagged narration
 ---@field _itemName (fun(item: string): string?)? borrowed item display-name resolver for use narration
 ---@field _battleItemUse (fun(item: string): table<string, unknown>?)? borrowed generated battle-use facts
+---@field _ballFadeColor (fun(ballKey: string): integer)? Pokepic palette-fade target of a ball (sBallColors)
 ---@field _faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts
 ---@field _messageText fun(context: unknown, key: string, substitutions: string[]): string source text resolver supplied by the battle screen or test fixture
 ---@field _messageTextContext unknown? owner passed to the source text resolver
@@ -57,6 +60,17 @@ BattleTimeline.MESSAGE_HOLD_TICKS = 12
 BattleTimeline.HIT_TICKS = 6
 BattleTimeline.HIT_DISPLACEMENT = 2
 BattleTimeline.VANISH_TICKS = 12
+-- Task_RecallPokemon / Task_PokemonSendOut: the Pokepic palette fade toward
+-- the ball color steps once per frame over 17 updates (0 -> 16 or 16 -> 0)
+-- and the picture's affine scale moves 32/256 per frame (8 steps).
+BattleTimeline.BALL_FADE_TICKS = 17
+BattleTimeline.BALL_SCALE_TICKS = 8
+-- party_gauge.c mid-battle show (arrow and balls slide at 18 px/frame, then
+-- the gauge task polls) and hide (arrow alpha fades 16 -> 0 at 1 per frame).
+BattleTimeline.PARTY_GAUGE_SHOW_TICKS = 11
+BattleTimeline.PARTY_GAUGE_HIDE_TICKS = 19
+-- subscript_0009_SwitchMon WaitTime between PokemonSendOut and HealthbarSlideIn.
+BattleTimeline.SWITCH_SETTLE_TICKS = 72
 BattleTimeline.HP_BAR_PIXELS = 48
 BattleTimeline.EXP_BAR_PIXELS = 96
 BattleTimeline.PAGE_GLYPHS = 54
@@ -122,6 +136,7 @@ end
 ---@field battleItemUse (fun(item: string): table<string, unknown>?)? generated battle-use facts for item narration
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
 ---@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire, absent without a screen owner
+---@field ballFadeColor (fun(ballKey: string): integer)? source recall and send-out fade color of a ball
 ---@field faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts for fainting
 ---@field messageText fun(context: unknown, key: string, substitutions: string[]): string staged retail battle message resolver
 ---@field messageTextContext unknown? explicit owner passed to the staged retail message resolver
@@ -139,6 +154,7 @@ function BattleTimeline.new(opts)
     _speciesName = opts.speciesName,
     _itemName = opts.itemName,
     _battleItemUse = opts.battleItemUse,
+    _ballFadeColor = opts.ballFadeColor,
     _faintAppearance = opts.faintAppearance,
     _messageText = opts.messageText,
     _messageTextContext = opts.messageTextContext,
@@ -162,6 +178,8 @@ function BattleTimeline.new(opts)
     _latest = nil,
     _openingPresentation = nil,
     _trainerSlideTracks = {},
+    _terrainSlideTracks = {},
+    _wildIntroTrack = nil,
     _wildVictoryMusicStarted = false,
     _accum = 0,
     _diagnostics = {},
@@ -233,6 +251,7 @@ local function displayedOf(record)
     exp = record.experience,
     condition = record.condition,
     moves = copyValue(record.moves),
+    ballKey = record.ballKey,
   }
   -- The native slot identity rides the displayed record for live
   -- active battlers only: benched or historic records never claim a
@@ -364,6 +383,8 @@ function BattleTimeline:reset(view)
   self._active = nil
   self._flowIntroDone = false
   self._wildVictoryMusicStarted = false
+  self._terrainSlideTracks = {}
+  self._wildIntroTrack = nil
   -- A fresh opening starts new actions: occurrence and narration claims
   -- never leak from the previous launch into the next one.
   self._nativeSeen = {}
@@ -468,6 +489,18 @@ local function openingTrainerSlides(view, wild)
     tracks[#tracks + 1] = { delay = 28, elapsed = 0, direction = 1, targetX = 192, speed = 8 }
   end
   return slides, tracks
+end
+
+---@return table<integer, table<string, unknown>> detached player and foe terrain positions
+---@return table<integer, { role: "player"|"foe", delay: integer, elapsed: integer, direction: integer, targetX: integer, speed: integer }> source slide tracks
+local function openingTerrainSlides()
+  return {
+    { role = "player", x = 336, y = 136, visible = true, phase = "intro-delay" },
+    { role = "foe", x = -80, y = 88, visible = true, phase = "intro-delay" },
+  }, {
+    { role = "player", delay = 28, elapsed = 0, direction = -1, targetX = 64, speed = 8 },
+    { role = "foe", delay = 28, elapsed = 0, direction = 1, targetX = 192, speed = 8 },
+  }
 end
 
 ---@param cue table<string, unknown> typed one-shot sound cue under queueing
@@ -752,6 +785,7 @@ end
 local eventObservation
 local foeHealthAt, recallText, enqueueSendOut, speciesOf, enqueueEncounterMessage
 local combatName, moveName
+local tickBallPoof
 
 ---@param self BattleTimeline
 ---@return table<string, unknown>? first trainer semantic key and name from the current view
@@ -845,14 +879,17 @@ local function queueOpening(self, view)
   end
   self._foeHpMark = foeHealthAt(self, nil)
   local trainerSlides, trainerTracks = openingTrainerSlides(view, wild)
+  local terrainSlides, terrainTracks = openingTerrainSlides()
   self._openingPresentation = {
     playerTrainerVisible = true,
     foeTrainerVisible = not wild,
     playerGaugeVisible = false,
     enemyGaugeVisible = false,
     trainerSlides = trainerSlides,
+    terrainSlides = terrainSlides,
   }
   self._trainerSlideTracks = trainerTracks
+  self._terrainSlideTracks = terrainTracks
   if type(foeSpecies) == "string" then
     enqueue(self, { kind = "sound", cue = cryCue(foeSpecies, foeForm, true), duration = 0 })
   end
@@ -1500,13 +1537,85 @@ function causeMoveKey(event)
   return cause.key
 end
 
+-- Task_RecallPokemon and Task_PokemonSendOut voice the ball sound panned
+-- at the switching battler's side.
+---@param self BattleTimeline
+---@param combatant integer recalled or arriving combatant
+local function enqueueBallSound(self, combatant)
+  local own = self._addressing[combatant] == "own"
+  enqueue(self, {
+    kind = "sound",
+    cue = effectCue(BattleAudio.SINK_SOUNDS.ballOpen, {
+      pan = own and BattleAudio.SIDE_PAN.player or BattleAudio.SIDE_PAN.foe,
+    }),
+    duration = 0,
+  })
+end
+
+-- ShowPartyGauge/HidePartyGauge: the trainer's ball gauge slides in with its
+-- start sound, or fades out, before the command completes. The gauge sprites
+-- are not staged, so only the retail pacing and sound are reproduced.
+---@param self BattleTimeline
+---@param own boolean whether the switching battler is on the player side
+---@param ticks integer retail frames until the gauge task completes
+---@param show boolean true for ShowPartyGauge
+local function enqueuePartyGauge(self, own, ticks, show)
+  if show then
+    enqueue(self, {
+      kind = "sound",
+      cue = effectCue(BattleAudio.SINK_SOUNDS.partyGaugeShow, {
+        pan = own and BattleAudio.SIDE_PAN.player or BattleAudio.SIDE_PAN.foe,
+      }),
+      duration = 0,
+    })
+  end
+  enqueue(self, { kind = "wait", duration = ticks })
+end
+
+-- The ball-colored poof of a recall or send-out: the staged sBallColors
+-- fade target of the mon's ball, nil when the mon or the source is unknown.
+---@param self BattleTimeline
+---@param combatant integer battler leaving or entering its ball
+---@return integer? color RGB555 fade target
+local function ballFadeColorOf(self, combatant)
+  if self._ballFadeColor == nil then
+    return nil
+  end
+  local ballKey = nil
+  local shown = self._battlers[combatant]
+  if shown ~= nil then
+    ballKey = shown.ballKey
+  end
+  local view = self._latest
+  if type(view) == "table" then
+    for _, group in ipairs({ view.own, view.foes }) do
+      if type(group) == "table" then
+        for _, record in ipairs(group) do
+          if type(record) == "table" and record.combatant == combatant and type(record.ballKey) == "string" then
+            ballKey = record.ballKey
+          end
+        end
+      end
+    end
+  end
+  if type(ballKey) ~= "string" then
+    return nil
+  end
+  return self._ballFadeColor(ballKey)
+end
+
 ---@param self BattleTimeline
 ---@param combatant integer combatant to reveal
-local function enqueueReveal(self, combatant)
+---@param holdHud boolean? keep the health box hidden for a later slide-in
+local function enqueueReveal(self, combatant, holdHud)
+  local fadeColor = ballFadeColorOf(self, combatant)
   enqueue(self, {
     kind = "reveal",
     combatant = combatant,
-    duration = BattleTimeline.VANISH_TICKS,
+    holdHud = holdHud,
+    fadeColor = fadeColor,
+    duration = fadeColor ~= nil and BattleTimeline.BALL_SCALE_TICKS + BattleTimeline.BALL_FADE_TICKS
+      or BattleTimeline.VANISH_TICKS,
     requiresImage = self:_imageKeyFor(combatant),
   })
 end
@@ -1590,8 +1699,13 @@ end
 ---@param self BattleTimeline
 ---@param incoming integer arriving combatant
 ---@param event table<string, unknown>? arrival event carrying its checkpoint
-function enqueueSendOut(self, incoming, event)
-  if self._addressing[incoming] == "own" then
+---@param switching boolean? true for subscript SwitchMon/ReplaceFainted sequencing: party gauge, settle wait, health box slide-in
+function enqueueSendOut(self, incoming, event, switching)
+  local ownSide = self._addressing[incoming] == "own"
+  if switching == true then
+    enqueuePartyGauge(self, ownSide, BattleTimeline.PARTY_GAUGE_SHOW_TICKS, true)
+  end
+  if ownSide then
     local name = combatName(self, incoming)
     local key = "battle/narration/player-sent-out"
     local hp, maxHp = foeHealthAt(self, event)
@@ -1625,16 +1739,26 @@ function enqueueSendOut(self, incoming, event)
       )
     end
   end
-  enqueueBallThrow(self, incoming, self._addressing[incoming] == "own" and "player" or "foe")
+  if switching == true then
+    enqueuePartyGauge(self, ownSide, BattleTimeline.PARTY_GAUGE_HIDE_TICKS, false)
+  end
+  enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
+  enqueueBallSound(self, incoming)
   local species, form = speciesOf(self, incoming)
   if species ~= nil then
     enqueue(self, {
       kind = "sound",
-      cue = cryCue(species, form, self._addressing[incoming] ~= "own"),
+      cue = cryCue(species, form, not ownSide),
       duration = 0,
     })
   end
-  enqueueReveal(self, incoming)
+  enqueueReveal(self, incoming, switching)
+  if switching == true then
+    -- WaitTime 72, then HealthbarSlideIn; the arriving health box stays
+    -- hidden until that slide.
+    enqueue(self, { kind = "wait", duration = BattleTimeline.SWITCH_SETTLE_TICKS })
+    enqueue(self, { kind = "hud-slide", combatant = incoming, direction = "in" })
+  end
 end
 
 ---@param self BattleTimeline
@@ -1760,6 +1884,16 @@ local function translateItem(self, event, packet)
   local actor = explicitActor(event)
   local shown = actor ~= nil and self:_shown(actor) or nil
   local playerUse = not (type(shown) == "table" and shown.side == 2)
+  -- The bag subscripts and the battle party menu voice SEQ_SE_DP_KAIFUKU
+  -- at the user's pan before the use line.
+  enqueue(self, {
+    kind = "sound",
+    cue = effectCue(BattleAudio.SINK_SOUNDS.recovery, {
+      pan = playerUse and BattleAudio.SIDE_PAN.player or BattleAudio.SIDE_PAN.foe,
+      foe = not playerUse,
+    }),
+    duration = 0,
+  })
   if playerUse then
     -- The player's bag task narrates msg_0197_01206.
     enqueueMessage(self, messageText(self, "battle/narration/bag-used-item", { itemText }), false)
@@ -1933,12 +2067,18 @@ local function translateSwitch(self, event)
   end
   if type(departed) == "number" and not replacesFaint then
     enqueueMessage(self, recallText(self, departed --[[@as integer]], event), false, 0)
+    enqueueBallSound(self, departed --[[@as integer]])
+    local fadeColor = ballFadeColorOf(self, departed --[[@as integer]])
     enqueue(self, {
       kind = "withdraw",
       combatant = departed,
-      duration = BattleTimeline.VANISH_TICKS,
+      fadeColor = fadeColor,
+      duration = fadeColor ~= nil and BattleTimeline.BALL_FADE_TICKS + BattleTimeline.BALL_SCALE_TICKS
+        or BattleTimeline.VANISH_TICKS,
       requiresImage = self:_imageKeyFor(departed),
+      keepHud = true,
     })
+    enqueue(self, { kind = "hud-slide", combatant = departed, direction = "out" })
   end
   local incoming = payload.to
   if type(incoming) ~= "number" then
@@ -1948,7 +2088,7 @@ local function translateSwitch(self, event)
     incoming = payload.incoming
   end
   if type(incoming) == "number" then
-    enqueueSendOut(self, incoming --[[@as integer]], event)
+    enqueueSendOut(self, incoming --[[@as integer]], event, true)
   end
   -- SwitchAndUpdateMon re-marks the foe health behind recall wording.
   self._foeHpMark = foeHealthAt(self, event)
@@ -2234,25 +2374,173 @@ local function captureTargetOf(self, event)
   return target
 end
 
+-- Ball sounds pan to the foe side like the source's PlaySE_SetPan(.., 117).
+---@param symbol string staged ball sound symbol
+---@return table<string, unknown> typed effect cue
+local function ballCue(symbol)
+  return effectCue(symbol, { pan = BattleAudio.SIDE_PAN.foe, foe = true })
+end
+
+-- sBallThrowBounceSounds (asm/battle_anim_data.s): ground-bounce frame and sound.
+local BALL_BOUNCE_SOUNDS = {
+  { frame = 1, symbol = BattleAudio.SINK_SOUNDS.ballBounce1 },
+  { frame = 8, symbol = BattleAudio.SINK_SOUNDS.ballBounce1 },
+  { frame = 14, symbol = BattleAudio.SINK_SOUNDS.ballBounce2 },
+  { frame = 18, symbol = BattleAudio.SINK_SOUNDS.ballBounce3 },
+  { frame = 20, symbol = BattleAudio.SINK_SOUNDS.ballBounce4 },
+}
+
+-- BallThrow_BallAnimThrow for the player's ball (battle_anim_ball.c, kinds
+-- 15-17): the ball starts off screen at (-30, 160) and arcs 64 pixels high
+-- to the foe's sBattleAnimScreenPositions entry plus 8 pixels in 16 frames.
+-- The motion starts on the third frame (modeFrames init, then spin init) and
+-- the arc state finishes on the 20th.
+local BALL_THROW_START_X, BALL_THROW_START_Y = -30, 160
+local BALL_THROW_ARC_HEIGHT, BALL_THROW_MOTION_TICKS = 64, 16
+local BALL_THROW_LEAD_TICKS, BALL_THROW_TICKS = 2, 20
+-- CaptureStateDeflect: from the throw's end to (60, 180) in 10 frames and a
+-- 12 pixel arc, starting on the third frame after the state change, and
+-- ending with the ball's removal on the 15th.
+local BALL_DEFLECT_TARGET_X, BALL_DEFLECT_TARGET_Y = 60, 180
+local BALL_DEFLECT_ARC_HEIGHT, BALL_DEFLECT_MOTION_TICKS = 12, 10
+local BALL_DEFLECT_LEAD_TICKS, BALL_DEFLECT_TICKS = 3, 15
+-- gBattleAnimBattlerScreenPositions plus 8: foe slot -> ball target.
+local BALL_THROW_FOE_TARGETS = {
+  single = { x = 192, y = 56 },
+  first = { x = 216, y = 58 },
+  second = { x = 176, y = 50 },
+}
+
+-- BattleAnimUtil_UpdateLinearSinMotion after n updates: fixed-point linear
+-- motion plus the amplitude * cos(0x3FFF + n * step) lift of the sin motion.
+---@param cue table<string, unknown> ball flight cue
+---@param n integer motion updates applied
+---@return integer x
+---@return integer y
+local function ballArcPoint(cue, n)
+  local ticks = cue.motionTicks --[[@as integer]]
+  local startX, startY =
+    cue.startX, --[[@as integer]]
+    cue.startY --[[@as integer]]
+  if n <= 0 then
+    return startX, startY
+  end
+  local function linear(start, target)
+    local quotient = (target - start) * 4096 / ticks
+    local step = quotient < 0 and math.ceil(quotient) or math.floor(quotient)
+    return math.floor((start * 4096 + step * n) / 4096)
+  end
+  local angle = (0x3FFF + n * math.floor(0x8000 / ticks)) % 0x10000
+  local cos = math.floor(math.cos(2 * math.pi * math.floor(angle / 16) / 4096) * 4096)
+  local lift = math.floor(cos * cue.arcHeight --[[@as integer]] / 4096)
+  return linear(startX, cue.targetX --[[@as integer]]), linear(startY, cue.targetY --[[@as integer]]) + lift
+end
+
+-- Where the thrown ball lands on the foe: the single-battle target, or in a
+-- doubles battle the target's claimed foe slot (kinds 16 and 17).
+---@param self BattleTimeline
+---@param event table<string, unknown> throw event under translation
+---@return { x: integer, y: integer } ball target
+local function ballThrowTarget(self, event)
+  local foePositions, playerPositions = {}, {}
+  local seen = {}
+  for _, id in ipairs(self._order) do
+    local shown = self._battlers[id]
+    if shown ~= nil and type(shown.position) == "number" then
+      local key = tostring(shown.side) .. ":" .. tostring(shown.position)
+      if not seen[key] then
+        seen[key] = true
+        local list = shown.side == 1 and playerPositions or foePositions
+        list[#list + 1] = shown.position --[[@as integer]]
+      end
+    end
+  end
+  if #foePositions < 2 and #playerPositions < 2 then
+    return BALL_THROW_FOE_TARGETS.single
+  end
+  table.sort(foePositions)
+  local target = captureTargetOf(self, event)
+  local shown = target ~= nil and self._battlers[target] or nil
+  assert(shown ~= nil and type(shown.position) == "number", "doubles ball throws target a placed foe")
+  return foePositions[1] == shown.position and BALL_THROW_FOE_TARGETS.first or BALL_THROW_FOE_TARGETS.second
+end
+
 ---@param self BattleTimeline
 ---@param event table<string, unknown> capture throw event under translation
 local function translateThrow(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
   assert(type(payload.ball) == "string", "capture throws name their ball")
-  local ball = itemName(self, payload.ball --[[@as string]])
-  -- subscript_0011_ThrowBall: msg_0197_00857 names the throwing trainer.
+  local ballKey = payload.ball --[[@as string]]
+  local ball = itemName(self, ballKey)
+  -- subscript_0011_ThrowBall: msg_0197_00857 names the throwing trainer and
+  -- finishes before StartCatchMonTask launches the ball with SEQ_SE_DP_THROW.
   local who = assert(self._playerName, "capture narration carries the player trainer name")
   enqueueMessage(self, messageText(self, "battle/narration/throw-ball", { who, ball }), false, 0)
+  enqueue(self, { kind = "sound", cue = effectCue(BattleAudio.SINK_SOUNDS.throw), duration = 0 })
+  if payload.blocked == true then
+    -- STATE_GET_POKEMON_CHECK_IF_TRAINER: once the throw arc ends a trainer's
+    -- Pokemon deflects the ball with SEQ_SE_DP_KON, the ball bounces away,
+    -- then msg_0197_00859 and 00860 print.
+    local target = ballThrowTarget(self, event)
+    local throw = {
+      kind = "ball-flight",
+      selector = "ball:" .. ballKey,
+      startX = BALL_THROW_START_X,
+      startY = BALL_THROW_START_Y,
+      targetX = target.x,
+      targetY = target.y,
+      arcHeight = BALL_THROW_ARC_HEIGHT,
+      motionTicks = BALL_THROW_MOTION_TICKS,
+      leadTicks = BALL_THROW_LEAD_TICKS,
+      duration = BALL_THROW_TICKS,
+      hideAtEnd = false,
+      requiresImage = "battle-ball:" .. ballKey .. ":0",
+    }
+    enqueue(self, throw)
+    enqueue(self, { kind = "sound", cue = ballCue(BattleAudio.SINK_SOUNDS.ballBounce1), duration = 0 })
+    local landedX, landedY = ballArcPoint(throw, BALL_THROW_MOTION_TICKS)
+    enqueue(self, {
+      kind = "ball-flight",
+      selector = throw.selector,
+      startX = landedX,
+      startY = landedY,
+      targetX = BALL_DEFLECT_TARGET_X,
+      targetY = BALL_DEFLECT_TARGET_Y,
+      arcHeight = BALL_DEFLECT_ARC_HEIGHT,
+      motionTicks = BALL_DEFLECT_MOTION_TICKS,
+      leadTicks = BALL_DEFLECT_LEAD_TICKS,
+      duration = BALL_DEFLECT_TICKS,
+      hideAtEnd = true,
+    })
+    enqueueMessage(self, messageText(self, "battle/narration/ball-blocked", {}), false)
+    enqueueMessage(self, messageText(self, "battle/narration/no-stealing", {}), false)
+    return
+  end
   -- Task_GetPokemon draws the target into the ball before any shake.
   local target = captureTargetOf(self, event)
   if target ~= nil then
     self._inBall = target
+    -- BtlCmd_ThrowPokeball opens the ball with SEQ_SE_DP_BOWA4 at the
+    -- throw's end.
+    enqueue(self, { kind = "sound", cue = ballCue(BattleAudio.SINK_SOUNDS.captureOpen), duration = 0 })
+    -- STATE_GET_POKEMON_CALCULATE_SHAKES counts 23 frames before the
+    -- target enters the ball.
+    enqueue(self, { kind = "wait", duration = 23 })
     enqueue(self, {
       kind = "withdraw",
       combatant = target,
       duration = BattleTimeline.VANISH_TICKS,
       requiresImage = self:_imageKeyFor(target),
     })
+    -- sBallThrowBounceSounds: frames 1, 8, 14, 18 and 20 of the ground bounce.
+    local previous = 0
+    for _, bounce in ipairs(BALL_BOUNCE_SOUNDS) do
+      if bounce.frame > previous then
+        enqueue(self, { kind = "wait", duration = bounce.frame - previous })
+      end
+      previous = bounce.frame
+      enqueue(self, { kind = "sound", cue = ballCue(bounce.symbol), duration = 0 })
+    end
   end
 end
 
@@ -2261,12 +2549,16 @@ end
 local function translateShake(self, event)
   local _ = event
   -- The source shakes the ball with its sound only; no line prints.
+  -- BallThrow_CaptureStateShakeWait holds 14 frames, the wobble sounds
+  -- BOWA on its fifth frame and ends on its twelfth, and
+  -- STATE_GET_POKEMON_BALL_SHAKE_DECREMENT then waits 12 frames.
+  enqueue(self, { kind = "wait", duration = 20 })
   enqueue(self, {
     kind = "sound",
-    cue = effectCue(BattleAudio.SINK_SOUNDS.shake),
+    cue = ballCue(BattleAudio.SINK_SOUNDS.shake),
     duration = 0,
   })
-  enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
+  enqueue(self, { kind = "wait", duration = 19 })
 end
 
 ---@param self BattleTimeline
@@ -2644,14 +2936,18 @@ function BattleTimeline:intro(view, wild)
   -- after "Go!".
   self._foeHpMark = foeHealthAt(self, nil)
   local trainerSlides, trainerTracks = openingTrainerSlides(view, wild)
+  local terrainSlides, terrainTracks = openingTerrainSlides()
   self._openingPresentation = {
     playerTrainerVisible = true,
     foeTrainerVisible = not wild,
     playerGaugeVisible = false,
     enemyGaugeVisible = false,
     trainerSlides = trainerSlides,
+    terrainSlides = terrainSlides,
   }
   self._trainerSlideTracks = trainerTracks
+  self._terrainSlideTracks = terrainTracks
+  self._wildIntroTrack = nil
   for _, battler in ipairs(self:battlers()) do
     local shown = self:_shown(battler.combatant --[[@as integer]])
     if shown ~= nil then
@@ -2660,14 +2956,30 @@ function BattleTimeline:intro(view, wild)
     end
   end
   if wild then
-    enqueue(self, { kind = "wait", duration = 122 })
+    local wildFoe = assert(foeRecord, "wild openings carry one foe") --[[@as table<string, unknown>]]
+    if type(wildFoe.combatant) == "number" then
+      local foeCombatant = wildFoe.combatant --[[@as integer]]
+      local shownFoe = self:_shown(foeCombatant)
+      if shownFoe ~= nil then
+        shownFoe.visible = true
+        shownFoe.pictureXOffset = -272
+        shownFoe.paletteFade = { applied = true, targetColor = 0, intensity = 8 }
+        self._wildIntroTrack = {
+          combatant = foeCombatant,
+          delay = 28,
+          elapsed = 0,
+          x = -80,
+          targetX = 192,
+          speed = 8,
+          arrived = false,
+          fadeElapsed = 0,
+        }
+      end
+    end
+    enqueue(self, { kind = "wait", duration = 61 })
     if type(foeSpecies) == "string" then
       enqueue(self, { kind = "sound", cue = cryCue(foeSpecies, foeForm, true), duration = 0 })
     end
-    local wildFoe = foeRecord --[[@as table<string, unknown>]]
-    assert(type(wildFoe) == "table", "wild openings carry one foe")
-    assert(type(wildFoe.combatant) == "number", "wild openings carry one foe")
-    enqueueReveal(self, wildFoe.combatant)
     enqueueEncounterMessage(self, true, foeName)
   else
     enqueue(self, { kind = "wait", duration = 96 })
@@ -2746,6 +3058,73 @@ local function tickTrainerSlides(self)
         end
         slide.x = nextX
         track.elapsed = track.elapsed + 1
+      end
+    end
+  end
+end
+
+---@param self BattleTimeline
+local function tickTerrainSlides(self)
+  local presentation = self._openingPresentation
+  if presentation == nil then
+    return
+  end
+  local slides = presentation.terrainSlides --[[@as table<integer, table<string, unknown>>]]
+  for index, track in ipairs(self._terrainSlideTracks) do
+    local slide = assert(slides[index], "terrain slide tracks stay aligned with their published positions")
+    if slide.visible == true and slide.phase ~= "intro-settle" then
+      if track.elapsed < track.delay then
+        track.elapsed = track.elapsed + 1
+      else
+        local x = assert(type(slide.x) == "number" and slide.x, "terrain slides carry source x positions")
+        local nextX = x + track.direction * track.speed
+        if (track.direction < 0 and nextX <= track.targetX) or (track.direction > 0 and nextX >= track.targetX) then
+          nextX = track.targetX
+          slide.phase = "intro-settle"
+        else
+          slide.phase = "intro-slide"
+        end
+        slide.x = nextX
+        track.elapsed = track.elapsed + 1
+      end
+    end
+  end
+end
+
+---@param self BattleTimeline
+local function tickWildIntro(self)
+  local track = self._wildIntroTrack
+  if track == nil then
+    return
+  end
+  local shown = self:_shown(track.combatant)
+  assert(shown ~= nil, "the wild intro track keeps its foe installed")
+  if not track.arrived then
+    if track.elapsed < track.delay then
+      track.elapsed = track.elapsed + 1
+      return
+    end
+    track.x = math.min(track.x + track.speed, track.targetX)
+    shown.pictureXOffset = track.x - track.targetX
+    if track.x == track.targetX then
+      track.arrived = true
+      track.fadeElapsed = 0
+    end
+    return
+  end
+  if track.fadeElapsed < 8 then
+    track.fadeElapsed = track.fadeElapsed + 1
+    shown.paletteFade = {
+      applied = true,
+      targetColor = 0,
+      intensity = 8 - track.fadeElapsed,
+    }
+    if track.fadeElapsed == 8 then
+      shown.hudVisible = true
+      local presentation = assert(self._openingPresentation, "the wild intro keeps its opening terrain")
+      local slides = presentation.terrainSlides --[[@as table<integer, table<string, unknown>>]]
+      for _, slide in ipairs(slides) do
+        slide.visible = false
       end
     end
   end
@@ -2855,8 +3234,21 @@ local function startCue(self, cue)
       x = cue.startX,
       y = cue.startY,
       frame = 0,
+      rotation = 0,
       visible = true,
     }
+  elseif cue.kind == "ball-flight" then
+    local state = self._openingPresentation
+    if state ~= nil then
+      state.ballThrow = {
+        selector = cue.selector,
+        x = cue.startX,
+        y = cue.startY,
+        frame = 0,
+        rotation = 0,
+        visible = true,
+      }
+    end
   elseif cue.kind == "sound" then
     emitSound(self, cue.cue --[[@as table<string, unknown>]])
   elseif cue.kind == "exp" then
@@ -2894,6 +3286,19 @@ local function startCue(self, cue)
     end
   elseif cue.kind == "reveal" then
     self:_installReveal(cue.combatant --[[@as integer]])
+    if cue.holdHud == true then
+      local arriving = self:_shown(cue.combatant --[[@as integer]])
+      if arriving ~= nil then
+        arriving.hudVisible = false
+      end
+    end
+  elseif cue.kind == "hud-slide" then
+    -- HealthbarSlideIn starts the box off-screen on its own edge.
+    local sliding = self:_shown(cue.combatant --[[@as integer]])
+    if sliding ~= nil then
+      sliding.hudVisible = true
+      sliding.hudOffsetX = cue.direction == "in" and (sliding.side == 1 and 160 or -160) or 0
+    end
   elseif cue.kind == "native-effect" then
     -- Admission already demanded the effect; the first visit only
     -- retries the demand when admission never ran it.
@@ -3054,6 +3459,61 @@ local function tickHealthBoxExit(self, cue)
   return false
 end
 
+-- Task_RecallPokemon / Task_PokemonSendOut picture poof for one tick: the
+-- recall fades the picture to the ball color (0 -> 16, one step per tick)
+-- then shrinks it by 32/256 per tick; the send-out grows the picture from
+-- zero while the fade holds 16, then fades back (16 -> 0).
+-- Pokepic_SetYOffsetForAffineHeight keeps the picture on its row while it
+-- scales; the send-out measures it by the shadow height, the recall by the
+-- picture height.
+---@param self BattleTimeline
+---@param cue table<string, unknown> withdraw or reveal cue carrying its fade color
+---@param shown table<string, unknown> displayed battler under the poof
+---@param entering boolean true for the send-out, false for the recall
+function tickBallPoof(self, cue, shown, entering)
+  local elapsed = cue.elapsed --[[@as integer]]
+  local fadeTicks = BattleTimeline.BALL_FADE_TICKS
+  local scaleTicks = BattleTimeline.BALL_SCALE_TICKS
+  local intensity, affine
+  if entering then
+    -- Affine 0 on the first tick, full size once the eight steps are added.
+    affine = math.min(0x100, 0x20 * (elapsed - 1))
+    intensity = elapsed <= scaleTicks + 1 and 16 or math.max(0, 16 - (elapsed - scaleTicks - 1))
+    shown.visible = true
+  else
+    intensity = math.min(16, elapsed - 1)
+    affine = elapsed <= fadeTicks and 0x100 or math.max(0, 0x100 - 0x20 * (elapsed - fadeTicks))
+  end
+  if
+    elapsed >= cue.duration --[[@as integer]]
+  then
+    shown.paletteFade = nil
+    shown.affineMode = nil
+    shown.affineWidth = nil
+    shown.affineHeight = nil
+    shown.pictureYOffset = nil
+    return
+  end
+  shown.paletteFade = { applied = true, targetColor = cue.fadeColor, intensity = intensity }
+  if affine < 0x100 then
+    if cue.rowHeight == nil then
+      local appearance = self._faintAppearance and self._faintAppearance(shown) or nil
+      local height = appearance and (entering and appearance.shadowHeight or appearance.height) or 0
+      cue.rowHeight = 40 - height
+    end
+    local lift = cue.rowHeight --[[@as number]]
+    shown.affineMode = true
+    shown.affineWidth = affine
+    shown.affineHeight = affine
+    shown.pictureYOffset = lift - math.floor(lift * affine / 0x100)
+  else
+    shown.affineMode = nil
+    shown.affineWidth = nil
+    shown.affineHeight = nil
+    shown.pictureYOffset = nil
+  end
+end
+
 ---@param self BattleTimeline
 ---@param cue table<string, unknown> active cue under advancement
 ---@param soundComplete (fun(cue: table<string, unknown>): boolean)? held sound cue completion probe
@@ -3101,6 +3561,23 @@ local function tickCue(self, cue, soundComplete)
       return true
     end
     return false
+  elseif cue.kind == "ball-flight" then
+    local elapsed = cue.elapsed --[[@as integer]]
+    local duration = cue.duration --[[@as integer]]
+    local motionTicks = cue.motionTicks --[[@as integer]]
+    local lead = cue.leadTicks --[[@as integer]]
+    local n = math.min(motionTicks, math.max(0, elapsed - lead))
+    local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+    if ball ~= nil then
+      ball.x, ball.y = ballArcPoint(cue, n)
+      -- Each update spins the ball 45 degrees; the frame after the last
+      -- update resets the rotation.
+      ball.rotation = elapsed <= lead + motionTicks and (n * 0x2000) % 0x10000 or 0
+      if elapsed >= duration and cue.hideAtEnd == true then
+        ball.visible = false
+      end
+    end
+    return elapsed >= duration
   elseif cue.kind == "wait" then
     local elapsed = cue.elapsed --[[@as integer]]
     local duration = cue.duration --[[@as integer]]
@@ -3169,24 +3646,57 @@ local function tickCue(self, cue, soundComplete)
       return true
     end
     return false
+  elseif cue.kind == "hud-slide" then
+    -- BattleHpBar_StartSlide/Task_BattleHpBarSlide: 24 px per frame; the
+    -- player boxes travel 160 px to the right edge, the foe boxes 24 px left.
+    local sliding = self:_shown(cue.combatant --[[@as integer]])
+    if sliding == nil then
+      return true
+    end
+    local player = sliding.side == 1
+    local offset = (
+      sliding.hudOffsetX --[[@as integer?]]
+      or 0
+    )
+    if cue.direction == "in" then
+      offset = player and math.max(0, offset - 24) or math.min(0, offset + 24)
+      sliding.hudOffsetX = offset
+      return offset == 0
+    end
+    offset = player and math.min(160, offset + 24) or math.max(-24, offset - 24)
+    sliding.hudOffsetX = offset
+    if offset == (player and 160 or -24) then
+      sliding.hudVisible = false
+      return true
+    end
+    return false
   elseif cue.kind == "withdraw" then
+    local shown = self:_shown(cue.combatant --[[@as integer]])
+    if shown ~= nil and cue.fadeColor ~= nil then
+      tickBallPoof(self, cue, shown, false)
+    end
     if
       cue.elapsed --[[@as integer]]
-      >= BattleTimeline.VANISH_TICKS
+      >= cue.duration --[[@as integer]]
     then
-      local shown = self:_shown(cue.combatant --[[@as integer]])
       if shown ~= nil then
         shown.visible = false
+        if cue.keepHud == true then
+          shown.hudVisible = true
+        end
       end
       return true
     end
     return false
   elseif cue.kind == "reveal" then
+    local shown = self:_shown(cue.combatant --[[@as integer]])
+    if shown ~= nil and cue.fadeColor ~= nil then
+      tickBallPoof(self, cue, shown, true)
+    end
     if
       cue.elapsed --[[@as integer]]
-      >= BattleTimeline.VANISH_TICKS
+      >= cue.duration --[[@as integer]]
     then
-      local shown = self:_shown(cue.combatant --[[@as integer]])
       if shown ~= nil then
         shown.visible = true
       end
@@ -3256,6 +3766,8 @@ function BattleTimeline:update(dt, isAvailable, soundComplete)
       local nextSound = next.kind == "sound" and next.cue or nil
       if type(nextSound) == "table" and nextSound.waitForVoice == true and soundComplete ~= nil then
         self._accum = self._accum - step
+        tickTerrainSlides(self)
+        tickWildIntro(self)
         if math.abs(self._accum) < SOURCE_TICK_EPSILON then
           self._accum = 0
         end
@@ -3265,6 +3777,8 @@ function BattleTimeline:update(dt, isAvailable, soundComplete)
         self._active = nil
       else
         self._accum = self._accum - step
+        tickTerrainSlides(self)
+        tickWildIntro(self)
         if math.abs(self._accum) < SOURCE_TICK_EPSILON then
           self._accum = 0
         end
@@ -3287,12 +3801,16 @@ function BattleTimeline:update(dt, isAvailable, soundComplete)
           break
         end
         self._accum = self._accum - step
+        tickTerrainSlides(self)
+        tickWildIntro(self)
         if math.abs(self._accum) < SOURCE_TICK_EPSILON then
           self._accum = 0
         end
         self._active = nil
       else
         self._accum = self._accum - step
+        tickTerrainSlides(self)
+        tickWildIntro(self)
         if math.abs(self._accum) < SOURCE_TICK_EPSILON then
           self._accum = 0
         end
@@ -3413,7 +3931,7 @@ function BattleTimeline:battlers()
   return out
 end
 
----@return table<string, boolean>? detached visibility facts for the current intro stage
+---@return table<string, unknown>? detached visibility facts for the current intro stage
 function BattleTimeline:openingPresentation()
   return self._openingPresentation ~= nil and copyValue(self._openingPresentation) or nil
 end

@@ -53,14 +53,16 @@ local MOVE_ROW_HEIGHT = 28
 local MOVE_LABEL_WIDTH = 79
 local MOVE_BACK_RECT = { x = 200, y = 164, width = 48, height = 20 }
 local MOVE_BACK_LABEL = { x = 204, y = 166 }
-local MOVE_INFO_TEXT_X = 202
-local MOVE_INFO_TYPE_Y = 130
-local MOVE_INFO_PP_Y = 148
-local MOVE_INFO_MAX_WIDTH = 44
--- Planning advance per character for move information text. The draw path
--- re-fits with the live text service; this estimate keeps ordinary type
--- and PP representations on one row without a text boundary at resolve.
-local MOVE_INFO_ADVANCE = 6
+-- Each move cell stacks the name over a retail-sized 32x16 type icon row
+-- (sTypeIconPositions) with the PP readout right of the icon.
+local MOVE_NAME_DY = 2
+local MOVE_ICON_DX = 8
+local MOVE_ICON_DY = 11
+local MOVE_ICON_WIDTH = 32
+local MOVE_ICON_HEIGHT = 16
+local MOVE_PP_DX = 44
+local MOVE_PP_DY = 15
+local MOVE_PP_WIDTH = 42
 local TARGET_FIRST_Y = 130
 local TARGET_ROW_HEIGHT = 16
 local TARGET_ROW_X = 12
@@ -110,72 +112,6 @@ local function contentOf(outer)
     y = outer.y + insets.top + 1,
     width = outer.width - insets.left - insets.right,
     height = outer.height - insets.top - insets.bottom - 2,
-  }
-end
-
----@param text string label wording under fitting
----@param maxWidth number region width under fitting
----@return string label fitting its region under the planning advance
-local function fitPlanning(text, maxWidth)
-  local label = tostring(text)
-  local glyphs = {}
-  for char in Utf8Glyphs.iter(label) do
-    glyphs[#glyphs + 1] = char
-  end
-  while #glyphs > 1 and #glyphs * MOVE_INFO_ADVANCE > maxWidth do
-    glyphs[#glyphs] = nil
-    label = table.concat(glyphs)
-  end
-  return label
-end
-
----@param view table<string, unknown> internal semantic snapshot under resolution
----@return table<string, unknown>? named move entry behind the current selection
-local function selectedMove(view)
-  local moves = {}
-  if type(view.moves) == "table" then
-    for _, move in ipairs(view.moves) do
-      if type(move) == "table" and type(move.slot) == "number" and type(move.name) == "string" then
-        moves[move.slot] = move
-      end
-    end
-  end
-  local slot = nil
-  if type(view.selection) == "string" then
-    slot = tonumber((view.selection --[[@as string]]):match("^move:(%d+)$") or "")
-  end
-  if slot ~= nil and moves[slot] ~= nil then
-    return moves[slot]
-  end
-  for index = 0, 3 do
-    if moves[index] ~= nil then
-      return moves[index]
-    end
-  end
-  return nil
-end
-
----@param view table<string, unknown> internal semantic snapshot under resolution
----@return table<string, unknown> typed move information rows for the information panel
-local function moveInfo(view)
-  local entry = selectedMove(view)
-  local moveType = "---"
-  local ppText = "--/--"
-  if entry ~= nil then
-    if type(entry.moveType) == "string" and entry.moveType ~= "" then
-      moveType = entry.moveType --[[@as string]]
-    end
-    ppText = tostring(entry.pp or "--") .. "/" .. tostring(entry.maxPp or "--")
-  end
-  local typeText = fitPlanning(moveType, MOVE_INFO_MAX_WIDTH)
-  local fittedPp = fitPlanning(ppText, MOVE_INFO_MAX_WIDTH)
-  return {
-    typeRowY = MOVE_INFO_TYPE_Y,
-    ppRowY = MOVE_INFO_PP_Y,
-    typeText = typeText,
-    ppText = fittedPp,
-    typeWidth = #typeText * MOVE_INFO_ADVANCE,
-    ppWidth = #fittedPp * MOVE_INFO_ADVANCE,
   }
 end
 
@@ -697,12 +633,17 @@ function BattleCompactInterface.contentFor(view)
     cursors[#cursors + 1] = { x = x, y = y + 2 }
   end
   local moveLabels = {}
+  local moveSlots = {}
   for index = 1, 4 do
     local column = (index - 1) % 2
     local row = math.floor((index - 1) / 2)
     local cellX = MOVE_GRID_X + column * MOVE_COLUMN_WIDTH
     local cellY = MOVE_GRID_TOP + row * MOVE_ROW_HEIGHT
-    moveLabels[#moveLabels + 1] = { x = cellX + 8, y = cellY + 6, width = MOVE_LABEL_WIDTH, height = 16 }
+    moveSlots[#moveSlots + 1] = {
+      icon = { x = cellX + MOVE_ICON_DX, y = cellY + MOVE_ICON_DY, width = MOVE_ICON_WIDTH, height = MOVE_ICON_HEIGHT },
+      pp = { x = cellX + MOVE_PP_DX, y = cellY + MOVE_PP_DY, width = MOVE_PP_WIDTH },
+    }
+    moveLabels[#moveLabels + 1] = { x = cellX + 8, y = cellY + MOVE_NAME_DY, width = MOVE_LABEL_WIDTH, height = 16 }
   end
   local childPlan = nil
   if mode == "child" and type(view.childView) == "table" then
@@ -737,7 +678,7 @@ function BattleCompactInterface.contentFor(view)
       rect = copyRect(MOVE_BACK_RECT),
       label = { x = MOVE_BACK_LABEL.x, y = MOVE_BACK_LABEL.y },
     },
-    moveInfo = moveInfo(view),
+    moveSlots = moveSlots,
     moveLabels = moveLabels,
     child = childPlan,
     targetBox = contentOf(TARGET_OUTER),
@@ -1128,6 +1069,35 @@ local function drawCommandDock(resources, view, content)
 end
 
 ---@param resources table<string, unknown> borrowed application collaborators
+---@param entry table<string, unknown> move facts under drawing
+---@param box table<string, number> the 32x16 icon cell the sprite centers on
+local function drawMoveTypeIcon(resources, entry, box)
+  if type(entry.moveType) ~= "string" or entry.moveType == "" then
+    return
+  end
+  local assets = assert(resources.assets, "the compact render borrows its icon assets")
+  local icon = assets:drawable("battle:move-type-icon:" .. entry.moveType:lower())
+  if icon == nil then
+    return
+  end
+  local width, height
+  if type(icon.getDimensions) == "function" then
+    width, height = icon:getDimensions()
+  else
+    width, height = icon.width, icon.height
+  end
+  assert(type(width) == "number" and type(height) == "number", "move-type icons carry measurable extents")
+  local offset = icon.offset --[[@as table<string, number>?]]
+  local x = box.x + math.floor((box.width - width) / 2) + (offset and offset.x or 0)
+  local y = box.y + math.floor((box.height - height) / 2) + (offset and offset.y or 0)
+  if type(icon.draw) == "function" then
+    icon:draw(resources.graphics, x, y)
+  else
+    resources.graphics.draw(icon, x, y)
+  end
+end
+
+---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot under drawing
 ---@param content table<string, unknown> canonical compact plan content under drawing
 local function drawMoveDock(resources, view, content)
@@ -1154,12 +1124,22 @@ local function drawMoveDock(resources, view, content)
       if view.selection == "move:" .. tostring(slot) then
         label = fitText(text, CURSOR .. " " .. entry.name, MOVE_LABEL_WIDTH)
       end
-      drawLabel(text, label, MOVE_GRID_X + 8 + column * MOVE_COLUMN_WIDTH, MOVE_GRID_TOP + 6 + row * MOVE_ROW_HEIGHT)
+      drawLabel(
+        text,
+        label,
+        MOVE_GRID_X + 8 + column * MOVE_COLUMN_WIDTH,
+        MOVE_GRID_TOP + MOVE_NAME_DY + row * MOVE_ROW_HEIGHT
+      )
+      local geometry = content.moveSlots[slot + 1]
+      drawMoveTypeIcon(resources, entry, geometry.icon)
+      drawLabel(
+        text,
+        fitText(text, tostring(entry.pp or "--") .. "/" .. tostring(entry.maxPp or "--"), geometry.pp.width),
+        geometry.pp.x,
+        geometry.pp.y
+      )
     end
   end
-  local info = content.moveInfo
-  drawLabel(text, fitText(text, info.typeText, MOVE_INFO_MAX_WIDTH), MOVE_INFO_TEXT_X, info.typeRowY)
-  drawLabel(text, fitText(text, info.ppText, MOVE_INFO_MAX_WIDTH), MOVE_INFO_TEXT_X, info.ppRowY)
   drawLabel(text, "BACK", MOVE_BACK_LABEL.x, MOVE_BACK_LABEL.y)
   local acting = BattleViewRoster.actingName(view)
   if acting ~= nil then

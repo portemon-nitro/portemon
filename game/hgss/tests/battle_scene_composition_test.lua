@@ -227,6 +227,9 @@ local function drawnDetail(view, opts)
         if key == "mon:LEAD/0/male/plain/back" and opts.pictureFrames ~= nil then
           return { frames = opts.pictureFrames }
         end
+        if key == "shadow" and opts.indexedShadow == true then
+          return { image = stagedDrawable(key), palette = opts.shadowPalette, kind = "r8" }
+        end
         return stagedDrawable(key)
       end,
       background = function(_, raster)
@@ -244,6 +247,23 @@ local function drawnDetail(view, opts)
   resources.assets.renderPictures = pictureRenderer(graphics, opts)
   BattleRenderer.drawPane(resources, view, "detail", {})
   return graphics
+end
+
+-- Indexed shadows keep their staged palette and representation through
+-- the renderer submission consumed by the GPU picture pass.
+function T.indexed_shadow_submission_carries_its_palette()
+  local palette = { handle = "shadow-palette" }
+  local graphics = drawnDetail(snapshot(), { indexedShadow = true, shadowPalette = palette })
+  local shadow = nil
+  for _, picture in ipairs(graphics.pictureItems) do
+    if picture.kind == "shadow" then
+      shadow = picture
+      break
+    end
+  end
+  Assert.notNil(shadow, "the visible battler submits its shadow plane")
+  Assert.equal(shadow.palette, palette, "the indexed shadow carries the exact staged palette")
+  Assert.equal(shadow.imageKind, "r8", "the shadow carries its indexed representation")
 end
 
 -- Printer digit tiles one health-box strip draws on one row, as

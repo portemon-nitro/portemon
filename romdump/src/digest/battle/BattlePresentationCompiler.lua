@@ -961,6 +961,8 @@ end
 ---@field layerPayloads BattlePresentationCompiler.ScenePayloads[]
 ---@field buildMetadata BattlePresentationCompiler.SceneBuildMetadata
 ---@field image string RGBA pixels for the static PNG optimization
+---@field introImage string RGBA pixels for the unbaked BG3 intro layer
+---@field terrainSpritePixels table<string, string> RGBA pixels keyed by player/foe
 
 -- Compile the source-selected per-species height and facing animation data
 -- into semantic keys. Physical member identities remain in the source
@@ -1193,14 +1195,19 @@ local function compileTrainerPicture(archive, memberBase, label)
   local offsets = sources.memberOffsets
   local charData = decodeChars(archive, memberBase + offsets.character, label .. " characters")
   local paletteData = decodePalette(archive, memberBase + offsets.palette, label .. " palette")
-  local cellData = decodeCells(archive, memberBase + offsets.cell, label .. " cells")
+  local cellMember = memberBase + offsets.cell
+  local cellBytes = decodeMember(archive, cellMember, label .. " cells")
+  local cellData, cellErr = G2dDecoder.decodeCell(cellBytes, { label = label .. " cells" })
+  cellData = mustDecode(cellData, cellErr, label .. " cells", cellMember)
+  local mapping, mappingErr = G2dDecoder.decodeCellMapping(cellBytes, { label = label .. " cells" })
+  mapping = mustDecode(mapping, mappingErr, label .. " cell mapping", cellMember)
   local animationData = decodeAnimation(archive, memberBase + offsets.animation, label .. " animation")
   local animation = assert(animationData.anims[1], "trainer picture has its source animation")
   local raster = G2dRasterizer.renderAnimationFrame(charData, paletteData, cellData, animation, 1, {
     asset = "trainer-pictures",
     member = memberBase + offsets.animation,
     role = label,
-  })
+  }, nil, mapping)
   if raster.width > 128 or raster.height > 128 then
     error(
       Errors.new("BATTLE_TRAINER_PICTURE_INVALID", "trainer picture exceeds the supported raster bounds", {
@@ -1329,12 +1336,12 @@ local function decodeTriple(archive, role, palette, label, normalizeObjTiles)
   return { anims = animation.anims, cells = cells.cells, chars = chars, palette = palette }
 end
 
----@param anim { frames: { cell: integer, duration: integer }[], playMode: string, loopStartFrameIdx: integer } decoded animation
+---@param anim { frames: { cell: integer, duration: integer, translateX: integer, translateY: integer }[], playMode: string, loopStartFrameIdx: integer } decoded animation
 ---@return { playMode: string, loopStartFrameIdx: integer, frames: table[] }
 local function summarizeAnimation(anim)
   local frames = {}
   for _, frame in ipairs(anim.frames) do
-    frames[#frames + 1] = { cell = frame.cell, duration = frame.duration }
+    frames[#frames + 1] = { cell = frame.cell, duration = frame.duration, x = frame.translateX, y = frame.translateY }
   end
   return { playMode = anim.playMode, loopStartFrameIdx = anim.loopStartFrameIdx, frames = frames }
 end
@@ -2064,9 +2071,9 @@ end
 ---@class BattleGlobalStaging
 ---@field catalog table<string, { kind: string, contentIdentity: string, format: string, geometry: table<string, unknown>, path: string }>
 ---@field payloads table<string, unknown>
----@field trainerPictures table<string, { drawableKey: string, image: string, width: integer, height: integer }>? semantic trainer portrait entries during global compilation
+---@field trainerPictures table<string, { drawableKey: string, image: string, width: integer, height: integer, rasterOffset: { x: number, y: number } }>? semantic trainer portrait entries during global compilation
 ---@field trainerImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only trainer portrait pixels
----@field battleBalls table<string, { frames: { drawableKey: string, image: string, width: integer, height: integer }[] }>? semantic ball animation frames during global compilation
+---@field battleBalls table<string, { frames: { drawableKey: string, image: string, width: integer, height: integer }[], fadeColor: integer }>? semantic ball animation frames during global compilation
 ---@field ballImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only ball animation pixels
 
 ---@param staging BattleGlobalStaging
@@ -2456,6 +2463,17 @@ local function compileTransitionResources(romFs, staging)
     embeddedParticleResources = {},
   }
   stageTransitionTypedResources(staging, transitionArchive, transition)
+  local orders = Sources.WILD_CELL_GRID_ORDERS
+  local contentIdentity = Hashing.sha1hex(Hashing.hashLua(orders))
+  local orderKey = "transition/data/wild-cell-grid-orders/" .. contentIdentity
+  stageCatalogResource(staging, orderKey, {
+    kind = "transition-data",
+    contentIdentity = contentIdentity,
+    format = "hgss-wild-cell-grid-orders-v1",
+    geometry = { gridWidth = 8, gridHeight = 6, orderCount = 24 },
+  }, orders)
+  transition.sourceResources["wild-cell-orders"] = orderKey
+  transition.keySet[orderKey] = true
   stageTransitionParticles(staging, transitionArchive, transition)
   return transition
 end
@@ -2564,14 +2582,20 @@ end
 
 -- Replaces every source member in a route asset group with its catalog key.
 ---@param sourceResources table<string, string> catalog key by source identity
----@param group table<string, unknown> source asset group
+---@param group unknown source asset group or staged semantic resource key
 ---@param routeKey string route under normalization
----@return table<string, unknown> normalized group
+---@return unknown normalized group
 local function normalizeTransitionResourceGroup(sourceResources, group, routeKey)
+  if type(group) == "string" then
+    return assert(sourceResources[group], "transition route names a staged semantic resource")
+  end
+  assert(type(group) == "table", "transition route asset group is a table or semantic resource key")
   local normalized = {}
   for role, value in pairs(group) do
     if type(value) == "number" then
       normalized[role] = transitionResourceForRole(sourceResources, role, value, routeKey)
+    elseif type(value) == "string" then
+      normalized[role] = assert(sourceResources[value], "transition route names a staged semantic resource")
     elseif type(value) == "table" then
       local entries = {}
       for index, entry in ipairs(value) do
@@ -2601,6 +2625,7 @@ local TRANSITION_ROUTE_GROUPS = {
   "spriteVariants",
   "background",
   "sceneAssets",
+  "wildCellOrders",
 }
 
 -- Context inputs by semantic route family, matched by key prefix.
@@ -3480,7 +3505,7 @@ end
 -- supported scene inventory. Returns the verified manifest, the staged
 -- image buffers by slice name, and the producer provenance beside it.
 ---@param romFs RomFs
----@return table<string, { drawableKey: string, image: string, width: integer, height: integer }> entries keyed by semantic front/back selector
+---@return table<string, { drawableKey: string, image: string, width: integer, height: integer, rasterOffset: { x: number, y: number } }> entries keyed by semantic front/back selector
 ---@return table<string, { width: integer, height: integer, pixels: string }> image slices keyed by generated image name
 function BattlePresentationCompiler.compileTrainerPictures(romFs)
   local source = Sources.TRAINER_PICTURES
@@ -3505,6 +3530,7 @@ function BattlePresentationCompiler.compileTrainerPictures(romFs)
       image = BattlePresentationCache.globalImagePath(imageName),
       width = raster.width,
       height = raster.height,
+      rasterOffset = raster.offset,
     }
   end
   local backArchive = openArchive(romFs, source.backArchive, "player trainer portraits")
@@ -3523,17 +3549,45 @@ function BattlePresentationCompiler.compileTrainerPictures(romFs)
       image = BattlePresentationCache.globalImagePath(imageName),
       width = raster.width,
       height = raster.height,
+      rasterOffset = raster.offset,
     }
   end
   return entries, imageSlices
 end
 
+-- Reads sBallColors from the overlay image: one BGR555 word per ball id.
 ---@param romFs RomFs
----@return table<string, { frames: { drawableKey: string, image: string, width: integer, height: integer }[] }> entries keyed by semantic ball selector
+---@param source { cpu: string, overlayId: integer, address: integer, count: integer } table location
+---@return integer[] colors by ball id, zero-based ids stored at index id
+local function readBallFadeColors(romFs, source)
+  local bytes, info = romFs:readOverlay(source.cpu, source.overlayId)
+  if bytes == nil then
+    error(info, 0)
+  end
+  assert(info ~= nil, "overlay reads describe their image")
+  local offset = source.address - info.ramAddress --[[@as integer]]
+  if offset < 0 or offset + source.count * 2 > #bytes then
+    error(Errors.new("BATTLE_SOURCE_UNEXPECTED", "ball fade color table lies outside its overlay", {}), 0)
+  end
+  local colors = {}
+  for ballId = 0, source.count - 1 do
+    local low, high = string.byte(bytes, offset + ballId * 2 + 1, offset + ballId * 2 + 2)
+    local color = low + high * 0x100
+    if color >= 0x8000 then
+      error(Errors.new("BATTLE_SOURCE_UNEXPECTED", "ball fade color is not BGR555", { ballId = ballId }), 0)
+    end
+    colors[ballId] = color
+  end
+  return colors
+end
+
+---@param romFs RomFs
+---@return table<string, { frames: { drawableKey: string, image: string, width: integer, height: integer }[], fadeColor: integer }> entries keyed by semantic ball selector
 ---@return table<string, { width: integer, height: integer, pixels: string }> image slices keyed by generated image name
 function BattlePresentationCompiler.compileBattleBalls(romFs)
   local source = Sources.BALL_PICTURES
   local archive = openArchive(romFs, source.archive, "ball sprites")
+  local fadeColors = readBallFadeColors(romFs, source.fadeColors)
   local entries = {}
   local imageSlices = {}
   for itemKey, resource in pairs(source.entries) do
@@ -3541,7 +3595,11 @@ function BattlePresentationCompiler.compileBattleBalls(romFs)
     local label = "battle ball " .. itemKey
     local charData = decodeChars(archive, resource.characterMember, label .. " characters")
     local paletteData = decodePalette(archive, resource.paletteMember, label .. " palette")
-    local cellData = decodeCells(archive, resource.cellMember, label .. " cells")
+    local cellBytes = decodeMember(archive, resource.cellMember, label .. " cells")
+    local cellData, cellErr = G2dDecoder.decodeCell(cellBytes, { label = label .. " cells" })
+    cellData = mustDecode(cellData, cellErr, label .. " cells", resource.cellMember)
+    local mapping, mappingErr = G2dDecoder.decodeCellMapping(cellBytes, { label = label .. " cells" })
+    mapping = mustDecode(mapping, mappingErr, label .. " cell mapping", resource.cellMember)
     local animationData = decodeAnimation(archive, resource.animationMember, label .. " animation")
     local animation = assert(animationData.anims[1], label .. " has its source animation")
     local selector = "ball:" .. itemKey
@@ -3553,7 +3611,9 @@ function BattlePresentationCompiler.compileBattleBalls(romFs)
         cellData,
         animation,
         sourceFrameIndex,
-        { asset = "battle-balls", member = resource.animationMember, role = label, frame = sourceFrameIndex - 1 }
+        { asset = "battle-balls", member = resource.animationMember, role = label, frame = sourceFrameIndex - 1 },
+        nil,
+        mapping
       )
       local frameIndex = sourceFrameIndex - 1
       local imageName = "battle-ball-" .. itemKey .. "-" .. frameIndex
@@ -3567,7 +3627,7 @@ function BattlePresentationCompiler.compileBattleBalls(romFs)
       }
     end
     assert(#frames > 0, "ball animation exposes at least one rendered frame for ball " .. tostring(ballId))
-    entries[selector] = { frames = frames }
+    entries[selector] = { frames = frames, fadeColor = fadeColors[ballId] }
   end
   return entries, imageSlices
 end
@@ -3910,7 +3970,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       decodeTriple(sceneArchive, ROLES.enemyHudDoubleLeft, hudPalette, "enemy left doubled HUD", true)
     local enemyDoubleRightTriple =
       decodeTriple(sceneArchive, ROLES.enemyHudDoubleRight, hudPalette, "enemy right doubled HUD", true)
-    local arrowTriple = decodeTriple(sceneArchive, ROLES.arrow, lowerObjPalette, "player arrow")
+    local arrowTriple = decodeTriple(sceneArchive, ROLES.arrow, lowerObjPalette, "player arrow", true)
     checkArrow(arrowTriple)
     local playerHud = compileSprite(playerTriple, "hud-player-chars", "player HUD", nil, true)
     local enemyHud = compileSprite(enemyTriple, "hud-enemy-chars", "enemy HUD", nil, true)
@@ -4319,6 +4379,15 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       transitionMessageRoutes = Sources.TRANSITION_MESSAGE_SOURCE_ROUTES,
       messageDependencies = messages.dependencies,
       transitionResources = transition.provenance,
+      wildCellGridOrders = {
+        file = "asm/encounter_effect_wild_data.s",
+        symbols = {
+          rows = "gWildEffectCellGridRows",
+          rowsReverse = "gWildEffectCellGridRowsReverse",
+          diagonalsA = "gWildEffectCellGridDiagonalsA",
+          diagonalsB = "gWildEffectCellGridDiagonalsB",
+        },
+      },
       transitionSelectorFamilies = transitionSelectorFamilies,
       transitionSelectorRoutes = Sources.TRANSITION_SELECTOR_ROUTES,
       transitionPreselection = Sources.TRANSITION_PRESELECTION,
@@ -4399,7 +4468,7 @@ end
 
 -- Bake terrain type-1 over destination tiles x=16..31, y=20..27. The left
 -- 64-pixel chunk reads objY * 0x100 + objX * 0x20 + i / 2; the right chunk
--- adds the source 0x700 term first. A zero nibble leaves the destination
+-- adds 0x700 and keeps objX in 8..15. A zero nibble leaves the destination
 -- unchanged; any other nibble writes nibble + 0x70.
 ---@param dest integer[] destination 8bpp bytes
 ---@param cells string terrain 4bpp bytes
@@ -4410,7 +4479,6 @@ local function bakeType1(dest, cells)
       local base = 0
       if objX >= 8 then
         base = 0x700
-        objX = objX - 8
       end
       for i = 0, 63 do
         local byte = cellByte(cells, base + objY * 0x100 + objX * 0x20 + math.floor(i / 2))
@@ -4545,6 +4613,52 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
     for index, color in ipairs(terrainPalette.colors) do
       combined[0x70 + index] = { r = color.r, g = color.g, b = color.b }
     end
+    local introRaster = G2dRasterizer.renderScreen(
+      { depth = 4, tiles = baseChars.tiles },
+      { colors = combined },
+      screen,
+      { asset = Sources.LOWER_NARC, role = "battle intro BG3 " .. sceneKey },
+      { transparentZero = false }
+    )
+    local terrainSprites = {}
+    local terrainSpritePixels = {}
+    ---@type ("player"|"foe")[]
+    local terrainSides = { "player", "foe" }
+    for _, side in ipairs(terrainSides) do
+      local characterMember = assert(
+        side == "player" and terrain.playerChar or terrain.foeChar,
+        "scene terrain sprite has a source character member"
+      )
+      local cellMember = side == "player" and ROLES.terrainCells0 or ROLES.terrainCells1
+      local animationMember = side == "player" and ROLES.terrainAnim0 or ROLES.terrainAnim1
+      local label = parsed.terrain .. " " .. side .. " terrain OBJ"
+      local charData = decodeChars(sceneArchive, characterMember, label .. " characters")
+      local cellBytes = decodeMember(sceneArchive, cellMember, label .. " cells")
+      local cellData, cellErr = G2dDecoder.decodeCell(cellBytes, { label = label .. " cells" })
+      cellData = mustDecode(cellData, cellErr, label .. " cells", cellMember)
+      local mapping, mappingErr = G2dDecoder.decodeCellMapping(cellBytes, { label = label .. " cells" })
+      mapping = mustDecode(mapping, mappingErr, label .. " cell mapping", cellMember)
+      local animationData = decodeAnimation(sceneArchive, animationMember, label .. " animation")
+      local animation = assert(animationData.anims[1], label .. " has its source animation")
+      local spriteRaster = G2dRasterizer.renderAnimationFrame(
+        charData,
+        { colors = terrainPalette.colors },
+        cellData,
+        animation,
+        1,
+        { asset = Sources.SCENE_NARC, member = animationMember, role = label },
+        nil,
+        mapping
+      )
+      local spriteImagePath = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, side)
+      terrainSprites[side] = {
+        image = spriteImagePath,
+        width = spriteRaster.width,
+        height = spriteRaster.height,
+        origin = spriteRaster.offset,
+      }
+      terrainSpritePixels[side] = spriteRaster.pixels
+    end
     local raster = G2dRasterizer.renderScreen({ depth = 4, tiles = concatChars(dest) }, { colors = combined }, screen, {
       asset = Sources.LOWER_NARC,
       role = "persistent scene " .. sceneKey,
@@ -4582,6 +4696,12 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
       canvasHeight = raster.height,
       viewport = { x = 0, y = 0, width = 256, height = 192 },
       layers = { layer },
+      introLayer = {
+        image = BattlePresentationCache.sceneIntroImagePath(sceneKey),
+        width = introRaster.width,
+        height = introRaster.height,
+      },
+      terrainSprites = terrainSprites,
       layerPayloads = {
         {
           characters = concatChars(dest),
@@ -4600,6 +4720,12 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
           paletteMember = terrainMember,
           type0Member = terrain.type0,
           type1Member = terrain.type1,
+          playerCharacterMember = terrain.playerChar,
+          foeCharacterMember = terrain.foeChar,
+          playerCellMember = ROLES.terrainCells0,
+          playerAnimationMember = ROLES.terrainAnim0,
+          foeCellMember = ROLES.terrainCells1,
+          foeAnimationMember = ROLES.terrainAnim1,
         },
         palette = {
           archiveSymbol = Sources.LOWER_NARC,
@@ -4610,6 +4736,8 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
         screen = { archiveSymbol = Sources.LOWER_NARC, member = ROLES.backdropScreen },
       },
       image = raster.pixels,
+      introImage = introRaster.pixels,
+      terrainSpritePixels = terrainSpritePixels,
       imagePath = BattlePresentationCache.sceneImagePath(sceneKey),
     }
     local sceneOk, sceneErr = pcall(BattlePresentationSchema.assertScene, {
@@ -4623,6 +4751,8 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
       viewport = record.viewport,
       layers = record.layers,
       imagePath = record.imagePath,
+      introLayer = record.introLayer,
+      terrainSprites = record.terrainSprites,
     })
     if not sceneOk then
       error(
@@ -4714,6 +4844,10 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
   local stage = artifact:stageFs()
   artifact:addOwnedRoot(BattlePresentationCache.scenePath(scene.key))
   artifact:addOwnedRoot(BattlePresentationCache.sceneImagePath(scene.key))
+  artifact:addOwnedRoot(scene.introLayer.image)
+  for _, sprite in pairs(scene.terrainSprites) do
+    artifact:addOwnedRoot(sprite.image)
+  end
   artifact:addOwnedRoot(scene.layers[1].characters.path)
   artifact:addOwnedRoot(scene.layers[1].map.path)
   artifact:addOwnedRoot(scene.layers[1].palette.path)
@@ -4730,6 +4864,8 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
     viewport = scene.viewport,
     layers = scene.layers,
     imagePath = scene.imagePath,
+    introLayer = scene.introLayer,
+    terrainSprites = scene.terrainSprites,
   })
   local payload = assert(scene.layerPayloads[1], "the scene carries its BG3 payload")
   stage:write(scene.layers[1].characters.path, payload.characters)
@@ -4740,6 +4876,16 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
     BattlePresentationCache.sceneImagePath(scene.key),
     encodeImage(scene.image, scene.canvasWidth, scene.canvasHeight, scene.key)
   )
+  stage:write(
+    scene.introLayer.image,
+    encodeImage(scene.introImage, scene.introLayer.width, scene.introLayer.height, scene.key .. " intro")
+  )
+  for side, sprite in pairs(scene.terrainSprites) do
+    stage:write(
+      sprite.image,
+      encodeImage(scene.terrainSpritePixels[side], sprite.width, sprite.height, scene.key .. " terrain " .. side)
+    )
+  end
   stage:write(BattlePresentationCache.sceneMarkerPath(scene.key), marker)
   return marker
 end
@@ -4757,7 +4903,14 @@ function BattlePresentationCompiler.sceneMarker(romSha1, scene)
       canvasHeight = scene.canvasHeight,
       viewport = scene.viewport,
       layers = scene.layers,
+      introLayer = scene.introLayer,
+      terrainSprites = scene.terrainSprites,
       image = Hashing.sha1hex(scene.image),
+      introImage = Hashing.sha1hex(scene.introImage),
+      terrainSpritePixels = {
+        player = Hashing.sha1hex(scene.terrainSpritePixels.player),
+        foe = Hashing.sha1hex(scene.terrainSpritePixels.foe),
+      },
       layerPayloads = {
         {
           characters = Hashing.sha1hex(scene.layerPayloads[1].characters),

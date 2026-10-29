@@ -92,7 +92,56 @@ local function spriteSection(image)
         },
       },
     },
-    animation = { playMode = "forward_loop", loopStartFrameIdx = 0, frames = { { cell = 0, duration = 4 } } },
+    animation = {
+      playMode = "forward_loop",
+      loopStartFrameIdx = 0,
+      frames = { { cell = 0, duration = 4, x = 0, y = 0 } },
+    },
+    palette = { colors = { { r = 0, g = 0, b = 0 } } },
+  }
+end
+
+local function arrowSection(image)
+  local function cell(objs)
+    return { objs = objs }
+  end
+  local function obj(tile, width, x)
+    return {
+      x = x,
+      y = -8,
+      tile = tile,
+      width = width,
+      height = 16,
+      flipH = false,
+      flipV = false,
+      palette = 0,
+      shape = 0,
+      size = 1,
+      affine = false,
+      disabled = false,
+      objMode = "normal",
+      mosaic = false,
+      colorMode = "16-color",
+      priority = 0,
+    }
+  end
+  local cells = {
+    cell({}),
+    cell({ obj(0, 16, -8) }),
+    cell({ obj(4, 16, -8) }),
+    cell({ obj(8, 16, -16), obj(12, 8, 0) }),
+    cell({ obj(14, 16, -16), obj(18, 8, 0) }),
+    cell({ obj(20, 16, -16), obj(24, 8, 0) }),
+  }
+  local durations = { 0, 4, 4, 4, 16, 6 }
+  local frames = {}
+  for index, duration in ipairs(durations) do
+    frames[index] = { cell = index - 1, duration = duration, x = 0, y = 0 }
+  end
+  return {
+    image = image,
+    cells = cells,
+    animation = { playMode = "forward_loop", loopStartFrameIdx = 0, frames = frames },
     palette = { colors = { { r = 0, g = 0, b = 0 } } },
   }
 end
@@ -128,7 +177,11 @@ local function gaugeSection(image, cellSize)
       },
     }
   end
-  section.animation = { playMode = "forward_loop", loopStartFrameIdx = 0, frames = { { cell = 1, duration = 4 } } }
+  section.animation = {
+    playMode = "forward_loop",
+    loopStartFrameIdx = 0,
+    frames = { { cell = 1, duration = 4, x = 0, y = 0 } },
+  }
   return section
 end
 
@@ -227,7 +280,7 @@ local function manifest()
     end
   end
   local old = {
-    schema = "g4-battle-presentation-v7",
+    schema = "g4-battle-presentation-v8",
     version = { id = "soulsilver", language = "en" },
     scenes = {
       { key = "general/grass/day", background = "general", terrain = "grass", time = "day" },
@@ -274,7 +327,7 @@ local function manifest()
       enemyLeft = hudSection("assets/generated/battle/hud-doubles-enemy-left-chars.png", -28),
       enemyRight = hudSection("assets/generated/battle/hud-doubles-enemy-right-chars.png", -28),
     },
-    arrow = spriteSection("assets/generated/battle/arrow-chars.png"),
+    arrow = arrowSection("assets/generated/battle/arrow-chars.png"),
     cursor = spriteSection("assets/generated/battle/cursor-chars.png"),
     partyGauges = {
       gaugeSection("assets/generated/battle/gauges-0-chars.png", 16),
@@ -613,24 +666,28 @@ local function manifest()
           image = "assets/generated/battle/trainer-front-YOUNGSTER.png",
           width = 80,
           height = 80,
+          rasterOffset = { x = -40, y = -40 },
         },
         ["front:LEADER_FALKNER"] = {
           drawableKey = "trainer:front:LEADER_FALKNER",
           image = "assets/generated/battle/trainer-front-LEADER_FALKNER.png",
           width = 80,
           height = 80,
+          rasterOffset = { x = -40, y = -40 },
         },
         ["back:PKMN_TRAINER_ETHAN"] = {
           drawableKey = "trainer:back:PKMN_TRAINER_ETHAN",
           image = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png",
           width = 80,
           height = 80,
+          rasterOffset = { x = -40, y = -40 },
         },
       },
     },
     battleBalls = {
       entries = {
         ["ball:POKE_BALL"] = {
+          fadeColor = 0x7ADF,
           frames = {
             {
               drawableKey = "battle-ball:POKE_BALL:0",
@@ -978,6 +1035,8 @@ local function manifest()
         ["battle/narration/gotcha"] = messageRecord({ "Gotcha! ", false, " was caught!" }),
         ["battle/narration/caught-nickname-question"] = messageRecord({ "Give a nickname to the caught ", false, "?" }),
         ["battle/narration/throw-ball"] = messageRecord({ false, " used one ", false, "!" }),
+        ["battle/narration/ball-blocked"] = messageRecord({ "The Trainer blocked the Ball!" }),
+        ["battle/narration/no-stealing"] = messageRecord({ "Don't be a thief!" }),
         ["battle/narration/item-no-effect"] = messageRecord({ "It won’t do any good to use that!" }),
         ["battle/narration/item-could-not-be-used"] = messageRecord({ "Items can’t be used here." }),
         ["battle/narration/pp-restored"] = messageRecord({ "PP was restored." }),

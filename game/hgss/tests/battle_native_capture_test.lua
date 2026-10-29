@@ -202,14 +202,25 @@ function T.capture_choreography_emits_its_ordered_audio_intents()
   timeline:reset(openingView())
   Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
   drain(timeline, 3000)
-  Assert.isTrue(#sounds.played >= 1, "throw, shake and success sounds play through the ordered audio sink")
-  local fanfare = false
+  local order = {}
   for _, cue in ipairs(sounds.played) do
-    if type(cue) == "table" and cue.symbol == "SEQ_ME_POKEGET" and cue.kind == "fanfare" then
-      fanfare = true
+    if type(cue) == "table" and cue.kind ~= "cry" then
+      order[#order + 1] = cue.symbol
     end
   end
-  Assert.isTrue(fanfare, "capture plays the source fanfare so battle music pauses")
+  Assert.deepEqual(order, {
+    "SEQ_SE_DP_THROW",
+    "SEQ_SE_DP_BOWA4",
+    "SEQ_SE_DP_KON",
+    "SEQ_SE_DP_KON",
+    "SEQ_SE_DP_KON2",
+    "SEQ_SE_DP_KON3",
+    "SEQ_SE_DP_KON4",
+    "SEQ_SE_DP_BOWA",
+    "SEQ_SE_DP_BOWA",
+    "SEQ_SE_DP_BOWA",
+    "SEQ_ME_POKEGET",
+  }, "throw, open, ground bounces, one wobble per shake, then the jingle")
 end
 
 function T.capture_effects_run_through_the_animation_player()
