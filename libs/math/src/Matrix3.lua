@@ -12,6 +12,7 @@
 ---@field transform fun(m: Matrix3.Values, x: number, y: number, z: number): number, number, number
 ---@field modelNormal fun(model: Matrix4.Values): Matrix3.Values
 ---@field modelNormalInto fun(out: Matrix3.Values, model: Matrix4.Values): Matrix3.Values
+---@field tryModelNormalBufferInto fun(out: Matrix3.Values, transformBuffer: Matrix4.Buffer): boolean
 ---@field normalMatrix fun(model: Matrix4.Values, view: Matrix4.Values): Matrix3.Values
 
 local Matrix3 = {}
@@ -146,6 +147,47 @@ function Matrix3.modelNormalInto(out, model)
   out[8] = (m3 * m4 - m1 * m6) * invDet
   out[9] = (m1 * m5 - m2 * m4) * invDet
   return out
+end
+
+-- Model normal transform written into an existing 9-number table directly
+-- from a typed model-transform buffer: the same inverse-transpose of the
+-- 4x4 column-major linear component as modelNormalInto, without
+-- roundtripping the buffer through a Lua array. The buffer's `m` field is a
+-- zero-based 16-number column-major matrix; the caller keeps the owning
+-- buffer alive for the call. Translation has no effect. Returns true and
+-- overwrites `out` on a nonsingular transform; returns false and leaves
+-- `out` untouched when the determinant is below 1e-12.
+---@param out Matrix3.Values -- 9-number column-major output, overwritten on success only
+---@param transformBuffer Matrix4.Buffer -- typed 4x4 column-major model matrix
+---@return boolean -- true when `out` holds the inverse-transpose normal
+function Matrix3.tryModelNormalBufferInto(out, transformBuffer)
+  assert(type(out) == "table" and #out == 9, "tryModelNormalBufferInto requires a 9-number output table")
+  assert(
+    type(transformBuffer) == "cdata" and transformBuffer.m ~= nil,
+    "tryModelNormalBufferInto requires a typed matrix buffer"
+  )
+  local m = transformBuffer.m
+  local m1, m2, m3 = m[0], m[1], m[2]
+  local m4, m5, m6 = m[4], m[5], m[6]
+  local m7, m8, m9 = m[8], m[9], m[10]
+  local c1 = m5 * m9 - m6 * m8
+  local c2 = m2 * m9 - m3 * m8
+  local c3 = m2 * m6 - m3 * m5
+  local det = m1 * c1 - m4 * c2 + m7 * c3
+  if math.abs(det) < 1e-12 then
+    return false
+  end
+  local invDet = 1 / det ---@type number
+  out[1] = c1 * invDet
+  out[2] = (m6 * m7 - m4 * m9) * invDet
+  out[3] = (m4 * m8 - m5 * m7) * invDet
+  out[4] = (m3 * m8 - m2 * m9) * invDet
+  out[5] = (m1 * m9 - m3 * m7) * invDet
+  out[6] = (m2 * m7 - m1 * m8) * invDet
+  out[7] = c3 * invDet
+  out[8] = (m3 * m4 - m1 * m6) * invDet
+  out[9] = (m1 * m5 - m2 * m4) * invDet
+  return true
 end
 
 -- Normal matrix: inverse-transpose of the upper 3x3 of (view * model).
