@@ -222,6 +222,30 @@ function T.reusable_sampling_keeps_stable_storage_with_current_contents()
   Assert.deepEqual(second.scaleEx, expected.scaleEx)
 end
 
+-- Alternating targets with different constant/model channel sources into
+-- one scratch overwrites every channel: no constant, model-placeholder, or
+-- interpolated value from an earlier target may leak into the next sample.
+function T.alternating_targets_overwrite_every_channel_in_shared_scratch()
+  local AF = require("tests.support.AnimationFixture")
+  local _, _, clip = compileClip(AF.jntConstants(), "jntConstants")
+  local scratch = CompiledNsbcaSampler.newScratch()
+  local first = CompiledNsbcaSampler.sampleInto(scratch, clip, 0, 0)
+  Assert.isTrue(first == scratch.result)
+  local order = { 2, 0, 3, 1, 2, 1, 0, 3 }
+  for _, targetIndex in ipairs(order) do
+    for _, frameFx in ipairs({ 0, 2048, 4096 }) do
+      local reused = CompiledNsbcaSampler.sampleInto(scratch, clip, targetIndex, frameFx)
+      Assert.isTrue(reused == scratch.result, "shared scratch keeps its result identity")
+      local expected = CompiledNsbcaSampler.sample(clip, targetIndex, frameFx)
+      Assert.equal(reused.flags, expected.flags, "flags track the current target")
+      Assert.deepEqual(reused.trans, expected.trans, "translation tracks the current target")
+      Assert.deepEqual(reused.rot, expected.rot, "rotation tracks the current target")
+      Assert.deepEqual(reused.scale, expected.scale, "scale tracks the current target")
+      Assert.deepEqual(reused.scaleEx, expected.scaleEx, "inverse scale tracks the current target")
+    end
+  end
+end
+
 -- The compiled clip envelope: binding tracks carry the targets' node
 -- indices, and the source block is opaque provenance.
 function T.compiled_clip_envelope()
