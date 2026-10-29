@@ -1157,6 +1157,7 @@ function BattleScreenState.new(opts)
   end
   self._timeline = BattleTimeline.new({
     ballFadeColor = ballFadeColor,
+    trainerPictures = self._manifest.trainerPictures.entries,
     moveName = moveNameOf,
     speciesName = speciesNameOf,
     itemName = itemNameOf,
@@ -1727,8 +1728,14 @@ function BattleScreenState:_snapshot()
       local selector =
         assert(type(slide.selector) == "string" and slide.selector, "trainer slides name a staged picture")
       local entry = assert(trainerEntries[selector], "trainer slides resolve to staged picture metadata")
-      local offset = entry.rasterOffset
-      assert(type(offset) == "table", "trainer picture metadata includes its raster origin")
+      local frame = assert(type(slide.frame) == "number" and slide.frame, "trainer slides select a source frame")
+      local sourceSequence = assert(slide.sourceSequence, "trainer slides identify their source animation sequence")
+      local animationData = assert(entry.animation, "trainer picture metadata stages animation frames")
+      local animation = sourceSequence == 0 and animationData or animationData.sequences[sourceSequence + 1]
+      assert(animation ~= nil, "trainer slide sequence is staged")
+      local sourceFrame = assert(animation.frames[frame + 1], "trainer slide frame resolves to staged source metadata")
+      local offset = assert(sourceFrame.rasterOffset, "trainer frame metadata includes its raster origin")
+      slide.drawableKey = assert(sourceFrame.drawableKey, "trainer frame metadata includes its exact drawable key")
       slide.x = assert(type(slide.x) == "number" and slide.x, "trainer slides carry an origin x") + offset.x
       slide.y = assert(type(slide.y) == "number" and slide.y, "trainer slides carry an origin y") + offset.y
     end
@@ -5413,6 +5420,9 @@ function BattleScreenState:dispose()
   end
   self._completion = nil
   self._completionResult = nil
+  if self._timeline ~= nil then
+    self._timeline:dispose()
+  end
   if self._subflows ~= nil then
     self._subflows:dispose()
   end

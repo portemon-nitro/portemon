@@ -876,6 +876,7 @@ local function musicTerminalPacket(launchId, packetId, word)
     playerName = "MINT",
     playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "MINT" },
     foeTrainers = {},
+    participants = {},
     own = {
       {
         combatant = 1,

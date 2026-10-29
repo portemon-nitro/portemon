@@ -31,7 +31,8 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _seen table<string, boolean> played event identities by launch and sequence
 ---@field _latest table<string, unknown>? newest after view for name and move facts
 ---@field _openingPresentation table<string, unknown>? detached opening-stage presentation facts
----@field _trainerSlideTracks table<integer, { delay: integer, elapsed: integer, direction: integer, targetX: integer, speed: integer }> source timing for concurrent opening trainer slides
+---@field _trainerSlideTracks table<integer, table<string, unknown>> source animation and slide tracks
+---@field _trainerPictures table<string, table<string, unknown>> staged trainer frame and throw metadata
 ---@field _terrainSlideTracks table<integer, { role: "player"|"foe", delay: integer, elapsed: integer, direction: integer, targetX: integer, speed: integer }> source timing for both terrain bases
 ---@field _wildIntroTrack { combatant: integer, delay: integer, elapsed: integer, x: integer, targetX: integer, speed: integer, arrived: boolean, fadeElapsed: integer }? source timing for the wild foe entrance
 ---@field _names table<integer, string> visible names by combatant identity across packets
@@ -54,6 +55,14 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _diagnostics string[] recorded unknown-effect occurrences
 local BattleTimeline = {}
 BattleTimeline.__index = BattleTimeline
+
+-- BattleAnim's gOpponentBallKinds and BallThrow_GetStartPosition place the
+-- already-created foe ball independently of the trainer backpic anchors.
+local FOE_BALL_START_BY_BATTLER_TYPE = {
+  [1] = { x = 192, y = 86 },
+  [3] = { x = 216, y = 88 },
+  [5] = { x = 176, y = 80 },
+}
 
 BattleTimeline.TICKS_PER_SECOND = SourceTick.HZ
 BattleTimeline.MESSAGE_HOLD_TICKS = 12
@@ -138,6 +147,7 @@ end
 ---@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire, absent without a screen owner
 ---@field ballFadeColor (fun(ballKey: string): integer)? source recall and send-out fade color of a ball
 ---@field faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts for fainting
+---@field trainerPictures table<string, table<string, unknown>>? staged source trainer metadata
 ---@field messageText fun(context: unknown, key: string, substitutions: string[]): string staged retail battle message resolver
 ---@field messageTextContext unknown? explicit owner passed to the staged retail message resolver
 
@@ -178,6 +188,7 @@ function BattleTimeline.new(opts)
     _latest = nil,
     _openingPresentation = nil,
     _trainerSlideTracks = {},
+    _trainerPictures = opts.trainerPictures or {},
     _terrainSlideTracks = {},
     _wildIntroTrack = nil,
     _wildVictoryMusicStarted = false,
@@ -391,6 +402,16 @@ function BattleTimeline:reset(view)
   self._announced = {}
 end
 
+-- Drops transient visual tracks when the owning battle screen is disposed.
+function BattleTimeline:dispose()
+  self._queue = {}
+  self._active = nil
+  self._openingPresentation = nil
+  self._trainerSlideTracks = {}
+  self._terrainSlideTracks = {}
+  self._wildIntroTrack = nil
+end
+
 ---@param cue table<string, unknown>
 local function enqueue(self, cue)
   cue.elapsed = 0
@@ -422,25 +443,70 @@ local function enqueueBallThrow(self, combatant, role)
       end
     end
   end
-  local ballKey = assert(
-    type(record) == "table" and type(record.ballKey) == "string" and record.ballKey,
-    "send-out records carry their semantic ball key"
-  )
-  local startX, startY, targetX, targetY, arcHeight = 192, 88, 192, 88, 0
+  local sendOutRecord =
+    assert(type(record) == "table" and record, "send-out events resolve their detached battler record") --[[@as { ballKey: unknown, participant?: unknown }]]
+  local ballKeyValue = sendOutRecord.ballKey
+  local ballKey =
+    assert(type(ballKeyValue) == "string" and ballKeyValue, "send-out records carry their semantic ball key")
+  local trainerSelector = nil
+  local throwOffsets = nil
+  local participant = nil
   if role == "player" then
-    startX, startY, targetX, targetY, arcHeight = 10, 100, 64, 144, 48
+    local trainer = assert(view.playerTrainer, "player throws carry their trainer class") --[[@as table<string, unknown>]]
+    trainerSelector = "back:" .. assert(trainer.classKey, "player throws carry their backpic selector") --[[@as string]]
+    local playerTrack = nil
+    for index, slide in ipairs(self._openingPresentation.trainerSlides) do
+      if slide.selector == trainerSelector and slide.visible == true then
+        playerTrack = self._trainerSlideTracks[index]
+        break
+      end
+    end
+    if playerTrack == nil or playerTrack.throwQueued == true then
+      return
+    end
+    local entry = assert(self._trainerPictures[trainerSelector], "player trainer backpic metadata is staged")
+    assert(type(entry.animation) == "table", "player trainer backpic carries its sequence-zero compatibility record")
+    assert(type(entry.animation.sequences) == "table", "player trainer backpic stages source animation sequences")
+    throwOffsets = assert(entry.throwOffsets, "animated player trainer backpics carry source throw anchors")
+    playerTrack.throwQueued = true
+  else
+    local participantValue = sendOutRecord.participant
+    participant =
+      assert(type(participantValue) == "number" and participantValue, "foe send-outs carry their trainer participant")
+    local slideTrack = nil
+    for index, slide in ipairs(self._openingPresentation.trainerSlides) do
+      local track = self._trainerSlideTracks[index]
+      if slide.role == "foe" and slide.visible == true and track.participant == participant then
+        slideTrack = track
+        break
+      end
+    end
+    if slideTrack == nil then
+      return
+    end
+    local start = assert(
+      FOE_BALL_START_BY_BATTLER_TYPE[
+        slideTrack.sourceBattlerType --[[@as integer]]
+      ],
+      "foe trainer type has a source ball start position"
+    )
+    enqueue(self, {
+      kind = "trainer-exit",
+      role = "foe",
+      participant = participant,
+      selector = "ball:" .. ballKey,
+      ballX = start.x,
+      ballY = start.y,
+      requiresImage = "battle-ball:" .. ballKey .. ":0",
+    })
+    return
   end
   local selector = "ball:" .. ballKey
   enqueue(self, {
     kind = "ball-throw",
     selector = selector,
-    startX = startX,
-    startY = startY,
-    targetX = targetX,
-    targetY = targetY,
-    arcHeight = arcHeight,
-    throwTicks = 12,
-    duration = 29,
+    trainerSelector = trainerSelector,
+    throwOffsets = throwOffsets,
     requiresImage = "battle-ball:" .. ballKey .. ":0",
   })
 end
@@ -449,7 +515,7 @@ end
 ---@param wild boolean
 ---@return table<integer, table<string, unknown>> public trainer slide states
 ---@return table<integer, { delay: integer, elapsed: integer, direction: integer, targetX: integer, speed: integer }> source slide tracks
-local function openingTrainerSlides(view, wild)
+local function openingTrainerSlides(self, view, wild)
   local slides = {}
   local tracks = {}
   local playerTrainerValue = view.playerTrainer
@@ -458,37 +524,111 @@ local function openingTrainerSlides(view, wild)
   local playerClassKey = playerTrainer.classKey
   assert(type(playerClassKey) == "string", "opening player trainer class is semantic")
   assert(playerClassKey ~= "", "opening player trainer class is semantic")
-  slides[#slides + 1] = {
-    role = "player",
-    selector = "back:" .. playerClassKey,
-    x = 336,
-    y = 112,
-    frame = 0,
-    visible = true,
-    phase = "intro-delay",
-  }
-  tracks[#tracks + 1] = { delay = 28, elapsed = 0, direction = -1, targetX = 64, speed = 8 }
-  if not wild then
-    local trainers = view.foeTrainers --[[@as table<integer, table<string, unknown>>]]
-    assert(type(trainers) == "table", "trainer openings carry foe class records")
-    local trainerRecord = trainers[1]
-    assert(type(trainerRecord) == "table", "trainer openings carry a lead trainer")
-    local trainer = trainerRecord --[[@as table<string, unknown>]]
-    local classKey = trainer.classKey
-    assert(type(classKey) == "string", "foe trainer class is semantic")
-    assert(classKey ~= "", "foe trainer class is semantic")
+  local foeTrainerParticipants = {}
+  local participants = assert(view.participants, "battle views carry the source participant roster")
+  for _, participant in ipairs(participants) do
+    if
+      participant.side == 2
+      and type(participant.controller) == "string"
+      and participant.controller:match("^trainer:")
+    then
+      foeTrainerParticipants[#foeTrainerParticipants + 1] = participant.participant
+    end
+  end
+  local function addSlide(role, selector, x, y, direction, targetX, participant, sourceBattlerType)
+    local entry = assert(self._trainerPictures[selector], "opening trainers use staged source frame metadata")
+    local animationData = assert(entry.animation, "opening trainer metadata carries sequence-zero source frames")
+    local sequences = assert(animationData.sequences, "trainer metadata carries the staged source sequence inventory")
+    local animation = #sequences > 2 and sequences[3] or animationData
+    local sourceSequence = animation.sourceSequence --[[@as integer]]
+    local frames = assert(animation.frames, "opening trainer metadata carries ordered source frames")
+    assert(type(frames) == "table" and #frames > 0, "opening trainer metadata carries source frames")
+    local initialFrame = assert(animation.loopStartFrameIdx, "trainer source sequences declare their initial frame")
     slides[#slides + 1] = {
-      role = "foe",
-      selector = "front:" .. classKey,
-      x = -80,
-      y = 50,
-      frame = 0,
+      role = role,
+      selector = selector,
+      sourceSequence = sourceSequence,
+      x = x,
+      y = y,
+      frame = initialFrame,
       visible = true,
       phase = "intro-delay",
     }
-    tracks[#tracks + 1] = { delay = 28, elapsed = 0, direction = 1, targetX = 192, speed = 8 }
+    tracks[#tracks + 1] = {
+      delay = 28,
+      elapsed = 0,
+      direction = direction,
+      targetX = targetX,
+      speed = 8,
+      frames = frames,
+      animation = animation,
+      sourceSequenceCount = #sequences,
+      throwQueued = false,
+      frame = initialFrame,
+      frameElapsed = 0,
+      frameDirection = 1,
+      animationActive = true,
+      encounterWaiting = false,
+      encounterComplete = false,
+      attributeFrame = nil,
+      participant = participant,
+      sourceBattlerType = sourceBattlerType,
+    }
+  end
+  addSlide("player", "back:" .. playerClassKey, 336, 112, -1, 64)
+  if not wild then
+    local trainers = view.foeTrainers --[[@as table<integer, table<string, unknown>>]]
+    assert(type(trainers) == "table", "trainer openings carry foe class records")
+    assert(#trainers > 0, "trainer openings carry at least one opponent trainer")
+    assert(#foeTrainerParticipants >= #trainers, "each foe trainer picture resolves to its source participant")
+    local entrance = #trainers == 1 and {
+      { x = -80, y = 50, targetX = 192 },
+    } or {
+      { x = -60, y = 50, targetX = 216 },
+      { x = -100, y = 42, targetX = 176 },
+    }
+    assert(#trainers <= #entrance, "HGSS has at most two physical trainers on the opposing side")
+    for index, trainerRecord in ipairs(trainers) do
+      local trainer = trainerRecord --[[@as table<string, unknown>]]
+      local classKey = assert(trainer.classKey, "foe trainer class is semantic") --[[@as string]]
+      assert(classKey ~= "", "foe trainer class is semantic")
+      local slot = entrance[index]
+      local sourceBattlerType = #trainers == 1 and 1 or (index == 1 and 3 or 5)
+      addSlide(
+        "foe",
+        "front:" .. classKey,
+        slot.x,
+        slot.y,
+        1,
+        slot.targetX,
+        foeTrainerParticipants[index],
+        sourceBattlerType
+      )
+    end
   end
   return slides, tracks
+end
+
+---@param self BattleTimeline
+---@param slide table<string, unknown> trainer pose under selection
+---@param track table<string, unknown> source trainer track under selection
+---@param sourceSequence integer source NANR sequence ID
+local function selectTrainerSequence(self, slide, track, sourceSequence)
+  local entry = assert(self._trainerPictures[
+    slide.selector --[[@as string]]
+  ])
+  local animationData = assert(entry.animation, "trainer source metadata carries sequence zero")
+  local animation = sourceSequence == 0 and animationData or animationData.sequences[sourceSequence + 1]
+  assert(animation ~= nil, "trainer source sequence is staged")
+  track.animation = animation
+  track.frames = assert(animation.frames, "trainer sequences carry source frames")
+  track.frame = assert(animation.loopStartFrameIdx, "trainer source sequences declare their initial frame")
+  track.frameElapsed = 0
+  track.frameDirection = 1
+  track.animationActive = true
+  track.attributeFrame = nil
+  slide.sourceSequence = sourceSequence
+  slide.frame = track.frame
 end
 
 ---@return table<integer, table<string, unknown>> detached player and foe terrain positions
@@ -878,7 +1018,7 @@ local function queueOpening(self, view)
     ownForm = own.form --[[@as integer]]
   end
   self._foeHpMark = foeHealthAt(self, nil)
-  local trainerSlides, trainerTracks = openingTrainerSlides(view, wild)
+  local trainerSlides, trainerTracks = openingTrainerSlides(self, view, wild)
   local terrainSlides, terrainTracks = openingTerrainSlides()
   self._openingPresentation = {
     playerTrainerVisible = true,
@@ -890,6 +1030,9 @@ local function queueOpening(self, view)
   }
   self._trainerSlideTracks = trainerTracks
   self._terrainSlideTracks = terrainTracks
+  if not wild then
+    enqueue(self, { kind = "trainer-intro-wait" })
+  end
   if type(foeSpecies) == "string" then
     enqueue(self, { kind = "sound", cue = cryCue(foeSpecies, foeForm, true), duration = 0 })
   end
@@ -2935,7 +3078,7 @@ function BattleTimeline:intro(view, wild)
   -- settles, before the encounter line; the lead cries on its send-out
   -- after "Go!".
   self._foeHpMark = foeHealthAt(self, nil)
-  local trainerSlides, trainerTracks = openingTrainerSlides(view, wild)
+  local trainerSlides, trainerTracks = openingTrainerSlides(self, view, wild)
   local terrainSlides, terrainTracks = openingTerrainSlides()
   self._openingPresentation = {
     playerTrainerVisible = true,
@@ -2954,6 +3097,9 @@ function BattleTimeline:intro(view, wild)
       shown.visible = false
       shown.hudVisible = false
     end
+  end
+  if not wild then
+    enqueue(self, { kind = "trainer-intro-wait" })
   end
   if wild then
     local wildFoe = assert(foeRecord, "wild openings carry one foe") --[[@as table<string, unknown>]]
@@ -3042,22 +3188,167 @@ local function tickTrainerSlides(self)
     return
   end
   local slides = presentation.trainerSlides --[[@as table<integer, table<string, unknown>>]]
+  local flashElapsed = presentation.trainerFlashElapsed
+  if type(flashElapsed) == "number" then
+    flashElapsed = flashElapsed + 1
+    if flashElapsed > 8 then
+      presentation.trainerFlashElapsed = nil
+      presentation.trainerFlashCoefficient = nil
+    else
+      presentation.trainerFlashElapsed = flashElapsed
+      presentation.trainerFlashCoefficient = flashElapsed <= 4 and 16 - flashElapsed * 4 or (flashElapsed - 4) * 4
+    end
+  end
   for index, track in ipairs(self._trainerSlideTracks) do
     local slide = assert(slides[index], "trainer slide tracks stay aligned with their public states")
-    if slide.visible == true and slide.phase ~= "intro-settle" then
-      if track.elapsed < track.delay then
-        track.elapsed = track.elapsed + 1
-      else
-        local x = assert(type(slide.x) == "number" and slide.x, "trainer slides carry a source x position")
-        local nextX = x + track.direction * track.speed
-        if (track.direction < 0 and nextX <= track.targetX) or (track.direction > 0 and nextX >= track.targetX) then
-          nextX = track.targetX
-          slide.phase = "intro-settle"
-        else
-          slide.phase = "intro-slide"
+    if slide.visible == true then
+      if track.animationActive == true then
+        local frame = track.frames[track.frame + 1]
+        assert(type(frame) == "table", "trainer animation frame indices resolve to staged source frames")
+        local sequenceChanged = false
+        if track.encounterWaiting == true and track.attributeFrame ~= track.frame then
+          local userAttr = frame.userAttr --[[@as integer]]
+          track.attributeFrame = track.frame
+          if userAttr == 1 then
+            presentation.trainerFlashElapsed = 0
+            presentation.trainerFlashCoefficient = 16
+          elseif userAttr == 0xFFF then
+            track.encounterWaiting = false
+            track.encounterComplete = true
+          elseif userAttr >= 0x100 and userAttr < 0x200 then
+            local animation = userAttr % 0x100
+            if animation ~= 0 then
+              selectTrainerSequence(self, slide, track, animation - 1)
+              sequenceChanged = true
+              track.encounterWaiting = false
+              track.encounterComplete = true
+            end
+          end
         end
-        slide.x = nextX
-        track.elapsed = track.elapsed + 1
+        if not sequenceChanged then
+          track.frameElapsed = track.frameElapsed + 1
+          local frameDuration = frame.durationTicks --[[@as integer]]
+          if frameDuration == 0 or track.frameElapsed >= frameDuration then
+            track.frameElapsed = 0
+            local animation = track.animation --[[@as table<string, unknown>]]
+            local playMode = animation.playMode --[[@as string]]
+            local skippedZeroFrames = 0
+            repeat
+              local loopStart = assert(animation.loopStartFrameIdx, "trainer sequences declare their loop start")
+              local nextFrame = track.frame + track.frameDirection
+              local completed = false
+              if track.frameDirection > 0 and nextFrame >= #track.frames then
+                if playMode == "forward_loop" then
+                  nextFrame = loopStart
+                elseif playMode == "forward" then
+                  nextFrame = #track.frames - 1
+                  completed = true
+                elseif playMode == "reverse" or playMode == "reverse_loop" then
+                  track.frameDirection = -1
+                  nextFrame = #track.frames - 1
+                else
+                  error("unsupported source trainer play mode " .. tostring(playMode), 0)
+                end
+              elseif track.frameDirection < 0 and nextFrame < loopStart then
+                if playMode == "reverse_loop" then
+                  track.frameDirection = 1
+                  nextFrame = loopStart
+                elseif playMode == "reverse" then
+                  nextFrame = math.max(0, loopStart - 1)
+                  completed = true
+                else
+                  error("unsupported source trainer play mode " .. tostring(playMode), 0)
+                end
+              end
+              if nextFrame == track.frame then
+                if completed then
+                  track.animationActive = false
+                  track.encounterWaiting = false
+                  track.encounterComplete = true
+                elseif frameDuration == 0 then
+                  skippedZeroFrames = skippedZeroFrames + 1
+                  assert(
+                    skippedZeroFrames < #track.frames,
+                    "source trainer animations cannot cycle only zero-duration frames"
+                  )
+                else
+                  break
+                end
+              end
+              track.frame = nextFrame
+              if completed then
+                track.animationActive = false
+                track.encounterWaiting = false
+                track.encounterComplete = true
+              end
+              track.attributeFrame = nil
+              local nextFrameRecord = assert(track.frames[nextFrame + 1], "next trainer frame is staged")
+              if
+                nextFrameRecord.durationTicks --[[@as integer]]
+                > 0
+              then
+                break
+              end
+              skippedZeroFrames = skippedZeroFrames + 1
+              assert(
+                skippedZeroFrames < #track.frames,
+                "source trainer animations cannot cycle only zero-duration frames"
+              )
+            until false
+            slide.frame = track.frame
+          end
+        end
+      end
+      if slide.phase == "exit-slide" then
+        local x = assert(type(slide.x) == "number" and slide.x, "trainer exits carry a source x position")
+        local nextX = x + track.exitDirection * 5
+        if
+          (track.exitDirection < 0 and nextX <= track.exitTargetX)
+          or (track.exitDirection > 0 and nextX >= track.exitTargetX)
+        then
+          slide.x = track.exitTargetX
+          slide.visible = false
+          slide.phase = "intro-settle"
+          local stillVisible = false
+          for _, other in ipairs(slides) do
+            stillVisible = stillVisible or (other.role == slide.role and other.visible == true)
+          end
+          if not stillVisible then
+            presentation[slide.role == "player" and "playerTrainerVisible" or "foeTrainerVisible"] = false
+          end
+        else
+          slide.x = nextX
+        end
+      elseif slide.phase ~= "intro-settle" then
+        if track.elapsed < track.delay then
+          track.elapsed = track.elapsed + 1
+        else
+          local x = assert(type(slide.x) == "number" and slide.x, "trainer slides carry a source x position")
+          local nextX = x + track.direction * track.speed
+          if (track.direction < 0 and nextX <= track.targetX) or (track.direction > 0 and nextX >= track.targetX) then
+            nextX = track.targetX
+            slide.phase = "intro-settle"
+            if slide.role == "foe" and track.sourceSequenceCount > 1 then
+              selectTrainerSequence(self, slide, track, 1)
+              track.encounterWaiting = true
+              track.encounterComplete = false
+            else
+              track.encounterWaiting = false
+              track.encounterComplete = true
+            end
+          else
+            slide.phase = "intro-slide"
+          end
+          slide.x = nextX
+          track.elapsed = track.elapsed + 1
+          if track.throwPending == true then
+            track.throwPending = false
+            track.exitDirection = -1
+            track.exitTargetX = -40
+            slide.phase = "exit-slide"
+            selectTrainerSequence(self, slide, track, 1)
+          end
+        end
       end
     end
   end
@@ -3229,14 +3520,43 @@ local function startCue(self, cue)
     end
   elseif cue.kind == "ball-throw" then
     local state = assert(self._openingPresentation, "opening ball throws follow an installed opening")
+    local trainerTracks = self._trainerSlideTracks
+    local slides = state.trainerSlides --[[@as table<integer, table<string, unknown>>]]
+    for index, slide in ipairs(slides) do
+      local track = assert(trainerTracks[index], "trainer slides retain their source animation tracks")
+      if slide.selector == cue.trainerSelector then
+        if slide.phase == "intro-settle" and slide.x == track.targetX then
+          track.exitDirection = -1
+          track.exitTargetX = -40
+          slide.phase = "exit-slide"
+          selectTrainerSequence(self, slide, track, 1)
+        else
+          track.throwPending = true
+        end
+      end
+    end
     state.ballThrow = {
       selector = cue.selector,
-      x = cue.startX,
-      y = cue.startY,
+      x = 0,
+      y = 0,
       frame = 0,
       rotation = 0,
-      visible = true,
+      trainerSelector = cue.trainerSelector,
+      throwOffsets = cue.throwOffsets,
+      visible = false,
     }
+  elseif cue.kind == "trainer-exit" then
+    local state = assert(self._openingPresentation, "trainer exits follow an installed opening")
+    for index, slide in
+      ipairs(state.trainerSlides --[[@as table<integer, table<string, unknown>>]])
+    do
+      local track = assert(self._trainerSlideTracks[index], "trainer slides retain their source animation tracks")
+      if slide.role == cue.role and track.participant == cue.participant then
+        track.exitDirection = 1
+        track.exitTargetX = 296
+        slide.phase = "exit-slide"
+      end
+    end
   elseif cue.kind == "ball-flight" then
     local state = self._openingPresentation
     if state ~= nil then
@@ -3541,24 +3861,81 @@ local function tickCue(self, cue, soundComplete)
     return cue.acknowledged == true
   elseif cue.kind == "opening-presentation" then
     return true
+  elseif cue.kind == "trainer-intro-wait" then
+    for _, track in ipairs(self._trainerSlideTracks) do
+      if track.encounterComplete ~= true then
+        return false
+      end
+    end
+    return true
+  elseif cue.kind == "trainer-exit" then
+    local found = false
+    local finished = true
+    for index, slide in ipairs(self._openingPresentation and self._openingPresentation.trainerSlides or {}) do
+      local track = assert(self._trainerSlideTracks[index], "trainer exits retain their source slide tracks")
+      if slide.role == cue.role and track.participant == cue.participant then
+        found = true
+        finished = finished and slide.visible ~= true
+        local x = assert(type(slide.x) == "number" and slide.x, "foe trainer exits carry their native x")
+        if x >= 160 then
+          local ball = self._openingPresentation.ballThrow
+          if ball == nil or ball.trainerParticipant ~= cue.participant then
+            ball = {
+              selector = cue.selector,
+              x = cue.ballX,
+              y = cue.ballY,
+              frame = 0,
+              rotation = 0,
+              trainerParticipant = cue.participant,
+              visible = true,
+            }
+            self._openingPresentation.ballThrow = ball
+            cue.ballElapsed = 0
+          else
+            cue.ballElapsed = (cue.ballElapsed or 0) + 1
+          end
+          if cue.ballElapsed >= 12 then
+            ball.visible = false
+          end
+        end
+      end
+    end
+    assert(found, "trainer exit resolves to its source participant slide")
+    return finished
   elseif cue.kind == "ball-throw" then
     local ball =
       assert(self._openingPresentation and self._openingPresentation.ballThrow, "active throws publish a ball sprite")
-    local elapsed = cue.elapsed --[[@as integer]]
-    local throwTicks = cue.throwTicks --[[@as integer]]
-    local progress = math.min(1, (elapsed - 1) / throwTicks)
-    local startX = cue.startX --[[@as number]]
-    local startY = cue.startY --[[@as number]]
-    local targetX = cue.targetX --[[@as number]]
-    local targetY = cue.targetY --[[@as number]]
-    local arcHeight = cue.arcHeight --[[@as number]]
-    ball.x = math.floor(startX + (targetX - startX) * progress + 0.5)
-    ball.y = math.floor(startY + (targetY - startY) * progress - math.sin(math.pi * progress) * arcHeight + 0.5)
-    if
-      elapsed >= cue.duration --[[@as integer]]
-    then
+    local offsets = ball.throwOffsets --[[@as table<integer, table<string, integer>>]]
+    local slide, track
+    for index, candidate in ipairs(self._openingPresentation.trainerSlides) do
+      if candidate.selector == ball.trainerSelector then
+        slide = candidate
+        track = self._trainerSlideTracks[index]
+        break
+      end
+    end
+    assert(slide ~= nil and track ~= nil, "trainer throws retain their backpic slide")
+    if track.throwPending == true then
+      return false
+    end
+    if slide.visible ~= true then
       ball.visible = false
       return true
+    end
+    local pose = assert(track.frames[track.frame + 1], "trainer pose resolves its staged source frame")
+    local frame = pose.sourceFrame --[[@as integer]]
+    local offset = assert(
+      offsets[frame + 1],
+      "trainer source frame "
+        .. tostring(frame)
+        .. " at sequence position "
+        .. tostring(track.frame)
+        .. " resolves its throw anchor"
+    )
+    if offset.x ~= 32767 then
+      ball.x = slide.x + offset.x
+      ball.y = slide.y + offset.y
+      ball.visible = true
     end
     return false
   elseif cue.kind == "ball-flight" then

@@ -64,6 +64,42 @@ local function commandPromptRecord()
   return record
 end
 
+---@param selector string semantic trainer selector
+---@param image string staged first-frame trainer image
+---@param rasterOffset table<string, integer> first-frame raster origin
+---@return table<string, unknown> synthetic animation with source-sequence inventory
+local function trainerAnimation(selector, image, rasterOffset)
+  local baseKey = "trainer:" .. selector
+  local sequences = {}
+  for sourceSequence = 0, 2 do
+    local drawableKey = sourceSequence == 0 and baseKey
+      or (baseKey .. ":sequence:" .. tostring(sourceSequence) .. ":frame:0")
+    local frames = {
+      {
+        drawableKey = drawableKey,
+        image = image,
+        rasterOffset = { x = rasterOffset.x, y = rasterOffset.y },
+        durationTicks = 65535,
+        sourceFrame = 0,
+        userAttr = sourceSequence == 1 and 0xFFF or 0,
+      },
+    }
+    sequences[#sequences + 1] = {
+      sourceSequence = sourceSequence,
+      playMode = sourceSequence == 1 and "forward" or "forward_loop",
+      loopStartFrameIdx = 0,
+      frames = frames,
+    }
+  end
+  return {
+    sourceSequence = 0,
+    playMode = "forward_loop",
+    loopStartFrameIdx = 0,
+    frames = sequences[1].frames,
+    sequences = sequences,
+  }
+end
+
 ---@return table sprite descriptor with one cell and one frame
 local function spriteSection(image)
   return {
@@ -667,6 +703,10 @@ local function manifest()
           width = 80,
           height = 80,
           rasterOffset = { x = -40, y = -40 },
+          animation = trainerAnimation("front:YOUNGSTER", "assets/generated/battle/trainer-front-YOUNGSTER.png", {
+            x = -40,
+            y = -40,
+          }),
         },
         ["front:LEADER_FALKNER"] = {
           drawableKey = "trainer:front:LEADER_FALKNER",
@@ -674,6 +714,14 @@ local function manifest()
           width = 80,
           height = 80,
           rasterOffset = { x = -40, y = -40 },
+          animation = trainerAnimation(
+            "front:LEADER_FALKNER",
+            "assets/generated/battle/trainer-front-LEADER_FALKNER.png",
+            {
+              x = -40,
+              y = -40,
+            }
+          ),
         },
         ["back:PKMN_TRAINER_ETHAN"] = {
           drawableKey = "trainer:back:PKMN_TRAINER_ETHAN",
@@ -681,6 +729,19 @@ local function manifest()
           width = 80,
           height = 80,
           rasterOffset = { x = -40, y = -40 },
+          animation = trainerAnimation(
+            "back:PKMN_TRAINER_ETHAN",
+            "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png",
+            { x = -40, y = -40 }
+          ),
+          throwOffsets = {
+            { x = 0, y = 128 },
+            { x = -34, y = 4 },
+            { x = -28, y = -11 },
+            { x = 50, y = -12 },
+            { x = 32767, y = 32767 },
+            { x = 32767, y = 32767 },
+          },
         },
       },
     },
