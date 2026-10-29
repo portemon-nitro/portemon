@@ -606,7 +606,6 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
         return menu
       end,
       onFinished = function() end,
-      onSwitchEdition = function() end,
       isCurrent = function()
         return true
       end,

@@ -3068,10 +3068,10 @@ end
 
 -- The two paired single-screen beats compose differently: the scene-4
 -- hero bands stack vertically with their black surroundings overlapped, so
--- they sit closer than two full frames, while the scene-5 panorama keeps
--- its two halves side by side. Both are checked on one playthrough so the
--- pack and the seek are amortized.
-function T.paired_beats_stack_the_hero_bands_and_split_the_panorama_on_a_wide_stage()
+-- they sit closer than two full frames, while a single stage shows only the
+-- scene-5 panorama's bottom-screen image. Both are checked on one
+-- playthrough so the pack and the seek are amortized.
+function T.paired_beats_stack_the_hero_bands_and_show_only_the_panorama_bottom_screen_on_a_wide_stage()
   local scenes, cacheFs = validPack()
   local stageWidth, stageHeight = 1200, 600
   local graphics = movieGraphics()
@@ -3100,11 +3100,14 @@ function T.paired_beats_stack_the_hero_bands_and_split_the_panorama_on_a_wide_st
       panoramaBlits[#panoramaBlits + 1] = draw
     end
   end
-  Assert.equal(#panoramaBlits, 2, "the panorama scene blits both role targets")
-  local left, right = panoramaBlits[1], panoramaBlits[2]
-  Assert.near(left.y, right.y, 1e-6, "the wide panorama shares one row for both halves")
-  Assert.near(left.sx, right.sx, 1e-9, "the wide panorama scales both halves together")
-  Assert.near(right.x - left.x, 256 * left.sx, 1e-6, "the wide panorama splits its halves left/right")
+  Assert.equal(#panoramaBlits, 1, "the wide panorama shows its bottom-screen image alone")
+  local bottom = panoramaBlits[1]
+  Assert.equal(bottom.image, movie.subCanvas, "the panorama's bottom screen owns the stage")
+  -- The single remaining image keeps the source 4:3 shape fitted to the
+  -- stage height and centered on the wide stage.
+  Assert.near(bottom.y, 0, 1e-6, "the panorama image fills the stage height")
+  Assert.near(bottom.sx, stageHeight / 192, 1e-9, "the panorama image scales to the stage height")
+  Assert.near(bottom.x, (stageWidth - 256 * bottom.sx) / 2, 1e-6, "the panorama image centers on the stage")
   movie:dispose()
 end
 

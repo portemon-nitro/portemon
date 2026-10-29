@@ -2509,15 +2509,6 @@ local function engineActive(slot, engine)
   return false
 end
 
--- Beats that keep both physical outputs on a single host screen: the
--- scene-4 hero compositions and the scene-5 panorama are coequal by
--- source authorship, so no single-screen stage may discard either side.
----@param slot OpeningMovieSlot scene slot
----@return boolean true when the beat must present both physical roles
-local function shotIsPaired(slot)
-  return slot.sceneNumber == 4 or slot.sceneNumber == 5
-end
-
 -- The scene-1 copyright is the one tie the upper screen wins: while each
 -- engine stages only its BG0 copyright plane, both engines carry their
 -- own notice and the stage shows the upper one, matching the
@@ -4358,66 +4349,33 @@ function HgssOpeningMovie:_render()
     }, true, lowerHold)
     return
   end
-  if shotIsPaired(slot) then
-    -- Coequal beats keep both outputs on one stage with no overlay strip:
-    -- the scene-5 panorama stacks as one 256x384 frame on compact/native
-    -- stages and stays side by side as one 512x192 pair on wide stages,
-    -- each fit inside the safe bounds. The scene-4 hero bands stack
-    -- vertically on compact/native and wide stages with their black
-    -- surroundings overlapped, so the bands sit closer than two full
-    -- frames. Tall and dual stages always stack (or surface) both roles
-    -- above.
-    if configuration == "wide" and slot.sceneNumber ~= 4 then
-      local scale = math.min(primary.width / (SOURCE_WIDTH * 2), primary.height / SOURCE_HEIGHT)
-      local paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
-      local x = primary.x + (primary.width - paneWidth * 2) / 2
-      local y = primary.y + (primary.height - paneHeight) / 2
-      blitPhysicalRole(self, upperCanvas, { x = x, y = y, width = paneWidth, height = paneHeight }, false, upperHold)
-      blitPhysicalRole(
-        self,
-        lowerCanvas,
-        { x = x + paneWidth, y = y, width = paneWidth, height = paneHeight },
-        false,
-        lowerHold
-      )
-      return
-    end
-    if slot.sceneNumber == 4 and configuration ~= "tall" then
-      local pairHeight = SOURCE_HEIGHT * 2 - SCENE4_BAND_OVERLAP
-      local scale = math.min(primary.width / SOURCE_WIDTH, primary.height / pairHeight)
-      local paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
-      local overlap = SCENE4_BAND_OVERLAP * scale
-      local x = primary.x + (primary.width - paneWidth) / 2
-      local y = primary.y + (primary.height - paneHeight * 2 + overlap) / 2
-      blitPhysicalRole(self, upperCanvas, { x = x, y = y, width = paneWidth, height = paneHeight }, false, upperHold)
-      blitPhysicalRole(
-        self,
-        lowerCanvas,
-        { x = x, y = y + paneHeight - overlap, width = paneWidth, height = paneHeight },
-        false,
-        lowerHold
-      )
-      return
-    end
-    local scale = math.min(primary.width / SOURCE_WIDTH, primary.height / (SOURCE_HEIGHT * 2))
+  if slot.sceneNumber == 4 then
+    -- The scene-4 hero bands stack vertically on compact and wide stages
+    -- with their black surroundings overlapped, so the bands sit closer
+    -- than two full frames. Tall and dual stages stack (or surface) both
+    -- roles above.
+    local pairHeight = SOURCE_HEIGHT * 2 - SCENE4_BAND_OVERLAP
+    local scale = math.min(primary.width / SOURCE_WIDTH, primary.height / pairHeight)
     local paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
+    local overlap = SCENE4_BAND_OVERLAP * scale
     local x = primary.x + (primary.width - paneWidth) / 2
-    local y = primary.y + (primary.height - paneHeight * 2) / 2
+    local y = primary.y + (primary.height - paneHeight * 2 + overlap) / 2
     blitPhysicalRole(self, upperCanvas, { x = x, y = y, width = paneWidth, height = paneHeight }, false, upperHold)
     blitPhysicalRole(
       self,
       lowerCanvas,
-      { x = x, y = y + paneHeight, width = paneWidth, height = paneHeight },
+      { x = x, y = y + paneHeight - overlap, width = paneWidth, height = paneHeight },
       false,
       lowerHold
     )
     return
   end
-  local active = activeEngine(slot)
+  -- The scene-5 panorama shows only its bottom-screen image on a single
+  -- compact or wide stage; other beats keep the authored active engine.
+  -- The staged hold of the shown engine still covers the output.
+  local active = (slot.sceneNumber == 5) and roleEngine(slot, "lower") or activeEngine(slot)
   local activeCanvas = (active == "main") and self.mainCanvas or self.subCanvas
   assert(activeCanvas ~= nil, "movie role targets are missing")
-  -- The single stage shows the authored active engine on its own physical
-  -- screen, so the staged hold of that engine still covers the output.
   local activeHold = type(holds) == "table" and holds[active] or nil
   blitPhysicalRole(self, activeCanvas, copyRect(primary), false, activeHold)
 end

@@ -731,11 +731,6 @@ function App._continueSelectedVersion(versionId, options)
         menu:dispose()
       end
     end,
-    onSwitchEdition = function(otherVersionId)
-      if App.epoch == epoch and App.selectedVersionId == versionId then
-        App._switchEdition(otherVersionId)
-      end
-    end,
     onCancel = function()
       if App.epoch == epoch and App.selectedVersionId == versionId then
         App._showVersionSelector()
@@ -812,52 +807,6 @@ function App._startImport(expectedVersionId)
     end
   end
   App.setState(ImportState.new(App.importer, App.saveDir, importOptions))
-end
-
-function App._switchEdition(versionId)
-  assert(GameVersion.VERSIONS[versionId], "unknown edition")
-  local ready = readyVersions()
-  for _, readyId in ipairs(ready) do
-    if readyId == versionId then
-      App._selectVersion(versionId)
-      return
-    end
-  end
-  if App.importer and App.importer:isBusy() then
-    return
-  end
-  local function showTargetImport()
-    App._startImport(versionId)
-  end
-  if App.service ~= nil and App.selectedVersionId ~= nil then
-    App._retireSelection()
-    local epoch = App.epoch or 0
-    local barrier = App.service:quiesce(epoch)
-    if barrier ~= nil then
-      App.pendingQuiesce = { epoch = epoch, barrier = barrier }
-      App.setState(CachePreparationState.new({
-        kind = "quiescence",
-        epoch = epoch,
-        service = App.service,
-        barrier = barrier,
-        isCurrent = function(_)
-          return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == barrier
-        end,
-        onReady = function()
-          App.pendingQuiesce = nil
-          if App.service:importSource(epoch, barrier) then
-            showTargetImport()
-          end
-        end,
-        onCancel = function()
-          App.pendingQuiesce = nil
-          App._showVersionSelector()
-        end,
-      }))
-      return
-    end
-  end
-  showTargetImport()
 end
 
 function App._beginImportPath(path, expectedVersionId)

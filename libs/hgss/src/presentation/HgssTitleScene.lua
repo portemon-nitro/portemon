@@ -42,7 +42,6 @@ local Matrix4 = require("libs.math.src.Matrix4")
 ---@field surfaces table<string, love.Image>?
 ---@field disposed boolean
 ---@field layout table<string, unknown>?
----@field buttonBounds { x: number, y: number, width: number, height: number }?
 ---@field projectionAspect number? live 3D lens aspect; wide follows its target, otherwise source 4:3
 ---@field pixelRatio number? framebuffer pixels per host unit behind the blend mask
 ---@field blendShader love.Shader? title-local horizontal alpha mask for the 2D layers
@@ -100,7 +99,6 @@ vec4 effect(vec4 color, Image tex, vec2 texture_coords, vec2 screen_coords) {
 -- Suggested initial blend regions from the task, as fractions of screen width.
 local FADE_WIDE_START, FADE_WIDE_END = 0.27, 0.45
 local FADE_NATIVE_START, FADE_NATIVE_END = 0.27, 0.55
-local EDITION_NAMES = { heartgold = "SOULSILVER", soulsilver = "HEARTGOLD" }
 local EDITION_COLORS = {
   heartgold = { 0.79, 0.40, 0.19 },
   soulsilver = { 0.38, 0.65, 0.88 },
@@ -425,7 +423,6 @@ function HgssTitleScene.new(options)
     sourceEnvironment = nil,
     disposed = false,
     layout = nil,
-    buttonBounds = nil,
     projectionAspect = 4 / 3,
     pixelRatio = 1,
     blendShader = nil,
@@ -852,23 +849,8 @@ function HgssTitleScene:_drawDual()
 end
 
 function HgssTitleScene:_drawUi(status)
-  local bounds = assert(self.buttonBounds)
   local graphics = self.graphics
-  local color = EDITION_COLORS[self.versionId]
   graphics.push("all")
-  graphics.setColor(0.04, 0.08, 0.13, 0.88)
-  graphics.circle("fill", bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, bounds.width / 2)
-  graphics.setColor(color[1], color[2], color[3], 1)
-  graphics.setLineWidth(2)
-  graphics.circle("line", bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, bounds.width / 2 - 2)
-  graphics.setColor(1, 1, 1, 1)
-  graphics.printf(
-    EDITION_NAMES[self.versionId],
-    bounds.x - 20,
-    bounds.y + bounds.height / 2 - 5,
-    bounds.width + 40,
-    "center"
-  )
   -- The prompt tint is the compiled retail text-palette RGB per edition
   -- (src/title_screen.c): HeartGold RGB(27, 8, 0), SoulSilver
   -- RGB(0, 28, 31). The shadow index matches the foreground index, so a
@@ -979,7 +961,6 @@ function HgssTitleScene:resize(width, height)
   end
   assert(main ~= nil, "title display has no unoccupied safe area")
   self.pixelRatio = measurement.pixelRatio or 1
-  local buttonSize = math.max(28, math.min(56, math.floor(math.min(main.width, main.height) * 0.12)))
   -- Decomp reference (pokeheartgold src/title_screen.c,
   -- sTouchToStartWindow = { GF_BG_LYR_MAIN_3, 0, 18, 32, 2 }): the
   -- prompt is a full-width strip at tile rows 18-19 of the 256x192
@@ -990,26 +971,6 @@ function HgssTitleScene:resize(width, height)
       y = topScreen.y + topScreen.height * 144 / 192,
       width = topScreen.width,
       height = topScreen.height * 16 / 192,
-    }
-  end
-  local isCinematic = configuration == "wide" or configuration == "nativeLike"
-  local buttonBounds
-  if isCinematic then
-    -- Cinematic single-screen keeps the switch reachable bottom-right
-    -- for both editions so it never collides with the left logo or the
-    -- centered prompt strip.
-    buttonBounds = {
-      x = main.x + main.width - buttonSize - 8,
-      y = main.y + main.height - buttonSize - 8,
-      width = buttonSize,
-      height = buttonSize,
-    }
-  else
-    buttonBounds = {
-      x = self.versionId == "heartgold" and main.x + main.width - buttonSize - 2 or main.x + 2,
-      y = main.y + main.height - buttonSize - 2,
-      width = buttonSize,
-      height = buttonSize,
     }
   end
   local composition
@@ -1077,12 +1038,6 @@ function HgssTitleScene:resize(width, height)
     prompt = prompt,
     safe = main,
   }
-  self.buttonBounds = buttonBounds
-end
-
-function HgssTitleScene:editionButtonBounds()
-  local bounds = assert(self.buttonBounds)
-  return { x = bounds.x, y = bounds.y, width = bounds.width, height = bounds.height }
 end
 
 function HgssTitleScene:dispose()

@@ -20,7 +20,6 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field derivedAssets table<string, function>?
 ---@field stageMenu fun(): table<string, unknown>
 ---@field onFinished fun(menu: table<string, unknown>)
----@field onSwitchEdition fun(versionId: string)
 ---@field onCancel fun()?
 ---@field isCurrent fun(epoch: integer): boolean
 ---@field onTitleReady fun()?
@@ -105,7 +104,6 @@ local FADE_IN_FRAMES = 18
 -- drawable.
 local LOADER_DWELL_SECONDS = 0.8
 local DWELL_DT_CAP = 0.25
-local EDITIONS = { heartgold = "soulsilver", soulsilver = "heartgold" }
 local OPENING_SCENE_COUNT = 5
 
 ---@class StartupTitleState.Options
@@ -114,7 +112,6 @@ local OPENING_SCENE_COUNT = 5
 ---@field derivedAssets table<string, function> selected epoch host
 ---@field stageMenu fun(): table<string, unknown> constructs the actual product menu
 ---@field onFinished fun(menu: table<string, unknown>) transfers the staged menu
----@field onSwitchEdition fun(versionId: string) routes through App's selection owner
 ---@field onCancel fun()? returns to the edition selector
 ---@field isCurrent fun(epoch: integer): boolean
 ---@field onTitleReady (fun())?
@@ -129,7 +126,10 @@ local OPENING_SCENE_COUNT = 5
 ---@return StartupTitleState
 function StartupTitleState.new(options)
   assert(type(options) == "table", "startup title requires composition options")
-  assert(EDITIONS[options.versionId] ~= nil, "startup title requires a supported edition")
+  assert(
+    options.versionId == "heartgold" or options.versionId == "soulsilver",
+    "startup title requires a supported edition"
+  )
   assert(type(options.epoch) == "number" and options.epoch % 1 == 0, "startup title requires its selected epoch")
   assert(type(options.derivedAssets) == "table", "startup title requires the selected derived host")
   -- Production collaborators are required: the five-scene opening selector
@@ -141,7 +141,6 @@ function StartupTitleState.new(options)
   )
   assert(type(options.stageMenu) == "function", "startup title requires menu staging")
   assert(type(options.onFinished) == "function", "startup title requires the menu transfer")
-  assert(type(options.onSwitchEdition) == "function", "startup title requires edition routing")
   assert(type(options.isCurrent) == "function", "startup title requires an epoch guard")
   if options.beginWarmup ~= nil then
     assert(type(options.beginWarmup) == "function", "startup title begins its warmup through a function")
@@ -168,7 +167,6 @@ function StartupTitleState.new(options)
     derivedAssets = options.derivedAssets,
     stageMenu = options.stageMenu,
     onFinished = options.onFinished,
-    onSwitchEdition = options.onSwitchEdition,
     onCancel = options.onCancel,
     isCurrent = options.isCurrent,
     onTitleReady = options.onTitleReady,
@@ -965,30 +963,13 @@ function StartupTitleState:resize(width, height)
   self.canceledPointers = {}
 end
 
-function StartupTitleState:_switchBounds()
-  if self.title ~= nil and type(self.title.editionButtonBounds) == "function" then
-    return self.title:editionButtonBounds()
-  end
-  local size, margin = 56, 2
-  return {
-    x = self.versionId == "heartgold" and self.width - size - margin or margin,
-    y = self.height - size - margin,
-    width = size,
-    height = size,
-  }
-end
-
-local function contains(rect, x, y)
-  return rect ~= nil and x >= rect.x and y >= rect.y and x < rect.x + rect.width and y < rect.y + rect.height
-end
-
-function StartupTitleState:_pressPointer(pointerId, x, y)
+function StartupTitleState:_pressPointer(pointerId)
   if not self:_live() then
     return
   end
   -- The movie owns its own input: a press that skips the movie is captured
   -- and swallowed here so it can never become the newly presented title's
-  -- skip. The edition corner is a title control, not a movie control.
+  -- skip.
   if self.phase == "movie" and self.movie ~= nil then
     self.pointerCapture = pointerId
     self.canceledPointers[pointerId] = true
@@ -996,12 +977,6 @@ function StartupTitleState:_pressPointer(pointerId, x, y)
     return
   end
   if (self.phase == "title" or self.phase == "error") and self.title ~= nil then
-    if contains(self:_switchBounds(), x, y) then
-      self.pointerCapture = pointerId
-      self.canceledPointers[pointerId] = true
-      self.onSwitchEdition(EDITIONS[self.versionId])
-      return
-    end
     if self.phase == "title" then
       self.pointerCapture = pointerId
       self.canceledPointers[pointerId] = true
@@ -1122,19 +1097,19 @@ function StartupTitleState:gamepadpressed(_, _)
   self:_pressAction()
 end
 
-function StartupTitleState:mousepressed(x, y, button)
+function StartupTitleState:mousepressed(_, _, button)
   if button ~= 1 then
     return
   end
-  self:_pressPointer("mouse:" .. tostring(button), x, y)
+  self:_pressPointer("mouse:" .. tostring(button))
 end
 
 function StartupTitleState:mousereleased(_, _, button)
   self:_releasePointer("mouse:" .. tostring(button))
 end
 
-function StartupTitleState:touchpressed(id, x, y)
-  self:_pressPointer("touch:" .. tostring(id), x, y)
+function StartupTitleState:touchpressed(id, _, _)
+  self:_pressPointer("touch:" .. tostring(id))
 end
 
 function StartupTitleState:touchreleased(id)

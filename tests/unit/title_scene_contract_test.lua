@@ -46,7 +46,6 @@ local function stubScene(bundle, drawn)
     sparkle = sparkle,
     textRenderer = stubTextRenderer(drawn or {}),
     layout = { prompt = { x = 100, y = 300, width = 300, height = 30 } },
-    buttonBounds = { x = 400, y = 320, width = 48, height = 48 },
     disposed = false,
   }, HgssTitleScene)
 end

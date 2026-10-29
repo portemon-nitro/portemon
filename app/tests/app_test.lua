@@ -937,52 +937,6 @@ function T.picker_cancel_does_not_start_a_barrier_or_import()
   end
 end
 
-function T.switching_to_a_missing_edition_waits_for_quiescence_and_targets_its_import()
-  local originalNew = RomImporter.new
-  local importerOptions
-  RomImporter.new = function(options)
-    importerOptions = options
-    local importer = { state = "idle" }
-    function importer:isBusy()
-      return false
-    end
-    function importer:update() end
-    function importer:status()
-      return { state = self.state }
-    end
-    function importer:filedropped(_) end
-    function importer:startPath(_) end
-    return importer
-  end
-  local ok, failure = pcall(function()
-    withAppHarness({ dev = false }, function(versionId)
-      return versionId == "heartgold"
-    end, function(result)
-      currentOnlyFor("heartgold")
-      App._bootExisting()
-      Assert.equal(App.selectedVersionId, "heartgold")
-      result.service.barrierStatus = function()
-        return "ready"
-      end
-      result.service.importSource = function()
-        result.importAuthorized = (result.importAuthorized or 0) + 1
-        return true
-      end
-      App._switchEdition("soulsilver")
-      Assert.isNil(importerOptions, "no importer starts while source readers are quiescing")
-      App.update(0.016)
-      Assert.equal(result.importAuthorized, 1)
-      Assert.equal(importerOptions.expectedVersionId, "soulsilver")
-      Assert.equal(App.state.targetVersion, "soulsilver")
-      Assert.equal(App.selectedVersionId, "heartgold", "a missing edition is only an import target until verified")
-    end)
-  end)
-  RomImporter.new = originalNew
-  if not ok then
-    error(failure, 0)
-  end
-end
-
 function T.last_played_preference_changes_only_after_successful_game_install()
   local EditionPreference = require("app.src.launcher.EditionPreference")
   withAppHarness({ dev = false }, function(versionId)
@@ -1962,12 +1916,11 @@ function T.targeted_rebind_carries_its_expected_edition()
   Assert.equal(captured.expectedVersionId, "soulsilver", "a targeted import keeps its expected edition")
 end
 
--- Without a usable native bridge the first card offers no edition switch
--- and no picker banner, and gestures never invoke the bridge.
-function T.pristine_import_without_a_bridge_has_no_switch_or_dead_action()
+-- Without a usable native bridge the first card shows no picker banner,
+-- and gestures never invoke the bridge.
+function T.pristine_import_without_a_bridge_has_no_dead_action()
   withNativeBridge(false, { kind = "cancel" }, function(opens)
     withPristineImport(function(_)
-      Assert.isNil(App.state.onSwitchEdition, "the first card offers no edition switch")
       Assert.isNil(App.importPickerError, "booting the first card sets no picker banner")
       App.state:mousepressed(400, 300, 1)
       App.state:touchpressed("touch", 400, 300, 0, 0, 1)

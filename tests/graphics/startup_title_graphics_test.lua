@@ -82,14 +82,6 @@ local function renderEdition(scope, versionId)
     end,
   })
 
-  local button = scene:editionButtonBounds()
-  Assert.isTrue(button.x >= 0 and button.y >= 0, "edition control stays inside the drawable")
-  Assert.isTrue(
-    button.x + button.width <= 512 and button.y + button.height <= 384,
-    "edition control fits the safe bounds"
-  )
-  Assert.isTrue(button.x > 256, "cinematic single keeps the edition control in the bottom-right corner")
-
   local firstFrame = drawBytes(scene, scope, 512, 384)
   for _ = 1, 45 do
     scene:updateFixed()
@@ -133,10 +125,6 @@ local function renderEdition(scope, versionId)
       end
       local afterWide = drawBytes(scene, scope, layout.width, layout.height)
       Assert.isTrue(beforeWide ~= afterWide, "wide title animation advances on the panoramic stage")
-      local boundsCenter = composition.bounds.x + composition.bounds.width / 2
-      local wideButton = scene:editionButtonBounds()
-      local buttonCenter = wideButton.x + wideButton.width / 2
-      Assert.isTrue(buttonCenter > boundsCenter, "cinematic single keeps the switch bottom-right, clear of the left logo")
     elseif layout.configuration == "tall" then
       Assert.isTrue(composition.lowerPanel == true, "tall title keeps its lower panel")
       Assert.isTrue(composition.upper ~= nil and composition.lower ~= nil, "tall title stacks two source roles")
@@ -156,12 +144,6 @@ local function renderEdition(scope, versionId)
         "dual display keeps upper and lower source roles on separate surfaces"
       )
     end
-    local resizedButton = scene:editionButtonBounds()
-    Assert.isTrue(resizedButton.x >= 0 and resizedButton.y >= 0, "resizing preserves the edition control safe area")
-    Assert.isTrue(
-      resizedButton.x + resizedButton.width <= layout.width and resizedButton.y + resizedButton.height <= layout.height,
-      "resized edition control stays visible"
-    )
     drawBytes(scene, scope, layout.width, layout.height)
   end
 
@@ -659,13 +641,6 @@ local function tallAndDualKeepTheirSourceRoles(scope, context)
       assert(dual.layout.primary, "dual layout has a world surface"),
       "dual"
     )
-    local button = dual:editionButtonBounds()
-    local center = button.x + button.width / 2
-    if versionId == "heartgold" then
-      Assert.isTrue(center > 256, "edition control stays in its edition corner")
-    else
-      Assert.isTrue(center < 256, "edition control stays in its edition corner")
-    end
     dual:dispose()
   end
 end
@@ -1280,12 +1255,6 @@ local function assertCenteredLegendPlacement(scene, scope, width, height, label)
   )
   local scale = math.max(canvasDraws[1].sx, canvasDraws[1].sy)
   Assert.near(canvasDraws[1].sx, canvasDraws[1].sy, 0.01 * scale, label .. " host scales the legendary uniformly")
-  local button = scene:editionButtonBounds()
-  Assert.isTrue(button.x >= 0 and button.y >= 0, label .. " host keeps the edition control on screen")
-  Assert.isTrue(
-    button.x + button.width <= width and button.y + button.height <= height,
-    label .. " host keeps the edition control reachable"
-  )
 end
 
 local function hostResizingKeepsTheSourcedTitleLens(scope, context)
