@@ -311,11 +311,31 @@ function T.rejects_truncated_tampered_and_misidentified_bytes()
     local ok, err = pcall(Format.decode, bytes)
     Assert.isTrue(not ok, "malformed derivative bytes must not decode: " .. reason)
     Assert.isTrue(Errors.is(err), "malformation reports a structured failure: " .. reason)
+    Assert.equal(err.code, "IMAGE_DERIVATIVE_CORRUPT", "corruption keeps its failure code: " .. reason)
   end
+  ---@param position integer 1-based byte offset to flip
+  ---@return string bytes with one altered byte
+  local function flippedAt(position)
+    local altered = (valid:byte(position) + 1) % 256
+    return valid:sub(1, position - 1) .. string.char(altered) .. valid:sub(position + 1)
+  end
+  local paletteEnd = #valid - 4
+  local paletteStart = paletteEnd - #entry.palette + 1
+  local indexEnd = paletteStart - 1
+  local indexStart = indexEnd - #entry.index + 1
   rejects(valid:sub(1, #valid - 1), "truncation")
+  rejects(valid .. "Z", "appended trailer byte")
   rejects("X" .. valid:sub(2), "wrong magic")
   rejects(valid:sub(1, 4) .. "Z" .. valid:sub(6), "tampered header byte")
   rejects(valid:sub(1, #valid - 4) .. "ZZZZ", "tampered payload tail")
+  rejects(flippedAt(indexEnd), "changed last index byte")
+  rejects(flippedAt(paletteEnd), "changed last palette byte")
+  rejects(flippedAt(indexStart), "changed first index byte")
+  local declaredByte = valid:byte(19)
+  rejects(
+    valid:sub(1, 18) .. string.char((declaredByte + 1) % 256) .. valid:sub(20),
+    "declared payload length disagrees"
+  )
   local badKind = {
     sourceHash = entry.sourceHash,
     pixelHash = entry.pixelHash,
@@ -374,6 +394,37 @@ function T.rejects_truncated_tampered_and_misidentified_bytes()
   local ok, err = pcall(Format.load, cache, path)
   Assert.isTrue(not ok, "a foreign file at a derivative path must not load")
   Assert.isTrue(Errors.is(err), "the foreign file reports a structured failure")
+end
+
+function T.reencoding_a_decoded_derivative_returns_the_exact_bytes()
+  local Format = derivativeFormat()
+  local tuples = {
+    pixel(0, 0, 0, 0),
+    pixel(255, 255, 255, 255),
+    pixel(0, 255, 0, 128),
+    pixel(255, 0, 255, 1),
+  }
+  local width, height = 4, 3
+  local pixels = cycledPixels(width, height, tuples)
+  local indexed = indexedEntry(width, height, pixels)
+  local validIndexed = Format.encode(indexed)
+  Assert.equal(Format.encode(Format.decode(validIndexed)), validIndexed, "indexed decode then re-encode is byte-identical")
+  local reloaded = Format.decode(validIndexed)
+  Assert.equal(reloaded.index, indexed.index, "index bytes survive, including embedded zeros")
+  Assert.equal(reloaded.palette, indexed.palette, "palette bytes survive, including 0x00 and 0xFF")
+  local straight = {
+    sourceHash = sha256(pixels),
+    pixelHash = sha256(pixels),
+    width = width,
+    height = height,
+    kind = "rgba8",
+    colors = 0,
+    index = pixels,
+    palette = "",
+  }
+  local validStraight = Format.encode(straight)
+  Assert.equal(Format.encode(Format.decode(validStraight)), validStraight, "straight decode then re-encode is byte-identical")
+  Assert.equal(Format.decode(validStraight).index, pixels, "straight RGBA keeps every 0x00 and 0xFF byte")
 end
 
 function T.publishing_leaves_no_staging_residue_and_cleans_up()

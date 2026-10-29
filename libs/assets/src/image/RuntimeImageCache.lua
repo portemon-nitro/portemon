@@ -10,6 +10,8 @@
 -- and publication is atomic (confined stage file plus replace), so a failed
 -- write keeps the previously published derivative intact.
 
+local ffi = require("ffi")
+
 local Errors = require("libs.errors.src.Errors")
 
 local RuntimeImageCache = {}
@@ -67,12 +69,22 @@ end
 -- Integrity word only: corruption detection for a disposable, rebuildable
 -- file. Source and pixel identity stay cryptographic (SHA256 fields below);
 -- hashing here would need love and does not belong in this package.
----@param bytes string
+-- The checksum reads the live string through a typed byte view, so the
+-- caller must keep owning `bytes` for the whole call and pass a prefix
+-- length already validated against `#bytes`.
+---@param bytes string live bytes owning the checked prefix
+---@param length integer validated prefix length, `0 <= length <= #bytes`
 ---@return integer
-local function integrityWord(bytes)
+local function integrityWord(bytes, length)
+  assert(type(bytes) == "string", "integrity input must be a byte string")
+  assert(
+    type(length) == "number" and length % 1 == 0 and length >= 0 and length <= #bytes,
+    "integrity length must be a validated prefix of the input"
+  )
+  local view = ffi.cast("const uint8_t *", bytes)
   local first, second = 1, 0
-  for index = 1, #bytes do
-    first = (first + bytes:byte(index)) % 65521
+  for index = 0, length - 1 do
+    first = (first + view[index]) % 65521
     second = (second + first) % 65521
   end
   return second * 65536 + first
@@ -213,7 +225,7 @@ function RuntimeImageCache.encode(entry)
     .. sourceHash
     .. pixelHash
   local body = header .. index .. palette
-  return body .. writeU32LE(integrityWord(body))
+  return body .. writeU32LE(integrityWord(body, #body))
 end
 
 ---@param bytes string
@@ -260,12 +272,13 @@ function RuntimeImageCache.decode(bytes)
   if #bytes ~= HEADER_LENGTH + indexLength + paletteLength + CHECKSUM_LENGTH then
     Errors.raise("IMAGE_DERIVATIVE_CORRUPT", "image derivative size disagrees with its header", { length = #bytes })
   end
-  local body = bytes:sub(1, HEADER_LENGTH + indexLength + paletteLength)
-  local stored = readU32LE(bytes, #body + 1)
-  if integrityWord(body) ~= stored then
+  local prefixLength = HEADER_LENGTH + indexLength + paletteLength
+  local stored = readU32LE(bytes, prefixLength + 1)
+  if integrityWord(bytes, prefixLength) ~= stored then
     Errors.raise("IMAGE_DERIVATIVE_CORRUPT", "image derivative integrity word mismatch", {})
   end
-  local payloads = bytes:sub(HEADER_LENGTH + 1, HEADER_LENGTH + indexLength + paletteLength)
+  local indexStart = HEADER_LENGTH + 1
+  local indexEnd = HEADER_LENGTH + indexLength
   return {
     sourceHash = bytes:sub(27, 58),
     pixelHash = bytes:sub(59, 90),
@@ -273,8 +286,8 @@ function RuntimeImageCache.decode(bytes)
     height = height,
     kind = kind,
     colors = colors,
-    index = payloads:sub(1, indexLength),
-    palette = payloads:sub(indexLength + 1),
+    index = bytes:sub(indexStart, indexEnd),
+    palette = bytes:sub(indexEnd + 1, indexEnd + paletteLength),
   }
 end
 
