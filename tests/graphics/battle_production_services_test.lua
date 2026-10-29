@@ -1005,6 +1005,147 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
   end
 end
 
+-- The first battle following settled idle (graphics leg)
+-- reuses the warmed predicted scene without rebuilding its GPU images
+-- at entry. The warmed envelope acquires no scene/intro/terrain images
+-- while entering, where the cold control still constructs them;
+-- dynamic foe portraits still demand through the ordinary path.
+function T.idle_warmup_reuses_staged_scene_on_first_battle_entry(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the warmup battle coverage needs a ready user-owned ROM with a derived cache")
+  end
+  Assert.isTrue(
+    type(FieldBattlePresentation.advanceWarmup) == "function",
+    "the battle envelope prewarms the predicted scene during idle field updates"
+  )
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local record = BattlePresentationCache.loadScene(cacheFs, SCENE_KEY)
+    local warmedPaths = {
+      [BattlePresentationCache.sceneImagePath(SCENE_KEY)] = true,
+      [record.introLayer.image] = true,
+      [record.terrainSprites.player.image] = true,
+      [record.terrainSprites.foe.image] = true,
+    }
+    local function readyHost(asks)
+      return {
+        requestBattleScene = function(sceneKey, urgency)
+          asks[#asks + 1] = { key = sceneKey, urgency = urgency }
+          return true
+        end,
+        requestBattlePresentation = function(urgency)
+          asks[#asks + 1] = { key = "presentation", urgency = urgency }
+          return true
+        end,
+      }
+    end
+    local function spyAcquires(images)
+      local tokenPaths = {}
+      local acquired = {}
+      local realRequest = images.request
+      function images.request(self, path, sampler, priority)
+        local token = realRequest(self, path, sampler, priority)
+        tokenPaths[token] = path
+        return token
+      end
+      local realAcquire = images.acquire
+      function images.acquire(self, token)
+        local lease = realAcquire(self, token)
+        acquired[#acquired + 1] = tokenPaths[token]
+        return lease
+      end
+      return acquired
+    end
+    local text, windows = productionDrawServices(scope, cacheFs, versionId)
+    local warmImages = ImageAssetPool.new(cacheFs)
+    scope:own({
+      release = function()
+        warmImages:dispose()
+      end,
+    })
+    local warmAsks = {}
+    local warmEnvelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      graphics = love.graphics,
+      windows = windows,
+      text = text,
+      audio = recordingAudio(),
+      measureDisplay = compactMeasurement,
+      derivedAssets = readyHost(warmAsks),
+      imagePool = warmImages,
+    })
+    scope:own({
+      release = function()
+        warmEnvelope:dispose()
+      end,
+    })
+    local spent = 0
+    for _ = 1, 64 do
+      local used, failure = warmEnvelope:advanceWarmup(SCENE_KEY, 1)
+      Assert.isNil(failure, versionId .. " warms without failure: " .. tostring(failure))
+      if used ~= true then
+        break
+      end
+      spent = spent + 1
+    end
+    Assert.isTrue(spent >= 1, versionId .. " adopts warmed image pairs during idle")
+    for _, ask in ipairs(warmAsks) do
+      Assert.equal(ask.urgency, "near", versionId .. " warms its scene below foreground urgency")
+    end
+    local warmAcquired = spyAcquires(warmImages)
+    local warmPort = buildPort(warmEnvelope, {
+      launchId = "battle-warm-entry",
+      kind = "wild",
+      environment = { sceneKey = SCENE_KEY },
+      host = stubHost(),
+    })
+    driveToEnter(warmEnvelope, warmPort, "battle-warm-entry", versionId)
+    for _, path in ipairs(warmAcquired) do
+      Assert.isNil(
+        warmedPaths[path] and true or nil,
+        versionId .. " rebuilds no warmed scene image at entry: " .. tostring(path)
+      )
+    end
+    local coldImages = ImageAssetPool.new(cacheFs)
+    scope:own({
+      release = function()
+        coldImages:dispose()
+      end,
+    })
+    local coldEnvelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      graphics = love.graphics,
+      windows = windows,
+      text = text,
+      audio = recordingAudio(),
+      measureDisplay = compactMeasurement,
+      derivedAssets = readyHost({}),
+      imagePool = coldImages,
+    })
+    scope:own({
+      release = function()
+        coldEnvelope:dispose()
+      end,
+    })
+    local coldAcquired = spyAcquires(coldImages)
+    local coldPort = buildPort(coldEnvelope, {
+      launchId = "battle-cold-entry",
+      kind = "wild",
+      environment = { sceneKey = SCENE_KEY },
+      host = stubHost(),
+    })
+    driveToEnter(coldEnvelope, coldPort, "battle-cold-entry", versionId)
+    local coldWarmed = 0
+    for _, path in ipairs(coldAcquired) do
+      if warmedPaths[path] == true then
+        coldWarmed = coldWarmed + 1
+      end
+    end
+    Assert.isTrue(coldWarmed > 0, versionId .. " constructs its scene images on a cold entry")
+  end
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {

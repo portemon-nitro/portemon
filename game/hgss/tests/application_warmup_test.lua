@@ -407,4 +407,95 @@ function T.foreground_demand_promotes_pending_idle_work_and_failures_still_surfa
   failing.owner:release()
 end
 
+-- A battle envelope double recording its idle warmup calls behind the
+-- same idle checks the production scheduler applies.
+local function battleSchedulingState(d02Used, sceneKey, ownsInput, entryFade)
+  local calls = {}
+  local resources = {
+    prepareBagApplication = function(_, application)
+      calls[#calls + 1] = { "prepare", application }
+      return true
+    end,
+    advanceApplicationWarmup = function(_, remaining)
+      calls[#calls + 1] = { "warmup", remaining }
+      return d02Used
+    end,
+  }
+  local envelopeCalls = {}
+  local envelope = {
+    updateFixed = function() end,
+    ownsInput = function()
+      return ownsInput == true
+    end,
+    advanceWarmup = function(_, key, allowance)
+      envelopeCalls[#envelopeCalls + 1] = { key, allowance }
+      return false, nil
+    end,
+  }
+  local runtime = {
+    update = function() end,
+    pcApplicationHost = nil,
+    applicationHost = nil,
+    martHost = nil,
+    kurtBoxHost = nil,
+    monNaming = InactiveMonNaming.new(),
+    starterChoice = nil,
+    session = nil,
+    battleCoordinator = {
+      predictedSceneKey = function()
+        return sceneKey
+      end,
+    },
+  }
+  local state = setmetatable({
+    runtime = runtime,
+    actorPresentation = {
+      sync = function()
+        return true
+      end,
+    },
+    presentationResources = resources,
+    battleEnvelope = envelope,
+    _entryFade = entryFade,
+    _entryAccumulator = 0,
+    _gameplayHoldEngaged = false,
+  }, FieldState)
+  return state, calls, envelopeCalls
+end
+
+-- Battle prewarm spends only the leftover single admission after the
+-- application warmup: an unused slot warms the predicted
+-- scene once with the full allowance, while a consumed slot, a missing
+-- prediction, a held foreground, or an active battle spends nothing.
+function T.battle_envelope_consumes_only_the_leftover_shared_gpu_slot()
+  local state, calls, envelopeCalls = battleSchedulingState(false, "general/plain/day", false, nil)
+  state:update(0.016)
+  Assert.deepEqual(calls, { { "warmup", 1 } }, "one idle update spends its single slot exactly once")
+  Assert.deepEqual(
+    envelopeCalls,
+    { { "general/plain/day", 1 } },
+    "the leftover slot warms the predicted battle scene once with the full allowance"
+  )
+  local heldState, heldCalls, heldEnvelope = battleSchedulingState(true, "general/plain/day", false, nil)
+  heldState:update(0.016)
+  Assert.deepEqual(heldCalls, { { "warmup", 1 } }, "the consumed update still reports its slot")
+  Assert.deepEqual(heldEnvelope, {}, "a consumed slot leaves no admission for battle warmup")
+  local nokeyState, _, nokeyEnvelope = battleSchedulingState(false, nil, false, nil)
+  nokeyState:update(0.016)
+  Assert.deepEqual(nokeyEnvelope, {}, "a missing prediction warms nothing")
+  local ownedState, _, ownedEnvelope = battleSchedulingState(false, "general/plain/day", true, nil)
+  ownedState:update(0.016)
+  Assert.deepEqual(ownedEnvelope, {}, "an active battle hold spends no idle admission")
+  local coveredState, coveredCalls, coveredEnvelope = battleSchedulingState(false, "general/plain/day", false, heldCover())
+  coveredState:update(0.016)
+  for _, call in ipairs(coveredCalls) do
+    if call[1] == "warmup" then
+      Assert.equal(call[2], 0, "a covered foreground holds all speculative admission")
+    end
+  end
+  for _, call in ipairs(coveredEnvelope) do
+    Assert.isFalse(call[2] == 1, "a covered field never grants the battle a GPU realization")
+  end
+end
+
 return { tests = T }
