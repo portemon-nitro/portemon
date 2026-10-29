@@ -3,6 +3,7 @@
 -- transparency), and staged-byte dimension reporting for readiness checks.
 
 local Assert = require("tests.support.Assert")
+local bit = require("bit")
 local PngWriter = require("libs.assets.src.PngWriter")
 local PngEncoder = require("tests.support.PngEncoder")
 local Errors = require("libs.errors.src.Errors")
@@ -67,6 +68,58 @@ local function decodePixels(png, name)
     end
   end
   return { width = data:getWidth(), height = data:getHeight(), pixels = table.concat(rows) }
+end
+
+-- Walk an encoded PNG and return each chunk's raw content bytes by type.
+local function chunkDataList(png)
+  assert(png:sub(1, 8) == PNG_SIGNATURE, "not a PNG file")
+  local position = 9
+  local found = {}
+  while position <= #png do
+    assert(position + 7 <= #png, "truncated PNG chunk header")
+    local length = readU32(png, position)
+    local kind = png:sub(position + 4, position + 7)
+    local dataStart = position + 8
+    assert(dataStart + length + 3 <= #png, "truncated " .. kind .. " chunk")
+    local content = png:sub(dataStart, dataStart + length - 1)
+    found[kind] = found[kind] or {}
+    found[kind][#found[kind] + 1] = content
+    if kind == "IEND" then
+      break
+    end
+    position = dataStart + length + 4
+  end
+  return found
+end
+
+-- Bit-by-bit reference CRC over a chunk's type and content, returned as
+-- four big-endian bytes for comparison with the stored CRC. It deliberately
+-- avoids the production lookup table so the stored framing has an
+-- independent anchor.
+local function referenceCrc(kind, content)
+  local crc = 0xFFFFFFFF
+  local function feed(value)
+    crc = bit.bxor(crc, value)
+    for _ = 1, 8 do
+      if bit.band(crc, 1) == 1 then
+        crc = bit.bxor(0xEDB88320, bit.rshift(crc, 1))
+      else
+        crc = bit.rshift(crc, 1)
+      end
+    end
+  end
+  for index = 1, 4 do
+    feed(kind:byte(index))
+  end
+  for index = 1, #content do
+    feed(content:byte(index))
+  end
+  crc = bit.bxor(crc, 0xFFFFFFFF)
+  local bytes = {}
+  for _, shift in ipairs({ 24, 16, 8, 0 }) do
+    bytes[#bytes + 1] = string.char(bit.band(bit.rshift(crc, shift), 0xFF))
+  end
+  return table.concat(bytes)
 end
 
 local function assertRoundTrip(width, height, pixels, name)
@@ -207,6 +260,58 @@ function T.falls_back_to_lossless_rgba_beyond_256_colors()
   Assert.equal(info.colorType, 6, "high-color images fall back to truecolor with alpha")
   local decoded = decodePixels(png, "fallback.png")
   Assert.equal(decoded.pixels, pixels, "fallback pixels survive exactly")
+end
+
+function T.keeps_first_seen_palette_order_and_index_scanlines()
+  local blue = px(0, 0, 255, 0)
+  local red = px(255, 0, 0, 255)
+  local green = px(0, 255, 0, 128)
+  -- First-seen order across two rows: blue, red, then green.
+  local pixels = blue .. red .. green .. red
+  local raws = {}
+  local function passthrough(raw)
+    raws[#raws + 1] = raw
+    return raw
+  end
+  local png = PngWriter.encode(2, 2, pixels, passthrough)
+  local chunks = chunkDataList(png)
+  -- Palette and alpha entries follow first-seen pixel order.
+  Assert.equal(
+    chunks["PLTE"][1],
+    string.char(0, 0, 255) .. string.char(255, 0, 0) .. string.char(0, 255, 0),
+    "palette entries keep first-seen order"
+  )
+  Assert.equal(chunks["tRNS"][1], string.char(0, 255, 128), "alpha entries keep first-seen order")
+  -- Each row starts with filter byte zero followed by packed indices.
+  Assert.equal(#raws, 1, "scanlines reach the compressor as one buffer")
+  Assert.equal(raws[1], "\0" .. string.char(0, 1) .. "\0" .. string.char(2, 1), "rows carry filter-zero indices")
+  Assert.equal(chunks["IDAT"][1], raws[1], "compressed payload wraps the scanline buffer")
+  -- Equal input and compressor output always produce equal PNG bytes.
+  local again = PngWriter.encode(2, 2, pixels, passthrough)
+  Assert.equal(again, png, "encoding stays deterministic")
+end
+
+function T.stores_matching_crcs_for_binary_chunk_payloads()
+  -- Pixel content chosen so palette, alpha, and compressed scanlines carry
+  -- NUL and high-bit values through the CRC walk.
+  local pixels = px(0, 0, 0, 0) .. px(255, 255, 255, 255) .. px(128, 0, 255, 13) .. px(0, 200, 0, 0)
+  local png = PngEncoder.encode(2, 2, pixels)
+  local position = 9
+  local checked = 0
+  while true do
+    local length = readU32(png, position)
+    local kind = png:sub(position + 4, position + 7)
+    local dataStart = position + 8
+    local content = png:sub(dataStart, dataStart + length - 1)
+    local stored = png:sub(dataStart + length, dataStart + length + 3)
+    Assert.equal(stored, referenceCrc(kind, content), kind .. " carries its CRC")
+    checked = checked + 1
+    if kind == "IEND" then
+      break
+    end
+    position = dataStart + length + 4
+  end
+  Assert.isTrue(checked >= 5, "indexed output frames every chunk")
 end
 
 function T.complete_envelope_reports_dimensions_only_for_whole_images()

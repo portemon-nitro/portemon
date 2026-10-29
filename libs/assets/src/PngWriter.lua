@@ -8,6 +8,7 @@
 -- dimensions.
 
 local bit = require("bit")
+local ffi = require("ffi")
 local Errors = require("libs.errors.src.Errors")
 
 local PngWriter = {}
@@ -62,8 +63,14 @@ local function chunk(kind, data)
   for index = 1, 4 do
     crc = updateCrc(crc, kind:byte(index))
   end
-  for index = 1, #data do
-    crc = updateCrc(crc, data:byte(index))
+  -- Walk the payload through a typed byte view; the seed, polynomial, and
+  -- byte order stay exactly as before. The chunk owns `data` for the whole
+  -- walk, so the borrowed view cannot outlive its bytes.
+  if #data > 0 then
+    local bytes = ffi.cast("const uint8_t *", data)
+    for offset = 0, #data - 1 do
+      crc = updateCrc(crc, bytes[offset])
+    end
   end
   return u32(#data) .. kind .. data .. u32(bit.bnot(crc))
 end
@@ -190,7 +197,7 @@ function PngWriter.encode(width, height, rgba, compressZlib)
   PngWriter.validateDimensions(width, height)
   assert(type(rgba) == "string", "PngWriter.encode requires an RGBA string")
   local expectedLength = width * height * 4
-  if #rgba ~= expectedLength then
+  if expectedLength ~= math.floor(expectedLength) or #rgba ~= expectedLength then
     Errors.raise(
       "PNG_BAD_RGBA_LENGTH",
       string.format("rgba is %d bytes, expected %d (%dx%d*4)", #rgba, expectedLength, width, height),
@@ -199,64 +206,81 @@ function PngWriter.encode(width, height, rgba, compressZlib)
   end
   assert(type(compressZlib) == "function", "PngWriter.encode requires a zlib compressor function")
 
-  -- First-seen palette order keeps the encoding deterministic; stopping
-  -- past 257 distinct tuples selects the fallback without scanning the
-  -- rest. Fully transparent tuples stay distinct entries so their RGB
-  -- survives exactly.
+  -- The validated product equals the live string length, so every count
+  -- derived below addresses bytes that exist. The input string stays
+  -- reachable for the whole encoding, which keeps the borrowed view valid.
+  local pixelCount = width * height
+  assert(pixelCount * 4 == #rgba, "typed pixel counts match the validated RGBA length")
+  local input = ffi.cast("const uint8_t *", rgba)
+
+  -- First-seen palette order keeps the encoding deterministic; stopping at
+  -- the 257th distinct tuple selects the fallback without scanning the
+  -- rest. The numeric key packs the four bytes in a fixed order, so fully
+  -- transparent tuples stay distinct entries and their RGB survives
+  -- exactly on every host.
   local palette = {}
   local paletteIndex = {}
-  local indices = {}
+  local distinct = 0
+  local indices = ffi.new("uint8_t[?]", pixelCount)
   local indexed = true
-  for offset = 1, #rgba, 4 do
-    local key = rgba:sub(offset, offset + 3)
+  for pixel = 0, pixelCount - 1 do
+    local base = pixel * 4
+    local key = input[base] + input[base + 1] * 256 + input[base + 2] * 65536 + input[base + 3] * 16777216
     local found = paletteIndex[key]
     if found == nil then
-      if #palette == 256 then
+      if distinct == 256 then
         indexed = false
         break
       end
-      palette[#palette + 1] = key
-      found = #palette - 1
+      distinct = distinct + 1
+      palette[distinct] = key
+      found = distinct - 1
       paletteIndex[key] = found
     end
-    indices[#indices + 1] = found
+    indices[pixel] = found
   end
 
   if not indexed then
-    local rows = {}
-    local stride = width * 4
+    local rowBytes = width * 4
+    local rawSize = height * (1 + rowBytes)
+    local rawBytes = ffi.new("uint8_t[?]", rawSize)
     for row = 0, height - 1 do
-      rows[#rows + 1] = "\0"
-      rows[#rows + 1] = rgba:sub(row * stride + 1, (row + 1) * stride)
+      local sourceOffset = row * rowBytes
+      local destOffset = row * (1 + rowBytes)
+      assert(sourceOffset + rowBytes <= #rgba, "fallback rows stay inside the validated input")
+      assert(destOffset + 1 + rowBytes <= rawSize, "fallback rows stay inside the scanline buffer")
+      rawBytes[destOffset] = 0
+      ffi.copy(rawBytes + destOffset + 1, input + sourceOffset, rowBytes)
     end
-    return SIGNATURE .. ihdr(width, height, 6) .. idat(table.concat(rows), compressZlib) .. chunk("IEND", "")
+    local raw = ffi.string(rawBytes, rawSize)
+    return SIGNATURE .. ihdr(width, height, 6) .. idat(raw, compressZlib) .. chunk("IEND", "")
   end
 
-  local plte, trns = {}, {}
-  for _, key in ipairs(palette) do
-    local r, g, b, a = key:byte(1, 4)
-    plte[#plte + 1] = string.char(r, g, b)
-    trns[#trns + 1] = string.char(a)
+  local plteBytes = ffi.new("uint8_t[?]", distinct * 3)
+  local trnsBytes = ffi.new("uint8_t[?]", distinct)
+  for slot = 0, distinct - 1 do
+    local key = palette[slot + 1]
+    plteBytes[slot * 3] = bit.band(key, 0xFF)
+    plteBytes[slot * 3 + 1] = bit.band(bit.rshift(key, 8), 0xFF)
+    plteBytes[slot * 3 + 2] = bit.band(bit.rshift(key, 16), 0xFF)
+    trnsBytes[slot] = bit.band(bit.rshift(key, 24), 0xFF)
   end
-  -- string.char/unpack are limited by the Lua stack; build index rows in
-  -- row chunks.
-  local rows = {}
+
+  local stride = width + 1
+  local scanSize = height * stride
+  local scanlines = ffi.new("uint8_t[?]", scanSize)
   for row = 0, height - 1 do
-    rows[#rows + 1] = "\0"
-    local base = row * width
-    local stop = base + width
-    local start = base + 1
-    while start <= stop do
-      local last = math.min(start + 4095, stop)
-      rows[#rows + 1] = string.char(unpack(indices, start, last))
-      start = last + 1
-    end
+    local destOffset = row * stride
+    assert(destOffset + stride <= scanSize, "index rows stay inside the scanline buffer")
+    scanlines[destOffset] = 0
+    ffi.copy(scanlines + destOffset + 1, indices + row * width, width)
   end
+  local raw = ffi.string(scanlines, scanSize)
   return SIGNATURE
     .. ihdr(width, height, 3)
-    .. chunk("PLTE", table.concat(plte))
-    .. chunk("tRNS", table.concat(trns))
-    .. idat(table.concat(rows), compressZlib)
+    .. chunk("PLTE", ffi.string(plteBytes, distinct * 3))
+    .. chunk("tRNS", ffi.string(trnsBytes, distinct))
+    .. idat(raw, compressZlib)
     .. chunk("IEND", "")
 end
 
