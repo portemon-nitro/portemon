@@ -279,6 +279,27 @@ local function openDoubleRig(opts)
   return rig
 end
 
+local function stageRendererIntro(rig)
+  local image = {
+    getWidth = function()
+      return 512
+    end,
+    getHeight = function()
+      return 256
+    end,
+    getDimensions = function()
+      return 512, 256
+    end,
+  }
+  rig.screen._assets._sceneLayer = {
+    introLayer = { drawable = image },
+    terrainSprites = {
+      player = { drawable = image, origin = { x = 0, y = 0 } },
+      foe = { drawable = image, origin = { x = 0, y = 0 } },
+    },
+  }
+end
+
 ---@param rig table live screen rig under test driving
 -- Acknowledges the source opening until the screen reaches its command state.
 local function acknowledgeOpening(rig)
@@ -1395,6 +1416,7 @@ function T.both_sides_field_two_battlers_with_their_own_pictures_and_health()
     foeLevels = { 4, 5 },
   })
   driveToMode(rig, "command")
+  stageRendererIntro(rig)
   local opening = rig.screen:_snapshot()
   local byPosition = battlersByPosition(opening)
   local near, far = {}, {}
@@ -1553,6 +1575,7 @@ function T.both_sides_field_two_battlers_with_their_own_pictures_and_health()
       Assert.isTrue(words[entry.name] == true, "the " .. name .. " arrangement names " .. tostring(entry.name))
     end
   end
+  rig.screen._assets._sceneLayer = nil
   local beforeHp = {}
   for _, entry in ipairs(rig.screen:_snapshot().battlers) do
     beforeHp[entry.combatant] = entry.hp
@@ -1625,6 +1648,7 @@ end
 function T.missing_native_doubles_sections_fail_the_screen_draw_without_substitution()
   local rig = openDoubleRig({ launchId = "launch-double-missing-hud", missingHud = true })
   driveToMode(rig, "command")
+  stageRendererIntro(rig)
   local FakeGraphics = require("tests.support.FakeGraphics")
   local requestedBeforeDraw = #rig.assets.requested
   rig.screen:draw({ graphics = FakeGraphics.new({}) })

@@ -89,6 +89,10 @@ local function methodAudio()
     controller.calls[#controller.calls + 1] = { method = "play", receiver = self, symbol = symbol }
     return true
   end
+  function controller:playPanned(symbol, pan)
+    controller.calls[#controller.calls + 1] = { method = "playPanned", receiver = self, symbol = symbol, pan = pan }
+    return true
+  end
   function controller:stop(symbol)
     controller.calls[#controller.calls + 1] = { method = "stop", receiver = self, symbol = symbol }
     return true
@@ -127,6 +131,9 @@ local function faultyAudio()
     error("injected cue fault", 0)
   end
   function controller:play(_)
+    checkReceiver(self)
+  end
+  function controller:playPanned(_, _)
     checkReceiver(self)
   end
   function controller:playCry(_, _)
@@ -206,7 +213,7 @@ local function stageBattlePresentation(cache)
     paletteColors[index] = { r = 0, g = 0, b = 0 }
   end
   cache:writeLua(BattlePresentationCache.scenePath(SCENE_KEY), {
-    schema = "g4-battle-scene-v2",
+    schema = "g4-battle-scene-v3",
     key = SCENE_KEY,
     background = "general",
     terrain = "grass",
@@ -238,8 +245,30 @@ local function stageBattlePresentation(cache)
       },
     },
     imagePath = BattlePresentationCache.sceneImagePath(SCENE_KEY),
+    introLayer = {
+      image = BattlePresentationCache.sceneIntroImagePath(SCENE_KEY),
+      width = 512,
+      height = 256,
+    },
+    terrainSprites = {
+      player = {
+        image = BattlePresentationCache.sceneTerrainSpritePath(SCENE_KEY, "player"),
+        width = 80,
+        height = 80,
+        origin = { x = -40, y = -40 },
+      },
+      foe = {
+        image = BattlePresentationCache.sceneTerrainSpritePath(SCENE_KEY, "foe"),
+        width = 80,
+        height = 80,
+        origin = { x = -40, y = -40 },
+      },
+    },
   })
   cache:write(BattlePresentationCache.sceneImagePath(SCENE_KEY), solidPng(512, 256))
+  cache:write(BattlePresentationCache.sceneIntroImagePath(SCENE_KEY), solidPng(512, 256))
+  cache:write(BattlePresentationCache.sceneTerrainSpritePath(SCENE_KEY, "player"), solidPng(80, 80))
+  cache:write(BattlePresentationCache.sceneTerrainSpritePath(SCENE_KEY, "foe"), solidPng(80, 80))
   cache:write(charactersPath, string.rep("\0", 65536))
   cache:writeLua(mapPath, { width = 512, height = 256, entries = mapEntries })
   cache:writeLua(palettePath, { colors = paletteColors })
@@ -493,7 +522,11 @@ local function openBattle(state, stock)
   local ScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foeRecord(FOE_SPECIES, 3, 0x5EED0002) },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+    {
+      party = party,
+      bag = bag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
   )
   holder.battle = BattleRuntime.new({
     request = launch,
@@ -532,8 +565,12 @@ end
 local function driveToCommand(rig)
   for _ = 1, 900 do
     local mode = rig.screen:status().mode
-    if mode == "intro" or mode == "narration" or mode == "outcome"
-      or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+    if
+      mode == "intro"
+      or mode == "narration"
+      or mode == "outcome"
+      or rig.screen._timeline:messageActive()
+      or rig.screen._timeline:levelUpStats() ~= nil
     then
       rig.screen:input({ { type = "confirm" } })
     end
@@ -887,8 +924,12 @@ local function driveMusicToOutcome(rig, word, packetId)
   rig.port.present(musicTerminalPacket(rig.host.launchId, packetId, word))
   for _ = 1, 900 do
     local mode = rig.screen:status().mode
-    if mode == "intro" or mode == "narration" or mode == "outcome"
-      or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+    if
+      mode == "intro"
+      or mode == "narration"
+      or mode == "outcome"
+      or rig.screen._timeline:messageActive()
+      or rig.screen._timeline:levelUpStats() ~= nil
     then
       rig.screen:input({ { type = "confirm" } })
     end

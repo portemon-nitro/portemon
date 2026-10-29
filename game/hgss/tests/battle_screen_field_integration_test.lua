@@ -376,6 +376,21 @@ local function uploadCapableGraphics()
   return graphics
 end
 
+local function scriptedPool()
+  local pool = {}
+  function pool:request(_, _, _)
+    return 1
+  end
+  function pool:poll(_)
+    return "ready"
+  end
+  function pool:acquire(_)
+    return { image = {}, width = 256, height = 256 }
+  end
+  function pool:release(_) end
+  return pool
+end
+
 ---@param game table live acceptance game under test driving
 ---@param versionId string ready game version under test driving
 ---@param measurement table caller-owned display facts under test driving
@@ -388,6 +403,7 @@ local function bindEnvelope(game, versionId, measurement, overrides)
   local options = {
     cacheFs = CacheFs.forVersion(versionId),
     graphics = uploadCapableGraphics(),
+    imagePool = scriptedPool(),
     windows = doubles.windows,
     text = doubles.text,
     audio = doubles.audio,

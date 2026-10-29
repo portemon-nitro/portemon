@@ -23,6 +23,64 @@ function T.transition_routes_require_semantic_context_and_staged_resources()
   Assert.isFalse(Schema.isValidManifest(nativeInput), "transition routes must not expose native selector indexes")
 end
 
+function T.animation_frames_require_integer_translation()
+  local valid = manifest()
+  local validResult, validError = Schema.isValidManifest(valid)
+  Assert.isTrue(
+    validResult,
+    "the manifest carries explicit zero translation where frames are static: " .. tostring(validError)
+  )
+
+  local missing = manifest()
+  missing.hud.cursor.animations[1].frames[1].x = nil
+  Assert.isFalse(Schema.isValidManifest(missing), "animation translation is required even when it is zero")
+
+  local fractional = manifest()
+  fractional.hud.cursor.animations[1].frames[1].y = 0.5
+  Assert.isFalse(Schema.isValidManifest(fractional), "animation translation must be integer pixels")
+end
+
+function T.wild_fallback_routes_require_the_staged_cell_grid_order_contract()
+  local valid = manifest()
+  local key = "transition/data/wild-cell-grid-orders/test"
+  valid.resources[key] = {
+    kind = "transition-data",
+    contentIdentity = string.rep("a", 40),
+    format = "hgss-wild-cell-grid-orders-v1",
+    geometry = { gridWidth = 8, gridHeight = 6, orderCount = 24 },
+    path = "data/generated/battle/resources/wild-cell-grid-orders.lua",
+  }
+  local route = valid.transitions.routes["trainer/red"]
+  route.role = "plain-wild-fallback"
+  route.resources[#route.resources + 1] = key
+  route.assetGroups.wildCellOrders = key
+  local admission = valid.coverage["transition/trainer/red"]
+  admission.resources[#admission.resources + 1] = key
+  admission.operations[1] = "plain-wild-fallback"
+  local routeValid, routeError = Schema.isValidManifest(valid)
+  Assert.isTrue(
+    routeValid,
+    "plain wild routes load strict producer-staged retail cell orders: " .. tostring(routeError)
+  )
+
+  local missing = manifest()
+  missing.transitions.routes["trainer/red"].role = "plain-wild-fallback"
+  Assert.isFalse(Schema.isValidManifest(missing), "wild routes cannot omit source cell grid orders")
+
+  local malformed = manifest()
+  malformed.resources[key] = {
+    kind = "transition-data",
+    contentIdentity = string.rep("a", 40),
+    format = "hgss-wild-cell-grid-orders-v1",
+    geometry = { gridWidth = 8, gridHeight = 5, orderCount = 24 },
+    path = "data/generated/battle/resources/wild-cell-grid-orders.lua",
+  }
+  Assert.isFalse(
+    Schema.isValidManifest(malformed),
+    "wild cell order geometry rejects mismatched retail grid dimensions"
+  )
+end
+
 function T.trainer_pictures_validate_semantic_role_selectors_and_staged_images()
   local valid = manifest()
   valid.trainerPictures = {
@@ -32,12 +90,14 @@ function T.trainer_pictures_validate_semantic_role_selectors_and_staged_images()
         image = "assets/generated/battle/trainer-front-YOUNGSTER.png",
         width = 80,
         height = 80,
+        rasterOffset = { x = -40, y = -40 },
       },
       ["back:PKMN_TRAINER_ETHAN"] = {
         drawableKey = "trainer:back:PKMN_TRAINER_ETHAN",
         image = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png",
         width = 80,
         height = 80,
+        rasterOffset = { x = -40, y = -40 },
       },
     },
   }
@@ -47,6 +107,13 @@ function T.trainer_pictures_validate_semantic_role_selectors_and_staged_images()
 
   valid.trainerPictures.entries["front:YOUNGSTER"].drawableKey = "trainer:front:POKEBALL"
   Assert.isFalse(Schema.isValidManifest(valid), "a trainer selector cannot point at another drawable identity")
+
+  local missingOffset = manifest()
+  missingOffset.trainerPictures.entries["front:YOUNGSTER"].rasterOffset = nil
+  Assert.isFalse(Schema.isValidManifest(missingOffset), "trainer pictures require their source raster offset")
+  local fractionalOffset = manifest()
+  fractionalOffset.trainerPictures.entries["front:YOUNGSTER"].rasterOffset.x = -40.5
+  Assert.isFalse(Schema.isValidManifest(fractionalOffset), "trainer raster offsets are integer source coordinates")
 end
 
 function T.battle_ball_frames_validate_ordered_semantic_drawables_and_staged_images()
@@ -697,7 +764,7 @@ end
 ---@return table valid composed scene record
 local function scene()
   return {
-    schema = "g4-battle-scene-v2",
+    schema = "g4-battle-scene-v3",
     key = "general/grass/day",
     background = "general",
     terrain = "grass",
@@ -712,28 +779,59 @@ local function scene()
         viewport = { x = 0, y = 0, width = 256, height = 192 },
         scroll = { x = 0, y = 0 },
         characters = {
-          key = "battle-scene/general-grass-day/bg3/characters",
+          key = "battle-scene/general-grass-day/background/characters",
           path = "data/generated/battle/scenes/general-grass-day.bg3.chars",
           format = "indexed8",
         },
         map = {
-          key = "battle-scene/general-grass-day/bg3/map",
+          key = "battle-scene/general-grass-day/background/map",
           path = "data/generated/battle/scenes/general-grass-day.bg3.map",
           format = "tilemap",
         },
         palette = {
-          key = "battle-scene/general-grass-day/bg3/palette",
+          key = "battle-scene/general-grass-day/background/palette",
           path = "data/generated/battle/scenes/general-grass-day.bg3.palette.lua",
           format = "rgb888",
         },
       },
     },
     imagePath = "assets/generated/battle/scenes/general-grass-day.png",
+    introLayer = {
+      image = "assets/generated/battle/scenes/general-grass-day-intro.png",
+      width = 512,
+      height = 256,
+    },
+    terrainSprites = {
+      player = {
+        image = "assets/generated/battle/scenes/general-grass-day-terrain-player.png",
+        width = 80,
+        height = 80,
+        origin = { x = -40, y = -40 },
+      },
+      foe = {
+        image = "assets/generated/battle/scenes/general-grass-day-terrain-foe.png",
+        width = 80,
+        height = 80,
+        origin = { x = -40, y = -40 },
+      },
+    },
   }
 end
 
 function T.scene_records_validate_their_key_and_viewport()
   Assert.isTrue(Schema.isValidScene(scene()), "a composed scene record validates")
+  local missingIntroLayer = scene()
+  missingIntroLayer.introLayer = nil
+  Assert.isFalse(Schema.isValidScene(missingIntroLayer), "a scene must stage its unbaked intro BG3 image")
+  local missingTerrainSprites = scene()
+  missingTerrainSprites.terrainSprites.foe = nil
+  Assert.isFalse(Schema.isValidScene(missingTerrainSprites), "a scene must stage both terrain OBJ images")
+  local fractionalOrigin = scene()
+  fractionalOrigin.terrainSprites.player.origin.x = 0.5
+  Assert.isFalse(Schema.isValidScene(fractionalOrigin), "terrain OBJ origins are integer cell coordinates")
+  local escapingImage = scene()
+  escapingImage.introLayer.image = "assets/generated/battle/scenes/../outside.png"
+  Assert.isFalse(Schema.isValidScene(escapingImage), "scene images cannot escape their generated root")
   local escaped = scene()
   escaped.viewport = { x = 300, y = 0, width = 256, height = 192 }
   Assert.isFalse(Schema.isValidScene(escaped), "a viewport escaping its canvas never validates")
@@ -745,7 +843,7 @@ function T.scene_records_validate_their_key_and_viewport()
   effect.background = "effect"
   Assert.isFalse(Schema.isValidScene(effect), "an effect background never validates as a scene")
   local stale = scene()
-  stale.schema = "g4-battle-scene-v1"
+  stale.schema = "g4-battle-scene-v2"
   Assert.isFalse(Schema.isValidScene(stale), "an old scene schema never validates as current")
 end
 

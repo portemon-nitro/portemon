@@ -92,6 +92,76 @@ function T.trainer_slide_renderer_uses_the_staged_picture_and_source_position()
   Assert.equal(#graphics.draws, 0, "a hidden trainer slide draws no sprite")
 end
 
+function T.opening_terrain_sprites_draw_over_the_unbaked_intro_scene()
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local graphics = FakeGraphics.new({})
+  local function image(handle)
+    return {
+      handle = handle,
+      getWidth = function()
+        return 256
+      end,
+      getHeight = function()
+        return 192
+      end,
+    }
+  end
+  local resources = {
+    graphics = graphics,
+    text = {
+      measure = function()
+        return { width = 0, height = 0 }
+      end,
+      drawText = function() end,
+    },
+    windows = { drawWindow = function() end },
+    assets = {
+      drawable = function()
+        return image("final-scene")
+      end,
+    },
+    sceneImageKey = "final-scene",
+    frameKey = "frame",
+  }
+  local view = {
+    battlers = {},
+    effectInstances = {},
+    introScene = image("intro-scene"),
+    terrainSprites = {
+      player = { drawable = image("player-terrain"), origin = { x = -32, y = -16 } },
+      foe = { drawable = image("foe-terrain"), origin = { x = -32, y = -16 } },
+    },
+    openingPresentation = {
+      playerTrainerVisible = false,
+      foeTrainerVisible = false,
+      terrainSlides = {
+        { role = "player", x = 336, y = 136, visible = true },
+        { role = "foe", x = -80, y = 88, visible = true },
+      },
+    },
+  }
+  BattleRenderer.drawPane(resources, view, "detail", {}, {})
+  local order, byHandle = {}, {}
+  for _, draw in ipairs(graphics.draws) do
+    local handle = type(draw.image) == "table" and draw.image.handle or nil
+    if handle ~= nil then
+      order[#order + 1] = handle
+      byHandle[handle] = draw
+    end
+  end
+  Assert.deepEqual(order, { "intro-scene", "player-terrain", "foe-terrain" }, "unbaked BG3 draws below both bases")
+  Assert.deepEqual(
+    { byHandle["player-terrain"].x, byHandle["player-terrain"].y },
+    { 336 - 32, 136 - 16 },
+    "the player base raster includes its cell origin"
+  )
+  Assert.deepEqual(
+    { byHandle["foe-terrain"].x, byHandle["foe-terrain"].y },
+    { -80 - 32, 88 - 16 },
+    "the foe base raster includes its cell origin"
+  )
+end
+
 function T.ball_throw_renderer_uses_the_staged_frame_and_source_position()
   local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
   local graphics = FakeGraphics.new({})
@@ -131,7 +201,7 @@ function T.ball_throw_renderer_uses_the_staged_frame_and_source_position()
     openingPresentation = {
       playerTrainerVisible = false,
       foeTrainerVisible = false,
-      ballThrow = { selector = "ball:ULTRA_BALL", x = 74, y = 103, frame = 3, visible = true },
+      ballThrow = { selector = "ball:ULTRA_BALL", x = 74, y = 103, frame = 3, rotation = 0, visible = true },
     },
   }
   BattleRenderer.drawPane(resources, view, "detail", {}, {})
@@ -327,7 +397,7 @@ local function openRig(opts)
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
       local isTypeIcon = key:match("^battle:move%-type%-icon:") ~= nil
-      local width = isTypeIcon and 64 or key == "shadow" and 64 or 80
+      local width = isTypeIcon and 32 or key == "shadow" and 64 or 80
       local height = isTypeIcon and 16 or key == "shadow" and 64 or 80
       rig.assets.images[key] = {
         handle = key,
@@ -338,6 +408,7 @@ local function openRig(opts)
         getDimensions = function()
           return width, height
         end,
+        offset = isTypeIcon and { x = -16, y = -8 } or nil,
         setFilter = fakeImageSetFilter,
       }
     end
@@ -942,11 +1013,15 @@ function T.picture_form_apply_and_restore_reaches_the_production_compositor()
   drawSnapshot(restored, restoredGraphics)
   local restoredFrame = rig.assets.images["mon:" .. originalSelector].frames[restoredBattler.pictureFrame + 1]
   local restoredDraw = pictureDraw(restoredGraphics, restoredFrame.handle)
-  Assert.deepEqual(
-    restoredDraw.meshVertices,
-    beforeChangedDraw.meshVertices,
-    "restored picture geometry matches the original"
-  )
+  local restoredVertices = {}
+  local verticalDelta = beforeChangedDraw.meshVertices[1][2] - restoredDraw.meshVertices[1][2]
+  for index, vertex in ipairs(restoredDraw.meshVertices) do
+    restoredVertices[index] = {}
+    for component, value in ipairs(vertex) do
+      restoredVertices[index][component] = component == 2 and value + verticalDelta or value
+    end
+  end
+  Assert.deepEqual(restoredVertices, beforeChangedDraw.meshVertices, "restored picture geometry matches the original")
   Assert.equal(
     rig.screen:_snapshot().battlers[1].portraitSelector,
     restored.battlers[1].portraitSelector,
@@ -1469,28 +1544,6 @@ function T.case_overrides_replace_plans_and_bad_keys_fail()
   sad.battle:dispose()
 end
 
--- The selection arrow traverses its cycle finitely: drawing across many
--- ticks cycles with a fixed period and never hangs on the zero-time
--- entry.
-function T.arrow_cycles_with_a_fixed_period()
-  local rig = openRig({})
-  driveToMode(rig, "command")
-  local shapes = {}
-  for _ = 1, 40 do
-    rig.pump(1)
-    local graphics = FakeGraphics.new({})
-    rig.screen:draw({ graphics = graphics })
-    local parts = {}
-    for _, entry in ipairs(graphics.draws) do
-      parts[#parts + 1] = tostring(entry.x) .. "," .. tostring(entry.y)
-    end
-    shapes[#shapes + 1] = table.concat(parts, "|")
-  end
-  Assert.equal(shapes[1], shapes[35], "the arrow cycle repeats with its authored period")
-  rig.screen:dispose()
-  rig.battle:dispose()
-end
-
 -- Screen drawing restores borrowed graphics state exactly.
 function T.screen_draw_restores_borrowed_state()
   local rig = openRig({})
@@ -1977,76 +2030,139 @@ function T.native_missing_art_draws_nothing()
   end
 end
 
--- The arrow draws its authored cells: the zero-time opening cell draws
--- nothing, every other cell bands its objects over the arrow strip, and
--- unknown frames draw nothing.
-function T.native_arrow_draws_authored_cells_with_bounded_zero_advance()
-  local zero = drawNativePane("detail", nativeView({ arrowFrame = 0 }), nil, {})
-  Assert.equal(#drawsOf(zero.graphics, "arrow"), 0, "the zero-time cell draws nothing")
-  local first = drawNativePane("detail", nativeView({ arrowFrame = 1 }), nil, {})
-  local one = drawsOf(first.graphics, "arrow")
-  Assert.equal(#one, 2, "the first cell bands its one object")
-  Assert.equal(one[1].x, 112, "the arrow sits left of the player anchor")
-  Assert.equal(one[1].y, 106, "the arrow shares the player anchor row")
-  Assert.equal(one[1].quad.x, 0, "the first cell opens tile 0")
-  Assert.equal(one[1].quad.imgW, 208, "the arrow quads reference the staged strip width")
-  Assert.equal(one[2].quad.x, 16, "the first cell bands row-major")
-  local third = drawNativePane("detail", nativeView({ arrowFrame = 3 }), nil, {})
-  local three = drawsOf(third.graphics, "arrow")
-  Assert.equal(#three, 4, "the third cell bands its two objects")
-  Assert.equal(three[1].x, 104, "the wider cells reach further left")
-  Assert.equal(three[1].quad.x, 32, "the third cell opens tile 4")
-  Assert.equal(three[3].x, 120, "the second object abuts the first")
-  Assert.equal(three[3].quad.x, 48, "the second object opens tile 6")
-  Assert.equal(three[3].quad.w, 8, "the second object keeps its narrow width")
-  local fifth = drawNativePane("detail", nativeView({ arrowFrame = 5 }), nil, {})
-  local five = drawsOf(fifth.graphics, "arrow")
-  Assert.equal(#five, 4, "the final cell bands its two objects")
-  Assert.equal(five[1].quad.x, 80, "the final cell opens tile 10")
-  Assert.equal(five[3].quad.x, 96, "the final narrow object opens tile 12")
-  for _, frame in ipairs({ -1, 6 }) do
-    local stray = drawNativePane("detail", nativeView({ arrowFrame = frame }), nil, {})
-    Assert.equal(#drawsOf(stray.graphics, "arrow"), 0, "frame " .. frame .. " draws no arrow")
+function T.native_cursor_uses_corner_flips_and_animated_translation()
+  local cursor = {
+    cells = {},
+    animations = {},
+  }
+  local flips = { { false, false }, { true, false }, { false, true }, { true, true } }
+  for corner = 1, 4 do
+    cursor.cells[corner] = {
+      objs = {
+        {
+          x = -8,
+          y = -8,
+          tile = corner - 1,
+          width = 16,
+          height = 16,
+          flipH = flips[corner][1],
+          flipV = flips[corner][2],
+        },
+      },
+    }
+    cursor.animations[corner] = {
+      playMode = "forward_loop",
+      frames = {
+        { cell = corner - 1, duration = 6, x = 0, y = 0 },
+        { cell = corner - 1, duration = 6, x = (corner % 2 == 1 and -1 or 1), y = (corner <= 2 and -1 or 1) },
+      },
+    }
   end
-  local missing = nativeView({})
-  missing.arrowFrame = nil
-  local silent = drawNativePane("detail", missing, nil, {})
-  Assert.equal(#drawsOf(silent.graphics, "arrow"), 0, "a missing frame draws no arrow")
+  local initial = drawsOf(
+    drawNativePane("interaction", nativeView({ cursor = cursor, cursorVisible = true, cursorTick = 0 }), "command", {}).graphics,
+    "cursor"
+  )
+  local animated =
+    drawNativePane("interaction", nativeView({ cursor = cursor, cursorVisible = true, cursorTick = 6 }), "command", {})
+  local corners = drawsOf(animated.graphics, "cursor")
+  Assert.equal(#corners, 8, "each cursor corner draws two 8-pixel rows")
+  for corner, offset in ipairs({ -1, 1, -1, 1 }) do
+    local drawIndex = (corner - 1) * 2 + 1
+    local draw = corners[drawIndex]
+    Assert.equal(draw.sx, offset < 0 and 1 or -1, "corner " .. corner .. " applies its horizontal mirror")
+    Assert.equal(draw.sy, corner <= 2 and 1 or -1, "corner " .. corner .. " applies its vertical mirror")
+    Assert.equal(draw.quad.x, (corner - 1) * 8, "animation selects corner cell " .. corner)
+    Assert.equal(
+      draw.x - initial[drawIndex].x,
+      offset,
+      "corner " .. corner .. " receives its horizontal animation offset"
+    )
+    Assert.equal(
+      draw.y - initial[drawIndex].y,
+      corner <= 2 and -1 or 1,
+      "corner " .. corner .. " receives its vertical animation offset"
+    )
+  end
 end
 
--- The live selection clock traverses the authored cells with their
--- authored counts: every displayed cell carries art, the order cycles
--- 1 through 5 with a 34-tick period, and the zero-time entry never
--- displays or hangs the cycle.
-function T.native_arrow_cycles_through_authored_cells()
+function T.active_player_and_health_box_bob_in_opposite_phases()
   local rig = openRig({})
   driveToMode(rig, "command")
-  Assert.equal(rig.screen:status().presentation.panes[1].id, "detail", "the dual display owns the detail pane")
-  local cellOfQuadX = { [0] = 1, [16] = 2, [32] = 3, [56] = 4, [80] = 5 }
-  local counts = { [1] = 0, [2] = 0, [3] = 0, [4] = 0, [5] = 0 }
-  local order = {}
-  local displayed = 0
-  for _ = 1, 68 do
+  local function activeRecord()
+    local view = rig.screen:_snapshot()
+    for _, battler in ipairs(view.battlers) do
+      if battler.side == 1 then
+        return battler
+      end
+    end
+    error("the player command battler is displayed")
+  end
+  rig.screen._activeEffectTick = 0
+  rig.screen._activeEffectRunning = true
+  local initial = activeRecord()
+  local basePictureOffset = initial.pictureYOffset or 0
+  local expectedHp = { 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, -1, -1, -1, -1, 0, 0, 0 }
+  for tick = 1, 18 do
     rig.pump(1)
-    local graphics = FakeGraphics.new({})
-    rig.screen:draw({ graphics = graphics })
-    local bands = drawsOf(graphics, "arrow")
-    if #bands > 0 then
-      Assert.isTrue(#bands == 2 or #bands == 4, "every displayed arrow cell carries art")
-      local cell = cellOfQuadX[bands[1].quad.x]
-      Assert.notNil(cell, "every arrow band opens an authored tile")
-      counts[cell] = counts[cell] + 1
-      displayed = displayed + 1
-      if order[#order] ~= cell then
-        order[#order + 1] = cell
+    local record = activeRecord()
+    Assert.equal(record.hudOffsetY, expectedHp[tick], "the active HP box follows the source bob at tick " .. tick)
+    Assert.equal(
+      (record.pictureYOffset or 0) - basePictureOffset,
+      -expectedHp[tick],
+      "the active mon bobs opposite the HP box at tick " .. tick
+    )
+    for _, battler in ipairs(rig.screen:_snapshot().battlers) do
+      if battler.side ~= 1 then
+        Assert.equal(battler.hudOffsetY or 0, 0, "inactive battlers keep a still HP box")
       end
     end
   end
-  Assert.equal(displayed, 68, "the zero-time opening cell does not count as visible: " .. tostring(displayed))
-  Assert.deepEqual(counts, { [1] = 8, [2] = 8, [3] = 8, [4] = 32, [5] = 12 }, "two periods hold the authored counts")
-  for index = 2, #order do
-    Assert.equal(order[index], order[index - 1] % 5 + 1, "the cells cycle in authored order")
+  rig.screen._activeEffectTick = 3
+  for _, kind in ipairs({ "safari", "pal-park" }) do
+    rig.screen._kind = kind
+    local record = activeRecord()
+    Assert.equal(record.hudOffsetY, 1, kind .. " keeps the health-box bob")
+    Assert.equal(record.pictureYOffset or 0, basePictureOffset, kind .. " skips the player picture bob")
   end
+  rig.screen._kind = "wild"
+  rig.screen._activeEffectTick = 5
+  rig.screen._activeEffectRunning = true
+  rig.screen:input({ { type = "confirm" } })
+  driveToMode(rig, "moves")
+  local movesTick = rig.screen._activeEffectTick
+  Assert.isTrue(movesTick > 5, "the active bob continues when Fight opens the move menu")
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
+  rig.screen:input({ { type = "confirm" } })
+  driveToMode(rig, "command")
+  Assert.isTrue(rig.screen._activeEffectTick > movesTick, "cancel returns to command without resetting the active bob")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+function T.wild_intro_keeps_its_foe_slide_through_scene_enrichment()
+  local rig = openRig({})
+  local snapshot = nil
+  for _ = 1, 60 do
+    rig.pump(1)
+    snapshot = rig.screen:_snapshot()
+    if type(snapshot.openingPresentation) == "table" then
+      break
+    end
+  end
+  local foe = nil
+  for _, battler in ipairs(assert(snapshot).battlers) do
+    if battler.side == 2 then
+      foe = battler
+      break
+    end
+  end
+  Assert.notNil(foe, "the composed wild opening publishes its foe")
+  Assert.isTrue(foe.visible, "the foe is visible before it reaches the battlefield")
+  Assert.equal(foe.pictureXOffset, -272, "scene enrichment preserves the offscreen intro slide")
+  Assert.equal(foe.paletteFade.intensity, 8, "scene enrichment preserves the darkened intro palette")
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -2285,8 +2401,8 @@ function T.native_move_facts_use_compiled_type_and_split_pp_anchors()
     end
   end
   Assert.notNil(typeIcon, "the source type sprite is drawn for the occupied move slot")
-  Assert.equal(typeIcon.x, 0, "the 64px type sprite centers on its source X coordinate")
-  Assert.equal(typeIcon.y, 53, "the 16px type sprite centers on its source Y coordinate")
+  Assert.equal(typeIcon.x, 16, "the type sprite origin is its source X coordinate plus the cell object offset")
+  Assert.equal(typeIcon.y, 53, "the type sprite origin is its source Y coordinate plus the cell object offset")
   local typeAnchors = {
     { x = 32, y = 61 },
     { x = 160, y = 60 },
@@ -2301,8 +2417,8 @@ function T.native_move_facts_use_compiled_type_and_split_pp_anchors()
       for _, entry in ipairs(graphics.draws) do
         local handle = type(entry.image) == "table" and entry.image.handle or nil
         if handle == key then
-          local expectedX = anchor.x - math.floor(entry.image:getWidth() / 2)
-          local expectedY = anchor.y - math.floor(entry.image:getHeight() / 2)
+          local expectedX = anchor.x + entry.image.offset.x
+          local expectedY = anchor.y + entry.image.offset.y
           if entry.x == expectedX and entry.y == expectedY then
             matchingDraw = entry
             break
@@ -2377,37 +2493,6 @@ function T.native_zero_pp_move_keeps_its_disabled_facts()
   rig.screen:input({ { type = "confirm" } })
   rig.pump(1)
   Assert.equal(#rig.submits, 0, "confirm cannot seal the exhausted move")
-  rig.screen:dispose()
-  rig.battle:dispose()
-end
-
--- The arrow shows only while a decision is open: leaving the selection
--- hides it while the composites and gauges keep drawing.
-function T.native_arrow_hides_outside_selection_modes()
-  local rig = openRig({})
-  driveToMode(rig, "command")
-  while rig.screen:view().arrowFrame == 0 do
-    rig.pump(1)
-  end
-  local shown = FakeGraphics.new({})
-  rig.screen:draw({ graphics = shown })
-  Assert.equal(
-    rig.screen:status().mode,
-    "command",
-    "drawing retains command mode: " .. tostring(rig.screen:status().error)
-  )
-  Assert.notNil(rig.assets.images.arrow, "the detail renderer resolves the staged arrow")
-  Assert.isTrue(#drawsOf(shown, "arrow") > 0, "the command root shows the arrow")
-  rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "moves", "Fight opens move selection")
-  rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "awaiting_resolution", "confirming the known slot submits")
-  local settled = FakeGraphics.new({})
-  rig.screen:draw({ graphics = settled })
-  Assert.equal(#drawsOf(settled, "arrow"), 0, "the submitted decision hides the arrow")
-  Assert.isTrue(#drawsOf(settled, "hud:player") > 0, "the submitted decision keeps its composite")
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -3496,24 +3581,6 @@ function T.doubled_enemy_caught_markers_follow_wild_and_trainer_visibility()
   Assert.isFalse(hasCaughtMark(trainer), "double trainer foes suppress the native caught marker")
 end
 
--- The doubled selection arrow follows the acting partner: its column
--- sits one horizontal arrow offset left of the acting health-box
--- anchor, derived at draw time instead of hardcoded.
-function T.doubled_arrow_follows_the_acting_partner_health_box()
-  local leftActing =
-    drawNativePane("detail", doublesDetailView({ actor = { combatant = 5, index = 1, total = 2 } }), nil, {})
-  local leftBands = drawsOf(leftActing.graphics, "arrow")
-  Assert.equal(#leftBands, 2, "the acting left partner shows the arrow")
-  Assert.equal(leftBands[1].x, 112, "the arrow sits one offset left of the left anchor")
-  Assert.equal(leftBands[1].y, 95, "the arrow shares the left anchor row")
-  local rightActing =
-    drawNativePane("detail", doublesDetailView({ actor = { combatant = 11, index = 2, total = 2 } }), nil, {})
-  local rightBands = drawsOf(rightActing.graphics, "arrow")
-  Assert.equal(#rightBands, 2, "the acting right partner shows the arrow")
-  Assert.equal(rightBands[1].x, 118, "the arrow sits one offset left of the right anchor")
-  Assert.equal(rightBands[1].y, 124, "the arrow shares the right anchor row")
-end
-
 -- Multi-actor decisions name the acting battler above the interaction
 -- menu, fitted to its 44-pixel label; a single-actor decision names
 -- nobody there.
@@ -3532,20 +3599,6 @@ function T.interaction_menu_names_the_acting_battler_in_multi_actor_decisions()
     end
     Assert.equal(named, total > 1, "the menu names the acting battler only in multi-actor decisions")
   end
-end
-
-function T.doubled_arrow_keeps_the_right_slot_when_left_partner_hides()
-  local view = doublesDetailView({ actor = { combatant = 11, index = 2, total = 2 } })
-  for _, battler in ipairs(view.battlers) do
-    if battler.combatant == 5 then
-      battler.visible = false
-    end
-  end
-  local drawn = drawNativePane("detail", view, nil, {})
-  local bands = drawsOf(drawn.graphics, "arrow")
-  Assert.equal(#bands, 2, "the acting right partner retains the arrow")
-  Assert.equal(bands[1].x, 118, "the arrow remains anchored to the right slot after the left hides")
-  Assert.equal(bands[1].y, 124, "the arrow remains on the right slot row after the left hides")
 end
 
 -- A single battle keeps its established anchors while its lead hides

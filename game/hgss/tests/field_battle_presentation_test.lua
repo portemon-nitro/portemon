@@ -294,6 +294,7 @@ local function bindEnvelope(runtime, versionId, measurement, graphics, transitio
     text = doubles.text,
     audio = doubles.audio,
     graphics = graphics,
+    imagePool = scriptedPool(),
     derivedAssets = transition ~= nil and transition.derivedAssets or nil,
     fieldRenderer = transition ~= nil and transition.fieldRenderer or nil,
     captureFieldLayers = transition ~= nil and transition.captureFieldLayers or nil,
@@ -1322,6 +1323,7 @@ function T.trainer_picture_demands_wait_for_the_selected_game_host()
               image = "assets/generated/battle/trainer-youngster.png",
               width = 80,
               height = 80,
+              rasterOffset = { x = -40, y = -40 },
             },
           },
         },
@@ -1776,6 +1778,9 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
   local sceneKey = "general/plain/day"
   local recordPath = BattlePresentationCache.scenePath(sceneKey)
   local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)
+  local introImagePath = BattlePresentationCache.sceneIntroImagePath(sceneKey)
+  local playerTerrainPath = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player")
+  local foeTerrainPath = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe")
   local charactersPath = BattlePresentationCache.sceneCharactersPath(sceneKey)
   local mapPath = BattlePresentationCache.sceneMapPath(sceneKey)
   local palettePath = BattlePresentationCache.scenePalettePath(sceneKey)
@@ -1822,6 +1827,21 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
         },
       },
       imagePath = imagePath,
+      introLayer = { image = introImagePath, width = 512, height = 256 },
+      terrainSprites = {
+        player = {
+          image = playerTerrainPath,
+          width = 96,
+          height = 48,
+          origin = { x = 48, y = 24 },
+        },
+        foe = {
+          image = foeTerrainPath,
+          width = 96,
+          height = 48,
+          origin = { x = 48, y = 24 },
+        },
+      },
     }
     local revealed = false
     local imageStaged = false
@@ -1844,13 +1864,16 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
         -- through exists, so staged bytes stay out of this channel.
         return nil
       end
+      if path == introImagePath or path == playerTerrainPath or path == foeTerrainPath then
+        return nil
+      end
       if path == charactersPath then
         return revealed and string.rep("c", 65536) or nil
       end
       return cacheFs:read(path)
     end
     function view.exists(_, path, expectedType)
-      if path == imagePath then
+      if path == imagePath or path == introImagePath or path == playerTerrainPath or path == foeTerrainPath then
         return imageStaged
       end
       return cacheFs:exists(path, expectedType)
@@ -1871,6 +1894,7 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       end,
       graphics = {},
       derivedAssets = derivedAssets,
+      imagePool = scriptedPool(),
     })
     local function demand()
       return {
@@ -3010,6 +3034,7 @@ local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOv
       return measurement
     end,
     graphics = graphicsOverride or uploadCapableGraphics(),
+    imagePool = scriptedPool(),
     derivedAssets = derivedAssets,
   })
   local ports = {}
@@ -3554,6 +3579,7 @@ function T.scheduled_port_operation_failures_report_once_with_their_context()
         return dualMeasurement("deferred-operation-failure:dual")
       end,
       graphics = uploadCapableGraphics(),
+      imagePool = scriptedPool(),
       derivedAssets = derivedAssets,
     })
     local launchId = "operation-failure-probe"
@@ -3660,6 +3686,7 @@ function T.scheduled_live_port_dispose_releases_the_screen_once_and_keeps_the_en
         return dualMeasurement("deferred-live-dispose:dual")
       end,
       graphics = uploadCapableGraphics(),
+      imagePool = scriptedPool(),
       derivedAssets = derivedAssets,
     })
     local launchId = "live-dispose-probe"

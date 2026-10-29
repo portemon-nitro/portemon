@@ -1277,6 +1277,22 @@ function T.resume_restores_current_policy_once_and_ignores_stale_tokens()
   Assert.equal(#spy.plays, playsBefore + 1, "a released token restores nothing further")
 end
 
+function T.battle_music_replaces_field_players_across_policy_hold()
+  local controller, _, player, _, _, fdA = seamlessSoundplateScenario()
+  controller:enterMap({ fieldData = fdA }, { play = true })
+  Assert.isTrue(player:isPlayerPlaying(1), "field music starts on player 1")
+
+  controller:suspendFieldPolicy("launch-1")
+  controller:playMusic("SEQ_GS_UTSUGI_RABO")
+  controller:updateSoundFrame()
+  Assert.isFalse(player:isPlayerPlaying(1), "battle music yields the field player")
+  Assert.isTrue(player:isPlayerPlaying(7), "battle music runs on player 7")
+
+  controller:resumeFieldPolicy("launch-1", true)
+  Assert.isFalse(player:isPlayerPlaying(7), "field restoration stops the battle player")
+  Assert.isTrue(player:isPlayerPlaying(1), "field music resumes on player 1")
+end
+
 function T.resume_without_restore_releases_the_hold_silently()
   local controller, sound, spy, fdA = musicScenario()
   controller:enterMap({ fieldData = fdA }, { play = true })

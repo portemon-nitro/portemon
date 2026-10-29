@@ -102,13 +102,13 @@ function T.contract_identities_version_the_new_catalog_shapes()
   local Contract = assetContract()
   Assert.equal(
     Contract.battlePresentation.schema,
-    "g4-battle-presentation-v7",
+    "g4-battle-presentation-v8",
     "the shared contract versions the normalized global catalog"
   )
   Assert.equal(
     Contract.battlePresentation.sceneSchema,
-    "g4-battle-scene-v2",
-    "the shared contract versions scenes with backing and provenance facts"
+    "g4-battle-scene-v3",
+    "the shared contract versions scenes with intro and terrain sprite images"
   )
   Assert.isTrue(
     type(Contract.battlePresentation.effectSchema) == "string" and Contract.battlePresentation.effectSchema ~= "",

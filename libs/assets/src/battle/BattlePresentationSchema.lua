@@ -10,8 +10,8 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattlePresentationSchema
 local BattlePresentationSchema = {}
 
-BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v7"
-BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v2"
+BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v8"
+BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v3"
 
 local fail = SchemaCheck.fail
 
@@ -204,6 +204,7 @@ local RESOURCE_KINDS = {
   ["particle-emitter"] = true,
   ["multi-cell"] = true,
   ["multi-cell-animation"] = true,
+  ["transition-data"] = true,
 }
 
 local function checkCatalogTable(value, context, code, field)
@@ -340,6 +341,21 @@ local function checkResourceDescriptor(descriptor, context, code, record)
       fail(code, record .. " particle format must be nitro-spl-aps-v1", context)
     end
     checkResourceGeometry(descriptor, PARTICLE_GEOMETRY, context, code, record)
+  elseif descriptor.kind == "transition-data" then
+    if descriptor.format ~= "hgss-wild-cell-grid-orders-v1" then
+      fail(code, record .. " transition data has an unknown format", context)
+    end
+    local geometry = descriptor.geometry
+    SchemaCheck.checkRecord(
+      geometry,
+      { gridWidth = true, gridHeight = true, orderCount = true },
+      context,
+      code,
+      record .. ".geometry"
+    )
+    if geometry.gridWidth ~= 8 or geometry.gridHeight ~= 6 or geometry.orderCount ~= 24 then
+      fail(code, record .. " wild cell order geometry must describe the 8 by 6 retail grid", context)
+    end
   elseif RESOURCE_GEOMETRY_BY_FORMAT[descriptor.format] ~= nil then
     checkResourceGeometry(descriptor, RESOURCE_GEOMETRY_BY_FORMAT[descriptor.format], context, code, record)
   end
@@ -475,6 +491,43 @@ local function checkSceneLayer(layer, context, field)
   checkSceneResource(layer.palette, context, field .. ".palette")
   if layer.characters.format ~= "indexed8" or layer.map.format ~= "tilemap" or layer.palette.format ~= "rgb888" then
     fail(CODE_SCENE, field .. " resources must use normalized indexed8, tilemap, and rgb888 formats", context)
+  end
+end
+
+local function checkScenePngImage(image, width, height, context, field)
+  checkImagePath(image, context, CODE_SCENE, field .. ".image")
+  local prefix = "assets/generated/battle/scenes/"
+  if image:sub(1, #prefix) ~= prefix or image:find("..", 1, true) ~= nil or image:sub(-4) ~= ".png" then
+    fail(CODE_SCENE, field .. ".image must reference a staged battle scene PNG", context)
+  end
+  checkInt(width, 1, 512, context, CODE_SCENE, field .. ".width")
+  checkInt(height, 1, 256, context, CODE_SCENE, field .. ".height")
+end
+
+local function checkIntroLayer(layer, context)
+  SchemaCheck.checkRecord(layer, { image = true, width = true, height = true }, context, CODE_SCENE, "scene introLayer")
+  checkScenePngImage(layer.image, layer.width, layer.height, context, "scene introLayer")
+  if layer.width ~= 512 or layer.height ~= 256 then
+    fail(CODE_SCENE, "scene introLayer must preserve the native unbaked 512x256 BG3 canvas", context)
+  end
+end
+
+local function checkTerrainSprites(sprites, context)
+  SchemaCheck.checkRecord(sprites, { player = true, foe = true }, context, CODE_SCENE, "scene terrainSprites")
+  for _, side in ipairs({ "player", "foe" }) do
+    local field = "scene terrainSprites." .. side
+    local sprite = sprites[side]
+    SchemaCheck.checkRecord(
+      sprite,
+      { image = true, width = true, height = true, origin = true },
+      context,
+      CODE_SCENE,
+      field
+    )
+    checkScenePngImage(sprite.image, sprite.width, sprite.height, context, field)
+    SchemaCheck.checkRecord(sprite.origin, { x = true, y = true }, context, CODE_SCENE, field .. ".origin")
+    checkInt(sprite.origin.x, -256, 255, context, CODE_SCENE, field .. ".origin.x")
+    checkInt(sprite.origin.y, -256, 255, context, CODE_SCENE, field .. ".origin.y")
   end
 end
 
@@ -1072,11 +1125,13 @@ local function checkAnimation(animation, context, code, field)
   end
   for index, frame in ipairs(animation.frames) do
     local entry = field .. ".frames[" .. index .. "]"
-    SchemaCheck.checkRecord(frame, { cell = true, duration = true }, context, code, entry)
+    SchemaCheck.checkRecord(frame, { cell = true, duration = true, x = true, y = true }, context, code, entry)
     checkInt(frame.cell, 0, nil, context, code, entry .. ".cell")
     -- A legal zero duration holds its opening cell; durations are never
     -- negative or fractional.
     checkInt(frame.duration, 0, nil, context, code, entry .. ".duration")
+    checkInt(frame.x, -32768, 32767, context, code, entry .. ".x")
+    checkInt(frame.y, -32768, 32767, context, code, entry .. ".y")
   end
 end
 
@@ -1875,6 +1930,17 @@ local function checkTransitionRoute(route, messageEntries, messageRoutes, resour
     fail(code, entry .. ".assetGroups must preserve source loader groupings", context)
   end
   checkResourceGroup(route.assetGroups, resources, valueSet(route.resources), context, code, entry .. ".assetGroups")
+  if
+    route.role == "plain-wild-fallback"
+    or route.role == "water-wild-fallback"
+    or route.role == "cave-wild-fallback"
+  then
+    local orderKey = route.assetGroups.wildCellOrders
+    local order = type(orderKey) == "string" and resources[orderKey] or nil
+    if type(order) ~= "table" or order.kind ~= "transition-data" or order.format ~= "hgss-wild-cell-grid-orders-v1" then
+      fail(code, entry .. " wild transition routes require staged retail cell grid orders", context)
+    end
+  end
   if route.messages ~= nil then
     if not Validate.isArray(route.messages) then
       fail(code, entry .. ".messages must be an ordered list of message routes", context)
@@ -3189,7 +3255,7 @@ local function checkTrainerPictures(manifest, context)
     local field = "manifest trainerPictures.entries[" .. selector .. "]"
     SchemaCheck.checkRecord(
       record,
-      { drawableKey = true, image = true, width = true, height = true },
+      { drawableKey = true, image = true, width = true, height = true, rasterOffset = true },
       context,
       CODE_MANIFEST,
       field
@@ -3200,6 +3266,15 @@ local function checkTrainerPictures(manifest, context)
     checkImagePath(record.image, context, CODE_MANIFEST, field .. ".image")
     checkInt(record.width, 1, 128, context, CODE_MANIFEST, field .. ".width")
     checkInt(record.height, 1, 128, context, CODE_MANIFEST, field .. ".height")
+    SchemaCheck.checkRecord(
+      record.rasterOffset,
+      { x = true, y = true },
+      context,
+      CODE_MANIFEST,
+      field .. ".rasterOffset"
+    )
+    checkInt(record.rasterOffset.x, -128, 127, context, CODE_MANIFEST, field .. ".rasterOffset.x")
+    checkInt(record.rasterOffset.y, -128, 127, context, CODE_MANIFEST, field .. ".rasterOffset.y")
     checkImageRef(manifest.menus.images, record.image, context, field .. ".image")
   end
 end
@@ -3216,7 +3291,8 @@ local function checkBattleBalls(manifest, context)
       fail(CODE_MANIFEST, "manifest battle ball selector is not semantic", context)
     end
     local field = "manifest battleBalls.entries[" .. selector .. "]"
-    SchemaCheck.checkRecord(record, { frames = true }, context, CODE_MANIFEST, field)
+    SchemaCheck.checkRecord(record, { frames = true, fadeColor = true }, context, CODE_MANIFEST, field)
+    checkInt(record.fadeColor, 0, 0x7FFF, context, CODE_MANIFEST, field .. ".fadeColor")
     if not Validate.isArray(record.frames) or #record.frames == 0 then
       fail(CODE_MANIFEST, field .. ".frames must carry ordered animation frames", context)
     end
@@ -3493,6 +3569,8 @@ function BattlePresentationSchema.assertScene(scene)
     viewport = true,
     layers = true,
     imagePath = true,
+    introLayer = true,
+    terrainSprites = true,
   }, context, CODE_SCENE, "scene")
   if scene.schema ~= BattlePresentationSchema.SCENE_SCHEMA then
     fail(CODE_SCENE, "scene schema must be " .. BattlePresentationSchema.SCENE_SCHEMA, context)
@@ -3545,6 +3623,8 @@ function BattlePresentationSchema.assertScene(scene)
     layerKeys[layer.key] = true
   end
   checkImagePath(scene.imagePath, context, CODE_SCENE, "scene imagePath")
+  checkIntroLayer(scene.introLayer, context)
+  checkTerrainSprites(scene.terrainSprites, context)
   checkNoNativeKeys(scene, context, CODE_SCENE, "scene")
   return true
 end

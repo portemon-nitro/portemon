@@ -374,6 +374,35 @@ function T.pp_serving_narrates_the_restoration()
   Assert.deepEqual(seen, { "Used the Ether!", "PP was restored." }, "the restoration follows its use line")
 end
 
+-- The bag subscripts play the recovery sound once for a served item.
+function T.bag_item_use_plays_its_recovery_sound_once()
+  local sounds = sink()
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+    itemName = function(item)
+      return item == "POTION" and "Potion" or nil
+    end,
+  })
+  timeline:reset(openingView())
+  local served = event("item", {
+    item = "POTION",
+    inventory = "party",
+    target = { kind = "combatant", combatant = 1 },
+    restored = 20,
+  }, { [1] = 52, [3] = 57 })
+  served.cause = { kind = "action", combatant = 1 }
+  Assert.isTrue(timeline:present(packet(1, { served }, openingView())), "the item packet is accepted")
+  advance(timeline, TICK)
+  Assert.equal(sounds.countEffect("SEQ_SE_DP_KAIFUKU"), 1, "the recovery sound plays once as the item is used")
+  for _ = 1, 600 do
+    advance(timeline, TICK)
+    timeline:ack()
+  end
+  Assert.equal(sounds.countEffect("SEQ_SE_DP_KAIFUKU"), 1, "later narration does not repeat the sound")
+end
+
 function T.displayed_battlers_preserve_false_source_caught_state()
   local view = openingView()
   view.foes[1].caught = false
@@ -786,6 +815,11 @@ function T.first_packet_events_play_after_the_opening_once()
       { kind = "glyph", code = 1, text = "[" },
       { kind = "substitution", control = 0x0100, args = { 0 } },
       { kind = "glyph", code = 2, text = "]" },
+      { kind = "line_break", control = 0xE000 },
+      { kind = "style", control = 0xFF00, args = { 3 } },
+      { kind = "glyph", code = 3, text = "é" },
+      { kind = "pause", control = 0x0201, args = { 4 } },
+      { kind = "prompt_break", control = 0x25BC },
       { kind = "eos" },
     },
   }
@@ -810,12 +844,12 @@ function T.first_packet_events_play_after_the_opening_once()
   local sourceShown = false
   for _ = 1, 600 do
     screen:updateFixed(TICK)
-    if screen:view().message == "[LEAD]" then
+    if screen:view().message == "[LEAD]\né" then
       sourceShown = true
       break
     end
   end
-  Assert.isTrue(sourceShown, "the Bide release selects the source message and substitutes the battler name")
+  Assert.isTrue(sourceShown, "the Bide release shows only printable glyphs and line breaks of the source message")
   local foe = nil
   for _, battler in ipairs(screen._timeline:battlers()) do
     if battler.combatant == 3 then
@@ -946,6 +980,90 @@ function T.active_lead_names_and_cries_the_live_slot_not_slot_zero()
   Assert.equal(sounds.countCry("EEVEE", true), 1, "the opening cries the wild foe species once")
 end
 
+function T.wild_intro_slides_the_dark_foe_in_before_cry_and_fades_it_at_arrival()
+  local sounds = sink()
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+    textSpeed = "fastest",
+  })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, true)
+
+  local foe = battler(timeline:battlers(), 3)
+  Assert.isTrue(foe.visible, "the wild foe appears at the opening slide start")
+  Assert.equal(foe.pictureXOffset, -272, "the wild foe starts offscreen at source x=-80")
+  Assert.equal(foe.paletteFade.intensity, 8, "the foe starts darkened")
+  for _ = 1, 28 do
+    advance(timeline, TICK)
+  end
+  foe = battler(timeline:battlers(), 3)
+  Assert.equal(foe.pictureXOffset, -272, "the foe waits 28 source ticks before sliding")
+  advance(timeline, TICK)
+  foe = battler(timeline:battlers(), 3)
+  Assert.equal(foe.pictureXOffset, -264, "the foe moves eight pixels on the first slide tick")
+  for _ = 1, 33 do
+    advance(timeline, TICK)
+  end
+  foe = battler(timeline:battlers(), 3)
+  Assert.equal(foe.pictureXOffset, 0, "the foe reaches the native battlefield position")
+  Assert.equal(
+    foe.paletteFade.intensity,
+    8,
+    "the fade begins at full darkening when the slide arrives: " .. tostring(foe.paletteFade.intensity)
+  )
+  Assert.equal(sounds.countCry("EEVEE", true), 1, "the foe cries on the arrival tick")
+  for _ = 1, 8 do
+    advance(timeline, TICK)
+  end
+  foe = battler(timeline:battlers(), 3)
+  Assert.equal(foe.paletteFade.intensity, 0, "the source palette fade completes in eight ticks")
+  Assert.isTrue(foe.hudVisible, "the foe HUD appears when the source intro fade completes")
+end
+
+function T.intro_slides_both_terrain_bases_after_the_source_delay()
+  local timeline = BattleTimeline.new({ sound = function(_) end, textSpeed = "fastest" })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, true)
+
+  local terrainSlides = assert(timeline:openingPresentation().terrainSlides)
+  Assert.deepEqual(terrainSlides, {
+    { role = "player", x = 336, y = 136, visible = true, phase = "intro-delay" },
+    { role = "foe", x = -80, y = 88, visible = true, phase = "intro-delay" },
+  }, "both terrain bases begin at their source positions")
+  for _ = 1, 28 do
+    advance(timeline, TICK)
+  end
+  terrainSlides = assert(timeline:openingPresentation().terrainSlides)
+  Assert.equal(terrainSlides[1].x, 336, "player terrain waits 28 ticks")
+  Assert.equal(terrainSlides[2].x, -80, "foe terrain waits 28 ticks")
+  advance(timeline, TICK)
+  terrainSlides = assert(timeline:openingPresentation().terrainSlides)
+  Assert.equal(terrainSlides[1].x, 328, "player terrain moves left eight pixels")
+  Assert.equal(terrainSlides[2].x, -72, "foe terrain moves right eight pixels")
+  for _ = 1, 33 do
+    advance(timeline, TICK)
+  end
+  terrainSlides = assert(timeline:openingPresentation().terrainSlides)
+  Assert.equal(terrainSlides[1].x, 64, "player terrain reaches its settled position")
+  Assert.equal(terrainSlides[2].x, 192, "foe terrain reaches its settled position")
+  Assert.equal(terrainSlides[1].phase, "intro-settle", "player terrain reports its settled phase")
+  Assert.equal(terrainSlides[2].phase, "intro-settle", "foe terrain reports its settled phase")
+  for _ = 1, 7 do
+    advance(timeline, TICK)
+  end
+  terrainSlides = assert(timeline:openingPresentation().terrainSlides)
+  Assert.isTrue(terrainSlides[1].visible, "terrain stays visible through the foe's palette fade")
+  Assert.isTrue(terrainSlides[2].visible, "foe terrain stays visible through the palette fade")
+  advance(timeline, TICK)
+  terrainSlides = assert(timeline:openingPresentation().terrainSlides)
+  Assert.isFalse(terrainSlides[1].visible, "player terrain hides after the foe's palette fade")
+  Assert.isFalse(terrainSlides[2].visible, "foe terrain hides after the foe's palette fade")
+end
+
 function T.opening_presentation_starts_with_the_native_trainer_visibility()
   local wild = BattleTimeline.new({ sound = function(_) end })
   wild:reset(openingView())
@@ -965,6 +1083,10 @@ function T.opening_presentation_starts_with_the_native_trainer_visibility()
         visible = true,
         phase = "intro-delay",
       },
+    },
+    terrainSlides = {
+      { role = "player", x = 336, y = 136, visible = true, phase = "intro-delay" },
+      { role = "foe", x = -80, y = 88, visible = true, phase = "intro-delay" },
     },
   })
   local trainer = BattleTimeline.new({ sound = function(_) end })
@@ -996,6 +1118,10 @@ function T.opening_presentation_starts_with_the_native_trainer_visibility()
         visible = true,
         phase = "intro-delay",
       },
+    },
+    terrainSlides = {
+      { role = "player", x = 336, y = 136, visible = true, phase = "intro-delay" },
+      { role = "foe", x = -80, y = 88, visible = true, phase = "intro-delay" },
     },
   })
 end
@@ -2629,6 +2755,49 @@ function T.level_up_stats_render_in_the_battle_detail_pane()
   Assert.equal(text.draws[2].x, 216, "stat values use the retail right column")
 end
 
+function T.narration_prints_each_source_line_on_its_own_row()
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local text = { draws = {} }
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 8 }
+  end
+  function text.drawText(content, x, y)
+    text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y }
+  end
+  local palette = {}
+  for index = 1, 16 do
+    palette[index] = { r = 255, g = 255, b = 255 }
+  end
+  local resources = {
+    graphics = require("tests.support.FakeGraphics").new({}),
+    text = text,
+    windows = {
+      drawWindow = function() end,
+    },
+    assets = {
+      drawable = function()
+        return nil
+      end,
+    },
+    sceneImageKey = "unused",
+    frameKey = "frame",
+  }
+  local view = {
+    battlers = {},
+    effectInstances = {},
+    textPalettes = { narration = { colors = palette } },
+    message = "Foe is hit\nwith recoil!",
+  }
+  BattleRenderer.drawPane(resources, view, "detail", {}, {})
+  local rows = {}
+  for _, draw in ipairs(text.draws) do
+    Assert.isTrue(draw.content:find("[\n\r\f]") == nil, "no control character reaches the font")
+    rows[#rows + 1] = draw.content
+  end
+  Assert.deepEqual(rows, { "Foe is hit", "with recoil!" }, "each source line is drawn separately")
+  Assert.equal(text.draws[2].y - text.draws[1].y, 16, "source lines step one font row")
+end
+
 -- subscript_0000_StartEncounter: the wild foe cries before msg_0197_00965,
 -- and the lead cries on its send-out after "Go!".
 function T.wild_opening_follows_the_source_encounter_order()
@@ -2637,7 +2806,7 @@ function T.wild_opening_follows_the_source_encounter_order()
   timeline:intro(openingView(), true)
   Assert.deepEqual(
     transcript(timeline, sounds),
-    { "cry:EEVEE:foe", "A wild FOE appeared!", "Go! LEAD!", "cry:EEVEE:own" },
+    { "cry:EEVEE:foe", "A wild FOE appeared!", "Go! LEAD!", "effect:SEQ_SE_DP_BOWA2", "cry:EEVEE:own" },
     "the wild opening keeps the retail order and wording"
   )
 end
@@ -2771,6 +2940,53 @@ function T.player_switch_lines_follow_the_foe_health()
   Assert.equal(seen[2], "Go for it, BENCH!", "the send-out scales by the foe health left")
 end
 
+-- Task_RecallPokemon and Task_PokemonSendOut each voice SEQ_SE_DP_BOWA2
+-- panned at the switching side; the arrival cry follows its send-out voice.
+function T.switch_voices_recall_and_send_out_with_the_side_pan()
+  local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+  local sounds = sink()
+  local timeline = BattleTimeline.new({ sound = sounds.sound })
+  local view = openingView()
+  view.own[2] = {
+    combatant = 2,
+    participant = 1,
+    side = 1,
+    controller = "player",
+    active = false,
+    hp = 30,
+    maxHp = 30,
+    species = "EEVEE",
+    form = 0,
+    name = "BENCH",
+    ballKey = "POKE_BALL",
+    level = 20,
+    experience = 8000,
+  }
+  timeline:reset(view)
+  local after = openingView()
+  after.own[2] = view.own[2]
+  local swap = event("switch", { from = 1, to = 2, position = 1 }, { [1] = 52, [3] = 57 })
+  swap.cause = { kind = "switch" }
+  local delivery = packet(1, { swap }, after)
+  delivery.before.own[2] = view.own[2]
+  Assert.isTrue(timeline:present(delivery), "the switch is accepted")
+  local seen = transcript(timeline, sounds)
+  local voices = {}
+  for _, entry in ipairs(seen) do
+    if entry:find("^effect:") or entry:find("^cry:") then
+      voices[#voices + 1] = entry
+    end
+  end
+  Assert.deepEqual(voices, {
+    "effect:" .. BattleAudio.SINK_SOUNDS.ballOpen,
+    "effect:" .. BattleAudio.SINK_SOUNDS.partyGaugeShow,
+    "effect:" .. BattleAudio.SINK_SOUNDS.ballOpen,
+    "cry:EEVEE:own",
+  }, "recall, the party gauge, and send-out voice their sounds in source order before the cry")
+  Assert.equal(sounds.played[1].pan, BattleAudio.SIDE_PAN.player, "the recall pans to the player side")
+  Assert.equal(sounds.played[3].pan, BattleAudio.SIDE_PAN.player, "the send-out pans to the player side")
+end
+
 -- subscript_0011_ThrowBall names the throwing trainer, the target enters
 -- the ball before any shake, shakes print nothing, and a break-out sends
 -- the target back out before its line.
@@ -2796,6 +3012,33 @@ function T.capture_throw_names_the_player_and_hides_the_target_in_the_ball()
   local seen = transcript(timeline, sink())
   Assert.deepEqual(seen, { "GOLD used one Poké Ball!" }, "the throw prints its source line and shakes print nothing")
   Assert.isFalse(battler(timeline:battlers(), 3).visible, "the target waits inside the ball")
+end
+
+-- BtlCmd_ThrowPokeball in a trainer battle: the ball deflects, the target
+-- never enters it, and msg_0197_00859 and 00860 follow the throw line.
+function T.blocked_throw_prints_the_trainer_block_lines_and_keeps_the_target()
+  local timeline = BattleTimeline.new({
+    itemName = function(_)
+      return "Poké Ball"
+    end,
+  })
+  local view = openingView()
+  view.playerName = "GOLD"
+  timeline:reset(view)
+  local after = openingView()
+  after.playerName = "GOLD"
+  local throw = event("throw", { ball = "POKE_BALL", blocked = true }, { [1] = 52, [3] = 57 })
+  throw.actors = { { combatant = 1 } }
+  throw.targets = { { combatant = 3 } }
+  local delivery = packet(1, { throw }, after)
+  delivery.before.playerName = "GOLD"
+  Assert.isTrue(timeline:present(delivery), "the blocked throw is accepted")
+  Assert.deepEqual(transcript(timeline, sink()), {
+    "GOLD used one Poké Ball!",
+    "The Trainer blocked the Ball!",
+    "Don't be a thief!",
+  }, "the deflected throw prints its three source lines")
+  Assert.isTrue(battler(timeline:battlers(), 3).visible, "the trainer's Pokemon never enters the ball")
 end
 
 -- subscript_0012_UpdateStatStage wording with msg_0443 stat names.

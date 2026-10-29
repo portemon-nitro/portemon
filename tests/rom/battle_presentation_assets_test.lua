@@ -235,6 +235,24 @@ function T.persistent_scene_compiles_for_one_context(romFs, versionId)
   Assert.equal(day.canvasWidth, 512, versionId .. ": the persistent scene keeps its 512-wide source canvas")
   Assert.equal(day.canvasHeight, 256, versionId .. ": the persistent scene keeps its 256-high source canvas")
   Assert.notNil(day.image, versionId .. ": the scene record references its composed image")
+  Assert.notNil(day.introImage, versionId .. ": the scene record includes its unbaked intro BG3 image")
+  Assert.equal(day.introLayer.image, cache.sceneIntroImagePath(day.key))
+  Assert.equal(day.introLayer.width, 512)
+  Assert.equal(day.introLayer.height, 256)
+  Assert.equal(day.terrainSprites.player.image, cache.sceneTerrainSpritePath(day.key, "player"))
+  Assert.equal(day.terrainSprites.foe.image, cache.sceneTerrainSpritePath(day.key, "foe"))
+  for _, side in ipairs({ "player", "foe" }) do
+    local sprite = day.terrainSprites[side]
+    Assert.equal(type(sprite.width), "number", versionId .. ": " .. side .. " terrain sprite has a raster width")
+    Assert.equal(type(sprite.height), "number", versionId .. ": " .. side .. " terrain sprite has a raster height")
+    Assert.equal(type(sprite.origin.x), "number", versionId .. ": " .. side .. " terrain sprite has an origin")
+    Assert.equal(type(sprite.origin.y), "number", versionId .. ": " .. side .. " terrain sprite has an origin")
+    Assert.equal(
+      type(day.terrainSpritePixels[side]),
+      "string",
+      versionId .. ": " .. side .. " terrain pixels are staged"
+    )
+  end
   Assert.notNil(day.viewport, versionId .. ": the scene record maps its visible region")
   Assert.isTrue(
     day.viewport.x + day.viewport.width <= day.canvasWidth and day.viewport.y + day.viewport.height <= day.canvasHeight,
@@ -328,6 +346,27 @@ function T.global_catalog_compiles_without_per_effect_closures(romFs, versionId)
   Assert.notNil(bundle, versionId .. ": the global catalog compiles from the dump (" .. tostring(compileErr) .. ")")
   local valid, schemaErr = Schema.isValidManifest(bundle.manifest)
   Assert.isTrue(valid, versionId .. ": the global manifest validates (" .. tostring(schemaErr) .. ")")
+  local keypadCursor = bundle.manifest.hud.cursor
+  local topLeft = keypadCursor.animations[1].frames[2]
+  Assert.deepEqual(
+    { topLeft.x, topLeft.y },
+    { -1, -1 },
+    versionId .. ": the cursor compiler preserves its second-frame NANR translation"
+  )
+  local wildRoute = bundle.manifest.transitions.routes["fallback/plain/day/wild"]
+  local orderKey = wildRoute.assetGroups.wildCellOrders
+  local orderResource = bundle.manifest.resources[orderKey]
+  local orderPayload = bundle.resourcePayloads[orderResource.path]
+  Assert.equal(
+    orderResource.kind,
+    "transition-data",
+    versionId .. ": wild cell orders are staged as semantic route data"
+  )
+  Assert.equal(orderPayload.rowsReverse[1], 0, versionId .. ": row transition uses the source reverse order")
+  Assert.equal(orderPayload.diagonalsB[24], 46, versionId .. ": cave transition uses the final source diagonal index")
+  local arrowMiddle = bundle.manifest.hud.arrow.cells[4].objs
+  Assert.equal(arrowMiddle[1].tile, 8, versionId .. ": arrow mapping-1 cell normalizes the first doubled tile index")
+  Assert.equal(arrowMiddle[2].tile, 12, versionId .. ": arrow mapping-1 cell normalizes the second doubled tile index")
   for _, key in ipairs({ "battle/bide-release", "battle/bide-release/wild", "battle/bide-release/foe" }) do
     local release = bundle.manifest.messages.entries[key]
     Assert.notNil(release, versionId .. ": " .. key .. " is staged from the battle message bank")

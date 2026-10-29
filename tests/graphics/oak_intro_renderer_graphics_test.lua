@@ -1187,7 +1187,7 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
     end
   end
   cache:writeLua(BattlePresentationCache.scenePath(sceneKey), {
-    schema = "g4-battle-scene-v2",
+    schema = "g4-battle-scene-v3",
     key = sceneKey,
     background = "general",
     terrain = "grass",
@@ -1219,6 +1219,25 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
       },
     },
     imagePath = sceneImagePath,
+    introLayer = {
+      image = BattlePresentationCache.sceneIntroImagePath(sceneKey),
+      width = 512,
+      height = 256,
+    },
+    terrainSprites = {
+      player = {
+        image = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player"),
+        width = 80,
+        height = 80,
+        origin = { x = -40, y = -40 },
+      },
+      foe = {
+        image = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe"),
+        width = 80,
+        height = 80,
+        origin = { x = -40, y = -40 },
+      },
+    },
   })
   cache:write(BattlePresentationCache.sceneCharactersPath(sceneKey), string.rep("\0", 65536))
   local sceneEntries = {}
@@ -1232,6 +1251,18 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
   end
   cache:writeLua(BattlePresentationCache.scenePalettePath(sceneKey), { colors = sceneColors })
   cache:write(sceneImagePath, PngWriter.encode(512, 256, string.rep(string.char(12, 34, 56, 255), 512 * 256)))
+  cache:write(
+    BattlePresentationCache.sceneIntroImagePath(sceneKey),
+    PngWriter.encode(512, 256, string.rep(string.char(12, 34, 56, 255), 512 * 256))
+  )
+  cache:write(
+    BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player"),
+    PngWriter.encode(80, 80, string.rep(string.char(12, 34, 56, 255), 80 * 80))
+  )
+  cache:write(
+    BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe"),
+    PngWriter.encode(80, 80, string.rep(string.char(12, 34, 56, 255), 80 * 80))
+  )
   local seed = 7
   for _, path in pairs(artPaths) do
     seed = seed + 11

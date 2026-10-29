@@ -24,39 +24,15 @@ local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
 BattleRenderer.PLAYER_CENTER = { x = 64, y = 112 }
 BattleRenderer.ENEMY_CENTER = { x = 192, y = 56 }
 
--- Native HUD anchors and the player arrow offset beside the player
--- anchor, in native logical pixels. The enemy anchor is used unclamped:
+-- Native HUD anchors in native logical pixels. The enemy anchor is used unclamped:
 -- its composite starts offscreen like the source layout.
 BattleRenderer.PLAYER_HUD = { x = 192, y = 116 }
 BattleRenderer.ENEMY_HUD = { x = 58, y = 36 }
-BattleRenderer.ARROW_OFFSET = 72
 
--- The arrow and gauge families are source-sized 8-pixel tile rows. HUD
--- strips use the staged drawable's actual width because appended source
--- component tiles extend past the character-cell payload.
+-- Gauge families are source-sized 8-pixel tile rows. HUD strips use the
+-- staged drawable's actual width because appended source component tiles
+-- extend past the character-cell payload.
 local STRIP_HEIGHT = 8
-local ARROW_STRIP_WIDTH = 208
-
--- Authored arrow cells in animation order: the zero-time opening cell
--- carries no objects and draws nothing, the rest hold their authored
--- counts through the selection clock the screen owns.
-local ARROW_CELLS = {
-  {},
-  { { tile = 0, width = 16, height = 16, x = -8, y = -8 } },
-  { { tile = 2, width = 16, height = 16, x = -8, y = -8 } },
-  {
-    { tile = 4, width = 16, height = 16, x = -16, y = -8 },
-    { tile = 6, width = 8, height = 16, x = 0, y = -8 },
-  },
-  {
-    { tile = 7, width = 16, height = 16, x = -16, y = -8 },
-    { tile = 9, width = 8, height = 16, x = 0, y = -8 },
-  },
-  {
-    { tile = 10, width = 16, height = 16, x = -16, y = -8 },
-    { tile = 12, width = 8, height = 16, x = 0, y = -8 },
-  },
-}
 
 -- 16-pixel gauge cells by roster visibility: 0 absent/unrevealed, 1
 -- present/revealed, 2 fainted. The fourth authored state has no roster
@@ -83,8 +59,8 @@ local COMMAND_SLOTS = {
 
 -- Fight menu text anchors from BattleInput_CreateFightMenuObjects: the
 -- move name centers on its anchor, the "PP" label and the current/max
--- values print left-aligned on the row beneath; the type icon centers on
--- sTypeIconPositions.
+-- values print left-aligned on the row beneath; the type icon sprite origin
+-- is sTypeIconPositions.
 local MOVE_ANCHORS = {
   { x = 64, y = 45 },
   { x = 192, y = 44 },
@@ -585,17 +561,25 @@ local PICTURE_OFFSETS = {
 -- wrappers resolve to their staged image while headless descriptors and
 -- other pixel-less stand-ins never reach the isolated depth target.
 ---@param handle unknown resolved drawable handle, nil when unstaged
----@return unknown? staged image for the picture pass
+---@return { image: unknown, palette: unknown?, imageKind: string }? staged image handle for the picture pass
 local function pictureImage(handle)
+  if handle == nil then
+    return nil
+  end
   if type(handle) ~= "table" then
     -- Host images draw directly.
-    return handle
+    return { image = handle, imageKind = "rgba8" }
   end
-  local staged = handle.image or (handle.lease and handle.lease.image) or handle
+  local lease = handle.lease or handle
+  local staged = handle.image or lease.image or handle
   if type(staged.getDimensions) ~= "function" then
     return nil
   end
-  return staged
+  return {
+    image = staged,
+    palette = handle.palette or lease.palette,
+    imageKind = handle.kind or lease.kind or "rgba8",
+  }
 end
 
 -- Live battlers with their published slot rows in native depth order:
@@ -663,7 +647,9 @@ local function shadowPicture(assets, battler, row)
   local tintR, tintG, tintB = tintOf(battler.shadowTint --[[@as table<string, number>?]])
   return {
     kind = "shadow",
-    image = shadow,
+    image = shadow.image,
+    palette = shadow.palette,
+    imageKind = shadow.imageKind,
     centerX = shadowX,
     centerY = shadowY,
     zCenter = BattleScene.SHADOW_DEPTH,
@@ -743,7 +729,8 @@ local function battlerPicture(assets, battler, row)
   local pictureVisible = battler.pictureVisible == true
   local tintR, tintG, tintB, tintA = tintOf(battler.pictureTint --[[@as table<string, number>?]])
   local picture = {
-    image = image,
+    image = image.image,
+    imageKind = image.imageKind,
     centerX = row.settledX + numberOr(battler.entryDx, 0) + numberOr(battler.shakeDx, 0),
     centerY = row.settledY + sourceHeight + numberOr(battler.entryDy, 0),
     zCenter = row.depth,
@@ -751,7 +738,7 @@ local function battlerPicture(assets, battler, row)
     frameY = frameY,
     frameW = frameW,
     frameH = frameH,
-    palette = palette,
+    palette = palette or image.palette,
     pictureVisible = pictureVisible,
     width = pictureVisible and numberOr(battler.pictureWidth, 80) or 80 * scaleX,
     height = pictureVisible and numberOr(battler.pictureHeight, 80) or 80 * scaleY,
@@ -779,10 +766,13 @@ end
 ---@return table<string, unknown> effect picture for the picture pass
 local function effectPicture(assets, picture)
   local assetKey = assert(picture.assetKey, "transient pictures carry their staged drawable key")
-  local image = assert(assets:drawable(assetKey), "transient effect drawables are staged before submission")
+  local image =
+    assert(pictureImage(assets:drawable(assetKey)), "transient effect drawables are staged before submission")
   return {
     kind = "effect",
-    image = image,
+    image = image.image,
+    palette = image.palette,
+    imageKind = image.imageKind,
     centerX = assert(picture.centerX, "transient pictures carry native X"),
     centerY = assert(picture.centerY, "transient pictures carry native Y"),
     zCenter = assert(picture.zCenter, "transient pictures carry native depth"),
@@ -855,17 +845,23 @@ local function drawSpriteObject(graphics, image, stripWidth, baseX, baseY, obj)
   local height = obj.height --[[@as integer]]
   local tilesPerRow = math.floor(width / 8)
   local rows = math.floor(height / 8)
+  local flipX = obj.flipH == true
+  local flipY = obj.flipV == true
+  local x = baseX + obj.x --[[@as number]] + (flipX and width or 0)
+  local scaleX = flipX and -1 or 1
+  local scaleY = flipY and -1 or 1
   for row = 0, rows - 1 do
     local quad = graphics.newQuad((tile + row * tilesPerRow) * 8, 0, width, STRIP_HEIGHT, stripWidth, STRIP_HEIGHT)
+    local y = baseY + obj.y --[[@as number]] + (flipY and (rows - row) or row) * 8
     -- Leases draw through the shared sampler so indexed pixels resolve
     -- exactly and records carry staged identity; owned, test, and
     -- descriptor handles draw directly, which records them in headless
     -- composition.
     local lease = samplerOf(image)
     if lease ~= nil then
-      lease:drawQuad(graphics, quad, baseX + obj.x --[[@as number]], baseY + obj.y --[[@as number]] + row * 8)
+      lease:drawQuad(graphics, quad, x, y, 0, scaleX, scaleY)
     else
-      graphics.draw(image, quad, baseX + obj.x --[[@as number]], baseY + obj.y --[[@as number]] + row * 8)
+      graphics.draw(image, quad, x, y, 0, scaleX, scaleY)
     end
   end
 end
@@ -911,14 +907,29 @@ local function drawKeypadCursor(graphics, assets, view, layout, regions)
   local right = selected.x + selected.w - 8
   local top = selected.y + 8
   local bottom = selected.y + selected.h - 8
+  local tick = view.cursorTick --[[@as integer?]] or 0
   for corner = 1, 4 do
     local animation = assert(section.animations[corner], "the cursor stages four corner animations")
-    local frame = assert(animation.frames[1], "each cursor corner animation has an initial frame")
+    local totalDuration = 0
+    for _, candidate in ipairs(animation.frames) do
+      totalDuration = totalDuration + candidate.duration
+    end
+    local frameTick = totalDuration > 0 and tick % totalDuration or 0
+    local elapsed = 0
+    local frame = nil
+    for _, candidate in ipairs(animation.frames) do
+      if candidate.duration > 0 and frameTick < elapsed + candidate.duration then
+        frame = candidate
+        break
+      end
+      elapsed = elapsed + candidate.duration
+    end
+    frame = frame or assert(animation.frames[1], "each cursor corner animation has an initial frame")
     local cell = assert(section.cells[frame.cell + 1], "cursor animation selects a staged cell")
     local x = corner % 2 == 1 and left or right
     local y = corner <= 2 and top or bottom
     for _, object in ipairs(cell.objs) do
-      drawSpriteObject(graphics, image, stripWidth --[[@as integer]], x, y, object)
+      drawSpriteObject(graphics, image, stripWidth --[[@as integer]], x + frame.x, y + frame.y, object)
     end
   end
 end
@@ -1282,30 +1293,6 @@ local function drawDoublesDetail(graphics, text, assets, sections, view, players
   end
 end
 
--- The doubled arrow base follows the acting partner at draw time:
--- one arrow offset left of that slot's health-box anchor, never a
--- hardcoded column. Without an acting identity the first player row
--- anchors it. The single-battle base stays frozen for pixel identity.
----@param view table<string, unknown> internal semantic snapshot under drawing
----@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
----@return number base horizontal origin
----@return number base vertical origin
-local function doublesArrowBase(view, players)
-  local row = DOUBLES_ROWS.player[1]
-  local actor = view.actor --[[@as table<string, unknown>?]]
-  if type(actor) == "table" and actor.combatant ~= nil then
-    local order = BattleViewRoster.claimedPositions(view, true)
-    for index, ally in ipairs(players) do
-      if ally.combatant == actor.combatant then
-        row = doublesRow(order, ally, index, DOUBLES_ROWS.player, "the sourced player rows cover every live ally")
-        break
-      end
-    end
-  end
-  local sourceRow = sourceSlotGeometry(view, row.sideType)
-  return sourceRow.hudX - BattleRenderer.ARROW_OFFSET, sourceRow.hudY
-end
-
 ---@param view table<string, unknown> internal semantic snapshot
 ---@return number horizontal background scroll in native pixels
 ---@return number vertical background scroll in native pixels
@@ -1327,13 +1314,53 @@ end
 local function sceneLayer(resources, assets, view)
   local scene = nil
   local backgroundFailure = nil
-  if type(view.backgroundRaster) == "table" and type(assets.background) == "function" then
+  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
+  local terrainSlides = type(opening) == "table" and opening.terrainSlides or nil
+  local terrainVisible = false
+  if type(terrainSlides) == "table" then
+    for _, slide in ipairs(terrainSlides) do
+      if type(slide) == "table" and slide.visible == true then
+        terrainVisible = true
+        break
+      end
+    end
+  end
+  if terrainVisible then
+    scene = view.introScene --[[@as table<string, unknown>?]]
+    assert(scene ~= nil, "visible terrain slides use the unbaked intro scene")
+  elseif type(view.backgroundRaster) == "table" and type(assets.background) == "function" then
     scene, backgroundFailure = assets:background(view.backgroundRaster --[[@as table<string, unknown>]])
   end
   if scene == nil and backgroundFailure == nil then
     scene = assets:drawable(resources.sceneImageKey --[[@as string]])
   end
   return scene
+end
+
+---@param graphics table<string, unknown> host graphics
+---@param view table<string, unknown> internal semantic snapshot
+local function drawTerrainSlides(graphics, view)
+  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
+  local slides = type(opening) == "table" and opening.terrainSlides or nil
+  if type(slides) ~= "table" then
+    return
+  end
+  local sprites = view.terrainSprites --[[@as table<string, table<string, unknown>>?]]
+  for _, slide in ipairs(slides) do
+    if type(slide) == "table" and slide.visible == true then
+      local role = assert(slide.role, "terrain slides name their side") --[[@as string]]
+      local sprite = assert(sprites and sprites[role], "visible terrain slides resolve staged sprite art")
+      local drawable = assert(sprite.drawable, "terrain sprite art is acquired before rendering")
+      local origin = assert(sprite.origin, "terrain sprite records carry their cell origin")
+      drawArtwork(
+        graphics,
+        drawable,
+        nil,
+        assert(type(slide.x) == "number" and slide.x) + origin.x,
+        assert(type(slide.y) == "number" and slide.y) + origin.y
+      )
+    end
+  end
 end
 
 -- Draws one single-battle health box: the staged cell composite, the
@@ -1394,39 +1421,6 @@ local function drawSingleHud(graphics, text, assets, view, battler, artKey, anch
     )
   end
   drawHudPrinters(graphics, text, assets, view, artKey, section, anchor, objects, battler, sideType, playerBox)
-end
-
--- Draws the selection arrow in the decision modes. The arrow OBJ uses
--- priority 0x11, behind the source HP box OBJ range; the opening cell and
--- out-of-range frames draw nothing.
----@param graphics table<string, unknown> injected host graphics
----@param assets table<string, unknown> injected asset holder
----@param view table<string, unknown> internal semantic snapshot
----@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
----@param singles boolean true while the battle keeps its single layout
-local function drawSelectionArrow(graphics, assets, view, players, singles)
-  if view.mode ~= "command" and view.mode ~= "moves" and view.mode ~= "target" then
-    return
-  end
-  local cell = view.arrowFrame --[[@as integer?]]
-  if type(cell) ~= "number" or cell < 1 or cell > #ARROW_CELLS - 1 then
-    return
-  end
-  local art = assets:drawable("arrow")
-  if art == nil then
-    return
-  end
-  local baseX, baseY
-  if singles then
-    local row = sourceSlotGeometry(view, 0)
-    baseX = row.hudX - BattleRenderer.ARROW_OFFSET
-    baseY = row.hudY - 2
-  else
-    baseX, baseY = doublesArrowBase(view, players)
-  end
-  for _, obj in ipairs(ARROW_CELLS[cell + 1]) do
-    drawSpriteObject(graphics, art --[[@as table<string, unknown>]], ARROW_STRIP_WIDTH, baseX, baseY, obj)
-  end
 end
 
 -- Single-battle health boxes in draw order: the foe box first, then the
@@ -1493,7 +1487,13 @@ local function drawNarration(resources, view)
   }
   windows.drawWindow(messageBox, resources.frameKey, { fill.r / 255, fill.g / 255, fill.b / 255, 1 })
   LogicalSurface.clip(graphics, messageBox, function()
-    drawRoleText(text, "narration", view.message --[[@as string]], messageBox.x, messageBox.y, palette)
+    local row = 0
+    for line in
+      (view.message --[[@as string]]):gmatch("[^\n]+")
+    do
+      drawRoleText(text, "narration", line, messageBox.x, messageBox.y + row * 16, palette)
+      row = row + 1
+    end
   end)
 end
 
@@ -1589,22 +1589,35 @@ local function drawTrainerPictures(graphics, assets, view)
       end
     end
   end
-  local ball = opening.ballThrow
-  if ball ~= nil then
-    assert(type(ball) == "table", "ball throw cues arrive as records")
-    local selector = assert(ball.selector, "ball throw cues name their semantic ball") --[[@as string]]
-    local ballKey = selector:match("^ball:([%w_]+)$")
-    assert(ballKey ~= nil, "ball throw selectors name a semantic ball key")
-    local x = assert(ball.x, "ball throw cues carry their source-pixel x") --[[@as number]]
-    local y = assert(ball.y, "ball throw cues carry their source-pixel y") --[[@as number]]
-    local frame = assert(ball.frame, "ball throw cues select a source animation frame") --[[@as integer]]
-    assert(type(frame) == "number" and frame % 1 == 0 and frame >= 0, "ball frames are zero-based integers")
-    assert(type(ball.visible) == "boolean", "ball throw cues state their visibility")
-    if ball.visible then
-      local image = assets:drawable("battle-ball:" .. ballKey .. ":" .. tostring(frame))
-      if image ~= nil then
-        drawArtwork(graphics, image, nil, x, y)
-      end
+end
+
+-- Draws the thrown Poke Ball sprite over the battlefield. Ball cells are
+-- 16x16 with their origin at the center, so the staged frame draws
+-- centered on the sprite position and spins about it.
+---@param graphics table<string, unknown> borrowed host graphics
+---@param assets table<string, unknown> borrowed battle asset holder
+---@param view table<string, unknown> internal semantic snapshot
+local function drawThrownBall(graphics, assets, view)
+  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
+  local ball = opening ~= nil and opening.ballThrow or nil
+  if ball == nil then
+    return
+  end
+  assert(type(ball) == "table", "ball throw cues arrive as records")
+  local selector = assert(ball.selector, "ball throw cues name their semantic ball") --[[@as string]]
+  local ballKey = selector:match("^ball:([%w_]+)$")
+  assert(ballKey ~= nil, "ball throw selectors name a semantic ball key")
+  local x = assert(ball.x, "ball throw cues carry their source-pixel x") --[[@as number]]
+  local y = assert(ball.y, "ball throw cues carry their source-pixel y") --[[@as number]]
+  local frame = assert(ball.frame, "ball throw cues select a source animation frame") --[[@as integer]]
+  assert(type(frame) == "number" and frame % 1 == 0 and frame >= 0, "ball frames are zero-based integers")
+  local rotation = assert(ball.rotation, "ball throw cues carry their 16-bit rotation") --[[@as integer]]
+  assert(type(rotation) == "number" and rotation >= 0 and rotation < 0x10000, "ball rotation is a 16-bit angle")
+  assert(type(ball.visible) == "boolean", "ball throw cues state their visibility")
+  if ball.visible then
+    local image = assets:drawable("battle-ball:" .. ballKey .. ":" .. tostring(frame))
+    if image ~= nil then
+      drawArtwork(graphics, image, nil, x, y, rotation / 0x10000 * 2 * math.pi, 1, 1, 8, 8)
     end
   end
 end
@@ -1626,14 +1639,18 @@ local function drawDetail(resources, view)
   -- layer; portraits and health boxes stay layer-independent.
   local scene = sceneLayer(resources, assets, view)
   if scene ~= nil then
-    local scrollX, scrollY = bgScrollOf(view)
+    local scrollX, scrollY = 0, 0
+    if scene ~= view.introScene then
+      scrollX, scrollY = bgScrollOf(view)
+    end
     drawSceneLayer(graphics, scene, scrollX, scrollY)
   end
+  drawTerrainSlides(graphics, view)
   drawTrainerPictures(graphics, assets, view)
   local players, enemies = BattleViewRoster.liveSides(view)
   local singles = not doublesFormat(view, players, enemies)
   drawPicturePlanes(graphics, assets, view, players, enemies, singles)
-  drawSelectionArrow(graphics, assets, view, players, singles)
+  drawThrownBall(graphics, assets, view)
   if singles then
     drawSinglesDetail(graphics, text, assets, view, players, enemies)
   else
@@ -1795,23 +1812,15 @@ local function drawControls(resources, view, layout, regions)
           if type(move.moveType) == "string" and typeAnchor ~= nil then
             local icon = assets:drawable("battle:move-type-icon:" .. move.moveType:lower())
             if icon ~= nil then
-              local iconWidth, iconHeight
-              if type(icon.getDimensions) == "function" then
-                iconWidth, iconHeight = icon:getDimensions()
-              else
-                iconWidth, iconHeight = icon.width, icon.height
-              end
-              assert(
-                type(iconWidth) == "number" and type(iconHeight) == "number",
-                "move-type icons carry measurable extents"
-              )
+              -- The staged offset is the source cell object's position
+              -- relative to the sprite origin, which is the anchor.
               local offset = icon.offset --[[@as table<string, number>?]]
               drawArtwork(
                 graphics,
                 icon,
                 nil,
-                typeAnchor.x - math.floor(iconWidth / 2) + (offset and offset.x or 0),
-                typeAnchor.y - math.floor(iconHeight / 2) + (offset and offset.y or 0) - (pressed and 2 or 0)
+                typeAnchor.x + (offset and offset.x or 0),
+                typeAnchor.y + (offset and offset.y or 0) - (pressed and 2 or 0)
               )
             end
           end
@@ -2308,7 +2317,10 @@ local function drawCompactScene(resources, view, content)
   LogicalSurface.clip(graphics, viewport, function()
     local scene = sceneLayer(resources, assets, view)
     if scene ~= nil then
-      local scrollX, scrollY = bgScrollOf(view)
+      local scrollX, scrollY = 0, 0
+      if scene ~= view.introScene then
+        scrollX, scrollY = bgScrollOf(view)
+      end
       drawSceneLayer(graphics, scene, scrollX, scrollY)
     end
     local spots = content.spriteCenters

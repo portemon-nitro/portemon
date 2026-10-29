@@ -626,8 +626,12 @@ end
 ---@param rig table live screen rig under test driving
 local function ackNarration(rig)
   local mode = rig.screen:status().mode
-  if mode == "intro" or mode == "narration" or mode == "outcome"
-    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  if
+    mode == "intro"
+    or mode == "narration"
+    or mode == "outcome"
+    or rig.screen._timeline:messageActive()
+    or rig.screen._timeline:levelUpStats() ~= nil
   then
     rig.screen:input({ { type = "confirm" } })
   end
@@ -1948,9 +1952,13 @@ function T.live_tackle_strike_runs_its_selected_program_before_health()
   })
   for _ = 1, 900 do
     local mode = screen:status().mode
-    if mode == "intro" or mode == "narration" or mode == "outcome"
-    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
-  then
+    if
+      mode == "intro"
+      or mode == "narration"
+      or mode == "outcome"
+      or rig.screen._timeline:messageActive()
+      or rig.screen._timeline:levelUpStats() ~= nil
+    then
       screen:input({ { type = "confirm" } })
     end
     screen:updateFixed(TICK)
@@ -1963,9 +1971,13 @@ function T.live_tackle_strike_runs_its_selected_program_before_health()
   local settledHp = nil
   for _ = 1, 1200 do
     local mode = screen:status().mode
-    if mode == "intro" or mode == "narration" or mode == "outcome"
-    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
-  then
+    if
+      mode == "intro"
+      or mode == "narration"
+      or mode == "outcome"
+      or rig.screen._timeline:messageActive()
+      or rig.screen._timeline:levelUpStats() ~= nil
+    then
       screen:input({ { type = "confirm" } })
     end
     screen:updateFixed(TICK)
@@ -2055,9 +2067,13 @@ function T.benched_reserves_contribute_no_live_side_positions()
   })
   for _ = 1, 900 do
     local mode = screen:status().mode
-    if mode == "intro" or mode == "narration" or mode == "outcome"
-    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
-  then
+    if
+      mode == "intro"
+      or mode == "narration"
+      or mode == "outcome"
+      or rig.screen._timeline:messageActive()
+      or rig.screen._timeline:levelUpStats() ~= nil
+    then
       screen:input({ { type = "confirm" } })
     end
     screen:updateFixed(TICK)
@@ -2070,9 +2086,13 @@ function T.benched_reserves_contribute_no_live_side_positions()
   local settledHp = nil
   for _ = 1, 1200 do
     local mode = screen:status().mode
-    if mode == "intro" or mode == "narration" or mode == "outcome"
-    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
-  then
+    if
+      mode == "intro"
+      or mode == "narration"
+      or mode == "outcome"
+      or rig.screen._timeline:messageActive()
+      or rig.screen._timeline:levelUpStats() ~= nil
+    then
       screen:input({ { type = "confirm" } })
     end
     screen:updateFixed(TICK)
@@ -2105,11 +2125,18 @@ function T.keypad_focus_cursor_hides_after_pointer_input()
   rig.screen:input({ { type = "navigate", direction = "down" } })
   rig.pump(1)
   Assert.isTrue(rig.screen:view().cursorVisible, "keyboard focus shows the source keypad cursor")
+  Assert.equal(rig.screen:view().cursorTick, 0, "the cursor starts at its first frame when focus appears")
+  rig.pump(1)
+  Assert.equal(rig.screen:view().cursorTick, 1, "the cursor advances in accepted source ticks")
+  rig.screen:input({ { type = "navigate", direction = "right" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:view().cursorTick, 0, "a new selection restarts the corner animation")
   rig.screen:input({
     { type = "battle_press", control = { scope = "command", id = "bag" }, pointerId = 1 },
   })
   rig.pump(1)
   Assert.isFalse(rig.screen:view().cursorVisible, "touch input hides the keypad cursor")
+  Assert.equal(rig.screen:view().cursorTick, 0, "hidden cursor animation resets")
   rig.screen:dispose()
 end
 

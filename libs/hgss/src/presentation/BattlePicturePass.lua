@@ -263,20 +263,13 @@ function BattlePicturePass:render(graphics, items)
       self.mesh:setTexture(item.image)
       graphics.setColor(item.tintR, item.tintG, item.tintB, item.alpha)
       local fadeColor, fadeAmount = paletteFade(item.paletteFade)
+      ImageSampling.sendMaterialSampling(self.shader, {
+        image = item.image,
+        palette = item.palette,
+        indexed = item.imageKind == "r8",
+      })
       self.shader:send("paletteFadeColor", fadeColor)
       self.shader:send("paletteFadeAmount", fadeAmount)
-      -- The palette image rides per item beside the mesh texture:
-      -- indexed pages resolve their slot through it while straight
-      -- sources sample unchanged. The flag sends on every item so no
-      -- stale palette state leaks across pictures.
-      local palette = item.palette
-      if palette ~= nil then
-        self.shader:send("u_usePalette", true)
-        self.shader:send("u_paletteCount", palette:getWidth())
-        self.shader:send("u_palette", palette)
-      else
-        self.shader:send("u_usePalette", false)
-      end
       graphics.setDepthMode("less", item.alpha >= 1)
       graphics.draw(self.mesh)
     end

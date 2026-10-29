@@ -364,7 +364,7 @@ BattlePresentationSources.HUD_COMPONENTS = {
 -- day/evening/night palette members. Every member below lives in the scene
 -- archive. The unknown recipe reuses the great-marsh daylight with puddle
 -- type-0 cells; it is source data, not a gap.
----@type table<string, { ordinal: integer, type0: integer, type1: integer, day: integer, evening: integer, night: integer }>
+---@type table<string, { ordinal: integer, type0: integer, type1: integer, day: integer, evening: integer, night: integer, playerChar?: integer, foeChar?: integer }>
 BattlePresentationSources.TERRAIN = {
   plain = { ordinal = 0, type0 = 135, type1 = 136, day = 7, evening = 8, night = 9 },
   sand = { ordinal = 1, type0 = 145, type1 = 146, day = 22, evening = 23, night = 24 },
@@ -396,6 +396,65 @@ BattlePresentationSources.TERRAIN = {
   battle_hall = { ordinal = 22, type0 = 173, type1 = 174, day = 64, evening = 65, night = 66 },
   giratina = { ordinal = 23, type0 = 175, type1 = 176, day = 67, evening = 68, night = 69 },
 }
+
+-- battle_terrain.c's side-specific character tables indexed by terrain ordinal.
+local terrainPlayerCharacters = {
+  0x87,
+  0x91,
+  0x7F,
+  0x97,
+  0x8B,
+  0x95,
+  0x8D,
+  0x85,
+  0x89,
+  0x8F,
+  0x93,
+  0x97,
+  0x99,
+  0x9B,
+  0x9D,
+  0x9F,
+  0xA1,
+  0xA3,
+  0xA5,
+  0xA7,
+  0xA9,
+  0xAB,
+  0xAD,
+  0xAF,
+}
+local terrainFoeCharacters = {
+  0x88,
+  0x92,
+  0x82,
+  0x98,
+  0x8C,
+  0x96,
+  0x8E,
+  0x86,
+  0x8A,
+  0x90,
+  0x94,
+  0x94,
+  0x9A,
+  0x9C,
+  0x9E,
+  0xA0,
+  0xA2,
+  0xA4,
+  0xA6,
+  0xA8,
+  0xAA,
+  0xAC,
+  0xAE,
+  0xB0,
+}
+for _, terrain in pairs(BattlePresentationSources.TERRAIN) do
+  terrain.playerChar = terrainPlayerCharacters[terrain.ordinal + 1]
+  terrain.foeChar = terrainFoeCharacters[terrain.ordinal + 1]
+  assert(terrain.playerChar ~= nil and terrain.foeChar ~= nil, "terrain OBJ source tables cover each terrain ordinal")
+end
 
 -- Exact shared menu/HUD member roles. All numbers below are zero-based
 -- archive members: lower-screen roles live in the lower archive, HUD/arrow
@@ -794,6 +853,10 @@ BattlePresentationSources.BALL_PICTURES = {
     palette = 0,
   },
   entries = ballPictures,
+  -- sBallColors in the overlay-12 data (battle_controller_opponent.c): one
+  -- BGR555 word per ball id 0..24, the Pokepic palette-fade target of the
+  -- recall and send-out. The address is the retail overlay-12 symbol.
+  fadeColors = { cpu = "arm9", overlayId = 12, address = 0x0226D15A, count = 25 },
 }
 
 -- Exact battle-menu text selectors from battle_input.c's message-bank
@@ -1360,6 +1423,8 @@ BattlePresentationSources.MESSAGE_RECORDS = {
   ["battle/narration/player-withdrew/good"] = { bank = "scriptController", messageId = 988 },
   ["battle/narration/trainer-used-item"] = { bank = "scriptController", messageId = 858 },
   ["battle/narration/throw-ball"] = { bank = "scriptController", messageId = 857 },
+  ["battle/narration/ball-blocked"] = { bank = "scriptController", messageId = 859 },
+  ["battle/narration/no-stealing"] = { bank = "scriptController", messageId = 860 },
   ["battle/child/party-title"] = { bank = "partyResult", messageId = 6 },
   ["battle/child/target-title"] = { bank = "partyResult", messageId = 7 },
   ["battle/child/command-prompt"] = { bank = "scriptController", messageId = 921 },
@@ -2231,6 +2296,116 @@ local fallbackContexts = {
   [10] = { terrain = "cave", timeOfDay = "day", isTrainer = true },
   [11] = { terrain = "cave", timeOfDay = "late", isTrainer = true },
 }
+
+-- EncounterEffectCellGrid order data from
+-- pokeheartgold/asm/encounter_effect_wild_data.s.
+BattlePresentationSources.WILD_CELL_GRID_ORDERS = {
+  rows = {
+    7,
+    6,
+    5,
+    4,
+    3,
+    2,
+    1,
+    0,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    23,
+    22,
+    21,
+    20,
+    19,
+    18,
+    17,
+    16,
+  },
+  rowsReverse = {
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    15,
+    14,
+    13,
+    12,
+    11,
+    10,
+    9,
+    8,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+  },
+  diagonalsA = {
+    0,
+    2,
+    9,
+    16,
+    4,
+    11,
+    18,
+    25,
+    32,
+    6,
+    13,
+    20,
+    27,
+    34,
+    41,
+    15,
+    22,
+    29,
+    36,
+    43,
+    31,
+    38,
+    45,
+    47,
+  },
+  diagonalsB = {
+    1,
+    8,
+    3,
+    10,
+    17,
+    24,
+    5,
+    12,
+    19,
+    26,
+    33,
+    40,
+    7,
+    14,
+    21,
+    28,
+    35,
+    42,
+    23,
+    30,
+    37,
+    44,
+    39,
+    46,
+  },
+}
+
 for selector = 0, 11 do
   local context = fallbackContexts[selector]
   local route = {
@@ -2250,6 +2425,9 @@ for selector = 0, 11 do
       maps = { 0xa2, 0xa5 },
       transitionBackground = { palette = 0xa6, character = 0xa7, map = 0xa8 },
     }
+    if selector <= 5 then
+      route.wildCellOrders = "wild-cell-orders"
+    end
   elseif selector == 6 or selector == 8 or selector >= 10 then
     route.sprite = { palette = 1, character = 4, cell = 6, animation = 5 }
   elseif selector == 7 then

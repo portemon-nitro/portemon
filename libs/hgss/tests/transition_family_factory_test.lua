@@ -1,6 +1,7 @@
 -- Routes installed transition roles through the production family factory.
 
 local Assert = require("tests.support.Assert")
+local WildCellOrdersFixture = require("tests.support.WildCellOrdersFixture")
 local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFamilyFactory")
 
 local T = {}
@@ -128,6 +129,7 @@ function T.factory_routes_fallback_and_rocket_and_red_roles_through_their_source
           maps = { "bg-map" },
           transitionBackground = { palette = "bg-palette", character = "bg-character", map = "bg-map" },
         },
+        wildCellOrders = "wild-cell-orders",
       },
     }
   end
@@ -135,6 +137,7 @@ function T.factory_routes_fallback_and_rocket_and_red_roles_through_their_source
     ["bg-palette"] = { colors = {} },
     ["bg-character"] = { tiles = "" },
     ["bg-map"] = { tiles = {} },
+    ["wild-cell-orders"] = WildCellOrdersFixture.payload(),
   }
   local wild = TransitionFamilyFactory.new(
     backgroundRoute("plain-wild-fallback", "fallback/plain/day/wild"),
@@ -145,8 +148,8 @@ function T.factory_routes_fallback_and_rocket_and_red_roles_through_their_source
   )
   wild:start()
   wild:stepSourceTick()
-  Assert.equal(wild:frame().family, "wild-fallback", "wild fallback routes run the window/mosaic worker")
-  Assert.equal(wild:frame().polarity, 0x10, "day fallback routes carry the opening polarity")
+  Assert.equal(wild:frame().family, "wild-cell-grid", "plain wild routes run the retail cell grid worker")
+  Assert.equal(wild:frame().sourceWhite, true, "day fallback routes flash white")
   wild:dispose()
 
   local trainerWipe = TransitionFamilyFactory.new({

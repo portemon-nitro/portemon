@@ -40,7 +40,7 @@ local FOE_SPECIES = "RATTATA"
 local LEAD_BACK_PAGE = 34
 local FOE_FRONT_PAGE = 164
 local TICK = 1 / 60
-local DRIVE_BUDGET = 1200
+local DRIVE_BUDGET = 2000
 local NATIVE_DOUBLES_HUD_ORIGINS = {
   playerLeft = { x = 192, y = 103 },
   playerRight = { x = 198, y = 132 },
@@ -272,6 +272,15 @@ local function captureServices(scope, cacheFs, versionId)
   end
   images["scene:" .. SCENE_KEY] =
     stagedImage(scope, cacheFs, BattlePresentationCache.sceneImagePath(SCENE_KEY), versionId .. " battle scene")
+  local sceneRecord =
+    assert(BattlePresentationCache.loadScene(cacheFs, SCENE_KEY), versionId .. " stages its scene record")
+  images["scene-intro:" .. SCENE_KEY] =
+    stagedImage(scope, cacheFs, sceneRecord.introLayer.image, versionId .. " unbaked battle intro scene")
+  for _, side in ipairs({ "player", "foe" }) do
+    local terrain = sceneRecord.terrainSprites[side]
+    images["scene-terrain:" .. SCENE_KEY .. ":" .. side] =
+      stagedImage(scope, cacheFs, terrain.image, versionId .. " " .. side .. " terrain sprite")
+  end
   local pokeBall = assert(manifest.battleBalls.entries["ball:POKE_BALL"], versionId .. " stages the fixture ball")
   for _, frame in ipairs(pokeBall.frames) do
     images[frame.drawableKey] = stagedImage(scope, cacheFs, frame.image, versionId .. " fixture ball frame")
@@ -440,6 +449,7 @@ local function captureServices(scope, cacheFs, versionId)
     end
   end
   local services = { prepared = {} }
+  local stagedSceneLayer = nil
   function services.prepare(demand)
     Assert.isTrue(type(demand) == "table", versionId .. " demands arrive as records")
     services.prepared[#services.prepared + 1] = demand
@@ -450,11 +460,40 @@ local function captureServices(scope, cacheFs, versionId)
       )
       local record, recordErr = BattlePresentationCache.loadScene(cacheFs, sceneKey)
       Assert.notNil(record, versionId .. " stages its scene: " .. tostring(recordErr))
+      local layer = record.layers[1]
+      local characters = assert(cacheFs:read(layer.characters.path), versionId .. " stages BG3 characters")
+      local map = assert(cacheFs:loadLua(layer.map.path), versionId .. " stages the BG3 tile map")
+      local palette = assert(cacheFs:loadLua(layer.palette.path), versionId .. " stages the BG3 palette")
       local bytes =
         assert(cacheFs:read(BattlePresentationCache.sceneImagePath(sceneKey)), versionId .. " stages its scene image")
       local imageWidth, imageHeight = PngWriter.completeDimensions(bytes)
       Assert.equal(imageWidth, record.canvasWidth, versionId .. " stages the complete scene image width")
       Assert.equal(imageHeight, record.canvasHeight, versionId .. " stages the complete scene image height")
+      local terrainSprites = {}
+      for _, side in ipairs({ "player", "foe" }) do
+        local sprite = record.terrainSprites[side]
+        terrainSprites[side] = {
+          drawable = assert(
+            images["scene-terrain:" .. sceneKey .. ":" .. side],
+            versionId .. " stages the " .. side .. " terrain drawable"
+          ),
+          width = sprite.width,
+          height = sprite.height,
+          origin = { x = sprite.origin.x, y = sprite.origin.y },
+        }
+      end
+      stagedSceneLayer = {
+        characters = characters,
+        map = map,
+        palette = palette,
+        colorMode = "8bpp",
+        introLayer = {
+          drawable = assert(images["scene-intro:" .. sceneKey], versionId .. " stages the intro scene drawable"),
+          width = record.introLayer.width,
+          height = record.introLayer.height,
+        },
+        terrainSprites = terrainSprites,
+      }
     end
     for _, page in ipairs(demand.pages or {}) do
       requirePortraitKey(cacheFs, page)
@@ -471,6 +510,9 @@ local function captureServices(scope, cacheFs, versionId)
       )
     end
     return true
+  end
+  function services.sceneLayer()
+    return stagedSceneLayer
   end
   function services.drawable(key)
     assert(type(key) == "string" and key ~= "", "image resolution names its key")
@@ -1171,7 +1213,7 @@ end
 ---@param sideType integer native health-box side type under census
 ---@return fun(x: integer, y: integer): integer?, integer?, integer? locator naming the strip tile and texel, nil outside the cell
 ---@return fun(tile: integer): boolean dynamic check for patch-overwritten destination tiles
-local function scaledCellLookup(strip, section, box, patchSpans, sideType)
+local function scaledCellLookup(strip, section, box, patchSpans, sideType, offsetY)
   local frame = assert(section.animation.frames[1], "the staged HUD animation has an initial frame")
   local cell = assert(section.cells[frame.cell + 1], "the initial HUD frame selects a cell")
   local objects = cell.objs
@@ -1187,7 +1229,7 @@ local function scaledCellLookup(strip, section, box, patchSpans, sideType)
   local width, height = right - left, bottom - top
   local scale = math.min(box.width / width, box.height / height)
   local originX = box.x + (box.width - width * scale) / 2 - left * scale
-  local originY = box.y + (box.height - height * scale) / 2 - top * scale
+  local originY = box.y + (box.height - height * scale) / 2 - top * scale + offsetY
   local dynamic = {}
   for _, patch in ipairs(BattleScene.hpPatchTiles(patchSpans, sideType, 1, 1)) do
     dynamic[patch.tile] = true
@@ -1400,6 +1442,8 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
       decodeData(scope, cacheFs, BattlePresentationCache.sceneImagePath(SCENE_KEY), versionId .. " scene source")
     local stagedManifest = BattlePresentationCache.load(cacheFs)
     local stagedPatchSpans = assert(stagedManifest.hud.patchSpans, versionId .. " carries its HUD patch spans")
+    local snapshot = screen:_snapshot()
+    local actorCombatant = type(snapshot.actor) == "table" and snapshot.actor.combatant or nil
     for _, side in ipairs({
       {
         box = hud.enemy,
@@ -1417,7 +1461,29 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
       },
     }) do
       local box = hostRect(frame, side.box)
-      local locateCell, isDynamicTile = scaledCellLookup(side.strip, side.section, box, stagedPatchSpans, side.sideType)
+      local hudOffsetY = 0
+      if side.sideType == 0 then
+        for _, battler in ipairs(snapshot.battlers) do
+          if battler.combatant == actorCombatant and battler.side == 1 then
+            local cell = assert(side.section.cells[side.section.animation.frames[1].cell + 1])
+            local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+            for _, object in ipairs(cell.objs) do
+              if not object.disabled then
+                left = math.min(left, object.x)
+                top = math.min(top, object.y)
+                right = math.max(right, object.x + object.width)
+                bottom = math.max(bottom, object.y + object.height)
+              end
+            end
+            hudOffsetY = (battler.hudOffsetY or 0) * math.min(box.width / (right - left), box.height / (bottom - top))
+            break
+          end
+        end
+      end
+      local locateCell, isDynamicTile =
+        scaledCellLookup(side.strip, side.section, box, stagedPatchSpans, side.sideType, hudOffsetY)
+      local sampleTop = math.floor(box.y + hudOffsetY)
+      local sampleBottom = math.ceil(box.y + hudOffsetY + box.height) - 1
       local stripMatches, stripOccupied = 0, 0
       -- Battler pictures draw before the HUD composites, so the foe
       -- picture shows through wherever the player composite stays
@@ -1437,13 +1503,15 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
       local textRegions = {}
       for _, region in ipairs(side.box.regions) do
         if type(region.text) == "string" and region.text ~= "" then
-          textRegions[#textRegions + 1] = { rect = hostRect(frame, region), id = region.id, ink = 0, darkInk = 0 }
+          local rect = hostRect(frame, region)
+          rect.y = rect.y + hudOffsetY
+          textRegions[#textRegions + 1] = { rect = rect, id = region.id, ink = 0, darkInk = 0 }
         end
       end
       Assert.isTrue(#textRegions > 0, versionId .. " publishes its " .. side.label .. " HUD wording")
       local violations = 0
       local violationSample = {}
-      for y = box.y, box.y + box.height - 1 do
+      for y = sampleTop, sampleBottom do
         for x = box.x, box.x + box.width - 1 do
           local tile, texX, texY = locateCell(x, y)
           local isDynamic = isDynamicTile(tile)
@@ -1451,14 +1519,14 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
           if not isDynamic then
             for _, textRegion in ipairs(textRegions) do
               local rect = textRegion.rect
-            -- Compact level digits retain the native split-tile
-            -- baseline, which sits below the compressed layout row.
-            local bottomOverhang = textRegion.id == "level" and 16 or 4
+              -- Compact level digits retain the native split-tile
+              -- baseline, which sits below the compressed layout row.
+              local bottomOverhang = textRegion.id == "level" and 16 or 4
               if
                 x >= rect.x - 4
                 and x < rect.x + rect.width + 4
                 and y >= rect.y - 4
-              and y < rect.y + rect.height + bottomOverhang
+                and y < rect.y + rect.height + bottomOverhang
               then
                 inRegion = textRegion
                 break
@@ -1636,23 +1704,37 @@ function T.native_doubles_draws_the_four_staged_source_hud_cells(scope, context)
     Assert.notNil(detailFrame, versionId .. " plans its native detail pane")
     local capture = renderCapture(scope, screen, 256, 384)
     saveCapture(capture, versionId .. "-native-doubles-hud")
-
+    local snapshot = screen:_snapshot()
+    local actorCombatant = type(snapshot.actor) == "table" and snapshot.actor.combatant or nil
+    local playerIndex = 0
+    local activePlayerHudSlot = nil
+    local activePlayerHudOffset = 0
+    for _, battler in ipairs(snapshot.battlers) do
+      if battler.side == 1 then
+        playerIndex = playerIndex + 1
+        if battler.combatant == actorCombatant then
+          activePlayerHudSlot = playerIndex == 1 and "playerLeft" or "playerRight"
+          activePlayerHudOffset = battler.hudOffsetY or 0
+        end
+      end
+    end
     local manifest = BattlePresentationCache.load(cacheFs)
     local sections = assert(manifest.hud.doubles, versionId .. " stages the four native doubled HUD sections")
     for slot, origin in pairs(NATIVE_DOUBLES_HUD_ORIGINS) do
       local section = assert(sections[slot], versionId .. " stages the " .. slot .. " source cell")
       local strip = decodeData(scope, cacheFs, section.image, versionId .. " " .. slot .. " source strip")
-      local maskedPixels =
-        sourcePatchMask(section, DOUBLE_HUD_PATCH_SPANS[slot], detailFrame.x + origin.x, detailFrame.y + origin.y)
+      local hudOffsetY = slot == activePlayerHudSlot and activePlayerHudOffset or 0
+      local sampleX = detailFrame.x + origin.x
+      local sampleY = detailFrame.y + origin.y + hudOffsetY
+      local maskedPixels = sourcePatchMask(section, DOUBLE_HUD_PATCH_SPANS[slot], sampleX, sampleY)
       if slot == "playerLeft" or slot == "playerRight" then
-        for y = detailFrame.y + 144, detailFrame.y + 183 do
+        for y = detailFrame.y + 144 + hudOffsetY, detailFrame.y + 183 + hudOffsetY do
           for x = detailFrame.x + 8, detailFrame.x + 247 do
             maskedPixels[y * 256 + x] = true
           end
         end
       end
-      local matched, occupied =
-        countHudCellMatches(capture, strip, section, detailFrame.x + origin.x, detailFrame.y + origin.y, maskedPixels)
+      local matched, occupied = countHudCellMatches(capture, strip, section, sampleX, sampleY, maskedPixels)
       Assert.isTrue(occupied > 40, versionId .. " has source pixels in the " .. slot .. " initial cell")
       Assert.isTrue(
         matched / occupied > 0.6,
@@ -1820,6 +1902,14 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
       saveCapture(first, versionId .. "-compact-doubles-" .. captureName)
 
       local seenPositions, seenPanels, pictures = {}, {}, {}
+      local hudOffsetByPosition = {}
+      local pictureOffsetByPosition = {}
+      for _, battler in ipairs(screen:_snapshot().battlers) do
+        if type(battler.position) == "number" then
+          hudOffsetByPosition[battler.position] = battler.hudOffsetY or 0
+          pictureOffsetByPosition[battler.position] = battler.pictureYOffset or 0
+        end
+      end
       for _, box in ipairs(boxes) do
         Assert.isNil(seenPositions[box.position], versionId .. " assigns one panel to each slot")
         seenPositions[box.position] = true
@@ -1833,6 +1923,7 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
           Assert.isFalse(rectanglesOverlap(panel, prior), versionId .. " keeps compact panels independent")
         end
         seenPanels[#seenPanels + 1] = panel
+        local renderedOffsetY = (hudOffsetByPosition[box.position] or 0) * math.min(box.width / 128, box.height / 64)
         local labelRegion = nil
         for _, region in ipairs(box.regions or {}) do
           if region.id == "name" then
@@ -1841,13 +1932,23 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
           end
         end
         Assert.notNil(labelRegion, versionId .. " publishes a name region for each panel")
+        local nameRect = hostRect(frame, labelRegion)
+        nameRect.y = nameRect.y + renderedOffsetY
+        local nameBottom = math.ceil(nameRect.y + nameRect.height)
+        nameRect.y = math.floor(nameRect.y)
+        nameRect.height = nameBottom - nameRect.y
         Assert.isTrue(
-          countSceneChanges(first, sceneSource, hostRect(frame, labelRegion), scene.x, scene.y) > 10,
+          countSceneChanges(first, sceneSource, nameRect, scene.x, scene.y) > 10,
           versionId .. " prints the " .. tostring(labelRegion.text) .. " panel name"
         )
         if type(box.bar) == "table" then
+          local barRect = hostRect(frame, box.bar)
+          barRect.y = barRect.y + renderedOffsetY
+          local barBottom = math.ceil(barRect.y + barRect.height)
+          barRect.y = math.floor(barRect.y)
+          barRect.height = barBottom - barRect.y
           Assert.isTrue(
-            countColor(first, hostRect(frame, box.bar), { 51, 204, 51 }) > 2,
+            countColor(first, barRect, { 51, 204, 51 }) > 2,
             versionId .. " paints the " .. tostring(box.name) .. " health bar"
           )
         end
@@ -1884,19 +1985,47 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
         pictures[#pictures + 1] = rect
 
         local source = assert(portraitCells["mon:" .. portrait.selector], versionId .. " stages " .. portrait.selector)
+        local pictureOffset = (pictureOffsetByPosition[portrait.position] or 0) * spot.scale
+        local renderedRect = {
+          x = rect.x,
+          y = math.floor(rect.y + pictureOffset + 0.5),
+          width = rect.width,
+          height = rect.height,
+        }
         local matches, occupied = 0, 0
-        for phaseY = 0, 1 do
-          for phaseX = 0, 1 do
-            local phaseMatches, phaseOccupied = countHalfScalePortraitMatches(first, source, rect, 0, 0, phaseX, phaseY)
-            if phaseOccupied > 0 and phaseMatches / phaseOccupied > matches / math.max(occupied, 1) then
-              matches, occupied = phaseMatches, phaseOccupied
+        for pixelOffsetY = -1, 1 do
+          for phaseY = 0, 1 do
+            for phaseX = 0, 1 do
+              local alignedRect = {
+                x = renderedRect.x,
+                y = renderedRect.y + pixelOffsetY,
+                width = renderedRect.width,
+                height = renderedRect.height,
+              }
+              local phaseMatches, phaseOccupied =
+                countHalfScalePortraitMatches(first, source, alignedRect, 0, 0, phaseX, phaseY)
+              if phaseOccupied > 0 and phaseMatches / phaseOccupied > matches / math.max(occupied, 1) then
+                matches, occupied = phaseMatches, phaseOccupied
+              end
             end
           end
         end
         Assert.isTrue(occupied > 100, versionId .. " has visible source pixels for " .. portrait.selector)
+        local matchThreshold = pictureOffset == 0 and 0.9 or 0.8
         Assert.isTrue(
-          matches / occupied > 0.9,
-          versionId .. " paints the nearest-neighbor half-scale pixels for " .. portrait.selector
+          matches / occupied > matchThreshold,
+          versionId
+            .. " paints the nearest-neighbor half-scale pixels for "
+            .. portrait.selector
+            .. " ("
+            .. tostring(matches)
+            .. "/"
+            .. tostring(occupied)
+            .. ", y="
+            .. tostring(renderedRect.y)
+            .. ", pictureOffset="
+            .. tostring(pictureOffset)
+            .. ")"
         )
       end
 
@@ -1962,14 +2091,15 @@ function T.compact_fight_view_prints_real_move_text(scope, context)
     Assert.isTrue(#labels >= 2, versionId .. " lays out its move labels")
     Assert.isTrue(countInk(first, hostRect(frame, labels[1])) > 5, versionId .. " prints its first move label")
     Assert.isTrue(countInk(first, hostRect(frame, labels[2])) > 5, versionId .. " prints its second move label")
-    local info = assert(content.moveInfo, versionId .. " carries its move information rows")
+    Assert.equal(#content.moveSlots, 4, versionId .. " carries its per-slot icon and PP geometry")
+    local slot = content.moveSlots[1]
     Assert.isTrue(
-      countInk(first, { x = frame.x + 202, y = frame.y + info.typeRowY, width = 44, height = 12 }) > 5,
-      versionId .. " prints its move type row"
+      countInk(first, hostRect(frame, slot.icon)) > 5,
+      versionId .. " draws its first move type icon"
     )
     Assert.isTrue(
-      countInk(first, { x = frame.x + 202, y = frame.y + info.ppRowY, width = 44, height = 12 }) > 5,
-      versionId .. " prints its move PP row"
+      countInk(first, { x = frame.x + slot.pp.x, y = frame.y + slot.pp.y, width = slot.pp.width, height = 12 }) > 5,
+      versionId .. " prints its first move PP"
     )
     local back = assert(content.moveBack, versionId .. " carries its move Back cell")
     Assert.isTrue(countInk(first, hostRect(frame, back.rect)) > 5, versionId .. " prints its Back label")

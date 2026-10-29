@@ -220,10 +220,21 @@ function T.move_dock_grid_back_and_info()
   assertRect(content.moveBack.rect, { x = 200, y = 164, width = 48, height = 20 }, "Back keeps its own cell")
   Assert.equal(content.moveBack.label.x, 204, "the Back label keeps its column")
   Assert.equal(content.moveBack.label.y, 166, "the Back label keeps its row")
-  Assert.equal(content.moveInfo.typeRowY, 130, "the type row keeps its origin")
-  Assert.equal(content.moveInfo.ppRowY, 148, "the PP row keeps its origin")
-  Assert.isTrue(content.moveInfo.typeWidth <= 44, "the type representation fits the information panel")
-  Assert.isTrue(content.moveInfo.ppWidth <= 44, "the PP representation fits the information panel")
+  Assert.equal(#content.moveSlots, 4, "every slot carries its own type icon and PP geometry")
+  for index, slot in ipairs(content.moveSlots) do
+    local cellX = 8 + (index - 1) % 2 * 88
+    local cellY = 128 + math.floor((index - 1) / 2) * 28
+    Assert.isTrue(
+      slot.icon.x >= cellX and slot.icon.x + slot.icon.width <= cellX + 88,
+      "the type icon stays inside its own move cell"
+    )
+    Assert.equal(slot.icon.width, 32, "the type icon keeps its 32x16 source size")
+    Assert.equal(slot.icon.height, 16, "the type icon keeps its 32x16 source size")
+    Assert.isTrue(slot.icon.y >= cellY and slot.icon.y + 16 <= cellY + 28, "the type icon row stays inside its cell")
+    Assert.isTrue(slot.pp.x >= slot.icon.x + 32, "the PP text follows its type icon")
+    Assert.isTrue(slot.pp.x + slot.pp.width <= cellX + 88, "the PP text stays inside its cell")
+    Assert.isTrue(content.moveLabels[index].y + 8 <= slot.icon.y, "the move name sits above the type icon row")
+  end
   Assert.equal(#content.moveLabels, 4, "every slot keeps a label region")
   for index, region in ipairs(content.moveLabels) do
     local column = (index - 1) % 2
@@ -404,6 +415,9 @@ function T.disabled_focusable_absent_blank()
     assets = {
       drawable = function(_, key)
         return fakeImage(key)
+      end,
+      renderPictures = function()
+        return { handle = "picture-composite" }
       end,
     },
     frameKey = "compact-plan-test-frame",
@@ -855,6 +869,9 @@ local function childDrawCensus(plan, view)
     assets = {
       drawable = function(_, key)
         return fakeImage(key)
+      end,
+      renderPictures = function()
+        return { handle = "picture-composite" }
       end,
     },
     frameKey = "compact-plan-test-frame",

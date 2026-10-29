@@ -59,4 +59,36 @@ function T.source_screen_brightness_composites_white_and_black_over_the_field(sc
   love.graphics.pop()
 end
 
+function T.water_wave_offsets_shift_each_field_scanline(scope)
+  local worldData = scope:own(love.image.newImageData(256, 192))
+  for y = 0, 191 do
+    for x = 0, 255 do
+      worldData:setPixel(x, y, x / 255, 0, 0, 1)
+    end
+  end
+  local world = scope:own(love.graphics.newImage(worldData))
+  world:setFilter("nearest", "nearest")
+  local target = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local renderer = FieldRenderer.new({ gxRenderer = GxRenderer.new(), graphics = love.graphics })
+  scope:own(renderer.gxRenderer)
+  local offsets = {}
+  for line = 1, 192 do
+    offsets[line] = 0
+  end
+  offsets[97] = 1
+
+  love.graphics.push("all")
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 1)
+  renderer:drawTransition({ world = world }, { scanlineOffsets = offsets }, { x = 0, y = 0, width = 256, height = 192 })
+  love.graphics.setCanvas()
+  love.graphics.pop()
+
+  local image = scope:own(target:newImageData())
+  local shifted = image:getPixel(20, 96)
+  local wrapped = image:getPixel(255, 96)
+  Assert.near(shifted, 21 / 255, 0.015, "positive HBlank offset samples the next source pixel")
+  Assert.near(wrapped, 0, 0.015, "scanline offset wraps at the native display edge")
+end
+
 return GraphicsSmoke.suite(T)

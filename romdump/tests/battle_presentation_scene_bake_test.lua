@@ -5,6 +5,7 @@
 -- scene keys and missing members fail precisely without touching the dump.
 
 local Assert = require("tests.support.Assert")
+local G2dBankFixture = require("tests.support.G2dBankFixture")
 
 local T = {}
 
@@ -113,6 +114,9 @@ local function romFsWith(members)
   return fs
 end
 
+local terrainSpriteCells = G2dBankFixture.cellBank({ { { x = 0, y = 0, tile = 0, pal = 0 } } })
+local terrainSpriteAnimation = G2dBankFixture.animBank({ 0 })
+
 ---@param screenTile integer baked tile every screen entry addresses
 ---@param type0overrides table<integer, integer>
 ---@param type1overrides table<integer, integer>
@@ -128,6 +132,10 @@ local function sceneRomFs(screenTile, type0overrides, type1overrides)
     ["NARC_a_0_0_8:3"] = paletteWith(31 * 32, 16),
     ["NARC_a_0_0_8:127"] = terrainCells(type0overrides or {}),
     ["NARC_a_0_0_8:130"] = terrainCells(type1overrides or {}),
+    ["NARC_a_0_0_8:128"] = terrainSpriteCells,
+    ["NARC_a_0_0_8:129"] = terrainSpriteAnimation,
+    ["NARC_a_0_0_8:131"] = terrainSpriteCells,
+    ["NARC_a_0_0_8:132"] = terrainSpriteAnimation,
   })
 end
 
@@ -173,9 +181,9 @@ end
 
 function T.type1_right_chunk_uses_the_additional_source_term()
   -- Destination tile (24, 20) is baked tile 664; objX 8 selects the right
-  -- chunk whose source adds the 0x700 term before the tile addressing.
-  local scene = assert(compile(sceneRomFs(664, {}, { [0x700] = 0x03, [0] = 0x00 })))
-  assertPixel(scene.image, 0, 0, TERRAIN[1], TERRAIN[2], TERRAIN[3], "the right chunk reads past the 0x700 term")
+  -- chunk at source byte 0x800.
+  local scene = assert(compile(sceneRomFs(664, {}, { [0x800] = 0x03, [0x700] = 0x00 })))
+  assertPixel(scene.image, 0, 0, TERRAIN[1], TERRAIN[2], TERRAIN[3], "the right chunk starts at source byte 0x800")
 end
 
 function T.type0_first_pixels_land_at_the_documented_offset()

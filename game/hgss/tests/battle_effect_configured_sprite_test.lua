@@ -562,8 +562,13 @@ function T.staged_sprite_pictures_reach_the_production_renderer()
   player:stepSourceTick({ tick = 1 })
   player:stepSourceTick({ tick = 1 })
   local submitted = nil
+  local image = {
+    getDimensions = function()
+      return 80, 80
+    end,
+  }
   local assets = {
-    handles = { [CHARACTER_KEY] = { image = CHARACTER_KEY } },
+    handles = { [CHARACTER_KEY] = { image = image } },
   }
   function assets.drawable(_self, key)
     return assets.handles[key]

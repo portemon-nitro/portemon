@@ -591,8 +591,7 @@ function T.move_dock_splits_grid_and_information_with_back()
   assertRect(content.moveBack.rect, MOVE_BACK, "Back occupies its own pointer-operable cell")
   Assert.equal(content.moveBack.label.x, MOVE_BACK_LABEL.x, "the Back label keeps its origin")
   Assert.equal(content.moveBack.label.y, MOVE_BACK_LABEL.y, "the Back label keeps its row")
-  Assert.equal(content.moveInfo.typeRowY, 130, "the type row keeps its origin")
-  Assert.equal(content.moveInfo.ppRowY, 148, "the PP row keeps its origin")
+  Assert.equal(#content.moveSlots, 4, "each move slot carries its own type icon and PP geometry")
   local view = snapshot("moves")
   local first = mappedAt(plan, view, 52, 142)
   Assert.notNil(first, "the upper-left grid cell claims its slot")
@@ -749,8 +748,6 @@ function T.long_labels_stay_inside_their_cells()
   local empty = mappedAt(plan, view, 140, 170)
   Assert.notNil(empty, "the empty fourth cell claims its slot")
   Assert.equal(empty.control.id, "move:3", "the empty fourth slot keeps its identity")
-  Assert.isTrue(content.moveInfo.typeWidth <= 44, "the type representation fits the information panel")
-  Assert.isTrue(content.moveInfo.ppWidth <= 44, "the PP representation fits the information panel")
 end
 
 ---@param species string foe species under test driving
@@ -1698,8 +1695,7 @@ function T.ordinary_paths_keep_target_and_ack_information_across_layouts()
       Assert.equal(targetPlan.content.targetRows[1].level, 20, "compact keeps the target level")
       Assert.isTrue(#targetPlan.content.hud.enemy.regions > 0, "compact retains enemy HP display regions")
       Assert.isTrue(#targetPlan.content.hud.player.regions > 0, "compact retains player HP display regions")
-      Assert.isTrue(targetPlan.content.moveInfo.ppWidth > 0, "compact reserves space for PP information")
-      Assert.isTrue(targetPlan.content.moveInfo.typeWidth > 0, "compact reserves space for the type icon")
+      Assert.equal(#targetPlan.content.moveSlots, 4, "compact reserves per-slot type icon and PP geometry")
     end
 
     local narrationView = snapshot("narration", { message = "A battle message." })
