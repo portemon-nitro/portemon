@@ -318,6 +318,41 @@ function T.portrait_rows_split_into_forty_byte_frame_halves()
   assertPixel(pixels, width, second.x + 1, second.y + 79, { 132, 132, 132, 255 }, "row79 frame1 high nibble")
 end
 
+-- The 32-bit unscan recurrence must stay exact when the seed carries high
+-- bits: a 0xFFFF seed word wraps the multiplier on the very first advance,
+-- so every later mask exercises unsigned wrap. The desired surface is
+-- authored here by hand; the forward scan below uses the test-local
+-- split-half recurrence while production advances through its own unsigned
+-- arithmetic, so full-plane agreement proves the inverse rather than
+-- echoing one implementation. The indexed export is checked because it
+-- exposes raw nibble order without palette resolution in the way.
+function T.high_seed_unscan_keeps_every_word_exact()
+  local desired = {}
+  for i = 1, 3200 do
+    desired[i] = (i * 257 + 13) % 65536
+  end
+  desired[1] = 0
+  local scanned = charContainer(wordsToBytes(scanWords(desired, 0xFFFF)))
+  local catalog = catalogWithRepresentatives()
+  local speciesId = assert(MonSources.speciesId("CHIKORITA"), "CHIKORITA must be a known species")
+  local indexed = assert(
+    MonPresentationCompiler.compileFrontIndexedFrames(uniformFs(catalog, scanned), speciesId, 0, "male", false),
+    "the indexed export compiles the high-seed payload"
+  )
+  Assert.equal(#indexed.frames, 2, "the indexed export carries both authored frames")
+  local surface = wordsToBytes(desired)
+  for frame = 0, 1 do
+    local parts = {}
+    for y = 0, PORTRAIT_CELL - 1 do
+      for x = 0, PORTRAIT_CELL - 1, 2 do
+        local packed = assert(string.byte(surface, y * 80 + frame * 40 + x / 2 + 1))
+        parts[#parts + 1] = string.char(packed % 16, math.floor(packed / 16))
+      end
+    end
+    Assert.equal(indexed.frames[frame + 1], table.concat(parts), "frame " .. frame .. " unpacks every word exactly")
+  end
+end
+
 function T.short_portrait_payload_fails_with_image_error()
   local catalog = catalogWithRepresentatives()
   local portraits, err =
