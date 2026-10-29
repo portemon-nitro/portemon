@@ -1053,6 +1053,134 @@ function T.ordered_joint_attachments_apply_in_attach_order_with_last_wins()
   Assert.isNil(instance.poseState.nodeVisible[1], "no stale visibility survives the removal")
 end
 
+-- An animated parent/child hierarchy reaches both the static and the
+-- billboard render paths unchanged: the static mesh draws under the
+-- composed child matrix while the billboard mesh reports the captured
+-- base, and warmed replays reuse the same pose containers without
+-- retaining animated values after the clip stops.
+function T.animated_hierarchy_reaches_static_and_billboard_draw_items()
+  local p = program({
+    bindNode(0),
+    bindNode(1, { translation = { x = 32, y = 0, z = 0 }, transZero = false }),
+  }, {
+    { opcode = 0x06, nodeIndex = 0, parentIndex = 0, flags = 0 },
+    { opcode = 0x02, nodeIndex = 0, visible = true },
+    { opcode = 0x04, materialIndex = 0 },
+    { opcode = 0x05, shapeIndex = 0 },
+    { opcode = 0x06, nodeIndex = 1, parentIndex = 0, flags = 0 },
+    { opcode = 0x02, nodeIndex = 1, visible = true },
+    { opcode = 0x07, option = 0, optionBits = 0 },
+    { opcode = 0x04, materialIndex = 0 },
+    { opcode = 0x05, shapeIndex = 1 },
+    { opcode = 0x01 },
+  })
+  local base = constTransClip("fixture:base", "base", "trs", { { node = 0, x = 10, y = 0, z = 0 } })
+  local def = ModelDefinition.new({
+    key = "fixture:nitro-hierarchy",
+    nodes = {
+      {
+        index = 0,
+        name = "root",
+        translation = { x = 0, y = 0, z = 0 },
+        rotation = identity9(),
+        scale = { x = 1, y = 1, z = 1 },
+      },
+      {
+        index = 1,
+        name = "arm",
+        translation = { x = 0, y = 0, z = 0 },
+        rotation = identity9(),
+        scale = { x = 1, y = 1, z = 1 },
+      },
+    },
+    meshes = {
+      {
+        id = "root.seg",
+        nodeIndex = 0,
+        materialIndex = 0,
+        geometry = "fixtures/root.seg.g4mesh",
+        center = { 1, 0, 1 },
+      },
+      {
+        id = "arm.seg",
+        nodeIndex = 1,
+        materialIndex = 0,
+        geometry = "fixtures/arm.seg.g4mesh",
+        center = { 0, 1, 0 },
+      },
+    },
+    materials = {
+      {
+        id = 0,
+        name = "mat0",
+        baseColor = { r = 255, g = 255, b = 255, a = 255 },
+        alphaMode = "opaque",
+        doubleSided = false,
+        polygonAlpha = 31,
+        texMtxMode = 0,
+        texWidth = 0,
+        texHeight = 0,
+      },
+    },
+    skins = {},
+    animations = { base },
+    backend = {
+      program = p,
+      meshes = {
+        ["root.seg"] = twoNodeMeshState(0),
+        ["arm.seg"] = {
+          drawIndex = 1,
+          positionSource = nil,
+          transformMode = "billboard",
+          cullMode = "back",
+          polygonMode = "modulation",
+          polygonId = 0,
+          lightMask = 5,
+          translucentDepthWrite = false,
+          depthEqual = false,
+          polygonAlpha = 31,
+        },
+      },
+    },
+  })
+  local instance = newInstance(def)
+  instance:play("base")
+  instance:updateFixed()
+  local scratch = NitroPoseBackend.newScratch(def)
+  local live = NitroPoseBackend.evaluateInto(instance, scratch)
+  -- Production wires the evaluated pose onto the instance (evaluatePose);
+  -- the test performs the same assignment so drawItems reads this pose.
+  instance.poseState = live
+  local items = instance:drawItems({ ["root.seg"] = {}, ["arm.seg"] = {} })
+  Assert.equal(#items, 2)
+  -- The static mesh draws under the animated parent translation.
+  Assert.equal(items[1].transform[13], 10 / 16)
+  Assert.deepEqual(items[1].modelNormal, identity9())
+  -- The billboard mesh reports the composed child base (10 + 32).
+  Assert.equal(items[2].billboardBase[13], 42 / 16)
+  Assert.deepEqual(items[2].billboardCenter, { 42 / 16, 0, 0 })
+  Assert.deepEqual(items[2].billboardScale, { 1, 1, 1 })
+  Assert.deepEqual(items[2].modelNormal, identity9())
+
+  local snapshot = NitroPoseBackend.evaluate(instance)
+  local again = NitroPoseBackend.evaluateInto(instance, scratch)
+  Assert.isTrue(again == live, "warmed replay reuses the same pose containers")
+  Assert.equal(again.drawMatrices["root.seg"].position[13], 10 / 16)
+
+  instance:stop("base")
+  local reset = NitroPoseBackend.evaluateInto(instance, scratch)
+  instance.poseState = reset
+  Assert.isTrue(reset == live, "the reset reuses the same pose containers")
+  Assert.equal(reset.drawMatrices["root.seg"].position[13], 0, "stopping the clip restores the bind pose")
+  Assert.equal(
+    snapshot.drawMatrices["root.seg"].position[13],
+    10 / 16,
+    "the snapshot keeps its animated values"
+  )
+  local resetItems = instance:drawItems({ ["root.seg"] = {}, ["arm.seg"] = {} })
+  Assert.equal(resetItems[1].transform[13], 0, "no stale animated transform survives the reset")
+end
+
 -- The compiled-clip guard still fires per attachment when several joint
 -- attachments play: an uncompiled later attachment raises instead of
 -- silently keeping the earlier node's values.
