@@ -67,6 +67,8 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field _staged table<integer, table<string, unknown>> staged choice fragments by request position
 ---@field _lastStaged integer? request position behind the latest staged fragment
 ---@field _targetCandidates table<integer, table<string, unknown>>? projected target variants behind the pending move
+---@field _lastTargetSelection string? previous native target slot beneath cancel
+---@field _targetGroup table<string, unknown>? native selected move target grouping
 ---@field _pendingMoveId string? move control identity behind the pending target choice
 ---@field _pendingFinal table<string, unknown>? retained final view behind playing cues
 ---@field _pendingRequest table<string, unknown>? retained request behind playing cues
@@ -132,6 +134,16 @@ local COMMAND_NAV = {
   ["safari-bait"] = { up = "safari-ball", down = "safari-bait", left = "safari-bait", right = "run" },
   ["safari-mud"] = { up = "safari-ball", down = "safari-mud", left = "run", right = "safari-mud" },
   ["bug-contest-ball"] = { up = "fight", down = "bug-contest-ball", left = "bug-contest-ball", right = "run" },
+}
+
+-- Source target text slots are positional and do not share target-choice
+-- ordinals. Native source slot types map to their visible button IDs.
+local TARGET_CONTROL_BY_SIDE_TYPE = {
+  [0] = "target:1",
+  [2] = "target:3",
+  [3] = "target:0",
+  [4] = "target:1",
+  [5] = "target:2",
 }
 
 -- Launch kind behind the staged menu mode: safari, pal-park, and
@@ -1000,6 +1012,8 @@ function BattleScreenState.new(opts)
     _staged = {},
     _lastStaged = nil,
     _targetCandidates = nil,
+    _lastTargetSelection = nil,
+    _targetGroup = nil,
     _pendingMoveId = nil,
     _pendingFinal = nil,
     _pendingRequest = nil,
@@ -1910,7 +1924,6 @@ function BattleScreenState:_snapshot()
       end
     end
   end
-  self._assets:setIconKeys(iconKeys)
   local menuWindows = nil
   if self._mode == "command" and self._menuGateTicks > 0 and type(acting) == "table" then
     local sideType = acting.sideType
@@ -1925,16 +1938,65 @@ function BattleScreenState:_snapshot()
     targets = {}
     for _, candidate in ipairs(self._targetCandidates) do
       local known = type(candidate.combatant) == "number" and names[candidate.combatant] or nil
+      local iconKey = nil
+      if
+        type(known) == "table"
+        and known.visible ~= false
+        and type(known.species) == "string"
+        and type(known.form) == "number"
+        and known.form % 1 == 0
+        and known.form >= 0
+      then
+        iconKey = MonCache.iconSelector(known.species, known.form --[[@as integer]], false)
+        iconKeys[#iconKeys + 1] = iconKey
+      end
+      local iconFrameIndex = nil
+      if iconKey ~= nil then
+        assert(type(known) == "table" and known.visible ~= false, "a target icon belongs to a visible battler")
+        local hp = tonumber(known.hp) or 0
+        local maxHp = tonumber(known.maxHp) or 0
+        local condition = type(known.condition) == "string" and known.condition:lower() or ""
+        local animation = 0
+        if hp > 0 and condition ~= "sleep" then
+          if condition == "poison" or condition == "bad-poison" then
+            animation = 5
+          elseif maxHp > 0 then
+            local pixels = math.max(1, math.floor(hp * 48 / maxHp))
+            animation = hp == maxHp and 1 or pixels > 24 and 2 or pixels > 9 and 3 or 4
+          end
+        end
+        iconFrameIndex = animation == 0 and 1 or math.floor(self._iconAnimationTick / (animation + 2)) % 2 + 1
+      end
+      local gender = type(known) == "table" and known.gender or nil
+      if gender == nil and type(known) == "table" and type(known.portraitSelector) == "string" then
+        gender = known.portraitSelector:match("^[^/]+/f%d+/([^/]+)/")
+      end
+      local controlId = type(known) == "table"
+          and known.visible ~= false
+          and TARGET_CONTROL_BY_SIDE_TYPE[
+            known.sideType --[[@as integer?]]
+          ]
+        or nil
+      candidate.controlId = controlId
       targets[#targets + 1] = {
-        id = candidate.id,
+        id = controlId,
+        fragmentId = candidate.id,
         position = candidate.position,
         enabled = candidate.enabled == true,
         reason = candidate.reason,
-        name = (type(known) == "table" and type(known.name) == "string") and known.name or "Target",
+        name = (type(known) == "table" and known.visible ~= false and type(known.name) == "string") and known.name
+          or nil,
         level = type(known) == "table" and known.level or nil,
+        gender = gender,
+        iconKey = iconKey,
+        iconFrameIndex = iconFrameIndex,
+        sideType = type(known) == "table" and known.sideType or nil,
+        visible = type(known) == "table" and known.visible ~= false,
+        side = type(known) == "table" and known.side or nil,
       }
     end
   end
+  self._assets:setIconKeys(iconKeys)
   local staged = {}
   if self._request ~= nil and type(self._request.actors) == "table" then
     local actors = self._request.actors --[[@as table<integer, table<string, unknown>>]]
@@ -2049,6 +2111,7 @@ function BattleScreenState:_snapshot()
     actor = acting,
     commandIcon = self._mode == "command" and commandIcon or nil,
     targetCandidates = targets,
+    targetGroup = copyValue(self._targetGroup),
     stagedChoices = staged,
     childIntent = self._child ~= nil and copyValue(self._child) or nil,
     childView = childView,
@@ -2305,6 +2368,7 @@ function BattleScreenState:view()
     commands = copyValue(snapshot.commands),
     moves = copyValue(snapshot.moves),
     commandIcon = copyValue(snapshot.commandIcon),
+    targetGroup = copyValue(snapshot.targetGroup),
     cursorVisible = snapshot.cursorVisible,
     cursorTick = snapshot.cursorTick,
     battlers = battlers,
@@ -4057,7 +4121,7 @@ function BattleScreenState:_targetVariant(id)
     return nil
   end
   for _, candidate in ipairs(self._targetCandidates) do
-    if type(candidate) == "table" and candidate.id == id then
+    if type(candidate) == "table" and candidate.controlId == id then
       return candidate
     end
   end
@@ -4070,6 +4134,8 @@ function BattleScreenState:_activateTarget(id, armed)
   local _ = armed
   if id == "cancel" then
     self._targetCandidates = nil
+    self._lastTargetSelection = nil
+    self._targetGroup = nil
     self:_playCancelFeedback()
     if self._pendingMoveId == "move:struggle" then
       self._pendingMoveId = nil
@@ -4093,6 +4159,8 @@ function BattleScreenState:_activateTarget(id, armed)
     return
   end
   self._targetCandidates = nil
+  self._lastTargetSelection = nil
+  self._targetGroup = nil
   self._pendingMoveId = nil
   self:_seal(copyValue(candidate.choice) --[[@as table<string, unknown>]])
 end
@@ -4546,8 +4614,26 @@ function BattleScreenState:_submitMove(entry)
       end
     end
   end
+  local displayedCombatants = {}
+  local battlers = self._timeline:battlers()
+  local foeOrder, allyOrder = sceneSlotOrders(battlers)
+  local sideTypes = {}
+  local sides = {}
+  for _, battler in ipairs(battlers) do
+    if type(battler.combatant) == "number" and battler.visible ~= false then
+      displayedCombatants[battler.combatant] = true
+      local order = battler.side == 1 and allyOrder or foeOrder
+      local row = BattleScene.slotRow(battler, order, self._manifest.battlefield.slots)
+      sideTypes[battler.combatant] = row.sideType
+      sides[battler.combatant] = battler.side
+    end
+  end
   if candidates == nil or #candidates <= 1 then
     if candidates ~= nil and #candidates == 1 then
+      if type(candidates[1].combatant) == "number" and displayedCombatants[candidates[1].combatant] ~= true then
+        self:_refuse(candidates[1].reason)
+        return
+      end
       self:_seal(copyValue(candidates[1].choice) --[[@as table<string, unknown>]])
     else
       self:_seal(copyValue(entry.choice) --[[@as table<string, unknown>]])
@@ -4556,8 +4642,50 @@ function BattleScreenState:_submitMove(entry)
   end
   self._pendingMoveId = entry.id
   self._targetCandidates = copyValue(entry.targets)
+  self._lastTargetSelection = nil
+  local firstControlId = nil
+  for _, candidate in ipairs(self._targetCandidates) do
+    local combatant = candidate.combatant
+    local sideType = type(combatant) == "number" and sideTypes[combatant] or nil
+    candidate.controlId = type(sideType) == "number" and TARGET_CONTROL_BY_SIDE_TYPE[sideType] or nil
+    candidate.side = type(combatant) == "number" and sides[combatant] or nil
+    if candidate.enabled == true and candidate.controlId ~= nil and firstControlId == nil then
+      firstControlId = candidate.controlId
+    end
+  end
+  self._targetGroup = nil
+  local display = entry.display
+  local moveKey = type(display) == "table" and (display.move or display.name) or nil
+  if type(moveKey) == "string" and self._monCatalog ~= nil then
+    local range = self._monCatalog:move(moveKey).range
+    local includeSide = range == 4 and 2 or range == 32 and 1 or range == 128 and 2 or nil
+    local groups = { own = {}, foes = {} }
+    for _, candidate in ipairs(self._targetCandidates) do
+      if candidate.enabled == true and type(candidate.controlId) == "string" then
+        local include = includeSide == nil or candidate.side == includeSide
+        if range == 8 or range == 64 then
+          include = true
+        end
+        if include then
+          local side = candidate.side == 2 and groups.foes or groups.own
+          side[#side + 1] = candidate.controlId
+        end
+      end
+    end
+    local groupCount = #groups.own + #groups.foes
+    if (range == 4 or range == 8 or range == 32 or range == 64 or range == 128) and groupCount > 1 then
+      self._targetGroup = { range = range, groups = groups }
+    end
+  end
   self._mode = "target"
-  self._selection = candidates[1].id
+  if firstControlId == nil then
+    self._targetCandidates = nil
+    self._pendingMoveId = nil
+    self._targetGroup = nil
+    self:_refuse(nil)
+    return
+  end
+  self._selection = firstControlId
   self._notice = nil
   self:cancelPointerCapture()
 end
@@ -4650,32 +4778,80 @@ function BattleScreenState:_navigate(direction)
   end
 end
 
----@param direction string? navigation direction across the projected target list
+---@param direction string? source keypad direction under selection
 function BattleScreenState:_navigateTargets(direction)
   if self._targetCandidates == nil or type(self._selection) ~= "string" then
     return
   end
-  local order = {}
+  local grid = {
+    ["target:0"] = { x = 0, y = 1 },
+    ["target:1"] = { x = 1, y = 0 },
+    ["target:2"] = { x = 1, y = 1 },
+    ["target:3"] = { x = 0, y = 0 },
+  }
+  local available = {}
   for _, candidate in ipairs(self._targetCandidates) do
-    if type(candidate) == "table" and candidate.enabled == true then
-      order[#order + 1] = candidate.id
+    local id = type(candidate) == "table" and candidate.controlId or nil
+    if type(id) == "string" and grid[id] ~= nil then
+      available[id] = candidate.enabled == true
     end
   end
-  order[#order + 1] = "cancel"
-  local current = 1
-  for index, id in ipairs(order) do
-    if id == self._selection then
-      current = index
+  if self._targetGroup ~= nil then
+    if self._selection == "cancel" then
+      if direction == "up" then
+        self._selection = self._lastTargetSelection or self._selection
+      end
+    elseif direction == "down" then
+      self._lastTargetSelection = self._selection
+      self._selection = "cancel"
     end
-  end
-  if direction == "down" or direction == "right" then
-    current = current % #order + 1
-  elseif direction == "up" or direction == "left" then
-    current = (current - 2) % #order + 1
-  else
     return
   end
-  self._selection = order[current]
+  if self._selection == "cancel" then
+    if direction == "up" then
+      for _, candidate in ipairs(self._targetCandidates) do
+        local candidateId = type(candidate) == "table" and candidate.controlId or nil
+        if candidateId == self._lastTargetSelection and candidate.enabled == true then
+          self._selection = candidateId
+          return
+        end
+      end
+    end
+    return
+  end
+  local origin = grid[self._selection]
+  if origin == nil or available[self._selection] ~= true then
+    return
+  end
+  if direction == "down" and origin.y == 1 then
+    self._lastTargetSelection = self._selection
+    self._selection = "cancel"
+    return
+  end
+  local delta = ({
+    left = { x = -1, y = 0 },
+    right = { x = 1, y = 0 },
+    up = { x = 0, y = -1 },
+    down = { x = 0, y = 1 },
+  })[
+    direction --[[@as string?]]
+  ]
+  if delta == nil then
+    return
+  end
+  local x = origin.x + delta.x
+  local y = origin.y + delta.y
+  while x >= 0 and x <= 1 and y >= 0 and y <= 1 do
+    for id, point in pairs(grid) do
+      if point.x == x and point.y == y and available[id] == true then
+        self._lastTargetSelection = self._selection
+        self._selection = id
+        return
+      end
+    end
+    x = x + delta.x
+    y = y + delta.y
+  end
 end
 
 ---@param options table<string, unknown>? decision options carrying the actor kinds

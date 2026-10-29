@@ -381,7 +381,7 @@ function T.two_leads_answer_different_foes_in_one_reply()
   local acting = rig.screen:view().actor
   Assert.notNil(acting, "the acting lead stays observable")
   Assert.equal(acting.index, 1, "the first lead decides first")
-  press(rig, { type = "navigate", direction = "down" })
+  press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "confirm" })
   Assert.equal(#rig.submits, 0, "the first staged strike submits nothing")
   acting = rig.screen:view().actor
@@ -762,10 +762,11 @@ function T.two_fainted_leads_are_replaced_without_partial_submit()
   local function ownRecord(combatant, hp)
     return {
       combatant = combatant,
+      position = combatant <= 2 and combatant or nil,
       participant = 1,
       side = 1,
       controller = "player",
-      active = true,
+      active = combatant <= 2,
       hp = hp,
       maxHp = 20,
       species = "EEVEE",
@@ -778,6 +779,7 @@ function T.two_fainted_leads_are_replaced_without_partial_submit()
   end
   local foeRecordEntry = {
     combatant = 5,
+    position = 5,
     participant = 2,
     side = 2,
     controller = "wild",
@@ -950,8 +952,8 @@ function T.exhausted_doubled_lead_reaches_struggle_targets_and_batches_atomicall
   Assert.equal(rig.screen:view().actor.index, 1, "the cancelled picker keeps the acting lead")
   press(rig, { type = "confirm" })
   Assert.equal(rig.screen:status().mode, "target", "Fight reopens the projected targets")
-  press(rig, { type = "navigate", direction = "down" })
-  Assert.equal(rig.screen:view().selection, "target:1", "the picker reaches the other foe")
+  press(rig, { type = "navigate", direction = "right" })
+  Assert.equal(rig.screen:view().selection, "target:2", "the picker reaches the other foe's native slot")
   press(rig, { type = "confirm" })
   Assert.equal(#rig.submits, 0, "the first staged struggle submits nothing")
   Assert.equal(rig.screen:view().actor.index, 2, "staging advances to the second lead")
@@ -996,18 +998,36 @@ function T.exhausted_doubled_lead_reaches_struggle_targets_and_batches_atomicall
     Assert.isTrue(touch.screen:view().menuInputEnabled ~= false, "source menu entry completes before tap")
     touch.screen:input({ { type = "pointer_down", pointerId = id, x = x, y = y } })
     touch.screen:input({ { type = "pointer_up", pointerId = id, x = x, y = y } })
-    touch.pump(1)
+    touch.pump(6)
+    for _ = 1, 12 do
+      if touch.screen:view().menuInputEnabled ~= false then
+        break
+      end
+      touch.pump(1)
+    end
   end
   tap("touch:fight", 128, 276)
-  Assert.equal(touch.screen:status().mode, "target", "tapping Fight opens the projected targets")
+  Assert.equal(
+    touch.screen:status().mode,
+    "target",
+    "tapping Fight opens the projected targets, got "
+      .. tostring(touch.screen:status().mode)
+      .. " selection="
+      .. tostring(touch.screen:view().selection)
+      .. " armed="
+      .. tostring(touch.screen._armed)
+      .. " feedback="
+      .. tostring(touch.screen._buttonFeedback)
+  )
   tap("touch:cancel", 128, 364)
   Assert.equal(touch.screen:status().mode, "command", "tapping Back returns to command")
   Assert.equal(touch.screen:view().selection, "fight", "the tapped Back refocuses Fight")
   tap("touch:fight", 128, 276)
   Assert.equal(touch.screen:status().mode, "target", "tapping Fight reopens the projected targets")
-  tap("touch:other-foe", 196, 224)
+  tap("touch:other-foe", 196, 300)
   Assert.equal(#touch.submits, 0, "the tapped struggle stages without submitting")
   Assert.equal(touch.screen:view().actor.index, 2, "the tapped pick advances to the second lead")
+  press(touch, { type = "navigate", direction = "up" })
   press(touch, { type = "confirm" })
   press(touch, { type = "confirm" })
   press(touch, { type = "confirm" })
@@ -1113,7 +1133,7 @@ local function openTargetLabelRig(layout, launchId, requestId)
     {
       id = "target:2",
       position = 2,
-      combatant = 2,
+      combatant = 99,
       enabled = false,
       reason = "disallowed",
       choice = attackChoice(1, 2),
@@ -1173,6 +1193,7 @@ local function openTargetLabelRig(layout, launchId, requestId)
   local function ownRecord(combatant, name)
     return {
       combatant = combatant,
+      position = combatant,
       participant = 1,
       side = 1,
       controller = "player",
@@ -1189,6 +1210,7 @@ local function openTargetLabelRig(layout, launchId, requestId)
   end
   local foeRecordEntry = {
     combatant = 5,
+    position = 5,
     participant = 2,
     side = 2,
     controller = "wild",
@@ -1242,11 +1264,12 @@ function T.target_pickers_name_projected_recipients_on_both_layouts()
   Assert.equal(targets[2].name, "BRAVO", "the partner keeps its displayed name")
   Assert.isTrue(targets[1].name ~= "Foe" and targets[2].name ~= "Foe", "allied candidates never claim the foe label")
   Assert.isFalse(targets[3].enabled, "the unadmitted candidate stays refused")
-  press(rig, { type = "navigate", direction = "down" })
-  Assert.equal(rig.screen:view().selection, "target:1", "the picker reaches the partner")
-  press(rig, { type = "navigate", direction = "down" })
-  Assert.equal(rig.screen:view().selection, "cancel", "navigation skips the unadmitted candidate")
-  press(rig, { type = "navigate", direction = "up" })
+  Assert.isNil(targets[3].id, "the unlisted candidate has no native slot or hit region")
+  press(rig, { type = "navigate", direction = "right" })
+  Assert.equal(rig.screen:view().selection, "target:1", "the picker reaches the partner's native slot")
+  press(rig, { type = "navigate", direction = "left" })
+  Assert.equal(rig.screen:view().selection, "target:3", "the picker reaches the lead's native slot")
+  press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "confirm" })
   Assert.equal(#rig.submits, 0, "the first staged pick submits nothing")
   Assert.equal(rig.screen:view().actor.index, 2, "staging advances to the second lead")
@@ -1256,8 +1279,8 @@ function T.target_pickers_name_projected_recipients_on_both_layouts()
   local foes = assert(rig.screen:view().targets, "the foe-side targets stay observable")
   Assert.equal(#foes, 2, "both projected foe positions stay listed")
   Assert.equal(foes[1].name, "FOEONE", "the listed foe keeps its displayed name")
-  Assert.equal(foes[2].name, "Target", "the unlisted recipient falls back to a neutral label")
-  Assert.isTrue(foes[2].name ~= "Foe", "the fallback never claims the foe category")
+  Assert.isNil(foes[2].id, "an unlisted recipient has no native hit region")
+  Assert.isNil(foes[2].name, "an unlisted recipient has no visible nickname")
   press(rig, { type = "confirm" })
   Assert.equal(#rig.submits, 1, "the completed pair submits exactly once")
   local sealed = assert(rig.submits[1], "the labelled reply is recorded")
@@ -1300,12 +1323,37 @@ function T.target_pickers_name_projected_recipients_on_both_layouts()
       Assert.isTrue(tapRig.screen:view().menuInputEnabled ~= false, "source menu entry completes before tap")
       tapRig.screen:input({ { type = "pointer_down", pointerId = id, x = point.x, y = point.y } })
       tapRig.screen:input({ { type = "pointer_up", pointerId = id, x = point.x, y = point.y } })
-      tapRig.pump(1)
+      tapRig.pump(6)
+      for _ = 1, 12 do
+        if tapRig.screen:view().menuInputEnabled ~= false then
+          break
+        end
+        tapRig.pump(1)
+      end
     end
     tap("touch:fight", touch.fight)
-    Assert.equal(tapRig.screen:status().mode, "moves", "tapping Fight opens move selection (" .. touch.layout .. ")")
+    Assert.equal(
+      tapRig.screen:status().mode,
+      "moves",
+      "tapping Fight opens move selection ("
+        .. touch.layout
+        .. "), got "
+        .. tostring(tapRig.screen:status().mode)
+        .. " selection="
+        .. tostring(tapRig.screen:view().selection)
+    )
     tap("touch:move", touch.move)
-    Assert.equal(tapRig.screen:status().mode, "target", "tapping the move opens its picker (" .. touch.layout .. ")")
+    tap("touch:move", touch.move)
+    Assert.equal(
+      tapRig.screen:status().mode,
+      "target",
+      "tapping the move opens its picker ("
+        .. touch.layout
+        .. "), got "
+        .. tostring(tapRig.screen:status().mode)
+        .. " selection="
+        .. tostring(tapRig.screen:view().selection)
+    )
     if touch.barred ~= nil then
       local before = tapRig.screen:view().selection
       tap("touch:barred", touch.barred)
@@ -1348,7 +1396,7 @@ function T.compact_focused_target_needs_its_matching_control_press()
   Assert.equal(rig.screen:status().mode, "moves", "Fight opens the compact move picker")
   press(rig, { type = "confirm" })
   Assert.equal(rig.screen:status().mode, "target", "the move opens its multi-target picker")
-  Assert.equal(rig.screen:view().selection, "target:0", "the first target is highlighted")
+  Assert.equal(rig.screen:view().selection, "target:3", "the first target uses its native upper-left slot")
   Assert.equal(rig.screen:view().actor.index, 1, "the first actor owns the open picker")
 
   rig.screen:input({ { type = "pointer_up", pointerId = "touch:orphan", x = 128, y = 138 } })

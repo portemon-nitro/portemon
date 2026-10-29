@@ -94,6 +94,10 @@ local TARGET_ANCHORS = {
   { x = 196, y = 116 },
   { x = 60, y = 32 },
 }
+local TARGET_ICON_ANCHORS = {
+  [3] = { x = 196, y = 56 },
+  [5] = { x = 60, y = 56 },
+}
 
 -- Party gauge slots on the interaction pane, six per side. The 16-pixel
 -- source cells center on these origins through their compiled offsets.
@@ -932,33 +936,67 @@ local function drawKeypadCursor(graphics, assets, view, layout, regions)
   if stripWidth == nil then
     return
   end
-  local left = selected.x + 8
-  local right = selected.x + selected.w - 8
-  local top = selected.y + 8
-  local bottom = selected.y + selected.h - 8
-  local tick = view.cursorTick --[[@as integer?]] or 0
-  for corner = 1, 4 do
-    local animation = assert(section.animations[corner], "the cursor stages four corner animations")
-    local totalDuration = 0
-    for _, candidate in ipairs(animation.frames) do
-      totalDuration = totalDuration + candidate.duration
-    end
-    local frameTick = totalDuration > 0 and tick % totalDuration or 0
-    local elapsed = 0
-    local frame = nil
-    for _, candidate in ipairs(animation.frames) do
-      if candidate.duration > 0 and frameTick < elapsed + candidate.duration then
-        frame = candidate
-        break
+  local bounds = {}
+  local targetGroup = view.targetGroup --[[@as table<string, unknown>?]]
+  if layout == "target" and view.selection ~= "cancel" and type(targetGroup) == "table" then
+    local sourceRegions = assert(BattleMenuRegions.forLayout("target"), "target cursors use source controls")
+    local groups = targetGroup.groups --[[@as table<string, table[]>?]]
+    if type(groups) == "table" then
+      for _, group in ipairs({ groups.own, groups.foes }) do
+        if type(group) == "table" and #group > 1 then
+          local left, top = math.huge, math.huge
+          local right, bottom = -math.huge, -math.huge
+          for _, id in ipairs(group) do
+            for _, region in ipairs(sourceRegions) do
+              if region.id == id then
+                left = math.min(left, region.x)
+                top = math.min(top, region.y)
+                right = math.max(right, region.x + region.w)
+                bottom = math.max(bottom, region.y + region.h)
+                break
+              end
+            end
+          end
+          if left < right and top < bottom then
+            bounds[#bounds + 1] = { left = left + 8, right = right - 8, top = top + 8, bottom = bottom - 8 }
+          end
+        end
       end
-      elapsed = elapsed + candidate.duration
     end
-    frame = frame or assert(animation.frames[1], "each cursor corner animation has an initial frame")
-    local cell = assert(section.cells[frame.cell + 1], "cursor animation selects a staged cell")
-    local x = corner % 2 == 1 and left or right
-    local y = corner <= 2 and top or bottom
-    for _, object in ipairs(cell.objs) do
-      drawSpriteObject(graphics, image, stripWidth --[[@as integer]], x + frame.x, y + frame.y, object)
+  end
+  if #bounds == 0 then
+    bounds[1] = {
+      left = selected.x + 8,
+      right = selected.x + selected.w - 8,
+      top = selected.y + 8,
+      bottom = selected.y + selected.h - 8,
+    }
+  end
+  local tick = view.cursorTick --[[@as integer?]] or 0
+  for _, box in ipairs(bounds) do
+    for corner = 1, 4 do
+      local animation = assert(section.animations[corner], "the cursor stages four corner animations")
+      local totalDuration = 0
+      for _, candidate in ipairs(animation.frames) do
+        totalDuration = totalDuration + candidate.duration
+      end
+      local frameTick = totalDuration > 0 and tick % totalDuration or 0
+      local elapsed = 0
+      local frame = nil
+      for _, candidate in ipairs(animation.frames) do
+        if candidate.duration > 0 and frameTick < elapsed + candidate.duration then
+          frame = candidate
+          break
+        end
+        elapsed = elapsed + candidate.duration
+      end
+      frame = frame or assert(animation.frames[1], "each cursor corner animation has an initial frame")
+      local cell = assert(section.cells[frame.cell + 1], "cursor animation selects a staged cell")
+      local x = corner % 2 == 1 and box.left or box.right
+      local y = corner <= 2 and box.top or box.bottom
+      for _, object in ipairs(cell.objs) do
+        drawSpriteObject(graphics, image, stripWidth --[[@as integer]], x + frame.x, y + frame.y, object)
+      end
     end
   end
 end
@@ -1700,18 +1738,14 @@ end
 
 ---@param view table<string, unknown> internal semantic snapshot under drawing
 ---@param id string target control identity under drawing
----@return string? projected target display name, nil without its candidate
-local function targetName(view, id)
+---@return table<string, unknown>? visible target candidate
+local function targetCandidate(view, id)
   local candidates = view.targetCandidates --[[@as table<integer, table<string, unknown>>?]]
-  if type(candidates) ~= "table" then
-    return nil
-  end
-  for _, candidate in ipairs(candidates) do
-    if type(candidate) == "table" and candidate.id == id then
-      if type(candidate.name) == "string" and candidate.name ~= "" then
-        return candidate.name --[[@as string]]
+  if type(candidates) == "table" then
+    for _, candidate in ipairs(candidates) do
+      if type(candidate) == "table" and candidate.id == id and candidate.visible == true then
+        return candidate
       end
-      return id
     end
   end
   return nil
@@ -1774,7 +1808,8 @@ local function drawControls(resources, view, layout, regions)
     end
     drawRoleText(text, role, content, x, anchor.y - 8 + offsetY, palette)
   end
-  for _, region in ipairs(regions) do
+  local drawRegions = layout == "target" and BattleMenuRegions.forLayout("target") or regions
+  for _, region in ipairs(drawRegions) do
     local box = region --[[@as table<string, unknown>]]
     local id = box.id --[[@as string]]
     local pressed = armed ~= nil and armed.id == id and armed.scope == layout
@@ -1863,15 +1898,41 @@ local function drawControls(resources, view, layout, regions)
         label("menu", menuText.cancel, CANCEL_ANCHOR, true, offsetY, sourcePalette(view, "menu", 2, 10, 11, 12))
       elseif id:match("^target:") ~= nil then
         local index = tonumber(id:match("^target:(%d+)$")) --[[@as integer]]
-        local opponent = index % 2 == 1
-        label(
-          "menu",
-          targetName(view, id) or id,
-          TARGET_ANCHORS[index + 1],
-          true,
-          offsetY,
-          sourcePalette(view, "menu", 6, opponent and 1 or 4, opponent and 2 or 5, opponent and 3 or 6)
-        )
+        local candidate = targetCandidate(view, id)
+        if candidate ~= nil then
+          local gender = candidate.gender
+          local marker = gender == "male" and " ♂" or gender == "female" and " ♀" or ""
+          local opponent = candidate.side == 2
+          local name = candidate.name
+          assert(type(name) == "string", "visible targets carry their public nickname")
+          label(
+            "menu",
+            name .. marker,
+            TARGET_ANCHORS[index + 1],
+            true,
+            offsetY,
+            sourcePalette(view, "menu", 6, opponent and 1 or 4, opponent and 2 or 5, opponent and 3 or 6)
+          )
+          local iconAnchor = TARGET_ICON_ANCHORS[
+            candidate.sideType --[[@as integer?]]
+          ]
+          if type(candidate.iconKey) == "string" and iconAnchor ~= nil then
+            local icon = assets:drawable(
+              "battle:icon:" .. candidate.iconKey .. ":frame:" .. tostring(candidate.iconFrameIndex or 1)
+            )
+            if icon ~= nil then
+              local dimensions = icon.getDimensions --[[@as fun(self: table<string, unknown>): number, number]]
+              local width, height = dimensions(icon)
+              drawArtwork(
+                graphics,
+                icon,
+                nil,
+                iconAnchor.x - math.floor(width / 2),
+                iconAnchor.y - math.floor(height / 2) + offsetY
+              )
+            end
+          end
+        end
       end
     end
   end

@@ -1490,6 +1490,83 @@ function openSealingScreen(launchId, specs, requestId)
   return rig
 end
 
+function T.target_navigation_uses_native_slots_and_remembers_the_target_beneath_cancel()
+  local rig = openSealingScreen("launch-screen-target-grid", {
+    {
+      id = "move:0",
+      slot = 0,
+      move = "TACKLE",
+      name = "Tackle",
+      pp = 35,
+      maxPp = 35,
+      target = { kind = "position", position = 2 },
+    },
+  }, 4311)
+  local screen = rig.screen
+  screen._mode = "target"
+  screen._selection = "target:0"
+  screen._targetCandidates = {
+    { id = "target:0", controlId = "target:0", enabled = true },
+    { id = "target:1", controlId = "target:2", enabled = true },
+  }
+
+  screen:_navigateTargets("right")
+  Assert.equal(
+    screen._selection,
+    "target:2",
+    "right follows the native lower-row neighbor despite target-choice ordinals"
+  )
+  screen:_navigateTargets("down")
+  Assert.equal(screen._selection, "cancel", "down from a lower target reaches the cancel row")
+  screen:_navigateTargets("up")
+  Assert.equal(screen._selection, "target:2", "up from cancel restores the previous target slot")
+  rig.screen:dispose()
+end
+
+function T.double_ally_targets_keep_both_native_slots()
+  local rig = openSealingScreen("launch-screen-double-ally-targets", {
+    {
+      id = "move:0",
+      slot = 0,
+      move = "HELPING_HAND",
+      name = "Helping Hand",
+      pp = 20,
+      maxPp = 20,
+      target = { kind = "position", position = 1 },
+    },
+  }, 4312)
+  local screen = rig.screen
+  local lead = assert(screen._timeline._battlers[1], "the opening retains its lead battler")
+  lead.position = 1
+  screen._timeline._battlers[2] = {
+    combatant = 2,
+    activation = 2,
+    side = 1,
+    position = 2,
+    active = true,
+    visible = true,
+    hp = 30,
+    maxHp = 30,
+  }
+  screen._timeline._order[#screen._timeline._order + 1] = 2
+
+  screen:_submitMove({
+    id = "move:0",
+    display = { move = "HELPING_HAND" },
+    targets = {
+      { id = "ally-left", combatant = 1, enabled = true, choice = { target = 1 } },
+      { id = "ally-right", combatant = 2, enabled = true, choice = { target = 2 } },
+    },
+  })
+
+  local view = screen:view()
+  Assert.equal(screen:status().mode, "target", "a double ally move opens the native target menu")
+  Assert.equal(view.selection, "target:3", "the left ally keeps its native upper-left slot")
+  Assert.equal(view.targets[1].id, "target:3", "side type 2 maps to the upper-left control")
+  Assert.equal(view.targets[2].id, "target:1", "side type 4 maps to the upper-right control")
+  screen:dispose()
+end
+
 -- A Fight with no usable move refuses with the kernel reason instead
 -- of opening a dead move list: the decision stays open, nothing
 -- seals, and repeating Fight still seals nothing.
@@ -1850,6 +1927,9 @@ local function drawNativePane(paneId, view, layout, held, doublesHud)
           return nil
         end
         local width = key == "gauges:player" and 512 or key == "gauges:enemy" and 128 or nil
+        if key:match("^battle:icon:") ~= nil then
+          return fakeDrawable(key, 32, 32)
+        end
         return fakeDrawable(key, width, 8)
       end,
       renderPictures = function(_, _, pictures)
@@ -1902,6 +1982,44 @@ local function drawsOf(graphics, handle)
     end
   end
   return found
+end
+
+function T.target_renderer_uses_icon_clock_and_keeps_empty_source_buttons()
+  local view = nativeView({
+    mode = "target",
+    selection = "target:0",
+    cursorVisible = false,
+    targetCandidates = {
+      {
+        id = "target:0",
+        enabled = true,
+        visible = true,
+        name = "FOE",
+        gender = "female",
+        side = 2,
+        sideType = 3,
+        iconKey = "EEVEE/f0",
+        iconFrameIndex = 2,
+      },
+    },
+  })
+  local drawn = drawNativePane("interaction", view, "target", {})
+  local icon =
+    assert(drawsOf(drawn.graphics, "battle:icon:EEVEE/f0:frame:2")[1], "the selected native icon frame draws")
+  Assert.equal(icon.x, 180, "the source icon anchor centers the 32-pixel sprite at x 196")
+  Assert.equal(icon.y, 40, "the source icon anchor centers the frame at y 56")
+  Assert.isTrue(
+    #drawsOf(drawn.graphics, "menu:target:target:3") > 0,
+    "an empty target slot still draws its native blank button art"
+  )
+  local targetLabel = false
+  for _, entry in ipairs(drawn.text.draws) do
+    if entry.content == "FOE ♀" then
+      targetLabel = true
+      break
+    end
+  end
+  Assert.isTrue(targetLabel, "the target nickname and gender marker share the native text line")
 end
 
 -- Bar tiles patch the mapped source tile origin of their own strip:
