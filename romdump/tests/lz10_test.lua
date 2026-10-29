@@ -50,6 +50,14 @@ function T.overlapping_matches_repeat_the_pattern()
   Assert.equal(out, "ABABABXY")
 end
 
+-- A match with displacement one repeats a single byte; the copy must proceed
+-- one byte at a time so the run extends to the declared boundary exactly.
+function T.distance_one_matches_repeat_a_single_byte()
+  local body = string.char(0x40, 0x58, 0x20, 0x00)
+  local data = lz10(6, body)
+  Assert.equal(assert(Lz10.decode(data)), string.rep("X", 6))
+end
+
 function T.non_lz10_payload_is_rejected()
   local out, err = Lz10.decode("not-lz10")
   Assert.isNil(out)
