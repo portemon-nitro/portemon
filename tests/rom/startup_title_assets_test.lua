@@ -166,7 +166,7 @@ local function withSurfaceRoles(manifest, names, bundle)
     if manifest.surfaces[name] ~= nil then
       surfaces[name] = manifest.surfaces[name]
     else
-      -- Reuse staged bytes so a retired-role manifest still has readable
+      -- Reuse staged bytes so an unknown-role manifest still has readable
       -- images; the strict reader must reject it for the role set alone.
       surfaces[name] = manifest.surfaces.editionLogo
     end
@@ -199,11 +199,11 @@ local function titleSurfacesAreExactlyTheTwoRuntimeRoles(romFs, versionId)
     readTitle(withSurfaceRoles(bundle.manifest, { "editionLogo", "subscreenLower" }, bundle), bundle.files, versionId)
   Assert.notNil(accepted, tostring(acceptError))
   local retired, _ = readTitle(
-    withSurfaceRoles(bundle.manifest, { "editionLogo", "subscreenLower", "subscreenDecor" }, bundle),
+    withSurfaceRoles(bundle.manifest, { "editionLogo", "subscreenLower", "bogusRole" }, bundle),
     bundle.files,
     versionId
   )
-  Assert.isNil(retired, "strict title reader rejects the retired three-role manifest")
+  Assert.isNil(retired, "strict title reader rejects the unknown three-role manifest")
 end
 
 return RomSuite.fromFacts({

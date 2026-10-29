@@ -912,7 +912,7 @@ function T.title_reader_rejects_malformed_structure()
 end
 
 -- The title schema versions its shape: a pre-change bundle without the
--- source projection/lighting records, with the retired third surface, or
+-- source projection/lighting records, with an unknown third surface, or
 -- with unlit lighting is not a ready title.
 function T.title_reader_rejects_pre_change_and_unlit_manifests()
   local stale = deepCopy(validTitleManifest())
@@ -922,10 +922,10 @@ function T.title_reader_rejects_pre_change_and_unlit_manifests()
   Assert.notNil(staleErr, "a pre-change title schema reports its cause")
 
   local decorated = deepCopy(validTitleManifest())
-  decorated.surfaces.subscreenDecor = titleSurface("assets/generated/startup/title/subscreen-decor.png")
+  decorated.surfaces.bogusRole = titleSurface("assets/generated/startup/title/edition-logo.png")
   local decoratedLoaded, decoratedErr = StartupAssetCache.loadTitle(titleCacheFs(decorated, nil), "heartgold")
-  Assert.isNil(decoratedLoaded, "a retired third title surface is not a ready title")
-  Assert.notNil(decoratedErr, "a retired third title surface reports its cause")
+  Assert.isNil(decoratedLoaded, "an unknown third title surface is not a ready title")
+  Assert.notNil(decoratedErr, "an unknown third title surface reports its cause")
 
   local unlit = deepCopy(validTitleManifest())
   unlit.lighting = nil

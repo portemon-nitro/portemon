@@ -97,52 +97,46 @@ end
 -- both copies (see the scene 2 LoadSpriteGfx engine toggles and the
 -- NNS-G2D all-surfaces draw in the vendored renderer).
 local function expectedSceneInstances()
+  local function inst(id, engine, x, y, drawOrder, objPriority)
+    return {
+      id = id,
+      engine = engine,
+      x = x,
+      y = y,
+      drawOrder = drawOrder,
+      objPriority = objPriority or 0,
+    }
+  end
   local scenes = {
     [1] = {
-      { id = "sun", engine = "main", x = 128, y = 96, drawOrder = 1, objPriority = 1 },
-      { id = "bird", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
+      inst("sun", "main", 128, 96, 1, 1),
+      inst("bird", "main", 128, 96, 2),
     },
     [3] = {
-      { id = "eusine", engine = "sub", x = 32, y = 608, drawOrder = 1, objPriority = 0 },
-      { id = "unown0", engine = "sub", x = 128, y = 544, drawOrder = 2, objPriority = 0 },
-      { id = "unown1", engine = "sub", x = 128, y = 672, drawOrder = 3, objPriority = 0 },
-      { id = "unown2", engine = "sub", x = 128, y = 608, drawOrder = 4, objPriority = 0 },
-      { id = "silver-silhouette", engine = "sub", x = 128, y = 608, drawOrder = 5, objPriority = 0 },
+      inst("eusine", "sub", 32, 608, 1),
+      inst("unown0", "sub", 128, 544, 2),
+      inst("unown1", "sub", 128, 672, 3),
+      inst("unown2", "sub", 128, 608, 4),
+      inst("silver-silhouette", "sub", 128, 608, 5),
     },
     [4] = {
-      { id = "hand1", engine = "sub", x = 128, y = 352, drawOrder = 1, objPriority = 0 },
-      { id = "hand2", engine = "main", x = 128, y = 96, drawOrder = 1, objPriority = 0 },
-      { id = "chikorita", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
-      { id = "cyndaquil", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
-      { id = "totodile", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
-      { id = "sparkles", engine = "main", x = 128, y = 96, drawOrder = 3, objPriority = 0 },
+      inst("hand1", "sub", 128, 352, 1),
+      inst("hand2", "main", 128, 96, 1),
+      inst("chikorita", "main", 128, 96, 2),
+      inst("cyndaquil", "main", 128, 96, 2),
+      inst("totodile", "main", 128, 96, 2),
+      inst("sparkles", "main", 128, 96, 3),
     },
     [5] = {},
   }
   local second = {}
   for flower = 1, 10 do
-    second[#second + 1] = {
-      id = "flower" .. flower .. "-main",
-      engine = "main",
-      x = 128,
-      y = 192,
-      drawOrder = flower,
-      objPriority = 0,
-    }
-    second[#second + 1] = {
-      id = "flower" .. flower .. "-sub",
-      engine = "sub",
-      x = 128,
-      y = 192,
-      drawOrder = flower,
-      objPriority = 0,
-    }
+    second[#second + 1] = inst("flower" .. flower .. "-main", "main", 128, 192, flower)
+    second[#second + 1] = inst("flower" .. flower .. "-sub", "sub", 128, 192, flower)
   end
   for hero = 0, 2 do
-    second[#second + 1] =
-      { id = "ethan" .. hero, engine = "main", x = 64, y = -96, drawOrder = 11 + hero, objPriority = 1 }
-    second[#second + 1] =
-      { id = "lyra" .. hero, engine = "main", x = 320, y = -96, drawOrder = 14 + hero, objPriority = 1 }
+    second[#second + 1] = inst("ethan" .. hero, "main", 64, -96, 11 + hero, 1)
+    second[#second + 1] = inst("lyra" .. hero, "main", 320, -96, 14 + hero, 1)
   end
   scenes[2] = second
   return scenes
