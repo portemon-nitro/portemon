@@ -599,6 +599,7 @@ end
 local function tap(rig, x, y)
   rig.screen:input({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
   rig.screen:input({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
+  rig.pump(3)
 end
 
 -- Collects every exact portrait selector the launch demanded through
@@ -907,6 +908,8 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   -- already-focused slot while still proving the anchor selects it.
   rig.screen:input({ { type = "navigate", direction = "down" } })
   rig.pump(1)
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
   tap(rig, 64, 45 + 192)
   rig.pump(1)
   Assert.equal(rig.screen:view().selection, "move:0", "the first move anchor selects the first slot")
@@ -954,14 +957,18 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   -- Empty move slots are not selectable: with a single known move the
   -- remaining anchors leave the selection alone.
   tap(rig, 128, 83 + 192)
-  rig.pump(1)
+  driveToMode(rig, "moves", 30)
   -- See the focus note above: stepping focus away first keeps the
   -- anchor tap to a focus move instead of a seal.
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
   rig.screen:input({ { type = "navigate", direction = "down" } })
   rig.pump(1)
   tap(rig, 64, 45 + 192)
   rig.pump(1)
   Assert.equal(rig.screen:view().selection, "move:0", "the first move anchor selects the known slot")
+  Assert.equal(rig.screen:status().mode, "moves", "the known slot tap only focuses the move")
+  Assert.equal(#rig.submits, 0, "the known slot focus does not submit")
   tap(rig, 192, 44 + 192)
   rig.pump(1)
   Assert.equal(rig.screen:view().selection, "move:0", "an empty slot leaves the selection alone")
@@ -1741,6 +1748,10 @@ end
 ---@return table detached dynamic view under test driving
 local function nativeView(foeHp)
   return {
+    participants = {
+      { participant = 1, side = 1, controller = "player" },
+      { participant = 2, side = 2, controller = "wild" },
+    },
     playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "MINT" },
     own = { nativeOwnRecord() },
     foes = { nativeFoeRecord(foeHp) },
@@ -1870,6 +1881,10 @@ end
 ---@return table detached production-shaped dynamic view picturing a full own roster
 local function rosterView(foeHp)
   return {
+    participants = {
+      { participant = 1, side = 1, controller = "player" },
+      { participant = 2, side = 2, controller = "wild" },
+    },
     playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "MINT" },
     own = { activeLeadRecord(), reserveRecord(2), reserveRecord(4) },
     foes = { activeFoeRecord(foeHp) },

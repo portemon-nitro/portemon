@@ -59,6 +59,7 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field _selection string? highlighted semantic identity
 ---@field _keyboardFocus boolean true while the last battle-menu input came from keys
 ---@field _armed table<string, unknown>? pressed control awaiting release
+---@field _buttonFeedback table<string, unknown>? native release feedback task owning a pending activation
 ---@field _child table<string, unknown>? open child intent
 ---@field _request table<string, unknown>? mirrored open request
 ---@field _options table<string, unknown>? latest decision options for the open request
@@ -111,6 +112,7 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field _disposed boolean
 local BattleScreenState = {}
 BattleScreenState.__index = BattleScreenState
+local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 
 -- One accepted HGSS source tick shared with the field session.
 BattleScreenState.SOURCE_FRAME = SourceTick.DT
@@ -118,15 +120,15 @@ BattleScreenState.SOURCE_FRAME = SourceTick.DT
 -- Native command navigation follows the source touch topology, not a
 -- compact grid order.
 local COMMAND_NAV = {
-  fight = { up = "fight", down = "run", left = "fight", right = "fight" },
+  fight = { up = "fight", down = "run", left = "bag", right = "pokemon" },
   bag = { up = "fight", down = "bag", left = "bag", right = "run" },
   run = { up = "fight", down = "run", left = "bag", right = "pokemon" },
   pokemon = { up = "fight", down = "pokemon", left = "run", right = "pokemon" },
   -- Special contexts keep the native four-slot touch topology with
   -- swapped labels: every special identity navigates exactly like the
   -- ordinary slot it replaces.
-  ["safari-ball"] = { up = "safari-ball", down = "run", left = "safari-ball", right = "safari-ball" },
-  ["pal-park-ball"] = { up = "pal-park-ball", down = "run", left = "pal-park-ball", right = "pal-park-ball" },
+  ["safari-ball"] = { up = "safari-ball", down = "run", left = "safari-bait", right = "safari-mud" },
+  ["pal-park-ball"] = { up = "pal-park-ball", down = "run", left = "safari-bait", right = "safari-mud" },
   ["safari-bait"] = { up = "safari-ball", down = "safari-bait", left = "safari-bait", right = "run" },
   ["safari-mud"] = { up = "safari-ball", down = "safari-mud", left = "run", right = "safari-mud" },
   ["bug-contest-ball"] = { up = "fight", down = "bug-contest-ball", left = "bug-contest-ball", right = "run" },
@@ -990,6 +992,7 @@ function BattleScreenState.new(opts)
     _selection = "fight",
     _keyboardFocus = false,
     _armed = nil,
+    _buttonFeedback = nil,
     _child = nil,
     _request = nil,
     _options = nil,
@@ -1975,6 +1978,20 @@ function BattleScreenState:_snapshot()
       self._completion.subject --[[@as table<string, unknown>]]
     )
   end
+  local buttonFeedback = nil
+  local armed = self._armed
+  if self._buttonFeedback ~= nil then
+    local feedback = self._buttonFeedback --[[@as table<string, unknown>]]
+    local ticks = feedback.ticks --[[@as integer]]
+    buttonFeedback = {
+      scope = feedback.scope,
+      id = feedback.id,
+      offsetY = ticks == 0 and -2 or ticks == 1 and -1 or 0,
+    }
+    if ticks == 0 then
+      armed = { scope = feedback.scope, id = feedback.id }
+    end
+  end
   return {
     battleKind = self._kind,
     menuMode = self:_menuMode(),
@@ -1987,7 +2004,8 @@ function BattleScreenState:_snapshot()
     selection = self._selection,
     cursorVisible = self._keyboardFocus and self._mode ~= "child",
     cursorTick = self._cursorTick,
-    armed = self._armed ~= nil and { scope = self._armed.scope, id = self._armed.id } or nil,
+    armed = armed ~= nil and { scope = armed.scope, id = armed.id } or nil,
+    buttonFeedback = buttonFeedback,
     touchFeedback = self._armed ~= nil and self._armed.id == "dialogue" and self._armed.pointerId ~= nil or false,
     requestId = self._request ~= nil and self._request.requestId or 0,
     message = (self._notice ~= nil and self._notice ~= "" and self._notice or completionPrompt or message),
@@ -3343,6 +3361,7 @@ function BattleScreenState:cancelPointerCapture()
     local _ = ok
   end
   self._armed = nil
+  self._buttonFeedback = nil
   if self._registrationChild ~= nil then
     pcall(self._registrationChild.cancelPointerCapture, self._registrationChild)
   end
@@ -3361,6 +3380,25 @@ local function sameControl(armed, control, pointerId)
     and armed.scope == control.scope
     and armed.id == control.id
     and armed.pointerId == pointerId
+end
+
+---@param scope unknown control scope under validation
+---@param id unknown control identity under validation
+---@return boolean known true when the native menu declares the control
+local function knownMenuControl(scope, id)
+  if type(scope) ~= "string" or type(id) ~= "string" then
+    return false
+  end
+  local regions = BattleMenuRegions.forLayout(scope)
+  if regions == nil then
+    return false
+  end
+  for _, region in ipairs(regions) do
+    if region.id == id then
+      return true
+    end
+  end
+  return false
 end
 
 ---@param reason string? supplied refusal reason under display
@@ -4071,6 +4109,64 @@ function BattleScreenState:_sealControl(control, armed)
   end
 end
 
+---@param scope string selected menu scope
+---@param id string selected source control identity
+---@param armed table<string, unknown>? pointer press state under activation
+function BattleScreenState:_startButtonFeedback(scope, id, armed)
+  local regions = BattleMenuRegions.forLayout(scope)
+  if regions == nil then
+    return
+  end
+  local known = false
+  for _, region in ipairs(regions) do
+    if region.id == id then
+      known = true
+      break
+    end
+  end
+  if not known then
+    return
+  end
+  if scope == "command" and not self:_isOfferedCommand(id) then
+    self:_refuse(nil)
+    return
+  elseif scope == "moves" and id ~= "cancel" then
+    local entry = self:_moveEntry(id)
+    if entry == nil or entry.enabled ~= true then
+      local reason = (entry ~= nil and type(entry.reason) == "string") and entry.reason or "empty"
+      self:_refuse(reason --[[@as string]])
+      return
+    end
+  elseif scope == "target" and id ~= "cancel" then
+    local candidate = self:_targetVariant(id)
+    if candidate == nil or candidate.enabled ~= true then
+      self:_refuse(candidate ~= nil and candidate.reason or nil)
+      return
+    end
+  end
+  self._buttonFeedback = {
+    scope = scope,
+    id = id,
+    ticks = 0,
+    armed = armed,
+  }
+end
+
+-- The held press supplies the down frame; release recovers through one
+-- source pixel, settles at rest, then activates.
+function BattleScreenState:_advanceButtonFeedback()
+  local feedback = self._buttonFeedback
+  if feedback == nil then
+    return
+  end
+  feedback.ticks = feedback.ticks + 1
+  if feedback.ticks < 3 then
+    return
+  end
+  self._buttonFeedback = nil
+  self:_sealControl({ id = feedback.id }, feedback.armed)
+end
+
 -- Checks one staged child result against the mirrored open request.
 -- Only the current launch, request, epoch, and controller seal.
 ---@param identity table<string, unknown> staged result or reply identity under validation
@@ -4221,6 +4317,9 @@ end
 ---@param event table<string, unknown> mapped semantic input under consumption
 function BattleScreenState:_consume(event)
   local eventType = event.type
+  local menuKeyboardEdge = (self._mode == "command" or self._mode == "moves" or self._mode == "target")
+    and (eventType == "navigate" or eventType == "confirm" or eventType == "cancel")
+  local revealCursor = eventType == "navigate" and menuKeyboardEdge and not self._keyboardFocus
   if eventType == "navigate" or eventType == "confirm" or eventType == "cancel" then
     self._keyboardFocus = true
   elseif eventType == "battle_press" or eventType == "child_press" then
@@ -4228,7 +4327,11 @@ function BattleScreenState:_consume(event)
   end
   if eventType == "pointer_cancel" then
     self._armed = nil
+    self._buttonFeedback = nil
     self._subflows:cancelPointerCapture()
+    return
+  end
+  if self._buttonFeedback ~= nil or revealCursor then
     return
   end
   -- The bound nickname completion owns its semantic edges ahead of the
@@ -4276,11 +4379,18 @@ function BattleScreenState:_consume(event)
   end
   if eventType == "battle_press" then
     if self._mode == "command" or self._mode == "moves" or self._mode == "target" then
-      self._armed = { scope = event.control.scope, id = event.control.id, pointerId = event.pointerId }
+      local scope = event.control.scope --[[@as string]]
+      local id = event.control.id --[[@as string]]
+      if not knownMenuControl(scope, id) then
+        return
+      end
+      if scope == "command" and not self:_isOfferedCommand(id) then
+        return
+      end
+      self._armed = { scope = scope, id = id, pointerId = event.pointerId }
       if event.control.scope == "command" then
         self._selection = event.control.id --[[@as string]]
       elseif event.control.scope == "moves" then
-        local id = event.control.id --[[@as string]]
         if id ~= "cancel" then
           local entry = self:_moveEntry(id)
           if entry ~= nil and entry.enabled == true then
@@ -4328,7 +4438,7 @@ function BattleScreenState:_consume(event)
           self._timeline:ack()
         end
       else
-        self:_sealControl(event.control, armed)
+        self:_startButtonFeedback(self._mode, event.control.id --[[@as string]], armed)
       end
     end
     return
@@ -4522,16 +4632,21 @@ function BattleScreenState:_navigate(direction)
   local links = table_[
     self._selection --[[@as string]]
   ]
-  if
-    links ~= nil
-    and type(direction) == "string"
-    and type(links[
-      direction --[[@as string]]
-    ]) == "string"
-  then
-    self._selection = links[
-      direction --[[@as string]]
-    ]
+  local destination = links ~= nil and links[
+    direction --[[@as string]]
+  ] or nil
+  if self._mode == "command" and self._kind == "bug-contest" and self._selection == "fight" then
+    if direction == "left" then
+      destination = "bug-contest-ball"
+    elseif direction == "right" then
+      destination = "pokemon"
+    end
+  end
+  if self._mode == "command" and type(destination) == "string" and not self:_isOfferedCommand(destination) then
+    destination = self._selection
+  end
+  if type(direction) == "string" and type(destination) == "string" then
+    self._selection = destination
   end
 end
 
@@ -4861,6 +4976,7 @@ function BattleScreenState:updateFixed(dt)
       if self._mode == "failed" then
         break
       end
+      self:_advanceButtonFeedback()
       self._timeline:update(BattleScreenState.SOURCE_FRAME, isAvailable, function(cue)
         return self:_soundCueComplete(cue)
       end)

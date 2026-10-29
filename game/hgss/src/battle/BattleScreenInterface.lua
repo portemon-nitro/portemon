@@ -10,6 +10,7 @@
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
+local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 
 ---@class BattleScreenInterface
 local BattleScreenInterface = {}
@@ -17,35 +18,6 @@ local BattleScreenInterface = {}
 local DETAIL_NATIVE = { id = "detail", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local CONTENT_NATIVE = { id = "interaction", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local INPUT_KEY = "battle"
-
--- Source command bounds as half-open logical regions: the lower edge
--- belongs to the lower control so adjacent controls never share one.
-local COMMAND_REGIONS = {
-  { id = "fight", x = 0, y = 24, w = 256, h = 120 },
-  { id = "bag", x = 0, y = 144, w = 80, h = 48 },
-  { id = "pokemon", x = 176, y = 144, w = 80, h = 48 },
-  { id = "run", x = 88, y = 152, w = 80, h = 40 },
-}
-
--- Source two-by-two move table with the bottom cancel strip.
-local MOVE_REGIONS = {
-  { id = "move:0", x = 0, y = 24, w = 128, h = 56 },
-  { id = "move:1", x = 128, y = 24, w = 128, h = 56 },
-  { id = "move:2", x = 0, y = 88, w = 128, h = 56 },
-  { id = "move:3", x = 128, y = 88, w = 128, h = 56 },
-  { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
-}
-
--- Interim target boxes around the source semantic anchors with the same
--- bottom cancel strip. Singles auto-resolve and never show these; they
--- exist so an explicit multi-target decision has admitted regions.
-local TARGET_REGIONS = {
-  { id = "target:0", x = 0, y = 88, w = 121, h = 57 },
-  { id = "target:1", x = 136, y = 8, w = 120, h = 73 },
-  { id = "target:2", x = 136, y = 88, w = 120, h = 57 },
-  { id = "target:3", x = 0, y = 8, w = 121, h = 73 },
-  { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
-}
 
 ---@param regions table<string, unknown>[] half-open logical hit regions
 ---@param x number logical horizontal position under test
@@ -84,10 +56,7 @@ local function childRegions(child)
     return { { id = "native", x = 0, y = 0, w = 256, h = 192 } }
   end
   if child.kind == "learn" and type(child.confirmation) == "table" then
-    return {
-      { id = "confirm", x = 0, y = 32, w = 256, h = 64 },
-      { id = "back", x = 0, y = 104, w = 256, h = 64 },
-    }
+    return BattleMenuRegions.forLayout("two-option")
   end
   local regions = {}
   local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
@@ -220,8 +189,9 @@ end
 ---@return table<string, unknown>[] hit regions for the projected targets with the cancel strip
 local function targetRegions(view)
   local candidates = view.targetCandidates --[[@as table<integer, table<string, unknown>>?]]
+  local sourceRegions = assert(BattleMenuRegions.forLayout("target"), "the native target layout has source regions")
   if type(candidates) ~= "table" then
-    return TARGET_REGIONS
+    return sourceRegions
   end
   local enabled = {}
   for _, candidate in ipairs(candidates) do
@@ -230,7 +200,7 @@ local function targetRegions(view)
     end
   end
   local regions = {}
-  for _, region in ipairs(TARGET_REGIONS) do
+  for _, region in ipairs(sourceRegions) do
     if region.id == "cancel" or enabled[region.id] == true then
       regions[#regions + 1] = region
     end
@@ -243,9 +213,9 @@ end
 local function regionsFor(view)
   local mode = view.mode
   if mode == "command" then
-    return COMMAND_REGIONS
+    return BattleMenuRegions.forLayout("command")
   elseif mode == "moves" then
-    return MOVE_REGIONS
+    return BattleMenuRegions.forLayout("moves")
   elseif mode == "target" then
     return targetRegions(view)
   elseif mode == "child" then
