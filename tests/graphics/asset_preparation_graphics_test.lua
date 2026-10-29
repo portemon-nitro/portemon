@@ -286,6 +286,82 @@ function T.icon_sized_image_decodes_through_the_real_worker_without_graphics()
   Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
 end
 
+-- A generated PNG prepares through the real worker into a classified
+-- derivative payload, and a second request for the same source reuses the
+-- privately stored derivative through the same worker cache: both payloads
+-- carry identical source and pixel hashes with no GPU object created by
+-- preparation itself.
+function T.image_derivative_prepares_through_the_real_worker_with_private_reuse()
+  local AssetPreparationQueue = requireQueue()
+  local cache = CacheFs.forVersion(VERSION_ID)
+  local png = PngWriter.encode(2, 2, string.char(255, 0, 0, 255):rep(4))
+  cache:write("assets/generated/textures/derivative.png", png)
+  local expectedSource = love.data.hash("sha256", png)
+  local statsBefore = love.graphics.getStats()
+
+  local runOk, runErr = pcall(function()
+    local queue = AssetPreparationQueue.new(cache)
+    local firstToken = queue:request("image-derivative", "assets/generated/textures/derivative.png", "demand")
+    local first = queue:wait(firstToken)
+    Assert.equal(first.sourceHash, expectedSource, "the derivative binds the exact PNG bytes")
+    Assert.equal(first.width, 2)
+    Assert.equal(first.height, 2)
+    Assert.isTrue(first.kind == "r8" or first.kind == "rgba8", "the derivative classifies to a known layout")
+    Assert.notNil(first.indexData, "the worker replies with packed index Data")
+
+    local secondToken = queue:request("image-derivative", "assets/generated/textures/derivative.png", "demand")
+    local second = queue:wait(secondToken)
+    Assert.equal(second.sourceHash, first.sourceHash, "the repeat preparation reuses the stored derivative")
+    Assert.equal(second.pixelHash, first.pixelHash, "the reused derivative carries identical pixels")
+    Assert.equal(second.width, first.width)
+    Assert.equal(second.height, first.height)
+
+    queue:release()
+  end)
+
+  local statsAfter = love.graphics.getStats()
+  cache:removeTree("")
+
+  if not runOk then
+    error(runErr, 0)
+  end
+  Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
+end
+
+-- A generated PCM sample prepares through the real worker into one
+-- transferable ByteData holding the exact logical bytes, proving the
+-- audio-sample branch rides the same worker cache as meshes and images.
+function T.audio_sample_prepares_through_the_real_worker_as_transferable_bytes()
+  local AssetPreparationQueue = requireQueue()
+  local cache = CacheFs.forVersion(VERSION_ID)
+  local logical = string.rep("\1\2\3\4", 512)
+  cache:write("data/generated/audio/sample.pcm16le", logical)
+  local statsBefore = love.graphics.getStats()
+
+  local runOk, runErr = pcall(function()
+    local queue = AssetPreparationQueue.new(cache)
+    local token = queue:request("audio-sample", "data/generated/audio/sample.pcm16le", "demand")
+    local prepared = queue:wait(token)
+    Assert.equal(prepared.size, #logical, "the sample payload sizes the exact logical bytes")
+    Assert.notNil(prepared.byteData, "the worker replies with transferable sample Data")
+    Assert.equal(prepared.byteData:getString(), logical, "the sample bytes survive the worker round trip")
+
+    local repeatToken = queue:request("audio-sample", "data/generated/audio/sample.pcm16le", "demand")
+    local repeated = queue:wait(repeatToken)
+    Assert.equal(repeated.byteData:getString(), logical, "a repeat preparation decodes identical sample bytes")
+
+    queue:release()
+  end)
+
+  local statsAfter = love.graphics.getStats()
+  cache:removeTree("")
+
+  if not runOk then
+    error(runErr, 0)
+  end
+  Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
+end
+
 return {
   metadata = { capabilities = { "graphics" } },
   tests = T,
