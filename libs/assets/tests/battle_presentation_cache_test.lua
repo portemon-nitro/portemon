@@ -285,6 +285,94 @@ function T.battle_ball_frames_are_part_of_the_exact_readiness_closure()
   Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a broken requested frame is never ready")
 end
 
+function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
+  local manifest = validManifest()
+  local selector = "back:PKMN_TRAINER_ETHAN"
+  local image0 = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png"
+  local image1 = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-frame-1.png"
+  local sequenceImage = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-sequence-1-frame-0.png"
+  local frames = {
+    {
+      drawableKey = "trainer:" .. selector,
+      image = image0,
+      rasterOffset = { x = -40, y = -40 },
+      durationTicks = 2,
+      sourceFrame = 0,
+      userAttr = 0,
+    },
+    {
+      drawableKey = "trainer:" .. selector .. ":frame:1",
+      image = image1,
+      rasterOffset = { x = -24, y = -40 },
+      durationTicks = 5,
+      sourceFrame = 1,
+      userAttr = 0,
+    },
+  }
+  manifest.trainerPictures.entries[selector] = {
+    drawableKey = "trainer:" .. selector,
+    image = image0,
+    width = 8,
+    height = 8,
+    rasterOffset = { x = -40, y = -40 },
+    animation = {
+      sourceSequence = 0,
+      playMode = "forward_loop",
+      loopStartFrameIdx = 0,
+      frames = frames,
+      sequences = {
+        { sourceSequence = 0, playMode = "forward_loop", loopStartFrameIdx = 0, frames = frames },
+        {
+          sourceSequence = 1,
+          playMode = "forward",
+          loopStartFrameIdx = 0,
+          frames = {
+            {
+              drawableKey = "trainer:" .. selector .. ":sequence:1:frame:0",
+              image = sequenceImage,
+              rasterOffset = { x = -40, y = -40 },
+              durationTicks = 3,
+              sourceFrame = 0,
+              userAttr = 1,
+            },
+          },
+        },
+      },
+    },
+    throwOffsets = {
+      { x = 0, y = 128 },
+      { x = -34, y = 4 },
+      { x = -28, y = -11 },
+      { x = 50, y = -12 },
+      { x = 32767, y = 32767 },
+      { x = 32767, y = 32767 },
+    },
+  }
+  manifest.menus.images[image0] = { width = 8, height = 8 }
+  manifest.menus.images[image1] = { width = 8, height = 8 }
+  manifest.menus.images[sequenceImage] = { width = 8, height = 8 }
+  local demand = assert(
+    BattlePresentationCache.requirements(
+      manifest,
+      { background = "general", terrain = "grass", time = "day" },
+      { MonCache.portraitSelector("CHIKORITA", 0, "male", false) },
+      nil,
+      { selector },
+      {}
+    )
+  )
+  Assert.deepEqual(demand.trainerPictures, { selector }, "only the requested trainer class reaches the launch demand")
+  local cache = staging()
+  stageBattle(cache, manifest, "general/grass/day")
+  stageMonPage(cache, MonCache.portraitSelector("CHIKORITA", 0, "male", false))
+  Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "both source frames are staged for the requested class")
+  cache:remove(sequenceImage)
+  Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a missing throw sequence frame prevents readiness")
+  stageBattle(cache, manifest, "general/grass/day")
+  cache:remove(image1)
+  Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a missing non-first trainer frame prevents readiness")
+end
+
 function T.fully_staged_demands_read_ready_and_breakages_do_not()
   local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false, "back")
   local manifest = validManifest()

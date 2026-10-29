@@ -83,26 +83,6 @@ end
 
 function T.trainer_pictures_validate_semantic_role_selectors_and_staged_images()
   local valid = manifest()
-  valid.trainerPictures = {
-    entries = {
-      ["front:YOUNGSTER"] = {
-        drawableKey = "trainer:front:YOUNGSTER",
-        image = "assets/generated/battle/trainer-front-YOUNGSTER.png",
-        width = 80,
-        height = 80,
-        rasterOffset = { x = -40, y = -40 },
-      },
-      ["back:PKMN_TRAINER_ETHAN"] = {
-        drawableKey = "trainer:back:PKMN_TRAINER_ETHAN",
-        image = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png",
-        width = 80,
-        height = 80,
-        rasterOffset = { x = -40, y = -40 },
-      },
-    },
-  }
-  valid.menus.images[valid.trainerPictures.entries["front:YOUNGSTER"].image] = { width = 80, height = 80 }
-  valid.menus.images[valid.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"].image] = { width = 80, height = 80 }
   Assert.isTrue(Schema.isValidManifest(valid), "semantic front and back trainer images validate")
 
   valid.trainerPictures.entries["front:YOUNGSTER"].drawableKey = "trainer:front:POKEBALL"
@@ -111,9 +91,156 @@ function T.trainer_pictures_validate_semantic_role_selectors_and_staged_images()
   local missingOffset = manifest()
   missingOffset.trainerPictures.entries["front:YOUNGSTER"].rasterOffset = nil
   Assert.isFalse(Schema.isValidManifest(missingOffset), "trainer pictures require their source raster offset")
+
+  local missingAnimation = manifest()
+  missingAnimation.trainerPictures.entries["front:YOUNGSTER"].animation = nil
+  Assert.isFalse(Schema.isValidManifest(missingAnimation), "every trainer picture retains its source frame sequence")
   local fractionalOffset = manifest()
   fractionalOffset.trainerPictures.entries["front:YOUNGSTER"].rasterOffset.x = -40.5
   Assert.isFalse(Schema.isValidManifest(fractionalOffset), "trainer raster offsets are integer source coordinates")
+end
+
+function T.trainer_picture_sequences_validate_ordered_staged_source_frames()
+  local image0 = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png"
+  local image1 = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-frame-1.png"
+  local sequenceImage = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-sequence-1-frame-0.png"
+  local function entryFixture()
+    local frames = {
+      {
+        drawableKey = "trainer:back:PKMN_TRAINER_ETHAN",
+        image = image0,
+        rasterOffset = { x = -40, y = -40 },
+        durationTicks = 2,
+        sourceFrame = 0,
+        userAttr = 0,
+      },
+      {
+        drawableKey = "trainer:back:PKMN_TRAINER_ETHAN:frame:1",
+        image = image1,
+        rasterOffset = { x = -24, y = -40 },
+        durationTicks = 5,
+        sourceFrame = 1,
+        userAttr = 1,
+      },
+    }
+    return {
+      drawableKey = "trainer:back:PKMN_TRAINER_ETHAN",
+      image = image0,
+      width = 8,
+      height = 8,
+      rasterOffset = { x = -40, y = -40 },
+      animation = {
+        sourceSequence = 0,
+        playMode = "forward_loop",
+        loopStartFrameIdx = 0,
+        frames = frames,
+        sequences = {
+          { sourceSequence = 0, playMode = "forward_loop", loopStartFrameIdx = 0, frames = frames },
+          {
+            sourceSequence = 1,
+            playMode = "forward",
+            loopStartFrameIdx = 0,
+            frames = {
+              {
+                drawableKey = "trainer:back:PKMN_TRAINER_ETHAN:sequence:1:frame:0",
+                image = sequenceImage,
+                rasterOffset = { x = -40, y = -40 },
+                durationTicks = 3,
+                sourceFrame = 0,
+                userAttr = 0xFFF,
+              },
+            },
+          },
+        },
+      },
+      throwOffsets = {
+        { x = 0, y = 128 },
+        { x = -34, y = 4 },
+        { x = -28, y = -11 },
+        { x = 50, y = -12 },
+        { x = 32767, y = 32767 },
+        { x = 32767, y = 32767 },
+      },
+    }
+  end
+  local valid = manifest()
+  local entry = entryFixture()
+  valid.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = entry
+  valid.menus.images[image0] = { width = 8, height = 8 }
+  valid.menus.images[image1] = { width = 8, height = 8 }
+  valid.menus.images[sequenceImage] = { width = 8, height = 8 }
+  local validResult, validError = Schema.isValidManifest(valid)
+  Assert.isTrue(
+    validResult,
+    "two source-order trainer frames and their image closure validate: " .. tostring(validError)
+  )
+
+  local missingImage = manifest()
+  local missingEntry = entryFixture()
+  missingEntry.animation.frames[2].image = "assets/generated/battle/missing-trainer-frame.png"
+  missingImage.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = missingEntry
+  missingImage.menus.images[image0] = { width = 8, height = 8 }
+  Assert.isFalse(Schema.isValidManifest(missingImage), "every source frame image must be staged")
+
+  local duplicateFrame = manifest()
+  local duplicateEntry = entryFixture()
+  duplicateEntry.animation.frames[2].sourceFrame = 0
+  duplicateFrame.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = duplicateEntry
+  duplicateFrame.menus.images[image0] = { width = 8, height = 8 }
+  duplicateFrame.menus.images[image1] = { width = 8, height = 8 }
+  Assert.isFalse(Schema.isValidManifest(duplicateFrame), "source frame indices are unique and ordered")
+
+  local invalidDuration = manifest()
+  local invalidEntry = entryFixture()
+  invalidEntry.animation.frames[2].durationTicks = 0.5
+  invalidDuration.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = invalidEntry
+  invalidDuration.menus.images[image0] = { width = 8, height = 8 }
+  invalidDuration.menus.images[image1] = { width = 8, height = 8 }
+  Assert.isFalse(Schema.isValidManifest(invalidDuration), "source frame durations are integer ticks")
+
+  local invalidUserAttr = manifest()
+  local invalidAttrEntry = entryFixture()
+  invalidAttrEntry.animation.sequences[2].frames[1].userAttr = -1
+  invalidUserAttr.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = invalidAttrEntry
+  invalidUserAttr.menus.images[image0] = { width = 8, height = 8 }
+  invalidUserAttr.menus.images[image1] = { width = 8, height = 8 }
+  invalidUserAttr.menus.images[sequenceImage] = { width = 8, height = 8 }
+  Assert.isFalse(Schema.isValidManifest(invalidUserAttr), "UAAT values are unsigned source integers")
+
+  local oversizedUserAttr = manifest()
+  local oversizedAttrEntry = entryFixture()
+  oversizedAttrEntry.animation.sequences[2].frames[1].userAttr = 0x100000000
+  oversizedUserAttr.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = oversizedAttrEntry
+  oversizedUserAttr.menus.images[image0] = { width = 8, height = 8 }
+  oversizedUserAttr.menus.images[image1] = { width = 8, height = 8 }
+  oversizedUserAttr.menus.images[sequenceImage] = { width = 8, height = 8 }
+  Assert.isFalse(Schema.isValidManifest(oversizedUserAttr), "UAAT values fit their source u32 representation")
+
+  local missingSequenceImage = manifest()
+  local missingSequenceEntry = entryFixture()
+  missingSequenceEntry.animation.sequences[2].frames[1].image =
+    "assets/generated/battle/missing-trainer-sequence-frame.png"
+  missingSequenceImage.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = missingSequenceEntry
+  missingSequenceImage.menus.images[image0] = { width = 8, height = 8 }
+  missingSequenceImage.menus.images[image1] = { width = 8, height = 8 }
+  Assert.isFalse(Schema.isValidManifest(missingSequenceImage), "every selected source sequence frame must be staged")
+
+  local skippedSequence = manifest()
+  local skippedSequenceEntry = entryFixture()
+  skippedSequenceEntry.animation.sequences[2].sourceSequence = 2
+  skippedSequence.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = skippedSequenceEntry
+  skippedSequence.menus.images[image0] = { width = 8, height = 8 }
+  skippedSequence.menus.images[image1] = { width = 8, height = 8 }
+  skippedSequence.menus.images[sequenceImage] = { width = 8, height = 8 }
+  Assert.isFalse(Schema.isValidManifest(skippedSequence), "source sequence IDs remain ordered and explicit")
+
+  local missingThrowAnchor = manifest()
+  local missingAnchorEntry = entryFixture()
+  missingAnchorEntry.throwOffsets = nil
+  missingThrowAnchor.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = missingAnchorEntry
+  missingThrowAnchor.menus.images[image0] = { width = 8, height = 8 }
+  missingThrowAnchor.menus.images[image1] = { width = 8, height = 8 }
+  Assert.isFalse(Schema.isValidManifest(missingThrowAnchor), "animated backpics require source throw attachments")
 end
 
 function T.battle_ball_frames_validate_ordered_semantic_drawables_and_staged_images()

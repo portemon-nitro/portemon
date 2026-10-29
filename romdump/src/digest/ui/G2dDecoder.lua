@@ -226,6 +226,97 @@ local PLAY_MODE = {
   [4] = "reverse_loop",
 }
 
+local USER_ANIMATION_ATTRIBUTE_BLOCK = 0x55414154
+
+---@param reader BinaryReader
+---@param block { payload: integer, size: integer }
+---@param animations table[] decoded source animation sequences
+local function decodeUserAnimationAttributes(reader, block, animations)
+  if block.size < 0x18 then
+    return
+  end
+  local extensionOffset = reader:u32le(block.payload + 20)
+  if extensionOffset == 0 then
+    return
+  end
+  if extensionOffset + 8 > block.size then
+    Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "ANIM user extension header exceeds the chunk", {
+      extensionOffset = extensionOffset,
+      chunkSize = block.size,
+    })
+  end
+  local extension = block.payload + extensionOffset
+  if reader:u32le(extension) ~= USER_ANIMATION_ATTRIBUTE_BLOCK then
+    return
+  end
+  local extensionSize = reader:u32le(extension + 4)
+  if extensionSize < 16 or extensionOffset + extensionSize > block.size then
+    Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "UAAT user animation data exceeds the chunk", {
+      extensionOffset = extensionOffset,
+      extensionSize = extensionSize,
+      chunkSize = block.size,
+    })
+  end
+  local bank = extension + 8
+  local bankSize = extensionSize - 8
+  local sequenceCount = reader:u16le(bank)
+  local attributeCount = reader:u16le(bank + 2)
+  local sequenceOffset = reader:u32le(bank + 4)
+  if sequenceCount > #animations or attributeCount == 0 then
+    Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "UAAT sequence or attribute count is invalid", {
+      sequenceCount = sequenceCount,
+      animationCount = #animations,
+      attributeCount = attributeCount,
+    })
+  end
+  if sequenceOffset + sequenceCount * 12 > bankSize then
+    Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "UAAT sequence table exceeds the extension", {
+      sequenceOffset = sequenceOffset,
+      sequenceCount = sequenceCount,
+      extensionSize = extensionSize,
+    })
+  end
+  for sequenceIndex = 0, sequenceCount - 1 do
+    local sequenceOffsetInBank = sequenceOffset + sequenceIndex * 12
+    local frameCount = reader:u16le(bank + sequenceOffsetInBank)
+    local attributeValuesOffset = reader:u32le(bank + sequenceOffsetInBank + 4)
+    local frameAttributesOffset = reader:u32le(bank + sequenceOffsetInBank + 8)
+    if frameCount ~= 0 and frameCount ~= #animations[sequenceIndex + 1].frames then
+      Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "UAAT frame count disagrees with its animation sequence", {
+        sequence = sequenceIndex,
+        attributeFrames = frameCount,
+        animationFrames = #animations[sequenceIndex + 1].frames,
+      })
+    end
+    if attributeValuesOffset + attributeCount * 4 > bankSize then
+      Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "UAAT sequence attribute values exceed the extension", {
+        sequence = sequenceIndex,
+        attributeValuesOffset = attributeValuesOffset,
+        attributeCount = attributeCount,
+      })
+    end
+    if frameAttributesOffset + frameCount * 4 > bankSize then
+      Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "UAAT frame attribute table exceeds the extension", {
+        sequence = sequenceIndex,
+        frameAttributesOffset = frameAttributesOffset,
+        frameCount = frameCount,
+      })
+    end
+    for frameIndex = 0, frameCount - 1 do
+      local valueOffset = reader:u32le(bank + frameAttributesOffset + frameIndex * 4)
+      if valueOffset + attributeCount * 4 > bankSize then
+        Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "UAAT frame attribute values exceed the extension", {
+          sequence = sequenceIndex,
+          frame = frameIndex,
+          valueOffset = valueOffset,
+          attributeCount = attributeCount,
+        })
+      end
+      animations[sequenceIndex + 1].frames[frameIndex + 1].userAttr = reader:u32le(bank + valueOffset)
+    end
+  end
+end
+
 local function decodeCharBlock(data, opts)
   local _, blks, reader, missingAt =
     blocks(data, { magics = CONTAINER_MAGICS, allowRetailTail = opts.allowRetailTail }, opts.label or "g2d-char")
@@ -567,7 +658,7 @@ end
 
 ---@param data string
 ---@param opts? { label?: string }
----@return { anims: { frames: { cell: integer, duration: integer, element: string, translateX: integer, translateY: integer, scaleX: number, scaleY: number, rotation: number }[], playMode: string, loopStartFrameIdx: integer }[] }?
+---@return { anims: { frames: { cell: integer, duration: integer, element: string, translateX: integer, translateY: integer, scaleX: number, scaleY: number, rotation: number, userAttr?: integer }[], playMode: string, loopStartFrameIdx: integer }[] }?
 ---@return Errors.Error?
 function G2dDecoder.decodeAnimation(data, opts)
   assert(type(data) == "string", "G2dDecoder.decodeAnimation requires a string")
@@ -796,6 +887,7 @@ function G2dDecoder.decodeAnimation(data, opts)
         loopStartFrameIdx = loopStartFrameIdx,
       }
     end
+    decodeUserAnimationAttributes(reader, blk, anims)
     return { anims = anims }
   end
   local ok, result = pcall(decodeAnimationBlock)

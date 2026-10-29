@@ -3253,13 +3253,15 @@ local function checkTrainerPictures(manifest, context)
       fail(CODE_MANIFEST, "manifest trainer picture selector is not semantic", context)
     end
     local field = "manifest trainerPictures.entries[" .. selector .. "]"
-    SchemaCheck.checkRecord(
-      record,
-      { drawableKey = true, image = true, width = true, height = true, rasterOffset = true },
-      context,
-      CODE_MANIFEST,
-      field
-    )
+    SchemaCheck.checkRecord(record, {
+      drawableKey = true,
+      image = true,
+      width = true,
+      height = true,
+      rasterOffset = true,
+      animation = true,
+      throwOffsets = true,
+    }, context, CODE_MANIFEST, field)
     if record.drawableKey ~= "trainer:" .. selector then
       fail(CODE_MANIFEST, field .. ".drawableKey must match its role selector", context)
     end
@@ -3276,6 +3278,161 @@ local function checkTrainerPictures(manifest, context)
     checkInt(record.rasterOffset.x, -128, 127, context, CODE_MANIFEST, field .. ".rasterOffset.x")
     checkInt(record.rasterOffset.y, -128, 127, context, CODE_MANIFEST, field .. ".rasterOffset.y")
     checkImageRef(manifest.menus.images, record.image, context, field .. ".image")
+    if record.animation == nil then
+      fail(CODE_MANIFEST, field .. ".animation must carry every source trainer sequence", context)
+    end
+    if record.animation ~= nil then
+      SchemaCheck.checkRecord(
+        record.animation,
+        { sourceSequence = true, playMode = true, loopStartFrameIdx = true, frames = true, sequences = true },
+        context,
+        CODE_MANIFEST,
+        field .. ".animation"
+      )
+      local frames = record.animation.frames
+      if not Validate.isArray(frames) or #frames == 0 then
+        fail(CODE_MANIFEST, field .. ".animation.frames must carry ordered source frames", context)
+      end
+      if record.animation.sourceSequence ~= 0 then
+        fail(CODE_MANIFEST, field .. ".animation.sourceSequence must preserve source sequence zero", context)
+      end
+      local sequences = record.animation.sequences
+      if not Validate.isArray(sequences) or #sequences == 0 then
+        fail(CODE_MANIFEST, field .. ".animation.sequences must carry every source animation", context)
+      end
+      for sequenceIndex, sequence in ipairs(sequences) do
+        local sequenceField = field .. ".animation.sequences[" .. sequenceIndex .. "]"
+        SchemaCheck.checkRecord(
+          sequence,
+          { sourceSequence = true, playMode = true, loopStartFrameIdx = true, frames = true },
+          context,
+          CODE_MANIFEST,
+          sequenceField
+        )
+        local sourceSequence = sequenceIndex - 1
+        if sequence.sourceSequence ~= sourceSequence then
+          fail(CODE_MANIFEST, sequenceField .. ".sourceSequence must follow source order from zero", context)
+        end
+        if
+          not (
+            sequence.playMode == "forward"
+            or sequence.playMode == "forward_loop"
+            or sequence.playMode == "reverse"
+            or sequence.playMode == "reverse_loop"
+          )
+        then
+          fail(CODE_MANIFEST, sequenceField .. ".playMode must retain its supported source mode", context)
+        end
+        local sequenceFrames = sequence.frames
+        if not Validate.isArray(sequenceFrames) or #sequenceFrames == 0 then
+          fail(CODE_MANIFEST, sequenceField .. ".frames must carry ordered source frames", context)
+        end
+        checkInt(
+          sequence.loopStartFrameIdx,
+          0,
+          #sequenceFrames - 1,
+          context,
+          CODE_MANIFEST,
+          sequenceField .. ".loopStartFrameIdx"
+        )
+        for frameIndex, frame in ipairs(sequenceFrames) do
+          local frameField = sequenceField .. ".frames[" .. frameIndex .. "]"
+          SchemaCheck.checkRecord(frame, {
+            drawableKey = true,
+            image = true,
+            rasterOffset = true,
+            durationTicks = true,
+            sourceFrame = true,
+            userAttr = true,
+          }, context, CODE_MANIFEST, frameField)
+          local sourceFrame = frameIndex - 1
+          if frame.sourceFrame ~= sourceFrame then
+            fail(CODE_MANIFEST, frameField .. ".sourceFrame must follow source order from zero", context)
+          end
+          local drawableKey
+          if sourceSequence == 0 then
+            drawableKey = sourceFrame == 0 and record.drawableKey
+              or (record.drawableKey .. ":frame:" .. tostring(sourceFrame))
+          else
+            drawableKey = record.drawableKey
+              .. ":sequence:"
+              .. tostring(sourceSequence)
+              .. ":frame:"
+              .. tostring(sourceFrame)
+          end
+          if frame.drawableKey ~= drawableKey then
+            fail(CODE_MANIFEST, frameField .. ".drawableKey must match its source sequence and frame", context)
+          end
+          checkImagePath(frame.image, context, CODE_MANIFEST, frameField .. ".image")
+          checkInt(frame.durationTicks, 0, 65535, context, CODE_MANIFEST, frameField .. ".durationTicks")
+          checkInt(frame.userAttr, 0, 0xFFFFFFFF, context, CODE_MANIFEST, frameField .. ".userAttr")
+          SchemaCheck.checkRecord(
+            frame.rasterOffset,
+            { x = true, y = true },
+            context,
+            CODE_MANIFEST,
+            frameField .. ".rasterOffset"
+          )
+          checkInt(frame.rasterOffset.x, -128, 127, context, CODE_MANIFEST, frameField .. ".rasterOffset.x")
+          checkInt(frame.rasterOffset.y, -128, 127, context, CODE_MANIFEST, frameField .. ".rasterOffset.y")
+          checkImageRef(manifest.menus.images, frame.image, context, frameField .. ".image")
+          if
+            sourceSequence == 0
+            and frameIndex == 1
+            and (
+              frame.image ~= record.image
+              or frame.rasterOffset.x ~= record.rasterOffset.x
+              or frame.rasterOffset.y ~= record.rasterOffset.y
+            )
+          then
+            fail(CODE_MANIFEST, field .. ".animation frame zero must preserve the legacy image and origin", context)
+          end
+        end
+        if sourceSequence == 0 then
+          if
+            sequence.playMode ~= record.animation.playMode
+            or sequence.loopStartFrameIdx ~= record.animation.loopStartFrameIdx
+            or #sequenceFrames ~= #frames
+          then
+            fail(CODE_MANIFEST, field .. ".animation must mirror source sequence zero", context)
+          end
+          for frameIndex, frame in ipairs(frames) do
+            local sourceFrame = sequenceFrames[frameIndex]
+            if
+              sourceFrame.drawableKey ~= frame.drawableKey
+              or sourceFrame.image ~= frame.image
+              or sourceFrame.durationTicks ~= frame.durationTicks
+              or sourceFrame.sourceFrame ~= frame.sourceFrame
+              or sourceFrame.userAttr ~= frame.userAttr
+              or sourceFrame.rasterOffset.x ~= frame.rasterOffset.x
+              or sourceFrame.rasterOffset.y ~= frame.rasterOffset.y
+            then
+              fail(CODE_MANIFEST, field .. ".animation.frames must mirror source sequence zero", context)
+            end
+          end
+        end
+      end
+    end
+    if validBack and record.throwOffsets == nil then
+      fail(CODE_MANIFEST, field .. ".throwOffsets are required for player backpics", context)
+    end
+    if not validBack and record.throwOffsets ~= nil then
+      fail(CODE_MANIFEST, field .. ".throwOffsets are only valid for player backpics", context)
+    end
+    if record.throwOffsets ~= nil then
+      if not Validate.isArray(record.throwOffsets) or #record.throwOffsets ~= 6 then
+        fail(CODE_MANIFEST, field .. ".throwOffsets must carry six source frame attachments", context)
+      end
+      for frameIndex, offset in ipairs(record.throwOffsets) do
+        local offsetField = field .. ".throwOffsets[" .. frameIndex .. "]"
+        SchemaCheck.checkRecord(offset, { x = true, y = true }, context, CODE_MANIFEST, offsetField)
+        checkInt(offset.x, -32768, 32767, context, CODE_MANIFEST, offsetField .. ".x")
+        checkInt(offset.y, -32768, 32767, context, CODE_MANIFEST, offsetField .. ".y")
+        if (offset.x == 32767) ~= (offset.y == 32767) then
+          fail(CODE_MANIFEST, offsetField .. " must use the paired 0x7FFF sentinel", context)
+        end
+      end
+    end
   end
 end
 

@@ -670,9 +670,48 @@ function BattlePresentationCache.isReady(cacheFs, demand)
     if type(entry) ~= "table" or type(entry.image) ~= "string" then
       return false
     end
-    local width, height = PngWriter.completeDimensions(cacheFs:read(entry.image))
-    if width ~= entry.width or height ~= entry.height then
+    local animation = entry.animation
+    local sequences = type(animation) == "table" and animation.sequences or nil
+    if type(sequences) ~= "table" or #sequences == 0 then
       return false
+    else
+      for sequenceIndex, sequence in ipairs(sequences) do
+        if type(sequence) ~= "table" or sequence.sourceSequence ~= sequenceIndex - 1 then
+          return false
+        end
+        local frames = sequence.frames
+        if type(frames) ~= "table" or #frames == 0 then
+          return false
+        end
+        for frameIndex, frame in ipairs(frames) do
+          local expectedKey
+          if sequence.sourceSequence == 0 then
+            expectedKey = frameIndex == 1 and entry.drawableKey
+              or (entry.drawableKey .. ":frame:" .. tostring(frameIndex - 1))
+          else
+            expectedKey = entry.drawableKey
+              .. ":sequence:"
+              .. tostring(sequence.sourceSequence)
+              .. ":frame:"
+              .. tostring(frameIndex - 1)
+          end
+          if
+            type(frame) ~= "table"
+            or frame.sourceFrame ~= frameIndex - 1
+            or frame.drawableKey ~= expectedKey
+            or type(frame.image) ~= "string"
+          then
+            return false
+          end
+          local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
+          if width == nil or height == nil then
+            return false
+          end
+          if sequence.sourceSequence == 0 and frameIndex == 1 and (width ~= entry.width or height ~= entry.height) then
+            return false
+          end
+        end
+      end
     end
   end
   for _, selector in ipairs(demand.battleBalls) do

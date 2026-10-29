@@ -2032,6 +2032,16 @@ local function uploadCapableGraphics()
     function handle.setFilter(...) end
     return handle
   end
+  function graphics.newQuad(x, y, width, height, imageWidth, imageHeight)
+    return {
+      x = x,
+      y = y,
+      width = width,
+      height = height,
+      imageWidth = imageWidth,
+      imageHeight = imageHeight,
+    }
+  end
   return graphics
 end
 
@@ -3019,10 +3029,11 @@ end
 ---@param measurement table
 ---@param graphicsOverride table? failing graphics namespace under fault driving
 ---@param poolOverride table? failing shared image owner under fault driving
+---@param imageFailure string? shared image owner failure when no pool override is supplied
 ---@return table envelope
 ---@return integer binding
 ---@return table doubles
-local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOverride, poolOverride)
+local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOverride, poolOverride, imageFailure)
   local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
   local worker = { ready = true, failure = nil }
   local derivedAssets = {}
@@ -3040,7 +3051,7 @@ local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOv
       return measurement
     end,
     graphics = graphicsOverride or uploadCapableGraphics(),
-    imagePool = poolOverride or scriptedPool(),
+    imagePool = poolOverride or scriptedPool(imageFailure),
     derivedAssets = derivedAssets,
   })
   local ports = {}
@@ -3337,7 +3348,14 @@ function T.scheduled_precommit_faults_raise_their_original_cause()
         pool = scriptedPool("probe upload failure")
       end
       local envelope, binding, _ =
-        bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-precommit:" .. point), graphics, pool)
+        bindScheduledEnvelope(
+          runtime,
+          versionId,
+          dualMeasurement("deferred-precommit:" .. point),
+          graphics,
+          pool,
+          point == "upload" and "probe upload failure" or nil
+        )
       local ScreenState = require("game.hgss.src.battle.BattleScreenState")
       local realNew = ScreenState.new
       if point == "construction" then
