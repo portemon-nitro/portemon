@@ -9,6 +9,7 @@ local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentatio
 local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local HgssGame = require("game.hgss.src.HgssGame")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local TITLE_SCENE_MODULE = "libs.hgss.src.presentation.HgssTitleScene"
 local titleSceneModule = require(TITLE_SCENE_MODULE)
@@ -335,8 +336,17 @@ end
 local function startTitle(versionId)
   App._selectVersion(versionId or "heartgold")
   App.update(1 / 60)
-  App.update(1 / 30)
-  return App.state
+  App.update(SourceTick.DT)
+  -- The adopted title spends the retail start-up calls behind white before
+  -- its first animation call reads input.
+  local state = App.state
+  for _ = 1, 10 do
+    if state == nil or state.titleAnimating then
+      break
+    end
+    App.update(SourceTick.DT)
+  end
+  return state
 end
 
 local function isStartupTitle(state)
@@ -382,14 +392,14 @@ function T.tests.early_skip_waits_on_the_title_then_transfers_the_staged_menu_on
     App.keypressed("return", "return", false)
     Assert.isTrue(state.skipRequested, "the title press latches skip intent immediately")
     for _ = 1, 150 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, state, "pending menu readiness keeps the title installed")
     Assert.isTrue(active.scenes[1].ticks >= 150, "the title keeps animating while skip is pending")
     Assert.equal(#active.menus, 0, "a pending bootstrap has no staged menu to receive input")
 
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(#active.menus, 1, "bootstrap constructs the real menu owner through App's composition seam")
     local stagedMenu = active.menus[1]
     Assert.equal(state.stagedMenu, stagedMenu, "the title owns the menu instance it will transfer")
@@ -400,7 +410,7 @@ function T.tests.early_skip_waits_on_the_title_then_transfers_the_staged_menu_on
       if App.state == stagedMenu then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, stagedMenu, "the exact staged menu becomes App's active state")
     Assert.equal(#active.menus, 1, "handoff does not reconstruct the menu")
@@ -415,9 +425,9 @@ function T.tests.menu_readiness_does_not_skip_a_title_without_user_intent()
     local state = startTitle()
     Assert.isTrue(isStartupTitle(state), "the production App path presents the title")
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     for _ = 1, 150 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
 
     Assert.equal(App.state, state, "a ready menu does not bypass the unpressed title")
@@ -439,7 +449,7 @@ function T.tests.retired_title_epoch_cannot_replace_the_new_edition()
 
     active.bootstrapReady = false
     App.update(1 / 60)
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.isTrue(
       App.state == nil or App.state.versionId == "soulsilver" or App.state.phase == "title",
       "the retired HeartGold completion cannot replace the SoulSilver selection"
@@ -454,7 +464,7 @@ function T.tests.menu_is_staged_before_first_play_without_claiming_entry_readine
     local state = startTitle()
     Assert.isTrue(isStartupTitle(state), "the source-admitted selection reaches the title before field closure")
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
 
     Assert.equal(#active.menus, 1, "bootstrap readiness stages the actual menu while field milestones remain pending")
     Assert.isFalse(
@@ -477,7 +487,7 @@ function T.tests.white_handoff_draws_owned_frames_and_consumes_the_title_pointer
     local state = startTitle()
     Assert.isTrue(isStartupTitle(state), "the production App path presents a title before drawing")
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     local menu = assert(state.stagedMenu, "the exact menu is staged under title ownership")
 
     App.mousepressed(400, 300, 1, false, 1)
@@ -489,7 +499,7 @@ function T.tests.white_handoff_draws_owned_frames_and_consumes_the_title_pointer
         #active.drawEvents > 0,
         "each transition frame draws the title or the staged menu behind its white veil"
       )
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
 
     Assert.equal(App.state, menu, "the white transition transfers the same staged menu")
@@ -553,7 +563,7 @@ function T.tests.title_and_staged_menu_dispose_once_when_the_selection_quits()
     local state = startTitle()
     Assert.isTrue(isStartupTitle(state), "the selected App path owns a title scene before quit")
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     local menu = assert(state.stagedMenu, "the menu remains staged under the title")
 
     App.quit()
@@ -570,13 +580,13 @@ function T.tests.menu_construction_failure_keeps_title_and_skip_owned_by_current
     App.keypressed("return", "return", false)
     active.failMenuConstruction = true
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
 
     Assert.equal(App.state, state, "a failed menu constructor cannot replace the active title")
     Assert.isTrue(state.skipRequested, "menu failure preserves the user's pending skip intent")
     Assert.equal(#active.menus, 0, "a partial failed menu is never exposed as ready")
     for _ = 1, 5 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(active.menuAttempts, 1, "a transient construction error does not create an automatic retry loop")
 
@@ -588,7 +598,7 @@ function T.tests.menu_construction_failure_keeps_title_and_skip_owned_by_current
       if App.state == menu then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, menu, "the retried staged menu receives the existing skip intent")
     Assert.equal(active.menuAttempts, 2, "retry transfers the same menu without reconstructing it")
@@ -634,8 +644,10 @@ function T.tests.title_owned_prewarm_uses_near_priority_and_disposes_with_select
       return preparation
     end
 
-    startTitle()
-    App.update(1 / 30)
+    App._selectVersion("heartgold")
+    App.update(1 / 60)
+    App.update(SourceTick.DT)
+    App.update(SourceTick.DT)
     Assert.equal(preparation.polls, 1, "title availability starts the optional first-play poll")
     Assert.equal(preparation.disposed, 0, "pending first-play work remains owned by the selected epoch")
     App.quit()
@@ -684,13 +696,13 @@ function T.tests.title_audio_events_use_the_bounded_borrowed_callbacks()
     local state = startTitle()
     Assert.equal(events.titleReady, 0, "pending optional audio emits no title event behind the visible title")
     active.audioReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(events.titleReady, 1, "audio readiness emits one bounded audio event")
     App.keypressed("return", "return", false)
     Assert.equal(events.prompt, 1, "the first title press emits the prompt/cry event")
     Assert.equal(events.skip, 0, "the transition cue waits for actual menu readiness")
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(events.skip, 1, "the skip fade emits one cue only after staging")
     App.keypressed("return", "return", false)
     Assert.equal(events.titleReady, 1, "later input never replays title startup audio")
@@ -750,11 +762,17 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
     local title = startTitle()
     Assert.equal(#active.audioSessions, 0, "pending startup-title audio assets cannot construct a session")
     active.titleAssetsReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.isTrue(isStartupTitle(title), "the selected title remains the active App state")
     Assert.equal(#active.audioSessions, 0, "visual readiness alone cannot construct a session")
     active.audioReady = true
-    App.update(1 / 30)
+    -- The title theme starts on the last retail title start-up call.
+    for _ = 1, 10 do
+      if title.titleAnimating then
+        break
+      end
+      App.update(SourceTick.DT)
+    end
     Assert.equal(#active.audioSessions, 1, "audio readiness creates one app-owned audio session")
     local session = active.audioSessions[1]
     Assert.deepEqual(session.events, { "title" }, "the title theme starts once after title readiness")
@@ -765,7 +783,7 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
     App.keypressed("return", "return", false)
     Assert.deepEqual(session.events, { "title", "cry" }, "the first valid skip requests one legendary cry")
     for _ = 1, 75 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.deepEqual(
       session.events,
@@ -774,7 +792,7 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
     )
 
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     local stagedMenu = assert(title.stagedMenu)
     local menuAudio = assert(stagedMenu.options.audio, "the staged menu receives a borrowed cue callback")
     Assert.isTrue(type(menuAudio.playMenuCue) == "function", "the staged menu has only its semantic cue operation")
@@ -783,7 +801,7 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
       if App.state == stagedMenu then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, stagedMenu, "the same staged menu receives the title handoff")
     Assert.equal(#active.audioSessions, 1, "the title/menu handoff does not construct another sink")
@@ -815,8 +833,15 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
 
     App._selectVersion("soulsilver")
     Assert.equal(active.audioSessions[2].disposals, 1, "edition selection releases the previous menu session once")
-    App.update(1 / 30)
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    App.update(SourceTick.DT)
+    -- The title theme, and its session, start on the last title start-up call.
+    for _ = 1, 10 do
+      if App.state ~= nil and App.state.titleAnimating then
+        break
+      end
+      App.update(SourceTick.DT)
+    end
     Assert.equal(
       #active.audioSessions,
       3,
@@ -841,13 +866,13 @@ function T.tests.post_install_warmup_failure_keeps_the_single_installed_menu()
     App.keypressed("return", "return", false)
     Assert.isTrue(state.skipRequested, "the press latches skip intent before menu readiness")
     for _ = 1, 30 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, state, "pending menu readiness keeps the title installed")
 
     active.bootstrapReady = true
     for _ = 1, 120 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
       if App.state ~= state then
         break
       end
@@ -863,7 +888,7 @@ function T.tests.post_install_warmup_failure_keeps_the_single_installed_menu()
     Assert.isTrue(App.provisioner == provisioner, "the selected provisioner survives the optional failure")
     Assert.equal(#active.epochs, 1, "no replacement selection is minted by the failure")
     for _ = 1, 30 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, menu, "later updates keep the single installed menu")
   end)
@@ -933,8 +958,8 @@ function T.tests.title_and_menu_proceed_while_optional_audio_is_pending()
     Assert.equal(audioUrgency, "near", "optional audio never outranks visual work")
 
     active.audioReady = true
-    App.update(1 / 30)
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    App.update(SourceTick.DT)
     Assert.equal(#sessions, 1, "audio readiness starts one session while the title is still visible")
     Assert.deepEqual(sessions[1].cues, { "title" }, "ready-before-skip starts the title theme once")
     Assert.isTrue(isStartupTitle(App.state), "audio readiness does not dismiss the unpressed title")
@@ -943,13 +968,13 @@ function T.tests.title_and_menu_proceed_while_optional_audio_is_pending()
     App.keypressed("return", "return", false)
     Assert.deepEqual(sessions[1].cues, { "title", "cry" }, "the first skip requests one cry")
     for _ = 1, 30 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, state, "the title waits for the pending menu after the skip")
 
     active.bootstrapReady = true
     for _ = 1, 120 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
       if App.state ~= state then
         break
       end
@@ -996,12 +1021,12 @@ function T.tests.title_and_menu_proceed_while_optional_audio_is_pending()
     Assert.equal(#sessions, 0, "pending optional audio constructs no session behind the visible title")
     App.keypressed("return", "return", false)
     for _ = 1, 10 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.isTrue(state.phase == "fadeOut" or state.phase == "fadeIn", "latched skip starts the fade")
     active.audioReady = true
     for _ = 1, 120 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
       if App.state ~= state then
         break
       end
@@ -1022,12 +1047,12 @@ function T.tests.pending_skip_transfers_once_and_the_retry_key_stays_useful()
     App.keypressed("return", "return", false)
     Assert.isTrue(state.skipRequested, "the first press latches skip intent")
     for _ = 1, 30 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, state, "the title keeps animating while the menu is pending")
     Assert.equal(#active.menus, 0, "no menu stages before bootstrap readiness")
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(#active.menus, 1, "bootstrap readiness stages the menu once")
     Assert.isTrue(
       state.phase == "fadeOut" or state.phase == "fadeIn",
@@ -1037,7 +1062,7 @@ function T.tests.pending_skip_transfers_once_and_the_retry_key_stays_useful()
       if App.state ~= state then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, active.menus[1], "the exact staged menu installs after the fade")
     Assert.equal(#active.menus, 1, "handoff never reconstructs the menu")
@@ -1049,7 +1074,7 @@ function T.tests.pending_skip_transfers_once_and_the_retry_key_stays_useful()
     App.keypressed("return", "return", false)
     active.failMenuConstruction = true
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(App.state, state, "a failed menu keeps the title installed")
     Assert.isTrue(state.skipRequested, "the failure preserves the pending skip")
     Assert.equal(active.menuAttempts, 1, "the failure consumes exactly one construction attempt")
@@ -1063,7 +1088,7 @@ function T.tests.pending_skip_transfers_once_and_the_retry_key_stays_useful()
       if App.state ~= state then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, active.menus[1], "the retried menu receives the existing skip intent")
     Assert.equal(active.menuAttempts, 2, "retry transfers the same menu without reconstructing it")
@@ -1202,7 +1227,7 @@ function T.tests.failed_optional_audio_never_blocks_the_menu()
       if App.state ~= state then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, active.menus[1], "the staged menu installs despite failed audio")
     Assert.equal(sessions, 0, "the failed audio never constructs a session")
@@ -1248,7 +1273,7 @@ function T.tests.throwing_transfer_callback_propagates_without_resurrecting_the_
       height = 600,
     })
     for _ = 1, 5 do
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
     end
     Assert.equal(state.phase, "title", "visual readiness presents the title before input")
     state:keypressed("return", "return", false)
@@ -1266,7 +1291,7 @@ function T.tests.throwing_transfer_callback_propagates_without_resurrecting_the_
     Assert.isTrue(state.transferred, "the transfer stays committed")
     Assert.equal(state.phase, "transferred", "a failed callback never returns the title phase")
     Assert.isNil(state.stagedMenu, "the committed title holds no menu to resurrect")
-    state:update(1 / 30)
+    state:update(SourceTick.DT)
     Assert.equal(transfers, 1, "later updates never re-enter the transfer")
     state:dispose()
   end)
@@ -1386,22 +1411,25 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
   local ok, err = xpcall(function()
     do
       local state, staged = build(false)
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
       Assert.notNil(state.movie, "the five ready scenes stage the movie behind the loader")
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
       Assert.equal(state.phase, "movie", "the warm entry enters the staged movie without the loader beat")
+      for _ = 1, 2 do
+        state:update(SourceTick.DT)
+      end
       state:draw()
       Assert.isTrue(staged.draws >= 1, "the entered movie paints its first frame")
       state:dispose()
     end
     do
       local state, _ = build(true)
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
       Assert.notNil(state.movie, "the cold entry stages the movie the same way")
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
       Assert.equal(state.phase, "loading", "the true first import keeps its bounded beat while fresh")
       for _ = 1, 30 do
-        state:update(1 / 30)
+        state:update(SourceTick.DT)
       end
       Assert.equal(state.phase, "movie", "the cold entry still reaches its staged movie after the beat")
       state:dispose()
@@ -1520,7 +1548,7 @@ function T.tests.movie_holds_loader_until_soundtrack_start_is_confirmed()
       audio = audio,
     })
     for _ = 1, 5 do
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
     end
     Assert.notNil(state.movie, "the five ready scenes stage the movie behind the loader")
     Assert.equal(state.phase, "loading", "pending soundtrack banks keep the loader visible")
@@ -1537,7 +1565,7 @@ function T.tests.movie_holds_loader_until_soundtrack_start_is_confirmed()
     Assert.equal(draws, 0, "the loader draw shows no movie frame while the soundtrack is pending")
     audioPending = false
     for _ = 1, 5 do
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
     end
     Assert.equal(sounds, 1, "readiness confirms exactly one soundtrack start")
     Assert.equal(state.phase, "movie", "the confirmed soundtrack admits the staged movie")
@@ -1554,7 +1582,7 @@ function T.tests.movie_holds_loader_until_soundtrack_start_is_confirmed()
     Assert.notNil(firstTick, "the admitted movie advances")
     Assert.isTrue(firstSound < firstTick, "the soundtrack start precedes the first movie tick")
     for _ = 1, 5 do
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
     end
     Assert.equal(sounds, 1, "later updates never restart the admitted soundtrack")
     state:dispose()
@@ -1672,7 +1700,7 @@ function T.tests.audio_failure_keeps_loader_visible_instead_of_silent_movie()
         audio = audio,
       })
       for _ = 1, 5 do
-        state:update(1 / 30)
+        state:update(SourceTick.DT)
       end
       Assert.isFalse(
         state.phase == "movie",
@@ -1840,12 +1868,12 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
         loading = fakeLoading(),
         audio = { openingReady = function() return session:beginOpening() end },
       })
-      for _ = 1, 5 do state:update(1 / 30) end
+      for _ = 1, 5 do state:update(SourceTick.DT) end
       Assert.isFalse(state.phase == "movie", "a refused first queue never admits the movie")
       Assert.equal(ticks, 0, "a refused first queue advances no source tick")
       Assert.equal(playCounter.count, 1, "the refused priming still accepts the voice once")
       host.refuseQueue = false
-      for _ = 1, 5 do state:update(1 / 30) end
+      for _ = 1, 5 do state:update(SourceTick.DT) end
       Assert.isTrue(state.phase == "movie", "the retry primes and admits the movie")
       Assert.isTrue(ticks > 0, "the admitted movie ticks")
       Assert.equal(playCounter.count, 1, "the retry must not restart the accepted voice")
@@ -1937,13 +1965,13 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       loading = fakeLoading(),
       audio = { openingReady = function() return true end },
     })
-    for _ = 1, 5 do state:update(1 / 30) end
+    for _ = 1, 5 do state:update(SourceTick.DT) end
     Assert.equal(state.phase, "movie", "the movie admits before output loss")
     local admittedTicks = ticks
     Assert.isTrue(admittedTicks > 0, "the admitted movie ticks")
     state:openingAudioFailed("synthetic output loss")
     Assert.notNil(state.audioError, "the active movie records its output diagnostic")
-    for _ = 1, 5 do state:update(1 / 30) end
+    for _ = 1, 5 do state:update(SourceTick.DT) end
     Assert.equal(ticks, admittedTicks, "no further movie ticks follow output loss")
     local status = state:_status()
     Assert.notNil(status, "the lost movie keeps a visible diagnostic")
@@ -2083,7 +2111,7 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       loading = fakeLoading(),
       audio = { openingReady = function() return true end },
     })
-    for _ = 1, 5 do appState:update(1 / 30) end
+    for _ = 1, 5 do appState:update(SourceTick.DT) end
     Assert.equal(appState.phase, "movie", "the app movie admits before routing")
     local ticksBeforeFailure = appTicks
     App.state = appState
@@ -2096,12 +2124,12 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     App._startupWarmup = nil
     App._pendingImport = nil
     App.provisioner = nil
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.notNil(appState.audioError, "the active movie adopts the routed failure")
     Assert.isNil(App.startupAudioSession, "the failed session releases exactly once")
     Assert.equal(releases, 1, "the failed sink releases exactly once")
     local ticksAfterFailure = appTicks
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(appTicks, ticksAfterFailure, "no further movie ticks follow the routed loss")
     Assert.isTrue(ticksAfterFailure >= ticksBeforeFailure, "routing never rewinds admitted ticks")
     appState:dispose()

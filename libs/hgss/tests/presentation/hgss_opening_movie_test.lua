@@ -481,6 +481,22 @@ local function liveSet(graphics)
   return set
 end
 
+-- Advances through the retail exit call into `sceneNumber` and past its
+-- init call plus entry stalls, so the next fixed update runs the scene's
+-- first case.
+---@param movie table opening movie
+---@param sceneNumber integer scene to enter
+local function enterScene(movie, sceneNumber)
+  while movie:sceneNumber() < sceneNumber do
+    movie:updateFixed()
+  end
+  local current = movie.current
+  while current ~= nil and current.handoff ~= nil do
+    movie:updateFixed()
+    current = movie.current
+  end
+end
+
 ---@param movie table
 ---@param graphics table
 ---@param limit integer
@@ -511,10 +527,12 @@ function T.plays_all_five_scenes_in_order_with_their_authored_step_lengths()
   for sceneNumber = 1, 5 do
     Assert.notNil(entries[sceneNumber], "scene " .. sceneNumber .. " is visited")
   end
+  -- Each handoff spends the retail exit call, and each later scene its
+  -- init call plus three entry stalls, around the scene's authored ticks.
   Assert.equal(entries[1], 0, "scene 1 starts on the first tick")
-  Assert.equal(entries[2], 90, "scene 2 starts after scene 1's authored 90 ticks")
-  Assert.equal(entries[3], 130, "scene 3 starts after scene 2's authored 40 ticks")
-  Assert.equal(entries[4], 180, "scene 4 starts after scene 3's authored 50 ticks")
+  Assert.equal(entries[2], 90 + 1, "scene 2 starts after scene 1's authored 90 ticks and exit call")
+  Assert.equal(entries[3], 91 + 4 + 40 + 1, "scene 3 starts after scene 2's init stalls, authored 40 ticks, and exit")
+  Assert.equal(entries[4], 136 + 4 + 50 + 1, "scene 4 starts after scene 3's init stalls, authored 50 ticks, and exit")
   Assert.isTrue(entries[5] > entries[4] + 20, "scene 5 waits out the starter effect, never a bare timer")
   movie:dispose()
 end
@@ -525,7 +543,16 @@ function T.simultaneous_events_share_one_tick_without_extra_frames_or_spins()
   local movie = openMovie(scenes, cacheFs, graphics)
   local entries, total = playthrough(movie, graphics, 5000)
   Assert.notNil(entries[5], "scene 5 is reached")
-  Assert.equal(total - entries[5], 53, "scene 5's same-tick wipe and role events cost exactly the authored 53 ticks")
+  -- Retail src/intro_movie.c spends, after the authored beat, the scene's
+  -- exit call, then the overlay's done call where IntroMovie_Main returns
+  -- TRUE, then the overlay's exit call: the last scene's own ticks are the
+  -- authored 53 plus its three entry stalls, and the movie finishes two
+  -- calls after its exit call.
+  Assert.equal(
+    total - entries[5],
+    4 + 53 + 1 + 2,
+    "scene 5's same-tick wipe and role events cost exactly the authored 53 ticks between its init stalls and the overlay calls"
+  )
   movie:dispose()
 end
 
@@ -586,11 +613,14 @@ function T.town_and_emitter_steps_stay_live_until_their_effects_complete()
   end
   Assert.equal(movie:sceneNumber(), 3, "playback reaches the town scenes")
   local scene3draws = #graphics.draws
-  for _ = 1, 50 do
+  -- The init call plus three entry stalls, the authored 50 town ticks, then the exit call.
+  for _ = 1, 4 + 50 do
     movie:updateFixed()
     movie:draw()
   end
-  Assert.equal(movie:sceneNumber(), 4, "scene 3 holds exactly its authored 50 town ticks")
+  Assert.equal(movie:sceneNumber(), 3, "scene 3 holds its authored 50 town ticks after its init stalls")
+  movie:updateFixed()
+  Assert.equal(movie:sceneNumber(), 4, "scene 3 hands over on its exit call")
   Assert.isTrue(#graphics.draws > scene3draws, "every town tick issues its frame")
   local emitterEntryDraws = #graphics.draws
   local emitterTicks = 0
@@ -846,12 +876,12 @@ function T.resize_reflows_without_rewinding_source_time()
   Assert.equal(
     entries[2],
     1,
-    "the continued run starts in scene two (entered at absolute 90, before the run, never rewound)"
+    "the continued run starts in scene two (entered at absolute 91, before the run, never rewound)"
   )
   Assert.equal(
     entries[3],
-    30,
-    "scene three enters 30 ticks into the continued run (authored absolute 130 less 100 pre-run ticks)"
+    36,
+    "scene three enters 36 ticks into the continued run (absolute 136 less 100 pre-run ticks)"
   )
   movie:dispose()
 end
@@ -1138,9 +1168,7 @@ function T.timed_pans_land_on_exact_signed_endpoints_with_truncating_steps()
   )
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  while movie:sceneNumber() < 2 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 2)
   local function offsets()
     local current = assert(movie.current, "the running movie owns its current slot")
     return {
@@ -1243,9 +1271,7 @@ function T.immediate_offsets_land_first_and_continuous_pans_advance_per_tick()
   )
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  while movie:sceneNumber() < 2 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 2)
   -- The newly entered case first runs on the following update: its entry
   -- programs dispatch there, and continuous programs advance at once.
   movie:updateFixed()
@@ -1357,12 +1383,11 @@ function T.full_native_extents_swap_atomically_and_tick_without_draws()
   local movie = openMovie(scenes, cacheFs, graphics)
   -- The custom scene stages its base, alternate, and sub art plus one
   -- scene-two filler clip image; the prefetched next scene stages its
-  -- two panels: nothing else may stay resident after the preflight.
-  Assert.equal(liveHandles(graphics), 8, "full native art still retains only the current and next scene graphs")
+  -- two panels and the town scene stages alongside them: nothing else
+  -- may stay resident after the preflight.
+  Assert.equal(liveHandles(graphics), 10, "full native art still retains a bounded prefetch window")
   Assert.equal(#graphics.canvases, 2, "preflight keeps exactly two bounded role targets")
-  while movie:sceneNumber() < 2 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 2)
   local function state()
     local current = assert(movie.current, "the running movie owns its current slot")
     local main = current.backgrounds.main[0]
@@ -1614,9 +1639,7 @@ function T.unstarted_effect_waits_fail_instead_of_completing()
   scenes[2] = hold
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  for _ = 1, 90 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 2)
   Assert.equal(movie:sceneNumber(), 2, "playback reaches the effect-gated step")
   local failure = nil
   for _ = 1, 10 do
@@ -1698,6 +1721,8 @@ function T.clip_completion_binds_the_compiled_clip_duration()
   end
   Assert.equal(movie:sceneNumber(), 1, "the finale holds for the nine ticks before the summed duration")
   movie:updateFixed()
+  Assert.equal(movie:sceneNumber(), 1, "the finale's completing tick leaves the exit call to the next tick")
+  movie:updateFixed()
   Assert.equal(movie:sceneNumber(), 2, "the finale completes exactly after the summed frame durations")
   movie:dispose()
   -- The same shape with an unstarted non-clip wait raises instead: a wait
@@ -1724,6 +1749,75 @@ function T.clip_completion_binds_the_compiled_clip_duration()
   Assert.notNil(failure, "waiting on an unstarted non-clip effect raises instead of completing")
   Assert.equal(rawMovie:sceneNumber(), 1, "the failed wait never advances past its step")
   rawMovie:dispose()
+end
+
+function T.scene_handoff_spends_the_retail_exit_and_init_calls()
+  -- Retail src/intro_movie.c dispatches one scene call per frame: after the
+  -- run case completes, the scene's exit call returns TRUE, the next scene
+  -- spends its init call plus three entry stalls, and only the following
+  -- call runs its first case.
+  local scenes, cacheFs = validPack()
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 90 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 1, "the completing case leaves the exit call to the next tick")
+  movie:updateFixed()
+  Assert.equal(movie:sceneNumber(), 2, "the exit call hands over to the next scene")
+  local background = function()
+    return movie.current.backgrounds.main[0]
+  end
+  for _ = 1, 4 do
+    movie:updateFixed()
+    Assert.equal(background().scrollX, 0, "the init stalls stage the scene without running its first case")
+  end
+  movie:updateFixed()
+  Assert.equal(background().scrollX, -10, "the first case runs on the call after the init stalls")
+  movie:dispose()
+end
+
+function T.palette_fade_waits_complete_after_the_fade_cleanup_call()
+  -- A palette fade's last step lands on its final update; the next update
+  -- runs the fade cleanup that clears the active flag, and the scene sees
+  -- IsPaletteFadeFinished on the call after that.
+  local root = sceneRoot(1)
+  local FADE_TICKS = 5
+  local fading = compositeManifest(
+    1,
+    { layer(0, root .. "layers/sunrise.png", 256, 192) },
+    { layer(0, root .. "layers/lower.png", 256, 192) },
+    {},
+    { { id = "fade", events = { 1, 2 }, ["until"] = { kind = "effect", effect = "fade-white" }, onCompleteEvents = { 3 } } },
+    {
+      {
+        op = "setFade",
+        stepId = "fade",
+        atStepTick = 0,
+        scope = "both",
+        mode = "brightness",
+        color = "white",
+        direction = "out",
+        ticks = FADE_TICKS,
+        terminal = "neutral",
+        effect = "fade-white",
+      },
+      { op = "enableSkip", stepId = "fade", atStepTick = 1 },
+      { op = "finish", stepId = "fade", atStepTick = 0 },
+    }
+  )
+  local scenes, cacheFs = packWithSceneAt(fading, 1)
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  -- The authored fade steps, then the cleanup call that clears the active
+  -- flag and the poll call that finally reports the fade finished.
+  for _ = 1, FADE_TICKS + 2 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 1, "the wait sees the finished fade only after its cleanup call")
+  movie:updateFixed()
+  Assert.equal(movie:sceneNumber(), 2, "the exit call follows the detected fade")
+  movie:dispose()
 end
 
 function T.step_events_apply_in_listed_order()
@@ -1847,9 +1941,7 @@ function T.repeated_effect_starts_rebind_the_wait_to_the_latest_start()
   )
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  for _ = 1, 90 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 2)
   Assert.equal(movie:sceneNumber(), 2, "playback reaches the rebound effect step")
   for _ = 1, 6 do
     movie:updateFixed()
@@ -1859,10 +1951,10 @@ function T.repeated_effect_starts_rebind_the_wait_to_the_latest_start()
     movie:updateFixed()
   end
   Assert.equal(movie:sceneNumber(), 2, "the rebound wait ends on the latest start with its tail step")
-  for _ = 1, 5 do
+  for _ = 1, 5 + 1 do
     movie:updateFixed()
   end
-  Assert.equal(movie:sceneNumber(), 3, "the tail step still costs its authored duration")
+  Assert.equal(movie:sceneNumber(), 3, "the tail step still costs its authored duration before the exit call")
   movie:dispose()
 end
 
@@ -2144,7 +2236,8 @@ function T.a_failed_scene_image_acquisition_keeps_the_current_scene_and_releases
   local fakeOpts = {}
   local graphics = movieGraphics(fakeOpts)
   local movie = openMovie(scenes, cacheFs, graphics)
-  for _ = 1, 90 do
+  -- Scene one's authored 90 ticks, then its exit call.
+  for _ = 1, 90 + 1 do
     movie:updateFixed()
     movie:draw()
   end
@@ -2322,10 +2415,12 @@ function T.construction_keeps_two_bounded_role_targets_for_the_current_and_next_
     Assert.equal(canvas.width, 256, "every role target keeps the source engine width")
     Assert.equal(canvas.height, 192, "every role target keeps the source engine height")
   end
-  -- The first scene owns its two staged images plus one clip image and the
-  -- prefetched second scene owns its two staged images: nothing else may
-  -- stay resident after the sequential preflight releases its transients.
-  Assert.equal(liveHandles(graphics), 7, "construction retains only the current and next scene graphs")
+  -- The first scene owns its two staged images plus one clip image, the
+  -- prefetched second scene owns its two staged images, and the town
+  -- scene stages alongside them so the first handoff never blocks
+  -- mid-movie: nothing else may stay resident after the sequential
+  -- preflight releases its transients.
+  Assert.equal(liveHandles(graphics), 9, "construction retains the current, next, and town scene graphs")
   movie:draw()
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "disposing the preflighted movie releases every handle")
@@ -2348,12 +2443,15 @@ function T.preflight_offscreen_renders_every_scene_once_without_consuming_source
   Movie._renderRoles = realRender
   Assert.isTrue(ok, "preflight still readies a drawable movie: " .. tostring(failure))
   Assert.equal(#rendered, 5, "preflight proves every scene with a real offscreen render, never a manifest-only check")
-  for sceneNumber = 1, 5 do
-    Assert.equal(rendered[sceneNumber], sceneNumber, "preflight renders scenes in retail order")
+  -- The town scene stages last and stays resident so its 3D build never
+  -- blocks the first handoff mid-movie; the lighter panoramas still
+  -- preflight as transients in between.
+  for index, sceneNumber in ipairs({ 1, 2, 4, 5, 3 }) do
+    Assert.equal(rendered[index], sceneNumber, "preflight renders every scene without overlap")
   end
   Assert.equal(movie:sceneNumber(), 1, "preflight consumes no source time")
   Assert.isFalse(movie:skipAllowed(), "preflight leaves the skip gate closed")
-  Assert.equal(liveHandles(graphics), 7, "preflight retains only the current and next scene graphs")
+  Assert.equal(liveHandles(graphics), 9, "preflight retains the current, next, and town scene graphs")
   movie:draw()
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "disposing the preflighted movie releases every handle")
@@ -2429,9 +2527,7 @@ function T.steps_hold_until_a_later_start_fires_and_completes()
   )
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  for _ = 1, 90 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 2)
   Assert.equal(movie:sceneNumber(), 2, "playback reaches the late-start step")
   for _ = 1, 4 do
     movie:updateFixed()
@@ -2441,12 +2537,16 @@ function T.steps_hold_until_a_later_start_fires_and_completes()
     movie:updateFixed()
   end
   Assert.equal(movie:sceneNumber(), 2, "the started effect runs its authored ticks")
-  movie:updateFixed()
-  Assert.equal(movie:sceneNumber(), 2, "the effect completion hands over to the tail step")
-  for _ = 1, 5 do
+  for _ = 1, 2 do
     movie:updateFixed()
   end
-  Assert.equal(movie:sceneNumber(), 3, "the tail step still costs its authored duration")
+  Assert.equal(movie:sceneNumber(), 2, "the fade wait trails its last step by the cleanup and poll calls")
+  movie:updateFixed()
+  Assert.equal(movie:sceneNumber(), 2, "the effect completion hands over to the tail step")
+  for _ = 1, 5 + 1 do
+    movie:updateFixed()
+  end
+  Assert.equal(movie:sceneNumber(), 3, "the tail step still costs its authored duration before the exit call")
   movie:dispose()
 end
 
@@ -2846,10 +2946,14 @@ function T.town_stage_draws_on_main_and_stops_without_releasing()
   end
   Assert.equal(movie:sceneNumber(), 3, "playback reaches the town scene")
   Assert.isFalse(movie.current.townVisible, "the town stage contributes nothing before its clip")
+  for _ = 1, 4 do
+    movie:updateFixed()
+    Assert.isFalse(movie.current.townVisible, "the init stalls stage the town scene without running its clip")
+  end
   -- The town beat runs silently: drawing it would composite staged town
-  -- meshes the fake host cannot texture. Scene 3 arrives at tick 130,
-  -- holds 20 arrive ticks, and stops its town at the eleventh hold tick,
-  -- so 31 silent ticks land just past the authored stop.
+  -- meshes the fake host cannot texture. Scene 3 holds 20 arrive ticks
+  -- after its init call and stops its town at the eleventh hold tick, so
+  -- 31 silent ticks land just past the authored stop.
   for _ = 1, 10 do
     movie:updateFixed()
   end
@@ -2880,6 +2984,128 @@ function T.town_stage_draws_on_main_and_stops_without_releasing()
   movie:dispose()
   Assert.equal(townPool.triangles, 0, "slot disposal releases the town geometry")
   Assert.equal(liveHandles(graphics), 0, "disposing the town movie releases every handle")
+end
+
+-- The first scene opens on the copyright pair: each engine stages only
+-- its BG0 notice, and the single-screen stage shows the upper (sub)
+-- notice, never the lower (main) one, until the GameFreak setup retires it.
+function T.copyright_beat_shows_the_upper_notice_on_a_single_screen()
+  local scenes, cacheFs = validPack()
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  Assert.equal(movie:sceneNumber(), 1, "playback starts on the copyright beat")
+  local current = assert(movie.current, "the running movie owns its current slot")
+  Assert.isTrue(current.backgrounds.main[0].visible, "the copyright stages the lower notice")
+  Assert.isTrue(current.backgrounds.sub[0].visible, "the copyright stages the upper notice")
+  local baseline = #graphics.draws
+  movie:draw()
+  local mainDraws, subDraws = 0, 0
+  for index = baseline + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if draw.image == movie.mainCanvas then
+      mainDraws = mainDraws + 1
+    elseif draw.image == movie.subCanvas then
+      subDraws = subDraws + 1
+    end
+  end
+  Assert.equal(mainDraws, 0, "the copyright beat never fills the single-screen stage from the lower target")
+  Assert.isTrue(subDraws > 0, "the copyright beat fills the single-screen stage from the upper target")
+  movie:dispose()
+end
+
+-- A staged physical hold covers only the fitted source image on a
+-- letterboxed stage: the scene-2 entry whites the central 4:3 picture
+-- while the side bars stay black.
+function T.physical_holds_cover_only_the_fitted_image_on_a_wide_stage()
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    raw[sceneNumber] = manifestFor(sceneNumber)
+  end
+  raw[1].initialDisplay = { mainPhysical = "upper", brightness = { main = "white", sub = "white" } }
+  local cacheFs = stubCache(raw)
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes the strict scene reader: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local stageWidth, stageHeight = 1200, 600
+  local graphics = movieGraphics()
+  local movie = openMovieSized(scenes, cacheFs, graphics, stageWidth, stageHeight)
+  movie:draw()
+  local whiteFills = {}
+  for _, rectangle in ipairs(graphics.rectangles) do
+    local color = rectangle.color
+    if color[1] == 1 and color[2] == 1 and color[3] == 1 and color[4] == 1 then
+      whiteFills[#whiteFills + 1] = rectangle
+    end
+  end
+  Assert.equal(#whiteFills, 1, "the staged white hold paints exactly one pane fill")
+  local fill = whiteFills[1]
+  -- A 4:3 source on a 2:1 stage letterboxes horizontally: the hold keeps
+  -- the source shape, spans the full height, and stays centered instead of
+  -- flashing the whole stage.
+  Assert.near(fill.w / fill.h, 256 / 192, 1e-9, "the white hold keeps the source image shape")
+  Assert.near(fill.h, stageHeight, 1e-9, "the white hold spans the fitted image height")
+  Assert.isTrue(fill.w < stageWidth, "the white hold stops at the fitted image edge, never the stage edge")
+  Assert.near(fill.x, (stageWidth - fill.w) / 2, 1e-9, "the white hold centers on the fitted image column")
+  Assert.near(fill.y, (stageHeight - fill.h) / 2, 1e-9, "the white hold centers on the fitted image row")
+  movie:dispose()
+end
+
+---@param graphics table fake graphics namespace carrying the recorded draws
+---@param movie table running opening movie owning the role targets
+---@return table[] role-target blits in draw order
+local function roleBlits(graphics, movie)
+  local blits = {}
+  for _, draw in ipairs(graphics.draws) do
+    if draw.image == movie.mainCanvas or draw.image == movie.subCanvas then
+      blits[#blits + 1] = draw
+    end
+  end
+  return blits
+end
+
+-- The two paired single-screen beats compose differently: the scene-4
+-- hero bands stack vertically with their black surroundings overlapped, so
+-- they sit closer than two full frames, while the scene-5 panorama keeps
+-- its two halves side by side. Both are checked on one playthrough so the
+-- pack and the seek are amortized.
+function T.paired_beats_stack_the_hero_bands_and_split_the_panorama_on_a_wide_stage()
+  local scenes, cacheFs = validPack()
+  local stageWidth, stageHeight = 1200, 600
+  local graphics = movieGraphics()
+  local movie = openMovieSized(scenes, cacheFs, graphics, stageWidth, stageHeight)
+
+  enterScene(movie, 4)
+  movie:draw()
+  local heroBlits = roleBlits(graphics, movie)
+  Assert.equal(#heroBlits, 2, "the hero scene blits both role targets")
+  local upper, lower = heroBlits[1], heroBlits[2]
+  Assert.near(upper.x, lower.x, 1e-6, "the hero stack centers both bands on the same column")
+  Assert.near(upper.sx, lower.sx, 1e-9, "the hero stack scales both bands together")
+  -- The overlap equals the black surroundings each portrait carries, so the
+  -- shared band shows one black margin instead of two stacked margins.
+  local overlap = (upper.y + 192 * upper.sy) - lower.y
+  Assert.near(overlap, 52 * upper.sy, 1e-6, "the hero stack overlaps by one band height")
+  Assert.isTrue(overlap > 0, "the hero bands sit closer than two full frames")
+
+  enterScene(movie, 5)
+  local before = #graphics.draws
+  movie:draw()
+  local panoramaBlits = {}
+  for index = before + 1, #graphics.draws do
+    local draw = graphics.draws[index]
+    if draw.image == movie.mainCanvas or draw.image == movie.subCanvas then
+      panoramaBlits[#panoramaBlits + 1] = draw
+    end
+  end
+  Assert.equal(#panoramaBlits, 2, "the panorama scene blits both role targets")
+  local left, right = panoramaBlits[1], panoramaBlits[2]
+  Assert.near(left.y, right.y, 1e-6, "the wide panorama shares one row for both halves")
+  Assert.near(left.sx, right.sx, 1e-9, "the wide panorama scales both halves together")
+  Assert.near(right.x - left.x, 256 * left.sx, 1e-6, "the wide panorama splits its halves left/right")
+  movie:dispose()
 end
 
 function T.independent_engine_windows_mask_planes_through_flips()
@@ -3332,6 +3558,63 @@ function T.wrapped_window_rectangles_split_across_the_screen_edge()
   Assert.isTrue(
     hasScissor(scissors, 0, 0, 50, 192),
     "the wrapped window paints its head from the left edge"
+  )
+  movie:dispose()
+end
+
+-- A first-window-only visibility mask retires the stale second register:
+-- planes the hidden window would admit follow the outside mask instead,
+-- matching the retail second-window disable after the scene-3 narrow pan.
+function T.first_window_only_visibility_ignores_the_stale_second_register()
+  local root = sceneRoot(1)
+  local frontImage = root .. "layers/mask-front.png"
+  local backImage = root .. "layers/mask-back.png"
+  local scenes, cacheFs = packWithSceneAt(
+    compositeManifest(
+      1,
+      { layer(0, frontImage, 256, 192, 0), layer(1, backImage, 256, 192, 1) },
+      { layer(0, root .. "layers/mask-lower.png", 256, 192) },
+      { spriteClip(root .. "sprites/clip0.g4sprite", { stillFrame() }) },
+      { { id = "reveal", events = { 1, 2, 3, 4, 5, 6 }, ["until"] = { kind = "duration", ticks = 20 } } },
+      {
+        windowEvent("reveal", 0, "main", windowRect(70, 0, 185, 192), windowRect(70, 0, 185, 192), 0, 3, 0),
+        {
+          op = "setWindowSecondary",
+          stepId = "reveal",
+          atStepTick = 0,
+          engine = "main",
+          rect = windowRect(0, 0, 64, 192),
+          insideMask = 2,
+        },
+        {
+          op = "setWindowVisible",
+          stepId = "reveal",
+          atStepTick = 0,
+          engine = "main",
+          mask = 1,
+        },
+        { op = "enableSkip", stepId = "reveal", atStepTick = 10 },
+        { op = "waitTicks", stepId = "reveal", atStepTick = 0, ticks = 20 },
+        { op = "finish", stepId = "reveal", atStepTick = 20 },
+      }
+    ),
+    1
+  )
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  for _ = 1, 2 do
+    movie:updateFixed()
+  end
+  local baseline = #graphics.scissorIntersections
+  movie:draw()
+  local scissors = engineScissors(graphics, movie, "main", baseline)
+  Assert.isTrue(
+    hasScissor(scissors, 70, 0, 115, 192),
+    "both planes paint the visible first window"
+  )
+  Assert.isFalse(
+    hasScissor(scissors, 0, 0, 64, 192),
+    "the hidden second register clips no plane"
   )
   movie:dispose()
 end
@@ -3849,9 +4132,7 @@ function T.row_wipe_boundaries_follow_the_scanline_cosine_law()
   )
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  while movie:sceneNumber() < 2 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 2)
   for _ = 1, 5 do
     movie:updateFixed()
   end
@@ -4150,10 +4431,10 @@ function T.blend_effect_waits_complete_on_their_own_engine_clock()
   end
   local done = assert(movie.current, "the running movie owns its current slot").effects
   Assert.isTrue(done["sub-twenty"].done, "the sub program retires on its own twentieth tick")
-  for _ = 1, 5 do
+  for _ = 1, 5 + 1 do
     movie:updateFixed()
   end
-  Assert.equal(movie:sceneNumber(), 2, "the tail step runs after both engine programs retire")
+  Assert.equal(movie:sceneNumber(), 2, "the tail step runs after both engine programs retire, then the exit call")
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the wait movie releases every handle")
 end
@@ -4220,10 +4501,10 @@ function T.wipe_endpoints_retire_cleanly_without_arithmetic_faults()
   local doneBaseline = mainScissors()
   movie:draw()
   Assert.equal(mainScissors(), doneBaseline, "the completed wipe draws no further row spans")
-  for _ = 1, 4 do
+  for _ = 1, 4 + 1 do
     movie:updateFixed()
   end
-  Assert.equal(movie:sceneNumber(), 2, "the step still holds its authored duration past the wipe")
+  Assert.equal(movie:sceneNumber(), 2, "the step still holds its authored duration past the wipe, then the exit call")
   local tailBaseline = mainScissors()
   movie:draw()
   Assert.equal(mainScissors(), tailBaseline, "the retired wipe stops clipping rows once its ticks elapse")
@@ -4918,9 +5199,7 @@ function T.background_wrap_draws_issue_no_new_quads_across_repeats_and_pans()
   )
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  while movie:sceneNumber() < 2 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 2)
   -- The newly entered case first runs on the following update: its entry
   -- programs dispatch there, and the continuous drift advances at once.
   movie:updateFixed()
@@ -5770,7 +6049,8 @@ function T.starter_emitter_count_stays_within_its_scene_bound()
     ticks = ticks + 1
   end
   Assert.equal(movie:sceneNumber(), 4, "playback reaches the starter scene")
-  for _ = 1, 3 do
+  -- The init call plus three entry stalls, then the three starter ticks.
+  for _ = 1, 4 + 3 do
     movie:updateFixed()
     movie:draw()
   end
@@ -5941,7 +6221,13 @@ function T.staged_sprites_stay_visible_while_the_physical_bottom_holds_black_unt
   local entered = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(entered.stepElapsed, 0, "the incoming scene has not run its first tick")
   checkEntryHolds(entered, 3)
-  -- The entry tick stages the rival; the black bottom hold still covers it.
+  -- The init call plus three entry stalls hold the staged entry; the first
+  -- case then stages the rival while the black bottom hold still covers it.
+  for _ = 1, 4 do
+    movie:updateFixed()
+    Assert.equal(movie.current.stepElapsed, 0, "the init stalls run no case")
+    checkEntryHolds(movie.current, 3)
+  end
   movie:updateFixed()
   local staged = assert(movie.current, "the running movie owns its current slot")
   local silver = assert(staged.spriteInstances["silver-silhouette"], "the entry tick stages the rival instance")
@@ -6232,9 +6518,7 @@ function T.nitro_play_modes_follow_source_edge_handling_at_double_speed()
   local scenes, cacheFs = packRawWithSceneAt(scene, 2)
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  while movie:sceneNumber() < 2 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 2)
   local clips = scene.spriteClips
   local clipIds = {}
   for _, clip in ipairs(clips) do
@@ -6379,9 +6663,7 @@ function T.bg_priority_zero_occludes_lower_priority_sprites_in_draw_order()
   local scenes, cacheFs = packRawWithSceneAt(scene, 2)
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  while movie:sceneNumber() < 2 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 2)
   movie:updateFixed()
   local baseline = #graphics.draws
   movie:draw()
@@ -6485,9 +6767,7 @@ function T.two_instances_sharing_one_clip_keep_independent_phases()
   local scenes, cacheFs = packRawWithSceneAt(scene, 2)
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  while movie:sceneNumber() < 2 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 2)
   local image = assert(movie.current.imageByPath[shared.id], "the shared clip image is staged")
   for _ = 1, 6 do
     movie:updateFixed()

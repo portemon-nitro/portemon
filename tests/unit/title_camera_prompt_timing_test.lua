@@ -25,6 +25,8 @@ local function syntheticBundle()
     },
     prompt = {
       text = "TOUCH TO START",
+      alignment = "center",
+      tokens = {},
       color = {
         foreground = 2,
         shadow = 2,
@@ -57,20 +59,32 @@ local function stubActor()
   return actor
 end
 
-local function stubUiGraphics(printed)
+local function stubUiGraphics()
   return {
     push = function() end,
     pop = function() end,
+    translate = function() end,
+    scale = function() end,
     setColor = function() end,
     setLineWidth = function() end,
     circle = function() end,
-    printf = function(text)
-      printed[#printed + 1] = text
+    printf = function() end,
+  }
+end
+
+local function stubTextRenderer(drawn)
+  return {
+    fontDef = { lineHeight = 16 },
+    textWidth = function()
+      return 120
+    end,
+    drawLineWithPalette = function()
+      drawn[#drawn + 1] = true
     end,
   }
 end
 
-local function stubScene(graphics, bundle)
+local function stubScene(graphics, bundle, drawn)
   local legend, sparkle = stubActor(), stubActor()
   local scene = setmetatable({
     versionId = "soulsilver",
@@ -80,6 +94,7 @@ local function stubScene(graphics, bundle)
     graphics = graphics or {},
     legend = legend,
     sparkle = sparkle,
+    textRenderer = stubTextRenderer(drawn or {}),
     layout = { prompt = { x = 100, y = 300, width = 300, height = 30 } },
     buttonBounds = { x = 400, y = 320, width = 48, height = 48 },
     disposed = false,
@@ -98,15 +113,6 @@ local function expectedView(eye, target)
     { target[1] * unit, target[2] * unit, target[3] * unit },
     { 0, 1, 0 }
   )
-end
-
-local function promptShown(printed, text)
-  for _, entry in ipairs(printed) do
-    if entry == text then
-      return true
-    end
-  end
-  return false
 end
 
 local T = {}
@@ -175,16 +181,15 @@ function T.title_camera_uses_source_projection_start_pose_stepping_and_lit_deliv
 end
 
 function T.title_prompt_hides_through_its_opening_delay_then_flashes()
-  local printed = {}
-  local scene, legend, sparkle = stubScene(stubUiGraphics(printed))
-  local promptText = scene.bundle.prompt.text
+  local drawn = {}
+  local scene, legend, sparkle = stubScene(stubUiGraphics(), nil, drawn)
   local shownAt = {}
-  local function drawUi() 
-    for index = #printed, 1, -1 do
-      printed[index] = nil
+  local function drawUi()
+    for index = #drawn, 1, -1 do
+      drawn[index] = nil
     end
     scene:_drawUi(nil)
-    return promptShown(printed, promptText)
+    return #drawn > 0
   end
   shownAt[0] = drawUi()
   for frame = 1, 80 do

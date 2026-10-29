@@ -627,6 +627,14 @@ local function isPlaneMask(mask)
   return isNonnegativeInteger(mask) and mask <= 31
 end
 
+-- Visible-window masks are 2-bit source masks: bit 0 shows the first
+-- (pan-driven) window and bit 1 the second (direct register) window.
+---@param mask unknown candidate mask
+---@return boolean whether the mask is an integer in 0..3
+local function isWindowMask(mask)
+  return isNonnegativeInteger(mask) and mask <= 3
+end
+
 -- Effect-starting ops: an `effect` identity on one of these starts the waitable
 -- effect the step graph binds waits against.
 local EFFECT_START_OPS =
@@ -1345,8 +1353,8 @@ local function validateOpeningEventOperands(event, sceneNumber)
     if OPENING_ENGINES[event.engine] ~= true then
       return nil, "opening scene window visibility names no source engine"
     end
-    if type(event.visible) ~= "boolean" then
-      return nil, "opening scene window visibility is malformed"
+    if not isWindowMask(event.mask) then
+      return nil, "opening scene window visibility names no window mask"
     end
   elseif op == "setModelVisible" then
     if type(event.visible) ~= "boolean" then
@@ -1485,7 +1493,7 @@ local OPENING_EVENT_KEYS = {
     effect = true,
   },
   setWindowSecondary = { engine = true, rect = true, insideMask = true },
-  setWindowVisible = { engine = true, visible = true },
+  setWindowVisible = { engine = true, mask = true },
   setModelVisible = { visible = true },
   setSpriteClip = {
     instanceId = true,

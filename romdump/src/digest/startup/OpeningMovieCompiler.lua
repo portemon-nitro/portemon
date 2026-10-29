@@ -876,14 +876,18 @@ local function setWindowSecondary(events, stepId, atStepTick, engine, rect, insi
   })
 end
 
--- Whole engine-window enable switch; retains positions and masks for later.
+-- Engine-window enable mask from one retail GXS/GX_SetVisibleWnd call:
+-- bit 0 shows the first (pan-driven) window, bit 1 the second (direct
+-- register) window. A pan start enables both windows the way the source
+-- helper does; only these explicit masks narrow it back down. Positions
+-- and inside masks are retained for later either way.
 ---@param events table<string, unknown>[]
 ---@param stepId string
 ---@param atStepTick integer
----@param engine string source engine owning the window
----@param visible boolean window enable state
-local function setWindowVisible(events, stepId, atStepTick, engine, visible)
-  events[#events + 1] = event("setWindowVisible", stepId, atStepTick, { engine = engine, visible = visible })
+---@param engine string source engine owning the windows
+---@param mask integer visible window mask 0..3
+local function setWindowVisible(events, stepId, atStepTick, engine, mask)
+  events[#events + 1] = event("setWindowVisible", stepId, atStepTick, { engine = engine, mask = mask })
 end
 
 ---@param instances table<string, unknown>[] scene sprite instance declarations
@@ -1119,13 +1123,16 @@ local function scene1Program(clips, layers)
   step(steps, "bird", bird, { kind = "duration", ticks = 128 })
   local run = { nextIndex(events), nextIndex(events) + 1 }
   events[#events + 1] = event("waitTicks", "run", 0, { ticks = 90 })
+  -- The source brightness register is sticky, so the completed fade holds
+  -- white behind the handoff instead of uncovering the sunrise: scene 2
+  -- enters white on both engines and fades in from there.
   events[#events + 1] = event("setFade", "run", 90, {
     scope = "both",
     mode = "brightness",
     color = "white",
     direction = "out",
     ticks = 65,
-    terminal = "neutral",
+    terminal = "hold",
     effect = "fade-white",
   })
   step(steps, "run", run, { kind = "duration", ticks = 90 })
@@ -1472,7 +1479,10 @@ local function scene3Program(clips, layers)
   aspect[#aspect + 1] = #events
   emitWindow(events, 3, "widen-aspect", "aspect", 44, "window-aspect-widen")
   aspect[#aspect + 1] = #events
-  setWindowVisible(events, "aspect", 44, "sub", true)
+  -- Retail narrows back to the first window after the widening pan starts
+  -- (GXS_SetVisibleWnd(1)): the stale full-width edge column in the second
+  -- register must not clip once the rival panels fill the stage.
+  setWindowVisible(events, "aspect", 44, "sub", 1)
   aspect[#aspect + 1] = #events
   aspect[#aspect + 1] = nextIndex(events)
   events[#events + 1] = event(
@@ -1511,15 +1521,18 @@ local function scene3Program(clips, layers)
   appearRaikou[#appearRaikou + 1] = #events
   step(steps, "appear-raikou", appearRaikou, { kind = "effect", effect = "scroll-sub1" })
   local loadRockets = {}
-  setWindowVisible(events, "load-rockets", 0, "sub", false)
+  setWindowVisible(events, "load-rockets", 0, "sub", 0)
   loadRockets[#loadRockets + 1] = #events
-  setWindowVisible(events, "load-rockets", 0, "main", false)
+  setWindowVisible(events, "load-rockets", 0, "main", 0)
   loadRockets[#loadRockets + 1] = #events
   step(steps, "load-rockets", loadRockets, { kind = "effect", effect = "scroll-sub2" })
   local narrowWindows = {}
   emitWindow(events, 3, "narrow-x", "narrow-windows", 42, "window-narrow-x")
   narrowWindows[#narrowWindows + 1] = #events
-  setWindowVisible(events, "narrow-windows", 42, "sub", true)
+  -- Retail shows only the first window from here until the sprite slide
+  -- reprograms the second register (GXS_SetVisibleWnd(1)): without this,
+  -- the Raikou panel leaks through the stale edge column left of Eusine.
+  setWindowVisible(events, "narrow-windows", 42, "sub", 1)
   narrowWindows[#narrowWindows + 1] = #events
   step(steps, "narrow-windows", narrowWindows, { kind = "duration", ticks = 42 })
   step(steps, "wait-narrow", {}, { kind = "effect", effect = "window-narrow-x" })
@@ -1728,9 +1741,9 @@ local function scene4Program(clips, layers)
   hide[#hide + 1] = #events
   setPlaneVisible(events, planes, layers, "hide-hands", 0, "sub", 1, false)
   hide[#hide + 1] = #events
-  setWindowVisible(events, "hide-hands", 0, "main", false)
+  setWindowVisible(events, "hide-hands", 0, "main", 0)
   hide[#hide + 1] = #events
-  setWindowVisible(events, "hide-hands", 0, "sub", false)
+  setWindowVisible(events, "hide-hands", 0, "sub", 0)
   hide[#hide + 1] = #events
   step(steps, "hide-hands", hide, { kind = "effect", effect = "scroll-slide-out" })
   local starters = { "chikorita", "cyndaquil", "totodile" }

@@ -220,12 +220,13 @@ function ArtifactJobs.newGameIntroJobs(audioPlan)
   return sortedJobs(jobs), true
 end
 
--- The bounded startup title visual: one compiled title scene with no
+-- The bounded startup title visual: one compiled title scene plus the
+-- field font it prints its start prompt with. Neither pulls a
 -- source-inventory or audio prerequisite. Like the loader it decodes
--- directly from the verified dump reader, so its roster is a singleton.
+-- directly from the verified dump reader.
 ---@return { kind: string, key: string }[]
 function ArtifactJobs.startupTitleJobs()
-  return { { kind = "startup-title", key = "global" } }
+  return { { kind = "startup-title", key = "global" }, { kind = "field-font", key = "global" } }
 end
 
 -- The optional startup audio closure: the title theme, the menu select

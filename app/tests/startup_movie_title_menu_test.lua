@@ -12,6 +12,7 @@ local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentatio
 local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local HgssGame = require("game.hgss.src.HgssGame")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local TITLE_SCENE_MODULE = "libs.hgss.src.presentation.HgssTitleScene"
 local titleSceneModule = require(TITLE_SCENE_MODULE)
@@ -429,8 +430,31 @@ end
 local function startSelection(versionId)
   App._selectVersion(versionId or "heartgold")
   App.update(1 / 60)
-  App.update(1 / 30)
+  App.update(SourceTick.DT)
   return App.state
+end
+
+-- The soundtrack lead-in holds the staged entry frame behind black for two
+-- source ticks before the first video tick. Pumping past it lets a caller
+-- assert on real movie frames; the lead-in contract itself is owned by
+-- `movie_entry_holds_two_black_ticks_before_first_video_tick`.
+local function pumpMovieLeadIn()
+  for _ = 1, 2 do
+    App.update(SourceTick.DT)
+  end
+end
+
+-- The adopted title spends the retail start-up calls behind white; its
+-- theme starts on the last one and input reads from the first animation
+-- call onward.
+---@param state table the startup state under test
+local function pumpTitleEntry(state)
+  for _ = 1, 10 do
+    if state.titleAnimating then
+      return
+    end
+    App.update(SourceTick.DT)
+  end
 end
 
 ---@return table<number> demanded opening scene numbers in request order
@@ -455,7 +479,7 @@ local function pumpUntilMovie(state)
     if state.phase == "movie" then
       return
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
   end
 end
 
@@ -508,7 +532,7 @@ function T.tests.startup_demands_all_five_opening_scenes_and_keeps_one_menu_thro
     -- title; a pending title keeps the same loader instead of blanking.
     active.titleAssetsReady = false
     for _ = 1, 60 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
       if state.phase ~= "movie" then
         break
       end
@@ -520,30 +544,35 @@ function T.tests.startup_demands_all_five_opening_scenes_and_keeps_one_menu_thro
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.isNil(state.movie, "the finished movie is disposed exactly once at the title handoff")
     Assert.equal(active.loaders[1].draws > 0, true, "the pending title keeps the same loader visible")
     paints = active.paints
+    local whites = active.whiteOverlays
     App.draw()
-    Assert.isTrue(active.paints > paints, "no blank frame appears between the movie and the pending title")
+    Assert.isTrue(
+      active.paints > paints or active.whiteOverlays > whites,
+      "no blank frame appears between the movie and the pending title"
+    )
 
     -- The independently ready title appears only after the movie; one
     -- latched skip then fades white into exactly one staged menu.
     active.titleAssetsReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(#active.scenes, 1, "the title scene is constructed once after the movie")
     Assert.equal(state.phase, "title", "the legendary title follows the completed movie")
+    pumpTitleEntry(state)
     App.keypressed("return", "return", false)
     Assert.isFalse(state.skipRequested and state.movie ~= nil, "the title press never replays the movie")
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(#active.menus, 1, "bootstrap stages exactly one menu behind the skipped title")
     for _ = 1, 100 do
       if App.state ~= state then
         break
       end
       App.draw()
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, active.menus[1], "the same staged menu installs after the white fade")
     Assert.isTrue(active.whiteOverlays > 0, "the title-to-menu handoff fades through white")
@@ -563,20 +592,21 @@ function T.tests.warm_movie_starts_at_once_while_a_true_first_import_keeps_its_b
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(#active.movies, 1, "the warm entry stages the movie behind the loader")
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(state.phase, "movie", "the warm entry starts the staged movie without a loader beat")
+    pumpMovieLeadIn()
     App.draw()
-    Assert.isTrue(active.movies[1].draws >= 1, "the entered movie paints its first frame at once")
+    Assert.isTrue(active.movies[1].draws >= 1, "the entered movie paints its first frame")
     -- Cold: a genuinely new import keeps one bounded beat so its freshly
     -- adopted art stays visible before the same handoff.
     App._selectVersion("heartgold", { freshImport = true })
     App.update(1 / 60)
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     local cold = assert(App.state, "the first import installs its startup state")
     for _ = 1, 15 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
       App.draw()
     end
     Assert.equal(cold.phase, "loading", "the true first import keeps its bounded beat while fresh")
@@ -584,8 +614,153 @@ function T.tests.warm_movie_starts_at_once_while_a_true_first_import_keeps_its_b
     Assert.equal(active.movies[2].ticks, 0, "the staged movie holds its source clock at zero during the beat")
     pumpUntilMovie(cold)
     Assert.equal(cold.phase, "movie", "the cold entry still reaches its staged movie after the beat")
+    pumpMovieLeadIn()
     App.draw()
     Assert.isTrue(active.movies[2].draws >= 1, "the first playable source frame draws at the transition")
+  end)
+end
+
+function T.tests.a_stalled_host_frame_never_fast_forwards_the_staged_movie_clock()
+  withStartup(function()
+    local state = startSelection()
+    Assert.notNil(state, "the selected edition installs its startup state")
+    active.audioReady = true
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    pumpUntilMovie(state)
+    Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
+    local movie = assert(state.movie, "the movie session is owned by the startup state")
+    local guard = 0
+    while movie.ticks == 0 and guard < 100 do
+      App.update(SourceTick.DT)
+      guard = guard + 1
+    end
+    Assert.isTrue(movie.ticks > 0, "the movie leaves its lead-in")
+    local before = movie.ticks
+    -- One stalled host frame (blocked main thread) must not replay the
+    -- blocked source time faster: the retail loop advances video and audio
+    -- together once per iteration no matter how long the iteration takes,
+    -- so the staged clock drops the blocked time the way the audio session
+    -- drops it instead of fast-forwarding through it. A full host second
+    -- therefore advances the bounded two-tick catch-up, never its ~30 ticks.
+    App.update(1.0)
+    Assert.equal(movie.ticks - before, 2, "a one-second stall advances only the bounded catch-up")
+  end)
+end
+
+function T.tests.title_entry_spends_the_retail_init_and_model_load_calls_before_its_theme()
+  withStartup(function()
+    active.movieDuration = 5
+    active.movieSkipAfter = 1000
+    local state = startSelection()
+    Assert.notNil(state, "the selected edition installs its startup state")
+    active.audioReady = true
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    pumpUntilMovie(state)
+    local guard = 0
+    while state.phase == "movie" and guard < 100 do
+      App.update(SourceTick.DT)
+      guard = guard + 1
+    end
+    Assert.equal(state.phase, "title", "the finished movie adopts the title")
+    local session = assert(App.startupAudioSession, "the opening session owns the title theme")
+    local title = assert(active.scenes[#active.scenes], "the title scene is adopted")
+    local function titleThemeStarted()
+      for _, event in ipairs(session.events) do
+        if event == "title" then
+          return true
+        end
+      end
+      return false
+    end
+    -- Retail src/title_screen.c spends its init call and the model-loading
+    -- call behind white, starts SEQ_GS_POKEMON_THEME on the next call, and
+    -- runs the first title animation call after that.
+    Assert.isFalse(titleThemeStarted(), "the adopting tick leaves the opening track playing")
+    for call = 1, 2 do
+      App.update(SourceTick.DT)
+      Assert.isFalse(titleThemeStarted(), "title entry call " .. call .. " keeps the opening track playing")
+      Assert.equal(title.ticks, 0, "title entry call " .. call .. " runs no title animation")
+      local draws = title.draws
+      App.draw()
+      Assert.equal(title.draws, draws, "title entry call " .. call .. " holds white instead of the title")
+    end
+    App.update(SourceTick.DT)
+    Assert.isTrue(titleThemeStarted(), "the music call starts the title theme")
+    Assert.equal(title.ticks, 0, "the music call runs no title animation")
+    App.update(SourceTick.DT)
+    Assert.equal(title.ticks, 1, "the first title animation call follows the music call")
+    local draws = title.draws
+    App.draw()
+    Assert.equal(title.draws, draws + 1, "the animated title draws")
+  end)
+end
+
+function T.tests.staged_movie_clock_keeps_the_retail_display_cadence()
+  withStartup(function()
+    active.movieDuration = 100000
+    local state = startSelection()
+    Assert.notNil(state, "the selected edition installs its startup state")
+    active.audioReady = true
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    pumpUntilMovie(state)
+    local movie = assert(state.movie, "the movie session is owned by the startup state")
+    local guard = 0
+    while movie.ticks == 0 and guard < 100 do
+      App.update(1 / 60)
+      guard = guard + 1
+    end
+    Assert.isTrue(movie.ticks > 0, "the movie leaves its lead-in")
+    local before = movie.ticks
+    -- The staged video clock advances on the HGSS source tick (half the DS
+    -- refresh), not on a nominal 30 Hz host frame: over this host window
+    -- the source clock lands within one tick of its own cadence, so a
+    -- reintroduced 30 Hz accumulator misses by many.
+    local hostFrames = 6000
+    local hostSeconds = hostFrames / 60
+    for _ = 1, hostFrames do
+      App.update(1 / 60)
+    end
+    Assert.near(
+      movie.ticks - before,
+      hostSeconds / SourceTick.DT,
+      1,
+      "the movie clock keeps the retail main-loop cadence"
+    )
+  end)
+end
+
+function T.tests.movie_entry_holds_two_black_ticks_before_first_video_tick()
+  withStartup(function()
+    local state = startSelection()
+    Assert.notNil(state, "the selected edition installs its startup state")
+    active.audioReady = true
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    pumpUntilMovie(state)
+    Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
+    local movie = assert(state.movie, "the movie session is owned by the startup state")
+    -- The retail overlay runs INIT and the scene runs INIT while the
+    -- opening BGM already plays, so the first video frame trails the
+    -- soundtrack by two source ticks; the staged movie holds its entry
+    -- clock at zero behind black until the lead-in elapses.
+    Assert.equal(movie.ticks, 0, "the entered movie holds its source clock at zero")
+    App.draw()
+    Assert.equal(movie.draws, 0, "the lead-in holds black instead of the staged first frame")
+    App.update(SourceTick.DT)
+    Assert.equal(movie.ticks, 0, "the first lead-in tick holds the entry frame")
+    App.draw()
+    Assert.equal(movie.draws, 0, "the lead-in still holds black on its second frame")
+    App.update(SourceTick.DT)
+    Assert.equal(movie.ticks, 1, "video advances once the soundtrack lead-in elapses")
+    App.draw()
+    Assert.isTrue(movie.draws >= 1, "the first playable source frame draws after the lead-in")
   end)
 end
 
@@ -603,14 +778,15 @@ function T.tests.accepted_title_input_proceeds_once_and_latches_until_the_staged
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    pumpTitleEntry(state)
     Assert.equal(state.phase, "title", "the selected edition reaches its legendary title")
 
     App.keypressed("return", "return", false)
     Assert.isTrue(state.skipRequested, "the first title press latches skip intent")
     Assert.equal(active.scenes[1].proceeds, 1, "the accepted press starts the title proceed reveal once")
     for _ = 1, 60 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, state, "pending menu readiness keeps the title installed")
     Assert.isTrue(active.scenes[1].ticks >= 60, "the title keeps animating while the skip is pending")
@@ -618,7 +794,7 @@ function T.tests.accepted_title_input_proceeds_once_and_latches_until_the_staged
     Assert.equal(#active.menus, 0, "no menu stages before bootstrap readiness")
 
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(#active.menus, 1, "bootstrap readiness stages the menu once under the latched skip")
     Assert.isTrue(
       state.phase == "fadeOut" or state.phase == "fadeIn",
@@ -630,7 +806,7 @@ function T.tests.accepted_title_input_proceeds_once_and_latches_until_the_staged
       if App.state ~= state then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, active.menus[1], "the exact staged menu installs after the fade")
     Assert.equal(#active.menus, 1, "handoff never reconstructs the menu")
@@ -665,7 +841,7 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
     end
     Assert.equal(openings, 1, "the active movie starts its opening track once")
     for _ = 1, 30 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     openings = 0
     for _, session in ipairs(active.audioSessions) do
@@ -682,7 +858,8 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    pumpTitleEntry(state)
     Assert.equal(state.phase, "title", "the finished movie hands off to the legendary title")
     local titles = 0
     for _, session in ipairs(active.audioSessions) do
@@ -699,12 +876,12 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
     Assert.isTrue(state.skipRequested, "the title press latches while audio is absent")
     Assert.isTrue(state.pendingLegendaryCry, "the accepted skip remembers its pending legendary cry")
     for _ = 1, 10 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, state, "pending menu readiness keeps the title installed")
     active.audioReady = true
-    App.update(1 / 30)
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    App.update(SourceTick.DT)
     local cries = 0
     for _, session in ipairs(active.audioSessions) do
       for _, event in ipairs(session.events) do
@@ -727,7 +904,7 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
 
     -- The actual staged-menu fade starts the music fade exactly once.
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     local fades = 0
     for _, session in ipairs(active.audioSessions) do
       for _, event in ipairs(session.events) do
@@ -741,7 +918,7 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
       if App.state ~= state then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, active.menus[1], "the staged menu installs after the fade")
   end)
@@ -766,14 +943,15 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    pumpTitleEntry(state)
     Assert.equal(state.phase, "title", "the selected edition reaches its legendary title")
     -- The title press latches with no session behind it.
     App.keypressed("return", "return", false)
     Assert.isTrue(state.skipRequested, "the title press latches while audio is absent")
     Assert.equal(#active.audioSessions, 1, "the skip with absent audio constructs no additional session")
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.isTrue(
       state.phase == "fadeOut" or state.phase == "fadeIn",
       "the latched skip starts the fade without audio"
@@ -783,7 +961,7 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
       if App.state ~= state then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, active.menus[1], "the menu installs even though audio arrived mid-fade")
     for _, session in ipairs(active.audioSessions) do
@@ -805,7 +983,7 @@ function T.tests.opening_music_starts_once_at_movie_entry_when_audio_is_ready()
     end
     local entryUpdates = 0
     while state.phase ~= "movie" and entryUpdates < 5 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
       entryUpdates = entryUpdates + 1
     end
     Assert.equal(state.phase, "movie", "five ready scenes reach the movie phase")
@@ -826,7 +1004,7 @@ function T.tests.opening_music_starts_once_at_movie_entry_when_audio_is_ready()
       "the opening decision lands on the entry update before the movie advances"
     )
     for _ = 1, 30 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(state.phase, "movie", "the movie keeps playing behind its single opening track")
     Assert.equal(openings(), 1, "the running movie never restarts its opening track")
@@ -842,7 +1020,7 @@ function T.tests.pending_audio_holds_loader_until_readiness_admits_the_movie()
     -- Pending soundtrack banks hold the loader: the staged movie waits
     -- silently with no source tick, no session, and no start.
     for _ = 1, 10 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(state.phase, "loading", "pending audio holds the loader behind the staged movie")
     Assert.notNil(state.movie, "all five scenes stage the movie while audio is pending")
@@ -876,7 +1054,8 @@ function T.tests.pending_audio_holds_loader_until_readiness_admits_the_movie()
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    pumpTitleEntry(state)
     Assert.equal(state.phase, "title", "the admitted movie hands off to the legendary title")
     openings, titles = counts()
     Assert.equal(openings, 1, "the opening track is never repeated after admission")
@@ -922,7 +1101,7 @@ function T.tests.startup_audio_composes_directly_without_the_game_root_wrapper()
   session:notifySkip()
   session:beginFade()
   session:playMenuCue("select")
-  session:update(1 / 30)
+  session:update(SourceTick.DT)
   session:dispose()
 end
 
@@ -947,7 +1126,7 @@ function T.tests.movie_skip_never_becomes_title_skip_and_releases_are_swallowed(
     -- An eligible pointer press skips the movie and is swallowed, so the
     -- newly presented title still needs its own accepted press.
     for _ = 1, 12 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     App.mousepressed(400, 300, 1, false, 1)
     Assert.isNil(state.movie, "the eligible press finishes the movie exactly once")
@@ -960,6 +1139,7 @@ function T.tests.movie_skip_never_becomes_title_skip_and_releases_are_swallowed(
     Assert.deepEqual(App._swallowedPointers, {}, "the swallowed release never reaches a later owner")
     Assert.equal(#active.menus, 0, "no menu stages from a movie press")
 
+    pumpTitleEntry(state)
     App.keypressed("return", "return", false)
     Assert.isTrue(state.skipRequested, "the title still needs its own accepted press")
     Assert.equal(active.scenes[1].proceeds, 1, "the title press starts the proceed reveal once")
@@ -974,7 +1154,7 @@ function T.tests.partial_opening_manifest_keeps_the_loader_without_start_or_erro
       active.sceneReady[sceneNumber] = true
     end
     for _ = 1, 5 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(state.phase, "loading", "four of five scenes never install the movie")
     Assert.isNil(state.movie, "a partial manifest constructs no movie session")
@@ -984,7 +1164,7 @@ function T.tests.partial_opening_manifest_keeps_the_loader_without_start_or_erro
     App.draw()
     Assert.isTrue(active.paints > paints, "the loader keeps painting while the last scene compiles")
     for _ = 1, 5 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(state.phase, "loading", "polling never escalates a pending scene into an error")
     Assert.isNil(state.sceneError, "pending scenes never report a terminal failure")
@@ -1001,7 +1181,7 @@ function T.tests.late_audio_checkpoints_play_only_the_current_stage_cue()
     -- Checkpoint 0: pending audio holds the loader behind the staged
     -- movie with no tick and no session.
     for _ = 1, 5 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(state.phase, "loading", "pending audio holds the loader behind the staged movie")
     Assert.notNil(state.movie, "all five scenes stage the movie while audio is pending")
@@ -1023,7 +1203,8 @@ function T.tests.late_audio_checkpoints_play_only_the_current_stage_cue()
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    pumpTitleEntry(state)
     Assert.equal(state.phase, "title", "the finished movie hands off to the legendary title")
     Assert.equal(#active.audioSessions, 1, "title entry constructs no second session")
     local session = active.audioSessions[1]
@@ -1033,13 +1214,13 @@ function T.tests.late_audio_checkpoints_play_only_the_current_stage_cue()
     App.keypressed("return", "return", false)
     Assert.deepEqual(session.events, { "opening", "title", "cry" }, "the accepted skip cries once")
     for _ = 1, 10 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.deepEqual(session.events, { "opening", "title", "cry" }, "waiting never duplicates the cry")
 
     -- Checkpoint 4: the staged-menu fade starts the music fade once.
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.deepEqual(
       session.events,
       { "opening", "title", "cry", "fade" },
@@ -1051,7 +1232,7 @@ function T.tests.late_audio_checkpoints_play_only_the_current_stage_cue()
       if App.state ~= state then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     local menu = assert(App.state, "the staged menu installs after the fade")
     Assert.equal(#active.audioSessions, 1, "transfer constructs no second session")
@@ -1078,15 +1259,16 @@ function T.tests.idle_title_loops_the_movie_without_losing_epoch_or_menu()
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    pumpTitleEntry(state)
     Assert.equal(state.phase, "title", "the finished movie hands off to the legendary title")
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     local menu = assert(state.stagedMenu, "the menu stages behind the unskipped title")
     local epoch = App.epoch
 
     for _ = 1, 40 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(state.phase, "movie", "the idle title loops back into the movie")
     Assert.equal(#active.movies, 2, "the loop acquires a fresh movie session")
@@ -1097,7 +1279,8 @@ function T.tests.idle_title_loops_the_movie_without_losing_epoch_or_menu()
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    pumpTitleEntry(state)
     Assert.equal(state.phase, "title", "the looped movie hands back to a fresh title")
     Assert.equal(#active.scenes, 2, "the looped movie presents the title again")
     Assert.equal(state.stagedMenu, menu, "the same staged menu survives the loop")
@@ -1116,11 +1299,12 @@ function T.tests.idle_title_loops_the_movie_without_losing_epoch_or_menu()
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    pumpTitleEntry(state)
     App.keypressed("return", "return", false)
     Assert.isTrue(state.skipRequested, "the title press latches while the menu is pending")
     for _ = 1, 60 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, state, "a skipped title never times out back into the movie")
     Assert.equal(#active.movies, 1, "pending skip constructs no second movie")
@@ -1143,16 +1327,17 @@ function T.tests.resize_during_fade_keeps_clocks_and_overlay()
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    pumpTitleEntry(state)
     App.keypressed("return", "return", false)
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.isTrue(state.phase == "fadeOut" or state.phase == "fadeIn", "the latched skip starts the fade")
     local phase, frame = state.phase, state.fadeFrame
     App.resize(640, 480)
     Assert.equal(state.phase, phase, "resize during the fade keeps the phase")
     Assert.equal(state.fadeFrame, frame, "resize during the fade keeps the fade clock")
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(state.phase, phase, "the fade advances in place after resize")
     local overlays = active.whiteOverlays
     App.draw()
@@ -1161,7 +1346,7 @@ function T.tests.resize_during_fade_keeps_clocks_and_overlay()
       if App.state ~= state then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, active.menus[1], "the fade completes into the staged menu after resize")
   end)
@@ -1183,7 +1368,7 @@ function T.tests.failed_opening_scene_is_a_visible_error_and_retirement_disposes
       "the recoverable error keeps the retained loader painted instead of a blank frame"
     )
     for _ = 1, 5 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(state.phase, "error", "polling never retries the failed scene behind a tight request loop")
     Assert.equal(#active.menus, 0, "a failed journey stages no menu")
@@ -1234,18 +1419,19 @@ function T.tests.movie_first_title_entry_keeps_its_edition_cry_through_the_accep
       while state.movie ~= nil and not state.movie:isFinished() do
         state.movie:updateFixed()
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
+      pumpTitleEntry(state)
       Assert.equal(state.phase, "title", "the finished movie hands off to the legendary title")
       App.keypressed("return", "return", false)
       Assert.isTrue(state.skipRequested, "the title press latches skip intent")
       active.bootstrapReady = true
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
       Assert.equal(#active.menus, 1, "bootstrap stages exactly one menu behind the skipped title")
       for _ = 1, 120 do
         if App.state ~= state then
           break
         end
-        App.update(1 / 30)
+        App.update(SourceTick.DT)
       end
       Assert.equal(App.state, active.menus[1], "the staged menu installs after the fade")
       local openings, titles, cries = 0, 0, {}
@@ -1286,14 +1472,15 @@ function T.tests.idle_title_replays_both_music_tracks_before_the_final_cry()
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    pumpTitleEntry(state)
     Assert.equal(state.phase, "title", "the finished movie hands off to the legendary title")
     active.bootstrapReady = true
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     local menu = assert(state.stagedMenu, "the menu stages behind the unskipped title")
     local epoch = App.epoch
     for _ = 1, 40 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(state.phase, "movie", "the idle title loops back into the movie")
     Assert.equal(#active.movies, 2, "the loop acquires a fresh movie session")
@@ -1302,7 +1489,8 @@ function T.tests.idle_title_replays_both_music_tracks_before_the_final_cry()
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
+    pumpTitleEntry(state)
     Assert.equal(state.phase, "title", "the looped movie presents the title again")
     local function orderedAudioEvents()
       local order = {}
@@ -1319,7 +1507,7 @@ function T.tests.idle_title_replays_both_music_tracks_before_the_final_cry()
       "each visual entry restarts its own music track in source order"
     )
     for _ = 1, 10 do
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.deepEqual(
       orderedAudioEvents(),
@@ -1332,7 +1520,7 @@ function T.tests.idle_title_replays_both_music_tracks_before_the_final_cry()
       if App.state ~= state then
         break
       end
-      App.update(1 / 30)
+      App.update(SourceTick.DT)
     end
     Assert.equal(App.state, menu, "the same staged menu installs after the final fade")
     Assert.deepEqual(

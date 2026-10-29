@@ -127,7 +127,10 @@ function T.title_visual_scopes_ignore_adopted_audio_membership()
     Assert.isTrue(complete, "startup-loader stays final beside an adopted audio plan")
     Assert.deepEqual(dependencies, {}, "startup-loader keeps no audio prerequisite")
   end
-  Assert.deepEqual(ArtifactJobs.startupTitleJobs(), { { kind = "startup-title", key = "global" } })
+  Assert.deepEqual(ArtifactJobs.startupTitleJobs(), {
+    { kind = "startup-title", key = "global" },
+    { kind = "field-font", key = "global" },
+  })
   local roster, resolved = ArtifactJobs.startupAudioJobs(plan.audioPlan)
   Assert.isTrue(resolved, "the optional audio roster resolves from the adopted index")
   local found = {}
@@ -460,7 +463,10 @@ function T.startup_visual_dependencies_are_empty_and_final()
     Assert.deepEqual(dependencies, {}, "startup-loader carries no prerequisite jobs")
   end
   Assert.deepEqual(ArtifactJobs.startupLoaderJobs(), { { kind = "startup-loader", key = "global" } })
-  Assert.deepEqual(ArtifactJobs.startupTitleJobs(), { { kind = "startup-title", key = "global" } })
+  Assert.deepEqual(ArtifactJobs.startupTitleJobs(), {
+    { kind = "startup-title", key = "global" },
+    { kind = "field-font", key = "global" },
+  })
 end
 
 -- The optional audio closure resolves exactly the opening theme, title theme,
@@ -2142,7 +2148,7 @@ function T.opening_scene_reader_accepts_manual_window_overrides_and_visibility()
     rect = { x1 = 70, y1 = 64, x2 = 185, y2 = 192 },
     insideMask = 29,
   })
-  appendStepEventV3(manifest, "open", { op = "setWindowVisible", atStepTick = 0, engine = "sub", visible = true })
+  appendStepEventV3(manifest, "open", { op = "setWindowVisible", atStepTick = 0, engine = "sub", mask = 1 })
   local loaded, err = StartupAssetCache.loadOpeningScene(openingCacheFs(manifest, nil), 3, "heartgold")
   Assert.notNil(loaded, "manual window records read ready: " .. tostring(err))
   local badOverride = deepCopy(manifest)
@@ -2151,9 +2157,9 @@ function T.opening_scene_reader_accepts_manual_window_overrides_and_visibility()
   Assert.isNil(badRead, "a manual override outside the five plane bits never validates")
   Assert.notNil(badErr, "the bad override mask reports its cause")
   local vague = deepCopy(manifest)
-  vague.timeline.events[#vague.timeline.events].visible = 1
+  vague.timeline.events[#vague.timeline.events].mask = 4
   local vagueRead, vagueErr = StartupAssetCache.loadOpeningScene(openingCacheFs(vague, nil), 3, "heartgold")
-  Assert.isNil(vagueRead, "a non-boolean window visibility is not ready")
+  Assert.isNil(vagueRead, "a window mask outside the two hardware windows is not ready")
   Assert.notNil(vagueErr, "the malformed visibility reports its cause")
 end
 

@@ -8,6 +8,7 @@ local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local PngWriter = require("tests.support.PngEncoder")
 local Presentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local WIDTH, HEIGHT = 480, 360
 
@@ -659,13 +660,16 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
     -- Warm: the adopted pair hands off on the next eligible update with no
     -- loader beat.
     local warm = build(nil)
-    warm:update(1 / 30)
+    warm:update(SourceTick.DT)
     Assert.equal(#staged, 1, "the warm entry stages the movie behind the loader")
-    warm:update(1 / 30)
+    warm:update(SourceTick.DT)
     Assert.equal(warm.phase, "movie", "the warm entry starts the staged movie without a loader beat")
+    for _ = 1, 2 do
+      warm:update(SourceTick.DT)
+    end
     local warmLines = {}
     local warmPixels = renderFrame(warm, warmLines)
-    Assert.isTrue(staged[1].draws >= 1, "the entered movie paints its first frame at once")
+    Assert.isTrue(staged[1].draws >= 1, "the entered movie paints its first frame")
     Assert.isTrue(warmPixels ~= blank, "the transition frame is playable pixels, never an empty stage")
     warm:dispose()
     Assert.equal(staged[1].disposed, 1, "leaving releases the staged movie exactly once")
@@ -674,7 +678,7 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
     local state = build(true)
     local hold = {}
     for _ = 1, 16 do
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
       local lines = {}
       hold[#hold + 1] = { bytes = renderFrame(state, lines), lines = lines }
     end
@@ -698,10 +702,15 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
         )
       end
     end
-    for _ = 1, 15 do
-      state:update(1 / 30)
+    local guard = 0
+    while state.phase ~= "movie" and guard < 50 do
+      state:update(SourceTick.DT)
+      guard = guard + 1
     end
     Assert.equal(state.phase, "movie", "the beat hands off to the opening movie")
+    for _ = 1, 2 do
+      state:update(SourceTick.DT)
+    end
     local firstLines = {}
     local first = renderFrame(state, firstLines)
     Assert.isTrue(staged[2].draws >= 1, "the first playable source frame draws at the transition")
