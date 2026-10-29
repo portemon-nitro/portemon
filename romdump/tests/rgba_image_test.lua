@@ -62,6 +62,21 @@ function T.full_bounds_crop_returns_an_equal_copy()
   Assert.equal(cropped.pixels, source.pixels)
 end
 
+function T.crop_returns_last_row_last_column_pixel()
+  local source = asymmetric()
+  local cropped = RgbaImage.crop(source, { x = 2, y = 1, width = 1, height = 1 }, "corner")
+  Assert.equal(cropped.width, 1)
+  Assert.equal(cropped.height, 1)
+  Assert.equal(cropped.pixels, pixel(71, 81, 91, 255))
+end
+
+function T.nonintegral_crop_rectangle_fails()
+  local source = asymmetric()
+  local ok, err = pcall(RgbaImage.crop, source, { x = 0.5, y = 0, width = 1, height = 1 }, "fraction")
+  Assert.isFalse(ok, "a nonintegral rectangle must fail")
+  Assert.notNil(tostring(err):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
+end
+
 function T.out_of_bounds_crop_fails()
   local source = asymmetric()
   local ok, err = pcall(RgbaImage.crop, source, { x = 2, y = 0, width = 2, height = 2 }, "overflow")
@@ -86,11 +101,43 @@ function T.compose_keeps_opaque_top_and_transparent_bottom()
   Assert.equal(top.pixels, pixel(40, 50, 60, 255) .. pixel(0, 0, 0, 0), "layer inputs are never mutated")
 end
 
+function T.compose_blends_boundary_alpha_values()
+  local bottom = { width = 1, height = 1, pixels = pixel(10, 20, 30, 255) }
+  local cases = {
+    { alpha = 1, expected = { 11, 20, 30, 255 } },
+    { alpha = 127, expected = { 105, 60, 40, 255 } },
+    { alpha = 254, expected = { 199, 100, 50, 255 } },
+    { alpha = 255, expected = { 200, 100, 50, 255 } },
+  }
+  for _, case in ipairs(cases) do
+    local top = { width = 1, height = 1, pixels = pixel(200, 100, 50, case.alpha) }
+    local composed = RgbaImage.compose({ bottom, top }, "boundary")
+    Assert.deepEqual({ string.byte(composed.pixels, 1, 4) }, case.expected)
+  end
+  local halfBottom = { width = 1, height = 1, pixels = pixel(10, 20, 30, 128) }
+  local halfTop = { width = 1, height = 1, pixels = pixel(200, 100, 50, 128) }
+  local half = RgbaImage.compose({ halfBottom, halfTop }, "half")
+  Assert.deepEqual({ string.byte(half.pixels, 1, 4) }, { 137, 73, 43, 192 })
+  Assert.equal(bottom.pixels, pixel(10, 20, 30, 255), "bottom input is never mutated")
+  Assert.equal(halfBottom.pixels, pixel(10, 20, 30, 128), "bottom input is never mutated")
+end
+
 function T.compose_blends_partial_alpha_over_opaque_bottom()
   local bottom = { width = 1, height = 1, pixels = pixel(10, 20, 30, 255) }
   local top = { width = 1, height = 1, pixels = pixel(40, 50, 60, 128) }
   local composed = RgbaImage.compose({ bottom, top }, "blend")
   Assert.deepEqual({ string.byte(composed.pixels, 1, 4) }, { 25, 35, 45, 255 })
+end
+
+function T.compose_stacks_multiple_layers_bottom_to_top()
+  local bottom = { width = 1, height = 1, pixels = pixel(10, 20, 30, 255) }
+  local middle = { width = 1, height = 1, pixels = pixel(40, 50, 60, 128) }
+  local top = { width = 1, height = 1, pixels = pixel(70, 80, 90, 64) }
+  local composed = RgbaImage.compose({ bottom, middle, top }, "stack")
+  Assert.deepEqual({ string.byte(composed.pixels, 1, 4) }, { 36, 46, 56, 255 })
+  Assert.equal(bottom.pixels, pixel(10, 20, 30, 255), "bottom input is never mutated")
+  Assert.equal(middle.pixels, pixel(40, 50, 60, 128), "middle input is never mutated")
+  Assert.equal(top.pixels, pixel(70, 80, 90, 64), "top input is never mutated")
 end
 
 function T.compose_rejects_mismatched_layers()
