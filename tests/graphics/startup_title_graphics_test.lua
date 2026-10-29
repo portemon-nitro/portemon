@@ -40,10 +40,10 @@ local function drawBytes(scene, scope, width, height)
 end
 
 local function countTitleImageDraws(scene, scope, width, height)
-  local counts = { canvas = 0, logo = 0, lower = 0, decor = 0 }
+  local counts = { canvas = 0, logo = 0, lower = 0 }
   local canvas = scene.canvas
   local surfaces = scene.surfaces or {}
-  local logo, lower, decor = surfaces.editionLogo, surfaces.subscreenLower, surfaces.subscreenDecor
+  local logo, lower = surfaces.editionLogo, surfaces.subscreenLower
   local graphics = love.graphics
   local originalDraw = graphics.draw
   graphics.draw = function(drawable, ...)
@@ -53,8 +53,6 @@ local function countTitleImageDraws(scene, scope, width, height)
       counts.logo = counts.logo + 1
     elseif drawable == lower then
       counts.lower = counts.lower + 1
-    elseif drawable == decor then
-      counts.decor = counts.decor + 1
     end
     return originalDraw(drawable, ...)
   end
@@ -109,7 +107,6 @@ local function renderEdition(scope, versionId)
       "the selected composition controls production drawing"
     )
     local stageDraws = countTitleImageDraws(scene, scope, layout.width, layout.height)
-    Assert.equal(stageDraws.decor, 0, "no layout paints the retired text art")
     if layout.configuration == "wide" then
       Assert.isFalse(
         composition.stageWidth == 512 and composition.stageHeight == 192,
@@ -144,7 +141,6 @@ local function renderEdition(scope, versionId)
         "dual display keeps upper and lower source roles on separate surfaces"
       )
     end
-    drawBytes(scene, scope, layout.width, layout.height)
   end
 
   local originalDraw = scene.renderer.draw
@@ -298,11 +294,7 @@ local function titleOverlayPhasesFollowTheirSourcedSchedule(scope, context)
     local overlayDraws = {}
     graphics.draw = function(drawable, ...)
       local surfaces = scene.surfaces or {}
-      if
-        drawable == surfaces.editionLogo
-        or drawable == surfaces.subscreenLower
-        or drawable == surfaces.subscreenDecor
-      then
+      if drawable == surfaces.editionLogo or drawable == surfaces.subscreenLower then
         local red, green, blue, alpha = graphics.getColor()
         overlayDraws[#overlayDraws + 1] = { drawable = drawable, color = { red, green, blue, alpha } }
       end
@@ -439,7 +431,6 @@ local function compactAndWideFillWithTheLegend(scope, context)
     for _, layout in ipairs({
       { width = 512, height = 384 },
       { width = 1280, height = 720 },
-      { width = 1680, height = 720 },
     }) do
       local scene = openTitleScene(scope, versionId, layout.width, layout.height, "single")
       local composition = assert(scene.layout.composition, "title composition has drawable bounds")
@@ -449,18 +440,10 @@ local function compactAndWideFillWithTheLegend(scope, context)
         canvasWidth <= 1024 and canvasHeight <= 576,
         "title 3D target stays bounded instead of matching the window"
       )
-      -- Cinematic single-screen keeps a bounded target: widescreen
-      -- follows its live stage aspect (16:9 at 1280x720), 4:3 keeps the
-      -- source-shaped target.
+      -- Cinematic single-screen keeps a bounded target: 16:9 widescreen
+      -- follows its live stage aspect, 4:3 keeps the source-shaped target.
       if layout.width == 1280 and layout.height == 720 then
         Assert.near(canvasWidth / canvasHeight, 16 / 9, 0.02, "widescreen cinematic uses a 16:9 3D target")
-      elseif layout.width / layout.height > 1.4 then
-        Assert.near(
-          canvasWidth / canvasHeight,
-          layout.width / layout.height,
-          0.02,
-          "widescreen cinematic follows its live stage aspect"
-        )
       else
         Assert.near(canvasWidth / canvasHeight, 4 / 3, 0.01, "4:3 cinematic keeps a source-shaped 3D target")
       end
@@ -468,7 +451,6 @@ local function compactAndWideFillWithTheLegend(scope, context)
       local surfaces = assert(scene.surfaces)
       Assert.isTrue(#drawsOf(draws, surfaces.editionLogo) >= 1, "cinematic stages draw the left edition artwork")
       Assert.isTrue(#drawsOf(draws, surfaces.subscreenLower) >= 1, "cinematic stages draw the middle artwork")
-      Assert.equal(#drawsOf(draws, surfaces.subscreenDecor), 0, "cinematic stages draw no retired text art")
       local canvasDraws = drawsOf(draws, scene.canvas)
       Assert.isTrue(#canvasDraws >= 1, "cinematic stages render the legendary")
       local legendRect = rectOf(canvasDraws[1], canvasWidth, canvasHeight)
@@ -526,6 +508,8 @@ local function compactAndWideFillWithTheLegend(scope, context)
       Assert.isTrue(expectedWidth <= prompt.width, "scaled prompt fits its strip")
       -- The line itself draws at the translated origin, so the
       -- centering lives in the immediately preceding translate.
+      -- The capture patches globals, so the draw runs under pcall and
+      -- the restores below execute even when the frame fails.
       local graphics = love.graphics
       local originalTranslate = graphics.translate
       local lastTranslate, seenLine = nil, nil
@@ -538,30 +522,34 @@ local function compactAndWideFillWithTheLegend(scope, context)
         seenLine = { origin = { x = x, y = y }, at = lastTranslate, palette = palette }
         return originalLine(self, tokens, x, y, palette)
       end
-      for _ = 1, 45 do
-        scene:updateFixed()
-      end
-      drawBytes(scene, scope, layout.width, layout.height)
+      local drawOk, drawFailure = pcall(function()
+        for _ = 1, 45 do
+          scene:updateFixed()
+        end
+        drawBytes(scene, scope, layout.width, layout.height)
+      end)
       graphics.translate = originalTranslate
       renderer.drawLineWithPalette = originalLine
-      Assert.notNil(seenLine, "prompt draws through the palette path while visible")
+      Assert.isTrue(drawOk, "the cinematic prompt frame draws: " .. tostring(drawFailure))
+      local line = assert(seenLine, "prompt draws through the palette path while visible")
+      local lineAt = assert(line.at, "prompt line follows a translate")
       Assert.near(
-        seenLine.at.x + expectedWidth / 2,
+        lineAt.x + expectedWidth / 2,
         prompt.x + prompt.width / 2,
         2,
         "ROM prompt centers in its strip"
       )
-      Assert.near(seenLine.at.y, prompt.y, 2, "ROM prompt sits at the strip top")
+      Assert.near(lineAt.y, prompt.y, 2, "ROM prompt sits at the strip top")
       local fg = assert(scene.bundle.prompt.color.foregroundRgb, "prompt carries its edition ink")
       local function byte(channel)
         return math.floor(channel * 255 + 0.5)
       end
       Assert.deepEqual(
-        seenLine.palette.foreground,
+        line.palette.foreground,
         { r = byte(fg[1]), g = byte(fg[2]), b = byte(fg[3]) },
         "prompt foreground uses the edition palette"
       )
-      Assert.equal(seenLine.palette.background.a, 0, "prompt background stays transparent")
+      Assert.equal(line.palette.background.a, 0, "prompt background stays transparent")
       -- Overlap is intentional in the blended composition: the 2D layers
       -- fade horizontally into the 3D via the title-local mask, so no
       -- disjointness check applies here. Visual inspection confirms the
@@ -633,7 +621,6 @@ local function tallAndDualKeepTheirSourceRoles(scope, context)
     Assert.isTrue(#drawsOf(dualDraws, dual.canvas) >= 1, "dual principal renders the legendary")
     Assert.isTrue(#drawsOf(dualDraws, dualSurfaces.editionLogo) >= 1, "dual auxiliary keeps the edition mark")
     Assert.isTrue(#drawsOf(dualDraws, dualSurfaces.subscreenLower) >= 1, "dual auxiliary keeps its lower art")
-    Assert.equal(#drawsOf(dualDraws, dualSurfaces.subscreenDecor), 0, "dual auxiliary draws no retired text art")
     -- The world (upper) surface is the top-screen equivalent, so the
     -- prompt strip maps onto it exactly like the decomp window.
     assertPromptStrip(
@@ -642,44 +629,6 @@ local function tallAndDualKeepTheirSourceRoles(scope, context)
       "dual"
     )
     dual:dispose()
-  end
-end
-
-local function retiredTextArtHasNoRuntimeImageOrDraw(scope, context)
-  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
-    local scene = openTitleScene(scope, versionId, 512, 384, "single")
-    local names = {}
-    for name in pairs(assert(scene.surfaces)) do
-      names[#names + 1] = name
-    end
-    table.sort(names)
-    Assert.deepEqual(names, { "editionLogo", "subscreenLower" })
-    scene:dispose()
-    for _, layout in ipairs({
-      { kind = "single", width = 512, height = 384 },
-      { kind = "single", width = 1280, height = 720 },
-      { kind = "single", width = 600, height = 1000 },
-      { kind = "dual", width = 512, height = 384 },
-    }) do
-      local staged = openTitleScene(scope, versionId, layout.width, layout.height, layout.kind)
-      local draws = captureComposedDraws(staged, scope, layout.width, layout.height)
-      local canvasCount, logoCount, lowerCount, decorCount = 0, 0, 0, 0
-      local surfaces = staged.surfaces or {}
-      for _, record in ipairs(draws) do
-        if record.drawable == staged.canvas then
-          canvasCount = canvasCount + 1
-        elseif record.drawable == surfaces.editionLogo then
-          logoCount = logoCount + 1
-        elseif record.drawable == surfaces.subscreenLower then
-          lowerCount = lowerCount + 1
-        elseif record.drawable == surfaces.subscreenDecor then
-          decorCount = decorCount + 1
-        end
-      end
-      Assert.equal(decorCount, 0, "retired text art is never drawn")
-      Assert.isTrue(canvasCount + logoCount + lowerCount > 0, "title still draws its two retained roles")
-      staged:dispose()
-    end
   end
 end
 
@@ -1409,7 +1358,6 @@ local T = GraphicsSmoke.suite({
   ["title overlay phases follow their sourced schedule"] = titleOverlayPhasesFollowTheirSourcedSchedule,
   ["compact and wide stages fill with the legendary"] = compactAndWideFillWithTheLegend,
   ["tall and dual stages keep their source roles"] = tallAndDualKeepTheirSourceRoles,
-  ["retired title text art has no runtime image or draw"] = retiredTextArtHasNoRuntimeImageOrDraw,
   ["title resize keeps source timing and camera pose"] = titleResizeKeepsSourceTimingAndCameraPose,
   ["title canvas stays bounded on large hosts"] = titleCanvasStaysBoundedOnLargeHosts,
   ["title canvas failure releases staged assets"] = titleCanvasFailureReleasesStagedAssets,

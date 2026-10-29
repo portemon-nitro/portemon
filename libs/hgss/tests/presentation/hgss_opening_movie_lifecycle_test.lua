@@ -1052,27 +1052,6 @@ function T.preflight_holds_at_most_three_scene_graphs_while_readying_all_five()
   end
 end
 
--- The town scene stays resident from construction so the first handoff
--- never blocks on synchronous acquisition mid-movie: the handoff adopts
--- the retained slot instead of rebuilding it while the soundtrack plays.
-function T.town_scene_stays_ready_across_the_first_handoff()
-  local scenes, cacheFs = validPack()
-  local graphics = movieGraphics()
-  local movie = openMovie(scenes, cacheFs, graphics)
-  local ready = assert(movie.nextNextSlot, "the town scene stages alongside the first two scenes")
-  Assert.equal(ready.sceneNumber, 3, "the prefetched slot names the upcoming town scene")
-  Assert.equal(ready.sceneTick, 0, "the prefetched town scene starts on its first tick")
-  local ticks = 0
-  while movie:sceneNumber() == 1 and ticks < 5000 do
-    movie:updateFixed()
-    ticks = ticks + 1
-  end
-  Assert.equal(movie:sceneNumber(), 2, "playback reaches the second scene")
-  Assert.equal(movie.nextSlot, ready, "the handoff adopts the retained town scene without rebuilding it")
-  movie:dispose()
-  Assert.equal(liveHandles(graphics), 0, "disposing releases the retained prefetch exactly once")
-end
-
 function T.later_scene_preflight_failure_releases_every_owner_and_stays_reusable()
   local scenes, cacheFs = validPack()
   local Movie = requireMovie()

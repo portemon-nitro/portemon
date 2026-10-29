@@ -90,14 +90,15 @@ function T.tests.sound_frames_follow_the_retail_display_cadence_not_thirty_hertz
   local audio, events = composition()
   local session = StartupAudioSession.new({ versionId = "heartgold", audioComposition = audio })
   -- Ten host seconds at 60 Hz advance the sound frame on the HGSS source
-  -- tick, so the count follows the retail main-loop cadence rather than the
-  -- one-per-host-frame count a nominal 30 Hz clock would produce.
+  -- tick (half the ~59.826 Hz DS refresh, about 29.913 Hz), so the count
+  -- is floor(10 * 29.913) = 299: a nominal 30 Hz clock would produce 300
+  -- and drift against the sequencer. Pin the literal count so the test
+  -- fails if the session ever stops honoring SourceTick.DT.
   local hostFrames = 600
-  local hostSeconds = hostFrames / 60
   for _ = 1, hostFrames do
     session:update(1 / 60)
   end
-  Assert.equal(#events, math.floor(hostSeconds / SourceTick.DT), "the sound frame keeps the retail main-loop cadence")
+  Assert.equal(#events, 299, "the sound frame keeps the retail main-loop cadence")
   session:dispose()
 end
 
