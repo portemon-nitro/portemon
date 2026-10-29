@@ -14,6 +14,7 @@
 -- the generated files, never this module. Pure module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
+local ffi = require("ffi")
 local Hashing = require("romdump.src.digest.Hashing")
 local PngWriter = require("romdump.src.digest.PngEncoder")
 local Lz10 = require("romdump.src.digest.Lz10")
@@ -48,15 +49,6 @@ local function must(value, err)
   return value
 end
 
-local function concatChars(chars)
-  -- string.char/unpack are limited by the Lua stack; build in row chunks.
-  local out = {}
-  for i = 1, #chars, 4096 do
-    out[#out + 1] = string.char(unpack(chars, i, math.min(i + 4095, #chars)))
-  end
-  return table.concat(out)
-end
-
 -- Decode a member that may be LZ10-wrapped.
 ---@param archive Narc
 ---@param memberId integer
@@ -74,38 +66,29 @@ local function decodeMember(archive, memberId, label)
   return bytes
 end
 
--- Authoritative raw source-pixel reader: one interpretation of 4bpp/8bpp
--- tile data shared by ordinary blits. 4bpp
--- tiles hold two pixel values per byte (low nibble first); 8bpp tiles hold
--- one. A tile index beyond the decoded tiles is malformed source, never
--- silent transparency. `source` names the asset/member/cell/obj that
--- produced the reference for the typed error context.
----@param charData FieldUiCompiler.CharData
----@param tileIndex integer
----@param x integer
----@param y integer
----@param source FieldUiCompiler.SourceRef
----@return integer
-local function tilePixelIndex(charData, tileIndex, x, y, source)
-  local depth = charData.depth
-  local tileBytes = depth == 3 and 32 or 64
-  local tileCount = math.floor(#charData.tiles / tileBytes)
-  if tileIndex < 0 or tileIndex >= tileCount then
-    Errors.raise(
-      FieldUiCompiler.ERROR.SOURCE_INVALID,
-      "tile reference exceeds the decoded char data",
-      { tile = tileIndex, available = tileCount, source = source }
-    )
+-- Bounds for one raster surface: decoded field-UI geometry is tiny (a DS
+-- screen is 256x192), so a 64 MiB RGBA budget accepts every legitimate
+-- surface while rejecting dimension/overflow abuse before any typed
+-- allocation.
+local MAX_RASTER_BYTES = 64 * 1024 * 1024
+
+local function validateDimensions(width, height)
+  if
+    type(width) ~= "number"
+    or type(height) ~= "number"
+    or width ~= width
+    or height ~= height
+    or width ~= math.floor(width)
+    or height ~= math.floor(height)
+    or width < 0
+    or height < 0
+    or width * height * 4 > MAX_RASTER_BYTES
+  then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "raster dimensions are invalid", {
+      width = width,
+      height = height,
+    })
   end
-  local base = tileIndex * tileBytes
-  if depth == 3 then
-    local byte = string.byte(charData.tiles, base + y * 4 + math.floor(x / 2) + 1)
-    if x % 2 == 0 then
-      return byte % 16
-    end
-    return math.floor(byte / 16)
-  end
-  return string.byte(charData.tiles, base + y * 8 + x + 1)
 end
 
 -- Blit one tile's pixels into an RGBA buffer. Pixel value 0 is
@@ -117,8 +100,37 @@ end
 -- cannot cover, is malformed source, never silent transparency.
 -- `source` names the asset/member/cell/obj that produced the reference for
 -- the typed error context.
-local function blitTile(rgba, atlasWidth, destX, destY, charData, tileIndex, palIndex, colors, flipH, flipV, source)
+local function blitTile(
+  rgba,
+  pixelBytes,
+  atlasWidth,
+  destX,
+  destY,
+  charData,
+  tileIndex,
+  palIndex,
+  colors,
+  flipH,
+  flipV,
+  source
+)
   local depth = charData.depth
+  local tileBytes = depth == 3 and 32 or 64
+  local tileCount = math.floor(#charData.tiles / tileBytes)
+  if tileIndex < 0 or tileIndex >= tileCount then
+    Errors.raise(
+      FieldUiCompiler.ERROR.SOURCE_INVALID,
+      "tile reference exceeds the decoded char data",
+      { tile = tileIndex, available = tileCount, source = source }
+    )
+  end
+  local base = tileIndex * tileBytes
+  -- Borrow the tile bytes through a typed view; charData (and therefore
+  -- its tile string) outlives this call, so the pointer never dangles.
+  -- 4bpp tiles hold two pixel values per byte (low nibble first); 8bpp
+  -- tiles hold one.
+  local tileString = charData.tiles
+  local bytes = ffi.cast("const uint8_t *", tileString)
   local palBase = depth == 3 and palIndex * 16 or palIndex * 256
   local function put(x, y, v)
     if v == 0 then
@@ -139,21 +151,40 @@ local function blitTile(rgba, atlasWidth, destX, destY, charData, tileIndex, pal
       y = 7 - y
     end
     local px = ((destY + y) * atlasWidth + destX + x) * 4
-    rgba[px + 1], rgba[px + 2], rgba[px + 3], rgba[px + 4] = c.r, c.g, c.b, 255
+    if px < 0 or px + 3 >= pixelBytes then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "pixel falls outside the raster destination", {
+        source = source,
+      })
+    end
+    rgba[px], rgba[px + 1], rgba[px + 2], rgba[px + 3] = c.r, c.g, c.b, 255
   end
   for y = 0, 7 do
     for x = 0, 7 do
-      put(x, y, tilePixelIndex(charData, tileIndex, x, y, source))
+      local v
+      if depth == 3 then
+        local byte = bytes[base + y * 4 + math.floor(x / 2)]
+        if x % 2 == 0 then
+          v = byte % 16
+        else
+          v = math.floor(byte / 16)
+        end
+      else
+        v = bytes[base + y * 8 + x]
+      end
+      put(x, y, v)
     end
   end
 end
 
+-- Fresh transparent-black RGBA backing for one render. The caller keeps the
+-- returned cdata alive until the single ffi.string conversion at its own
+-- return boundary; no pointer escapes this module.
 local function newRgba(width, height)
-  local rgba = {}
-  for i = 1, width * height * 4 do
-    rgba[i] = 0
-  end
-  return rgba
+  validateDimensions(width, height)
+  local bytes = width * height * 4
+  local rgba = ffi.new("uint8_t[?]", bytes)
+  ffi.fill(rgba, bytes, 0)
+  return rgba, bytes
 end
 
 -- Compose one 16x16 continuation phase the way the source window code
@@ -161,7 +192,18 @@ end
 -- cursor payload is blitted from source columns 3..15 onto destination
 -- columns 0..12 with palette index 0 transparent. The phase block holds
 -- its 2x2 tiles row-major, so source column 3 starts mid-tile.
-local function blitCursorPayload(rgba, atlasWidth, destX, destY, cursorChar, phase, palIndex, colors, source)
+local function blitCursorPayload(
+  rgba,
+  pixelBytes,
+  atlasWidth,
+  destX,
+  destY,
+  cursorChar,
+  phase,
+  palIndex,
+  colors,
+  source
+)
   local depth = cursorChar.depth
   local tileBytes = depth == 3 and 32 or 64
   local tileCount = math.floor(#cursorChar.tiles / tileBytes)
@@ -173,6 +215,10 @@ local function blitCursorPayload(rgba, atlasWidth, destX, destY, cursorChar, pha
       { phase = phase, available = tileCount, source = source }
     )
   end
+  -- Borrow the cursor tile bytes through a typed view; cursorChar (and
+  -- therefore its tile string) outlives this call.
+  local tileString = cursorChar.tiles
+  local bytes = ffi.cast("const uint8_t *", tileString)
   local palBase = depth == 3 and palIndex * 16 or palIndex * 256
   for y = 0, 15 do
     for dx = 0, 12 do
@@ -182,14 +228,14 @@ local function blitCursorPayload(rgba, atlasWidth, destX, destY, cursorChar, pha
       local base = tile * tileBytes
       local v
       if depth == 3 then
-        local byte = string.byte(cursorChar.tiles, base + ly * 4 + math.floor(lx / 2) + 1)
+        local byte = bytes[base + ly * 4 + math.floor(lx / 2)]
         if lx % 2 == 0 then
           v = byte % 16
         else
           v = math.floor(byte / 16)
         end
       else
-        v = string.byte(cursorChar.tiles, base + ly * 8 + lx + 1)
+        v = bytes[base + ly * 8 + lx]
       end
       if v ~= 0 then
         local c = colors[palBase + v + 1]
@@ -201,7 +247,12 @@ local function blitCursorPayload(rgba, atlasWidth, destX, destY, cursorChar, pha
           )
         end
         local px = ((destY + y) * atlasWidth + destX + dx) * 4
-        rgba[px + 1], rgba[px + 2], rgba[px + 3], rgba[px + 4] = c.r, c.g, c.b, 255
+        if px < 0 or px + 3 >= pixelBytes then
+          Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "pixel falls outside the raster destination", {
+            source = source,
+          })
+        end
+        rgba[px], rgba[px + 1], rgba[px + 2], rgba[px + 3] = c.r, c.g, c.b, 255
       end
     end
   end
@@ -210,12 +261,36 @@ end
 -- Compose the 16x16 continuation surface exactly as the source window code
 -- does: the cursor member supplies the phase payload, while frame tiles 10
 -- and 11 provide the backing that surrounds that payload.
-local function composeCursorPhase(rgba, atlasWidth, destX, destY, frameChar, framePalette, cursorChar, phase, source)
+local function composeCursorPhase(
+  rgba,
+  pixelBytes,
+  atlasWidth,
+  destX,
+  destY,
+  frameChar,
+  framePalette,
+  cursorChar,
+  phase,
+  source
+)
   for row = 0, 1 do
-    blitTile(rgba, atlasWidth, destX, destY + row * 8, frameChar, 10, 0, framePalette, false, false, source)
-    blitTile(rgba, atlasWidth, destX + 8, destY + row * 8, frameChar, 11, 0, framePalette, false, false, source)
+    blitTile(rgba, pixelBytes, atlasWidth, destX, destY + row * 8, frameChar, 10, 0, framePalette, false, false, source)
+    blitTile(
+      rgba,
+      pixelBytes,
+      atlasWidth,
+      destX + 8,
+      destY + row * 8,
+      frameChar,
+      11,
+      0,
+      framePalette,
+      false,
+      false,
+      source
+    )
   end
-  blitCursorPayload(rgba, atlasWidth, destX, destY, cursorChar, phase, 0, framePalette, source)
+  blitCursorPayload(rgba, pixelBytes, atlasWidth, destX, destY, cursorChar, phase, 0, framePalette, source)
 end
 
 -- Render a screen (BG tilemap with flips) into a PNG. Generic decoded-tile
@@ -272,19 +347,22 @@ local function composeNamingPageWindow(image, window, role, colors, pageKey)
     })
   end
   assert(base ~= nil and alternate ~= nil, "missing keyboard window slots fail above")
-  local bytes = {}
-  do
-    local raw = image.pixels
-    for i = 1, #raw, 4096 do
-      local chunk = { string.byte(raw, i, math.min(i + 4095, #raw)) }
-      for j = 1, #chunk do
-        bytes[#bytes + 1] = chunk[j]
-      end
-    end
+  -- Stage the page in a typed buffer; image (and therefore its pixel
+  -- string) outlives this call, so the borrowed copy source never dangles.
+  if type(image.pixels) ~= "string" or #image.pixels ~= image.width * image.height * 4 then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming page raster is malformed", { page = pageKey })
   end
+  local pixelBytes = #image.pixels
+  local bytes = ffi.new("uint8_t[?]", pixelBytes)
+  ffi.copy(bytes, image.pixels, pixelBytes)
   local function setPixel(x, y, color)
     local offset = (y * image.width + x) * 4
-    bytes[offset + 1], bytes[offset + 2], bytes[offset + 3], bytes[offset + 4] = color.r, color.g, color.b, 255
+    if offset < 0 or offset + 3 >= pixelBytes then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming keyboard fill falls outside its page", {
+        page = pageKey,
+      })
+    end
+    bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3] = color.r, color.g, color.b, 255
   end
   for y = window.y, window.y + window.height - 1 do
     for x = window.x, window.x + window.width - 1 do
@@ -302,7 +380,7 @@ local function composeNamingPageWindow(image, window, role, colors, pageKey)
       end
     end
   end
-  return PngWriter.encode(image.width, image.height, concatChars(bytes))
+  return PngWriter.encode(image.width, image.height, ffi.string(bytes, pixelBytes))
 end
 
 ---@param romFs RomFs
@@ -926,7 +1004,7 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
   -- other count is malformed source the renderer could never place.
   local atlasWidth = FieldUiAssetCache.GEOMETRY.FRAME_TILES * 8
   local atlasHeight = (cfg.frameCount + 1) * 8
-  local rgba = newRgba(atlasWidth, atlasHeight)
+  local rgba, pixelBytes = newRgba(atlasWidth, atlasHeight)
   local frameTiles = {}
   local palettes = {}
   local cursorCharBytes = decodeMember(archive, cfg.continueCursorMember, "dialogue continuation cursor")
@@ -934,7 +1012,7 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
   cursorChar = must(cursorChar, cursorErr)
   local cursorWidth = 48
   local cursorHeight = cfg.frameCount * 16
-  local cursorRgba = newRgba(cursorWidth, cursorHeight)
+  local cursorRgba, cursorPixelBytes = newRgba(cursorWidth, cursorHeight)
   for frame = 0, cfg.frameCount - 1 do
     local frameCharBytes = decodeMember(archive, cfg.firstFrameMember + frame, "frame " .. frame .. " char")
     local framePalBytes = decodeMember(archive, cfg.firstPaletteMember + frame, "frame " .. frame .. " palette")
@@ -962,7 +1040,7 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
       )
     end
     for tile = 0, tiles - 1 do
-      blitTile(rgba, atlasWidth, tile * 8, frame * 8, frameChar, tile, 0, framePal.colors, false, false, {
+      blitTile(rgba, pixelBytes, atlasWidth, tile * 8, frame * 8, frameChar, tile, 0, framePal.colors, false, false, {
         asset = "dialogue frame " .. frame,
         member = cfg.firstFrameMember + frame,
       })
@@ -970,6 +1048,7 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
     for phase = 0, 2 do
       composeCursorPhase(
         cursorRgba,
+        cursorPixelBytes,
         cursorWidth,
         phase * 16,
         frame * 16,
@@ -1029,10 +1108,23 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
   end
   local standardY = cfg.frameCount * 8
   for tile = 0, standardTileCount - 1 do
-    blitTile(rgba, atlasWidth, tile * 8, standardY, standardChar, tile, 0, standardPalette.colors, false, false, {
-      asset = "standard Yes/No frame",
-      member = cfg.standardFrameMember,
-    })
+    blitTile(
+      rgba,
+      pixelBytes,
+      atlasWidth,
+      tile * 8,
+      standardY,
+      standardChar,
+      tile,
+      0,
+      standardPalette.colors,
+      false,
+      false,
+      {
+        asset = "standard Yes/No frame",
+        member = cfg.standardFrameMember,
+      }
+    )
   end
   local standardFramePalette = {}
   for slot = 0, 15 do
@@ -1046,11 +1138,11 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
     name = manifestConfig.dialogueFrames.alias .. ":palette:" .. cfg.standardPaletteMember,
     sha1 = sha1hex(standardPaletteBytes),
   }
-  assets[tilesPath] = PngWriter.encode(atlasWidth, atlasHeight, concatChars(rgba))
+  assets[tilesPath] = PngWriter.encode(atlasWidth, atlasHeight, ffi.string(rgba, pixelBytes))
   manifestAssets[FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES] =
     { image = tilesPath, width = atlasWidth, height = atlasHeight }
   local cursorPath = FieldUiAssetCache.assetDir() .. "/dialogue-continue-cursor.png"
-  assets[cursorPath] = PngWriter.encode(cursorWidth, cursorHeight, concatChars(cursorRgba))
+  assets[cursorPath] = PngWriter.encode(cursorWidth, cursorHeight, ffi.string(cursorRgba, cursorPixelBytes))
   manifestAssets[FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR] =
     { image = cursorPath, width = cursorWidth, height = cursorHeight }
   deps[#deps + 1] = { name = manifestConfig.dialogueFrames.alias .. ":narc", sha1 = sha1hex(archiveBytes) }
@@ -1147,7 +1239,7 @@ local function compileSignposts(romFs, sha1hex, deps, assets, manifestAssets)
   local frameRowYs = {}
   local frameAtlasHeight = #cfg.sourceTypes * 8
   local frameAtlasWidth = frameTiles * 8
-  local frameRgba = newRgba(frameAtlasWidth, frameAtlasHeight)
+  local frameRgba, framePixelBytes = newRgba(frameAtlasWidth, frameAtlasHeight)
 
   for rowIndex, sourceType in ipairs(cfg.sourceTypes) do
     local paletteOneBasedArray = paletteAsOneBasedArray(signPaletteBank(framePal.colors, sourceType))
@@ -1155,6 +1247,7 @@ local function compileSignposts(romFs, sha1hex, deps, assets, manifestAssets)
     for tile = 0, frameTiles - 1 do
       blitTile(
         frameRgba,
+        framePixelBytes,
         frameAtlasWidth,
         tile * 8,
         (rowIndex - 1) * 8,
@@ -1176,7 +1269,7 @@ local function compileSignposts(romFs, sha1hex, deps, assets, manifestAssets)
   end
 
   local framePath = FieldUiAssetCache.assetDir() .. "/signpost-tiles.png"
-  assets[framePath] = PngWriter.encode(frameAtlasWidth, frameAtlasHeight, concatChars(frameRgba))
+  assets[framePath] = PngWriter.encode(frameAtlasWidth, frameAtlasHeight, ffi.string(frameRgba, framePixelBytes))
   manifestAssets[FieldUiAssetCache.ASSET.SIGNPOST_TILES] =
     { image = framePath, width = frameAtlasWidth, height = frameAtlasHeight }
 
@@ -1226,7 +1319,7 @@ local function compileSignposts(romFs, sha1hex, deps, assets, manifestAssets)
   local finalWidth = FieldUiAssetCache.GEOMETRY.WAYFINDING_WIDTH
   local finalHeight = FieldUiAssetCache.GEOMETRY.WAYFINDING_HEIGHT
   local atlasHeight = #rows * finalHeight
-  local rgba = newRgba(finalWidth, atlasHeight)
+  local rgba, wayfindingPixelBytes = newRgba(finalWidth, atlasHeight)
   for index, row in ipairs(rows) do
     local wfChar = row.char
     local paletteOneBasedArray = paletteAsOneBasedArray(signPaletteBank(framePal.colors, row.sourceType))
@@ -1236,6 +1329,7 @@ local function compileSignposts(romFs, sha1hex, deps, assets, manifestAssets)
       local destRow = math.floor(tile / FieldUiAssetCache.GEOMETRY.WAYFINDING_COLUMNS)
       blitTile(
         rgba,
+        wayfindingPixelBytes,
         finalWidth,
         destCol * 8,
         (index - 1) * finalHeight + destRow * 8,
@@ -1257,7 +1351,7 @@ local function compileSignposts(romFs, sha1hex, deps, assets, manifestAssets)
       sha1 = sha1hex(row.bytes),
     }
   end
-  assets[wayfindingPath] = PngWriter.encode(finalWidth, atlasHeight, concatChars(rgba))
+  assets[wayfindingPath] = PngWriter.encode(finalWidth, atlasHeight, ffi.string(rgba, wayfindingPixelBytes))
   manifestAssets[FieldUiAssetCache.ASSET.SIGNPOST_WAYFINDING] =
     { image = wayfindingPath, width = finalWidth, height = atlasHeight }
 
@@ -1581,17 +1675,26 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
       atlasWidth = atlasWidth + frame.width
       atlasHeight = math.max(atlasHeight, frame.height)
     end
-    local rows = {}
-    for y = 0, atlasHeight - 1 do
-      for _, frame in ipairs(frames) do
-        if y < frame.height then
-          rows[#rows + 1] = frame.pixels:sub(y * frame.width * 4 + 1, (y + 1) * frame.width * 4)
-        else
-          rows[#rows + 1] = string.rep(string.char(0, 0, 0, 0), frame.width)
-        end
+    validateDimensions(atlasWidth, atlasHeight)
+    local pixelBytes = atlasWidth * atlasHeight * 4
+    local atlas = ffi.new("uint8_t[?]", pixelBytes)
+    ffi.fill(atlas, pixelBytes, 0)
+    local x = 0
+    for _, frame in ipairs(frames) do
+      -- Frames come from the shared cell rasterizer above, which always
+      -- produces one RGBA tuple per pixel; frame stays rooted here while
+      -- the borrowed view is consumed.
+      if type(frame.pixels) ~= "string" or #frame.pixels ~= frame.width * frame.height * 4 then
+        Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming animation frame is malformed", {})
       end
+      local source = ffi.cast("const uint8_t *", frame.pixels)
+      local rowBytes = frame.width * 4
+      for y = 0, frame.height - 1 do
+        ffi.copy(atlas + (y * atlasWidth + x) * 4, source + y * rowBytes, rowBytes)
+      end
+      x = x + frame.width
     end
-    return PngWriter.encode(atlasWidth, atlasHeight, table.concat(rows)), atlasWidth, atlasHeight
+    return PngWriter.encode(atlasWidth, atlasHeight, ffi.string(atlas, pixelBytes)), atlasWidth, atlasHeight
   end
 
   -- The synthetic pulse palette: absolute source palette entry 29 renders
@@ -1607,16 +1710,25 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
   end
 
   local function maskPixels(pixels)
-    local out = {}
-    for index = 1, #pixels, 4 do
-      local r, g, b, a = string.byte(pixels, index, index + 3)
-      if r == 255 and g == 255 and b == 255 and a == 255 then
-        out[#out + 1] = string.char(255, 255, 255, 255)
-      else
-        out[#out + 1] = string.char(0, 0, 0, 0)
+    if type(pixels) ~= "string" or #pixels % 4 ~= 0 then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming pulse source is malformed", {})
+    end
+    -- pixels stays rooted here while the borrowed view is consumed.
+    local source = ffi.cast("const uint8_t *", pixels)
+    local mask = ffi.new("uint8_t[?]", #pixels)
+    ffi.fill(mask, #pixels, 0)
+    for index = 0, math.floor(#pixels / 4) - 1 do
+      local offset = index * 4
+      if
+        source[offset] == 255
+        and source[offset + 1] == 255
+        and source[offset + 2] == 255
+        and source[offset + 3] == 255
+      then
+        mask[offset], mask[offset + 1], mask[offset + 2], mask[offset + 3] = 255, 255, 255, 255
       end
     end
-    return table.concat(out)
+    return ffi.string(mask, #pixels)
   end
 
   -- Publish one full semantic animation: every decoded source frame in

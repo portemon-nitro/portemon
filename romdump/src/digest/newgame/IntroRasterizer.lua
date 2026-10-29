@@ -1,6 +1,7 @@
 -- Rasterizes decoded intro character, screen, cell, and animation resources.
 
 local Errors = require("libs.errors.src.Errors")
+local ffi = require("ffi")
 
 local IntroRasterizer = {}
 local SOURCE_INVALID = "INTRO_SOURCE_INVALID"
@@ -9,27 +10,35 @@ local function sourceError(message, context)
   Errors.raise(SOURCE_INVALID, message, context or {})
 end
 
-local function byteAt(bytes, offset)
-  return string.byte(bytes, offset --[[@as integer]])
-end
+-- Bounds for one raster surface: decoded intro geometry is tiny (one tile
+-- row is 128x8), so a 64 MiB RGBA budget accepts every legitimate surface
+-- while rejecting dimension/overflow abuse before any typed allocation.
+local MAX_RASTER_BYTES = 64 * 1024 * 1024
 
+-- Fresh transparent-black RGBA backing for one render. The caller keeps the
+-- returned cdata alive until the single ffi.string conversion at its own
+-- return boundary; no pointer escapes this module.
 local function newRgba(width, height)
-  local rgba = {}
-  for index = 1, width * height * 4 do
-    rgba[index] = 0
+  if
+    type(width) ~= "number"
+    or type(height) ~= "number"
+    or width ~= width
+    or height ~= height
+    or width ~= math.floor(width)
+    or height ~= math.floor(height)
+    or width < 0
+    or height < 0
+    or width * height * 4 > MAX_RASTER_BYTES
+  then
+    sourceError("intro raster dimensions are invalid", { width = width, height = height })
   end
-  return rgba
+  local bytes = width * height * 4
+  local rgba = ffi.new("uint8_t[?]", bytes)
+  ffi.fill(rgba, bytes, 0)
+  return rgba, bytes
 end
 
-local function concatBytes(bytes)
-  local out = {}
-  for index = 1, #bytes, 4096 do
-    out[#out + 1] = string.char(unpack(bytes, index, math.min(index + 4095, #bytes)))
-  end
-  return table.concat(out)
-end
-
-local function blitTile(rgba, width, char, x, y, tileIndex, palette, paletteBank, flipH, flipV)
+local function blitTile(rgba, pixelBytes, width, char, x, y, tileIndex, palette, paletteBank, flipH, flipV)
   local tileBytes = char.depth == 3 and 32 or 64
   local tileCount = #char.tiles / tileBytes
   if tileIndex < 0 or tileIndex >= tileCount then
@@ -39,6 +48,17 @@ local function blitTile(rgba, width, char, x, y, tileIndex, palette, paletteBank
       sourceOffset = tileIndex * tileBytes,
     })
   end
+  local base = tileIndex * tileBytes
+  if base + tileBytes > #char.tiles then
+    sourceError("intro tile reference exceeds source char data", {
+      tile = tileIndex,
+      available = tileCount,
+      sourceOffset = base,
+    })
+  end
+  -- Borrow the tile bytes through a typed view; char (and therefore its
+  -- tile string) outlives this call, so the pointer never dangles.
+  local tiles = ffi.cast("const uint8_t *", char.tiles)
   local function put(px, py, value)
     if value == 0 then
       return
@@ -54,13 +74,15 @@ local function blitTile(rgba, width, char, x, y, tileIndex, palette, paletteBank
     local targetX = flipH and 7 - px or px
     local targetY = flipV and 7 - py or py
     local offset = ((y + targetY) * width + x + targetX) * 4
-    rgba[offset + 1], rgba[offset + 2], rgba[offset + 3], rgba[offset + 4] = color.r, color.g, color.b, 255
+    if offset < 0 or offset + 3 >= pixelBytes then
+      sourceError("intro pixel falls outside the raster destination", { offset = offset })
+    end
+    rgba[offset], rgba[offset + 1], rgba[offset + 2], rgba[offset + 3] = color.r, color.g, color.b, 255
   end
-  local base = tileIndex * tileBytes
   if char.depth == 3 then
     for row = 0, 7 do
       for column = 0, 3 do
-        local value = string.byte(char.tiles, base + row * 4 + column + 1)
+        local value = tiles[base + row * 4 + column]
         put(column * 2, row, value % 16)
         put(column * 2 + 1, row, math.floor(value / 16))
       end
@@ -68,7 +90,7 @@ local function blitTile(rgba, width, char, x, y, tileIndex, palette, paletteBank
   else
     for row = 0, 7 do
       for column = 0, 7 do
-        put(column, row, string.byte(char.tiles, base + row * 8 + column + 1))
+        put(column, row, tiles[base + row * 8 + column])
       end
     end
   end
@@ -82,11 +104,11 @@ function IntroRasterizer.renderChar(char, palette)
   local tileCount = #char.tiles / tileBytes
   local width = 16 * 8
   local height = math.ceil(tileCount / 16) * 8
-  local rgba = newRgba(width, height)
+  local rgba, pixelBytes = newRgba(width, height)
   for tile = 0, tileCount - 1 do
-    blitTile(rgba, width, char, tile % 16 * 8, math.floor(tile / 16) * 8, tile, palette)
+    blitTile(rgba, pixelBytes, width, char, tile % 16 * 8, math.floor(tile / 16) * 8, tile, palette)
   end
-  return { width = width, height = height, rgba = concatBytes(rgba) }
+  return { width = width, height = height, rgba = ffi.string(rgba, pixelBytes) }
 end
 
 ---@param char table<string, unknown>
@@ -95,13 +117,14 @@ end
 ---@param paletteBankOverride integer|nil
 ---@return table<string, unknown>
 function IntroRasterizer.renderScreen(char, palette, screen, paletteBankOverride)
-  local rgba = newRgba(screen.width, screen.height)
+  local rgba, pixelBytes = newRgba(screen.width, screen.height)
   local columns = screen.width / 8
   for row = 0, screen.height / 8 - 1 do
     for column = 0, columns - 1 do
       local entry = screen.entries[row * columns + column + 1]
       blitTile(
         rgba,
+        pixelBytes,
         screen.width,
         char,
         column * 8,
@@ -114,7 +137,7 @@ function IntroRasterizer.renderScreen(char, palette, screen, paletteBankOverride
       )
     end
   end
-  return { width = screen.width, height = screen.height, rgba = concatBytes(rgba) }
+  return { width = screen.width, height = screen.height, rgba = ffi.string(rgba, pixelBytes) }
 end
 
 local function cellBounds(cell, bounds)
@@ -132,7 +155,7 @@ local function renderCell(char, palette, cell, bounds)
   end
   local minX, minY = bounds.minX, bounds.minY
   local width, height = bounds.maxX - minX, bounds.maxY - minY
-  local rgba = newRgba(width, height)
+  local rgba, pixelBytes = newRgba(width, height)
   for _, object in ipairs(cell.objs) do
     local columns, rows = object.width / 8, object.height / 8
     for row = 0, rows - 1 do
@@ -141,6 +164,7 @@ local function renderCell(char, palette, cell, bounds)
         local tileRow = object.flipV and rows - 1 - row or row
         blitTile(
           rgba,
+          pixelBytes,
           width,
           char,
           object.x - minX + column * 8,
@@ -154,7 +178,7 @@ local function renderCell(char, palette, cell, bounds)
       end
     end
   end
-  return { width = width, height = height, rgba = concatBytes(rgba) }
+  return { width = width, height = height, rgba = ffi.string(rgba, pixelBytes) }
 end
 
 local function transformedBounds(cell, frame)
@@ -179,8 +203,16 @@ local function transformedBounds(cell, frame)
   return cellB, { minX = minX, minY = minY, maxX = maxX, maxY = maxY }
 end
 
-local function copyTransformed(rgba, width, height, cellImage, cellB, frame, bounds)
+local function copyTransformed(rgba, pixelBytes, width, height, cellImage, cellB, frame, bounds)
   local cellW, cellH = cellB.maxX - cellB.minX, cellB.maxY - cellB.minY
+  -- The source pixel string must hold exactly one RGBA tuple per source
+  -- pixel; renderCell above always produces that shape, and the typed reads
+  -- below rely on it. cellImage stays rooted here while the borrowed view
+  -- is consumed.
+  if type(cellImage.rgba) ~= "string" or #cellImage.rgba ~= cellW * cellH * 4 then
+    sourceError("intro animation source image is malformed", { sourceOffset = 0 })
+  end
+  local source = ffi.cast("const uint8_t *", cellImage.rgba)
   local radians = math.rad(frame.rotation)
   local cosR, sinR = math.cos(radians), math.sin(radians)
   for dy = 0, height - 1 do
@@ -192,13 +224,16 @@ local function copyTransformed(rgba, width, height, cellImage, cellB, frame, bou
       local srcY = math.floor(iy / frame.scaleY - cellB.minY + 0.5)
       if srcX >= 0 and srcX < cellW and srcY >= 0 and srcY < cellH then
         local sourceOffset = (srcY * cellW + srcX) * 4
-        local alpha = byteAt(cellImage.rgba, sourceOffset + 4)
-        if alpha ~= 0 and alpha ~= nil then
+        local alpha = source[sourceOffset + 3]
+        if alpha ~= 0 then
           local destinationOffset = (dy * width + dx) * 4
-          rgba[destinationOffset + 1] = byteAt(cellImage.rgba, sourceOffset + 1)
-          rgba[destinationOffset + 2] = byteAt(cellImage.rgba, sourceOffset + 2)
-          rgba[destinationOffset + 3] = byteAt(cellImage.rgba, sourceOffset + 3)
-          rgba[destinationOffset + 4] = alpha
+          if destinationOffset < 0 or destinationOffset + 3 >= pixelBytes then
+            sourceError("intro pixel falls outside the raster destination", { offset = destinationOffset })
+          end
+          rgba[destinationOffset] = source[sourceOffset]
+          rgba[destinationOffset + 1] = source[sourceOffset + 1]
+          rgba[destinationOffset + 2] = source[sourceOffset + 2]
+          rgba[destinationOffset + 3] = alpha
         end
       end
     end
@@ -258,7 +293,7 @@ function IntroRasterizer.renderAnimations(char, palette, cells, animation, anima
   local anchor = { x = math.max(0, math.min(width, -bounds.minX)), y = math.max(0, math.min(height, -bounds.minY)) }
   local output = {}
   for index, frame in ipairs(selectedFrames) do
-    local rgba = newRgba(width, height)
+    local rgba, pixelBytes = newRgba(width, height)
     local cellB = transformedBounds(frame.cell, frame)
     local identity = frame.translateX == 0
       and frame.translateY == 0
@@ -270,8 +305,8 @@ function IntroRasterizer.renderAnimations(char, palette, cells, animation, anima
       renderedRgba = renderCell(char, palette, frame.cell, bounds).rgba
     else
       local cellImage = renderCell(char, palette, frame.cell, cellB)
-      copyTransformed(rgba, width, height, cellImage, cellB, frame, bounds)
-      renderedRgba = concatBytes(rgba)
+      copyTransformed(rgba, pixelBytes, width, height, cellImage, cellB, frame, bounds)
+      renderedRgba = ffi.string(rgba, pixelBytes)
     end
     output[index] = {
       width = width,
