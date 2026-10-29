@@ -208,6 +208,10 @@ local function currentStepId(movie)
 end
 
 -- Ticks the movie until it plays the named step of the named scene.
+-- A scene arrival spends the retail init call plus three entry stalls
+-- before its first case runs: when the seek lands on the handoff itself,
+-- updates drain the init stalls so the caller samples the dispatched
+-- entry exactly like before.
 ---@param movie table running opening movie
 ---@param sceneNumber integer retail scene position
 ---@param stepId string authored step identity
@@ -216,6 +220,11 @@ local function advanceToSceneStep(movie, sceneNumber, stepId, budget)
   local elapsed = 0
   while elapsed < budget and not movie:isFinished() do
     if movie:sceneNumber() == sceneNumber and currentStepId(movie) == stepId then
+      local slot = assert(movie.current, "the arrived scene owns its current slot")
+      while slot.handoff ~= nil do
+        movie:updateFixed()
+        slot = assert(movie.current, "the arrived scene owns its current slot")
+      end
       return
     end
     movie:updateFixed()
@@ -328,6 +337,21 @@ local function regionLit(bytes, width, x0, x1, y0, y1)
     end
   end
   return lit / total
+end
+
+-- Peak channel value along the left edge column pair, where the scene-3
+-- Raikou panel would leak through a stale second window register.
+---@param bytes string raw RGBA bytes of the engine target
+---@return number peak sampled channel in 0..1
+local function leftEdgePeak(bytes)
+  local peak = 0
+  for y = 160, 191, 2 do
+    for x = 0, 1 do
+      local r, g, b = pixelOf(bytes, 256, x, y)
+      peak = math.max(peak, r, g, b)
+    end
+  end
+  return peak
 end
 
 local function changeFraction(before, after, width, height)
@@ -1928,39 +1952,6 @@ local function majorityColor(bytes, width, y0, y1)
   return buckets[best].r, buckets[best].g, buckets[best].b
 end
 
--- Majority color of a vertical device band on a coarse grid: solid role
--- art resolves exactly, so a band owned by one role reports that role.
----@param bytes string raw RGBA frame bytes
----@param width integer device frame width
----@param height integer device frame height
----@param x0 integer first device column in the band
----@param x1 integer last device column in the band
----@return number r, number g, number b band majority color in 0..1
-local function majorityColorColumns(bytes, width, height, x0, x1)
-  local buckets = {}
-  local order = {}
-  for y = 0, height - 1, 8 do
-    for x = x0, x1, 8 do
-      local r, g, b = pixelOf(bytes, width, x, y)
-      local key = string.format("%d:%d:%d", math.floor(r * 4 + 0.5), math.floor(g * 4 + 0.5), math.floor(b * 4 + 0.5))
-      local entry = buckets[key]
-      if entry == nil then
-        entry = { count = 0, r = r, g = g, b = b }
-        buckets[key] = entry
-        order[#order + 1] = key
-      end
-      entry.count = entry.count + 1
-    end
-  end
-  local best = nil
-  for _, key in ipairs(order) do
-    if best == nil or buckets[key].count > buckets[best].count then
-      best = key
-    end
-  end
-  return buckets[best].r, buckets[best].g, buckets[best].b
-end
-
 ---@param r1 number
 ---@param g1 number
 ---@param b1 number
@@ -2207,101 +2198,69 @@ local function paired_beats_and_flips_keep_both_source_screens_across_every_layo
       guard = guard + 1
     end
     Assert.equal(movie:sceneNumber(), 4, where .. ": playback reaches the paired scene")
+    -- Drain the init call plus three entry stalls before the first case.
+    for _ = 1, 4 do
+      movie:updateFixed()
+    end
     advance(movie, 2)
     local before = drawBytes(movie, scope, layout.width, layout.height)
     advance(movie, 20)
     local after = drawBytes(movie, scope, layout.width, layout.height)
     local width, height = layout.width, layout.height
-    -- The wide stage arranges the pair side by side, so its halves split
-    -- left/right; compact, tall, and dual stages stack them top/bottom.
-    -- Each half is sampled along the stacking axis it owns.
-    local sideBySide = layout.kind == "single" and width == 1200
-    if sideBySide then
-      local row = math.floor(height / 2)
-      local midLeft = math.floor(width * 0.3)
-      local midRight = math.floor(width * 0.7)
-      assertSamePixel(
-        before,
-        width,
-        20,
-        row,
-        midLeft,
-        row,
-        0.05,
-        where .. ": the paired beat shows no overlay band before the flip"
-      )
-      assertSamePixel(
-        after,
-        width,
-        20,
-        row,
-        midLeft,
-        row,
-        0.05,
-        where .. ": the paired beat shows no overlay band after the flip"
-      )
-      assertSamePixel(
-        before,
-        width,
-        midRight,
-        row,
-        width - 20,
-        row,
-        0.05,
-        where .. ": the paired beat shows no overlay band before the flip"
-      )
-      assertSamePixel(
-        after,
-        width,
-        midRight,
-        row,
-        width - 20,
-        row,
-        0.05,
-        where .. ": the paired beat shows no overlay band after the flip"
-      )
-    else
-      local midTop = math.floor(height * 0.2)
-      local botTop = math.floor(height * 0.7)
-      assertSamePixel(
-        before,
-        width,
-        math.floor(width / 2),
-        20,
-        math.floor(width / 2),
-        midTop,
-        0.05,
-        where .. ": the upper physical screen keeps its own role"
-      )
-      assertSamePixel(
-        before,
-        width,
-        math.floor(width / 2),
-        botTop,
-        math.floor(width / 2),
-        height - 20,
-        0.05,
-        where .. ": the lower physical screen keeps its own role"
-      )
+    -- The scene-4 pair stacks top/bottom on every stage, including wide:
+    -- the bands overlap by one black-surroundings height instead of
+    -- sitting side by side. Each half is sampled along the vertical axis
+    -- the stack owns, inside the centered image column.
+    local midTop = math.floor(height * 0.2)
+    local botTop = math.floor(height * 0.7)
+    assertSamePixel(
+      before,
+      width,
+      math.floor(width / 2),
+      20,
+      math.floor(width / 2),
+      midTop,
+      0.05,
+      where .. ": the upper physical screen keeps its own role"
+    )
+    assertSamePixel(
+      before,
+      width,
+      math.floor(width / 2),
+      botTop,
+      math.floor(width / 2),
+      height - 20,
+      0.05,
+      where .. ": the lower physical screen keeps its own role"
+    )
+    if layout.kind == "single" and width == 1200 then
+      -- The stacked wide pair overlaps by one band height: the shared
+      -- middle rows show the lower band (it paints second), the outer rows
+      -- keep their own band, and the side bars stay black. The captured
+      -- frames are the pre- and post-flip states; the live movie has
+      -- already moved on, so it is never resampled here.
+      local upperBand, lowerBand, black = { 1, 0, 0 }, { 0, 0, 1 }, { 0, 0, 0 }
+      local probes = {
+        { before, 600, 100, upperBand, "the upper-only rows show the upper band" },
+        { before, 600, 500, lowerBand, "the lower-only rows show the lower band" },
+        { before, 600, 300, lowerBand, "the shared rows show the lower band" },
+        { before, 20, 300, black, "the side bars stay black" },
+        { after, 600, 100, lowerBand, "the upper-only rows show the flipped band" },
+        { after, 600, 500, upperBand, "the lower-only rows show the flipped band" },
+      }
+      for _, probe in ipairs(probes) do
+        local r, g, b = pixelOf(probe[1], width, probe[2], probe[3])
+        assertSameColor(r, g, b, probe[4][1], probe[4][2], probe[4][3], 0.05, where .. ": " .. probe[5])
+      end
     end
     local firstBeforeR, firstBeforeG, firstBeforeB
     local secondBeforeR, secondBeforeG, secondBeforeB
     local firstAfterR, firstAfterG, firstAfterB
     local secondAfterR, secondAfterG, secondAfterB
-    if sideBySide then
-      firstBeforeR, firstBeforeG, firstBeforeB =
-        majorityColorColumns(before, width, height, 0, math.floor(width / 2) - 1)
-      secondBeforeR, secondBeforeG, secondBeforeB =
-        majorityColorColumns(before, width, height, math.floor(width / 2), width - 1)
-      firstAfterR, firstAfterG, firstAfterB = majorityColorColumns(after, width, height, 0, math.floor(width / 2) - 1)
-      secondAfterR, secondAfterG, secondAfterB =
-        majorityColorColumns(after, width, height, math.floor(width / 2), width - 1)
-    else
-      firstBeforeR, firstBeforeG, firstBeforeB = majorityColor(before, width, 0, math.floor(height / 2) - 1)
-      secondBeforeR, secondBeforeG, secondBeforeB = majorityColor(before, width, math.floor(height / 2), height - 1)
-      firstAfterR, firstAfterG, firstAfterB = majorityColor(after, width, 0, math.floor(height / 2) - 1)
-      secondAfterR, secondAfterG, secondAfterB = majorityColor(after, width, math.floor(height / 2), height - 1)
-    end
+    firstBeforeR, firstBeforeG, firstBeforeB = majorityColor(before, width, 0, math.floor(height / 2) - 1)
+    secondBeforeR, secondBeforeG, secondBeforeB = majorityColor(before, width, math.floor(height / 2), height - 1)
+    firstAfterR, firstAfterG, firstAfterB = majorityColor(after, width, 0, math.floor(height / 2) - 1)
+    secondAfterR, secondAfterG, secondAfterB = majorityColor(after, width, math.floor(height / 2), height - 1)
     assertSameColor(
       firstBeforeR,
       firstBeforeG,
@@ -2438,8 +2397,8 @@ local function construction_fails_before_the_first_frame_unless_all_five_scenes_
   Assert.equal(afterRetry.canvases, baseline.canvases + 2, "a repaired retry retains exactly two role targets")
   Assert.equal(
     afterRetry.images,
-    baseline.images + 4,
-    "a repaired retry retains only the current and next scene graphs"
+    baseline.images + 6,
+    "a repaired retry retains the current, next, and town scene graphs"
   )
   local twinScenes, twinFs = customPack(fillerScene(5), 5, {}, gray16)
   local twin = openCompositeMovie(scope, twinScenes, twinFs, 512, 384, "single")
@@ -3073,8 +3032,13 @@ local function real_starter_flips_map_each_source_engine_onto_its_authored_host_
   Assert.equal(single.current.mainPhysical, "upper", "the cyndaquil beat maps main to upper")
   for _, layout in ipairs({
     { width = 600, height = 1000, first = { 300, 250 }, second = { 300, 750 }, name = "tall" },
-    { width = 1200, height = 600, first = { 300, 300 }, second = { 900, 300 }, name = "wide" },
-    { width = 512, height = 384, first = { 256, 96 }, second = { 256, 288 }, name = "nativeLike" },
+    -- The wide pair stacks with one band height of overlap, so both probes
+    -- sit on the centered image column: the upper-only rows map the main
+    -- texel, the lower-only rows past the shared middle map it too.
+    { width = 1200, height = 600, first = { 600, 173 }, second = { 600, 427 }, name = "wide" },
+    -- The compact pair stacks the same way at its own scale: the probes
+    -- move off the old full-frame rows onto the overlapped stack.
+    { width = 512, height = 384, first = { 256, 111 }, second = { 256, 273 }, name = "nativeLike" },
   }) do
     single:resize(layout.width, layout.height)
     Assert.equal(single:sceneNumber(), 4, layout.name .. " keeps the movie on its scene")
@@ -3255,8 +3219,10 @@ local function scene4_authored_shutters_match_source_rows_on_both_engines(scope,
     rowEdgeOf(openFirstMain, 96),
     "the revealed center holds still while the mask runs"
   )
-  advance(movie, 5)
-  Assert.equal(currentStepId(movie), "slide-in", "the open completes into its slide on step ten")
+  -- The ten-step open, then the fade cleanup and IsPaletteFadeFinished
+  -- poll calls before the slide case dispatches.
+  advance(movie, 5 + 2)
+  Assert.equal(currentStepId(movie), "slide-in", "the open completes into its slide after its fade wait")
   movie:draw()
   local openDoneMain, openDoneSub = sourceBytes(scope, movie.mainCanvas), sourceBytes(scope, movie.subCanvas)
   Assert.equal(
@@ -5127,8 +5093,12 @@ local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bot
   while movie:sceneNumber() < 5 do
     movie:updateFixed()
   end
-  -- The newly entered case first runs on the following update: the wipe
-  -- entry arms the shutter there and opens its first center step at once.
+  -- The newly entered scene spends its init call plus three entry stalls
+  -- before its first case runs: the wipe entry arms the shutter on the
+  -- following update and opens its first center step at once.
+  for _ = 1, 4 do
+    movie:updateFixed()
+  end
   movie:updateFixed()
   movie:draw()
   local mainShut = sourceBytes(scope, movie.mainCanvas)
@@ -5237,6 +5207,10 @@ local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bot
     while probe:sceneNumber() < 5 do
       probe:updateFixed()
     end
+    -- The probe spends the same init call plus three entry stalls before its wipe entry runs.
+    for _ = 1, 4 do
+      probe:updateFixed()
+    end
     advance(probe, 9)
     probe:draw()
     Assert.equal(
@@ -5305,9 +5279,9 @@ local function soulsilver_scene_two_sub_blackout_holds_while_main_pans(scope, co
   -- the settle must not release its next pan yet.
   advance(movie, 1)
   Assert.equal(currentStepId(movie), "settle-flyin", "the settle still waits while the sub fade runs past its scrolls")
-  -- Once the fade completes the next pan begins with main art showing
-  -- and sub at full black.
-  advance(movie, 3)
+  -- Once the fade completes and its cleanup and poll calls pass, the next
+  -- pan begins with main art showing and sub at full black.
+  advance(movie, 3 + 2)
   Assert.equal(currentStepId(movie), "slow-pan-ethan", "the next pan begins once the sub fade completes")
   movie:draw()
   local doneMain = sourceBytes(scope, movie.mainCanvas)
@@ -5450,7 +5424,10 @@ local function soulsilver_scene_two_final_wipe_keeps_its_source_kind_and_white_h
     movie:draw()
     local fr, fg, fb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
     assertSameColor(fr, fg, fb, 1, 1, 1, 0.08, "the finished wipe holds full white")
-    advance(movie, 3)
+    -- The completing call keeps scene two current behind its white hold
+    -- before the exit call hands over.
+    advance(movie, 1)
+    Assert.equal(movie:sceneNumber(), 2, "the completed wipe still belongs to scene two")
     movie:draw()
     local hr, hg, hb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
     assertSameColor(hr, hg, hb, 1, 1, 1, 0.08, "the white hold persists past completion")
@@ -6906,6 +6883,9 @@ local function scoped_sub_brightness_out_holds_black_while_main_stays_clear(scop
   assertSameColor(fr, fg, fb, 1, 0, 0, 0.08, "main stays clear when the sub fade completes")
   local br, bg, bb = pixelOf(sourceBytes(scope, movie.subCanvas), 256, 128, 96)
   assertSameColor(br, bg, bb, 0, 0, 0, 0.08, "sub reaches black at its final fade tick")
+  -- The brightness wait trails the fade by its two settle calls before the
+  -- step completes.
+  advance(movie, 2)
   Assert.equal(currentStepId(movie), "tail", "the named fade effect completes its step")
   advance(movie, 5)
   movie:draw()
@@ -7010,6 +6990,8 @@ local function both_engine_line_shutters_sample_source_rows_not_uniform_alpha(sc
   assertEngineRow(movie.subCanvas, 0, 1, 0, 180, true, "the open middle frame on sub")
   advance(movie, 5)
   movie:draw()
+  -- The line-shutter wait trails the ten-step open by its two settle calls.
+  advance(movie, 2)
   Assert.equal(currentStepId(movie), "close", "the open shutter completes into its close")
   assertEngineRow(movie.mainCanvas, 1, 0, 0, 8, false, "the open final frame on main")
   assertEngineRow(movie.mainCanvas, 1, 0, 0, 96, false, "the open final frame on main")
@@ -7028,7 +7010,8 @@ local function both_engine_line_shutters_sample_source_rows_not_uniform_alpha(sc
   assertEngineRow(movie.subCanvas, 0, 1, 0, 8, true, "the close middle frame on sub")
   assertEngineRow(movie.subCanvas, 0, 1, 0, 96, false, "the close middle frame on sub")
   assertEngineRow(movie.subCanvas, 0, 1, 0, 180, true, "the close middle frame on sub")
-  advance(movie, 13)
+  -- The close wait trails the twenty-six-step shutter by its two settle calls.
+  advance(movie, 15)
   movie:draw()
   Assert.equal(currentStepId(movie), "tail", "the close shutter completes into its tail")
   assertEngineRow(movie.mainCanvas, 1, 0, 0, 8, true, "the close final frame on main")
@@ -7271,7 +7254,8 @@ local function sub_engine_neutral_resets_only_the_sub_engine(scope)
   )
   local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "dual")
   advance(movie, 2)
-  advance(movie, 4)
+  -- The brightness wait trails the four-tick fade by its two settle calls.
+  advance(movie, 6)
   Assert.equal(currentStepId(movie), "flip", "the both-engine fade completes into its flip")
   movie:draw()
   local fr, fg, fb = pixelOf(sourceBytes(scope, movie.mainCanvas), 256, 128, 96)
@@ -7712,7 +7696,12 @@ function EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_
   local entered = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(entered.stepElapsed, 0, "the incoming scene has not run its first tick")
   EntryHolds.assertPhysicalEntry(entered, 3, "upper", "white", "black")
-  -- The entry tick stages the rival; the black bottom hold still covers it.
+  -- The init call plus three entry stalls hold the staged entry; the first
+  -- case then stages the rival while the black bottom hold still covers it.
+  for _ = 1, 4 do
+    movie:updateFixed()
+    Assert.equal(movie.current.stepElapsed, 0, "the init stalls run no case")
+  end
   movie:updateFixed()
   local staged = assert(movie.current, "the running movie owns its current slot")
   local silver = assert(staged.spriteInstances["silver-silhouette"], "the entry tick stages the rival instance")
@@ -7970,8 +7959,8 @@ function OcclusionCases.sample(scope, withBlend)
   local custom, art = OcclusionCases.scene(withBlend)
   local scenes, cacheFs = compositePackAt(custom, 2, art, solidPng(16, 16, 128, 128, 128))
   local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "single")
-  advance(movie, 10)
-  advance(movie, 3)
+  advanceToSceneStep(movie, 2, "hold", 20000)
+  advance(movie, 5)
   -- Source (128, 96) sits inside the lower-priority sprite under the
   -- foreground background; source (212, 96) inside the tied sprite;
   -- source (32, 160) on bare foreground background.
@@ -8260,8 +8249,8 @@ local T = GraphicsSmoke.suite({
     slot = assert(movie.current, "the running movie owns its current slot")
     Assert.equal(slot.backgrounds.main[1].scrollX, 0, "the main portrait lands centered")
     Assert.equal(slot.backgrounds.sub[1].scrollX, 0, "the sub portrait lands centered")
-    Assert.isTrue(slot.windows.main.enabled, "the main reveal stays open through the hold")
-    Assert.isTrue(slot.windows.sub.enabled, "the sub reveal stays open through the hold")
+    Assert.isTrue(slot.windows.main.visibleMask ~= 0, "the main reveal stays open through the hold")
+    Assert.isTrue(slot.windows.sub.visibleMask ~= 0, "the sub reveal stays open through the hold")
     movie:draw()
     local mainHold = sourceBytes(scope, movie.mainCanvas)
     local subHold = sourceBytes(scope, movie.subCanvas)
@@ -8296,8 +8285,8 @@ local T = GraphicsSmoke.suite({
     Assert.isTrue(slot.spriteInstances["hand2"].visible == false, "the second hand retires with the slide")
     Assert.isTrue(slot.backgrounds.main[1].visible == false, "the main portrait retires with the hands")
     Assert.isTrue(slot.backgrounds.sub[1].visible == false, "the sub portrait retires with the hands")
-    Assert.isFalse(slot.windows.main.enabled, "the main reveal closes with the hands")
-    Assert.isFalse(slot.windows.sub.enabled, "the sub reveal closes with the hands")
+    Assert.isTrue(slot.windows.main.visibleMask == 0, "the main reveal closes with the hands")
+    Assert.isTrue(slot.windows.sub.visibleMask == 0, "the sub reveal closes with the hands")
     Assert.isTrue(
       slot.spriteInstances["chikorita"].visible == true,
       "the retired slide hands off to the first starter"
@@ -8322,6 +8311,37 @@ local T = GraphicsSmoke.suite({
   ["soulsilver scene two sub blackout holds while main pans"] = soulsilver_scene_two_sub_blackout_holds_while_main_pans,
   ["soulsilver scene one sunrise shows its static sun before scrolling"] = soulsilver_scene_one_sunrise_shows_static_sun_before_scroll,
   ["soulsilver scene three closes retire town drawing before the rival reveal"] = soulsilver_scene_three_closes_retire_town_drawing_before_the_rival_reveal,
+  -- The Eusine beat narrows the sub engine to its first window, so the
+  -- stale second register must not clip the Raikou panel into the left
+  -- edge column.
+  ["soulsilver scene three eusine beat hides raikou at the left edge"] = function(scope, context)
+    if not RomImporter.isReady("soulsilver") then
+      context:skip("SoulSilver Eusine beat needs a user-owned SoulSilver ROM")
+    end
+    local movie = openMovie(scope, "soulsilver", 512, 384, "dual")
+    advanceToSceneStep(movie, 3, "sprites", 20000)
+    -- Eusine holds his pose through tick ~100 and parks offscreen by tick
+    -- 120, so the visibility sanity covers the held pose while the
+    -- edge-black assertion covers the whole beat.
+    for _, target in ipairs({ 60, 100 }) do
+      while movie.current.stepElapsed < target do
+        movie:updateFixed()
+      end
+      movie:draw()
+      local sub = sourceBytes(scope, movie.subCanvas)
+      Assert.isTrue(regionLit(sub, 256, 8, 48, 10, 150) > 0.1, "Eusine stays visible while the left edge is sampled")
+      Assert.isTrue(leftEdgePeak(sub) < 12 / 255, "no Raikou panel leaks at the left edge during the Eusine beat")
+    end
+    while movie.current.stepElapsed < 140 do
+      movie:updateFixed()
+    end
+    movie:draw()
+    Assert.isTrue(
+      leftEdgePeak(sourceBytes(scope, movie.subCanvas)) < 12 / 255,
+      "no Raikou panel leaks at the left edge after Eusine exits"
+    )
+    movie:dispose()
+  end,
   -- The source advances only the town it currently shows: sibling stages
   -- keep their staged first frame until their own show case starts, and a
   -- hidden stage freezes exactly like the retail map that stops animating
@@ -8392,6 +8412,7 @@ T.metadata.derivedAssets = {
   "opening-scene:4",
   "opening-scene:5",
   "startup-title:global",
+  "field-font:global",
 }
 T.metadata.tags = { "startup", "opening" }
 return T

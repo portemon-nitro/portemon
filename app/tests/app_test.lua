@@ -10,6 +10,7 @@ local Assert = require("tests.support.Assert")
 local RomImporter = require("romdump.src.source.RomImporter")
 local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local HgssGame = require("game.hgss.src.HgssGame")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local defaultAppBackend = ProducerFingerprint.appBackend
@@ -405,7 +406,7 @@ local function assertStagedStartupMenu(result)
     if getmetatable(App.state).__index == StartupTitleState and App.state.stagedMenu ~= nil then
       break
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
   end
   Assert.equal(getmetatable(App.state).__index, StartupTitleState, "selection remains under startup title ownership")
   Assert.equal(App.state.stagedMenu, result.menus[#result.menus], "title stages the exact product menu")
@@ -418,16 +419,24 @@ local function finishStartupTitle(result)
     if App.state.title ~= nil then
       break
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
   end
   Assert.notNil(App.state.title, "title readiness adopts the renderer before skip")
+  -- The adopted title spends the retail start-up calls behind white before
+  -- its first animation call reads input.
+  for _ = 1, 10 do
+    if App.state.titleAnimating then
+      break
+    end
+    App.update(SourceTick.DT)
+  end
   App.keypressed("return")
   for _ = 1, 80 do
     local metatable = getmetatable(App.state)
     if metatable == nil or metatable.__index ~= require("app.src.launcher.StartupTitleState") then
       break
     end
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
   end
   Assert.equal(
     App.state,

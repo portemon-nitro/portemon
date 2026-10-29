@@ -1,6 +1,6 @@
 -- Renders the generated HGSS title through the existing Nitro model renderer.
 -- The scene owns two independent transforms: the sourced camera (a fixed
--- projection with axis-stepped waypoints advanced on the 30 Hz title tick)
+-- projection with axis-stepped waypoints advanced on the source title tick)
 -- and the host composition (the safe-area stage, accent placement and draw
 -- offsets). Presentation offsets never alter the sourced camera track.
 
@@ -9,6 +9,7 @@ local DisplayContext = require("libs.ui.src.DisplayContext")
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
+local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
@@ -42,6 +43,10 @@ local Matrix4 = require("libs.math.src.Matrix4")
 ---@field disposed boolean
 ---@field layout table<string, unknown>?
 ---@field buttonBounds { x: number, y: number, width: number, height: number }?
+---@field projectionAspect number? live 3D lens aspect; wide follows its target, otherwise source 4:3
+---@field pixelRatio number? framebuffer pixels per host unit behind the blend mask
+---@field blendShader love.Shader? title-local horizontal alpha mask for the 2D layers
+---@field textRenderer FieldTextRenderer? ROM field font behind the start prompt
 local HgssTitleScene = {}
 HgssTitleScene.__index = HgssTitleScene
 
@@ -65,8 +70,36 @@ local GPU_NEAR, GPU_FAR = 1, 5000
 -- aspect and stay under the canvas cap below. The target never tracks the
 -- host window: a full-window canvas would break the field-memory budget.
 local CANVAS_HEIGHT_NATIVE = 192
-local CANVAS_HEIGHT_WIDE = 288
+-- Single-screen cinematic targets: fullscreen legendary backdrops at
+-- bounded resolutions. Wide derives its width from the live stage aspect
+-- (960x540 at 16:9); 4:3 keeps the fixed source-shaped 768x576 target.
+-- Tall keeps its source roles but renders the upper 3D at the same
+-- 540-line height so it no longer looks out of place next to them.
+local CANVAS_HEIGHT_WIDE_SINGLE = 540
+local CANVAS_HEIGHT_TALL_SINGLE = 540
+local CANVAS_HEIGHT_NATIVE_SINGLE = 576
+local CANVAS_WIDTH_NATIVE_SINGLE = 768
 local CANVAS_MAX_WIDTH, CANVAS_MAX_HEIGHT = 1024, 576
+-- Title-local horizontal blend mask: left 2D artwork stays opaque through
+-- fadeStart, then fades to transparent by fadeEnd using screen-relative
+-- fractions so the transition survives asset resizes. Color and reveal
+-- stay in the draw color; the shader only carries the spatial mask.
+local BLEND_SHADER_CODE = [[
+extern number fadeStart;
+extern number fadeEnd;
+extern number boundsX;
+extern number boundsWidth;
+vec4 effect(vec4 color, Image tex, vec2 texture_coords, vec2 screen_coords) {
+  vec4 px = Texel(tex, texture_coords);
+  number xFrac = (screen_coords.x - boundsX) / boundsWidth;
+  number m = 1.0 - smoothstep(fadeStart, fadeEnd, xFrac);
+  px.a *= m;
+  return px * color;
+}
+]]
+-- Suggested initial blend regions from the task, as fractions of screen width.
+local FADE_WIDE_START, FADE_WIDE_END = 0.27, 0.45
+local FADE_NATIVE_START, FADE_NATIVE_END = 0.27, 0.55
 local EDITION_NAMES = { heartgold = "SOULSILVER", soulsilver = "HEARTGOLD" }
 local EDITION_COLORS = {
   heartgold = { 0.79, 0.40, 0.19 },
@@ -174,11 +207,15 @@ local function copyWithAnimations(descriptor, clips)
   return copy
 end
 
-local function ownedImage(self, path, width, height)
+local function ownedImage(self, path, width, height, filter)
   local bytes = assert(self.cacheFs:read(path), "generated title image is missing: " .. path)
   local data = love.filesystem.newFileData(bytes, path)
   local image = self.graphics.newImage(data)
-  image:setFilter("nearest", "nearest")
+  if filter == "linear" then
+    image:setFilter("linear", "linear")
+  else
+    image:setFilter("nearest", "nearest")
+  end
   if width ~= nil then
     assert(image:getWidth() == width and image:getHeight() == height, "generated title surface dimensions changed")
   end
@@ -341,9 +378,19 @@ local function promptVisible(self)
   return (elapsed % flash.cycleFrames) < flash.visibleFrames
 end
 
+-- The start prompt never scales past 2x no matter how tall its strip
+-- gets: bitmap glyphs beyond that read as shouting on big displays.
+local MAX_PROMPT_SCALE = 2
+
+local function pulseShade(self)
+  -- The retail glow breathes toward RGB(12, 12, 12) rather than black
+  -- (TitleScreenAnim_RunTopScreenGlow), so the pulse stops short of
+  -- half-dark: same sourced frequency, shallower floor.
+  return 1 - 0.3 * glowLevel(self)
+end
+
 local function overlayTone(self)
-  local shade = 1 - 0.5 * glowLevel(self)
-  return shade, revealAlpha(self)
+  return pulseShade(self), revealAlpha(self)
 end
 
 ---@param options { versionId: string, cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext }
@@ -379,6 +426,10 @@ function HgssTitleScene.new(options)
     disposed = false,
     layout = nil,
     buttonBounds = nil,
+    projectionAspect = 4 / 3,
+    pixelRatio = 1,
+    blendShader = nil,
+    textRenderer = nil,
   }, HgssTitleScene)
   local ok, failure = pcall(function()
     local bundle = StartupAssetCache.loadTitle(self.cacheFs, self.versionId)
@@ -386,12 +437,20 @@ function HgssTitleScene.new(options)
     self.bundle = bundle
     self.pool = GpuAssetPool.new(self.cacheFs, { graphics = graphics })
     self.renderer = FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = graphics })
+    -- The start prompt prints with the ROM field font (font 0, the
+    -- printer the decomp selects). The title milestone always carries
+    -- the font beside the bundle, so a missing font fails loudly here
+    -- instead of falling back to a wrong system look.
+    self.textRenderer = FieldTextRenderer.new({ cacheFs = self.cacheFs, graphics = graphics })
     self.legend = buildModel(self, bundle.model, bundle.clips, "startup-title:" .. self.versionId)
     self.sparkle =
       buildModel(self, bundle.sparkle.model, bundle.sparkle.clips, "startup-title-sparkle:" .. self.versionId)
     self.surfaces = {}
     for role, surface in pairs(bundle.surfaces) do
-      self.surfaces[role] = ownedImage(self, surface.image, WIDTH, HEIGHT)
+      -- Enlarged 2D title surfaces use linear filtering for the smooth
+      -- cinematic blend; 3D model textures keep nearest filtering via
+      -- their own resolveImage path.
+      self.surfaces[role] = ownedImage(self, surface.image, WIDTH, HEIGHT, "linear")
     end
     self.sourceEnvironment = {
       lighting = bundle.lighting,
@@ -433,9 +492,12 @@ function HgssTitleScene:_camera()
     initCameraState(self)
   end
   local camera = self.bundle.timeline.camera
-  -- The sourced title lens is always the fixed source 4:3 projection:
-  -- host shape only repositions the bounded source target, never the lens.
-  local aspect = 4 / 3
+  -- The sourced title lens keeps its vertical half-angle; widescreen
+  -- cinematic targets widen the horizontal field by using the live target
+  -- aspect, while 4:3/tall/dual retain the fixed source 4:3 projection.
+  -- View animation (eye waypoints) never changes: only the projection
+  -- aspect widens, revealing more horizontal space without stretching.
+  local aspect = self.projectionAspect or (4 / 3)
   local halfAngle = (HALF_ANGLE_INDEX / 65536) * (2 * math.pi)
   -- View-space only. Source timeline coordinates remain unchanged.
   local unit = 1 / 16
@@ -559,7 +621,11 @@ end
 local function tallComposition(safe)
   local upper = { x = safe.x, y = safe.y, width = safe.width, height = safe.height / 2 }
   local lower = { x = safe.x, y = safe.y + safe.height / 2, width = safe.width, height = safe.height / 2 }
-  local canvasWidth = math.min(CANVAS_MAX_WIDTH, math.max(1, math.floor(CANVAS_HEIGHT_NATIVE * 4 / 3)))
+  -- Only the tall upper stage consumes these dimensions; the dual
+  -- auxiliary reuses this shape record for its 2D lower half while the
+  -- principal stage keeps its own bounded target.
+  local canvasHeight = math.min(CANVAS_HEIGHT_TALL_SINGLE, CANVAS_MAX_HEIGHT)
+  local canvasWidth = math.min(CANVAS_MAX_WIDTH, math.max(1, math.floor(canvasHeight * 4 / 3)))
   local integer = math.floor(math.min(lower.width / WIDTH, lower.height / HEIGHT))
   local artScale, artWidth, artHeight
   if integer >= 1 then
@@ -579,7 +645,7 @@ local function tallComposition(safe)
       height = artHeight,
     },
     canvasWidth = canvasWidth,
-    canvasHeight = CANVAS_HEIGHT_NATIVE,
+    canvasHeight = canvasHeight,
   }
 end
 
@@ -591,28 +657,171 @@ function HgssTitleScene:_drawSingleStage(composition)
   end
 end
 
+-- Ensures the title-local horizontal blend shader exists. The shader only
+-- carries the spatial mask; reveal and glow stay in the draw color so
+-- overlay-phase tests keep observing their sourced schedule via getColor.
+local function ensureBlendShader(self)
+  if self.blendShader ~= nil then
+    return self.blendShader
+  end
+  local ok, shader = pcall(self.graphics.newShader, BLEND_SHADER_CODE)
+  if not ok or shader == nil then
+    return nil
+  end
+  self.blendShader = shader
+  return shader
+end
+
+-- Single-screen cinematic composition: fullscreen 3D legendary backdrop
+-- with the 2D burst left and the text logo middle-left, blended into the
+-- 3D on the right. Geometry derives from the live safe bounds, never
+-- from hardcoded window dimensions.
+local function cinematicComposition(safe, configuration)
+  local bounds = { x = safe.x, y = safe.y, width = safe.width, height = safe.height }
+  local canvasWidth, canvasHeight, fadeStart, fadeEnd
+  local logoScale, lowerScale
+  if configuration == "wide" then
+    local aspect = safe.width / safe.height
+    canvasHeight = math.min(CANVAS_HEIGHT_WIDE_SINGLE, CANVAS_MAX_HEIGHT)
+    canvasWidth = math.max(1, math.floor(canvasHeight * aspect + 0.5))
+    if canvasWidth > CANVAS_MAX_WIDTH then
+      canvasWidth = CANVAS_MAX_WIDTH
+      canvasHeight = math.max(1, math.floor(canvasWidth / aspect + 0.5))
+    end
+    fadeStart, fadeEnd = FADE_WIDE_START, FADE_WIDE_END
+    logoScale = safe.height / HEIGHT
+    -- Compact text hugs the left edge inside the left third so the
+    -- legendary clears it; the full-height burst behind it avoids a
+    -- horizontal seam.
+    lowerScale = logoScale * 0.47
+  else
+    canvasWidth, canvasHeight = CANVAS_WIDTH_NATIVE_SINGLE, CANVAS_HEIGHT_NATIVE_SINGLE
+    fadeStart, fadeEnd = FADE_NATIVE_START, FADE_NATIVE_END
+    -- Full-height burst avoids a horizontal seam; the compact text
+    -- keeps the branding inside the left third on 4:3 too.
+    logoScale = safe.height / HEIGHT
+    lowerScale = logoScale * 0.40
+  end
+  local logoWidth, logoHeight = WIDTH * logoScale, HEIGHT * logoScale
+  -- The burst's bright core (image center) sits at 20% width, under
+  -- the text logo near the N, with the glow spilling right into the
+  -- transition. The cropped left edge stays behind the opaque
+  -- branding, so no seam shows.
+  local logo = {
+    x = safe.x + safe.width * 0.20 - logoWidth / 2,
+    y = safe.y,
+    scale = logoScale,
+    width = logoWidth,
+    height = logoHeight,
+  }
+  local lowerWidth, lowerHeight = WIDTH * lowerScale, HEIGHT * lowerScale
+  local lower = {
+    x = safe.x + safe.width * 0.01,
+    y = safe.y + (safe.height - lowerHeight) / 2,
+    scale = lowerScale,
+    width = lowerWidth,
+    height = lowerHeight,
+  }
+  -- The 3D scene begins at the fade instead of running fullscreen
+  -- behind the logo: its left edge hides under the opaque 2D art at
+  -- fadeStart and the blend reveals it through the transition. Cover
+  -- into the right sub-region centers the legendary in the visible
+  -- 3D area, pushing it right of the logo.
+  local stage3D = {
+    x = safe.x + safe.width * fadeStart,
+    y = safe.y,
+    width = safe.width * (1 - fadeStart),
+    height = safe.height,
+  }
+  return {
+    configuration = configuration,
+    bounds = bounds,
+    stageWidth = bounds.width,
+    stageHeight = bounds.height,
+    canvasWidth = canvasWidth,
+    canvasHeight = canvasHeight,
+    logo = logo,
+    lower = lower,
+    fadeStart = fadeStart,
+    fadeEnd = fadeEnd,
+    stage3D = stage3D,
+    stageShift = (stage3D.x + stage3D.width / 2) - (bounds.x + bounds.width / 2),
+    lowerPanel = false,
+  }
+end
+
+local function editionBackdrop(versionId)
+  local tint = EDITION_COLORS[versionId] or { 0.38, 0.65, 0.88 }
+  return { tint[1] * 0.12, tint[2] * 0.12, tint[3] * 0.18, 1 }
+end
+
+function HgssTitleScene:_drawCinematicSingle(composition)
+  local graphics = self.graphics
+  local surfaces = assert(self.surfaces)
+  local bounds = assert(composition.bounds, "cinematic composition has drawable bounds")
+  -- Opaque edition-tinted backdrop behind the transparent 3D target so
+  -- uncovered canvas regions never show black bands or checker.
+  local backdrop = editionBackdrop(self.versionId)
+  LogicalSurface.clip(graphics, bounds, function()
+    graphics.setColor(backdrop[1], backdrop[2], backdrop[3], 1)
+    graphics.rectangle("fill", bounds.x, bounds.y, bounds.width, bounds.height)
+  end)
+  drawStageCanvas(self, assert(composition.stage3D, "cinematic composition has a 3D stage"))
+  local shader = ensureBlendShader(self)
+  local pixelRatio = self.pixelRatio or 1
+  -- Unlike overlayTone, the cinematic blend skips the sourced reveal
+  -- fade (alpha stays 1): fading the fullscreen backdrop in over the
+  -- first second reads as a bug, while the glow pulse stays.
+  local shade, alpha = pulseShade(self), 1
+  local function drawBlended(image, geom)
+    LogicalSurface.clip(graphics, bounds, function()
+      if shader ~= nil then
+        graphics.setShader(shader)
+        shader:send("fadeStart", composition.fadeStart)
+        shader:send("fadeEnd", composition.fadeEnd)
+        shader:send("boundsX", bounds.x * pixelRatio)
+        shader:send("boundsWidth", bounds.width * pixelRatio)
+      end
+      graphics.setColor(shade, shade, shade, alpha)
+      graphics.draw(image, geom.x, geom.y, 0, geom.scale, geom.scale)
+      if shader ~= nil then
+        graphics.setShader()
+      end
+    end)
+  end
+  -- Burst background first, text logo above to preserve readability;
+  -- both share the same horizontal mask so the right side exposes the
+  -- unobstructed legendary.
+  drawBlended(surfaces.editionLogo, composition.logo)
+  drawBlended(surfaces.subscreenLower, composition.lower)
+end
+
 function HgssTitleScene:_drawTall()
   local composition = self.layout.composition
   local graphics = self.graphics
   local surfaces = assert(self.surfaces)
-  drawStageCanvas(self, composition.upper)
-  local lower = composition.lower
-  local logoScale = math.max(lower.width / WIDTH, lower.height / HEIGHT)
+  -- Swapped halves: the animated 3D legendary plays on the bottom,
+  -- the 2D edition art sits on top. Both halves are equal-sized, so
+  -- the lower-computed art remaps to the upper half by the half offset.
+  local upper, lower = composition.upper, composition.lower
+  drawStageCanvas(self, lower)
+  local logoScale = math.max(upper.width / WIDTH, upper.height / HEIGHT)
   local logoWidth, logoHeight = WIDTH * logoScale, HEIGHT * logoScale
   local art = composition.art
-  LogicalSurface.clip(graphics, lower, function()
+  local artY = art.y - (lower.y - upper.y)
+  LogicalSurface.clip(graphics, upper, function()
     local shade, alpha = overlayTone(self)
     graphics.setColor(shade, shade, shade, alpha)
     graphics.draw(
       surfaces.editionLogo,
-      lower.x + (lower.width - logoWidth) / 2,
-      lower.y + (lower.height - logoHeight) / 2,
+      upper.x + (upper.width - logoWidth) / 2,
+      upper.y + (upper.height - logoHeight) / 2,
       0,
       logoScale,
       logoScale
     )
     graphics.setColor(shade, shade, shade, alpha)
-    graphics.draw(surfaces.subscreenLower, art.x, art.y, 0, art.scale, art.scale)
+    graphics.draw(surfaces.subscreenLower, art.x, artY, 0, art.scale, art.scale)
   end)
 end
 
@@ -665,10 +874,33 @@ function HgssTitleScene:_drawUi(status)
   -- RGB(0, 28, 31). The shadow index matches the foreground index, so a
   -- shadow pass reuses this same RGB.
   if promptVisible(self) then
-    local promptColor = assert(self.bundle.prompt.color.foregroundRgb, "title prompt ink is missing")
-    graphics.setColor(promptColor[1], promptColor[2], promptColor[3], 1)
     local rect = assert(self.layout.prompt)
-    graphics.printf(self.bundle.prompt.text, rect.x, rect.y, rect.width, "center")
+    local renderer = assert(self.textRenderer, "title prompt prints with the ROM font")
+    local lineHeight = assert(renderer.fontDef.lineHeight, "ROM font carries its line height")
+    -- Integer scale of the decomp strip so the bitmap glyphs stay
+    -- crisp, capped small; the line centers in the full-width strip
+    -- exactly as the retail centered window does on the top screen.
+    local scale = math.min(MAX_PROMPT_SCALE, math.max(1, math.floor(rect.height / lineHeight)))
+    local promptText = assert(self.bundle.prompt.text, "title prompt carries its extracted text")
+    local promptTokens = assert(self.bundle.prompt.tokens, "title prompt carries its extracted tokens")
+    local alignment = assert(self.bundle.prompt.alignment, "title prompt keeps its extracted alignment")
+    assert(alignment == "center", "title prompt alignment stays retail-centered")
+    local textWidth = renderer:textWidth(promptText) * scale
+    local fg = assert(self.bundle.prompt.color.foregroundRgb, "title prompt ink is missing")
+    local sh = assert(self.bundle.prompt.color.shadowRgb, "title prompt shadow is missing")
+    local function byte(channel)
+      return math.floor(channel * 255 + 0.5)
+    end
+    local palette = {
+      foreground = { r = byte(fg[1]), g = byte(fg[2]), b = byte(fg[3]) },
+      shadow = { r = byte(sh[1]), g = byte(sh[2]), b = byte(sh[3]) },
+      background = { r = 0, g = 0, b = 0, a = 0 },
+    }
+    graphics.push()
+    graphics.translate(rect.x + (rect.width - textWidth) / 2, rect.y)
+    graphics.scale(scale, scale)
+    renderer:drawLineWithPalette(promptTokens, 0, 0, palette)
+    graphics.pop()
   end
   -- While the menu stages the title holds its art and prompt with no
   -- staging copy: only a genuine failure earns a line below.
@@ -699,7 +931,7 @@ function HgssTitleScene:draw(status)
   elseif composition.configuration == "tall" then
     self:_drawTall()
   else
-    self:_drawSingleStage(composition)
+    self:_drawCinematicSingle(composition)
   end
   self:_drawUi(status)
 end
@@ -746,19 +978,40 @@ function HgssTitleScene:resize(width, height)
     main = primary
   end
   assert(main ~= nil, "title display has no unoccupied safe area")
+  self.pixelRatio = measurement.pixelRatio or 1
   local buttonSize = math.max(28, math.min(56, math.floor(math.min(main.width, main.height) * 0.12)))
-  local buttonBounds = {
-    x = self.versionId == "heartgold" and main.x + main.width - buttonSize - 2 or main.x + 2,
-    y = main.y + main.height - buttonSize - 2,
-    width = buttonSize,
-    height = buttonSize,
-  }
-  local prompt = {
-    x = main.x + main.width * 0.2,
-    y = main.y + main.height * 0.82,
-    width = main.width * 0.6,
-    height = 30,
-  }
+  -- Decomp reference (pokeheartgold src/title_screen.c,
+  -- sTouchToStartWindow = { GF_BG_LYR_MAIN_3, 0, 18, 32, 2 }): the
+  -- prompt is a full-width strip at tile rows 18-19 of the 256x192
+  -- top screen, centered, over the lower 3D exactly as retail.
+  local function promptStrip(topScreen)
+    return {
+      x = topScreen.x,
+      y = topScreen.y + topScreen.height * 144 / 192,
+      width = topScreen.width,
+      height = topScreen.height * 16 / 192,
+    }
+  end
+  local isCinematic = configuration == "wide" or configuration == "nativeLike"
+  local buttonBounds
+  if isCinematic then
+    -- Cinematic single-screen keeps the switch reachable bottom-right
+    -- for both editions so it never collides with the left logo or the
+    -- centered prompt strip.
+    buttonBounds = {
+      x = main.x + main.width - buttonSize - 8,
+      y = main.y + main.height - buttonSize - 8,
+      width = buttonSize,
+      height = buttonSize,
+    }
+  else
+    buttonBounds = {
+      x = self.versionId == "heartgold" and main.x + main.width - buttonSize - 2 or main.x + 2,
+      y = main.y + main.height - buttonSize - 2,
+      width = buttonSize,
+      height = buttonSize,
+    }
+  end
   local composition
   if configuration == "dualDisplay" then
     local principal = stageComposition(primary, CANVAS_HEIGHT_NATIVE)
@@ -780,6 +1033,7 @@ function HgssTitleScene:resize(width, height)
       lowerPanel = false,
     }
     rebuildCanvas(self, principal.canvasWidth, principal.canvasHeight)
+    self.projectionAspect = 4 / 3
   elseif configuration == "tall" then
     local tall = tallComposition(main)
     composition = {
@@ -793,18 +1047,26 @@ function HgssTitleScene:resize(width, height)
       lowerPanel = true,
     }
     rebuildCanvas(self, tall.canvasWidth, tall.canvasHeight)
+    self.projectionAspect = 4 / 3
   else
-    local canvasHeight = configuration == "wide" and CANVAS_HEIGHT_WIDE or CANVAS_HEIGHT_NATIVE
-    local staged = stageComposition(main, canvasHeight)
-    composition = {
-      configuration = configuration,
-      bounds = staged.stage,
-      stageWidth = staged.stage.width,
-      stageHeight = staged.stage.height,
-      accent = staged.accent,
-      lowerPanel = false,
-    }
+    local staged = cinematicComposition(main, configuration)
+    composition = staged
+    if configuration == "wide" then
+      self.projectionAspect = staged.canvasWidth / staged.canvasHeight
+    else
+      self.projectionAspect = 4 / 3
+    end
     rebuildCanvas(self, staged.canvasWidth, staged.canvasHeight)
+  end
+  -- The prompt strip always maps the decomp top-screen window onto the
+  -- 3D stage: the full single screen for cinematic, the lower half for
+  -- tall (the legendary plays on the bottom there), and the world
+  -- (upper) surface for genuine dual display.
+  local prompt
+  if configuration == "tall" then
+    prompt = promptStrip(assert(composition.lower, "tall composition stages 3D in its lower half"))
+  else
+    prompt = promptStrip(main)
   end
   self.layout = {
     configuration = configuration,
@@ -828,8 +1090,9 @@ function HgssTitleScene:dispose()
     return
   end
   self.disposed = true
-  local images, pool, renderer, canvas = self.images, self.pool, self.renderer, self.canvas
-  self.images, self.pool, self.renderer, self.canvas = {}, nil, nil, nil
+  local images, pool, renderer, canvas, shader, textRenderer =
+    self.images, self.pool, self.renderer, self.canvas, self.blendShader, self.textRenderer
+  self.images, self.pool, self.renderer, self.canvas, self.blendShader, self.textRenderer = {}, nil, nil, nil, nil, nil
   self.legend, self.sparkle, self.surfaces, self.bundle, self.sourceEnvironment = nil, nil, nil, nil, nil
   for _, image in ipairs(images) do
     image:release()
@@ -842,6 +1105,12 @@ function HgssTitleScene:dispose()
   end
   if renderer ~= nil then
     renderer:release()
+  end
+  if shader ~= nil then
+    shader:release()
+  end
+  if textRenderer ~= nil then
+    textRenderer:release()
   end
 end
 

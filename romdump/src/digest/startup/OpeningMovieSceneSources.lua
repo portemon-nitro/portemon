@@ -220,7 +220,9 @@ end
 
 -- Sprite instance stations transcribed from the retail CreateSprites
 -- functions: scene 1 sun and bird share (128, 96) on the main engine
--- (src/intro_movie_scene_1.c IntroMovie_Scene1_CreateSprites);
+-- (src/intro_movie_scene_1.c IntroMovie_Scene1_CreateSprites) with the sun
+-- one step behind the logo planes (OBJ priority 1) while the bird keeps
+-- OBJ priority 0;
 -- scene 2 holds ten flowers at (128, 192), three ethan at (64, -96),
 -- and three lyra at (320, -96), all with sprite animation inactive on
 -- creation (src/intro_movie_scene_2.c IntroMovie_Scene2_CreateSprites);
@@ -230,8 +232,8 @@ end
 -- with hand2, sparkles, and all three starters at (128, 96)
 -- (src/intro_movie_scene_4.c IntroMovie_Scene4_CreateSprites); scene 5
 -- creates no sprites. Each station also carries the source sprite header
--- priority from the same creation calls: scene 2 heroes 1, every other
--- instance 0. Engine follows the creation VRAM type
+-- priority from the same creation calls: the scene 1 sun and the scene 2
+-- heroes take priority 1, every other instance 0. Engine follows the creation VRAM type
 -- (2DMAIN main, 2DSUB sub); flowers carry one instance per engine
 -- because their character data loads as 2DBOTH, the scene enables
 -- sprite pixels on both engines, and the renderer draws every sprite to
@@ -245,7 +247,10 @@ function OpeningMovieSceneSources.spriteInstances(sceneNumber)
   checkScene(sceneNumber)
   if sceneNumber == 1 then
     return {
-      { id = "sun", sprite = "sun", engine = "main", x = 128, y = 96, drawOrder = 1, objPriority = 0 },
+      -- The sun takes OBJ priority 1 while the bird keeps priority 0, so
+      -- the hardware orders the rising sun behind the priority-0 logo
+      -- planes and the bird in front of them.
+      { id = "sun", sprite = "sun", engine = "main", x = 128, y = 96, drawOrder = 1, objPriority = 1 },
       { id = "bird", sprite = "bird", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
     }
   elseif sceneNumber == 2 then

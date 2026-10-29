@@ -279,6 +279,10 @@ local function compilePrompt(romFs, versionId, dependencies)
   if parsedText ~= "{ALN_CENTER}TOUCH TO START" then
     sourceError("title prompt message differs from the retail centered start instruction", { text = parsedText })
   end
+  -- The stored text is the extracted message after its alignment tag,
+  -- not a retyped literal: the retail wording flows through untouched.
+  local displayText = parsedText:sub(#"{ALN_CENTER}" + 1)
+  assert(displayText ~= "", "title prompt carries no display text after its alignment tag")
   -- The retail prompt ink is an edition-specific text-palette entry
   -- (src/title_screen.c, TitleScreenAnim_Load2dBgGfx): HeartGold prints
   -- with foreground index 1 over RGB(27, 8, 0), SoulSilver with
@@ -287,7 +291,7 @@ local function compilePrompt(romFs, versionId, dependencies)
   -- foreground index per edition, so both passes share one RGB.
   local promptRgb = versionId == "heartgold" and { 27 / 31, 8 / 31, 0 } or { 0, 28 / 31, 1 }
   return {
-    text = "TOUCH TO START",
+    text = displayText,
     alignment = "center",
     tokens = tokens,
     color = versionId == "heartgold" and {

@@ -1,5 +1,5 @@
 -- Five-scene retail opening movie session. Plays the normalized opening
--- scenes in order at the 30 Hz source tick: per-engine layered 2D
+-- scenes in order at the HGSS source tick: per-engine layered 2D
 -- backgrounds with clip-offset sprite instances, three town model segments,
 -- and the nine starter emitter sequences, with the source skip gate and
 -- bounded scene GPU ownership.
@@ -34,6 +34,7 @@ local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 ---@field disposed boolean
 ---@field current OpeningMovieSlot|nil active scene slot
 ---@field nextSlot OpeningMovieSlot|nil prefetched scene slot
+---@field nextNextSlot OpeningMovieSlot|nil second prefetched scene slot, staging the town scene from construction
 ---@field mainCanvas love.Canvas? fixed main-engine source target (256x192)
 ---@field subCanvas love.Canvas? fixed sub-engine source target (256x192)
 ---@field townScratch love.Canvas? fixed town composite scratch (256x192), allocated only when a scene stages towns
@@ -49,6 +50,23 @@ local HgssOpeningMovie = {}
 HgssOpeningMovie.__index = HgssOpeningMovie
 
 local SOURCE_WIDTH, SOURCE_HEIGHT = 256, 192
+-- Scene-4 hero bands overlap by one black-surroundings height when they
+-- stack: each portrait fills source rows 52..139 of its 256-tall native
+-- art, leaving 52-row black bands at the top and bottom of the 192-row
+-- viewport, so the lower band rises 52 rows and the two black bands
+-- coincide instead of doubling the gap between the portraits.
+local SCENE4_BAND_OVERLAP = 52
+-- Retail IsPaletteFadeFinished trails the last visible fade step: the
+-- fade cleanup clears the active flag on the following call, and the
+-- named wait completes on the call after that. The count is a local
+-- task-lifecycle constant: the validated event pins the fade length, and
+-- this count covers the cleanup and handoff calls past the final step.
+local PALETTE_FADE_SETTLE_TICKS = 2
+
+-- Extra source ticks every scene-init call holds the incoming scene's entry
+-- frame: retail scene init loads cartridge graphics and stalls the video
+-- while the music keeps its real-time clock. Tunable by ear.
+local SCENE_INIT_STALL_TICKS = 3
 -- Ops whose `effect` field starts a waitable effect when the event fires.
 -- Started names (plus started emitter groups and compiled sprite clips)
 -- are the only identities a later wait may name.
@@ -201,6 +219,8 @@ end
 ---@field wipe table<string, unknown>? engine-local scanline wipe program
 ---@field wipeHold table<string, unknown>? retained full-engine white/black hold by source engine
 ---@field shutter table<string, unknown>? ordered main-then-sub line shutter program
+---@field handoff string? retail scene-call phase: "exit" keeps the finished scene current for one call, "init" stages the incoming scene for one call, and after the last scene "done" then "overlayExit" spend the intro overlay's own calls
+---@field initStall integer remaining extra init-call ticks before the scene runs
 ---@field blendPrograms table<string, table<string, unknown>> engine-local alpha programs by source engine
 ---@field palette table<string, unknown>?
 ---@field windows table<string, OpeningMovieWindow> live engine-local window state by source engine
@@ -212,7 +232,7 @@ end
 ---@field townEnvKey number?
 
 ---@class OpeningMovieWindow
----@field enabled boolean whether window clipping constrains the owning engine
+---@field visibleMask integer visible hardware windows as a two-bit mask: bit 0 shows the first (pan-driven) window, bit 1 the second (direct register) window
 ---@field win0Rect table<string, integer>? current first hardware rectangle in source coordinates
 ---@field win1Rect table<string, integer>? current second hardware rectangle in source coordinates
 ---@field win0InsideMask integer plane mask inside the first window
@@ -655,6 +675,7 @@ local function acquireSlot(self, manifest)
     applied = {},
     released = false,
     sceneTick = 0,
+    initStall = 0,
     stepIndex = 1,
     stepElapsed = 0,
     rng = manifest.particles.seed or 0,
@@ -685,7 +706,7 @@ local function acquireSlot(self, manifest)
     palette = nil,
     windows = {
       main = {
-        enabled = false,
+        visibleMask = 0,
         win0Rect = nil,
         win1Rect = nil,
         win0InsideMask = 0,
@@ -694,7 +715,7 @@ local function acquireSlot(self, manifest)
         pan = nil,
       },
       sub = {
-        enabled = false,
+        visibleMask = 0,
         win0Rect = nil,
         win1Rect = nil,
         win0InsideMask = 0,
@@ -1714,7 +1735,9 @@ local function startWindowProgram(slot, event)
   state.win0InsideMask = event.insideMask --[[@as integer]]
   state.win1InsideMask = event.insideMask --[[@as integer]]
   state.outsideMask = event.outsideMask --[[@as integer]]
-  state.enabled = true
+  -- Every pan start enables both hardware windows the way the source
+  -- window helper does; an explicit visibility mask narrows them after.
+  state.visibleMask = 3
   local program = {
     from = copyWindowRect(event.from),
     to = copyWindowRect(event.to),
@@ -1864,9 +1887,10 @@ local function applyEvent(self, slot, event)
     state.win1Rect = copyWindowRect(event.rect)
     state.win1InsideMask = event.insideMask --[[@as integer]]
   elseif op == "setWindowVisible" then
-    -- Display visibility only gates clipping; stored rectangles, masks, and
-    -- running waits survive the toggle either way.
-    windowState(slot, event.engine).enabled = event.visible
+    -- A retail visible-window mask: positions and masks survive the
+    -- toggle either way, and a cleared bit retires its stale register
+    -- instead of clipping through it.
+    windowState(slot, event.engine).visibleMask = event.mask
   elseif op == "setModelVisible" then
     -- The town meshes and renderer stay staged until the slot retires;
     -- only the draw contribution stops here.
@@ -2051,7 +2075,9 @@ local function applyEvent(self, slot, event)
       }
       state.hold = nil
     end
-    startTimedEffect(slot, event.effect, event.ticks)
+    -- The named wait is retail IsPaletteFadeFinished: it trails the last
+    -- visible step by the fade cleanup update and the following call.
+    startTimedEffect(slot, event.effect, event.ticks + PALETTE_FADE_SETTLE_TICKS)
   elseif op == "waitTicks" then
     -- Duration steps own the wait; the event only marks the authored beat.
     -- Guards live on the owning step record, so there is no wait-shaped
@@ -2170,8 +2196,9 @@ local function advanceContinuous(slot)
     local state = slot.fadeByEngine[engine]
     local task = state ~= nil and state.task or nil
     if task ~= nil then
-      -- A finished task retires instead of tinting later art: only an
-      -- authored hold persists past the final tick, on its own engine.
+      -- A finished task tints through its final update instead of retiring
+      -- early: only an authored hold persists past the final tick, and the
+      -- fade cleanup clears the active flag on the following call.
       if task.elapsed < task.ticks then
         task.elapsed = task.elapsed + 1
         if task.elapsed >= task.ticks then
@@ -2180,7 +2207,6 @@ local function advanceContinuous(slot)
           else
             state.hold = nil
           end
-          state.task = nil
         end
       else
         state.task = nil
@@ -2417,32 +2443,31 @@ end
 
 ---@param self HgssOpeningMovie
 local function ensureNext(self)
-  if self.currentIndex >= 5 or self.nextSlot ~= nil then
-    return
+  if self.currentIndex < 5 and self.nextSlot == nil then
+    self.nextSlot = acquireSlot(self, self.scenes[self.currentIndex + 1])
   end
-  self.nextSlot = acquireSlot(self, self.scenes[self.currentIndex + 1])
+  if self.currentIndex + 1 < 5 and self.nextNextSlot == nil then
+    self.nextNextSlot = acquireSlot(self, self.scenes[self.currentIndex + 2])
+  end
 end
 
 ---@param self HgssOpeningMovie
-local function finishCurrentScene(self)
-  local finished = self.currentIndex >= 5
-  if finished then
-    self.finished = true
-    self.pendingFinish = false
-    return
-  end
+local function swapToNextScene(self)
   local old = assert(self.current)
   local replacement = self.nextSlot
-  self.nextSlot = nil
+  -- The handoff adopts the retained prefetch without rebuilding it: the
+  -- second window slides forward and the playback prefetch refills it.
+  self.nextSlot = self.nextNextSlot
+  self.nextNextSlot = nil
   if replacement == nil then
     replacement = acquireSlot(self, self.scenes[self.currentIndex + 1])
   end
   self.currentIndex = self.currentIndex + 1
   self.current = replacement
   self.pendingFinish = false
-  -- The incoming scene first runs on the following fixed update: its clock
-  -- stays at zero and no entry event fires on the finishing update, so the
-  -- scene boundary separates the two source dispatches.
+  -- The incoming scene stages without running: its clock stays at zero
+  -- and no entry event fires until its init call elapses, so the scene
+  -- boundary separates the two source dispatches.
   releaseSlot(old)
 end
 
@@ -2493,6 +2518,31 @@ local function shotIsPaired(slot)
   return slot.sceneNumber == 4 or slot.sceneNumber == 5
 end
 
+-- The scene-1 copyright is the one tie the upper screen wins: while each
+-- engine stages only its BG0 copyright plane, both engines carry their
+-- own notice and the stage shows the upper one, matching the
+-- top-screen-first retail opening.
+---@param slot OpeningMovieSlot scene slot
+---@return boolean true while each engine stages only its BG0 copyright plane
+local function onlyCopyrightStaged(slot)
+  for _, engine in ipairs({ "main", "sub" }) do
+    local backgrounds = slot.backgrounds[engine]
+    if type(backgrounds) ~= "table" then
+      return false
+    end
+    local bg0 = backgrounds[0]
+    if type(bg0) ~= "table" or bg0.visible ~= true then
+      return false
+    end
+    for bgSlot, background in pairs(backgrounds) do
+      if bgSlot ~= 0 and background.visible then
+        return false
+      end
+    end
+  end
+  return true
+end
+
 -- Selects the engine whose output fills a single-screen stage on a
 -- single-role beat. Exactly one active engine wins; a tie (or no active
 -- engine yet) deterministically keeps the main engine, which the source
@@ -2501,6 +2551,9 @@ end
 ---@return string source engine owning the active single-role output
 local function activeEngine(slot)
   local mainActive, subActive = engineActive(slot, "main"), engineActive(slot, "sub")
+  if slot.sceneNumber == 1 and onlyCopyrightStaged(slot) then
+    return "sub"
+  end
   if subActive and not mainActive then
     return "sub"
   end
@@ -2653,6 +2706,7 @@ function HgssOpeningMovie.new(options)
     disposed = false,
     current = nil,
     nextSlot = nil,
+    nextNextSlot = nil,
     mainCanvas = nil,
     subCanvas = nil,
     townScratch = nil,
@@ -2667,11 +2721,12 @@ function HgssOpeningMovie.new(options)
   }, HgssOpeningMovie)
   -- Bounded readiness: the two fixed source-engine targets are the only
   -- movie canvases, and every scene is strictly acquired plus
-  -- offscreen-rendered before the movie becomes visible. Only the first
-  -- two slots stay resident; each later scene is a transient that
-  -- releases before the next acquires, so at most two retained graphs
-  -- plus one transient coexist, and the source clock never advances
-  -- during preparation.
+  -- offscreen-rendered before the movie becomes visible. The first three
+  -- slots stay resident while scenes four and five preflight as
+  -- transients, so at most three scene graphs coexist and the source
+  -- clock never advances during preparation. The town scene stages last
+  -- and stays resident so the first handoff never blocks on synchronous
+  -- acquisition mid-movie.
   local transient = nil
   local ok, failure = pcall(function()
     self.mainCanvas = graphics.newCanvas(SOURCE_WIDTH, SOURCE_HEIGHT, {
@@ -2759,16 +2814,19 @@ function HgssOpeningMovie.new(options)
     self:_renderRoles(self.current)
     self.nextSlot = acquireSlot(self, scenes[2])
     self:_renderRoles(self.nextSlot)
-    for sceneNumber = 3, 5 do
+    for _, sceneNumber in ipairs({ 4, 5 }) do
       transient = acquireSlot(self, scenes[sceneNumber])
       self:_renderRoles(transient)
       releaseSlot(transient)
       transient = nil
       -- Reclaim the transient preflight handles promptly instead of leaving
       -- them queued behind the next acquisition: the retained targets keep
-      -- only current and next scene graphs resident from here on.
+      -- only staged scene graphs resident from here on.
       settleReleasedHandles(self, self.mainCanvas)
     end
+    -- The town scene stages last and stays resident for the first handoff.
+    self.nextNextSlot = acquireSlot(self, scenes[3])
+    self:_renderRoles(self.nextNextSlot)
   end)
   if not ok then
     if transient ~= nil then
@@ -2788,6 +2846,42 @@ function HgssOpeningMovie:updateFixed()
   end
   ensureNext(self)
   local slot = assert(self.current)
+  -- Retail src/intro_movie.c dispatches one scene call per frame: after a
+  -- run case completes, the scene's exit call returns TRUE, the next scene
+  -- spends its init call, and only the following call runs its first case.
+  -- The exit call keeps the finished scene current; the handoff swaps on
+  -- it; the init call stages the incoming scene without advancing its
+  -- clock or firing entry events. After the last scene, the overlay's done
+  -- call returns TRUE from IntroMovie_Main and IntroMovie_Exit runs on the
+  -- call after, both holding the final frame.
+  if slot.handoff == "exit" and self.currentIndex >= 5 then
+    slot.handoff = "done"
+    return
+  end
+  if slot.handoff == "done" then
+    slot.handoff = "overlayExit"
+    return
+  end
+  if slot.handoff == "overlayExit" then
+    self.finished = true
+    self.pendingFinish = false
+    return
+  end
+  if slot.handoff == "exit" then
+    swapToNextScene(self)
+    local incoming = assert(self.current)
+    incoming.handoff = "init"
+    incoming.initStall = SCENE_INIT_STALL_TICKS
+    return
+  end
+  if slot.handoff == "init" then
+    if slot.initStall > 0 then
+      slot.initStall = slot.initStall - 1
+      return
+    end
+    slot.handoff = nil
+    return
+  end
   slot.sceneTick = slot.sceneTick + 1
   slot.stepElapsed = slot.stepElapsed + 1
   applyDueEvents(self, slot)
@@ -2800,14 +2894,16 @@ function HgssOpeningMovie:updateFixed()
   end
   applyCompletionEvents(self, slot)
   if self.pendingFinish then
-    finishCurrentScene(self)
+    -- The completing case leaves the exit call to the next tick.
+    slot.handoff = "exit"
     return
   end
   local steps = slot.manifest.timeline.steps
   slot.stepIndex = slot.stepIndex + 1
   slot.stepElapsed = 0
   if slot.stepIndex > #steps then
-    finishCurrentScene(self)
+    -- The exhausted scene leaves its exit call to the next tick.
+    slot.handoff = "exit"
   end
 end
 
@@ -2985,25 +3081,26 @@ end
 
 -- Resolves the two hardware register spans for one engine: the first and
 -- second rectangles, each with its inside mask, plus the outside mask.
--- Returns nil only while clipping is disabled; an enabled engine whose
+-- Returns nil only while no window is visible; an enabled engine whose
 -- rectangles cover nothing still honors its outside mask instead of
--- painting its whole target in one draw.
+-- painting its whole target in one draw. A hidden window retires its
+-- stale register: only visible windows constrain planes.
 ---@param slot OpeningMovieSlot scene slot
 ---@param engine string source engine owning the window registers
 ---@return OpeningMovieWindowSpans? spans with win0, win1, and outside mask
 local function windowSpans(slot, engine)
   local state = slot.windows[engine]
-  if state == nil or not state.enabled then
+  if state == nil or state.visibleMask == 0 then
     return nil
   end
   local win0, win1 = nil, nil
-  if state.win0Rect ~= nil then
+  if maskAllows(state.visibleMask, 0) and state.win0Rect ~= nil then
     local spans = rectSpans(state.win0Rect)
     if spans ~= nil then
       win0 = { spans = spans, mask = state.win0InsideMask }
     end
   end
-  if state.win1Rect ~= nil then
+  if maskAllows(state.visibleMask, 1) and state.win1Rect ~= nil then
     local spans = rectSpans(state.win1Rect)
     if spans ~= nil then
       win1 = { spans = spans, mask = state.win1InsideMask }
@@ -3767,7 +3864,10 @@ end
 
 -- Projects one physical screen, then paints its staged hold exactly once
 -- over the same host pane. Holds never touch the shared engine canvases,
--- so a later mapping flip reroutes engines without carrying a hold.
+-- so a later mapping flip reroutes engines without carrying a hold. On a
+-- letterboxed fit the hold covers only the drawn source image, so a
+-- scene-edge white keeps the side bars black instead of flashing the
+-- whole stage.
 ---@param self HgssOpeningMovie
 ---@param canvas love.Canvas fixed role target to project
 ---@param rect { x: number, y: number, width: number, height: number } host pane receiving the role
@@ -3778,13 +3878,24 @@ local function blitPhysicalRole(self, canvas, rect, cover, hold)
   if hold ~= "white" and hold ~= "black" then
     return
   end
+  local fill = rect
+  if not cover then
+    local scale = math.min(rect.width / SOURCE_WIDTH, rect.height / SOURCE_HEIGHT)
+    local drawnWidth, drawnHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
+    fill = {
+      x = rect.x + (rect.width - drawnWidth) / 2,
+      y = rect.y + (rect.height - drawnHeight) / 2,
+      width = drawnWidth,
+      height = drawnHeight,
+    }
+  end
   local graphics = self.graphics
   if hold == "white" then
     graphics.setColor(1, 1, 1, 1)
   else
     graphics.setColor(0, 0, 0, 1)
   end
-  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+  graphics.rectangle("fill", fill.x, fill.y, fill.width, fill.height)
   graphics.setColor(1, 1, 1, 1)
 end
 
@@ -4249,10 +4360,14 @@ function HgssOpeningMovie:_render()
   end
   if shotIsPaired(slot) then
     -- Coequal beats keep both outputs on one stage with no overlay strip:
-    -- stacked as one 256x384 frame on compact/native stages, side by side
-    -- as one 512x192 pair on wide stages, each fit inside the safe bounds.
-    -- Tall and dual stages always stack (or surface) both roles above.
-    if configuration == "wide" then
+    -- the scene-5 panorama stacks as one 256x384 frame on compact/native
+    -- stages and stays side by side as one 512x192 pair on wide stages,
+    -- each fit inside the safe bounds. The scene-4 hero bands stack
+    -- vertically on compact/native and wide stages with their black
+    -- surroundings overlapped, so the bands sit closer than two full
+    -- frames. Tall and dual stages always stack (or surface) both roles
+    -- above.
+    if configuration == "wide" and slot.sceneNumber ~= 4 then
       local scale = math.min(primary.width / (SOURCE_WIDTH * 2), primary.height / SOURCE_HEIGHT)
       local paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
       local x = primary.x + (primary.width - paneWidth * 2) / 2
@@ -4262,6 +4377,23 @@ function HgssOpeningMovie:_render()
         self,
         lowerCanvas,
         { x = x + paneWidth, y = y, width = paneWidth, height = paneHeight },
+        false,
+        lowerHold
+      )
+      return
+    end
+    if slot.sceneNumber == 4 and configuration ~= "tall" then
+      local pairHeight = SOURCE_HEIGHT * 2 - SCENE4_BAND_OVERLAP
+      local scale = math.min(primary.width / SOURCE_WIDTH, primary.height / pairHeight)
+      local paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
+      local overlap = SCENE4_BAND_OVERLAP * scale
+      local x = primary.x + (primary.width - paneWidth) / 2
+      local y = primary.y + (primary.height - paneHeight * 2 + overlap) / 2
+      blitPhysicalRole(self, upperCanvas, { x = x, y = y, width = paneWidth, height = paneHeight }, false, upperHold)
+      blitPhysicalRole(
+        self,
+        lowerCanvas,
+        { x = x, y = y + paneHeight - overlap, width = paneWidth, height = paneHeight },
         false,
         lowerHold
       )
@@ -4313,9 +4445,10 @@ function HgssOpeningMovie:dispose()
     return
   end
   self.disposed = true
-  local current, nextSlot, mainCanvas, subCanvas, townScratch, planeCanvas, rawA, rawB, colorA, colorB, rawShader, colorShader =
+  local current, nextSlot, nextNextSlot, mainCanvas, subCanvas, townScratch, planeCanvas, rawA, rawB, colorA, colorB, rawShader, colorShader =
     self.current,
     self.nextSlot,
+    self.nextNextSlot,
     self.mainCanvas,
     self.subCanvas,
     self.townScratch,
@@ -4326,7 +4459,8 @@ function HgssOpeningMovie:dispose()
     self.colorB,
     self.rawShader,
     self.colorShader
-  self.current, self.nextSlot, self.mainCanvas, self.subCanvas, self.townScratch = nil, nil, nil, nil, nil
+  self.current, self.nextSlot, self.nextNextSlot, self.mainCanvas, self.subCanvas, self.townScratch =
+    nil, nil, nil, nil, nil, nil
   self.planeCanvas, self.rawA, self.rawB, self.colorA, self.colorB = nil, nil, nil, nil, nil
   self.rawShader, self.colorShader = nil, nil
   if current ~= nil then
@@ -4334,6 +4468,9 @@ function HgssOpeningMovie:dispose()
   end
   if nextSlot ~= nil then
     releaseSlot(nextSlot)
+  end
+  if nextNextSlot ~= nil then
+    releaseSlot(nextNextSlot)
   end
   -- Settle retired scene handles before releasing the targets that drew
   -- them, so teardown leaves no queued (but logically released) handles

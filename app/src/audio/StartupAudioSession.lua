@@ -2,6 +2,7 @@
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local GameAudio = require("game.hgss.src.audio.GameAudio")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 ---@class StartupAudioComposition
 ---@field sound table<string, function>
@@ -24,7 +25,6 @@ local GameAudio = require("game.hgss.src.audio.GameAudio")
 local StartupAudioSession = {}
 StartupAudioSession.__index = StartupAudioSession
 
-local FRAMES_PER_SECOND = 30
 local MAX_SOURCE_TICKS_PER_UPDATE = 8
 local OPENING_THEME = "SEQ_GS_TITLE"
 local TITLE_THEME = "SEQ_GS_POKEMON_THEME"
@@ -198,8 +198,7 @@ function StartupAudioSession:update(dt)
     return
   end
   assert(type(dt) == "number" and dt >= 0, "startup audio update needs a non-negative duration")
-  self.accumulator = self.accumulator
-    + math.min(dt, MAX_SOURCE_TICKS_PER_UPDATE / FRAMES_PER_SECOND) * FRAMES_PER_SECOND
+  self.accumulator = self.accumulator + math.min(dt, MAX_SOURCE_TICKS_PER_UPDATE * SourceTick.DT) * SourceTick.HZ
   local ticks = math.min(math.floor(self.accumulator), MAX_SOURCE_TICKS_PER_UPDATE)
   self.accumulator = self.accumulator - ticks
   for _ = 1, ticks do

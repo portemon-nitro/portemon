@@ -4,6 +4,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local HgssOpeningMovie = require("libs.hgss.src.presentation.HgssOpeningMovie")
 local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 ---@class StartupTitleLoading
 ---@field artFailure unknown?
@@ -31,6 +32,8 @@ local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 ---@field movie table<string, unknown>?
 ---@field movieScenes table[]?
 ---@field movieCompleted boolean
+---@field movieLeadIn integer remaining black ticks before the first video tick
+---@field movieVideoStarted boolean true once the movie has advanced its first tick
 ---@field openingObserved boolean[]
 ---@field openingStarted boolean
 ---@field promotedScenes boolean
@@ -43,6 +46,8 @@ local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 ---@field pendingLegendaryCry boolean
 ---@field fadeStarted boolean
 ---@field titleElapsed integer
+---@field titleEntry integer remaining retail title start-up calls before its theme starts
+---@field titleAnimating boolean true once the adopted title has run its first animation call
 ---@field titleReadyPending boolean
 ---@field menuError unknown?
 ---@field titleError unknown?
@@ -68,7 +73,29 @@ local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 local StartupTitleState = {}
 StartupTitleState.__index = StartupTitleState
 
-local FRAME_SECONDS = 1 / 30
+-- Maximum host time a single update may advance the staged source clocks.
+-- The retail loop advances video and audio together once per iteration no
+-- matter how long the iteration takes, while our video accumulator would
+-- otherwise replay blocked main-thread time faster (entry audio setup,
+-- lazy sample loads, menu staging, GC) and the sample-clocked soundtrack
+-- drops the same blocked time instead: every hitch would push the visuals
+-- permanently ahead of the music. Capping the catch-up restores the
+-- lockstep: a stalled frame delays both clocks together instead of
+-- fast-forwarding the video. Two ticks cover normal frame jitter and
+-- match the audio sink queue depth, so only real stalls are dropped.
+local MAX_CATCHUP_TICKS = 2
+-- Black source ticks between the acknowledged soundtrack start and the
+-- first video tick. The retail overlay runs INIT and the scene runs INIT
+-- (loading its graphics with the planes off) while the opening BGM already
+-- plays, so the first video frame trails the soundtrack by two source
+-- ticks; the staged movie holds its entry clock at zero behind black for
+-- the same beat instead of ticking alongside the first audible frame.
+local MOVIE_LEAD_IN_TICKS = 2
+-- Retail src/title_screen.c start-up calls behind white before its first
+-- animation call: TitleScreen_Init, the model-loading case, and the case
+-- that starts SEQ_GS_POKEMON_THEME. The opening track keeps playing until
+-- that last call, so its final note is never cut by an early title theme.
+local TITLE_ENTRY_CALLS = 3
 local FADE_OUT_FRAMES = 60
 local FADE_IN_FRAMES = 18
 -- Minimum visible loader time after transfer before the staged opening
@@ -153,6 +180,8 @@ function StartupTitleState.new(options)
     movie = nil,
     movieScenes = nil,
     movieCompleted = false,
+    movieLeadIn = 0,
+    movieVideoStarted = false,
     openingObserved = { false, false, false, false, false },
     openingStarted = false,
     promotedScenes = false,
@@ -165,6 +194,8 @@ function StartupTitleState.new(options)
     pendingLegendaryCry = false,
     fadeStarted = false,
     titleElapsed = 0,
+    titleEntry = 0,
+    titleAnimating = false,
     titleReadyPending = false,
     menuError = nil,
     titleError = nil,
@@ -390,6 +421,10 @@ function StartupTitleState:_maybeEnterMovie()
     return
   end
   self.phase = "movie"
+  -- The soundtrack is already audible: hold the staged entry frame behind
+  -- black for the retail INIT beat before the first video tick.
+  self.movieLeadIn = MOVIE_LEAD_IN_TICKS
+  self.movieVideoStarted = false
   local movie = assert(self.movie)
   if movie:isFinished() then
     self:_finishMovie()
@@ -483,6 +518,8 @@ function StartupTitleState:_adoptTitle()
   end
   self.title = assert(result)
   self.titleElapsed = 0
+  self.titleEntry = TITLE_ENTRY_CALLS
+  self.titleAnimating = false
   self.phase = "title"
   self:_notifyTitleReady()
   self:_maybeStartAudio()
@@ -528,7 +565,7 @@ function StartupTitleState:_maybeStartAudio()
     end
     return
   end
-  if self.skipRequested or self.audioStarted then
+  if self.skipRequested or self.audioStarted or self.titleEntry > 0 then
     return
   end
   if type(self.audio.titleReady) ~= "function" then
@@ -696,6 +733,8 @@ function StartupTitleState:_reenterMovie()
   self.phase = "loading"
   if self:_confirmSoundtrackStart() then
     self.phase = "movie"
+    self.movieLeadIn = MOVIE_LEAD_IN_TICKS
+    self.movieVideoStarted = false
     if movie:isFinished() then
       self:_finishMovie()
     end
@@ -726,6 +765,19 @@ function StartupTitleState:_tick()
       self.phase = "loading"
       return
     end
+    -- A finished movie never needs its lead-in: hand off at once instead
+    -- of holding black behind an already-completed session.
+    if movie:isFinished() then
+      self:_finishMovie()
+      return
+    end
+    -- The soundtrack lead-in holds the staged entry frame behind black:
+    -- the source clock only starts once the retail INIT beat has elapsed.
+    if self.movieLeadIn > 0 then
+      self.movieLeadIn = self.movieLeadIn - 1
+      return
+    end
+    self.movieVideoStarted = true
     local ok, failure = pcall(movie.updateFixed, movie)
     if not ok then
       self.sceneError = failure
@@ -739,8 +791,16 @@ function StartupTitleState:_tick()
     end
     return
   end
+  if self.phase == "title" and self.titleEntry > 0 then
+    self.titleEntry = self.titleEntry - 1
+    if self.titleEntry == 0 then
+      self:_maybeStartAudio()
+    end
+    return
+  end
   if self.title ~= nil and (self.phase == "title" or self.phase == "fadeOut" or self.phase == "fadeIn") then
     self.title:updateFixed()
+    self.titleAnimating = true
   end
   if self.phase == "title" then
     if not self.skipRequested then
@@ -782,9 +842,9 @@ function StartupTitleState:update(dt)
     self.loaderVisibleTime = self.loaderVisibleTime + math.min(dt, DWELL_DT_CAP)
     self:_maybeEnterMovie()
   end
-  self.accumulator = self.accumulator + dt
-  while self.accumulator >= FRAME_SECONDS and not self.disposed do
-    self.accumulator = self.accumulator - FRAME_SECONDS
+  self.accumulator = self.accumulator + math.min(dt, MAX_CATCHUP_TICKS * SourceTick.DT)
+  while self.accumulator >= SourceTick.DT and not self.disposed do
+    self.accumulator = self.accumulator - SourceTick.DT
     self:_tick()
     if self.phase == "error" or self.phase == "transferred" then
       self.accumulator = 0
@@ -830,7 +890,14 @@ function StartupTitleState:draw()
   if self.disposed then
     return
   end
-  if self.phase == "movie" and self.movie ~= nil then
+  if self.phase == "movie" and self.movie ~= nil and not self.movieVideoStarted then
+    -- The soundtrack lead-in covers the staged entry frame: retail shows
+    -- black while the INIT beat elapses behind the already-audible BGM.
+    local graphics = love.graphics
+    graphics.setColor(0, 0, 0, 1)
+    graphics.rectangle("fill", 0, 0, self.width, self.height)
+    graphics.setColor(1, 1, 1, 1)
+  elseif self.phase == "movie" and self.movie ~= nil then
     local graphics = love.graphics
     graphics.push("all")
     local ok, failure = pcall(self.movie.draw, self.movie)
@@ -845,6 +912,12 @@ function StartupTitleState:draw()
       end
       self.loading:draw(self:_status())
     end
+  elseif self.phase == "title" and self.title ~= nil and not self.titleAnimating then
+    -- Retail holds both screens white through the title start-up calls.
+    local graphics = love.graphics
+    graphics.setColor(1, 1, 1, 1)
+    graphics.rectangle("fill", 0, 0, self.width, self.height)
+    graphics.setColor(1, 1, 1, 1)
   elseif self.title ~= nil and self.phase ~= "loading" and self.phase ~= "error" then
     local graphics = love.graphics
     graphics.push("all")
@@ -947,7 +1020,8 @@ function StartupTitleState:_requestMovieSkip()
 end
 
 function StartupTitleState:_requestSkip()
-  if self.phase ~= "title" or self.title == nil then
+  -- Retail reads title input only from its first animation call onward.
+  if self.phase ~= "title" or self.title == nil or not self.titleAnimating then
     return
   end
   if not self.skipRequested then

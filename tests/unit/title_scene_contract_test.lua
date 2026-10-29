@@ -22,7 +22,19 @@ local function stubActor()
   return actor
 end
 
-local function stubScene(bundle)
+local function stubTextRenderer(drawn)
+  return {
+    fontDef = { lineHeight = 16 },
+    textWidth = function()
+      return 120
+    end,
+    drawLineWithPalette = function(_, _, _, _, palette)
+      drawn[#drawn + 1] = { palette = palette }
+    end,
+  }
+end
+
+local function stubScene(bundle, drawn)
   local legend, sparkle = stubActor(), stubActor()
   return setmetatable({
     versionId = "soulsilver",
@@ -32,6 +44,7 @@ local function stubScene(bundle)
     graphics = {},
     legend = legend,
     sparkle = sparkle,
+    textRenderer = stubTextRenderer(drawn or {}),
     layout = { prompt = { x = 100, y = 300, width = 300, height = 30 } },
     buttonBounds = { x = 400, y = 320, width = 48, height = 48 },
     disposed = false,
@@ -54,6 +67,8 @@ local function twoWaypointBundle()
     },
     prompt = {
       text = "TOUCH TO START",
+      alignment = "center",
+      tokens = {},
       color = {
         foreground = 2,
         shadow = 2,
@@ -259,35 +274,37 @@ function T.title_prompt_tint_uses_the_compiled_retail_palette_per_edition()
       visibleFrames = 30,
       hiddenFrames = 15,
     }
-    local scene = stubScene(bundle)
+    local drawn = {}
+    local scene = stubScene(bundle, drawn)
     scene.versionId = versionId
     scene.tick = 30
-    local tint = nil
     scene.graphics = {
       push = function() end,
       pop = function() end,
-      setColor = function(red, green, blue, alpha)
-        tint = { red, green, blue, alpha }
-      end,
+      translate = function() end,
+      scale = function() end,
+      setColor = function() end,
       setLineWidth = function() end,
       circle = function() end,
-      printf = function(text)
-        if text == bundle.prompt.text then
-          assert(tint ~= nil, "the start prompt sets its tint before drawing")
-          Assert.near(tint[1], ink[1], 1e-9, versionId .. " prompt red uses the retail text palette")
-          Assert.near(tint[2], ink[2], 1e-9, versionId .. " prompt green uses the retail text palette")
-          Assert.near(tint[3], ink[3], 1e-9, versionId .. " prompt blue uses the retail text palette")
-          Assert.equal(tint[4], 1, versionId .. " prompt stays opaque")
-        end
-      end,
+      printf = function() end,
     }
     scene:_drawUi(nil)
-    Assert.notNil(tint, versionId .. " prompt draws with a tint")
+    Assert.equal(#drawn, 1, versionId .. " prompt prints one ROM-font line")
+    local palette = assert(drawn[1].palette, versionId .. " prompt carries its palette triple")
+    local function byte(channel)
+      return math.floor(channel * 255 + 0.5)
+    end
     Assert.deepEqual(
-      bundle.prompt.color.shadowRgb,
-      bundle.prompt.color.foregroundRgb,
-      versionId .. " shadow pass reuses the foreground ink"
+      palette.foreground,
+      { r = byte(ink[1]), g = byte(ink[2]), b = byte(ink[3]) },
+      versionId .. " prompt foreground uses the retail text palette"
     )
+    Assert.deepEqual(
+      palette.shadow,
+      { r = byte(ink[1]), g = byte(ink[2]), b = byte(ink[3]) },
+      versionId .. " prompt shadow reuses the foreground ink"
+    )
+    Assert.equal(palette.background.a, 0, versionId .. " prompt background stays transparent")
   end
 end
 

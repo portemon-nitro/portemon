@@ -77,7 +77,9 @@ end
 
 -- Retail sprite stations transcribed from the pinned decomp CreateSprites
 -- functions: scene 1 sun and bird share (128, 96) on the main engine
--- (src/intro_movie_scene_1.c IntroMovie_Scene1_CreateSprites);
+-- (src/intro_movie_scene_1.c IntroMovie_Scene1_CreateSprites) with the sun
+-- one step behind the logo planes (OBJ priority 1) while the bird keeps
+-- OBJ priority 0;
 -- scene 2 holds ten flowers at (128, 192) with both-engines character
 -- data plus three ethan at (64, -96) and three lyra at (320, -96) on the
 -- main engine (src/intro_movie_scene_2.c IntroMovie_Scene2_CreateSprites);
@@ -97,34 +99,50 @@ end
 local function expectedSceneInstances()
   local scenes = {
     [1] = {
-      { id = "sun", engine = "main", x = 128, y = 96, drawOrder = 1 },
-      { id = "bird", engine = "main", x = 128, y = 96, drawOrder = 2 },
+      { id = "sun", engine = "main", x = 128, y = 96, drawOrder = 1, objPriority = 1 },
+      { id = "bird", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
     },
     [3] = {
-      { id = "eusine", engine = "sub", x = 32, y = 608, drawOrder = 1 },
-      { id = "unown0", engine = "sub", x = 128, y = 544, drawOrder = 2 },
-      { id = "unown1", engine = "sub", x = 128, y = 672, drawOrder = 3 },
-      { id = "unown2", engine = "sub", x = 128, y = 608, drawOrder = 4 },
-      { id = "silver-silhouette", engine = "sub", x = 128, y = 608, drawOrder = 5 },
+      { id = "eusine", engine = "sub", x = 32, y = 608, drawOrder = 1, objPriority = 0 },
+      { id = "unown0", engine = "sub", x = 128, y = 544, drawOrder = 2, objPriority = 0 },
+      { id = "unown1", engine = "sub", x = 128, y = 672, drawOrder = 3, objPriority = 0 },
+      { id = "unown2", engine = "sub", x = 128, y = 608, drawOrder = 4, objPriority = 0 },
+      { id = "silver-silhouette", engine = "sub", x = 128, y = 608, drawOrder = 5, objPriority = 0 },
     },
     [4] = {
-      { id = "hand1", engine = "sub", x = 128, y = 352, drawOrder = 1 },
-      { id = "hand2", engine = "main", x = 128, y = 96, drawOrder = 1 },
-      { id = "chikorita", engine = "main", x = 128, y = 96, drawOrder = 2 },
-      { id = "cyndaquil", engine = "main", x = 128, y = 96, drawOrder = 2 },
-      { id = "totodile", engine = "main", x = 128, y = 96, drawOrder = 2 },
-      { id = "sparkles", engine = "main", x = 128, y = 96, drawOrder = 3 },
+      { id = "hand1", engine = "sub", x = 128, y = 352, drawOrder = 1, objPriority = 0 },
+      { id = "hand2", engine = "main", x = 128, y = 96, drawOrder = 1, objPriority = 0 },
+      { id = "chikorita", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
+      { id = "cyndaquil", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
+      { id = "totodile", engine = "main", x = 128, y = 96, drawOrder = 2, objPriority = 0 },
+      { id = "sparkles", engine = "main", x = 128, y = 96, drawOrder = 3, objPriority = 0 },
     },
     [5] = {},
   }
   local second = {}
   for flower = 1, 10 do
-    second[#second + 1] = { id = "flower" .. flower .. "-main", engine = "main", x = 128, y = 192, drawOrder = flower }
-    second[#second + 1] = { id = "flower" .. flower .. "-sub", engine = "sub", x = 128, y = 192, drawOrder = flower }
+    second[#second + 1] = {
+      id = "flower" .. flower .. "-main",
+      engine = "main",
+      x = 128,
+      y = 192,
+      drawOrder = flower,
+      objPriority = 0,
+    }
+    second[#second + 1] = {
+      id = "flower" .. flower .. "-sub",
+      engine = "sub",
+      x = 128,
+      y = 192,
+      drawOrder = flower,
+      objPriority = 0,
+    }
   end
   for hero = 0, 2 do
-    second[#second + 1] = { id = "ethan" .. hero, engine = "main", x = 64, y = -96, drawOrder = 11 + hero }
-    second[#second + 1] = { id = "lyra" .. hero, engine = "main", x = 320, y = -96, drawOrder = 14 + hero }
+    second[#second + 1] =
+      { id = "ethan" .. hero, engine = "main", x = 64, y = -96, drawOrder = 11 + hero, objPriority = 1 }
+    second[#second + 1] =
+      { id = "lyra" .. hero, engine = "main", x = 320, y = -96, drawOrder = 14 + hero, objPriority = 1 }
   end
   scenes[2] = second
   return scenes
@@ -160,6 +178,7 @@ function T.scene_sources_declare_stable_sprite_instances_per_scene()
           Assert.equal(instance.x, wanted.x, wanted.id .. " keeps its retail x")
           Assert.equal(instance.y, wanted.y, wanted.id .. " keeps its retail y")
           Assert.equal(instance.drawOrder, wanted.drawOrder, wanted.id .. " keeps its draw order")
+          Assert.equal(instance.objPriority, wanted.objPriority, wanted.id .. " keeps its retail OBJ priority")
         end
       end
     end

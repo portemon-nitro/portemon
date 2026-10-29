@@ -2732,6 +2732,7 @@ function T.title_visual_scope_certifies_while_optional_audio_bank_fails()
   pool.states["audio-bank:7"] = { state = "failed", details = { error = "synthetic audio bank failure" } }
   pool.states["audio-bank:8"] = "ready"
   pool.states["audio-bank:250"] = "ready"
+  pool.states["field-font:global"] = "ready"
   pool.states["startup-title:global"] = "ready"
   for _ = 1, 10 do
     session:update()

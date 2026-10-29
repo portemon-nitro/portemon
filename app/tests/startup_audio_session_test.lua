@@ -1,6 +1,7 @@
 -- App-selected startup audio lifetime and source-frame timing.
 
 local Assert = require("tests.support.Assert")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
 
 local T = { tests = {} }
@@ -60,14 +61,14 @@ function T.tests.title_events_use_the_existing_sound_and_bounded_source_clock()
   session:beginFade()
   session:beginFade()
   Assert.deepEqual(events[3], { "fade", 0, 60 }, "the fade uses the retail target and source duration")
-  session:update(1 / 60)
+  session:update(SourceTick.DT / 2)
   Assert.equal(sink.updates, 1, "the queueable output sink pumps once per App update")
   Assert.equal(#events, 3, "a fractional half source frame does not advance semantic audio")
-  session:update(1 / 60)
+  session:update(SourceTick.DT / 2)
   Assert.equal(sink.updates, 2, "the next host update pumps once")
   Assert.equal(#events, 4, "two half frames advance exactly one source frame")
   for _ = 1, 59 do
-    session:update(1 / 30)
+    session:update(SourceTick.DT)
   end
   local stops = 0
   for _, event in ipairs(events) do
@@ -83,6 +84,21 @@ function T.tests.title_events_use_the_existing_sound_and_bounded_source_clock()
   session:dispose()
   session:dispose()
   Assert.equal(sink.releases, 1, "the borrowed composition sink is released exactly once")
+end
+
+function T.tests.sound_frames_follow_the_retail_display_cadence_not_thirty_hertz()
+  local audio, events = composition()
+  local session = StartupAudioSession.new({ versionId = "heartgold", audioComposition = audio })
+  -- Ten host seconds at 60 Hz advance the sound frame on the HGSS source
+  -- tick, so the count follows the retail main-loop cadence rather than the
+  -- one-per-host-frame count a nominal 30 Hz clock would produce.
+  local hostFrames = 600
+  local hostSeconds = hostFrames / 60
+  for _ = 1, hostFrames do
+    session:update(1 / 60)
+  end
+  Assert.equal(#events, math.floor(hostSeconds / SourceTick.DT), "the sound frame keeps the retail main-loop cadence")
+  session:dispose()
 end
 
 function T.tests.opening_theme_plays_once_and_yields_to_the_title_theme()
@@ -122,7 +138,7 @@ function T.tests.failed_host_output_disables_only_the_optional_sink()
     audioComposition = audio,
   })
   session:beginTitle()
-  session:update(1 / 30)
+  session:update(SourceTick.DT)
   Assert.notNil(session.diagnostic, "host output failure is retained as an audio diagnostic")
   Assert.equal(sink.releases, 1, "failed output is released once")
   Assert.equal(events[#events][1], "tick", "semantic sound state still advances without the optional sink")

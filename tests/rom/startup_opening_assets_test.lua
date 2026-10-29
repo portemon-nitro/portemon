@@ -1554,9 +1554,17 @@ local function engineWindowRecordsReplaceTheSyntheticKindShapes(romFs, versionId
     elseif event.op == "setWindowVisible" then
       if event.engine == "sub" then
         subVisibilities = subVisibilities + 1
+        -- Retail re-enables only the first window after these pans
+        -- (GXS_SetVisibleWnd(1)): the stale second register stays hidden
+        -- until the sprite slide reprograms it.
+        if event.stepId == "aspect" or event.stepId == "narrow-windows" then
+          Assert.equal(event.mask, 1, "scene 3 shows only its first window after the " .. event.stepId .. " pan")
+        else
+          Assert.equal(event.mask, 0, "scene 3 hides both windows while rocket tiles load")
+        end
       else
         Assert.equal(event.engine, "main", "visibility toggles name a source engine")
-        Assert.isFalse(event.visible, "the main engine window is only ever disabled")
+        Assert.equal(event.mask, 0, "the main engine window is only ever disabled")
         mainDisables = mainDisables + 1
       end
     end
@@ -2323,7 +2331,7 @@ local function pinnedScrollBlendWipeAndFadeOperandsMatchRetailCalls(romFs, versi
     "atStepTick=0 engine=sub firstMask=2 secondMask=30 direction=1 ticks=80 effect=scroll-sunrise-sub",
   })
   assertExactEvents(first, 1, "setFade", "run", FADE_KEYS, {
-    "atStepTick=90 scope=both mode=brightness color=white direction=out ticks=65 terminal=neutral shape=nil effect=fade-white",
+    "atStepTick=90 scope=both mode=brightness color=white direction=out ticks=65 terminal=hold shape=nil effect=fade-white",
   })
   assertExactEvents(second, 2, "setScroll", "flyin", SCROLL_KEYS, {
     "atStepTick=0 engine=main bgSlot=0 dx=0 dy=192 ticks=0 effect=nil",

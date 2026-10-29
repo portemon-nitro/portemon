@@ -364,6 +364,22 @@ local function validPack()
   return scenes, cacheFs
 end
 
+-- Advances through the retail exit call into `sceneNumber` and past its
+-- init call plus entry stalls, so the next fixed update runs the scene's
+-- first case.
+---@param movie table opening movie
+---@param sceneNumber integer scene to enter
+local function enterScene(movie, sceneNumber)
+  while movie:sceneNumber() < sceneNumber do
+    movie:updateFixed()
+  end
+  local current = movie.current
+  while current ~= nil and current.handoff ~= nil do
+    movie:updateFixed()
+    current = movie.current
+  end
+end
+
 -- A scene-five filler that stages art and finishes on a bare duration:
 -- wipe and shutter isolation tests replace another scene and need a
 -- fifth scene that starts no effect of its own.
@@ -690,9 +706,7 @@ function T.started_wipe_effects_hold_the_close_step_for_their_authored_ticks()
   Assert.isFalse(wipeBoundary(2, 10, 48) == wipeBoundary(2, 10, 96), "early edges already slope with the scanline")
   local probeGraphics = movieGraphics()
   local probeMovie = openMovie(scenes, cacheFs, probeGraphics)
-  while probeMovie:sceneNumber() < 2 do
-    probeMovie:updateFixed()
-  end
+  enterScene(probeMovie, 2)
   for _ = 1, 27 do
     probeMovie:updateFixed()
   end
@@ -815,9 +829,7 @@ function T.started_wipe_effects_hold_the_close_step_for_their_authored_ticks()
   end
   local otherGraphics = movieGraphics()
   local otherMovie = openMovie(otherScenes, otherCache, otherGraphics)
-  while otherMovie:sceneNumber() < 2 do
-    otherMovie:updateFixed()
-  end
+  enterScene(otherMovie, 2)
   for _ = 1, 27 do
     otherMovie:updateFixed()
   end
@@ -854,8 +866,12 @@ function T.started_wipe_effects_hold_the_close_step_for_their_authored_ticks()
   end
   otherMovie:dispose()
   Assert.isTrue(movie:isFinished(), "the movie finishes within its bounded run")
-  Assert.equal(entries[2], 90, "scene 2 still starts on its authored tick")
-  Assert.equal(entries[3], 125, "the close step holds exactly the wipe's ten authored ticks")
+  Assert.equal(entries[2], 90 + 1, "scene 2 still starts on its authored tick after scene 1's exit call")
+  Assert.equal(
+    entries[3],
+    91 + 4 + 35 + 1,
+    "the close step holds exactly the wipe's ten authored ticks between scene 2's init stalls and exit calls"
+  )
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the wipe step leaves no handle behind")
 end
@@ -988,14 +1004,18 @@ function T.preflight_holds_at_most_three_scene_graphs_while_readying_all_five()
   stopWatching()
   Assert.isTrue(ok, "bounded preflight still readies a drawable movie: " .. tostring(failure))
   Assert.equal(#rendered, 5, "every scene proves its first frame before handoff, never a manifest-only check")
-  for sceneNumber = 1, 5 do
-    Assert.equal(rendered[sceneNumber], sceneNumber, "preflight renders scenes in retail order without overlap")
+  -- The town scene stages last and stays resident so its 3D build never
+  -- blocks the first handoff mid-movie; the lighter panoramas still
+  -- preflight as transients in between, keeping the peak at three graphs.
+  for index, sceneNumber in ipairs({ 1, 2, 4, 5, 3 }) do
+    Assert.equal(rendered[index], sceneNumber, "preflight renders every scene without overlap")
   end
-  Assert.isTrue(tracker.peak <= 3, "at most two retained graphs plus one transient coexist, peak " .. tracker.peak)
+  Assert.isTrue(tracker.peak <= 3, "at most three scene graphs coexist, peak " .. tracker.peak)
   Assert.equal(tracker.unattributed, 0, "every staged image attributes to exactly one scene graph")
   Assert.isTrue((tracker.liveByScene[1] or 0) > 0, "the current scene graph stays resident")
   Assert.isTrue((tracker.liveByScene[2] or 0) > 0, "the next scene graph stays resident")
-  for sceneNumber = 3, 5 do
+  Assert.isTrue((tracker.liveByScene[3] or 0) > 0, "the town scene graph stays resident for the first handoff")
+  for sceneNumber = 4, 5 do
     Assert.equal(
       tracker.liveByScene[sceneNumber] or 0,
       0,
@@ -1021,7 +1041,7 @@ function T.preflight_holds_at_most_three_scene_graphs_while_readying_all_five()
     ticks = ticks + 1
     movie:draw()
   end
-  Assert.equal(movie:sceneNumber(), 3, "the retained graphs hand off to a lazily acquired third scene")
+  Assert.equal(movie:sceneNumber(), 3, "the retained graphs hand off to a prefetched third scene")
   Assert.isTrue(tracker.peak <= 3, "playback prefetch never exceeds the preflight bound, peak " .. tracker.peak)
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "disposing the preflighted movie releases every handle")
@@ -1030,6 +1050,27 @@ function T.preflight_holds_at_most_three_scene_graphs_while_readying_all_five()
       Assert.equal(handle.releaseCount, 1, "every acquired handle is released exactly once")
     end
   end
+end
+
+-- The town scene stays resident from construction so the first handoff
+-- never blocks on synchronous acquisition mid-movie: the handoff adopts
+-- the retained slot instead of rebuilding it while the soundtrack plays.
+function T.town_scene_stays_ready_across_the_first_handoff()
+  local scenes, cacheFs = validPack()
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local ready = assert(movie.nextNextSlot, "the town scene stages alongside the first two scenes")
+  Assert.equal(ready.sceneNumber, 3, "the prefetched slot names the upcoming town scene")
+  Assert.equal(ready.sceneTick, 0, "the prefetched town scene starts on its first tick")
+  local ticks = 0
+  while movie:sceneNumber() == 1 and ticks < 5000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  Assert.equal(movie:sceneNumber(), 2, "playback reaches the second scene")
+  Assert.equal(movie.nextSlot, ready, "the handoff adopts the retained town scene without rebuilding it")
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "disposing releases the retained prefetch exactly once")
 end
 
 function T.later_scene_preflight_failure_releases_every_owner_and_stays_reusable()
@@ -1087,7 +1128,10 @@ function T.later_scene_preflight_failure_releases_every_owner_and_stays_reusable
     Assert.isNil(movie, "a failed preflight never publishes a partial movie")
     Assert.isFalse(ok, "a scene-five render failure surfaces explicitly")
     Assert.equal(failure, sentinel, "a transient render failure propagates the original error value")
-    Assert.equal(#rendered, 5, "the fifth scene renders after the earlier scenes preflighted")
+    -- The town scene stages last and stays resident, so the failing
+    -- fifth scene renders after scenes 1, 2, and 4 proved out; the
+    -- retained town preflight never runs on this path.
+    Assert.equal(#rendered, 4, "the fifth scene renders after the earlier scenes preflighted")
     Assert.equal(liveHandles(graphics), 0, "a scene-five failure releases every staged handle and canvas")
     for _, group in ipairs({ graphics.images, graphics.canvases, graphics.meshes or {} }) do
       for _, handle in ipairs(group) do
@@ -1344,8 +1388,13 @@ function T.scene_five_shutter_opens_main_center_out_before_sub_bottom_up_and_wai
     ticks = ticks + 1
   end
   Assert.equal(movie:sceneNumber(), 5, "playback reaches the shutter scene")
-  -- The newly entered case first runs on the following update: its entry
-  -- arms the ordered line shutter there and opens the first main step.
+  -- The newly entered scene spends its init call plus three entry stalls,
+  -- and its first case runs on the following update: its entry arms the
+  -- ordered line shutter there and opens the first main step.
+  for _ = 1, 4 do
+    movie:updateFixed()
+    Assert.isNil(movie.current.shutter, "the init stalls arm no shutter")
+  end
   movie:updateFixed()
   local slot = assert(movie.current, "the running movie owns its current slot")
   local step = assert(slot.manifest.timeline.steps[slot.stepIndex], "the movie stays on a known step")
