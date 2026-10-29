@@ -2,6 +2,7 @@
 -- footer and overlay-table flag semantics follow GBATEK's DS overlay file
 -- format. Uncompressed overlays are returned unchanged by the caller.
 
+local ffi = require("ffi")
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local Errors = require("libs.errors.src.Errors")
 
@@ -48,15 +49,22 @@ local function _decode(bytes, expectedSize)
     )
   end
 
-  local output = {}
-  local rawPrefixLength = #bytes - packedLength
-  for offset = 0, rawPrefixLength - 1 do
-    output[offset] = string.byte(bytes, offset + 1)
+  -- The owning string stays reachable for the whole pointer use below, so the
+  -- borrowed view can never outlive its bytes.
+  local size = #bytes
+  local source = ffi.cast("const uint8_t *", bytes)
+  local output = ffi.new("uint8_t[?]", outputLength)
+  local rawPrefixLength = size - packedLength
+  -- size is a validated whole-byte count and packedLength derives from an
+  -- integer header word, so the prefix length is integral.
+  ---@cast rawPrefixLength integer
+  if rawPrefixLength > 0 then
+    ffi.copy(output, bytes, rawPrefixLength)
   end
-  local sourceOffset = #bytes - headerLength - 1
+  local sourceOffset = size - headerLength - 1
   local outputOffset = outputLength - 1
   while sourceOffset >= rawPrefixLength and outputOffset >= rawPrefixLength do
-    local flags = string.byte(bytes, sourceOffset + 1)
+    local flags = tonumber(source[sourceOffset])
     sourceOffset = sourceOffset - 1
     local mask = 128
     while mask > 0 and outputOffset >= rawPrefixLength do
@@ -64,14 +72,16 @@ local function _decode(bytes, expectedSize)
         if sourceOffset - 1 < rawPrefixLength then
           Errors.raise("OVERLAY_COMPRESSION_STREAM_INVALID", "truncated backwards-LZ match", {})
         end
-        local first = string.byte(bytes, sourceOffset + 1)
-        local second = string.byte(bytes, sourceOffset)
+        local first = tonumber(source[sourceOffset])
+        local second = tonumber(source[sourceOffset - 1])
         sourceOffset = sourceOffset - 2
         local length = math.floor(first / (2 ^ MATCH_LENGTH_NIBBLE_BITS)) + MIN_MATCH_LENGTH
         local displacement = (first % (2 ^ MATCH_LENGTH_NIBBLE_BITS)) * 256 + second + MIN_DISPLACEMENT
         for _ = 1, length do
           local copyOffset = outputOffset + displacement
-          if copyOffset >= outputLength or output[copyOffset] == nil then
+          -- Only already-written tail bytes and the verified raw prefix are
+          -- readable; anything else is an out-of-bounds reference.
+          if copyOffset >= outputLength or (copyOffset >= rawPrefixLength and copyOffset <= outputOffset) then
             Errors.raise(
               "OVERLAY_COMPRESSION_STREAM_INVALID",
               "backwards-LZ match is out of bounds",
@@ -88,7 +98,7 @@ local function _decode(bytes, expectedSize)
         if sourceOffset < rawPrefixLength then
           Errors.raise("OVERLAY_COMPRESSION_STREAM_INVALID", "truncated backwards-LZ literal", {})
         end
-        output[outputOffset] = string.byte(bytes, sourceOffset + 1)
+        output[outputOffset] = source[sourceOffset]
         sourceOffset = sourceOffset - 1
         outputOffset = outputOffset - 1
       end
@@ -102,11 +112,7 @@ local function _decode(bytes, expectedSize)
       { remaining = outputOffset - rawPrefixLength + 1 }
     )
   end
-  local chunks = {}
-  for offset = 0, outputLength - 1 do
-    chunks[offset + 1] = string.char(output[offset])
-  end
-  return table.concat(chunks)
+  return ffi.string(output, outputLength)
 end
 
 function OverlayCompression.decode(bytes, expectedSize)
