@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
+local BattleTimelineCore = require("game.hgss.src.battle.BattleTimeline")
 local MonCache = require("libs.assets.src.MonCache")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 
@@ -1077,6 +1078,7 @@ function T.opening_presentation_starts_with_the_native_trainer_visibility()
       {
         role = "player",
         selector = "back:PKMN_TRAINER_ETHAN",
+        sourceSequence = 2,
         x = 336,
         y = 112,
         frame = 0,
@@ -1103,6 +1105,7 @@ function T.opening_presentation_starts_with_the_native_trainer_visibility()
       {
         role = "player",
         selector = "back:PKMN_TRAINER_ETHAN",
+        sourceSequence = 2,
         x = 336,
         y = 112,
         frame = 0,
@@ -1112,6 +1115,7 @@ function T.opening_presentation_starts_with_the_native_trainer_visibility()
       {
         role = "foe",
         selector = "front:YOUNGSTER",
+        sourceSequence = 2,
         x = -80,
         y = 50,
         frame = 0,
@@ -1139,6 +1143,7 @@ function T.opening_trainer_slides_start_together_and_follow_the_source_ticks()
   Assert.deepEqual(slides[1], {
     role = "player",
     selector = "back:PKMN_TRAINER_ETHAN",
+    sourceSequence = 2,
     x = 336,
     y = 112,
     frame = 0,
@@ -1148,6 +1153,7 @@ function T.opening_trainer_slides_start_together_and_follow_the_source_ticks()
   Assert.deepEqual(slides[2], {
     role = "foe",
     selector = "front:YOUNGSTER",
+    sourceSequence = 2,
     x = -80,
     y = 50,
     frame = 0,
@@ -1175,7 +1181,277 @@ function T.opening_trainer_slides_start_together_and_follow_the_source_ticks()
   Assert.equal(slides[2].phase, "intro-settle", "the foe trainer completes the slide")
 end
 
-function T.player_send_out_draws_the_semantic_ball_through_its_source_arc()
+function T.opening_trainer_frames_advance_while_the_source_slide_runs()
+  local timeline = BattleTimeline.new({ sound = function(_) end })
+  local view = openingView()
+  view.playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" }
+  view.foeTrainers = { { classKey = "YOUNGSTER", name = "WHITNEY" } }
+  timeline:reset(view)
+  timeline:intro(view, false)
+
+  local seenPlayerFrames = {}
+  local seenFoeFrames = {}
+  for _ = 1, 62 do
+    advance(timeline, TICK)
+    local slides = assert(timeline:openingPresentation().trainerSlides)
+    seenPlayerFrames[slides[1].frame] = true
+    seenFoeFrames[slides[2].frame] = true
+  end
+  Assert.isTrue(seenPlayerFrames[1] or seenPlayerFrames[2], "the player backpic advances from its first source frame")
+  Assert.isTrue(seenFoeFrames[1] or seenFoeFrames[2], "the foe frontpic advances from its first source frame")
+end
+
+function T.zero_duration_trainer_frames_advance_without_duration_normalization()
+  local timeline = BattleTimeline.new({ sound = function(_) end })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, false)
+  local track = timeline._trainerSlideTracks[1]
+  track.frames[1].durationTicks = 0
+  advance(timeline, TICK)
+  Assert.equal(track.frame, 1, "a zero-duration source frame advances without being normalized to one tick")
+end
+
+function T.trainer_animation_tracks_preserve_reverse_modes_and_loop_boundaries()
+  local function timelineWithMode(playMode, loopStartFrameIdx)
+    local view = openingView()
+    local fixture = BattleTimeline.new({ sound = function(_) end })
+    fixture:reset(view)
+    local trainerPictures = fixture._trainerPictures
+    local animation = trainerPictures["front:YOUNGSTER"].animation.sequences[3]
+    animation.playMode = playMode
+    animation.loopStartFrameIdx = loopStartFrameIdx
+    animation.frames[1].durationTicks = 1
+    animation.frames[2].durationTicks = 1
+    animation.frames[3] = {
+      sourceFrame = 2,
+      userAttr = 0,
+      durationTicks = 1,
+    }
+    local timeline = BattleTimelineCore.new({
+      sound = function(_) end,
+      messageText = function() return "" end,
+      trainerPictures = trainerPictures,
+    })
+    timeline:reset(view)
+    timeline:intro(view, false)
+    local track = timeline._trainerSlideTracks[2]
+    return timeline, track
+  end
+
+  local reverseLoop, reverseLoopTrack = timelineWithMode("reverse_loop", 0)
+  advance(reverseLoop, TICK)
+  Assert.equal(
+    reverseLoopTrack.frame,
+    1,
+    "reverse-loop source animation first advances toward its sequence end; got " .. tostring(reverseLoopTrack.frame)
+  )
+  advance(reverseLoop, TICK)
+  Assert.equal(reverseLoopTrack.frame, 2, "reverse-loop source animation reaches its final source frame")
+  advance(reverseLoop, TICK)
+  Assert.equal(reverseLoopTrack.frame, 2, "reverse-loop source animation turns at its end without skipping a source tick")
+  advance(reverseLoop, TICK)
+  Assert.equal(reverseLoopTrack.frame, 1, "reverse-loop source animation returns toward its source loop frame")
+  advance(reverseLoop, TICK)
+  Assert.equal(reverseLoopTrack.frame, 0, "reverse-loop source animation reaches its source loop frame")
+  advance(reverseLoop, TICK)
+  Assert.equal(reverseLoopTrack.frame, 0, "reverse-loop source animation turns at its loop frame without skipping a tick")
+  advance(reverseLoop, TICK)
+  Assert.equal(reverseLoopTrack.frame, 1, "reverse-loop source animation repeats the source cycle")
+
+  local reverse, reverseTrack = timelineWithMode("reverse", 1)
+  Assert.equal(reverseTrack.frame, 1, "trainer sequence starts at its source loop frame")
+  advance(reverse, TICK)
+  Assert.equal(reverseTrack.frame, 2, "reverse source animation begins at its declared loop frame and advances")
+  advance(reverse, TICK)
+  Assert.equal(reverseTrack.frame, 2, "reverse source animation turns at its end without skipping a source tick")
+  advance(reverse, TICK)
+  Assert.equal(reverseTrack.frame, 1, "reverse source animation returns to its declared loop frame")
+  advance(reverse, TICK)
+  Assert.equal(reverseTrack.frame, 0, "reverse source animation stops at the frame before its loop boundary")
+  Assert.isFalse(reverseTrack.animationActive, "non-loop reverse source animation stops at its loop boundary")
+end
+
+function T.trainer_user_attributes_drive_flash_and_encounter_completion()
+  local timeline = BattleTimeline.new({ sound = function(_) end })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, false)
+
+  local sawSourceFlash = false
+  for _ = 1, 100 do
+    advance(timeline, TICK)
+    local presentation = assert(timeline:openingPresentation())
+    sawSourceFlash = sawSourceFlash or presentation.trainerFlashCoefficient == 16
+    if timeline._trainerSlideTracks[1].encounterComplete and timeline._trainerSlideTracks[2].encounterComplete then
+      break
+    end
+  end
+  Assert.isTrue(sawSourceFlash, "frontpic user attr 1 starts the source brightness flash")
+  Assert.isTrue(
+    timeline._trainerSlideTracks[1].encounterComplete,
+    "player-facing trainer task completes at slide arrival"
+  )
+  Assert.equal(
+    timeline:openingPresentation().trainerSlides[1].sourceSequence,
+    2,
+    "the player backpic keeps its source entry sequence until the throw begins"
+  )
+  Assert.isFalse(
+    timeline._trainerSlideTracks[1].encounterWaiting,
+    "player-facing trainer tasks do not wait on backpic UAAT attributes"
+  )
+  Assert.isTrue(
+    timeline._trainerSlideTracks[2].encounterComplete,
+    "frontpic user attr 0xFFF completes its encounter task"
+  )
+end
+
+function T.trainer_user_attributes_select_the_requested_source_sequence()
+  local timeline = BattleTimeline.new({ sound = function(_) end })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, false)
+
+  local foeTrack = timeline._trainerSlideTracks[2]
+  for _ = 1, 80 do
+    advance(timeline, TICK)
+    if foeTrack.encounterWaiting then
+      break
+    end
+  end
+  Assert.isTrue(foeTrack.encounterWaiting, "the foe task waits after selecting its source sequence")
+  foeTrack.frames[1].userAttr = 0x101
+  foeTrack.frames[1].durationTicks = 1
+  advance(timeline, TICK)
+  Assert.equal(
+    timeline:openingPresentation().trainerSlides[2].sourceSequence,
+    0,
+    "UAAT animation 1 selects source sequence zero"
+  )
+  Assert.isTrue(foeTrack.encounterComplete, "a source animation switch completes the foe encounter task")
+  Assert.equal(foeTrack.frame, 0, "the new animation begins on frame zero on the next source tick")
+  Assert.equal(foeTrack.frameElapsed, 0, "the old sequence duration does not advance the new sequence")
+end
+
+function T.trainer_opening_tracks_every_multi_battle_trainer_once()
+  local function foe(combatant, position)
+    return {
+      combatant = combatant,
+      participant = combatant,
+      side = 2,
+      controller = "trainer",
+      active = true,
+      position = position,
+      activation = combatant,
+      hp = 45,
+      maxHp = 45,
+      species = "GEODUDE",
+      form = 0,
+      name = "FOE " .. tostring(position),
+      selector = "front",
+      experience = 8000,
+    }
+  end
+  local function openingViewWithTrainers(trainers)
+    local view = openingView()
+    view.foes = { foe(3, 3), foe(4, 4) }
+    view.foeTrainers = trainers
+    return view
+  end
+  local ordinary = openingViewWithTrainers({ { classKey = "YOUNGSTER", name = "WHITNEY" } })
+  local timeline = BattleTimeline.new({ sound = function(_) end })
+  timeline:reset(ordinary)
+  timeline:intro(ordinary, false)
+  local ordinarySlides = assert(timeline:openingPresentation().trainerSlides)
+  local ordinaryFoes = 0
+  for _, slide in ipairs(ordinarySlides) do
+    if slide.role == "foe" then
+      ordinaryFoes = ordinaryFoes + 1
+      Assert.equal(slide.selector, "front:YOUNGSTER", "ordinary doubles keeps its single physical opponent")
+    end
+  end
+  Assert.equal(ordinaryFoes, 1, "ordinary doubles does not duplicate the opponent trainer")
+
+  local multi = openingViewWithTrainers({
+    { classKey = "YOUNGSTER", name = "WHITNEY" },
+    { classKey = "LASS", name = "VIOLET" },
+  })
+  timeline:reset(multi)
+  timeline:intro(multi, false)
+  local multiSlides = assert(timeline:openingPresentation().trainerSlides)
+  local foeSelectors = {}
+  for _, slide in ipairs(multiSlides) do
+    if slide.role == "foe" then
+      foeSelectors[#foeSelectors + 1] = slide.selector
+    end
+  end
+  Assert.deepEqual(
+    foeSelectors,
+    { "front:YOUNGSTER", "front:LASS" },
+    "a multi battle stages each source trainer exactly once in roster order"
+  )
+end
+
+function T.multi_trainer_sendout_exits_only_its_source_participant()
+  local timeline = BattleTimeline.new({ sound = function(_) end, textSpeed = "fastest" })
+  local view = openingView()
+  view.foeTrainers = {
+    { classKey = "YOUNGSTER", name = "WHITNEY" },
+    { classKey = "LASS", name = "VIOLET" },
+  }
+  view.participants = {
+    { participant = 3, side = 2, controller = "trainer:3" },
+    { participant = 4, side = 2, controller = "trainer:4" },
+  }
+  view.foes = {
+    { combatant = 3, participant = 3, active = true, position = 3, side = 2, name = "FOE 1", ballKey = "POKE_BALL" },
+    { combatant = 4, participant = 4, active = true, position = 4, side = 2, name = "FOE 2", ballKey = "POKE_BALL" },
+  }
+  timeline:reset(view)
+  timeline:intro(view, false)
+
+  local firstTrainerExitedAlone = false
+  for _ = 1, 1200 do
+    if timeline:messageActive() then
+      timeline:ack()
+    end
+    advance(timeline, TICK)
+    local slides = assert(timeline:openingPresentation().trainerSlides)
+    if slides[2].visible == false and slides[3].visible == true then
+      firstTrainerExitedAlone = true
+      break
+    end
+  end
+  Assert.isTrue(firstTrainerExitedAlone, "the first foe sendout leaves its partner trainer present")
+end
+
+function T.trainer_exit_finishes_before_the_player_sendout_is_visible()
+  local timeline = BattleTimeline.new({ sound = function(_) end, textSpeed = "fastest" })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, false)
+
+  local ownVisible = false
+  local trainersVisibleAtSendout = nil
+  for _ = 1, 3000 do
+    advance(timeline, TICK)
+    if timeline:messageActive() then
+      timeline:ack()
+    end
+    local presentation = timeline:openingPresentation()
+    local own = battler(timeline:battlers(), 1)
+    if own.visible then
+      ownVisible = true
+      trainersVisibleAtSendout = presentation.playerTrainerVisible or presentation.foeTrainerVisible
+      break
+    end
+  end
+  Assert.isTrue(ownVisible, "the player send-out completes within the source opening")
+  Assert.isFalse(trainersVisibleAtSendout, "trainer sprites have left before the player's mon is revealed")
+end
+
+function T.player_send_out_draws_the_ball_from_its_source_trainer_anchor()
   local timeline = BattleTimeline.new({ sound = function(_) end, textSpeed = "fastest" })
   local view = openingView()
   timeline:reset(view)
@@ -1201,9 +1477,9 @@ function T.player_send_out_draws_the_semantic_ball_through_its_source_arc()
     end
   end
   Assert.notNil(firstVisibleTick, "the player send-out opens with its staged ball sprite")
-  Assert.equal(firstVisibleX, 10, "the single-battle player ball starts at the native throw origin")
-  Assert.equal(firstVisibleY, 100, "the player ball uses the native vertical origin")
-  Assert.equal(lastVisibleTick - firstVisibleTick + 1, 28, "the ball stays through the 12-tick throw and 16-tick open")
+  Assert.equal(firstVisibleX, 64, "the player ball follows the settled backpic x anchor")
+  Assert.equal(firstVisibleY, 240, "the player ball follows the staged backpic y anchor")
+  Assert.equal(lastVisibleTick - firstVisibleTick + 1, 21, "the ball stays until the source trainer exits to x=-40")
   local ball = timeline:openingPresentation().ballThrow
   Assert.isFalse(ball.visible, "the staged ball hides after its opening sequence")
 end
@@ -2804,11 +3080,13 @@ function T.wild_opening_follows_the_source_encounter_order()
   local sounds = sink()
   local timeline = BattleTimeline.new({ sound = sounds.sound })
   timeline:intro(openingView(), true)
-  Assert.deepEqual(
-    transcript(timeline, sounds),
-    { "cry:EEVEE:foe", "A wild FOE appeared!", "Go! LEAD!", "effect:SEQ_SE_DP_BOWA2", "cry:EEVEE:own" },
-    "the wild opening keeps the retail order and wording"
-  )
+  Assert.deepEqual(transcript(timeline, sounds), {
+    "cry:EEVEE:foe",
+    "A wild FOE appeared!",
+    "Go! LEAD!",
+    "effect:SEQ_SE_DP_BOWA2",
+    "cry:EEVEE:own",
+  }, "the wild opening keeps the retail order and wording")
 end
 
 -- Nickname-tagged lines address an enemy battler through the source

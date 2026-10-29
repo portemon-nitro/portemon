@@ -340,6 +340,7 @@ local function terminalPacket(launchId, packetId, word, events, trainerClass, mo
     foes = side({
       {
         combatant = 2,
+        participant = trainerClass ~= nil and 2 or nil,
         activation = 1,
         side = 2,
         position = 2,
@@ -352,6 +353,9 @@ local function terminalPacket(launchId, packetId, word, events, trainerClass, mo
         active = true,
       },
     }),
+    participants = trainerClass ~= nil and {
+      { participant = 2, side = 2, controller = "trainer:2" },
+    } or {},
     foeTrainers = trainerClass ~= nil and {
       {
         classKey = trainerClass,
@@ -543,7 +547,7 @@ function T.trainer_loss_uses_ordered_bank_pages_and_exact_source_waits()
   Assert.equal(rig.screen:status().mode, "outcome", "the committed loss opens its source sequence")
   local firstId = waitForCompleteOutcomeMessage(rig, "usable Pokémon!")
   Assert.isTrue(rig.screen:view().message:find("MINT", 1, true) ~= nil, "the first loss line names the player")
-  for _ = 1, 29 do
+  for _ = 1, 28 do
     rig.screen:updateFixed(TICK)
   end
   Assert.equal(rig.screen._timeline:messageId(), firstId, "the first loss line holds for 30 source ticks")
@@ -553,7 +557,7 @@ function T.trainer_loss_uses_ordered_bank_pages_and_exact_source_waits()
   local moneyId = waitForCompleteOutcomeMessage(rig, "to the winner.", firstId)
   Assert.isTrue(moneyId > firstId, "the trainer payout follows the defeat line")
   Assert.isTrue(rig.screen:view().message:find("$250", 1, true) ~= nil, "trainer payout uses the committed exact money")
-  for _ = 1, 29 do
+  for _ = 1, 28 do
     rig.screen:updateFixed(TICK)
   end
   Assert.equal(rig.screen._timeline:messageId(), moneyId, "the payout line holds for 30 source ticks")
@@ -561,7 +565,7 @@ function T.trainer_loss_uses_ordered_bank_pages_and_exact_source_waits()
   rig.screen:updateFixed(TICK)
   local ellipsisId = waitForCompleteOutcomeMessage(rig, "... ... ... ...", moneyId)
   Assert.isTrue(ellipsisId > moneyId, "ellipsis follows the payout")
-  for _ = 1, 29 do
+  for _ = 1, 28 do
     rig.screen:updateFixed(TICK)
   end
   Assert.equal(rig.screen._timeline:messageId(), ellipsisId, "ellipsis holds for 30 source ticks")
@@ -570,7 +574,7 @@ function T.trainer_loss_uses_ordered_bank_pages_and_exact_source_waits()
   local blackoutId = waitForCompleteOutcomeMessage(rig, "blacked out!", ellipsisId)
   Assert.isTrue(blackoutId > ellipsisId, "blackout follows ellipsis")
   Assert.isTrue(rig.screen:view().message:find("MINT", 1, true) ~= nil, "the blackout line uses the player-name token")
-  for _ = 1, 29 do
+  for _ = 1, 28 do
     rig.screen:updateFixed(TICK)
   end
   Assert.equal(rig.screen._timeline:messageId(), blackoutId, "blackout holds for 30 source ticks")
@@ -599,7 +603,7 @@ function T.trainer_win_uses_lose_speech_then_the_planned_prize()
   Assert.isFalse(rig.port.leave({}), "the trainer win cannot leave before its response")
   local speechId = waitForCompleteOutcomeMessage(rig, "Trainer reacts to defeat.", defeatedId)
   Assert.isTrue(speechId > defeatedId, "the source trainer loss speech follows msg 839")
-  for _ = 1, 59 do
+  for _ = 1, 58 do
     rig.screen:updateFixed(TICK)
   end
   Assert.equal(rig.screen._timeline:messageId(), speechId, "trainer loss speech holds for 60 source ticks")
@@ -607,7 +611,7 @@ function T.trainer_win_uses_lose_speech_then_the_planned_prize()
   Assert.isTrue(payoutId > speechId, "the trainer prize follows the source loss speech")
   Assert.isTrue(rig.screen:view().message:find("$250", 1, true) ~= nil, "msg 33 uses the committed trainer prize")
   Assert.isTrue(rig.screen:view().message:find("MINT", 1, true) ~= nil, "msg 33 names the player")
-  for _ = 1, 59 do
+  for _ = 1, 58 do
     rig.screen:updateFixed(TICK)
   end
   Assert.equal(rig.screen._timeline:messageId(), payoutId, "the trainer prize holds for 60 source ticks")

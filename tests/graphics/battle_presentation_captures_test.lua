@@ -14,6 +14,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
+local BattleTimelineFixture = require("game.hgss.tests.support.BattleTimelineFixture")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
@@ -21,6 +22,7 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local Hashing = require("romdump.src.digest.Hashing")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local MonCache = require("libs.assets.src.MonCache")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
@@ -220,13 +222,19 @@ end
 ---@param cacheFs table versioned derived cache
 ---@param kind "icons"|"portraits" page family
 ---@param pageId integer demanded page identity
+---@param manifest table page inventory that owns this page
+---@param versionId string staged ROM version identity
 ---@param what string assertion context
-local function requirePage(cacheFs, kind, pageId, what)
-  local marker = assert(
-    cacheFs:read(MonCache.pageMarkerPath(kind, pageId)),
-    what .. " has its page completion marker"
-  )
-  Assert.isTrue(MonCache.isPageReady(cacheFs, kind, pageId, marker), what .. " has its complete page image")
+local function requirePage(cacheFs, kind, pageId, manifest, versionId, what)
+  local declared = false
+  for _, declaredPageId in ipairs(manifest.pageIds) do
+    declared = declared or declaredPageId == pageId
+  end
+  Assert.isTrue(declared, what .. " appears in its staged page manifest")
+  local version = assert(GameVersion.info(versionId), what .. " has a known ROM identity")
+  local expectedMarker =
+    MonCache.marker(version.sha1, Hashing.hashLua({ kind = kind, pageId = pageId, manifest = manifest }))
+  Assert.isTrue(MonCache.isPageReady(cacheFs, kind, pageId, expectedMarker), what .. " has its complete staged page")
 end
 
 -- Mirrors the envelope's demand validation so the capture harness stages
@@ -235,7 +243,8 @@ end
 -- planned with a ready page.
 ---@param cacheFs table versioned derived cache
 ---@param pageKey string demand portrait key under validation
-local function requirePortraitKey(cacheFs, pageKey)
+---@param versionId string staged ROM version identity
+local function requirePortraitKey(cacheFs, pageKey, versionId)
   local species, form, facing = tostring(pageKey):match("^([^/]+)/([0-9]+)/([a-z]+)$")
   local portraits =
     assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the staged cache carries its portrait manifest")
@@ -244,14 +253,18 @@ local function requirePortraitKey(cacheFs, pageKey)
     -- Exact canonical selectors validate their single staged entry and
     -- page: no expansion, no guessed variant.
     local entry = assert(entries[pageKey], "the staged manifest plans " .. pageKey)
-    requirePage(cacheFs, "portraits", entry.pageId, "portrait page " .. tostring(entry.pageId) .. " for " .. pageKey)
+    requirePage(
+      cacheFs,
+      "portraits",
+      entry.pageId,
+      portraits,
+      versionId,
+      "portrait page " .. tostring(entry.pageId) .. " for " .. pageKey
+    )
     return
   end
   Assert.notNil(form, "portrait demands name their form: " .. pageKey)
   Assert.isTrue(facing == "front" or facing == "back", "portrait demands name their facing: " .. pageKey)
-  local portraits =
-    assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the staged cache carries its portrait manifest")
-  local entries = assert(portraits.entries, "the staged portrait manifest carries entries")
   for _, gender in ipairs({ "male", "female" }) do
     for _, finish in ipairs({ "plain", "shiny" }) do
       local selector = MonCache.portraitSelector(species, tonumber(form), gender, finish == "shiny", facing)
@@ -260,6 +273,8 @@ local function requirePortraitKey(cacheFs, pageKey)
         cacheFs,
         "portraits",
         entry.pageId,
+        portraits,
+        versionId,
         "portrait page " .. tostring(entry.pageId) .. " for " .. selector
       )
     end
@@ -462,7 +477,7 @@ local function captureServices(scope, cacheFs, versionId)
       images["mon:" .. femaleBackSelector] = cellHandle(croppedImage)
     end
   end
-  local services = { prepared = {} }
+  local services = { prepared = {}, drawableKeys = {} }
   local stagedSceneLayer = nil
   function services.prepare(demand)
     Assert.isTrue(type(demand) == "table", versionId .. " demands arrive as records")
@@ -510,13 +525,20 @@ local function captureServices(scope, cacheFs, versionId)
       }
     end
     for _, page in ipairs(demand.pages or {}) do
-      requirePortraitKey(cacheFs, page)
+      requirePortraitKey(cacheFs, page, versionId)
     end
     local iconManifest = cacheFs:loadLua(MonCache.iconManifestPath())
     for _, iconKey in ipairs(demand.iconKeys or {}) do
       local entry = type(iconManifest) == "table" and iconManifest.entries[iconKey] or nil
       Assert.notNil(entry, versionId .. " stages demanded icon " .. tostring(iconKey))
-      requirePage(cacheFs, "icons", entry.pageId, versionId .. " stages icon page " .. tostring(entry.pageId))
+      requirePage(
+        cacheFs,
+        "icons",
+        entry.pageId,
+        iconManifest,
+        versionId,
+        versionId .. " stages icon page " .. tostring(entry.pageId)
+      )
     end
     return true
   end
@@ -525,6 +547,7 @@ local function captureServices(scope, cacheFs, versionId)
   end
   function services.drawable(key)
     assert(type(key) == "string" and key ~= "", "image resolution names its key")
+    services.drawableKeys[#services.drawableKeys + 1] = key
     local stored = images[key]
     if stored == nil then
       return nil
@@ -826,6 +849,21 @@ local function drivePacketToCommand(screen, versionId, packet, kind)
     ticks = ticks + 1
   end
   local status = screen:status()
+  local opening = screen:view().openingPresentation
+  local trainerStates = {}
+  for index, slide in ipairs(type(opening) == "table" and opening.trainerSlides or {}) do
+    local track = screen._timeline._trainerSlideTracks[index]
+    trainerStates[#trainerStates + 1] = table.concat({
+      tostring(slide.role),
+      tostring(slide.phase),
+      tostring(slide.visible),
+      tostring(slide.x),
+      tostring(slide.sourceSequence),
+      tostring(slide.frame),
+      tostring(track.throwPending),
+      tostring(track.animationActive),
+    }, "/")
+  end
   Assert.notNil(
     status.request,
     versionId
@@ -837,6 +875,8 @@ local function drivePacketToCommand(screen, versionId, packet, kind)
       .. tostring(screen._timeline:message())
       .. ", timelineBusy="
       .. tostring(screen._timeline:busy())
+      .. ", trainers="
+      .. table.concat(trainerStates, ";")
       .. ")"
   )
   Assert.equal(screen:status().mode, "command", versionId .. " rests on the command view")
@@ -2092,20 +2132,15 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
 
     local function captureTargetGender(targetGender)
       local genderMeasurement = dualMeasurement()
-      local genderScreen, genderImages, genderPortraitCells = captureScreen(
-        scope,
-        cacheFs,
-        versionId,
-        genderMeasurement,
-        {
+      local genderScreen, genderImages, genderPortraitCells =
+        captureScreen(scope, cacheFs, versionId, genderMeasurement, {
           monCatalog = {
             move = function(_, key)
               Assert.equal(key, "TACKLE", versionId .. " resolves the comparison target range")
               return { range = 4 }
             end,
           },
-        }
-      )
+        })
       for _, portrait in ipairs(portraitSpecs) do
         local image, pixels = cropPortrait(scope, cacheFs, portrait.selector, portrait.pageId)
         genderImages["mon:" .. portrait.selector] = cellHandle(image)
@@ -2173,7 +2208,17 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
     }
     for _, icon in ipairs(targetIconSources) do
       local _, frames = cropIconFrames(scope, cacheFs, icon.key)
-      local source = assert(frames[1], versionId .. " carries frame 1 for " .. icon.key)
+      local frameIndex = nil
+      for _, target in ipairs(assert(screen:view().targets, versionId .. " publishes the target icon frame")) do
+        if target.iconKey == icon.key then
+          frameIndex = target.iconFrameIndex
+          break
+        end
+      end
+      local source = assert(
+        type(frameIndex) == "number" and frames[frameIndex],
+        versionId .. " carries selected frame " .. tostring(frameIndex) .. " for " .. icon.key
+      )
       local rect = {
         x = interactionFrame.x + icon.center.x - 16,
         y = interactionFrame.y + icon.center.y - 16,
@@ -2182,7 +2227,21 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
       }
       local matches, occupied = countSourceMatches(targetPixels, source, rect, rect.x, rect.y)
       Assert.isTrue(occupied > 100, versionId .. " samples visible source icon pixels for " .. icon.key)
-      Assert.isTrue(matches / occupied > 0.9, versionId .. " paints native icon pixels at their source anchor")
+      Assert.isTrue(
+        matches / occupied > 0.9,
+        versionId
+          .. " paints native icon pixels at their source anchor for "
+          .. icon.key
+          .. " ("
+          .. tostring(matches)
+          .. "/"
+          .. tostring(occupied)
+          .. ", rect="
+          .. tostring(rect.x)
+          .. ","
+          .. tostring(rect.y)
+          .. ")"
+      )
     end
     for _, blank in ipairs({ { x = 0, y = 8, width = 121, height = 73 }, { x = 136, y = 8, width = 120, height = 73 } }) do
       blank.x = interactionFrame.x + blank.x
@@ -3235,6 +3294,425 @@ function T.indexed_portrait_page_resolves_through_its_staged_palette(scope, _)
   end
 end
 
+function T.multi_trainer_timeline_slides_draw_at_distinct_native_origins(scope)
+  local timeline = BattleTimelineFixture.new()
+  local view = {
+    round = 1,
+    status = "running",
+    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "ETHAN" },
+    foeTrainers = {
+      { classKey = "YOUNGSTER", name = "WHITNEY" },
+      { classKey = "LASS", name = "VIOLET" },
+    },
+    participants = {
+      { participant = 3, side = 2, controller = "trainer:3" },
+      { participant = 4, side = 2, controller = "trainer:4" },
+    },
+    own = {
+      { combatant = 1, participant = 1, side = 1, active = true, species = "EEVEE", form = 0, name = "LEAD" },
+    },
+    foes = {
+      { combatant = 3, participant = 3, side = 2, position = 3, active = true, species = "EEVEE", form = 0, name = "LEFT" },
+      { combatant = 4, participant = 4, side = 2, position = 4, active = true, species = "EEVEE", form = 0, name = "RIGHT" },
+    },
+    environment = {},
+  }
+  timeline:reset(view)
+  timeline:intro(view, false)
+  local opening = assert(timeline:openingPresentation(), "the source timeline owns its trainer slides")
+  opening.terrainSlides = {}
+  local selectors = { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER", "front:LASS" }
+  local colors = { { 1, 0, 0, 1 }, { 0, 1, 0, 1 }, { 0, 0, 1, 1 } }
+  local positions = { { x = 20, y = 20 }, { x = 80, y = 40 }, { x = 160, y = 80 } }
+  local images = {}
+  local requested = {}
+  for index, selector in ipairs(selectors) do
+    local slide = assert(opening.trainerSlides[index], "the multi-trainer opening preserves roster order")
+    Assert.equal(slide.selector, selector, "the timeline retains each exact trainer identity")
+    local entry = assert(timeline._trainerPictures[selector], "the timeline stages the selected trainer sequence")
+    local sequence = entry.animation.sequences[slide.sourceSequence + 1]
+    local frame = assert(sequence.frames[slide.frame + 1], "the current slide selects a staged source frame")
+    slide.drawableKey = frame.drawableKey
+    slide.x = positions[index].x - frame.rasterOffset.x
+    slide.y = positions[index].y - frame.rasterOffset.y
+    local data = scope:own(love.image.newImageData(8, 8, "rgba8"))
+    for y = 0, 7 do
+      for x = 0, 7 do
+        data:setPixel(x, y, colors[index][1], colors[index][2], colors[index][3], colors[index][4])
+      end
+    end
+    images[frame.drawableKey] = scope:own(love.graphics.newImage(data))
+  end
+  Assert.equal(#opening.trainerSlides, 3, "the player and both source opponent trainers remain present")
+
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  BattleRenderer.drawPane({
+    graphics = love.graphics,
+    text = {},
+    windows = { drawWindow = function() end },
+    assets = {
+      drawable = function(_, key)
+        if type(key) == "string" and key:match("^trainer:") ~= nil then
+          requested[#requested + 1] = key
+        end
+        return images[key]
+      end,
+    },
+    frameKey = "unused",
+    sceneImageKey = "unused",
+  }, {
+    battlers = {},
+    effectInstances = {},
+    slotGeometry = {},
+    hudSections = {},
+    message = "",
+    openingPresentation = opening,
+  }, "detail", {}, {})
+  love.graphics.setCanvas()
+  local pixels = scope:own(canvas:newImageData())
+  Assert.deepEqual(requested, {
+    opening.trainerSlides[1].drawableKey,
+    opening.trainerSlides[2].drawableKey,
+    opening.trainerSlides[3].drawableKey,
+  }, "the renderer resolves both foe trainers in timeline order")
+  for index, position in ipairs(positions) do
+    local red, green, blue, alpha = pixels:getPixel(position.x + 1, position.y + 1)
+    Assert.deepEqual(
+      { red, green, blue, alpha },
+      colors[index],
+      "the renderer composes trainer " .. selectors[index] .. " at its native origin"
+    )
+  end
+end
+
+-- The production battle screen must draw each selected trainer frame and
+-- ball frame from the C02 cache into real pixels. Disposing during the
+-- throw releases every frame drawable already borrowed by the screen.
+function T.trainer_intro_draws_c02_frames_and_releases_throw_assets(scope, _)
+  local versions = readyVersions()
+  Assert.isTrue(#versions > 0, "trainer intro captures require a ready user-owned ROM cache")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = BattlePresentationCache.load(cacheFs)
+    local trainerEntries = assert(manifest.trainerPictures.entries, versionId .. " stages C02 trainer entries")
+    local backSelectors = {}
+    for selector in pairs(trainerEntries) do
+      if selector:match("^back:") ~= nil then
+        backSelectors[#backSelectors + 1] = selector
+      end
+    end
+    table.sort(backSelectors)
+    local playerSelector = nil
+    local playerEntry = nil
+    local backpicInventory = {}
+    for _, selector in ipairs(backSelectors) do
+      local entry = trainerEntries[selector]
+      local frames = type(entry.animation) == "table" and entry.animation.frames or nil
+      backpicInventory[#backpicInventory + 1] = selector .. ":" .. tostring(type(frames) == "table" and #frames or 0)
+      if type(entry.throwOffsets) == "table" then
+        playerSelector = selector
+        playerEntry = entry
+        break
+      end
+    end
+    Assert.notNil(
+      playerSelector,
+      versionId
+        .. " stages a player trainer with C02 throw anchors (backpic frames: "
+        .. table.concat(backpicInventory, ", ")
+        .. ")"
+    )
+    Assert.equal(#playerEntry.throwOffsets, 6, versionId .. " stages all six source throw anchors")
+    local hasSentinel = false
+    for _, offset in ipairs(playerEntry.throwOffsets) do
+      if offset.x == 32767 and offset.y == 32767 then
+        hasSentinel = true
+      end
+    end
+    Assert.isTrue(hasSentinel, versionId .. " stages a paired no-ball source anchor")
+    local playerClass = playerSelector:sub(#"back:" + 1)
+    local frontSelector = nil
+    local frontEntry = nil
+    local frontFrames = nil
+    local frontInventory = {}
+    for selector, entry in pairs(trainerEntries) do
+      if selector:match("^front:") ~= nil then
+        local sequence = type(entry.animation) == "table"
+            and type(entry.animation.sequences) == "table"
+            and entry.animation.sequences[3]
+          or nil
+        local frames = type(sequence) == "table" and sequence.frames or nil
+        frontInventory[#frontInventory + 1] = selector .. ":" .. tostring(type(frames) == "table" and #frames or 0)
+        if type(frames) == "table" and #frames > 0 then
+          frontSelector = selector
+          frontEntry = entry
+          frontFrames = frames
+          break
+        end
+      end
+    end
+    table.sort(frontInventory)
+    Assert.notNil(
+      frontSelector,
+      versionId
+        .. " stages a multi-frame source foe picture (frontpic frames: "
+        .. table.concat(frontInventory, ", ")
+        .. ")"
+    )
+    frontFrames = assert(frontFrames, versionId .. " stages the selected front entry sequence")
+    local frontClass = frontSelector:sub(#"front:" + 1)
+
+    local screen, images, _, services = captureScreen(scope, cacheFs, versionId, dualMeasurement())
+    scope:own({
+      release = function()
+        screen:dispose()
+      end,
+    })
+    local sources = {}
+    local playerEntrySequences = playerEntry.animation.sequences
+    local playerIntro = playerEntrySequences[3] or playerEntry.animation
+    local playerThrow = assert(playerEntrySequences[2], versionId .. " stages the player throw sequence")
+    local frontIntro = assert(frontEntry.animation.sequences[3], versionId .. " stages the foe entry sequence")
+    for _, selectedSequence in ipairs({ playerIntro, playerThrow, frontIntro }) do
+      for _, frame in ipairs(selectedSequence.frames) do
+        images[frame.drawableKey] =
+          stagedImage(scope, cacheFs, frame.image, versionId .. " trainer frame " .. frame.drawableKey)
+        sources[frame.drawableKey] = decodeData(scope, cacheFs, frame.image, versionId .. " trainer frame pixels")
+      end
+    end
+    local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+    local requestedTrainerDrawables = {}
+    local function renderTrainerFrame(frameIndex)
+      local frame = frontFrames[frameIndex + 1]
+      local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      BattleRenderer.drawPane({
+        graphics = love.graphics,
+        text = {},
+        windows = { drawWindow = function() end },
+        assets = {
+          drawable = function(_, key)
+            requestedTrainerDrawables[#requestedTrainerDrawables + 1] = key
+            local prefix = "trainer:" .. frontSelector
+            if key == prefix then
+              return images[frontFrames[1].drawableKey]
+            end
+            for _, candidate in ipairs(frontFrames) do
+              if key == candidate.drawableKey or key == prefix .. ":frame:" .. tostring(candidate.sourceFrame) then
+                return images[candidate.drawableKey]
+              end
+            end
+            return nil
+          end,
+        },
+        sceneImageKey = "unused",
+        frameKey = "unused",
+      }, {
+        battlers = {},
+        effectInstances = {},
+        openingPresentation = {
+          playerTrainerVisible = false,
+          foeTrainerVisible = false,
+          trainerSlides = {
+            {
+              role = "foe",
+              selector = frontSelector,
+              drawableKey = frame.drawableKey,
+              x = 48 + frame.rasterOffset.x,
+              y = 40 + frame.rasterOffset.y,
+              frame = frameIndex,
+              phase = "intro-slide",
+              visible = true,
+            },
+          },
+        },
+      }, "detail", {}, {})
+      love.graphics.setCanvas()
+      return scope:own(canvas:newImageData())
+    end
+    local firstSource = frontFrames[1]
+    local firstCapture = renderTrainerFrame(0)
+    local firstMatches, firstOccupied = countSourceMatches(
+      firstCapture,
+      sources[firstSource.drawableKey],
+      { x = 0, y = 0, width = 256, height = 192 },
+      48 + firstSource.rasterOffset.x,
+      40 + firstSource.rasterOffset.y
+    )
+    Assert.isTrue(
+      firstOccupied > 10,
+      versionId
+        .. " exposes ROM pixels for C02 frame zero ("
+        .. firstSource.drawableKey
+        .. " at "
+        .. tostring(48 + firstSource.rasterOffset.x)
+        .. ","
+        .. tostring(40 + firstSource.rasterOffset.y)
+        .. "; occupied "
+        .. tostring(firstOccupied)
+        .. ")"
+    )
+    Assert.isTrue(firstMatches / firstOccupied > 0.5, versionId .. " draws ROM pixels for C02 frame zero")
+    local packet = openingPacket()
+    packet.after.playerTrainer = { classKey = playerClass, name = "ETHAN" }
+    packet.after.foeTrainers = { { classKey = frontClass, name = "WHITNEY" } }
+    packet.after.foes[1].controller = "trainer"
+    local port = screen:presentationPort()
+    for _ = 1, 5 do
+      screen:updateFixed(TICK)
+    end
+    Assert.isTrue(
+      port.enter({ launchId = "battle-capture", kind = "trainer" }),
+      versionId .. " enters the real trainer battle screen"
+    )
+    port.present(packet)
+
+    local plan = livePlan(screen, versionId)
+    local width, height = canvasSize(plan, versionId)
+    local detailFrame = nil
+    for _, pane in ipairs(plan.panes) do
+      if pane.id == "detail" then
+        detailFrame = assert(pane.placement.frame, versionId .. " places the detail pane")
+      end
+    end
+    Assert.notNil(detailFrame, versionId .. " composes the battle detail pane")
+
+    local observedBallFrames = {}
+    local observedPlayerFrames = {}
+    local observedThrowAnchor = nil
+    local sawBall = false
+    for _ = 1, DRIVE_BUDGET do
+      acknowledgeNarration(screen)
+      screen:updateFixed(TICK)
+      local view = screen:view()
+      local opening = view.openingPresentation
+      if type(opening) == "table" then
+        local ball = opening.ballThrow
+        if type(ball) == "table" and ball.visible and ball.trainerSelector == playerSelector then
+          local playerSlide = nil
+          for _, slide in ipairs(opening.trainerSlides or {}) do
+            if slide.selector == playerSelector then
+              playerSlide = slide
+              break
+            end
+          end
+          Assert.notNil(playerSlide, versionId .. " keeps the source player slide with its throw")
+          local anchor = playerEntry.throwOffsets[playerSlide.frame + 1]
+          Assert.notNil(anchor, versionId .. " stages the anchor for the selected player frame")
+          local animation = playerEntry.animation.sequences[playerSlide.sourceSequence + 1]
+          local sourceFrame = assert(animation.frames[playerSlide.frame + 1])
+          local expectedX = playerSlide.x - sourceFrame.rasterOffset.x + anchor.x
+          local expectedY = playerSlide.y - sourceFrame.rasterOffset.y + anchor.y
+          if playerSlide.frame == 0 and anchor.x ~= 32767 and anchor.y ~= 32767 then
+            Assert.equal(
+              ball.y,
+              240,
+              versionId
+                .. " resolves source frame-zero to its off-canvas C02 position (managed y "
+                .. tostring(playerSlide.y - sourceFrame.rasterOffset.y)
+                .. ", source anchor y "
+                .. tostring(anchor.y)
+                .. ", sequence "
+                .. tostring(playerSlide.sourceSequence)
+                .. ", frame "
+                .. tostring(playerSlide.frame)
+                .. ")"
+            )
+          elseif anchor.x ~= 32767 and anchor.y ~= 32767 then
+            sawBall = true
+            if observedThrowAnchor == nil then
+              observedThrowAnchor = {
+                actualX = ball.x,
+                actualY = ball.y,
+                expectedX = expectedX,
+                expectedY = expectedY,
+              }
+            end
+          end
+          if playerSlide.frame > 0 and not observedPlayerFrames[playerSlide.frame] then
+            observedPlayerFrames[playerSlide.frame] = true
+            local playerPose = assert(animation.frames[playerSlide.frame + 1])
+            local capture = renderCapture(scope, screen, width, height)
+            local pixels = decodeData(scope, cacheFs, playerPose.image, versionId .. " selected player frame pixels")
+            local matches, occupied = countSourceMatches(
+              capture,
+              pixels,
+              { x = detailFrame.x, y = detailFrame.y, width = 256, height = 192 },
+              detailFrame.x + playerSlide.x,
+              detailFrame.y + playerSlide.y
+            )
+            Assert.isTrue(occupied > 10, versionId .. " exposes ROM pixels for player C02 frame " .. playerSlide.frame)
+            Assert.isTrue(matches / occupied > 0.5, versionId .. " draws the selected player C02 frame")
+          end
+          if playerSlide.frame > 0 and not observedBallFrames[ball.frame] then
+            observedBallFrames[ball.frame] = true
+            local sourceFrame = assert(
+              manifest.battleBalls.entries["ball:POKE_BALL"].frames[ball.frame + 1],
+              versionId .. " stages the selected ball frame"
+            )
+            local intersectsViewport = ball.x + 8 > 0 and ball.x - 8 < 256 and ball.y + 8 > 0 and ball.y - 8 < 192
+            if not intersectsViewport then
+              Assert.deepEqual(
+                { ball.x, ball.y },
+                { -10, 116 },
+                versionId .. " keeps the first source throw pose outside the viewport"
+              )
+            end
+            Assert.isTrue(type(sourceFrame.drawableKey) == "string", versionId .. " stages the selected ball drawable")
+          end
+        end
+      end
+      if sawBall then
+        break
+      end
+    end
+    Assert.isTrue(sawBall, versionId .. " reaches the trainer's source send-out throw")
+    Assert.isTrue(next(observedBallFrames) ~= nil, versionId .. " draws a staged source ball frame")
+    Assert.isTrue(next(observedPlayerFrames) ~= nil, versionId .. " draws a selected player C02 frame")
+    screen:dispose()
+    Assert.equal(screen:status().mode, "disposed", versionId .. " disposes the mid-throw battle screen")
+    local releasedTrainerFrame = false
+    for _, key in ipairs(services.drawableKeys) do
+      if key:match("^trainer:") ~= nil then
+        releasedTrainerFrame = true
+        Assert.isNil(images[key], versionId .. " releases borrowed trainer frame " .. key)
+      end
+    end
+    Assert.isTrue(releasedTrainerFrame, versionId .. " resolves a trainer frame through the production screen")
+    Assert.isNil(images["battle-ball:POKE_BALL:0"], versionId .. " releases the borrowed ball frame")
+    Assert.notNil(observedThrowAnchor, versionId .. " observes a non-sentinel source throw frame")
+    Assert.equal(
+      observedThrowAnchor.actualX,
+      observedThrowAnchor.expectedX,
+      versionId
+        .. " places the ball at its C02 x anchor (actual "
+        .. tostring(observedThrowAnchor.actualX)
+        .. ", expected "
+        .. tostring(observedThrowAnchor.expectedX)
+        .. ")"
+    )
+    Assert.equal(
+      observedThrowAnchor.actualY,
+      observedThrowAnchor.expectedY,
+      versionId
+        .. " places the ball at its C02 y anchor (actual "
+        .. tostring(observedThrowAnchor.actualY)
+        .. ", expected "
+        .. tostring(observedThrowAnchor.expectedY)
+        .. ")"
+    )
+    Assert.equal(
+      requestedTrainerDrawables[#requestedTrainerDrawables],
+      firstSource.drawableKey,
+      versionId .. " resolves its selected source frame from the ROM-derived drawable key"
+    )
+  end
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {
@@ -3242,6 +3720,7 @@ suite.metadata.derivedAssets = {
   "battle-scene:general/grass/day",
   "field-font:global",
   "field-ui:global",
+  "mon-catalog:global",
   "move-icons:global",
   "mon-icon-page:4",
   "mon-icon-page:11",

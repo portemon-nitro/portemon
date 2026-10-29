@@ -1614,7 +1614,10 @@ local function drawTrainerPictures(graphics, assets, view)
       local frame = assert(slide.frame, "trainer slide cues carry their animation frame") --[[@as integer]]
       assert(type(frame) == "number" and frame % 1 == 0 and frame >= 0, "trainer frames are zero-based integers")
       assert(
-        slide.phase == "intro-delay" or slide.phase == "intro-slide" or slide.phase == "intro-settle",
+        slide.phase == "intro-delay"
+          or slide.phase == "intro-slide"
+          or slide.phase == "intro-settle"
+          or slide.phase == "exit-slide",
         "trainer slide cues name their source phase"
       )
       assert(type(slide.visible) == "boolean", "trainer slide cues state their visibility")
@@ -1623,7 +1626,11 @@ local function drawTrainerPictures(graphics, assets, view)
         "trainer slide selectors name a semantic front/back picture"
       )
       if slide.visible then
-        local image = assets:drawable("trainer:" .. selector)
+        local key = assert(
+          type(slide.drawableKey) == "string" and slide.drawableKey,
+          "trainer slides resolve their selected source frame"
+        )
+        local image = assets:drawable(key)
         if image ~= nil then
           drawArtwork(graphics, image, nil, x, y)
         end
@@ -1935,6 +1942,13 @@ local function drawControls(resources, view, layout, regions)
         end
       end
     end
+  end
+  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
+  local brightness = opening and opening.trainerFlashCoefficient or nil
+  if type(brightness) == "number" and brightness > 0 then
+    graphics.setColor(1, 1, 1, brightness / 16)
+    graphics.rectangle("fill", 0, 0, 256, 192)
+    graphics.setColor(1, 1, 1, 1)
   end
   restoreColor(graphics, r, g, b, a)
 end

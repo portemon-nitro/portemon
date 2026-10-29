@@ -323,6 +323,10 @@ end
 
 local function openingPacket(launchId, portraits)
   local after = {
+    participants = {
+      { participant = 1, side = 1, controller = "player" },
+      { participant = 2, side = 2, controller = "wild" },
+    },
     playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "ETHAN" },
     foeTrainers = {},
     own = {

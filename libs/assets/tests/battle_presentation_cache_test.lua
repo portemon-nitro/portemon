@@ -366,6 +366,19 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
   stageBattle(cache, manifest, "general/grass/day")
   stageMonPage(cache, MonCache.portraitSelector("CHIKORITA", 0, "male", false))
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "both source frames are staged for the requested class")
+  local stagedEntry = BattlePresentationCache.load(cache).trainerPictures.entries[selector]
+  Assert.deepEqual(
+    stagedEntry.animation.sequences,
+    manifest.trainerPictures.entries[selector].animation.sequences,
+    "the staged trainer metadata retains every selected source sequence"
+  )
+  Assert.deepEqual(
+    stagedEntry.throwOffsets,
+    manifest.trainerPictures.entries[selector].throwOffsets,
+    "the staged trainer metadata retains all six source throw anchors"
+  )
+  Assert.deepEqual(stagedEntry.throwOffsets[5], { x = 32767, y = 32767 }, "the first no-ball sentinel survives staging")
+  Assert.deepEqual(stagedEntry.throwOffsets[6], { x = 32767, y = 32767 }, "the final no-ball sentinel survives staging")
   cache:remove(sequenceImage)
   Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a missing throw sequence frame prevents readiness")
   stageBattle(cache, manifest, "general/grass/day")

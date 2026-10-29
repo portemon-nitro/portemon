@@ -21,18 +21,35 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local T = {}
 
+local function completeSourceParticipantRoster(port)
+  local present = port.present
+  port.present = function(packet)
+    for _, view in ipairs({ packet.before, packet.after }) do
+      if type(view) == "table" and view.participants == nil then
+        view.participants = {}
+      end
+    end
+    return present(packet)
+  end
+end
+
 function T.trainer_slide_renderer_uses_the_staged_picture_and_source_position()
   local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
   local graphics = FakeGraphics.new({})
   local requested = {}
-  local picture = {
-    getWidth = function()
-      return 80
-    end,
-    getHeight = function()
-      return 80
-    end,
-  }
+  local function picture(handle)
+    return {
+      handle = handle,
+      getWidth = function()
+        return 80
+      end,
+      getHeight = function()
+        return 80
+      end,
+    }
+  end
+  local firstFrame = picture("trainer-frame-0")
+  local secondFrame = picture("trainer-frame-1")
   local resources = {
     graphics = graphics,
     text = {
@@ -45,8 +62,12 @@ function T.trainer_slide_renderer_uses_the_staged_picture_and_source_position()
     assets = {
       drawable = function(_, key)
         requested[#requested + 1] = key
-        if key == "trainer:back:ethan" or key == "trainer:front:YOUNGSTER" then
-          return picture
+        if key == "trainer:back:ethan" then
+          return firstFrame
+        elseif key == "trainer:back:ethan:frame:1" then
+          return secondFrame
+        elseif key == "trainer:front:YOUNGSTER" then
+          return firstFrame
         end
         return nil
       end,
@@ -61,10 +82,20 @@ function T.trainer_slide_renderer_uses_the_staged_picture_and_source_position()
       playerTrainerVisible = false,
       foeTrainerVisible = false,
       trainerSlides = {
-        { role = "player", selector = "back:ethan", x = 42, y = 18, frame = 0, phase = "intro-slide", visible = true },
+        {
+          role = "player",
+          selector = "back:ethan",
+          drawableKey = "trainer:back:ethan",
+          x = 42,
+          y = 18,
+          frame = 0,
+          phase = "intro-slide",
+          visible = true,
+        },
         {
           role = "foe",
           selector = "front:YOUNGSTER",
+          drawableKey = "trainer:front:YOUNGSTER",
           x = 82,
           y = 18,
           frame = 0,
@@ -81,6 +112,19 @@ function T.trainer_slide_renderer_uses_the_staged_picture_and_source_position()
   Assert.equal(requested[3], "trainer:front:YOUNGSTER", "the foe slide resolves after the player slide")
   Assert.equal(graphics.draws[2].x, 82, "the foe trainer uses its source-pixel x")
   Assert.equal(graphics.draws[2].y, 18, "the foe trainer uses its source-pixel y")
+  view.openingPresentation.trainerSlides[1].frame = 1
+  view.openingPresentation.trainerSlides[1].drawableKey = "trainer:back:ethan:frame:1"
+  requested = {}
+  for index = #graphics.draws, 1, -1 do
+    table.remove(graphics.draws, index)
+  end
+  BattleRenderer.drawPane(resources, view, "detail", {}, {})
+  Assert.equal(
+    graphics.draws[1].image.handle,
+    "trainer-frame-1",
+    "the rendered trainer bitmap changes with its source animation frame"
+  )
+  Assert.equal(requested[2], "trainer:back:ethan:frame:1", "the selected frame resolves its staged source image")
   view.openingPresentation.trainerSlides[1].visible = false
   view.openingPresentation.trainerSlides[2].visible = false
   requested = {}
@@ -206,6 +250,7 @@ function T.ball_throw_renderer_uses_the_staged_frame_and_source_position()
   }
   BattleRenderer.drawPane(resources, view, "detail", {}, {})
   Assert.equal(requested[2], "battle-ball:ULTRA_BALL:3", "the source frame resolves its exact staged image")
+  Assert.equal(graphics.draws[1].image, image, "the selected staged ball bitmap reaches the renderer")
   Assert.equal(graphics.draws[1].x, 74, "the ball uses the cue's source-pixel x")
   Assert.equal(graphics.draws[1].y, 103, "the ball uses the cue's source-pixel y")
   view.openingPresentation.ballThrow.visible = false
@@ -470,6 +515,7 @@ local function openRig(opts)
   })
   rig.screen = screen
   rig.port = screen:presentationPort()
+  completeSourceParticipantRoster(rig.port)
   holder.battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
@@ -512,6 +558,49 @@ local function driveToMode(rig, mode, keepCursorHidden)
     end
   end
   error("the battle screen never reached " .. mode, 0)
+end
+
+function T.repeated_trainer_view_does_not_accumulate_the_raster_origin()
+  local rig = openRig()
+  local openingView = {
+    participants = { { participant = 2, side = 2, controller = "trainer:2" } },
+    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" },
+    foeTrainers = { { classKey = "YOUNGSTER", name = "WHITNEY" } },
+    own = {
+      {
+        combatant = 0,
+        active = true,
+        name = "EEVEE",
+        species = "EEVEE",
+        selector = "back",
+        side = 1,
+        ballKey = "POKE_BALL",
+      },
+    },
+    foes = {
+      {
+        combatant = 2,
+        participant = 2,
+        active = true,
+        name = "RATTATA",
+        species = "RATTATA",
+        selector = "front",
+        side = 2,
+        ballKey = "POKE_BALL",
+      },
+    },
+  }
+  rig.screen._timeline:reset(openingView)
+  rig.screen._timeline:intro(openingView, false)
+
+  local first = assert(rig.screen:view().openingPresentation).trainerSlides[1]
+  local second = assert(rig.screen:view().openingPresentation).trainerSlides[1]
+  Assert.deepEqual(
+    { second.x, second.y },
+    { first.x, first.y },
+    "reading the trainer picture twice keeps its managed sprite coordinate stable"
+  )
+  rig.screen:dispose()
 end
 
 function T.screen_exposes_health_task_progress_and_completion_to_controller_owners()
@@ -1371,6 +1460,7 @@ function openSealingScreen(launchId, specs, requestId)
   })
   rig.screen = screen
   rig.port = screen:presentationPort()
+  completeSourceParticipantRoster(rig.port)
   function rig.pump(ticks, dt)
     for _ = 1, ticks or 1 do
       rig.screen:updateFixed(dt or TICK)
@@ -2904,6 +2994,7 @@ local function openWeakTerminalRig(launchId)
   })
   rig.screen = screen
   rig.port = screen:presentationPort()
+  completeSourceParticipantRoster(rig.port)
   holder.battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
@@ -3038,6 +3129,7 @@ local function openLongOutcomeRig(launchId)
   })
   rig.screen = screen
   rig.port = screen:presentationPort()
+  completeSourceParticipantRoster(rig.port)
   function rig.pump(ticks, dt)
     for _ = 1, ticks or 1 do
       rig.screen:updateFixed(dt or TICK)
@@ -3184,6 +3276,7 @@ local function openPacedScreen(launchId, speed)
   local screen = BattleScreenState.new(options)
   rig.screen = screen
   rig.port = screen:presentationPort()
+  completeSourceParticipantRoster(rig.port)
   function rig.pump(ticks, dt)
     for _ = 1, ticks or 1 do
       rig.screen:updateFixed(dt or TICK)

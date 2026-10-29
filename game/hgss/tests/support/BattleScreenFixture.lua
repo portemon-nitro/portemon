@@ -17,6 +17,7 @@ local function completeView(view)
   if view.foeTrainers == nil then
     view.foeTrainers = { { classKey = "YOUNGSTER", name = "WHITNEY" } }
   end
+  view.participants = view.participants or {}
   for _, trainer in ipairs(view.foeTrainers) do
     trainer.classKey = trainer.classKey or "YOUNGSTER"
     trainer.name = trainer.name or "WHITNEY"
@@ -30,6 +31,21 @@ local function completeView(view)
         if type(battler) == "table" and battler.name == nil then
           battler.name = battler.species
         end
+      end
+    end
+  end
+  if type(view.participants) == "table" and #view.participants == 0 and #view.foeTrainers > 0 then
+    local seen = {}
+    for _, foe in ipairs(view.foes or {}) do
+      local participant = foe.participant or foe.combatant
+      if type(participant) == "number" and not seen[participant] then
+        seen[participant] = true
+        foe.participant = participant
+        view.participants[#view.participants + 1] = {
+          participant = participant,
+          side = 2,
+          controller = "trainer:" .. tostring(participant),
+        }
       end
     end
   end
