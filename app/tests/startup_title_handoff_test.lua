@@ -1686,8 +1686,10 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
     return presentation
   end
   local function fakeHostDrained(order)
+    local ffi = require("ffi")
     local host = { sources = {}, soundData = {}, refuseQueue = false }
     function host.newSoundData(frames, sampleRate, bitDepth, channels)
+      local backing = ffi.new("int16_t[?]", frames * channels)
       local data = {
         frames = frames,
         released = 0,
@@ -1695,6 +1697,8 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
       function data:getSample() return 0 end
       function data:getSampleCount() return frames end
       function data:getChannelCount() return channels end
+      function data:getSize() return frames * channels * 2 end
+      function data:getFFIPointer() return backing end
       function data:setSample() end
       function data:release() self.released = self.released + 1 end
       host.soundData[#host.soundData + 1] = data
@@ -1741,10 +1745,9 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
     function sound:stopMusic() end
     function sound:updateSoundFrame() end
     local renderer = {}
-    function renderer:render(frames)
-      local out = {}
-      for _ = 1, frames * 2 do out[#out + 1] = 0 end
-      return out
+    function renderer:renderIntoInt16(ptr, frames)
+      local ffi = require("ffi")
+      ffi.fill(ptr, frames * 2 * 2, 0)
     end
     local sink = LoveAudioSink.new({
       audio = host,
@@ -1935,10 +1938,14 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       refuseQueue = false,
     }
     function host.newSoundData(frames, sampleRate, bitDepth, channels)
+      local ffi = require("ffi")
+      local backing = ffi.new("int16_t[?]", frames * channels)
       local data = {}
       function data:getSample() return 0 end
       function data:getSampleCount() return frames end
       function data:getChannelCount() return channels end
+      function data:getSize() return frames * channels * 2 end
+      function data:getFFIPointer() return backing end
       function data:setSample() end
       function data:release() end
       return data
@@ -1969,10 +1976,9 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     function sound:stopMusic() end
     function sound:updateSoundFrame() end
     local renderer = {}
-    function renderer:render(frames)
-      local out = {}
-      for _ = 1, frames * 2 do out[#out + 1] = 0 end
-      return out
+    function renderer:renderIntoInt16(ptr, frames)
+      local ffi = require("ffi")
+      ffi.fill(ptr, frames * 2 * 2, 0)
     end
     local sink = LoveAudioSink.new({ audio = host, sound = host, renderer = renderer, sampleRate = 32768 })
     local session = StartupAudioSession.new({

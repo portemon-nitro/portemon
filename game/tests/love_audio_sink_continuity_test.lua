@@ -2,6 +2,8 @@
 -- consumes queued PCM between sink updates, so free slots are derived from
 -- completed 512-frame buffers rather than a scripted sequence.
 
+local ffi = require("ffi")
+
 local Assert = require("tests.support.Assert")
 local LoveAudioSink = require("game.src.audio.LoveAudioSink")
 
@@ -75,9 +77,16 @@ local function newDevice()
   }
   device.sound = {
     newSoundData = function(frames)
+      local backing = ffi.new("int16_t[?]", frames * CHANNELS)
       return {
         getSampleCount = function()
           return frames
+        end,
+        getSize = function()
+          return frames * CHANNELS * 2
+        end,
+        getFFIPointer = function()
+          return backing
         end,
         setSample = function() end,
         release = function() end,
@@ -97,13 +106,9 @@ local function newSink(device)
     sound = device.sound,
     sampleRate = SAMPLE_RATE,
     renderer = {
-      render = function(_, frames)
+      renderIntoInt16 = function(_, ptr, frames)
         device.renderedFrames = device.renderedFrames + frames
-        local pcm = {}
-        for _ = 1, frames * CHANNELS do
-          pcm[#pcm + 1] = 0
-        end
-        return pcm
+        ffi.fill(ptr, frames * CHANNELS * 2, 0)
       end,
     },
   })

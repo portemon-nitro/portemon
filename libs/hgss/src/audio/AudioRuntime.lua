@@ -30,7 +30,7 @@ local RADIO_PLAYER_RECORD = { id = 9, maxSequences = 1, channelMask = 0xA7FE }
 
 ---@class HgssAudioRuntimeComposition
 ---@field sound GameSound
----@field renderer { render: fun(self: table<string, unknown>, frames: integer): integer[] }
+---@field renderer { render: fun(self: table<string, unknown>, frames: integer): integer[], renderIntoInt16: fun(self: table<string, unknown>, ptr: ffi.cdata*, frames: integer) }
 ---@field fieldService FieldAudioController?
 
 ---@param opts HgssAudioRuntimeOptions

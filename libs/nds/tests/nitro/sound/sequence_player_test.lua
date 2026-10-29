@@ -4644,4 +4644,47 @@ function T.rejected_handle_starts_report_false_without_claiming_ownership()
   Assert.isFalse(trackPlayer:isHandlePlaying(rejected))
 end
 
+-- The typed destination entrypoint renders the same schedule as the table
+-- renderer: one pointer span and consecutive offset pointer spans match the
+-- table render across the 192 Hz interval boundaries.
+function T.typed_pointer_render_matches_table_render_across_interval_boundaries()
+  local ffi = require("ffi")
+  local program = {
+    { op = "tempo", amount = 128 },
+    { op = "note", key = 60, velocity = 100, duration = 48 },
+    { op = "end" },
+  }
+  local function playedPlayer()
+    local player, provider = engine({ [0] = seq(program) })
+    play(player, provider)
+    return player
+  end
+  local frames = 1000
+  local expected = playedPlayer():render(frames)
+  Assert.equal(#expected, frames * 2)
+  local player = playedPlayer()
+  local backing = ffi.new("int16_t[?]", frames * 2)
+  player:renderIntoInt16(backing, frames)
+  for index = 1, frames * 2 do
+    Assert.equal(tonumber(backing[index - 1]), expected[index], "scheduled pointer sample " .. index .. " matches")
+  end
+  -- Consecutive typed calls continue the same clock: two chunks render the
+  -- same thousand frames as one call.
+  local resumed = playedPlayer()
+  local head = ffi.new("int16_t[?]", 400 * 2)
+  local tail = ffi.new("int16_t[?]", 600 * 2)
+  resumed:renderIntoInt16(head, 400)
+  resumed:renderIntoInt16(tail, 600)
+  for index = 1, 400 * 2 do
+    Assert.equal(tonumber(head[index - 1]), expected[index], "first chunk sample " .. index .. " matches")
+  end
+  for index = 1, 600 * 2 do
+    Assert.equal(
+      tonumber(tail[index - 1]),
+      expected[400 * 2 + index],
+      "continued chunk sample " .. index .. " matches"
+    )
+  end
+end
+
 return { tests = T }

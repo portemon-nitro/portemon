@@ -8,6 +8,8 @@
 -- that accepted interactions the production collaborator rejects would let the
 -- wrong-behavior regressions pass silently.
 
+local ffi = require("ffi")
+
 local Assert = require("tests.support.Assert")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 
@@ -99,6 +101,28 @@ function T.the_playback_head_drains_queued_buffers_while_playing()
   stopped:queue(chunk)
   Assert.equal(stopped:getFreeBufferCount(), 0, "a stopped full queue advertises no free buffers")
   Assert.isFalse(stopped:queue(chunk), "a stopped full queue refuses without draining")
+end
+
+-- The fake buffer exposes stable int16 host memory: the byte size is exact,
+-- the pointer is stable across calls, and words written through it decode
+-- through the sample accessor.
+function T.sound_data_exposes_stable_int16_memory_with_an_exact_byte_size()
+  local host = FakeAudioOutput.new()
+  local chunk = host.sound.newSoundData(8, SAMPLE_RATE, BIT_DEPTH, CHANNELS)
+  Assert.equal(chunk:getSize(), 8 * CHANNELS * 2, "the byte size is frames times channels times int16")
+  local first = chunk:getFFIPointer()
+  Assert.notNil(first, "the buffer exposes its sample memory")
+  Assert.isTrue(first == chunk:getFFIPointer(), "the accessor returns the same stable backing")
+  local words = ffi.cast("int16_t *", first)
+  for index = 0, 8 * CHANNELS - 1 do
+    words[index] = (index + 1) * 1000 - 8000
+  end
+  for frame = 0, 7 do
+    for channel = 1, CHANNELS do
+      local word = (frame * CHANNELS + (channel - 1) + 1) * 1000 - 8000
+      Assert.equal(chunk:getSample(frame, channel), word / 32768, "word " .. word .. " decodes exactly")
+    end
+  end
 end
 
 function T.sound_data_shaped_chunks_are_accepted_and_the_non_silence_probes_read_them()

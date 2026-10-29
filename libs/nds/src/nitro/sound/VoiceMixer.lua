@@ -62,7 +62,10 @@
 -- floor(x+0.5).
 
 local bit = require("bit")
+local ffi = require("ffi")
 local NnsSoundMath = require("libs.nds.src.nitro.sound.NnsSoundMath")
+
+assert(ffi.abi("le"), "mixed PCM output requires a little-endian host")
 
 ---@class VoiceMixer
 ---@field private _outputRate integer
@@ -80,6 +83,7 @@ local NnsSoundMath = require("libs.nds.src.nitro.sound.NnsSoundMath")
 ---@field isSampleActive fun(self: VoiceMixer, sampleRef: table<string, unknown>): boolean
 ---@field controlStep fun(self: VoiceMixer)
 ---@field renderInto fun(self: VoiceMixer, out: integer[], frames: integer)
+---@field renderIntoInt16 fun(self: VoiceMixer, ptr: ffi.cdata*, offsetFrames: integer, frames: integer)
 ---@field render fun(self: VoiceMixer, frames: integer): integer[]
 
 local VoiceMixer = {}
@@ -310,6 +314,13 @@ local function newVoice(spec)
     volume = 0,
     timer = 0,
     hardwarePan = 0,
+    -- The committed host mix coefficients: the register gain and the linear
+    -- pan pair as last computed by the register sync, so the span kernel
+    -- reads numbers instead of recomputing them per sample. Silent until the
+    -- first sync commits real values.
+    cachedGain = 0,
+    cachedPanLeft = 0.5,
+    cachedPanRight = 0.5,
     ratio = 0,
     released = false,
     physicalInactive = false,
@@ -477,6 +488,10 @@ local function syncRegisters(voice)
   voice.timer = timer
   pan = pan + PAN_CENTER
   voice.hardwarePan = clamp(pan, 0, 127)
+  -- Commit the host mix coefficients with the registers: the span kernel
+  -- then mixes with the same doubles the per-sample path would compute.
+  voice.cachedGain = registerGain(voice.volume)
+  voice.cachedPanLeft, voice.cachedPanRight = panMix(voice.hardwarePan)
   voice.ratio = voiceRatio(voice)
   return true
 end
@@ -892,6 +907,56 @@ function VoiceMixer:controlStep(ordinal)
   end
 end
 
+-- The one authoritative span kernel: mixes `frames` output frames of
+-- interleaved stereo int16 PCM into the caller's buffer at frame offset
+-- `offsetFrames`. Voices render in ascending channel order with the
+-- coefficients the register sync committed, reading at their position and
+-- advancing with the current ratio. This is a pure PCM span renderer: no
+-- control state -- no envelope step, no sweep/LFO advance, no queued-value
+-- application -- moves during rendering. The mix sums and saturates at the
+-- int16 bounds; chunk sizes never change the result. The destination must
+-- hold at least (offsetFrames + frames) * 2 int16 entries.
+---@param ptr ffi.cdata* interleaved stereo int16 destination, owned by the caller
+---@param offsetFrames integer zero-based frame offset of the first written frame
+---@param frames integer frame count to mix
+local function renderSpanIntoInt16(self, ptr, offsetFrames, frames)
+  for frame = 0, frames - 1 do
+    local left, right = 0, 0
+    for channel = 0, CHANNEL_COUNT - 1 do
+      local voice = self._channels[channel]
+      if voice ~= nil then
+        local sample = sampleAt(voice)
+        local gain = voice.cachedGain
+        left = left + math.floor(sample * gain * voice.cachedPanLeft + 0.5)
+        right = right + math.floor(sample * gain * voice.cachedPanRight + 0.5)
+      end
+    end
+    local base = (offsetFrames + frame) * 2
+    ptr[base] = saturate(left)
+    ptr[base + 1] = saturate(right)
+  end
+end
+
+-- Mixes `frames` output frames into the caller's int16 stereo buffer at
+-- frame offset `offsetFrames`: the production destination entrypoint. The
+-- pointer is borrowed only for the call; the caller keeps the owning
+-- buffer alive and guarantees its size.
+---@param ptr ffi.cdata* interleaved stereo int16 destination, owned by the caller
+---@param offsetFrames integer zero-based frame offset of the first written frame
+---@param frames integer frame count to mix
+function VoiceMixer:renderIntoInt16(ptr, offsetFrames, frames)
+  assert(ptr ~= nil and type(ptr) == "cdata", "typed mixing requires an int16 destination pointer")
+  assert(
+    type(offsetFrames) == "number" and offsetFrames % 1 == 0 and offsetFrames >= 0,
+    "typed mixing requires a non-negative integer frame offset"
+  )
+  assert(
+    type(frames) == "number" and frames % 1 == 0 and frames >= 0,
+    "typed mixing requires a non-negative integer frame count"
+  )
+  renderSpanIntoInt16(self, ptr, offsetFrames, frames)
+end
+
 -- Renders `frames` output frames of interleaved stereo int16 PCM (2*frames
 -- entries) appended to `out` after its current end, so a caller-owned
 -- buffer is reused across span renders instead of allocating a fresh result
@@ -900,24 +965,27 @@ end
 -- envelope step, no sweep/LFO advance, no queued-value application -- moves
 -- during rendering. The external scheduler runs one controlStep per sound
 -- interval after the sequence portion. The mix sums and saturates at the
--- int16 bounds; chunk sizes never change the result.
+-- int16 bounds; chunk sizes never change the result. The samples mix
+-- through short-lived typed scratch and are copied out only at this
+-- boundary.
 ---@param out integer[]
 ---@param frames integer
 function VoiceMixer:renderInto(out, frames)
-  for _ = 1, frames do
-    local left, right = 0, 0
-    for channel = 0, CHANNEL_COUNT - 1 do
-      local voice = self._channels[channel]
-      if voice ~= nil then
-        local sample = sampleAt(voice)
-        local gain = registerGain(voice.volume)
-        local panLeft, panRight = panMix(voice.hardwarePan)
-        left = left + math.floor(sample * gain * panLeft + 0.5)
-        right = right + math.floor(sample * gain * panRight + 0.5)
-      end
-    end
-    out[#out + 1] = saturate(left)
-    out[#out + 1] = saturate(right)
+  assert(type(out) == "table", "table mixing requires a destination table")
+  assert(
+    type(frames) == "number" and frames % 1 == 0 and frames >= 0,
+    "table mixing requires a non-negative integer frame count"
+  )
+  if frames == 0 then
+    return
+  end
+  local scratch = ffi.new("int16_t[?]", frames * 2)
+  renderSpanIntoInt16(self, scratch, 0, frames)
+  for index = 0, frames * 2 - 1 do
+    -- scratch is int16_t-backed, so every read is provably integral.
+    local sample = tonumber(scratch[index])
+    ---@cast sample integer
+    out[#out + 1] = sample
   end
 end
 

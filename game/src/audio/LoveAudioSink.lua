@@ -1,5 +1,5 @@
 -- LoveAudioSink: the thin LÖVE output adapter. It owns queue management --
--- request PCM frames from the renderer, copy them into host SoundData
+-- request PCM frames from the renderer straight into host SoundData
 -- buffers (output sample rate, 16-bit, 2 channels), queue the buffers into
 -- the host QueueableSource, keep the host source started (restarting it when
 -- the host stops it), and release host resources exactly once -- and
@@ -13,13 +13,20 @@
 -- be released immediately; buffers are allocated per chunk and released
 -- right after queueing.
 
+local ffi = require("ffi")
+
+assert(ffi.abi("le"), "host PCM output requires a little-endian host")
+
+---@class LoveAudioSinkRenderer
+---@field render fun(self: LoveAudioSinkRenderer, frames: integer): integer[]
+---@field renderIntoInt16 fun(self: LoveAudioSinkRenderer, ptr: ffi.cdata*, frames: integer)
 ---@class LoveAudioSink
 ---@field private _audio table<string, unknown> love.audio-shaped namespace
 ---@field private _sound table<string, unknown> love.sound-shaped namespace
----@field private _renderer { render: fun(self: table<string, unknown>, frames: integer): integer[] }
+---@field private _renderer LoveAudioSinkRenderer
 ---@field private _sampleRate integer
 ---@field private _source table<string, unknown>|nil
----@field private _pendingPcm integer[]|nil
+---@field private _pendingData table<string, unknown>|nil the rendered but unqueued host buffer
 ---@field private _started boolean
 ---@field private _underrunCount integer
 ---@field private _released boolean
@@ -34,17 +41,7 @@ local BIT_DEPTH = 16
 local CHUNK_FRAMES = 512
 local QUEUE_BUFFER_COUNT = 4
 
--- The render contract is int16 and exact: the returned PCM is
--- requestedFrames * 2 interleaved stereo samples, checked before any host
--- buffer is built. An out-of-range or fractional sample is a programming
--- fault that must fail loudly rather than be clamped silently by the host
--- buffer.
-local function sampleValue(sample)
-  assert(sample >= -32768 and sample <= 32767 and sample == math.floor(sample), "renderer must produce int16 samples")
-  return sample / 32768
-end
-
----@param opts { audio: table<string, unknown>, sound: table<string, unknown>, renderer: { render: fun(self: table<string, unknown>, frames: integer): integer[] }, sampleRate: integer }
+---@param opts { audio: table<string, unknown>, sound: table<string, unknown>, renderer: LoveAudioSinkRenderer, sampleRate: integer }
 ---@return LoveAudioSink
 function LoveAudioSink.new(opts)
   assert(
@@ -57,7 +54,7 @@ function LoveAudioSink.new(opts)
     _renderer = opts.renderer,
     _sampleRate = opts.sampleRate,
     _source = nil,
-    _pendingPcm = nil,
+    _pendingData = nil,
     _started = false,
     _underrunCount = 0,
     _released = false,
@@ -67,20 +64,26 @@ end
 
 -- Pumps PCM from the renderer into the host source: one pending or newly
 -- rendered chunk per free host buffer, then restarts the source when the host
--- stopped it. Rendering creates pending PCM; queue success publishes it.
--- After release the pump is a no-op. Host failures follow one policy: a
--- failure anywhere in the pump -- the free-buffer query, a render, SoundData
--- construction, a queue, or the start step -- propagates from the update,
--- releases the in-flight SoundData the update did not hand off, and leaves
--- the sink usable. The source acquired by the failed update is released only
--- when the failure was not a queue handoff: a refused or failing queue means
--- the chunk was rejected while the source itself stayed healthy, so the next
--- update retries with the same source. Construction-time failures (the
--- free-buffer query, buffer build, or start step) release a source that this
--- update acquired, exactly once. Reports primed output: true only when the
--- current track owns at least one successfully submitted buffer and the host
--- source confirms playback after play; an explicit play false is rejection
--- even when a fake later reports playing. A released sink reports no priming.
+-- stopped it. Rendering fills the owned host buffer in place through the
+-- typed seam and parks it as pending; queue success publishes it and
+-- releases the host copy. After release the pump is a no-op. Host failures
+-- follow one policy: a failure anywhere in the pump -- the free-buffer
+-- query, a render, SoundData construction, a queue, or the start step --
+-- propagates from the update, releases a fresh buffer the update built but
+-- never parked or handed off, and leaves the sink usable. A refused or
+-- failing queue keeps the already-rendered buffer parked, so the next
+-- update retries the same buffer without advancing the renderer. The source
+-- acquired by the failed update is released only when the failure was not a
+-- queue handoff: a refused or failing queue means the chunk was rejected
+-- while the source itself stayed healthy, so the next update retries with
+-- the same source. Construction-time failures (the free-buffer query,
+-- buffer build, render, or start step) release a source that this update
+-- acquired, exactly once. The host pointer is borrowed only while the
+-- owning SoundData is held; nothing retains it between updates. Reports
+-- primed output: true only when the current track owns at least one
+-- successfully submitted buffer and the host source confirms playback after
+-- play; an explicit play false is rejection even when a fake later reports
+-- playing. A released sink reports no priming.
 ---@return boolean primed
 function LoveAudioSink:update()
   if self._released then
@@ -95,51 +98,55 @@ function LoveAudioSink:update()
   -- A narrowed alias for the closure below: the branch narrowing of `source`
   -- does not propagate into pcall's function.
   local live = source
-  local chunk
+  -- A fresh host buffer built by this update but not yet parked as pending
+  -- or handed off: released exactly once when the update fails before the
+  -- handoff. A parked pending buffer is owned by the sink across updates
+  -- and is never released on a queue refusal.
+  local fresh
   local queueStep = false
   local publishedToAcquiredSource = false
   local playRejected = false
   local ok, err = pcall(function()
     local free = live:getFreeBufferCount()
     for _ = 1, free do
-      if self._pendingPcm == nil then
-        local pcm = self._renderer:render(CHUNK_FRAMES)
+      if self._pendingData == nil then
+        -- SoundData's first argument is the per-channel FRAME count, not the
+        -- total interleaved scalar count: a 512-frame stereo chunk builds a
+        -- 512-frame buffer holding 512 * 2 * 2 bytes of int16 samples.
+        local data = self._sound.newSoundData(CHUNK_FRAMES, self._sampleRate, BIT_DEPTH, CHANNELS)
+        fresh = data
         assert(
-          #pcm == CHUNK_FRAMES * CHANNELS,
+          data:getSize() == CHUNK_FRAMES * CHANNELS * 2,
           string.format(
-            "renderer must return exactly %d stereo samples for %d frames",
+            "host buffer must hold exactly %d stereo int16 samples for %d frames",
             CHUNK_FRAMES * CHANNELS,
             CHUNK_FRAMES
           )
         )
-        self._pendingPcm = pcm
-      end
-      -- SoundData's first argument is the per-channel FRAME count, not the
-      -- total interleaved scalar count: a 512-frame stereo render is 1024
-      -- scalars that build a 512-frame buffer with getSampleCount() == 512.
-      local frameCount = #self._pendingPcm / CHANNELS
-      chunk = self._sound.newSoundData(frameCount, self._sampleRate, BIT_DEPTH, CHANNELS)
-      for i = 0, frameCount - 1 do
-        for channel = 1, CHANNELS do
-          chunk:setSample(i, channel, sampleValue(self._pendingPcm[i * CHANNELS + channel]))
-        end
+        local raw = data:getFFIPointer()
+        assert(raw ~= nil, "host buffer must expose its sample memory")
+        self._renderer:renderIntoInt16(ffi.cast("int16_t *", raw), CHUNK_FRAMES)
+        self._pendingData = data
+        fresh = nil
       end
       -- The real binding returns a success boolean from queue: an explicit
       -- `false` means the queue refused the chunk (full queue); anything else
       -- is a successful handoff. Assert the boolean so a refused chunk must
       -- fail the update, never be silently considered delivered.
       queueStep = true
-      local queued = live:queue(chunk)
+      local queued = live:queue(self._pendingData)
       if queued == false then
         error("the host queue refused the rendered chunk", 0)
       end
       queueStep = false
       publishedToAcquiredSource = true
       self._queuedCurrentTrack = self._queuedCurrentTrack + 1
-      self._pendingPcm = nil
-      local queuedChunk = chunk
-      chunk = nil
-      queuedChunk:release()
+      local handed = self._pendingData
+      self._pendingData = nil
+      -- The queue above succeeded, so pending always holds this update's
+      -- rendered buffer here: the handoff target cannot be nil.
+      assert(handed ~= nil, "queued chunk must hold a host buffer")
+      handed:release()
     end
     if not live:isPlaying() then
       if self._started then
@@ -154,12 +161,13 @@ function LoveAudioSink:update()
     end
   end)
   if not ok then
-    -- Release only an in-flight SoundData that was not handed off. A queue
-    -- failure leaves the healthy source in place for the next update; any
-    -- other pre-publication failure on a source this update constructed
-    -- releases that source exactly once before the update propagates.
-    if chunk ~= nil then
-      chunk:release()
+    -- Release only a fresh buffer that was never parked or handed off. A
+    -- queue failure leaves the parked pending buffer and the healthy source
+    -- in place for the next update; any other pre-publication failure on a
+    -- source this update constructed releases that source exactly once
+    -- before the update propagates.
+    if fresh ~= nil then
+      fresh:release()
     end
     if acquiredSource and not queueStep and not publishedToAcquiredSource then
       live:release()
@@ -177,15 +185,19 @@ function LoveAudioSink:update()
 end
 
 -- Discards the current track queue without releasing the sink: releases the
--- owned host source, clears pending PCM/started state and forgets prior
--- queue evidence so a failed new queue cannot be acknowledged by old buffer
--- occupancy. Retains the borrowed renderer and sink lifetime.
+-- owned host source, releases a parked pending buffer, clears started state,
+-- and forgets prior queue evidence so a failed new queue cannot be
+-- acknowledged by old buffer occupancy. Retains the borrowed renderer and
+-- sink lifetime.
 function LoveAudioSink:resetForNewTrack()
   if self._source ~= nil then
     self._source:release()
     self._source = nil
   end
-  self._pendingPcm = nil
+  if self._pendingData ~= nil then
+    self._pendingData:release()
+    self._pendingData = nil
+  end
   self._started = false
   self._queuedCurrentTrack = 0
 end
@@ -198,7 +210,10 @@ end
 -- Releases the host source exactly once; later updates are no-ops.
 function LoveAudioSink:release()
   self._released = true
-  self._pendingPcm = nil
+  if self._pendingData ~= nil then
+    self._pendingData:release()
+    self._pendingData = nil
+  end
   if self._source ~= nil then
     self._source:release()
     self._source = nil
