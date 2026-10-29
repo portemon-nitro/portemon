@@ -9,6 +9,7 @@
 -- Source basis: GBATEK "Nitro Character Tiles / BG Maps Screens".
 
 local Errors = require("libs.errors.src.Errors")
+local ffi = require("ffi")
 
 local G2dRasterizer = {}
 
@@ -25,21 +26,44 @@ G2dRasterizer.ERROR = {
 ---@alias G2dRasterizer.ScreenOptions { transparentZero?: boolean, backdrop?: boolean }
 ---@alias G2dRasterizer.CellOptions { paletteOverride: integer|nil, mapping: integer|nil }
 
-local function concatChars(chars)
-  -- string.char/unpack are limited by the Lua stack; build in row chunks.
-  local out = {}
-  for i = 1, #chars, 4096 do
-    out[#out + 1] = string.char(unpack(chars, i, math.min(i + 4095, #chars)))
+-- Bounds for one raster surface: decoded G2D geometry is tiny (a DS screen
+-- is 256x192), so a 64 MiB RGBA budget accepts every legitimate surface
+-- while rejecting dimension/overflow abuse before any typed allocation.
+local MAX_RASTER_BYTES = 64 * 1024 * 1024
+
+local function validateDimensions(width, height, source)
+  if
+    type(width) ~= "number"
+    or type(height) ~= "number"
+    or width ~= width
+    or height ~= height
+    or width == math.huge
+    or height == math.huge
+    or width == -math.huge
+    or height == -math.huge
+    or width ~= math.floor(width)
+    or height ~= math.floor(height)
+    or width < 0
+    or height < 0
+    or width * height * 4 > MAX_RASTER_BYTES
+  then
+    Errors.raise(
+      G2dRasterizer.ERROR.SOURCE_INVALID,
+      "raster dimensions are invalid",
+      { width = width, height = height, source = source }
+    )
   end
-  return table.concat(out)
 end
 
-local function newRgba(width, height)
-  local rgba = {}
-  for i = 1, width * height * 4 do
-    rgba[i] = 0
-  end
-  return rgba
+-- Fresh transparent-black RGBA backing for one render. The caller keeps the
+-- returned cdata alive until the single ffi.string conversion at its own
+-- return boundary; no pointer escapes this module.
+local function newRgba(width, height, source)
+  validateDimensions(width, height, source)
+  local bytes = width * height * 4
+  local backing = ffi.new("uint8_t[?]", bytes)
+  ffi.fill(backing, bytes, 0)
+  return backing, bytes
 end
 
 -- Blit one tile's pixels into an RGBA buffer. 4bpp tiles hold two pixel
@@ -75,40 +99,38 @@ local function blitTile(
     )
   end
   local palBase = depth == 3 and palIndex * 16 or palIndex * 256
-  local function put(x, y, v)
-    if v == 0 and transparentZero ~= false then
-      return
-    end
-    local c = colors[palBase + v + 1]
-    if not c then
-      Errors.raise(
-        G2dRasterizer.ERROR.SOURCE_INVALID,
-        "pixel references a palette entry the decoded palette cannot cover",
-        { value = v, palette = palIndex, available = #colors, source = source }
-      )
-    end
-    if flipH then
-      x = 7 - x
-    end
-    if flipV then
-      y = 7 - y
-    end
-    local px = ((destY + y) * atlasWidth + destX + x) * 4
-    rgba[px + 1], rgba[px + 2], rgba[px + 3], rgba[px + 4] = c.r, c.g, c.b, 255
-  end
+  -- Borrow the tile bytes through a typed view; charData (and therefore
+  -- its tile string) outlives this call, so the pointer never dangles.
+  local tileString = charData.tiles
+  local bytes = ffi.cast("const uint8_t *", tileString)
   local base = tileIndex * tileBytes
-  if depth == 3 then
-    for y = 0, 7 do
-      for x = 0, 3 do
-        local byte = string.byte(charData.tiles, base + y * 4 + x + 1)
-        put(x * 2, y, byte % 16)
-        put(x * 2 + 1, y, math.floor(byte / 16))
+  local opaqueZero = transparentZero == false
+  for sourceY = 0, 7 do
+    local destRow = flipV and (7 - sourceY) or sourceY
+    for sourceX = 0, 7 do
+      local destCol = flipH and (7 - sourceX) or sourceX
+      local v
+      if depth == 3 then
+        local byte = bytes[base + sourceY * 4 + math.floor(sourceX / 2)]
+        if sourceX % 2 == 0 then
+          v = byte % 16
+        else
+          v = math.floor(byte / 16)
+        end
+      else
+        v = bytes[base + sourceY * 8 + sourceX]
       end
-    end
-  else
-    for y = 0, 7 do
-      for x = 0, 7 do
-        put(x, y, string.byte(charData.tiles, base + y * 8 + x + 1))
+      if v ~= 0 or opaqueZero then
+        local c = colors[palBase + v + 1]
+        if not c then
+          Errors.raise(
+            G2dRasterizer.ERROR.SOURCE_INVALID,
+            "pixel references a palette entry the decoded palette cannot cover",
+            { value = v, palette = palIndex, available = #colors, source = source }
+          )
+        end
+        local o = ((destY + destRow) * atlasWidth + destX + destCol) * 4
+        rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3] = c.r, c.g, c.b, 255
       end
     end
   end
@@ -143,12 +165,13 @@ function G2dRasterizer.renderScreen(charData, paletteData, screenData, source, o
       { width = width, height = height, entries = #screenData.entries, source = source }
     )
   end
-  local rgba = newRgba(width, height)
+  local rgba, bytes = newRgba(width, height, source)
   if options and options.backdrop then
     -- Hardware shows palette color 0 wherever no BG pixel is drawn.
     local backdrop = assert(paletteData.colors[1], "backdrop needs palette color 0")
     for px = 0, width * height - 1 do
-      rgba[px * 4 + 1], rgba[px * 4 + 2], rgba[px * 4 + 3], rgba[px * 4 + 4] = backdrop.r, backdrop.g, backdrop.b, 255
+      local o = px * 4
+      rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3] = backdrop.r, backdrop.g, backdrop.b, 255
     end
   end
   local transparentZero = not (options and options.transparentZero == false)
@@ -171,7 +194,7 @@ function G2dRasterizer.renderScreen(charData, paletteData, screenData, source, o
       )
     end
   end
-  return { width = width, height = height, pixels = concatChars(rgba) }
+  return { width = width, height = height, pixels = ffi.string(rgba, bytes) }
 end
 
 -- Render selected background tiles in their source order. The HGSS shared
@@ -185,14 +208,14 @@ end
 function G2dRasterizer.renderTiles(charData, paletteData, tileIndices, source)
   assert(type(tileIndices) == "table" and #tileIndices > 0, "tile rasterization needs an ordered source selection")
   local width, height = #tileIndices * 8, 8
-  local rgba = newRgba(width, height)
+  local rgba, bytes = newRgba(width, height, source)
   for index, tileIndex in ipairs(tileIndices) do
     if type(tileIndex) ~= "number" or tileIndex % 1 ~= 0 or tileIndex < 0 then
       Errors.raise(G2dRasterizer.ERROR.SOURCE_INVALID, "selected tile index is invalid", { source = source })
     end
     blitTile(rgba, width, (index - 1) * 8, 0, charData, tileIndex, 0, paletteData.colors, false, false, source, true)
   end
-  return { width = width, height = height, pixels = concatChars(rgba) }
+  return { width = width, height = height, pixels = ffi.string(rgba, bytes) }
 end
 
 -- Render a contiguous NCGR tile run through the shared pixel/palette path.
@@ -228,7 +251,7 @@ function G2dRasterizer.renderTileStrip(charData, paletteData, firstTile, tileCou
     })
   end
   local width = tileCount * 8
-  local pixels = newRgba(width, 8)
+  local pixels, bytes = newRgba(width, 8, source)
   for stripIndex = 0, tileCount - 1 do
     blitTile(
       pixels,
@@ -245,7 +268,7 @@ function G2dRasterizer.renderTileStrip(charData, paletteData, firstTile, tileCou
       true
     )
   end
-  return { width = width, height = 8, pixels = concatChars(pixels) }
+  return { width = width, height = 8, pixels = ffi.string(pixels, bytes) }
 end
 
 -- OBJ tile indices count in 32 << mapping byte units; the character data counts
@@ -290,7 +313,7 @@ function G2dRasterizer.renderCell(charData, paletteData, cell, source, options)
   if width <= 0 or height <= 0 then
     Errors.raise(G2dRasterizer.ERROR.SOURCE_INVALID, "sprite cell has no extent", { source = source })
   end
-  local rgba = newRgba(width, height)
+  local rgba, bytes = newRgba(width, height, source)
   local paletteOverride = options and options.paletteOverride
   if
     paletteOverride ~= nil and (type(paletteOverride) ~= "number" or paletteOverride % 1 ~= 0 or paletteOverride < 0)
@@ -331,7 +354,7 @@ function G2dRasterizer.renderCell(charData, paletteData, cell, source, options)
       end
     end
   end
-  return { width = width, height = height, pixels = concatChars(rgba), origin = { x = minX, y = minY } }
+  return { width = width, height = height, pixels = ffi.string(rgba, bytes), origin = { x = minX, y = minY } }
 end
 
 local function transformedPoint(x, y, frame)
@@ -381,7 +404,20 @@ local function transformPixels(image, frame, source)
   if width <= 0 or height <= 0 then
     Errors.raise(G2dRasterizer.ERROR.SOURCE_INVALID, "sprite animation transform has no extent", { source = source })
   end
-  local pixels = newRgba(width, height)
+  -- The source pixel string must hold exactly one RGBA tuple per source
+  -- pixel; the cell rasterizer above always produces that shape, and the
+  -- typed reads below rely on it. image.pixels stays rooted here while the
+  -- borrowed view is consumed.
+  if
+    type(image.width) ~= "number"
+    or type(image.height) ~= "number"
+    or type(image.pixels) ~= "string"
+    or #image.pixels ~= image.width * image.height * 4
+  then
+    Errors.raise(G2dRasterizer.ERROR.SOURCE_INVALID, "sprite animation source image is malformed", { source = source })
+  end
+  local sourceBytes = ffi.cast("const uint8_t *", image.pixels)
+  local pixels, bytes = newRgba(width, height, source)
   local radians = frame.rotation * math.pi / 180
   local cosTheta, sinTheta = math.cos(radians), math.sin(radians)
   for y = 0, height - 1 do
@@ -395,14 +431,14 @@ local function transformPixels(image, frame, source)
       if sampleX >= 0 and sampleX < image.width and sampleY >= 0 and sampleY < image.height then
         local sourceOffset = (sampleY * image.width + sampleX) * 4
         local targetOffset = (y * width + x) * 4
-        pixels[targetOffset + 1] = string.byte(image.pixels, sourceOffset + 1)
-        pixels[targetOffset + 2] = string.byte(image.pixels, sourceOffset + 2)
-        pixels[targetOffset + 3] = string.byte(image.pixels, sourceOffset + 3)
-        pixels[targetOffset + 4] = string.byte(image.pixels, sourceOffset + 4)
+        pixels[targetOffset] = sourceBytes[sourceOffset]
+        pixels[targetOffset + 1] = sourceBytes[sourceOffset + 1]
+        pixels[targetOffset + 2] = sourceBytes[sourceOffset + 2]
+        pixels[targetOffset + 3] = sourceBytes[sourceOffset + 3]
       end
     end
   end
-  return { width = width, height = height, pixels = concatChars(pixels), offset = { x = originX, y = originY } }
+  return { width = width, height = height, pixels = ffi.string(pixels, bytes), offset = { x = originX, y = originY } }
 end
 
 -- Realize one decoded NANR frame through the shared cell rasterizer. The

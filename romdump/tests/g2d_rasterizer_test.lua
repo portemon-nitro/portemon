@@ -390,6 +390,212 @@ function T.animation_frame_transform_changes_the_realized_extent()
   Assert.deepEqual(result.offset, { x = 3, y = 2 }, "the realized visual preserves frame translation")
 end
 
+function T.ordered_tile_selection_renders_each_tile_side_by_side()
+  local palette = paletteData(16)
+  local result =
+    rasterizer().renderTiles(charData({ solidTile4(2), solidTile4(3) }), palette, { 0, 1 })
+  Assert.equal(result.width, 16)
+  Assert.equal(result.height, 8)
+  Assert.equal(#result.pixels, 16 * 8 * 4)
+  local first, second = palette.colors[3], palette.colors[4]
+  local r1, g1, b1, a1 = pixelAt(result.pixels, 16, 2, 4)
+  Assert.equal(r1, first.r)
+  Assert.equal(g1, first.g)
+  Assert.equal(b1, first.b)
+  Assert.equal(a1, 255)
+  local r2, g2, b2, a2 = pixelAt(result.pixels, 16, 10, 4)
+  Assert.equal(r2, second.r)
+  Assert.equal(g2, second.g)
+  Assert.equal(b2, second.b)
+  Assert.equal(a2, 255)
+end
+
+function T.tile_strip_renders_the_selected_run_with_the_bank_palette()
+  local palette = paletteData(32)
+  local before = {}
+  for index, color in ipairs(palette.colors) do
+    before[index] = { r = color.r, g = color.g, b = color.b }
+  end
+  local result = rasterizer().renderTileStrip(
+    charData({ solidTile4(0), solidTile4(1), solidTile4(2) }),
+    palette,
+    1,
+    2,
+    1
+  )
+  Assert.equal(result.width, 16)
+  Assert.equal(result.height, 8)
+  Assert.equal(#result.pixels, 16 * 8 * 4)
+  local first = palette.colors[18]
+  local r1, g1, b1, a1 = pixelAt(result.pixels, 16, 2, 4)
+  Assert.equal(r1, first.r)
+  Assert.equal(g1, first.g)
+  Assert.equal(b1, first.b)
+  Assert.equal(a1, 255)
+  local second = palette.colors[19]
+  local r2, g2, b2, a2 = pixelAt(result.pixels, 16, 10, 4)
+  Assert.equal(r2, second.r)
+  Assert.equal(g2, second.g)
+  Assert.equal(b2, second.b)
+  Assert.equal(a2, 255)
+  for index, color in ipairs(palette.colors) do
+    Assert.equal(color.r, before[index].r)
+    Assert.equal(color.g, before[index].g)
+    Assert.equal(color.b, before[index].b)
+  end
+end
+
+function T.affine_mirror_scale_preserves_nearest_neighbor_sampling()
+  local module = rasterizer()
+  local tiles = charData({ gradientTile4() })
+  local palette = paletteData(16)
+  local result = module.renderAnimationFrame(
+    tiles,
+    palette,
+    { cells = { cell(0) } },
+    animation({
+      {
+        cell = 0,
+        duration = 4,
+        element = "affine",
+        translateX = 8,
+        translateY = 8,
+        scaleX = -1,
+        scaleY = -1,
+        rotation = 0,
+      },
+    }),
+    1
+  )
+  Assert.equal(result.width, 8)
+  Assert.equal(result.height, 8)
+  Assert.deepEqual(result.offset, { x = 0, y = 0 })
+  local plain = module.renderScreen(tiles, palette, screenData(8, 8, { entry(0, 0) }))
+  for y = 0, 7 do
+    for x = 0, 7 do
+      local r1, g1, b1, a1 = pixelAt(plain.pixels, 8, 7 - x, 7 - y)
+      local r2, g2, b2, a2 = pixelAt(result.pixels, 8, x, y)
+      Assert.equal(r2, r1)
+      Assert.equal(g2, g1)
+      Assert.equal(b2, b1)
+      Assert.equal(a2, a1)
+    end
+  end
+end
+
+function T.affine_rotation_clips_pixels_outside_the_source()
+  local result = rasterizer().renderAnimationFrame(
+    charData({ solidTile4(4) }),
+    paletteData(16),
+    { cells = { cell(0) } },
+    animation({
+      {
+        cell = 0,
+        duration = 4,
+        element = "affine",
+        translateX = 4,
+        translateY = 4,
+        scaleX = 1,
+        scaleY = 1,
+        rotation = 45,
+      },
+    }),
+    1
+  )
+  Assert.isTrue(result.width > 8 and result.height > 8, "the rotated frame extends past its source bounds")
+  local opaque = 0
+  for y = 0, result.height - 1 do
+    for x = 0, result.width - 1 do
+      local _, _, _, a = pixelAt(result.pixels, result.width, x, y)
+      Assert.isTrue(a == 0 or a == 255, "rotated pixels stay straight alpha")
+      if a == 255 then
+        opaque = opaque + 1
+      end
+    end
+  end
+  local total = result.width * result.height
+  Assert.isTrue(opaque > 0 and opaque < total, "rotation keeps source ink while clipping corners")
+  local _, _, _, corner = pixelAt(result.pixels, result.width, 0, 0)
+  Assert.equal(corner, 0)
+end
+
+function T.malformed_tile_strip_and_tile_selections_are_typed_errors()
+  local module = rasterizer()
+  local chars = charData({ solidTile4(1) })
+  local palette = paletteData(16)
+  local function check(fn)
+    local ok, err = pcall(fn)
+    Assert.isFalse(ok)
+    Assert.isTrue(Errors.is(err), "expected a structured raster failure")
+    local failure = err ---@cast failure Errors.Error
+    Assert.equal(failure.code, module.ERROR.SOURCE_INVALID)
+  end
+  check(function()
+    return module.renderTileStrip(chars, palette, 0, 2, 0)
+  end)
+  check(function()
+    return module.renderTileStrip(chars, palette, 0, 1, 3)
+  end)
+  check(function()
+    return module.renderTiles(chars, palette, { 0, 9 })
+  end)
+  check(function()
+    return module.renderTiles(chars, palette, { -1 })
+  end)
+end
+
+function T.malformed_cells_transforms_and_frames_are_typed_errors()
+  local module = rasterizer()
+  local chars = charData({ solidTile4(1) })
+  local palette = paletteData(16)
+  local cells = { cells = { cell(0) } }
+  local function frameWith(overrides)
+    local frame =
+      { cell = 0, duration = 4, element = "affine", translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 }
+    for key, value in pairs(overrides) do
+      frame[key] = value
+    end
+    return animation({ frame })
+  end
+  local function check(fn)
+    local ok, err = pcall(fn)
+    Assert.isFalse(ok)
+    Assert.isTrue(Errors.is(err), "expected a structured raster failure")
+    local failure = err ---@cast failure Errors.Error
+    Assert.equal(failure.code, module.ERROR.SOURCE_INVALID)
+  end
+  check(function()
+    return module.renderCell(chars, palette, { objs = {} })
+  end)
+  check(function()
+    return module.renderCell(chars, palette, {
+      objs = { { x = 0, y = 0, tile = 0, palette = 0, width = -8, height = 8 } },
+    })
+  end)
+  check(function()
+    return module.renderCell(chars, palette, {
+      objs = { { x = 0, y = 0, tile = 0, palette = 0, width = 12, height = 8 } },
+    })
+  end)
+  check(function()
+    return module.renderAnimationFrame(chars, palette, cells, frameWith({ scaleX = 0 }), 1)
+  end)
+  check(function()
+    return module.renderAnimationFrame(chars, palette, cells, frameWith({ rotation = 0 / 0 }), 1)
+  end)
+  check(function()
+    local missing = frameWith({ element = "none" })
+    missing.frames[1].cell = 4
+    return module.renderAnimationFrame(chars, palette, cells, missing, 1)
+  end)
+  check(function()
+    return module.renderAnimationFrame(chars, palette, cells, frameWith({ element = "spin" }), 1)
+  end)
+  check(function()
+    return module.renderAnimationFrame(chars, palette, cells, frameWith({}), "1")
+  end)
+end
+
 function T.animation_frame_transform_preserves_the_cell_origin()
   local module = rasterizer()
   local result = module.renderAnimationFrame(
