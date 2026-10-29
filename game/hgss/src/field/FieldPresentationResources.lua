@@ -12,6 +12,7 @@ local MartRenderer = require("libs.hgss.src.ui.MartRenderer")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local SummaryCache = require("libs.assets.src.SummaryCache")
+local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local SummaryPresentationResources = require("game.hgss.src.field.SummaryPresentationResources")
 local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
 local PokedexPresentationResources = require("game.hgss.src.pokedex.PokedexPresentationResources")
@@ -60,6 +61,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field unbindSummaryPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime summary preparation unbinding in presented composition
 ---@field bindPokedexPreparation fun(runtime: FieldPresentationResourcesRuntime, acquire: PokedexPreparationAcquire): integer runtime pokedex preparation binding in presented composition
 ---@field unbindPokedexPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime pokedex preparation unbinding in presented composition
+---@field monService table<string, unknown>? the live party mon service behind idle selector prediction
 ---@field monCatalog table<string, unknown>? the resolved mon catalog borrowed by pokedex composition
 ---@field pokedexCatalog table<string, unknown>? the borrowed generated dex catalog behind pokedex composition
 ---@field messageProvider table<string, unknown>? the borrowed field message provider
@@ -131,6 +133,10 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field fieldEmoteRenderer FieldActorEmoteRenderer?
 ---@field fieldTerrainEffectRenderer FieldTerrainEffectRenderer?
 ---@field presenters table<string, FieldPresentationApplicationPresenter>? the per-instance application presenter map
+---@field _warmPartyRevision integer? last observed live party revision behind the idle selector memo
+---@field _warmPortraitSelectors string[]? predicted non-egg portrait selectors in stable slot order
+---@field _warmNext string? next idle owner to progress first, summary or pokedex
+---@field _applicationWarmupFailure string? last idle staging diagnostic, never a demand failure
 local FieldPresentationResources = {}
 FieldPresentationResources.__index = FieldPresentationResources
 
@@ -1339,6 +1345,119 @@ function FieldPresentationResources:dispose()
     self.renderer:release()
     self.renderer = nil
   end
+end
+
+-- Advances the field-owned idle application warmup under the shared one
+-- GPU realization budget: predicts the live party portrait selectors from
+-- validated party copies and alternates progress across the Summary and
+-- Pokedex owners. Both owners may enroll or poll with zero allowance;
+-- at most one new pool lease or canvas realizes per call. Failures stay
+-- diagnostic and never disable the ordinary demand path.
+---@param remainingGpu integer 0 or 1 speculative GPU realizations for the call
+---@return boolean usedGpu true when the call realized a new pool lease or canvas
+function FieldPresentationResources:advanceApplicationWarmup(remainingGpu)
+  assert(remainingGpu == 0 or remainingGpu == 1, "idle staging spends at most one GPU realization")
+  local runtime = self._presentationRuntime
+  local selectors = self._warmPortraitSelectors
+  if runtime ~= nil then
+    local service = runtime.monService
+    if type(service) == "table" and type(service.partyRevision) == "function" then
+      local okRevision, revision = pcall(function()
+        return service:partyRevision()
+      end)
+      if okRevision and revision ~= self._warmPartyRevision then
+        local nextSelectors = {}
+        local catalog = runtime.monCatalog
+        if catalog == nil and type(service.catalog) == "function" then
+          local okCatalog, resolved = pcall(function()
+            return service:catalog()
+          end)
+          if okCatalog then
+            catalog = resolved
+          end
+        end
+        if
+          type(catalog) == "table"
+          and type(service.partyCount) == "function"
+          and type(service.partyMon) == "function"
+        then
+          local okCount, count = pcall(function()
+            return service:partyCount()
+          end)
+          if okCount and type(count) == "number" then
+            local seen = {}
+            for slot = 0, count - 1 do
+              local okMon, mon = pcall(function()
+                return service:partyMon(slot)
+              end)
+              if okMon and type(mon) == "table" and mon.isEgg ~= true then
+                local okSelector, selector = pcall(SummaryModel.portraitSelectorFor, catalog, mon)
+                if okSelector and type(selector) == "string" and not seen[selector] then
+                  seen[selector] = true
+                  nextSelectors[#nextSelectors + 1] = selector
+                end
+              end
+            end
+          end
+        end
+        self._warmPartyRevision = revision
+        self._warmPortraitSelectors = nextSelectors
+        selectors = nextSelectors
+      end
+    end
+  end
+  selectors = selectors or {}
+  local first, second
+  if self._warmNext == "pokedex" then
+    first, second = "pokedex", "summary"
+  else
+    first, second = "summary", "pokedex"
+  end
+  self._warmNext = second
+  local remaining = remainingGpu
+  local used = false
+  for _, name in ipairs({ first, second }) do
+    local owner = nil
+    if name == "summary" then
+      owner = self.summaryResources
+    else
+      if self._presentationRuntime ~= nil then
+        local okOwner, resolved = pcall(function()
+          return self:pokedex()
+        end)
+        if okOwner then
+          owner = resolved
+        end
+      else
+        owner = self.pokedexResources
+      end
+    end
+    if owner ~= nil and type(owner.advanceWarmup) == "function" then
+      local ok, ownerUsed, failure
+      if name == "summary" then
+        local roster = assert(selectors, "idle staging carries its selector memo")
+        ok, ownerUsed, failure = pcall(function()
+          return owner:advanceWarmup(roster, remaining)
+        end)
+      else
+        ok, ownerUsed, failure = pcall(function()
+          return owner:advanceWarmup(remaining)
+        end)
+      end
+      if not ok then
+        self._applicationWarmupFailure = name .. " idle staging raised: " .. tostring(ownerUsed)
+      else
+        if type(failure) == "string" and failure ~= "" then
+          self._applicationWarmupFailure = name .. " idle staging deferred: " .. failure
+        end
+        if ownerUsed == true then
+          used = true
+          remaining = 0
+        end
+      end
+    end
+  end
+  return used
 end
 
 --- Returns the lazily owned field pokedex preparation leaf, creating it
