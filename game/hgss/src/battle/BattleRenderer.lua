@@ -806,6 +806,10 @@ end
 ---@param singles boolean true while the battle keeps its single layout
 local function drawPicturePlanes(graphics, assets, view, players, enemies, singles)
   local pictures = {}
+  local battlerPictures = {}
+  local function activationKey(activation)
+    return tostring(activation.combatant) .. ":" .. tostring(activation.activation)
+  end
   local function submit(picture)
     if picture ~= nil then
       pictures[#pictures + 1] = picture
@@ -813,15 +817,39 @@ local function drawPicturePlanes(graphics, assets, view, players, enemies, singl
   end
   for _, record in ipairs(pictureRecords(view, players, enemies, singles)) do
     local battler = record.battler
+    local picture = battlerPicture(assets, battler, record.row)
+    if type(battler.combatant) == "number" and type(battler.activation) == "number" and picture ~= nil then
+      battlerPictures[activationKey(battler)] = { battler = battler, row = record.row, picture = picture }
+    end
     if battler.visible ~= false and battler.vanished ~= true and battler.dontDraw ~= true then
       submit(shadowPicture(assets, battler, record.row))
-      submit(battlerPicture(assets, battler, record.row))
+      submit(picture)
     end
   end
   for _, effect in ipairs(assert(view.effectInstances, "battle snapshots carry transient effect instances")) do
     local picture = effect.picture --[[@as table<string, unknown>?]]
     if picture ~= nil then
-      submit(effectPicture(assets, picture))
+      local sourceActivation = picture.battlerActivation
+      if type(sourceActivation) == "table" then
+        local source = battlerPictures[activationKey(sourceActivation)]
+        if source ~= nil then
+          local copy = {}
+          for field, value in pairs(source.picture) do
+            copy[field] = value
+          end
+          copy.centerY = copy.centerY - numberOr(source.battler.shadowHeight, 0)
+          if picture.follow ~= true then
+            copy.centerX = source.row.settledX
+            copy.centerY = source.row.settledY
+              + numberOr(source.battler.height, 0)
+              + numberOr(source.battler.sourceHeight, 0)
+              - numberOr(source.battler.shadowHeight, 0)
+          end
+          submit(copy)
+        end
+      else
+        submit(effectPicture(assets, picture))
+      end
     end
   end
   if #pictures > 0 then

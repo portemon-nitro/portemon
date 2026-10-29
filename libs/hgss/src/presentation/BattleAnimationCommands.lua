@@ -1202,8 +1202,11 @@ Handlers["show-pokemon-picture"] = handleShowPokemonPicture
 local function handleCreatePokemonSprite(exec, instruction, index)
   if instruction.taskKind ~= nil then
     local record = exec.spawn(instruction.taskKind, "raw", {
+      operation = "create",
       values = instruction.values,
       battlerTarget = instruction.battlerTarget,
+      spriteSlot = instruction.spriteSlot,
+      follow = instruction.values[1] ~= 0,
       runtimeSelection = instruction.runtimeSelection,
     })
     if record == nil then
@@ -1300,6 +1303,15 @@ end
 Handlers["destroy-effect-slot"] = handleDestroyEffectSlot
 
 local function handleDeleteManagedSprite(exec, instruction, index)
+  if instruction.taskKind ~= nil then
+    local record = exec.spawn(instruction.taskKind, "raw", {
+      operation = "delete",
+      spriteSlot = instruction.values[1],
+    })
+    if record == nil then
+      return "done"
+    end
+  end
   return noteVisual(exec, instruction, index)
 end
 Handlers["delete-managed-sprite"] = handleDeleteManagedSprite

@@ -297,6 +297,13 @@ local function settle(self, occurrence, phase, fault)
     return
   end
   occurrence.wait = nil
+  local releaseSlots = self._scene.releaseBattlerSpriteSlots
+  if type(releaseSlots) == "function" then
+    releaseSlots(
+      self._scene,
+      occurrence.launchId .. ":" .. tostring(occurrence.packetId) .. ":" .. tostring(occurrence.id)
+    )
+  end
   if phase == "complete" then
     stopVoices(self, occurrence)
     releaseLeases(self, occurrence)
@@ -335,11 +342,15 @@ end
 local function taskContext(occurrence)
   local packet = occurrence.packet --[[@as table<string, unknown>]]
   local topology = nil ---@type table<string, unknown>?
+  local sourceBattlers = nil ---@type table<integer, table<string, unknown>>?
   local event = nil ---@type table<string, unknown>?
   local visualSeed = nil ---@type integer?
   if type(packet) == "table" then
     if type(packet.topology) == "table" then
       topology = packet.topology --[[@as table<string, unknown>]]
+      if type(topology.sourceBattlers) == "table" then
+        sourceBattlers = topology.sourceBattlers --[[@as table<integer, table<string, unknown>>]]
+      end
     end
     if type(packet.event) == "table" then
       event = packet.event --[[@as table<string, unknown>]]
@@ -356,10 +367,12 @@ local function taskContext(occurrence)
   return {
     launchId = occurrence.launchId,
     packetId = occurrence.packetId,
+    occurrenceId = occurrence.id,
     programKey = occurrence.programKey,
     seed = occurrence.seed,
     random = occurrenceRandom,
     topology = topology,
+    sourceBattlers = sourceBattlers,
     event = event,
     visualSeed = visualSeed,
   }

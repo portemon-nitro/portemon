@@ -319,6 +319,37 @@ local function resolveEntry(packet, entry, role, slotGeometry)
   }
 end
 
+local function sourceBattlers(packet, slotGeometry)
+  local bySideType = {}
+  local function collect(view)
+    if type(view) ~= "table" then
+      return
+    end
+    for _, group in ipairs({ view.own, view.foes }) do
+      if type(group) == "table" then
+        for _, record in ipairs(group) do
+          if type(record) == "table" and type(record.combatant) == "number" and record.activation ~= nil then
+            local resolved = resolveEntry(packet, record, "source battler", slotGeometry)
+            if bySideType[resolved.sideType] == nil then
+              bySideType[resolved.sideType] = resolved
+            end
+          end
+        end
+      end
+    end
+  end
+  collect(packet.before)
+  collect(packet.after)
+  local ordered = {}
+  for sideType = 0, 5 do
+    local battler = bySideType[sideType]
+    if battler ~= nil then
+      ordered[#ordered + 1] = battler
+    end
+  end
+  return ordered
+end
+
 -- Adapts one sanitized event into a frozen visual occurrence packet.
 -- The attacker and every target resolve against the event-time
 -- before/after views only; later roster edits cannot retarget the
@@ -389,7 +420,7 @@ function BattlePresentationFlow.animationPlayback(packet, event, slotGeometry)
     packetId = packetId,
     event = occurrenceEvent,
     visualSeed = event.visualSeed,
-    topology = { attacker = attacker, targets = resolved },
+    topology = { attacker = attacker, targets = resolved, sourceBattlers = sourceBattlers(packet, slotGeometry) },
   }
 end
 

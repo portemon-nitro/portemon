@@ -1000,7 +1000,11 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
         offset = offset + 8 + count * 4
       end
     elseif opcode == 60 then
-      instruction = { op = "delete-managed-sprite", values = { readWord(stream, key, offset) } }
+      instruction = {
+        op = "delete-managed-sprite",
+        values = { readWord(stream, key, offset) },
+        taskKind = "pokemon-battler-sprite-slot",
+      }
       offset = offset + 4
     elseif opcode == 61 then
       instruction = { op = "destroy-effect-slot", values = { readWord(stream, key, offset) } }
@@ -1118,12 +1122,10 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
         op = "create-pokemon-sprite",
         values = { operands[2] },
         battlerTarget = resolved.battlerTarget,
+        spriteSlot = operands[3],
         runtimeSelection = resolved.runtimeSelection,
+        taskKind = "pokemon-battler-sprite-slot",
       }
-      if operands[3] == 1 then
-        instruction.taskKind = "pokemon-picture-animation"
-        instruction.taskStartRule = "picture-active-and-animation-attribute"
-      end
       offset = offset + 16
     elseif opcode == 79 then
       local operands = {}

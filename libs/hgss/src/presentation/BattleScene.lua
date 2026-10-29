@@ -31,6 +31,7 @@
 ---@field _gaugeTasks table<string, table<string, unknown>> source-ticked displayed gauge tasks
 ---@field _healthBoxModes table<string, { sideType: integer, mode: string }> double-player native health-box mode by activation
 ---@field _effects table<integer, { id: integer, sourceKey: string, age: integer, picture?: table<string, unknown> }> live transient effect records
+---@field _battlerSpriteSlots table<string, table<integer, integer>> battler picture copies by source occurrence and sprite slot
 ---@field _nextEffect integer next transient effect identity
 ---@field _released boolean launch-scoped release guard
 local BattleScene = {}
@@ -85,6 +86,7 @@ function BattleScene.new()
     _gaugeTasks = {},
     _healthBoxModes = {},
     _effects = {},
+    _battlerSpriteSlots = {},
     _nextEffect = 1,
     _released = false,
   }, BattleScene)
@@ -516,6 +518,7 @@ local PICTURE_STATE_FIELDS = {
   affineWidth = true,
   affineHeight = true,
   pictureVisible = true,
+  pictureXOffset = true,
   pictureXOffset2 = true,
   pictureYOffset2 = true,
   pictureWidth = true,
@@ -620,17 +623,8 @@ local function checkedPicturePatch(patch)
         "native picture rotation is a 16-bit angle index"
       )
     elseif
-      field == "pictureXOffset2"
-      or field == "pictureYOffset2"
-      or field == "pictureWidth"
-      or field == "pictureHeight"
-    then
-      assert(
-        type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 0xFF,
-        "visible picture crop fields are unsigned bytes"
-      )
-    elseif
-      field == "pictureYOffset"
+      field == "pictureXOffset"
+      or field == "pictureYOffset"
       or field == "shadowHeight"
       or field == "shadowX"
       or field == "shadowY"
@@ -639,7 +633,17 @@ local function checkedPicturePatch(patch)
     then
       assert(
         type(value) == "number" and value % 1 == 0 and value >= -0x8000 and value <= 0x7FFF,
-        "picture vertical offsets are signed native pixel values"
+        "picture offsets are signed native pixel values"
+      )
+    elseif
+      field == "pictureXOffset2"
+      or field == "pictureYOffset2"
+      or field == "pictureWidth"
+      or field == "pictureHeight"
+    then
+      assert(
+        type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 0xFF,
+        "visible picture crop fields are unsigned bytes"
       )
     elseif field == "shadowSize" then
       assert(
@@ -1755,7 +1759,7 @@ end
 -- concrete record. Effect visuals stay with their kind owner; the scene
 -- only tracks the lifetime.
 ---@param sourceKey string semantic source route under allocating
----@return { id: integer, sourceKey: string, age: integer } owned effect record
+---@return { id: integer, sourceKey: string, age: integer, picture?: table<string, unknown> } owned effect record
 function BattleScene:allocEffect(sourceKey)
   assert(not self._released, "released scenes allocate nothing")
   assert(type(sourceKey) == "string" and sourceKey ~= "", "effects allocate under their source key")
@@ -1818,6 +1822,66 @@ function BattleScene:setEffectPicture(id, picture)
   record.picture = copy
 end
 
+-- Publishes a source battler picture copy into its managed sprite slot.
+-- The renderer resolves the copied pixels from the selected live battler;
+-- scene owns only source identity, follow mode, and slot lifetime.
+---@param ownerKey string source animation occurrence identity
+---@param spriteSlot integer source managed-sprite slot
+---@param battlerActivation { combatant: integer, activation: integer } selected source picture
+---@param follow boolean whether source task follows its battler picture
+function BattleScene:setBattlerSpriteSlot(ownerKey, spriteSlot, battlerActivation, follow)
+  assert(not self._released, "released scenes publish no battler sprites")
+  assert(type(ownerKey) == "string" and ownerKey ~= "", "battler sprites belong to a source occurrence")
+  assert(type(spriteSlot) == "number" and spriteSlot % 1 == 0 and spriteSlot >= 0, "battler sprites name a source slot")
+  assert(type(battlerActivation) == "table", "battler sprites copy a selected activation")
+  assert(type(battlerActivation.combatant) == "number", "battler sprites retain their source combatant")
+  assert(type(battlerActivation.activation) == "number", "battler sprites retain their source activation")
+  assert(type(follow) == "boolean", "battler sprites retain the source follow flag")
+  local slots = self._battlerSpriteSlots[ownerKey]
+  if slots == nil then
+    slots = {}
+    self._battlerSpriteSlots[ownerKey] = slots
+  end
+  assert(slots[spriteSlot] == nil, "source battler sprite slots are created once before deletion")
+  local record = self:allocEffect("battler-sprite-slot")
+  record.picture = {
+    spriteSlot = spriteSlot,
+    battlerActivation = {
+      combatant = battlerActivation.combatant,
+      activation = battlerActivation.activation,
+    },
+    follow = follow,
+  }
+  slots[spriteSlot] = record.id
+end
+
+-- Deletes one source sprite slot, or every remaining slot when its
+-- animation occurrence settles or is cancelled.
+---@param ownerKey string source animation occurrence identity
+---@param spriteSlot integer? exact slot to delete, absent for occurrence cleanup
+function BattleScene:releaseBattlerSpriteSlots(ownerKey, spriteSlot)
+  assert(not self._released, "released scenes release no battler sprites")
+  local slots = self._battlerSpriteSlots[ownerKey]
+  if slots == nil then
+    return
+  end
+  if spriteSlot ~= nil then
+    local effectId = slots[spriteSlot]
+    if effectId ~= nil then
+      self:releaseEffect(effectId)
+      slots[spriteSlot] = nil
+    end
+    if next(slots) == nil then
+      self._battlerSpriteSlots[ownerKey] = nil
+    end
+    return
+  end
+  for _, effectId in pairs(slots) do
+    self:releaseEffect(effectId)
+  end
+  self._battlerSpriteSlots[ownerKey] = nil
+end
+
 -- Publishes detached effect records in launch allocation order.
 ---@return table<integer, { id: integer, sourceKey: string, age: integer, picture?: table<string, unknown> }> renderable effect snapshot
 function BattleScene:effectViews()
@@ -1866,6 +1930,7 @@ function BattleScene:release()
   self._released = true
   self._entries = {}
   self._effects = {}
+  self._battlerSpriteSlots = {}
   self._background = nil
   self._backgroundRasterizer = nil
   self._backgroundLayers = {}

@@ -19,7 +19,6 @@ local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattleAnimationSources = require("romdump.src.config.BattleAnimationSources")
 local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
-local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 
@@ -414,7 +413,9 @@ local function statusKernelMoveFacts()
     TACKLE = catalog:move("TACKLE"),
     SPLASH = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = 0 },
     SWORDS_DANCE = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = 0 },
+    TAIL_WHIP = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = 0 },
     THUNDER_WAVE = { power = 0, accuracy = 100, category = "other", moveType = "electric", priority = 0 },
+    HYPNOSIS = { power = 0, accuracy = 100, category = "other", moveType = "psychic", priority = 0 },
   }
 end
 
@@ -700,6 +701,197 @@ function T.successful_status_and_stage_execution_admits_one_visual_after_announc
   session:dispose()
   checkStatusTurn(danceEvents, 1, "SWORDS_DANCE", "Swords Dance", "rose")
   checkStatusTurn(waveEvents, 2, "THUNDER_WAVE", "Thunder Wave", "paralyzed")
+end
+
+-- A real successful move event reaches the live screen's production
+-- timeline and player. The staged program uses the compiler's existing
+-- source task shape; its task is observed in the native scene before it
+-- retires, with no replacement drawing code in the test.
+function T.named_status_and_stage_events_start_one_native_screen_task()
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local BattleScreenFixture = require("game.hgss.tests.support.BattleScreenFixture")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local contracts = SessionFixture.sessionContracts()
+  local content = statusKernelContent()
+  local launchId = "named-move-native-task"
+
+  local function runMove(key, seed)
+    local alpha = statusScriptedCombatant(1, 11, { { move = key, pp = 30, ppUps = 0 } })
+    local beta = statusScriptedCombatant(2, 31, { { move = "TACKLE", pp = 35, ppUps = 0 } })
+    local session = contracts.Battle.newSession(statusDuelScenario({ alpha, beta }), content)
+    local _, events = statusPlayTurn(session, function(request)
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        if request.controller == "alpha" then
+          choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+        else
+          choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+        end
+      end
+      return choices
+    end)
+    session:dispose()
+
+    local used = nil
+    for _, event in ipairs(events) do
+      if event.kind == "move-used" and event.cause.key == key then
+        used = event
+      end
+    end
+    Assert.notNil(used, key .. " is emitted by the real battle kernel on success")
+    Assert.equal(used.effectKey, key, key .. " retains the executed move effect key")
+
+    local staging = EffectStagingFixture.new({ launchId = launchId })
+    local function stageProgram(effectKey, sourceWords)
+      local program = lowered(effectKey, sourceWords)
+      local record = EffectStagingFixture.effectRecord(effectKey, {})
+      record.program = {
+        entry = program.entry,
+        instructions = program.instructions,
+        subprograms = program.subprograms,
+        taskKinds = program.taskKinds,
+      }
+      staging:stageEffect(effectKey, record, {})
+    end
+    stageProgram("TACKLE", { 29, 50, 4 })
+    stageProgram(key, { 5, 1, 34, 1, 2, 3, 50, 4 })
+
+    local manifest = ManifestFixture.manifest()
+    manifest.messages.entries["battle/move-use/HYPNOSIS/own"] =
+      manifest.messages.entries["battle/move-use/TACKLE/own"]
+    manifest.messages.entries["battle/narration/status/sleep/own"] =
+      manifest.messages.entries["battle/narration/status/paralysis/own"]
+    local measurement = {
+      width = 256,
+      height = 384,
+      topology = ScreenTopology.dualDisplay(
+        { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+        { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+      ),
+      pixelRatio = 1,
+      signature = "named-move-native-task:dual",
+    }
+    local audio = {}
+    function audio.play(_name)
+      return true
+    end
+    function audio.stop(_name) end
+    function audio.isFinished(_name)
+      return true
+    end
+    local assets = {}
+    function assets.prepare(demand)
+      return staging.services.prepare(demand)
+    end
+    function assets.drawable(imageKey)
+      local staged = staging.services.drawable(imageKey)
+      if staged ~= nil then
+        return staged
+      end
+      return { handle = imageKey, width = 256, height = 192 }
+    end
+    function assets.release(imageKey)
+      staging.services.release(imageKey)
+    end
+    assets.requestEffect = staging.services.requestEffect
+    assets.loadEffect = staging.services.loadEffect
+    assets.resolveEffectResource = staging.services.resolveEffectResource
+    assets.releaseEffectResource = staging.services.releaseEffectResource
+    local screen = BattleScreenFixture.new({
+      launchId = launchId,
+      manifest = manifest,
+      model = BattlePresentationModel,
+      submit = function(_reply)
+        return true
+      end,
+      measureDisplay = function()
+        return measurement
+      end,
+      assets = assets,
+      text = {
+        measure = function(text)
+          return { width = 8 * #tostring(text), height = 16 }
+        end,
+        drawText = function(_text, _x, _y) end,
+      },
+      windows = { drawWindow = function(_box, _frame, _background) end },
+      audio = audio,
+    })
+    local view = statusTimelineView()
+    for _ = 1, 4 do
+      screen:updateFixed(1 / 30)
+    end
+    Assert.isTrue(screen:presentationPort().enter({ kind = "wild" }), key .. " staged screen enters")
+    screen._timeline:reset(view)
+    local packet = BattlePresentationModel.packet(view, { events = events }, view, {
+      launchId = launchId,
+      packetId = seed,
+    })
+    screen:presentationPort().present(packet)
+
+    local startedHandle = nil
+    local completed = false
+    local playerStatus = screen._player.status
+    function screen._player:status(handle)
+      local phase = playerStatus(self, handle)
+      if handle == startedHandle and phase == "complete" then
+        completed = true
+      end
+      return phase
+    end
+    for _ = 1, 3000 do
+      screen:updateFixed(BattleScreenFixture.SOURCE_FRAME or 1 / 30)
+      screen._timeline:ack()
+      for _, track in pairs(screen._nativeHandles) do
+        if track.effectKey == key and track.handle ~= nil then
+          startedHandle = track.handle
+        end
+      end
+      if screen._timeline:settled() and startedHandle ~= nil then
+        break
+      end
+    end
+    local queuedKinds = {}
+    for _, cue in ipairs(screen._timeline._queue) do
+      queuedKinds[#queuedKinds + 1] = tostring(cue.kind)
+    end
+    local targetRequests = 0
+    for _, requested in ipairs(staging.requests) do
+      if requested == key then
+        targetRequests = targetRequests + 1
+      end
+    end
+    Assert.equal(
+      targetRequests,
+      1,
+      key
+        .. " causes exactly one lazy native effect demand (mode="
+        .. tostring(screen:status().mode)
+        .. ", error="
+        .. tostring(screen:status().error)
+        .. ", message="
+        .. tostring(screen._timeline:message())
+        .. ", active="
+        .. tostring(screen._timeline._active and screen._timeline._active.kind)
+        .. "/"
+        .. tostring(screen._timeline._active and screen._timeline._active.effectKey)
+        .. "/attempt="
+        .. tostring(screen._timeline._active and screen._timeline._active.startAttempted)
+        .. "/routing="
+        .. tostring(screen._nativeRouting)
+        .. ", queue="
+        .. table.concat(queuedKinds, ",")
+        .. ")"
+    )
+    Assert.notNil(startedHandle, key .. " reaches BattleScreenState's real animation player")
+    Assert.isTrue(completed, key .. " task reaches its completion boundary")
+    screen:dispose()
+    staging:dispose()
+  end
+
+  runMove("TAIL_WHIP", 1)
+  runMove("HYPNOSIS", 2)
 end
 
 -- A missed status attempt through the production packet path follows

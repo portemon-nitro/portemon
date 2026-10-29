@@ -375,6 +375,7 @@ end
 -- Semantic picture targets resolving to the occurrence attacker side.
 local ATTACKER_PICTURE_NAMES = {
   attacker = true,
+  ["active-position-first"] = true,
   ["active-battler"] = true,
   ["active-battler-pair-when-enabled"] = true,
   ["all-battler-positions"] = true,
@@ -384,10 +385,20 @@ local ATTACKER_PICTURE_NAMES = {
 -- Semantic picture targets resolving to the first occurrence target.
 local TARGET_PICTURE_NAMES = {
   target = true,
+  ["active-position-second"] = true,
   ["opposing-battler"] = true,
   ["opposing-battler-pair-when-enabled"] = true,
   ["other-battler-positions"] = true,
   ["target-related-position-when-paired"] = true,
+  ["first-battler-state-one-or-three"] = true,
+  ["first-battler-state-five"] = true,
+}
+
+local SOURCE_BATTLER_TYPES = {
+  ["first-battler-state-zero-or-two"] = { [0] = true, [2] = true },
+  ["first-battler-state-one-or-three"] = { [1] = true, [3] = true },
+  ["first-battler-state-four"] = { [4] = true },
+  ["first-battler-state-five"] = { [5] = true },
 }
 
 -- Resolves the activation a picture body owns: the explicit spawning
@@ -430,6 +441,223 @@ local function plannedActivation(args, context)
     return nil
   end
   return nil
+end
+
+local function plannedBattlerSpriteActivation(args, context)
+  local name = args.battlerTarget
+  if name == "first-battler-for-active-position-first" or name == "first-battler-for-active-position-second" then
+    local topology = context.topology --[[@as table<string, unknown>?]]
+    local battler = nil
+    if name == "first-battler-for-active-position-first" then
+      battler = type(topology) == "table" and topology.attacker or nil
+    elseif type(topology) == "table" and type(topology.targets) == "table" then
+      battler = topology.targets[1]
+    end
+    if type(battler) ~= "table" or type(battler.sideType) ~= "number" then
+      return nil
+    end
+    local partnerSideType = ({ [0] = 0, [1] = 1, [2] = 4, [3] = 5, [4] = 2, [5] = 3 })[
+      battler.sideType --[[@as integer]]
+    ]
+    local sourceBattlers = context.sourceBattlers --[[@as table<integer, table<string, unknown>>?]]
+    if type(sourceBattlers) ~= "table" or partnerSideType == nil then
+      return nil
+    end
+    for _, candidate in ipairs(sourceBattlers) do
+      if candidate.sideType == partnerSideType then
+        return { combatant = candidate.combatant, activation = candidate.activation }
+      end
+    end
+    return nil
+  end
+  local sourceTypes = type(name) == "string" and SOURCE_BATTLER_TYPES[name] or nil
+  if sourceTypes == nil then
+    return plannedActivation(args, context)
+  end
+  local sourceBattlers = context.sourceBattlers
+  if type(sourceBattlers) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: battler sprite role reads ordered source battler slots", 0)
+  end
+  for _, candidate in ipairs(sourceBattlers) do
+    if type(candidate.sideType) == "number" and sourceTypes[candidate.sideType] == true then
+      return { combatant = candidate.combatant, activation = candidate.activation }
+    end
+  end
+  -- BattleAnimSystem_GetBattlerByRole falls back to battler index zero
+  -- when state roles 4–7 have no active match. sourceBattlers keeps
+  -- native battler index order, so its first record is that exact fallback.
+  local first = sourceBattlers[1]
+  return type(first) == "table" and { combatant = first.combatant, activation = first.activation } or nil
+end
+
+-- Resolves the native battler-role mask used by MoveBattlerSin. The
+-- event-time topology carries the attacker and the complete ordered
+-- target set; singles therefore naturally omit partner roles.
+---@param parameters table<string, unknown> source MoveBattlerSin operands
+---@param context table<string, unknown> occurrence-bound playback context
+---@param kind string task kind under construction
+---@return table<integer, table<string, unknown>> selected battler activations
+local function positionPathActivations(parameters, context, kind)
+  local topology = type(context) == "table" and context.topology or nil
+  if type(topology) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " reads event-time battler positions", 0)
+  end
+  local attacker = topology.attacker
+  local targets = topology.targets
+  if type(attacker) ~= "table" or type(attacker.combatant) ~= "number" or type(targets) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " reads its attacker and target positions", 0)
+  end
+
+  local available = { attacker }
+  for _, target in ipairs(targets) do
+    if type(target) ~= "table" or type(target.combatant) ~= "number" then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " reads ordered target positions", 0)
+    end
+    available[#available + 1] = target
+  end
+  local function addUnique(into, candidate)
+    for _, current in ipairs(into) do
+      if current.combatant == candidate.combatant and current.activation == candidate.activation then
+        return
+      end
+    end
+    into[#into + 1] = { combatant = candidate.combatant, activation = candidate.activation }
+  end
+
+  local selected = {}
+  local path = parameters.positionPath
+  if path == "all-battler-positions" then
+    for _, candidate in ipairs(available) do
+      addUnique(selected, candidate)
+    end
+  elseif path == "active-and-related-pair" then
+    for _, candidate in ipairs(available) do
+      if candidate.combatant ~= attacker.combatant then
+        addUnique(selected, candidate)
+      end
+    end
+  elseif path == "selected-position-anchors" then
+    if parameters.attackerAnchor == true then
+      addUnique(selected, attacker)
+    end
+    if parameters.targetAnchor == true then
+      local target = targets[1]
+      if type(target) == "table" then
+        addUnique(selected, target)
+      end
+    end
+    -- Partner roles only exist in doubles. Resolve them from the
+    -- event-time participants when those moves also target the partner.
+    local function addPartner(anchor, related)
+      if anchor ~= true or type(related) ~= "table" then
+        return
+      end
+      local sideType = related.sideType
+      local partnerSideType = sideType == 2 and 4 or sideType == 4 and 2 or sideType == 3 and 5 or sideType == 5 and 3
+      for _, candidate in ipairs(available) do
+        if candidate.combatant ~= related.combatant and candidate.sideType == partnerSideType then
+          addUnique(selected, candidate)
+          return
+        end
+      end
+    end
+    addPartner(parameters.attackerRelatedAnchor, attacker)
+    addPartner(parameters.targetRelatedAnchor, targets[1])
+  else
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " selects a known position path", 0)
+  end
+  if #selected == 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " selects at least one present battler", 0)
+  end
+  return selected
+end
+
+---@class BattlePositionPathTask
+---@field _scene table<string, unknown> scene behind owned picture offsets
+---@field _kind string source task kind behind the run
+---@field _activations table<integer, table<string, unknown>> selected native battlers
+---@field _stepTicks integer source circle duration before the multiplier
+---@field _duration integer complete source task duration
+---@field _ticks integer source ticks advanced
+---@field _state string pending, running, complete, or cancelled
+---@field _disposed boolean release has run
+local BattlePositionPathTask = {}
+BattlePositionPathTask.__index = BattlePositionPathTask
+
+-- The source MoveBattlerSin task advances the circle phase by one base
+-- duration while its lifetime is multiplied by stepMultiplier. Its
+-- authored half-amplitudes are 1 horizontal pixel and -0.25 vertical
+-- pixels, with the source's eight-pixel vertical baseline.
+---@param self BattlePositionPathTask task under advancement
+local function writePositionPathTick(self)
+  local angle = 2 * math.pi * self._ticks / self._stepTicks
+  local offsetX = math.floor(math.sin(angle))
+  local offsetY = 8 + math.floor(-math.cos(angle) / 4)
+  for _, activation in ipairs(self._activations) do
+    self._scene.applyTaskPicturePatch(self._scene, self, activation, {
+      pictureXOffset = offsetX,
+      pictureYOffset = offsetY,
+    })
+  end
+end
+
+---@param self BattlePositionPathTask task under advancement
+---@param tick table<string, unknown>? source tick under advancement
+function BattlePositionPathTask:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  if self._duration == 0 then
+    self._state = "complete"
+    return
+  end
+  local ok, err = pcall(writePositionPathTick, self)
+  if not ok then
+    for _, activation in ipairs(self._activations) do
+      self._scene.removeTaskPicturePatch(self._scene, self, activation)
+    end
+    error(err, 0)
+  end
+  if self._ticks >= self._duration then
+    self._state = "complete"
+    for _, activation in ipairs(self._activations) do
+      self._scene.removeTaskPicturePatch(self._scene, self, activation)
+    end
+  end
+end
+
+---@param self BattlePositionPathTask
+---@return string
+function BattlePositionPathTask:status()
+  assert(VALID_TASK_STATES[self._state] == true, "position path tasks report a known run state")
+  return self._state
+end
+
+---@param self BattlePositionPathTask
+---@param reason string cancellation cause under diagnosis
+function BattlePositionPathTask:cancel(reason)
+  local _ = reason
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  for _, activation in ipairs(self._activations) do
+    self._scene.removeTaskPicturePatch(self._scene, self, activation)
+  end
+end
+
+---@param self BattlePositionPathTask
+function BattlePositionPathTask:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  for _, activation in ipairs(self._activations) do
+    self._scene.removeTaskPicturePatch(self._scene, self, activation)
+  end
 end
 
 -- Plans the owned picture overlay from compiled placement operands.
@@ -535,6 +763,44 @@ local function checkScene(services, kind)
     error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " constructs without its scene", 0)
   end
   return scene --[[@as table<string, unknown>]]
+end
+
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> scene collaborator
+---@return BattlePositionPathTask runnable MoveBattlerSin task
+local function newPositionPathTask(args, context, services)
+  local kind = "pokemon-picture-position-path-transition"
+  if type(args) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries instruction arguments", 0)
+  end
+  local scene = checkScene(services, kind)
+  if type(scene.applyTaskPicturePatch) ~= "function" or type(scene.removeTaskPicturePatch) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pictures through the scene overlay seam", 0)
+  end
+  local parameters = args.parameters
+  if type(parameters) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its parameters as a record", 0)
+  end
+  local stepTicks = parameters.durationTicks
+  local multiplier = parameters.stepMultiplier
+  if not isPositiveInt(stepTicks) or type(multiplier) ~= "number" or multiplier % 1 ~= 0 or multiplier < 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries source circle timing", 0)
+  end
+  local duration = stepTicks * multiplier
+  if duration > 0xFFFFFFFF then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " stays within native source timing", 0)
+  end
+  return setmetatable({
+    _scene = scene,
+    _kind = kind,
+    _activations = positionPathActivations(parameters, context, kind),
+    _stepTicks = stepTicks,
+    _duration = duration,
+    _ticks = 0,
+    _state = "pending",
+    _disposed = false,
+  }, BattlePositionPathTask)
 end
 
 -- Requires the transient sprite-record seam behind particle tasks, the
@@ -1435,6 +1701,75 @@ local function newPictureAnimation(args, context, services)
     _cancelReason = nil,
     _disposed = false,
   }, BattlePictureAnimation)
+end
+
+---@param args table<string, unknown> create or delete instruction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> scene collaborator
+---@return table<string, function> one-tick task for a source battler sprite slot
+local function newBattlerSpriteSlotTask(args, context, services)
+  local operation = args.operation
+  local slot = args.spriteSlot
+  if operation ~= "create" and operation ~= "delete" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: battler sprite slot has a source operation", 0)
+  end
+  if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: battler sprite slot carries a nonnegative slot", 0)
+  end
+  local launchId = context.launchId
+  local packetId = context.packetId
+  local occurrenceId = context.occurrenceId
+  local programKey = context.programKey
+  if
+    type(launchId) ~= "string"
+    or type(packetId) ~= "number"
+    or (type(occurrenceId) ~= "number" and type(programKey) ~= "string")
+  then
+    error("BATTLE_EFFECT_TASK_MALFORMED: battler sprite slots retain source occurrence identity", 0)
+  end
+  local ownerKey = launchId .. ":" .. tostring(packetId) .. ":" .. tostring(occurrenceId or programKey)
+  local scene = checkScene(services, "pokemon-battler-sprite-slot")
+  if type(scene.setBattlerSpriteSlot) ~= "function" or type(scene.releaseBattlerSpriteSlots) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: battler sprite slots require their scene owner", 0)
+  end
+  local selected = operation == "create" and plannedBattlerSpriteActivation(args, context) or nil
+  if operation == "create" then
+    if args.runtimeSelection ~= "battler-pokemon-picture-resource" then
+      error("BATTLE_EFFECT_TASK_MALFORMED: battler sprite slots select the runtime battler picture", 0)
+    end
+    if selected == nil then
+      error("BATTLE_EFFECT_TASK_MALFORMED: battler sprite slots resolve their source role", 0)
+    end
+    if type(args.follow) ~= "boolean" then
+      error("BATTLE_EFFECT_TASK_MALFORMED: battler sprite slots preserve the source follow flag", 0)
+    end
+  end
+  local state = "pending"
+  local ran = false
+  local function stepSourceTick()
+    if ran then
+      return
+    end
+    ran = true
+    state = "running"
+    if operation == "create" then
+      scene.setBattlerSpriteSlot(scene, ownerKey, slot, selected, args.follow)
+    else
+      scene.releaseBattlerSpriteSlots(scene, ownerKey, slot)
+    end
+    state = "complete"
+  end
+  local function status()
+    return state
+  end
+  local function cancel() end
+  local function dispose() end
+  return {
+    stepSourceTick = stepSourceTick,
+    status = status,
+    cancel = cancel,
+    dispose = dispose,
+  }
 end
 
 -- Restores the exact pre-effect picture snapshot (only when this
@@ -3583,6 +3918,9 @@ function BattleEffectTasks.supportsKind(kind)
   if kind == BattleEffectTasks.PICTURE_ANIMATION_KIND then
     return true
   end
+  if kind == "pokemon-battler-sprite-slot" then
+    return true
+  end
   if SOUND_TASK_KINDS[kind] == true then
     return true
   end
@@ -3625,6 +3963,10 @@ function BattleEffectTasks.create(kind, args, context, services)
     assert(type(services) == "table", "picture animations require their services record")
     return newPictureAnimation(args or {}, context or {}, services)
   end
+  if kind == "pokemon-battler-sprite-slot" then
+    assert(type(services) == "table", "battler sprite slots require their services record")
+    return newBattlerSpriteSlotTask(args or {}, context or {}, services)
+  end
   if SOUND_TASK_KINDS[kind] == true then
     assert(type(services) == "table", "sound tasks require their services record")
     return newSoundTask(kind, args or {}, context or {}, services)
@@ -3640,6 +3982,9 @@ function BattleEffectTasks.create(kind, args, context, services)
   end
   if NATIVE_VISUAL_KINDS[kind] == true then
     assert(type(services) == "table", "native visual tasks require their services record")
+    if kind == "pokemon-picture-position-path-transition" then
+      return newPositionPathTask(args or {}, context or {}, services)
+    end
     return newNativeVisualTask(kind, args or {}, context or {}, services)
   end
   error("BATTLE_EFFECT_TASK_UNKNOWN: no native task implementation for kind " .. tostring(kind), 0)

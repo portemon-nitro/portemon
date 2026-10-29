@@ -3345,7 +3345,7 @@ function T.sprite_resource_source_plans_use_pinned_archives_and_members()
   end
 end
 
-function T.battler_pokemon_sprite_uses_semantic_target_and_conditional_animation_task()
+function T.battler_pokemon_sprite_preserves_semantic_target_follow_and_slot()
   local program = assert(compiler().compile({
     key = "synthetic-battler-pokemon-sprite",
     stream = table.concat({ u32(58), u32(0), u32(2), u32(1), u32(0x4e23) }),
@@ -3363,12 +3363,8 @@ function T.battler_pokemon_sprite_uses_semantic_target_and_conditional_animation
   Assert.deepEqual(instruction.values, { 2 }, "only the semantic sprite slot remains numeric")
   Assert.equal(instruction.battlerTarget, "active-position-first", "native target selector is normalized")
   Assert.equal(instruction.runtimeSelection, "battler-pokemon-picture-resource", "sprite resources follow the battler")
-  Assert.equal(instruction.taskKind, "pokemon-picture-animation", "source-selected animation task is typed")
-  Assert.equal(
-    instruction.taskStartRule,
-    "picture-active-and-animation-attribute",
-    "animation starts only when the source picture supports it"
-  )
+  Assert.equal(instruction.spriteSlot, 1, "the source sprite slot remains an explicit identity")
+  Assert.equal(instruction.taskKind, "pokemon-battler-sprite-slot", "source sprite copies use their own slot task")
 end
 
 function T.parameter_and_state_branches_normalize_targets_without_source_offsets()
