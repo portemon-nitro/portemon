@@ -492,7 +492,7 @@ end
 ---@param rig table live screen rig under test driving
 ---@param mode string awaited controller mode under test driving
 ---@return table the screen status once the mode is reached
-local function driveToMode(rig, mode)
+local function driveToMode(rig, mode, keepCursorHidden)
   for _ = 1, 600 do
     rig.pump(1)
     local status = rig.screen:status()
@@ -500,6 +500,14 @@ local function driveToMode(rig, mode)
       error("the battle screen failed while driving to " .. mode .. ": " .. tostring(status.error), 0)
     end
     if status.mode == mode and (mode ~= "command" and mode ~= "moves" or rig.screen:view().menuInputEnabled) then
+      if
+        keepCursorHidden ~= true
+        and (mode == "command" or mode == "moves")
+        and rig.screen:view().cursorVisible ~= true
+      then
+        rig.screen:input({ { type = "navigate", direction = "left" } })
+        rig.pump(1)
+      end
       return status
     end
   end
@@ -1058,13 +1066,13 @@ function T.navigation_follows_the_native_topology()
   Assert.equal(rig.screen:view().selection, "fight", "the prompt rests on the first command")
   rig.screen:input({ { type = "navigate", direction = "right" } })
   rig.pump(1)
-  Assert.equal(rig.screen:view().selection, "fight", "the wide top command keeps horizontal edges")
+  Assert.equal(rig.screen:view().selection, "pokemon", "right from Fight reaches the lower-right command")
   rig.screen:input({ { type = "navigate", direction = "down" } })
   rig.pump(1)
-  Assert.equal(rig.screen:view().selection, "run", "down from the top reaches the bottom middle")
+  Assert.equal(rig.screen:view().selection, "pokemon", "down clamps at the lower-right command")
   rig.screen:input({ { type = "navigate", direction = "left" } })
   rig.pump(1)
-  Assert.equal(rig.screen:view().selection, "bag", "left from the middle reaches the lower left")
+  Assert.equal(rig.screen:view().selection, "run", "left from the lower-right reaches Run")
   rig.screen:input({ { type = "navigate", direction = "up" } })
   rig.pump(1)
   Assert.equal(rig.screen:view().selection, "fight", "up returns to the top command")
@@ -1080,6 +1088,145 @@ function T.navigation_follows_the_native_topology()
   Assert.equal(rig.screen:status().mode, "command", "confirming cancel returns to command")
   rig.screen:dispose()
   rig.battle:dispose()
+end
+
+function T.first_keyboard_edge_reveals_then_fight_left_and_right_follow_native_slots()
+  local rig = openRig({ launchId = "launch-screen-native-cursor-reveal" })
+  driveToMode(rig, "command", true)
+  local initial = rig.screen:view()
+
+  rig.screen:input({ { type = "navigate", direction = "left" } })
+  rig.pump(1)
+  local revealed = rig.screen:view()
+
+  rig.screen:input({ { type = "navigate", direction = "left" } })
+  rig.pump(1)
+  local left = rig.screen:view().selection
+  rig.screen:input({ { type = "navigate", direction = "up" } })
+  rig.pump(1)
+  local up = rig.screen:view().selection
+  rig.screen:input({ { type = "navigate", direction = "right" } })
+  rig.pump(1)
+  local right = rig.screen:view().selection
+
+  rig.screen:input({ { type = "cancel" } })
+  local modeAfterCancel = rig.screen:status().mode
+  local requestAfterCancel = rig.screen:status().request
+  local submissionsAfterCancel = #rig.submits
+  rig.screen:dispose()
+  rig.battle:dispose()
+
+  Assert.isFalse(initial.cursorVisible, "command selection begins without a keyboard cursor")
+  Assert.equal(initial.selection, "fight", "the first command is initially selected")
+  Assert.isTrue(revealed.cursorVisible, "the first direction reveals the native cursor")
+  Assert.equal(revealed.selection, "fight", "cursor reveal consumes the first direction")
+  Assert.equal(left, "bag", "left from Fight selects Bag")
+  Assert.equal(up, "fight", "up from Bag returns to Fight")
+  Assert.equal(right, "pokemon", "right from Fight selects Pokémon")
+  Assert.equal(modeAfterCancel, "command", "cancel on the first command does not flee")
+  Assert.notNil(requestAfterCancel, "the command request stays open after cancel")
+  Assert.equal(submissionsAfterCancel, 0, "cancel does not seal or flee the first command")
+end
+
+function T.touch_release_waits_for_native_button_feedback_before_sealing_once()
+  local manifest = battleManifest()
+  manifest.menus.moves.screens[1].moveButtons = {
+    { x = 0, y = 24 },
+    { x = 128, y = 24 },
+    { x = 0, y = 88 },
+    { x = 128, y = 88 },
+  }
+  local rig = openRig({ launchId = "launch-screen-native-button-feedback", manifest = manifest })
+  driveToMode(rig, "command")
+  rig.screen:input({ { type = "confirm" } })
+  driveToMode(rig, "moves")
+
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:exit", x = 64, y = 237 } })
+  rig.screen:input({ { type = "pointer_move", pointerId = "touch:exit", x = 240, y = 370 } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:exit", x = 240, y = 370 } })
+  local submissionsAfterExit = #rig.submits
+
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:empty", x = 192, y = 237 } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:empty", x = 192, y = 237 } })
+  local submissionsAfterEmptyMove = #rig.submits
+
+  local moveName = assert(rig.screen:view().moves[1].name, "the opened move list has a source name")
+  local moveType = assert(rig.screen:view().moves[1].moveType, "the opened move list has a source type")
+  local function drawMoveState()
+    local graphics = FakeGraphics.new({})
+    rig.text.draws = {}
+    rig.screen:draw({ graphics = graphics })
+    local labelY = nil
+    for _, entry in ipairs(rig.text.draws) do
+      if entry.content == moveName then
+        labelY = entry.y
+        break
+      end
+    end
+    return labelY, graphics
+  end
+  local idleLabelY, normalGraphics = drawMoveState()
+  local idleButtonState = nil
+  for _, entry in ipairs(normalGraphics.draws) do
+    local image = entry.image
+    if type(image) == "table" and image.handle == "menu:moves:move-button:0:" .. moveType:lower() .. ":normal" then
+      idleButtonState = entry
+    end
+  end
+  local idleTypeIcon = nil
+  for _, entry in ipairs(normalGraphics.draws) do
+    local image = entry.image
+    if type(image) == "table" and image.handle == "battle:move-type-icon:" .. moveType:lower() then
+      idleTypeIcon = entry
+    end
+  end
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:valid", x = 64, y = 237 } })
+  rig.pump(1)
+  local pressedLabelY, pressedGraphics = drawMoveState()
+  local pressedButtonState = nil
+  for _, entry in ipairs(pressedGraphics.draws) do
+    local image = entry.image
+    if image ~= nil and image.handle == "menu:moves:move-button:0:" .. moveType:lower() .. ":pressed" then
+      pressedButtonState = entry
+    end
+  end
+  local pressedTypeIcon = nil
+  for _, entry in ipairs(pressedGraphics.draws) do
+    local image = entry.image
+    if type(image) == "table" and image.handle == "battle:move-type-icon:" .. moveType:lower() then
+      pressedTypeIcon = entry
+    end
+  end
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:valid", x = 64, y = 237 } })
+  local submissionsAtRelease = #rig.submits
+  rig.pump(1)
+  local submissionsAfterOneTick = #rig.submits
+  local recoveryLabelY = drawMoveState()
+  for _ = 1, 20 do
+    if #rig.submits > 0 then
+      break
+    end
+    rig.pump(1)
+  end
+  local finalSubmissions = #rig.submits
+  rig.screen:dispose()
+  rig.battle:dispose()
+
+  Assert.equal(submissionsAfterExit, 0, "pointer exit cancels the captured move")
+  Assert.equal(submissionsAfterEmptyMove, 0, "an empty move slot cannot submit a choice")
+  Assert.notNil(idleLabelY, "the idle move label is drawn")
+  Assert.notNil(pressedLabelY, "the pressed move label remains visible")
+  Assert.equal(pressedLabelY, idleLabelY - 2, "the held label uses the native two-pixel press offset")
+  Assert.notNil(idleButtonState, "the source normal button tile is drawn")
+  Assert.notNil(pressedButtonState, "the source pressed button tile is drawn while held")
+  Assert.notNil(idleTypeIcon, "the selected move type icon is drawn")
+  Assert.notNil(pressedTypeIcon, "the pressed move type icon stays visible")
+  Assert.equal(recoveryLabelY, idleLabelY - 1, "the first release tick advances the label by one source pixel")
+  Assert.equal(pressedTypeIcon.x, idleTypeIcon.x, "the pressed type icon keeps its source x")
+  Assert.equal(pressedTypeIcon.y, idleTypeIcon.y - 2, "the pressed type icon follows the label offset")
+  Assert.equal(submissionsAtRelease, 0, "matched release starts feedback without sealing early")
+  Assert.equal(submissionsAfterOneTick, 0, "feedback holds the choice through its next source tick")
+  Assert.equal(finalSubmissions, 1, "completed feedback seals the legal move exactly once")
 end
 
 -- A genuinely spent move set keeps its slot with the kernel reason and
@@ -1140,7 +1287,7 @@ function T.paired_second_tap_seals_the_focused_move_once()
   local x, y = 192, 236
   rig.screen:input({ { type = "pointer_down", pointerId = "touch:focus", x = x, y = y } })
   rig.screen:input({ { type = "pointer_up", pointerId = "touch:focus", x = x, y = y } })
-  rig.pump(1)
+  rig.pump(3)
   Assert.equal(rig.screen:view().selection, "move:1", "the first tap focuses the new slot")
   Assert.equal(#rig.submits, 0, "the first tap seals nothing")
   local request = assert(rig.screen:status().request, "the prompt mirrors its request")
@@ -1148,7 +1295,7 @@ function T.paired_second_tap_seals_the_focused_move_once()
   Assert.notNil(projected, "the focused slot carries its projected fragment")
   rig.screen:input({ { type = "pointer_down", pointerId = "touch:seal", x = x, y = y } })
   rig.screen:input({ { type = "pointer_up", pointerId = "touch:seal", x = x, y = y } })
-  rig.pump(1)
+  rig.pump(3)
   Assert.equal(#rig.submits, 1, "the second matched tap seals once")
   Assert.equal(rig.screen:status().mode, "awaiting_resolution", "the sealed move waits for resolution")
   local sealed = assert(rig.submits[1], "the sealed reply is recorded")
@@ -1332,6 +1479,10 @@ function openSealingScreen(launchId, specs, requestId)
       and status.request ~= nil
       and status.request.requestId == requestId
     then
+      if rig.screen:view().cursorVisible ~= true then
+        rig.screen:input({ { type = "navigate", direction = "left" } })
+        rig.pump(1)
+      end
       return rig
     end
   end
@@ -1449,7 +1600,7 @@ function T.projected_side_and_field_targets_seal_unchanged()
   Assert.equal(field.screen:status().mode, "moves", "Fight opens move selection for the field intent")
   field.screen:input({ { type = "pointer_down", pointerId = "touch:field", x = 64, y = 237 } })
   field.screen:input({ { type = "pointer_up", pointerId = "touch:field", x = 64, y = 237 } })
-  field.pump(1)
+  field.pump(3)
   Assert.equal(#field.submits, 1, "touch on the focused slot seals the field intent")
   Assert.isTrue(field.screen:status().mode ~= "target", "the field intent never opens target selection")
   local fieldSealed = assert(field.submits[1], "the field reply is recorded")
@@ -3105,7 +3256,7 @@ function T.exhausted_lead_finishes_through_fight_without_a_fifth_cell()
     touchRig.screen:input({
       { type = "pointer_up", pointerId = "touch:fight", x = layout.fight.x, y = layout.fight.y },
     })
-    touchRig.pump(1)
+    touchRig.pump(3)
     Assert.equal(
       touchRig.screen:status().mode,
       "awaiting_resolution",

@@ -15,6 +15,7 @@ local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
+local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
 
 -- Interim battler anchors on the native canvas: retained for layout
@@ -1713,6 +1714,7 @@ local function drawControls(resources, view, layout, regions)
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
   local r, g, b, a = saveColor(graphics)
   local armed = view.armed --[[@as table<string, unknown>?]]
+  local feedback = view.buttonFeedback --[[@as table<string, unknown>?]]
   local movesBySlot = {}
   if type(view.moves) == "table" then
     for _, move in ipairs(view.moves) do
@@ -1737,17 +1739,21 @@ local function drawControls(resources, view, layout, regions)
   -- BattleInput_CreateTextObject centers each label on its anchor when
   -- asked and lifts the 16-pixel text object eight pixels above it; a
   -- pressed button raises its label two more pixels.
-  local function label(role, content, anchor, centered, pressed, palette)
+  local function label(role, content, anchor, centered, offsetY, palette)
     local x = anchor.x
     if centered then
       x = x - math.floor(measureRoleText(text, role, content) / 2)
     end
-    drawRoleText(text, role, content, x, anchor.y - 8 - (pressed and 2 or 0), palette)
+    drawRoleText(text, role, content, x, anchor.y - 8 + offsetY, palette)
   end
   for _, region in ipairs(regions) do
     local box = region --[[@as table<string, unknown>]]
     local id = box.id --[[@as string]]
     local pressed = armed ~= nil and armed.id == id and armed.scope == layout
+    local offsetY = pressed and -2 or 0
+    if feedback ~= nil and feedback.id == id and feedback.scope == layout then
+      offsetY = feedback.offsetY --[[@as number]]
+    end
     local art = assets:drawable("menu:" .. layout .. ":" .. id)
     local slot = id:match("^move:(%d+)$")
     if slot ~= nil and movesBySlot[tonumber(slot)] == nil then
@@ -1773,7 +1779,7 @@ local function drawControls(resources, view, layout, regions)
             -- BattleInput positions the 32-pixel sprite by its center at
             -- the fight label's left edge minus sixteen pixels.
             local iconX = iconFacts.rightOfLabel == true and labelLeft + labelWidth or labelLeft - 32
-            drawArtwork(graphics, icon, nil, iconX, COMMAND_ANCHORS.fight.y - 32 - (pressed and 2 or 0))
+            drawArtwork(graphics, icon, nil, iconX, COMMAND_ANCHORS.fight.y - 32 + offsetY)
             assert(width == 32 and height == 32, "battle command icons use the native 32-pixel extent")
           end
         end
@@ -1782,7 +1788,7 @@ local function drawControls(resources, view, layout, regions)
           assert(entry.label, "command controls carry their source label") --[[@as string]],
           COMMAND_ANCHORS[id],
           true,
-          pressed,
+          offsetY,
           sourcePalette(view, "menu", 2, slots[1], slots[2], slots[3])
         )
       elseif slot ~= nil then
@@ -1795,18 +1801,18 @@ local function drawControls(resources, view, layout, regions)
             move.name --[[@as string]],
             MOVE_ANCHORS[slotIndex + 1],
             true,
-            pressed,
+            offsetY,
             sourcePalette(view, "menu", 3, 7, 8, 9)
           )
           local foreground, shadow = ppSlots(move.pp --[[@as integer]], move.maxPp --[[@as integer]])
           local ppPalette = sourcePalette(view, "menu", 4, foreground, shadow, 0)
-          label("hud", menuText.pp, PP_CURRENT_ANCHORS[slotIndex + 1], false, pressed, ppPalette)
+          label("hud", menuText.pp, PP_CURRENT_ANCHORS[slotIndex + 1], false, offsetY, ppPalette)
           label(
             "hud",
             string.format("%2d/%2d", move.pp, move.maxPp),
             PP_MAX_ANCHORS[slotIndex + 1],
             false,
-            pressed,
+            offsetY,
             ppPalette
           )
           if type(move.moveType) == "string" and typeAnchor ~= nil then
@@ -1820,13 +1826,13 @@ local function drawControls(resources, view, layout, regions)
                 icon,
                 nil,
                 typeAnchor.x + (offset and offset.x or 0),
-                typeAnchor.y + (offset and offset.y or 0) - (pressed and 2 or 0)
+                typeAnchor.y + (offset and offset.y or 0) + offsetY
               )
             end
           end
         end
       elseif id == "cancel" then
-        label("menu", menuText.cancel, CANCEL_ANCHOR, true, pressed, sourcePalette(view, "menu", 2, 10, 11, 12))
+        label("menu", menuText.cancel, CANCEL_ANCHOR, true, offsetY, sourcePalette(view, "menu", 2, 10, 11, 12))
       elseif id:match("^target:") ~= nil then
         local index = tonumber(id:match("^target:(%d+)$")) --[[@as integer]]
         local opponent = index % 2 == 1
@@ -1835,7 +1841,7 @@ local function drawControls(resources, view, layout, regions)
           targetName(view, id) or id,
           TARGET_ANCHORS[index + 1],
           true,
-          pressed,
+          offsetY,
           sourcePalette(view, "menu", 6, opponent and 1 or 4, opponent and 2 or 5, opponent and 3 or 6)
         )
       end
@@ -2113,40 +2119,26 @@ local function drawTwoOptionConfirmation(resources, view, child)
   local labels = assert(child.twoOption, "learning confirmation carries source-selected labels") --[[@as table<string, unknown>]]
   local top = assert(labels.top, "the top option has its staged source label") --[[@as string]]
   local bottom = assert(labels.bottom, "the bottom option has its staged source label") --[[@as string]]
+  local regions = assert(BattleMenuRegions.forLayout("two-option"), "the two-option menu has source regions")
   -- Source text objects sit eight pixels above their centered anchors; a
   -- pressed option raises its label two more pixels.
-  local function drawOption(label, anchorY, optionId, palette)
-    local y = anchorY - (pressed == optionId and 2 or 0) - 8
+  local function drawOption(label, optionId, palette)
+    local region = nil
+    for _, candidate in ipairs(regions) do
+      if candidate.id == optionId then
+        region = candidate
+        break
+      end
+    end
+    local box = assert(region, "two-option labels match their source control region")
+    local anchorY = box.y + math.floor(box.h / 2) + 3
+    local artId = optionId == "confirm" and "yes" or "cancel"
+    local y = anchorY - (pressed == artId and 2 or 0) - 8
     drawRoleText(text, "menu", label, 128 - math.floor(measureRoleText(text, "menu", label) / 2), y, palette)
   end
-  drawOption(top, 67, "yes", sourcePalette(view, "menu", 2, 1, 2, 3))
-  drawOption(bottom, 139, "cancel", sourcePalette(view, "menu", 2, 10, 11, 12))
+  drawOption(top, "confirm", sourcePalette(view, "menu", 2, 1, 2, 3))
+  drawOption(bottom, "back", sourcePalette(view, "menu", 2, 10, 11, 12))
 end
-
--- Interaction-pane control regions by menu layout; any other layout
--- keeps the command regions. Read-only: drawing never mutates them.
-local INTERACTION_REGIONS = {
-  moves = {
-    { id = "move:0", x = 0, y = 24, w = 128, h = 56 },
-    { id = "move:1", x = 128, y = 24, w = 128, h = 56 },
-    { id = "move:2", x = 0, y = 88, w = 128, h = 56 },
-    { id = "move:3", x = 128, y = 88, w = 128, h = 56 },
-    { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
-  },
-  target = {
-    { id = "target:0", x = 0, y = 88, w = 121, h = 57 },
-    { id = "target:1", x = 136, y = 8, w = 120, h = 73 },
-    { id = "target:2", x = 136, y = 88, w = 120, h = 57 },
-    { id = "target:3", x = 0, y = 8, w = 121, h = 73 },
-    { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
-  },
-  command = {
-    { id = "fight", x = 0, y = 24, w = 256, h = 120 },
-    { id = "bag", x = 0, y = 144, w = 80, h = 48 },
-    { id = "pokemon", x = 176, y = 144, w = 80, h = 48 },
-    { id = "run", x = 88, y = 152, w = 80, h = 40 },
-  },
-}
 
 -- Menu layer sections by drawable menu layout.
 local MENU_SECTIONS = { command = "command", moves = "moves", target = "target", ["two-option"] = "twoOption" }
@@ -2177,7 +2169,7 @@ local function drawInteraction(resources, view, content, placement)
   end
   local menuLayers = assert(view.menuLayers, "the battle view carries generated menu screen layers")
   local layers = assert(menuLayers[MENU_SECTIONS[layout]], "the battle view carries layers for its selected menu") --[[@as table[] ]]
-  local regions = INTERACTION_REGIONS[layout] or INTERACTION_REGIONS.command
+  local regions = assert(BattleMenuRegions.forLayout(layout), "the active battle menu has native source regions")
   local menuWindows = type(view.menuWindows) == "table" and view.menuWindows or nil
   BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWindows)
   local function drawOverlay()

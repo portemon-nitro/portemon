@@ -7,6 +7,7 @@
 local Assert = require("tests.support.Assert")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
+local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
@@ -24,6 +25,57 @@ local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 
 local T = {}
 local TICK = 1 / 60
+
+function T.native_menu_regions_use_source_pixel_bounds()
+  for _, sample in ipairs({
+    {
+      layout = "command",
+      expected = {
+        { id = "fight", x = 0, y = 24, w = 256, h = 120 },
+        { id = "bag", x = 0, y = 144, w = 80, h = 48 },
+        { id = "pokemon", x = 176, y = 144, w = 80, h = 48 },
+        { id = "run", x = 88, y = 152, w = 80, h = 40 },
+      },
+    },
+    {
+      layout = "moves",
+      expected = {
+        { id = "move:0", x = 0, y = 24, w = 128, h = 56 },
+        { id = "move:1", x = 128, y = 24, w = 128, h = 56 },
+        { id = "move:2", x = 0, y = 88, w = 128, h = 56 },
+        { id = "move:3", x = 128, y = 88, w = 128, h = 56 },
+        { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
+      },
+    },
+    {
+      layout = "target",
+      expected = {
+        { id = "target:0", x = 0, y = 88, w = 121, h = 57 },
+        { id = "target:1", x = 136, y = 8, w = 120, h = 73 },
+        { id = "target:2", x = 136, y = 88, w = 120, h = 57 },
+        { id = "target:3", x = 0, y = 8, w = 121, h = 73 },
+        { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
+      },
+    },
+    {
+      layout = "two-option",
+      expected = {
+        { id = "confirm", x = 0, y = 32, w = 256, h = 64 },
+        { id = "back", x = 0, y = 104, w = 256, h = 64 },
+      },
+    },
+  }) do
+    local regions = BattleMenuRegions.forLayout(sample.layout)
+    Assert.deepEqual(regions, sample.expected, sample.layout .. " uses the source logical rectangles")
+    Assert.equal(BattleMenuRegions.forLayout(sample.layout), regions, sample.layout .. " reuses its shared geometry")
+    for _, region in ipairs(regions) do
+      Assert.isTrue(region.x >= 0 and region.y >= 0, sample.layout .. " begins inside the logical screen")
+      Assert.isTrue(region.x + region.w <= 256, sample.layout .. " ends inside the logical screen width")
+      Assert.isTrue(region.y + region.h <= 192, sample.layout .. " ends inside the logical screen height")
+    end
+  end
+  Assert.isNil(BattleMenuRegions.forLayout("unknown"), "unsupported menu layouts have no synthesized regions")
+end
 
 function T.child_titles_and_learn_prompts_use_staged_source_labels()
   Assert.equal(
@@ -385,6 +437,101 @@ function T.source_hit_ranges_have_single_control_ownership()
   })
 end
 
+-- Native hit edges and button artwork share the same source-pixel
+-- origins for command and move controls.
+function T.native_control_art_starts_at_the_hit_region_origin()
+  local function assertLayout(mode, samples)
+    local session = ApplicationPresentation.new(BattleScreenInterface.defaults(), nil)
+    local plan = resolve(session, dualMeasurement(), mode)
+    local snapshot = view(mode)
+    snapshot.battlers = {}
+    snapshot.moves = {
+      { slot = 0, id = "move:0", enabled = true, label = "TACKLE", pp = "35/35" },
+      { slot = 1, id = "move:1", enabled = true, label = "GROWL", pp = "40/40" },
+      { slot = 2, id = "move:2", enabled = true, label = "TAIL WHIP", pp = "30/30" },
+      { slot = 3, id = "move:3", enabled = true, label = "HYPNOSIS", pp = "20/20" },
+    }
+    local graphics = FakeGraphics.new({})
+    local resources = {
+      graphics = graphics,
+      text = {
+        measure = function(content)
+          return { width = 8 * #tostring(content), height = 16 }
+        end,
+        drawText = function() end,
+      },
+      windows = { drawWindow = function() end },
+      assets = {
+        drawable = function(_, key)
+          if key:match("^menu:" .. mode .. ":") == nil then
+            return nil
+          end
+          return {
+            handle = key,
+            getDimensions = function()
+              return 80, 56
+            end,
+            getWidth = function()
+              return 80
+            end,
+            getHeight = function()
+              return 56
+            end,
+          }
+        end,
+        menuBlendTargets = function(self, blendGraphics)
+          if self.menuBlend == nil then
+            self.menuBlend = BattleMenuPresenter.newBlendTargets(blendGraphics)
+          end
+          return self.menuBlend
+        end,
+      },
+      frameKey = "default",
+      sceneImageKey = "scene:test",
+    }
+    local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+    BattleRenderer.drawPane(resources, snapshot, "interaction", { layout = mode }, {})
+    local artwork = {}
+    for _, draw in ipairs(graphics.draws) do
+      local image = draw.image
+      if type(image) == "table" and type(image.handle) == "string" then
+        artwork[image.handle] = { x = draw.x, y = draw.y }
+      end
+    end
+    for _, sample in ipairs(samples) do
+      local mapped = plan.mapInput({
+        type = "pointer_down",
+        pointerId = "native-geometry",
+        x = sample.x,
+        y = sample.y,
+      }, snapshot, plan)
+      Assert.notNil(mapped, mode .. " maps the source control edge")
+      Assert.equal(mapped.control.id, sample.id, mode .. " maps the expected control")
+      local visual = artwork["menu:" .. mode .. ":" .. sample.id]
+      Assert.notNil(visual, mode .. " draws the matching native control art")
+      Assert.deepEqual(
+        { visual.x, visual.y },
+        { sample.left, sample.top },
+        mode .. " art uses the source region origin"
+      )
+    end
+    resources.assets.menuBlend:release()
+  end
+
+  assertLayout("command", {
+    { x = 0, y = 24, id = "fight", left = 0, top = 24 },
+    { x = 0, y = 144, id = "bag", left = 0, top = 144 },
+    { x = 176, y = 144, id = "pokemon", left = 176, top = 144 },
+    { x = 88, y = 152, id = "run", left = 88, top = 152 },
+  })
+  assertLayout("moves", {
+    { x = 0, y = 24, id = "move:0", left = 0, top = 24 },
+    { x = 128, y = 24, id = "move:1", left = 128, top = 24 },
+    { x = 0, y = 88, id = "move:2", left = 0, top = 88 },
+    { x = 128, y = 88, id = "move:3", left = 128, top = 88 },
+  })
+end
+
 -- A pair without room takes the compact pane instead of a squeezed
 -- battle: the full command composition stays reachable and
 -- pointer-operable on the tiny host.
@@ -702,6 +849,8 @@ function T.cancelled_and_refused_pointer_edges_spend_nothing()
     end
     rig.pump(1)
   end
+  rig.screen:input({ { type = "navigate", direction = "left" } })
+  rig.pump(1)
   rig.screen:input({ { type = "confirm" } })
   for _ = 1, 20 do
     rig.pump(1)
@@ -749,7 +898,7 @@ function T.cancelled_and_refused_pointer_edges_spend_nothing()
   Assert.equal(rig.screen:view().selection, "move:0", "a foreign release does not move focus")
   Assert.equal(#rig.audio.plays, foreignSounds, "a foreign release plays no activation sound")
   rig.screen:input({ { type = "pointer_up", pointerId = "touch:A", x = 64, y = 237 } })
-  rig.pump(1)
+  rig.pump(6)
   Assert.equal(#rig.submits, 1, "the original pointer completes its still-armed tap once")
   Assert.equal(rig.screen:status().mode, "awaiting_resolution", "the original pointer's move waits for resolution")
   rig.screen:dispose()
@@ -1001,6 +1150,10 @@ local function driveToMode(rig, mode)
       error("the battle screen failed while driving to " .. mode .. ": " .. tostring(status.error), 0)
     end
     if status.mode == mode and (mode ~= "command" and mode ~= "moves" or rig.screen:view().menuInputEnabled) then
+      if (mode == "command" or mode == "moves") and rig.screen:view().cursorVisible ~= true then
+        rig.screen:input({ { type = "navigate", direction = "left" } })
+        rig.pump(1)
+      end
       return status
     end
   end
