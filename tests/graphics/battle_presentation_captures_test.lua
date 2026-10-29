@@ -207,13 +207,26 @@ local function cropIconFrames(scope, cacheFs, selector)
   local entry = assert(manifest.entries[selector], "the staged icon manifest plans " .. selector)
   local bytes = assert(cacheFs:read(MonCache.iconPagePath(entry.pageId)), "the staged cache carries the icon page")
   local page = scope:own(love.image.newImageData(love.filesystem.newFileData(bytes, "icons/" .. entry.pageId)))
-  local frames = {}
+  local frames, pixels = {}, {}
   for index, frame in ipairs(entry.frames) do
     local cropped = scope:own(love.image.newImageData(frame.width, frame.height))
     cropped:paste(page, 0, 0, frame.x, frame.y, frame.width, frame.height)
+    pixels[index] = cropped
     frames[index] = scope:own(love.graphics.newImage(cropped))
   end
-  return frames
+  return frames, pixels
+end
+
+---@param cacheFs table versioned derived cache
+---@param kind "icons"|"portraits" page family
+---@param pageId integer demanded page identity
+---@param what string assertion context
+local function requirePage(cacheFs, kind, pageId, what)
+  local marker = assert(
+    cacheFs:read(MonCache.pageMarkerPath(kind, pageId)),
+    what .. " has its page completion marker"
+  )
+  Assert.isTrue(MonCache.isPageReady(cacheFs, kind, pageId, marker), what .. " has its complete page image")
 end
 
 -- Mirrors the envelope's demand validation so the capture harness stages
@@ -227,16 +240,11 @@ local function requirePortraitKey(cacheFs, pageKey)
   local portraits =
     assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the staged cache carries its portrait manifest")
   local entries = assert(portraits.entries, "the staged portrait manifest carries entries")
-  local index = assert(cacheFs:loadLua(MonCache.indexPath()), "the staged cache carries its mon index")
-  local markers = assert(index.portraitPages, "the staged mon index carries portrait page markers")
   if species == nil then
     -- Exact canonical selectors validate their single staged entry and
     -- page: no expansion, no guessed variant.
     local entry = assert(entries[pageKey], "the staged manifest plans " .. pageKey)
-    Assert.isTrue(
-      MonCache.isPageReady(cacheFs, "portraits", entry.pageId, markers[entry.pageId + 1]),
-      "portrait page " .. tostring(entry.pageId) .. " is staged for " .. pageKey
-    )
+    requirePage(cacheFs, "portraits", entry.pageId, "portrait page " .. tostring(entry.pageId) .. " for " .. pageKey)
     return
   end
   Assert.notNil(form, "portrait demands name their form: " .. pageKey)
@@ -244,15 +252,15 @@ local function requirePortraitKey(cacheFs, pageKey)
   local portraits =
     assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the staged cache carries its portrait manifest")
   local entries = assert(portraits.entries, "the staged portrait manifest carries entries")
-  local index = assert(cacheFs:loadLua(MonCache.indexPath()), "the staged cache carries its mon index")
-  local markers = assert(index.portraitPages, "the staged mon index carries portrait page markers")
   for _, gender in ipairs({ "male", "female" }) do
     for _, finish in ipairs({ "plain", "shiny" }) do
       local selector = MonCache.portraitSelector(species, tonumber(form), gender, finish == "shiny", facing)
       local entry = assert(entries[selector], "the staged manifest plans " .. selector)
-      Assert.isTrue(
-        MonCache.isPageReady(cacheFs, "portraits", entry.pageId, markers[entry.pageId + 1]),
-        "portrait page " .. tostring(entry.pageId) .. " is staged for " .. selector
+      requirePage(
+        cacheFs,
+        "portraits",
+        entry.pageId,
+        "portrait page " .. tostring(entry.pageId) .. " for " .. selector
       )
     end
   end
@@ -266,9 +274,15 @@ local function captureServices(scope, cacheFs, versionId)
   local manifest = BattlePresentationCache.load(cacheFs)
   Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
   local images = {}
-  local commandIconKey = MonCache.iconSelector(LEAD_SPECIES, 0, false)
-  for frameIndex, frame in ipairs(cropIconFrames(scope, cacheFs, commandIconKey)) do
-    images["battle:icon:" .. commandIconKey .. ":frame:" .. tostring(frameIndex)] = frame
+  local iconKeys = {
+    MonCache.iconSelector(LEAD_SPECIES, 0, false),
+    MonCache.iconSelector("RATTATA", 0, false),
+    MonCache.iconSelector("HEATRAN", 0, false),
+  }
+  for _, iconKey in ipairs(iconKeys) do
+    for frameIndex, frame in ipairs(cropIconFrames(scope, cacheFs, iconKey)) do
+      images["battle:icon:" .. iconKey .. ":frame:" .. tostring(frameIndex)] = frame
+    end
   end
   images["scene:" .. SCENE_KEY] =
     stagedImage(scope, cacheFs, BattlePresentationCache.sceneImagePath(SCENE_KEY), versionId .. " battle scene")
@@ -499,15 +513,10 @@ local function captureServices(scope, cacheFs, versionId)
       requirePortraitKey(cacheFs, page)
     end
     local iconManifest = cacheFs:loadLua(MonCache.iconManifestPath())
-    local monIndex = assert(cacheFs:loadLua(MonCache.indexPath()), versionId .. " stages its mon index")
-    local iconMarkers = assert(monIndex.iconPages, versionId .. " stages icon page markers")
     for _, iconKey in ipairs(demand.iconKeys or {}) do
       local entry = type(iconManifest) == "table" and iconManifest.entries[iconKey] or nil
       Assert.notNil(entry, versionId .. " stages demanded icon " .. tostring(iconKey))
-      Assert.isTrue(
-        MonCache.isPageReady(cacheFs, "icons", entry.pageId, iconMarkers[entry.pageId + 1]),
-        versionId .. " stages icon page " .. tostring(entry.pageId)
-      )
+      requirePage(cacheFs, "icons", entry.pageId, versionId .. " stages icon page " .. tostring(entry.pageId))
     end
     return true
   end
@@ -625,11 +634,13 @@ end
 ---@param cacheFs table versioned derived cache
 ---@param versionId string ready game version under capture
 ---@param measurement table caller-owned display facts
+---@param options table? optional borrowed production collaborators
 ---@return table live battle screen behind the capture
 ---@return table staged images behind the screen drawables
 ---@return table cropped portrait cells behind the mon drawables
 ---@return table preparation services logging the screen demands
-local function captureScreen(scope, cacheFs, versionId, measurement)
+local function captureScreen(scope, cacheFs, versionId, measurement, options)
+  options = options or {}
   local manifest = BattlePresentationCache.load(cacheFs)
   local text, windows = captureDrawServices(scope, cacheFs, versionId)
   local services, images, portraitCells = captureServices(scope, cacheFs, versionId)
@@ -648,6 +659,7 @@ local function captureScreen(scope, cacheFs, versionId, measurement)
     -- The battle screen borrows the immutable item catalog so its bag
     -- child can group stocked items by pocket, exactly like production.
     itemCatalog = ItemFixture.makeCatalog(),
+    monCatalog = options.monCatalog,
     monIconProvider = {
       prepareKeys = function()
         return true
@@ -1772,15 +1784,7 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
     portraitByPosition[portrait.position] = portrait
   end
 
-  for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
-    local screen, images, portraitCells = captureScreen(scope, cacheFs, versionId, compactMeasurement())
-    for _, portrait in ipairs(portraitSpecs) do
-      local image, pixels = cropPortrait(scope, cacheFs, portrait.selector, portrait.pageId)
-      images["mon:" .. portrait.selector] = cellHandle(image)
-      portraitCells["mon:" .. portrait.selector] = pixels
-    end
-
+  local function targetPacket(targetGender)
     local packet = openingPacket()
     packet.after.own = {
       {
@@ -1825,6 +1829,7 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
         selector = "front",
         portraitSelector = portraitByPosition[1].selector,
         name = "RATTATA",
+        gender = targetGender,
         level = 3,
         hp = 12,
         maxHp = 12,
@@ -1839,6 +1844,7 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
         selector = "front",
         portraitSelector = portraitByPosition[2].selector,
         name = "HEATRAN",
+        gender = "genderless",
         level = 40,
         hp = 31,
         maxHp = 48,
@@ -1871,6 +1877,27 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
       },
       { kind = "command", choices = { moveChoice("move:0", "TACKLE", 35, 35, "NORMAL", 0) } },
     }
+    return packet
+  end
+
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local measurement = compactMeasurement()
+    local screen, images, portraitCells = captureScreen(scope, cacheFs, versionId, measurement, {
+      monCatalog = {
+        move = function(_, key)
+          Assert.equal(key, "TACKLE", versionId .. " resolves the source target mode through the selected move")
+          return { range = 4 }
+        end,
+      },
+    })
+    for _, portrait in ipairs(portraitSpecs) do
+      local image, pixels = cropPortrait(scope, cacheFs, portrait.selector, portrait.pageId)
+      images["mon:" .. portrait.selector] = cellHandle(image)
+      portraitCells["mon:" .. portrait.selector] = pixels
+    end
+
+    local packet = targetPacket("male")
     drivePacketToCommand(screen, versionId, packet, "trainer")
 
     local function assertCapture(mode, captureName)
@@ -2055,6 +2082,113 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
     screen:input({ { type = "confirm" } })
     screen:updateFixed(TICK)
     assertCapture("target", "target")
+    local visibleTargets = assert(screen:view().targets, versionId .. " publishes the target menu facts")
+    Assert.equal(#visibleTargets, 2, versionId .. " shows only the two active target slots")
+    Assert.isTrue(type(visibleTargets[1].gender) == "string", versionId .. " publishes target gender")
+    Assert.isTrue(type(visibleTargets[1].iconKey) == "string", versionId .. " publishes target icon identity")
+    local targetGroup = assert(screen:view().targetGroup, versionId .. " groups the source both-foes target range")
+    Assert.equal(#targetGroup.groups.foes, 2, versionId .. " groups both admitted foe positions")
+    Assert.isTrue(screen:view().cursorVisible, versionId .. " exposes target cursor focus before the render")
+
+    local function captureTargetGender(targetGender)
+      local genderMeasurement = dualMeasurement()
+      local genderScreen, genderImages, genderPortraitCells = captureScreen(
+        scope,
+        cacheFs,
+        versionId,
+        genderMeasurement,
+        {
+          monCatalog = {
+            move = function(_, key)
+              Assert.equal(key, "TACKLE", versionId .. " resolves the comparison target range")
+              return { range = 4 }
+            end,
+          },
+        }
+      )
+      for _, portrait in ipairs(portraitSpecs) do
+        local image, pixels = cropPortrait(scope, cacheFs, portrait.selector, portrait.pageId)
+        genderImages["mon:" .. portrait.selector] = cellHandle(image)
+        genderPortraitCells["mon:" .. portrait.selector] = pixels
+      end
+      drivePacketToCommand(genderScreen, versionId, targetPacket(targetGender), "trainer")
+      genderScreen:input({ { type = "confirm" } })
+      genderScreen:updateFixed(TICK)
+      Assert.equal(genderScreen:status().mode, "moves", versionId .. " opens the comparison move list")
+      waitForMenuInput(genderScreen, versionId)
+      genderScreen:input({ { type = "confirm" } })
+      genderScreen:updateFixed(TICK)
+      Assert.equal(genderScreen:status().mode, "target", versionId .. " opens the comparison target menu")
+      local comparisonTargets = assert(genderScreen:view().targets, versionId .. " publishes comparison targets")
+      Assert.equal(comparisonTargets[1].name, "RATTATA", versionId .. " keeps the comparison nickname")
+      Assert.equal(comparisonTargets[1].iconKey, visibleTargets[1].iconKey, versionId .. " keeps the comparison icon")
+      Assert.equal(comparisonTargets[1].gender, targetGender, versionId .. " publishes the comparison gender")
+      return genderScreen
+    end
+
+    local dual = dualMeasurement()
+    measurement.width = dual.width
+    measurement.height = dual.height
+    measurement.topology = dual.topology
+    measurement.pixelRatio = dual.pixelRatio
+    measurement.signature = dual.signature
+    screen:updateFixed(TICK)
+    local nativePlan = livePlan(screen, versionId)
+    local nativeWidth, nativeHeight = canvasSize(nativePlan, versionId)
+    Assert.equal(nativeWidth, 256, versionId .. " resolves the native menu width")
+    Assert.equal(nativeHeight, 384, versionId .. " resolves both native target screens")
+    local interactionFrame = nil
+    for _, pane in ipairs(nativePlan.panes) do
+      if pane.id == "interaction" then
+        interactionFrame = assert(pane.placement.frame, versionId .. " anchors the native target pane")
+      end
+    end
+    Assert.notNil(interactionFrame, versionId .. " resolves a native target pane")
+    local targetPixels = renderCapture(scope, screen, nativeWidth, nativeHeight)
+    saveCapture(targetPixels, versionId .. "-native-target-icons")
+    local femaleScreen = captureTargetGender("female")
+    local femalePixels = renderCapture(scope, femaleScreen, nativeWidth, nativeHeight)
+    femaleScreen:dispose()
+    Assert.isTrue(
+      regionDistance(
+        targetPixels,
+        femalePixels,
+        { x = interactionFrame.x + 20, y = interactionFrame.y + 108, width = 88, height = 16 },
+        1
+      ) > 0,
+      versionId .. " paints different gender markers for the same native target nickname"
+    )
+    screen._keyboardFocus = false
+    local noCursorPixels = renderCapture(scope, screen, nativeWidth, nativeHeight)
+    screen._keyboardFocus = true
+    local groupedCursorRect = { x = 0, y = 0, width = nativeWidth, height = nativeHeight }
+    Assert.isTrue(
+      regionDistance(targetPixels, noCursorPixels, groupedCursorRect, 1) > 0,
+      versionId .. " draws the grouped cursor around the source target row"
+    )
+
+    local targetIconSources = {
+      { key = MonCache.iconSelector("RATTATA", 0, false), center = { x = 196, y = 56 } },
+      { key = MonCache.iconSelector("HEATRAN", 0, false), center = { x = 60, y = 56 } },
+    }
+    for _, icon in ipairs(targetIconSources) do
+      local _, frames = cropIconFrames(scope, cacheFs, icon.key)
+      local source = assert(frames[1], versionId .. " carries frame 1 for " .. icon.key)
+      local rect = {
+        x = interactionFrame.x + icon.center.x - 16,
+        y = interactionFrame.y + icon.center.y - 16,
+        width = 32,
+        height = 32,
+      }
+      local matches, occupied = countSourceMatches(targetPixels, source, rect, rect.x, rect.y)
+      Assert.isTrue(occupied > 100, versionId .. " samples visible source icon pixels for " .. icon.key)
+      Assert.isTrue(matches / occupied > 0.9, versionId .. " paints native icon pixels at their source anchor")
+    end
+    for _, blank in ipairs({ { x = 0, y = 8, width = 121, height = 73 }, { x = 136, y = 8, width = 120, height = 73 } }) do
+      blank.x = interactionFrame.x + blank.x
+      blank.y = interactionFrame.y + blank.y
+      Assert.isTrue(countInk(targetPixels, blank) > 100, versionId .. " paints source target-menu art in empty slots")
+    end
   end
 end
 
@@ -2093,10 +2227,7 @@ function T.compact_fight_view_prints_real_move_text(scope, context)
     Assert.isTrue(countInk(first, hostRect(frame, labels[2])) > 5, versionId .. " prints its second move label")
     Assert.equal(#content.moveSlots, 4, versionId .. " carries its per-slot icon and PP geometry")
     local slot = content.moveSlots[1]
-    Assert.isTrue(
-      countInk(first, hostRect(frame, slot.icon)) > 5,
-      versionId .. " draws its first move type icon"
-    )
+    Assert.isTrue(countInk(first, hostRect(frame, slot.icon)) > 5, versionId .. " draws its first move type icon")
     Assert.isTrue(
       countInk(first, { x = frame.x + slot.pp.x, y = frame.y + slot.pp.y, width = slot.pp.width, height = 12 }) > 5,
       versionId .. " prints its first move PP"
@@ -3113,6 +3244,8 @@ suite.metadata.derivedAssets = {
   "field-ui:global",
   "move-icons:global",
   "mon-icon-page:4",
+  "mon-icon-page:11",
+  "mon-icon-page:22",
   "mon-portrait-page:0",
   "mon-portrait-page:34",
   "mon-portrait-page:86",

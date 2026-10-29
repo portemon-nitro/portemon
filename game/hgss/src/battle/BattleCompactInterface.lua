@@ -154,6 +154,9 @@ local function targetRows(view)
           id = candidate.id,
           name = candidate.name,
           level = candidate.level,
+          gender = candidate.gender,
+          iconKey = candidate.iconKey,
+          iconFrameIndex = candidate.iconFrameIndex,
         }
       end
     end
@@ -1153,6 +1156,8 @@ end
 ---@param view table<string, unknown> internal semantic snapshot under drawing
 ---@param content table<string, unknown> canonical compact plan content under drawing
 local function drawTargetDock(resources, view, content)
+  local graphics = assert(resources.graphics, "the compact render borrows its graphics host")
+  local assets = assert(resources.assets, "the compact render borrows its icon assets")
   local text = assert(resources.text, "the compact render borrows its text services")
   local windows = assert(resources.windows, "the compact render borrows its window services")
   local background = backgroundOf(resources)
@@ -1163,16 +1168,40 @@ local function drawTargetDock(resources, view, content)
   end
   for _, row in ipairs(content.targetRows) do
     local label = "BACK"
+    local labelX = row.x + 8
     if row.id ~= "cancel" then
       label = tostring(row.name or row.id)
+      local marker = row.gender == "male" and " ♂" or row.gender == "female" and " ♀" or ""
+      label = label .. marker
       if type(row.level) == "number" then
         label = label .. " Lv" .. tostring(row.level)
       end
+      if type(row.iconKey) == "string" then
+        local icon = assets:drawable("battle:icon:" .. row.iconKey .. ":frame:" .. tostring(row.iconFrameIndex or 1))
+        if icon ~= nil then
+          local draw = assert(icon.draw, "target icons use the shared palette-exact draw handle")
+          draw(icon, graphics, row.x + 2, row.y, 0, 0.5, 0.5)
+          labelX = row.x + 20
+        end
+      end
     end
-    if view.selection == row.id then
+    local grouped = false
+    local targetGroup = view.targetGroup --[[@as table<string, unknown>?]]
+    local groups = type(targetGroup) == "table" and targetGroup.groups or nil
+    if type(groups) == "table" and row.id ~= "cancel" then
+      for _, group in ipairs({ groups.own, groups.foes }) do
+        for _, id in ipairs(group or {}) do
+          if id == row.id then
+            grouped = true
+            break
+          end
+        end
+      end
+    end
+    if view.selection == row.id or grouped then
       label = CURSOR .. " " .. label
     end
-    drawLabel(text, fitText(text, label, row.width - 8), row.x + 8, row.y)
+    drawLabel(text, fitText(text, label, row.width - (labelX - row.x)), labelX, row.y)
   end
   windows.drawApplicationFrame(content.targetBox, resources.frameKey)
 end
