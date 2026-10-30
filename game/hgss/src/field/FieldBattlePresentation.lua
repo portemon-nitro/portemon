@@ -39,6 +39,8 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _warmTickets { key: string, path: string, token: integer }[] pending speculative pool tickets in enrollment order
 ---@field _warmDesired string? predicted scene key the speculative ledger currently serves
 ---@field _warmFailed table<string, string> latched speculative failures by staged image path for the desired scene
+---@field _warmPlan { sceneKey: string, record: BattlePresentationCache.SceneRecord, ordered: { key: string, path: string }[] }? validated one-prediction scene plan behind pending image tickets
+---@field _warmPlanFailure string? terminal speculative planning failure behind the desired scene
 ---@field _warmBg3Key string? scene key behind the staged speculative BG3 source values
 ---@field _warmBg3 table<string, unknown>? staged speculative BG3 characters/map/palette source values by exact scene
 ---@field _warmFailure string? last attributable idle warmup diagnostic, never raised into field update
@@ -819,6 +821,8 @@ function FieldBattlePresentation.new(opts)
     _warmPinned = {},
     _warmPaths = {},
     _warmTickets = {},
+    _warmPlan = nil,
+    _warmPlanFailure = nil,
     _manifestDocs = {},
     _stagedMembersOk = false,
     _pool = opts.imagePool,
@@ -2438,6 +2442,8 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
     retireIncompleteWarmGroups(self)
     self._warmDesired = sceneKey
     self._warmFailed = {}
+    self._warmPlan = nil
+    self._warmPlanFailure = nil
   end
   if self._warmFailed == nil then
     self._warmFailed = {}
@@ -2473,88 +2479,127 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
       return false, nil
     end
   end
+  -- A latched terminal fault idles quietly until the prediction
+  -- changes: the first failure stays in _warmFailure, while later
+  -- same-key rounds spend no semantic, document, or pool work.
+  if self._warmPlanFailure ~= nil or next(self._warmFailed) ~= nil then
+    return false, nil
+  end
   -- Semantic demand stays below the foreground: near compilation only,
   -- and a pending source waits without touching missing files.
   local okPresentation, readyPresentation, failurePresentation = pcall(requestPresentation, "near")
   if not okPresentation then
-    return false, "battle warmup " .. sceneKey .. " presentation demand failed: " .. tostring(readyPresentation)
+    local cause = "battle warmup " .. sceneKey .. " presentation demand failed: " .. tostring(readyPresentation)
+    self._warmPlanFailure = cause
+    return false, cause
   end
   if failurePresentation ~= nil then
-    return false, "battle warmup " .. sceneKey .. " presentation demand failed: " .. tostring(failurePresentation)
+    local cause = "battle warmup " .. sceneKey .. " presentation demand failed: " .. tostring(failurePresentation)
+    self._warmPlanFailure = cause
+    return false, cause
   end
   if readyPresentation ~= true then
     return false, nil
   end
   local okScene, readyScene, failureScene = pcall(requestScene, sceneKey, "near")
   if not okScene then
-    return false, "battle warmup " .. sceneKey .. " scene demand failed: " .. tostring(readyScene)
+    local sceneCause = "battle warmup " .. sceneKey .. " scene demand failed: " .. tostring(readyScene)
+    self._warmPlanFailure = sceneCause
+    return false, sceneCause
   end
   if failureScene ~= nil then
-    return false, "battle warmup " .. sceneKey .. " scene demand failed: " .. tostring(failureScene)
+    local sceneCause = "battle warmup " .. sceneKey .. " scene demand failed: " .. tostring(failureScene)
+    self._warmPlanFailure = sceneCause
+    return false, sceneCause
   end
   if readyScene ~= true then
     return false, nil
   end
-  -- The scene record resolves first and its group enrolls before the
-  -- slower global validation below: the worker decodes the priority
-  -- scene image while the field validates the shared manifest.
-  local record, recordErr = BattlePresentationCache.loadScene(self._cacheFs, sceneKey)
-  if record == nil then
-    return false, "battle warmup " .. sceneKey .. " scene is not staged: " .. tostring(recordErr)
+  -- One validated plan per semantically ready prediction: the scene
+  -- record and the ordered scene-plus-fixed art list resolve once,
+  -- then every pending round reuses them without reparsing staged
+  -- documents. A ready answer without a verifiable staged
+  -- scene/global record is a terminal speculative fault, never a
+  -- reason to reload every frame.
+  local plan = self._warmPlan
+  if plan == nil then
+    local stagedRecord, stagedRecordErr = BattlePresentationCache.loadScene(self._cacheFs, sceneKey)
+    if stagedRecord == nil then
+      local cause = "battle warmup " .. sceneKey .. " scene is not staged: " .. tostring(stagedRecordErr)
+      self._warmPlanFailure = cause
+      return false, cause
+    end
+    local introLayer = stagedRecord.introLayer
+    local terrainSprites = stagedRecord.terrainSprites
+    if type(introLayer) ~= "table" or type(introLayer.image) ~= "string" or introLayer.image == "" then
+      local cause = "battle warmup " .. sceneKey .. " scene has no staged intro art"
+      self._warmPlanFailure = cause
+      return false, cause
+    end
+    if
+      type(terrainSprites) ~= "table"
+      or type(terrainSprites.player) ~= "table"
+      or type(terrainSprites.player.image) ~= "string"
+      or terrainSprites.player.image == ""
+      or type(terrainSprites.foe) ~= "table"
+      or type(terrainSprites.foe.image) ~= "string"
+      or terrainSprites.foe.image == ""
+    then
+      local cause = "battle warmup " .. sceneKey .. " scene has no staged terrain art"
+      self._warmPlanFailure = cause
+      return false, cause
+    end
+    -- A verified envelope manifest is reused as-is; otherwise the
+    -- global validates once here the same way the pending build does.
+    local staged = stagedManifest(self._manifest)
+    if staged == nil then
+      local refreshed = loadManifest(self._cacheFs)
+      if stagedManifest(refreshed) ~= nil then
+        self._manifest = refreshed
+        staged = stagedManifest(self._manifest)
+      end
+    end
+    if staged == nil then
+      local cause = "battle warmup " .. sceneKey .. " presentation is not staged"
+      self._warmPlanFailure = cause
+      return false, cause
+    end
+    local grouped = {} ---@type { key: string, path: string }[]
+    local groupKeys = warmSceneKeys(sceneKey)
+    grouped[#grouped + 1] = { key = groupKeys[1], path = BattlePresentationCache.sceneImagePath(sceneKey) }
+    grouped[#grouped + 1] = { key = groupKeys[2], path = introLayer.image }
+    grouped[#grouped + 1] = { key = groupKeys[3], path = terrainSprites.player.image }
+    grouped[#grouped + 1] = { key = groupKeys[4], path = terrainSprites.foe.image }
+    local planned = {} ---@type { key: string, path: string }[]
+    for _, entry in ipairs(grouped) do
+      planned[#planned + 1] = entry
+    end
+    local fixedKeys = {} ---@type string[]
+    for fixedKey in pairs(WARM_PINNED_KEYS) do
+      fixedKeys[#fixedKeys + 1] = fixedKey
+    end
+    table.sort(fixedKeys)
+    for _, fixedKey in ipairs(fixedKeys) do
+      local artPath = stagedArtPath(staged, fixedKey)
+      if type(artPath) ~= "string" or artPath == "" then
+        local cause = "battle warmup " .. sceneKey .. " fixed art is not staged: " .. fixedKey
+        self._warmPlanFailure = cause
+        return false, cause
+      end
+      planned[#planned + 1] = { key = fixedKey, path = artPath }
+    end
+    -- The plan publishes only after every entry validated: a partial
+    -- failure above leaves no usable memo behind.
+    plan = { sceneKey = sceneKey, record = stagedRecord, ordered = planned }
+    self._warmPlan = plan
   end
-  local introLayer = record.introLayer
-  local terrainSprites = record.terrainSprites
-  if type(introLayer) ~= "table" or type(introLayer.image) ~= "string" or introLayer.image == "" then
-    return false, "battle warmup " .. sceneKey .. " scene has no staged intro art"
-  end
-  if
-    type(terrainSprites) ~= "table"
-    or type(terrainSprites.player) ~= "table"
-    or type(terrainSprites.player.image) ~= "string"
-    or terrainSprites.player.image == ""
-    or type(terrainSprites.foe) ~= "table"
-    or type(terrainSprites.foe.image) ~= "string"
-    or terrainSprites.foe.image == ""
-  then
-    return false, "battle warmup " .. sceneKey .. " scene has no staged terrain art"
-  end
-  local grouped = {} ---@type { key: string, path: string }[]
-  local groupKeys = warmSceneKeys(sceneKey)
-  grouped[#grouped + 1] = { key = groupKeys[1], path = BattlePresentationCache.sceneImagePath(sceneKey) }
-  grouped[#grouped + 1] = { key = groupKeys[2], path = introLayer.image }
-  grouped[#grouped + 1] = { key = groupKeys[3], path = terrainSprites.player.image }
-  grouped[#grouped + 1] = { key = groupKeys[4], path = terrainSprites.foe.image }
+  local record = plan.record
+  local ordered = plan.ordered
   local ticketed = {} ---@type table<string, boolean>
   for _, ticket in ipairs(self._warmTickets) do
     ticketed[ticket.key] = true
   end
-  enrollWarmEntries(self, pool, grouped, ticketed)
-  -- A ready global refreshes the envelope manifest the same way the
-  -- pending build does; an unvalidated answer keeps the current one.
-  local refreshed = loadManifest(self._cacheFs)
-  if stagedManifest(refreshed) ~= nil then
-    self._manifest = refreshed
-  end
-  local staged = stagedManifest(self._manifest)
-  if staged == nil then
-    return false, nil
-  end
-  local ordered = {} ---@type { key: string, path: string }[]
-  for _, entry in ipairs(grouped) do
-    ordered[#ordered + 1] = entry
-  end
-  local fixedKeys = {} ---@type string[]
-  for fixedKey in pairs(WARM_PINNED_KEYS) do
-    fixedKeys[#fixedKeys + 1] = fixedKey
-  end
-  table.sort(fixedKeys)
-  for _, fixedKey in ipairs(fixedKeys) do
-    local artPath = stagedArtPath(staged, fixedKey)
-    if type(artPath) ~= "string" or artPath == "" then
-      return false, "battle warmup " .. sceneKey .. " fixed art is not staged: " .. fixedKey
-    end
-    ordered[#ordered + 1] = { key = fixedKey, path = artPath }
-  end
+  enrollWarmEntries(self, pool, ordered, ticketed)
   -- The BG3 source values stage once per predicted scene as pure cache
   -- reads under any allowance; a pending replacement keeps the preceding
   -- usable record until its own successor stages.
@@ -2565,22 +2610,30 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
     local mapEntry = type(layer) == "table" and layer.map or nil
     local paletteEntry = type(layer) == "table" and layer.palette or nil
     if type(charactersEntry) ~= "table" or type(mapEntry) ~= "table" or type(paletteEntry) ~= "table" then
-      return false, "battle warmup " .. sceneKey .. " BG3 source paths are not staged"
+      local bg3Cause = "battle warmup " .. sceneKey .. " BG3 source paths are not staged"
+      self._warmPlanFailure = bg3Cause
+      return false, bg3Cause
     end
     if charactersEntry.format ~= "indexed8" then
-      return false, "battle warmup " .. sceneKey .. " BG3 keeps the staged 8bpp character format"
+      local bg3Cause = "battle warmup " .. sceneKey .. " BG3 keeps the staged 8bpp character format"
+      self._warmPlanFailure = bg3Cause
+      return false, bg3Cause
     end
     local charactersPath = charactersEntry.path
     local mapPath = mapEntry.path
     local palettePath = paletteEntry.path
     if type(charactersPath) ~= "string" or type(mapPath) ~= "string" or type(palettePath) ~= "string" then
-      return false, "battle warmup " .. sceneKey .. " BG3 source paths are not staged"
+      local bg3Cause = "battle warmup " .. sceneKey .. " BG3 source paths are not staged"
+      self._warmPlanFailure = bg3Cause
+      return false, bg3Cause
     end
     local characters = self._cacheFs:read(charactersPath)
     local map = self._cacheFs:loadLua(mapPath)
     local palette = self._cacheFs:loadLua(palettePath)
     if type(characters) ~= "string" or type(map) ~= "table" or type(palette) ~= "table" then
-      return false, "battle warmup " .. sceneKey .. " BG3 payload is not staged"
+      local bg3Cause = "battle warmup " .. sceneKey .. " BG3 payload is not staged"
+      self._warmPlanFailure = bg3Cause
+      return false, bg3Cause
     end
     self._warmBg3 = { sceneKey = sceneKey, characters = characters, map = map, palette = palette }
     self._warmBg3Key = sceneKey
@@ -2598,7 +2651,6 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   if settled then
     return false, nil
   end
-  enrollWarmEntries(self, pool, ordered, ticketed)
   -- Poll every ticket without blocking; the first failure names its
   -- scene, key, and path while the remaining tickets stay pending.
   local readyTicket = nil ---@type { key: string, path: string, token: integer }?
@@ -3893,6 +3945,8 @@ function FieldBattlePresentation:dispose()
   cancelWarmTickets(self)
   self._warmDesired = nil
   self._warmFailed = {}
+  self._warmPlan = nil
+  self._warmPlanFailure = nil
   self._warmBg3Key = nil
   self._warmBg3 = nil
   self._warmFailure = nil
