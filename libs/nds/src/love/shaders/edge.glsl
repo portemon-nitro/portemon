@@ -7,7 +7,8 @@
 // scene candidate -> fog(scene) and, when marked, edge candidate
 // vec4(edgeColorFor(id), scene.a) -> fog(edge candidate), then the project's
 // current antialias approximation (50% mix of the two fogged candidates when
-// u_antialiasEnabled). Fog is therefore applied per candidate before any
+// u_antialiasEnabled, plus a 20% single-texel background contribution on
+// staircase foreground corners). Fog is therefore applied per candidate before any
 // mix, so fog alpha is also resolved before the AA interpolation.
 //
 // Both candidates share the center pixel's single depth and fog gate. A future
@@ -67,7 +68,16 @@
 // this project approximates as 50% coverage at a marked edge
 // (3DFinalPassEdgeFS.glsl); u_antialiasEnabled selects that coverage mix vs.
 // the flat replacement. This 50% mix is the project's current approximation,
-// not exact DS lower-pixel coverage generation.
+// not exact DS lower-pixel coverage generation. A second, purely local step
+// softens staircase corners: a marked pixel with a behind-neighbor on both a
+// horizontal and a vertical side blends 20% of one fogged horizontal
+// background neighbor into the resolved color. The background sample steps
+// exactly one world-raster texel (never u_edgeRadiusPx, which is the
+// DS-style marking width and grows with raster resolution), is fogged with
+// its own gate and depth exactly once, and contributes no RGB when fully
+// transparent. This is a visual approximation, not DS hardware coverage: it
+// never looks past one texel, prefers the left neighbor, and misses
+// polygons sharing one ID.
 //
 // Fog (melonDS src/GPU3D_Soft.cpp, SoftRenderer3D::CalculateFogDensity and the
 // post-density blend in SoftRenderer3D::RenderPixel; see tests/support/DsFog.lua
@@ -350,16 +360,69 @@ vec4 effect(vec4 color, Image tex, vec2 uv, vec2 screen_coords)
   // fogged candidate. The 50% step is the project's current approximation,
   // not exact hardware lower-pixel coverage; both candidates share the
   // center depth/fog state, and fog alpha is resolved before the mix.
+  //
+  // Geometry-aware corner smoothing continues below for AA-enabled marked
+  // pixels only: staircase corners blend 20% of one fogged single-texel
+  // background neighbor into the resolved color. Straight silhouettes,
+  // coplanar boundaries, background pixels, and interior pixels all return
+  // above or at the gate below with no extra sampling.
   vec4 sceneFogged = applyFog(scene, centerFogGate, centerDepth);
-  if (!isMarked) {
-    return sceneFogged;
+  vec4 resolved = sceneFogged;
+  if (isMarked) {
+    vec3 edgeColor = u_edgeColors[centerPolygonId / 8];
+    vec4 edgeCandidate = vec4(edgeColor, scene.a);
+    vec4 edgeFogged = applyFog(edgeCandidate, centerFogGate, centerDepth);
+    resolved = u_antialiasEnabled
+      ? mix(sceneFogged, edgeFogged, 0.5)
+      : edgeFogged;
   }
-  vec3 edgeColor = u_edgeColors[centerPolygonId / 8];
-  vec4 edgeCandidate = vec4(edgeColor, scene.a);
-  vec4 edgeFogged = applyFog(edgeCandidate, centerFogGate, centerDepth);
-  if (!u_antialiasEnabled) {
-    return edgeFogged;
+
+  // Most pixels finish here: no additional state or color texture samples
+  // for interior pixels.
+  if (!u_antialiasEnabled || !isMarked) {
+    return resolved;
   }
-  return mix(sceneFogged, edgeFogged, 0.5);
+
+  // Single-texel corner probes: one actual world-raster pixel, NOT
+  // u_edgeRadiusPx. The edge radius is the DS-style marking width, which
+  // grows with raster resolution; reusing it for the color sample would
+  // smooth whole neighborhoods at high raster scales instead of one texel.
+  vec2 pixelUv = statePixelCenter(uv);
+  vec2 pixelStep = 1.0 / u_stateSize;
+  bool left = marked(pixelUv, vec2(-pixelStep.x, 0.0), centerId, centerDepth);
+  bool right = marked(pixelUv, vec2(pixelStep.x, 0.0), centerId, centerDepth);
+  bool up = marked(pixelUv, vec2(0.0, -pixelStep.y), centerId, centerDepth);
+  bool down = marked(pixelUv, vec2(0.0, pixelStep.y), centerId, centerDepth);
+
+  // Only soften staircase corners, not straight boundaries.
+  if (!(left || right) || !(up || down)) {
+    return resolved;
+  }
+
+  // One qualifying horizontal background neighbor. This is intentionally
+  // minimal: no multi-tap filter, no directional weighting.
+  vec2 backgroundUv = pixelUv + (left ? vec2(-pixelStep.x, 0.0) : vec2(pixelStep.x, 0.0));
+
+  // Never sample scene color outside the render target.
+  if (backgroundUv.x < 0.0 || backgroundUv.y < 0.0 || backgroundUv.x >= 1.0 || backgroundUv.y >= 1.0) {
+    return resolved;
+  }
+
+  // Scene and state are sampled at the same pixel; the background candidate
+  // is fogged with its own gate and depth, exactly once.
+  vec3 backgroundState = stateSample(backgroundUv);
+  vec4 background = Texel(tex, backgroundUv);
+  vec4 backgroundFogged = applyFog(background, backgroundState.b, backgroundState.g);
+
+  const float CORNER_BLEND = 0.20;
+
+  // Approximate the DS coverage rule: transparent background does not inject
+  // arbitrary RGB, but alpha still blends.
+  if (backgroundFogged.a > 0.0) {
+    resolved.rgb = mix(resolved.rgb, backgroundFogged.rgb, CORNER_BLEND);
+  }
+  resolved.a = mix(resolved.a, backgroundFogged.a, CORNER_BLEND);
+
+  return resolved;
 }
 #endif
