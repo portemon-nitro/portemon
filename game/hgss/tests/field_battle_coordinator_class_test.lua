@@ -397,4 +397,61 @@ function T.stationary_movement_and_background_changes_refresh_the_predicted_scen
   )
 end
 
+-- Presented admission pre-seeds the launch without touching field audio:
+-- the descriptor carries the lead and foe records for required-urgency
+-- staging, the party warmup refreshes its bench near demands, and the
+-- field policy stays active until the battle music voices with the
+-- transition effect.
+function T.presented_admission_preseeds_without_suspending_field_audio()
+  local refreshed = 0
+  local admitted = nil
+  local runtime = {
+    session = {
+      currentMap = { mapId = 33, fieldData = { battleBackground = "general" } },
+      setBattleActive = function() end,
+      setForegroundHold = function() end,
+    },
+    player = { fieldX = 5, fieldZ = 6, surfaceId = 0 },
+    playerData = { profile = { gender = 0 }, options = { textSpeed = "fastest" } },
+    arrivalBehavior = function()
+      return nil
+    end,
+    localClock = {
+      nowLocal = function()
+        return { hour = 12 }
+      end,
+    },
+    audio = {
+      suspendFieldPolicy = function()
+        error("admission never suspends the field policy", 0)
+      end,
+    },
+    monService = {
+      partyMon = function(_, slot)
+        assert(slot == 0, "admission pre-seeds the opening lead")
+        return { species = "CHIKORITA", form = 0 }
+      end,
+    },
+    refreshPartyWarmup = function()
+      refreshed = refreshed + 1
+    end,
+  }
+  local coordinator = FieldBattleCoordinator.new(runtime)
+  coordinator:bindBattlePresentation(function(descriptor)
+    admitted = descriptor
+    return {}
+  end)
+  local foe = { species = "PIDGEY", form = 0 }
+  local launchId =
+    coordinator:launchPresentedBattle("wild#9", { id = "wild#9", kind = "wild", payload = {
+      species = "PIDGEY",
+      mon = foe,
+    } }, nil)
+  Assert.equal(launchId, "wild#9", "admission keeps its issued launch identity")
+  Assert.notNil(admitted, "admission builds its presentation port")
+  Assert.equal(admitted.leadMon.species, "CHIKORITA", "the descriptor pre-seeds the party lead")
+  Assert.isTrue(admitted.foeMon == foe, "the descriptor pre-seeds the wild foe record")
+  Assert.equal(refreshed, 1, "admission refreshes the bench near warmup once")
+end
+
 return { tests = T }

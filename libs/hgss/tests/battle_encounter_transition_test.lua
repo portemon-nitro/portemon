@@ -54,11 +54,10 @@ local function fixture()
     end,
     cacheFs = cacheFs,
     battleAssets = {
-      requestBattleScene = function()
+      requestBattlePresentation = function()
         return true
       end,
     },
-    sceneKey = "general/plain/day",
     audioOperations = {
       emit = function(_, operation)
         event = operation
@@ -166,11 +165,10 @@ function T.selected_resource_failure_does_not_start_music_or_effect()
       end,
     },
     battleAssets = {
-      requestBattleScene = function()
+      requestBattlePresentation = function()
         return true
       end,
     },
-    sceneKey = "general/plain/day",
     audioOperations = {
       emit = function()
         emitted = emitted + 1
@@ -235,11 +233,10 @@ function T.partial_native_start_failure_disposes_the_effect_once()
       end,
     },
     battleAssets = {
-      requestBattleScene = function()
+      requestBattlePresentation = function()
         return true
       end,
     },
-    sceneKey = "general/plain/day",
     audioOperations = {
       emit = function()
         emitted = emitted + 1
@@ -354,11 +351,10 @@ function T.generic_trainer_source_task_renders_then_completes_after_owned_sprite
       end,
     },
     battleAssets = {
-      requestBattleScene = function()
+      requestBattlePresentation = function()
         return true
       end,
     },
-    sceneKey = "general/plain/day",
     audioOperations = { emit = function() end },
     effectFactory = function(selectedRoute, resources)
       effect = TransitionFamilyFactory.new(selectedRoute, resources, love.graphics, {}, { playerGender = "male" })
@@ -422,7 +418,7 @@ function T.generic_trainer_source_task_renders_then_completes_after_owned_sprite
   Assert.equal(ticks < 100, true, "native task completes without an external timer")
 end
 
-function T.scene_receipt_stays_pending_without_loading_and_resumes_only_when_ready()
+function T.global_receipt_stays_pending_without_loading_and_resumes_only_when_ready()
   local requested = {}
   local shouldBeReady = false
   local loads = 0
@@ -473,12 +469,11 @@ function T.scene_receipt_stays_pending_without_loading_and_resumes_only_when_rea
       end,
     },
     battleAssets = {
-      requestBattleScene = function(sceneKey, urgency)
-        requested[#requested + 1] = { sceneKey = sceneKey, urgency = urgency }
+      requestBattlePresentation = function(urgency)
+        requested[#requested + 1] = { urgency = urgency }
         return shouldBeReady, nil
       end,
     },
-    sceneKey = "general/plain/day",
     audioOperations = { emit = function() end },
     effectFactory = function()
       return {
@@ -502,25 +497,106 @@ function T.scene_receipt_stays_pending_without_loading_and_resumes_only_when_rea
     specialBattle = false,
     alternateTransition = false,
   }
-  Assert.equal(transition:prepare(context), "pending", "unready scene receipt keeps preparation pending")
-  Assert.equal(transition:status().phase, "pending", "pending scene receipt is observable")
+  Assert.equal(transition:prepare(context), "pending", "unready global receipt keeps preparation pending")
+  Assert.equal(transition:status().phase, "pending", "pending global receipt is observable")
   Assert.equal(loads, 0, "transition payload bytes are not opened before global readiness")
-  Assert.equal(manifestLoads, 0, "the staged manifest is not read before the scene publishes it")
-  Assert.equal(started, 0, "pending scene does not construct or start its family")
+  Assert.equal(manifestLoads, 0, "the staged manifest is not read before global publication")
+  Assert.equal(started, 0, "pending global publication does not construct or start its family")
   shouldBeReady = true
-  Assert.equal(transition:prepare(context), "ready", "the selected scene resumes after global publication")
-  Assert.equal(transition:start(), "running", "ready scene starts once")
+  Assert.equal(transition:prepare(context), "ready", "global publication resumes preparation")
+  Assert.equal(transition:start(), "running", "published global starts once")
   Assert.equal(loads, 1, "selected payload bytes load only after the ready receipt")
   Assert.equal(manifestLoads, 1, "the staged manifest is read once after the ready receipt")
   Assert.equal(started, 1, "native task starts only after complete publication")
   Assert.deepEqual(requested, {
-    { sceneKey = "general/plain/day", urgency = "required" },
-    { sceneKey = "general/plain/day", urgency = "required" },
-  }, "repeated preparation uses the idempotent launch-scoped scene demand")
+    { urgency = "required" },
+    { urgency = "required" },
+  }, "repeated preparation uses the idempotent launch-scoped global demand")
   transition:dispose()
 end
 
-function T.scene_receipt_failure_is_terminal_without_loading_or_starting()
+-- The scene demand never gates the transition: with the global published
+-- but no scene receipt anywhere in the host, preparation still resolves
+-- the route and the effect still starts, so battle staging no longer
+-- holds the transition, cover, or music behind scene pixels.
+function T.transition_start_never_waits_for_scene_staging()
+  local started = 0
+  local transition = BattleEncounterTransition.new({
+    loadManifest = function()
+      return {
+        transitions = {
+          routes = {
+            ["trainer/red"] = { role = "red-trainer-transition", resources = { "sprite" } },
+          },
+          selection = {
+            trainerClassRoutes = { RIVAL = "trainer/red" },
+            trainerClassMusicRoles = { RIVAL = "rival" },
+            trainerRules = {
+              specialBattle = {
+                preserveRoute = "trainer/red",
+                defaultRoute = "trainer/red",
+                defaultMusicRole = "trainer",
+                doublesRoute = "trainer/red",
+                doublesMusicRole = "trainer",
+              },
+              preserveRoutes = { "trainer/red" },
+              unknownRoute = "trainer/red",
+              unknownMusicRole = "trainer",
+              doublesRoute = "trainer/red",
+              doublesMusicRole = "trainer",
+              alternateTransitionRoute = "trainer/red",
+              alternateMusicRole = "trainer",
+            },
+            wildRules = {},
+            fallbackRoutes = {},
+          },
+        },
+        resources = { sprite = { path = "sprite.lua" } },
+      }
+    end,
+    cacheFs = {
+      loadLua = function()
+        return { decoded = true }
+      end,
+    },
+    battleAssets = {
+      requestBattlePresentation = function()
+        return true
+      end,
+    },
+    audioOperations = { emit = function() end },
+    effectFactory = function()
+      return {
+        start = function()
+          started = started + 1
+        end,
+        stepSourceTick = function()
+          return true
+        end,
+        frame = function()
+          return {}
+        end,
+        dispose = function() end,
+      }
+    end,
+  })
+  Assert.equal(
+    transition:prepare({
+      kind = "trainer",
+      trainerClass = "RIVAL",
+      doubleBattle = false,
+      specialBattle = false,
+      alternateTransition = false,
+    }),
+    "ready",
+    "global readiness alone prepares the transition with no scene receipt"
+  )
+  Assert.equal(transition:start(), "running", "the transition starts while scene pixels still stage")
+  Assert.equal(started, 1, "the native task starts without any scene demand")
+  transition:dispose()
+end
+
+function T.global_receipt_failure_is_terminal_without_loading_or_starting()
   local loads = 0
   local starts = 0
   local manifest = {
@@ -562,11 +638,10 @@ function T.scene_receipt_failure_is_terminal_without_loading_or_starting()
       end,
     },
     battleAssets = {
-      requestBattleScene = function()
-        return nil, "corrupt scene"
+      requestBattlePresentation = function()
+        return nil, "corrupt global"
       end,
     },
-    sceneKey = "general/plain/day",
     audioOperations = { emit = function() end },
     effectFactory = function()
       return {
@@ -593,7 +668,7 @@ function T.scene_receipt_failure_is_terminal_without_loading_or_starting()
     })
   end)
   Assert.isFalse(ok, "failed global publication is a terminal preparation error")
-  Assert.equal(transition:status().phase, "failed", "failed scene readiness is observable")
+  Assert.equal(transition:status().phase, "failed", "failed global readiness is observable")
   Assert.equal(loads, 0, "failed global publication never opens resource payloads")
   Assert.equal(starts, 0, "failed global publication never starts a native task")
   transition:dispose()
@@ -645,12 +720,11 @@ function T.effect_init_emits_music_before_ticks_done_and_unload_exactly_once()
       end,
     },
     battleAssets = {
-      requestBattleScene = function(_, _, _)
+      requestBattlePresentation = function(_, _)
         events[#events + 1] = "scene-demand"
         return true
       end,
     },
-    sceneKey = "general/plain/day",
     audioOperations = {
       emit = function(_, operation)
         events[#events + 1] = operation.kind .. ":" .. tostring(operation.role)

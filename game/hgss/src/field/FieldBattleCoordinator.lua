@@ -745,6 +745,37 @@ function FieldBattleCoordinator:launchBattle(spec)
   return launchId
 end
 
+-- Reads the party lead for admission pre-seeding: slot zero carries the
+-- opening battler, and anything unreadable simply pre-seeds nothing while
+-- the required preparation path reports with its context later.
+---@return table<string, unknown>? lead mon record, nil when unavailable
+function FieldBattleCoordinator:_launchLeadMon()
+  local runtime = self.runtime
+  local service = type(runtime) == "table" and runtime.monService or nil
+  if type(service) ~= "table" or type(service.partyMon) ~= "function" then
+    return nil
+  end
+  local ok, mon = pcall(function()
+    return service:partyMon(0)
+  end)
+  if not ok or type(mon) ~= "table" then
+    return nil
+  end
+  return mon
+end
+
+-- Reads the wild foe for admission pre-seeding: trainer rosters resolve
+-- later through their catalog, so only a carried foe record pre-seeds.
+---@param request table<string, unknown> launch request carrying its identity and kind
+---@return table<string, unknown>? foe mon record, nil when unavailable
+function FieldBattleCoordinator:_launchFoeMon(request)
+  local payload = request.payload
+  if type(payload) == "table" and type(payload.mon) == "table" then
+    return payload.mon
+  end
+  return nil
+end
+
 -- Admits one presented launch: captures the launch environment before the
 -- field changes, builds the fresh per-launch port through the bound
 -- factory, then claims input/foreground and the battle-music policy for
@@ -809,6 +840,8 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     audio = fieldRuntime(self).audio,
     musicRole = self:_battleMusicRole(request),
     trainerClass = self:_battleTrainerClass(request),
+    leadMon = self:_launchLeadMon(),
+    foeMon = self:_launchFoeMon(request),
     host = {
       status = presentedStatus,
       advance = presentedAdvance,
@@ -839,9 +872,14 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
   if fieldRuntime(self).input ~= nil then
     fieldRuntime(self).input:clearAll()
   end
-  local audio = fieldRuntime(self).audio
-  if audio ~= nil and type(audio.suspendFieldPolicy) == "function" then
-    audio:suspendFieldPolicy(launchId)
+  -- The bench re-enrolls its near portrait, cry, and effect demands on
+  -- the next update even when the party revision has not changed since
+  -- map entry; the lead and foe stage at required urgency through the
+  -- admitted descriptor. Field policy suspends later, on the same tick
+  -- the battle music voices with the transition effect.
+  local runtime = fieldRuntime(self)
+  if type(runtime.refreshPartyWarmup) == "function" then
+    runtime:refreshPartyWarmup()
   end
   return launchId
 end

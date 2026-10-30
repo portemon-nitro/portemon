@@ -424,6 +424,15 @@ local function bindEnvelope(game, versionId, measurement, overrides)
     audio = doubles.audio,
     itemCatalog = game.runtime.itemCatalog,
     monCatalog = game.runtime.monCatalog,
+    -- Audio bank files are outside this suite's staged set and never
+    -- voiced through its recording sink, so the bank seam answers ready
+    -- like the substituted host boundaries above; bank readiness itself
+    -- is owned by the battle staging tests with a controllable host.
+    derivedAssets = {
+      requestAudioBank = function()
+        return true
+      end,
+    },
     measureDisplay = function()
       return measurement
     end,

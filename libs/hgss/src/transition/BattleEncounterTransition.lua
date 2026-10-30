@@ -7,7 +7,6 @@ local Errors = require("libs.errors.src.Errors")
 ---@field _loadManifest fun(): table<string, unknown>
 ---@field _cacheFs BattleEncounterTransition.CacheFs
 ---@field _battleAssets BattleEncounterTransition.BattleAssets
----@field _sceneKey string
 ---@field _audioOperations BattleEncounterTransition.AudioOperations
 ---@field _effectFactory fun(route: table<string, unknown>, resources: table<string, unknown>, context: BattleEncounterSelector.Context): BattleEncounterTransition.Effect
 ---@field _phase string
@@ -23,7 +22,7 @@ BattleEncounterTransition.__index = BattleEncounterTransition
 ---@field loadLua fun(self: BattleEncounterTransition.CacheFs, path: string): table<string, unknown>?, string?
 
 ---@class BattleEncounterTransition.BattleAssets
----@field requestBattleScene fun(sceneKey: string, urgency: string): boolean?, string?
+---@field requestBattlePresentation fun(urgency: string): boolean?, string?
 
 ---@class BattleEncounterTransition.AudioOperations
 ---@field emit fun(self: BattleEncounterTransition.AudioOperations, operation: table<string, unknown>)
@@ -36,10 +35,9 @@ BattleEncounterTransition.__index = BattleEncounterTransition
 ---@field acceptFieldLayers fun(self: BattleEncounterTransition.Effect, layers: table<string, unknown>)?
 
 ---@class BattleEncounterTransition.Options
----@field loadManifest fun(): table<string, unknown> reads the staged presentation manifest the ready scene published
+---@field loadManifest fun(): table<string, unknown> reads the staged presentation manifest the global receipt published
 ---@field cacheFs BattleEncounterTransition.CacheFs staged CacheFs reader
----@field battleAssets BattleEncounterTransition.BattleAssets typed scene demand host
----@field sceneKey string selected battle scene key whose receipt owns global transition payloads
+---@field battleAssets BattleEncounterTransition.BattleAssets typed global demand host
 ---@field audioOperations BattleEncounterTransition.AudioOperations typed battle audio operation sink
 ---@field effectFactory fun(route: table<string, unknown>, resources: table<string, unknown>, context: BattleEncounterSelector.Context): BattleEncounterTransition.Effect source family constructor
 
@@ -49,12 +47,8 @@ function BattleEncounterTransition.new(options)
   assert(options and type(options.loadManifest) == "function", "battle transition requires its staged manifest reader")
   assert(options.cacheFs and options.cacheFs.loadLua, "battle transition requires staged resource access")
   assert(
-    options.battleAssets and type(options.battleAssets.requestBattleScene) == "function",
-    "battle transition requires its generation-scoped scene demand host"
-  )
-  assert(
-    type(options.sceneKey) == "string" and options.sceneKey ~= "",
-    "battle transition requires its selected scene key"
+    options.battleAssets and type(options.battleAssets.requestBattlePresentation) == "function",
+    "battle transition requires its generation-scoped global demand host"
   )
   assert(options.audioOperations and options.audioOperations.emit, "battle transition requires the typed audio sink")
   assert(type(options.effectFactory) == "function", "battle transition requires native effect families")
@@ -62,7 +56,6 @@ function BattleEncounterTransition.new(options)
     _loadManifest = options.loadManifest,
     _cacheFs = options.cacheFs,
     _battleAssets = options.battleAssets,
-    _sceneKey = options.sceneKey,
     _audioOperations = options.audioOperations,
     _effectFactory = options.effectFactory,
     _phase = "new",
@@ -80,17 +73,15 @@ function BattleEncounterTransition:prepare(context)
   assert(self._phase == "new" or self._phase == "pending", "battle transition prepares once and resumes while pending")
   self._phase = "preparing"
   local ok, result = pcall(function()
-    -- The scene receipt publishes the global manifest: selection reads it
-    -- only after the demand reports ready.
-    local ready, demandError = self._battleAssets.requestBattleScene(self._sceneKey, "required")
+    -- The global receipt publishes the manifest: selection reads it only
+    -- after the global demand reports ready. Scene pixels stage in
+    -- parallel and never gate the transition, cover, or music.
+    local ready, demandError = self._battleAssets.requestBattlePresentation("required")
     if demandError ~= nil then
       Errors.raise(
         "BATTLE_TRANSITION_RESOURCE_UNAVAILABLE",
         "selected transition resources are not globally published",
-        {
-          scene = self._sceneKey,
-          cause = demandError,
-        }
+        { cause = demandError }
       )
     end
     if ready ~= true then

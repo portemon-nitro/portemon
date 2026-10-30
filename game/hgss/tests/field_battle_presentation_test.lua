@@ -573,6 +573,9 @@ function T.encounter_music_starts_with_transition_before_full_cover()
     local envelope, binding =
       bindEnvelope(runtime, versionId, dualMeasurement("encounter-transition:dual"), love.graphics, {
         derivedAssets = {
+          requestBattlePresentation = function()
+            return true
+          end,
           requestBattleScene = function()
             return true
           end,
@@ -3038,6 +3041,11 @@ local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOv
   local worker = { ready = true, failure = nil }
   local derivedAssets = {}
   function derivedAssets.requestBattleScene(_, _)
+    return worker.ready, worker.failure
+  end
+  -- Audio staging rides the same worker double: these journeys prove
+  -- battle flow, while bank readiness is owned by the staging tests.
+  function derivedAssets.requestAudioBank(_, _)
     return worker.ready, worker.failure
   end
   local envelope = FieldBattlePresentation.new({
