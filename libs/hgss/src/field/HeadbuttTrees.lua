@@ -95,7 +95,7 @@ end
 -- The table kind a struck tile uses: common or rare for a regular tree
 -- (decided by the trainer ID's last digit), secret for a secret tree, nil
 -- when the tile belongs to no tree or that tree yields no encounter.
----@param headbutt { regularTrees: table, secretTrees: table }
+---@param headbutt { regularTrees: { x: integer, z: integer }[][], secretTrees: { x: integer, z: integer }[][] }
 ---@param trainerId integer
 ---@param x integer
 ---@param z integer

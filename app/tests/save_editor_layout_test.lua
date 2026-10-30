@@ -3053,7 +3053,7 @@ function T.tests.decision_actions_use_measured_rows_and_keep_back_last()
       section = "Party",
       ids = { "party-move:move", "party-move:pp", "party-move:pp-ups", "cancel" },
       labels = { "Move", "Current PP", "PP Ups", "Back" },
-      matrix = { { "party-move:move", "party-move:pp" }, { "party-move:pp-ups" }, { "cancel" } },
+      matrix = { { "party-move:move", "party-move:pp", "party-move:pp-ups" }, { "cancel" } },
     },
   }
 
@@ -3159,14 +3159,21 @@ function T.tests.decision_actions_use_measured_rows_and_keep_back_last()
   controller:setSection("Party")
   controller:setFocus("party-move:move")
   navigate(controller, layout, "right")
-  Assert.equal(controller.focus, "party-move:pp", "right moves across the first modal row")
+  Assert.equal(controller.focus, "party-move:pp", "right moves across the single modal row")
+  navigate(controller, layout, "right")
+  Assert.equal(controller.focus, "party-move:pp-ups", "right reaches the third action in the same row")
   navigate(controller, layout, "down")
-  Assert.equal(controller.focus, "party-move:pp-ups", "down follows the next visible primary row")
+  Assert.equal(controller.focus, "cancel", "down drops from the primary row to Back")
   navigate(controller, layout, "up")
-  Assert.equal(controller.focus, "party-move:move", "up returns to the nearest main action")
-  controller:setFocus("party-move:pp-ups")
+  Assert.isTrue(
+    controller.focus == "party-move:move"
+      or controller.focus == "party-move:pp"
+      or controller.focus == "party-move:pp-ups",
+    "up returns to a primary action"
+  )
+  controller:setFocus("party-move:move")
   navigate(controller, layout, "down")
-  Assert.equal(controller.focus, "cancel", "the final primary action also reaches Back")
+  Assert.equal(controller.focus, "cancel", "the first primary action also reaches Back")
 end
 
 function T.tests.party_move_actions_follow_a_standalone_back_row()
@@ -3185,10 +3192,11 @@ function T.tests.party_move_actions_follow_a_standalone_back_row()
   Assert.equal(rows[2].targetId, "party-move:pp")
   Assert.equal(rows[3].targetId, "party-move:pp-ups")
   Assert.equal(rows[4].targetId, "cancel", "Back preserves the typed cancel action ID")
-  Assert.equal(move.y, currentPp.y, "Move and Current PP share the top row")
+  Assert.equal(move.y, currentPp.y, "Move and Current PP share the single primary row")
   Assert.isTrue(move.x < currentPp.x, "Current PP is to the right of Move")
-  Assert.isTrue(ppUps.y > move.y, "PP Ups starts the lower row")
-  Assert.isTrue(back.y > ppUps.y + ppUps.height - 1, "Back has its own final row below every primary action")
+  Assert.equal(move.y, ppUps.y, "PP Ups joins the same primary row")
+  Assert.isTrue(ppUps.x > currentPp.x, "PP Ups is to the right of Current PP")
+  Assert.isTrue(back.y > move.y + move.height - 1, "Back has its own final row below every primary action")
   Assert.near(
     back.x + back.width / 2,
     assert(layout.decisionList).surface.x + assert(layout.decisionList).surface.width / 2,
@@ -3200,14 +3208,54 @@ function T.tests.party_move_actions_follow_a_standalone_back_row()
   controller:setSection("Party")
   controller:setFocus("party-move:move")
   navigate(controller, layout, "right")
-  Assert.equal(controller.focus, "party-move:pp", "right moves within the top row")
+  Assert.equal(controller.focus, "party-move:pp", "right moves within the single row")
+  navigate(controller, layout, "right")
+  Assert.equal(controller.focus, "party-move:pp-ups", "right reaches the third primary action")
   navigate(controller, layout, "down")
-  Assert.equal(controller.focus, "party-move:pp-ups", "down follows the next visible primary row")
+  Assert.equal(controller.focus, "cancel", "down drops from the primary row to Back")
   navigate(controller, layout, "up")
   Assert.isTrue(controller.focus ~= "cancel", "up from Back returns to a visible primary action")
-  controller:setFocus("party-move:pp-ups")
+  controller:setFocus("party-move:move")
   navigate(controller, layout, "down")
-  Assert.equal(controller.focus, "cancel", "the second primary row can reach Back")
+  Assert.equal(controller.focus, "cancel", "the single primary row can reach Back")
+end
+
+function T.tests.party_move_dialog_fits_its_primary_actions_in_a_single_row_when_space_allows()
+  local metrics = filterMetrics()
+  for _, size in ipairs({ { 640, 480 }, { 800, 600 } }) do
+    local view = partyEditorView("Moves")
+    view.section = "Party"
+    view.modal = "party-move"
+    view.scope = { id = "decision:party-move", epoch = 1, kind = "decision", focusId = "party-move:move" }
+    local layout = Layout.compute(view, size[1], size[2], metrics)
+    local decision = assert(layout.decisionList, "the move dialog publishes its action surface")
+    local move = assert(decision.rows[1]).rect
+    local currentPp = assert(decision.rows[2]).rect
+    local ppUps = assert(decision.rows[3]).rect
+    local back = assert(decision.rows[4]).rect
+    Assert.equal(move.y, currentPp.y, "Move and Current PP share one row at ample width")
+    Assert.equal(move.y, ppUps.y, "PP Ups joins the single primary row at ample width")
+    Assert.isTrue(back.y > move.y + move.height - 1, "Back keeps its own final row")
+    local actionMatrix
+    for _, region in ipairs(layout.focusNavigation.regions) do
+      if region.id == "decision:actions" then
+        actionMatrix = assert(region.logical).matrix
+      end
+    end
+    Assert.notNil(actionMatrix, "the move dialog publishes its visual action matrix")
+    Assert.equal(#actionMatrix, 2, "ample width groups primaries into one row above Back")
+    Assert.equal(#actionMatrix[1], 3, "the single primary row holds every main action")
+  end
+end
+
+function T.tests.moves_focus_publication_tolerates_a_cleared_party_draft()
+  local metrics = filterMetrics()
+  local view = partyEditorView("Moves")
+  view.partyMoves = nil
+  view.partyEmpty = false
+  local ok, layout = pcall(Layout.compute, view, 640, 480, metrics)
+  Assert.isTrue(ok, "layout survives a cleared Moves draft without asserting: " .. tostring(layout))
+  Assert.isTrue(type(layout) == "table", "a cleared draft still publishes a layout")
 end
 
 function T.tests.resize_publishes_before_the_next_draw_without_resolving_in_draw()

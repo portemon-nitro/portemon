@@ -3676,15 +3676,21 @@ function State:_showMoveOverlay(slot0, focusTarget)
     "a move overlay needs its occupied slot"
   )
   self.pendingMoveSlot = slot0
+  local entry = assert(draft:record().moves[slot0 + 1])
+  local catalog = assert(self.dependencies.context.monCatalog)
+  local title = "Edit move: " .. (catalog:move(entry.move).name or entry.move)
   local moveTop = self.modalStack:top()
   if moveTop == nil or moveTop.kind ~= "move" then
-    local entry = assert(draft:record().moves[slot0 + 1])
-    local catalog = assert(self.dependencies.context.monCatalog)
     self:_openDecision("party-move", {
       slot0 = slot0,
-      title = "Edit move: " .. (catalog:move(entry.move).name or entry.move),
+      title = title,
     })
   else
+    local layer = assert(self.modalStack:pop())
+    assert(layer.kind == "move", "restored move overlay owns its decision layer")
+    layer.payload.slot0 = slot0
+    layer.payload.title = title
+    self.modalStack:push(layer)
     self.controller.modal = "party-move"
   end
   self.controller.modalReturnFocus = "party:move:" .. slot0

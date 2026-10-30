@@ -1493,8 +1493,8 @@ local function buildDecisionScope(ctx)
     assert(decisionActions[index].command ~= "cancel", "only the final decision action cancels")
   end
   local primaryCount = #decisionActions - 1
-  local primaryColumnCount = math.min(2, primaryCount)
-  local primaryRowCount = math.ceil(primaryCount / 2)
+  local primaryColumnCount = math.min(3, primaryCount)
+  local primaryRowCount = math.ceil(primaryCount / primaryColumnCount)
   local rowCount = primaryRowCount + 1
   local buttonHeight = metrics.lineHeight + 34
   local promptHeight = math.max(1, metrics.lineHeight)
@@ -1577,7 +1577,7 @@ local function buildDecisionScope(ctx)
   end
   for column = 1, primaryColumnCount do
     local minimumWidth = 40
-    for index = column, primaryCount, 2 do
+    for index = column, primaryCount, primaryColumnCount do
       minimumWidth = math.max(minimumWidth, metrics.measure(decisionActions[index].label) + 16)
     end
     primaryColumnWidths[column] = math.min(128, minimumWidth)
@@ -1600,18 +1600,18 @@ local function buildDecisionScope(ctx)
   local rowStartY = surface.content.y + promptHeight + 4
   for index = 1, primaryCount do
     local action = decisionActions[index]
-    local rowIndex = math.floor((index - 1) / 2) + 1
-    local column = (index - 1) % 2 + 1
-    local firstInRow = (rowIndex - 1) * 2 + 1
-    local lastInRow = math.min(firstInRow + 1, primaryCount)
+    local rowIndex = math.floor((index - 1) / primaryColumnCount) + 1
+    local column = (index - 1) % primaryColumnCount + 1
+    local firstInRow = (rowIndex - 1) * primaryColumnCount + 1
+    local lastInRow = math.min(firstInRow + primaryColumnCount - 1, primaryCount)
     local rowWidth, rowColumns = 0, lastInRow - firstInRow + 1
     for rowAction = firstInRow, lastInRow do
-      rowWidth = rowWidth + primaryColumnWidths[(rowAction - 1) % 2 + 1]
+      rowWidth = rowWidth + primaryColumnWidths[(rowAction - 1) % primaryColumnCount + 1]
     end
     rowWidth = rowWidth + 4 * (rowColumns - 1)
     local x = surface.content.x + math.floor((surface.content.width - rowWidth) / 2)
     for priorAction = firstInRow, index - 1 do
-      x = x + primaryColumnWidths[(priorAction - 1) % 2 + 1] + 4
+      x = x + primaryColumnWidths[(priorAction - 1) % primaryColumnCount + 1] + 4
     end
     local rowRect = rect(x, rowStartY + (rowIndex - 1) * (buttonHeight + 4), primaryColumnWidths[column], buttonHeight)
     ctx.decisionList.rows[index] = {
@@ -2328,12 +2328,8 @@ local function publishMovesRegion(nav)
 
   if ctx.partyMoves ~= nil then
     local matrix = {}
-    local slots
-    if ctx.view.partyEmpty then
-      slots = {}
-    else
-      slots = assert(ctx.view.partyMoves).slots
-    end
+    local moves = not ctx.view.partyEmpty and ctx.view.partyMoves or nil
+    local slots = moves ~= nil and moves.slots or {}
     for index = 1, #slots, 2 do
       local row = {}
       for column = index, math.min(index + 1, #slots) do
