@@ -23,6 +23,7 @@ local ScriptHeader = require("romdump.src.digest.script.ScriptHeader")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
+local FieldMoveEncounterData = require("romdump.src.digest.field.FieldMoveEncounterData")
 local ApricornSources = require("romdump.src.config.ApricornSources")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 
@@ -155,37 +156,26 @@ local function semanticObjectEvents(objectEvents, map)
   return objects
 end
 
--- Whether the source weather id marks a dark Flash-usable cave.
----@param weatherId integer
----@return boolean
-local function isFlashWeather(weatherId)
-  for _, id in ipairs(FieldMoveSources.FLASH_WEATHER_IDS) do
-    if weatherId == id then
-      return true
-    end
-  end
-  return false
-end
-
 -- The semantic field-use policy for one map, projected from frozen source
 -- header facts: Fly/Escape Rope permissions ride the header flags,
--- Teleport follows the outdoor transition environment, Flash follows the
--- dark-cave weather ids plus the explicit Alph chamber exception, Dig and
+-- Teleport follows MapHeader_IsTeleportAllowed (fly permission outside
+-- cities and towns), the two Alph first rooms carry the Flash and Escape
+-- Rope exceptions (the tile and facing check is runtime context), Dig and
 -- Escape Rope need the cave environment with escape permission, and the
 -- Union/Colosseum exclusion plus the Ice Path B2F exception ride explicit
--- symbol sets. Runtime checks read this record; they never branch on map
--- ids or infer permission from map type.
+-- symbol sets. Flash itself follows live weather, never a static flag.
+-- Runtime checks read this record; they never branch on map ids or infer
+-- permission from map type.
 ---@param map table<string, unknown>
 ---@param environment string
 ---@return table<string, unknown>
 local function fieldUsePolicy(map, environment)
-  local alphChamber = map.symbol == FieldMoveSources.ALPH_FLASH_SYMBOL
   return {
     flyAllowed = map.flyAllowed == true,
-    teleportAllowed = environment == "outdoors",
+    teleportAllowed = map.flyAllowed == true and map.mapType ~= "CITY_TOWN",
     escapeAllowed = map.escapeRopeAllowed == true,
-    flashUsable = isFlashWeather(map.weather) or alphChamber,
-    alphChamber = alphChamber,
+    alphFlashRoom = map.symbol == FieldMoveSources.ALPH_FLASH_ROOM_SYMBOL,
+    alphEscapeRopeRoom = map.symbol == FieldMoveSources.ALPH_ESCAPE_ROPE_ROOM_SYMBOL,
     icePathB2F = map.symbol == FieldMoveSources.ICE_PATH_B2F_SYMBOL,
     cave = environment == "cave",
     unionOrColosseum = FieldMoveSources.UNION_COLOSSEUM_SYMBOLS[map.symbol] == true,
@@ -348,6 +338,8 @@ local function loadSource(romFs, sha1hex)
     archive = archive,
     archiveInfo = archiveInfo,
     archiveSha1 = sha1hex(archiveBytes),
+    rockSmashArchive = must(romFs:openNarc("rock_smash_items")),
+    headbuttArchive = must(romFs:openNarc("headbutt_encounters")),
   }
 end
 
@@ -554,6 +546,12 @@ local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
     fieldLightSourcePath = environmentSource.fieldLightSourcePath,
     fieldLightSourceSha1 = environmentSource.fieldLightSourceSha1,
   }
+  local rockSmashBytes = must(source.rockSmashArchive:readMember(map.id)) --[[@as string]]
+  local rockSmash = must(FieldMoveEncounterData.decodeRockSmash(rockSmashBytes, romFs:version()))
+  local headbuttBytes = must(source.headbuttArchive:readMember(map.id)) --[[@as string]]
+  local headbutt = must(FieldMoveEncounterData.decodeHeadbutt(headbuttBytes))
+  dependencies.rockSmashMemberSha1 = sha1hex(rockSmashBytes)
+  dependencies.headbuttMemberSha1 = sha1hex(headbuttBytes)
   local environment = transitionEnvironment(map)
   local field = {
     schema = FieldMapDataCache.FIELD_SCHEMA,
@@ -599,6 +597,11 @@ local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
     -- selection. Runtime code never mistakes its map identity for the
     -- table member; it reads this field.
     wildEncounterMemberId = encounterMemberFor(map),
+    -- The map's Rock Smash item odds with its resolved 8-item table and its
+    -- Headbutt tree groups and weighted slots, decoded from the map's own
+    -- source members.
+    rockSmash = rockSmash,
+    headbutt = headbutt,
     soundplates = soundplates,
     -- The normalized renderer environment (lighting, edge colors, base
     -- weather, base fog) so logical maps stay drawable without a visual

@@ -1227,7 +1227,7 @@ T["opcodes 295 and 296 lower to award and count"] = function()
   Assert.equal(#lowered.unsupported, 0)
 end
 
-T["opcode 596 reads live partner state while 600 stays deferred"] = function()
+T["opcode 596 reads live partner state and 600 recalls the follower"] = function()
   local bytes = ScriptFixture.member({
     scripts = {
       {
@@ -1241,7 +1241,7 @@ T["opcode 596 reads live partner state while 600 stays deferred"] = function()
     },
   })
   Assert.equal(CommandCatalog.classification(596), CommandCatalog.CONTINUE)
-  Assert.equal(CommandCatalog.classification(600), CommandCatalog.UNSUPPORTED)
+  Assert.equal(CommandCatalog.classification(600), CommandCatalog.CONTINUE)
   local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
   local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
   Assert.deepEqual(lowered.items[1], {
@@ -1249,9 +1249,8 @@ T["opcode 596 reads live partner state while 600 stays deferred"] = function()
     result = { value = "var", id = "VAR_SPECIAL_x8008" },
     provenance = { offsets = { 32 }, opcodes = { 596 } },
   })
-  Assert.equal(#lowered.unsupported, 1)
-  Assert.equal(lowered.unsupported[1].command, 600)
-  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_600")
+  Assert.equal(#lowered.unsupported, 0)
+  Assert.equal(lowered.items[2].op, "follower_recall_to_player")
 end
 
 -- Opcode 582 (the source special-spawn setter) must lower to a named
@@ -1521,7 +1520,7 @@ end
 -- Opcode 400 (StrengthFlagAction) has no slot operand and no place in the
 -- explicit shape, so it stays an explicit unsupported node rather than
 -- succeeding silently or becoming a stop.
-T["strength flag action stays explicitly unsupported"] = function()
+T["strength flag action lowers to the strength permission flag"] = function()
   local bytes = ScriptFixture.member({
     scripts = {
       {
@@ -1535,8 +1534,9 @@ T["strength flag action stays explicitly unsupported"] = function()
   })
   local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
   local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
-  Assert.equal(#lowered.unsupported, 1)
-  Assert.equal(lowered.unsupported[1].command, 400)
+  Assert.equal(#lowered.unsupported, 0)
+  Assert.equal(lowered.items[1].op, "set_flag")
+  Assert.equal(lowered.items[1].flag, "FLAG_STRENGTH_ACTIVE")
 end
 
 -- a label on the branch keeps both instructions separate and enterable: the

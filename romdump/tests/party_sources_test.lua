@@ -336,6 +336,23 @@ function T.message_templates_select_the_full_bag_message()
   Assert.equal(template.index, 84, "the full-bag message is the dedicated source message")
 end
 
+-- Party-menu field-move refusal messages (PartyMenuContextMenuAction_FieldMoveCommon).
+function T.message_templates_select_the_field_move_refusal_messages()
+  local expected = {
+    fieldMoveNotHere = 101,
+    fieldMoveNeedBadge = 77,
+    fieldMoveHaveFollower = 180,
+    fieldMoveAlreadySurfing = 100,
+    fieldMoveNotNow = 181,
+  }
+  for key, index in pairs(expected) do
+    local template = PartySources.messages.templates[key]
+    Assert.notNil(template, key)
+    Assert.equal(template.bank, 300, key)
+    Assert.equal(template.index, index, key)
+  end
+end
+
 function T.lower_message_role_selects_the_loaded_font_palette()
   local role = PartySources.messageRole
   Assert.notNil(role, "the producer selects the lower-message font palette")

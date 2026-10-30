@@ -12,6 +12,7 @@ local FieldAudio = {}
 ---@field fieldPosition fun(): integer, integer
 ---@field dayNight fun(): "day"|"night"
 ---@field fieldDataForMap fun(mapIdOrSymbol: integer|string): unknown
+---@field traversal (fun(): string)? the avatar's durable traversal mode, read for traversal music
 ---@field outputHost table<string, unknown>|nil
 ---@field assetPreparation table<string, unknown>? shared background preparation queue for predicted sample payloads
 
@@ -39,6 +40,7 @@ function FieldAudio.compose(opts)
       fieldPosition = opts.fieldPosition,
       dayNight = opts.dayNight,
       fieldDataForMap = opts.fieldDataForMap,
+      traversal = opts.traversal,
     },
   })
   return { service = assert(core.fieldService), sink = core.sink }

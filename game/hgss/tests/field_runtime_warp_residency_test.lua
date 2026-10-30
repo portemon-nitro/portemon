@@ -187,6 +187,7 @@ local function fixture(options)
       updateFixed = function() end,
       beginMapEntry = function() end,
     },
+    scentTint = { updateSourceFrame = function() end },
     screenFade = {
       isOpaque = function()
         return true

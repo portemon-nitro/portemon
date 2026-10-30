@@ -82,7 +82,7 @@ function T.generic_healing_never_touches_travel_facts()
     FieldTravelState.DEFAULT_LAST_HEAL_SPAWN,
     "generic healing must not rewrite respawn history"
   )
-  Assert.isNil(travel:capture().escapeEntrance, "generic healing must not invent entrances")
+  Assert.isNil(travel:capture().specialSpawn, "generic healing must not invent a special spawn")
 end
 
 return { tests = T }

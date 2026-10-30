@@ -3,8 +3,8 @@
 -- menu-origin requests after deciding eligibility, takePending transfers the
 -- single copy to the task exactly once, plan builds the closed executable
 -- plan union, advance steps acknowledgement then commits once, and cancel
--- releases motion plus the active marker idempotently. Strength arming is
--- transient map-lifetime state cleared only by an explicit reset. Pure
+-- releases motion plus the active marker idempotently. Strength permission is
+-- the world's FLAG_STRENGTH_ACTIVE, cleared only by an explicit reset. Pure
 -- domain module: no love dependency.
 
 local FieldMoveRuntime = {}
@@ -16,7 +16,6 @@ FieldMoveRuntime.__index = FieldMoveRuntime
 ---@field private _pending table<string, unknown>?
 ---@field private _activeRequest table<string, unknown>?
 ---@field private _activePlan table<string, unknown>?
----@field private _strengthArmed boolean
 ---@field new fun(opts: { policy: table<string, unknown>, world: table<string, unknown> }): FieldMoveRuntime
 ---@field isBusy fun(self: FieldMoveRuntime): boolean
 ---@field queue fun(self: FieldMoveRuntime, request: table<string, unknown>): table<string, unknown>
@@ -28,10 +27,12 @@ FieldMoveRuntime.__index = FieldMoveRuntime
 ---@field clearTransient fun(self: FieldMoveRuntime)
 ---@field dispose fun(self: FieldMoveRuntime)
 ---@field requestDisembark fun(self: FieldMoveRuntime): table<string, unknown>
+---@field requestWaterfallDescent fun(self: FieldMoveRuntime): table<string, unknown>
 ---@field tryStrengthPush fun(self: FieldMoveRuntime, snapshot: table<string, unknown>): table<string, unknown>
 ---@field confirmFlyDestination fun(self: FieldMoveRuntime, plan: table<string, unknown>, terminal: table<string, unknown>, livePartyRevision: integer?): table<string, unknown>
 
 local Errors = require("libs.errors.src.Errors")
+local FieldWarpSequence = require("libs.hgss.src.field.FieldWarpSequence")
 
 -- Bounded native field-use acknowledgement before a committed effect, in
 -- fixed ticks on the existing cadence. This is an intentional project
@@ -39,12 +40,12 @@ local Errors = require("libs.errors.src.Errors")
 FieldMoveRuntime.ACKNOWLEDGE_TICKS = 8
 
 local CUT = "cut"
-local SMASH = "smash"
 local ENABLE_STRENGTH = "enable_strength"
 local PUSH_STRENGTH = "push_strength"
 local FLASH = "flash"
 local DIG = "dig"
 local TELEPORT = "teleport"
+local ESCAPE_ROPE = "escape_rope"
 local SURF_ENTER = "surf_enter"
 local DISEMBARK = "disembark"
 local WATERFALL = "waterfall"
@@ -66,14 +67,28 @@ local POLICY_MOVES = {
   headbutt = true,
   sweet_scent = true,
   chatter = true,
-  defog = true,
-  escape_rope = true,
 }
 
+-- Rock Smash, Headbutt, and Sweet Scent run their own scripts after this
+-- queue vets eligibility: the retail menu scripts (cues, effect, aftermath)
+-- and the runtime Sweet Scent script own the whole move, consuming
+-- FieldMoveAftermath, FieldMoveCue, and SweetScentTask. The plan path below
+-- reports them as script-owned instead of executing them here.
+-- Chatter eligibility is fully implemented and matches FieldMove_CheckChatter
+-- (the policy always answers ok), while field use stays feature_unavailable
+-- chatter_recording_deferred until a voice-recording application owner exists.
 local EXPLICIT_DEFERRED = {
-  headbutt = "headbutt_encounters_deferred",
-  sweet_scent = "sweet_scent_encounters_deferred",
   chatter = "chatter_recording_deferred",
+}
+
+-- Moves whose execution lives in scripts, not in runtime plans. Queue still
+-- vets their eligibility; plan only names the script owner. Sweet Scent
+-- weather refusal stays in execution (SweetScentTask, per honey_sweet_scent.c),
+-- never in the eligibility policy.
+local SCRIPT_OWNED = {
+  rock_smash = "rock_smash_script_owned",
+  headbutt = "headbutt_script_owned",
+  sweet_scent = "sweet_scent_script_owned",
 }
 
 local TRAVERSAL_MOVES = {
@@ -120,7 +135,12 @@ local function checkShape(self)
     isRecord(self._policy) and type(self._policy.check) == "function",
     "field runtime requires the eligibility policy"
   )
-  assert(isRecord(self._world), "field runtime requires the world adapter")
+  assert(
+    isRecord(self._world)
+      and type(self._world.isStrengthActive) == "function"
+      and type(self._world.clearStrength) == "function",
+    "field runtime requires the world adapter"
+  )
 end
 
 ---@param opts { policy: table<string, unknown>, world: table<string, unknown> }
@@ -133,7 +153,6 @@ function FieldMoveRuntime.new(opts)
     _pending = nil,
     _activeRequest = nil,
     _activePlan = nil,
-    _strengthArmed = false,
   }, FieldMoveRuntime)
   checkShape(runtime)
   return runtime
@@ -171,7 +190,10 @@ function FieldMoveRuntime:queue(request)
     return { kind = "busy" }
   end
   local move = request.move
-  if move ~= PUSH_STRENGTH then
+  if move == "strength" and request.context ~= nil and self._world:isStrengthActive() then
+    return { kind = "already_active" }
+  end
+  if move ~= PUSH_STRENGTH and move ~= ESCAPE_ROPE then
     assertSlot(request.slot, move)
   end
   if request.partyRevision ~= nil then
@@ -179,6 +201,13 @@ function FieldMoveRuntime:queue(request)
       type(request.partyRevision) == "number" and request.partyRevision % 1 == 0,
       "field request revision must be an integer"
     )
+  end
+  if move == ESCAPE_ROPE then
+    local decision = self._policy.checkEscapeRope(assert(request.context, "escape rope admission needs its context"))
+    assert(isRecord(decision) and type(decision.kind) == "string", "policy must return a decision record")
+    if decision.kind ~= "ok" then
+      return decision
+    end
   end
   if move ~= PUSH_STRENGTH and POLICY_MOVES[move] and request.context ~= nil then
     local context = request.context
@@ -268,7 +297,7 @@ local function buildFlyPlan(self, request)
     mapContext = copyValue(mapContext),
     destinations = permitted,
     phase = "choose_destination",
-    ticksLeft = FieldMoveRuntime.ACKNOWLEDGE_TICKS,
+    sequence = FieldWarpSequence.new("fly"),
     committed = false,
     warpStarted = false,
     choice = nil,
@@ -288,7 +317,8 @@ local function buildReturnPlan(self, request, move)
     return { kind = "not_now" }
   end
   local context = assert(request.context, move .. " planning requires its context")
-  local destination = self._world:planReturn(move, context, travel)
+  -- The Escape Rope item returns to the Dig special spawn.
+  local destination = self._world:planReturn(move == ESCAPE_ROPE and DIG or move, context, travel)
   assert(isRecord(destination), "return resolution answers a record")
   if type(destination.kind) == "string" then
     return destination
@@ -296,12 +326,12 @@ local function buildReturnPlan(self, request, move)
   return {
     kind = move,
     move = move,
-    slot = assertSlot(request.slot, move),
+    slot = move ~= ESCAPE_ROPE and assertSlot(request.slot, move) or nil,
     partyRevision = request.partyRevision,
     mapId = assert(context.mapId, "return plans carry their source map"),
     destination = destination,
-    phase = "acknowledge",
-    ticksLeft = FieldMoveRuntime.ACKNOWLEDGE_TICKS,
+    phase = "depart",
+    sequence = FieldWarpSequence.new(move),
     committed = false,
     warpStarted = false,
   }
@@ -328,6 +358,11 @@ end
 local function buildPlan(self, request)
   assert(isRecord(request), "field planning requires a request record")
   local move = assert(request.move, "field planning requires a move key")
+  -- Source script 0146_002 refuses a second enablement before any other
+  -- check, for menu and explicit requests alike.
+  if move == "strength" and self._world:isStrengthActive() then
+    return { kind = "already_active" }
+  end
   if move == "fly" then
     return buildFlyPlan(self, request)
   end
@@ -337,19 +372,17 @@ local function buildPlan(self, request)
       return decision
     end
   end
-  if move == DIG or move == TELEPORT then
+  if move == DIG or move == TELEPORT or move == ESCAPE_ROPE then
     return buildReturnPlan(self, request, move)
   end
-  if move == CUT or move == "rock_smash" then
-    local context = assert(request.context, move .. " planning requires its context")
-    local kind = move == CUT and CUT or SMASH
-    local want = move == CUT and "cut_tree" or "smash_rock"
-    local target = planTarget(context, kind)
-    if target.obstacleKind ~= want then
+  if move == CUT then
+    local context = assert(request.context, "cut planning requires its context")
+    local target = planTarget(context, CUT)
+    if target.obstacleKind ~= "cut_tree" then
       return { kind = "not_here" }
     end
     return {
-      kind = kind,
+      kind = CUT,
       move = move,
       slot = assertSlot(request.slot, move),
       partyRevision = request.partyRevision,
@@ -396,14 +429,13 @@ local function buildPlan(self, request)
   end
   if move == FLASH then
     local context = assert(request.context, "flash planning requires its context")
-    local fieldUse = assert(context.fieldUse, "flash planning requires the map policy")
     return {
       kind = FLASH,
       move = move,
       slot = assertSlot(request.slot, move),
       partyRevision = request.partyRevision,
       mapId = context.mapId,
-      alphChamber = fieldUse.alphChamber == true,
+      alphChamber = context.alphFlashSpot == true,
       phase = "acknowledge",
       ticksLeft = FieldMoveRuntime.ACKNOWLEDGE_TICKS,
       committed = false,
@@ -414,7 +446,7 @@ local function buildPlan(self, request)
     -- through the world adapter. Menu requests re-check eligibility above
     -- when they carry a context; explicit script-origin requests plan from
     -- live world state like the other executable moves.
-    local traversal = self._world:planTraversal({ move = move }, request.context)
+    local traversal = self._world:planTraversal({ move = move, auto = request.auto }, request.context)
     assert(isRecord(traversal) and type(traversal.kind) == "string", "traversal planning must decide")
     if not TRAVERSAL_PLANS[traversal.kind] then
       return traversal
@@ -428,10 +460,13 @@ local function buildPlan(self, request)
       sourceIdentity = traversal.sourceIdentity,
       segmentIndex = 0,
       motionActive = false,
+      effect = traversal.effect,
+      preTicks = traversal.preTicks,
+      postTicks = traversal.postTicks,
       phase = "traverse",
       committed = false,
     }
-    if move ~= "disembark" then
+    if move ~= "disembark" and not request.auto then
       plan.slot = assertSlot(request.slot, move)
     end
     return plan
@@ -439,6 +474,10 @@ local function buildPlan(self, request)
   local deferred = EXPLICIT_DEFERRED[move]
   if deferred then
     return { kind = "feature_unavailable", reason = deferred }
+  end
+  local scriptOwned = SCRIPT_OWNED[move]
+  if scriptOwned then
+    return { kind = "feature_unavailable", reason = scriptOwned }
   end
   if POLICY_MOVES[move] then
     return { kind = "feature_unavailable", reason = "move_execution_deferred" }
@@ -456,6 +495,8 @@ local PLAN_PHASES = {
   step = true,
   traverse = true,
   warp = true,
+  depart = true,
+  arrive = true,
 }
 
 -- Plan and register the live plan: the built plan table identifies the
@@ -505,7 +546,7 @@ function FieldMoveRuntime:advance(plan)
     return { kind = "done" }
   end
   local kind = plan.kind
-  if kind == CUT or kind == SMASH or kind == FLASH or kind == ENABLE_STRENGTH then
+  if kind == CUT or kind == FLASH or kind == ENABLE_STRENGTH then
     if plan.phase == "acknowledge" then
       plan.ticksLeft = (plan.ticksLeft or 0) - 1
       if plan.ticksLeft > 0 then
@@ -515,7 +556,6 @@ function FieldMoveRuntime:advance(plan)
     end
     if kind == ENABLE_STRENGTH then
       self._world:activateStrength(plan)
-      self._strengthArmed = true
     elseif kind == FLASH then
       local stale = self._world:validateTarget(plan)
       if stale ~= nil then
@@ -578,29 +618,25 @@ function FieldMoveRuntime:advance(plan)
     -- confirmation.
     return { kind = "running" }
   end
-  if kind == DIG or kind == TELEPORT or kind == "fly" then
-    -- Acknowledge on the shared cadence, then start the warp exactly
-    -- once and observe it to completion. A failed start or a failed warp
-    -- faults the plan with the service error; the world and travel state
-    -- stay exactly as the failure left them, and settling releases the
-    -- runtime so nothing replays. Fly resolves its confirmed semantic
-    -- choice through the world handoff after revalidating the source map.
-    if plan.phase == "acknowledge" then
-      plan.ticksLeft = (plan.ticksLeft or 0) - 1
-      if plan.ticksLeft > 0 then
-        return { kind = "running" }
-      end
-      if kind == "fly" then
-        plan.phase = "travel"
-      else
-        plan.phase = "warp"
-      end
+  if kind == DIG or kind == TELEPORT or kind == ESCAPE_ROPE or kind == "fly" then
+    -- Warping moves run the source field animation (FieldWarpSequence)
+    -- through the world adapter: departure to the colored cover, then the
+    -- map warp started exactly once and observed to completion, then the
+    -- arrival. A failed start or warp faults the plan with the service
+    -- error after releasing the animation; the world and travel state stay
+    -- exactly as the failure left them, and settling releases the runtime
+    -- so nothing replays. Fly resolves its confirmed semantic choice
+    -- through the world handoff after revalidating the source map, before
+    -- anything animates.
+    local function fail(err)
+      self._world:cancelMotion(plan)
+      settle(self, plan)
+      return { kind = "failed", error = err }
     end
-    if kind == "fly" and plan.warpStarted ~= true then
+    if kind == "fly" and plan.destination == nil then
       local mapDecision = self._world:validateTarget(plan)
       if mapDecision ~= nil then
-        settle(self, plan)
-        return { kind = "failed", error = mapDecision }
+        return fail(mapDecision)
       end
       local resolved, destination = pcall(function()
         return self._world:planFly(
@@ -610,45 +646,54 @@ function FieldMoveRuntime:advance(plan)
       end)
       if not resolved then
         if Errors.is(destination) then
-          settle(self, plan)
-          return { kind = "failed", error = destination }
+          return fail(destination)
         end
         error(destination, 0)
       end
       assert(isRecord(destination), "fly resolution answers a record")
       if type(destination.kind) == "string" then
-        settle(self, plan)
-        return { kind = "failed", error = destination }
+        return fail(destination)
       end
       plan.destination = destination
     end
-    if not plan.warpStarted then
-      local started, startErr = pcall(function()
-        self._world:beginReturnWarp(plan)
-      end)
-      if not started then
-        if Errors.is(startErr) then
-          settle(self, plan)
-          return { kind = "failed", error = startErr }
-        end
-        error(startErr, 0)
+    if plan.phase == "depart" then
+      if self._world:stepWarpDeparture(plan) == "running" then
+        return { kind = "running" }
       end
-      return { kind = "running" }
+      plan.phase = "warp"
     end
-    if self._world:returnWarpDone(plan) then
+    if plan.phase == "warp" then
+      if not plan.warpStarted then
+        local started, startErr = pcall(function()
+          self._world:beginReturnWarp(plan)
+        end)
+        if not started then
+          if Errors.is(startErr) then
+            return fail(startErr)
+          end
+          error(startErr, 0)
+        end
+        return { kind = "running" }
+      end
+      if not self._world:returnWarpDone(plan) then
+        return { kind = "running" }
+      end
       local warpError = self._world:returnWarpError(plan)
       if warpError ~= nil then
-        settle(self, plan)
-        return { kind = "failed", error = warpError }
+        return fail(warpError)
       end
-      plan.committed = true
-      if kind == "fly" then
-        plan.phase = "complete"
-      end
-      settle(self, plan)
-      return { kind = "done" }
+      self._world:settleWarp(plan)
+      plan.phase = "arrive"
     end
-    return { kind = "running" }
+    if self._world:stepWarpArrival(plan) == "running" then
+      return { kind = "running" }
+    end
+    plan.committed = true
+    if kind == "fly" then
+      plan.phase = "complete"
+    end
+    settle(self, plan)
+    return { kind = "done" }
   end
   if TRAVERSAL_PLANS[kind] then
     -- One committed segment per advance: begin only from idle after
@@ -657,8 +702,26 @@ function FieldMoveRuntime:advance(plan)
     -- segment committed; cancellation restores the last committed tile
     -- through the existing motion owner with no mode rollback.
     if not plan.motionActive then
+      if plan.segmentIndex == 0 then
+        -- Surf mounts around two waits: the avatar turns to surfing between
+        -- them, before the hop.
+        if (plan.preTicks or 0) > 0 then
+          plan.preTicks = plan.preTicks - 1
+          return { kind = "running" }
+        end
+        if kind == SURF_ENTER and not plan.modeApplied then
+          self._world:commitTraversalMode(plan)
+          plan.modeApplied = true
+        end
+        if (plan.postTicks or 0) > 0 then
+          plan.postTicks = plan.postTicks - 1
+          return { kind = "running" }
+        end
+      end
       if plan.segmentIndex >= #plan.segments then
-        self._world:commitTraversalMode(plan)
+        if not plan.modeApplied then
+          self._world:commitTraversalMode(plan)
+        end
         plan.committed = true
         settle(self, plan)
         return { kind = "done" }
@@ -743,15 +806,14 @@ function FieldMoveRuntime:confirmFlyDestination(plan, terminal, livePartyRevisio
     return abandon({ kind = "stale", reason = "party_changed" })
   end
   plan.choice = key
-  plan.phase = "acknowledge"
-  plan.ticksLeft = FieldMoveRuntime.ACKNOWLEDGE_TICKS
+  plan.phase = "depart"
   return { kind = "confirmed" }
 end
 
--- Clear transient map-lifetime strength permission. Called on the source
+-- Clear the map-lifetime strength permission flag. Called on the source
 -- full-map reset by the composition; nothing else disarms.
 function FieldMoveRuntime:clearTransient()
-  self._strengthArmed = false
+  self._world:clearStrength()
 end
 
 -- Final idempotent backstop for the owning composition: drop a
@@ -788,6 +850,26 @@ function FieldMoveRuntime:requestDisembark()
   return { kind = "accepted" }
 end
 
+-- Session descent port: a surfing step south into a fall runs the
+-- unannounced Waterfall when any party mon knows it (source checks no badge).
+-- Expected refusals return Decisions for the session's normal fallthrough.
+---@return table<string, unknown> { kind = "accepted" } or Decision
+function FieldMoveRuntime:requestWaterfallDescent()
+  if self:isBusy() then
+    return { kind = "busy" }
+  end
+  if not self._world:partyKnowsWaterfall() then
+    return { kind = "not_here", reason = "no_waterfall_user" }
+  end
+  local request = { move = WATERFALL, auto = true }
+  local plan = self:plan(request)
+  if plan.kind ~= WATERFALL then
+    return plan
+  end
+  self._pending = copyValue(request)
+  return { kind = "accepted" }
+end
+
 -- Session push port: validate an armed walked-into boulder step and queue
 -- the single push operation. Expected refusals return Decisions for the
 -- session's normal bump fallthrough; program errors raise.
@@ -795,7 +877,7 @@ end
 ---@return table<string, unknown> { kind = "accepted" } or Decision
 function FieldMoveRuntime:tryStrengthPush(snapshot)
   assert(isRecord(snapshot), "push attempts require a snapshot")
-  if not self._strengthArmed then
+  if not self._world:isStrengthActive() then
     return { kind = "not_here", reason = "strength_not_enabled" }
   end
   if self:isBusy() then

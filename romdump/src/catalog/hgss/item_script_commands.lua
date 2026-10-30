@@ -66,7 +66,6 @@ local commands = {
   { opcode = 739, category = "apricorn" },
   { opcode = 567, category = "prize" },
   { opcode = 651, category = "prize" },
-  { opcode = 753, category = "field_item_check" },
 }
 
 local byOpcode = {}

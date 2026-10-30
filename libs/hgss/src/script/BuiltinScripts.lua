@@ -15,6 +15,34 @@ local BuiltinScripts = {}
 -- scripts and no temporary global variables.
 BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT = "runtime.field_move_entry"
 
+-- The runtime-owned Sweet Scent script (a field task in the source, with no
+-- script of its own): the scent task, then a wild battle for a prepared
+-- encounter or the faded-weather / nothing-happened standard message.
+BuiltinScripts.SWEET_SCENT_SCRIPT = "runtime.sweet_scent"
+
+-- The standard scripts the source queues after the scent task: 2018 says
+-- nothing happened, 2019 says the scent faded.
+local NOTHING_HAPPENED_SCRIPT = "common.honey_sweet_scent_nothing_happened"
+local SCENT_FADED_SCRIPT = "common.honey_sweet_scent_faded"
+
+local function sweetScentSteps()
+  local outcome = S.local_("outcome")
+  return {
+    S.sweetScent({ result = outcome }),
+    S.if_({
+      condition = S.eq(outcome, 2),
+      yes = { S.battleLaunch({ kind = "wild" }) },
+      no = {
+        S.if_({
+          condition = S.eq(outcome, 1),
+          yes = { S.callCommon({ target = SCENT_FADED_SCRIPT }) },
+          no = { S.callCommon({ target = NOTHING_HAPPENED_SCRIPT }) },
+        }),
+      },
+    }),
+  }
+end
+
 ---@return table<string, table<string, unknown>>
 function BuiltinScripts.all()
   return {
@@ -27,6 +55,12 @@ function BuiltinScripts.all()
       api = 1,
       id = BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT,
       steps = { S.fieldMove({ source = "pending" }) },
+    }),
+    [BuiltinScripts.SWEET_SCENT_SCRIPT] = S.script({
+      api = 1,
+      id = BuiltinScripts.SWEET_SCENT_SCRIPT,
+      locals = { outcome = "integer" },
+      steps = sweetScentSteps(),
     }),
   }
 end

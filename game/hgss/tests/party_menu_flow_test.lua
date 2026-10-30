@@ -934,6 +934,49 @@ function T.tests.terminal_field_action_emits_typed_output(context)
   end
 end
 
+function T.tests.bag_escape_rope_use_checks_the_item_rule_then_hands_the_field_a_slotless_move(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "bag")
+    local checked = {}
+    local answer = { kind = "not_here" }
+    rig.flow._fieldMoves = {
+      check = function(request)
+        checked[#checked + 1] = request
+        return answer
+      end,
+    }
+    local bagRevision = rig.bag:revision()
+    rig.flow:_routeBagIntent({ kind = "use", item = "ESCAPE_ROPE", bagRevision = bagRevision })
+    Assert.equal(checked[1].move, "escape_rope", "the item check asks the Escape Rope rule")
+    Assert.equal(rig.flow:status().page, "bag_browse", "a refusal holds the Bag")
+    Assert.isNil(rig.flow:status().transition, "a refusal never starts the app exit")
+    Assert.equal(rig.bag:revision(), bagRevision, "a refusal consumes nothing")
+    answer = { kind = "ok" }
+    rig.flow:_routeBagIntent({ kind = "use", item = "ESCAPE_ROPE", bagRevision = bagRevision })
+    Assert.equal(rig.flow:status().transition.phase, "app_exit", "an allowed use leaves for the field")
+    local result
+    for _ = 1, 8 do
+      rig.flow:updateFixed({})
+      result = rig.flow:takeResult()
+      if result ~= nil then
+        break
+      end
+    end
+    Assert.equal(result.kind, "field_action")
+    Assert.equal(result.request.move, "escape_rope")
+    Assert.isNil(result.request.slot, "the item names no move user")
+    Assert.equal(rig.bag:revision(), bagRevision, "the field consumes the rope at admission, not the flow")
+    rig.flow:dispose()
+  end
+end
+
 function T.tests.root_close_reports_close_and_releases_once(context)
   local versions = readyVersions()
   if #versions == 0 then

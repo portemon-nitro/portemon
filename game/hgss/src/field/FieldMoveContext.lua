@@ -8,6 +8,7 @@ local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 
 local FieldMoveContext = {}
 
+local CARDINALS = { north = true, south = true, east = true, west = true }
 local AVATAR_MODES = { walking = true, cycling = true, surfing = true, rocket = true }
 
 local function isMask(value)
@@ -24,6 +25,12 @@ local function isBool(value)
   return type(value) == "boolean"
 end
 
+-- The Alph first-room exceptions need the fixed tile (6, 3) facing north
+-- (CheckUseFlashInAlphChamber / CheckUseEscapeRopeInAlphChamber).
+local function alphSpot(inRoom, sources)
+  return inRoom and sources.localX == 6 and sources.localZ == 3 and sources.facing == "north"
+end
+
 ---@param sources table<string, unknown> live service reads (badges, map, fieldUse, avatar, flags, tiles, actor)
 ---@return table<string, unknown> the copied read-only context record
 function FieldMoveContext.capture(sources)
@@ -36,6 +43,8 @@ function FieldMoveContext.capture(sources)
   )
   assert(FieldMapDataCache.hasFieldUsePolicy(sources.fieldUse), "field context requires the generated field-use policy")
   assert(AVATAR_MODES[sources.avatarMode], "field context avatar mode is invalid")
+  assert(type(sources.localX) == "number" and type(sources.localZ) == "number", "field context needs the player tile")
+  assert(CARDINALS[sources.facing], "field context needs a cardinal facing")
   for _, key in ipairs({ "humanFollower", "followingMon", "rocketCostume", "safari", "palPark" }) do
     assert(isBool(sources[key]), "field context flag " .. key .. " must be a boolean")
   end
@@ -45,8 +54,6 @@ function FieldMoveContext.capture(sources)
     "facingWhirlpool",
     "climbTile",
     "headbuttTree",
-    "foggy",
-    "chatterOpen",
   }) do
     assert(isBool(sources[key]), "field context tile " .. key .. " must be a boolean")
   end
@@ -56,8 +63,8 @@ function FieldMoveContext.capture(sources)
     "flyAllowed",
     "teleportAllowed",
     "escapeAllowed",
-    "flashUsable",
-    "alphChamber",
+    "alphFlashRoom",
+    "alphEscapeRopeRoom",
     "icePathB2F",
     "cave",
     "unionOrColosseum",
@@ -98,8 +105,8 @@ function FieldMoveContext.capture(sources)
     facingWhirlpool = sources.facingWhirlpool,
     climbTile = sources.climbTile,
     headbuttTree = sources.headbuttTree,
-    foggy = sources.foggy,
-    chatterOpen = sources.chatterOpen,
+    alphFlashSpot = alphSpot(use.alphFlashRoom, sources),
+    alphEscapeRopeSpot = alphSpot(use.alphEscapeRopeRoom, sources),
     fieldUse = use,
   }
 end

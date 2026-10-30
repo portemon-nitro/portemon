@@ -148,7 +148,6 @@ local FAMILY = {
 -- core follower entries flipped to supported with their blocking
 -- applications.
 local LATER_OWNED = {
-  [600] = "following_mon",
   [727] = "following_mon",
   [783] = "following_mon",
 }
@@ -207,6 +206,7 @@ end
 
 function T.interaction_and_shiny_leaf_commands_are_supported_with_source_timing()
   local cases = {
+    [600] = { feature = "following_mon", classification = "continue_same_tick", widths = {} },
     [606] = { feature = "following_mon", classification = "continue_same_tick", widths = {} },
     [711] = { feature = "following_mon", classification = "native_wait", widths = {} },
     [825] = { feature = "mons", classification = "continue_same_tick", widths = { 2, 2 } },

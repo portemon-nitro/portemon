@@ -253,7 +253,9 @@ DerivedAssetContract.fieldMapData = {
   -- table member backing committed-step encounter selection so the runtime
   -- resolves the map's own table.
   -- v14 carries semantic Apricorn tree identity and normalized ripe sprites.
-  fieldSchema = "g4-field-map-v14",
+  -- v15 carries the per-map Rock Smash odds with its resolved item table and
+  -- the per-map Headbutt tree groups and weighted slot tables.
+  fieldSchema = "g4-field-map-v15",
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.
@@ -353,6 +355,15 @@ DerivedAssetContract.fieldUi = {
 DerivedAssetContract.fieldEntry = {
   cacheFormat = "field-entry-cache-v1",
   schema = "g4-field-entry-v1",
+}
+
+-- The field-move cut-in banner family carries the single BG3 banner surface
+-- of the move cut-in (one 256x256 PNG per game version) with the hardware
+-- palette slot its composition was built against. It stages apart from the
+-- map and field families, so the banner producer runs and rebuilds alone.
+DerivedAssetContract.fieldMoveCutInBanner = {
+  cacheFormat = "field-move-cut-in-banner-cache-v1",
+  schema = "g4-field-move-cut-in-banner-v1",
 }
 
 DerivedAssetContract.intro = {

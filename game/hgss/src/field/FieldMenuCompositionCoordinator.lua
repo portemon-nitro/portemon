@@ -435,11 +435,12 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
     transition = assert(runtime.transition, "menu-origin returns require the live transition"),
     loader = assert(runtime.mapLoader, "menu-origin returns require the map loader"),
     sourceMap = assert(runtime.runtimeMap, "menu-origin returns require the active map"),
+    screen = assert(runtime.screenFade, "menu-origin returns cover the swap with the screen fade"),
   })
   runtime.menuLaneWarps = lane
   -- The warp port always serves the live map: the lane instance keeps
   -- no stale source across map swaps because every call re-reads it
-  -- first. Ordinary fade lifecycle, never script-authored cover.
+  -- first. The move's own fade is the cover the swap waits for.
   local function startLaneWarp(_, target)
     lane:setSourceMap(assert(runtime.runtimeMap, "menu-origin returns require the active map"))
     return lane:startWarp(target)
@@ -477,6 +478,9 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
   local function readRuntimeMap()
     return assert(runtime.runtimeMap, "field context needs the active map")
   end
+  local function readLiveCamera()
+    return assert(runtime.camera, "field move zooms need the live camera")
+  end
   local worldPorts = {
     actors = assert(runtime.actors, "the menu composition requires the actor manager"),
     events = assert(runtime.eventState, "the menu composition requires the event state"),
@@ -496,6 +500,10 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
       dispatch = dispatchFlashReaction,
     },
     warps = warps,
+    -- The swap replaces the camera, so warp zooms read the live one.
+    camera = readLiveCamera,
+    screen = assert(runtime.screenFade, "field move covers need the screen fade"),
+    travel = assert(runtime.fieldTravel, "field moves record special spawns on the travel owner"),
   }
   -- The icon preparation binding belongs to the presentation lifetime
   -- and may postdate this composition: the closures resolve it per
@@ -524,6 +532,11 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
     if runtime.audio then
       runtime.audio:playCry(species, pattern, form)
     end
+  end
+  -- The lead cry of a field move plays and is awaited through the same
+  -- borrowed audio service; a host without audio stays silent.
+  local function isFieldCryFinished()
+    return runtime.audio == nil or runtime.audio:isCryFinished()
   end
   local bagTextPolicy = TextSpeedPolicy.forSpeed(
     assert(runtime.playerData and runtime.playerData.options and runtime.playerData.options.textSpeed)
@@ -567,6 +580,7 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
   runtime.partyMenu = PartyMenuComposition.create({
     effect = playBagSequence,
     playCry = playSummaryCry,
+    isCryFinished = isFieldCryFinished,
     textPolicy = bagTextPolicy,
     summaryManifest = summaryManifest,
     summaryContext = summaryContextProvider(runtime, summaryManifest),
@@ -615,28 +629,34 @@ end
 ---@return table<string, unknown>
 function FieldMenuCompositionCoordinator:menuPlayerPort()
   local runtime = self.runtime
-  local player = assert(runtime.player, "the menu composition requires the live player")
+  assert(runtime.player, "the menu composition requires the live player")
   local avatar = assert(runtime.playerAvatar, "the menu composition requires the avatar transition owner")
+  -- A map swap replaces the player: every call reads the live one so a
+  -- field move that outlives its warp keeps driving the arriving avatar.
+  local function live()
+    return assert(runtime.player, "the menu composition requires the live player")
+  end
   local function readPosition(_)
+    local player = live()
     return { fieldX = player.fieldX, fieldZ = player.fieldZ, worldY = player.worldY }
   end
   local function readFacing(_)
-    return player.facing
+    return live().facing
   end
   local function beginPlayerAction(_, action)
-    return player:beginScriptedAction(action)
+    return live():beginScriptedAction(action)
   end
   local function advancePlayerAction(_, progressTicks, durationTicks)
-    return player:advanceScriptedAction(progressTicks, durationTicks)
+    return live():advanceScriptedAction(progressTicks, durationTicks)
   end
   local function commitPlayerAction(_)
-    return player:commitScriptedAction()
+    return live():commitScriptedAction()
   end
   local function cancelPlayerMovement(_)
-    return player:cancelScriptedMovement()
+    return live():cancelScriptedMovement()
   end
   local function playerMoving(_)
-    return player:isScriptedMoving()
+    return live():isScriptedMoving()
   end
   local function queuePlayerTransition(_, name)
     return avatar:queueTransition(name)
@@ -658,11 +678,9 @@ function FieldMenuCompositionCoordinator:menuPlayerPort()
 end
 
 -- Live world reads for one eligibility check: badges, map identity and
--- generated policy, avatar mode, follower state, and facing-tile facts
--- resolved through the live collision and actor owners. States with no
--- owner in this engine (human escorts, costumes, safari/park zones,
--- recording input, weather fog for the out-of-scope Defog check) read
--- as their absent value with the reason beside them.
+-- generated policy, avatar mode, follower state, escort/costume/zone event
+-- flags, and facing-tile facts resolved through the live collision and
+-- actor owners.
 ---@return fun(): table<string, unknown>
 function FieldMenuCompositionCoordinator:menuFieldSources()
   local runtime = self.runtime
@@ -692,6 +710,11 @@ function FieldMenuCompositionCoordinator:menuFieldSources()
     local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, toX, toZ)
     local cell = runtimeMap.collision:getLocal(localX, localZ)
     local behavior = cell and cell.behavior or nil
+    local playerX, playerZ = FieldCoordinates.fieldToLocal(runtimeMap, player.fieldX, player.fieldZ)
+    local standingCell = runtimeMap.collision:getLocal(playerX, playerZ)
+    local standing = standingCell and standingCell.behavior or nil
+    local events = assert(runtime.eventState, "field context needs the event state")
+    local flags = FieldScriptSymbols.flagsByName
     local avatar = assert(runtime.playerAvatar, "field context needs the avatar transition owner")
     local follower = runtime.followingMon
     return {
@@ -701,19 +724,19 @@ function FieldMenuCompositionCoordinator:menuFieldSources()
       fieldUse = fieldData.fieldUse,
       weatherId = runtimeMap.effectiveWeatherId,
       avatarMode = avatar:status().durableState,
-      humanFollower = false,
+      localX = playerX,
+      localZ = playerZ,
+      facing = player.facing,
+      humanFollower = events:isFlagSet(flags.FLAG_HAVE_FOLLOWER),
       followingMon = follower ~= nil and follower:isVisible() == true,
-      rocketCostume = false,
-      safari = false,
-      palPark = false,
-      surfEdge = behavior ~= nil and MetatileBehavior.isSurfableWater(behavior),
+      rocketCostume = events:isFlagSet(flags.FLAG_SYS_ROCKET_COSTUME),
+      safari = events:isFlagSet(flags.FLAG_SYS_SAFARI),
+      palPark = events:isFlagSet(flags.FLAG_SYS_PAL_PARK),
+      surfEdge = MetatileBehavior.canSurfOnto(standing, behavior),
       facingWaterfall = behavior == MetatileBehavior.BEHAVIOR.WATERFALL,
       facingWhirlpool = behavior == MetatileBehavior.BEHAVIOR.WHIRLPOOL,
-      climbTile = behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_NORTH_SOUTH
-        or behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_EAST_WEST,
-      headbuttTree = facingActor ~= nil and facingActor.obstacleKind == "headbutt_tree",
-      foggy = false,
-      chatterOpen = false,
+      climbTile = MetatileBehavior.isRockClimbInDirection(behavior, player.facing),
+      headbuttTree = behavior == MetatileBehavior.BEHAVIOR.HEADBUTT,
       facingActor = facingActor,
     }
   end
@@ -774,6 +797,9 @@ function FieldMenuCompositionCoordinator:composeAudio(cacheFs, restoredAudio)
     local function fieldPosition()
       return runtime.player.fieldX, runtime.player.fieldZ
     end
+    local function readAvatarTraversal()
+      return assert(runtime.playerAvatar, "traversal music needs the avatar owner"):durableState()
+    end
     local function fieldDataForMap(mapIdOrSymbol)
       local mapId = mapIdOrSymbol
       if type(mapIdOrSymbol) == "string" then
@@ -804,6 +830,7 @@ function FieldMenuCompositionCoordinator:composeAudio(cacheFs, restoredAudio)
       fieldPosition = fieldPosition,
       dayNight = runtime.mapMusicDayNight,
       fieldDataForMap = fieldDataForMap,
+      traversal = readAvatarTraversal,
       outputHost = runtime.audioOutput,
       -- The presented field shares its preparation worker with the scene
       -- and image owners; headless runtimes pass no queue and stay on the

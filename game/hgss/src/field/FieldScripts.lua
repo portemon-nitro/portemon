@@ -23,6 +23,7 @@ local HgssScript = require("libs.hgss.src.script.Composition")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MapInitScriptController = require("libs.hgss.src.field.MapInitScriptController")
 local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteractionEngine")
+local FieldMoveCue = require("game.hgss.src.field.FieldMoveCue")
 
 -- The player facade the script services consume: position/facing/gender/name
 -- plus the mutation hooks the movement tasks use (the player can be a
@@ -257,6 +258,8 @@ end
 ---@field mart table<string, unknown>|nil the script-owned mart child host (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field travel table<string, unknown>|nil the durable travel owner for spawn updates (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field fieldMoves table<string, unknown>|nil the field-move runtime for task execution (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field fieldMoveAftermath table<string, unknown>|nil the Rock Smash / Headbutt aftermath service (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field sweetScent table<string, unknown>|nil the Sweet Scent host seam for the scent task (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field monNaming table<string, unknown>|nil the script-owned Pokemon Naming Screen host
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field celebiCinematic table<string, unknown>|nil runtime-owned Celebi scene service used by the time-travel task
@@ -539,6 +542,9 @@ function FieldScripts.new(opts)
       mart = opts.mart,
       travel = opts.travel,
       fieldMoves = opts.fieldMoves,
+      fieldMoveAftermath = opts.fieldMoveAftermath,
+      sweetScent = opts.sweetScent,
+      fieldMoveCue = FieldMoveCue.new(),
       monNaming = opts.monNaming,
       followingMon = opts.followingMon,
       celebiCinematic = opts.celebiCinematic,

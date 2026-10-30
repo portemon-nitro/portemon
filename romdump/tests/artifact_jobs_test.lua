@@ -33,6 +33,7 @@ local CANONICAL_KEYS = {
   ["field-emotes"] = "global",
   ["field-ui"] = "global",
   ["field-entry"] = "global",
+  ["field-move-cut-in-banner"] = "global",
   ["field-font"] = "global",
   ["intro"] = "global",
   ["new-game-init"] = "global",
@@ -165,6 +166,15 @@ function T.battle_presentation_carries_the_shared_effect_sound_banks()
     { { kind = "battle-presentation", key = "global" } },
     "effects reach the shared banks through the global catalog"
   )
+end
+
+function T.field_move_cut_in_banner_runs_as_a_standalone_global_route()
+  local deps, complete = ArtifactJobs.dependencies("field-move-cut-in-banner", "global", {})
+  Assert.isTrue(complete, "the standalone banner route plans without prerequisites")
+  Assert.deepEqual(deps, {}, "the standalone banner route carries no child edges")
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local ready = ArtifactJobs.validate(cache, "route-generation", "field-move-cut-in-banner", "global", {})
+  Assert.isFalse(ready, "an absent banner receipt is a normal cache miss")
 end
 
 function T.unknown_kinds_are_rejected_before_planning()

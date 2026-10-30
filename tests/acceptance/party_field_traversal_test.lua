@@ -182,8 +182,8 @@ local function surfContext(game)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
-    foggy = false,
-    chatterOpen = false,
+    alphFlashSpot = false,
+    alphEscapeRopeSpot = false,
   }
 end
 
@@ -551,8 +551,8 @@ local function rigContext(overrides)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
-    foggy = false,
-    chatterOpen = false,
+    alphFlashSpot = false,
+    alphEscapeRopeSpot = false,
   }
   for key, value in pairs(overrides or {}) do
     context[key] = value
@@ -574,18 +574,17 @@ local function driveToDone(runtime, player, maxTicks)
   error("traversal task did not settle", 2)
 end
 
--- Waterfall column at x=5 (tiles z=3..5) draining south into a pool:
--- approach ledge at z=2 rides high ground, the pool sits at height 0.
+-- Waterfall at x=5 (tile z=3) draining south into a pool: the source task
+-- crosses exactly two tiles. The approach ledge at z=2 rides high ground,
+-- the pool sits at height 0.
 local function waterfallRig()
   local behaviorAt = {}
-  for z = 3, 5 do
-    behaviorAt["5:" .. z] = 19
-  end
-  behaviorAt["5:6"] = 21
+  behaviorAt["5:3"] = 19
+  behaviorAt["5:4"] = 21
   local map = rigMap(behaviorAt, {
     flatPlate(0, 0, 0, 32, 3, 4),
-    flatPlate(1, 0, 3, 32, 6, 2),
-    flatPlate(2, 0, 6, 32, 32, 0),
+    flatPlate(1, 0, 3, 32, 4, 2),
+    flatPlate(2, 0, 4, 32, 32, 0),
   })
   local player = rigPlayer(map, 5, 2, 0)
   player:turn("south")
@@ -611,7 +610,7 @@ function T.tests.waterfall_uses_a_contiguous_validated_path()
   local result = driveToDone(rig.runtime, rig.player)
   Assert.equal(result.kind, "field_move_done", "a valid falls route must run to done")
   Assert.equal(rig.player.fieldX, 5, "falls route must keep its column")
-  Assert.equal(rig.player.fieldZ, 6, "falls route must land on the exact terminal pool tile")
+  Assert.equal(rig.player.fieldZ, 4, "falls route must land on the exact terminal pool tile")
   Assert.equal(rig.player.worldY, 0, "falls landing height must come from terrain, never a constant")
   Assert.equal(rig.avatar:status().durableState, "surfing", "falls travel must stay surfing")
 end
@@ -625,7 +624,7 @@ function T.tests.broken_falls_begin_no_motion_and_guess_no_height()
   -- landing, so planning must refuse before any motion.
   local fallsBehaviors = rig.behaviorAt
   rig.map.collision.getLocal = function(_, x, z)
-    if x == 5 and z == 6 then
+    if x == 5 and z == 4 then
       return { blocked = true }
     end
     return { blocked = false, behavior = fallsBehaviors[x .. ":" .. z] }

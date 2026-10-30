@@ -68,6 +68,7 @@ local PartyMenuComposition = {}
 ---@field overrides table<string, unknown>? per-case application overrides
 ---@field effect (fun(sequence: string))? the production semantic sound boundary for bag children
 ---@field playCry (fun(species: integer, pattern: integer, form: integer))? the production cry boundary for summary children
+---@field isCryFinished (fun(): boolean)? the production cry completion boundary for field moves
 ---@field textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
 ---@field summaryManifest table<string, unknown>? the borrowed summary family for summary children
 ---@field summaryContext fun(): table<string, unknown>? the explicit summary display context per refresh
@@ -84,6 +85,9 @@ local function checkFieldMove(contextSources, request)
   local move = assert(request.move, "field checks need a move key")
   assert(type(move) == "string" and move ~= "", "field checks need a move key")
   local context = FieldMoveContext.capture(assert(contextSources, "field checks need live sources")())
+  if move == "escape_rope" then
+    return FieldMovePolicy.checkEscapeRope(context)
+  end
   return FieldMovePolicy.check(move, context)
 end
 
@@ -94,8 +98,12 @@ local function spawnResolver(cacheFs)
   local function destinationFor(_, spawnKey)
     return FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
   end
+  local function specialFor(_, spawnKey)
+    return FieldMapDataCache.specialSpawnDestination(cacheFs, spawnKey)
+  end
   return {
     destinationFor = destinationFor,
+    specialFor = specialFor,
   }
 end
 
@@ -165,6 +173,33 @@ function PartyMenuComposition.create(deps)
   end
   if deps.cacheFs ~= nil then
     ports.spawns = spawnResolver(deps.cacheFs)
+  end
+  local effect = deps.effect
+  if effect ~= nil then
+    -- Field moves play their source effects through the same borrowed
+    -- sequence player the menus use.
+    local function playFieldMoveEffect(_, sequence)
+      effect(sequence)
+    end
+    ports.audio = { play = playFieldMoveEffect }
+  end
+  local function partyKnowsMove(_, move)
+    return mons:partySlotWithMove(move) ~= nil
+  end
+  ports.party = { knowsMove = partyKnowsMove }
+  if deps.playCry ~= nil then
+    assert(type(deps.isCryFinished) == "function", "field move cries need their completion boundary")
+    -- Field moves cry the departing lead: the catalog's native species id
+    -- and the mon's form, default pattern, then wait for the voice to end.
+    local function startFieldCry(_, slot)
+      local mon = assert(mons:partyMon(slot), "field move cries need their party mon")
+      local facts = assert(monCatalog:species(mon.species), "field move cries need a cataloged species")
+      deps.playCry(facts.nativeId, 0, assert(mon.form, "party mons carry their form"))
+    end
+    local function fieldCryDone(_)
+      return deps.isCryFinished()
+    end
+    ports.cry = { start = startFieldCry, done = fieldCryDone }
   end
   local world = FieldMoveWorld.new(ports)
   local fieldMoves = FieldMoveRuntime.new({

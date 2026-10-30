@@ -12,6 +12,7 @@ local KurtConversions = require("game.hgss.src.apricorn.KurtConversions")
 local CelebiTimeTravelScene = require("libs.hgss.src.field.CelebiTimeTravelScene")
 local HoOhAppearanceScene = require("libs.hgss.src.field.HoOhAppearanceScene")
 local GameStats = require("libs.hgss.src.mons.GameStats")
+local FieldMoveAftermath = require("game.hgss.src.field.FieldMoveAftermath")
 
 ---@class FieldScriptCompositionResult
 ---@field scripts FieldScripts
@@ -252,6 +253,117 @@ local function trainerCardStarsService(runtime)
     )
   end
   return { count = count }
+end
+
+local FACING_DELTAS = {
+  north = { 0, -1 },
+  south = { 0, 1 },
+  west = { -1, 0 },
+  east = { 1, 0 },
+}
+
+-- The one Rock Smash / Headbutt aftermath behind both the script commands
+-- and the party-menu field-move path: live map record, world draw stream,
+-- party lead, player and follower tiles, and the shared encounter attempt.
+local function fieldMoveAftermathService(runtime)
+  local function fieldData()
+    local session = assert(runtime.session, "field-move aftermath requires the field session")
+    return session.currentMap.fieldData
+  end
+  local function draw()
+    local scripts = assert(runtime.scripts, "field script runtime is assigned before script execution")
+    return (scripts.worldState.rng:nextRaw() % 65536) % 100
+  end
+  local function leadAbility()
+    local mons = runtime.monService
+    if mons:partyCount() == 0 then
+      return nil
+    end
+    local lead = mons:partyMon(0)
+    return lead.isEgg and nil or lead.ability
+  end
+  local function frontTile()
+    local player = assert(runtime.player, "field-move aftermath requires the player")
+    local delta = assert(FACING_DELTAS[player.facing], "the player faces a cardinal direction")
+    return { x = player.fieldX + delta[1], z = player.fieldZ + delta[2] }
+  end
+  local function follower()
+    local following = runtime.followingMon
+    if following == nil or not following:isActive() then
+      return nil
+    end
+    local id = following:partnerActorId()
+    local at = runtime.actors:getPosition(id)
+    return { x = at.fieldX, z = at.fieldZ, facing = runtime.actors:getFacing(id) }
+  end
+  local function trainerId()
+    return runtime.playerData.profile.trainerId
+  end
+  local function attemptEncounter(method, modifiers)
+    return runtime:attemptFieldMoveEncounter(method, modifiers)
+  end
+  local function launchDetails(encounter)
+    return runtime:wildLaunchDetails(encounter)
+  end
+  local function itemNativeId(key)
+    return runtime.itemCatalog:item(key).nativeId
+  end
+  return FieldMoveAftermath.new({
+    fieldData = fieldData,
+    draw = draw,
+    leadAbility = leadAbility,
+    trainerId = trainerId,
+    frontTile = frontTile,
+    follower = follower,
+    attemptEncounter = attemptEncounter,
+    launchDetails = launchDetails,
+    itemNativeId = itemNativeId,
+  })
+end
+
+-- The source "no wild encounter table" member identity (ENCDATA_NA).
+local NO_ENCOUNTER_MEMBER = 255
+-- Weather in which Honey and Sweet Scent fail: rain, snow, and the second
+-- mist weather (WEATHER_RAIN, WEATHER_SNOW, WEATHER_UNKNOWN_9).
+local SCENT_BLOCKING_WEATHER = { [1] = true, [5] = true, [9] = true }
+
+-- The Sweet Scent host seam: the weather gate, the screen tint, and the
+-- encounter roll over the shared field-move encounter attempt.
+local function sweetScentHost(runtime)
+  local function hasWildEncounters()
+    local session = assert(runtime.session, "sweet scent requires the field session")
+    return session.currentMap.fieldData.wildEncounterMemberId ~= NO_ENCOUNTER_MEMBER
+  end
+  local function weatherSuitable()
+    local weatherId = assert(runtime.runtimeMap, "sweet scent requires the active map").effectiveWeatherId
+    return SCENT_BLOCKING_WEATHER[weatherId] ~= true
+  end
+  local function startTint(_, direction)
+    if direction == "in" then
+      runtime.scentTint:startIn()
+    else
+      assert(direction == "out", "sweet scent tints fade in or out")
+      runtime.scentTint:startOut()
+    end
+  end
+  local function tintDone()
+    return runtime.scentTint:isDone()
+  end
+  local function clearTint()
+    runtime.scentTint:clear()
+  end
+  local function encounter()
+    local result = runtime:attemptSweetScentEncounter()
+    return result ~= nil and result.kind == "prepared"
+  end
+  return {
+    weatherSuitable = weatherSuitable,
+    startTint = startTint,
+    tintDone = tintDone,
+    clearTint = clearTint,
+    hasWildEncounters = hasWildEncounters,
+    encounter = encounter,
+  }
 end
 
 local function apricornService(runtime)
@@ -602,6 +714,8 @@ function FieldScriptComposition.compose(runtime, options)
     mart = options.mart,
     travel = options.travel,
     fieldMoves = options.fieldMoves,
+    fieldMoveAftermath = fieldMoveAftermathService(runtime),
+    sweetScent = sweetScentHost(runtime),
     monNaming = options.monNaming,
     followerTransition = options.followerTransition,
     starterBalls = options.starterBalls,

@@ -54,6 +54,32 @@ function MovementCalibration.jumpTiles(distance)
   return assert(JUMP_TILES[distance], "unknown jump distance " .. tostring(distance))
 end
 
+-- Source Task_Waterfall: the avatar travels exactly two tiles over 96
+-- updates with no walk animation. Rising, height climbs linearly over the
+-- first 64 updates while ground travel starts after 32 and ends at 96;
+-- falling mirrors it, ground first (updates 1-64), height after 32 (33-96).
+MovementCalibration.WATERFALL_TICKS = 96
+local WATERFALL_PHASE_TICKS = 32
+local WATERFALL_SPAN_TICKS = 64
+
+---@param direction string "north" rises, "south" falls
+---@param progressTicks integer
+---@return number heightFraction
+---@return number groundFraction
+function MovementCalibration.waterfallFractions(direction, progressTicks)
+  assert(direction == "north" or direction == "south", "waterfalls run north or south")
+  assert(
+    type(progressTicks) == "number" and progressTicks >= 0 and progressTicks <= MovementCalibration.WATERFALL_TICKS,
+    "waterfall progress out of range"
+  )
+  local early = math.min(1, progressTicks / WATERFALL_SPAN_TICKS)
+  local late = math.max(0, math.min(1, (progressTicks - WATERFALL_PHASE_TICKS) / WATERFALL_SPAN_TICKS))
+  if direction == "north" then
+    return early, late
+  end
+  return late, early
+end
+
 MovementCalibration.FACE_TICKS = 1
 MovementCalibration.REVEAL_TRAINER_TICKS = 9
 local REVEAL_TRAINER_OFFSETS = {

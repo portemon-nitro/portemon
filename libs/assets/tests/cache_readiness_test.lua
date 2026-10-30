@@ -369,12 +369,17 @@ local function writeFieldRecord(c, mapId, events, audioPolicy, schema)
     -- and its encounter table member; readiness requires both facts.
     battleBackground = "general",
     wildEncounterMemberId = 0,
+    rockSmash = {
+      odds = 0,
+      items = { "MAX_ETHER", "REVIVE", "HEART_SCALE", "RED_SHARD", "BLUE_SHARD", "GREEN_SHARD", "YELLOW_SHARD", "STAR_PIECE" },
+    },
+    headbutt = { regularTrees = {}, secretTrees = {}, slots = { common = {}, rare = {}, secret = {} } },
     fieldUse = {
       flyAllowed = true,
       teleportAllowed = true,
       escapeAllowed = false,
-      flashUsable = false,
-      alphChamber = false,
+      alphFlashRoom = false,
+      alphEscapeRopeRoom = false,
       icePathB2F = false,
       cave = false,
       unionOrColosseum = false,

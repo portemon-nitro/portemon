@@ -1621,16 +1621,26 @@ local function rectUnion(existing, rect)
   return result
 end
 
+-- The Honey/Sweet Scent tint over the world, then the script screen fade
+-- over everything.
 function FieldState:_drawScriptScreenFadeIfNeeded()
+  local scentTint = self.runtime.scentTint
+  if scentTint ~= nil then
+    self:_drawCoverOverlay(scentTint:presentationOverlay())
+  end
   local screenFade = self.runtime.screenFade
   if screenFade == nil then
     return
   end
-  -- The borrowed overlay is polled every frame (cheap owner-state read),
-  -- but the cover rectangles follow the topology, not the frame clock:
-  -- they are rebuilt only when the topology identity changes and repainted
-  -- unchanged while only the alpha moves.
-  local overlay = screenFade:presentationOverlay()
+  self:_drawCoverOverlay(screenFade:presentationOverlay())
+end
+
+-- Paints one borrowed solid-colour overlay. The overlay is polled every
+-- frame (cheap owner-state read), but the cover rectangles follow the
+-- topology, not the frame clock: they are rebuilt only when the topology
+-- identity changes and repainted unchanged while only the alpha moves.
+---@param overlay { r: number, g: number, b: number, a: number, screenScope: "main"|"both" }?
+function FieldState:_drawCoverOverlay(overlay)
   if overlay == nil then
     return
   end

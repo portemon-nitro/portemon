@@ -9,8 +9,8 @@ local Spawns = require("romdump.src.catalog.hgss.spawns")
 
 local T = {}
 
-function T.sixteen_moves_have_ordered_badge_gates()
-  Assert.equal(#FieldMoveSources.MOVE_KEYS, 16)
+function T.party_field_moves_have_ordered_badge_gates()
+  Assert.equal(#FieldMoveSources.MOVE_KEYS, 14)
   local gates = FieldMoveSources.badgeGate
   Assert.equal(gates.cut, "hive")
   Assert.equal(gates.fly, "storm")
@@ -44,23 +44,11 @@ function T.mother_spawn_resolves_through_the_frozen_spawn_catalog()
   Assert.equal(FieldMoveSources.MOTHER_SPAWN_NAME, "SPAWN_NEW_BARK")
 end
 
-function T.flash_weather_ids_cover_the_dark_caves()
-  local snowy = false
-  for _, id in ipairs(FieldMoveSources.FLASH_WEATHER_IDS) do
-    Assert.isTrue(type(id) == "number")
-    if id == 11 then
-      snowy = true
-    end
-  end
-  Assert.isTrue(snowy)
-end
-
 function T.obstacle_kinds_form_a_closed_vocabulary()
   Assert.deepEqual(FieldMoveSources.OBSTACLE_KINDS, {
     "cut_tree",
     "smash_rock",
     "strength_boulder",
-    "headbutt_tree",
   })
   Assert.equal(FieldMoveSources.obstacleKindForSprite(1), nil)
 end
@@ -71,9 +59,23 @@ function T.obstacle_sprites_resolve_their_verified_kinds()
   Assert.equal(FieldMoveSources.obstacleKindForSprite(85), "smash_rock")
 end
 
+function T.union_colosseum_symbols_cover_the_link_battle_rooms()
+  -- The retail field-move checks reject UNION and COLOSSEUM load types
+  -- together (field_move.c); the COLOSSEUM load type is entered only by
+  -- CallTask_WarpToColosseum (field_warp_tasks.c, MAP_LOAD_TYPE_COLOSSEUM
+  -- from include/constants/field/map_load.h), whose only script callers
+  -- target the single and multi Wi-Fi battle areas (scr_seq_0004
+  -- WarpToColosseum MAP_WIFI_SINGLE_BATTLE_AREA / MAP_WIFI_MULTI_BATTLE_AREA).
+  local symbols = FieldMoveSources.UNION_COLOSSEUM_SYMBOLS
+  Assert.isTrue(symbols.MAP_UNION == true)
+  Assert.isTrue(symbols.MAP_WIFI_SINGLE_BATTLE_AREA == true)
+  Assert.isTrue(symbols.MAP_WIFI_MULTI_BATTLE_AREA == true)
+end
+
 function T.exception_maps_are_explicit_symbols()
   Assert.equal(FieldMoveSources.ICE_PATH_B2F_SYMBOL, "MAP_ICE_PATH_B2F")
-  Assert.equal(FieldMoveSources.ALPH_FLASH_SYMBOL, "MAP_RUINS_OF_ALPH_UNDERGROUND_HALL")
+  Assert.equal(FieldMoveSources.ALPH_FLASH_ROOM_SYMBOL, "MAP_RUINS_OF_ALPH_SOUTHEAST_ENTRANCE_FIRST_ROOM")
+  Assert.equal(FieldMoveSources.ALPH_ESCAPE_ROPE_ROOM_SYMBOL, "MAP_RUINS_OF_ALPH_NORTHEAST_ENTRANCE_FIRST_ROOM")
 end
 
 function T.spawn_destinations_cover_every_frozen_spawn_name()

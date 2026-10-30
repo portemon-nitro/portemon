@@ -1222,27 +1222,7 @@ local function setObjectPosition(ins)
   }
 end
 
-local function flagAction(ins, flag)
-  local mode = Operands.operandValue(ins.operands[1])
-  if mode == 0 then
-    return { op = "clear_flag", flag = flag }
-  end
-  if mode == 1 then
-    return { op = "set_flag", flag = flag }
-  end
-  if mode == 2 then
-    return {
-      op = "set_var",
-      variable = Operands.varRef(ins.operands[2]),
-      value = { value = "flag_value", flag = flag },
-    }
-  end
-  Errors.raise("SCRIPT_UNKNOWN_FLAG_ACTION", "unknown flag action mode", {
-    sourceOffset = ins.offset,
-    opcode = ins.opcode,
-    mode = mode,
-  })
-end
+local flagAction = FieldServiceHandlers.flagAction
 
 local function flashEffect()
   return {
@@ -1835,6 +1815,9 @@ local FieldHandlers = {
   [479] = partyRibbonCount,
   [496] = partyLead,
   [529] = partyLeadAlive,
+  -- ScrCmd_GetFollowPokePartyIndex answers the first alive party slot, the
+  -- same query as ScrCmd_GetPartyLeadAlive.
+  [727] = partyLeadAlive,
   [535] = partyMonLevel,
   [542] = partyMonContestValue,
   [584] = partyLegalCheck,
@@ -1931,6 +1914,22 @@ local FieldHandlers = {
   [181] = flashEffect,
   [401] = flashAction,
   [402] = defogAction,
+  [400] = FieldServiceHandlers.strengthFlagAction,
+  [299] = FieldServiceHandlers.checkEscortMode,
+  [183] = FieldServiceHandlers.fieldMoveCutIn,
+  [560] = FieldServiceHandlers.fieldMoveEffect,
+  [598] = FieldServiceHandlers.swapPlayerAndFollower,
+  [728] = FieldServiceHandlers.followerFlash,
+  [730] = FieldServiceHandlers.followerInactiveOrVisible,
+  [731] = FieldServiceHandlers.followerGrowAndShrink,
+  [732] = FieldServiceHandlers.followerAddMood,
+  [733] = FieldServiceHandlers.partyLeadHasType,
+  [734] = FieldServiceHandlers.followerJumpOnSpot,
+  [851] = FieldServiceHandlers.bufferCapitalize,
+  [600] = FieldServiceHandlers.followerRecallToPlayer,
+  [829] = FieldServiceHandlers.followerIsNextToPlayer,
+  [753] = FieldServiceHandlers.rockSmashItemCheck,
+  [754] = FieldServiceHandlers.tryHeadbuttEncounter,
   [177] = explicitFieldMove("rock_climb"),
   [178] = explicitFieldMove("surf"),
   [179] = explicitFieldMove("waterfall"),

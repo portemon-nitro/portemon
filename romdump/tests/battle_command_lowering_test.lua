@@ -63,7 +63,7 @@ function T.battle_won_check_lowers_to_a_result_read()
 end
 
 function T.unknown_battle_opcodes_never_map_to_ordinary_launches()
-  for _, opcode in ipairs({ 36, 168, 214, 217, 218, 221, 225, 249, 562, 683, 754 }) do
+  for _, opcode in ipairs({ 36, 168, 214, 217, 218, 221, 225, 249, 562, 683 }) do
     local step = lowerSingle(opcode, {})
     Assert.equal(step.op, "unsupported", "opcode " .. opcode .. " must not lower to a battle")
     Assert.isTrue(

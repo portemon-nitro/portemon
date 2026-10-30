@@ -129,19 +129,20 @@ function FieldWorldSwapCoordinator:abort(resolution, prepared)
   physical.state = "released"
 end
 
--- Escape-entrance publication owns the durable return point at the one
--- moment the destination is certain: a successful outside entry into an
--- escapable cave records the outside source tile (never the destination
--- or a deeper doorway); leaving a cave clears the stale point so a later
--- Dig cannot exit somewhere the player no longer came from. Inner-cave
--- moves and ordinary travel leave the record alone. Failed builds never
--- reach this owner, so the old record survives them unchanged.
+-- Special-spawn publication owns the durable relocation point the source
+-- field control writes when the player leaves the main outdoor matrix
+-- (FieldSystem_SetMapConnection): a successful swap from an outdoor map to
+-- a building or cave records the outdoor warp tile and the facing used to
+-- enter it (a northward entrance records the tile south of the warp).
+-- Dig and Escape Rope arrive there; Teleport, Fly and blackout overwrite it
+-- elsewhere, and nothing here ever clears it. Failed builds never reach
+-- this owner, so the old record survives them unchanged.
 ---@param self FieldWorldSwapCoordinator
 ---@param runtime table<string, unknown> the live runtime surface (travel, map, player)
 ---@param resolution table<string, unknown>
-function FieldWorldSwapCoordinator:publishEscapeEntrance(runtime, resolution)
+function FieldWorldSwapCoordinator:publishSpecialSpawn(runtime, resolution)
   local travel = runtime.fieldTravel
-  if travel == nil or type(travel.setEscapeEntrance) ~= "function" then
+  if travel == nil or type(travel.setSpecialSpawn) ~= "function" then
     return
   end
   local sourceMap = runtime.runtimeMap
@@ -154,30 +155,26 @@ function FieldWorldSwapCoordinator:publishEscapeEntrance(runtime, resolution)
   if type(sourceFieldData) ~= "table" or type(destinationFieldData) ~= "table" then
     return
   end
-  local destinationUse = destinationFieldData.fieldUse
-  if type(destinationUse) ~= "table" then
+  if
+    sourceFieldData.transitionEnvironment ~= "outdoors" or destinationFieldData.transitionEnvironment == "outdoors"
+  then
     return
   end
   local player = runtime.player
-  if
-    sourceFieldData.transitionEnvironment == "outdoors"
-    and destinationUse.cave == true
-    and destinationUse.escapeAllowed == true
-  then
-    assert(type(player) == "table", "entrance recording needs the source player")
-    assert(type(sourceMap.mapSymbol) == "string", "entrance recording needs the source map symbol")
-    travel:setEscapeEntrance({
-      map = sourceMap.mapSymbol,
-      fieldX = assert(player.fieldX, "entrance recording needs the source tile"),
-      fieldZ = assert(player.fieldZ, "entrance recording needs the source tile"),
-      facing = assert(player.facing, "entrance recording needs the source facing"),
-    })
-    return
+  assert(type(player) == "table", "special spawn recording needs the source player")
+  assert(type(sourceMap.mapSymbol) == "string", "special spawn recording needs the source map symbol")
+  local facing = assert(player.facing, "special spawn recording needs the source facing")
+  local fieldZ = assert(player.fieldZ, "special spawn recording needs the source tile")
+  if facing == "north" then
+    fieldZ = fieldZ + 1
   end
-  local sourceUse = sourceFieldData.fieldUse
-  if type(sourceUse) == "table" and sourceUse.cave == true and destinationUse.cave ~= true then
-    travel:clearEscapeEntrance()
-  end
+  travel:setSpecialSpawn({
+    map = sourceMap.mapSymbol,
+    fieldX = assert(player.fieldX, "special spawn recording needs the source tile"),
+    fieldZ = fieldZ,
+    warpId = -1,
+    direction = facing,
+  })
 end
 
 ---@param self FieldWorldSwapCoordinator
@@ -187,7 +184,7 @@ end
 function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   local runtime = self.runtime
   local sourceMap, sourcePlayer = runtime.runtimeMap, runtime.player
-  self:publishEscapeEntrance(runtime, resolution)
+  self:publishSpecialSpawn(runtime, resolution)
   local runtimeMap = resolution.destinationMap
   local physical = (prepared and prepared.physical) or resolution.physical
   local residency = assert(prepared and prepared.residency, "prepared residency transaction required")

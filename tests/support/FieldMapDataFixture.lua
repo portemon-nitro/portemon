@@ -74,6 +74,8 @@ function FieldMapDataFixture.build(opts)
     zone_events = { [eventMemberId] = opts.zoneEventsMember or ZoneEventsBuilder.build() },
     field_script_headers = { [opts.scriptHeaderMemberId or 618] = opts.scriptHeaderMember or "" },
     area_data = {},
+    rock_smash_items = {},
+    headbutt_encounters = {},
   }
   for alias, byId in pairs(opts.members or {}) do
     for memberId, bytes in pairs(byId) do
@@ -119,6 +121,10 @@ function FieldMapDataFixture.build(opts)
             return assert(byId[memberId] or areaBytes)
           end
           local bytes = byId[memberId]
+          -- Maps without field-move encounters read the all-zero member.
+          if bytes == nil and (alias == "rock_smash_items" or alias == "headbutt_encounters") then
+            return string.rep("\0", 4)
+          end
           assert(bytes, string.format("fixture %s has no member %d", alias, memberId))
           return bytes
         end,

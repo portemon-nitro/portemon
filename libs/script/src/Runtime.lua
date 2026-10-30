@@ -1209,6 +1209,10 @@ end
 ---@field setMovementType fun(self: RuntimeFollowingMon, movementType: string)
 ---@field repositionRelativeToPlayer fun(self: RuntimeFollowingMon, offsetSelector: integer, directionRaw: integer)
 ---@field releaseNextToPlayer fun(self: RuntimeFollowingMon): boolean
+---@field swapPositionsWithPlayer fun(self: RuntimeFollowingMon)
+---@field recallToPlayer fun(self: RuntimeFollowingMon): boolean
+---@field isNextToPlayer fun(self: RuntimeFollowingMon): boolean
+---@field isInactiveOrVisible fun(self: RuntimeFollowingMon): boolean
 ---@field isEventTrigger fun(self: RuntimeFollowingMon, kind: string, param: unknown): boolean
 
 do
@@ -1291,6 +1295,123 @@ do
     return Runtime.OUTCOME_CONTINUE
   end
 
+  ---@class RuntimeFieldMoveCue
+  ---@field startCutIn fun(self: RuntimeFieldMoveCue, partySlot: integer)
+  ---@field startFollowerGesture fun(self: RuntimeFieldMoveCue, gesture: string, a: integer?, b: integer?)
+  ---@field startEffect fun(self: RuntimeFieldMoveCue, effect: integer, onFinished: fun())
+  ---@field startEmoteMark fun(self: RuntimeFieldMoveCue, onFollower: boolean)
+  ---@field addFollowerMood fun(self: RuntimeFieldMoveCue, amount: integer)
+  ---@field isBlockingCueFinished fun(self: RuntimeFieldMoveCue): boolean
+
+  ---@param run table<string, unknown>
+  ---@return RuntimeFieldMoveCue
+  local function cueFor(run)
+    return requireService(run, "fieldMoveCue") --[[@as RuntimeFieldMoveCue]]
+  end
+
+  -- The cut-in and follower gestures are blocking cues: the script resumes
+  -- once the cue service reports the started cue finished.
+  local function continueWhenCueFinished(run)
+    if cueFor(run):isBlockingCueFinished() then
+      return Runtime.OUTCOME_CONTINUE
+    end
+    return blockOnTask(run, "field_move_cue_wait", {})
+  end
+
+  local function handleFieldMoveCutIn(node, run)
+    cueFor(run):startCutIn(semanticsFor(run).evaluateValue(node.slot, run))
+    return continueWhenCueFinished(run)
+  end
+
+  local function handleFieldMoveEffect(node, run)
+    assert(node.done.value == "var", "field-move effect completes a variable")
+    local world = requireService(run, "world") --[[@as { setVar: fun(self: table, id: unknown, value: unknown) }]]
+    local id = node.done.id
+    world:setVar(id, 0)
+    cueFor(run):startEffect(node.effect, function()
+      world:setVar(id, 1)
+    end)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerGesture(node, run)
+    cueFor(run):startFollowerGesture(node.gesture, node.a, node.b)
+    return continueWhenCueFinished(run)
+  end
+
+  local function handleFollowerAddMood(node, run)
+    cueFor(run):addFollowerMood(node.amount)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerSwapWithPlayer(_, run)
+    followingMonFor(run):swapPositionsWithPlayer()
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerInactiveOrVisible(node, run)
+    writeMonsBool(node, run, followingMonFor(run):isInactiveOrVisible())
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  ---@class RuntimeFieldMoveAftermath
+  ---@field rockSmash fun(self: RuntimeFieldMoveAftermath, followerUsing: boolean): table<string, unknown>
+  ---@field headbutt fun(self: RuntimeFieldMoveAftermath): table<string, unknown>
+
+  ---@param run table<string, unknown>
+  ---@return RuntimeFieldMoveAftermath
+  local function aftermathFor(run)
+    return requireService(run, "fieldMoveAftermath") --[[@as RuntimeFieldMoveAftermath]]
+  end
+
+  -- A wild battle the aftermath prepared suspends the script on the battle
+  -- task, exactly like an explicit wild launch.
+  local function blockOnAftermathBattle(result, run)
+    requireForeground(run, "field_move_aftermath")
+    assert(type(result.details) == "table", "an aftermath battle carries its launch details")
+    return blockOnTask(run, "battle", { kind = "wild", details = result.details })
+  end
+
+  local function handleRockSmashItemCheck(node, run)
+    local semantics = semanticsFor(run)
+    local followerUsing = semantics.evaluateValue(node.followerUsing, run) ~= 0
+    local result = aftermathFor(run):rockSmash(followerUsing)
+    local found = result.kind == "item"
+    semantics.writeRef(node.found, found and 1 or 0, run)
+    semantics.writeRef(node.item, found and result.item or 0, run)
+    if result.kind == "battle" then
+      return blockOnAftermathBattle(result, run)
+    end
+    if found then
+      cueFor(run):startEmoteMark(followerUsing)
+      return continueWhenCueFinished(run)
+    end
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleTryHeadbuttEncounter(node, run)
+    local result = aftermathFor(run):headbutt()
+    semanticsFor(run).writeRef(node.result, result.kind == "battle" and 1 or 0, run)
+    if result.kind == "battle" then
+      return blockOnAftermathBattle(result, run)
+    end
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleSweetScent(node, run)
+    requireForeground(run, "sweet_scent")
+    return blockOnTask(run, "sweet_scent", {}, node.result)
+  end
+
+  HANDLERS.sweet_scent = handleSweetScent
+  HANDLERS.rock_smash_item_check = handleRockSmashItemCheck
+  HANDLERS.try_headbutt_encounter = handleTryHeadbuttEncounter
+  HANDLERS.field_move_cut_in = handleFieldMoveCutIn
+  HANDLERS.field_move_effect = handleFieldMoveEffect
+  HANDLERS.follower_gesture = handleFollowerGesture
+  HANDLERS.follower_add_mood = handleFollowerAddMood
+  HANDLERS.follower_swap_with_player = handleFollowerSwapWithPlayer
+  HANDLERS.follower_inactive_or_visible = handleFollowerInactiveOrVisible
   HANDLERS.follower_is_active = handleFollowerIsActive
   HANDLERS.follower_partner_state = handleFollowerPartnerState
   HANDLERS.follower_face_player = handleFollowerFacePlayer
@@ -1301,6 +1422,18 @@ do
   HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
   HANDLERS.follower_transition = handleFollowerTransition
   HANDLERS.follower_recall = handleFollowerRecall
+  local function handleFollowerRecallToPlayer(_, run)
+    followingMonFor(run):recallToPlayer()
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerIsNextToPlayer(node, run)
+    writeMonsBool(node, run, followingMonFor(run):isNextToPlayer())
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  HANDLERS.follower_recall_to_player = handleFollowerRecallToPlayer
+  HANDLERS.follower_is_next_to_player = handleFollowerIsNextToPlayer
   HANDLERS.follower_release_next_to_player = handleFollowerReleaseNextToPlayer
 end
 
@@ -2496,6 +2629,12 @@ HANDLERS.copy_local = handleCopyLocal
 HANDLERS.add_local = handleAddLocal
 HANDLERS.sub_local = handleSubLocal
 HANDLERS.buffer_text = handleBufferText
+-- ScrCmd_Capitalize: the buffered text keeps resolving lazily; the wrapper
+-- upper-cases the first character of what it resolves to.
+function HANDLERS.buffer_capitalize(node, run)
+  run.instance.textArgs[node.slot] = { text = "capitalized", source = run.instance.textArgs[node.slot] }
+  return Runtime.OUTCOME_CONTINUE
+end
 HANDLERS.give_mon = handleGiveMon
 HANDLERS.choose_starter = handleChooseStarter
 HANDLERS.return_loan_mon = handleReturnLoanMon
@@ -2533,6 +2672,13 @@ HANDLERS.party_has_pokerus = handlePartyHasPokerus
 HANDLERS.party_has_held_item = handlePartyHasHeldItem
 HANDLERS.party_lead = handlePartyLead
 HANDLERS.party_lead_alive = handlePartyLeadAlive
+-- ScrCmd_FirstAliveMonHasType: either native type of the first alive mon.
+function HANDLERS.party_lead_has_type(node, run)
+  local slot = assert(monsFor(run):leadAliveSlot(), "the first-alive type query requires an alive party mon")
+  local type1, type2 = monsFor(run):monTypes(slot)
+  writeMonsBool(node, run, type1 == node.type or type2 == node.type)
+  return Runtime.OUTCOME_CONTINUE
+end
 HANDLERS.party_legal_check = handlePartyLegalCheck
 HANDLERS.check_kyogre_groudon = handleCheckKyogreGroudon
 HANDLERS.check_badge = handleCheckBadge

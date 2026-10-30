@@ -29,7 +29,7 @@ end
 
 function T.current_policy_passes_readiness()
   local bundle = compile(60)
-  Assert.equal(bundle.field.schema, "g4-field-map-v14")
+  Assert.equal(bundle.field.schema, "g4-field-map-v15")
   Assert.isTrue(FieldMapDataCache.hasFieldUsePolicy(bundle.field.fieldUse))
   Assert.isTrue(FieldMapDataCache.hasEncounterMember(bundle.field.wildEncounterMemberId))
   Assert.isTrue(FieldMapDataCache.isReady(publishedCache(bundle), 60, bundle.marker))
@@ -42,6 +42,24 @@ function T.absent_encounter_member_fails_readiness()
   FieldMapDataCacheWriter.write(cache, bundle)
   Assert.isFalse(FieldMapDataCache.hasEncounterMember(nil))
   Assert.isFalse(FieldMapDataCache.isReady(cache, 60, bundle.marker))
+end
+
+function T.absent_or_partial_move_encounter_records_fail_readiness()
+  local bundle = compile(60)
+  Assert.isTrue(FieldMapDataCache.hasRockSmash(bundle.field.rockSmash))
+  Assert.isTrue(FieldMapDataCache.hasHeadbutt(bundle.field.headbutt))
+  Assert.isFalse(FieldMapDataCache.hasRockSmash(nil))
+  Assert.isFalse(FieldMapDataCache.hasRockSmash({ odds = 101, items = bundle.field.rockSmash.items }))
+  Assert.isFalse(FieldMapDataCache.hasRockSmash({ odds = 5, items = { "MAX_ETHER" } }))
+  Assert.isFalse(FieldMapDataCache.hasHeadbutt(nil))
+  Assert.isFalse(FieldMapDataCache.hasHeadbutt({ regularTrees = {}, secretTrees = {} }))
+  for _, field in ipairs({ "rockSmash", "headbutt" }) do
+    local broken = compile(60)
+    broken.field[field] = nil
+    local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+    FieldMapDataCacheWriter.write(cache, broken)
+    Assert.isFalse(FieldMapDataCache.isReady(cache, 60, broken.marker), field)
+  end
 end
 
 function T.absent_policy_fails_readiness()

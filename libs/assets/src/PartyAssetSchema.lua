@@ -62,6 +62,11 @@ local REQUIRED_RUNTIME_TEMPLATES = {
   "switchHeldPrompt",
   "switchHeldResult",
   "giveHeldItem",
+  "fieldMoveNotHere",
+  "fieldMoveNeedBadge",
+  "fieldMoveHaveFollower",
+  "fieldMoveAlreadySurfing",
+  "fieldMoveNotNow",
 }
 
 local function fail(message, context)

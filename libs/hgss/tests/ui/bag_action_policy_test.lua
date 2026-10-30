@@ -202,6 +202,14 @@ function T.field_use_requires_party_effect_metadata()
   )
 end
 
+function T.field_escape_rope_offers_use_without_party_targets()
+  Assert.isTrue(has(BagActionPolicy.actionsForField(fieldFacts({ itemKey = "ESCAPE_ROPE", useKind = "none" })), "use"))
+  Assert.isTrue(
+    has(BagActionPolicy.actionsForField(fieldFacts({ itemKey = "ESCAPE_ROPE", useKind = "none", partyEmpty = true })), "use"),
+    "the rope needs no party target"
+  )
+end
+
 function T.field_empty_party_hides_target_requiring_entries_only()
   local actions = BagActionPolicy.actionsForField(fieldFacts({ partyEmpty = true }))
   Assert.isFalse(has(actions, "use"), "an empty party offers no Use without targets")

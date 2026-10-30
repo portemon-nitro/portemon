@@ -12,13 +12,18 @@
 local Errors = require("libs.errors.src.Errors")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
+local FieldCameraZoom = require("libs.hgss.src.field.FieldCameraZoom")
+local FieldMoveCutInBannerAssetCache = require("libs.assets.src.field.FieldMoveCutInBannerAssetCache")
 local FieldMoveContext = require("game.hgss.src.field.FieldMoveContext")
+local FieldWarpSequence = require("libs.hgss.src.field.FieldWarpSequence")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local ScriptErrors = require("libs.script.src.errors")
 local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 
 local FLASH_FLAG_ID = assert(FieldScriptSymbols.flagsByName.FLAG_SYS_FLASH, "flash flag identity required")
+local SAFARI_FLAG_ID = assert(FieldScriptSymbols.flagsByName.FLAG_SYS_SAFARI, "safari flag identity required")
+local STRENGTH_FLAG_ID = assert(FieldScriptSymbols.flagsByName.FLAG_STRENGTH_ACTIVE, "strength flag identity required")
 
 -- The lit-cave weather preset: the generated weather catalog rewrites
 -- weather 11 to 12 on the flash flag (weather_flag_override), and the
@@ -29,13 +34,24 @@ local FLASH_LIT_WEATHER_ID = 12
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 
--- Boulder pushes walk at the slow cadence through the existing calibration,
--- so actor and player motion share one tick count with scripted walks.
+-- Source Task_PushBoulder: the boulder takes one slow walk step (movement 8)
+-- while the player walks on the spot at normal speed (movement 32); the task
+-- ends when both settle, and the push sound plays as both start.
 local PUSH_TICKS = MovementCalibration.actionTicks({ action = "walk", speed = "slow" })
+local PUSH_PLAYER_TICKS = MovementCalibration.actionTicks({ action = "walk_in_place", speed = "normal" })
+local SE_BOULDER_PUSH = "SEQ_SE_DP_UG_023"
+local SE_ROCK_CLIMB_DEBRIS = "SEQ_SE_DP_UG_023"
+local SE_WATER_FIELD_MOVE = "SEQ_SE_DP_FW463"
 
--- Planned traversal steps ride the ordinary walk cadence through the
--- existing scripted-motion owner; exact DS cinematic timing is not claimed.
-local TRAVERSE_TICKS = MovementCalibration.actionTicks({ action = "walk", speed = "normal" })
+-- Source Task_Surf mounts after an 11-update wait and hops only once a
+-- second 11-update wait has passed (timer incremented past 10 each time).
+local SURF_MOUNT_WAIT_TICKS = 11
+
+-- Source movement ids per traversal gait: Surf, Stop Surfing, and Rock Climb
+-- landings hop (52, near fast); Rock Climb walks fast between wall tiles
+-- (16); Whirlpool walks slowest per tile (4).
+local WHIRLPOOL_SPEED = "slower"
+local CLIMB_WALK_SPEED = "fast"
 
 -- Closed traversal plan kinds produced by planTraversal. Only surf entry
 -- and disembark change the avatar; falls and climbs hold their mode while
@@ -73,6 +89,15 @@ local DIRECTION_DELTAS = {
 ---@field private _reactions table<string, unknown>
 ---@field private _warps table<string, unknown>? borrowed maps service for return warps
 ---@field private _spawns table<string, unknown>? cited landing destinations for teleport returns
+---@field private _party table<string, unknown>? borrowed party move lookup for unannounced field moves
+---@field private _audio table<string, unknown>? borrowed effect player; absent hosts stay silent
+---@field private _camera (fun(): FieldCamera)? live camera reader; the swap replaces the camera
+---@field private _screen table<string, unknown>? borrowed script screen-fade owner for warp covers
+---@field private _cry table<string, unknown>? borrowed lead-mon cry port; absent hosts stay silent
+---@field private _travel table<string, unknown>? borrowed durable travel owner for special-spawn rewrites
+---@field private _cutin table<string, unknown>? borrowed cut-in/landing presenter; absent hosts run the warp covers without presentation
+---@field private _zoom FieldCameraZoom? the live warp zoom, bound to one camera
+---@field private _fadeLease integer? the live warp fade's lease on the screen owner
 local FieldMoveWorld = {}
 FieldMoveWorld.__index = FieldMoveWorld
 
@@ -127,6 +152,15 @@ function FieldMoveWorld.new(ports)
     -- resolving anything.
     _warps = ports.warps,
     _spawns = ports.spawns,
+    _audio = ports.audio,
+    _party = ports.party,
+    _camera = ports.camera,
+    _screen = ports.screen,
+    _cry = ports.cry,
+    _travel = ports.travel,
+    _cutin = ports.cutin,
+    _zoom = nil,
+    _fadeLease = nil,
   }, FieldMoveWorld)
   assert(type(world._profile.badges) == "number", "field world profile must carry its badge mask")
   assert(type(world._maps:current()) == "table", "field world maps must describe the live map")
@@ -136,8 +170,51 @@ function FieldMoveWorld.new(ports)
     assert(type(world._warps.pendingError) == "function", "warps port must report warp failures")
     assert(type(world._warps.placement) == "function", "warps port must place destination maps")
   end
+  if world._party ~= nil then
+    assert(type(world._party.knowsMove) == "function", "party port must answer move knowledge")
+  end
+  if world._audio ~= nil then
+    assert(type(world._audio.play) == "function", "audio port must play effects")
+  end
   if world._spawns ~= nil then
     assert(type(world._spawns.destinationFor) == "function", "spawns port must resolve cited landing destinations")
+    assert(type(world._spawns.specialFor) == "function", "spawns port must resolve special spawn records")
+  end
+  if world._camera ~= nil then
+    assert(type(world._camera) == "function", "camera port must read the live camera")
+  end
+  if world._screen ~= nil then
+    assert(type(world._screen.startFade) == "function", "screen port must start fades")
+    assert(type(world._screen.fadeDone) == "function", "screen port must observe fades")
+    assert(type(world._screen.clearIfCurrent) == "function", "screen port must clear its fade lease")
+  end
+  if world._cry ~= nil then
+    assert(type(world._cry.start) == "function", "cry port must start the lead cry")
+    assert(type(world._cry.done) == "function", "cry port must observe the cry")
+  end
+  if world._travel ~= nil then
+    assert(type(world._travel.setSpecialSpawn) == "function", "travel port must record special spawns")
+  end
+  if world._cutin ~= nil then
+    for _, method in ipairs({
+      "startCutIn",
+      "cutInDone",
+      "cancelCutIn",
+      "startLanding",
+      "landingClimbed",
+      "landingDone",
+      "cancelLanding",
+    }) do
+      assert(type(world._cutin[method]) == "function", "cutin port must implement " .. method)
+    end
+    -- The staged banner class is validated once at composition: a malformed
+    -- generated class fails loudly here instead of presenting garbage mid-fly.
+    local manifest = assert(world._cutin.manifest, "cutin port carries its staged banner class")
+    assert(type(manifest) == "table", "staged banner classes are records")
+    local valid, err = FieldMoveCutInBannerAssetCache.validateManifest(manifest)
+    if not valid then
+      error(err, 0)
+    end
   end
   return world
 end
@@ -236,10 +313,6 @@ function FieldMoveWorld:removeObstacle(target)
   end
   assert(type(actor) == "table", "live obstacle validated above")
   self._actors:cancelScriptedMovement(actorId)
-  if target.obstacleKind == "smash_rock" then
-    self._actors:removePresence(actorId, false)
-    return
-  end
   local event = actor.sourceEvent
   local flag = event and event.eventFlag or nil
   if type(flag) == "number" and flag ~= 0 then
@@ -354,20 +427,40 @@ function FieldMoveWorld:validatePush(plan)
 end
 
 -- Begin the coordinated push: the boulder walks one tile while the player
--- steps into its vacated tile, both through the existing scripted-motion
--- owners on the fixed-tick cadence.
+-- walks on the spot facing it, both through the existing scripted-motion
+-- owners; the player's tile changes only when the player later walks.
 ---@param plan table<string, unknown>
 function FieldMoveWorld:beginPush(plan)
   assert(type(plan) == "table", "push begin requires a plan")
   local target = planTarget(plan)
   assert(DIRECTION_DELTAS[plan.direction] ~= nil, "push needs a cardinal direction")
-  local opposite = { north = "south", south = "north", west = "east", east = "west" }
   self._actors:beginScriptedAction(target.actorId, { action = "walk", direction = plan.direction, speed = "slow" })
-  self._player:beginScriptedAction({ action = "walk", direction = opposite[plan.direction], speed = "slow" })
+  self._player:beginScriptedAction({ action = "walk_in_place", direction = plan.direction, speed = "normal" })
+  self:playEffect(SE_BOULDER_PUSH)
+end
+
+-- True when any party mon knows Waterfall. The auto descent keeps this gate:
+-- field_control.c marks the surf step PLAYER_EVENT_USED_WATERFALL only when
+-- GetIdxOfFirstPartyMonWithMove finds MOVE_WATERFALL (no badge is checked),
+-- Field_PlayerAvatar_TryWaterfallUp answers only that southward surf step
+-- into the fall, and Field_StartWaterfallTask runs the Task_Waterfall down
+-- steps (sWaterfallDownSteps) with no announcement (player_avatar_actions.c).
+---@return boolean
+function FieldMoveWorld:partyKnowsWaterfall()
+  return assert(self._party, "unannounced field moves require the party port"):knowsMove("WATERFALL")
+end
+
+-- Play one source effect through the borrowed audio port.
+---@param sequence string
+function FieldMoveWorld:playEffect(sequence)
+  if self._audio ~= nil then
+    self._audio:play(sequence)
+  end
 end
 
 -- Advance both motions one tick. True once the calibrated push cadence
--- completes; progress rides the plan so task state stays serializable.
+-- completes; progress rides the plan so task state stays serializable. The
+-- player's on-the-spot walk settles on its own shorter lifetime.
 ---@param plan table<string, unknown>
 ---@return boolean settled
 function FieldMoveWorld:advancePush(plan)
@@ -379,7 +472,10 @@ function FieldMoveWorld:advancePush(plan)
     self._actors:advanceScriptedAction(target.actorId, progress, PUSH_TICKS)
   end
   if self._player:isScriptedMoving() then
-    self._player:advanceScriptedAction(progress, PUSH_TICKS)
+    self._player:advanceScriptedAction(math.min(progress, PUSH_PLAYER_TICKS), PUSH_PLAYER_TICKS)
+    if progress >= PUSH_PLAYER_TICKS then
+      self._player:commitScriptedAction()
+    end
   end
   return progress >= PUSH_TICKS
 end
@@ -393,12 +489,17 @@ function FieldMoveWorld:commitPush(plan)
   self._player:commitScriptedAction()
 end
 
+local warpPort
+
 -- Release in-flight motion for one plan. Tolerant: settled or absent
 -- motion is a no-op, and a missing actor after removal is not a fault.
 ---@param plan table<string, unknown>
 function FieldMoveWorld:cancelMotion(plan)
   if type(plan) ~= "table" then
     return
+  end
+  if plan.sequence ~= nil then
+    FieldWarpSequence.cancel(plan.sequence, warpPort(self, plan))
   end
   local target = plan.target
   if type(target) == "table" and type(target.actorId) == "string" then
@@ -409,8 +510,14 @@ function FieldMoveWorld:cancelMotion(plan)
   end
 end
 
--- Commit a Strength enablement: the map-lifetime permission itself lives
--- in the runtime; the world gates the commit on a live map.
+-- The map-lifetime Strength permission is FLAG_STRENGTH_ACTIVE, the flag the
+-- retail scripts set and check; the world owns it for every path.
+---@return boolean
+function FieldMoveWorld:isStrengthActive()
+  return self._events:isFlagSet(STRENGTH_FLAG_ID)
+end
+
+-- Commit a Strength enablement on a live map by setting the flag.
 ---@param plan table<string, unknown>
 ---@return boolean armed
 function FieldMoveWorld:activateStrength(plan)
@@ -418,7 +525,13 @@ function FieldMoveWorld:activateStrength(plan)
   local live = self._maps:current()
   assert(type(live.id) == "number", "live map needs its identity")
   assert(plan.mapId == nil or plan.mapId == live.id, "strength enables on the live map")
+  self._events:setFlag(STRENGTH_FLAG_ID)
   return true
+end
+
+-- Source map entry by warp or connection drops the permission.
+function FieldMoveWorld:clearStrength()
+  self._events:clearFlag(STRENGTH_FLAG_ID)
 end
 
 -- Commit Flash: the Alph chamber dispatches its exact compiled source
@@ -436,13 +549,15 @@ function FieldMoveWorld:applyFlash(plan)
 end
 
 -- Resolve a validated return destination from durable travel facts. Dig
--- exits through the recorded outside entrance; a missing entrance is
--- not_now, never a guessed tile. Teleport resolves the recorded heal
--- spawn through the injected cited landing destinations; an unknown
--- spawn key fails loudly instead of warping somewhere convenient.
--- Coordinates are destination-global; the warp start converts them
--- against the loaded map origin. Source carries no arrival facing, so
--- teleport arrivals stamp the standard facing used across the field.
+-- exits to the recorded special spawn (the last entrance from the outside
+-- or the spawn a Teleport, Fly or blackout wrote); with none recorded it is
+-- not_now, never a guessed tile. Teleport resolves the recorded heal spawn
+-- through the injected cited landing destinations and rewrites the special
+-- spawn at the warp (GetSpecialSpawnWarpData); an unknown spawn key fails
+-- loudly instead of warping somewhere convenient. Coordinates are
+-- destination-global; the warp start converts them against the loaded map
+-- origin. Teleport arrives facing south, a recorded special spawn arrives
+-- facing its recorded direction.
 ---@param move string "dig" or "teleport"
 ---@param context table<string, unknown>
 ---@param travel table<string, unknown> a FieldTravelState capture
@@ -478,25 +593,26 @@ function FieldMoveWorld:planReturn(move, context, travel)
       fieldX = destination.fieldX,
       fieldZ = destination.fieldZ,
       facing = "south",
+      specialSpawnKey = spawnKey,
     }
   end
-  local entrance = travel.escapeEntrance
-  if entrance == nil then
+  local special = travel.specialSpawn
+  if special == nil then
     return { kind = "not_now" }
   end
-  assert(type(entrance) == "table", "recorded entrances are records")
-  assert(type(entrance.map) == "string" and entrance.map ~= "", "recorded entrances name their outside map")
+  assert(type(special) == "table", "recorded special spawns are records")
+  assert(type(special.map) == "string" and special.map ~= "", "recorded special spawns name their map")
   assert(
-    type(entrance.fieldX) == "number" and type(entrance.fieldZ) == "number",
-    "recorded entrances carry their outside tile"
+    type(special.fieldX) == "number" and type(special.fieldZ) == "number",
+    "recorded special spawns carry their tile"
   )
-  assert(type(entrance.facing) == "string" and entrance.facing ~= "", "recorded entrances carry facing")
+  assert(type(special.direction) == "string" and special.direction ~= "", "recorded special spawns carry facing")
   return {
-    map = entrance.map,
+    map = special.map,
     warp = 0,
-    fieldX = entrance.fieldX,
-    fieldZ = entrance.fieldZ,
-    facing = entrance.facing,
+    fieldX = special.fieldX,
+    fieldZ = special.fieldZ,
+    facing = special.direction,
   }
 end
 
@@ -532,6 +648,7 @@ function FieldMoveWorld:planFly(flypointKey, context)
     fieldX = destination.fieldX,
     fieldZ = destination.fieldZ,
     facing = "south",
+    specialSpawnKey = flypointKey,
   }
 end
 
@@ -561,6 +678,9 @@ function FieldMoveWorld:beginReturnWarp(plan)
   end
   assert(type(destination.fieldX) == "number", "return destinations carry tiles")
   assert(type(destination.fieldZ) == "number", "return destinations carry tiles")
+  -- The warp task sets the avatar to walking before the map change.
+  self._player:queueAvatarTransition("walking")
+  self._player:applyAvatarTransitions()
   warps:startWarp({
     map = destination.map,
     warp = destination.warp or 0,
@@ -569,6 +689,189 @@ function FieldMoveWorld:beginReturnWarp(plan)
     facing = destination.facing,
   })
   plan.warpStarted = true
+  -- Teleport and Fly rewrite the special spawn with the spawn they leave
+  -- for (GetSpecialSpawnWarpData) as the warp begins.
+  local spawnKey = destination.specialSpawnKey
+  if spawnKey ~= nil then
+    local spawns = assert(self._spawns, "special spawn rewrites need the spawn records")
+    local travel = assert(self._travel, "special spawn rewrites need the travel owner")
+    travel:setSpecialSpawn(assert(spawns:specialFor(spawnKey), "spawn has no special spawn record"))
+  end
+end
+
+-- Warp animation port: the sequence reaches the avatar, camera, screen
+-- fade, effect player and cry only through these operations. Every owner
+-- is borrowed and read live, because the map swap replaces the player and
+-- the camera.
+local WarpPort = {}
+WarpPort.__index = WarpPort
+
+function WarpPort:playEffect(sequence)
+  self.world:playEffect(sequence)
+end
+
+function WarpPort:faceAvatar(direction)
+  self.world._player:beginScriptedAction({ action = "face", direction = direction })
+end
+
+function WarpPort:zoomSet(mode, amount, duration)
+  local world = self.world
+  if world._zoom == nil then
+    local camera = assert(world._camera, "warp zooms need the camera port")
+    world._zoom = FieldCameraZoom.new(camera())
+  end
+  world._zoom:set(mode, amount, duration)
+end
+
+function WarpPort:zoomStep()
+  self.world._zoom:step()
+end
+
+function WarpPort:zoomDone()
+  return self.world._zoom:isDone()
+end
+
+function WarpPort:zoomRelease()
+  local world = self.world
+  if world._zoom ~= nil then
+    world._zoom:release()
+    world._zoom = nil
+  end
+end
+
+-- Source fades run six steps at one frame each.
+local FADE_STEPS = 6
+local FADE_FRAMES_PER_STEP = 1
+
+function WarpPort:fadeStart(direction, color)
+  local world = self.world
+  local screen = assert(world._screen, "warp covers need the screen port")
+  world._fadeLease = screen:startFade({
+    direction = direction,
+    color = color,
+    duration = FADE_STEPS,
+    speed = FADE_FRAMES_PER_STEP,
+    screenScope = "both",
+  })
+end
+
+function WarpPort:fadeDone()
+  return assert(self.world._screen, "warp covers need the screen port"):fadeDone()
+end
+
+function WarpPort:fadeClear()
+  local world = self.world
+  if world._fadeLease ~= nil then
+    world._screen:clearIfCurrent(world._fadeLease)
+    world._fadeLease = nil
+  end
+end
+
+function WarpPort:startCry()
+  local cry = self.world._cry
+  if cry ~= nil then
+    cry:start(assert(self.plan.slot, "warp cries need the departing party slot"))
+  end
+end
+
+function WarpPort:cryDone()
+  local cry = self.world._cry
+  return cry == nil or cry:done()
+end
+
+-- Fly cut-in and landing presentation through the borrowed presenter. The
+-- presenter owns the staged banner pixels and the takeoff/landing models:
+-- the world only hands it the staged banner record selected per the banner
+-- asset contract (the semantic banner key, never NARC/member ids) plus the
+-- departing slot, and orders the waits around the warp-cover fades the
+-- sequence owns. The presenter picks the solo or follower-riding cut-in
+-- from its own follower reads (FieldTask_Fly states 1/5-6). Absent
+-- presenters complete immediately, so presenter-less hosts keep the legacy
+-- warp covers with no behavior change.
+function WarpPort:startCutIn()
+  local cutin = self.world._cutin
+  if cutin == nil then
+    return
+  end
+  local manifest = assert(cutin.manifest, "cut-in presentation needs its staged banner class")
+  local asset = assert(manifest.assets[manifest.banner], "staged banner class carries its banner asset")
+  cutin:startCutIn({
+    slot = assert(self.plan.slot, "cut-ins name the departing party slot"),
+    banner = {
+      key = manifest.banner,
+      image = asset.image,
+      width = asset.width,
+      height = asset.height,
+      paletteSlot = manifest.paletteSlot,
+    },
+  })
+end
+
+function WarpPort:cutInDone()
+  local cutin = self.world._cutin
+  return cutin == nil or cutin:cutInDone()
+end
+
+function WarpPort:cancelCutIn()
+  local cutin = self.world._cutin
+  if cutin ~= nil then
+    cutin:cancelCutIn()
+  end
+end
+
+function WarpPort:startLanding()
+  local cutin = self.world._cutin
+  if cutin ~= nil then
+    cutin:startLanding()
+  end
+end
+
+function WarpPort:landingClimbed()
+  local cutin = self.world._cutin
+  return cutin == nil or cutin:landingClimbed()
+end
+
+function WarpPort:landingDone()
+  local cutin = self.world._cutin
+  return cutin == nil or cutin:landingDone()
+end
+
+function WarpPort:cancelLanding()
+  local cutin = self.world._cutin
+  if cutin ~= nil then
+    cutin:cancelLanding()
+  end
+end
+
+function warpPort(world, plan)
+  return setmetatable({ world = world, plan = plan }, WarpPort)
+end
+
+-- Advance a warp plan's departure animation one source tick: "running"
+-- until the cover completes, then "warp".
+---@param plan table<string, unknown>
+---@return "running"|"warp"
+function FieldMoveWorld:stepWarpDeparture(plan)
+  assert(type(plan) == "table", "warp departure steps a plan")
+  return FieldWarpSequence.stepDeparture(assert(plan.sequence, "warp plans carry their sequence"), warpPort(self, plan))
+end
+
+-- Advance a warp plan's arrival animation one source tick: "running"
+-- until the screen, avatar and camera settle, then "done".
+---@param plan table<string, unknown>
+---@return "running"|"done"
+function FieldMoveWorld:stepWarpArrival(plan)
+  assert(type(plan) == "table", "warp arrival steps a plan")
+  return FieldWarpSequence.stepArrival(assert(plan.sequence, "warp plans carry their sequence"), warpPort(self, plan))
+end
+
+-- The map change landed: the source warp tasks end any Safari Zone session
+-- (FieldSystem_ClearSafariSysFlag). Teleport and Fly also re-randomize the
+-- roamers there; no roamer owner exists to do so yet.
+---@param plan table<string, unknown>
+function FieldMoveWorld:settleWarp(plan)
+  assert(type(plan) == "table", "warp settling needs a plan")
+  self._events:clearFlag(SAFARI_FLAG_ID)
 end
 
 -- Observe a started return warp: true once the maps service settles it.
@@ -681,7 +984,6 @@ local function appendTraversalSegment(runtimeMap, mapId, segment)
   segment.map = mapId
   segment.sourceCellKey = plate.cellKey
   segment.sourceSurfaceId = plate.sourceSurfaceId
-  segment.durationTicks = TRAVERSE_TICKS
 end
 
 ---@param mapId integer
@@ -718,11 +1020,14 @@ local function planSurfEntry(self, runtimeMap, mapId, position, facing, delta)
     behavior = cell.behavior,
     direction = facing,
     mode = "surfing",
+    hop = true,
   }
   appendTraversalSegment(runtimeMap, mapId, segment)
   segments[1] = segment
   return {
     kind = SURF_ENTER,
+    preTicks = SURF_MOUNT_WAIT_TICKS,
+    postTicks = SURF_MOUNT_WAIT_TICKS,
     segments = segments,
     sourceIdentity = { move = "surf", mapId = mapId, startFieldX = position.fieldX, startFieldZ = position.fieldZ },
   }
@@ -753,6 +1058,7 @@ local function planDisembark(self, runtimeMap, mapId, position, facing, delta)
     behavior = cell.behavior,
     direction = facing,
     mode = "surfing",
+    hop = true,
   }
   appendTraversalSegment(runtimeMap, mapId, segment)
   segments[1] = segment
@@ -768,8 +1074,67 @@ local function planDisembark(self, runtimeMap, mapId, position, facing, delta)
   }
 end
 
-local function planFalls(self, runtimeMap, mapId, position, facing, delta, move)
-  local want = move == "waterfall" and MetatileBehavior.BEHAVIOR.WATERFALL or MetatileBehavior.BEHAVIOR.WHIRLPOOL
+-- Source Task_Waterfall: the avatar crosses exactly two tiles straight up or
+-- down, whatever the fall behavior's height. The facing tile must be the
+-- fall; the far tile must be water or another fall tile and carry a surface
+-- above (rising) or at or below (falling) the current height.
+local function planWaterfall(self, runtimeMap, mapId, position, facing, delta, auto)
+  if facing ~= "north" and facing ~= "south" then
+    return { kind = "not_here" }
+  end
+  local viaX, viaZ = position.fieldX + delta.fieldX, position.fieldZ + delta.fieldZ
+  local via = readTraversalTile(runtimeMap, viaX, viaZ)
+  if via == nil then
+    return { kind = "not_here", reason = "connection_unprepared" }
+  end
+  if via.behavior ~= MetatileBehavior.BEHAVIOR.WATERFALL then
+    return { kind = "not_here" }
+  end
+  local x, z = viaX + delta.fieldX, viaZ + delta.fieldZ
+  local far = readTraversalTile(runtimeMap, x, z)
+  if far == nil then
+    return { kind = "not_here", reason = "connection_unprepared" }
+  end
+  if not MetatileBehavior.isSurfableWater(far.behavior) and far.behavior ~= MetatileBehavior.BEHAVIOR.WATERFALL then
+    return { kind = "not_here" }
+  end
+  local landing = selectTraversalSurface(runtimeMap, x, z, position.worldY, facing == "north" and "above" or "below")
+  if landing == nil then
+    return { kind = "not_here" }
+  end
+  if traversalTileOccupied(self, mapId, x, z, landing.surfaceId) then
+    return { kind = "not_here", reason = "traversal_blocked" }
+  end
+  local segment = {
+    fieldX = x,
+    fieldZ = z,
+    worldY = landing.worldY,
+    surfaceId = landing.surfaceId,
+    behavior = far.behavior,
+    direction = facing,
+    mode = "surfing",
+    waterfall = true,
+    viaFieldX = viaX,
+    viaFieldZ = viaZ,
+    viaBehavior = via.behavior,
+  }
+  appendTraversalSegment(runtimeMap, mapId, segment)
+  return {
+    kind = WATERFALL,
+    -- The unannounced descent carries no announcement: WaterfallDown_StartCutIn
+    -- skips the cut-in (and its follow-up SE_WATER_FIELD_MOVE) when the task
+    -- runs without one (player_avatar_actions.c sWaterfallDownSteps), so only
+    -- the announced climb plays the effect.
+    effect = not auto and SE_WATER_FIELD_MOVE or nil,
+    segments = { segment },
+    sourceIdentity = { move = "waterfall", mapId = mapId, startFieldX = position.fieldX, startFieldZ = position.fieldZ },
+  }
+end
+
+-- Source Task_Whirlpool: one slowest-walk step per tile until the avatar's
+-- tile is no longer a whirlpool; the first non-whirlpool tile must be water.
+local function planWhirlpool(self, runtimeMap, mapId, position, facing, delta)
+  local want = MetatileBehavior.BEHAVIOR.WHIRLPOOL
   local tileX, tileZ = position.fieldX + delta.fieldX, position.fieldZ + delta.fieldZ
   local first = readTraversalTile(runtimeMap, tileX, tileZ)
   if first == nil then
@@ -786,35 +1151,16 @@ local function planFalls(self, runtimeMap, mapId, position, facing, delta, move)
     if cell == nil then
       return { kind = "not_here", reason = "connection_unprepared" }
     end
-    if cell.behavior ~= want then
-      if not MetatileBehavior.isSurfableWater(cell.behavior) then
-        return { kind = "not_here" }
-      end
-      local landing = selectTraversalSurface(runtimeMap, x, z, currentY, "below")
-      if landing == nil then
-        return { kind = "not_here" }
-      end
-      if traversalTileOccupied(self, mapId, x, z, landing.surfaceId) then
-        return { kind = "not_here", reason = "traversal_blocked" }
-      end
-      local segment = {
-        fieldX = x,
-        fieldZ = z,
-        worldY = landing.worldY,
-        surfaceId = landing.surfaceId,
-        behavior = cell.behavior,
-        direction = facing,
-        mode = "surfing",
-      }
-      appendTraversalSegment(runtimeMap, mapId, segment)
-      segments[#segments + 1] = segment
-      return {
-        kind = move == "waterfall" and WATERFALL or WHIRLPOOL,
-        segments = segments,
-        sourceIdentity = { move = move, mapId = mapId, startFieldX = position.fieldX, startFieldZ = position.fieldZ },
-      }
+    local terminal = cell.behavior ~= want
+    if terminal and not MetatileBehavior.isSurfableWater(cell.behavior) then
+      return { kind = "not_here" }
     end
-    local sample = selectTraversalSurface(runtimeMap, x, z, currentY, nil)
+    local sample
+    if terminal then
+      sample = selectTraversalSurface(runtimeMap, x, z, currentY, "below")
+    else
+      sample = selectTraversalSurface(runtimeMap, x, z, currentY, nil)
+    end
     if sample == nil then
       return { kind = "not_here" }
     end
@@ -829,9 +1175,23 @@ local function planFalls(self, runtimeMap, mapId, position, facing, delta, move)
       behavior = cell.behavior,
       direction = facing,
       mode = "surfing",
+      speed = WHIRLPOOL_SPEED,
     }
     appendTraversalSegment(runtimeMap, mapId, segment)
     segments[#segments + 1] = segment
+    if terminal then
+      return {
+        kind = WHIRLPOOL,
+        effect = SE_WATER_FIELD_MOVE,
+        segments = segments,
+        sourceIdentity = {
+          move = "whirlpool",
+          mapId = mapId,
+          startFieldX = position.fieldX,
+          startFieldZ = position.fieldZ,
+        },
+      }
+    end
     currentY = sample.worldY
     x, z = x + delta.fieldX, z + delta.fieldZ
   end
@@ -890,8 +1250,18 @@ local function planClimb(self, runtimeMap, mapId, position, facing, delta)
       }
       appendTraversalSegment(runtimeMap, mapId, segment)
       segments[#segments + 1] = segment
+      -- Source Task_RockClimb: hop onto the wall, walk fast between wall
+      -- tiles, hop onto the landing.
+      for index, planned in ipairs(segments) do
+        if index == 1 or index == #segments then
+          planned.hop = true
+        else
+          planned.speed = CLIMB_WALK_SPEED
+        end
+      end
       return {
         kind = ROCK_CLIMB,
+        effect = SE_ROCK_CLIMB_DEBRIS,
         segments = segments,
         sourceIdentity = {
           move = "rock_climb",
@@ -932,7 +1302,7 @@ end
 -- a Decision before any motion: wrong facing tile, occupied tiles,
 -- missing landings, unbounded paths, and connections the residency never
 -- prepared.
----@param request table<string, unknown> { move }
+---@param request table<string, unknown> { move, auto? }
 ---@param context table<string, unknown>?
 ---@return table<string, unknown> traversal plan or Decision
 function FieldMoveWorld:planTraversal(request, context)
@@ -956,8 +1326,10 @@ function FieldMoveWorld:planTraversal(request, context)
     return planSurfEntry(self, runtimeMap, live.id, position, facing, delta)
   elseif move == "disembark" then
     return planDisembark(self, runtimeMap, live.id, position, facing, delta)
-  elseif move == "waterfall" or move == "whirlpool" then
-    return planFalls(self, runtimeMap, live.id, position, facing, delta, move)
+  elseif move == "waterfall" then
+    return planWaterfall(self, runtimeMap, live.id, position, facing, delta, request.auto == true)
+  elseif move == "whirlpool" then
+    return planWhirlpool(self, runtimeMap, live.id, position, facing, delta)
   elseif move == "rock_climb" then
     return planClimb(self, runtimeMap, live.id, position, facing, delta)
   end
@@ -995,23 +1367,44 @@ function FieldMoveWorld:validateTraversalSegment(plan)
   if traversalTileOccupied(self, live.id, segment.fieldX, segment.fieldZ, segment.surfaceId) then
     return { kind = "not_here", reason = "traversal_blocked" }
   end
+  if segment.viaFieldX ~= nil then
+    -- A two-tile crossing also revalidates the tile it passes over.
+    local via = readTraversalTile(runtimeMap, segment.viaFieldX, segment.viaFieldZ)
+    if via == nil then
+      return { kind = "not_here", reason = "connection_unprepared" }
+    end
+    if via.behavior ~= segment.viaBehavior then
+      return { kind = "not_here" }
+    end
+  end
   return nil
 end
 
 -- Begin the current segment's scripted traverse motion through the
--- existing motion owner. Marks the plan in-flight so the runtime can tell
--- a settled segment from one never started.
+-- existing motion owner, at the gait the plan chose. Marks the plan
+-- in-flight so the runtime can tell a settled segment from one never
+-- started; the plan's source effect sounds as its first segment starts.
 ---@param plan table<string, unknown>
 function FieldMoveWorld:beginTraversalSegment(plan)
   assert(type(plan) == "table", "segment begin requires a plan")
   local segment = assert(plan.segments[plan.segmentIndex + 1], "traversal has no current segment")
-  self._player:beginScriptedAction({
+  local action = {
     action = "traverse",
     direction = segment.direction,
-    speed = "normal",
     mode = segment.mode,
     surfaceId = segment.surfaceId,
-  })
+  }
+  if segment.waterfall then
+    action.action = "waterfall"
+  elseif segment.hop then
+    action.hop = true
+  else
+    action.speed = assert(segment.speed, "traversal segment needs its gait")
+  end
+  self._player:beginScriptedAction(action)
+  if plan.segmentIndex == 0 and plan.effect ~= nil then
+    self:playEffect(plan.effect)
+  end
   plan.motionActive = true
 end
 

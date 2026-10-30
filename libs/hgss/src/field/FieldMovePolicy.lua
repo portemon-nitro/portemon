@@ -4,10 +4,10 @@
 -- queries presentation, host time, or private runtime fields, and never
 -- mutates the context. Pure domain module: no love dependency and no I/O.
 --
--- Source basis: the retail ROM's field-move checks. Badge semantics follow the durable progression order;
--- encounter/recording capabilities stay deferred (GD-06), so Headbutt,
--- Sweet Scent, and Chatter report feature_unavailable only after their
--- genuine physical checks pass.
+-- Source basis: the retail ROM's field-move checks (field_move.c) and the
+-- Escape Rope item check. Badge semantics follow the durable progression
+-- order. Checks answer eligibility only; moves whose execution is not yet
+-- implemented report that at the runtime layer.
 
 local FieldMovePolicy = {}
 
@@ -26,8 +26,6 @@ FieldMovePolicy.MOVE_KEYS = {
   "headbutt",
   "sweet_scent",
   "chatter",
-  "defog",
-  "escape_rope",
 }
 
 -- Badge bit per semantic badge key, following the progression order.
@@ -61,6 +59,10 @@ local function fieldUse(context)
   return policy
 end
 
+-- Source WEATHER_FLASH: the dark-cave weather Flash can light. Using Flash
+-- switches to a different weather, so the check fails afterwards.
+local WEATHER_FLASH = 11
+
 -- A visible following mon is not the source's human-escort restriction.
 local function escortRefusal(context)
   if context.humanFollower then
@@ -91,9 +93,11 @@ local function checkFly(context)
   if escort then
     return escort
   end
-  -- Field checks do not consume a move's PP or enable it globally.
-  if context.rocketCostume or context.safari or context.palPark then
+  if context.rocketCostume then
     return { kind = "not_now" }
+  end
+  if context.safari or context.palPark then
+    return { kind = "not_here" }
   end
   return { kind = "ok" }
 end
@@ -134,15 +138,10 @@ local function checkStrength(context)
 end
 
 local function checkFlash(context)
-  local policy = fieldUse(context)
-  if policy.alphChamber then
+  if context.alphFlashSpot or context.weatherId == WEATHER_FLASH then
     return { kind = "ok" }
   end
-  if not policy.flashUsable then
-    return { kind = "not_here" }
-  end
-  -- Field checks do not consume a move's PP or enable it globally.
-  return { kind = "ok" }
+  return { kind = "not_here" }
 end
 
 local function checkRockSmash(context)
@@ -226,9 +225,11 @@ local function checkTeleport(context)
   if escort then
     return escort
   end
-  -- Field checks do not consume a move's PP or enable it globally.
-  if context.rocketCostume or context.safari or context.palPark then
+  if context.rocketCostume then
     return { kind = "not_now" }
+  end
+  if context.safari or context.palPark then
+    return { kind = "not_here" }
   end
   return { kind = "ok" }
 end
@@ -237,37 +238,41 @@ local function checkHeadbutt(context)
   if not context.headbuttTree then
     return { kind = "not_here" }
   end
-  return { kind = "feature_unavailable", reason = "headbutt_encounters_deferred" }
+  return { kind = "ok" }
 end
 
 local function checkSweetScent(context)
   if context.palPark then
     return { kind = "not_here" }
   end
-  return { kind = "feature_unavailable", reason = "sweet_scent_encounters_deferred" }
-end
-
-local function checkChatter(context)
-  if not context.chatterOpen then
-    return { kind = "not_here" }
-  end
-  return { kind = "feature_unavailable", reason = "chatter_recording_deferred" }
-end
-
-local function checkDefog(context)
-  if not context.foggy then
-    return { kind = "not_here" }
-  end
-  -- Field checks do not consume a move's PP or enable it globally.
   return { kind = "ok" }
 end
 
-local function checkEscapeRope(context)
+local function checkChatter(_)
+  return { kind = "ok" }
+end
+
+-- The Escape Rope bag item shares the field-move vocabulary but is not a
+-- party move: escort and costume refusals precede the Alph first-room
+-- exception, then the cave rule.
+---@param context table<string, unknown> a copied read-only context record
+---@return table<string, unknown>
+function FieldMovePolicy.checkEscapeRope(context)
+  assert(type(context) == "table", "field checks require a context record")
+  local escort = escortRefusal(context)
+  if escort then
+    return escort
+  end
+  if context.rocketCostume then
+    return { kind = "not_now" }
+  end
+  if context.alphEscapeRopeSpot then
+    return { kind = "ok" }
+  end
   local policy = fieldUse(context)
   if not policy.cave or not policy.escapeAllowed then
     return { kind = "not_here" }
   end
-  -- Field checks do not consume a move's PP or enable it globally.
   return { kind = "ok" }
 end
 
@@ -286,8 +291,6 @@ local CHECKS = {
   headbutt = checkHeadbutt,
   sweet_scent = checkSweetScent,
   chatter = checkChatter,
-  defog = checkDefog,
-  escape_rope = checkEscapeRope,
 }
 
 ---@param moveKey string

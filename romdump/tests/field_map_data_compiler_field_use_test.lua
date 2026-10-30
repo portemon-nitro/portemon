@@ -22,13 +22,13 @@ end
 
 function T.field_use_projects_source_flags_per_map()
   local bark = compileOk(60)
-  Assert.equal(bark.field.schema, "g4-field-map-v14")
+  Assert.equal(bark.field.schema, "g4-field-map-v15")
   Assert.deepEqual(bark.field.fieldUse, {
     flyAllowed = true,
-    teleportAllowed = true,
+    teleportAllowed = false,
     escapeAllowed = false,
-    flashUsable = false,
-    alphChamber = false,
+    alphFlashRoom = false,
+    alphEscapeRopeRoom = false,
     icePathB2F = false,
     cave = false,
     unionOrColosseum = false,
@@ -38,8 +38,8 @@ function T.field_use_projects_source_flags_per_map()
     flyAllowed = false,
     teleportAllowed = false,
     escapeAllowed = true,
-    flashUsable = true,
-    alphChamber = false,
+    alphFlashRoom = false,
+    alphEscapeRopeRoom = false,
     icePathB2F = false,
     cave = true,
     unionOrColosseum = false,
@@ -63,12 +63,37 @@ function T.exception_maps_carry_explicit_source_exceptions()
   local ice = compileOk(238).field.fieldUse
   Assert.isTrue(ice.icePathB2F)
   Assert.isTrue(ice.cave)
-  local alph = compileOk("MAP_RUINS_OF_ALPH_UNDERGROUND_HALL").field.fieldUse
-  Assert.isTrue(alph.alphChamber)
-  Assert.isTrue(alph.flashUsable)
+  local flashRoom = compileOk("MAP_RUINS_OF_ALPH_SOUTHEAST_ENTRANCE_FIRST_ROOM").field.fieldUse
+  Assert.isTrue(flashRoom.alphFlashRoom)
+  Assert.isFalse(flashRoom.alphEscapeRopeRoom)
+  local ropeRoom = compileOk("MAP_RUINS_OF_ALPH_NORTHEAST_ENTRANCE_FIRST_ROOM").field.fieldUse
+  Assert.isTrue(ropeRoom.alphEscapeRopeRoom)
+  Assert.isFalse(ropeRoom.alphFlashRoom)
+  local hall = compileOk("MAP_RUINS_OF_ALPH_UNDERGROUND_HALL").field.fieldUse
+  Assert.isFalse(hall.alphFlashRoom, "the underground hall is not the Flash exception room")
   local plain = compileOk(60).field.fieldUse
-  Assert.isFalse(plain.alphChamber)
+  Assert.isFalse(plain.alphFlashRoom)
+  Assert.isFalse(plain.alphEscapeRopeRoom)
   Assert.isFalse(plain.icePathB2F)
+end
+
+-- Source MapHeader_IsTeleportAllowed: fly permission and not a city/town.
+function T.teleport_requires_fly_permission_outside_cities_and_towns()
+  local seen = { allowed = false, city = false, noFly = false }
+  for _, mapId in ipairs(FieldMapDataCompiler.supportedMapIds()) do
+    local map = header(mapId)
+    if map.mapType == "ROUTE" and map.flyAllowed and not seen.allowed then
+      seen.allowed = true
+      Assert.isTrue(compileOk(mapId).field.fieldUse.teleportAllowed, map.symbol)
+    elseif map.mapType == "CITY_TOWN" and map.flyAllowed and not seen.city then
+      seen.city = true
+      Assert.isFalse(compileOk(mapId).field.fieldUse.teleportAllowed, map.symbol)
+    elseif map.mapType == "ROUTE" and not map.flyAllowed and not seen.noFly then
+      seen.noFly = true
+      Assert.isFalse(compileOk(mapId).field.fieldUse.teleportAllowed, map.symbol)
+    end
+  end
+  Assert.isTrue(seen.allowed and seen.city, "the catalog covers allowed and city cases")
 end
 
 function T.union_room_rejects_external_checks_as_data()

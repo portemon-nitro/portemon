@@ -69,6 +69,7 @@ local function runtimeWithAudio(calls, options)
       end,
     },
     transition = transition,
+    scentTint = { updateSourceFrame = function() end },
     screenFade = screenFadeFake(calls),
     scripts = {},
     applicationHost = {
@@ -99,6 +100,7 @@ local function runtimeWithoutAudio(calls)
       end,
     },
     transition = transition,
+    scentTint = { updateSourceFrame = function() end },
     screenFade = screenFadeFake(calls),
     scripts = {},
     applicationHost = {
@@ -135,6 +137,7 @@ local function runtimeForSemanticCatchUp(counters)
       end,
       consumeCompleted = function() end,
     },
+    scentTint = { updateSourceFrame = function() end },
     screenFade = {
       fadeDone = function()
         return true
@@ -342,6 +345,7 @@ function T.tests.zero_delta_does_not_advance_any_clock()
       end,
       consumeCompleted = function() end,
     },
+    scentTint = { updateSourceFrame = function() end },
     screenFade = screenFadeFake(calls),
     scripts = {},
     applicationHost = {
@@ -380,6 +384,7 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
       updateSourceFrame = function() end,
       consumeCompleted = function() end,
     },
+    scentTint = { updateSourceFrame = function() end },
     screenFade = {
       fadeDone = function()
         return true
@@ -433,6 +438,7 @@ local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive
       updateSourceFrame = function() end,
       consumeCompleted = function() end,
     },
+    scentTint = { updateSourceFrame = function() end },
     screenFade = {
       fadeDone = function()
         return true

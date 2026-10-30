@@ -67,7 +67,8 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
----@field progression PlayerProgression? Running Shoes owner; absent sessions never run
+---@field progression PlayerProgression? Running Shoes owner and badge reads; absent sessions never run or Surf
+---@field partyKnowsMove (fun(move: string): boolean)? whether a party mon knows the field-move key; absent sessions never resolve Surf
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field navigationBoundary table<string, unknown>?
 ---@field fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
@@ -84,6 +85,8 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field tryStrengthPush fun(self: FieldSession.FieldMoves, snapshot: table<string, unknown>): table<string, unknown>
 ---@field discardPending fun(self: FieldSession.FieldMoves)
 ---@field requestDisembark fun(self: FieldSession.FieldMoves): table<string, unknown>
+---@field clearTransient fun(self: FieldSession.FieldMoves)
+---@field requestWaterfallDescent fun(self: FieldSession.FieldMoves): table<string, unknown>
 
 ---@class FieldSession.IncomingCalls
 ---@field onOpportunity fun(self: FieldSession.IncomingCalls, args: table<string, unknown>)
@@ -129,7 +132,8 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
----@field progression PlayerProgression? Running Shoes owner; absent sessions never run
+---@field progression PlayerProgression? Running Shoes owner and badge reads; absent sessions never run or Surf
+---@field partyKnowsMove (fun(move: string): boolean)? whether a party mon knows the field-move key; absent sessions never resolve Surf
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field initController table<string, unknown>|nil
 ---@field mapEntryStage FieldMapEntryStage? read-only view of mapEntryController state
@@ -401,6 +405,14 @@ function FieldSession.new(options)
       type(options.fieldMoves.requestDisembark) == "function",
       "field session disembark port requires requestDisembark"
     )
+    assert(
+      type(options.fieldMoves.requestWaterfallDescent) == "function",
+      "field session waterfall descent requires requestWaterfallDescent"
+    )
+    assert(
+      type(options.fieldMoves.clearTransient) == "function",
+      "field session map-lifetime reset requires clearTransient"
+    )
   end
   if options.audio then
     assert(
@@ -460,6 +472,7 @@ function FieldSession.new(options)
     terrainEffects = options.terrainEffects,
     playerAvatar = options.playerAvatar,
     progression = options.progression,
+    partyKnowsMove = options.partyKnowsMove,
     audio = options.audio,
     initController = options.initController,
     mapEntryController = FieldMapEntryController.new({
@@ -493,7 +506,12 @@ function FieldSession.new(options)
   return session
 end
 
+-- Source FieldSystem_ResetStateOnWarp and _OnMapConnection clear the
+-- Strength enablement whenever a map is entered by warp or connection.
 function FieldSession:beginMapEntry()
+  if self.fieldMoves ~= nil then
+    self.fieldMoves:clearTransient()
+  end
   self:validateSurfSpawn()
   self.mapEntryController:begin("full")
 end
@@ -1531,6 +1549,12 @@ function FieldSession:updateFixed(inputSnapshot)
       interactionSnapshot.surfaceId = self.player.surfaceId
       interactionSnapshot.worldY = self.player.worldY
       interactionSnapshot.facing = self.player.facing
+      local avatar = self.playerAvatar
+      interactionSnapshot.surfing = avatar ~= nil and avatar:durableState() == "surfing"
+      interactionSnapshot.surfAllowed = self.progression ~= nil
+        and self.partyKnowsMove ~= nil
+        and self.progression:hasBadge("fog")
+        and self.partyKnowsMove("surf")
       interactionSnapshot.tick = self.tick + 1
       local intent = self.interactions:resolve(interactionSnapshot)
       if intent then
@@ -1631,8 +1655,23 @@ function FieldSession:updateFixed(inputSnapshot)
   local disembarkDirection = inputSnapshot.pressedDirection or inputSnapshot.heldDirection
   if self.fieldMoves ~= nil and not foregroundActive and self.player.motion == "idle" and disembarkDirection then
     local decision = self.player:stepDecision(disembarkDirection)
-    if type(decision) == "table" and decision.kind == "disembark" then
-      local attempt = self.fieldMoves:requestDisembark()
+    -- Source Field_PlayerAvatar_TryWaterfallUp: a facing surfer stepping
+    -- south into a fall starts the unannounced descent when the party
+    -- knows Waterfall; the rising fall needs the explicit field move.
+    local descending = type(decision) == "table"
+      and decision.kind == "field_action"
+      and decision.action == "waterfall"
+      and disembarkDirection == "south"
+      and self.player.facing == "south"
+      and self.playerAvatar ~= nil
+      and self.playerAvatar:durableState() == "surfing"
+    if descending or (type(decision) == "table" and decision.kind == "disembark") then
+      local attempt
+      if descending then
+        attempt = self.fieldMoves:requestWaterfallDescent()
+      else
+        attempt = self.fieldMoves:requestDisembark()
+      end
       if type(attempt) == "table" and attempt.kind == "accepted" then
         local started = self.scriptClient:startApplicationScript(BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT, self.tick + 1)
         if started ~= ScriptInteractionClient.RESULTS.blocked then
@@ -1671,6 +1710,9 @@ function FieldSession:updateFixed(inputSnapshot)
         -- own the next ticks, and the arrival tile's event -- its coordinate
         -- event, or the passive sign it faces -- waits for them instead of
         -- resolving against a map that is not live yet.
+        if self.fieldMoves ~= nil then
+          self.fieldMoves:clearTransient()
+        end
         self.mapEntryController:begin("connection")
       end
     end

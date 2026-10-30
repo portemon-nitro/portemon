@@ -19,6 +19,16 @@ ScriptInteractionClient.__index = ScriptInteractionClient
 local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
 local Bindings = require("libs.hgss.src.script.Bindings")
 
+-- The closed set of facing-metatile scripts the field resolver may hand over.
+local STANDARD_INTERACTION_SCRIPTS = {
+  ["common.pokecenter_pc"] = true,
+  ["common.field_headbutt"] = true,
+  ["common.field_rock_climb"] = true,
+  ["common.field_surf"] = true,
+  ["common.field_waterfall"] = true,
+  ["common.field_whirlpool"] = true,
+}
+
 -- The dynamic follower keeps raw script id zero on its synthetic actor event
 -- (see FieldActorManager.partnerEvent), so the generic binding would route
 -- it to the inert no-op. Facing the partner must instead start the
@@ -127,8 +137,9 @@ end
 -- loudly. Map-init lifecycle flags are never reused for this entry.
 ---@param scriptId string
 ---@param tick integer
+---@param context { selfActor: string }? the actor a menu move targets, read by the script as its last-talked actor
 ---@return string instanceId | blocked
-function ScriptInteractionClient:startApplicationScript(scriptId, tick)
+function ScriptInteractionClient:startApplicationScript(scriptId, tick, context)
   assert(type(scriptId) == "string" and scriptId ~= "", "application script identity required")
   assert(type(tick) == "number" and tick == tick and tick % 1 == 0 and tick >= 0, "tick required")
   if self._scheduler:foregroundEnvironmentId() ~= nil then
@@ -142,8 +153,12 @@ function ScriptInteractionClient:startApplicationScript(scriptId, tick)
   -- claim but never player input, or scripted player motion could never
   -- advance while the task runs. Menu and reopen edges stay barred by
   -- the foreground claim itself.
-  local instanceId =
-    self._scheduler:startInteraction({ type = "application", scriptId = scriptId }, composed, tick, false)
+  local trigger = { type = "application", scriptId = scriptId }
+  if context ~= nil then
+    assert(type(context.selfActor) == "string" and context.selfActor ~= "", "application script actor must be named")
+    trigger.selfActor = context.selfActor
+  end
+  local instanceId = self._scheduler:startInteraction(trigger, composed, tick, false)
   assert(instanceId ~= nil, "application script scheduler start did not create an instance")
   return instanceId
 end
@@ -165,7 +180,7 @@ function ScriptInteractionClient:resolve(intent)
     }
   end
   if intent.kind == "standard" then
-    assert(intent.scriptId == "common.pokecenter_pc", "unknown standard field interaction")
+    assert(STANDARD_INTERACTION_SCRIPTS[intent.scriptId] == true, "unknown standard field interaction")
     local composed = self._compose(intent.scriptId)
     if composed == nil then
       error("missing composed standard interaction " .. intent.scriptId)

@@ -29,6 +29,7 @@ local AudioBank = require("libs.assets.src.audio.AudioBank")
 ---@field fieldPosition fun(): integer, integer
 ---@field dayNight fun(): "day"|"night"
 ---@field fieldDataForMap fun(mapId: integer|string): unknown
+---@field traversal (fun(): string)? the avatar's durable traversal mode, owned outside audio
 
 ---@class FieldAudioController
 ---@field private _sound GameSound
@@ -36,6 +37,7 @@ local AudioBank = require("libs.assets.src.audio.AudioBank")
 ---@field private _fieldPosition fun(): integer, integer
 ---@field private _dayNight fun(): "day"|"night"
 ---@field private _fieldDataForMap fun(mapId: integer|string): unknown
+---@field private _traversal (fun(): string)?
 ---@field _currentMap unknown
 ---@field _fieldMusic integer|nil
 ---@field _musicOverride integer|nil
@@ -81,6 +83,7 @@ function FieldAudioController.new(opts)
     _fieldPosition = opts.fieldPosition,
     _dayNight = opts.dayNight,
     _fieldDataForMap = opts.fieldDataForMap,
+    _traversal = opts.traversal,
     _currentMap = nil,
     _fieldMusic = nil,
     _musicOverride = nil,
@@ -462,9 +465,53 @@ function FieldAudioController:_prefetchPredictedBanks(fieldData)
   end
 end
 
--- Returns the effective field music: persisted override > map-header
+-- The traversal music the live avatar mode selects on the current map: the
+-- first generated traversal rule for that mode whose suppressing flag is
+-- clear. Nil without a traversal owner, a map, or a matching rule.
+---@return integer|nil
+function FieldAudioController:_traversalMusic()
+  local traversal = self._traversal
+  if traversal == nil or self._currentMap == nil then
+    return nil
+  end
+  local music = self._currentMap.fieldData and self._currentMap.fieldData.music
+  if music == nil or music.traversalOverrides == nil then
+    return nil
+  end
+  local mode = traversal()
+  for _, rule in ipairs(music.traversalOverrides) do
+    if rule.traversal == mode and not (rule.unlessFlagId ~= nil and self._eventState:isFlagSet(rule.unlessFlagId)) then
+      return self._provider:sequence(rule.sequence).id
+    end
+  end
+  return nil
+end
+
+-- Follows a traversal mode change (Task_Surf / Task_StopSurfing): mounting
+-- the traversal music clears the persisted override and replaces the field
+-- music over one frame; any other change returns to the effective music
+-- over four. A surviving radio keeps playing, as in the source.
+function FieldAudioController:syncTraversalMusic()
+  assert(self._traversal ~= nil, "traversal music follows an avatar traversal owner")
+  local traversalMusic = self:_traversalMusic()
+  if traversalMusic ~= nil then
+    self._musicOverride = nil
+  end
+  local target = self:effectiveMusic()
+  if target == nil or self._policySuspendedBy ~= nil or self._sound:currentRadioSequence() ~= nil then
+    return
+  end
+  self._sound:queueMusicReplacement(target, traversalMusic ~= nil and 1 or 4)
+end
+
+-- Returns the effective field music: traversal music > persisted override >
+-- map-header
 ---@return integer|nil
 function FieldAudioController:effectiveMusic()
+  local traversalMusic = self:_traversalMusic()
+  if traversalMusic ~= nil then
+    return traversalMusic
+  end
   if self._musicOverride ~= nil then
     return self._musicOverride
   end
@@ -734,7 +781,7 @@ function FieldAudioController:_processSelection(fieldX, fieldZ)
 
     self._environment = { sequence = seqId }
 
-    if selectedPlate.bgmTarget ~= nil and self._fieldMusic ~= nil then
+    if selectedPlate.bgmTarget ~= nil and self:effectiveMusic() ~= nil then
       self:_applyOrDeferFieldMusicTarget(selectedPlate.bgmTarget, 15)
     elseif self._pendingFieldMusicPolicy ~= nil then
       self._pendingFieldMusicPolicy.target = nil
@@ -786,7 +833,7 @@ function FieldAudioController:_deactivateSoundplate()
 
   self._sound:stopSequenceWithFade(self._environment.sequence, 10)
 
-  if self._fieldMusic ~= nil then
+  if self:effectiveMusic() ~= nil then
     self:_applyOrDeferFieldMusicTarget(128, 15)
   end
 
@@ -808,8 +855,11 @@ function FieldAudioController:_applyOrDeferFieldMusicTarget(target, durationFram
     return
   end
 
-  if self._fieldMusic ~= nil then
-    self._sound:moveSequenceVolume(self._fieldMusic, target, durationFrames)
+  -- The volume ramp belongs to the music that actually plays, which a
+  -- traversal override can make differ from the map-header music.
+  local playing = self:effectiveMusic()
+  if playing ~= nil then
+    self._sound:moveSequenceVolume(playing, target, durationFrames)
   end
 end
 

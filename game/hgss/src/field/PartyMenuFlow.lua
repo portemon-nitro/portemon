@@ -16,6 +16,7 @@ local MailboxScreenState = require("game.hgss.src.pc.MailboxScreenState")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 
 local TERMINAL_FIELD_ACTION = "pokemon.field_move"
+local ESCAPE_ROPE = "ESCAPE_ROPE"
 
 -- The complete set of pages the flow's single live child can occupy.
 local PAGE = {
@@ -641,6 +642,22 @@ function PartyMenuFlow:_useKind(itemKey)
   return "none"
 end
 
+-- The Escape Rope Use: the item rule decides on selection. An allowed use
+-- leaves for the field with a slotless escape request (the field consumes
+-- the rope when it admits the request); a refusal holds the Bag.
+function PartyMenuFlow:_routeEscapeRope()
+  local decision = self._fieldMoves.check({ move = "escape_rope" })
+  assert(type(decision) == "table" and type(decision.kind) == "string", "item checks answer decisions")
+  if decision.kind ~= "ok" then
+    return
+  end
+  self:_terminate({
+    kind = "field_action",
+    actionId = TERMINAL_FIELD_ACTION,
+    request = { move = "escape_rope" },
+  })
+end
+
 -- Routes a bag intent into its party target page with a captured
 -- continuation. The launching batch stays with the retired bag child.
 ---@param intent table<string, unknown>
@@ -649,6 +666,10 @@ function PartyMenuFlow:_routeBagIntent(intent)
   local itemKey = assert(intent.item, "bag intents snapshot their item")
   if intent.kind == "use" and itemKey == "APRICORN_BOX" then
     self:_replace(PAGE.APRICORN_BOX, nil)
+    return
+  end
+  if intent.kind == "use" and itemKey == ESCAPE_ROPE then
+    self:_routeEscapeRope()
     return
   end
   local operation = intent.kind == "use" and "use" or "give"
@@ -1071,6 +1092,16 @@ function PartyMenuFlow:_routeBrowseIntent(intent)
   error("unknown party browse intent " .. tostring(intent.kind), 0)
 end
 
+-- Source party-menu refusal messages per field-check answer
+-- (PartyMenuContextMenuAction_FieldMoveCommon), keyed by decision kind.
+local FIELD_MOVE_REFUSAL_TEMPLATES = {
+  not_here = "fieldMoveNotHere",
+  need_badge = "fieldMoveNeedBadge",
+  have_follower = "fieldMoveHaveFollower",
+  already_surfing = "fieldMoveAlreadySurfing",
+  not_now = "fieldMoveNotNow",
+}
+
 -- Checks one field entry before leaving the application: executable
 -- checks emit the typed terminal handoff, and refusals hold the screen
 -- without publishing.
@@ -1101,7 +1132,12 @@ function PartyMenuFlow:_routeFieldMove(intent)
     })
     return
   end
-  self:_completeParty({ kind = decision.kind })
+  local templateKey = FIELD_MOVE_REFUSAL_TEMPLATES[decision.kind]
+  if templateKey == nil then
+    self:_completeParty({ kind = decision.kind })
+    return
+  end
+  self:_completeParty({ kind = decision.kind, message = { templateKey = templateKey } })
 end
 
 -- Routes a summary result: a returned member reopens Party on the live

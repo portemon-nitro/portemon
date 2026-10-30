@@ -96,6 +96,8 @@ end
 local function setup(map, player, avatar)
   local events = FieldEventState.new()
   local applied = { count = 0, names = {} }
+  local actorActions = {}
+  local sounds = {}
   local ports = {
     actors = {
       getActor = function()
@@ -110,7 +112,9 @@ local function setup(map, player, avatar)
       getCollisionAt = function()
         return nil
       end,
-      beginScriptedAction = function() end,
+      beginScriptedAction = function(_, actorId, action)
+        actorActions[#actorActions + 1] = { actorId = actorId, action = action }
+      end,
       advanceScriptedAction = function() end,
       commitScriptedAction = function() end,
       cancelScriptedMovement = function() end,
@@ -173,8 +177,20 @@ local function setup(map, player, avatar)
         error("traversal world tests cover no reaction dispatch", 2)
       end,
     },
+    audio = {
+      play = function(_, sequence)
+        sounds[#sounds + 1] = sequence
+      end,
+    },
   }
-  return { world = FieldMoveWorld.new(ports), applied = applied, events = events }
+  return {
+    world = FieldMoveWorld.new(ports),
+    applied = applied,
+    events = events,
+    actorActions = actorActions,
+    sounds = sounds,
+    player = player,
+  }
 end
 
 local function shoreRig()
@@ -253,7 +269,9 @@ function T.disembark_plans_the_shore_step_and_flips_avatar_at_commit()
   Assert.equal(rig.applied.count, 2)
 end
 
-function T.waterfall_chains_contiguous_falls_to_a_validated_pool()
+-- Source Task_Waterfall: the avatar crosses exactly two tiles, however tall
+-- the fall behavior runs, so the plan is one segment two tiles away.
+function T.waterfall_plans_exactly_two_tiles_from_the_facing_fall()
   local behaviorAt = {}
   for z = 3, 5 do
     behaviorAt["5:" .. z] = 19
@@ -266,21 +284,20 @@ function T.waterfall_chains_contiguous_falls_to_a_validated_pool()
   })
   local player = FieldPlayer.new({ currentMap = map, fieldX = 5, fieldZ = 2, surfaceId = 0, facing = "south" })
   player:setTraversalMode("surfing")
-  local avatar = rigAvatar("surfing")
-  local rig = setup(map, player, avatar)
+  local rig = setup(map, player, rigAvatar("surfing"))
   local plan = rig.world:planTraversal({ move = "waterfall" })
   Assert.equal(plan.kind, "waterfall")
-  Assert.equal(#plan.segments, 4)
-  Assert.equal(plan.segments[4].fieldZ, 6)
-  Assert.equal(plan.segments[4].worldY, 0)
-  Assert.equal(plan.segments[4].surfaceId, 2)
+  Assert.equal(#plan.segments, 1)
+  Assert.equal(plan.segments[1].fieldZ, 4)
+  Assert.equal(plan.segments[1].worldY, 2)
+  Assert.equal(plan.segments[1].surfaceId, 1)
+  Assert.equal(plan.effect, "SEQ_SE_DP_FW463")
+  local automatic = rig.world:planTraversal({ move = "waterfall", auto = true })
+  Assert.isNil(automatic.effect, "the unannounced descent plays no effect")
 end
 
-function T.waterfall_refuses_a_missing_landing_before_motion()
-  local behaviorAt = {}
-  for z = 3, 5 do
-    behaviorAt["5:" .. z] = 19
-  end
+function T.waterfall_refuses_a_non_water_far_tile_before_motion()
+  local behaviorAt = { ["5:3"] = 19 }
   local map = rigMap(behaviorAt, {
     flatPlate(0, 0, 0, 32, 3, 4),
     flatPlate(1, 0, 3, 32, 32, 2),
@@ -291,6 +308,78 @@ function T.waterfall_refuses_a_missing_landing_before_motion()
   local plan = rig.world:planTraversal({ move = "waterfall" })
   Assert.equal(plan.kind, "not_here")
   Assert.isFalse(player:isScriptedMoving())
+end
+
+function T.waterfall_refuses_sideways_facing()
+  local behaviorAt = { ["6:2"] = 19, ["7:2"] = 16 }
+  local map = rigMap(behaviorAt, { flatPlate(0, 0, 0, 32, 32, 0) })
+  local player = FieldPlayer.new({ currentMap = map, fieldX = 5, fieldZ = 2, surfaceId = 0, facing = "east" })
+  player:setTraversalMode("surfing")
+  local rig = setup(map, player, rigAvatar("surfing"))
+  Assert.equal(rig.world:planTraversal({ move = "waterfall" }).kind, "not_here")
+end
+
+-- Drive one planned waterfall through the real player and record each tick.
+local function runWaterfall(rig, plan)
+  local runtimePlan = { kind = plan.kind, mapId = 61, segments = plan.segments, segmentIndex = 0 }
+  Assert.isNil(rig.world:validateTraversalSegment(runtimePlan))
+  local player = rig.player
+  local samples = { { y = player.worldY, z = player.worldZ } }
+  rig.world:beginTraversalSegment(runtimePlan)
+  while player:isScriptedMoving() do
+    player:updateFixed({})
+    samples[#samples + 1] = { y = player.worldY, z = player.worldZ, walking = player:presentationState().locomotionActive }
+    Assert.isTrue(#samples <= 200, "the fall must settle")
+  end
+  rig.world:commitTraversalSegment(runtimePlan)
+  return samples
+end
+
+function T.waterfall_rise_runs_96_updates_height_first_without_walk_animation()
+  local behaviorAt = { ["5:4"] = 19, ["5:3"] = 16 }
+  local map = rigMap(behaviorAt, {
+    flatPlate(0, 0, 0, 32, 4, 4),
+    flatPlate(1, 0, 4, 32, 32, 0),
+  })
+  local player = FieldPlayer.new({ currentMap = map, fieldX = 5, fieldZ = 5, surfaceId = 1, facing = "north" })
+  player:setTraversalMode("surfing")
+  local rig = setup(map, player, rigAvatar("surfing"))
+  local plan = rig.world:planTraversal({ move = "waterfall" })
+  Assert.equal(plan.kind, "waterfall")
+  local samples = runWaterfall(rig, plan)
+  Assert.equal(#samples - 1, 96, "source cadence is 96 updates")
+  local first, last = samples[1], samples[#samples]
+  Assert.equal(player.fieldZ, 3)
+  Assert.equal(player.surfaceId, 0)
+  Assert.equal(last.y, 4)
+  -- Updates 1-32 raise height only; ground travel starts afterwards.
+  Assert.equal(samples[33].z, first.z, "no ground travel during the first 32 updates")
+  Assert.near(samples[33].y, first.y + (last.y - first.y) / 2, 1e-9, "half the height after 32 updates")
+  Assert.near(samples[65].y, last.y, 1e-9, "height settles at update 64")
+  Assert.near(samples[65].z, first.z + (last.z - first.z) / 2, 1e-9, "half the ground after 64 updates")
+  for index = 2, #samples do
+    Assert.isFalse(samples[index].walking, "the fall plays no walk animation")
+  end
+end
+
+function T.waterfall_descent_moves_ground_first()
+  local behaviorAt = { ["5:3"] = 19, ["5:4"] = 16 }
+  local map = rigMap(behaviorAt, {
+    flatPlate(0, 0, 0, 32, 3, 4),
+    flatPlate(1, 0, 3, 32, 32, 0),
+  })
+  local player = FieldPlayer.new({ currentMap = map, fieldX = 5, fieldZ = 2, surfaceId = 0, facing = "south" })
+  player:setTraversalMode("surfing")
+  local rig = setup(map, player, rigAvatar("surfing"))
+  local plan = rig.world:planTraversal({ move = "waterfall" })
+  Assert.equal(plan.kind, "waterfall")
+  local samples = runWaterfall(rig, plan)
+  Assert.equal(#samples - 1, 96)
+  local first, last = samples[1], samples[#samples]
+  Assert.near(samples[65].z, last.z, 1e-9, "ground travel settles at update 64")
+  Assert.near(samples[33].z, first.z + (last.z - first.z) / 2, 1e-9)
+  Assert.equal(samples[33].y, first.y, "height holds for the first 32 updates")
+  Assert.equal(player.fieldZ, 4)
 end
 
 function T.climb_matches_orientation_and_validates_the_landing()
@@ -308,6 +397,74 @@ function T.climb_matches_orientation_and_validates_the_landing()
   Assert.equal(plan.segments[2].worldY, 2)
   Assert.equal(plan.segments[2].surfaceId, 1)
   Assert.equal(plan.segments[1].mode, "walking")
+end
+
+-- Count the fixed updates one planned segment takes through the real player.
+local function segmentTicks(rig, plan, index)
+  local runtimePlan = { kind = plan.kind, mapId = 61, segments = plan.segments, segmentIndex = index - 1 }
+  Assert.isNil(rig.world:validateTraversalSegment(runtimePlan))
+  rig.world:beginTraversalSegment(runtimePlan)
+  local ticks = 0
+  while rig.player:isScriptedMoving() do
+    rig.player:updateFixed({})
+    ticks = ticks + 1
+    Assert.isTrue(ticks <= 200, "the segment must settle")
+  end
+  rig.world:commitTraversalSegment(runtimePlan)
+  return ticks
+end
+
+-- Source Task_RockClimb: a near hop onto the wall, fast walks between wall
+-- tiles, and a near hop off the top; the debris effect sounds once at start.
+function T.climb_hops_on_and_off_the_wall_and_walks_fast_between()
+  local behaviorAt = { ["5:3"] = 76, ["6:3"] = 76 }
+  local map = rigMap(behaviorAt, {
+    flatPlate(0, 0, 0, 32, 32, 0),
+    flatPlate(1, 7, 3, 8, 4, 2),
+  })
+  local player = FieldPlayer.new({ currentMap = map, fieldX = 4, fieldZ = 3, surfaceId = 0, facing = "east" })
+  local rig = setup(map, player, rigAvatar("walking"))
+  local plan = rig.world:planTraversal({ move = "rock_climb" })
+  Assert.equal(plan.kind, "rock_climb")
+  Assert.equal(plan.effect, "SEQ_SE_DP_UG_023")
+  Assert.equal(#plan.segments, 3)
+  Assert.equal(segmentTicks(rig, plan, 1), 8, "near fast hop onto the wall")
+  Assert.equal(segmentTicks(rig, plan, 2), 4, "fast walk between wall tiles")
+  Assert.equal(segmentTicks(rig, plan, 3), 8, "near fast hop onto the landing")
+end
+
+-- Source Task_Whirlpool: one slowest-walk step per tile through the swirl.
+function T.whirlpool_steps_at_the_slowest_walk_and_sounds_once()
+  local behaviorAt = { ["5:3"] = 17, ["6:3"] = 17, ["7:3"] = 16 }
+  local map = rigMap(behaviorAt, { flatPlate(0, 0, 0, 32, 32, 0) })
+  local player = FieldPlayer.new({ currentMap = map, fieldX = 4, fieldZ = 3, surfaceId = 0, facing = "east" })
+  player:setTraversalMode("surfing")
+  local rig = setup(map, player, rigAvatar("surfing"))
+  local plan = rig.world:planTraversal({ move = "whirlpool" })
+  Assert.equal(plan.kind, "whirlpool")
+  Assert.equal(plan.effect, "SEQ_SE_DP_FW463")
+  Assert.equal(#plan.segments, 3)
+  for index = 1, 3 do
+    Assert.equal(segmentTicks(rig, plan, index), 32)
+  end
+end
+
+-- Source Task_Surf / Task_StopSurfing: ten-update waits (11 updates) around
+-- the mount, then a near fast hop; dismounting is the hop alone.
+function T.surf_mount_waits_then_hops_and_dismount_only_hops()
+  local rig = shoreRig()
+  local entry = rig.world:planTraversal({ move = "surf" })
+  Assert.equal(entry.preTicks, 11)
+  Assert.equal(entry.postTicks, 11)
+  Assert.isNil(entry.effect)
+  Assert.equal(segmentTicks(rig, entry, 1), 8)
+  rig.world:commitTraversalMode(entry)
+  rig.player:setTraversalMode("surfing")
+  rig.player:turn("north")
+  local exit = rig.world:planTraversal({ move = "disembark" })
+  Assert.equal(exit.kind, "disembark")
+  Assert.isNil(exit.preTicks)
+  Assert.equal(segmentTicks(rig, exit, 1), 8)
 end
 
 function T.climb_refuses_mismatched_orientation()
@@ -342,6 +499,39 @@ function T.segment_validation_rechecks_map_identity_and_occupancy()
     segmentIndex = 0,
   }
   Assert.isNil(rig.world:validateTraversalSegment(runtimePlan))
+end
+
+-- Source Task_PushBoulder: the boulder walks one slow tile while the player
+-- walks on the spot facing it (no tile move), with the push effect at start.
+function T.push_walks_the_boulder_while_the_real_player_stays_on_its_tile()
+  local map = rigMap({}, { flatPlate(0, 0, 0, 32, 32, 0) })
+  local player = FieldPlayer.new({ currentMap = map, fieldX = 4, fieldZ = 4, surfaceId = 0, facing = "south" })
+  local rig = setup(map, player, rigAvatar("walking"))
+  local plan = {
+    kind = "push_strength",
+    mapId = 61,
+    target = { actorId = "map:61:object:2", obstacleKind = "strength_boulder", mapId = 61 },
+    direction = "south",
+    phase = "begin",
+    committed = false,
+  }
+  rig.world:beginPush(plan)
+  Assert.equal(#rig.actorActions, 1)
+  Assert.equal(rig.actorActions[1].action.action, "walk")
+  Assert.equal(rig.actorActions[1].action.speed, "slow")
+  Assert.deepEqual(rig.sounds, { "SEQ_SE_DP_UG_023" })
+  Assert.isTrue(player:isScriptedMoving(), "the player animates")
+  local startZ = player.worldZ
+  for _ = 1, 40 do
+    if rig.world:advancePush(plan) then
+      break
+    end
+    Assert.equal(player.worldZ, startZ, "the player never leaves its tile while pushing")
+  end
+  rig.world:commitPush(plan)
+  Assert.equal(player.fieldX, 4)
+  Assert.equal(player.fieldZ, 4)
+  Assert.isFalse(player:isScriptedMoving())
 end
 
 return { tests = T }

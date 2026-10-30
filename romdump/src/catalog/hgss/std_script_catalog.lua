@@ -18,6 +18,8 @@ return {
     [2012] = "whited_out_to_mom",
     [2013] = "whited_out_to_pokecenter",
     [2015] = "global_terminal_globe",
+    [2018] = "honey_sweet_scent_nothing_happened",
+    [2019] = "honey_sweet_scent_faded",
     [2020] = "bike_rack",
     [2021] = "hatch_egg",
     [2022] = "repel_wore_off",

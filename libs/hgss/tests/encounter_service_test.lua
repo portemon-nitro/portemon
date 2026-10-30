@@ -296,6 +296,75 @@ function T.unknown_tables_and_methods_fail_without_draws()
   Assert.equal(stream:calls(), before, "rejected attempts consume no draws")
 end
 
+function T.field_move_rock_smash_consults_its_table_without_counting_a_step()
+  local host = service()
+  local stream = Fixture.spyStream(0)
+  local result = attemptResult(
+    host,
+    Fixture.context({ mapId = 15, method = "rock_smash", movement = "field_move" }),
+    stream
+  )
+  Assert.equal(result.kind, "prepared")
+  Assert.equal(result.stateDelta.steps, 0, "field-move attempts never advance the step counter")
+  Assert.deepEqual({ stream:labels()[1], stream:labels()[2], stream:labels()[3] }, { "opportunity", "slot", "level" })
+  local species = result.encounter.mons[1].mon.species
+  Assert.isTrue(species == "TOTODILE" or species == "CHIKORITA", "rock smash draws from the map's rock slots")
+  -- A map whose rock smash rate is zero never triggers.
+  local none = attemptResult(
+    host,
+    Fixture.context({ mapId = 11, method = "rock_smash", movement = "field_move" }),
+    Fixture.spyStream(0)
+  )
+  Assert.equal(none.kind, "none")
+end
+
+function T.sweet_scent_skips_the_opportunity_roll_but_needs_a_table_rate()
+  local host = service()
+  local stream = Fixture.spyStream(0)
+  local context = Fixture.context({ mapId = 15, method = "grass", movement = "field_move" })
+  context.modifiers = Fixture.modifiers({ sweetScent = true })
+  local result = attemptResult(host, context, stream)
+  Assert.equal(result.kind, "prepared")
+  Assert.equal(result.stateDelta.steps, 0)
+  Assert.equal(stream:labels()[1], "slot", "the opportunity roll is skipped")
+  host:consume(result.attemptId)
+  local surfStream = Fixture.spyStream(0)
+  local surfContext = Fixture.context({ mapId = 15, method = "surf", movement = "field_move" })
+  surfContext.modifiers = Fixture.modifiers({ sweetScent = true })
+  local surf = attemptResult(host, surfContext, surfStream)
+  Assert.equal(surf.kind, "prepared")
+  Assert.equal(surfStream:labels()[1], "slot")
+  host:consume(surf.attemptId)
+  local zeroStream = Fixture.spyStream(0)
+  local zeroContext = Fixture.context({ mapId = 12, method = "grass", movement = "field_move" })
+  zeroContext.modifiers = Fixture.modifiers({ sweetScent = true })
+  local zero = attemptResult(host, zeroContext, zeroStream)
+  Assert.equal(zero.kind, "none")
+  Assert.equal(zeroStream:calls(), 0, "a zero-rate table consumes no draws")
+end
+
+function T.headbutt_draws_its_slot_and_level_from_the_supplied_slots()
+  local host = service()
+  local slots = {}
+  for index, weight in ipairs({ 50, 15, 15, 10, 5, 5 }) do
+    slots[index] = { species = "EEVEE", minLevel = 5, maxLevel = 7, weight = weight }
+  end
+  local stream = Fixture.spyStream(0)
+  local context = Fixture.context({ method = "headbutt", movement = "field_move" })
+  context.modifiers = Fixture.modifiers({ headbutt = { slots = slots } })
+  local result = attemptResult(host, context, stream)
+  Assert.equal(result.kind, "prepared")
+  Assert.equal(result.stateDelta.steps, 0)
+  Assert.deepEqual({ stream:labels()[1], stream:labels()[2] }, { "slot", "level" })
+  local mon = result.encounter.mons[1].mon
+  Assert.equal(mon.species, "EEVEE")
+  Assert.isTrue(mon.met.level >= 5 and mon.met.level <= 7)
+  rejectionCode(function()
+    local missing = Fixture.context({ method = "headbutt", movement = "field_move" })
+    host:attempt(missing, Fixture.spyStream(0))
+  end, "ENCOUNTER_MISSING_TABLE")
+end
+
 function T.static_attempts_generate_without_a_table_check()
   local host = service()
   local context = Fixture.context({ method = "static", movement = "still" })

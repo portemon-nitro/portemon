@@ -10,6 +10,7 @@ local BagActionPolicy = require("libs.hgss.src.ui.BagActionPolicy")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
+local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldMoveContext = require("game.hgss.src.field.FieldMoveContext")
 local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
 local FieldMoveTask = require("libs.hgss.src.script.tasks.FieldMoveTask")
@@ -92,11 +93,11 @@ local function fieldUse()
     flyAllowed = true,
     teleportAllowed = true,
     escapeAllowed = true,
-    flashUsable = true,
     unionOrColosseum = false,
     cave = false,
     icePathB2F = false,
-    alphChamber = false,
+    alphFlashRoom = false,
+    alphEscapeRopeRoom = false,
     headbuttUsable = false,
     sweetScentUsable = false,
     rockSmashUsable = true,
@@ -127,8 +128,9 @@ local function sources(overrides)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
-    foggy = false,
-    chatterOpen = false,
+    localX = 0,
+    localZ = 0,
+    facing = "south",
   }
   for key, item in pairs(overrides or {}) do
     value[key] = item
@@ -308,7 +310,8 @@ local CAPABILITY_MATRIX = {
     setup = { badges = 0xFFFF, facingActor = treeActor("strength_boulder") },
     expect = "ok",
   },
-  { capability = "flash", setup = { badges = 0xFFFF }, expect = "ok" },
+  { capability = "flash", setup = { badges = 0xFFFF, weatherId = 11 }, expect = "ok" },
+  { capability = "flash", setup = { badges = 0xFFFF }, expect = "not_here" },
   {
     capability = "rock_smash",
     setup = { badges = 0xFFFF, facingActor = treeActor("smash_rock") },
@@ -329,11 +332,10 @@ local CAPABILITY_MATRIX = {
     expect = "ok",
   },
   { capability = "rock_climb", setup = { badges = 0xFFFF, climbTile = true }, expect = "ok" },
-  { capability = "headbutt", setup = { badges = 0xFFFF, headbuttTree = true }, expect = "feature_unavailable" },
+  { capability = "headbutt", setup = { badges = 0xFFFF, headbuttTree = true }, expect = "ok" },
   { capability = "headbutt", setup = { badges = 0xFFFF }, expect = "not_here" },
-  { capability = "sweet_scent", setup = { badges = 0xFFFF }, expect = "feature_unavailable" },
-  { capability = "chatter", setup = { badges = 0xFFFF, chatterOpen = true }, expect = "feature_unavailable" },
-  { capability = "chatter", setup = { badges = 0xFFFF }, expect = "not_here" },
+  { capability = "sweet_scent", setup = { badges = 0xFFFF }, expect = "ok" },
+  { capability = "chatter", setup = { badges = 0xFFFF }, expect = "ok" },
 }
 
 function T.tests.capability_limits_are_honest_and_closed()
@@ -355,9 +357,6 @@ function T.tests.capability_limits_are_honest_and_closed()
     Assert.equal(decision.kind, row.expect, label .. ", got " .. tostring(decision.kind))
     if row.reason ~= nil then
       Assert.equal(decision.badge, row.reason, label .. " names its badge")
-    end
-    if row.expect == "feature_unavailable" then
-      Assert.isTrue(type(decision.reason) == "string", label .. " explains its limitation")
     end
   end
 end
@@ -438,6 +437,7 @@ local function admissionRuntime(composition, client, readerOverrides)
     actors = readers.actors,
     playerAvatar = readers.playerAvatar,
     followingMon = readers.followingMon,
+    eventState = FieldEventState.new(),
   }, FieldRuntime)
   runtime.menuComposer = FieldMenuCompositionCoordinator.new(runtime)
   return runtime
@@ -466,6 +466,99 @@ function T.tests.stale_admission_refusal_never_reaches_the_scheduler()
     "the refusal names the admission boundary: " .. message
   )
   composition.dispose()
+end
+
+function T.tests.rock_smash_and_headbutt_menu_use_runs_their_menu_scripts_with_the_party_slot()
+  local composition = openComposition()
+  local started = {}
+  local client = {
+    startApplicationScript = function(_, scriptId, tick, context)
+      started[#started + 1] = { scriptId = scriptId, tick = tick, context = context }
+      return "instance"
+    end,
+  }
+  local vars = {}
+  local rockActors = {
+    actorsOf = function()
+      return { { actorId = "test:rock", sourceEvent = { obstacleKind = "smash_rock" } } }
+    end,
+    getPosition = function(_, actorId)
+      return actorId == "test:rock" and { fieldX = 4, fieldZ = 6 } or nil
+    end,
+  }
+  local runtime = admissionRuntime(composition, client, {
+    playerData = { profile = { badges = 0xFFFF } },
+    actors = rockActors,
+  })
+  runtime.scripts.worldState = {
+    setVar = function(_, id, value)
+      vars[id] = value
+    end,
+  }
+  runtime:_admitFieldAction("pokemon.field_move", { move = "rock_smash", slot = 2 })
+  Assert.deepEqual(started[1], {
+    scriptId = "common.menu_rock_smash",
+    tick = 42,
+    context = { selfActor = "test:rock" },
+  })
+  Assert.equal(vars[0x8000], 2, "the menu script reads its mon slot from the first special variable")
+  Assert.isFalse(composition.fieldMoves:isBusy(), "the menu script owns the operation, not the field-move queue")
+  composition.dispose()
+end
+
+function T.tests.escape_rope_admission_takes_the_rope_then_runs_the_return_and_refusals_keep_it()
+  local function caveMap(allowed)
+    local use = fieldUse()
+    use.cave = allowed
+    use.escapeAllowed = allowed
+    return {
+      mapSymbol = "MAP_UNION_CAVE_B1F",
+      mapId = 201,
+      fieldData = { fieldUse = use },
+      effectiveWeatherId = 11,
+      coordinateOrigin = { x = 0, z = 0 },
+      collision = {
+        getLocal = function()
+          return nil
+        end,
+        containsLocal = function()
+          return true
+        end,
+      },
+    }
+  end
+  local function attempt(allowed)
+    local composition = openComposition()
+    local started = {}
+    local client = {
+      startApplicationScript = function(_, scriptId)
+        started[#started + 1] = scriptId
+        return "instance"
+      end,
+    }
+    local runtime = admissionRuntime(composition, client, { runtimeMap = caveMap(allowed) })
+    local taken = {}
+    runtime.bagService = {
+      take = function(_, item, quantity)
+        taken[#taken + 1] = { item, quantity }
+        return true
+      end,
+    }
+    local ok = pcall(runtime._admitFieldAction, runtime, "pokemon.field_move", { move = "escape_rope" })
+    local busy = composition.fieldMoves:isBusy()
+    composition.fieldMoves:discardPending()
+    composition.dispose()
+    return ok, taken, started, busy
+  end
+  local ok, taken, started, busy = attempt(true)
+  Assert.isTrue(ok, "an allowed cave admits the rope")
+  Assert.deepEqual(taken, { { "ESCAPE_ROPE", 1 } })
+  Assert.deepEqual(started, { "runtime.field_move_entry" })
+  Assert.isTrue(busy, "the queued request waits for the entry script")
+  local refused, keptTaken, refusedStarted = attempt(false)
+  Assert.isFalse(refused, "a refused admission raises")
+  Assert.deepEqual(keptTaken, {}, "a refusal keeps the rope")
+  Assert.deepEqual(refusedStarted, {})
 end
 
 function T.tests.busy_second_request_is_refused_without_touching_the_first()
@@ -724,6 +817,8 @@ function T.tests.field_menu_coordinator_passes_its_runtime_mailbox_and_loaded_pc
   local runtime = {
     avatar = { gender = 0 },
     transition = {},
+    screenFade = require("libs.hgss.src.transition.FieldScriptScreenFade").new(),
+    fieldTravel = require("libs.hgss.src.field.FieldTravelState").new({ lastHealSpawn = "SPAWN_NEW_BARK" }),
     mapLoader = {
       requestLocation = function() end,
       beginLoad = function() end,

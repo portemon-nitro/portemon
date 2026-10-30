@@ -2,10 +2,156 @@
 -- They live here so their names never become more file-scoped locals
 -- in the main field-handler chunk.
 
+local Errors = require("libs.errors.src.Errors")
 local Operands = require("romdump.src.digest.script.lowering.Operands")
 
 ---@class FieldServiceHandlers
 local FieldServiceHandlers = {}
+
+-- Source flag-action commands (set 1, clear 0, check 2 into a result var).
+function FieldServiceHandlers.flagAction(ins, flag)
+  local mode = Operands.operandValue(ins.operands[1])
+  if mode == 0 then
+    return { op = "clear_flag", flag = flag }
+  end
+  if mode == 1 then
+    return { op = "set_flag", flag = flag }
+  end
+  if mode == 2 then
+    return {
+      op = "set_var",
+      variable = Operands.varRef(ins.operands[2]),
+      value = { value = "flag_value", flag = flag },
+    }
+  end
+  Errors.raise("SCRIPT_UNKNOWN_FLAG_ACTION", "unknown flag action mode", {
+    sourceOffset = ins.offset,
+    opcode = ins.opcode,
+    mode = mode,
+  })
+end
+
+function FieldServiceHandlers.strengthFlagAction(ins)
+  return FieldServiceHandlers.flagAction(ins, "FLAG_STRENGTH_ACTIVE")
+end
+
+-- ScrCmd_CheckEscortMode reads FLAG_HAVE_FOLLOWER into its result variable.
+function FieldServiceHandlers.checkEscortMode(ins)
+  return {
+    op = "set_var",
+    variable = Operands.varRef(ins.operands[1]),
+    value = { value = "flag_value", flag = "FLAG_HAVE_FOLLOWER" },
+  }
+end
+
+local function unsupportedNode(ins, reason)
+  local arguments = {}
+  for index, operand in ipairs(ins.operands) do
+    arguments[index] = Operands.operandValue(operand)
+  end
+  return {
+    op = "unsupported",
+    command = ins.opcode,
+    arguments = arguments,
+    sourceOffset = ins.offset,
+    reason = reason,
+  }
+end
+
+-- ScrCmd_PlayFieldMoveCutIn reads the party slot of the move user.
+function FieldServiceHandlers.fieldMoveCutIn(ins)
+  return { op = "field_move_cut_in", slot = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_StartFieldMoveEffect takes the effect kind (0..5) and the variable
+-- the effect task completes. Scripts only poll that variable, so it must be
+-- a variable operand.
+function FieldServiceHandlers.fieldMoveEffect(ins)
+  local effect = Operands.operandValue(ins.operands[1])
+  local done = Operands.varRef(ins.operands[2])
+  if type(effect) ~= "number" or effect < 0 or effect > 5 or type(done) ~= "table" then
+    return unsupportedNode(ins, "ScrCmd_StartFieldMoveEffect needs a literal effect kind and a variable operand")
+  end
+  return { op = "field_move_effect", effect = effect, done = done }
+end
+
+-- ScrCmd_SwapPlayerAndFollowMonPositions mode 1 steps the player into the
+-- follower's tile; mode 2 (follower first) has no corpus caller.
+function FieldServiceHandlers.swapPlayerAndFollower(ins)
+  if Operands.operandValue(ins.operands[1]) ~= 1 then
+    return unsupportedNode(ins, "ScrCmd_SwapPlayerAndFollowMonPositions follower-first mode is unsupported")
+  end
+  return { op = "follower_swap_with_player" }
+end
+
+function FieldServiceHandlers.followerFlash(ins)
+  return {
+    op = "follower_gesture",
+    gesture = "flash",
+    a = Operands.operandValue(ins.operands[1]),
+    b = Operands.operandValue(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.followerGrowAndShrink(_)
+  return { op = "follower_gesture", gesture = "grow_shrink" }
+end
+
+function FieldServiceHandlers.followerJumpOnSpot(ins)
+  return { op = "follower_gesture", gesture = "jump", a = Operands.operandValue(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.followerAddMood(ins)
+  return { op = "follower_add_mood", amount = Operands.operandValue(ins.operands[1]) }
+end
+
+-- ScrCmd_FollowMonIsInactiveOrVisible: true without a follower, else the
+-- follower's visible flag.
+function FieldServiceHandlers.followerInactiveOrVisible(ins)
+  return { op = "follower_inactive_or_visible", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_FirstAliveMonHasType: native type id against the first alive mon.
+function FieldServiceHandlers.partyLeadHasType(ins)
+  return {
+    op = "party_lead_has_type",
+    type = Operands.operandValue(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- ScrCmd_Capitalize upper-cases the first character of one message buffer.
+function FieldServiceHandlers.bufferCapitalize(ins)
+  return { op = "buffer_capitalize", slot = Operands.operandValue(ins.operands[1]) }
+end
+
+-- ScrCmd_RockSmashItemCheck: whether the follower used the move, then the
+-- found flag and item result variables.
+function FieldServiceHandlers.rockSmashItemCheck(ins)
+  return {
+    op = "rock_smash_item_check",
+    followerUsing = Operands.varRef(ins.operands[1]),
+    found = Operands.varRef(ins.operands[2]),
+    item = Operands.varRef(ins.operands[3]),
+  }
+end
+
+-- ScrCmd_TryHeadbuttEncounter: the result variable answers whether a battle
+-- started.
+function FieldServiceHandlers.tryHeadbuttEncounter(ins)
+  return { op = "try_headbutt_encounter", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_FollowMonRecall: the follower returns to the player's tile hidden.
+function FieldServiceHandlers.followerRecallToPlayer(_)
+  return { op = "follower_recall_to_player" }
+end
+
+-- ScrCmd_FollowMonIsNextToPlayer: whether a visible follower stands on a
+-- cardinally adjacent tile.
+function FieldServiceHandlers.followerIsNextToPlayer(ins)
+  return { op = "follower_is_next_to_player", result = Operands.varRef(ins.operands[1]) }
+end
 
 function FieldServiceHandlers.whiteout(_)
   return { op = "whiteout" }

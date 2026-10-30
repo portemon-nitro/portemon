@@ -245,6 +245,31 @@ function FieldCamera:setTransitionPose(pose)
   copyComponents(self.previousEye, self.eye)
 end
 
+-- The live eye distance in tiles (the source Camera_GetDistance value).
+---@return number
+function FieldCamera:distanceTiles()
+  return self._transitionDistanceTiles
+end
+
+-- Moves the eye along the camera ray to a new distance from the target (the
+-- source Camera_SetDistance); angles and perspective are untouched, and the
+-- previous eye stays so the render interpolates across the change.
+---@param distanceTiles number
+function FieldCamera:setDistanceTiles(distanceTiles)
+  assert(type(distanceTiles) == "number" and distanceTiles > 0, "camera distance must be positive")
+  self._transitionDistanceTiles = distanceTiles
+  self.distance = distanceTiles
+  self._projectionDirty = true
+  writeEyeFromTarget(
+    self.target,
+    self.profile,
+    self.eye,
+    distanceTiles,
+    self._transitionAngleXRaw,
+    self._transitionAngleYRaw
+  )
+end
+
 ---@param state FieldCamera.TransitionState state returned by captureTransitionState
 function FieldCamera:restoreTransitionState(state)
   assert(type(state) == "table", "captured source camera state is required")

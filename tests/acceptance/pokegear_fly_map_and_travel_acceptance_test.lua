@@ -110,6 +110,10 @@ local function ownedRuntime(planFly)
   function world:cancelMotion(_)
     self.calls[#self.calls + 1] = { op = "cancelMotion" }
   end
+  function world:isStrengthActive()
+    return false
+  end
+  function world:clearStrength() end
   local adapter = setmetatable({ calls = world.calls }, { __index = world })
   function adapter:planFly(flypointKey, context)
     self.calls[#self.calls + 1] = { op = "planFly", flypointKey = flypointKey, context = context }

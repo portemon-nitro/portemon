@@ -265,6 +265,11 @@ local function partyManifest()
         switchHeldPrompt = { segments = { { kind = "text", value = "Switch the held items?" } } },
         switchHeldResult = { segments = { { kind = "text", value = "Switched the held items." } } },
         giveHeldItem = { segments = { { kind = "text", value = "Gave the item to hold." } } },
+        fieldMoveNotHere = { segments = { { kind = "text", value = "You cannot use that here." } } },
+        fieldMoveNeedBadge = { segments = { { kind = "text", value = "Need a Badge." } } },
+        fieldMoveHaveFollower = { segments = { { kind = "text", value = "Someone is with you." } } },
+        fieldMoveAlreadySurfing = { segments = { { kind = "text", value = "Already surfing." } } },
+        fieldMoveNotNow = { segments = { { kind = "text", value = "Not the place." } } },
       },
       roles = {
         ordinary = {

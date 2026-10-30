@@ -1365,6 +1365,56 @@ function T.script_completion_consumes_its_final_action_edge()
   Assert.equal(resolved, 0)
 end
 
+-- The Action edge's interaction snapshot carries the facts the metatile
+-- script order needs: the avatar surfing state, and Surf permission (Fog
+-- badge plus a party mon knowing Surf).
+function T.action_snapshot_carries_the_surfing_state_and_surf_permission()
+  local function snapshotFor(avatarState, hasBadge, knowsSurf)
+    local captured
+    local player = defaultPlayer()
+    player.facing = "north"
+    local options = baseOptions({
+      player = player,
+      interactions = {
+        resolve = function(_, snapshot)
+          captured = snapshot
+          return nil
+        end,
+      },
+      partyKnowsMove = function(move)
+        Assert.equal(move, "surf")
+        return knowsSurf
+      end,
+    })
+    options.progression = {
+      hasRunningShoes = function()
+        return false
+      end,
+      runningShoesLock = function()
+        return false
+      end,
+      hasBadge = function(_, key)
+        Assert.equal(key, "fog")
+        return hasBadge
+      end,
+    }
+    options.playerAvatar = {
+      updateFixed = function() end,
+      durableState = function()
+        return avatarState
+      end,
+    }
+    FieldSession.new(options):updateFixed({ actionPressed = true })
+    return captured
+  end
+  local walking = snapshotFor("walking", true, true)
+  Assert.isFalse(walking.surfing)
+  Assert.isTrue(walking.surfAllowed)
+  Assert.isFalse(snapshotFor("walking", false, true).surfAllowed, "no badge refuses Surf")
+  Assert.isFalse(snapshotFor("walking", true, false).surfAllowed, "no Surf mon refuses Surf")
+  Assert.isTrue(snapshotFor("surfing", true, true).surfing)
+end
+
 -- The input snapshot vocabulary is actionPressed/cancelPressed; the
 -- scheduler receives edges only through that vocabulary. Snapshot properties
 -- outside it are ignored -- the scheduler's own step-input vocabulary
@@ -3482,7 +3532,7 @@ end
 ---@param arrivalKind "coordinate"|"passive"
 ---@return table
 local function connectionSeamScenario(arrivalKind)
-  local scenario = { order = {}, entered = 0, arrivalResolves = 0, consumedIntents = {} }
+  local scenario = { order = {}, entered = 0, arrivalResolves = 0, consumedIntents = {}, strengthClears = 0 }
   local order = scenario.order
   local sourceMap = {
     mapId = 61,
@@ -3545,6 +3595,21 @@ local function connectionSeamScenario(arrivalKind)
   scenario.session = FieldSession.new(baseOptions({
     currentMap = sourceMap,
     player = player,
+    fieldMoves = {
+      tryStrengthPush = function()
+        return { kind = "not_here" }
+      end,
+      discardPending = function() end,
+      requestDisembark = function()
+        return { kind = "not_here" }
+      end,
+      clearTransient = function()
+        scenario.strengthClears = scenario.strengthClears + 1
+      end,
+      requestWaterfallDescent = function()
+        return { kind = "not_here" }
+      end,
+    },
     initController = controller,
     scriptScheduler = scheduler,
     navigationBoundary = {
@@ -3609,6 +3674,43 @@ local function assertDeferredArrivalOrder(scenario)
     arrivalIndex ~= nil and actorsIndex < arrivalIndex,
     "the arrival event must be consumed only after actor entry"
   )
+end
+
+-- Source FieldSystem_ResetStateOnMapConnection / _ResetStateOnWarp: entering
+-- a map by connection crossing or by warp swap clears Strength enablement.
+function T.map_connection_crossing_clears_the_strength_enablement()
+  local scenario = connectionSeamScenario("coordinate")
+  scenario.session:updateFixed({})
+  Assert.equal(scenario.strengthClears, 1, "the crossing clears the map-lifetime enablement once")
+end
+
+function T.warp_map_entry_clears_the_strength_enablement()
+  local clears = 0
+  local session = FieldSession.new(baseOptions({
+    initController = {
+      hasLifecycle = function()
+        return false
+      end,
+      startLifecycle = function() end,
+    },
+    fieldMoves = {
+      tryStrengthPush = function()
+        return { kind = "not_here" }
+      end,
+      discardPending = function() end,
+      requestDisembark = function()
+        return { kind = "not_here" }
+      end,
+      clearTransient = function()
+        clears = clears + 1
+      end,
+      requestWaterfallDescent = function()
+        return { kind = "not_here" }
+      end,
+    },
+  }))
+  session:beginMapEntry()
+  Assert.equal(clears, 1, "a full map entry clears the enablement")
 end
 
 function T.seamless_zone_change_defers_the_arrival_coordinate_until_destination_activation_completes()
@@ -4432,6 +4534,10 @@ local function pushSession(overrides)
       requestDisembark = function()
         error("push arbitration never requests disembark", 2)
       end,
+      clearTransient = function() end,
+      requestWaterfallDescent = function()
+        error("push arbitration never requests a descent", 2)
+      end,
     },
   })
   if overrides.foreground == true then
@@ -4510,6 +4616,8 @@ function T.disembark_port_requires_request_disembark()
           return { kind = "busy" }
         end,
         discardPending = function() end,
+        clearTransient = function() end,
+        requestWaterfallDescent = function() end,
       },
     })
   )
@@ -4525,6 +4633,7 @@ local function disembarkSession(overrides)
   local BuiltinScripts = require("libs.hgss.src.script.BuiltinScripts")
   local claims = {}
   local requests = 0
+  local descents = 0
   local discards = 0
   local modes = {}
   local player = defaultPlayer()
@@ -4537,6 +4646,9 @@ local function disembarkSession(overrides)
   player.stepDecision = function(_)
     if overrides.decision == "step" then
       return { kind = "step" }
+    end
+    if overrides.decision == "waterfall" then
+      return { kind = "field_action", action = "waterfall" }
     end
     return { kind = "disembark" }
   end
@@ -4594,6 +4706,11 @@ local function disembarkSession(overrides)
         end
         return { kind = "accepted" }
       end,
+      clearTransient = function() end,
+      requestWaterfallDescent = function()
+        descents = descents + 1
+        return { kind = "accepted" }
+      end,
     },
   })
   local session = FieldSession.new(options)
@@ -4602,6 +4719,9 @@ local function disembarkSession(overrides)
       claims = claims,
       requests = function()
         return requests
+      end,
+      descents = function()
+        return descents
       end,
       discards = function()
         return discards
@@ -4624,6 +4744,28 @@ function T.surfing_shore_step_claims_the_disembark_task()
   Assert.equal(spy.stepped(), 0, "the claimed attempt never also steps the player")
   Assert.equal(spy.discards(), 0, "claimed queues are never discarded")
   Assert.equal(session.tick, 1, "the claimed tick advances")
+end
+
+-- Source Field_PlayerAvatar_TryWaterfallUp: only a south step toward a fall
+-- by an already facing surfer starts the unannounced descent.
+function T.surfing_south_step_into_a_fall_claims_the_descent()
+  local session, spy = disembarkSession({ decision = "waterfall" })
+  session.player.facing = "south"
+  session:updateFixed({ pressedDirection = "south" })
+  Assert.equal(spy.descents(), 1)
+  Assert.equal(#spy.claims, 1, "admission claims the entry script")
+  Assert.equal(spy.stepped(), 0, "the claimed attempt never also steps the player")
+end
+
+function T.fall_descent_waits_for_the_player_to_face_south()
+  local session, spy = disembarkSession({ decision = "waterfall" })
+  session.player.facing = "east"
+  session:updateFixed({ pressedDirection = "south" })
+  Assert.equal(spy.descents(), 0)
+  local north, northSpy = disembarkSession({ decision = "waterfall" })
+  north.player.facing = "north"
+  north:updateFixed({ pressedDirection = "north" })
+  Assert.equal(northSpy.descents(), 0, "north falls need the explicit move")
 end
 
 function T.declined_disembark_falls_through_to_normal_movement()
