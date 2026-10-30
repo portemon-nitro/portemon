@@ -1240,6 +1240,28 @@ function Scheduler:playerInputOwned()
   return self:explicitPlayerLocked() or self:interactionOwnsPlayerInput()
 end
 
+-- The foreground root's launch trigger, or nil when no foreground owns the
+-- field. `FieldSession` reads the origin to hold ordinary movement while a
+-- runtime-owned application script (field-move entries and their menu
+-- scripts) drives the field: those roots never take the interaction claim,
+-- so the ownership facts above cannot name them.
+---@return table<string, unknown>|nil
+function Scheduler:foregroundTrigger()
+  local envId = self._foregroundEnvironmentId
+  if envId == nil then
+    return nil
+  end
+  local env = self._environments[envId]
+  if env == nil or env.rootInstanceId == nil then
+    return nil
+  end
+  local root = self._instances[env.rootInstanceId]
+  if root == nil then
+    return nil
+  end
+  return root.trigger
+end
+
 ---@return boolean
 function Scheduler:autonomousActorsLocked()
   local envId = self._foregroundEnvironmentId

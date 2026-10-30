@@ -645,6 +645,11 @@ end
 -- The Escape Rope Use: the item rule decides on selection. An allowed use
 -- leaves for the field with a slotless escape request (the field consumes
 -- the rope when it admits the request); a refusal holds the Bag.
+-- Gap: refusals stay silent. Retail answers have_follower with msg_0010_00118,
+-- not_now with msg_0010_00119, and the cave rule with msg_0040_00037
+-- (GetItemUseErrorMessage), but the bag child owns its lower-message
+-- templates and the flow has no channel to publish into it, so there is
+-- nowhere to show them without a new flow-to-bag message surface.
 function PartyMenuFlow:_routeEscapeRope()
   local decision = self._fieldMoves.check({ move = "escape_rope" })
   assert(type(decision) == "table" and type(decision.kind) == "string", "item checks answer decisions")

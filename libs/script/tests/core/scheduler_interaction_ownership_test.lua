@@ -419,4 +419,42 @@ end
 -- explicit_unlock`. No composed-script fixture is needed to prove the fourth
 -- combination beyond those already covered by the acceptance contract.
 
+-- The field session holds ordinary movement while a runtime-owned
+-- application script (field-move entries, menu field-move scripts, sweet
+-- scent) owns the foreground, so it reads the launch origin through the
+-- foreground trigger: application roots publish their trigger, and an idle
+-- field publishes nothing.
+function T.foreground_trigger_names_the_application_launch_origin()
+  local h = harness()
+  Assert.isNil(h.scheduler:foregroundTrigger(), "no foreground owns the field before launch")
+  install(h, script("test.application_owned", {
+    S.waitTicks({ ticks = 5 }),
+    S.stop(),
+  }))
+  local instanceId = h.client:startApplicationScript("test.application_owned", 700)
+  Assert.notNil(instanceId, "the application script must start")
+  local trigger = h.scheduler:foregroundTrigger()
+  Assert.notNil(trigger, "an application root publishes its trigger")
+  Assert.equal(trigger.type, "application")
+  Assert.equal(trigger.scriptId, "test.application_owned")
+end
+
+function T.foreground_trigger_reports_field_interaction_roots_and_clears_on_teardown()
+  local h = harness()
+  install(h, script("test.interaction_named", {
+    S.waitTicks({ ticks = 5 }),
+    S.stop(),
+  }))
+  h.setResolvedScriptId("test.interaction_named")
+  h.client:consume({ kind = "background" }, 800)
+  local trigger = h.scheduler:foregroundTrigger()
+  Assert.notNil(trigger, "an interaction root publishes its trigger")
+  Assert.equal(trigger.type, "field_interaction")
+  for tick = 801, 810 do
+    h.scheduler:step(tick, nil)
+  end
+  Assert.isNil(h.scheduler:foregroundEnvironmentId(), "the interaction root must have completed")
+  Assert.isNil(h.scheduler:foregroundTrigger(), "a settled field publishes no trigger")
+end
+
 return { tests = T }

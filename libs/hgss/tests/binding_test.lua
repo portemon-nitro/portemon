@@ -841,6 +841,9 @@ function T.application_scripts_may_carry_the_actor_the_menu_move_targets()
     foregroundEnvironmentId = function()
       return nil
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
     startInteraction = function(_, trigger)
       started = trigger
       return "instance"

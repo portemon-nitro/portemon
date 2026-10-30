@@ -1247,6 +1247,9 @@ function T.ambient_clip_advances_once_per_session_tick_and_through_dialogue()
       foregroundEnvironmentId = function()
         return nil
       end,
+      foregroundTrigger = function()
+        return nil
+      end,
       autonomousActorsLocked = function()
         return false
       end,

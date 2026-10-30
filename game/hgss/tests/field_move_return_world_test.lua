@@ -61,6 +61,9 @@ local function worldWith(warps, spawns, travel)
       getActor = stub(),
       actorsOf = stub(),
       getPosition = stub(),
+      partnerId = function()
+        return nil
+      end,
       getCollisionAt = stub(),
       beginScriptedAction = stub(),
       advanceScriptedAction = stub(),
@@ -369,6 +372,9 @@ local function flyWorldWith(overrides)
       getActor = stub(),
       actorsOf = stub(),
       getPosition = stub(),
+      partnerId = function()
+        return nil
+      end,
       getCollisionAt = stub(),
       beginScriptedAction = stub(),
       advanceScriptedAction = stub(),
@@ -538,12 +544,118 @@ function T.cancel_during_the_fly_landing_releases_the_presenter_and_zoom_once()
   Assert.equal(camera.distance, 10, "cancellation restores the captured camera distance")
 end
 
+-- The follower performs a menu Dig/Teleport only when its actor stands next
+-- to the player and the used slot is the party lead (Task_FieldDig and
+-- Task_FieldTeleport compare FollowMon_IsNextToPlayer with the lead index).
+-- Anything else -- a non-lead user, a distant or absent follower, no party
+-- port, or no slot -- takes the solo cut-in path.
+local function performingWorldWith(overrides)
+  overrides = overrides or {}
+  local function stub()
+    return function() end
+  end
+  local partnerPosition = overrides.partnerPosition
+  local playerPosition = overrides.playerPosition or { fieldX = 10, fieldZ = 10, worldY = 0 }
+  local leadSlot = overrides.leadSlot
+  return FieldMoveWorld.new({
+    actors = {
+      getActor = stub(),
+      actorsOf = stub(),
+      getPosition = function(_, actorId)
+        assert(actorId == "partner", "the follower check reads the partner actor")
+        return partnerPosition
+      end,
+      getCollisionAt = stub(),
+      beginScriptedAction = stub(),
+      advanceScriptedAction = stub(),
+      commitScriptedAction = stub(),
+      cancelScriptedMovement = stub(),
+      isScriptedMoving = stub(),
+      removePresence = stub(),
+      syncEventStateChanges = stub(),
+      partnerId = function()
+        return overrides.partnerAbsent and nil or "partner"
+      end,
+    },
+    events = { setFlag = stub(), isFlagSet = stub() },
+    maps = {
+      current = function()
+        return {}
+      end,
+      runtimeMap = function()
+        return {}
+      end,
+    },
+    player = {
+      position = function()
+        return playerPosition
+      end,
+      facing = stub(),
+      beginScriptedAction = stub(),
+      advanceScriptedAction = stub(),
+      commitScriptedAction = stub(),
+      cancelScriptedMovement = stub(),
+      isScriptedMoving = stub(),
+      queueAvatarTransition = stub(),
+      applyAvatarTransitions = stub(),
+    },
+    profile = { badges = 0 },
+    weather = { change = stub() },
+    reactions = { dispatch = stub() },
+    party = overrides.noParty and nil or {
+      knowsMove = stub(),
+      leadSlot = function()
+        return leadSlot
+      end,
+    },
+  })
+end
+
+function T.follower_performs_for_the_adjacent_lead_slot()
+  local world = performingWorldWith({
+    partnerPosition = { fieldX = 11, fieldZ = 10 },
+    leadSlot = 2,
+  })
+  Assert.isTrue(world:isFollowerPerforming(2), "an adjacent follower using the lead performs")
+end
+
+function T.follower_sits_out_for_a_non_lead_slot()
+  local world = performingWorldWith({
+    partnerPosition = { fieldX = 11, fieldZ = 10 },
+    leadSlot = 2,
+  })
+  Assert.isFalse(world:isFollowerPerforming(0), "an adjacent follower never performs another slot")
+end
+
+function T.follower_sits_out_when_distant_absent_or_portless()
+  local distant = performingWorldWith({
+    partnerPosition = { fieldX = 14, fieldZ = 10 },
+    leadSlot = 0,
+  })
+  Assert.isFalse(distant:isFollowerPerforming(0), "a distant follower never performs")
+  local absent = performingWorldWith({ partnerAbsent = true, leadSlot = 0 })
+  Assert.isFalse(absent:isFollowerPerforming(0), "an absent follower never performs")
+  local portless = performingWorldWith({
+    noParty = true,
+    partnerPosition = { fieldX = 11, fieldZ = 10 },
+  })
+  Assert.isFalse(portless:isFollowerPerforming(0), "no party port means no lead to compare")
+  local slotless = performingWorldWith({
+    partnerPosition = { fieldX = 11, fieldZ = 10 },
+    leadSlot = 0,
+  })
+  Assert.isFalse(slotless:isFollowerPerforming(nil), "a missing slot never performs")
+end
+
 function T.party_knows_waterfall_reads_the_party_port()
   local knower = flyWorldWith({
     party = {
       knowsMove = function(_, move)
         assert(move == "WATERFALL", "the descent gates on waterfall knowledge")
         return true
+      end,
+      leadSlot = function()
+        return 0
       end,
     },
   })
@@ -552,6 +664,9 @@ function T.party_knows_waterfall_reads_the_party_port()
     party = {
       knowsMove = function()
         return false
+      end,
+      leadSlot = function()
+        return 0
       end,
     },
   })

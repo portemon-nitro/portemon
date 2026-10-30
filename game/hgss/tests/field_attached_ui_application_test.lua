@@ -162,6 +162,9 @@ local function modalSession(overrides)
   function scheduler:foregroundEnvironmentId()
     return nil
   end
+  function scheduler:foregroundTrigger()
+    return nil
+  end
   function scheduler:autonomousActorsLocked()
     return false
   end

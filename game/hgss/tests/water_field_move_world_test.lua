@@ -109,6 +109,9 @@ local function setup(map, player, avatar)
       getPosition = function()
         return nil
       end,
+      partnerId = function()
+        return nil
+      end,
       getCollisionAt = function()
         return nil
       end,

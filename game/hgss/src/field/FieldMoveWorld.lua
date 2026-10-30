@@ -119,6 +119,7 @@ function FieldMoveWorld.new(ports)
       "getActor",
       "actorsOf",
       "getPosition",
+      "partnerId",
       "getCollisionAt",
       "beginScriptedAction",
       "advanceScriptedAction",
@@ -172,6 +173,7 @@ function FieldMoveWorld.new(ports)
   end
   if world._party ~= nil then
     assert(type(world._party.knowsMove) == "function", "party port must answer move knowledge")
+    assert(type(world._party.leadSlot) == "function", "party port must answer the lead slot")
   end
   if world._audio ~= nil then
     assert(type(world._audio.play) == "function", "audio port must play effects")
@@ -264,6 +266,37 @@ function FieldMoveWorld:validateTarget(plan)
     end
   end
   return nil
+end
+
+-- Whether the follower performs a menu field move for one party slot: the
+-- follower actor stands next to the player and the slot is the party lead
+-- (the follower shows the first alive mon, Task_FieldDig/Task_FieldTeleport
+-- compare FollowMon_IsNextToPlayer with the lead index). Without a party
+-- port there is no lead to compare, so nothing performs.
+---@param slot integer? the used zero-based party slot
+---@return boolean
+function FieldMoveWorld:isFollowerPerforming(slot)
+  if type(slot) ~= "number" then
+    return false
+  end
+  local party = self._party
+  if party == nil then
+    return false
+  end
+  if party:leadSlot() ~= slot then
+    return false
+  end
+  local partnerId = self._actors:partnerId()
+  if partnerId == nil then
+    return false
+  end
+  local partner = self._actors:getPosition(partnerId)
+  if partner == nil then
+    return false
+  end
+  local player = self._player:position()
+  assert(type(player.fieldX) == "number" and type(player.fieldZ) == "number", "follower checks need the player tile")
+  return math.abs(partner.fieldX - player.fieldX) + math.abs(partner.fieldZ - player.fieldZ) == 1
 end
 
 -- Name the obstacle actor ahead of the player, if any: same tile and same

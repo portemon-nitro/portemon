@@ -189,6 +189,9 @@ function T.field_player_traverses_new_bark_east_staircase(romFs)
     foregroundEnvironmentId = function()
       return nil
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
     autonomousActorsLocked = function()
       return false
     end,

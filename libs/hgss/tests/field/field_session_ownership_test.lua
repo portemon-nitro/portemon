@@ -106,6 +106,9 @@ local function makeSession(opts)
       foregroundEnvironmentId = function()
         return nil
       end,
+      foregroundTrigger = function()
+        return nil
+      end,
       autonomousActorsLocked = function()
         return false
       end,
@@ -222,6 +225,9 @@ function T.foreground_without_player_lock_permits_movement_but_blocks_menu_and_i
     foregroundEnvironmentId = function(self)
       return self.foreground
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
     autonomousActorsLocked = function()
       return false
     end,
@@ -305,6 +311,9 @@ function T.actor_world_continues_while_foreground_holds_the_field_and_release_ti
     foregroundEnvironmentId = function(self)
       return self.foreground
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
     autonomousActorsLocked = function()
       return false
     end,
@@ -374,6 +383,9 @@ function T.interaction_only_ownership_must_suppress_input_including_the_completi
     end,
     foregroundEnvironmentId = function(self)
       return self.foreground
+    end,
+    foregroundTrigger = function()
+      return nil
     end,
     playerInputOwned = function()
       return claimed
@@ -496,6 +508,9 @@ function T.active_choice_routes_ui_events_through_its_host_and_suppresses_raw_ed
     end,
     foregroundEnvironmentId = function()
       return "env-choice"
+    end,
+    foregroundTrigger = function()
+      return nil
     end,
     autonomousActorsLocked = function()
       return false

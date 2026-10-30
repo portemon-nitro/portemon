@@ -122,6 +122,9 @@ local function setup(map, player, avatar)
       getPosition = function()
         return nil
       end,
+      partnerId = function()
+        return nil
+      end,
       getCollisionAt = function()
         return nil
       end,
@@ -179,6 +182,9 @@ local function setup(map, player, avatar)
     party = {
       knowsMove = function(_, key)
         return knownMoves[key] == true
+      end,
+      leadSlot = function()
+        return nil
       end,
     },
     weather = {

@@ -98,6 +98,7 @@ local function departToWarp(sequence, port)
       port.fadeIsDone = true
     end
     port.cryIsDone = true
+    port.cutinIsDone = true
     result = FieldWarpSequence.stepDeparture(sequence, port)
     if result == "warp" then
       port.events = {}
@@ -122,14 +123,17 @@ function T.teleport_plays_the_effect_zooms_spins_eight_times_and_fades_to_black(
   local sequence = FieldWarpSequence.new("teleport")
   local port = newPort()
   Assert.equal(FieldWarpSequence.stepDeparture(sequence, port), "running")
+  Assert.deepEqual(port.events, { "cutin_start" }, "the departure opens with the cut-in")
+  port.cutinIsDone = true
+  Assert.equal(FieldWarpSequence.stepDeparture(sequence, port), "running")
   Assert.deepEqual(
-    port.events,
+    { port.events[#port.events - 1], port.events[#port.events] },
     { "zoom:by:-614400:15", "se:SEQ_SE_DP_TELE" },
-    "the first tick starts the 15-tick zoom, then plays the source effect"
+    "the finished cut-in starts the 15-tick zoom, then plays the source effect"
   )
   -- 40-tick spin-start script, then seven 8-tick spins; the eighth spin
   -- begins on the next evaluation and starts the black fade.
-  for _ = 2, 96 do
+  for _ = 1, 95 do
     Assert.equal(FieldWarpSequence.stepDeparture(sequence, port), "running")
     Assert.isNil(indexOf(port, "fade:out:black"), "no fade before the eighth spin")
   end
@@ -148,7 +152,13 @@ function T.dig_sinks_before_the_hole_and_fades_to_white()
   local sequence = FieldWarpSequence.new("dig")
   local port = newPort()
   FieldWarpSequence.stepDeparture(sequence, port)
-  Assert.deepEqual(port.events, { "zoom:by:-614400:15", "se:SEQ_SE_DP_KAIDAN2" })
+  Assert.deepEqual(port.events, { "cutin_start" }, "the departure opens with the cut-in")
+  port.cutinIsDone = true
+  FieldWarpSequence.stepDeparture(sequence, port)
+  Assert.deepEqual(
+    { port.events[#port.events - 1], port.events[#port.events] },
+    { "zoom:by:-614400:15", "se:SEQ_SE_DP_KAIDAN2" }
+  )
   local _, ticks = run(sequence, port, function(seq, p)
     if indexOf(p, "fade:out:white") then
       p.fadeIsDone = true
@@ -351,11 +361,89 @@ function T.cancel_during_the_fly_landing_releases_it_and_the_zoom_exactly_once()
   Assert.equal(releases, 1, "cancellation releases the landing zoom once")
 end
 
+-- Dig and Teleport show the move cut-in before spinning when the follower
+-- is not performing the move (sDigSteps/sTeleportSteps ShowCutIn/WaitCutIn).
+-- Escape Rope never does: it has no cut-in in either case.
+function T.teleport_shows_the_cutin_before_the_spin_without_a_cry()
+  local sequence = FieldWarpSequence.new("teleport")
+  local port = newPort()
+  Assert.equal(FieldWarpSequence.stepDeparture(sequence, port), "running")
+  Assert.deepEqual(port.events, { "cutin_start" }, "the departure opens with the cut-in")
+  Assert.equal(FieldWarpSequence.stepDeparture(sequence, port), "running")
+  Assert.isNil(indexOf(port, "zoom:by:-614400:15"), "the spin waits for the cut-in")
+  Assert.isNil(indexOf(port, "cry"), "the solo departure plays no cry")
+  port.cutinIsDone = true
+  Assert.equal(FieldWarpSequence.stepDeparture(sequence, port), "running")
+  Assert.deepEqual(
+    port.events[#port.events - 1],
+    "zoom:by:-614400:15",
+    "the finished cut-in hands off to the zoomed spin"
+  )
+  Assert.equal(port.events[#port.events], "se:SEQ_SE_DP_TELE")
+end
+
+function T.dig_shows_the_cutin_before_the_sink_without_a_cry()
+  local sequence = FieldWarpSequence.new("dig")
+  local port = newPort()
+  Assert.equal(FieldWarpSequence.stepDeparture(sequence, port), "running")
+  Assert.deepEqual(port.events, { "cutin_start" })
+  port.cutinIsDone = true
+  Assert.equal(FieldWarpSequence.stepDeparture(sequence, port), "running")
+  Assert.equal(port.events[#port.events - 1], "zoom:by:-614400:15")
+  Assert.equal(port.events[#port.events], "se:SEQ_SE_DP_KAIDAN2")
+end
+
+-- When the follower performs Dig/Teleport (next to the player and holding
+-- the used slot), the departure cries instead: the follower path runs its
+-- own flash and spin with no cut-in (sDigWithFollowMonSteps and
+-- sTeleportWithFollowMonSteps carry no ShowCutIn).
+function T.teleport_plays_the_cry_before_the_spin_without_a_cutin_when_the_follower_performs()
+  local sequence = FieldWarpSequence.new("teleport", { withFollowMon = true })
+  local port = newPort()
+  Assert.equal(FieldWarpSequence.stepDeparture(sequence, port), "running")
+  Assert.deepEqual(port.events, { "cry" }, "the follower departure opens with the cry")
+  Assert.equal(FieldWarpSequence.stepDeparture(sequence, port), "running")
+  Assert.isNil(indexOf(port, "cutin_start"), "the follower departure shows no cut-in")
+  Assert.isNil(indexOf(port, "zoom:by:-614400:15"), "the spin waits for the cry")
+  port.cryIsDone = true
+  Assert.equal(FieldWarpSequence.stepDeparture(sequence, port), "running")
+  Assert.equal(port.events[#port.events - 1], "zoom:by:-614400:15")
+  Assert.equal(port.events[#port.events], "se:SEQ_SE_DP_TELE")
+end
+
+function T.cancel_during_the_grounded_cutin_or_cry_releases_exactly_once()
+  for _, kind in ipairs({ "teleport", "dig" }) do
+    local sequence = FieldWarpSequence.new(kind)
+    local port = newPort()
+    FieldWarpSequence.stepDeparture(sequence, port)
+    FieldWarpSequence.cancel(sequence, port)
+    FieldWarpSequence.cancel(sequence, port)
+    local cancels, clears = 0, 0
+    for _, event in ipairs(port.events) do
+      if event == "cutin_cancel" then
+        cancels = cancels + 1
+      elseif event == "fade_clear" then
+        clears = clears + 1
+      end
+    end
+    Assert.equal(cancels, 1, kind .. " cancellation releases the in-flight cut-in once")
+    Assert.equal(clears, 0, kind .. " cancellation clears no fade that never started")
+  end
+  local crying = FieldWarpSequence.new("teleport", { withFollowMon = true })
+  local cryPort = newPort()
+  FieldWarpSequence.stepDeparture(crying, cryPort)
+  FieldWarpSequence.cancel(crying, cryPort)
+  FieldWarpSequence.cancel(crying, cryPort)
+  Assert.isNil(indexOf(cryPort, "cutin_cancel"), "cancelling the cry touches no cut-in")
+  Assert.isNil(indexOf(cryPort, "fade_clear"), "cancelling the cry clears no fade")
+end
+
 function T.grounded_warps_never_touch_the_fly_cutin_or_landing()
   for _, kind in ipairs({ "teleport", "dig", "escape_rope" }) do
     local sequence = FieldWarpSequence.new(kind)
     local port = newPort()
     port.cryIsDone = true
+    port.cutinIsDone = true
     for _ = 1, 300 do
       if FieldWarpSequence.stepDeparture(sequence, port) == "warp" then
         break
@@ -366,16 +454,33 @@ function T.grounded_warps_never_touch_the_fly_cutin_or_landing()
     FieldWarpSequence.stepArrival(sequence, port)
     for _, event in ipairs(port.events) do
       Assert.isTrue(
-        event ~= "cutin_start" and event ~= "landing_start",
-        kind .. " leaves the fly presentation untouched: " .. event
+        event ~= "landing_start",
+        kind .. " leaves the fly landing untouched: " .. event
       )
     end
   end
+  local rope = FieldWarpSequence.new("escape_rope")
+  local ropePort = newPort()
+  ropePort.cryIsDone = true
+  ropePort.cutinIsDone = true
+  for _ = 1, 300 do
+    if FieldWarpSequence.stepDeparture(rope, ropePort) == "warp" then
+      break
+    end
+    ropePort.fadeIsDone = true
+  end
+  Assert.isNil(
+    indexOf(ropePort, "cutin_start"),
+    "escape rope never shows a cut-in"
+  )
+  Assert.isNil(indexOf(ropePort, "cry"), "escape rope never cries")
 end
 
 function T.cancel_releases_the_zoom_and_fade_once()
   local sequence = FieldWarpSequence.new("teleport")
   local port = newPort()
+  FieldWarpSequence.stepDeparture(sequence, port)
+  port.cutinIsDone = true
   FieldWarpSequence.stepDeparture(sequence, port)
   port.fadeIsDone = false
   for _ = 1, 96 do

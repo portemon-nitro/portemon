@@ -76,6 +76,9 @@ local function recordingScheduler()
   function scheduler:foregroundEnvironmentId()
     return nil
   end
+  function scheduler:foregroundTrigger()
+    return nil
+  end
   function scheduler:autonomousActorsLocked()
     return false
   end
