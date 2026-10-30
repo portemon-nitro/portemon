@@ -970,10 +970,75 @@ function FieldBattleCoordinator:_captureLaunchEnvironment(request, method)
   return environment
 end
 
+-- Cheap battle-scene freshness facts shared by prediction and selection: the
+-- raw clock band before indoor clamping, the avatar movement mode, and
+-- the authored map background. Each mirrors its _fieldBattleEnvironment
+-- rule exactly so the memo and the launched scene agree.
+---@param self FieldBattleCoordinator
+---@return integer hourInt truncated field hour
+---@return string rawBand "day"|"evening"|"night" before indoor clamping
+local function sampledBattleClock(self)
+  local hour = 12
+  local runtime = self.runtime
+  if type(runtime) == "table" and runtime.localClock ~= nil then
+    local clock = runtime.localClock
+    local okClock, now = pcall(function()
+      return clock:nowLocal()
+    end)
+    if okClock and type(now) == "table" and type(now.hour) == "number" then
+      hour = now.hour
+    end
+  end
+  local hourInt = math.floor(hour)
+  if hourInt < 0 or hourInt >= 24 then
+    return 12, "day"
+  end
+  local band = "day"
+  local okBand, bandName = pcall(TimeOfDayProps.bandForHour, hourInt)
+  if okBand and bandName == "eve" then
+    band = "evening"
+  elseif okBand and bandName == "nite" then
+    band = "night"
+  end
+  return hourInt, band
+end
+
+---@param self FieldBattleCoordinator
+---@return string avatar durable movement mode, "walking" when unreadable
+local function sampledMovementMode(self)
+  local runtime = self.runtime
+  if type(runtime) ~= "table" then
+    return "walking"
+  end
+  local avatar = runtime.playerAvatar
+  if avatar ~= nil and type(avatar.status) == "function" then
+    local okStatus, status = pcall(function()
+      return avatar:status()
+    end)
+    if okStatus and type(status) == "table" and type(status.durableState) == "string" then
+      return status.durableState
+    end
+  end
+  return "walking"
+end
+
+---@param map table<string, unknown>?
+---@return string authored battle background, "general" when absent
+local function authoredBattleBackground(map)
+  if type(map) == "table" and type(map.fieldData) == "table" then
+    local compiled = map.fieldData.battleBackground
+    if type(compiled) == "string" and compiled ~= "" then
+      return compiled
+    end
+  end
+  return "general"
+end
+
 -- The battle environment the player's committed tile would launch now; the
 -- scene key may name an unknown context, which launch capture rejects.
+---@param sample { movementMode: string, hour: integer, rawBand: string }? private prefetch sample reused for memo consistency
 ---@return table<string, unknown> detached field battle environment
-function FieldBattleCoordinator:_fieldBattleEnvironment()
+function FieldBattleCoordinator:_fieldBattleEnvironment(sample)
   local session = fieldRuntime(self).session
   local map = nil
   if session ~= nil then
@@ -982,13 +1047,7 @@ function FieldBattleCoordinator:_fieldBattleEnvironment()
   if map == nil then
     map = fieldRuntime(self).runtimeMap
   end
-  local background = "general"
-  if type(map) == "table" and type(map.fieldData) == "table" then
-    local compiled = map.fieldData.battleBackground
-    if type(compiled) == "string" and compiled ~= "" then
-      background = compiled
-    end
-  end
+  local background = authoredBattleBackground(map)
   local player = fieldRuntime(self).player
   local fieldX, fieldZ, surfaceId = nil, nil, nil
   local behavior = nil
@@ -996,40 +1055,24 @@ function FieldBattleCoordinator:_fieldBattleEnvironment()
     fieldX, fieldZ, surfaceId = player.fieldX, player.fieldZ, player.surfaceId
     behavior = fieldRuntime(self):arrivalBehavior(map, player)
   end
-  local movementMode = "walking"
-  local avatar = fieldRuntime(self).playerAvatar
-  if avatar ~= nil and type(avatar.status) == "function" then
-    local okStatus, status = pcall(function()
-      return avatar:status()
-    end)
-    if okStatus and type(status) == "table" and type(status.durableState) == "string" then
-      movementMode = status.durableState
-    end
+  local movementMode = nil
+  local hourInt = nil
+  local rawBand = nil
+  if type(sample) == "table" and type(sample.movementMode) == "string" then
+    movementMode = sample.movementMode
+  else
+    movementMode = sampledMovementMode(self)
+  end
+  if type(sample) == "table" and type(sample.hour) == "number" and type(sample.rawBand) == "string" then
+    hourInt = sample.hour
+    rawBand = sample.rawBand
+  else
+    hourInt, rawBand = sampledBattleClock(self)
   end
   if movementMode == "surfing" then
     background = "ocean"
   end
-  local hour = 12
-  if fieldRuntime(self).localClock ~= nil then
-    local okClock, now = pcall(function()
-      return fieldRuntime(self).localClock:nowLocal()
-    end)
-    if okClock and type(now) == "table" and type(now.hour) == "number" then
-      hour = now.hour
-    end
-  end
-  local band = "day"
-  local hourInt = math.floor(hour)
-  if hourInt < 0 or hourInt >= 24 then
-    hourInt = 12
-  else
-    local okBand, bandName = pcall(TimeOfDayProps.bandForHour, hourInt)
-    if okBand and bandName == "eve" then
-      band = "evening"
-    elseif okBand and bandName == "nite" then
-      band = "night"
-    end
-  end
+  local band = rawBand
   if OUTDOOR_BATTLE_BACKGROUNDS[background] ~= true then
     band = "day"
   end
@@ -1055,7 +1098,8 @@ end
 
 -- Publishes the already computed battle-scene prediction for idle
 -- presentation warmup: the memoized key survives only while the
--- committed map, tile, and surface still match the prefetch snapshot
+-- committed map, tile, surface, raw time band, movement mode, and
+-- authored background still match the prefetch snapshot
 -- and no accepted launch owns the field. Read-only: it never
 -- recomputes the environment, never queues derived work, and never
 -- synthesizes a scene before the first prefetch.
@@ -1088,7 +1132,13 @@ function FieldBattleCoordinator:predictedSceneKey()
     or self._prefetchX ~= player.fieldX
     or self._prefetchZ ~= player.fieldZ
     or self._prefetchSurface ~= player.surfaceId
+    or self._prefetchAuthoredBackground ~= authoredBattleBackground(session.currentMap)
+    or self._prefetchMovementMode ~= sampledMovementMode(self)
   then
+    return nil
+  end
+  local _, rawBand = sampledBattleClock(self)
+  if self._prefetchRawBand ~= rawBand then
     return nil
   end
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
@@ -1101,8 +1151,9 @@ end
 -- Queues the battle scene the next encounter at the committed tile would
 -- launch at near urgency, so the shared battle catalog behind every scene
 -- builds before an encounter holds the field. Only presented battles need
--- scenes; the environment resolves again only when the committed tile
--- changes, and an unresolvable context is left to the launch to reject.
+-- scenes; the environment resolves again only when the committed context
+-- (tile, raw time band, movement mode, or authored background) changes,
+-- and an unresolvable context clears the memo for the launch to reject.
 function FieldBattleCoordinator:prefetchEncounterScene()
   if self._disposed or self._battlePresentationFactory == nil or self._battleLaunch ~= nil then
     return
@@ -1115,19 +1166,34 @@ function FieldBattleCoordinator:prefetchEncounterScene()
     return
   end
   local map = session.currentMap
+  local authoredBackground = authoredBattleBackground(map)
+  local movementMode = sampledMovementMode(self)
+  local hourInt, rawBand = sampledBattleClock(self)
   if
     self._prefetchMap == map
     and self._prefetchX == player.fieldX
     and self._prefetchZ == player.fieldZ
     and self._prefetchSurface == player.surfaceId
+    and self._prefetchAuthoredBackground == authoredBackground
+    and self._prefetchMovementMode == movementMode
+    and self._prefetchRawBand == rawBand
   then
     return
   end
+  local previousSceneKey = self._prefetchSceneKey
   self._prefetchMap, self._prefetchX, self._prefetchZ = map, player.fieldX, player.fieldZ
   self._prefetchSurface = player.surfaceId
+  self._prefetchAuthoredBackground = authoredBackground
+  self._prefetchMovementMode = movementMode
+  self._prefetchRawBand = rawBand
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local sceneKey = self:_fieldBattleEnvironment().sceneKey
-  if sceneKey ~= self._prefetchSceneKey and BattlePresentationCache.parseSceneKey(sceneKey) ~= nil then
+  local sceneKey =
+    self:_fieldBattleEnvironment({ movementMode = movementMode, hour = hourInt, rawBand = rawBand }).sceneKey
+  if BattlePresentationCache.parseSceneKey(sceneKey) == nil then
+    self._prefetchSceneKey = nil
+    return
+  end
+  if sceneKey ~= previousSceneKey then
     self._prefetchSceneKey = sceneKey
     host.requestBattleScene(sceneKey, "near")
   end
