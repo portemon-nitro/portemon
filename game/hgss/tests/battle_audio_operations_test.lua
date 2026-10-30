@@ -1497,7 +1497,7 @@ function T.missing_or_rejected_sounds_fail_the_launch_with_their_identity()
 end
 
 -- Every outcome hands music back exactly once without retiring the
--- engine: the field policy suspends at admission, the battle track
+-- engine: the field policy suspends with the battle-music start, the battle track
 -- starts once, victory swaps to the wild-win BGM instead of pausing for a
 -- fanfare, the escape restores the field track exactly once, and the
 -- shared service and sink stay usable after the battle disposes.
@@ -1512,6 +1512,13 @@ function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engi
       watchMusic(runtime.audio, trace)
       local ok, legErr = xpcall(function()
         runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+        runtime:update(1 / 30)
+        envelope:updateFixed(TICK)
+        check(
+          problems,
+          trace.suspends == 0,
+          "admission itself leaves the field policy active on " .. versionId
+        )
         local ticks = 0
         while runtime.battleCoordinator:activeBattle() == nil and ticks < 1500 do
           runtime:update(1 / 30)
@@ -1528,7 +1535,7 @@ function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engi
         local turns = settle(runtime, envelope, sparringChoose, 6000)
         Assert.isTrue(turns > 0, "the win handoff answers decisions to its committed words")
         Assert.equal(runtime:lastBattleResult().result, "win", "the win handoff reports its exact word")
-        check(problems, trace.suspends == 1, "the field policy suspends once at admission on " .. versionId)
+        check(problems, trace.suspends == 1, "the field policy suspends once with the music start on " .. versionId)
         check(problems, #trace.starts == 2, "the battle track starts once and victory swaps once on " .. versionId)
         if trace.starts[1] ~= nil then
           check(
@@ -1599,10 +1606,17 @@ function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engi
       watchMusic(runtime.audio, trace)
       local ok, legErr = xpcall(function()
         runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+        runtime:update(1 / 30)
+        envelope:updateFixed(TICK)
+        check(
+          problems,
+          trace.suspends == 0,
+          "the escape admission itself leaves the field policy active on " .. versionId
+        )
         waitConstructed(runtime, envelope)
         settle(runtime, envelope, fleeingChoose, 6000)
         Assert.equal(runtime:lastBattleResult().result, "flee", "the escape reports its exact word")
-        check(problems, trace.suspends == 1, "the escape suspends once at admission on " .. versionId)
+        check(problems, trace.suspends == 1, "the escape suspends once with the music start on " .. versionId)
         check(problems, #trace.starts == 1, "the escape starts its battle track exactly once on " .. versionId)
         local escaped = false
         for _, entry in ipairs(log) do

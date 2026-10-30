@@ -518,7 +518,15 @@ end
 ---@param capture { _canvases: GxRenderer.Canvas[] } partial capture accumulating its canvases
 ---@return GxRenderer.Canvas
 function FieldRenderer:_copyCanvas(graphics, source, capture)
-  local canvas = graphics.newCanvas(source:getWidth(), source:getHeight())
+  -- Launch-owned transition planes keep the native pipeline spec: the
+  -- copy composites 1:1 at capture time but upscales to the live
+  -- viewport during the transition, so a default-filtered DPI-following
+  -- canvas would blur and mis-size the frozen field behind the effect.
+  local canvas = graphics.newCanvas(source:getWidth(), source:getHeight(), {
+    format = "rgba8",
+    dpiscale = 1,
+  })
+  canvas:setFilter("nearest", "nearest")
   capture._canvases[#capture._canvases + 1] = canvas
 
   local previousCanvas = graphics.getCanvas()

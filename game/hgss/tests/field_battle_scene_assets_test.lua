@@ -1,8 +1,11 @@
 local Assert = require("tests.support.Assert")
+local AudioCache = require("libs.assets.src.audio.AudioCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
+local MonCache = require("libs.assets.src.MonCache")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 
 local T = {}
 
@@ -1533,6 +1536,294 @@ function T.failed_warmup_stays_quiet_without_rereading_documents()
     audio = { roles = {}, banks = {}, cries = {} },
   })
   Assert.isTrue(readyB, "an independent valid launch still prepares: " .. tostring(failureB))
+  envelope:dispose()
+end
+
+-- A launch whose cry and music banks are not yet staged waits under cover
+-- instead of voicing a missing bank: preparation demands every music bank
+-- and every cry species bank at required urgency and stays pending until
+-- the worker stages them, so a fresh cache never reaches its send-out cry
+-- with a missing audio asset (PIDGEY voices bank 16).
+function T.preparation_waits_for_cry_and_music_banks_before_first_battle()
+  local record = sceneRecord(SCENE_KEY)
+  local pool = ledgerPool(0, {})
+  local bankReady = false
+  local bankAsks = {}
+  local host = {
+    requestAudioBank = function(bankId, urgency)
+      bankAsks[#bankAsks + 1] = { bankId = bankId, urgency = urgency }
+      if bankReady then
+        return true
+      end
+      return nil
+    end,
+  }
+  local monCatalog = {
+    species = function(_, key)
+      assert(key == "PIDGEY", "the probe cry names its species")
+      return { nativeId = 16 }
+    end,
+  }
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = stagedCacheFs(record),
+    windows = { drawWindow = function() end, drawApplicationFrame = function() end },
+    text = {
+      measure = function()
+        return { width = 0, height = 0 }
+      end,
+      drawText = function() end,
+    },
+    measureDisplay = function()
+      return {
+        width = 256,
+        height = 384,
+        topology = ScreenTopology.dualDisplay(
+          { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+          { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+        ),
+        pixelRatio = 1,
+        signature = "scene-assets-audio-gate",
+      }
+    end,
+    graphics = {},
+    imagePool = pool,
+    derivedAssets = host,
+    monCatalog = monCatalog,
+  })
+  envelope._manifest = graphicsManifest()
+  local services = envelope:_preparationServices()
+  local demand = {
+    launchId = "cry-bank-gate",
+    scenes = { SCENE_KEY },
+    pages = {},
+    trainerPictures = {},
+    battleBalls = {},
+    iconKeys = {},
+    audio = { roles = {}, banks = { 7 }, cries = { "cry:PIDGEY" } },
+  }
+  local ready, failure = services.prepare(demand)
+  Assert.isNil(failure, "an unstaged cry bank waits without failing: " .. tostring(failure))
+  Assert.isFalse(ready == true, "an unstaged cry bank never prepares its launch")
+  local asked = {}
+  for _, ask in ipairs(bankAsks) do
+    Assert.equal(ask.urgency, "required", "cry and music banks stage at required urgency")
+    asked[ask.bankId] = true
+  end
+  Assert.isTrue(asked[7], "the music bank stages before the launch prepares")
+  Assert.isTrue(asked[16], "the PIDGEY cry bank stages before the launch prepares")
+  bankReady = true
+  local readyStaged, failureStaged = services.prepare(demand)
+  Assert.isTrue(readyStaged, "the staged cry bank prepares its launch: " .. tostring(failureStaged))
+  envelope:dispose()
+end
+
+local MUSIC_ROLE = "SEQ_TEST_WILD"
+
+-- Staged audio index mapping only the probe music role to its bank, so
+-- admission and music-start demands resolve without the full catalog.
+local function musicIndex()
+  return {
+    schema = AudioCache.INDEX_SCHEMA,
+    sequences = { [11] = { bankId = 7 } },
+    sequenceBySymbol = { [MUSIC_ROLE] = 11 },
+  }
+end
+
+local function probeCatalog()
+  return {
+    species = function(_, key)
+      if key == "PIDGEY" then
+        return { nativeId = 16, genderRatio = 127 }
+      end
+      if key == "CHIKORITA" then
+        return { nativeId = 152, genderRatio = 127 }
+      end
+      error("unknown probe species: " .. tostring(key), 0)
+    end,
+  }
+end
+
+local function probeMon(species)
+  return {
+    species = species,
+    form = 0,
+    personality = 0x12345678,
+    origin = { trainerId = 1 },
+  }
+end
+
+-- Recording derived-asset host behind admission and music-start demands:
+-- every method records its urgency and answers from one readiness flag.
+local function recordingDemands(host)
+  host.asks = {}
+  host.bankReady = false
+  function host.requestBattlePresentation(urgency)
+    host.asks[#host.asks + 1] = { method = "presentation", urgency = urgency }
+    if host.bankReady then
+      return true
+    end
+    return nil
+  end
+  function host.requestBattleScene(sceneKey, urgency)
+    host.asks[#host.asks + 1] = { method = "scene", id = sceneKey, urgency = urgency }
+    if host.bankReady then
+      return true
+    end
+    return nil
+  end
+  function host.requestMonPortraitPage(pageId, urgency)
+    host.asks[#host.asks + 1] = { method = "portrait", id = pageId, urgency = urgency }
+    if host.bankReady then
+      return true
+    end
+    return nil
+  end
+  function host.requestAudioBank(bankId, urgency)
+    host.asks[#host.asks + 1] = { method = "audioBank", id = bankId, urgency = urgency }
+    if host.bankReady then
+      return true
+    end
+    return nil
+  end
+  return host
+end
+
+local function admissionCacheFs(record, portraits)
+  local cacheFs = stagedCacheFs(record)
+  local baseLoad = cacheFs.loadLua
+  function cacheFs:loadLua(path)
+    if path == AudioCache.indexPath() then
+      return musicIndex()
+    end
+    if path == MonCache.portraitManifestPath() then
+      return { entries = portraits }
+    end
+    return baseLoad(self, path)
+  end
+  return cacheFs
+end
+
+local function admissionEnvelope(cacheFs, pool, host, catalog, audio)
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = { drawWindow = function() end, drawApplicationFrame = function() end },
+    text = {
+      measure = function()
+        return { width = 0, height = 0 }
+      end,
+      drawText = function() end,
+    },
+    measureDisplay = function()
+      return {
+        width = 256,
+        height = 384,
+        topology = ScreenTopology.dualDisplay(
+          { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+          { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+        ),
+        pixelRatio = 1,
+        signature = "scene-assets-admission",
+      }
+    end,
+    graphics = {},
+    imagePool = pool,
+    derivedAssets = host,
+    monCatalog = catalog,
+    audio = audio,
+  })
+  envelope._manifest = graphicsManifest()
+  return envelope
+end
+
+local function askedSet(asks)
+  local seen = {}
+  for _, ask in ipairs(asks) do
+    Assert.equal(ask.urgency, "required", "admission stages its launch demands at required urgency")
+    local key = ask.method .. ":" .. tostring(ask.id)
+    seen[key] = true
+  end
+  return seen
+end
+
+-- Admission enrolls the whole launch closure at required urgency before
+-- any tick runs: the shared global, the scene, the music bank, and the
+-- lead and foe portrait pages with their cry banks. The worker then
+-- builds throughout the transition instead of starting at first packet.
+function T.admission_preseeds_launch_closure_at_required_urgency()
+  local record = sceneRecord(SCENE_KEY)
+  local catalog = probeCatalog()
+  local leadMon, foeMon = probeMon("CHIKORITA"), probeMon("PIDGEY")
+  local leadSelector = SummaryModel.portraitSelectorFor(catalog, leadMon)
+  local foeSelector = SummaryModel.portraitSelectorFor(catalog, foeMon)
+  local cacheFs = admissionCacheFs(record, {
+    [leadSelector] = { pageId = 5 },
+    [foeSelector] = { pageId = 3 },
+  })
+  local pool = ledgerPool(0, {})
+  local host = recordingDemands({})
+  local envelope = admissionEnvelope(cacheFs, pool, host, catalog, nil)
+  envelope:factory()({
+    launchId = "admission-preseed",
+    kind = "wild",
+    environment = { sceneKey = SCENE_KEY },
+    textSpeed = "fastest",
+    audio = { playMusic = function()
+      return true
+    end },
+    musicRole = MUSIC_ROLE,
+    leadMon = leadMon,
+    foeMon = foeMon,
+    host = {},
+  })
+  local seen = askedSet(host.asks)
+  Assert.isTrue(seen["presentation:nil"], "admission demands the shared global first")
+  Assert.isTrue(seen["scene:" .. SCENE_KEY], "admission demands the scene at required urgency")
+  Assert.isTrue(seen["audioBank:7"], "admission demands the music bank at required urgency")
+  Assert.isTrue(seen["audioBank:152"], "admission demands the lead cry bank at required urgency")
+  Assert.isTrue(seen["audioBank:16"], "admission demands the foe cry bank at required urgency")
+  Assert.isTrue(seen["portrait:5"], "admission demands the lead portrait page at required urgency")
+  Assert.isTrue(seen["portrait:3"], "admission demands the foe portrait page at required urgency")
+  envelope:dispose()
+end
+
+-- Battle music waits for its staged files and suspends the field policy
+-- on the same tick it voices: an unstaged bank holds without failing
+-- and without silencing the field, and admission itself never suspends.
+function T.battle_music_waits_for_staged_files_and_suspends_with_the_start()
+  local record = sceneRecord(SCENE_KEY)
+  local cacheFs = admissionCacheFs(record, {})
+  local pool = ledgerPool(0, {})
+  local host = recordingDemands({})
+  local controller = { suspends = {}, plays = {} }
+  function controller:suspendFieldPolicy(token)
+    self.suspends[#self.suspends + 1] = token
+  end
+  function controller:playMusic(symbol)
+    self.plays[#self.plays + 1] = symbol
+    return true
+  end
+  local envelope = admissionEnvelope(cacheFs, pool, host, probeCatalog(), controller)
+  envelope:factory()({
+    launchId = "music-gate",
+    kind = "wild",
+    environment = { sceneKey = SCENE_KEY },
+    textSpeed = "fastest",
+    audio = controller,
+    musicRole = MUSIC_ROLE,
+    host = {},
+  })
+  Assert.equal(#controller.suspends, 0, "admission never suspends the field policy")
+  envelope:_startBattleMusic()
+  Assert.equal(#controller.suspends, 0, "an unstaged music bank holds without suspending the field")
+  Assert.equal(#controller.plays, 0, "an unstaged music bank holds without voicing")
+  Assert.isNil(envelope:musicNote(), "an unstaged music bank records no start note")
+  host.bankReady = true
+  envelope:_startBattleMusic()
+  Assert.deepEqual(controller.suspends, { "music-gate" }, "the staged start suspends the field policy once")
+  Assert.deepEqual(controller.plays, { MUSIC_ROLE }, "the staged start voices its role once")
+  Assert.equal(envelope:musicNote(), "started:" .. MUSIC_ROLE, "the staged start records its note")
+  envelope:_startBattleMusic()
+  Assert.equal(#controller.plays, 1, "the music start latches exactly once")
   envelope:dispose()
 end
 

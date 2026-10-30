@@ -163,7 +163,7 @@ function T.transition_init_starts_music_before_ticks_done_and_unload_exactly_onc
     end,
     graphics = graphics,
     derivedAssets = {
-      requestBattleScene = function()
+      requestBattlePresentation = function()
         return true
       end,
     },

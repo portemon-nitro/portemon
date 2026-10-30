@@ -10,11 +10,13 @@
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+local CryPlayer = require("libs.hgss.src.audio.CryPlayer")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
 local MonCache = require("libs.assets.src.MonCache")
+local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local BattleEncounterTransition = require("libs.hgss.src.transition.BattleEncounterTransition")
 local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
 local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFamilyFactory")
@@ -66,6 +68,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _revealingBattle boolean true once the constructed battle starts its reveal
 ---@field _musicStarted boolean true once battle music was attempted for the launch
 ---@field _musicNote string? battle-music start note, set once the staged track voices
+---@field _musicBankIds integer[]? admission snapshot behind the gated music start, refreshed while empty
 ---@field _musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@field _resultMusicPlayed boolean true once the result music swap was attempted for the launch
 ---@field _pool table<string, unknown>? borrowed shared generated-image owner, required once graphics resolve pixels
@@ -803,6 +806,7 @@ function FieldBattlePresentation.new(opts)
     _revealingBattle = false,
     _musicStarted = false,
     _musicNote = nil,
+    _musicBankIds = nil,
     _musicRole = nil,
     _resultMusicPlayed = false,
     _fieldRenderer = opts.fieldRenderer,
@@ -1417,6 +1421,148 @@ local function checkAudioMembers(manifest, musicRole, demand)
   return nil
 end
 
+-- Resolves the distinct audio bank ids one launch must stage before it
+-- may voice: every numeric music bank plus every cry species bank behind
+-- the demanded portrait pages (form-accurate) and cry roles (form 0
+-- fallback for cries without a page). Unknown species stay for the voice
+-- to report with its species context, and a missing catalog skips cry
+-- resolution the same way the voice would fail it later.
+---@param envelope FieldBattlePresentation
+---@param demand table<string, unknown> exact launch demand under preparation
+---@return integer[] distinct bank ids in stable ascending order
+local function demandedAudioBanks(envelope, demand)
+  local seen = {} ---@type table<integer, boolean>
+  local banks = {} ---@type integer[]
+  local function note(bankId)
+    if type(bankId) ~= "number" or bankId % 1 ~= 0 or bankId < 0 then
+      return
+    end
+    if not seen[bankId] then
+      seen[bankId] = true
+      banks[#banks + 1] = bankId
+    end
+  end
+  local audio = demand.audio
+  if type(audio) == "table" and type(audio.banks) == "table" then
+    for _, bankId in ipairs(audio.banks) do
+      note(bankId)
+    end
+  end
+  local catalog = envelope._monCatalog
+  if type(catalog) ~= "table" or type(catalog.species) ~= "function" then
+    table.sort(banks)
+    return banks
+  end
+  local coveredSpecies = {} ---@type table<string, boolean>
+  if type(demand.pages) == "table" then
+    for _, selector in ipairs(demand.pages) do
+      if type(selector) == "string" then
+        local speciesKey, formText = tostring(selector):match("^([^/]+)/f(%d+)")
+        if type(speciesKey) == "string" and speciesKey ~= "" and formText ~= nil then
+          local form = tonumber(formText)
+          if form ~= nil and form % 1 == 0 then
+            local ok, facts = pcall(catalog.species, catalog, speciesKey)
+            if
+              ok
+              and type(facts) == "table"
+              and type(facts.nativeId) == "number"
+              and facts.nativeId % 1 == 0
+              and facts.nativeId >= 0
+            then
+              coveredSpecies[speciesKey] = true
+              note(CryPlayer.bankFor(facts.nativeId, form --[[@as integer]]))
+            end
+          end
+        end
+      end
+    end
+  end
+  if type(audio) == "table" and type(audio.cries) == "table" then
+    for _, cry in ipairs(audio.cries) do
+      if type(cry) == "string" then
+        local speciesKey = cry:match("^cry:(.+)$")
+        if type(speciesKey) == "string" and speciesKey ~= "" and coveredSpecies[speciesKey] ~= true then
+          local ok, facts = pcall(catalog.species, catalog, speciesKey)
+          if
+            ok
+            and type(facts) == "table"
+            and type(facts.nativeId) == "number"
+            and facts.nativeId % 1 == 0
+            and facts.nativeId >= 0
+          then
+            coveredSpecies[speciesKey] = true
+            note(CryPlayer.bankFor(facts.nativeId, 0))
+          end
+        end
+      end
+    end
+  end
+  table.sort(banks)
+  return banks
+end
+
+-- Waits for every demanded music and cry bank through the selected-game
+-- host at required urgency, so the launch never voices a bank whose file
+-- is not yet generated. Without a host nothing can build the bank: a
+-- graphical launch accepts only an already-staged bank file, mirroring
+-- the portrait and trainer-picture gates.
+---@param envelope FieldBattlePresentation
+---@param demand table<string, unknown> exact launch demand under preparation
+---@return boolean? ready true when every bank is staged, false while building
+---@return string? terminal failure naming the exact bank
+local function checkAudioBanks(envelope, demand)
+  local needed = demandedAudioBanks(envelope, demand)
+  if #needed == 0 then
+    return true
+  end
+  local host = envelope._derivedAssets
+  local requestBank = type(host) == "table" and host.requestAudioBank or nil
+  local waiting = false
+  for _, bankId in ipairs(needed) do
+    if type(requestBank) == "function" then
+      local ok, ready, failure = pcall(requestBank, bankId, "required")
+      if not ok then
+        return nil, "battle audio bank " .. tostring(bankId) .. " is not staged: " .. tostring(ready)
+      end
+      if failure ~= nil then
+        return nil, "battle audio bank " .. tostring(bankId) .. " is not staged: " .. tostring(failure)
+      end
+      if ready ~= true then
+        waiting = true
+      end
+    else
+      local ok, bank = pcall(envelope._cacheFs.loadLua, envelope._cacheFs, AudioCache.bankPath(bankId))
+      if not ok or type(bank) ~= "table" then
+        return nil, "battle audio bank " .. tostring(bankId) .. " is not staged: no audio bank host to schedule it"
+      end
+    end
+  end
+  if waiting then
+    return false
+  end
+  return true
+end
+
+-- Resolves one portrait selector to its staged atlas page without
+-- manifest-schema validation, mirroring the party near warmup: an
+-- unstaged or malformed manifest simply pre-seeds nothing and the
+-- required preparation path reports with its context later.
+---@param cacheFs table<string, unknown> versioned derived cache behind the manifests
+---@param selector string canonical portrait selector under resolution
+---@return integer? staged atlas page id, nil when unresolvable
+local function preseedPortraitPage(cacheFs, selector)
+  local ok, manifest = pcall(cacheFs.loadLua, cacheFs, MonCache.portraitManifestPath())
+  if not ok or type(manifest) ~= "table" or type(manifest.entries) ~= "table" then
+    return nil
+  end
+  local entry = manifest.entries[selector]
+  local pageId = type(entry) == "table" and entry.pageId or nil
+  if type(pageId) ~= "number" or pageId % 1 ~= 0 or pageId < 0 then
+    return nil
+  end
+  return pageId --[[@as integer]]
+end
+
 -- Validates the staged menu, HUD, and font members behind the launch:
 -- every drawable the renderers reach for must have its staged image,
 -- and every manifest text role must have its staged font definition.
@@ -1567,6 +1713,35 @@ function FieldBattlePresentation:_preparationServices()
               "battle scene image is not staged: " .. tostring(sceneKey) .. ": no scene demand host to schedule it"
           end
           return nil, "battle scene image is not staged: " .. tostring(sceneKey)
+        end
+        -- A staged layer stays usable only while its drawables are still
+        -- the live warm pins: idle warmup retires a superseded scene's
+        -- pins once its successor group completes, so a launch returning
+        -- to the retired scene must re-acquire instead of drawing
+        -- released leases through the stale memo.
+        if stagedSceneKey == sceneKey then
+          local layer = stagedSceneLayer
+          local introPin = envelope._warmPinned["scene-intro:" .. sceneKey]
+          local playerPin = envelope._warmPinned["scene-terrain:" .. sceneKey .. ":player"]
+          local foePin = envelope._warmPinned["scene-terrain:" .. sceneKey .. ":foe"]
+          local introLayer = type(layer) == "table" and layer.introLayer or nil
+          local terrainSprites = type(layer) == "table" and layer.terrainSprites or nil
+          local playerSprite = type(terrainSprites) == "table" and terrainSprites.player or nil
+          local foeSprite = type(terrainSprites) == "table" and terrainSprites.foe or nil
+          if
+            introPin == nil
+            or playerPin == nil
+            or foePin == nil
+            or type(introLayer) ~= "table"
+            or introPin.handle ~= introLayer.drawable
+            or type(playerSprite) ~= "table"
+            or playerPin.handle ~= playerSprite.drawable
+            or type(foeSprite) ~= "table"
+            or foePin.handle ~= foeSprite.drawable
+          then
+            stagedSceneKey = nil
+            stagedSceneLayer = nil
+          end
         end
         if stagedSceneKey ~= sceneKey then
           local previousSceneKey = stagedSceneKey
@@ -1825,6 +2000,18 @@ function FieldBattlePresentation:_preparationServices()
         if type(path) == "string" then
           enrollUpload(envelope, path)
         end
+      end
+      -- Cry and music banks stage through the same provisioner seam so
+      -- the launch never voices a bank whose file is not yet generated:
+      -- an unstaged bank waits under cover while its fixed art already
+      -- decodes, and a failed bank fails closed naming the bank. A fresh
+      -- cache reaches its send-out cry only after the cry bank stages.
+      local audioReady, audioFailure = checkAudioBanks(envelope, demand)
+      if audioReady == nil then
+        return nil, audioFailure
+      end
+      if audioReady == false then
+        return false, nil
       end
     end
     return true
@@ -2759,6 +2946,7 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._revealingBattle = false
   self._musicStarted = false
   self._musicNote = nil
+  self._musicBankIds = nil
   self._musicRole = descriptor.musicRole
   self._resultMusicPlayed = false
   self._transition = nil
@@ -2780,6 +2968,10 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
     local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)
     self._pendingSceneImage = { path = imagePath, token = pool:request(imagePath, POOLED_SAMPLER, "demand") }
   end
+  -- The launch closure enrolls at required urgency before any tick runs
+  -- so the worker builds throughout the transition: never raises, so a
+  -- hostile host cannot fail admission through speculation.
+  self:_preseedLaunchDemands(descriptor)
   local derived = self._derivedAssets
   local scheduled = self._graphics ~= nil
     and type(derived) == "table"
@@ -3323,6 +3515,8 @@ end
 
 -- Resolves battle music and emitted sound effects to their bank closure
 -- through the staged audio index. A cold or unstaged index stages nothing.
+-- The admission snapshot behind the music start refreshes while empty:
+-- a later-staging index still resolves before the voice.
 ---@return integer[] battle audio bank identities, empty without a staged index
 function FieldBattlePresentation:_audioBanks()
   local ok, index = pcall(function()
@@ -3355,6 +3549,77 @@ function FieldBattlePresentation:_audioBanks()
   end
   table.sort(banks)
   return banks
+end
+
+-- Demands one combatant's portrait page and cry bank at required urgency
+-- from tick one: eggs and unresolvable records pre-seed nothing and the
+-- required preparation path reports with its context later. Never raises:
+-- admission must not fail on speculative demands.
+---@param mon table<string, unknown>? party lead or foe mon record under pre-seeding
+function FieldBattlePresentation:_preseedCombatant(mon)
+  if type(mon) ~= "table" or mon.isEgg == true then
+    return
+  end
+  local catalog = self._monCatalog
+  local derived = self._derivedAssets
+  if type(catalog) ~= "table" or type(derived) ~= "table" then
+    return
+  end
+  local speciesKey = mon.species
+  local form = mon.form
+  if type(speciesKey) == "string" and speciesKey ~= "" then
+    local okFacts, facts = pcall(catalog.species, catalog, speciesKey)
+    if
+      okFacts
+      and type(facts) == "table"
+      and type(facts.nativeId) == "number"
+      and facts.nativeId % 1 == 0
+      and facts.nativeId >= 0
+      and type(form) == "number"
+      and form % 1 == 0
+      and form >= 0
+      and type(derived.requestAudioBank) == "function"
+    then
+      pcall(derived.requestAudioBank, CryPlayer.bankFor(facts.nativeId, form --[[@as integer]]), "required")
+    end
+    local okSelector, selector = pcall(SummaryModel.portraitSelectorFor, catalog, mon)
+    if okSelector and type(selector) == "string" and selector ~= "" and self._cacheFs ~= nil then
+      local pageId = preseedPortraitPage(self._cacheFs, selector)
+      if pageId ~= nil and type(derived.requestMonPortraitPage) == "function" then
+        pcall(derived.requestMonPortraitPage, pageId, "required")
+      end
+    end
+  end
+end
+
+-- Enrolls the whole launch closure at required urgency before any tick
+-- runs: the shared global, the scene, the music banks, and the lead and
+-- foe portrait pages with their cry banks. The worker then builds
+-- throughout the transition instead of starting at first packet, while
+-- the bench rides the field party near warmup refreshed at admission.
+-- Never raises: every demand is best effort behind its host method.
+---@param descriptor table<string, unknown> admitted launch descriptor under pre-seeding
+function FieldBattlePresentation:_preseedLaunchDemands(descriptor)
+  local derived = self._derivedAssets
+  if type(derived) ~= "table" then
+    return
+  end
+  if type(derived.requestBattlePresentation) == "function" then
+    pcall(derived.requestBattlePresentation, "required")
+  end
+  local environment = descriptor.environment
+  local sceneKey = type(environment) == "table" and environment.sceneKey or nil
+  if type(sceneKey) == "string" and sceneKey ~= "" and type(derived.requestBattleScene) == "function" then
+    pcall(derived.requestBattleScene, sceneKey, "required")
+  end
+  self._musicBankIds = self:_audioBanks()
+  if type(derived.requestAudioBank) == "function" then
+    for _, bankId in ipairs(self._musicBankIds or {}) do
+      pcall(derived.requestAudioBank, bankId, "required")
+    end
+  end
+  self:_preseedCombatant(descriptor.leadMon)
+  self:_preseedCombatant(descriptor.foeMon)
 end
 
 ---@return string? battle-music start note, nil until the staged track voices
@@ -3411,9 +3676,8 @@ function FieldBattlePresentation:_startTransition(descriptor)
     cacheFs = self._cacheFs,
     battleAssets = assert(
       self._derivedAssets,
-      "battle transition waits on its selected scene through the selected-game host"
+      "battle transition waits on the global presentation through the selected-game host"
     ),
-    sceneKey = assert(descriptor.environment.sceneKey, "presented field launches carry their selected scene key"),
     audioOperations = { emit = emitAudio },
     effectFactory = createEffect,
   })
@@ -3625,6 +3889,14 @@ function FieldBattlePresentation:_stepCover()
     then
       return
     end
+    -- Battle music starts with the running effect once its files stage:
+    -- the gated start holds without suspending the field while unstaged
+    -- and latches exactly once when it voices. Without an effect the
+    -- cover-full fallback below owns the start instead, so data-only
+    -- cover never invents a transition music operation.
+    if self._transition ~= nil then
+      self:_startBattleMusic()
+    end
     self:_stepCoverUp()
     if
       self._cover >= FieldBattlePresentation.COVER_MAX
@@ -3632,9 +3904,7 @@ function FieldBattlePresentation:_stepCover()
     then
       host.notify("cover-complete")
     end
-    if self._cover >= FieldBattlePresentation.COVER_MAX then
-      -- Battle music starts once under full cover: the role was selected
-      -- from staged source data at admission.
+    if self._transition == nil and self._cover >= FieldBattlePresentation.COVER_MAX then
       self:_startBattleMusic()
     end
     return
@@ -3706,26 +3976,55 @@ function FieldBattlePresentation:_portEnterReady()
   return ok and ready == true
 end
 
--- Starts the source-defined battle music role once under full cover:
--- the staged chosen-track closure voices through the launch voice
--- operations at the transition boundary. The start is attempted exactly
--- once per launch. A missing role, a rejected start, or a missing
--- staged track fails the launch through the host with its music
--- identity instead of continuing silently; a launch without a music
--- port keeps its headless test-sink contract.
+-- Starts the source-defined battle music role once its files stage: an
+-- unstaged bank holds the voice without failing the launch or silencing
+-- the field, and the covering ticks retry until staged. Field policy
+-- suspends on the same tick the battle music voices (retail switches
+-- scene and BGM with the effect init), so the staging window keeps field
+-- music instead of cutting to silence at admission. A missing role, a
+-- rejected start, or a missing staged track fails the launch through the
+-- host with its music identity instead of continuing silently; a launch
+-- without a music port keeps its headless test-sink contract.
 function FieldBattlePresentation:_startBattleMusic()
   if self._musicStarted then
     return
   end
-  self._musicStarted = true
   local launchId = self._launchId
   local descriptor = self._descriptor
   local role = self._musicRole
-  local audio = descriptor ~= nil and descriptor.audio or nil
   if type(role) ~= "string" or role == "" then
+    self._musicStarted = true
     self:_failMusic("battle music needs its staged track role for launch " .. tostring(launchId))
     return
   end
+  local bankIds = self._musicBankIds
+  if bankIds == nil or #bankIds == 0 then
+    bankIds = self:_audioBanks()
+    self._musicBankIds = bankIds
+  end
+  local ready, failure = checkAudioBanks(self, { audio = { banks = bankIds, cries = {} } })
+  if ready == nil then
+    self._musicStarted = true
+    self:_failMusic(assert(failure, "music bank failures carry a reason"))
+    return
+  end
+  if ready == false then
+    return
+  end
+  self._musicStarted = true
+  -- Field policy suspends on the same launch audio boundary the
+  -- coordinator admits: in production the screen controller and the
+  -- field controller are one object, while tests may substitute the
+  -- screen sink and keep the field owner on the descriptor.
+  local fieldAudio = descriptor ~= nil and descriptor.audio or nil
+  if type(fieldAudio) == "table" and type(fieldAudio.suspendFieldPolicy) == "function" then
+    local okSuspend, suspendErr = pcall(fieldAudio.suspendFieldPolicy, fieldAudio, launchId)
+    if not okSuspend then
+      self:_failMusic(tostring(suspendErr))
+      return
+    end
+  end
+  local audio = descriptor ~= nil and descriptor.audio or nil
   if audio == nil or type(audio.playMusic) ~= "function" then
     return
   end
@@ -3881,6 +4180,7 @@ function FieldBattlePresentation:_dropLaunch()
   self._revealingBattle = false
   self._musicStarted = false
   self._musicNote = nil
+  self._musicBankIds = nil
   self._musicRole = nil
   self._resultMusicPlayed = false
   self._transitionFailed = false

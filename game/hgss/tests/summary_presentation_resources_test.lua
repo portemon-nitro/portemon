@@ -1812,8 +1812,9 @@ end
 
 -- A party revision predicts the new roster pages while a live lease still
 -- watches the old ones: the new pages are resident before they open, the
--- watched pictures stay drawable throughout, and stale art frees exactly
--- once only after its watchers leave, never replacing a current picture.
+-- watched pictures stay drawable throughout (including across a fresh
+-- prepare on the same lease), and stale art frees exactly once only after
+-- its watchers leave, never replacing a current picture.
 function T.revision_change_warms_new_portraits_without_evicting_watched_pages()
   local first = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
   local second = MonCache.portraitSelector("TOTODILE", 0, "male", false)
@@ -1851,6 +1852,12 @@ function T.revision_change_warms_new_portraits_without_evicting_watched_pages()
     readyA.assets.portraits:image(first) == pageA,
     "the watched party A picture stays drawable while leased"
   )
+  local rewatched = prepareToTerminal(leaseA, exactDemand("party-a-again", { first }))
+  Assert.equal(rewatched.kind, "ready", "the watched lease stays usable after unrelated staging")
+  Assert.isTrue(
+    rewatched.assets.portraits:image(first) == pageA,
+    "unrelated staging never swaps the watched picture"
+  )
   leaseA:release()
   settleWarm({ second })
   poolInner:prune()
@@ -1866,62 +1873,6 @@ function T.revision_change_warms_new_portraits_without_evicting_watched_pages()
     poolInner:stats().physicalImages,
     0,
     "every staged image reclaims with no leak and no double free"
-  )
-end
-
--- Staging never evicts a page a live lease watches, even after the party
--- revision moves on: the watched picture keeps its identity across idle
--- rounds, and the predicted page is adopted without rebuilding.
-function T.staging_never_evicts_pages_a_live_lease_watches()
-  local one = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
-  local other = MonCache.portraitSelector("TOTODILE", 0, "male", false)
-  local setup = exactComposition({ [one] = portraitEntry(3), [other] = portraitEntry(12) })
-  local owner = setup.owner
-  Assert.isTrue(
-    type(owner.advanceWarmup) == "function",
-    "the summary owner keeps watched pages resident across idle rounds"
-  )
-  local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
-  local function settleWarm(selectors)
-    for _ = 1, SETTLE_ROUNDS do
-      local used, failure = owner:advanceWarmup(selectors, 1)
-      Assert.isNil(failure, "idle staging reports no failure on synthetic portraits")
-      if used == false then
-        return
-      end
-    end
-    error("idle staging never settles", 0)
-  end
-  settleWarm({ one })
-  local lease = owner:acquire()
-  local ready = prepareToTerminal(lease, exactDemand("watched", { one }))
-  Assert.equal(ready.kind, "ready", "the watched demand prepares through its ordinary path")
-  local watched = ready.assets.portraits:image(one)
-  settleWarm({ other })
-  local again = prepareToTerminal(lease, exactDemand("watched", { one }))
-  Assert.equal(again.kind, "ready", "the watched lease stays usable after unrelated staging")
-  Assert.isTrue(
-    again.assets.portraits:image(one) == watched,
-    "unrelated staging never swaps the watched picture"
-  )
-  local uploadsBeforeAdoption = poolInner.uploads
-  local predicted = owner:acquire()
-  local predictedReady = prepareToTerminal(predicted, exactDemand("predicted", { other }))
-  Assert.equal(predictedReady.kind, "ready", "the predicted demand prepares through its ordinary path")
-  Assert.equal(
-    poolInner.uploads,
-    uploadsBeforeAdoption,
-    "the predicted page is adopted without rebuilding"
-  )
-  lease:release()
-  predicted:release()
-  owner:release()
-  poolInner:prune()
-  Assert.equal(watched.releaseCount, 1, "the watched page frees exactly once after its watchers leave")
-  Assert.equal(
-    poolInner:stats().physicalImages,
-    0,
-    "staging retains no portrait past its watchers and owner"
   )
 end
 

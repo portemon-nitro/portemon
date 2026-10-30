@@ -605,6 +605,32 @@ function T.tests.party_warmup_enrolls_near_demands_on_revision_change()
   Assert.isTrue(#hostCalls > count, "a party change rewarms the party assets")
 end
 
+function T.tests.party_warmup_refresh_rewarms_without_a_party_change()
+  local hostCalls = {}
+  local revisionOf = { revision = 7 }
+  local runtime = runtimeWithPartyWarmup(hostCalls, revisionOf)
+
+  runtime:update(1 / 60)
+  local count = #hostCalls
+  runtime:update(1 / 60)
+  Assert.equal(#hostCalls, count, "a settled party enrolls nothing more")
+
+  runtime:refreshPartyWarmup()
+  runtime:update(1 / 60)
+  Assert.isTrue(
+    #hostCalls > count,
+    "battle admission refreshes the bench near demands without a party change"
+  )
+  local nearAudio = false
+  for index = count + 1, #hostCalls do
+    local call = hostCalls[index]
+    if call.kind == "audio" and call.urgency == "near" then
+      nearAudio = true
+    end
+  end
+  Assert.isTrue(nearAudio, "the refresh round re-enrolls cry banks below foreground urgency")
+end
+
 function T.tests.follower_update_rejects_stable_map_ownership_drift()
   local calls = { count = 0 }
   local runtime = runtimeForFollowerCoherence(61, 60, false, calls)

@@ -2041,6 +2041,15 @@ function FieldRuntime:_pollPartyAssetWarmup(dt)
   end
 end
 
+-- Re-runs the live party near warmup on the next update: battle admission
+-- refreshes the bench portrait, cry, and effect demands even when the
+-- party revision has not changed since map entry. Marker-only; the next
+-- update still skips without its mon service, cache, or asset host.
+function FieldRuntime:refreshPartyWarmup()
+  self._partyPrefetchRevision = nil
+  self._partyPrefetchCooldown = 0
+end
+
 function FieldRuntime:update(dt)
   local maxSemanticDt = FieldSession.FIXED_DT * FieldSession.MAX_CATCH_UP_TICKS
   local acceptedDt = math.min(dt, maxSemanticDt)
