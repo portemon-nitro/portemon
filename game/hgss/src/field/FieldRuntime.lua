@@ -651,6 +651,7 @@ end
 ---@field assetNeeds AssetNeedsRegistry the script-declared asset preparation registry
 ---@field audioSink LoveAudioSink? production-composed LÖVE output sink (absent without an audio-output host)
 ---@field screenFade FieldScriptScreenFade the production semantic script screen-fade controller (fade_screen/wait_fade); always composed, advanced once after each field tick
+---@field scentTint FieldScentTint the Honey/Sweet Scent screen tint; always composed, advanced once after each field tick
 ---@field localClock LocalClock the shared host-local civil-time boundary
 ---@field weatherClock table<string, unknown> injectable host boundary { today()->{month,day}, hasPenalty()->boolean }
 ---@field fieldEntranceIndicator FieldEntranceIndicator
@@ -1349,6 +1350,7 @@ function FieldRuntime:_composeTransitions(boot)
   -- regardless of presentation mode or scriptHosts injection. Rendering
   -- only reads its status().
   self.screenFade = FieldScriptScreenFade.new()
+  self.scentTint = require("libs.hgss.src.transition.FieldScentTint").new()
 
   -- Modal dialogue is pure and fixed-tick. Runtime layout needs only the
   -- compiled font definition; presentation later owns the atlas and drawing.
@@ -1865,6 +1867,9 @@ function FieldRuntime:_startFieldSession(boot)
   local function sessionContextChoicePresentation()
     return self:contextChoicePresentation()
   end
+  local function partyKnowsMove(move)
+    return self.monService:partySlotWithMove(move) ~= nil
+  end
   self.session = FieldSession.new({
     versionId = self.versionId,
     currentMap = self.runtimeMap,
@@ -1914,6 +1919,7 @@ function FieldRuntime:_startFieldSession(boot)
     terrainEffects = self.fieldTerrainEffectController,
     playerAvatar = self.playerAvatar,
     progression = PlayerProgression.new(self.playerData.profile),
+    partyKnowsMove = partyKnowsMove,
   })
 
   if boot.loadedGame and boot.loadedGame.weatherId ~= nil then
@@ -2155,6 +2161,7 @@ function FieldRuntime:update(dt)
       self.transition:updateSourceFrame()
     end
     self.screenFade:updateSourceFrame()
+    self.scentTint:updateSourceFrame()
     if self.blackoutFlow then
       self.blackoutFlow:updateSourceFrame()
     end
@@ -2570,9 +2577,13 @@ end
 ---@return { spriteId: integer, spriteChanged: boolean, sounds: string[] }
 function FieldRuntime:applyAvatarTransitions()
   local avatar = assert(self.playerAvatar, "field runtime has no avatar transition owner")
+  local before = avatar:durableState()
   local result = avatar:applyTransitions()
   if result.spriteChanged then
     assert(self.playerVisual, "field runtime has no player visual"):setAvatar(result.spriteId)
+  end
+  if self.audio ~= nil and avatar:durableState() ~= before then
+    self.audio:syncTraversalMusic()
   end
   if #result.sounds > 0 then
     local audio = self.audio or (self.scriptHosts and self.scriptHosts.audio)
@@ -3625,13 +3636,12 @@ function FieldRuntime:_consumeCommittedStep()
   self:_admitStepEncounter(result.encounter --[[@as table<string, unknown>]], method)
 end
 
--- Admits one prepared step encounter to the presented launch path on its
--- own committed tick: the prepared identity rides the launch details so
--- the single scenario construction consumes it, never rerolls it. An
--- explicit cancellation still discards it under the existing policy.
+-- The launch details that identify one prepared wild encounter to the
+-- battle host: the prepared identity rides the details so the single
+-- scenario construction consumes it, never rerolls it.
 ---@param encounter table<string, unknown> prepared encounter carrying its mon
----@param method string encounter method for the arrival tile
-function FieldRuntime:_admitStepEncounter(encounter, method)
+---@return table<string, unknown> wild launch details
+function FieldRuntime:wildLaunchDetails(encounter)
   local mons = encounter.mons --[[@as table<integer, unknown>]]
   assert(type(mons) == "table" and type(mons[1]) == "table", "prepared encounters carry their mon")
   local first = mons[1] --[[@as table<string, unknown>]]
@@ -3656,12 +3666,62 @@ function FieldRuntime:_admitStepEncounter(encounter, method)
     type(level) == "number" and level % 1 == 0 and level >= 1 and level <= 100,
     "prepared encounters carry their level in 1..100"
   )
-  local details = {
+  return {
     species = mon.species,
     level = level,
     attemptId = encounter.id,
     environment = encounter.environment,
   }
+end
+
+-- Runs one field-move encounter attempt (Rock Smash, Headbutt, Sweet Scent)
+-- over the active map's encounter table member. Field-move attempts are not
+-- steps: they consult their tables without advancing any step counter.
+---@param method string rock_smash, headbutt, grass, or surf
+---@param modifiers table<string, unknown> method modifiers (headbutt slots, sweetScent)
+---@return table<string, unknown>? attempt result
+function FieldRuntime:attemptFieldMoveEncounter(method, modifiers)
+  local session = assert(self.session, "field-move encounters require the field session")
+  local map = session.currentMap --[[@as table<string, unknown>]]
+  local fieldData = map.fieldData --[[@as table<string, unknown>]]
+  local memberId = fieldData.wildEncounterMemberId
+  assert(type(memberId) == "number" and memberId % 1 == 0, "field-move encounters resolve their map's table member")
+  local staged = { radio = "none" }
+  for key, value in pairs(modifiers) do
+    staged[key] = value
+  end
+  return self:attemptEncounter({
+    eventId = session.tick,
+    mapId = memberId,
+    method = method,
+    movement = "field_move",
+    modifiers = staged,
+    environment = {},
+    timeOfDay = self:_encounterTimeOfDay(),
+    playerProfile = self.playerData.profile,
+  })
+end
+
+-- The Sweet Scent encounter roll: the standing tile's step-encounter method
+-- (land or surf), nothing where the tile carries none. The scent always
+-- draws an encounter from a table with a rate.
+---@return table<string, unknown>? attempt result, nil when the tile allows no encounter
+function FieldRuntime:attemptSweetScentEncounter()
+  local session = assert(self.session, "sweet scent requires the field session")
+  local method = self:_stepEncounterMethod(session.currentMap, assert(self.player, "sweet scent requires the player"))
+  if method == nil then
+    return nil
+  end
+  return self:attemptFieldMoveEncounter(method, { sweetScent = true })
+end
+
+-- Admits one prepared step encounter to the presented launch path on its
+-- own committed tick. An explicit cancellation still discards it under the
+-- existing policy.
+---@param encounter table<string, unknown> prepared encounter carrying its mon
+---@param method string encounter method for the arrival tile
+function FieldRuntime:_admitStepEncounter(encounter, method)
+  local details = self:wildLaunchDetails(encounter)
   local launchId = self.battleCoordinator:nextLaunchIdentity("wild")
   local request = { id = launchId, kind = "wild", payload = details }
   self.battleCoordinator:clearReceipt()
@@ -3750,14 +3810,17 @@ function FieldRuntime:_stepEncounterMethod(map, player)
 end
 
 -- Whether one arrival behavior carries surf encounters: the river and sea
--- tiles behind the shared surfable-water predicate plus the two further
--- source surfable-encounter water behaviors (pokeheartgold
--- src/metatile_behavior.c). Surfable water without the encounter flag
--- never encounters, and water on foot never reads the grass tables.
+-- tiles plus the two further source encounter-water behaviors (pokeheartgold
+-- FieldSystem_GetTileEncounterTypeAndRate). Surfable water without the
+-- encounter type never encounters, and water on foot never reads the grass
+-- tables.
 ---@param behavior integer? arrival metatile behavior under inspection
 ---@return boolean true for surf-encounter water
 function FieldRuntime:_isSurfEncounterWater(behavior)
-  return MetatileBehavior.isSurfableWater(behavior) or behavior == 18 or behavior == 42
+  return behavior == MetatileBehavior.BEHAVIOR.RIVER_WATER
+    or behavior == MetatileBehavior.BEHAVIOR.SEA_WATER
+    or behavior == 18
+    or behavior == 42
 end
 
 ---@return boolean true while the avatar surfs
@@ -3817,11 +3880,50 @@ function FieldRuntime:_admitFieldAction(actionId, request)
     context = context,
     travel = travel,
   })
+  local session = assert(self.session, "field admission requires the field session")
+  local client = assert(self.scripts and self.scripts.client, "field admission requires the script client")
+  if type(queued) == "table" and queued.kind == "already_active" then
+    -- Retail menu Strength with the permission already set runs the menu
+    -- script, which reads FLAG_STRENGTH_ACTIVE and says Strength is in use.
+    self.scripts.worldState:setVar(0x8000, flowRequest.slot)
+    local reply = client:startApplicationScript("common.menu_strength", session.tick + 1)
+    if reply == ScriptInteractionClient.RESULTS.blocked then
+      error("pokemon.field_move admission scheduling failed without a foreground claim", 0)
+    end
+    return reply
+  end
   if type(queued) ~= "table" or queued.kind ~= "accepted" then
     error("pokemon.field_move admission refused: " .. tostring(queued and queued.kind), 0)
   end
-  local session = assert(self.session, "field admission requires the field session")
-  local client = assert(self.scripts and self.scripts.client, "field admission requires the script client")
+  -- Moves whose party-menu use runs a script that owns the whole move: the
+  -- retail menu scripts (cues, effect, aftermath) and the runtime Sweet
+  -- Scent script.
+  local menuScript = ({
+    rock_smash = "common.menu_rock_smash",
+    headbutt = "common.menu_headbutt",
+    sweet_scent = BuiltinScripts.SWEET_SCENT_SCRIPT,
+  })[flowRequest.move]
+  if menuScript ~= nil then
+    -- Menu scripts read the party slot from the first special variable and
+    -- the struck object as their last-talked actor. The admission queue only
+    -- vetted eligibility.
+    fieldMoves:discardPending()
+    self.scripts.worldState:setVar(0x8000, flowRequest.slot)
+    local target = context.facingActor
+    local reply = client:startApplicationScript(
+      menuScript,
+      session.tick + 1,
+      target ~= nil and { selfActor = target.identity } or nil
+    )
+    if reply == ScriptInteractionClient.RESULTS.blocked then
+      error("pokemon.field_move admission scheduling failed without a foreground claim", 0)
+    end
+    return reply
+  end
+  if flowRequest.move == "escape_rope" then
+    -- The Rope is spent as the bag closes, before the return animation.
+    assert(self.bagService:take("ESCAPE_ROPE", 1), "the Escape Rope use requires the item in the bag")
+  end
   local started = client:startApplicationScript(BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT, session.tick + 1)
   if started == nil or started == ScriptInteractionClient.RESULTS.blocked then
     fieldMoves:discardPending()

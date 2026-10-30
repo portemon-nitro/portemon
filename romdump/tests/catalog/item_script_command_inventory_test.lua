@@ -19,7 +19,6 @@ local CATEGORIES = {
   seal = true,
   apricorn = true,
   prize = true,
-  field_item_check = true,
 }
 
 -- The generic protocol owned here: inventory primitives, item queries, and
@@ -67,7 +66,6 @@ local DEFERRED = {
   [626] = "apricorn",
   [567] = "prize",
   [651] = "prize",
-  [753] = "field_item_check",
 }
 
 local ALLOWED_DEFERRALS = {
@@ -78,7 +76,6 @@ local ALLOWED_DEFERRALS = {
   seal = true,
   apricorn = true,
   prize = true,
-  field_item_check = true,
 }
 
 -- Commands that must never appear in the item inventory: mon-owned mail and

@@ -87,6 +87,15 @@ function T.resolves_map_asset_aliases()
   end
 end
 
+function T.cut_in_banner_aliases_the_choose_starter_sub_resources()
+  local e = HgssArchives.resolve("cut_in_banner")
+  Assert.equal(e.symbol, "NARC_application_choose_starter_choose_starter_sub_res")
+  Assert.equal(e.narcId, 93)
+  Assert.equal(e.path, "a/0/9/3")
+  Assert.equal(e.alias, "cut_in_banner")
+  Assert.isFalse(e.required)
+end
+
 function T.touch_subwindow_aliases_the_prompt_art_archive()
   local e = HgssArchives.resolve("touch_subwindow")
   Assert.equal(e.symbol, "NARC_system_touch_subwindow")

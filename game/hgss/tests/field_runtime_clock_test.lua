@@ -121,6 +121,7 @@ function T.tests.apricorn_day_is_sampled_before_each_fixed_tick_and_only_advance
       consumeCompleted = function() end,
     }
     runtime.screenFade = { updateSourceFrame = function() end }
+    runtime.scentTint = { updateSourceFrame = function() end }
 
     runtime:update(FieldSession.FIXED_DT)
     Assert.equal(#dates, 1)

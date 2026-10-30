@@ -1,6 +1,6 @@
--- Return-warp phase ownership: Dig plans from recorded entrances and
--- Teleport plans from cited spawn destinations, both advancing
--- acknowledge-then-warp through the world adapter exactly once; Fly
+-- Return-warp phase ownership: Dig plans from the recorded special spawn and
+-- Teleport plans from cited spawn destinations, both advancing departure,
+-- the warp, then arrival through the world adapter exactly once; Fly
 -- stages bounded destination choice before its validated travel;
 -- cancellation before the start leaves the service untouched and
 -- repeated polls never re-warp.
@@ -21,16 +21,19 @@ local T = {}
 ---@field cancel fun(self: ReturnRuntimePort, plan: table<string, unknown>)
 ---@field isBusy fun(self: ReturnRuntimePort): boolean
 
-local function travelWith(entrance)
+local function travelWith(special)
   return {
     lastHealSpawn = "SPAWN_NEW_BARK",
-    escapeEntrance = entrance,
+    specialSpawn = special,
   }
 end
 
 local function worldDouble(warps)
   local world = {
     warpCalls = { plan = 0, begin = 0 },
+    order = {},
+    departureTicks = 3,
+    arrivalTicks = 2,
     planned = nil,
     began = nil,
     done = false,
@@ -41,18 +44,32 @@ local function worldDouble(warps)
     self.planned = { move = move, travel = travel }
     assert(type(context) == "table", "return planning requires its context")
     if move == "dig" then
-      local entrance = travel.escapeEntrance
-      if entrance == nil then
+      local special = travel.specialSpawn
+      if special == nil then
         return { kind = "not_now" }
       end
-      return { map = entrance.map, warp = 0, fieldX = 1, fieldZ = 2, facing = "south" }
+      return { map = special.map, warp = 0, fieldX = 1, fieldZ = 2, facing = special.direction }
     end
     if move == "teleport" then
       return { map = "MAP_NEW_BARK", warp = 0, fieldX = 695, fieldZ = 397, facing = "south" }
     end
     error("world double plans only dig and teleport returns", 0)
   end
+  function world:stepWarpDeparture(plan)
+    self.order[#self.order + 1] = "depart"
+    self.departureTicks = self.departureTicks - 1
+    return self.departureTicks > 0 and "running" or "warp"
+  end
+  function world:settleWarp(_)
+    self.order[#self.order + 1] = "settle"
+  end
+  function world:stepWarpArrival(plan)
+    self.order[#self.order + 1] = "arrive"
+    self.arrivalTicks = self.arrivalTicks - 1
+    return self.arrivalTicks > 0 and "running" or "done"
+  end
   function world:beginReturnWarp(plan)
+    self.order[#self.order + 1] = "begin"
     self.warpCalls.begin = self.warpCalls.begin + 1
     self.began = plan
     assert(plan.warpStarted ~= true, "world double starts once")
@@ -67,7 +84,13 @@ local function worldDouble(warps)
   function world:validateTarget(_)
     return nil
   end
-  function world:cancelMotion(_) end
+  function world:isStrengthActive()
+    return false
+  end
+  function world:clearStrength() end
+  function world:cancelMotion(_)
+    self.order[#self.order + 1] = "cancel"
+  end
   if warps ~= nil then
     world.warpsDouble = warps
   end
@@ -102,8 +125,8 @@ end
 function T.dig_plans_and_runs_to_done_through_one_warp()
   local world = worldDouble()
   local runtime = runtimeWith(world)
-  local entrance = { map = "M", fieldX = 1, fieldZ = 2, facing = "south" }
-  local request = digRequest(travelWith(entrance))
+  local special = { map = "M", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" }
+  local request = digRequest(travelWith(special))
   Assert.equal(runtime:queue(request).kind, "accepted", "dig admission must accept")
   local taken = runtime:takePending()
   local plan = runtime:plan(taken)
@@ -124,13 +147,92 @@ function T.dig_plans_and_runs_to_done_through_one_warp()
   Assert.equal(world.warpCalls.begin, 1, "settled polls never re-warp")
 end
 
-function T.dig_without_history_refuses_without_planning()
+-- The Escape Rope bag item returns to the recorded special spawn like Dig,
+-- through its own animation, and needs no party slot or move user.
+function T.escape_rope_plans_the_dig_destination_with_its_own_sequence_and_no_slot()
+  local world = worldDouble()
+  local runtime = runtimeWith(world)
+  local special = { map = "M", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" }
+  local request = { move = "escape_rope", context = contextWith(), travel = travelWith(special) }
+  Assert.equal(runtime:queue(request).kind, "accepted", "escape rope admission must accept without a slot")
+  local plan = runtime:plan(runtime:takePending())
+  Assert.equal(plan.kind, "escape_rope")
+  Assert.equal(plan.slot, nil)
+  Assert.equal(world.planned.move, "dig", "the destination is the Dig special spawn")
+  Assert.equal(plan.sequence.kind, "escape_rope")
+  world.done = true
+  local outcome = nil
+  for _ = 1, 60 do
+    outcome = runtime:advance(plan)
+    if outcome.kind ~= "running" then
+      break
+    end
+  end
+  Assert.equal(outcome.kind, "done")
+  Assert.equal(world.warpCalls.begin, 1)
+end
+
+function T.escape_rope_refuses_per_the_item_check_before_any_plan()
+  local runtime = runtimeWith(worldDouble())
+  local noCave = contextWith()
+  noCave.fieldUse = { cave = false, escapeAllowed = false }
+  Assert.equal(runtime:queue({ move = "escape_rope", context = noCave, travel = travelWith(nil) }).kind, "not_here")
+  Assert.isFalse(runtime:isBusy())
+  local escorted = contextWith()
+  escorted.humanFollower = true
+  Assert.equal(runtime:queue({ move = "escape_rope", context = escorted, travel = travelWith(nil) }).kind, "have_follower")
+end
+
+function T.warping_runs_departure_then_one_warp_then_arrival_before_done()
+  local world = worldDouble()
+  local runtime = runtimeWith(world)
+  local special = { map = "M", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" }
+  runtime:queue(digRequest(travelWith(special)))
+  local plan = runtime:plan(runtime:takePending())
+  Assert.equal(plan.phase, "depart", "a warping move opens with its departure animation")
+  local outcome
+  for _ = 1, 40 do
+    world.done = world.warpCalls.begin > 0
+    outcome = runtime:advance(plan)
+    if outcome.kind ~= "running" then
+      break
+    end
+  end
+  Assert.equal(outcome.kind, "done")
+  Assert.deepEqual(
+    world.order,
+    { "depart", "depart", "depart", "begin", "settle", "arrive", "arrive" },
+    "departure completes, the warp starts once, then arrival runs"
+  )
+  Assert.isFalse(runtime:isBusy(), "the runtime releases once arrival settles")
+end
+
+function T.cancelling_a_started_departure_releases_the_animation_once()
+  local world = worldDouble()
+  local runtime = runtimeWith(world)
+  local special = { map = "M", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" }
+  runtime:queue(digRequest(travelWith(special)))
+  local plan = runtime:plan(runtime:takePending())
+  runtime:advance(plan)
+  runtime:cancel(plan)
+  runtime:cancel(plan)
+  local cancels = 0
+  for _, entry in ipairs(world.order) do
+    if entry == "cancel" then
+      cancels = cancels + 1
+    end
+  end
+  Assert.equal(cancels, 1, "the animation releases exactly once")
+  Assert.isFalse(runtime:isBusy())
+end
+
+function T.dig_without_a_special_spawn_refuses_without_planning()
   local world = worldDouble()
   local runtime = runtimeWith(world)
   local request = digRequest(travelWith(nil))
   Assert.equal(runtime:queue(request).kind, "accepted", "dig admission precedes planning")
   local plan = runtime:plan(runtime:takePending())
-  Assert.equal(plan.kind, "not_now", "dig with no entrance refuses instead of planning")
+  Assert.equal(plan.kind, "not_now", "dig with no special spawn refuses instead of planning")
 end
 
 function T.failed_warp_reports_failure_and_releases()
@@ -138,8 +240,8 @@ function T.failed_warp_reports_failure_and_releases()
   world.done = true
   world.errorValue = { kind = "stale" }
   local runtime = runtimeWith(world)
-  local entrance = { map = "M", fieldX = 1, fieldZ = 2, facing = "south" }
-  local request = digRequest(travelWith(entrance))
+  local special = { map = "M", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" }
+  local request = digRequest(travelWith(special))
   runtime:queue(request)
   local plan = runtime:plan(runtime:takePending())
   local outcome = nil
@@ -158,8 +260,8 @@ end
 function T.cancel_before_start_leaves_the_service_untouched()
   local world = worldDouble()
   local runtime = runtimeWith(world)
-  local entrance = { map = "M", fieldX = 1, fieldZ = 2, facing = "south" }
-  local request = digRequest(travelWith(entrance))
+  local special = { map = "M", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" }
+  local request = digRequest(travelWith(special))
   runtime:queue(request)
   local plan = runtime:plan(runtime:takePending())
   runtime:cancel(plan)
@@ -175,9 +277,9 @@ function T.teleport_plans_and_runs_to_done_through_one_warp()
   Assert.equal(runtime:queue(request).kind, "accepted", "teleport admission must accept")
   local plan = runtime:plan(runtime:takePending())
   Assert.equal(plan.kind, "teleport", "teleport must produce an executable plan")
-  world.done = true
   local outcome = nil
   for _ = 1, 40 do
+    world.done = world.warpCalls.begin > 0
     outcome = runtime:advance(plan)
     if outcome.kind ~= "running" then
       break

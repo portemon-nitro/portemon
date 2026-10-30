@@ -169,9 +169,9 @@ local function resolver(actorsByCell)
   })
 end
 
-local function baseSnapshot(overrides)
+local function baseSnapshot(overrides, behavior)
   local snapshot = {
-    runtimeMap = map(),
+    runtimeMap = map(nil, behavior),
     fieldX = 4,
     fieldZ = 14,
     surfaceId = 0,
@@ -183,6 +183,41 @@ local function baseSnapshot(overrides)
     snapshot[key] = value
   end
   return snapshot --[[@as InteractionResolverSnapshot]]
+end
+
+local function metatileScript(behavior, overrides)
+  local result = resolver():resolve(baseSnapshot(overrides, behavior))
+  return result and result.scriptId or nil, result
+end
+
+function T.facing_rock_climb_wall_resolves_the_rock_climb_script_in_its_direction_only()
+  Assert.equal(metatileScript(75, { facing = "north" }), "common.field_rock_climb")
+  Assert.equal(metatileScript(75, { facing = "south" }), "common.field_rock_climb")
+  Assert.isNil(metatileScript(75, { facing = "east" }), "the north-south wall needs a north-south facing")
+  Assert.equal(metatileScript(76, { facing = "west" }), "common.field_rock_climb")
+  local _, intent = metatileScript(75, { facing = "north" })
+  Assert.equal(intent.kind, "standard")
+end
+
+function T.facing_a_headbutt_metatile_resolves_the_headbutt_script_in_any_direction()
+  for _, facing in ipairs({ "north", "south", "east", "west" }) do
+    Assert.equal(metatileScript(6, { facing = facing }), "common.field_headbutt")
+  end
+  local _, intent = metatileScript(6)
+  Assert.equal(intent.kind, "standard")
+end
+
+function T.facing_water_on_foot_resolves_surf_only_with_the_badge_and_a_surf_mon()
+  Assert.equal(metatileScript(16, { surfAllowed = true }), "common.field_surf")
+  Assert.isNil(metatileScript(16, { surfAllowed = false }), "no badge or no Surf mon resolves nothing")
+  Assert.isNil(metatileScript(16, { surfAllowed = true, surfing = true }), "a surfing player never re-offers Surf")
+end
+
+function T.surfing_player_facing_a_waterfall_or_whirlpool_resolves_those_scripts()
+  Assert.equal(metatileScript(19, { surfing = true }), "common.field_waterfall")
+  Assert.equal(metatileScript(17, { surfing = true }), "common.field_whirlpool")
+  Assert.isNil(metatileScript(19), "waterfalls resolve only while surfing")
+  Assert.isNil(metatileScript(17), "whirlpools resolve only while surfing")
 end
 
 function T.north_facing_pc_metatile_resolves_to_its_closed_standard_script()

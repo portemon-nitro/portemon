@@ -95,6 +95,10 @@ end
 local function ownedRuntime()
   local FieldMoveRuntime = require("libs.hgss.src.field.FieldMoveRuntime")
   local world = { calls = {} }
+  function world:isStrengthActive()
+    return false
+  end
+  function world:clearStrength() end
   function world:cancelMotion(_)
     self.calls[#self.calls + 1] = "cancelMotion"
   end
@@ -314,6 +318,10 @@ local function policyRuntime()
   local FieldMoveRuntime = require("libs.hgss.src.field.FieldMoveRuntime")
   local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
   local world = { calls = {} }
+  function world:isStrengthActive()
+    return false
+  end
+  function world:clearStrength() end
   function world:cancelMotion(_)
     self.calls[#self.calls + 1] = "cancelMotion"
   end
@@ -374,6 +382,10 @@ end
 ---@return table world
 local function travelWorld()
   local world = { calls = {}, done = false, errorValue = nil }
+  function world:isStrengthActive()
+    return false
+  end
+  function world:clearStrength() end
   function world:cancelMotion(_)
     self.calls[#self.calls + 1] = "cancelMotion"
   end
@@ -394,6 +406,13 @@ local function travelWorld()
   end
   function world:returnWarpError(_)
     return self.errorValue
+  end
+  function world:stepWarpDeparture(_)
+    return "warp"
+  end
+  function world:settleWarp(_) end
+  function world:stepWarpArrival(_)
+    return "done"
   end
   return world
 end
@@ -512,7 +531,7 @@ function T.tests.confirmed_fly_choice_travels_across_tiers_through_the_world_han
     7
   )
   Assert.equal(confirmed.kind, "confirmed", "a live choice confirms")
-  Assert.equal(plan.phase, "acknowledge", "a confirmed choice enters acknowledgement")
+  Assert.equal(plan.phase, "depart", "a confirmed choice enters the departure animation")
   world.done = true
   local outcome = nil
   for _ = 1, 40 do

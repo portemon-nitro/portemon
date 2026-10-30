@@ -11,13 +11,20 @@ local Errors = require("libs.errors.src.Errors")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FieldMoveRuntime = require("libs.hgss.src.field.FieldMoveRuntime")
+local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
 local FieldMoveWorld = require("game.hgss.src.field.FieldMoveWorld")
+local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local Runtime = require("libs.script.src.Runtime")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
+local WorldState = require("libs.hgss.src.script.WorldState")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 
 local T = {}
 
 local CUT_FLAG = 100
 local FLASH_FLAG = 2419
+local STRENGTH_FLAG = 2402
 
 local POLICY = {
   variableSprites = { first = 101, last = 117, variableBase = 0x4020 },
@@ -180,7 +187,7 @@ local function ports(manager, eventState, map, overrides)
     events = eventState,
     maps = {
       current = function()
-        return { symbol = "test-map", id = 61, fieldUse = { flashUsable = true, alphChamber = false } }
+        return { symbol = "test-map", id = 61, fieldUse = { alphFlashRoom = false, alphEscapeRopeRoom = false } }
       end,
       runtimeMap = function()
         return map
@@ -220,7 +227,7 @@ local function setup(overrides)
   manager:enterMap(map, eventState, nil)
   local mapPorts = {
     current = function()
-      return { symbol = "test-map", id = 61, fieldUse = { flashUsable = true, alphChamber = false } }
+      return { symbol = "test-map", id = 61, fieldUse = { alphFlashRoom = false, alphEscapeRopeRoom = false } }
     end,
     runtimeMap = function()
       return map
@@ -479,7 +486,8 @@ function T.push_moves_boulder_and_player_through_motion_owners()
   Assert.equal(position.fieldX, 4)
   Assert.equal(position.fieldZ, 7, "boulder commits one tile south")
   Assert.equal(#filled.worldPorts.player.began, 1, "player motion begins exactly once")
-  Assert.equal(filled.worldPorts.player.commits, 1, "player motion commits exactly once")
+  Assert.equal(filled.worldPorts.player.began[1].action, "walk_in_place", "the player walks on the spot")
+  Assert.isTrue(filled.worldPorts.player.commits >= 1, "player motion settles")
   filled.manager:dispose()
 end
 
@@ -501,9 +509,39 @@ function T.apply_flash_in_the_chamber_dispatches_the_reaction()
   filled.manager:dispose()
 end
 
-function T.activate_strength_confirms_the_enablement()
+function T.strength_permission_is_the_script_visible_strength_flag()
   local filled = setup()
+  local flag = STRENGTH_FLAG
+  Assert.isFalse(filled.world:isStrengthActive(), "a fresh map has no strength permission")
   Assert.isTrue(filled.world:activateStrength({ kind = "enable_strength", mapId = 61 }), "enablement commits")
+  Assert.isTrue(filled.eventState:isFlagSet(flag), "enablement sets the flag the scripts read")
+  Assert.isTrue(filled.world:isStrengthActive())
+  filled.world:clearStrength()
+  Assert.isFalse(filled.eventState:isFlagSet(flag), "the map-entry reset clears the same flag")
+  filled.eventState:setFlag(flag)
+  Assert.isTrue(filled.world:isStrengthActive(), "a script-set flag is the permission too")
+  filled.manager:dispose()
+end
+
+-- The retail Strength script sets FLAG_STRENGTH_ACTIVE; the native boulder
+-- push consumes that same flag, and a map-entry reset clears it.
+function T.strength_script_flag_enables_the_native_push_until_the_map_entry_reset()
+  local filled = setup()
+  filled.worldPorts.player.positionValue = { fieldX = 4, fieldZ = 5, worldY = 0 }
+  filled.worldPorts.player.facingValue = "south"
+  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, world = filled.world })
+  local push = { boulderActorId = "map:61:object:2", direction = "south", mapId = 61 }
+  Assert.equal(runtime:tryStrengthPush(push).kind, "not_here", "no push before Strength is enabled")
+  local worldState = WorldState.new({
+    eventState = filled.eventState,
+    catalogs = { flags = FieldScriptSymbols.flagsByName, variables = FieldScriptSymbols.variablesByName },
+  })
+  local run = { services = { world = worldState }, semantics = RuntimeValues, instance = { scriptId = "test" } }
+  Runtime.executeNode({ op = "set_flag", flag = "FLAG_STRENGTH_ACTIVE" }, run)
+  Assert.equal(runtime:tryStrengthPush(push).kind, "accepted", "the script's flag arms the push")
+  runtime:discardPending()
+  runtime:clearTransient()
+  Assert.equal(runtime:tryStrengthPush(push).kind, "not_here", "the map-entry reset disarms the push")
   filled.manager:dispose()
 end
 
@@ -517,8 +555,8 @@ function T.capture_context_validates_sources_loudly()
       flyAllowed = false,
       teleportAllowed = false,
       escapeAllowed = false,
-      flashUsable = true,
-      alphChamber = false,
+      alphFlashRoom = false,
+      alphEscapeRopeRoom = false,
       icePathB2F = false,
       cave = true,
       unionOrColosseum = false,
@@ -534,8 +572,9 @@ function T.capture_context_validates_sources_loudly()
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
-    foggy = false,
-    chatterOpen = false,
+    localX = 0,
+    localZ = 0,
+    facing = "south",
   }
   local captured = filled.world:captureContext(sources)
   Assert.equal(captured.mapId, 61)

@@ -125,8 +125,8 @@ function FieldMapDataCache.hasFieldUsePolicy(fieldUse)
     "flyAllowed",
     "teleportAllowed",
     "escapeAllowed",
-    "flashUsable",
-    "alphChamber",
+    "alphFlashRoom",
+    "alphEscapeRopeRoom",
     "icePathB2F",
     "cave",
     "unionOrColosseum",
@@ -137,6 +137,86 @@ function FieldMapDataCache.hasFieldUsePolicy(fieldUse)
   end
   return true
 end
+-- The Rock Smash record the current field-map schema always carries: the
+-- item odds (0..100) and the 8 item keys the drawn index selects from.
+---@param rockSmash unknown
+---@return boolean
+function FieldMapDataCache.hasRockSmash(rockSmash)
+  if type(rockSmash) ~= "table" then
+    return false
+  end
+  local odds = rockSmash.odds
+  if type(odds) ~= "number" or odds % 1 ~= 0 or odds < 0 or odds > 100 then
+    return false
+  end
+  local items = rockSmash.items
+  if not Validate.isArray(items) or #items ~= 8 then
+    return false
+  end
+  for _, key in ipairs(items) do
+    if type(key) ~= "string" or key == "" then
+      return false
+    end
+  end
+  return true
+end
+
+local function hasHeadbuttSlots(slots)
+  if not Validate.isArray(slots) or (#slots ~= 0 and #slots ~= 6) then
+    return false
+  end
+  for _, slot in ipairs(slots) do
+    if
+      type(slot) ~= "table"
+      or type(slot.species) ~= "string"
+      or type(slot.minLevel) ~= "number"
+      or type(slot.maxLevel) ~= "number"
+      or type(slot.weight) ~= "number"
+    then
+      return false
+    end
+  end
+  return true
+end
+
+local function hasHeadbuttTrees(trees)
+  if not Validate.isArray(trees) then
+    return false
+  end
+  for _, tree in ipairs(trees) do
+    if not Validate.isArray(tree) or #tree == 0 or #tree > 6 then
+      return false
+    end
+    for _, coord in ipairs(tree) do
+      if type(coord) ~= "table" or type(coord.x) ~= "number" or type(coord.z) ~= "number" then
+        return false
+      end
+    end
+  end
+  return true
+end
+
+-- The Headbutt record the current field-map schema always carries: ordered
+-- tree groups (each a list of global tile coordinates) and the weighted slot
+-- tables, which are empty exactly when the map has no regular trees.
+---@param headbutt unknown
+---@return boolean
+function FieldMapDataCache.hasHeadbutt(headbutt)
+  if type(headbutt) ~= "table" or type(headbutt.slots) ~= "table" then
+    return false
+  end
+  if not hasHeadbuttTrees(headbutt.regularTrees) or not hasHeadbuttTrees(headbutt.secretTrees) then
+    return false
+  end
+  local slots = headbutt.slots
+  for _, name in ipairs({ "common", "rare", "secret" }) do
+    if not hasHeadbuttSlots(slots[name]) then
+      return false
+    end
+  end
+  return true
+end
+
 -- The authoritative event-collection rule of the current field-map record:
 -- true only when every required collection is present as an array. Runtime
 -- consumers that read field records validate
@@ -604,6 +684,8 @@ function FieldMapDataCache.isReady(cacheFs, mapId, expectedMarker)
     or not FieldMapDataCache.hasRenderEnvironment(field.renderEnvironment)
     or not FieldMapDataCache.hasBattleBackground(field.battleBackground)
     or not FieldMapDataCache.hasEncounterMember(field.wildEncounterMemberId)
+    or not FieldMapDataCache.hasRockSmash(field.rockSmash)
+    or not FieldMapDataCache.hasHeadbutt(field.headbutt)
   then
     return false
   end

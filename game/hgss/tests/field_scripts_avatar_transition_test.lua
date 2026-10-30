@@ -345,7 +345,10 @@ local function recordingMaterializer(owner)
     visual.spriteId = spriteId
     order[#order + 1] = "swap:" .. tostring(spriteId)
   end
-  local audio = { played = {} }
+  local audio = { played = {}, traversalSyncs = 0 }
+  function audio:syncTraversalMusic()
+    audio.traversalSyncs = audio.traversalSyncs + 1
+  end
   function audio:play(sound)
     audio.played[#audio.played + 1] = sound
     order[#order + 1] = "play:" .. tostring(sound)
@@ -370,6 +373,7 @@ function T.tests.runtime_materializer_swaps_the_visual_then_plays_sounds_in_orde
   Assert.isTrue(result.spriteChanged)
   Assert.equal(visual.spriteId, owner:currentSpriteId())
   Assert.equal(visual.spriteId, 1002, "the cycling graphic presents after the apply")
+  Assert.equal(audio.traversalSyncs, 1, "a durable traversal change re-syncs the traversal music")
   Assert.deepEqual(audio.played, { "SEQ_SE_DP_JITENSYA" })
   Assert.deepEqual(order, { "swap:1002", "play:SEQ_SE_DP_JITENSYA" }, "the swap lands before its sounds")
 end

@@ -46,6 +46,7 @@ local function runtimeWithTransitionError(transitionError)
         return nil
       end,
     },
+    scentTint = { updateSourceFrame = function() end },
     screenFade = {
       fadeDone = function()
         return true

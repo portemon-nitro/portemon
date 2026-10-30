@@ -140,11 +140,11 @@ local function fieldUse()
     flyAllowed = true,
     teleportAllowed = true,
     escapeAllowed = true,
-    flashUsable = true,
     unionOrColosseum = false,
     cave = false,
     icePathB2F = false,
-    alphChamber = false,
+    alphFlashRoom = false,
+    alphEscapeRopeRoom = false,
     headbuttUsable = false,
     sweetScentUsable = false,
     rockSmashUsable = true,
@@ -175,8 +175,9 @@ local function sources(overrides)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
-    foggy = false,
-    chatterOpen = false,
+    localX = 0,
+    localZ = 0,
+    facing = "south",
   }
   for key, item in pairs(overrides or {}) do
     value[key] = item

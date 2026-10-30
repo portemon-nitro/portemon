@@ -193,6 +193,7 @@ local function runtimeWithClock(catalog, calls, currentMap)
       updateSourceFrame = function() end,
       updateFixed = function() end,
     },
+    scentTint = { updateSourceFrame = function() end },
     screenFade = {
       fadeDone = function()
         return true

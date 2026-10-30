@@ -1,4 +1,4 @@
--- FieldTravelState contract tests: semantic respawn and escape-entrance
+-- FieldTravelState contract tests: semantic respawn and special-spawn
 -- values owned as copied records, never live pointers.
 
 local Assert = require("tests.support.Assert")
@@ -40,43 +40,17 @@ function T.heal_spawn_updates_explicitly_only()
   Assert.equal(state:capture().lastHealSpawn, "SPAWN_GOLDENROD")
 end
 
-function T.escape_entrance_round_trips_and_clears()
-  local state = FieldTravelState.new(travel())
-  Assert.isNil(state:capture().escapeEntrance)
-  local entrance = { map = "MAP_UNION_CAVE_1F", fieldX = 10, fieldZ = 20, facing = "north" }
-  state:setEscapeEntrance(entrance)
-  Assert.deepEqual(state:capture().escapeEntrance, entrance)
-  entrance.fieldX = 999
-  Assert.equal(state:capture().escapeEntrance.fieldX, 10)
-  state:clearEscapeEntrance()
-  Assert.isNil(state:capture().escapeEntrance)
-end
-
-function T.escape_entrance_rejects_malformed_records()
-  local state = FieldTravelState.new(travel())
-  Assert.throws(function()
-    state:setEscapeEntrance({ map = "", fieldX = 1, fieldZ = 2, facing = "north" })
-  end)
-  Assert.throws(function()
-    state:setEscapeEntrance({ map = "MAP_X", fieldX = 1, fieldZ = 2, facing = "up" })
-  end)
-  Assert.throws(function()
-    state:setEscapeEntrance({ map = "MAP_X", fieldX = -1, fieldZ = 2, facing = "north" })
-  end)
-  Assert.isNil(state:capture().escapeEntrance)
-end
-
 function T.trusted_restore_takes_ownership_copies()
-  local entrance = { map = "MAP_UNION_CAVE_1F", fieldX = 10, fieldZ = 20, facing = "north" }
-  local snapshot = travel({ lastHealSpawn = "SPAWN_GOLDENROD", escapeEntrance = entrance })
+  local special = { map = "MAP_UNION_CAVE_1F", fieldX = 10, fieldZ = 20, warpId = -1, direction = "north" }
+  local snapshot = travel({ lastHealSpawn = "SPAWN_GOLDENROD", specialSpawn = special })
   local state = FieldTravelState.new(snapshot)
   snapshot.lastHealSpawn = "SPAWN_PALLET"
-  snapshot.escapeEntrance.fieldX = 999
+  snapshot.specialSpawn.fieldX = 999
   Assert.equal(state:capture().lastHealSpawn, "SPAWN_GOLDENROD", "restore copies the spawn value")
-  Assert.equal(state:capture().escapeEntrance.fieldX, 10, "restore copies the entrance record")
+  Assert.equal(state:capture().specialSpawn.fieldX, 10, "restore copies the special spawn record")
   Assert.deepEqual(state:capture(), {
     lastHealSpawn = "SPAWN_GOLDENROD",
-    escapeEntrance = { map = "MAP_UNION_CAVE_1F", fieldX = 10, fieldZ = 20, facing = "north" },
+    specialSpawn = { map = "MAP_UNION_CAVE_1F", fieldX = 10, fieldZ = 20, warpId = -1, direction = "north" },
   })
 end
 

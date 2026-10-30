@@ -29,6 +29,7 @@ local WALKING_ENCOUNTER_BEHAVIORS = {
 MetatileBehavior.BEHAVIOR = {
   TALL_GRASS = 2,
   VERY_TALL_GRASS = 3,
+  HEADBUTT = 6,
   RIVER_WATER = 16,
   WHIRLPOOL = 17,
   WATERFALL = 19,
@@ -73,21 +74,55 @@ function MetatileBehavior.isDoor(behavior)
   return behavior == MetatileBehavior.BEHAVIOR.DOOR
 end
 
+-- TILE_BEHAVIOR_* values flagged surfable by the source behavior flag table
+-- (MetatileBehavior_IsSurfableWater).
+local SURFABLE_WATER = {}
+for _, behavior in ipairs({ 16, 17, 18, 19, 20, 21, 25, 42, 80, 81, 82, 83, 115, 120, 124 }) do
+  SURFABLE_WATER[behavior] = true
+end
+
 ---@param behavior integer?
 ---@return boolean
 function MetatileBehavior.isSurfableWater(behavior)
-  return behavior == MetatileBehavior.BEHAVIOR.RIVER_WATER or behavior == MetatileBehavior.BEHAVIOR.SEA_WATER
+  return SURFABLE_WATER[behavior] == true
+end
+
+-- Field_PlayerCanSurfOnTile: the facing tile must be surfable water and the
+-- standing tile must not be a bridge/bridge-start tile (the source refuses
+-- while the avatar's on-bridge flag is set, which bridge tiles maintain) or
+-- behavior 34.
+---@param standing integer?
+---@param facing integer?
+---@return boolean
+function MetatileBehavior.canSurfOnto(standing, facing)
+  if not MetatileBehavior.isSurfableWater(facing) then
+    return false
+  end
+  return not (standing == 112 or standing == 113 or standing == 114 or standing == 115 or standing == 34)
+end
+
+-- MetatileBehavior_IsRockClimbInDirection: north/south facing needs the
+-- north/south climb behavior, east/west facing the east/west one.
+---@param behavior integer?
+---@param facing string
+---@return boolean
+function MetatileBehavior.isRockClimbInDirection(behavior, facing)
+  if facing == "north" or facing == "south" then
+    return behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_NORTH_SOUTH
+  end
+  assert(facing == "east" or facing == "west", "rock climb needs a cardinal facing")
+  return behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_EAST_WEST
 end
 
 ---@param behavior integer?
 ---@return string?
 function MetatileBehavior.fieldAction(behavior)
-  if MetatileBehavior.isSurfableWater(behavior) then
-    return "surf"
-  elseif behavior == MetatileBehavior.BEHAVIOR.WATERFALL then
+  if behavior == MetatileBehavior.BEHAVIOR.WATERFALL then
     return "waterfall"
   elseif behavior == MetatileBehavior.BEHAVIOR.WHIRLPOOL then
     return "whirlpool"
+  elseif MetatileBehavior.isSurfableWater(behavior) then
+    return "surf"
   elseif
     behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_EAST_WEST
     or behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_NORTH_SOUTH

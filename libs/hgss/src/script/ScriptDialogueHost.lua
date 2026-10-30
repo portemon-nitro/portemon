@@ -283,6 +283,24 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider, mo
     end
     local worldState = world --[[@as { getVar: fun(self: table, id: unknown): unknown }]]
     return FieldMessageProvider.asciiGlyphTokens(tostring(worldState:getVar(value.id)), fontDef)
+  elseif kind == "capitalized" then
+    -- Buffered-text upper-casing: the wrapped mon or item text resolves to
+    -- its display string, whose first character is upper-cased.
+    local source = descriptor.source
+    assert(type(source) == "table" and type(source.text) == "string", "capitalized text wraps a buffered text value")
+    local text = mons ~= nil and resolveMonsTextValue(source.text, source, mons, world) or nil
+    if text == nil and items ~= nil then
+      text = resolveItemsTextValue(source.text, source, items, world, mons)
+    end
+    if text == nil then
+      Errors.raise(
+        ScriptErrors.SCRIPT_UNSUPPORTED_REACHABLE,
+        "unsupported capitalized text source " .. source.text,
+        { kind = source.text }
+      )
+    end
+    assert(text ~= nil, "capitalized text resolved")
+    return FieldMessageProvider.asciiGlyphTokens(text:sub(1, 1):upper() .. text:sub(2), fontDef)
   end
   if mons ~= nil and type(kind) == "string" then
     local resolved = resolveMonsTextValue(kind, descriptor, mons, world)

@@ -185,14 +185,14 @@ local function context(overrides)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
-    foggy = false,
-    chatterOpen = false,
+    alphFlashSpot = false,
+    alphEscapeRopeSpot = false,
     fieldUse = {
       flyAllowed = false,
       teleportAllowed = false,
       escapeAllowed = false,
-      flashUsable = true,
-      alphChamber = false,
+      alphFlashRoom = false,
+      alphEscapeRopeRoom = false,
       icePathB2F = false,
       cave = true,
       unionOrColosseum = false,
@@ -219,7 +219,7 @@ local function ports(manager, eventState, map, overrides)
     events = eventState,
     maps = {
       current = function()
-        return { symbol = "test-map", id = 61, fieldUse = { flashUsable = true, alphChamber = false } }
+        return { symbol = "test-map", id = 61, fieldUse = { alphFlashRoom = false, alphEscapeRopeRoom = false } }
       end,
       runtimeMap = function()
         return map
@@ -426,52 +426,6 @@ function T.strength_push_moves_boulder_and_player_once()
   manager:dispose()
 end
 
--- Rock Smash removes terrain only: no encounter, item, or RNG draw exists
--- anywhere on the world contract.
-function T.rock_smash_is_terrain_only()
-  local objects = fieldObjects()
-  local map = runtimeMap(objects, 61)
-  local eventState = FieldEventState.new()
-  local manager = openManager(map, eventState)
-  local dannoPorts = ports(manager, eventState, map)
-  dannoPorts.player.positionValue = { fieldX = 8, fieldZ = 3, worldY = 0 }
-  dannoPorts.player.facingValue = "east"
-  local runtime, world = openRuntime(manager, eventState, map, dannoPorts)
-  local exposed = world --[[@as table<string, unknown>]]
-  Assert.isNil(exposed.beginEncounter, "the world exposes no encounter entry")
-  Assert.isNil(exposed.rollReward, "the world exposes no reward entry")
-  Assert.isNil(exposed.drawRng, "the world exposes no RNG entry")
-  local result = runTask(runtime, {
-    move = "rock_smash",
-    slot = 2,
-    partyRevision = 4,
-    context = context({
-      facingObstacle = "smash_rock",
-      facingActor = {
-        identity = rockId(),
-        obstacleKind = "smash_rock",
-        mapSymbol = "test-map",
-        fieldX = 9,
-        fieldZ = 3,
-      },
-    }),
-  })
-  Assert.equal(result.kind, "field_move_done", "smash must run to done")
-  Assert.equal(result.move, "smash")
-  Assert.isNil(manager:getById(rockId()), "smashed rock presence is gone")
-  Assert.isNil(
-    manager:getCollisionAt(61, { fieldX = 9, fieldZ = 3, surfaceId = 0 }),
-    "smashed rock collision is gone so traversal works"
-  )
-  Assert.isFalse(eventState:isFlagSet(SMASH_FLAG), "smash sets no flag: the rock respawns on re-entry")
-  local fresh = openManager(map, eventState)
-  Assert.notNil(fresh:getById(rockId()), "re-entry rebuilds the transient rock from source")
-  manager:dispose()
-  fresh:dispose()
-end
-
--- Flash in a dark cave illuminates through the weather owner and persists
--- through the save flag; the Alph chamber dispatches its reaction instead.
 function T.flash_illuminates_through_weather_and_persists()
   local objects = fieldObjects()
   local map = runtimeMap(objects, 61)
@@ -498,7 +452,7 @@ function T.flash_in_the_alph_chamber_dispatches_its_reaction()
   local worldPorts = ports(manager, eventState, map)
   local runtime = openRuntime(manager, eventState, map, worldPorts)
   local chamber = context()
-  chamber.fieldUse.alphChamber = true
+  chamber.alphFlashSpot = true
   local result = runTask(runtime, { move = "flash", slot = 3, partyRevision = 4, context = chamber })
   Assert.equal(result.kind, "field_move_done", "chamber flash must run to done")
   Assert.deepEqual(worldPorts.reactionsFired, { "alph_flash" }, "the chamber dispatches its source reaction")

@@ -342,6 +342,11 @@ local function v6manifest()
     { "switchHeldPrompt", "Switch the held items?" },
     { "switchHeldResult", "Switched the held items." },
     { "giveHeldItem", "Gave the item to hold." },
+    { "fieldMoveNotHere", "You can't use that here." },
+    { "fieldMoveNeedBadge", "This can't be used until a new Badge is obtained." },
+    { "fieldMoveHaveFollower", "You can't use that when you have someone with you." },
+    { "fieldMoveAlreadySurfing", "You're already surfing." },
+    { "fieldMoveNotNow", "This isn't the place for that!" },
   }
   for _, entry in ipairs(runtimeMessages) do
     data.text.templates[entry[1]] = { segments = { { kind = "text", value = entry[2] } } }
@@ -704,6 +709,11 @@ function T.runtime_messages_are_required_at_the_schema_boundary()
     "switchHeldPrompt",
     "switchHeldResult",
     "giveHeldItem",
+    "fieldMoveNotHere",
+    "fieldMoveNeedBadge",
+    "fieldMoveHaveFollower",
+    "fieldMoveAlreadySurfing",
+    "fieldMoveNotNow",
   }
   Assert.isTrue(PartyAssetSchema.isValidManifest(v6manifest()), "the complete family is valid")
   local accepted = {}

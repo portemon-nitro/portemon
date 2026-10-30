@@ -835,21 +835,36 @@ function FieldPlayer:_advanceStep()
   assert(self.motion == "walking" and self.from and self.to, "walking step endpoints required")
   self.progressTicks = self.progressTicks + 1
   local progress = self.progressTicks / self.durationTicks
-  self.worldX = self.from.worldX + (self.to.worldX - self.from.worldX) * progress
-  self.worldZ = self.from.worldZ + (self.to.worldZ - self.from.worldZ) * progress
-  -- Sampling glides along one continuous plate; without a destination
-  -- surface (a step onto or across plateless tiles) height interpolates
-  -- linearly instead.
-  if self.to.surfaceId ~= nil and not self.to.sourceCellKey and self.from.surfaceId == self.to.surfaceId then
-    local localX = self.from.localX
-      + FieldCoordinates.TILE_CENTER_OFFSET
-      + (self.to.localX - self.from.localX) * progress
-    local localZ = self.from.localZ
-      + FieldCoordinates.TILE_CENTER_OFFSET
-      + (self.to.localZ - self.from.localZ) * progress
-    self.worldY = self.currentMap.terrain:sampleHeight(self.to.surfaceId, localX, localZ)
+  local scripted = self._scriptedMotion
+  local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
+  if scripted ~= nil and scripted.action == "waterfall" then
+    -- Height and ground travel follow their own fall schedule.
+    local heightFraction, groundFraction =
+      MovementCalibration.waterfallFractions(scripted.direction, self.progressTicks)
+    self.worldX = self.from.worldX + (self.to.worldX - self.from.worldX) * groundFraction
+    self.worldZ = self.from.worldZ + (self.to.worldZ - self.from.worldZ) * groundFraction
+    self.worldY = self.from.worldY + (self.to.worldY - self.from.worldY) * heightFraction
   else
-    self.worldY = self.from.worldY + (self.to.worldY - self.from.worldY) * progress
+    self.worldX = self.from.worldX + (self.to.worldX - self.from.worldX) * progress
+    self.worldZ = self.from.worldZ + (self.to.worldZ - self.from.worldZ) * progress
+    -- Sampling glides along one continuous plate; without a destination
+    -- surface (a step onto or across plateless tiles) height interpolates
+    -- linearly instead.
+    if self.to.surfaceId ~= nil and not self.to.sourceCellKey and self.from.surfaceId == self.to.surfaceId then
+      local localX = self.from.localX
+        + FieldCoordinates.TILE_CENTER_OFFSET
+        + (self.to.localX - self.from.localX) * progress
+      local localZ = self.from.localZ
+        + FieldCoordinates.TILE_CENTER_OFFSET
+        + (self.to.localZ - self.from.localZ) * progress
+      self.worldY = self.currentMap.terrain:sampleHeight(self.to.surfaceId, localX, localZ)
+    else
+      self.worldY = self.from.worldY + (self.to.worldY - self.from.worldY) * progress
+    end
+    if scripted ~= nil and scripted.hop == true then
+      self.worldY = self.worldY
+        + MovementCalibration.jumpOffsetAt({ distance = "near" }, self.progressTicks, self.durationTicks)
+    end
   end
   if self.progressTicks < self.durationTicks then
     return false
@@ -1098,13 +1113,24 @@ function FieldPlayer:beginScriptedAction(action)
   local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
   local durationTicks
   if kind == "traverse" then
-    -- Planned field traversal reuses the ordinary walk cadence through the
-    -- current motion owner: the plan segments carry their own validated
-    -- mode and surface, so only the timing comes from calibration.
+    -- Planned field traversal: the plan segments carry their own validated
+    -- mode and surface, so only the gait comes from calibration -- a walk
+    -- speed, or the near fast hop.
     assert(type(action.direction) == "string", "direction required for traverse")
-    assert(type(action.speed) == "string", "speed required for traverse")
     assert(action.mode == "walking" or action.mode == "surfing", "traverse mode must be walking or surfing")
-    durationTicks = MovementCalibration.actionTicks({ action = "walk", speed = action.speed })
+    if action.hop == true then
+      durationTicks = MovementCalibration.actionTicks({ action = "jump", distance = "near", speed = "fast" })
+    else
+      assert(type(action.speed) == "string", "speed required for traverse")
+      durationTicks = MovementCalibration.actionTicks({ action = "walk", speed = action.speed })
+    end
+  elseif kind == "waterfall" then
+    -- Task_Waterfall: two tiles straight up or down over the fixed fall
+    -- lifetime, resolved on the plan's validated far surface.
+    assert(action.direction == "north" or action.direction == "south", "waterfall direction must be north or south")
+    assert(action.mode == "surfing", "waterfalls run while surfing")
+    assert(action.surfaceId ~= nil, "waterfall requires its planned far surface")
+    durationTicks = MovementCalibration.WATERFALL_TICKS
   elseif
     kind == "walk"
     or kind == "walk_in_place"
@@ -1129,15 +1155,15 @@ function FieldPlayer:beginScriptedAction(action)
     surfaceId = self.surfaceId,
   }
   local toState
-  if kind == "walk" or kind == "jump" or kind == "traverse" then
+  if kind == "walk" or kind == "jump" or kind == "traverse" or kind == "waterfall" then
     local direction = assert(action.direction, "direction required for " .. kind)
     local bypass = true
     local planned = nil
-    if kind == "traverse" then
+    if kind == "traverse" or kind == "waterfall" then
       bypass = false
       planned = { mode = action.mode, surfaceId = action.surfaceId }
     end
-    local tiles = 1
+    local tiles = kind == "waterfall" and 2 or 1
     if kind == "jump" then
       -- A zero jump is overwritten below; it still resolves the adjacent tile.
       tiles = math.max(1, (MovementCalibration.jumpTiles(action.distance)))
@@ -1181,6 +1207,7 @@ function FieldPlayer:beginScriptedAction(action)
     direction = action.direction,
     distance = action.distance,
     speed = action.speed,
+    hop = action.hop,
     gestureName = action.name,
     durationTicks = durationTicks,
     progressTicks = 0,

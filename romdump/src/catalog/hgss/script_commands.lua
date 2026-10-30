@@ -4471,11 +4471,10 @@ return {
       widths = {},
     },
     [600] = {
-      name = "ScrCmd_600",
+      classification = "continue_same_tick",
+      name = "ScrCmd_FollowMonRecall",
       feature = "following_mon",
-      disposition = "deferred",
-      deferredReason = "special_follower_event",
-      deferredNote = "opcode 600 runs only on the active-follower arm and needs the special follower reaction contract",
+      disposition = "supported",
       widths = {},
     },
     [601] = {
@@ -5649,10 +5648,9 @@ return {
       widths = {},
     },
     [753] = {
+      classification = "yield_to_task",
+      disposition = "supported",
       name = "ScrCmd_RockSmashItemCheck",
-      disposition = "deferred",
-      deferredReason = "field_item_check",
-      deferredNote = "rock-smash item checks need the field rock-smash flow",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5660,11 +5658,9 @@ return {
       },
     },
     [754] = {
+      classification = "yield_to_task",
+      disposition = "supported",
       name = "ScrCmd_TryHeadbuttEncounter",
-      feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "headbutt encounters need the field encounter application",
       widths = {
         [1] = 2,
       },

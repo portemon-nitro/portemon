@@ -34,6 +34,7 @@ local PokedexCache = require("libs.assets.src.PokedexCache")
 local SummaryCache = require("libs.assets.src.SummaryCache")
 local SummaryAssetSchema = require("libs.assets.src.SummaryAssetSchema")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
+local FieldMoveCutInBannerAssetCache = require("libs.assets.src.field.FieldMoveCutInBannerAssetCache")
 
 local T = {}
 
@@ -68,7 +69,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     fieldMapData = {
       cacheFormat = "g4-field-map-cache-v1",
-      fieldSchema = "g4-field-map-v14",
+      fieldSchema = "g4-field-map-v15",
       spawnIndexSchema = "g4-field-spawn-index-v3",
     },
     messages = {
@@ -113,6 +114,10 @@ function T.contract_pins_the_current_asset_identities()
     fieldEntry = {
       cacheFormat = "field-entry-cache-v1",
       schema = "g4-field-entry-v1",
+    },
+    fieldMoveCutInBanner = {
+      cacheFormat = "field-move-cut-in-banner-cache-v1",
+      schema = "g4-field-move-cut-in-banner-v1",
     },
     intro = {
       cacheFormat = "intro-cache-v14",
@@ -290,6 +295,11 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(SummaryCache.SCHEMA, DerivedAssetContract.summary.schema)
   Assert.equal(StarterChoiceAssetCache.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)
   Assert.equal(StarterChoiceAssetCache.SCHEMA, DerivedAssetContract.starterChoice.schema)
+  Assert.equal(
+    FieldMoveCutInBannerAssetCache.FORMAT,
+    DerivedAssetContract.fieldMoveCutInBanner.cacheFormat
+  )
+  Assert.equal(FieldMoveCutInBannerAssetCache.SCHEMA, DerivedAssetContract.fieldMoveCutInBanner.schema)
 end
 
 function T.summary_family_carries_the_v4_manifest_schema()

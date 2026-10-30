@@ -21,6 +21,7 @@ local RADIO_PLAYER_RECORD = { id = 9, maxSequences = 1, channelMask = 0xA7FE }
 ---@field fieldPosition fun(): integer, integer
 ---@field dayNight fun(): "day"|"night"
 ---@field fieldDataForMap fun(mapId: integer|string): unknown
+---@field traversal (fun(): string)?
 
 ---@class HgssAudioRuntimeOptions
 ---@field cacheFs CacheFs
@@ -81,6 +82,7 @@ function AudioRuntime.compose(opts)
       fieldPosition = opts.field.fieldPosition,
       dayNight = opts.field.dayNight,
       fieldDataForMap = opts.field.fieldDataForMap,
+      traversal = opts.field.traversal,
     })
   end
   -- The sample idle budget must never take bytes a mixer voice still

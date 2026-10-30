@@ -835,4 +835,28 @@ T["application script starts with a foreground claim"] = function()
   Assert.notNil(tostring(missing):find(entryId), "the fault names the missing builtin")
 end
 
+function T.application_scripts_may_carry_the_actor_the_menu_move_targets()
+  local started
+  local scheduler = {
+    foregroundEnvironmentId = function()
+      return nil
+    end,
+    startInteraction = function(_, trigger)
+      started = trigger
+      return "instance"
+    end,
+  }
+  local client = ScriptInteractionClient.new({
+    bindings = Bindings.new(),
+    compose = function()
+      return {}
+    end,
+    scheduler = scheduler,
+  })
+  client:startApplicationScript("common.menu_rock_smash", 5, { selfActor = "map:54:object:3" })
+  Assert.deepEqual(started, { type = "application", scriptId = "common.menu_rock_smash", selfActor = "map:54:object:3" })
+  client:startApplicationScript("common.menu_strength", 6)
+  Assert.deepEqual(started, { type = "application", scriptId = "common.menu_strength" })
+end
+
 return { tests = T }

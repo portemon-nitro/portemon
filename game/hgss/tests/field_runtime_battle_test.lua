@@ -1599,6 +1599,7 @@ function T.direct_battle_blocks_the_first_tick_and_releases_the_next()
         return nil
       end,
     },
+    scentTint = { updateSourceFrame = function() end },
     screenFade = { updateSourceFrame = function() end },
   })
   local portRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
@@ -1889,6 +1890,7 @@ function T.field_tick_keeps_battle_gate_positions()
         return nil
       end,
     },
+    scentTint = { updateSourceFrame = function() end },
     screenFade = {
       updateSourceFrame = function() end,
     },

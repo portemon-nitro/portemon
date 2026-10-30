@@ -1,6 +1,6 @@
 -- Discovers script-neutral facing interactions. Mirrors the original
 -- normal-field action order (retail ROM): the facing object actor wins, then a compatible
--- background event on the facing tile, then nothing. The background direction
+-- background event on the facing tile, then the facing metatile's script, then nothing. The background direction
 -- compatibility table is the retail ROM's
 -- (raw 4 is a wildcard; facing 0/1/2/3 accept {0,6}/{3,6}/{2,5}/{1,5}).
 --
@@ -68,6 +68,8 @@ FieldInteractionResolver.__index = FieldInteractionResolver
 ---@field worldY number
 ---@field facing FieldDirection
 ---@field tick integer
+---@field surfing boolean? the avatar currently surfs
+---@field surfAllowed boolean? the Fog badge is held and a party mon knows Surf
 
 ---@class FieldInteractionResolverOptions
 ---@field actorAt fun(mapId: integer, candidate: FieldOccupancyCandidate): table<string, unknown>|nil
@@ -258,6 +260,43 @@ local function facingBehavior(targetMap, targetX, targetZ)
   return assert(collision:getLocal(localX, localZ).behavior, "facing collision behavior required")
 end
 
+-- The metatile interaction scripts, in the source order of
+-- GetInteractedMetatileScript: the Pokemon Center PC (north only), the
+-- Headbutt tree, Rock
+-- Climb in the facing direction, then on foot Surf (the standing tile must
+-- allow it, the Fog badge held, a party mon knowing Surf) or while surfing
+-- Waterfall and Whirlpool.
+---@param snapshot InteractionResolverSnapshot
+---@param map RuntimeFieldMap
+---@param targetMap RuntimeFieldMap
+---@param targetX integer
+---@param targetZ integer
+---@return string?
+local function metatileScript(snapshot, map, targetMap, targetX, targetZ)
+  local behavior = facingBehavior(targetMap, targetX, targetZ)
+  local BEHAVIOR = MetatileBehavior.BEHAVIOR
+  if snapshot.facing == "north" and behavior == BEHAVIOR.PC then
+    return "common.pokecenter_pc"
+  end
+  if behavior == BEHAVIOR.HEADBUTT then
+    return "common.field_headbutt"
+  end
+  if MetatileBehavior.isRockClimbInDirection(behavior, snapshot.facing) then
+    return "common.field_rock_climb"
+  end
+  if not snapshot.surfing then
+    local standing = facingBehavior(map, snapshot.fieldX, snapshot.fieldZ)
+    if snapshot.surfAllowed == true and MetatileBehavior.canSurfOnto(standing, behavior) then
+      return "common.field_surf"
+    end
+  elseif behavior == BEHAVIOR.WATERFALL then
+    return "common.field_waterfall"
+  elseif behavior == BEHAVIOR.WHIRLPOOL then
+    return "common.field_whirlpool"
+  end
+  return nil
+end
+
 -- Resolves one Action press into an immutable InteractionIntent or nil.
 ---@param snapshot InteractionResolverSnapshot
 ---@return InteractionIntent?
@@ -339,10 +378,9 @@ function FieldInteractionResolver:resolve(snapshot)
     return intent
   end
 
-  if snapshot.facing == "north" then
-    if facingBehavior(targetMap, targetX, targetZ) == MetatileBehavior.BEHAVIOR.PC then
-      return baseIntent("standard", targetMap, snapshot, targetX, targetZ, "common.pokecenter_pc")
-    end
+  local script = metatileScript(snapshot, map, targetMap, targetX, targetZ)
+  if script ~= nil then
+    return baseIntent("standard", targetMap, snapshot, targetX, targetZ, script)
   end
 
   return nil

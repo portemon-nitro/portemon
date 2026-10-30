@@ -193,7 +193,13 @@ function BagActionPolicy.actionsForField(facts)
   if facts.itemKey ~= nil then
     assert(type(facts.itemKey) == "string" and facts.itemKey ~= "", "a selected action needs its item key")
     assert(type(facts.useKind) == "string", "the field policy needs the party-use kind")
-    if facts.itemKey == "APRICORN_BOX" or (targetsExist and facts.useKind ~= "none") then
+    -- The Apricorn Box and the Escape Rope are field-use items: their Use
+    -- needs no party target, and the Rope's refusals come on selection.
+    if
+      facts.itemKey == "APRICORN_BOX"
+      or facts.itemKey == "ESCAPE_ROPE"
+      or (targetsExist and facts.useKind ~= "none")
+    then
       actions[#actions + 1] = { id = "use", enabled = true, slot = 0 }
     end
     if targetsExist and facts.canHold == true and facts.isHm ~= true and facts.pocket ~= "mail" then

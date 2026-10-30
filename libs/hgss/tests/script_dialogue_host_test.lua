@@ -584,6 +584,13 @@ function T.item_text_resolves_catalog_display_forms()
   Assert.equal(textAt(withItems, { text = "pocket_name", value = 1 }), "Medicine")
 end
 
+function T.capitalized_text_upper_cases_the_first_character_of_the_wrapped_text()
+  local withItems = itemTextHost()
+  local source = { text = "item_name_indefinite", value = 17 }
+  Assert.equal(textAt(withItems, { text = "capitalized", source = source }), "A Potion")
+  Assert.equal(textAt(withItems, { text = "capitalized", source = { text = "item_name", value = 17 } }), "Potion")
+end
+
 function T.item_text_evaluates_variable_operands()
   local world = {
     getVar = function(_, id)

@@ -1191,6 +1191,117 @@ function T.begin_warp_fails_loudly_when_destination_field_data_is_corrupt()
   end
 end
 
+-- Source Task_Surf / Task_StopSurfing: surfing plays the traversal music
+-- unless its suppressing flag is set, mounting clears the persisted music
+-- override and fades in one frame, dismounting returns to the map-header
+-- music over four, and the avatar owns the mode the controller only reads.
+local SURF_MUSIC_SUPPRESS_FLAG = 0x99A
+
+local function traversalScenario(soundplates)
+  local keyA = AudioFixture.key(1)
+  local header =
+    seq(10, "SEQ_GS_T_WAKABA", 12, 1, { { op = "note", key = 60, velocity = 127, duration = 1 }, { op = "end" } })
+  local surf =
+    seq(11, "SEQ_GS_NAMINORI", 12, 1, { { op = "note", key = 62, velocity = 127, duration = 1 }, { op = "end" } })
+  local ambient =
+    seq(13, "SEQ_SE_TEST_AMBIENT", 12, 1, { { op = "note", key = 64, velocity = 127, duration = 1 }, { op = "end" } })
+  local provider =
+    providerFor({ [10] = header, [11] = surf, [13] = ambient }, { [12] = bankWithSamples(12, "BANK_A", keyA) })
+  local mixer = VoiceMixer.new({ sampleRate = SAMPLE_RATE })
+  local player = newSequencePlayer({ sampleRate = SAMPLE_RATE, mixer = mixer, provider = provider })
+  local sound = GameSound.new({ provider = provider, player = player })
+  local flags = {}
+  local state = { mode = "walking" }
+  local fieldData = fieldDataWithSoundplates(soundplates or {}, {
+    day = "SEQ_GS_T_WAKABA",
+    night = "SEQ_GS_T_WAKABA",
+    flagOverrides = {},
+    traversalOverrides = {
+      { traversal = "surfing", sequence = "SEQ_GS_NAMINORI", unlessFlagId = SURF_MUSIC_SUPPRESS_FLAG },
+    },
+  })
+  local controller = FieldAudioController.new({
+    sound = sound,
+    provider = provider,
+    eventState = eventState(flags),
+    fieldPosition = function()
+      return 0, 0
+    end,
+    dayNight = function()
+      return "day"
+    end,
+    fieldDataForMap = function()
+      return fieldData
+    end,
+    traversal = function()
+      return state.mode
+    end,
+  })
+  controller:enterMap({ fieldData = fieldData }, { play = true })
+  local function settle(frames)
+    for _ = 1, frames do
+      sound:updateSoundFrame()
+    end
+  end
+  return controller, sound, state, flags, settle
+end
+
+function T.surfing_plays_the_traversal_music_and_dismounting_returns_to_the_header_music()
+  local controller, sound, state, _, settle = traversalScenario()
+  Assert.equal(sound:currentMusic(), 10, "walking plays the map-header music")
+  state.mode = "surfing"
+  controller:syncTraversalMusic()
+  Assert.equal(controller:effectiveMusic(), 11, "surfing selects the traversal music")
+  settle(3)
+  Assert.equal(sound:currentMusic(), 11, "the traversal music replaces the header music")
+  state.mode = "walking"
+  controller:syncTraversalMusic()
+  Assert.equal(controller:effectiveMusic(), 10, "walking selects the map-header music again")
+  settle(6)
+  Assert.equal(sound:currentMusic(), 10, "dismounting returns to the header music")
+end
+
+function T.soundplate_music_ramps_follow_the_traversal_music_that_plays()
+  local controller, sound, state, _, settle = traversalScenario({
+    {
+      x = 0,
+      xBounds = 31,
+      z = 0,
+      zBounds = 31,
+      sequence = "SEQ_SE_TEST_AMBIENT",
+      useFieldMusicBank = false,
+      bgmTarget = 64,
+    },
+  })
+  state.mode = "surfing"
+  controller:syncTraversalMusic()
+  settle(3)
+  Assert.equal(sound:currentMusic(), 11, "the traversal music plays")
+  local ramped = {}
+  local move = sound.moveSequenceVolume
+  sound.moveSequenceVolume = function(self, ref, target, duration)
+    ramped[#ramped + 1] = { ref = ref, target = target }
+    return move(self, ref, target, duration)
+  end
+  controller:processSoundplate()
+  Assert.deepEqual(ramped[1], { ref = 11, target = 64 }, "the plate ramps the music that actually plays")
+end
+
+function T.the_suppressing_flag_and_the_mount_override_clear_follow_the_source()
+  local controller, sound, state, flags, settle = traversalScenario()
+  flags[SURF_MUSIC_SUPPRESS_FLAG] = true
+  state.mode = "surfing"
+  controller:syncTraversalMusic()
+  settle(6)
+  Assert.equal(sound:currentMusic(), 10, "the suppressing flag keeps the map-header music while surfing")
+  flags[SURF_MUSIC_SUPPRESS_FLAG] = nil
+  controller:setMusicOverride("SEQ_GS_T_WAKABA")
+  controller:syncTraversalMusic()
+  Assert.isNil(controller:musicOverride(), "mounting the traversal music clears the persisted override")
+  settle(6)
+  Assert.equal(sound:currentMusic(), 11, "the traversal music wins once the flag clears")
+end
+
 function T.audio_owned_traversal_mutation_is_not_a_supported_operation()
   local keyA = AudioFixture.key(1)
   local bgm =

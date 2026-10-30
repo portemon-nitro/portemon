@@ -91,6 +91,10 @@ Schema.ENUMS = {
   -- The three persistent follower map-object movement modes opcode 604 may
   -- select; raw source selectors never appear past the generated boundary.
   follower_movement_type = { "follow_player", "follow_transition_a", "follow_transition_b" },
+  -- Presentation gestures the field-move cue service may play on the
+  -- following mon: a spot jump (a = repeat count), the grow-and-shrink
+  -- billboard pulse, and the flash blink (a = step, b = period).
+  follower_gesture = { "jump", "grow_shrink", "flash" },
   -- Battle launch kinds: wild encounters, trainer battles, staged script
   -- fights, and fully explicit scenarios. Numeric source codes never
   -- appear at runtime (lowering converts them).
@@ -919,6 +923,8 @@ Schema.OPERATIONS = {
   celebi_time_travel = { fields = {} },
   give_spiky_ear_pichu = { fields = {} },
   follower_release_next_to_player = { fields = {} },
+  follower_recall_to_player = { fields = {} },
+  follower_is_next_to_player = { fields = { result = { type = "value", required = true } } },
   follower_reset_movement = { fields = {} },
   legend_cutscene_bell_begin = { fields = {}, assets = LEGEND_SCENE_ASSETS },
   legend_cutscene_bell_end = { fields = {}, assets = LEGEND_SCENE_ASSETS },
@@ -1520,6 +1526,47 @@ Schema.OPERATIONS = {
   },
   follower_transition = { fields = {} },
   follower_recall = { fields = {} },
+  -- Field-move cue operations. The cut-in blocks until the cue service
+  -- reports its blocking cue finished; the effect cue clears the done
+  -- variable and the service completes it, the script only polls it.
+  field_move_cut_in = { fields = { slot = { type = "scalar_or_value", required = true } } },
+  field_move_effect = {
+    fields = {
+      effect = { type = "integer", required = true },
+      done = { type = "value", required = true },
+    },
+  },
+  follower_gesture = {
+    fields = {
+      gesture = { type = "enum:follower_gesture", required = true },
+      a = { type = "integer" },
+      b = { type = "integer" },
+    },
+  },
+  -- Field-move aftermath: the Rock Smash wild-encounter-then-item roll writes
+  -- the found flag and item; a started battle suspends the script on the
+  -- battle task. The Headbutt attempt writes whether a battle started.
+  rock_smash_item_check = {
+    fields = {
+      followerUsing = { type = "scalar_or_value", required = true },
+      found = { type = "value", required = true },
+      item = { type = "value", required = true },
+    },
+  },
+  -- Sweet Scent: blocks on the scent task, which writes the outcome code
+  -- (0 nothing, 1 faded weather, 2 a wild encounter is prepared).
+  sweet_scent = { fields = { result = { type = "value", required = true } } },
+  try_headbutt_encounter = { fields = { result = { type = "value", required = true } } },
+  follower_add_mood = { fields = { amount = { type = "integer", required = true } } },
+  follower_swap_with_player = { fields = {} },
+  follower_inactive_or_visible = { fields = { result = { type = "value", required = true } } },
+  party_lead_has_type = {
+    fields = {
+      type = { type = "integer", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  buffer_capitalize = { fields = { slot = { type = "buffer_slot", required = true } } },
   unsupported = {
     fields = {
       command = { type = "integer", required = true },
@@ -2457,6 +2504,11 @@ Schema.CONSTRUCTORS = {
         signature = "S.fieldMove(spec)",
         canonical = "op=field_move",
         notes = "spec={source}; pending claims the runtime queue, explicit adds move and slot.",
+      },
+      {
+        signature = "S.sweetScent(spec)",
+        canonical = "op=sweet_scent",
+        notes = "spec={result}; blocks on the scent task and writes 0 nothing, 1 faded weather, 2 prepared encounter.",
       },
       {
         signature = "S.pokemonNicknameInput(spec)",

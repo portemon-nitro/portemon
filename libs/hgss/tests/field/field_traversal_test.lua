@@ -20,6 +20,34 @@ function T.metatile_behavior_names_cover_navigation_categories()
   Assert.isFalse(MetatileBehavior.isSurfableWater(BEHAVIOR.TALL_GRASS))
 end
 
+function T.surfable_water_matches_the_source_flag_table()
+  local surfable = { [16]=true,[17]=true,[18]=true,[19]=true,[20]=true,[21]=true,[25]=true,[42]=true,
+    [80]=true,[81]=true,[82]=true,[83]=true,[115]=true,[120]=true,[124]=true }
+  for behavior = 0, 255 do
+    Assert.equal(MetatileBehavior.isSurfableWater(behavior), surfable[behavior] == true, "behavior " .. behavior)
+  end
+end
+
+function T.surf_entry_excludes_bridge_and_behavior_34_standing_tiles()
+  Assert.isTrue(MetatileBehavior.canSurfOnto(0, BEHAVIOR.SEA_WATER))
+  Assert.isFalse(MetatileBehavior.canSurfOnto(0, BEHAVIOR.TALL_GRASS))
+  for _, standing in ipairs({ 112, 113, 114, 115, 34 }) do
+    Assert.isFalse(MetatileBehavior.canSurfOnto(standing, BEHAVIOR.SEA_WATER), "standing " .. standing)
+  end
+end
+
+function T.rock_climb_tile_must_match_the_facing_axis()
+  local ns, ew = BEHAVIOR.ROCK_CLIMB_NORTH_SOUTH, BEHAVIOR.ROCK_CLIMB_EAST_WEST
+  for _, facing in ipairs({ "north", "south" }) do
+    Assert.isTrue(MetatileBehavior.isRockClimbInDirection(ns, facing))
+    Assert.isFalse(MetatileBehavior.isRockClimbInDirection(ew, facing))
+  end
+  for _, facing in ipairs({ "east", "west" }) do
+    Assert.isTrue(MetatileBehavior.isRockClimbInDirection(ew, facing))
+    Assert.isFalse(MetatileBehavior.isRockClimbInDirection(ns, facing))
+  end
+end
+
 function T.reaction_suppression_matches_the_three_retail_metatiles()
   for _, behavior in ipairs({ 46, 113, 114 }) do
     Assert.isTrue(MetatileBehavior.suppressesFollowerReaction(behavior), "suppressed behavior " .. behavior)

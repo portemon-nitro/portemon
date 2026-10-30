@@ -17,12 +17,17 @@ FieldMoveTask.type = "field_move"
 FieldMoveTask.version = 1
 
 -- The closed executable plan union shared with the runtime. Refused
--- decisions complete as results; only these kinds execute. The traversal
--- tags mirror the runtime's closed plan union exactly, as do the return
--- tags: a tag missing here can never execute through the scheduler task.
+-- decisions complete as results; only these kinds execute. Rock Smash,
+-- Headbutt, and Sweet Scent are absent on purpose: the retail menu scripts
+-- and the runtime Sweet Scent script own those moves through FieldMoveAftermath,
+-- FieldMoveCue, and SweetScentTask after the queue vets eligibility. Chatter
+-- eligibility matches FieldMove_CheckChatter, while field use stays
+-- feature_unavailable chatter_recording_deferred until a voice-recording
+-- application owner exists. The traversal tags mirror the runtime's closed
+-- plan union exactly, as do the return tags: a tag missing here can never
+-- execute through the scheduler task.
 local PLAN_KINDS = {
   cut = true,
-  smash = true,
   enable_strength = true,
   push_strength = true,
   flash = true,
@@ -33,6 +38,7 @@ local PLAN_KINDS = {
   rock_climb = true,
   dig = true,
   teleport = true,
+  escape_rope = true,
   fly = true,
 }
 

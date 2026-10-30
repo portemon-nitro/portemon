@@ -110,6 +110,7 @@ end
 
 local function setup(map, player, avatar)
   local events = FieldEventState.new()
+  local knownMoves = {}
   local world = FieldMoveWorld.new({
     actors = {
       getActor = function()
@@ -175,6 +176,11 @@ local function setup(map, player, avatar)
       end,
     },
     profile = { badges = 0xFFFF },
+    party = {
+      knowsMove = function(_, key)
+        return knownMoves[key] == true
+      end,
+    },
     weather = {
       change = function()
         error("traversal runtime tests cover no weather change", 2)
@@ -187,7 +193,14 @@ local function setup(map, player, avatar)
     },
   })
   local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, world = world }) --[[@as TraversalTaskRuntimePort]]
-  return { world = world, runtime = runtime, player = player, avatar = avatar, map = map }
+  return {
+    world = world,
+    runtime = runtime,
+    player = player,
+    avatar = avatar,
+    map = map,
+    knownMoves = knownMoves,
+  }
 end
 
 local function shoreRig()
@@ -219,8 +232,8 @@ local function shoreRig()
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
-    foggy = false,
-    chatterOpen = false,
+    alphFlashSpot = false,
+    alphEscapeRopeSpot = false,
   }
   local rig = setup(map, player, avatar)
   rig.context = context
@@ -387,8 +400,12 @@ function T.cancel_mid_traversal_restores_the_committed_tile()
   local queued = rig.runtime:queue({ move = "surf", slot = 0, context = rig.context })
   Assert.equal(queued.kind, "accepted")
   local plan = rig.runtime:plan(rig.runtime:takePending())
-  local first = rig.runtime:advance(plan)
-  Assert.equal(first.kind, "running")
+  for _ = 1, 40 do
+    Assert.equal(rig.runtime:advance(plan).kind, "running")
+    if rig.player:isScriptedMoving() then
+      break
+    end
+  end
   Assert.isTrue(rig.player:isScriptedMoving())
   for _ = 1, 3 do
     rig.player:updateFixed({})
@@ -397,7 +414,34 @@ function T.cancel_mid_traversal_restores_the_committed_tile()
   Assert.equal(rig.player.motion, "idle")
   Assert.equal(rig.player.fieldX, 2)
   Assert.equal(rig.player.fieldZ, 3)
-  Assert.equal(rig.avatar:status().durableState, "walking")
+  Assert.equal(rig.avatar:status().durableState, "surfing", "the mount precedes the hop and is never rolled back")
+  Assert.isFalse(rig.runtime:isBusy())
+end
+
+-- Source Field_PlayerAvatar_TryWaterfallUp: a surfing step into a fall is an
+-- unannounced descent when any party mon knows Waterfall; no badge applies.
+local function fallRig()
+  local map = rigMap({ ["5:3"] = 19, ["5:4"] = 16 }, {
+    flatPlate(0, 0, 0, 32, 3, 4),
+    flatPlate(1, 0, 3, 32, 32, 0),
+  })
+  local player = FieldPlayer.new({ currentMap = map, fieldX = 5, fieldZ = 2, surfaceId = 0, facing = "south" })
+  player:setTraversalMode("surfing")
+  return setup(map, player, rigAvatar("surfing"))
+end
+
+function T.surfing_fall_descent_needs_a_party_waterfall_user_and_runs_the_fall()
+  local rig = fallRig()
+  local declined = rig.runtime:requestWaterfallDescent()
+  Assert.equal(declined.kind, "not_here", "no party mon knows Waterfall")
+  Assert.isFalse(rig.runtime:isBusy())
+  rig.knownMoves.WATERFALL = true
+  Assert.equal(rig.runtime:requestWaterfallDescent().kind, "accepted")
+  local plan = rig.runtime:plan(rig.runtime:takePending())
+  Assert.equal(plan.kind, "waterfall")
+  Assert.isNil(plan.effect, "the unannounced descent is silent")
+  driveToDone(rig, plan)
+  Assert.equal(rig.player.fieldZ, 4)
   Assert.isFalse(rig.runtime:isBusy())
 end
 

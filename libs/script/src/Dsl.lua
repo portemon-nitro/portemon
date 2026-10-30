@@ -1038,6 +1038,11 @@ function M.fieldMove(spec)
   return op("field_move", spec)
 end
 
+-- Sweet Scent task: blocks until the scent finishes and writes its outcome.
+function M.sweetScent(spec)
+  return op("sweet_scent", spec)
+end
+
 -- Bag and item constructors. Each takes the single canonical spec table
 -- named by the schema fields; item operands hold native item identities.
 function M.bagAddItem(spec)

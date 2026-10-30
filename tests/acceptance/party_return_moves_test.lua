@@ -1,5 +1,5 @@
 -- Production-composed Dig/Teleport returns and the checked Fly boundary:
--- real cave-entrance recording through genuine map transitions, Dig exit
+-- real special-spawn recording through genuine map transitions, Dig exit
 -- through the composed field runtime/task/world/maps owners, Teleport
 -- through saved spawn history, failed-warp fault containment, and the
 -- checked Fly handoff inside the real menu flow. Stops before GPU rendering like
@@ -129,29 +129,33 @@ end
 
 local function livePlayerPort(game)
   local runtime = game.runtime
-  local player = assert(runtime.player, "live player required")
   local avatar = assert(runtime.playerAvatar, "live avatar transition owner required")
+  -- The map swap replaces the player, so every call reads the live one.
+  local function live()
+    return assert(runtime.player, "live player required")
+  end
   local port = {}
   function port:position()
+    local player = live()
     return { fieldX = player.fieldX, fieldZ = player.fieldZ, worldY = player.worldY }
   end
   function port:facing()
-    return player.facing
+    return live().facing
   end
   function port:beginScriptedAction(action)
-    return player:beginScriptedAction(action)
+    return live():beginScriptedAction(action)
   end
   function port:advanceScriptedAction(progress, duration)
-    return player:advanceScriptedAction(progress, duration)
+    return live():advanceScriptedAction(progress, duration)
   end
   function port:commitScriptedAction()
-    return player:commitScriptedAction()
+    return live():commitScriptedAction()
   end
   function port:cancelScriptedMovement()
-    return player:cancelScriptedMovement()
+    return live():cancelScriptedMovement()
   end
   function port:isScriptedMoving()
-    return player:isScriptedMoving()
+    return live():isScriptedMoving()
   end
   function port:queueAvatarTransition(name)
     return avatar:queueTransition(name)
@@ -162,11 +166,9 @@ local function livePlayerPort(game)
   return port
 end
 
--- Menu-lane maps service: menu-origin returns run the ordinary
--- transition fade lifecycle, never the script-authored screen cover, so
--- the adapter is constructed without a screen (the service's supported
--- fallback path). It borrows the live transition/loader and the current
--- source map; callers rebuild it after any map change. Production
+-- Menu-lane maps service: menu-origin returns cover the swap with the
+-- move's own screen fade. It borrows the live transition/loader and the
+-- current source map; callers rebuild it after any map change. Production
 -- composition owns the equivalent long-lived wiring.
 local function menuLaneWarps(game)
   local runtime = game.runtime
@@ -175,10 +177,11 @@ local function menuLaneWarps(game)
     transition = assert(runtime.transition, "live transition required"),
     loader = assert(runtime.mapLoader, "live map loader required"),
     sourceMap = assert(runtime.runtimeMap, "live source map required"),
+    screen = assert(runtime.screenFade, "live screen fade required"),
   })
 end
 
-local function liveWorld(game, warpsOverride)
+local function liveWorld(game, warpsOverride, effects)
   local runtime = game.runtime
   local versionId = AcceptanceHarness.defaultVersion()
   local spawnCache = CacheFs.forVersion(versionId)
@@ -186,6 +189,9 @@ local function liveWorld(game, warpsOverride)
   local spawns = {
     destinationFor = function(_, spawnKey)
       return FieldMapDataCache.spawnDestination(spawnCache, spawnKey)
+    end,
+    specialFor = function(_, spawnKey)
+      return FieldMapDataCache.specialSpawnDestination(spawnCache, spawnKey)
     end,
   }
   return FieldMoveWorld.new({
@@ -214,6 +220,18 @@ local function liveWorld(game, warpsOverride)
     },
     warps = warpsOverride or menuLaneWarps(game),
     spawns = spawns,
+    audio = {
+      play = function(_, sequence)
+        if effects ~= nil then
+          effects[#effects + 1] = sequence
+        end
+      end,
+    },
+    camera = function()
+      return assert(runtime.camera, "live camera required")
+    end,
+    screen = assert(runtime.screenFade, "live screen fade required"),
+    travel = assert(runtime.fieldTravel, "live travel state required"),
   })
 end
 
@@ -246,8 +264,8 @@ local function returnContext(game)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
-    foggy = false,
-    chatterOpen = false,
+    alphFlashSpot = false,
+    alphEscapeRopeSpot = false,
   }
 end
 
@@ -342,27 +360,30 @@ local function settlePlayer(game)
   end, 1200)
 end
 
-function T.tests.dig_exits_to_the_recorded_outside_entrance()
+function T.tests.dig_exits_to_the_recorded_special_spawn()
   withGame(function(game)
     local geodude = giftMon(game, "GEODUDE")
     teachMove(game, geodude, "TM28")
     local mouth = findDarkCaveMouth(game)
     stepOnto(game, mouth.tile)
     waitForMap(game, mouth.destinationSymbol)
-    local entrance = liveTravel(game):capture().escapeEntrance
-    Assert.notNil(entrance, "entering the cave must record the outside entrance")
+    local special = liveTravel(game):capture().specialSpawn
+    Assert.notNil(special, "entering the cave must record the special spawn")
     settlePlayer(game)
     game:restart()
     freezeAutonomousActors(game)
-    local reloaded = liveTravel(game):capture().escapeEntrance
-    Assert.deepEqual(reloaded, entrance, "save/reload must preserve the recorded entrance")
-    local mover = liveRuntime(liveWorld(game))
+    local reloaded = liveTravel(game):capture().specialSpawn
+    Assert.deepEqual(reloaded, special, "save/reload must preserve the recorded special spawn")
+    local effects = {}
+    local mover = liveRuntime(liveWorld(game, nil, effects))
     local result = runReturnPlan(game, mover, "dig", geodude, liveTravel(game))
     Assert.equal(result.kind, "field_move_done", "dig must run to done")
+    Assert.deepEqual(effects, { "SEQ_SE_DP_KAIDAN2" }, "dig plays its source effect exactly once")
     local settled = game:snapshot()
-    Assert.equal(settled.mapSymbol, entrance.map, "dig must exit to the recorded entrance map")
-    Assert.equal(settled.player.fieldX, entrance.fieldX, "dig must exit to the recorded entrance tile")
-    Assert.equal(settled.player.fieldZ, entrance.fieldZ, "dig must exit to the recorded entrance tile")
+    Assert.equal(settled.mapSymbol, special.map, "dig must exit to the recorded special spawn map")
+    Assert.equal(settled.player.fieldX, special.fieldX, "dig must exit to the recorded special spawn tile")
+    Assert.equal(settled.player.fieldZ, special.fieldZ, "dig must exit to the recorded special spawn tile")
+    Assert.isFalse(game.runtime.screenFade:isOpaque(), "the move's cover is gone after arrival")
   end, "MAP_ROUTE_46")
 end
 
@@ -389,12 +410,17 @@ function T.tests.teleport_uses_explicit_heal_spawn_history()
     })
     Assert.equal(healing.kind, "no_effect", "a healthy mon needs no healing")
     Assert.deepEqual(travel:capture(), before, "medicine use must not rewrite respawn history")
-    local mover = liveRuntime(liveWorld(game))
+    local effects = {}
+    local mover = liveRuntime(liveWorld(game, nil, effects))
     local result = runReturnPlan(game, mover, "teleport", geodude, travel)
     Assert.equal(result.kind, "field_move_done", "teleport to the recorded mother spawn must run to done")
+    Assert.deepEqual(effects, { "SEQ_SE_DP_TELE" }, "teleport plays its source effect exactly once")
     local settled = game:snapshot()
     Assert.equal(settled.mapSymbol, "MAP_NEW_BARK", "mother-spawn teleport must land in New Bark")
-  end)
+    local special = assert(travel:capture().specialSpawn, "teleport rewrites the special spawn")
+    Assert.equal(special.map, "MAP_NEW_BARK", "the special spawn names the spawn teleport left for")
+    Assert.equal(special.direction, "south", "rewritten special spawns face south")
+  end, "MAP_ROUTE_46")
 end
 
 function T.tests.failed_return_warp_fabricates_nothing()
@@ -418,10 +444,11 @@ function T.tests.failed_return_warp_fabricates_nothing()
       transition = runtime.transition,
       loader = faultingLoader,
       sourceMap = runtime.runtimeMap,
+      screen = runtime.screenFade,
     })
     local mover = liveRuntime(liveWorld(game, faultingService))
     local travel = liveTravel(game)
-    local entrance = assert(travel:capture().escapeEntrance, "cave entry must record the entrance")
+    local special = assert(travel:capture().specialSpawn, "cave entry must record the special spawn")
     local before = game:snapshot()
     local context = returnContext(game)
     local queued = mover:queue({ move = "dig", slot = geodude, context = context, travel = travel:capture() })
@@ -435,7 +462,9 @@ function T.tests.failed_return_warp_fabricates_nothing()
     Assert.equal(settled.mapSymbol, before.mapSymbol, "failure must not move the player")
     Assert.equal(settled.player.fieldX, before.player.fieldX, "failure must not jump position")
     Assert.equal(settled.player.fieldZ, before.player.fieldZ, "failure must not jump position")
-    Assert.deepEqual(travel:capture().escapeEntrance, entrance, "failure must leave travel intact")
+    Assert.deepEqual(travel:capture().specialSpawn, special, "failure must leave travel intact")
+    Assert.isFalse(runtime.screenFade:isOpaque(), "a failed warp never strands the covered screen")
+    Assert.equal(runtime.camera:distanceTiles(), assert(runtime.cameraProfiles[runtime.runtimeMap.cameraType]).distanceTiles, "a failed warp restores the camera")
   end, "MAP_ROUTE_46")
 end
 

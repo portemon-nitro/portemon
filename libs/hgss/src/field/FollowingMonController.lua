@@ -79,6 +79,8 @@ FollowingMonController.__index = FollowingMonController
 ---@field setMovementType fun(self: FollowingMonController, movementType: string)
 ---@field repositionRelativeToPlayer fun(self: FollowingMonController, offsetSelector: integer, directionRaw: integer)
 ---@field facePlayer fun(self: FollowingMonController)
+---@field isInactiveOrVisible fun(self: FollowingMonController): boolean
+---@field swapPositionsWithPlayer fun(self: FollowingMonController)
 ---@field dispose fun(self: FollowingMonController)
 ---@field _descriptor fun(self: FollowingMonController, snapshot: table<string, unknown>): table<string, unknown>?
 ---@field _desiredLead fun(self: FollowingMonController): table<string, unknown>?
@@ -1589,6 +1591,90 @@ function FollowingMonController:releaseNextToPlayer()
   end
   self:repositionRelativeToPlayer(9, 1)
   return true
+end
+
+-- Retail ScrCmd_FollowMonIsNextToPlayer: a visible follower on a cardinally
+-- adjacent tile of the player's committed anchor.
+---@return boolean
+---@param self FollowingMonController
+function FollowingMonController:isNextToPlayer()
+  if not self:isVisible() or not self:isPartnerVisible() then
+    return false
+  end
+  local partner = assert(self._actors:getPosition(assert(self._actors:partnerId())), "partner position is required")
+  local anchor = self._playerOf():committedAnchor()
+  return math.abs(partner.fieldX - anchor.fieldX) + math.abs(partner.fieldZ - anchor.fieldZ) == 1
+end
+
+-- Retail ScrCmd_FollowMonRecall: an active follower returns to the player's
+-- tile facing north and stays hidden until the next step. The recall ball
+-- effect the retail task spawns for a hidden follower is a presentation cue.
+---@return boolean true when an active permitted follower was recalled
+---@param self FollowingMonController
+function FollowingMonController:recallToPlayer()
+  if not self:isVisible() then
+    return false
+  end
+  self:repositionRelativeToPlayer(-1, 0)
+  self:hideUntilNextStep()
+  return true
+end
+
+-- Retail ScrCmd_FollowMonIsInactiveOrVisible: true without a follower, else
+-- the partner object's visible flag.
+---@return boolean
+---@param self FollowingMonController
+function FollowingMonController:isInactiveOrVisible()
+  return not self:isVisible() or self:isPartnerVisible()
+end
+
+-- Retail ScrCmd_SwapPlayerAndFollowMonPositions mode 1: the adjacent player
+-- and partner exchange tiles. The retail task walks the two steps; the swap
+-- commits the end state at once. The player ends facing back toward the
+-- vacated tile and the partner takes the player's former facing. The trail
+-- restarts from the new tiles.
+---@param self FollowingMonController
+function FollowingMonController:swapPositionsWithPlayer()
+  local partnerId = assert(self._actors:partnerId(), "position swap requires the installed partner")
+  local partner = assert(self._actors:getPosition(partnerId), "position swap requires the partner position")
+  local player = self._playerOf()
+  local anchor = player:committedAnchor()
+  local dx = partner.fieldX - anchor.fieldX
+  local dz = partner.fieldZ - anchor.fieldZ
+  assert(math.abs(dx) + math.abs(dz) == 1, "position swap requires an adjacent partner")
+  local mapId = assert(self._actors.currentMapId, "position swap requires the follower map")
+  local partnerFacing = anchor.facing
+  local playerFacing = dx == 1 and "west" or dx == -1 and "east" or dz == 1 and "north" or "south"
+  self:settleMovement()
+  self._queue = {}
+  self._lastFollowerCommand = nil
+  self._consumedStep = nil
+  self._ledgeLanding = nil
+  player:setScriptPosition({ fieldX = partner.fieldX, fieldZ = partner.fieldZ })
+  local ok, err = pcall(
+    self._actors.setPosition,
+    self._actors,
+    partnerId,
+    { fieldX = anchor.fieldX, fieldZ = anchor.fieldZ, worldY = anchor.worldY },
+    { scripted = true }
+  )
+  if not ok then
+    if FieldActorManager.isPlacementRejection(err) then
+      self:_discontinuity(mapId)
+      return
+    end
+    error(err)
+  end
+  self._actors:setFacing(partnerId, partnerFacing)
+  player:turn(playerFacing)
+  if type(player.movementTransaction) == "function" then
+    local tx = player:movementTransaction()
+    if tx ~= nil then
+      self._lastMovementTransactionRevision = tx.revision
+    end
+  end
+  self._lastPlayerRevision = player:movementRevision()
+  self._lastAnchor = player:committedAnchor()
 end
 
 -- Release follower state without touching saved data. The manager owns the

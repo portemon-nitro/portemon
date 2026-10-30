@@ -42,6 +42,9 @@ local WILD_TERRAIN = 0
 local WILD_DATE = { year = 2000, month = 1, day = 1 }
 
 local CHECKING_MOVEMENTS = { step = true, fish = true }
+-- Field-move attempts (Rock Smash, Headbutt, Sweet Scent) consult their
+-- tables like a checking movement but are not steps: no counter advances.
+local FIELD_MOVE_MOVEMENTS = { field_move = true }
 local IDLE_MOVEMENTS = { still = true, menu = true }
 local FORCED_MOVEMENTS = { forced = true, forced_movement = true }
 local SCRIPTED_MOVEMENTS = { scripted = true, scripted_movement = true }
@@ -220,6 +223,14 @@ local function checkModifiers(modifiers)
   end
   if modifiers.roamerKey ~= nil and type(modifiers.roamerKey) ~= "string" then
     Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter roamer state must be a string key", {})
+  end
+  if modifiers.sweetScent ~= nil and modifiers.sweetScent ~= true and modifiers.sweetScent ~= false then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter sweet scent state must be a boolean", {})
+  end
+  if
+    modifiers.headbutt ~= nil and (type(modifiers.headbutt) ~= "table" or type(modifiers.headbutt.slots) ~= "table")
+  then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter headbutt state must carry its slots", {})
   end
   local leadAbility = modifiers.leadAbility
   if leadAbility ~= nil and LEAD_ABILITIES[leadAbility] ~= true then
@@ -459,7 +470,12 @@ function HgssEncounterService:_attemptTable(context, stream, attemptId)
   assert(type(stream.nextU16) == "function", "table attempts consult the labeled stream")
   local draw = stream.nextU16
   local cause = { kind = "encounter", method = method }
-  if not EncounterSelection.trigger(rate, draw(stream, "opportunity", cause) % 100) then
+  if modifiers.sweetScent == true then
+    -- Sweet Scent always draws an encounter on a table with a rate.
+    if rate == 0 then
+      return self:_miss(context, attemptId, "no_opportunity")
+    end
+  elseif not EncounterSelection.trigger(rate, draw(stream, "opportunity", cause) % 100) then
     if method == "fish" then
       return self:_miss(context, attemptId, "no_bite")
     end
@@ -481,6 +497,27 @@ function HgssEncounterService:_attemptTable(context, stream, attemptId)
     options.leadNature = modifiers.leadNature
   end
   local mon = self._factory:create(slot.species, level, stream, options)
+  return self:_prepare(mon, context, attemptId, "triggered")
+end
+
+-- Headbutt draws from the struck tree's supplied slots with no opportunity
+-- roll: the slot roll and level roll, then the wild identity.
+---@param self HgssEncounterService
+---@param context table<string, unknown>
+---@param stream table<string, unknown>
+---@param attemptId integer
+---@return table<string, unknown>
+function HgssEncounterService:_attemptHeadbutt(context, stream, attemptId)
+  local modifiers = context.modifiers
+  assert(type(modifiers) == "table", "headbutt attempts read the modifier record")
+  local headbutt = modifiers.headbutt
+  assert(type(headbutt) == "table", "headbutt attempts read their slots")
+  local slots = headbutt.slots
+  local draw = stream.nextU16
+  local cause = { kind = "encounter", method = "headbutt" }
+  local slot = slots[EncounterSelection.selectSlot(slots, draw(stream, "slot", cause) % 100)]
+  local level = EncounterSelection.selectLevel(slot, draw(stream, "level", cause))
+  local mon = self._factory:create(slot.species, level, stream, self:_wildOptions(context, attemptId))
   return self:_prepare(mon, context, attemptId, "triggered")
 end
 
@@ -510,7 +547,7 @@ function HgssEncounterService:attempt(context, stream)
     self._revision = self._revision + 1
     return self:_attemptStatic(checked, stream, attemptId)
   end
-  if CHECKING_MOVEMENTS[movement] ~= true then
+  if CHECKING_MOVEMENTS[movement] ~= true and FIELD_MOVE_MOVEMENTS[movement] ~= true then
     if
       IDLE_MOVEMENTS[movement] ~= true
       and FORCED_MOVEMENTS[movement] ~= true
@@ -534,6 +571,16 @@ function HgssEncounterService:attempt(context, stream)
     else
       return self:_miss(checked, attemptId, "scripted_movement")
     end
+  end
+  if method == "headbutt" and checked.modifiers.headbutt ~= nil then
+    checkLeadRequirements(checked)
+    if self._protected then
+      Errors.raise("ENCOUNTER_PENDING", "an encounter is already prepared", { attemptId = self._pendingAttemptId })
+    end
+    local attemptId = self._nextAttemptId
+    self._nextAttemptId = attemptId + 1
+    self._revision = self._revision + 1
+    return self:_attemptHeadbutt(checked, stream, attemptId)
   end
   if not isTableMethod(method) and method ~= "roamer" then
     if method == "headbutt" or method == "safari" or method == "bug_contest" or method == "unown" then

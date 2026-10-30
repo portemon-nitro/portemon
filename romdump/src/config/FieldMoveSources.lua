@@ -29,8 +29,6 @@ FieldMoveSources.MOVE_KEYS = {
   "headbutt",
   "sweet_scent",
   "chatter",
-  "defog",
-  "escape_rope",
 }
 
 -- Semantic badge order shared with the durable progression owner.
@@ -54,8 +52,8 @@ FieldMoveSources.BADGE_ORDER = {
 }
 
 -- The badge gate per move, from the source check predicates. Moves without
--- an entry need no badge: Flash works in any dark place, Headbutt/Sweet
--- Scent/Chatter/Defog/Escape Rope/Dig/Teleport gate on map state instead.
+-- an entry need no badge: Flash gates on live weather, Headbutt/Sweet
+-- Scent/Chatter/Dig/Teleport gate on map state instead.
 FieldMoveSources.badgeGate = {
   cut = "hive",
   surf = "fog",
@@ -67,19 +65,27 @@ FieldMoveSources.badgeGate = {
   rock_climb = "earth",
 }
 
--- Source map-header weather ids where Flash is usable (dark caves).
-FieldMoveSources.FLASH_WEATHER_IDS = { 11 }
-
--- The Ruins of Alph underground hall lights with Flash despite clear
--- weather (the source Alph chamber exception).
-FieldMoveSources.ALPH_FLASH_SYMBOL = "MAP_RUINS_OF_ALPH_UNDERGROUND_HALL"
+-- The Ruins of Alph first rooms that carry the source Flash and Escape
+-- Rope exceptions (CheckUseFlashInAlphChamber, CheckUseEscapeRopeInAlphChamber);
+-- both also require the fixed tile and facing at runtime.
+FieldMoveSources.ALPH_FLASH_ROOM_SYMBOL = "MAP_RUINS_OF_ALPH_SOUTHEAST_ENTRANCE_FIRST_ROOM"
+FieldMoveSources.ALPH_ESCAPE_ROPE_ROOM_SYMBOL = "MAP_RUINS_OF_ALPH_NORTHEAST_ENTRANCE_FIRST_ROOM"
 
 -- Ice Path B2F carries the source Strength exception.
 FieldMoveSources.ICE_PATH_B2F_SYMBOL = "MAP_ICE_PATH_B2F"
 
--- The Union Room link-battle map rejects every external field check.
+-- The Union Room link-battle map and the Colosseum battle rooms reject
+-- every external field check: the retail checks gate on the UNION and
+-- COLOSSEUM load types together (field_move.c, with MAP_LOAD_TYPE_COLOSSEUM
+-- from include/constants/field/map_load.h), the COLOSSEUM load type is
+-- entered only by CallTask_WarpToColosseum (field_warp_tasks.c), and the
+-- only script callers of ScrCmd_WarpToColosseum target the single and
+-- multi Wi-Fi battle areas (scr_seq_0004). Both battle rooms therefore run
+-- under the COLOSSEUM load type and join the Union Room here.
 FieldMoveSources.UNION_COLOSSEUM_SYMBOLS = {
   MAP_UNION = true,
+  MAP_WIFI_SINGLE_BATTLE_AREA = true,
+  MAP_WIFI_MULTI_BATTLE_AREA = true,
 }
 
 -- The default respawn is the mother's house spawn (GetMomSpawnId), pinned
@@ -266,11 +272,87 @@ function FieldMoveSources.spawnDestinationForKey(spawnKey)
   return { map = entry.map, fieldX = entry.fieldX, fieldZ = entry.fieldZ }
 end
 
+-- Rock Smash item tables (the retail ROM's three 8-entry item tables, indexed
+-- by the drawn item index) keyed by the table type the per-map member names
+-- (0 default, 1 Ruins of Alph, 2 Cliff Cave). The Alph and Cliff Cave tables
+-- differ per game version.
+FieldMoveSources.ROCK_SMASH_ITEM_TABLES = {
+  [0] = {
+    heartgold = {
+      "MAX_ETHER",
+      "REVIVE",
+      "HEART_SCALE",
+      "RED_SHARD",
+      "BLUE_SHARD",
+      "GREEN_SHARD",
+      "YELLOW_SHARD",
+      "STAR_PIECE",
+    },
+    soulsilver = {
+      "MAX_ETHER",
+      "REVIVE",
+      "HEART_SCALE",
+      "RED_SHARD",
+      "BLUE_SHARD",
+      "GREEN_SHARD",
+      "YELLOW_SHARD",
+      "STAR_PIECE",
+    },
+  },
+  [1] = {
+    heartgold = {
+      "RED_SHARD",
+      "YELLOW_SHARD",
+      "HELIX_FOSSIL",
+      "MAX_ETHER",
+      "BLUE_SHARD",
+      "GREEN_SHARD",
+      "OLD_AMBER",
+      "MAX_REVIVE",
+    },
+    soulsilver = {
+      "BLUE_SHARD",
+      "GREEN_SHARD",
+      "DOME_FOSSIL",
+      "MAX_ETHER",
+      "RED_SHARD",
+      "YELLOW_SHARD",
+      "OLD_AMBER",
+      "MAX_REVIVE",
+    },
+  },
+  [2] = {
+    heartgold = {
+      "MAX_ETHER",
+      "PEARL",
+      "BIG_PEARL",
+      "RED_SHARD",
+      "YELLOW_SHARD",
+      "CLAW_FOSSIL",
+      "CLAW_FOSSIL",
+      "RARE_BONE",
+    },
+    soulsilver = {
+      "MAX_ETHER",
+      "PEARL",
+      "BIG_PEARL",
+      "BLUE_SHARD",
+      "GREEN_SHARD",
+      "ROOT_FOSSIL",
+      "ROOT_FOSSIL",
+      "RARE_BONE",
+    },
+  },
+}
+
+-- Headbutt slot interval widths (the retail ROM's headbutt slot roll over
+-- 0..99: 50, 15, 15, 10, 5, 5).
+FieldMoveSources.HEADBUTT_SLOT_WEIGHTS = { 50, 15, 15, 10, 5, 5 }
+
 FieldMoveSources.OBSTACLE_KINDS = {
   "cut_tree",
   "smash_rock",
   "strength_boulder",
-  "headbutt_tree",
 }
 
 -- Sprite id -> obstacle kind, verified against ROM script correlations.

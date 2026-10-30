@@ -50,14 +50,14 @@ local function context(overrides)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
-    foggy = false,
-    chatterOpen = false,
+    alphFlashSpot = false,
+    alphEscapeRopeSpot = false,
     fieldUse = {
       flyAllowed = false,
       teleportAllowed = false,
       escapeAllowed = false,
-      flashUsable = true,
-      alphChamber = false,
+      alphFlashRoom = false,
+      alphEscapeRopeRoom = false,
       icePathB2F = false,
       cave = true,
       unionOrColosseum = false,
@@ -99,9 +99,17 @@ local function worldDouble(overrides)
     cancelMotion = function(self)
       self.cancels = self.cancels + 1
     end,
+    strengthActive = false,
+    isStrengthActive = function(self)
+      return self.strengthActive
+    end,
     activateStrength = function(self)
       self.activatedStrength = self.activatedStrength + 1
+      self.strengthActive = true
       return true
+    end,
+    clearStrength = function(self)
+      self.strengthActive = false
     end,
     applyFlash = function(_) end,
   }
@@ -231,6 +239,7 @@ function T.teleport_resolves_through_the_real_world()
         assert(spawnKey == "SPAWN_NEW_BARK", "resolution requests the recorded spawn")
         return { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397 }
       end,
+      specialFor = function() end,
     },
   })
   local wired = open(world)
@@ -330,9 +339,54 @@ function T.strength_arming_is_map_lifetime_and_explicitly_cleared()
   local pushAttempt = runtime:tryStrengthPush({ boulderActorId = "map:61:object:2", direction = "south", mapId = 61 })
   Assert.equal(pushAttempt.kind, "accepted", "an armed map accepts pushes")
   runtime:discardPending()
+  local again = runtime:queue({
+    move = "strength",
+    slot = 1,
+    partyRevision = 4,
+    context = context({
+      facingObstacle = "strength_boulder",
+      facingActor = { identity = "map:61:object:2", obstacleKind = "strength_boulder" },
+    }),
+  })
+  Assert.equal(again.kind, "already_active", "an armed map refuses to re-arm")
+  Assert.isFalse(runtime:isBusy(), "the refusal holds nothing")
   runtime:clearTransient()
   local cold = runtime:tryStrengthPush({ boulderActorId = "map:61:object:2", direction = "south", mapId = 61 })
   Assert.equal(cold.kind, "not_here", "only an explicit reset disarms strength")
+  local rearmed = runtime:queue({
+    move = "strength",
+    slot = 1,
+    partyRevision = 4,
+    context = context({
+      facingObstacle = "strength_boulder",
+      facingActor = { identity = "map:61:object:2", obstacleKind = "strength_boulder" },
+    }),
+  })
+  Assert.equal(rearmed.kind, "accepted", "a cleared map arms again")
+end
+
+function T.strength_permission_is_the_world_flag_a_script_may_have_set()
+  local world = worldDouble()
+  local runtime = open(world)
+  world.strengthActive = true
+  local strength = {
+    move = "strength",
+    slot = 1,
+    partyRevision = 4,
+    context = context({
+      facingObstacle = "strength_boulder",
+      facingActor = { identity = "map:61:object:2", obstacleKind = "strength_boulder" },
+    }),
+  }
+  Assert.equal(runtime:queue(strength).kind, "already_active", "the flag alone refuses a second enablement")
+  Assert.equal(
+    runtime:tryStrengthPush({ boulderActorId = "map:61:object:2", direction = "south", mapId = 61 }).kind,
+    "accepted",
+    "the flag alone arms the push"
+  )
+  runtime:discardPending()
+  runtime:clearTransient()
+  Assert.isFalse(world.strengthActive, "the map-entry reset clears the flag through the world")
 end
 
 function T.unarmed_push_declines_without_queueing()

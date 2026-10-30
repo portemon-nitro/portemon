@@ -12,8 +12,8 @@ local function fieldUse(overrides)
     flyAllowed = true,
     teleportAllowed = true,
     escapeAllowed = true,
-    flashUsable = false,
-    alphChamber = false,
+    alphFlashRoom = false,
+    alphEscapeRopeRoom = false,
     icePathB2F = false,
     cave = false,
     unionOrColosseum = false,
@@ -43,8 +43,9 @@ local function sources(overrides)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
-    foggy = false,
-    chatterOpen = false,
+    localX = 0,
+    localZ = 0,
+    facing = "south",
   }
   for key, item in pairs(overrides or {}) do
     value[key] = item
@@ -67,6 +68,27 @@ function T.capture_copies_every_fact_without_aliasing()
   input.fieldUse.flyAllowed = false
   Assert.equal(context.badges, 3)
   Assert.isTrue(context.fieldUse.flyAllowed)
+end
+
+function T.alph_spots_need_the_room_tile_and_north_facing()
+  local flashRoom = fieldUse({ alphFlashRoom = true })
+  local at = FieldMoveContext.capture(sources({ fieldUse = flashRoom, localX = 6, localZ = 3, facing = "north" }))
+  Assert.isTrue(at.alphFlashSpot)
+  Assert.isFalse(at.alphEscapeRopeSpot)
+  for _, wrong in ipairs({
+    { localX = 5, localZ = 3, facing = "north" },
+    { localX = 6, localZ = 4, facing = "north" },
+    { localX = 6, localZ = 3, facing = "south" },
+  }) do
+    wrong.fieldUse = flashRoom
+    Assert.isFalse(FieldMoveContext.capture(sources(wrong)).alphFlashSpot)
+  end
+  local ropeRoom = fieldUse({ alphEscapeRopeRoom = true })
+  local rope = FieldMoveContext.capture(sources({ fieldUse = ropeRoom, localX = 6, localZ = 3, facing = "north" }))
+  Assert.isTrue(rope.alphEscapeRopeSpot)
+  Assert.isFalse(rope.alphFlashSpot)
+  local elsewhere = FieldMoveContext.capture(sources({ localX = 6, localZ = 3, facing = "north" }))
+  Assert.isFalse(elsewhere.alphFlashSpot or elsewhere.alphEscapeRopeSpot, "other maps have no exception")
 end
 
 function T.facing_actor_resolves_the_obstacle_and_records_identity()

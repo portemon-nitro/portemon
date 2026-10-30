@@ -571,6 +571,16 @@ local function executeFieldEntry(artifact, context)
   return Writer.stage(artifact, bundle)
 end
 
+local function executeFieldMoveCutInBanner(artifact, context)
+  local Compiler = require("romdump.src.digest.field.FieldMoveCutInBannerCompiler")
+  local Writer = require("romdump.src.digest.field.FieldMoveCutInBannerCacheWriter")
+  local romFs = assert(context.romFs, "coarse jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return Compiler.compile(romFs)
+  end, "field-move cut-in banner")
+  return Writer.stage(artifact, bundle)
+end
+
 local function executeFieldEmotes(artifact, context)
   local Compiler = require("romdump.src.digest.actor.FieldActorEmoteCompiler")
   local Writer = require("romdump.src.digest.actor.FieldActorEmoteCacheWriter")
@@ -1380,6 +1390,13 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
+local function validateFieldMoveCutInBanner(check)
+  local FieldMoveCutInBannerAssetCache = require("libs.assets.src.field.FieldMoveCutInBannerAssetCache")
+  return FieldMoveCutInBannerAssetCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
 local function validateFieldFont(check)
   local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
   return FieldFontCache.isReady(check.cacheFs, check.marker)
@@ -1920,6 +1937,14 @@ DESCRIPTORS = {
     size = "normal",
     execute = executeFieldEntry,
     validate = validateFieldEntry,
+  },
+  -- The cut-in banner stages alone: it is not enrolled in the
+  -- field-runtime or complete scopes, so the banner producer runs and
+  -- rebuilds without the map and field families.
+  ["field-move-cut-in-banner"] = {
+    size = "normal",
+    execute = executeFieldMoveCutInBanner,
+    validate = validateFieldMoveCutInBanner,
   },
   ["field-font"] = {
     size = "heavy",

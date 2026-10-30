@@ -181,6 +181,7 @@ function EncounterFixture.vectorCatalog()
       [12] = memberTable(meadowDay(), rates(0, 0, 0, 0, 0, 0), "soulsilver"),
       [13] = memberTable(meadowDay(), rates(30, 0, 0, 0, 0, 0), "soulsilver"),
       [14] = memberTable(meadowDay(), rates(0, 0, 0, 100, 0, 0), "soulsilver"),
+      [15] = memberTable(meadowDay(), rates(100, 100, 100, 0, 0, 0), "soulsilver"),
     },
   }
   local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
