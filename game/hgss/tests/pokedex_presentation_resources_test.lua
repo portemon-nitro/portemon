@@ -1686,6 +1686,11 @@ function T.idle_rounds_stage_common_chrome_and_the_canvas_group_for_first_open()
     type(owner.advanceWarmup) == "function",
     "the dex owner stages its common chrome and canvas group across idle rounds"
   )
+  -- A real foreground demand establishes the presentation first; idle
+  -- staging then warms the shared chrome and canvas group from it.
+  local primer = owner:acquire({ purpose = "browser" })
+  primer:prepare(pageDemand("grid", "idle-prime"))
+  primer:release()
   local maxDelta = 0
   local before = pool.uploads + #graphics.canvases
   local settled = false
@@ -1726,13 +1731,20 @@ function T.idle_rounds_stage_common_chrome_and_the_canvas_group_for_first_open()
   end
   -- A held modal update offers no speculative GPU slot while the loaned
   -- group is live: staging may observe readiness but must neither build
-  -- a replacement group nor realize a canvas.
+  -- a replacement group nor realize a canvas. An admitted update while
+  -- the lease is live likewise realizes nothing without a spare slot.
   for _ = 1, 3 do
     local used, failure = owner:advanceWarmup(0)
     Assert.isNil(failure, "held staging reports no failure on synthetic chrome")
     Assert.equal(used, false, "a held update with no GPU slot admits nothing")
   end
   Assert.equal(#graphics.canvases, 6, "held updates while a lease is live create no canvases")
+  for _ = 1, 3 do
+    local used, failure = owner:advanceWarmup(1)
+    Assert.isNil(failure, "admitted staging reports no failure while a lease is live")
+    Assert.equal(used, false, "an admitted update with no spare slot realizes nothing")
+  end
+  Assert.equal(#graphics.canvases, 6, "admitted updates while a lease is live create no spare group")
   local uploadsAfterOpen = pool.uploads
   lease:release()
   for index, canvas in ipairs(firstCanvases) do
@@ -1779,6 +1791,11 @@ function T.overlapping_leases_hold_independent_canvas_groups()
     type(owner.advanceWarmup) == "function",
     "the dex owner loans its warmed canvas group to exactly one lease"
   )
+  -- A real foreground demand establishes the presentation first; idle
+  -- staging then warms the shared chrome and canvas group from it.
+  local primer = owner:acquire({ purpose = "browser" })
+  primer:prepare(pageDemand("grid", "overlap-prime"))
+  primer:release()
   settleWarmup(owner, 1)
   Assert.equal(#graphics.canvases, 6, "idle rounds prepare exactly one spare group")
   local first = owner:acquire({ purpose = "browser" })
@@ -1815,13 +1832,20 @@ function T.overlapping_leases_hold_independent_canvas_groups()
   end
   -- Held modal updates while both leases are live must not occupy the
   -- vacant spare slot with an empty group: staging observes readiness
-  -- only and creates no canvases.
+  -- only and creates no canvases. Admitted updates likewise realize
+  -- nothing while no spare slot is vacant.
   for _ = 1, 3 do
     local used, failure = owner:advanceWarmup(0)
     Assert.isNil(failure, "held staging reports no failure on synthetic chrome")
     Assert.equal(used, false, "a held update with no GPU slot admits nothing")
   end
   Assert.equal(#graphics.canvases, 12, "held updates while leases are live create no canvases")
+  for _ = 1, 3 do
+    local used, failure = owner:advanceWarmup(1)
+    Assert.isNil(failure, "admitted staging reports no failure while leases are live")
+    Assert.equal(used, false, "an admitted update with no spare slot realizes nothing")
+  end
+  Assert.equal(#graphics.canvases, 12, "admitted updates while leases are live create no spare group")
   local secondGroup = {}
   for _, surface in ipairs(secondCanvases) do
     secondGroup[#secondGroup + 1] = surface.canvas
@@ -1881,6 +1905,12 @@ function T.failed_canvas_round_keeps_completed_chrome_and_reports_authoritativel
     type(owner.advanceWarmup) == "function",
     "the dex owner isolates a failed canvas round from completed warm work"
   )
+  -- A real foreground demand establishes the presentation first, even
+  -- though its own surfaces hit the same outage; idle staging then runs
+  -- against the established manifest.
+  local primer = owner:acquire({ purpose = "browser" })
+  primer:prepare(pageDemand("grid", "failed-canvas-prime"))
+  primer:release()
   local sawFailure = nil
   for _ = 1, 128 do
     local used, failure = owner:advanceWarmup(1)
@@ -1918,6 +1948,192 @@ function T.failed_canvas_round_keeps_completed_chrome_and_reports_authoritativel
     Assert.isTrue(canvas.releaseCount <= 1, "teardown never double-frees a canvas")
   end
   Assert.equal(pool:stats().outstandingLeases, 0, "failure and disposal return every image interest")
+end
+
+-- Cold idle issues no producer demand; the first real browser open
+-- resolves through its ordinary required path, and a refused required
+-- request surfaces its original cause on a registration open instead of
+-- a synthetic answer.
+function T.cold_idle_issues_no_demand_while_first_open_uses_required_readiness()
+  local Owner = requirePresent("cold idle demand ownership")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local pool = SharedImagePoolFake.new()
+  local graphics = FakeGraphics.new()
+  local demands = {}
+  local gate = { ready = false }
+  local args = idleOwnerArgs(pool, graphics)
+  args.derivedAssets = {
+    requestPokedex = function(urgency)
+      demands[#demands + 1] = urgency
+      if gate.ready then
+        return true, nil
+      end
+      return false, nil
+    end,
+  }
+  local owner = Owner.new(args)
+  local used, failure = owner:advanceWarmup(1)
+  Assert.equal(used, false, "cold idle admits no GPU realization")
+  Assert.equal(#demands, 0, "cold idle issues no producer demand before any foreground open")
+  Assert.isNil(failure, "cold idle reports no failure on an unopened presentation")
+  local lease = owner:acquire({ purpose = "browser" })
+  local stalled = lease:prepare(pageDemand("grid", "first-grid"))
+  Assert.equal(stalled.kind, "pending", "an unready foreground demand stays pending")
+  Assert.equal(#demands, 1, "the first foreground demand enrolls exactly once")
+  Assert.equal(demands[1], "required", "the first foreground demand uses required readiness")
+  gate.ready = true
+  local ready = pumpReady(lease, pageDemand("grid", "first-grid"))
+  Assert.equal(ready.key, "first-grid", "the ready outcome carries its matching generation key")
+  for _, urgency in ipairs(demands) do
+    Assert.equal(urgency, "required", "no idle turn enrolls producer work around the first open")
+  end
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "the first open returns every borrowed interest")
+  local failedPool = SharedImagePoolFake.new()
+  local failedGraphics = FakeGraphics.new()
+  local failedDemands = {}
+  local failedArgs = idleOwnerArgs(failedPool, failedGraphics)
+  failedArgs.derivedAssets = {
+    requestPokedex = function(urgency)
+      failedDemands[#failedDemands + 1] = urgency
+      return nil, "synthetic required failure"
+    end,
+  }
+  local failedOwner = Owner.new(failedArgs)
+  local failedUsed, failedIdle = failedOwner:advanceWarmup(1)
+  Assert.equal(failedUsed, false, "cold idle admits no GPU realization")
+  Assert.equal(#failedDemands, 0, "cold idle issues no producer demand before any foreground open")
+  Assert.isNil(failedIdle, "cold idle reports no failure on an unopened presentation")
+  local registration = failedOwner:acquire({ purpose = "registration" })
+  local monCatalog, catalog = Fixture.catalogs()
+  local dexOwner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local snapshot = Fixture.registrationSnapshot(dexOwner, monCatalog, "TOTODILE", 0)
+  local failed = nil
+  for _ = 1, 64 do
+    local outcome = registration:prepare(Fixture.registrationDemand(snapshot, "first-card"))
+    if outcome.kind == "failed" then
+      failed = outcome
+      break
+    end
+    Assert.equal(outcome.kind, "pending", "the doomed card never publishes")
+  end
+  Assert.notNil(failed, "a refused foreground demand cannot publish")
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error:find("synthetic required failure", 1, true) ~= nil,
+    "the failure carries its original required cause"
+  )
+  for _, urgency in ipairs(failedDemands) do
+    Assert.equal(urgency, "required", "no idle turn enrolls producer work around the refused open")
+  end
+  registration:release()
+  failedOwner:release()
+  Assert.equal(failedPool:stats().outstandingLeases, 0, "the refused open returns every borrowed interest")
+end
+
+-- Settled idle work rests: after the static closure and the canvas group
+-- are complete, mixed-allowance rounds admit nothing and issue no new
+-- image interest, canvases, producer demand, cache loads, or manifest
+-- reads.
+function T.settled_idle_work_rests_without_new_interest_or_reads()
+  local Owner = requirePresent("settled idle rest")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local pool = SharedImagePoolFake.new()
+  local graphics = FakeGraphics.new()
+  local tallies = { request = 0, poll = 0, acquire = 0 }
+  local rawRequest, rawPoll, rawAcquire = pool.request, pool.poll, pool.acquire
+  function pool:request(path, sampler, priority)
+    tallies.request = tallies.request + 1
+    return rawRequest(self, path, sampler, priority)
+  end
+  function pool:poll(token)
+    tallies.poll = tallies.poll + 1
+    return rawPoll(self, token)
+  end
+  function pool:acquire(token)
+    tallies.acquire = tallies.acquire + 1
+    return rawAcquire(self, token)
+  end
+  local rawManifest = idleClosureManifest()
+  local manifestReads = { count = 0 }
+  local manifestView = setmetatable({}, {
+    __index = function(_, key)
+      manifestReads.count = manifestReads.count + 1
+      return rawManifest[key]
+    end,
+  })
+  local cacheLoads = { count = 0 }
+  local producerCalls = { count = 0 }
+  local gate = { ready = false }
+  local args = ownerArgs(pool)
+  args.graphics = graphics
+  args.cacheFs = {
+    loadLua = function(_)
+      cacheLoads.count = cacheLoads.count + 1
+      return manifestView
+    end,
+  }
+  args.derivedAssets = {
+    requestPokedex = function(_)
+      producerCalls.count = producerCalls.count + 1
+      if gate.ready then
+        return true, nil
+      end
+      return false, nil
+    end,
+  }
+  local owner = Owner.new(args)
+  local opener = owner:acquire({ purpose = "browser" })
+  local stalled = opener:prepare(pageDemand("grid", "settled-grid"))
+  Assert.equal(stalled.kind, "pending", "an unready foreground demand stays pending")
+  gate.ready = true
+  local activated = pumpReady(opener, pageDemand("grid", "settled-grid"))
+  Assert.notNil(activated, "the foreground open establishes the presentation")
+  opener:release()
+  local before = pool.uploads + #graphics.canvases
+  local settled = false
+  for _ = 1, 128 do
+    local used, failure = owner:advanceWarmup(1)
+    Assert.isNil(failure, "idle staging reports no failure on synthetic chrome")
+    local delta = (pool.uploads + #graphics.canvases) - before
+    before = pool.uploads + #graphics.canvases
+    Assert.isTrue(delta <= 1, "one idle round realizes at most one image pair or canvas")
+    if used == false then
+      settled = true
+      break
+    end
+  end
+  Assert.isTrue(settled, "idle rounds finish the static closure and canvas group work")
+  local snapshot = {
+    request = tallies.request,
+    poll = tallies.poll,
+    acquire = tallies.acquire,
+    canvases = #graphics.canvases,
+    uploads = pool.uploads,
+    manifest = manifestReads.count,
+    loads = cacheLoads.count,
+    producer = producerCalls.count,
+  }
+  for round = 1, 150 do
+    local allowance = (round % 2 == 0) and 0 or 1
+    local used, failure = owner:advanceWarmup(allowance)
+    Assert.equal(used, false, "settled idle work admits no GPU realization")
+    Assert.isNil(failure, "settled idle work reports no failure")
+  end
+  Assert.equal(tallies.request, snapshot.request, "settled idle issues no new image requests")
+  Assert.equal(tallies.poll, snapshot.poll, "settled idle polls nothing again")
+  Assert.equal(tallies.acquire, snapshot.acquire, "settled idle acquires nothing again")
+  Assert.equal(#graphics.canvases, snapshot.canvases, "settled idle constructs no canvases")
+  Assert.equal(pool.uploads, snapshot.uploads, "settled idle uploads no new images")
+  Assert.equal(producerCalls.count, snapshot.producer, "settled idle reissues no producer demand")
+  Assert.equal(cacheLoads.count, snapshot.loads, "settled idle reloads no manifests")
+  Assert.equal(
+    manifestReads.count,
+    snapshot.manifest,
+    "settled idle re-reads no static manifest state"
+  )
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "close returns every adopted image interest")
 end
 
 return { tests = T }
