@@ -2211,15 +2211,13 @@ local function paired_beats_and_flips_keep_both_source_screens_across_every_layo
     -- the bands overlap by one black-surroundings height instead of
     -- sitting side by side. Each half is sampled along the vertical axis
     -- the stack owns, inside the centered image column.
-    local midTop = math.floor(height * 0.2)
-    local botTop = math.floor(height * 0.7)
     assertSamePixel(
       before,
       width,
       math.floor(width / 2),
-      20,
+      math.floor(height * 0.25),
       math.floor(width / 2),
-      midTop,
+      math.floor(height * 0.35),
       0.05,
       where .. ": the upper physical screen keeps its own role"
     )
@@ -2227,9 +2225,9 @@ local function paired_beats_and_flips_keep_both_source_screens_across_every_layo
       before,
       width,
       math.floor(width / 2),
-      botTop,
+      math.floor(height * 0.65),
       math.floor(width / 2),
-      height - 20,
+      math.floor(height * 0.75),
       0.05,
       where .. ": the lower physical screen keeps its own role"
     )
@@ -2241,12 +2239,12 @@ local function paired_beats_and_flips_keep_both_source_screens_across_every_layo
       -- already moved on, so it is never resampled here.
       local upperBand, lowerBand, black = { 1, 0, 0 }, { 0, 0, 1 }, { 0, 0, 0 }
       local probes = {
-        { before, 600, 100, upperBand, "the upper-only rows show the upper band" },
-        { before, 600, 500, lowerBand, "the lower-only rows show the lower band" },
+        { before, 600, 200, upperBand, "the upper-only rows show the upper band" },
+        { before, 600, 400, lowerBand, "the lower-only rows show the lower band" },
         { before, 600, 300, lowerBand, "the shared rows show the lower band" },
         { before, 20, 300, black, "the side bars stay black" },
-        { after, 600, 100, lowerBand, "the upper-only rows show the flipped band" },
-        { after, 600, 500, upperBand, "the lower-only rows show the flipped band" },
+        { after, 600, 200, lowerBand, "the upper-only rows show the flipped band" },
+        { after, 600, 400, upperBand, "the lower-only rows show the flipped band" },
       }
       for _, probe in ipairs(probes) do
         local r, g, b = pixelOf(probe[1], width, probe[2], probe[3])
@@ -2427,28 +2425,28 @@ local function composited_town_pixels_stay_visible_and_animate_across_hold_ticks
   love.graphics.newCanvas = realNewCanvas
   Assert.isTrue(constructed, "a town-staging movie constructs on bounded targets")
   local movie = movieOrFailure
-  local movieCalls = 0
+  local movieCalls, townHiCalls = 0, 0
   for index, call in ipairs(calls) do
+    local isTownHi = call.width == 768 and call.height == 576
     Assert.isTrue(
-      call.width <= 256 and call.height <= 192,
-      "canvas call " .. index .. " stays within the 256x192 source frame"
+      (call.width <= 256 and call.height <= 192) or isTownHi,
+      "canvas call " .. index .. " stays within the 256x192 source frame or the bounded 768x576 town target"
     )
-    -- Only the movie's own targets count toward its standing budget: the
-    -- shared field renderer lazily owns its reused scene targets outside
-    -- it, at the same bounded source size.
     if call.at:find("HgssOpeningMovie", 1, true) ~= nil then
       movieCalls = movieCalls + 1
-      Assert.equal(call.width, 256, "movie canvas call " .. movieCalls .. " keeps the source engine width")
-      Assert.equal(call.height, 192, "movie canvas call " .. movieCalls .. " keeps the source engine height")
+      if isTownHi then
+        townHiCalls = townHiCalls + 1
+      else
+        Assert.equal(call.width, 256, "movie canvas call " .. movieCalls .. " keeps the source engine width")
+        Assert.equal(call.height, 192, "movie canvas call " .. movieCalls .. " keeps the source engine height")
+      end
     end
   end
-  -- A blend timeline owns the five fixed compositor targets alongside the
-  -- two role targets and the town scratch: eight standing source canvases
-  -- at most, every one exactly 256x192.
+  Assert.equal(townHiCalls, 1, "a town-staging movie keeps exactly one bounded high-resolution town target")
   Assert.equal(
     movieCalls,
     8,
-    "a town-staging movie keeps two role targets plus five compositor targets plus one fixed town scratch"
+    "a town-staging movie keeps two role targets plus five compositor targets plus one fixed town target"
   )
   local ticks = 0
   while movie:sceneNumber() < 3 and ticks < 20000 do
@@ -3035,10 +3033,10 @@ local function real_starter_flips_map_each_source_engine_onto_its_authored_host_
     -- The wide pair stacks with one band height of overlap, so both probes
     -- sit on the centered image column: the upper-only rows map the main
     -- texel, the lower-only rows past the shared middle map it too.
-    { width = 1200, height = 600, first = { 600, 173 }, second = { 600, 427 }, name = "wide" },
-    -- The compact pair stacks the same way at its own scale: the probes
-    -- move off the old full-frame rows onto the overlapped stack.
-    { width = 512, height = 384, first = { 256, 111 }, second = { 256, 273 }, name = "nativeLike" },
+    { width = 1200, height = 600, first = { 600, 230 }, second = { 600, 370 }, name = "wide" },
+    -- Integer 1x stacking centers the 256x192 bands: the probes sample
+    -- the band centers (pane origin plus the 128,96 texel).
+    { width = 512, height = 384, first = { 256, 122 }, second = { 256, 262 }, name = "nativeLike" },
   }) do
     single:resize(layout.width, layout.height)
     Assert.equal(single:sceneNumber(), 4, layout.name .. " keeps the movie on its scene")
@@ -3286,7 +3284,6 @@ local function scene4_authored_shutters_match_source_rows_on_both_engines(scope,
   movie:dispose()
 end
 
-
 -- The scene-4 slide-in runs one five-tick window per engine (ten VBlanks)
 -- in opposite directions: main reveals left to right, sub right to left.
 -- Between the midway and completed frames the still-scrolling background
@@ -3361,12 +3358,18 @@ local function every_scene_paints_its_authored_beat_on_both_engines(scope, conte
   local movie = openMovie(scope, versionId, 512, 384, "dual")
   local function sampleBeat(label)
     movie:draw()
-    local main = sourceBytes(scope, movie.mainCanvas)
+    local useHi = movie.current.townVisible == true and movie.townHi ~= nil
+    local mainBytes = useHi and sourceBytes(scope, movie.townHi) or sourceBytes(scope, movie.mainCanvas)
+    local mainW = useHi and 768 or 256
+    local mainH = useHi and 576 or 192
     local sub = sourceBytes(scope, movie.subCanvas)
-    Assert.isTrue(regionLit(main, 256, 0, 255, 0, 191) > 0.2, label .. " lights the main source target")
+    Assert.isTrue(
+      regionLit(mainBytes, mainW, 0, mainW - 1, 0, mainH - 1) > 0.2,
+      label .. " lights the main source target"
+    )
     Assert.isTrue(regionLit(sub, 256, 0, 255, 0, 191) > 0.2, label .. " lights the sub source target")
-    Assert.isTrue(main ~= sub, label .. " keeps the two source engines distinct")
-    return main
+    Assert.isTrue(mainBytes ~= sub, label .. " keeps the two source engines distinct")
+    return mainBytes
   end
   advanceToSceneStep(movie, 1, "sunrise", 20000)
   -- The reached case first runs on the following update: dispatch the
@@ -3429,7 +3432,7 @@ local function single_screen_stages_show_the_authored_active_engine(scope, conte
   }) do
     single:resize(layout.width, layout.height)
     local hostBytes = drawBytes(single, scope, layout.width, layout.height)
-    local mainR, mainG, mainB = pixelOf(sourceBytes(scope, single.mainCanvas), 256, 128, 96)
+    local mainR, mainG, mainB = pixelOf(sourceBytes(scope, single.townHi), 768, 384, 288)
     local subR, subG, subB = pixelOf(sourceBytes(scope, single.subCanvas), 256, 128, 96)
     local hostR, hostG, hostB = pixelOf(hostBytes, layout.width, layout.center[1], layout.center[2])
     assertPaneShowsEngine(
@@ -3478,11 +3481,14 @@ local function single_screen_stages_show_the_authored_active_engine(scope, conte
   local function assertBothPanesMapped(width, height, upperPt, lowerPt, enginePt, sceneLabel)
     dual:draw()
     local hostBytes = drawBytes(dual, scope, width, height)
-    local mainBytes = sourceBytes(scope, dual.mainCanvas)
+    local useHi = dual.current.townVisible == true and dual.current.activeTown ~= nil and dual.townHi ~= nil
+    local mainBytes = useHi and sourceBytes(scope, dual.townHi) or sourceBytes(scope, dual.mainCanvas)
+    local mainW = useHi and 768 or 256
+    local mainPt = useHi and { enginePt[1] * 3, enginePt[2] * 3 } or enginePt
     local subBytes = sourceBytes(scope, dual.subCanvas)
     local upperR, upperG, upperB = pixelOf(hostBytes, width, upperPt[1], upperPt[2])
     local lowerR, lowerG, lowerB = pixelOf(hostBytes, width, lowerPt[1], lowerPt[2])
-    local mainR, mainG, mainB = pixelOf(mainBytes, 256, enginePt[1], enginePt[2])
+    local mainR, mainG, mainB = pixelOf(mainBytes, mainW, mainPt[1], mainPt[2])
     local subR, subG, subB = pixelOf(subBytes, 256, enginePt[1], enginePt[2])
     local firstR, firstG, firstB, firstMappedR, firstMappedG, firstMappedB, firstOtherR, firstOtherG, firstOtherB
     local secondR, secondG, secondB, secondMappedR, secondMappedG, secondMappedB, secondOtherR, secondOtherG, secondOtherB
@@ -7779,9 +7785,27 @@ function EntryHolds.engine_holds_follow_their_engine_across_mapping_flips_and_ne
   movie:draw()
   local held = drawBytes(movie, scope, 512, 384)
   local heldUpperR, heldUpperG, heldUpperB = pixelOf(held, 512, 256, 96)
-  assertSameColor(heldUpperR, heldUpperG, heldUpperB, 0, 0, 0, 0.08, "the upper pane follows the sub hold across the flip")
+  assertSameColor(
+    heldUpperR,
+    heldUpperG,
+    heldUpperB,
+    0,
+    0,
+    0,
+    0.08,
+    "the upper pane follows the sub hold across the flip"
+  )
   local heldLowerR, heldLowerG, heldLowerB = pixelOf(held, 512, 256, 288)
-  assertSameColor(heldLowerR, heldLowerG, heldLowerB, 1, 1, 1, 0.08, "the lower pane follows the main hold across the flip")
+  assertSameColor(
+    heldLowerR,
+    heldLowerG,
+    heldLowerB,
+    1,
+    1,
+    1,
+    0.08,
+    "the lower pane follows the main hold across the flip"
+  )
   advanceToSceneStep(movie, 1, "reset", 20000)
   advance(movie, 1)
   local reset = assert(movie.current, "the running movie owns its current slot")
@@ -8176,11 +8200,11 @@ local T = GraphicsSmoke.suite({
   ["scene 4 close retires starters and frees the main engine below black above"] = scene4_close_retires_starters_and_holds_black_until_top_neutral,
   ["scene 4 starter beats hold emission and flip until their cases"] = scene4_starter_beats_hold_emission_and_flip_until_their_cases,
   ["scene 4 authored shutters match source rows on both engines"] = scene4_authored_shutters_match_source_rows_on_both_engines,
--- Scene 4 opens both hands on the same tick as both portrait pans: the
--- decoded hand sequences give each hand one-tick opening frames followed
--- by a long dwell frame that covers the whole hold, so the two hands stay
--- on the same cell while the portrait backgrounds pan in mirror and the
--- composed engines move together, hold still together, and retire together.
+  -- Scene 4 opens both hands on the same tick as both portrait pans: the
+  -- decoded hand sequences give each hand one-tick opening frames followed
+  -- by a long dwell frame that covers the whole hold, so the two hands stay
+  -- on the same cell while the portrait backgrounds pan in mirror and the
+  -- composed engines move together, hold still together, and retire together.
   ["scene four hands stay together with their portrait pans"] = function(scope, context)
     local versionId = selectedVersionId(context)
     local movie = openMovie(scope, versionId, 512, 384, "dual")
@@ -8231,14 +8255,8 @@ local T = GraphicsSmoke.suite({
     movie:draw()
     local mainNinth = sourceBytes(scope, movie.mainCanvas)
     local subNinth = sourceBytes(scope, movie.subCanvas)
-    Assert.isTrue(
-      changeFraction(mainFirst, mainNinth, 256, 192) > 0.05,
-      "the main portrait and hand move together"
-    )
-    Assert.isTrue(
-      changeFraction(subFirst, subNinth, 256, 192) > 0.05,
-      "the sub portrait and hand move together"
-    )
+    Assert.isTrue(changeFraction(mainFirst, mainNinth, 256, 192) > 0.05, "the main portrait and hand move together")
+    Assert.isTrue(changeFraction(subFirst, subNinth, 256, 192) > 0.05, "the sub portrait and hand move together")
     movie:updateFixed()
     Assert.equal(currentStepId(movie), "hold", "the completed slide hands off to the hold")
     assertHandsTogether("the settled hold")
@@ -8287,10 +8305,7 @@ local T = GraphicsSmoke.suite({
     Assert.isTrue(slot.backgrounds.sub[1].visible == false, "the sub portrait retires with the hands")
     Assert.isTrue(slot.windows.main.visibleMask == 0, "the main reveal closes with the hands")
     Assert.isTrue(slot.windows.sub.visibleMask == 0, "the sub reveal closes with the hands")
-    Assert.isTrue(
-      slot.spriteInstances["chikorita"].visible == true,
-      "the retired slide hands off to the first starter"
-    )
+    Assert.isTrue(slot.spriteInstances["chikorita"].visible == true, "the retired slide hands off to the first starter")
     movie:dispose()
   end,
   ["slide-in windows reveal opposite halves on each engine"] = slide_in_windows_reveal_opposite_halves_on_each_engine,

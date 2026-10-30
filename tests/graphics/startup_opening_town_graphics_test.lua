@@ -188,9 +188,12 @@ end
 ---@param versionId string selected edition identity
 local function town_hold_frames_keep_their_source_materials_for_edition(scope, versionId)
   local movie = openMovie(scope, versionId, 512, 384)
+  Assert.notNil(movie.townHi, "the town stage owns its bounded high-resolution target")
+  Assert.equal(movie.townHi:getWidth(), 768, "the town target keeps its 3x native width")
+  Assert.equal(movie.townHi:getHeight(), 576, "the town target keeps its 3x native height")
   ---@param stepId string authored hold identity
   ---@param ticks integer fixed ticks to settle inside the hold
-  ---@return string raw RGBA bytes of the main engine target
+  ---@return string raw RGBA bytes of the high-resolution town target
   local function frameAt(stepId, ticks)
     advanceToSceneStep(movie, 3, stepId, 20000)
     for _ = 1, ticks do
@@ -198,23 +201,23 @@ local function town_hold_frames_keep_their_source_materials_for_edition(scope, v
     end
     Assert.equal(currentStepId(movie), stepId, "the hold stays inside " .. stepId)
     movie:draw()
-    return sourceBytes(scope, movie.mainCanvas)
+    return sourceBytes(scope, movie.townHi)
   end
-  ---@param bytes string raw RGBA bytes of the engine target
-  ---@param x integer engine pixel column
-  ---@param y integer engine pixel row
+  ---@param bytes string raw RGBA bytes of the town target
+  ---@param x integer town pixel column 0..767
+  ---@param y integer town pixel row 0..575
   ---@return integer summed channel brightness in 0..765
   local function channelSum(bytes, x, y)
-    local base = (y * 256 + x) * 4 + 1
+    local base = (y * 768 + x) * 4 + 1
     local r, g, b = string.byte(bytes, base, base + 2)
     return r + g + b
   end
-  ---@param bytes string raw RGBA bytes of the engine target
+  ---@param bytes string raw RGBA bytes of the town target
   ---@return integer pure-black pixel count over the whole target
   local function blackCount(bytes)
     local black = 0
-    for y = 0, 191 do
-      for x = 0, 255 do
+    for y = 0, 575, 3 do
+      for x = 0, 767, 3 do
         if channelSum(bytes, x, y) == 0 then
           black = black + 1
         end
@@ -223,13 +226,13 @@ local function town_hold_frames_keep_their_source_materials_for_edition(scope, v
     return black
   end
   local newBark = frameAt("show-new-bark-town", 25)
-  Assert.isTrue(blackCount(newBark) < 400, "the first town keeps only scattered dark pixels")
+  Assert.isTrue(blackCount(newBark) < 400, "the first town keeps only scattered dark pixels at high resolution")
   local goldenrod = frameAt("show-goldenrod-city", 25)
-  Assert.isTrue(channelSum(goldenrod, 128, 80) > 100, "the town mass stays lit on its active frame")
-  local edge = channelSum(goldenrod, 36, 148)
+  Assert.isTrue(channelSum(goldenrod, 384, 240) > 100, "the town mass stays lit on its active high-resolution frame")
+  local edge = channelSum(goldenrod, 108, 444)
   Assert.isTrue(edge > 20 and edge < 500, "the blended shadow edge stays between black and full brightness")
   local ecruteak = frameAt("show-ecruteak-city", 25)
-  Assert.isTrue(blackCount(ecruteak) < 400, "the third town keeps only scattered dark pixels")
+  Assert.isTrue(blackCount(ecruteak) < 400, "the third town keeps only scattered dark pixels at high resolution")
   movie:dispose()
 end
 

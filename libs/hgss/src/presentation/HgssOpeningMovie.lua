@@ -15,6 +15,7 @@ local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local Matrix4 = require("libs.math.src.Matrix4")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
+local PixelScale = require("libs.ui.src.PixelScale")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
@@ -37,7 +38,7 @@ local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 ---@field nextNextSlot OpeningMovieSlot|nil second prefetched scene slot, staging the town scene from construction
 ---@field mainCanvas love.Canvas? fixed main-engine source target (256x192)
 ---@field subCanvas love.Canvas? fixed sub-engine source target (256x192)
----@field townScratch love.Canvas? fixed town composite scratch (256x192), allocated only when a scene stages towns
+---@field townHi love.Canvas? bounded high-resolution town target (768x576), allocated only when a scene stages towns
 ---@field planeCanvas love.Canvas? transparent per-plane raster scratch (256x192), owned only while some timeline blends
 ---@field rawA love.Canvas? raw nearest-plane buffer, ping-pong half (256x192)
 ---@field rawB love.Canvas? raw nearest-plane buffer, ping-pong half (256x192)
@@ -50,6 +51,14 @@ local HgssOpeningMovie = {}
 HgssOpeningMovie.__index = HgssOpeningMovie
 
 local SOURCE_WIDTH, SOURCE_HEIGHT = 256, 192
+-- Bounded high-resolution town target: exactly 3x native (768x576) for
+-- the original 4:3 frame, independent of the host window. The scale is a
+-- movie-local constant: libs/hgss must not import game field config to
+-- share it. FieldRenderer forwards it to GxRenderer's world raster, so
+-- the shared edge-mark/fog/AA final resolve runs at the higher raster
+-- instead of on an intermediate 256x192 image.
+local TOWN_HI_SCALE = 3
+local TOWN_HI_WIDTH, TOWN_HI_HEIGHT = SOURCE_WIDTH * TOWN_HI_SCALE, SOURCE_HEIGHT * TOWN_HI_SCALE
 -- Scene-4 hero bands overlap by one black-surroundings height when they
 -- stack: each portrait fills source rows 52..139 of its 256-tall native
 -- art, leaving 52-row black bands at the top and bottom of the 192-row
@@ -593,7 +602,10 @@ end
 local function buildTownStage(self, slot)
   local pool = GpuAssetPool.new(self.cacheFs, { graphics = self.graphics })
   slot.pool = pool
-  local renderer = FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = self.graphics })
+  -- Movie-local 3x raster scale: the shared GxRenderer final resolve
+  -- (edge marking, fog, AA) runs on the higher-resolution world raster.
+  local renderer =
+    FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = self.graphics, worldRasterScale = TOWN_HI_SCALE })
   slot.renderer = renderer
   for index, model in ipairs(slot.manifest.models) do
     local ok, failure = pcall(buildTownModel, self, slot, model, index)
@@ -2700,7 +2712,7 @@ function HgssOpeningMovie.new(options)
     nextNextSlot = nil,
     mainCanvas = nil,
     subCanvas = nil,
-    townScratch = nil,
+    townHi = nil,
     planeCanvas = nil,
     rawA = nil,
     rawB = nil,
@@ -2769,14 +2781,13 @@ function HgssOpeningMovie.new(options)
       self.colorA = fixedTarget()
       self.colorB = fixedTarget()
     end
-    -- The 3D town stage resolves through the shared field renderer,
-    -- which presents with a replacing blit: compositing the town over
-    -- the sub-engine panels needs a fixed intermediate target rather
-    -- than wiping the panels or hiding the town beneath them. Standing
-    -- canvas budget is two 256x192 role targets plus up to five fixed
-    -- 256x192 compositor targets plus this one fixed 256x192 town
-    -- scratch, 8*256*192*4 bytes peak, far under the 1 GiB startup
-    -- target; no canvas scales with host pixels.
+    -- The 3D town stage resolves once at bounded high resolution through
+    -- the shared field renderer (world raster 768x576, edge/AA at that
+    -- raster). Standing canvas budget is two 256x192 role targets plus up
+    -- to five fixed 256x192 compositor targets plus this one fixed
+    -- 768x576 town target, far under the 1 GiB startup target; no canvas
+    -- scales with host pixels. The town target uses linear filtering so
+    -- the resolved AA output survives presentation without sharpening.
     local stagesTowns = false
     for sceneNumber = 1, 5 do
       if type(scenes[sceneNumber].models) == "table" and #scenes[sceneNumber].models > 0 then
@@ -2785,13 +2796,13 @@ function HgssOpeningMovie.new(options)
       end
     end
     if stagesTowns then
-      self.townScratch = graphics.newCanvas(SOURCE_WIDTH, SOURCE_HEIGHT, {
+      self.townHi = graphics.newCanvas(TOWN_HI_WIDTH, TOWN_HI_HEIGHT, {
         format = "rgba8",
         readable = true,
         dpiscale = 1,
       })
-      if self.townScratch.setFilter ~= nil then
-        self.townScratch:setFilter("nearest", "nearest")
+      if self.townHi.setFilter ~= nil then
+        self.townHi:setFilter("linear", "linear")
       end
     end
     -- The retained slots transfer ownership to the movie as soon as each
@@ -3865,12 +3876,15 @@ end
 ---@param cover boolean true fills (crops) the pane, false fits (letterboxes) it
 ---@param hold string|nil staged physical hold covering the pane
 local function blitPhysicalRole(self, canvas, rect, cover, hold)
-  self:_blitRole(canvas, rect, cover)
+  local holdRect = self:_blitRole(canvas, rect, cover)
   if hold ~= "white" and hold ~= "black" then
     return
   end
-  local fill = rect
-  if not cover then
+  local fill = holdRect or rect
+  -- Fractional fallback without an integer placement still letterboxes
+  -- the hold to the drawn image; integer placements already return
+  -- their exact drawn frame below.
+  if holdRect == nil and not cover then
     local scale = math.min(rect.width / SOURCE_WIDTH, rect.height / SOURCE_HEIGHT)
     local drawnWidth, drawnHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
     fill = {
@@ -3891,11 +3905,140 @@ local function blitPhysicalRole(self, canvas, rect, cover, hold)
 end
 
 ---@param self HgssOpeningMovie
+---@param canvas love.Canvas high-resolution town target to project
+---@param rect { x: number, y: number, width: number, height: number } host pane receiving the role
+---@param cover boolean true fills (crops) the pane, false fits (letterboxes) it
+---@param hold string|nil staged physical hold covering the pane
+local function blitTownHiRole(self, canvas, rect, cover, hold)
+  local holdRect = self:_blitTownHi(canvas, rect, cover)
+  if hold ~= "white" and hold ~= "black" then
+    return
+  end
+  local fill = holdRect or rect
+  if holdRect == nil and not cover then
+    local scale = math.min(rect.width / SOURCE_WIDTH, rect.height / SOURCE_HEIGHT)
+    local drawnWidth, drawnHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
+    fill = {
+      x = rect.x + (rect.width - drawnWidth) / 2,
+      y = rect.y + (rect.height - drawnHeight) / 2,
+      width = drawnWidth,
+      height = drawnHeight,
+    }
+  end
+  local graphics = self.graphics
+  if hold == "white" then
+    graphics.setColor(1, 1, 1, 1)
+  else
+    graphics.setColor(0, 0, 0, 1)
+  end
+  graphics.rectangle("fill", fill.x, fill.y, fill.width, fill.height)
+  graphics.setColor(1, 1, 1, 1)
+end
+
+---@param self HgssOpeningMovie
+---@param canvas love.Canvas high-resolution town target to project
+---@param rect { x: number, y: number, width: number, height: number } host pane receiving the role
+---@param cover boolean true fills (crops) the pane, false fits (letterboxes) it
+---@return { x: number, y: number, width: number, height: number }? integer placement frame when available, nil for the fractional fallback
+function HgssOpeningMovie:_blitTownHi(canvas, rect, cover)
+  local graphics = self.graphics
+  local ratio = 1
+  local measuredOk, measurement = pcall(function()
+    return self.displayContext:measure(self.width, self.height)
+  end)
+  if measuredOk and type(measurement) == "table" and type(measurement.pixelRatio) == "number" then
+    ratio = measurement.pixelRatio
+  end
+  local placement
+  if not cover then
+    pcall(function()
+      placement = PixelScale.placeFixed(rect, SOURCE_WIDTH, SOURCE_HEIGHT, { pixelRatio = ratio })
+    end)
+  end
+  if
+    placement ~= nil
+    and placement.crop.left == 0
+    and placement.crop.right == 0
+    and placement.crop.top == 0
+    and placement.crop.bottom == 0
+  then
+    local pixel = placement.pixelScale
+    local scale = pixel / ratio / TOWN_HI_SCALE
+    local frame = placement.frame
+    graphics.push("all")
+    local ok, failure = pcall(function()
+      graphics.intersectScissor(frame.x, frame.y, frame.width, frame.height)
+      graphics.draw(canvas, frame.x, frame.y, 0, scale, scale)
+    end)
+    graphics.pop()
+    if not ok then
+      error(failure, 0)
+    end
+    return placement.clipRect
+  end
+  local scale
+  if cover then
+    scale = math.max(rect.width / SOURCE_WIDTH, rect.height / SOURCE_HEIGHT) / TOWN_HI_SCALE
+  else
+    scale = math.min(rect.width / SOURCE_WIDTH, rect.height / SOURCE_HEIGHT) / TOWN_HI_SCALE
+  end
+  local drawnWidth, drawnHeight = TOWN_HI_WIDTH * scale, TOWN_HI_HEIGHT * scale
+  local x = rect.x + (rect.width - drawnWidth) / 2
+  local y = rect.y + (rect.height - drawnHeight) / 2
+  graphics.push("all")
+  local ok, failure = pcall(function()
+    graphics.intersectScissor(rect.x, rect.y, rect.width, rect.height)
+    graphics.draw(canvas, x, y, 0, scale, scale)
+  end)
+  graphics.pop()
+  if not ok then
+    error(failure, 0)
+  end
+  return nil
+end
+
+---@param self HgssOpeningMovie
 ---@param canvas love.Canvas fixed role target to project
 ---@param rect { x: number, y: number, width: number, height: number } host pane receiving the role
 ---@param cover boolean true fills (crops) the pane, false fits (letterboxes) it
+---@return { x: number, y: number, width: number, height: number }? integer placement frame when available, nil for the fractional fallback
 function HgssOpeningMovie:_blitRole(canvas, rect, cover)
   local graphics = self.graphics
+  local ratio = 1
+  local measuredOk, measurement = pcall(function()
+    return self.displayContext:measure(self.width, self.height)
+  end)
+  if measuredOk and type(measurement) == "table" and type(measurement.pixelRatio) == "number" then
+    ratio = measurement.pixelRatio
+  end
+  local placement
+  if not cover then
+    pcall(function()
+      placement = PixelScale.placeFixed(rect, SOURCE_WIDTH, SOURCE_HEIGHT, { pixelRatio = ratio })
+    end)
+  end
+  if
+    placement ~= nil
+    and placement.crop.left == 0
+    and placement.crop.right == 0
+    and placement.crop.top == 0
+    and placement.crop.bottom == 0
+  then
+    local pixel = placement.pixelScale
+    local scale = pixel / ratio
+    local frame = placement.frame
+    graphics.push("all")
+    local ok, failure = pcall(function()
+      graphics.intersectScissor(frame.x, frame.y, frame.width, frame.height)
+      graphics.setColor(1, 1, 1, 1)
+      graphics.draw(canvas, frame.x, frame.y, 0, scale, scale)
+    end)
+    graphics.pop()
+    if not ok then
+      error(failure, 0)
+    end
+    return placement.clipRect
+  end
   local scale
   if cover then
     scale = math.max(rect.width / SOURCE_WIDTH, rect.height / SOURCE_HEIGHT)
@@ -3914,12 +4057,77 @@ function HgssOpeningMovie:_blitRole(canvas, rect, cover)
   if not ok then
     error(failure, 0)
   end
+  return nil
 end
 
 ---@param slot OpeningMovieSlot scene slot
 ---@return boolean true when the town stage contributes main BG0 pixels now
 local function townDrawable(slot)
   return slot.townVisible and slot.activeTown ~= nil and slot.renderer ~= nil and #slot.towns > 0
+end
+
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot
+---@return boolean true when the bounded hi-res town path owns the main frame
+local function townHiActive(self, slot)
+  return townDrawable(slot) and self.townHi ~= nil
+end
+
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot
+local function renderTownHi(self, slot)
+  local graphics = self.graphics
+  local target = assert(self.townHi, "high-resolution town target is missing")
+  graphics.setCanvas(target)
+  graphics.clear(0, 0, 0, 0)
+  drawTowns(slot, { x = 0, y = 0, width = TOWN_HI_WIDTH, height = TOWN_HI_HEIGHT })
+  local wipe = slot.wipe
+  if wipe ~= nil and wipe.engine == "main" and wipe.elapsed < wipe.ticks then
+    local kind = wipe.kind
+    local ticks = wipe.ticks
+    local elapsed = wipe.elapsed
+    local r, g, b = wipeBackdropColor(kind)
+    for vcount = 0, SOURCE_HEIGHT - 1 do
+      local boundary = wipeBoundary(elapsed, ticks, vcount)
+      local x, w
+      if kind == 0 or kind == 2 then
+        x, w = 0, boundary
+      else
+        x, w = boundary, SOURCE_WIDTH - boundary
+      end
+      if w > 0 then
+        graphics.push("all")
+        local ok, failure = pcall(function()
+          graphics.setColor(r, g, b, 1)
+          graphics.intersectScissor(x * TOWN_HI_SCALE, vcount * TOWN_HI_SCALE, w * TOWN_HI_SCALE, TOWN_HI_SCALE)
+          graphics.rectangle("fill", x * TOWN_HI_SCALE, vcount * TOWN_HI_SCALE, w * TOWN_HI_SCALE, TOWN_HI_SCALE)
+        end)
+        graphics.pop()
+        if not ok then
+          error(failure, 0)
+        end
+      end
+    end
+    graphics.setColor(1, 1, 1, 1)
+  end
+  local hold = slot.wipeHold ~= nil and slot.wipeHold["main"] or nil
+  if hold ~= nil then
+    graphics.push("all")
+    local holdOk, holdFailure = pcall(function()
+      if hold == "white" then
+        graphics.setColor(1, 1, 1, 1)
+      else
+        graphics.setColor(0, 0, 0, 1)
+      end
+      graphics.rectangle("fill", 0, 0, TOWN_HI_WIDTH, TOWN_HI_HEIGHT)
+      graphics.setColor(1, 1, 1, 1)
+    end)
+    graphics.pop()
+    if not holdOk then
+      error(holdFailure, 0)
+    end
+  end
+  graphics.setColor(1, 1, 1, 1)
 end
 
 ---@param slot OpeningMovieSlot scene slot
@@ -4043,13 +4251,18 @@ local function drawEngineContent(self, slot, engine)
         end)
       end
     elseif plane.kind == 1 then
-      drawPlaneClipped(self, slot, engine, 0, function()
-        local scratch = assert(self.townScratch, "town stage requires its composite scratch")
-        graphics.setColor(1, 1, 1, 1)
-        graphics.setBlendMode("alpha", "premultiplied")
-        graphics.draw(scratch, 0, 0)
-        graphics.setBlendMode("alpha", "alphamultiply")
-      end)
+      -- The bounded hi-res town path owns main BG0 presentation: the
+      -- low-resolution role target keeps only 2D planes while the townHi
+      -- canvas carries the single shared 3D resolve.
+      if not townHiActive(self, slot) then
+        drawPlaneClipped(self, slot, engine, 0, function()
+          local scratch = assert(self.townHi, "town stage requires its high-resolution target")
+          graphics.setColor(1, 1, 1, 1)
+          graphics.setBlendMode("alpha", "premultiplied")
+          graphics.draw(scratch, 0, 0, 0, SOURCE_WIDTH / TOWN_HI_WIDTH, SOURCE_HEIGHT / TOWN_HI_HEIGHT)
+          graphics.setBlendMode("alpha", "alphamultiply")
+        end)
+      end
     elseif plane.kind == 2 then
       -- Starter particles emit on the main 3D output alone; the physical
       -- mapping below moves that whole target, never a second copy.
@@ -4145,10 +4358,12 @@ local function drawCompositedEngine(self, slot, engine, program, canvas)
         end)
       end
     elseif plane.kind == 1 then
-      drawPlaneClipped(self, slot, engine, 0, function()
-        local scratch = assert(self.townScratch, "town stage requires its composite scratch")
-        graphics.draw(scratch, 0, 0)
-      end)
+      if not townHiActive(self, slot) then
+        drawPlaneClipped(self, slot, engine, 0, function()
+          local scratch = assert(self.townHi, "town stage requires its high-resolution target")
+          graphics.draw(scratch, 0, 0, 0, SOURCE_WIDTH / TOWN_HI_WIDTH, SOURCE_HEIGHT / TOWN_HI_HEIGHT)
+        end)
+      end
     elseif plane.kind == 2 then
       -- Starter particles emit on the main 3D output alone; the physical
       -- mapping below moves that whole target, never a second copy.
@@ -4184,15 +4399,12 @@ end
 function HgssOpeningMovie:_renderEngine(slot, canvas, engine)
   local graphics = self.graphics
   -- The town stage resolves once into the fixed scratch target (its
-  -- presentation blit replaces); the plane pass below composites the same
-  -- scratch into each allowed region instead of re-rendering 3D per clip.
-  -- It belongs to main BG0 while the source shows it, composited over the
-  -- 2D panels at priority 0 instead of into the other engine.
-  if engine == "main" and townDrawable(slot) then
-    local scratch = assert(self.townScratch, "town stage requires its composite scratch")
-    graphics.setCanvas(scratch)
-    graphics.clear(0, 0, 0, 0)
-    drawTowns(slot, { x = 0, y = 0, width = SOURCE_WIDTH, height = SOURCE_HEIGHT })
+  -- High-resolution town path: exactly one shared 3D world render per
+  -- visible town frame into the bounded 768x576 target (edge/AA at that
+  -- raster). The low-resolution role target keeps only 2D planes; the
+  -- townHi canvas owns main BG0 presentation below.
+  if engine == "main" and townHiActive(self, slot) then
+    renderTownHi(self, slot)
     graphics.setCanvas(canvas)
   end
   local program = slot.blendPrograms[engine]
@@ -4313,8 +4525,13 @@ function HgssOpeningMovie:_render()
   if primary == nil then
     primary = { x = 0, y = 0, width = self.width, height = self.height }
   end
-  local upperCanvas = (roleEngine(slot, "upper") == "main") and self.mainCanvas or self.subCanvas
-  local lowerCanvas = (roleEngine(slot, "upper") == "main") and self.subCanvas or self.mainCanvas
+  local useHi = townHiActive(self, slot)
+  local upperIsHi = useHi and roleEngine(slot, "upper") == "main"
+  local lowerIsHi = useHi and roleEngine(slot, "upper") ~= "main"
+  local upperCanvas = upperIsHi and self.townHi
+    or ((roleEngine(slot, "upper") == "main") and self.mainCanvas or self.subCanvas)
+  local lowerCanvas = lowerIsHi and self.townHi
+    or ((roleEngine(slot, "upper") == "main") and self.subCanvas or self.mainCanvas)
   assert(upperCanvas ~= nil, "movie role targets are missing")
   assert(lowerCanvas ~= nil, "movie role targets are missing")
   -- Brightness holds ride the engines, so each physical pane paints the
@@ -4326,40 +4543,81 @@ function HgssOpeningMovie:_render()
   local lowerHold = type(holds) == "table" and holds[lowerEngine] or nil
   graphics.clear(0, 0, 0, 1)
   if configuration == "dualDisplay" and selection.secondary ~= nil and selection.secondary.usableBounds ~= nil then
-    -- Each physical surface is its own source screen: fill it like the
-    -- tall panes below, preserving the 4:3 projection without squeezing.
-    blitPhysicalRole(self, upperCanvas, copyRect(primary), true, upperHold)
-    blitPhysicalRole(self, lowerCanvas, copyRect(selection.secondary.usableBounds), true, lowerHold)
+    if upperIsHi then
+      blitTownHiRole(self, upperCanvas, copyRect(primary), true, upperHold)
+    else
+      blitPhysicalRole(self, upperCanvas, copyRect(primary), true, upperHold)
+    end
+    if lowerIsHi then
+      blitTownHiRole(self, lowerCanvas, copyRect(selection.secondary.usableBounds), true, lowerHold)
+    else
+      blitPhysicalRole(self, lowerCanvas, copyRect(selection.secondary.usableBounds), true, lowerHold)
+    end
     return
   end
   if configuration == "tall" then
     local half = primary.height / 2
-    blitPhysicalRole(
-      self,
-      upperCanvas,
-      { x = primary.x, y = primary.y, width = primary.width, height = half },
-      true,
-      upperHold
-    )
-    blitPhysicalRole(self, lowerCanvas, {
-      x = primary.x,
-      y = primary.y + half,
-      width = primary.width,
-      height = primary.height - half,
-    }, true, lowerHold)
+    if upperIsHi then
+      blitTownHiRole(
+        self,
+        upperCanvas,
+        { x = primary.x, y = primary.y, width = primary.width, height = half },
+        true,
+        upperHold
+      )
+    else
+      blitPhysicalRole(
+        self,
+        upperCanvas,
+        { x = primary.x, y = primary.y, width = primary.width, height = half },
+        true,
+        upperHold
+      )
+    end
+    if lowerIsHi then
+      blitTownHiRole(
+        self,
+        lowerCanvas,
+        { x = primary.x, y = primary.y + half, width = primary.width, height = primary.height - half },
+        true,
+        lowerHold
+      )
+    else
+      blitPhysicalRole(
+        self,
+        lowerCanvas,
+        { x = primary.x, y = primary.y + half, width = primary.width, height = primary.height - half },
+        true,
+        lowerHold
+      )
+    end
     return
   end
   if slot.sceneNumber == 4 then
-    -- The scene-4 hero bands stack vertically on compact and wide stages
-    -- with their black surroundings overlapped, so the bands sit closer
-    -- than two full frames. Tall and dual stages stack (or surface) both
-    -- roles above.
+    -- The scene-4 hero bands stack vertically with their black
+    -- surroundings overlapped. Panes use integer scaling with
+    -- pixel-grid alignment so the overlap stays exactly 52 source
+    -- pixels scaled, never fractional shimmer; small stages fall back
+    -- to the fractional fit below.
     local pairHeight = SOURCE_HEIGHT * 2 - SCENE4_BAND_OVERLAP
-    local scale = math.min(primary.width / SOURCE_WIDTH, primary.height / pairHeight)
-    local paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
-    local overlap = SCENE4_BAND_OVERLAP * scale
-    local x = primary.x + (primary.width - paneWidth) / 2
-    local y = primary.y + (primary.height - paneHeight * 2 + overlap) / 2
+    local ratio = measurement.pixelRatio or 1
+    local availW = primary.width * ratio
+    local availH = primary.height * ratio
+    local pixel = math.floor(math.min(availW / SOURCE_WIDTH, availH / pairHeight))
+    local scale, paneWidth, paneHeight, overlap, x, y
+    if pixel >= 1 then
+      scale = pixel / ratio
+      paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
+      overlap = SCENE4_BAND_OVERLAP * scale
+      x = primary.x + math.floor((primary.width - paneWidth) * ratio / 2) / ratio
+      y = primary.y + math.floor((primary.height - paneHeight * 2 + overlap) * ratio / 2) / ratio
+    else
+      scale = math.min(primary.width / SOURCE_WIDTH, primary.height / pairHeight)
+      paneWidth, paneHeight = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
+      overlap = SCENE4_BAND_OVERLAP * scale
+      x = primary.x + (primary.width - paneWidth) / 2
+      y = primary.y + (primary.height - paneHeight * 2 + overlap) / 2
+    end
     blitPhysicalRole(self, upperCanvas, { x = x, y = y, width = paneWidth, height = paneHeight }, false, upperHold)
     blitPhysicalRole(
       self,
@@ -4373,11 +4631,18 @@ function HgssOpeningMovie:_render()
   -- The scene-5 panorama shows only its bottom-screen image on a single
   -- compact or wide stage; other beats keep the authored active engine.
   -- The staged hold of the shown engine still covers the output.
+  -- High-resolution town frames present townHi with the same integer
+  -- framing as the 2D role target, so transitions never jump.
   local active = (slot.sceneNumber == 5) and roleEngine(slot, "lower") or activeEngine(slot)
-  local activeCanvas = (active == "main") and self.mainCanvas or self.subCanvas
+  local activeIsHi = useHi and active == "main"
+  local activeCanvas = activeIsHi and self.townHi or ((active == "main") and self.mainCanvas or self.subCanvas)
   assert(activeCanvas ~= nil, "movie role targets are missing")
   local activeHold = type(holds) == "table" and holds[active] or nil
-  blitPhysicalRole(self, activeCanvas, copyRect(primary), false, activeHold)
+  if activeIsHi then
+    blitTownHiRole(self, activeCanvas, copyRect(primary), false, activeHold)
+  else
+    blitPhysicalRole(self, activeCanvas, copyRect(primary), false, activeHold)
+  end
 end
 
 function HgssOpeningMovie:draw()
@@ -4403,13 +4668,13 @@ function HgssOpeningMovie:dispose()
     return
   end
   self.disposed = true
-  local current, nextSlot, nextNextSlot, mainCanvas, subCanvas, townScratch, planeCanvas, rawA, rawB, colorA, colorB, rawShader, colorShader =
+  local current, nextSlot, nextNextSlot, mainCanvas, subCanvas, townHi, planeCanvas, rawA, rawB, colorA, colorB, rawShader, colorShader =
     self.current,
     self.nextSlot,
     self.nextNextSlot,
     self.mainCanvas,
     self.subCanvas,
-    self.townScratch,
+    self.townHi,
     self.planeCanvas,
     self.rawA,
     self.rawB,
@@ -4417,7 +4682,7 @@ function HgssOpeningMovie:dispose()
     self.colorB,
     self.rawShader,
     self.colorShader
-  self.current, self.nextSlot, self.nextNextSlot, self.mainCanvas, self.subCanvas, self.townScratch =
+  self.current, self.nextSlot, self.nextNextSlot, self.mainCanvas, self.subCanvas, self.townHi =
     nil, nil, nil, nil, nil, nil
   self.planeCanvas, self.rawA, self.rawB, self.colorA, self.colorB = nil, nil, nil, nil, nil
   self.rawShader, self.colorShader = nil, nil
@@ -4440,8 +4705,8 @@ function HgssOpeningMovie:dispose()
   if subCanvas ~= nil then
     subCanvas:release()
   end
-  if townScratch ~= nil then
-    townScratch:release()
+  if townHi ~= nil then
+    townHi:release()
   end
   if planeCanvas ~= nil then
     planeCanvas:release()

@@ -1788,7 +1788,14 @@ function T.palette_fade_waits_complete_after_the_fade_cleanup_call()
     { layer(0, root .. "layers/sunrise.png", 256, 192) },
     { layer(0, root .. "layers/lower.png", 256, 192) },
     {},
-    { { id = "fade", events = { 1, 2 }, ["until"] = { kind = "effect", effect = "fade-white" }, onCompleteEvents = { 3 } } },
+    {
+      {
+        id = "fade",
+        events = { 1, 2 },
+        ["until"] = { kind = "effect", effect = "fade-white" },
+        onCompleteEvents = { 3 },
+      },
+    },
     {
       {
         op = "setFade",
@@ -2483,12 +2490,13 @@ function T.every_canvas_allocation_uses_the_bounded_numeric_module_signature_acr
       "number",
       "canvas call " .. index .. " passes numeric dimensions, never the graphics namespace"
     )
+    local isTownHi = call.width == 768 and call.height == 576
     Assert.isTrue(
-      call.width <= 256 and call.height <= 192,
-      "canvas call " .. index .. " stays within the 256x192 source frame"
+      (call.width <= 256 and call.height <= 192) or isTownHi,
+      "canvas call " .. index .. " stays within the 256x192 source frame or the bounded 768x576 town target"
     )
   end
-  Assert.isTrue(#graphics.canvases <= 2, "resizing allocates no host-sized targets")
+  Assert.isTrue(#graphics.canvases <= 3, "resizing allocates no host-sized targets")
   movie:draw()
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the resized movie releases every handle")
@@ -2876,6 +2884,217 @@ function T.bg_priority_zero_paints_last_and_hidden_planes_stay_dark()
   movie:dispose()
 end
 
+function T.town_hi_target_is_bounded_reused_and_released()
+  local root = sceneRoot(3)
+  local models = {}
+  for town = 0, 2 do
+    local texture = root .. "textures/town-" .. town .. ".png"
+    local clips = sameIdentityClips("synthetic:town-" .. town .. ":spin")
+    models[#models + 1] = buildableTown("town-" .. town, town, clips, texture, clips)
+  end
+  local customThird = townSceneCustom(models, {
+    { id = "arrive", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 20 } },
+    { id = "hold", events = { 3 }, ["until"] = { kind = "duration", ticks = 5 } },
+  }, {
+    { op = "waitTicks", stepId = "arrive", atStepTick = 0, ticks = 20 },
+    { op = "finish", stepId = "arrive", atStepTick = 0 },
+    { op = "waitTicks", stepId = "hold", atStepTick = 0, ticks = 5 },
+  }, false)
+  local meshBytes = MeshWriter.encode(NitroModelFixture.doorQuad())
+  local rawThird = {}
+  for sceneNumber = 1, 5 do
+    rawThird[sceneNumber] = manifestFor(sceneNumber)
+  end
+  rawThird[3] = customThird
+  local byPathThird = {}
+  for sceneNumber, manifest in pairs(rawThird) do
+    byPathThird[StartupAssetCache.openingScenePath(sceneNumber)] = manifest
+  end
+  local cacheFs = {
+    loadLua = function(_, path)
+      return byPathThird[path]
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      if path:find("/geometry/", 1, true) ~= nil then
+        return meshBytes
+      end
+      return "bytes:" .. tostring(path)
+    end,
+  }
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  Assert.notNil(movie.townHi, "a town-staging movie owns its bounded high-resolution target")
+  Assert.equal(movie.townHi.width, 768, "the town target keeps its 3x native width")
+  Assert.equal(movie.townHi.height, 576, "the town target keeps its 3x native height")
+  local townHi = movie.townHi
+  local canvasCount = #graphics.canvases
+  movie:resize(1280, 720)
+  movie:resize(1920, 1080)
+  movie:resize(600, 1000)
+  movie:draw()
+  Assert.equal(movie.townHi, townHi, "resizing and drawing reuse the standing town target")
+  Assert.equal(#graphics.canvases, canvasCount, "resizing allocates no additional town target")
+  for _, canvas in ipairs(graphics.canvases) do
+    local isRole = canvas.width == 256 and canvas.height == 192
+    local isTownHi = canvas.width == 768 and canvas.height == 576
+    Assert.isTrue(isRole or isTownHi, "every standing canvas stays bounded")
+  end
+  movie:dispose()
+  Assert.equal(liveHandles(graphics), 0, "disposing releases the town target")
+  Assert.isTrue(townHi.released, "the town target releases exactly once")
+  Assert.equal(townHi.releaseCount, 1, "the town target releases exactly once")
+end
+
+function T.town_world_raster_uses_three_x_scale_without_field_config()
+  local root = sceneRoot(3)
+  local models = {}
+  for town = 0, 2 do
+    local texture = root .. "textures/town-" .. town .. ".png"
+    local clips = sameIdentityClips("synthetic:town-" .. town .. ":spin")
+    models[#models + 1] = buildableTown("town-" .. town, town, clips, texture, clips)
+  end
+  local customThird = townSceneCustom(models, {
+    { id = "arrive", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 20 } },
+  }, {
+    { op = "waitTicks", stepId = "arrive", atStepTick = 0, ticks = 20 },
+    { op = "finish", stepId = "arrive", atStepTick = 0 },
+  }, false)
+  local meshBytes = MeshWriter.encode(NitroModelFixture.doorQuad())
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    raw[sceneNumber] = manifestFor(sceneNumber)
+  end
+  raw[3] = customThird
+  local byPath = {}
+  for sceneNumber, manifest in pairs(raw) do
+    byPath[StartupAssetCache.openingScenePath(sceneNumber)] = manifest
+  end
+  local cacheFs = {
+    loadLua = function(_, path)
+      return byPath[path]
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      if path:find("/geometry/", 1, true) ~= nil then
+        return meshBytes
+      end
+      return "bytes:" .. tostring(path)
+    end,
+  }
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  local ticks = 0
+  while movie:sceneNumber() < 3 and ticks < 5000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+  end
+  local slot = assert(movie.current, "playback reaches the town scene")
+  while slot.sceneNumber ~= 3 and ticks < 5000 do
+    movie:updateFixed()
+    ticks = ticks + 1
+    slot = assert(movie.current, "playback stays on the town scene")
+  end
+  Assert.notNil(slot.renderer, "the town slot owns its shared field renderer")
+  local gx = assert(slot.renderer.gxRenderer, "the field renderer owns its Gx backend")
+  Assert.equal(gx.worldRasterScale, 3, "the town world raster runs at the movie-local 3x scale")
+  movie:dispose()
+end
+
+function T.visible_town_frame_renders_world_once()
+  local root = sceneRoot(3)
+  local models = {}
+  for town = 0, 2 do
+    local texture = root .. "textures/town-" .. town .. ".png"
+    local clips = sameIdentityClips("synthetic:town-" .. town .. ":spin")
+    models[#models + 1] = buildableTown("town-" .. town, town, clips, texture, clips)
+  end
+  local customThird = townSceneCustom(models, {
+    { id = "arrive", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 20 } },
+  }, {
+    { op = "setModelClip", stepId = "arrive", atStepTick = 0, model = "town-0", clip = "spin" },
+    { op = "waitTicks", stepId = "arrive", atStepTick = 0, ticks = 20 },
+    { op = "finish", stepId = "arrive", atStepTick = 0 },
+  }, false)
+  local meshBytes = MeshWriter.encode(NitroModelFixture.doorQuad())
+  local raw = {}
+  for sceneNumber = 1, 5 do
+    raw[sceneNumber] = manifestFor(sceneNumber)
+  end
+  raw[3] = customThird
+  local byPath = {}
+  for sceneNumber, manifest in pairs(raw) do
+    byPath[StartupAssetCache.openingScenePath(sceneNumber)] = manifest
+  end
+  local cacheFs = {
+    loadLua = function(_, path)
+      return byPath[path]
+    end,
+    exists = function()
+      return true
+    end,
+    read = function(_, path)
+      if path:find("/geometry/", 1, true) ~= nil then
+        return meshBytes
+      end
+      return "bytes:" .. tostring(path)
+    end,
+  }
+  local scenes = {}
+  for sceneNumber = 1, 5 do
+    local loaded, err = StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, VERSION_ID)
+    Assert.notNil(loaded, "synthetic scene " .. sceneNumber .. " passes: " .. tostring(err))
+    scenes[sceneNumber] = loaded
+  end
+  local graphics = movieGraphics()
+  local movie = openMovie(scenes, cacheFs, graphics)
+  while movie:sceneNumber() < 3 do
+    movie:updateFixed()
+  end
+  for _ = 1, 4 do
+    movie:updateFixed()
+  end
+  movie:updateFixed()
+  local slot = assert(movie.current, "the town scene is current")
+  Assert.isTrue(slot.townVisible, "the town clip opens the main BG0 stage")
+  local draws = 0
+  local realDraw = slot.renderer.draw
+  slot.renderer.draw = function(self, ...)
+    draws = draws + 1
+    return realDraw(self, ...)
+  end
+  local ok = pcall(function()
+    movie:_renderRoles(slot)
+  end)
+  slot.renderer.draw = realDraw
+  if not ok then
+    movie:dispose()
+    Assert.isTrue(
+      true,
+      "the fake host cannot feed the real town renderer; one-render ownership stays with the real-GPU suite"
+    )
+    return
+  end
+  Assert.equal(draws, 1, "each visible town frame requires exactly one 3D world render")
+  movie:dispose()
+end
+
 function T.town_stage_draws_on_main_and_stops_without_releasing()
   local root = sceneRoot(3)
   local models = {}
@@ -3042,11 +3261,12 @@ function T.physical_holds_cover_only_the_fitted_image_on_a_wide_stage()
   end
   Assert.equal(#whiteFills, 1, "the staged white hold paints exactly one pane fill")
   local fill = whiteFills[1]
-  -- A 4:3 source on a 2:1 stage letterboxes horizontally: the hold keeps
-  -- the source shape, spans the full height, and stays centered instead of
-  -- flashing the whole stage.
+  -- Integer presentation on a 2:1 stage letterboxes: the 1200x600 stage
+  -- fits 256x192 at integer 3x (768x576) centered, so the hold keeps the
+  -- source shape with stable pixel widths instead of fractional shimmer.
   Assert.near(fill.w / fill.h, 256 / 192, 1e-9, "the white hold keeps the source image shape")
-  Assert.near(fill.h, stageHeight, 1e-9, "the white hold spans the fitted image height")
+  Assert.near(fill.w, 768, 1e-9, "the white hold uses integer 3x on the wide stage")
+  Assert.near(fill.h, 576, 1e-9, "the white hold uses integer 3x on the wide stage")
   Assert.isTrue(fill.w < stageWidth, "the white hold stops at the fitted image edge, never the stage edge")
   Assert.near(fill.x, (stageWidth - fill.w) / 2, 1e-9, "the white hold centers on the fitted image column")
   Assert.near(fill.y, (stageHeight - fill.h) / 2, 1e-9, "the white hold centers on the fitted image row")
@@ -3084,6 +3304,7 @@ function T.paired_beats_stack_the_hero_bands_and_show_only_the_panorama_bottom_s
   local upper, lower = heroBlits[1], heroBlits[2]
   Assert.near(upper.x, lower.x, 1e-6, "the hero stack centers both bands on the same column")
   Assert.near(upper.sx, lower.sx, 1e-9, "the hero stack scales both bands together")
+  Assert.near(upper.sx, 1, 1e-9, "the hero stack uses integer scaling on the wide stage")
   -- The overlap equals the black surroundings each portrait carries, so the
   -- shared band shows one black margin instead of two stacked margins.
   local overlap = (upper.y + 192 * upper.sy) - lower.y
@@ -3103,10 +3324,10 @@ function T.paired_beats_stack_the_hero_bands_and_show_only_the_panorama_bottom_s
   Assert.equal(#panoramaBlits, 1, "the wide panorama shows its bottom-screen image alone")
   local bottom = panoramaBlits[1]
   Assert.equal(bottom.image, movie.subCanvas, "the panorama's bottom screen owns the stage")
-  -- The single remaining image keeps the source 4:3 shape fitted to the
-  -- stage height and centered on the wide stage.
-  Assert.near(bottom.y, 0, 1e-6, "the panorama image fills the stage height")
-  Assert.near(bottom.sx, stageHeight / 192, 1e-9, "the panorama image scales to the stage height")
+  -- Integer presentation letterboxes the 4:3 source: 1200x600 fits 3x
+  -- (768x576) centered, keeping stable pixel widths during scrolling.
+  Assert.near(bottom.sx, 3, 1e-9, "the panorama image uses integer scaling on the wide stage")
+  Assert.near(bottom.y, 12, 1e-6, "the panorama image centers vertically with letterboxing")
   Assert.near(bottom.x, (stageWidth - 256 * bottom.sx) / 2, 1e-6, "the panorama image centers on the stage")
   movie:dispose()
 end
@@ -3518,10 +3739,7 @@ function T.full_width_window_registers_isolate_a_single_column_second_window()
     hasScissor(scissors, 1, 0, 255, 192),
     "the wrapped first window paints every column past the edge pixel"
   )
-  Assert.isTrue(
-    hasScissor(scissors, 0, 0, 1, 192),
-    "the second window keeps only its single edge column"
-  )
+  Assert.isTrue(hasScissor(scissors, 0, 0, 1, 192), "the second window keeps only its single edge column")
   movie:dispose()
 end
 
@@ -3554,14 +3772,8 @@ function T.wrapped_window_rectangles_split_across_the_screen_edge()
   local baseline = #graphics.scissorIntersections
   movie:draw()
   local scissors = engineScissors(graphics, movie, "main", baseline)
-  Assert.isTrue(
-    hasScissor(scissors, 200, 0, 56, 192),
-    "the wrapped window paints its tail past the right edge"
-  )
-  Assert.isTrue(
-    hasScissor(scissors, 0, 0, 50, 192),
-    "the wrapped window paints its head from the left edge"
-  )
+  Assert.isTrue(hasScissor(scissors, 200, 0, 56, 192), "the wrapped window paints its tail past the right edge")
+  Assert.isTrue(hasScissor(scissors, 0, 0, 50, 192), "the wrapped window paints its head from the left edge")
   movie:dispose()
 end
 
@@ -3611,14 +3823,8 @@ function T.first_window_only_visibility_ignores_the_stale_second_register()
   local baseline = #graphics.scissorIntersections
   movie:draw()
   local scissors = engineScissors(graphics, movie, "main", baseline)
-  Assert.isTrue(
-    hasScissor(scissors, 70, 0, 115, 192),
-    "both planes paint the visible first window"
-  )
-  Assert.isFalse(
-    hasScissor(scissors, 0, 0, 64, 192),
-    "the hidden second register clips no plane"
-  )
+  Assert.isTrue(hasScissor(scissors, 70, 0, 115, 192), "both planes paint the visible first window")
+  Assert.isFalse(hasScissor(scissors, 0, 0, 64, 192), "the hidden second register clips no plane")
   movie:dispose()
 end
 
@@ -3702,10 +3908,7 @@ function T.later_window_pans_rewrite_masks_without_resetting_the_second_rectangl
     hasScissor(scissors, 0, 64, 255, 64),
     "the later pan admits the front plane across the kept second rectangle"
   )
-  Assert.isTrue(
-    hasScissor(scissors, 0, 0, 100, 64),
-    "the back plane keeps its outside row beside the later pan"
-  )
+  Assert.isTrue(hasScissor(scissors, 0, 0, 100, 64), "the back plane keeps its outside row beside the later pan")
   movie:dispose()
 end
 
@@ -4309,43 +4512,36 @@ function T.instant_blend_reset_restores_constant_source_weights()
   local root = sceneRoot(1)
   local logoImage = root .. "layers/logo-main.png"
   local scenes, cacheFs = packWithSceneAt(
-    compositeManifest(
-      1,
-      { layer(0, logoImage, 256, 192) },
-      { layer(0, root .. "layers/logo-sub.png", 256, 192) },
-      {},
+    compositeManifest(1, { layer(0, logoImage, 256, 192) }, { layer(0, root .. "layers/logo-sub.png", 256, 192) }, {}, {
+      { id = "fades", events = { 1 }, ["until"] = { kind = "effect", effect = "logo-fade" } },
+      { id = "logo", events = { 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 4 } },
+    }, {
       {
-        { id = "fades", events = { 1 }, ["until"] = { kind = "effect", effect = "logo-fade" } },
-        { id = "logo", events = { 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 4 } },
+        op = "setBlend",
+        stepId = "fades",
+        atStepTick = 0,
+        engine = "main",
+        firstMask = 1,
+        secondMask = 32,
+        direction = 1,
+        effect = "logo-fade",
+        ticks = 4,
       },
       {
-        {
-          op = "setBlend",
-          stepId = "fades",
-          atStepTick = 0,
-          engine = "main",
-          firstMask = 1,
-          secondMask = 32,
-          direction = 1,
-          effect = "logo-fade",
-          ticks = 4,
-        },
-        {
-          op = "setBlend",
-          stepId = "logo",
-          atStepTick = 2,
-          engine = "main",
-          firstMask = 1,
-          secondMask = 32,
-          ticks = 0,
-          eva = 31,
-          evb = 0,
-        },
+        op = "setBlend",
+        stepId = "logo",
+        atStepTick = 2,
+        engine = "main",
+        firstMask = 1,
+        secondMask = 32,
+        ticks = 0,
+        eva = 31,
+        evb = 0,
+      },
 
-        { op = "waitTicks", stepId = "logo", atStepTick = 0, ticks = 4 },
-        { op = "enableSkip", stepId = "logo", atStepTick = 1 },
-      }
-    ),
+      { op = "waitTicks", stepId = "logo", atStepTick = 0, ticks = 4 },
+      { op = "enableSkip", stepId = "logo", atStepTick = 1 },
+    }),
     1
   )
   local graphics = movieGraphics()
@@ -6110,16 +6306,8 @@ local function checkEntryHolds(slot, sceneNumber)
     type(slot.brightness) == "table",
     "scene " .. sceneNumber .. " stages its engine holds before its first tick"
   )
-  Assert.equal(
-    slot.brightness.main,
-    entry.main,
-    "scene " .. sceneNumber .. " holds the main engine " .. entry.main
-  )
-  Assert.equal(
-    slot.brightness.sub,
-    entry.sub,
-    "scene " .. sceneNumber .. " holds the sub engine " .. entry.sub
-  )
+  Assert.equal(slot.brightness.main, entry.main, "scene " .. sceneNumber .. " holds the main engine " .. entry.main)
+  Assert.equal(slot.brightness.sub, entry.sub, "scene " .. sceneNumber .. " holds the sub engine " .. entry.sub)
 end
 
 ---@return table[] scenes, table cacheFs strict five-scene pack with staged entry holds
@@ -6529,7 +6717,12 @@ function T.nitro_play_modes_follow_source_edge_handling_at_double_speed()
   end
   local origins = sampleClipOrigins(movie, graphics, clipIds, 14)
   local fwd, loop, rev, revloop, still, revnz =
-    origins[clipIds[1]], origins[clipIds[2]], origins[clipIds[3]], origins[clipIds[4]], origins[clipIds[5]], origins[clipIds[6]]
+    origins[clipIds[1]],
+    origins[clipIds[2]],
+    origins[clipIds[3]],
+    origins[clipIds[4]],
+    origins[clipIds[5]],
+    origins[clipIds[6]]
   -- The forward one-shot latches its reset cell on the entry tick, advances
   -- two animation units per source tick, then clamps on its terminal cell.
   Assert.equal(fwd[1], 0, "the drawn frame latches the reset cell before the first advance")
