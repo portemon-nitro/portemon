@@ -354,6 +354,78 @@ local function cancelWarmTickets(envelope)
   end
 end
 
+-- Retires one speculative ticket interest through the shared owner:
+-- failed and thrown polls never consume their token, and an acquire
+-- failure may leave its token live or already retired, so the
+-- best-effort cancellation runs before the owner forgets the token and
+-- tolerates an already-consumed token as a safe no-op. A secondary
+-- cancellation failure never masks the original diagnostic.
+---@param envelope FieldBattlePresentation
+---@param token integer pool ticket behind the terminal failure
+local function cancelWarmTicketToken(envelope, token)
+  local pool = envelope._pool
+  if pool == nil or token == nil then
+    return
+  end
+  pcall(pool.cancel, pool, token)
+end
+
+-- Releases the pins of every incomplete scene group when the prediction
+-- changes: completeness snapshots before any removal, so deleting one
+-- key never demotes a complete group. The one complete predecessor and
+-- all scene-independent fixed pins stay resident; the successor group
+-- completes later and retires its predecessor then. A launch alias left
+-- in the launch ledger clears through the existing release behavior
+-- while the pin still owns the borrow, then the pin returns once, so
+-- one physical borrow never returns twice. Runs only while no launch
+-- owns the envelope.
+---@param envelope FieldBattlePresentation
+local function retireIncompleteWarmGroups(envelope)
+  if envelope._launchId ~= nil then
+    return
+  end
+  local doomed = {} ---@type table<string, boolean>
+  local seen = {} ---@type table<string, boolean>
+  for key in pairs(envelope._warmPinned) do
+    local scene = warmSceneOfKey(key)
+    if scene ~= nil and seen[scene] == nil then
+      seen[scene] = true
+      if not warmGroupComplete(envelope, scene) then
+        doomed[scene] = true
+      end
+    end
+  end
+  if next(doomed) == nil then
+    return
+  end
+  local condemned = {} ---@type string[]
+  for key in pairs(envelope._warmPinned) do
+    local scene = warmSceneOfKey(key)
+    if scene ~= nil and doomed[scene] == true then
+      condemned[#condemned + 1] = key
+    end
+  end
+  local pool = envelope._pool
+  local services = envelope._services
+  for _, key in ipairs(condemned) do
+    local record = envelope._warmPinned[key]
+    if record ~= nil then
+      if envelope._leases[key] ~= nil and services ~= nil and type(services.release) == "function" then
+        services.release(key)
+      end
+      if envelope._warmPinned[key] ~= nil then
+        envelope._warmPinned[key] = nil
+        if envelope._warmPaths ~= nil then
+          envelope._warmPaths[key] = nil
+        end
+        if pool ~= nil then
+          pcall(pool.release, pool, record.lease)
+        end
+      end
+    end
+  end
+end
+
 -- Enrolls one staged image decode on the shared owner without waiting:
 -- preparation overlaps worker work for art the pending build will draw,
 -- and the drawable takes over the ticket instead of enrolling again.
@@ -2363,11 +2435,43 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   end
   if self._warmDesired ~= sceneKey then
     cancelWarmTickets(self)
+    retireIncompleteWarmGroups(self)
     self._warmDesired = sceneKey
     self._warmFailed = {}
   end
   if self._warmFailed == nil then
     self._warmFailed = {}
+  end
+  -- A settled scene idles without touching derived hosts or staged
+  -- documents: the desired key, staged BG3 record, empty ticket ledger,
+  -- complete scene group, and every fixed pin with its recorded path
+  -- already prove readiness from inexpensive in-memory state.
+  if
+    self._warmDesired == sceneKey
+    and self._warmBg3Key == sceneKey
+    and type(self._warmBg3) == "table"
+    and #self._warmTickets == 0
+  then
+    local settledFast = warmGroupComplete(self, sceneKey)
+    if settledFast then
+      for _, groupKey in ipairs(warmSceneKeys(sceneKey)) do
+        if self._warmPinned[groupKey] == nil or self._warmPaths[groupKey] == nil then
+          settledFast = false
+          break
+        end
+      end
+    end
+    if settledFast then
+      for fixedKey in pairs(WARM_PINNED_KEYS) do
+        if self._warmPinned[fixedKey] == nil or self._warmPaths[fixedKey] == nil then
+          settledFast = false
+          break
+        end
+      end
+    end
+    if settledFast then
+      return false, nil
+    end
   end
   -- Semantic demand stays below the foreground: near compilation only,
   -- and a pending source waits without touching missing files.
@@ -2510,6 +2614,7 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
     elseif okPoll and status == "pending" then
       index = index + 1
     else
+      cancelWarmTicketToken(self, ticket.token)
       table.remove(self._warmTickets, index)
       local reason = okPoll and tostring(cause) or tostring(status)
       self._warmFailed[ticket.path] = reason
@@ -2524,17 +2629,24 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   -- pair behind the ticket counts as the single operation.
   local ticketKey, ticketPath, ticketToken = readyTicket.key, readyTicket.path, readyTicket.token
   local okAcquire, lease = pcall(pool.acquire, pool, ticketToken)
+  if not okAcquire or type(lease) ~= "table" or lease.image == nil then
+    cancelWarmTicketToken(self, ticketToken)
+    for position, ticket in ipairs(self._warmTickets) do
+      if ticket.token == ticketToken then
+        table.remove(self._warmTickets, position)
+        break
+      end
+    end
+    local reason = okAcquire and "empty image lease" or tostring(lease)
+    self._warmFailed[ticketPath] = reason
+    return false,
+      "battle warmup " .. sceneKey .. " image " .. ticketKey .. " upload failed: " .. ticketPath .. ": " .. reason
+  end
   for position, ticket in ipairs(self._warmTickets) do
     if ticket.token == ticketToken then
       table.remove(self._warmTickets, position)
       break
     end
-  end
-  if not okAcquire or type(lease) ~= "table" or lease.image == nil then
-    local reason = okAcquire and "empty image lease" or tostring(lease)
-    self._warmFailed[ticketPath] = reason
-    return false,
-      "battle warmup " .. sceneKey .. " image " .. ticketKey .. " upload failed: " .. ticketPath .. ": " .. reason
   end
   self._warmPinned[ticketKey] = { lease = lease, handle = lease }
   self._warmPaths[ticketKey] = ticketPath
