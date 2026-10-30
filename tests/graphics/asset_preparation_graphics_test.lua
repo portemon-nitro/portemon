@@ -11,6 +11,7 @@
 -- boundary.
 
 local Assert = require("tests.support.Assert")
+local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local CacheFs = require("libs.storage.src.CacheFs")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local PngWriter = require("tests.support.PngEncoder")
@@ -290,45 +291,84 @@ end
 -- derivative payload, and a second request for the same source reuses the
 -- privately stored derivative through the same worker cache: both payloads
 -- carry identical source and pixel hashes with no GPU object created by
--- preparation itself.
+-- preparation itself. Replacing the generated file at the same path through
+-- the staged publication lifecycle is visible to the next request on the
+-- same live worker: the follow-up payloads bind the replacement bytes, and
+-- repeating the replacement reuses its stored derivative.
 function T.image_derivative_prepares_through_the_real_worker_with_private_reuse()
   local AssetPreparationQueue = requireQueue()
   local cache = CacheFs.forVersion(VERSION_ID)
-  local png = PngWriter.encode(2, 2, string.char(255, 0, 0, 255):rep(4))
-  cache:write("assets/generated/textures/derivative.png", png)
-  local expectedSource = love.data.hash("sha256", png)
+  local logicalPath = "assets/generated/textures/derivative.png"
+  local pngA = PngWriter.encode(2, 2, string.char(255, 0, 0, 255):rep(4))
+  local pngB = PngWriter.encode(2, 2, string.char(0, 64, 255, 255):rep(4))
+  Assert.isTrue(pngA ~= pngB, "the replacement fixture must carry distinct source bytes")
+  cache:write(logicalPath, pngA)
+  local expectedSourceA = love.data.hash("sha256", pngA)
+  local expectedSourceB = love.data.hash("sha256", pngB)
+  Assert.isTrue(expectedSourceA ~= expectedSourceB, "the replacement fixture must hash distinctly")
   local statsBefore = love.graphics.getStats()
 
   local runOk, runErr = pcall(function()
     local queue = AssetPreparationQueue.new(cache)
-    local firstToken = queue:request("image-derivative", "assets/generated/textures/derivative.png", "demand")
+    local firstToken = queue:request("image-derivative", logicalPath, "demand")
     local first = queue:wait(firstToken)
-    Assert.equal(first.sourceHash, expectedSource, "the derivative binds the exact PNG bytes")
+    Assert.equal(first.sourceHash, expectedSourceA, "the derivative binds the exact PNG bytes")
     Assert.equal(first.width, 2)
     Assert.equal(first.height, 2)
     Assert.isTrue(first.kind == "r8" or first.kind == "rgba8", "the derivative classifies to a known layout")
     Assert.notNil(first.indexData, "the worker replies with packed index Data")
 
-    local secondToken = queue:request("image-derivative", "assets/generated/textures/derivative.png", "demand")
+    local publisher = ArtifactPublisher.begin(cache, "derivative-refresh", { logicalPath })
+    publisher.stage:write(logicalPath, pngB)
+    Assert.isTrue(publisher:publish(), "the replacement publication must succeed")
+
+    local secondToken = queue:request("image-derivative", logicalPath, "demand")
     local second = queue:wait(secondToken)
-    Assert.equal(second.sourceHash, first.sourceHash, "the repeat preparation reuses the stored derivative")
-    Assert.equal(second.pixelHash, first.pixelHash, "the reused derivative carries identical pixels")
-    Assert.equal(second.width, first.width)
-    Assert.equal(second.height, first.height)
+    Assert.equal(
+      second.sourceHash,
+      expectedSourceB,
+      "the next request on the same worker binds the replacement bytes"
+    )
+    Assert.isTrue(
+      second.sourceHash ~= first.sourceHash,
+      "the replacement source hash must differ from the earlier payload"
+    )
+    Assert.isTrue(
+      second.pixelHash ~= first.pixelHash,
+      "the replacement pixels must differ from the earlier payload"
+    )
+    Assert.equal(second.width, 2)
+    Assert.equal(second.height, 2)
+    Assert.isTrue(
+      second.kind == "r8" or second.kind == "rgba8",
+      "the replacement derivative classifies to a known layout"
+    )
+    Assert.notNil(second.indexData, "the worker replies with packed index Data")
+
+    local thirdToken = queue:request("image-derivative", logicalPath, "demand")
+    local third = queue:wait(thirdToken)
+    Assert.equal(third.sourceHash, second.sourceHash, "the repeat preparation reuses the stored derivative")
+    Assert.equal(third.pixelHash, second.pixelHash, "the reused derivative carries identical pixels")
+    Assert.equal(third.width, second.width)
+    Assert.equal(third.height, second.height)
 
     queue:release()
   end)
 
   local statsAfter = love.graphics.getStats()
   cache:removeTree("")
+  pcall(function()
+    CacheFs.forArtifactStage(VERSION_ID, "derivative-refresh"):removeTree("")
+  end)
 
   if not runOk then
     error(runErr, 0)
   end
   Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
+  Assert.equal(statsAfter.canvases, statsBefore.canvases, "preparation alone creates no GPU Canvas")
 end
 
--- A generated PCM sample prepares through the real worker into one
+-- A generated PCM sample prepares through the real worker as one
 -- transferable ByteData holding the exact logical bytes, proving the
 -- audio-sample branch rides the same worker cache as meshes and images.
 function T.audio_sample_prepares_through_the_real_worker_as_transferable_bytes()
