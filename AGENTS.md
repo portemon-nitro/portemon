@@ -193,9 +193,11 @@ Read `tests/AGENTS.md` for the test contract and runner mechanics.
 
 - Be concrete, brief, and deletion-biased. Remove dead code, speculative compatibility,
   forwarding layers, stale comments, debug/trace residue, and unnecessary nesting.
-- LuaLS is intentionally strict: `scripts/lint.sh` must be clean through Hint. Fix
-  findings at their source; do not weaken `.luarc.json`, add broad suppressions/globals, edit
-  vendored types/generated overrides, or erase types with `any`.
+- LuaLS is intentionally strict: Fix findings at their source; do not weaken
+  `.luarc.json`, add broad suppressions/globals, edit vendored types/generated
+  overrides, or erase types with `any`.
+- Linting the entire codebase is expensive, and the pre-commit hook always does it.
+  Limit manual running of `scripts/lint.sh` only for when it's necessary.
 - Exact `_` is the intentional unused discard; delete unused named bindings.
 - Annotate public APIs, non-obvious table/data shapes, and places where an annotation states
   an invariant or materially improves inference. Do not annotate trivial private locals just
