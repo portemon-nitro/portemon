@@ -266,15 +266,25 @@ function T.failed_terrain_upload_returns_the_leases_it_already_holds()
 end
 
 local SCENE_B_KEY = "general/grass/day"
+local SCENE_C_KEY = "general/sand/day"
 
--- Counts native cache reads per path while serving two distinct valid
--- scene records: warmed BG3 bytes must not be reread by the later
--- foreground demand, and each scene keeps its own byte identity.
-local function dualSceneCacheFs(recordA, recordB)
+-- Counts native cache reads per path while serving distinct valid scene
+-- records: warmed BG3 bytes must not be reread by the later foreground
+-- demand, and each scene keeps its own byte identity. The Lua-document
+-- ledger exists so a settled idle round cannot hide repeated scene or
+-- manifest parses behind a quiet byte-read count.
+local function dualSceneCacheFs(recordA, recordB, recordC)
   local reads = {}
+  local loadLuaCounts = {}
   local cacheFs = { versionId = "synthetic" }
-  local records = { [recordA.key] = recordA, [recordB.key] = recordB }
+  local records = {}
+  for _, record in ipairs({ recordA, recordB, recordC }) do
+    if record ~= nil then
+      records[record.key] = record
+    end
+  end
   function cacheFs:loadLua(path)
+    loadLuaCounts[path] = (loadLuaCounts[path] or 0) + 1
     for _, record in pairs(records) do
       if path == BattlePresentationCache.scenePath(record.key) then
         return record
@@ -307,13 +317,28 @@ local function dualSceneCacheFs(recordA, recordB)
     return true
   end
   cacheFs.reads = reads
+  cacheFs.loadLuaCounts = loadLuaCounts
   return cacheFs
+end
+
+-- Totals one ledger of per-path counts.
+local function totalLoads(counts)
+  local total = 0
+  for _, count in pairs(counts) do
+    total = total + count
+  end
+  return total
 end
 
 -- A pool double with explicit readiness control: requests enroll at the
 -- caller-chosen priority, polls stay pending until the path is marked
 -- ready or the poll budget lapses, and every token is either acquired
 -- or cancelled exactly once while every lease is released exactly once.
+-- The live ledger mirrors the shared owner's contract: a request holds
+-- pool interest until acquire consumes it or cancel retires it, so a
+-- test can tell an uncleared failed request apart from a forgotten
+-- owner-side ticket. Cancelling an already-consumed token lands in a
+-- separate stale ledger and never counts as retiring live interest.
 local function scriptedPool(pendingPolls, failures)
   local pool = {
     requested = {},
@@ -321,7 +346,10 @@ local function scriptedPool(pendingPolls, failures)
     acquired = {},
     released = {},
     cancelled = {},
+    cancelledStale = {},
+    live = {},
     readyPaths = {},
+    throwPaths = {},
     nextToken = 0,
     pendingPolls = pendingPolls or 0,
     failures = failures or {},
@@ -330,6 +358,7 @@ local function scriptedPool(pendingPolls, failures)
     self.nextToken = self.nextToken + 1
     local token = self.nextToken
     self.requested[#self.requested + 1] = { token = token, path = path, priority = priority }
+    self.live[token] = path
     return token
   end
   function pool:poll(token)
@@ -342,6 +371,9 @@ local function scriptedPool(pendingPolls, failures)
     end
     assert(ticket ~= nil, "unknown image request token")
     self.polls[token] = (self.polls[token] or 0) + 1
+    if self.throwPaths[ticket.path] ~= nil then
+      error(self.throwPaths[ticket.path], 0)
+    end
     if self.failures[ticket.path] ~= nil then
       return "failed", self.failures[ticket.path]
     end
@@ -355,13 +387,19 @@ local function scriptedPool(pendingPolls, failures)
       if entry.token == token then
         local lease = { image = { path = entry.path } }
         self.acquired[#self.acquired + 1] = { token = token, path = entry.path, lease = lease }
+        self.live[token] = nil
         return lease
       end
     end
     error("unknown image request token", 0)
   end
   function pool:cancel(token)
-    self.cancelled[#self.cancelled + 1] = token
+    if self.live[token] ~= nil then
+      self.live[token] = nil
+      self.cancelled[#self.cancelled + 1] = token
+    else
+      self.cancelledStale[#self.cancelledStale + 1] = token
+    end
   end
   function pool:release(lease)
     self.released[#self.released + 1] = lease
@@ -452,15 +490,27 @@ end
 
 -- The first battle following settled idle reuses the warmed
 -- scene and fixed art without duplicate native reads or GPU
--- construction at entry; dynamic foe/effect demand still works.
+-- construction at entry; dynamic foe/effect demand still works. A cold
+-- launch first sets the baseline the warmed path must avoid repeating,
+-- and a settled scene then idles with no further document, host, or
+-- pool demand until the prediction actually changes.
 function T.idle_warmup_adopts_scene_group_and_fixed_art_before_first_launch()
   local record = sceneRecord(SCENE_KEY)
-  local probe = warmEnvelope(stagedCacheFs(record), scriptedPool(0, {}), nearHost({}, true))
+  local coldFs = dualSceneCacheFs(record, sceneRecord(SCENE_B_KEY))
+  local coldPool = scriptedPool(0, {})
+  local coldEnvelope = warmEnvelope(coldFs, coldPool, nearHost({}, true))
   Assert.isTrue(
-    type(probe.advanceWarmup) == "function",
-    "the battle envelope prewarms the predicted scene during idle field updates"
+    type(coldEnvelope.advanceWarmup) == "function",
+    "the battle envelope exposes idle warmup for cold/warm comparison"
   )
-  probe:dispose()
+  local coldReady, coldFailure = prepareScene(coldEnvelope:_preparationServices())
+  Assert.isTrue(coldReady, "the cold scene prepares: " .. tostring(coldFailure))
+  Assert.isTrue(
+    (coldFs.reads[record.layers[1].characters.path] or 0) >= 1,
+    "the cold launch reads its staged BG3 bytes"
+  )
+  Assert.isTrue(#coldPool.acquired >= 3, "the cold launch constructs its intro and terrain images")
+  coldEnvelope:dispose()
   local cacheFs = dualSceneCacheFs(record, sceneRecord(SCENE_B_KEY))
   local pool = scriptedPool(0, {})
   local asks = {}
@@ -473,6 +523,34 @@ function T.idle_warmup_adopts_scene_group_and_fixed_art_before_first_launch()
   for _, entry in ipairs(pool.requested) do
     Assert.equal(entry.priority, "prefetch", "speculative image tickets stay below foreground demand")
   end
+  -- A settled scene idles with no repeated scene/manifest document
+  -- loads, no staged-byte rereads, and no new host or pool demand.
+  local settledLoads = totalLoads(cacheFs.loadLuaCounts)
+  local settledReads = totalLoads(cacheFs.reads)
+  local settledAsks = #asks
+  local settledRequests = #pool.requested
+  local settledAcquires = #pool.acquired
+  for _ = 1, 40 do
+    local usedIdle, failureIdle = envelope:advanceWarmup(SCENE_KEY, 1)
+    Assert.isFalse(usedIdle == true, "a settled scene realizes no further GPU pairs")
+    Assert.isNil(failureIdle, "a settled scene reports no idle failure")
+  end
+  local usedZero, failureZero = envelope:advanceWarmup(SCENE_KEY, 0)
+  Assert.isFalse(usedZero == true, "a settled scene with zero allowance realizes nothing")
+  Assert.isNil(failureZero, "a settled scene with zero allowance reports no failure")
+  Assert.equal(
+    totalLoads(cacheFs.loadLuaCounts),
+    settledLoads,
+    "settled idle parses no further Lua documents"
+  )
+  Assert.equal(
+    totalLoads(cacheFs.reads),
+    settledReads,
+    "settled idle rereads no staged bytes"
+  )
+  Assert.equal(#asks, settledAsks, "settled idle places no further derived demand")
+  Assert.equal(#pool.requested, settledRequests, "settled idle enrolls no new image tickets")
+  Assert.equal(#pool.acquired, settledAcquires, "settled idle constructs no new GPU images")
   local services = envelope:_preparationServices()
   local warmedScene = services.drawable("scene:" .. SCENE_KEY)
   Assert.notNil(warmedScene, "the warmed scene image answers through the canonical drawable")
@@ -512,6 +590,25 @@ function T.idle_warmup_adopts_scene_group_and_fixed_art_before_first_launch()
     type(foeFailure) == "string" and foeFailure ~= "",
     "the unstaged foe demand still carries its cause"
   )
+  -- A distinct prediction resumes staging on the same envelope and
+  -- eventually completes its own scene group.
+  do
+    local resumeFs = dualSceneCacheFs(record, sceneRecord(SCENE_B_KEY))
+    local resumePool = scriptedPool(0, {})
+    local resume = warmEnvelope(resumeFs, resumePool, nearHost({}, true))
+    driveWarmup(resume, SCENE_KEY, 1, 64)
+    local settledResumeLoads = totalLoads(resumeFs.loadLuaCounts)
+    driveWarmup(resume, SCENE_B_KEY, 1, 128)
+    Assert.isTrue(
+      totalLoads(resumeFs.loadLuaCounts) > settledResumeLoads,
+      "a changed scene stages its own documents instead of idling"
+    )
+    Assert.notNil(
+      resume:_preparationServices().drawable("scene:" .. SCENE_B_KEY),
+      "the resumed prediction completes its own scene group"
+    )
+    resume:dispose()
+  end
   envelope:dispose()
 end
 
@@ -667,6 +764,116 @@ function T.actual_scene_wins_over_predicted_warm_group()
   envelope:dispose()
 end
 
+-- A terminal speculative image failure retires its pool interest
+-- exactly once without losing the diagnostic: the failed ticket is
+-- cancelled, later same-key speculation never re-enrolls it while the
+-- latch holds, a changed prediction does not resurrect the old token,
+-- and required foreground demand for the bad art still fails aloud.
+-- A throwing poll takes the same retirement path in the same journey.
+function T.failed_speculative_image_request_cancels_its_pool_interest()
+  local record = sceneRecord(SCENE_KEY)
+  local pool = scriptedPool(0, { [record.imagePath] = "probe-scene-upload-failed" })
+  local cacheFs = dualSceneCacheFs(record, sceneRecord(SCENE_B_KEY))
+  local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
+  local used, failure = envelope:advanceWarmup(SCENE_KEY, 1)
+  Assert.isFalse(used == true, "a failed speculative image realizes no GPU pair")
+  Assert.isTrue(
+    type(failure) == "string"
+      and failure:find(SCENE_KEY, 1, true) ~= nil
+      and failure:find(record.imagePath, 1, true) ~= nil,
+    "the terminal failure names its scene key and path: " .. tostring(failure)
+  )
+  local failedToken = nil
+  for _, entry in ipairs(pool.requested) do
+    if entry.path == record.imagePath then
+      failedToken = entry.token
+    end
+  end
+  Assert.notNil(failedToken, "the failed path was enrolled exactly once")
+  local function cancelCount(token)
+    local count = 0
+    for _, cancelled in ipairs(pool.cancelled) do
+      if cancelled == token then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  Assert.equal(cancelCount(failedToken), 1, "the terminal failed ticket is cancelled exactly once")
+  Assert.isNil(pool.live[failedToken], "the failed token holds no pool interest afterwards")
+  for _ = 1, 4 do
+    local _, failureAgain = envelope:advanceWarmup(SCENE_KEY, 1)
+    Assert.isNil(failureAgain, "latched speculation reports no further failure: " .. tostring(failureAgain))
+  end
+  local failedRequests = 0
+  for _, entry in ipairs(pool.requested) do
+    if entry.path == record.imagePath then
+      failedRequests = failedRequests + 1
+    end
+  end
+  Assert.equal(failedRequests, 1, "the latched path is never re-enrolled while the prediction holds")
+  local _, switchFailure = envelope:advanceWarmup(SCENE_B_KEY, 0)
+  Assert.isNil(switchFailure, "switching predictions reports no failure: " .. tostring(switchFailure))
+  for _, entry in ipairs(pool.acquired) do
+    Assert.isTrue(entry.token ~= failedToken, "a stale failed token is never consumed afterwards")
+  end
+  local _, revisitFailure = envelope:advanceWarmup(SCENE_KEY, 1)
+  Assert.isTrue(
+    type(revisitFailure) == "string" and revisitFailure:find(record.imagePath, 1, true) ~= nil,
+    "revisiting the scene still reports the deterministic failure: " .. tostring(revisitFailure)
+  )
+  local revisitToken = nil
+  for _, entry in ipairs(pool.requested) do
+    if entry.path == record.imagePath and entry.token ~= failedToken then
+      revisitToken = entry.token
+    end
+  end
+  Assert.notNil(revisitToken, "the revisit enrolls a fresh token instead of resurrecting the old one")
+  Assert.equal(cancelCount(revisitToken), 1, "the revisit failure is cancelled exactly once as well")
+  Assert.equal(cancelCount(failedToken), 1, "the original failed token is never cancelled twice")
+  local services = envelope:_preparationServices()
+  -- The main scene image borrows through the drawable seam, not the
+  -- scene-group prepare: prepare stages only intro and terrain art, so
+  -- the foreground drawable is the seam that fails aloud and latches.
+  local sceneDrawable, demandFailure = services.drawable("scene:" .. SCENE_KEY)
+  Assert.isNil(sceneDrawable, "required demand for the bad art never reads as ready")
+  Assert.isTrue(
+    type(demandFailure) == "string" and demandFailure:find(record.imagePath, 1, true) ~= nil,
+    "required demand still names the failing path: " .. tostring(demandFailure)
+  )
+  envelope:dispose()
+  -- A throwing poll retires its token through the same cancellation path.
+  local recordThrow = sceneRecord(SCENE_KEY)
+  local throwingPool = scriptedPool(0, {})
+  throwingPool.throwPaths[recordThrow.introLayer.image] = "probe-poll-threw"
+  local throwingEnvelope =
+    warmEnvelope(dualSceneCacheFs(recordThrow, sceneRecord(SCENE_B_KEY)), throwingPool, nearHost({}, true))
+  local usedThrow, failureThrow = throwingEnvelope:advanceWarmup(SCENE_KEY, 1)
+  Assert.isFalse(usedThrow == true, "a throwing poll realizes no GPU pair")
+  Assert.isTrue(
+    type(failureThrow) == "string"
+      and failureThrow:find(SCENE_KEY, 1, true) ~= nil
+      and failureThrow:find(recordThrow.introLayer.image, 1, true) ~= nil,
+    "a throwing poll keeps its scene/key/path cause: " .. tostring(failureThrow)
+  )
+  local thrownToken = nil
+  for _, entry in ipairs(throwingPool.requested) do
+    if entry.path == recordThrow.introLayer.image then
+      thrownToken = entry.token
+    end
+  end
+  Assert.notNil(thrownToken, "the throwing path was enrolled")
+  local thrownCancels = 0
+  for _, cancelled in ipairs(throwingPool.cancelled) do
+    if cancelled == thrownToken then
+      thrownCancels = thrownCancels + 1
+    end
+  end
+  Assert.equal(thrownCancels, 1, "the thrown ticket is cancelled exactly once")
+  Assert.isNil(throwingPool.live[thrownToken], "the thrown token holds no pool interest afterwards")
+  throwingEnvelope:dispose()
+end
+
 -- Speculative cancellation, launch admission and teardown
 -- never double-release a pooled resource or mutate an active port:
 -- every ticket is cancelled or consumed once, warm-only leases return
@@ -763,59 +970,6 @@ function T.speculative_cancellation_and_dispose_keep_foreground_leases_exactly_o
   end
 end
 
--- Cold/warm evidence through truthful boundaries -- native
--- read counts, decode/GPU construction counts and queue payloads --
--- without mistaking software-renderer timings for native approval.
-function T.cold_and_warm_launches_share_handles_without_repeat_reads_or_uploads()
-  local record = sceneRecord(SCENE_KEY)
-  local coldFs = dualSceneCacheFs(record, sceneRecord(SCENE_B_KEY))
-  local coldPool = scriptedPool(0, {})
-  local coldEnvelope = warmEnvelope(coldFs, coldPool, nearHost({}, true))
-  Assert.isTrue(
-    type(coldEnvelope.advanceWarmup) == "function",
-    "the battle envelope exposes idle warmup for cold/warm comparison"
-  )
-  local coldReady, coldFailure = prepareScene(coldEnvelope:_preparationServices())
-  Assert.isTrue(coldReady, "the cold scene prepares: " .. tostring(coldFailure))
-  local coldReads = coldFs.reads[record.layers[1].characters.path] or 0
-  local coldAcquires = #coldPool.acquired
-  Assert.isTrue(coldReads >= 1, "the cold launch reads its staged BG3 bytes")
-  Assert.isTrue(coldAcquires >= 3, "the cold launch constructs its intro and terrain images")
-  coldEnvelope:dispose()
-  local warmFs = dualSceneCacheFs(record, sceneRecord(SCENE_B_KEY))
-  local warmPool = scriptedPool(0, {})
-  local warmEnvelope = warmEnvelope(warmFs, warmPool, nearHost({}, true))
-  driveWarmup(warmEnvelope, SCENE_KEY, 1, 64)
-  local warmServices = warmEnvelope:_preparationServices()
-  local warmedScene = warmServices.drawable("scene:" .. SCENE_KEY)
-  Assert.notNil(warmedScene, "warmup leaves the scene handle behind for the launch")
-  local readsBefore = warmFs.reads[record.layers[1].characters.path] or 0
-  local requestsBefore = #warmPool.requested
-  local acquiresBefore = #warmPool.acquired
-  local warmReady, warmFailure = prepareScene(warmServices)
-  Assert.isTrue(warmReady, "the warmed scene prepares: " .. tostring(warmFailure))
-  Assert.equal(
-    warmFs.reads[record.layers[1].characters.path] or 0,
-    readsBefore,
-    "the warmed launch rereads no staged BG3 bytes"
-  )
-  Assert.equal(
-    #warmPool.requested,
-    requestsBefore,
-    "the warmed launch enrolls no new image tickets for warmed art"
-  )
-  Assert.equal(
-    #warmPool.acquired,
-    acquiresBefore,
-    "the warmed launch constructs no new GPU images for warmed art"
-  )
-  Assert.isTrue(
-    warmServices.drawable("scene:" .. SCENE_KEY) == warmedScene,
-    "the launch reuses the warmed scene handle itself"
-  )
-  warmEnvelope:dispose()
-end
-
 -- Launch-path pinning keeps one complete scene group: warming A then
 -- cold-launching B retires A's whole 4-key group exactly once (no split
 -- pin set), and warming A then idle-warming B to completion leaves a
@@ -839,6 +993,11 @@ function T.launch_and_idle_replacement_keep_a_single_scene_group()
       end
     end
     for _, key in ipairs(groupKeys(SCENE_B_KEY)) do
+      if envelope._warmPinned[key] ~= nil then
+        keys[#keys + 1] = key
+      end
+    end
+    for _, key in ipairs(groupKeys(SCENE_C_KEY)) do
       if envelope._warmPinned[key] ~= nil then
         keys[#keys + 1] = key
       end
@@ -926,6 +1085,232 @@ function T.launch_and_idle_replacement_keep_a_single_scene_group()
     )
     for _, key in ipairs(groupKeys(SCENE_KEY)) do
       Assert.equal(releaseCount(pool, priorA[key]), 1, "idle retirement returns each lease exactly once: " .. key)
+    end
+    envelope:dispose()
+  end
+  -- Partial A, then partial B, then C: neither abandoned incomplete
+  -- group keeps a pin; only the current prediction may stay partial.
+  do
+    local recordC = sceneRecord(SCENE_C_KEY)
+    local cacheFs = dualSceneCacheFs(recordA, recordB, recordC)
+    local pool = scriptedPool(1000000, {})
+    local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
+    pool.readyPaths[recordA.imagePath] = true
+    local usedA, failureA = envelope:advanceWarmup(SCENE_KEY, 1)
+    Assert.isTrue(usedA == true, "the first prediction adopts its ready scene image")
+    Assert.isNil(failureA, "the partial prediction reports no failure: " .. tostring(failureA))
+    local usedA2, failureA2 = envelope:advanceWarmup(SCENE_KEY, 1)
+    Assert.isFalse(usedA2 == true, "nothing else is ready behind the partial prediction")
+    Assert.isNil(failureA2, "the stalled partial prediction reports no failure: " .. tostring(failureA2))
+    Assert.equal(#pool.acquired, 1, "the partial prediction holds exactly one scene lease")
+    local leaseA = pool.acquired[1].lease
+    pool.readyPaths[recordB.imagePath] = true
+    pool.readyPaths[recordB.introLayer.image] = true
+    local usedB, failureB = envelope:advanceWarmup(SCENE_B_KEY, 1)
+    Assert.isTrue(usedB == true, "the replacement prediction adopts its own ready art")
+    Assert.isNil(failureB, "the replacement reports no failure: " .. tostring(failureB))
+    Assert.equal(
+      releaseCount(pool, leaseA),
+      1,
+      "the abandoned partial group returns its lease exactly once"
+    )
+    local usedB2, failureB2 = envelope:advanceWarmup(SCENE_B_KEY, 1)
+    Assert.isTrue(usedB2 == true, "the replacement adopts its second ready image")
+    Assert.isNil(failureB2, "the partial replacement reports no failure: " .. tostring(failureB2))
+    Assert.equal(#pool.acquired, 3, "the partial replacement holds exactly two scene leases")
+    local leaseB1 = pool.acquired[2].lease
+    local leaseB2 = pool.acquired[3].lease
+    pool.readyPaths[recordC.imagePath] = true
+    local usedC, failureC = envelope:advanceWarmup(SCENE_C_KEY, 1)
+    Assert.isTrue(usedC == true, "the third prediction adopts its own ready art")
+    Assert.isNil(failureC, "the third prediction reports no failure: " .. tostring(failureC))
+    Assert.equal(
+      releaseCount(pool, leaseB1),
+      1,
+      "the second abandoned partial group returns its first lease exactly once"
+    )
+    Assert.equal(
+      releaseCount(pool, leaseB2),
+      1,
+      "the second abandoned partial group returns its second lease exactly once"
+    )
+    -- Drawable fresh-borrows any pool-ready path on demand, so retired
+    -- predictions are proved gone through the pin and pool ledgers
+    -- instead of a drawable probe that would re-enroll behind the check.
+    Assert.deepEqual(
+      pinnedSceneKeys(envelope),
+      sorted({ "scene:" .. SCENE_C_KEY }),
+      "only the current prediction keeps pins; abandoned partial groups keep none"
+    )
+    Assert.equal(
+      releaseCount(pool, leaseB1),
+      1,
+      "the retired replacement still returns its first lease exactly once"
+    )
+    Assert.equal(
+      releaseCount(pool, leaseB2),
+      1,
+      "the retired replacement still returns its second lease exactly once"
+    )
+    local function retiredSceneImageCount(ledger)
+      local count = 0
+      for _, entry in ipairs(ledger) do
+        if entry.path == recordA.imagePath or entry.path == recordB.imagePath then
+          count = count + 1
+        end
+      end
+      return count
+    end
+    local requestedRetired = retiredSceneImageCount(pool.requested)
+    local acquiredRetired = retiredSceneImageCount(pool.acquired)
+    for _ = 1, 3 do
+      local _, failureLater = envelope:advanceWarmup(SCENE_C_KEY, 1)
+      Assert.isNil(failureLater, "further current-prediction warmup reports no failure: " .. tostring(failureLater))
+    end
+    Assert.equal(
+      retiredSceneImageCount(pool.requested),
+      requestedRetired,
+      "further warmup enrolls no new tickets for retired predictions"
+    )
+    Assert.equal(
+      retiredSceneImageCount(pool.acquired),
+      acquiredRetired,
+      "further warmup acquires no new leases for retired predictions"
+    )
+    local partialServices = envelope:_preparationServices()
+    Assert.notNil(
+      partialServices.drawable("scene:" .. SCENE_C_KEY),
+      "only the current prediction keeps its partial scene"
+    )
+    envelope:dispose()
+    for _, entry in ipairs(pool.acquired) do
+      Assert.equal(
+        releaseCount(pool, entry.lease),
+        1,
+        "disposal returns every adopted partial lease exactly once: " .. entry.path
+      )
+    end
+  end
+  -- Complete A, then partial B, then partial C: the complete
+  -- predecessor stays usable until C completes, B's partial pins return
+  -- once, fixed art is never treated as disposable scene art, and C's
+  -- completion retires A once.
+  do
+    local recordC = sceneRecord(SCENE_C_KEY)
+    local cacheFs = dualSceneCacheFs(recordA, recordB, recordC)
+    local pool = scriptedPool(1000000, {})
+    local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
+    for _, path in ipairs({
+      recordA.imagePath,
+      recordA.introLayer.image,
+      recordA.terrainSprites.player.image,
+      recordA.terrainSprites.foe.image,
+      "assets/generated/battle/synthetic.png",
+    }) do
+      pool.readyPaths[path] = true
+    end
+    driveWarmup(envelope, SCENE_KEY, 1, 128)
+    Assert.deepEqual(
+      pinnedSceneKeys(envelope),
+      sorted(groupKeys(SCENE_KEY)),
+      "idle warmup completes scene A's group with its fixed art"
+    )
+    local priorA = {}
+    for _, key in ipairs(groupKeys(SCENE_KEY)) do
+      priorA[key] = envelope._warmPinned[key].lease
+    end
+    pool.readyPaths[recordB.imagePath] = true
+    local usedB, failureB = envelope:advanceWarmup(SCENE_B_KEY, 1)
+    Assert.isTrue(usedB == true, "the partial successor adopts its ready scene image")
+    Assert.isNil(failureB, "the partial successor reports no failure: " .. tostring(failureB))
+    Assert.notNil(
+      envelope:_preparationServices().drawable("scene:" .. SCENE_KEY),
+      "the complete predecessor stays usable during partial replacement"
+    )
+    for _, key in ipairs(groupKeys(SCENE_KEY)) do
+      Assert.equal(
+        releaseCount(pool, priorA[key]),
+        0,
+        "the complete predecessor keeps its leases during partial replacement: " .. key
+      )
+    end
+    local leaseB = pool.acquired[#pool.acquired].lease
+    pool.readyPaths[recordC.imagePath] = true
+    local usedC, failureC = envelope:advanceWarmup(SCENE_C_KEY, 1)
+    Assert.isTrue(usedC == true, "the third prediction adopts its own ready art")
+    Assert.isNil(failureC, "the third prediction reports no failure: " .. tostring(failureC))
+    Assert.equal(
+      releaseCount(pool, leaseB),
+      1,
+      "the superseded partial group returns its lease exactly once"
+    )
+    Assert.notNil(
+      envelope:_preparationServices().drawable("scene:" .. SCENE_KEY),
+      "the complete predecessor survives a second partial replacement"
+    )
+    -- Drawable fresh-borrows any pool-ready path on demand, so the
+    -- retired partial is proved gone through the pin and pool ledgers
+    -- instead of a drawable probe that would re-enroll behind the check.
+    local expectedPinned = groupKeys(SCENE_KEY)
+    expectedPinned[#expectedPinned + 1] = "scene:" .. SCENE_C_KEY
+    Assert.deepEqual(
+      pinnedSceneKeys(envelope),
+      sorted(expectedPinned),
+      "the complete predecessor keeps its full group while only the current prediction stays partial"
+    )
+    Assert.equal(
+      releaseCount(pool, leaseB),
+      1,
+      "the superseded partial group still returns its lease exactly once"
+    )
+    local function retiredBImageCount(ledger)
+      local count = 0
+      for _, entry in ipairs(ledger) do
+        if entry.path == recordB.imagePath then
+          count = count + 1
+        end
+      end
+      return count
+    end
+    local requestedB = retiredBImageCount(pool.requested)
+    local acquiredB = retiredBImageCount(pool.acquired)
+    for _ = 1, 2 do
+      local _, failureLater = envelope:advanceWarmup(SCENE_C_KEY, 1)
+      Assert.isNil(failureLater, "further current-prediction warmup reports no failure: " .. tostring(failureLater))
+    end
+    Assert.equal(
+      retiredBImageCount(pool.requested),
+      requestedB,
+      "further warmup enrolls no new tickets for the retired prediction"
+    )
+    Assert.equal(
+      retiredBImageCount(pool.acquired),
+      acquiredB,
+      "further warmup acquires no new leases for the retired prediction"
+    )
+    for _, entry in ipairs(pool.acquired) do
+      if entry.path == "assets/generated/battle/synthetic.png" then
+        Assert.equal(
+          releaseCount(pool, entry.lease),
+          0,
+          "fixed art is never retired as scene-specific art"
+        )
+      end
+    end
+    pool.readyPaths[recordC.introLayer.image] = true
+    pool.readyPaths[recordC.terrainSprites.player.image] = true
+    pool.readyPaths[recordC.terrainSprites.foe.image] = true
+    driveWarmup(envelope, SCENE_C_KEY, 1, 128)
+    Assert.notNil(
+      envelope:_preparationServices().drawable("scene:" .. SCENE_C_KEY),
+      "the third prediction completes its own scene group"
+    )
+    for _, key in ipairs(groupKeys(SCENE_KEY)) do
+      Assert.equal(
+        releaseCount(pool, priorA[key]),
+        1,
+        "completing the successor retires the predecessor exactly once: " .. key
+      )
     end
     envelope:dispose()
   end
