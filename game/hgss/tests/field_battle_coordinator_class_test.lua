@@ -56,9 +56,13 @@ end
 -- idle warmup without reselecting: the memo survives while the tile
 -- matches, expires on tile/surface/map moves and during launches, and
 -- never synthesizes a scene when nothing was prefetched. Reading the
--- prediction never enqueues another derived-asset request.
-local function predictionRuntime(requests)
-  return {
+-- prediction never enqueues another derived-asset request. Mutable clock
+-- and avatar state ride an explicit box so stationary time-of-day and
+-- movement changes are observable without wall clocks or sleeps; an
+-- absent box keeps the historical clockless/movementless defaults.
+local function predictionRuntime(requests, state)
+  state = state or {}
+  local runtime = {
     session = { currentMap = { mapId = 33, fieldData = { battleBackground = "general" } } },
     player = { fieldX = 5, fieldZ = 6, surfaceId = 0 },
     derivedAssets = {
@@ -71,6 +75,21 @@ local function predictionRuntime(requests)
       return nil
     end,
   }
+  if state.clockHour ~= nil then
+    runtime.localClock = {
+      nowLocal = function()
+        return { hour = state.clockHour }
+      end,
+    }
+  end
+  if state.movementMode ~= nil then
+    runtime.playerAvatar = {
+      status = function()
+        return { durableState = state.movementMode }
+      end,
+    }
+  end
+  return runtime
 end
 
 function T.predicted_scene_key_tracks_memo_expiry_without_reselecting()
@@ -87,6 +106,15 @@ function T.predicted_scene_key_tracks_memo_expiry_without_reselecting()
   Assert.isNil(
     coordinator:predictedSceneKey(),
     "no prediction reads before the first prefetch"
+  )
+  Assert.isNil(
+    coordinator:predictedSceneKey(),
+    "repeated reads still synthesize nothing before the first prefetch"
+  )
+  Assert.deepEqual(
+    requests,
+    {},
+    "reads before the first prefetch enqueue no derived work"
   )
   coordinator:prefetchEncounterScene()
   Assert.deepEqual(
@@ -154,6 +182,218 @@ function T.predicted_scene_key_tracks_memo_expiry_without_reselecting()
     coordinator:predictedSceneKey(),
     "general/plain/day",
     "clearing the launch restores the memoized scene"
+  )
+  local indoorRequests = {}
+  local indoorState = { clockHour = 12 }
+  local indoorRuntime = predictionRuntime(indoorRequests, indoorState)
+  indoorRuntime.session.currentMap = { mapId = 61, fieldData = { battleBackground = "building_1" } }
+  local indoor = FieldBattleCoordinator.new(indoorRuntime)
+  indoor:bindBattlePresentation(function(_)
+    error("no launch is admitted by a prediction read", 0)
+  end)
+  Assert.isNil(indoor:predictedSceneKey(), "no interior prediction reads before the first prefetch")
+  Assert.deepEqual(indoorRequests, {}, "interior reads before the first prefetch enqueue no derived work")
+  indoor:prefetchEncounterScene()
+  Assert.equal(
+    indoor:predictedSceneKey(),
+    "building_1/building/day",
+    "the interior publishes its day scene"
+  )
+  Assert.deepEqual(
+    indoorRequests,
+    { "building_1/building/day@near" },
+    "the interior queues its scene once at near urgency"
+  )
+  indoorState.clockHour = 23
+  Assert.isNil(
+    indoor:predictedSceneKey(),
+    "a night clock expires the interior memo until the next prefetch"
+  )
+  indoor:prefetchEncounterScene()
+  Assert.equal(
+    indoor:predictedSceneKey(),
+    "building_1/building/day",
+    "interiors keep day lighting after dark"
+  )
+  Assert.deepEqual(
+    indoorRequests,
+    { "building_1/building/day@near" },
+    "an unchanged interior scene queues nothing new"
+  )
+  local indoorEnvironment = indoor:_captureLaunchEnvironment({ kind = "wild", payload = {} }, "grass")
+  Assert.equal(
+    indoorEnvironment.sceneKey,
+    "building_1/building/day",
+    "the live interior launch agrees with the refreshed prediction"
+  )
+  Assert.equal(indoorEnvironment.time, "day", "interiors pin day lighting after dark")
+  indoorState.clockHour = 12
+  indoor:prefetchEncounterScene()
+  Assert.deepEqual(
+    indoorRequests,
+    { "building_1/building/day@near" },
+    "returning to the same band queues nothing new"
+  )
+end
+
+-- A stationary outdoor prediction follows the civil clock: the memo
+-- expires when the time band changes and the next prefetch publishes the
+-- scene the live launch would select. Settled repeats queue nothing new.
+function T.stationary_time_of_day_changes_refresh_the_predicted_scene()
+  local requests = {}
+  local state = { clockHour = 12 }
+  local runtime = predictionRuntime(requests, state)
+  local coordinator = FieldBattleCoordinator.new(runtime)
+  coordinator:bindBattlePresentation(function(_)
+    error("no launch is admitted by a prediction read", 0)
+  end)
+  coordinator:prefetchEncounterScene()
+  Assert.equal(
+    coordinator:predictedSceneKey(),
+    "general/plain/day",
+    "midday publishes the day scene"
+  )
+  Assert.deepEqual(
+    requests,
+    { "general/plain/day@near" },
+    "the midday tile queues its scene once at near urgency"
+  )
+  state.clockHour = 18
+  Assert.isNil(
+    coordinator:predictedSceneKey(),
+    "an evening clock expires the stationary memo until the next prefetch"
+  )
+  coordinator:prefetchEncounterScene()
+  Assert.equal(
+    coordinator:predictedSceneKey(),
+    "general/plain/evening",
+    "the next prefetch publishes the evening scene"
+  )
+  Assert.deepEqual(
+    requests,
+    { "general/plain/day@near", "general/plain/evening@near" },
+    "the evening scene queues exactly once"
+  )
+  local evening = coordinator:_captureLaunchEnvironment({ kind = "wild", payload = {} }, "grass")
+  Assert.equal(
+    evening.sceneKey,
+    "general/plain/evening",
+    "the live evening launch agrees with the refreshed prediction"
+  )
+  state.clockHour = 23
+  Assert.isNil(
+    coordinator:predictedSceneKey(),
+    "a night clock expires the stationary memo until the next prefetch"
+  )
+  coordinator:prefetchEncounterScene()
+  Assert.equal(
+    coordinator:predictedSceneKey(),
+    "general/plain/night",
+    "the next prefetch publishes the night scene"
+  )
+  Assert.deepEqual(
+    requests,
+    { "general/plain/day@near", "general/plain/evening@near", "general/plain/night@near" },
+    "the night scene queues exactly once"
+  )
+  local night = coordinator:_captureLaunchEnvironment({ kind = "wild", payload = {} }, "grass")
+  Assert.equal(
+    night.sceneKey,
+    "general/plain/night",
+    "the live night launch agrees with the refreshed prediction"
+  )
+  Assert.equal(night.time, "night", "the night launch carries its band")
+  coordinator:prefetchEncounterScene()
+  Assert.deepEqual(
+    requests,
+    { "general/plain/day@near", "general/plain/evening@near", "general/plain/night@near" },
+    "a settled night prediction queues nothing new"
+  )
+end
+
+-- A stationary prediction follows avatar movement and the authored map
+-- background: surfing selects ocean water, walking restores the compiled
+-- background, and each changed scene queues once while repeats stay quiet.
+function T.stationary_movement_and_background_changes_refresh_the_predicted_scene()
+  local requests = {}
+  local state = { clockHour = 12, movementMode = "walking" }
+  local runtime = predictionRuntime(requests, state)
+  local coordinator = FieldBattleCoordinator.new(runtime)
+  coordinator:bindBattlePresentation(function(_)
+    error("no launch is admitted by a prediction read", 0)
+  end)
+  coordinator:prefetchEncounterScene()
+  Assert.equal(
+    coordinator:predictedSceneKey(),
+    "general/plain/day",
+    "walking publishes the compiled background scene"
+  )
+  state.movementMode = "surfing"
+  Assert.isNil(
+    coordinator:predictedSceneKey(),
+    "surfing expires the stationary memo until the next prefetch"
+  )
+  coordinator:prefetchEncounterScene()
+  Assert.equal(
+    coordinator:predictedSceneKey(),
+    "ocean/water/day",
+    "the next prefetch publishes the surfing scene"
+  )
+  Assert.deepEqual(
+    requests,
+    { "general/plain/day@near", "ocean/water/day@near" },
+    "the surfing scene queues exactly once"
+  )
+  local surf = coordinator:_captureLaunchEnvironment({ kind = "wild", payload = {} }, "surf")
+  Assert.equal(
+    surf.sceneKey,
+    "ocean/water/day",
+    "the live surfing launch agrees with the refreshed prediction"
+  )
+  Assert.equal(surf.movementMode, "surfing", "the surfing launch carries its movement")
+  state.movementMode = "walking"
+  Assert.isNil(
+    coordinator:predictedSceneKey(),
+    "walking again expires the stationary memo until the next prefetch"
+  )
+  coordinator:prefetchEncounterScene()
+  Assert.equal(
+    coordinator:predictedSceneKey(),
+    "general/plain/day",
+    "returning to walking restores the compiled background scene"
+  )
+  Assert.deepEqual(
+    requests,
+    { "general/plain/day@near", "ocean/water/day@near", "general/plain/day@near" },
+    "the restored scene queues again only because its key changed"
+  )
+  runtime.session.currentMap.fieldData.battleBackground = "forest"
+  Assert.isNil(
+    coordinator:predictedSceneKey(),
+    "an authored background swap expires the memo on the same map object"
+  )
+  coordinator:prefetchEncounterScene()
+  Assert.equal(
+    coordinator:predictedSceneKey(),
+    "forest/grass/day",
+    "the next prefetch publishes the authored background scene"
+  )
+  local forest = coordinator:_captureLaunchEnvironment({ kind = "wild", payload = {} }, "grass")
+  Assert.equal(
+    forest.sceneKey,
+    "forest/grass/day",
+    "the live forest launch agrees with the refreshed prediction"
+  )
+  coordinator:prefetchEncounterScene()
+  Assert.deepEqual(
+    requests,
+    {
+      "general/plain/day@near",
+      "ocean/water/day@near",
+      "general/plain/day@near",
+      "forest/grass/day@near",
+    },
+    "a settled background prediction queues nothing new"
   )
 end
 
