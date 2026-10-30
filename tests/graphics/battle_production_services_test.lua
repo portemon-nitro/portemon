@@ -1081,13 +1081,27 @@ function T.idle_warmup_reuses_staged_scene_on_first_battle_entry(scope, context)
       end,
     })
     local spent = 0
-    for _ = 1, 64 do
+    local quiet = 0
+    for _ = 1, 256 do
       local used, failure = warmEnvelope:advanceWarmup(SCENE_KEY, 1)
       Assert.isNil(failure, versionId .. " warms without failure: " .. tostring(failure))
-      if used ~= true then
-        break
+      -- A round with no new adoption is normal while worker decodes are
+      -- still pending: yield briefly so asynchronous preparation can
+      -- progress, and only stop after sustained quiet. A fixed small
+      -- round count would mistake a quiet round for a settled group now
+      -- that idle rounds no longer reread staged documents.
+      if used == true then
+        spent = spent + 1
+        quiet = 0
+      else
+        quiet = quiet + 1
+        if quiet >= 20 then
+          break
+        end
+        if love.timer ~= nil and love.timer.sleep ~= nil then
+          love.timer.sleep(0.005)
+        end
       end
-      spent = spent + 1
     end
     Assert.isTrue(spent >= 1, versionId .. " adopts warmed image pairs during idle")
     for _, ask in ipairs(warmAsks) do

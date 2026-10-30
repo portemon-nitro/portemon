@@ -1316,4 +1316,224 @@ function T.launch_and_idle_replacement_keep_a_single_scene_group()
   end
 end
 
+-- A predicted scene whose images never become ready validates its scene
+-- and global documents once, then keeps polling tickets without rereading
+-- staged files, enrolling duplicates, or realizing GPU images. A pending
+-- semantic producer touches no staged files at all.
+function T.pending_warmup_reuses_validated_documents_across_idle_frames()
+  local record = sceneRecord(SCENE_KEY)
+  do
+    local pendingFs = dualSceneCacheFs(record, sceneRecord(SCENE_B_KEY))
+    local pendingPool = scriptedPool(1000000, {})
+    local pendingEnvelope = warmEnvelope(pendingFs, pendingPool, nearHost({}, false))
+    local pendingLoads = totalLoads(pendingFs.loadLuaCounts)
+    local pendingReads = totalLoads(pendingFs.reads)
+    for _ = 1, 10 do
+      local usedPending, failurePending = pendingEnvelope:advanceWarmup(SCENE_KEY, 1)
+      Assert.isFalse(usedPending == true, "a pending producer realizes no GPU pair")
+      Assert.isNil(failurePending, "a pending producer reports no failure")
+    end
+    Assert.equal(
+      totalLoads(pendingFs.loadLuaCounts),
+      pendingLoads,
+      "a pending producer parses no Lua documents"
+    )
+    Assert.equal(totalLoads(pendingFs.reads), pendingReads, "a pending producer reads no staged bytes")
+    Assert.equal(#pendingPool.requested, 0, "a pending producer enrolls no image tickets")
+    pendingEnvelope:dispose()
+  end
+  local cacheFs = dualSceneCacheFs(record, sceneRecord(SCENE_B_KEY))
+  local pool = scriptedPool(1000000, {})
+  local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
+  local scenePath = BattlePresentationCache.scenePath(SCENE_KEY)
+  local manifestPath = BattlePresentationCache.manifestPath()
+  local usedFirst, failureFirst = envelope:advanceWarmup(SCENE_KEY, 0)
+  Assert.isFalse(usedFirst == true, "an incomplete warmup realizes no GPU pair")
+  Assert.isNil(failureFirst, "an incomplete warmup reports no failure: " .. tostring(failureFirst))
+  Assert.equal(cacheFs.loadLuaCounts[scenePath], 1, "the first ready round validates the scene document once")
+  local manifestLoads = cacheFs.loadLuaCounts[manifestPath] or 0
+  local readsBefore = totalLoads(cacheFs.reads)
+  local requestedBefore = #pool.requested
+  Assert.isTrue(requestedBefore > 0, "the first round enrolls the scene tickets")
+  for round = 1, 150 do
+    local allowance = (round % 10 == 0) and 1 or 0
+    local used, failure = envelope:advanceWarmup(SCENE_KEY, allowance)
+    Assert.isFalse(used == true, "a pending scene realizes no GPU pair")
+    Assert.isNil(failure, "a pending scene reports no failure")
+  end
+  Assert.equal(
+    cacheFs.loadLuaCounts[scenePath],
+    1,
+    "pending idle rereads no scene document after the first validated plan"
+  )
+  Assert.equal(
+    cacheFs.loadLuaCounts[manifestPath] or 0,
+    manifestLoads,
+    "pending idle rereads no global manifest after the first validated plan"
+  )
+  Assert.equal(totalLoads(cacheFs.reads), readsBefore, "pending idle rereads no staged bytes")
+  Assert.equal(#pool.requested, requestedBefore, "pending idle enrolls no duplicate tickets")
+  Assert.equal(#pool.acquired, 0, "pending idle constructs no GPU images")
+  envelope:dispose()
+end
+
+-- A replacement prediction validates its own scene once while pending,
+-- keeps the complete predecessor usable until the successor completes,
+-- and reparses neither scene while tickets stay pending.
+function T.replacement_prediction_validates_once_and_keeps_predecessor_until_complete()
+  local recordA = sceneRecord(SCENE_KEY)
+  local recordB = sceneRecord(SCENE_B_KEY)
+  local cacheFs = dualSceneCacheFs(recordA, recordB)
+  local pool = scriptedPool(1000000, {})
+  local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
+  local scenePathA = BattlePresentationCache.scenePath(SCENE_KEY)
+  local scenePathB = BattlePresentationCache.scenePath(SCENE_B_KEY)
+  local manifestPath = BattlePresentationCache.manifestPath()
+  for _, path in ipairs({
+    recordA.imagePath,
+    recordA.introLayer.image,
+    recordA.terrainSprites.player.image,
+    recordA.terrainSprites.foe.image,
+    "assets/generated/battle/synthetic.png",
+  }) do
+    pool.readyPaths[path] = true
+  end
+  driveWarmup(envelope, SCENE_KEY, 1, 128)
+  Assert.notNil(
+    envelope:_preparationServices().drawable("scene:" .. SCENE_KEY),
+    "the first prediction completes its scene group"
+  )
+  local function acquiredSceneACount()
+    local count = 0
+    for _, entry in ipairs(pool.acquired) do
+      if
+        entry.path == recordA.imagePath
+        or entry.path == recordA.introLayer.image
+        or entry.path == recordA.terrainSprites.player.image
+        or entry.path == recordA.terrainSprites.foe.image
+      then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  local acquiredBefore = acquiredSceneACount()
+  Assert.isTrue(acquiredBefore > 0, "the first prediction adopts its scene art")
+  local usedB, failureB = envelope:advanceWarmup(SCENE_B_KEY, 0)
+  Assert.isFalse(usedB == true, "the replacement enrolls without realizing any image pair")
+  Assert.isNil(failureB, "the replacement reports no failure: " .. tostring(failureB))
+  Assert.equal(cacheFs.loadLuaCounts[scenePathB], 1, "the replacement validates its scene document once")
+  local manifestPending = cacheFs.loadLuaCounts[manifestPath] or 0
+  for round = 1, 100 do
+    local allowance = (round % 10 == 0) and 1 or 0
+    local used, failure = envelope:advanceWarmup(SCENE_B_KEY, allowance)
+    Assert.isFalse(used == true, "the pending replacement realizes no GPU pair")
+    Assert.isNil(failure, "the pending replacement reports no failure")
+  end
+  Assert.equal(
+    cacheFs.loadLuaCounts[scenePathA],
+    1,
+    "the pending replacement reparses no predecessor scene document"
+  )
+  Assert.equal(
+    cacheFs.loadLuaCounts[scenePathB],
+    1,
+    "the pending replacement rereads no scene document while its images stay pending"
+  )
+  Assert.equal(
+    cacheFs.loadLuaCounts[manifestPath] or 0,
+    manifestPending,
+    "the pending replacement rereads no global manifest while its images stay pending"
+  )
+  Assert.notNil(
+    envelope:_preparationServices().drawable("scene:" .. SCENE_KEY),
+    "the complete predecessor stays usable while the replacement stays pending"
+  )
+  for _, path in ipairs({
+    recordB.imagePath,
+    recordB.introLayer.image,
+    recordB.terrainSprites.player.image,
+    recordB.terrainSprites.foe.image,
+  }) do
+    pool.readyPaths[path] = true
+  end
+  driveWarmup(envelope, SCENE_B_KEY, 1, 128)
+  Assert.notNil(
+    envelope:_preparationServices().drawable("scene:" .. SCENE_B_KEY),
+    "the replacement completes its own scene group"
+  )
+  Assert.equal(cacheFs.loadLuaCounts[scenePathA], 1, "the predecessor scene validated exactly once")
+  Assert.equal(cacheFs.loadLuaCounts[scenePathB], 1, "the replacement scene validated exactly once")
+  Assert.isTrue(
+    (cacheFs.loadLuaCounts[manifestPath] or 0) <= 2,
+    "the global manifest validates at most once per prediction"
+  )
+  Assert.equal(acquiredSceneACount(), acquiredBefore, "no late abandoned art publishes the predecessor scene")
+  envelope:dispose()
+end
+
+-- A terminal speculative image failure stays quiet on later idle frames:
+-- no document rereads, no re-enrollment, no repeated error — while the
+-- required foreground demand still fails aloud and an independent valid
+-- launch still prepares.
+function T.failed_warmup_stays_quiet_without_rereading_documents()
+  local record = sceneRecord(SCENE_KEY)
+  local recordB = sceneRecord(SCENE_B_KEY)
+  local cacheFs = dualSceneCacheFs(record, recordB)
+  local pool = scriptedPool(0, { [record.imagePath] = "probe-scene-upload-failed" })
+  local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
+  local scenePath = BattlePresentationCache.scenePath(SCENE_KEY)
+  local manifestPath = BattlePresentationCache.manifestPath()
+  local used, failure = envelope:advanceWarmup(SCENE_KEY, 1)
+  Assert.isFalse(used == true, "a failed speculative image realizes no GPU pair")
+  Assert.isTrue(
+    type(failure) == "string"
+      and failure:find(SCENE_KEY, 1, true) ~= nil
+      and failure:find(record.imagePath, 1, true) ~= nil,
+    "the terminal failure names its scene key and path: " .. tostring(failure)
+  )
+  local sceneLoads = cacheFs.loadLuaCounts[scenePath]
+  local manifestLoads = cacheFs.loadLuaCounts[manifestPath] or 0
+  local requested = #pool.requested
+  for _ = 1, 150 do
+    local usedIdle, failureIdle = envelope:advanceWarmup(SCENE_KEY, 0)
+    Assert.isFalse(usedIdle == true, "latched speculation realizes no GPU pair")
+    Assert.isNil(failureIdle, "latched speculation reports no further failure")
+  end
+  Assert.equal(
+    cacheFs.loadLuaCounts[scenePath],
+    sceneLoads,
+    "latched speculation rereads no scene document"
+  )
+  Assert.equal(
+    cacheFs.loadLuaCounts[manifestPath] or 0,
+    manifestLoads,
+    "latched speculation rereads no global manifest"
+  )
+  Assert.equal(#pool.requested, requested, "latched speculation enrolls no new tickets")
+  for _ = 1, 10 do
+    local usedAllowed, failureAllowed = envelope:advanceWarmup(SCENE_KEY, 1)
+    Assert.isFalse(usedAllowed == true, "latched speculation stays quiet even with allowance")
+    Assert.isNil(failureAllowed, "latched speculation reports no further failure with allowance")
+  end
+  local services = envelope:_preparationServices()
+  local sceneDrawable, demandFailure = services.drawable("scene:" .. SCENE_KEY)
+  Assert.isNil(sceneDrawable, "required demand for the bad art never reads as ready")
+  Assert.isTrue(
+    type(demandFailure) == "string" and demandFailure:find(record.imagePath, 1, true) ~= nil,
+    "required demand still names the failing path: " .. tostring(demandFailure)
+  )
+  local readyB, failureB = services.prepare({
+    launchId = "failed-warmup-independent-launch",
+    scenes = { SCENE_B_KEY },
+    pages = {},
+    trainerPictures = {},
+    battleBalls = {},
+    iconKeys = {},
+    audio = { roles = {}, banks = {}, cries = {} },
+  })
+  Assert.isTrue(readyB, "an independent valid launch still prepares: " .. tostring(failureB))
+  envelope:dispose()
+end
+
 return { tests = T }
