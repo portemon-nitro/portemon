@@ -29,6 +29,9 @@ local PokedexRenderer = require("libs.hgss.src.ui.PokedexRenderer")
 ---@field _manifestReady boolean
 ---@field _warmChromeTokens table<string, integer> unconsumed shared-owner prefetch tokens by canonical path
 ---@field _warmChromeLeases table<string, table<string, unknown>> owner-held prefetch leases by canonical path
+---@field _warmChromePaths string[]? deduplicated sorted staged chrome paths behind the validated manifest
+---@field _warmStaticFailure string? latched idle staging diagnostic for immutable chrome work
+---@field _warmSettled boolean true once idle chrome and canvases are fully staged
 ---@field _idleSurfaces table<string, unknown>? reusable six-canvas compositor group on loan to at most one lease
 ---@field _leases table<string, unknown>[] live per-open leases in acquisition order
 ---@field _released boolean
@@ -100,6 +103,9 @@ function PokedexPresentationResources.new(opts)
     _manifestReady = false,
     _warmChromeTokens = {},
     _warmChromeLeases = {},
+    _warmChromePaths = nil,
+    _warmStaticFailure = nil,
+    _warmSettled = false,
     _idleSurfaces = nil,
     _portraitManifest = nil,
     _leases = {},
@@ -2635,50 +2641,64 @@ end
 function PokedexPresentationResources:advanceWarmup(remainingGpu)
   assert(not self._released, "pokedex preparation is released")
   assert(remainingGpu == 0 or remainingGpu == 1, "idle staging spends at most one GPU realization")
-  local allowance = remainingGpu
-  local used = false
-  local ready, failure = ensureManifest(self, "near")
-  if failure ~= nil then
-    return used, failure
+  -- Idle work never enrolls producer work: only a foreground demand
+  -- establishes the manifest, so a cold leaf rests without touching the
+  -- semantic seam, the pool, or graphics.
+  if not self._manifestReady then
+    return false, nil
   end
-  if not ready then
-    return used, nil
+  if self._warmSettled then
+    return false, nil
+  end
+  if self._warmStaticFailure ~= nil then
+    return false, self._warmStaticFailure
   end
   local manifest = assert(self._manifest, "prepared bundles carry their manifest")
-  local wantedRoles, seenRoles = {}, {}
-  for _, pageRole in ipairs({ "cover", "grid", "registration" }) do
-    local roles, closureFailure = requiredChromeRoles(manifest, pageRole)
-    if roles == nil then
-      return used, closureFailure
-    end
-    for _, role in ipairs(roles) do
-      if not seenRoles[role] then
-        seenRoles[role] = true
-        wantedRoles[#wantedRoles + 1] = role
+  local wantedPaths = self._warmChromePaths
+  if wantedPaths == nil then
+    local wantedRoles, seenRoles = {}, {}
+    for _, pageRole in ipairs({ "cover", "grid", "registration" }) do
+      local roles, closureFailure = requiredChromeRoles(manifest, pageRole)
+      if roles == nil then
+        self._warmStaticFailure = closureFailure
+        return false, closureFailure
+      end
+      for _, role in ipairs(roles) do
+        if not seenRoles[role] then
+          seenRoles[role] = true
+          wantedRoles[#wantedRoles + 1] = role
+        end
       end
     end
-  end
-  table.sort(wantedRoles)
-  local chromeInventory = manifest.chrome
-  if type(chromeInventory) ~= "table" then
-    return used, "prepared bundles carry their chrome inventory"
-  end
-  local wantedPaths, seenPaths = {}, {}
-  for _, role in ipairs(wantedRoles) do
-    local record = chromeInventory[role]
-    if type(record) ~= "table" then
-      return used, "chrome role " .. tostring(role) .. " is not a record"
+    table.sort(wantedRoles)
+    local chromeInventory = manifest.chrome
+    if type(chromeInventory) ~= "table" then
+      self._warmStaticFailure = "prepared bundles carry their chrome inventory"
+      return false, self._warmStaticFailure
     end
-    local path = record.path
-    if type(path) ~= "string" or path == "" then
-      return used, "chrome role " .. tostring(role) .. " carries no path"
+    local paths, seenPaths = {}, {}
+    for _, role in ipairs(wantedRoles) do
+      local record = chromeInventory[role]
+      if type(record) ~= "table" then
+        self._warmStaticFailure = "chrome role " .. tostring(role) .. " is not a record"
+        return false, self._warmStaticFailure
+      end
+      local path = record.path
+      if type(path) ~= "string" or path == "" then
+        self._warmStaticFailure = "chrome role " .. tostring(role) .. " carries no path"
+        return false, self._warmStaticFailure
+      end
+      if not seenPaths[path] then
+        seenPaths[path] = true
+        paths[#paths + 1] = path
+      end
     end
-    if not seenPaths[path] then
-      seenPaths[path] = true
-      wantedPaths[#wantedPaths + 1] = path
-    end
+    table.sort(paths)
+    self._warmChromePaths = paths
+    wantedPaths = paths
   end
-  table.sort(wantedPaths)
+  local allowance = remainingGpu
+  local used = false
   local pool = self._pool
   for _, path in ipairs(wantedPaths) do
     if self._warmChromeLeases[path] == nil and self._warmChromeTokens[path] == nil then
@@ -2692,7 +2712,8 @@ function PokedexPresentationResources:advanceWarmup(remainingGpu)
       if status == "failed" then
         pool:cancel(token)
         self._warmChromeTokens[path] = nil
-        return used, "compiled Pokedex chrome missing at " .. path .. ": " .. tostring(cause)
+        self._warmStaticFailure = "compiled Pokedex chrome missing at " .. path .. ": " .. tostring(cause)
+        return used, self._warmStaticFailure
       end
     end
   end
@@ -2706,7 +2727,8 @@ function PokedexPresentationResources:advanceWarmup(remainingGpu)
           if not ok then
             self._warmChromeTokens[path] = nil
             pool:cancel(token)
-            return used, "compiled Pokedex chrome missing at " .. path .. ": " .. tostring(adopted)
+            self._warmStaticFailure = "compiled Pokedex chrome missing at " .. path .. ": " .. tostring(adopted)
+            return used, self._warmStaticFailure
           end
           self._warmChromeTokens[path] = nil
           self._warmChromeLeases[path] = adopted
@@ -2744,6 +2766,36 @@ function PokedexPresentationResources:advanceWarmup(remainingGpu)
           break
         end
       end
+    end
+  end
+  -- A settled leaf rests without rewalking the manifest: every staged
+  -- path holds its lease and the one idle canvas group is complete. A
+  -- group on loan to a live lease never counts as the idle spare, so a
+  -- held leaf keeps its memo valid and settles once the group returns.
+  local chromeComplete = true
+  for _, path in ipairs(wantedPaths) do
+    if self._warmChromeLeases[path] == nil then
+      chromeComplete = false
+      break
+    end
+  end
+  if chromeComplete then
+    local canvasComplete = true
+    if type(graphics) == "table" and type(graphics.newCanvas) == "function" then
+      local group = self._idleSurfaces
+      if type(group) ~= "table" or #group ~= #SURFACE_NAMES then
+        canvasComplete = false
+      else
+        for _, surface in ipairs(group) do
+          if surface.canvas == nil then
+            canvasComplete = false
+            break
+          end
+        end
+      end
+    end
+    if canvasComplete then
+      self._warmSettled = true
     end
   end
   return used, nil
@@ -2863,6 +2915,9 @@ function PokedexPresentationResources:release()
   end
   self._manifest = nil
   self._manifestReady = false
+  self._warmChromePaths = nil
+  self._warmStaticFailure = nil
+  self._warmSettled = false
   self._portraitManifest = nil
 end
 

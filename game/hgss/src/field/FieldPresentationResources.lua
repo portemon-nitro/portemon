@@ -1350,9 +1350,10 @@ end
 -- Advances the field-owned idle application warmup under the shared one
 -- GPU realization budget: predicts the live party portrait selectors from
 -- validated party copies and alternates progress across the Summary and
--- Pokedex owners. Both owners may enroll or poll with zero allowance;
--- at most one new pool lease or canvas realizes per call. Failures stay
--- diagnostic and never disable the ordinary demand path.
+-- Pokedex owners. The Pokedex turn only advances an already-opened leaf
+-- and never constructs one or enrolls producer work. At most one new pool
+-- lease or canvas realizes per call. Failures stay diagnostic and never
+-- disable the ordinary demand path.
 ---@param remainingGpu integer 0 or 1 speculative GPU realizations for the call
 ---@return boolean usedGpu true when the call realized a new pool lease or canvas
 function FieldPresentationResources:advanceApplicationWarmup(remainingGpu)
@@ -1421,16 +1422,7 @@ function FieldPresentationResources:advanceApplicationWarmup(remainingGpu)
     if name == "summary" then
       owner = self.summaryResources
     else
-      if self._presentationRuntime ~= nil then
-        local okOwner, resolved = pcall(function()
-          return self:pokedex()
-        end)
-        if okOwner then
-          owner = resolved
-        end
-      else
-        owner = self.pokedexResources
-      end
+      owner = self.pokedexResources
     end
     if owner ~= nil and type(owner.advanceWarmup) == "function" then
       local ok, ownerUsed, failure

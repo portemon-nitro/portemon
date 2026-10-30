@@ -219,6 +219,40 @@ function T.presentation_aggregate_advertises_the_idle_application_slot()
   state:dispose()
 end
 
+-- Idle field work never builds the dex leaf as a side effect and never
+-- issues dex producer demand: the aggregate runs its alternating Summary
+-- turns with full and held allowances while the dex owner stays absent
+-- and the semantic ledger stays empty.
+function T.idle_field_work_leaves_the_pokedex_leaf_unbuilt_and_unrequested()
+  local runtime = stubPresentationRuntime()
+  local demands = {}
+  local derived = assert(runtime.derivedAssets, "the presented runtime carries its semantic cache host")
+  derived.requestPokedex = function(urgency)
+    demands[#demands + 1] = urgency
+    return false, nil
+  end
+  local resources = FieldPresentationResources.new(runtime)
+  Assert.isNil(resources.pokedexResources, "a field that never opened the dex owns no dex leaf")
+  Assert.isTrue(
+    type(resources.advanceApplicationWarmup) == "function",
+    "field presentation advances its application warmup between foreground preparation and draw"
+  )
+  for _ = 1, 4 do
+    local used = resources:advanceApplicationWarmup(1)
+    Assert.isTrue(used == true or used == false, "idle staging answers with its GPU admission")
+  end
+  Assert.isNil(resources.pokedexResources, "idle turns never construct the dex leaf")
+  Assert.equal(#demands, 0, "idle turns issue no dex producer demand")
+  for _ = 1, 4 do
+    local used = resources:advanceApplicationWarmup(0)
+    Assert.isTrue(used == true or used == false, "held staging answers with its GPU admission")
+  end
+  Assert.isNil(resources.pokedexResources, "held turns never construct the dex leaf")
+  Assert.equal(#demands, 0, "held turns issue no dex producer demand")
+  Assert.notNil(resources.summaryResources, "idle staging keeps its summary leaf")
+  resources:dispose()
+end
+
 -- An idle host update spends its single speculative admission exactly once
 -- and never blocks: the warmup seam answers synchronously.
 function T.idle_update_advances_warmup_exactly_once_with_the_full_slot()
