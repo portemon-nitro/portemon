@@ -5,6 +5,12 @@
 # time is roughly the slower of the two rather than their sum.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Resolved at runtime from the repo root.
+# shellcheck disable=SC1091
+source scripts/lib/dev.sh
+# Ensure the lint toolchain (stylua, lua-language-server) alongside the
+# `love` runtime dev.sh already covers; installs land in scripts/bin/.
+scripts/lib/repo-setup.sh --dev
 
 case "$#:${1:-}" in
   0:) STYLUA_ARGS=() ;;
@@ -73,7 +79,9 @@ scripts/lib/check-invariants.sh --cached
 # "New Bark slice" stay legal. lint.sh is excluded because it contains the
 # patterns itself.
 permanent_prose_roots=(README.md docs data libs game romdump tests scripts gen4 .agents/docs)
+# scripts/bin/ holds third-party tool downloads, not repository prose.
 if grep -RInE --include='*.lua' --include='*.md' --include='*.sh' --include='*.toml' \
+  --exclude-dir='bin' \
   -e 'tmp/spec' -e 'spec section' -e 'Workstream' -e 'milestone [0-9]' -e 'slice [0-9]' \
   -e 'WS[0-9]' -e 'under development' -e 'provisional' -e 'may change in a future API' \
   -e '\bD[0-9]+\b' -e '\bDEV-[0-9]+\b' -e 'pre-D[0-9]+' \

@@ -4,6 +4,7 @@
 *.md    text eol=lf
 *.sh    text eol=lf
 *.ps1   text eol=crlf
+*.bat    text eol=crlf
 
 *.nds   binary
 *.sav   binary

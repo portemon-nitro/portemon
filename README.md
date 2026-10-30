@@ -12,27 +12,14 @@ the importer recognizes only the supported canonical US dumps. Your ROM file
 stays where you keep it: the app records only a small pointer to it, never a
 copy, and derived game data is compiled straight from the original.
 
-## Requirements
-
-- [LÖVE 11.5](https://love2d.org/)
-
-
 ## Contributing
 
-Run commands from the repository root (assumes UNIX-like system):
+Run commands from the repository root (assumes UNIX-like system for most things):
 
 ```sh
-scripts/run.sh
-scripts/test.sh [--rom-source <path-to-nds-or-zip-file>]
-scripts/lint.sh          # format Lua, then run fast static/policy checks
+scripts/run.sh (run.bat on Windows)
+scripts/test.sh [--filter <substring>] [--rom-source <path-to-nds-or-zip-file>]
 ```
-
-`lint.sh` needs [StyLua](https://github.com/JohnnyMorganz/StyLua) and
-[LuaLS](https://github.com/LuaLS/lua-language-server) on `PATH`.
-
-
-See [the architecture principles](docs/architecture.md) for ownership,
-dependency direction, and data-lifecycle guidance.
 
 ## Acknowledgements
 
