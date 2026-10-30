@@ -1335,6 +1335,43 @@ function T.shared_pp_arithmetic_drives_items_deposit_and_editors()
   )
 end
 
+function T.move_overlay_refreshes_its_title_after_the_draft_move_changes()
+  local catalog = CatalogFixture.makeCatalog()
+  local draftContext = CatalogFixture.domainContext(catalog)
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local record = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 5 }))
+  record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
+  local draft =
+    Draft.new({ mode = "edit", slot0 = 0, basePartyRevision = 0, record = record, context = draftContext })
+  local overlayState = setmetatable({
+    pendingMoveSlot = nil,
+    modalLayerSequence = 0,
+    modalStack = require("app.src.saveeditor.SaveEditorModalStack").new(),
+    monDraft = draft,
+    dependencies = { context = { monCatalog = catalog } },
+    controller = Controller.new(),
+    valueEditor = nil,
+  }, SaveEditorState)
+  overlayState:_showMoveOverlay(0)
+  local opened = assert(overlayState.modalStack:top(), "the move overlay pushes its decision layer")
+  Assert.isTrue(
+    tostring(opened.payload.title):find("Tackle", 1, true) ~= nil,
+    "the overlay names the selected move on open"
+  )
+  Assert.isTrue(draft:setMove(0, "move", "GROWL"), "the draft accepts the replacement move")
+  overlayState:_showMoveOverlay(0, "party-move:move")
+  local restored = assert(overlayState.modalStack:top(), "the restored overlay keeps its decision layer")
+  Assert.isTrue(
+    tostring(restored.payload.title):find("Growl", 1, true) ~= nil,
+    "restoring the overlay refreshes the title to the replacement move"
+  )
+  Assert.isNil(
+    tostring(restored.payload.title):find("Tackle", 1, true),
+    "the stale move name does not survive the restore"
+  )
+end
+
 function T.party_details_project_held_item_and_ball_options_from_mixed_catalog()
   local _, _, mon, projection = structuredMon("EEVEE", 9)
   local root = ItemFixture.buildAssetRoot()

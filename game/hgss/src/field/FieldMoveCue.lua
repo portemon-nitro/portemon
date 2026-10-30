@@ -14,13 +14,16 @@
 -- jump (a = repeats), grow_shrink, flash (a = step, b = period). The emote
 -- mark mirrors field_emote_mark.c: the exclamation over a smashed rock.
 
+---@class FieldMoveCue
+---@field _blocking boolean
+---@field _pendingEffects fun()[]
 local FieldMoveCue = {}
 FieldMoveCue.__index = FieldMoveCue
 
 local GESTURES = { jump = true, grow_shrink = true, flash = true }
 local EFFECT_KIND_COUNT = 6
 
----@return table
+---@return FieldMoveCue
 function FieldMoveCue.new()
   return setmetatable({ _blocking = false, _pendingEffects = {} }, FieldMoveCue)
 end

@@ -296,7 +296,10 @@ local function matrixDestination(snapshot, region, targetId, direction)
   if type(candidate) == "string" then
     return candidate, nextRow
   end
-  for distance = 1, #row do
+  -- Jagged rows (a wide primary row above a single Back action) still
+  -- resolve by nearest column: the search spans the full column gap,
+  -- not just the next row's own width.
+  for distance = 1, math.max(#row, columnIndex) do
     candidate = row[columnIndex - distance]
     if type(candidate) == "string" then
       return candidate, nextRow
