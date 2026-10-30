@@ -1767,6 +1767,9 @@ local function gatedSessionOptions(input, lifecycles, enterMapActors)
       foregroundEnvironmentId = function()
         return nil
       end,
+      foregroundTrigger = function()
+        return nil
+      end,
     },
     scriptClient = { consume = function() end },
     enterMapActors = enterMapActors,
@@ -2130,6 +2133,9 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
           return false
         end,
         foregroundEnvironmentId = function()
+          return nil
+        end,
+        foregroundTrigger = function()
           return nil
         end,
       },

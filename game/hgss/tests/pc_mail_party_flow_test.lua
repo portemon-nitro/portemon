@@ -127,6 +127,7 @@ local function worldPorts()
         return {}
       end,
       getPosition = function() end,
+      partnerId = function() end,
       getCollisionAt = function() end,
       beginScriptedAction = function() end,
       advanceScriptedAction = function() end,

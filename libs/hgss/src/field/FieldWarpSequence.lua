@@ -203,10 +203,16 @@ function FieldWarpSequence.departureColor(sequence)
   return kindConfig(sequence).color
 end
 
+-- Whether the follower performs the move: next to the player and holding
+-- the used party slot (Task_FieldDig/Task_FieldTeleport). The follower path
+-- cries and runs its own flash and spin with no cut-in; the solo path shows
+-- the cut-in with no cry. Escape Rope never takes either path.
 ---@param kind "teleport"|"dig"|"escape_rope"|"fly"
+---@param opts { withFollowMon: boolean? }?
 ---@return table<string, unknown> sequence plain-data state
-function FieldWarpSequence.new(kind)
+function FieldWarpSequence.new(kind, opts)
   assert(KINDS[kind], "unknown warp sequence kind " .. tostring(kind))
+  assert(opts == nil or type(opts) == "table", "warp sequence options are a record")
   return {
     kind = kind,
     phase = "departure",
@@ -218,6 +224,7 @@ function FieldWarpSequence.new(kind)
     cutinStarted = false,
     landingStarted = false,
     zoomBack = false,
+    withFollowMon = opts ~= nil and opts.withFollowMon == true,
   }
 end
 
@@ -253,6 +260,21 @@ local function stepFlyDeparture(sequence, port)
   return "warp"
 end
 
+-- Dig and Teleport open with the move cut-in when the follower is not
+-- performing the move, or with the lead cry when it is (sDigSteps and
+-- sTeleportSteps ShowCutIn/WaitCutIn versus the follower cry and steps).
+-- Escape Rope takes neither path. The follower jump and mood, the follower
+-- flash and spin, the rock debris, and the post-cut-in recall stay with
+-- the follower and effect owners: this sequence only orders the cry and
+-- cut-in waits the warp-cover fades own around the shared spin.
+local function startGroundedSpin(sequence, port, config)
+  startZoom(sequence, port, "by", FieldWarpSequence.ZOOM_BY_FX32, ZOOM_OUT_TICKS)
+  beginMovement(sequence, config.start)
+  port:playEffect(config.effect)
+  sequence.step = config.hole and "hole" or "spin"
+  return tickEnd(sequence, port)
+end
+
 -- Advance the departure one source tick. "warp" once the cover is complete
 -- and the avatar/camera are released for the map change.
 ---@param sequence table<string, unknown>
@@ -265,11 +287,31 @@ function FieldWarpSequence.stepDeparture(sequence, port)
     return stepFlyDeparture(sequence, port)
   end
   if sequence.step == "start" then
-    startZoom(sequence, port, "by", FieldWarpSequence.ZOOM_BY_FX32, ZOOM_OUT_TICKS)
-    beginMovement(sequence, config.start)
-    port:playEffect(config.effect)
-    sequence.step = config.hole and "hole" or "spin"
-    return tickEnd(sequence, port)
+    if sequence.kind == "dig" or sequence.kind == "teleport" then
+      if sequence.withFollowMon then
+        port:startCry()
+        sequence.step = "cry"
+      else
+        port:startCutIn()
+        sequence.cutinStarted = true
+        sequence.step = "cutin"
+      end
+      return "running"
+    end
+    return startGroundedSpin(sequence, port, config)
+  end
+  if sequence.step == "cry" then
+    if not port:cryDone() then
+      return "running"
+    end
+    return startGroundedSpin(sequence, port, config)
+  end
+  if sequence.step == "cutin" then
+    if not port:cutInDone() then
+      return "running"
+    end
+    sequence.cutinStarted = false
+    return startGroundedSpin(sequence, port, config)
   end
   if sequence.step == "hole" then
     if movementFinished(sequence) then

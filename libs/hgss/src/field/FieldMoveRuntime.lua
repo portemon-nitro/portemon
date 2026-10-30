@@ -323,6 +323,13 @@ local function buildReturnPlan(self, request, move)
   if type(destination.kind) == "string" then
     return destination
   end
+  -- Dig and Teleport resolve the follower performance from live world state
+  -- at plan time: an adjacent follower using the lead takes the cry path,
+  -- and the answer rides the plan and its warp sequence together.
+  local withFollowMon = false
+  if move == DIG or move == TELEPORT then
+    withFollowMon = self._world:isFollowerPerforming(request.slot) == true
+  end
   return {
     kind = move,
     move = move,
@@ -331,7 +338,8 @@ local function buildReturnPlan(self, request, move)
     mapId = assert(context.mapId, "return plans carry their source map"),
     destination = destination,
     phase = "depart",
-    sequence = FieldWarpSequence.new(move),
+    withFollowMon = withFollowMon,
+    sequence = FieldWarpSequence.new(move, { withFollowMon = withFollowMon }),
     committed = false,
     warpStarted = false,
   }

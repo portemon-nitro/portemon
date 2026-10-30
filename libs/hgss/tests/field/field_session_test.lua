@@ -229,6 +229,9 @@ local function baseOptions(overrides)
       foregroundEnvironmentId = function()
         return nil
       end,
+      foregroundTrigger = function()
+        return nil
+      end,
     },
     scriptClient = { consume = function() end },
     enterMapActors = function() end,
@@ -527,6 +530,9 @@ function T.fixed_tick_runs_the_major_arbitration_phases_in_order()
         mark("script-lock-check")
         return false
       end,
+      foregroundTrigger = function()
+        return nil
+      end,
       step = function()
         mark("script-step")
       end,
@@ -775,6 +781,9 @@ function T.session_requires_player_presentation_state()
       foregroundEnvironmentId = function()
         return nil
       end,
+      foregroundTrigger = function()
+        return nil
+      end,
     },
     scriptClient = { consume = function() end },
     menuHost = {
@@ -869,6 +878,9 @@ function T.absent_overworld_keeps_scripts_running_and_suspends_actor_activity()
       foregroundEnvironmentId = function()
         return nil
       end,
+      foregroundTrigger = function()
+        return nil
+      end,
     },
     actors = {
       cameraTargetId = function()
@@ -907,6 +919,9 @@ function T.map_init_claims_the_tick_before_scheduler_and_player_input()
       return false
     end,
     foregroundEnvironmentId = function()
+      return nil
+    end,
+    foregroundTrigger = function()
       return nil
     end,
   }
@@ -963,6 +978,9 @@ function T.map_lifecycle_events_are_queued_and_drained_before_frame_checks()
     end,
     foregroundEnvironmentId = function(self)
       return self.busy and "foreground" or nil
+    end,
+    foregroundTrigger = function()
+      return nil
     end,
   }
   local s = FieldSession.new(baseOptions({
@@ -1066,6 +1084,9 @@ function T.blocked_lifecycle_stays_at_head_until_foreground_is_free()
     end,
     foregroundEnvironmentId = function(self)
       return self.busy and "busy" or nil
+    end,
+    foregroundTrigger = function()
+      return nil
     end,
   }
   local controller = {
@@ -1330,6 +1351,9 @@ function T.script_completion_consumes_its_final_action_edge()
     foregroundEnvironmentId = function()
       return locked and "foreground" or nil
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
   }
   local player = {
     fieldX = 0,
@@ -1416,6 +1440,82 @@ function T.action_snapshot_carries_the_surfing_state_and_surf_permission()
 end
 
 -- The input snapshot vocabulary is actionPressed/cancelPressed; the
+-- While a runtime-owned application script (field-move entries and their menu
+-- scripts) owns the foreground, held and pressed directions never reach the
+-- player's ordinary stepping: the warp and traversal sequences drive facing
+-- and scripted motion themselves, and live steps would flap the avatar
+-- between turn frames and scripted facings. Button edges stay live for the
+-- scripts' own waits, and scripted motion still advances through the normal
+-- stepping path.
+local function applicationHoldSession(recorded)
+  local player = defaultPlayer()
+  player.updateFixed = function(_, input)
+    recorded[#recorded + 1] = {
+      pressedDirection = input.pressedDirection,
+      heldDirection = input.heldDirection,
+    }
+    return false
+  end
+  local scheduler = {
+    step = function() end,
+    playerInputLocked = function()
+      return false
+    end,
+    playerInputOwned = function()
+      return false
+    end,
+    foregroundEnvironmentId = function()
+      return "env-application"
+    end,
+    foregroundTrigger = function()
+      return { type = "application", scriptId = "runtime.field_move_entry" }
+    end,
+  }
+  return FieldSession.new(baseOptions({ player = player, scriptScheduler = scheduler }))
+end
+
+function T.application_foreground_holds_held_directions_out_of_player_steps()
+  local recorded = {}
+  local session = applicationHoldSession(recorded)
+  session:updateFixed({ heldDirection = "east", pressedDirection = "east" })
+  Assert.isTrue(#recorded > 0, "the player must still step while an application script runs")
+  for _, input in ipairs(recorded) do
+    Assert.isNil(input.pressedDirection, "pressed directions must not reach the player under an application foreground")
+    Assert.isNil(input.heldDirection, "held directions must not reach the player under an application foreground")
+  end
+end
+
+function T.non_application_foreground_leaves_held_directions_alone()
+  local recorded = {}
+  local player = defaultPlayer()
+  player.updateFixed = function(_, input)
+    recorded[#recorded + 1] = {
+      pressedDirection = input.pressedDirection,
+      heldDirection = input.heldDirection,
+    }
+    return false
+  end
+  local scheduler = {
+    step = function() end,
+    playerInputLocked = function()
+      return false
+    end,
+    playerInputOwned = function()
+      return false
+    end,
+    foregroundEnvironmentId = function()
+      return "env-interaction"
+    end,
+    foregroundTrigger = function()
+      return { type = "field_interaction" }
+    end,
+  }
+  local session = FieldSession.new(baseOptions({ player = player, scriptScheduler = scheduler }))
+  session:updateFixed({ heldDirection = "east", pressedDirection = "east" })
+  Assert.isTrue(#recorded > 0, "the player must step")
+  Assert.equal(recorded[#recorded].heldDirection, "east", "other foreground origins keep live directions")
+end
+
 -- scheduler receives edges only through that vocabulary. Snapshot properties
 -- outside it are ignored -- the scheduler's own step-input vocabulary
 -- (pressedAction/pressedCancel) is a separate contract.
@@ -1432,6 +1532,9 @@ function T.scheduler_edges_come_only_from_current_snapshot_properties()
       return false
     end,
     foregroundEnvironmentId = function()
+      return nil
+    end,
+    foregroundTrigger = function()
       return nil
     end,
   }
@@ -1469,6 +1572,9 @@ function T.modal_menu_routes_ui_events_to_the_script_scheduler()
     end,
     foregroundEnvironmentId = function()
       return "foreground"
+    end,
+    foregroundTrigger = function()
+      return nil
     end,
   }
   local player = {
@@ -2722,6 +2828,9 @@ function T.script_locked_ticks_still_advance_the_scene_clock()
     foregroundEnvironmentId = function()
       return "foreground"
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
   }
   local session = FieldSession.new(baseOptions({
     currentMap = map,
@@ -2859,6 +2968,9 @@ function T.absent_overworld_tick_advances_the_map_clock_once()
       foregroundEnvironmentId = function()
         return nil
       end,
+      foregroundTrigger = function()
+        return nil
+      end,
     },
   }))
   session:updateFixed({})
@@ -2902,6 +3014,9 @@ function T.application_host_owns_the_tick_and_freezes_world_simulation()
       return false
     end,
     foregroundEnvironmentId = function()
+      return nil
+    end,
+    foregroundTrigger = function()
       return nil
     end,
   }
@@ -3060,6 +3175,9 @@ function T.a_movement_lock_blocks_the_menu_edge()
     end,
     foregroundEnvironmentId = function()
       return "foreground"
+    end,
+    foregroundTrigger = function()
+      return nil
     end,
   }
   local session = FieldSession.new(baseOptions({
@@ -3336,6 +3454,9 @@ function T.audio_update_field_runs_once_per_completed_step_before_early_returns(
     foregroundEnvironmentId = function()
       return state.scriptLocked and "foreground" or nil
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
   }
   local player = {
     fieldX = 4,
@@ -3427,6 +3548,9 @@ function T.field_policy_runs_once_per_completed_step_without_stepping_semantic_a
     foregroundEnvironmentId = function()
       return nil
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
   }
   local committed = false
   local player = {
@@ -3484,6 +3608,9 @@ function T.map_entry_waits_for_yielding_transition_before_entering_actors()
     end,
     foregroundEnvironmentId = function(self)
       return self.busy and "transition" or nil
+    end,
+    foregroundTrigger = function()
+      return nil
     end,
   }
   local controller = {
@@ -3559,6 +3686,9 @@ local function connectionSeamScenario(arrivalKind)
     end,
     foregroundEnvironmentId = function(self)
       return self.busy and "transition" or nil
+    end,
+    foregroundTrigger = function()
+      return nil
     end,
   }
   local controller = {
@@ -4087,6 +4217,9 @@ local function eventBoundarySession(kind)
     foregroundEnvironmentId = function()
       return lockTicks > 0 and "script" or nil
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
   }
   local transition = {
     phase = "idle",
@@ -4544,6 +4677,9 @@ local function pushSession(overrides)
     options.scriptScheduler.foregroundEnvironmentId = function()
       return "env-1"
     end
+    options.scriptScheduler.foregroundTrigger = function()
+      return nil
+    end
   end
   local session = FieldSession.new(options)
   return session,
@@ -4870,6 +5006,9 @@ function T.contextual_choice_routes_pointer_through_the_shared_choice_host()
     foregroundEnvironmentId = function()
       return "foreground"
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
   }
   local session = FieldSession.new(baseOptions({
     input = {
@@ -4933,6 +5072,9 @@ function T.inactive_contextual_choice_clears_borrowed_capture()
     foregroundEnvironmentId = function()
       return nil
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
   }
   local session = FieldSession.new(baseOptions({
     scriptScheduler = scheduler,
@@ -4981,6 +5123,9 @@ function T.unpresentable_contextual_choice_keeps_the_raw_lane()
     end,
     foregroundEnvironmentId = function()
       return "foreground"
+    end,
+    foregroundTrigger = function()
+      return nil
     end,
   }
   local session = FieldSession.new(baseOptions({
@@ -5150,6 +5295,9 @@ function T.foreground_hold_freezes_gameplay_but_not_script_polling()
         return false
       end,
       foregroundEnvironmentId = function()
+        return nil
+      end,
+      foregroundTrigger = function()
         return nil
       end,
       autonomousActorsLocked = function()
@@ -5497,6 +5645,9 @@ function T.a_locked_preview_advances_the_covered_map_entry_without_gameplay()
       end
       return nil
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
   }
   local order = {}
   local controller = {
@@ -5626,6 +5777,9 @@ function T.a_locked_preview_without_entry_scripts_still_reaches_presentation()
       return false
     end,
     foregroundEnvironmentId = function()
+      return nil
+    end,
+    foregroundTrigger = function()
       return nil
     end,
   }

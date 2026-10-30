@@ -223,6 +223,7 @@ end
 ---@field terrainResponseInput table<string, unknown>
 ---@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: ("normal"|"run")?, scriptedPoseDelta: integer? }
 ---@field carriedMovementInput table<string, unknown>
+---@field heldMovementInput table<string, unknown>
 ---@field interactionSnapshot table<string, unknown>
 ---@field actorContext table<string, unknown>
 ---@field playerFacts { fieldX: integer, fieldZ: integer, surfaceId: integer, worldY: number }
@@ -267,6 +268,7 @@ local function newTickScratch(actorLocked)
       scriptedPoseDelta = nil,
     },
     carriedMovementInput = {},
+    heldMovementInput = {},
     interactionSnapshot = {},
     actorContext = {
       autonomousLocked = false,
@@ -354,6 +356,7 @@ function FieldSession.new(options)
   assert(
     scriptScheduler
       and scriptScheduler.step
+      and scriptScheduler.foregroundTrigger
       and (scriptScheduler.playerInputOwned or scriptScheduler.playerMovementLocked),
     "field session script scheduler required"
   )
@@ -665,6 +668,17 @@ end
 
 local function isForegroundActive(scheduler)
   return foregroundEnvironmentId(scheduler) ~= nil
+end
+
+-- Whether a runtime-owned application script owns the foreground: the
+-- field-move entries and their menu scripts drive the field without taking
+-- the interaction claim, so the ownership facts above cannot name them.
+-- The trigger category is the contract; every application root today is a
+-- field-move or sweet-scent task host, and none of them read raw
+-- directional input (modal companions ride the UI-event lane instead).
+local function isApplicationForeground(scheduler)
+  local trigger = scheduler:foregroundTrigger()
+  return type(trigger) == "table" and trigger.type == "application"
 end
 
 -- Combined ownership: explicit lock OR field-interaction claim. This is the
@@ -1610,6 +1624,19 @@ function FieldSession:updateFixed(inputSnapshot)
     -- as a walking continuation and skip the required turn.
     movementInput.heldDirection = nil
     movementInput.pressedDirection = carriedBoundaryDirection
+  end
+  if isApplicationForeground(self.scriptScheduler) then
+    -- Runtime-owned application scripts hold ordinary directional input for
+    -- their whole foreground lifetime: warp and traversal sequences drive
+    -- facing and scripted motion themselves, so live steps would flap the
+    -- avatar between turn frames and scripted facings (or fault against a
+    -- segment beginning mid-motion). Button edges stay live for the
+    -- scripts' own waits, and scripted motion still advances through the
+    -- normal stepping path below with the emptied input.
+    local held = self._tickScratch.heldMovementInput
+    held.pressedDirection = nil
+    held.heldDirection = nil
+    movementInput = held
   end
   local motionAtPlayerUpdateStart = self.player.motion
   -- Avatar ownership of traversal mode: ordinary-step classification

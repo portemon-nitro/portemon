@@ -186,7 +186,10 @@ function PartyMenuComposition.create(deps)
   local function partyKnowsMove(_, move)
     return mons:partySlotWithMove(move) ~= nil
   end
-  ports.party = { knowsMove = partyKnowsMove }
+  local function partyLeadSlot(_)
+    return mons:leadAliveSlot()
+  end
+  ports.party = { knowsMove = partyKnowsMove, leadSlot = partyLeadSlot }
   if deps.playCry ~= nil then
     assert(type(deps.isCryFinished) == "function", "field move cries need their completion boundary")
     -- Field moves cry the departing lead: the catalog's native species id

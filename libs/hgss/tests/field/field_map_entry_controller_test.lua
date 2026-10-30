@@ -14,6 +14,9 @@ local function controllerFixture(overrides)
       foregroundEnvironmentId = function()
         return nil
       end,
+      foregroundTrigger = function()
+        return nil
+      end,
     },
     initController = {
       hasLifecycle = function(_, lifecycle)

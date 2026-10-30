@@ -121,6 +121,9 @@ local function sessionOptions(overrides)
       foregroundEnvironmentId = function()
         return nil
       end,
+      foregroundTrigger = function()
+        return nil
+      end,
       autonomousActorsLocked = function()
         return false
       end,
@@ -189,6 +192,9 @@ function T.scheduler_input_record_identity_is_stable_across_ordinary_ticks()
     foregroundEnvironmentId = function()
       return nil
     end,
+    foregroundTrigger = function()
+      return nil
+    end,
     autonomousActorsLocked = function()
       return false
     end,
@@ -228,6 +234,9 @@ function T.scheduler_input_record_clears_stale_optional_fields_between_branches(
     end,
     foregroundEnvironmentId = function()
       return menuModal and "foreground" or nil
+    end,
+    foregroundTrigger = function()
+      return nil
     end,
     autonomousActorsLocked = function()
       return false
@@ -303,6 +312,9 @@ function T.actor_locked_predicate_reads_current_scheduler_state_at_call_time()
       return false
     end,
     foregroundEnvironmentId = function()
+      return nil
+    end,
+    foregroundTrigger = function()
       return nil
     end,
     autonomousActorsLocked = function()

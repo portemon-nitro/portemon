@@ -58,6 +58,9 @@ local function worldWith(warps, spawns, rig)
       getActor = stub(),
       actorsOf = stub(),
       getPosition = stub(),
+      partnerId = function()
+        return nil
+      end,
       getCollisionAt = stub(),
       beginScriptedAction = stub(),
       advanceScriptedAction = stub(),

@@ -284,6 +284,9 @@ function SceneLoaderFixture.newHarness(versionId, opts)
       foregroundEnvironmentId = function()
         return nil
       end,
+      foregroundTrigger = function()
+        return nil
+      end,
       autonomousActorsLocked = function()
         return false
       end,

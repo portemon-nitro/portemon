@@ -202,6 +202,9 @@ function T.teleport_resolves_through_the_real_world()
       getActor = stub(),
       actorsOf = stub(),
       getPosition = stub(),
+      partnerId = function()
+        return nil
+      end,
       getCollisionAt = stub(),
       beginScriptedAction = stub(),
       advanceScriptedAction = stub(),

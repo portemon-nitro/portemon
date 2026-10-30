@@ -84,6 +84,10 @@ local function worldDouble(warps)
   function world:validateTarget(_)
     return nil
   end
+  function world:isFollowerPerforming(slot)
+    self.followerSlot = slot
+    return self.followerPerforming == true
+  end
   function world:isStrengthActive()
     return false
   end
@@ -149,6 +153,32 @@ end
 
 -- The Escape Rope bag item returns to the recorded special spawn like Dig,
 -- through its own animation, and needs no party slot or move user.
+-- Dig and Teleport resolve the follower performance at plan time from live
+-- world state: an adjacent follower using the lead takes the cry path, and
+-- the plan carries the answer on itself and its warp sequence.
+function T.dig_plan_marks_the_follower_performance_on_the_plan_and_sequence()
+  local world = worldDouble()
+  world.followerPerforming = true
+  local runtime = runtimeWith(world)
+  local special = { map = "M", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" }
+  runtime:queue(digRequest(travelWith(special)))
+  local plan = runtime:plan(runtime:takePending())
+  Assert.equal(plan.kind, "dig")
+  Assert.equal(world.followerSlot, 0, "the follower check names the used slot")
+  Assert.isTrue(plan.withFollowMon, "the plan carries the live performance answer")
+  Assert.isTrue(plan.sequence.withFollowMon, "the warp sequence cries for the follower")
+end
+
+function T.solo_dig_plans_take_the_cutin_path()
+  local world = worldDouble()
+  local runtime = runtimeWith(world)
+  local special = { map = "M", fieldX = 1, fieldZ = 2, warpId = -1, direction = "south" }
+  runtime:queue(digRequest(travelWith(special)))
+  local plan = runtime:plan(runtime:takePending())
+  Assert.isFalse(plan.withFollowMon, "a solo departure leaves the flag clear")
+  Assert.isFalse(plan.sequence.withFollowMon, "the warp sequence shows the cut-in")
+end
+
 function T.escape_rope_plans_the_dig_destination_with_its_own_sequence_and_no_slot()
   local world = worldDouble()
   local runtime = runtimeWith(world)
