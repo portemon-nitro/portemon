@@ -1672,8 +1672,10 @@ end
 
 -- Common role art and exactly one six-canvas compositor group are staged
 -- across idle rounds; the first browser lease reuses them without new
--- canvas construction or chrome re-upload, and a repeated open reuses
--- them again while page state still waits on its own dynamic content.
+-- canvas construction or chrome re-upload, held zero-allowance updates
+-- while the lease is live displace nothing, and a repeated open reuses
+-- the returned group again while page state still waits on its own
+-- dynamic content.
 function T.idle_rounds_stage_common_chrome_and_the_canvas_group_for_first_open()
   local Owner = requirePresent("idle common chrome and canvas staging")
   local FakeGraphics = require("tests.support.FakeGraphics")
@@ -1718,21 +1720,54 @@ function T.idle_rounds_stage_common_chrome_and_the_canvas_group_for_first_open()
     Assert.equal(surface.width, 256, "warmed surfaces stay 256 wide")
     Assert.equal(surface.height, 192, "warmed surfaces stay 192 tall")
   end
+  local firstCanvases = {}
+  for _, surface in ipairs(surfaces) do
+    firstCanvases[#firstCanvases + 1] = surface.canvas
+  end
+  -- A held modal update offers no speculative GPU slot while the loaned
+  -- group is live: staging may observe readiness but must neither build
+  -- a replacement group nor realize a canvas.
+  for _ = 1, 3 do
+    local used, failure = owner:advanceWarmup(0)
+    Assert.isNil(failure, "held staging reports no failure on synthetic chrome")
+    Assert.equal(used, false, "a held update with no GPU slot admits nothing")
+  end
+  Assert.equal(#graphics.canvases, 6, "held updates while a lease is live create no canvases")
   local uploadsAfterOpen = pool.uploads
   lease:release()
+  for index, canvas in ipairs(firstCanvases) do
+    Assert.equal(
+      canvas.releaseCount,
+      0,
+      "closing the first open returns canvas " .. index .. " instead of releasing it"
+    )
+  end
   local second = owner:acquire({ purpose = "browser" })
-  pumpReady(second, pageDemand("grid", "idle-grid-again"))
+  local reopened = pumpReady(second, pageDemand("grid", "idle-grid-again"))
   Assert.equal(#graphics.canvases, 6, "a repeated open creates no new canvases")
+  local reopenedSurfaces = assert(reopened.assets.surfaces, "the reopened bundle carries its serial surfaces")
+  Assert.equal(#reopenedSurfaces, 6, "the reopened lease owns its six surfaces")
+  local reused = {}
+  for _, canvas in ipairs(firstCanvases) do
+    reused[canvas] = true
+  end
+  for index, surface in ipairs(reopenedSurfaces) do
+    Assert.isTrue(reused[surface.canvas], "reopened surface " .. index .. " reuses the returned canvas group")
+  end
   Assert.equal(pool.uploads, uploadsAfterOpen, "a repeated open re-uploads no common chrome")
   second:release()
   second:release()
   owner:release()
+  for index, canvas in ipairs(graphics.canvases) do
+    Assert.equal(canvas.releaseCount, 1, "owner teardown releases canvas " .. index .. " exactly once")
+  end
   Assert.equal(pool:stats().outstandingLeases, 0, "close returns every adopted image interest")
 end
 
 -- Independent browser and registration leases never draw into the same
 -- canvas group: the first takes the warmed spare, the second builds its
--- own, each group is released or returned exactly once, and a later open
+-- own, held zero-allowance updates while both are live create no spare,
+-- each group is released or returned exactly once, and a later open
 -- reuses the surviving spare without new construction.
 function T.overlapping_leases_hold_independent_canvas_groups()
   local Owner = requirePresent("independent per-lease canvas ownership")
@@ -1778,19 +1813,45 @@ function T.overlapping_leases_hold_independent_canvas_groups()
     Assert.isNil(seen[surface.canvas], "the registration group holds six distinct canvases")
     seen[surface.canvas] = true
   end
+  -- Held modal updates while both leases are live must not occupy the
+  -- vacant spare slot with an empty group: staging observes readiness
+  -- only and creates no canvases.
+  for _ = 1, 3 do
+    local used, failure = owner:advanceWarmup(0)
+    Assert.isNil(failure, "held staging reports no failure on synthetic chrome")
+    Assert.equal(used, false, "a held update with no GPU slot admits nothing")
+  end
+  Assert.equal(#graphics.canvases, 12, "held updates while leases are live create no canvases")
+  local secondGroup = {}
+  for _, surface in ipairs(secondCanvases) do
+    secondGroup[#secondGroup + 1] = surface.canvas
+  end
   second:release()
   first:release()
+  local spare = 0
   for _, canvas in ipairs(graphics.canvases) do
-    Assert.isTrue(
-      canvas.releaseCount <= 1,
-      "every canvas group is released or returned exactly once"
-    )
+    Assert.isTrue(canvas.releaseCount <= 1, "every canvas is released or returned at most once")
+    if canvas.releaseCount == 0 then
+      spare = spare + 1
+    end
   end
+  Assert.equal(spare, 6, "the first returned group survives as the sole spare")
   local third = owner:acquire({ purpose = "browser" })
-  pumpReady(third, pageDemand("grid", "overlap-grid-again"))
+  local readyThird = pumpReady(third, pageDemand("grid", "overlap-grid-again"))
   Assert.equal(#graphics.canvases, 12, "a later open reuses the surviving spare without new canvases")
+  local thirdSurfaces = assert(readyThird.assets.surfaces, "the later bundle carries its surfaces")
+  local kept = {}
+  for _, canvas in ipairs(secondGroup) do
+    kept[canvas] = true
+  end
+  for index, surface in ipairs(thirdSurfaces) do
+    Assert.isTrue(kept[surface.canvas], "later surface " .. index .. " reuses the surviving spare group")
+  end
   third:release()
   owner:release()
+  for _, canvas in ipairs(graphics.canvases) do
+    Assert.equal(canvas.releaseCount, 1, "owner teardown releases every canvas exactly once")
+  end
   Assert.equal(pool:stats().outstandingLeases, 0, "overlapping close returns every image interest")
 end
 

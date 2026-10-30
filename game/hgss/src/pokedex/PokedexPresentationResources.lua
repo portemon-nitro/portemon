@@ -2721,14 +2721,17 @@ function PokedexPresentationResources:advanceWarmup(remainingGpu)
   end
   local graphics = self._graphics
   if type(graphics) == "table" and type(graphics.newCanvas) == "function" then
-    if self._idleSurfaces == nil then
-      local group = {}
-      for _, name in ipairs(SURFACE_NAMES) do
-        group[#group + 1] = { name = name, canvas = nil, width = SURFACE_WIDTH, height = SURFACE_HEIGHT }
+    -- A live lease owns the loaned group, so a held zero-budget update
+    -- must not occupy the vacant slot with an empty replacement; the
+    -- chrome branch above may also have consumed the one allowance.
+    if allowance > 0 and #self._leases == 0 then
+      if self._idleSurfaces == nil then
+        local group = {}
+        for _, name in ipairs(SURFACE_NAMES) do
+          group[#group + 1] = { name = name, canvas = nil, width = SURFACE_WIDTH, height = SURFACE_HEIGHT }
+        end
+        self._idleSurfaces = group
       end
-      self._idleSurfaces = group
-    end
-    if allowance > 0 then
       for _, surface in ipairs(assert(self._idleSurfaces, "the idle canvas group is staged")) do
         if surface.canvas == nil then
           local ok, canvas = pcall(graphics.newCanvas, SURFACE_WIDTH, SURFACE_HEIGHT)
