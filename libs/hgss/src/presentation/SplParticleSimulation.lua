@@ -1,7 +1,8 @@
 -- Software particle simulation for the retail SPL library (lib/src/spl_*.c):
--- the deterministic congruential stream, emitter generation geometry,
--- life-rate scale/color/alpha blocks, rotation, fields, and children over
--- compiled emitter records. Rendering stays with each consumer; this module
+-- the deterministic congruential stream, emitter placement kinds, life-rate
+-- scale/color/alpha/texture blocks (plain or looping), random color and
+-- texture picks, rotation, fields, and children over compiled emitter
+-- records. Each particle carries the texture it currently shows in texNo. Rendering stays with each consumer; this module
 -- owns only emitter and particle state. Normalized directions and rotations
 -- use host floating point and are deterministic without being bit-identical
 -- to the retail fixed-point unit.
@@ -131,7 +132,8 @@ local function circleFrame(record)
   end
   local c1x, c1y, c1z = normalize3(ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
   local c2x, c2y, c2z = normalize3(ay * c1z - az * c1y, az * c1x - ax * c1z, ax * c1y - ay * c1x)
-  return { c1x = c1x, c1y = c1y, c1z = c1z, c2x = c2x, c2y = c2y, c2z = c2z }
+  local nx, ny, nz = normalize3(c1y * c2z - c1z * c2y, c1z * c2x - c1x * c2z, c1x * c2y - c1y * c2x)
+  return { c1x = c1x, c1y = c1y, c1z = c1z, c2x = c2x, c2y = c2y, c2z = c2z, nx = nx, ny = ny, nz = nz }
 end
 
 -- Maps circle-frame coordinates into emitter space through the frame
@@ -148,7 +150,9 @@ local function circleMap(frame, x, y, z)
   local c2x = frame.c2x --[[@as number]]
   local c2y = frame.c2y --[[@as number]]
   local c2z = frame.c2z --[[@as number]]
-  local nx, ny, nz = normalize3(c1y * c2z - c1z * c2y, c1z * c2x - c1x * c2z, c1x * c2y - c1y * c2x)
+  local nx = frame.nx --[[@as number]]
+  local ny = frame.ny --[[@as number]]
+  local nz = frame.nz --[[@as number]]
   return x * c1x + y * c2x + z * nx, x * c1y + y * c2y + z * ny, x * c1z + y * c2z + z * nz
 end
 
@@ -163,6 +167,15 @@ local function randomizeFx(valueFx, range, sim)
   local draw = math.floor(rngNext(sim) / 16777216)
   local factor = range + 255 - math.floor(draw * range / 128)
   return math.floor(factor * valueFx / 256)
+end
+
+-- A random fixed-point factor in [0, 1), drawing once from the sim stream
+-- (RANDOM_HALF_TO_ONE).
+---@param sim SplParticleSimulation
+---@return integer factor in 1/4096 units
+local function randomHalfToOneFx(sim)
+  local draw = math.floor(rngNext(sim) / 8388608)
+  return math.floor((draw * 4096 - 1048576) / 512) + 2048
 end
 
 -- A random fixed-point factor in [-1, 1), drawing once from the sim stream.
@@ -295,28 +308,63 @@ local function liveParticleCount(sim)
   return count
 end
 
+-- Places a particle by the retail placement kind (spl_gen_ptcl), returning
+-- its emitter-relative position and, for cylinder walls, its outward
+-- direction. Draw counts per kind follow the retail stream order.
 ---@param sim SplParticleSimulation
 ---@param runtime table<string, unknown> live emitter runtime gaining one particle
-local function spawnParticle(sim, runtime)
-  if liveParticleCount(sim) >= MAX_PARTICLE_COUNT then
-    return
-  end
+---@param index integer zero-based index of this particle within its generation burst
+---@param count integer particles the burst generates
+---@return number px, number py, number pz, number? dirX, number? dirY, number? dirZ
+local function placeParticle(sim, runtime, index, count)
   local record = runtime.record --[[@as table<string, unknown>]]
   local initPosType = record.initPosType --[[@as integer]]
   local radius = record.radius --[[@as number]]
-  -- Exact round-trip: the compiled float divides a small integer magnitude
-  -- by 4096, so scaling back recovers the staged raw value.
+  local frame = runtime.frame --[[@as table<string, unknown>]]
   local lengthFx = math.floor(record.length --[[@as number]] * 4096 + 0.5)
-  local px, py, pz = 0, 0, 0
-  local dirX, dirY, dirZ = 0, 0, 0
-  local hasDir = false
-  if initPosType == 2 then
+  if initPosType == 1 then
+    local nx, ny, nz = arbVecXyz(sim)
+    return nx * radius, ny * radius, nz * radius
+  elseif initPosType == 2 then
     local nx, ny = arbVecXy(sim)
-    local frame = runtime.frame --[[@as table<string, unknown>]]
-    px, py, pz = circleMap(frame, nx * radius, ny * radius, 0)
+    return circleMap(frame, nx * radius, ny * radius, 0)
+  elseif initPosType == 3 then
+    -- Evenly spaced on the circle: the burst index maps to a 4096-step angle.
+    local step = math.floor(math.floor(index * 65536 / count) / 16)
+    local angle = step / 4096 * 2 * math.pi
+    return circleMap(frame, math.sin(angle) * radius, math.cos(angle) * radius, 0)
+  elseif initPosType == 4 then
+    local nx, ny, nz = arbVecXyz(sim)
+    local fx = randomSignedOneFx(sim)
+    local fy = randomSignedOneFx(sim)
+    local fz = randomSignedOneFx(sim)
+    return nx * radius * fx / 4096, ny * radius * fy / 4096, nz * radius * fz / 4096
+  elseif initPosType == 5 then
+    local vx, vy = arbVecXy(sim)
+    local lx = vx * radius * randomSignedOneFx(sim) / 4096
+    local ly = vy * radius * randomSignedOneFx(sim) / 4096
+    return circleMap(frame, lx, ly, 0)
+  elseif initPosType == 8 or initPosType == 9 then
+    local nx, ny, nz = arbVecXyz(sim)
+    local axisX, axisY, axisZ =
+      frame.nx, --[[@as number]]
+      frame.ny, --[[@as number]]
+      frame.nz --[[@as number]]
+    local dot = nx * axisX + ny * axisY + nz * axisZ
+    -- The surface keeps the axis-side hemisphere; a zero dot flips the
+    -- surface kind but not the volume kind.
+    if dot < 0 or (initPosType == 8 and dot == 0) then
+      nx, ny, nz = -nx, -ny, -nz
+    end
+    if initPosType == 8 then
+      return nx * radius, ny * radius, nz * radius
+    end
+    local fx = randomHalfToOneFx(sim)
+    local fy = randomHalfToOneFx(sim)
+    local fz = randomHalfToOneFx(sim)
+    return nx * radius * fx / 4096, ny * radius * fy / 4096, nz * radius * fz / 4096
   elseif initPosType == 6 or initPosType == 7 then
     local vx, vy = arbVecXy(sim)
-    local frame = runtime.frame --[[@as table<string, unknown>]]
     local lx, ly = vx * radius, vy * radius
     if initPosType == 7 then
       lx = lx * randomSignedOneFx(sim) / 4096
@@ -324,23 +372,39 @@ local function spawnParticle(sim, runtime)
     end
     local draw = math.floor(rngNext(sim) / 8388608)
     local lz = math.floor(s32wrap(lengthFx * draw - s32wrap(lengthFx * 256)) / 256) / 4096
-    px, py, pz = circleMap(frame, lx, ly, lz)
+    local px, py, pz = circleMap(frame, lx, ly, lz)
     if initPosType == 6 then
       -- Cylinder walls orient along the disc velocity mapped through the
       -- frame directly, without the normal term.
-      dirX = vx * frame.c1x --[[@as number]] + vy * frame.c2x --[[@as number]]
-      dirY = vx * frame.c1y --[[@as number]] + vy * frame.c2y --[[@as number]]
-      dirZ = vx * frame.c1z --[[@as number]] + vy * frame.c2z --[[@as number]]
-      hasDir = true
+      return px,
+        py,
+        pz,
+        vx * frame.c1x --[[@as number]] + vy * frame.c2x, --[[@as number]]
+        vx * frame.c1y --[[@as number]] + vy * frame.c2y, --[[@as number]]
+        vx * frame.c1z --[[@as number]] + vy * frame.c2z --[[@as number]]
     end
+    return px, py, pz
   end
+  return 0, 0, 0
+end
+
+---@param sim SplParticleSimulation
+---@param runtime table<string, unknown> live emitter runtime gaining one particle
+---@param index integer zero-based index of this particle within its generation burst
+---@param count integer particles the burst generates
+local function spawnParticle(sim, runtime, index, count)
+  if liveParticleCount(sim) >= MAX_PARTICLE_COUNT then
+    return
+  end
+  local record = runtime.record --[[@as table<string, unknown>]]
+  local px, py, pz, dirX, dirY, dirZ = placeParticle(sim, runtime, index, count)
   local velocityFx = record.velocityFx --[[@as { pos: integer, axis: integer }]]
   local velRandom = record.velRandom --[[@as integer]]
   local velPos = randomizeFx(velocityFx.pos, velRandom, sim)
   local velAxis = randomizeFx(velocityFx.axis, velRandom, sim)
   local nx, ny, nz
-  if hasDir then
-    nx, ny, nz = normalize3(dirX, dirY, dirZ)
+  if dirX ~= nil then
+    nx, ny, nz = normalize3(dirX, dirY --[[@as number]], dirZ --[[@as number]])
   elseif px == 0 and py == 0 and pz == 0 then
     nx, ny, nz = arbVecXyz(sim)
   else
@@ -349,6 +413,18 @@ local function spawnParticle(sim, runtime)
   local axis = record.axis --[[@as { x: number, y: number, z: number }]]
   local baseScale = randomizeFx(record.baseScaleFx --[[@as integer]], record.scaleRandom --[[@as integer]], sim)
   local baseRgb = record.baseColorRgb --[[@as table<string, integer>]]
+  local animations = record.animations --[[@as table<string, unknown>]]
+  local pickedRgb = baseRgb
+  local colorAnim = animations.color --[[@as table<string, unknown>|nil]]
+  if colorAnim ~= nil and colorAnim.random then
+    -- A random color pick replaces the color animation: start, base, or end.
+    local pick = math.floor(rngNext(sim) / 1048576) % 3
+    if pick == 0 then
+      pickedRgb = colorAnim.startRgb --[[@as table<string, integer>]]
+    elseif pick == 2 then
+      pickedRgb = colorAnim.endRgb --[[@as table<string, integer>]]
+    end
+  end
   local rotation = record.rotation --[[@as { min: integer, max: integer }]]
   local rtt
   if record.useInitRotationRandom then
@@ -365,6 +441,16 @@ local function spawnParticle(sim, runtime)
   local lifeRandom = record.lifeRandom --[[@as integer]]
   local particleLife = record.particleLife --[[@as integer]]
   local life = math.floor((255 - math.floor(lifeDraw * lifeRandom / 256)) * particleLife / 256) + 1
+  local texNo = record.texture --[[@as integer]]
+  local textureAnim = record.textureAnim --[[@as table<string, unknown>|nil]]
+  if textureAnim ~= nil then
+    local textures = textureAnim.textures --[[@as integer[] ]]
+    if textureAnim.random then
+      texNo = textures[math.floor(rngNext(sim) / 1048576) % #textures + 1]
+    else
+      texNo = textures[1]
+    end
+  end
   local loopFrame = record.loopFrame --[[@as integer]]
   runtime.particles[#runtime.particles + 1] = {
     x = px,
@@ -381,10 +467,10 @@ local function spawnParticle(sim, runtime)
     diffNoloop = math.floor(65535 / life),
     baseScale = baseScale,
     animScale = 4096,
-    colorRgb = { r = baseRgb.r, g = baseRgb.g, b = baseRgb.b },
+    colorRgb = { r = pickedRgb.r, g = pickedRgb.g, b = pickedRgb.b },
     baseAlpha = record.baseAlpha --[[@as integer]],
     animAlpha = 31,
-    texNo = record.texture --[[@as integer]],
+    texNo = texNo,
     ex = runtime.x --[[@as number]],
     ey = runtime.y --[[@as number]],
     ez = runtime.z --[[@as number]],
@@ -501,16 +587,35 @@ end
 local function updateParticle(sim, runtime, particle)
   local record = runtime.record --[[@as table<string, unknown>]]
   local age = particle.age --[[@as integer]]
-  local rate = math.floor(particle.diffNoloop --[[@as integer]] * age / 256) % 256
+  -- The retail life rates are bytes: one over the particle's life, one
+  -- looping over the emitter's loop frame.
+  local rateNoloop = math.floor(particle.diffNoloop --[[@as integer]] * age / 256) % 256
+  local rateLoop = math.floor(particle.diffLoop --[[@as integer]] * age / 256) % 256
   local animations = record.animations --[[@as table<string, unknown>]]
-  if animations.scale ~= nil then
-    particle.animScale = evalScaleFx(animations.scale, rate)
+  local scale = animations.scale --[[@as table<string, unknown>|nil]]
+  if scale ~= nil then
+    particle.animScale = evalScaleFx(scale, scale.loop and rateLoop or rateNoloop)
   end
-  if animations.color ~= nil then
-    particle.colorRgb = evalColorRgb(animations.color, record.baseColorRgb --[[@as table<string, integer>]], rate)
+  local color = animations.color --[[@as table<string, unknown>|nil]]
+  if color ~= nil and not color.random then
+    particle.colorRgb =
+      evalColorRgb(color, record.baseColorRgb --[[@as table<string, integer>]], color.loop and rateLoop or rateNoloop)
   end
-  if animations.alpha ~= nil then
-    particle.animAlpha = evalAlpha(animations.alpha, rate, sim)
+  local alpha = animations.alpha --[[@as table<string, unknown>|nil]]
+  if alpha ~= nil then
+    particle.animAlpha = evalAlpha(alpha, alpha.loop and rateLoop or rateNoloop, sim)
+  end
+  local textureAnim = record.textureAnim --[[@as table<string, unknown>|nil]]
+  if textureAnim ~= nil and not textureAnim.random then
+    local textureRate = textureAnim.loop and rateLoop or rateNoloop
+    local textures = textureAnim.textures --[[@as integer[] ]]
+    local diff = textureAnim.diff --[[@as integer]]
+    for index = 1, #textures do
+      if textureRate < diff * index then
+        particle.texNo = textures[index]
+        break
+      end
+    end
   end
   local accX, accY, accZ = 0, 0, 0
   for _, field in
@@ -642,9 +747,9 @@ function M.advance(sim, group)
           local total = generation.countFx + runtime.carry --[[@as integer]]
           local due = math.floor(total / 4096)
           runtime.carry = total - due * 4096
-          for _ = 1, due do
+          for burstIndex = 0, due - 1 do
             if liveParticleCount(sim) < MAX_PARTICLE_COUNT then
-              spawnParticle(sim, runtime)
+              spawnParticle(sim, runtime, burstIndex, due)
             end
           end
         end
