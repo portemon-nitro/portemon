@@ -443,6 +443,31 @@ function T.global_catalog_compiles_without_per_effect_closures(romFs, versionId)
   )
   Assert.equal(orderPayload.rowsReverse[1], 0, versionId .. ": row transition uses the source reverse order")
   Assert.equal(orderPayload.diagonalsB[24], 46, versionId .. ": cave transition uses the final source diagonal index")
+  -- The Elite Four intro replays both transition particle members through
+  -- the shared emitter simulation: each stages as emitter records over RGBA
+  -- texture pixels, with the emitter counts the intro creates.
+  local introRoute
+  for _, route in pairs(bundle.manifest.transitions.routes) do
+    if route.role == "trainer-intro" then
+      introRoute = route
+      break
+    end
+  end
+  Assert.notNil(introRoute, versionId .. ": the catalog carries an Elite Four intro route")
+  for name, emitterCount in pairs({ intro = 3, followup = 4 }) do
+    local descriptor = bundle.manifest.resources[assert(introRoute).assetGroups.particles[name]]
+    Assert.equal(descriptor.kind, "particle", versionId .. ": the " .. name .. " member stages as a particle set")
+    Assert.equal(descriptor.geometry.emitterCount, emitterCount, versionId .. ": the " .. name .. " emitter count")
+    local set = bundle.resourcePayloads[descriptor.path]
+    Assert.equal(#set.emitters, emitterCount, versionId .. ": the " .. name .. " set stages its emitters")
+    for _, texture in ipairs(set.textures) do
+      Assert.equal(
+        #texture.pixels,
+        texture.width * texture.height * 4,
+        versionId .. ": the " .. name .. " texture " .. texture.id .. " stages RGBA pixels"
+      )
+    end
+  end
   local arrowMiddle = bundle.manifest.hud.arrow.cells[4].objs
   Assert.equal(arrowMiddle[1].tile, 8, versionId .. ": arrow mapping-1 cell normalizes the first doubled tile index")
   Assert.equal(arrowMiddle[2].tile, 12, versionId .. ": arrow mapping-1 cell normalizes the second doubled tile index")

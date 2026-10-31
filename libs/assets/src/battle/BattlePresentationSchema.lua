@@ -10,7 +10,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattlePresentationSchema
 local BattlePresentationSchema = {}
 
-BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v8"
+BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v9"
 BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v4"
 
 local fail = SchemaCheck.fail
@@ -239,21 +239,10 @@ end
 -- Decoded geometry per resource format: the exact geometry fields with
 -- their integer bounds, the resource kind a format pins (with the noun its
 -- mismatch names), and any non-integer geometry rule.
-local PARTICLE_GEOMETRY = { fields = { { "emitterCount", 0 }, { "resourceCount", 0 } } }
-local APS_PAYLOAD_GEOMETRY = { fields = { { "byteCount", 1 } } }
+local PARTICLE_GEOMETRY = { fields = { { "emitterCount", 1 }, { "textureCount", 1 } } }
 local TRAINER_INDEX_GEOMETRY =
   { kind = "message", kindNoun = "trainer message index", fields = { { "recordCount", 1 } } }
 local RESOURCE_GEOMETRY_BY_FORMAT = {
-  ["nitro-spl-texture-data-v1"] = {
-    kind = "texture",
-    kindNoun = "APS embedded payload",
-    fields = APS_PAYLOAD_GEOMETRY.fields,
-  },
-  ["nitro-spl-palette-data-v1"] = {
-    kind = "palette",
-    kindNoun = "APS embedded payload",
-    fields = APS_PAYLOAD_GEOMETRY.fields,
-  },
   ["hgss-message-bank-tokens-v1"] = {
     kind = "message",
     kindNoun = "message bank",
@@ -337,8 +326,8 @@ local function checkResourceDescriptor(descriptor, context, code, record)
     fail(code, record .. " carries no decoded geometry", context)
   end
   if descriptor.kind == "particle" then
-    if descriptor.format ~= "nitro-spl-aps-v1" then
-      fail(code, record .. " particle format must be nitro-spl-aps-v1", context)
+    if descriptor.format ~= "spl-emitter-set-v1" then
+      fail(code, record .. " particle format must be spl-emitter-set-v1", context)
     end
     checkResourceGeometry(descriptor, PARTICLE_GEOMETRY, context, code, record)
   elseif descriptor.kind == "transition-data" then

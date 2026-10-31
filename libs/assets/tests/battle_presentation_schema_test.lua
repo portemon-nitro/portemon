@@ -666,14 +666,14 @@ function T.resources_require_decoded_cache_payloads()
   )
 end
 
-function T.particle_resources_require_decoded_emitter_and_resource_counts()
+function T.particle_resources_require_emitter_and_texture_counts()
   local missing = manifest()
-  missing.resources["transition/particle/synthetic"].geometry.resourceCount = nil
-  Assert.isFalse(Schema.isValidManifest(missing), "APS descriptors identify decoded resource records")
+  missing.resources["transition/particle/synthetic"].geometry.textureCount = nil
+  Assert.isFalse(Schema.isValidManifest(missing), "particle set descriptors count their staged textures")
 
   local negative = manifest()
   negative.resources["transition/particle/synthetic"].geometry.emitterCount = -1
-  Assert.isFalse(Schema.isValidManifest(negative), "APS descriptors cannot publish negative emitter counts")
+  Assert.isFalse(Schema.isValidManifest(negative), "particle set descriptors cannot publish negative emitter counts")
 end
 
 function T.effect_resources_accept_every_emitted_semantic_kind()

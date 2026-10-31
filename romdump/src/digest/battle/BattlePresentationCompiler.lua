@@ -2389,7 +2389,6 @@ end
 ---@field resourceMembers table<string, { archive: string, members: table<integer, { selectors: table<unknown, true> }> }>
 ---@field keySet table<string, true> content-addressed transition catalog keys
 ---@field particleMembers table<string, { archive: string, memberId: integer }>
----@field embeddedParticleResources table<string, { texture: string|nil, palette: string|nil }[]>
 
 -- Stages each typed transition member once under its content-addressed
 -- key, recording which source selectors reach it.
@@ -2441,79 +2440,37 @@ local function stageTransitionTypedResources(staging, transitionArchive, transit
   end
 end
 
--- Stages one embedded APS texture or palette payload by content identity.
----@param staging BattleGlobalStaging
----@param transition BattleTransitionStaging
----@param kind "texture"|"palette"
----@param bytes string raw embedded payload
----@return string resourceKey
-local function stageTransitionParticlePayload(staging, transition, kind, bytes)
-  local identity = Hashing.sha1hex(bytes)
-  local key = "transition/content/" .. kind .. "/" .. identity
-  if staging.catalog[key] == nil then
-    stageCatalogResource(staging, key, {
-      kind = kind,
-      contentIdentity = identity,
-      format = kind == "texture" and "nitro-spl-texture-data-v1" or "nitro-spl-palette-data-v1",
-      geometry = { byteCount = #bytes },
-    }, { bytes = bytes })
-    transition.keySet[key] = true
-  end
-  return key
-end
-
--- Stages every transition APS archive with its embedded resources; shared
--- texture references resolve onto the referenced staged texture.
+-- Stages every transition SPL member as normalized emitter records with
+-- their textures decoded to RGBA pixels, so the runtime replays them
+-- without any Nitro particle format.
 ---@param staging BattleGlobalStaging
 ---@param transitionArchive Narc
 ---@param transition BattleTransitionStaging
 local function stageTransitionParticles(staging, transitionArchive, transition)
   for _, memberId in ipairs(Sources.TRANSITION_PARTICLE_MEMBERS) do
     local bytes = must(transitionArchive:readMember(memberId))
-    local decoded = must(Spl.decode(bytes))
+    local compiled, compileErr = SplEmitterCompiler.compile(bytes, { embedPixels = true })
+    if compiled == nil then
+      error(
+        Errors.new("BATTLE_PARTICLE_RESOURCE_INVALID", "transition particle member failed to compile", {
+          memberId = memberId,
+          cause = tostring(compileErr),
+        }),
+        0
+      )
+    end
+    local particles = compiled.particles
     local contentIdentity = Hashing.sha1hex(bytes)
     local resourceKey = "transition/content/particle/" .. contentIdentity
-    local embeddedKeys = {}
-    local normalizedResources = {}
-    for resourceIndex, resource in ipairs(decoded.resources) do
-      local textureKey = resource.texture
-          and stageTransitionParticlePayload(staging, transition, "texture", resource.texture)
-        or nil
-      if resource.textureReference ~= nil then
-        local referenced = embeddedKeys[resource.textureReference + 1]
-        if referenced == nil or referenced.texture == nil then
-          error(
-            Errors.new("BATTLE_PARTICLE_RESOURCE_INVALID", "APS texture reference has no staged source", {
-              memberId = memberId,
-              resourceIndex = resourceIndex - 1,
-              textureReference = resource.textureReference,
-            }),
-            0
-          )
-        end
-        textureKey = referenced.texture
-      end
-      local paletteKey = resource.palette
-          and stageTransitionParticlePayload(staging, transition, "palette", resource.palette)
-        or nil
-      embeddedKeys[resourceIndex] = { texture = textureKey, palette = paletteKey }
-      normalizedResources[resourceIndex] = { textureKey = textureKey, paletteKey = paletteKey }
-    end
     stageCatalogResource(staging, resourceKey, {
       kind = "particle",
       contentIdentity = contentIdentity,
-      format = "nitro-spl-aps-v1",
-      geometry = { emitterCount = #decoded.emitters, resourceCount = #decoded.resources },
-    }, {
-      format = decoded.format,
-      emitters = decoded.emitters,
-      resources = normalizedResources,
-      source = decoded.source,
-    })
+      format = "spl-emitter-set-v1",
+      geometry = { emitterCount = #particles.emitters, textureCount = #particles.textures },
+    }, particles)
     transition.keySet[resourceKey] = true
     transition.sourceResources["particle:" .. memberId] = resourceKey
     transition.particleMembers[resourceKey] = { archive = Sources.TRANSITION_ARCHIVE, memberId = memberId }
-    transition.embeddedParticleResources[resourceKey] = embeddedKeys
   end
 end
 
@@ -2531,7 +2488,6 @@ local function compileTransitionResources(romFs, staging)
     resourceMembers = {},
     keySet = {},
     particleMembers = {},
-    embeddedParticleResources = {},
   }
   stageTransitionTypedResources(staging, transitionArchive, transition)
   local orders = Sources.WILD_CELL_GRID_ORDERS
@@ -4588,7 +4544,6 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       transitionSourceResources = transition.sourceResources,
       transitionResourceMembers = transition.resourceMembers,
       transitionParticleMembers = transition.particleMembers,
-      embeddedParticleResources = transition.embeddedParticleResources,
       menuTilemaps = menuTilemapProvenance,
       menuLayouts = menuLayoutProvenance,
       menuLayerIndices = menuLayerIndices,

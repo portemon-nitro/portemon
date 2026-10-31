@@ -316,7 +316,7 @@ local function manifest()
     end
   end
   local old = {
-    schema = "g4-battle-presentation-v8",
+    schema = "g4-battle-presentation-v9",
     version = { id = "soulsilver", language = "en" },
     scenes = {
       { key = "general/grass/day", background = "general", terrain = "grass", time = "day" },
@@ -501,8 +501,8 @@ local function manifest()
       ["transition/particle/synthetic"] = {
         kind = "particle",
         contentIdentity = string.rep("5", 40),
-        format = "nitro-spl-aps-v1",
-        geometry = { emitterCount = 1, resourceCount = 2 },
+        format = "spl-emitter-set-v1",
+        geometry = { emitterCount = 1, textureCount = 2 },
         path = "data/generated/battle/resources/transition/particle/synthetic.lua",
       },
       ["message-bank/script-controller"] = {

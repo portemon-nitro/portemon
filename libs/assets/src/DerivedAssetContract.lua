@@ -425,7 +425,7 @@ DerivedAssetContract.trainerCatalog = {
 -- symbols instead of staging private sound payloads).
 DerivedAssetContract.battlePresentation = {
   cacheFormat = "battle-presentation-cache-v4",
-  schema = "g4-battle-presentation-v8",
+  schema = "g4-battle-presentation-v9",
   sceneSchema = "g4-battle-scene-v4",
   effectSchema = "g4-battle-effect-v3",
 }
