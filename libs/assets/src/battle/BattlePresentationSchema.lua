@@ -653,6 +653,7 @@ local function checkEmitterChild(child, textures, context, field)
     texNo = true,
     textureImage = true,
     texRepeat = true,
+    rotationType = true,
   }, context, CODE_SCENE, field)
   for _, name in ipairs({ "useScaleAnm", "useAlphaAnm", "followEmitter", "useChildColor" }) do
     checkBool(child[name], context, field .. "." .. name)
@@ -670,6 +671,9 @@ local function checkEmitterChild(child, textures, context, field)
   checkInt(child.genNum, 0, nil, context, CODE_SCENE, field .. ".genNum")
   checkInt(child.genStart, 0, 255, context, CODE_SCENE, field .. ".genStart")
   checkInt(child.genInterval, 1, nil, context, CODE_SCENE, field .. ".genInterval")
+  if child.rotationType ~= nil then
+    checkInt(child.rotationType, 1, 2, context, CODE_SCENE, field .. ".rotationType")
+  end
   checkInt(child.texNo, 0, 255, context, CODE_SCENE, field .. ".texNo")
   local texture = textures[child.texNo]
   if texture == nil or child.textureImage ~= texture.image then
@@ -694,6 +698,10 @@ local function checkEmitterFields(fields, context, field)
       SchemaCheck.checkRecord(entry, { kind = true, position = true, magnitude = true }, context, CODE_SCENE, at)
       checkXyz(entry.position, context, at .. ".position")
       checkFinite(entry.magnitude, context, at .. ".magnitude")
+    elseif entry.kind == "convergence" then
+      SchemaCheck.checkRecord(entry, { kind = true, position = true, ratio = true }, context, CODE_SCENE, at)
+      checkXyz(entry.position, context, at .. ".position")
+      checkInt(entry.ratio, -32768, 32767, context, CODE_SCENE, at .. ".ratio")
     elseif entry.kind == "spin" then
       SchemaCheck.checkRecord(entry, { kind = true, rotation = true, axis = true }, context, CODE_SCENE, at)
       checkInt(entry.rotation, 0, 65535, context, CODE_SCENE, at .. ".rotation")
@@ -739,6 +747,9 @@ local EMITTER_KEYS = {
   textureAnim = true,
   textureOffset = true,
   drawChildFirst = true,
+  followEmitter = true,
+  persistent = true,
+  hideParent = true,
   animations = true,
   child = true,
   fields = true,
@@ -823,6 +834,9 @@ local function checkEncounterEmitter(emitter, textures, context, field)
     checkFinite(offset.y, context, at .. ".y")
   end
   checkOptionalFlag(emitter.drawChildFirst, context, field .. ".drawChildFirst")
+  checkOptionalFlag(emitter.followEmitter, context, field .. ".followEmitter")
+  checkOptionalFlag(emitter.persistent, context, field .. ".persistent")
+  checkOptionalFlag(emitter.hideParent, context, field .. ".hideParent")
   checkEmitterAnimations(emitter.animations, context, field .. ".animations")
   if emitter.child ~= nil then
     checkEmitterChild(emitter.child, textures, context, field .. ".child")

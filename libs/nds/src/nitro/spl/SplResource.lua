@@ -62,11 +62,9 @@ end
 -- fails the decode with emitter and flag context instead of silently
 -- dropping an effect the runtime cannot reproduce.
 local UNSUPPORTED_BITS = {
-  [15] = "follow_emtr",
   [20] = "ptcl_random_loop_anm",
   [25] = "use_fld_rndm",
   [28] = "use_fld_scfld",
-  [29] = "use_fld_cngc",
   [30] = "polygonID_fixed",
   [31] = "child_polygonID_fixed",
 }
@@ -75,6 +73,7 @@ local SUPPORTED_FIELD_BITS = {
   [24] = "gravity",
   [26] = "magnet",
   [27] = "spin",
+  [29] = "convergence",
 }
 
 ---@param reader BinaryReader
@@ -183,7 +182,7 @@ local function decodeEmitter(reader, baseOffset, emitterId)
     if hasBit(flag, bit) then
       local name = SUPPORTED_FIELD_BITS[bit]
       if name == nil then
-        local fieldName = bit == 25 and "use_fld_rndm" or (bit == 28 and "use_fld_scfld" or "use_fld_cngc")
+        local fieldName = bit == 25 and "use_fld_rndm" or "use_fld_scfld"
         sourceError("SPL emitter uses an unsupported particle field", {
           emitter = emitterId,
           flag = fieldName,

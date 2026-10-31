@@ -107,9 +107,22 @@ local function normalizeField(field, block)
       rotation = reader:u16le(field.offset),
       axis = reader:u16le(field.offset + 2),
     }
+  elseif field.kind == "convergence" then
+    local function fx32(offset)
+      local value = reader:u32le(offset)
+      if value >= 2147483648 then
+        value = value - 4294967296
+      end
+      return value / 4096
+    end
+    return {
+      kind = "convergence",
+      position = { x = fx32(field.offset), y = fx32(field.offset + 4), z = fx32(field.offset + 8) },
+      ratio = toS16(reader:u16le(field.offset + 12)),
+    }
   end
-  -- SplResource decodes only the observed gravity, magnet, and spin
-  -- fields, so any other kind is a producer inconsistency.
+  -- SplResource decodes only the observed gravity, magnet, spin, and
+  -- convergence fields, so any other kind is a producer inconsistency.
   sourceError("particle field is outside the observed set", { kind = field.kind })
   error("unreachable")
 end
@@ -303,12 +316,6 @@ local function validateEmitter(emitter)
   if drawType ~= 0 and drawType ~= 1 then
     reject("particle emitter uses an unrepresented draw kind", { draw = drawType })
   end
-  if math.floor(emitter.flag / 16384) % 2 ~= 1 then
-    reject("particle emitter does not self-destruct")
-  end
-  if math.floor(emitter.flag / 4194304) % 2 == 1 then
-    reject("particle emitter uses an unrepresented parent draw gate")
-  end
   if math.floor(emitter.flag / 8388608) % 2 == 1 then
     reject("particle emitter uses an unrepresented camera-relative draw")
   end
@@ -391,6 +398,22 @@ local function normalizeEmitter(memberBytes, emitter, byTexture, group)
   if math.floor(emitter.flag / 2097152) % 2 == 1 then
     drawChildFirst = true
   end
+  local followEmitter = nil
+  if math.floor(emitter.flag / 32768) % 2 == 1 then
+    followEmitter = true
+  end
+  -- An emitter without the self-destruct flag outlives its lifespan and
+  -- leaves only when its owner removes it.
+  -- The retail draw_parent flag suppresses the parent particles; the
+  -- children still draw.
+  local hideParent = nil
+  if math.floor(emitter.flag / 4194304) % 2 == 1 then
+    hideParent = true
+  end
+  local persistent = nil
+  if math.floor(emitter.flag / 16384) % 2 ~= 1 then
+    persistent = true
+  end
   return {
     id = emitter.id,
     group = group,
@@ -427,6 +450,9 @@ local function normalizeEmitter(memberBytes, emitter, byTexture, group)
     textureAnim = textureAnim,
     textureOffset = textureOffset,
     drawChildFirst = drawChildFirst,
+    followEmitter = followEmitter,
+    persistent = persistent,
+    hideParent = hideParent,
     animations = animations,
     child = child,
     fields = fields,
@@ -441,7 +467,7 @@ end
 
 -- Compile one SPL member into normalized per-emitter emission records plus
 -- staged texture art. The emitter-level `textureAnim` and `textureOffset`
--- fields, `drawChildFirst`, a child's `rotationType`, and the `loop`/`random` flags on animation blocks, are absent
+-- fields, `drawChildFirst`, `followEmitter`, `persistent`, `hideParent`, and the `loop`/`random` flags on animation blocks, are absent
 -- unless the source sets them. Returns the normalized particle set, its
 -- staged files, and the producer dependencies for the job receipt.
 ---@param memberBytes string raw SPL member bytes

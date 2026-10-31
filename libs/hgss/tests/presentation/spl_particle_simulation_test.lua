@@ -290,4 +290,52 @@ function T.tests.emitter_axis_circle_axis_orients_the_circle_across_the_emitter_
   end
 end
 
+function T.tests.convergence_field_pulls_the_position_toward_its_target_by_the_ratio()
+  local field = { kind = "convergence", position = { x = 4, y = -4, z = 0 }, ratio = 2048 }
+  local particle = ageOne({ initPosType = 0, fields = { field } }, 1)
+  -- Born at the origin with no velocity: half the distance to the target.
+  Assert.near(particle.x, 2, EPSILON, "x closes half the gap")
+  Assert.near(particle.y, -2, EPSILON, "y closes half the gap")
+  Assert.near(particle.z, 0, EPSILON, "z stays on its target plane")
+  local again = ageOne({ initPosType = 0, fields = { field } }, 2)
+  Assert.near(again.x, 3, EPSILON, "the next tick closes half the remaining gap")
+end
+
+function T.tests.following_emitters_carry_their_particles_with_the_emitter()
+  local function worldXAfterMove(follow)
+    local sim = SplParticleSimulation.new(0, 0)
+    SplParticleSimulation.addEmitter(sim, 0, nil, record({ followEmitter = follow, emitterLife = 5 }))
+    SplParticleSimulation.advance(sim)
+    sim.emitters[1].x = 3
+    SplParticleSimulation.advance(sim)
+    local particle = sim.emitters[1].particles[1]
+    return particle.x + particle.ex
+  end
+  Assert.near(worldXAfterMove(true), 3, EPSILON, "a following particle tracks the moved emitter")
+  Assert.near(worldXAfterMove(nil), 0, EPSILON, "a plain particle keeps its birth emitter position")
+end
+
+function T.tests.persistent_emitters_outlive_their_life_until_removed_with_their_particles()
+  local sim = SplParticleSimulation.new(0, 0)
+  local runtime = SplParticleSimulation.addEmitter(sim, 0, nil, record({ persistent = true, particleLife = 2 }))
+  for _ = 1, 10 do
+    SplParticleSimulation.advance(sim)
+  end
+  Assert.equal(#sim.emitters, 1, "a persistent emitter outlives its life and its last particle")
+  Assert.equal(#runtime.particles, 0, "its particles still retire on their own life")
+  local plain = SplParticleSimulation.new(0, 0)
+  SplParticleSimulation.addEmitter(plain, 0, nil, record({ particleLife = 2 }))
+  for _ = 1, 10 do
+    SplParticleSimulation.advance(plain)
+  end
+  Assert.equal(#plain.emitters, 0, "a self-destroying emitter leaves once its particles retire")
+  local held = SplParticleSimulation.new(0, 0)
+  local owned = SplParticleSimulation.addEmitter(held, 0, nil, record({ persistent = true }))
+  SplParticleSimulation.advance(held)
+  Assert.equal(#owned.particles, 1, "the emitter holds a live particle")
+  SplParticleSimulation.removeEmitter(held, owned)
+  SplParticleSimulation.removeEmitter(held, owned)
+  Assert.equal(#held.emitters, 0, "removal drops the emitter and its particles at once, and repeats silently")
+end
+
 return T

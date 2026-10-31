@@ -544,6 +544,17 @@ local function spawnChild(sim, runtime, parent)
   }
 end
 
+-- One convergence step on a single axis: the position plus the retail
+-- rounded fixed-point product of the field ratio and the remaining distance.
+---@param position number emitter-relative world position
+---@param target number field world position
+---@param ratio integer staged signed fx16 ratio
+---@return number converged world position
+local function convergeFx(position, target, ratio)
+  local positionFx = worldToRawFx(position)
+  return (positionFx + math.floor((ratio * (worldToRawFx(target) - positionFx) + 2048) / 4096)) / 4096
+end
+
 -- Rotates a position about one source axis by a retail rotation step.
 ---@param x number
 ---@param y number
@@ -624,6 +635,11 @@ local function updateParticle(sim, runtime, particle)
       end
     end
   end
+  if record.followEmitter then
+    particle.ex = runtime.x
+    particle.ey = runtime.y
+    particle.ez = runtime.z
+  end
   local accX, accY, accZ = 0, 0, 0
   for _, field in
     ipairs(record.fields --[[@as table<string, unknown>[] ]])
@@ -642,6 +658,14 @@ local function updateParticle(sim, runtime, particle)
       local dy = target.y - particle.y --[[@as number]] - particle.vy --[[@as number]]
       local dz = target.z - particle.z --[[@as number]] - particle.vz --[[@as number]]
       accX, accY, accZ = accX + magnitude * dx, accY + magnitude * dy, accZ + magnitude * dz
+    elseif entry.kind == "convergence" then
+      -- Pulls the emitter-relative position toward the field position by the
+      -- staged ratio with the retail rounded fixed-point multiply.
+      local target = entry.position --[[@as { x: number, y: number, z: number }]]
+      local ratio = entry.ratio --[[@as integer]]
+      particle.x = convergeFx(particle.x --[[@as number]], target.x, ratio)
+      particle.y = convergeFx(particle.y --[[@as number]], target.y, ratio)
+      particle.z = convergeFx(particle.z --[[@as number]], target.z, ratio)
     elseif entry.kind == "spin" then
       particle.x, particle.y, particle.z = spinRotate(
         particle.x --[[@as number]],
@@ -712,9 +736,10 @@ end
 ---@param id integer source emitter id
 ---@param group string|nil consumer-owned group tag that advance may filter on
 ---@param record table<string, unknown> compiled emitter record
+---@return table<string, unknown> runtime live emitter runtime; its x, y, z may be moved by the owner
 function M.addEmitter(sim, id, group, record)
   local position = record.position --[[@as { x: number, y: number, z: number }]]
-  sim.emitters[#sim.emitters + 1] = {
+  local runtime = {
     id = id,
     group = group,
     record = record,
@@ -729,6 +754,21 @@ function M.addEmitter(sim, id, group, record)
     children = {},
     quad = nil,
   }
+  sim.emitters[#sim.emitters + 1] = runtime
+  return runtime
+end
+
+-- Removes one emitter and every particle and child it owns at once, as the
+-- retail emitter deletion does. Removing a runtime that already left is a no-op.
+---@param sim SplParticleSimulation
+---@param runtime table<string, unknown> runtime returned by addEmitter
+function M.removeEmitter(sim, runtime)
+  for index, live in ipairs(sim.emitters) do
+    if live == runtime then
+      table.remove(sim.emitters, index)
+      return
+    end
+  end
 end
 
 ---@param sim SplParticleSimulation
@@ -785,9 +825,11 @@ function M.advance(sim, group)
       end
       runtime.age = runtime.age --[[@as integer]] + 1
       -- Self-destroying emitters leave the active set once their age
-      -- passes their lifespan and their last particle retires.
+      -- passes their lifespan and their last particle retires; persistent
+      -- emitters stay until their owner removes them.
       if
-        emitterLife ~= 0
+        not record.persistent
+        and emitterLife ~= 0
         and runtime.started
         and runtime.age --[[@as integer]]
           > emitterLife

@@ -5,6 +5,7 @@
 -- approximated by far-first painter ordering. Billboards and directional
 -- billboards (draw type 1) are supported for emitters and children alike;
 -- children draw with their own texture and the emitter's scale parameters.
+-- an emitter's hideParent flag draws only its children.
 
 local M = {}
 
@@ -57,8 +58,10 @@ local function orderedDraws(simulation)
         add(runtime, runtime.children[childIndex], runtime.record.child)
       end
     end
-    for particleIndex = #runtime.particles, 1, -1 do
-      add(runtime, runtime.particles[particleIndex], nil)
+    if not runtime.record.hideParent then
+      for particleIndex = #runtime.particles, 1, -1 do
+        add(runtime, runtime.particles[particleIndex], nil)
+      end
     end
     if not childFirst then
       for childIndex = #runtime.children, 1, -1 do

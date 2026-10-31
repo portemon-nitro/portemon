@@ -139,9 +139,11 @@ function T.compile_accepts_every_placement_kind_and_rejects_unknown_ones()
   Assert.isNil(compileOne(emitterBase(SELF_DEST + 10, 0)), "an unreplayed placement kind fails")
 end
 
-function T.compile_requires_a_self_destroying_emitter()
-  local compiled = compileOne(emitterBase(0, 0))
-  Assert.isNil(compiled, "an emitter that never retires has no replay semantics")
+function T.compile_marks_emitters_without_the_self_destruct_flag_persistent()
+  local plain = compileOne(emitterBase(0, 0))
+  Assert.isTrue(plain.particles.emitters[1].persistent, "an emitter without self-destruct outlives its lifespan")
+  local destroying = compileOne(emitterBase(SELF_DEST, 0))
+  Assert.isNil(destroying.particles.emitters[1].persistent, "a self-destroying emitter carries no persistent flag")
 end
 
 function T.compile_records_the_texture_animation()
@@ -221,6 +223,24 @@ function T.compile_records_the_child_rotation_inheritance_only_when_set()
   Assert.isNil(
     compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(3 * 8)),
     "a child rotation type the retail generator never handles fails"
+)
+end
+
+function T.compile_records_emitter_following_only_when_set()
+  local followed = compileOne(emitterBase(SELF_DEST + 2 ^ 15, 0))
+  Assert.isTrue(followed.particles.emitters[1].followEmitter, "the follow-emitter flag is kept")
+  local plain = compileOne(emitterBase(SELF_DEST, 0))
+  Assert.isNil(plain.particles.emitters[1].followEmitter, "an unset follow-emitter flag stays absent")
+end
+
+function T.compile_normalizes_the_convergence_field()
+  local field = u32(4096 * 2) .. u32(0xFFFFF000) .. u32(0) .. u16(0xFF00) .. u16(0)
+  local compiled, err = compileOne(emitterBase(SELF_DEST + 2 ^ 29, 0) .. field)
+  Assert.notNil(compiled, "a convergence emitter compiles: " .. tostring(err))
+  Assert.deepEqual(
+    compiled.particles.emitters[1].fields,
+    { { kind = "convergence", position = { x = 2, y = -1, z = 0 }, ratio = -256 } },
+    "the convergence field keeps its target and signed fx16 ratio"
   )
 end
 

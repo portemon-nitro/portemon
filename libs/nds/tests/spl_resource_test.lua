@@ -93,7 +93,7 @@ function T.spl_decoder_rejects_implausible_counts()
 end
 
 function T.spl_decoder_rejects_unsupported_animation_and_field_flags()
-  for _, flag in ipairs({ 2 ^ 15, 2 ^ 20, 2 ^ 25, 2 ^ 28, 2 ^ 29, 2 ^ 30, 2 ^ 31 }) do
+  for _, flag in ipairs({ 2 ^ 20, 2 ^ 25, 2 ^ 28, 2 ^ 30, 2 ^ 31 }) do
     local member = blob(1, 1, { emitter(flag) }, { textureBlock() })
     local decoded, err = SplResource.decode(member)
     Assert.isNil(decoded, "an unsupported feature bit never decodes silently: " .. tostring(flag))
@@ -110,6 +110,21 @@ function T.spl_decoder_accepts_the_observed_anchor_feature_set()
   local decoded, err = SplResource.decode(member)
   Assert.notNil(decoded, "the observed anchor set decodes: " .. tostring(err))
   Assert.equal(#decoded.emitters[1].fields, 3, "the three observed fields normalize")
+end
+
+function T.spl_decoder_walks_the_convergence_field_and_keeps_the_follow_flag()
+  -- Convergence is the last field block (16 bytes); follow-emitter is a
+  -- plain base flag bit the compiler reads from the kept flag word.
+  local flag = 2 ^ 15 + 2 ^ 24 + 2 ^ 29
+  local record = emitter(flag, 18, 15, 0) .. string.rep("\0", 8 + 16)
+  local member = blob(1, 1, { record }, { textureBlock() })
+  local decoded, err = SplResource.decode(member)
+  Assert.notNil(decoded, "convergence and follow-emitter decode: " .. tostring(err))
+  local fields = decoded.emitters[1].fields
+  Assert.equal(#fields, 2, "gravity then convergence normalize")
+  Assert.equal(fields[2].kind, "convergence", "the convergence field keeps its kind")
+  Assert.equal(fields[2].offset, 32 + 88 + 8, "the convergence block follows the gravity block")
+  Assert.equal(math.floor(decoded.emitters[1].flag / 2 ^ 15) % 2, 1, "the follow-emitter bit stays in the flag word")
 end
 
 function T.spl_decoder_walks_the_texture_animation_block_between_alpha_and_child()
