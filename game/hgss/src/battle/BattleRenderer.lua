@@ -277,6 +277,28 @@ end
 
 -- Pool leases pair the staged image with the shared sampler while owned
 -- and test images draw directly. Resolves the measurable staged image
+-- when it samples (pool and test leases), else its admitted effect
+-- lease, else nothing. Pool borrows keep their sampler on the outer
+-- handle while the inner borrow token only pins the physical entry,
+-- so outer-first resolution draws pool art instead of crashing on the
+-- token; raw images and recording stand-ins sample nothing and draw
+-- directly.
+---@param art unknown resolved drawable handle under drawing
+---@return table<string, unknown>? drawable sampler, nil for raw images and recording stand-ins
+local function samplerOf(art)
+  if type(art) ~= "table" then
+    return nil
+  end
+  if type(art.drawQuad) == "function" then
+    return art
+  end
+  local inner = art.lease
+  if type(inner) == "table" and type(inner.drawQuad) == "function" then
+    return inner
+  end
+  return nil
+end
+
 -- behind a drawable handle, or nil when the handle carries no pixels:
 -- headless descriptors and bare test stand-ins stay drawable-shaped so
 -- recording views prove without GPU uploads, while pool leases resolve
@@ -294,14 +316,20 @@ local function stagedPixelsOf(art)
   return nil
 end
 
--- Draws one resolved scene layer: pool leases resolve to their staged
--- image for the raw host draw while owned, test, and descriptor handles
--- draw as resolved.
+-- Draws one resolved scene layer: palette-sampling handles draw through
+-- the shared sampler (an indexed borrow drawn raw would show its palette
+-- indices as red), while owned, test, and descriptor handles keep the
+-- direct host draw.
 ---@param graphics table<string, unknown> injected host graphics
 ---@param scene table<string, unknown> resolved scene drawable under drawing
 ---@param scrollX number background horizontal scroll in native pixels
 ---@param scrollY number background vertical scroll in native pixels
 local function drawSceneLayer(graphics, scene, scrollX, scrollY)
+  local sampler = samplerOf(scene)
+  if sampler ~= nil then
+    sampler:draw(graphics, 0 - scrollX, 0 - scrollY)
+    return
+  end
   local staged = stagedPixelsOf(scene)
   graphics.draw(staged == nil and scene or staged, 0 - scrollX, 0 - scrollY)
 end
@@ -339,28 +367,6 @@ local function stripHeightOf(art)
 end
 
 -- Resolves the drawable sampler behind one handle: the handle itself
--- when it samples (pool and test leases), else its admitted effect
--- lease, else nothing. Pool borrows keep their sampler on the outer
--- handle while the inner borrow token only pins the physical entry,
--- so outer-first resolution draws pool art instead of crashing on the
--- token; raw images and recording stand-ins sample nothing and draw
--- directly.
----@param art unknown resolved drawable handle under drawing
----@return table<string, unknown>? drawable sampler, nil for raw images and recording stand-ins
-local function samplerOf(art)
-  if type(art) ~= "table" then
-    return nil
-  end
-  if type(art.drawQuad) == "function" then
-    return art
-  end
-  local inner = art.lease
-  if type(inner) == "table" and type(inner.drawQuad) == "function" then
-    return inner
-  end
-  return nil
-end
-
 -- Draws one resolved handle with a caller viewport through the shared
 -- sampler when it samples, directly otherwise. Extra placement
 -- arguments forward to the draw call.

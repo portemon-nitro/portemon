@@ -3755,6 +3755,98 @@ function T.trainer_intro_draws_c02_frames_and_releases_throw_assets(scope, conte
   Assert.isNil(images["battle-ball:POKE_BALL:0"], "the borrowed ball frame is released")
 end
 
+-- The unbaked intro scene stages as an indexed pool borrow: drawing it
+-- must sample through its staged palette, never as raw indices (which
+-- read as dark red). Guards the battle intro background against the
+-- palette-sampler bypass.
+function T.intro_scene_draws_indexed_pool_art_through_its_palette(scope, context)
+  local versionId = readyVersions()[1]
+  if versionId == nil then
+    context:skip("intro palette capture needs staged battle assets")
+  end
+  local cacheFs = CacheFs.forVersion(versionId)
+  local record = assert(BattlePresentationCache.loadScene(cacheFs, SCENE_KEY), "intro scene staged")
+  local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+  local pool = ImageAssetPool.new(cacheFs, { graphics = love.graphics })
+  scope:own({
+    release = function()
+      pcall(function()
+        pool:dispose()
+      end)
+    end,
+  })
+  local token = pool:request(
+    record.introLayer.image,
+    { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" },
+    "demand"
+  )
+  local lease
+  for _ = 1, 600 do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      lease = pool:acquire(token)
+      break
+    end
+    assert(status ~= "failed", "intro scene stages decodably: " .. tostring(failure))
+    love.timer.sleep(0.01)
+  end
+  Assert.notNil(lease, "intro scene art borrows from the pool")
+  Assert.equal(lease.kind, "r8", "the unbaked intro scene stages indexed")
+  local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  local view = {
+    battlers = {},
+    effectInstances = {},
+    slotGeometry = {},
+    hudSections = {},
+    message = "",
+    openingPresentation = {
+      playerTrainerVisible = false,
+      foeTrainerVisible = false,
+      trainerSlides = {},
+      terrainSlides = { { role = "player", visible = true, x = 0, y = 0 } },
+    },
+    introScene = lease,
+    terrainSprites = {
+      player = {
+        drawable = scope:own(love.graphics.newImage(scope:own(love.image.newImageData(8, 8, "rgba8")))),
+        origin = { x = 0, y = 0 },
+      },
+    },
+  }
+  local resources = {
+    graphics = love.graphics,
+    text = {},
+    windows = { drawWindow = function() end },
+    assets = {
+      drawable = function()
+        return nil
+      end,
+    },
+    frameKey = "unused",
+    sceneImageKey = "unused",
+  }
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  BattleRenderer.drawPane(resources, view, "detail", {}, { x = 0, y = 0, width = 256, height = 192 })
+  love.graphics.setCanvas()
+  local pixels = scope:own(canvas:newImageData())
+  local total, sumR, sumG, sumB = 0, 0, 0, 0, 0
+  for y = 0, 191, 2 do
+    for x = 0, 255, 2 do
+      local r, g, b, a = pixels:getPixel(x, y)
+      if a > 0.5 then
+        total = total + 1
+        sumR, sumG, sumB = sumR + r, sumG + g, sumB + b
+      end
+    end
+  end
+  Assert.isTrue(total > 0, "the intro scene covers the detail pane")
+  local meanR, meanG = sumR / total, sumG / total
+  Assert.isTrue(meanG > meanR, "the staged intro grass resolves green, not palette-index red")
+  pool:release(lease)
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {
