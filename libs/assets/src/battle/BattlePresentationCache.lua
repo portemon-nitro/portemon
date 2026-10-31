@@ -86,6 +86,18 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field map BattlePresentationCache.SceneResource
 ---@field palette BattlePresentationCache.SceneResource
 
+---@class BattlePresentationCache.EncounterParticleTexture
+---@field id integer texture id the set's emitters, children, and texture animations name
+---@field width integer
+---@field height integer
+---@field image string cache-relative staged RGBA PNG path
+
+---@class BattlePresentationCache.EncounterParticleSet
+---@field startTick integer encounter animation tick the set starts on
+---@field seed integer particle random seed
+---@field emitters table<string, unknown>[] compiled emitter records
+---@field textures BattlePresentationCache.EncounterParticleTexture[]
+
 ---@class BattlePresentationCache.SceneRecord
 ---@field schema string
 ---@field key string
@@ -99,6 +111,7 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field imagePath string
 ---@field introLayer { image: string, width: integer, height: integer }
 ---@field terrainSprites table<string, { image: string, width: integer, height: integer, origin: { x: integer, y: integer } }>
+---@field encounterParticles BattlePresentationCache.EncounterParticleSet[] the two retail terrain emitter sets in start order
 
 ---@return string
 function BattlePresentationCache.dir()
@@ -174,6 +187,19 @@ end
 function BattlePresentationCache.sceneTerrainSpritePath(sceneKey, side)
   assert(side == "player" or side == "foe", "terrain sprite side is player or foe")
   return ASSET_DIR .. "/scenes/" .. sceneStem(sceneKey) .. "-terrain-" .. side .. ".png"
+end
+
+---@param sceneKey string semantic scene key
+---@param setIndex integer 1-based encounter emitter set, in start order
+---@param textureId integer texture id within the set
+---@return string cache-relative staged encounter particle texture image path
+function BattlePresentationCache.sceneParticleTexturePath(sceneKey, setIndex, textureId)
+  assert(setIndex == 1 or setIndex == 2, "encounter particle sets are numbered 1 and 2")
+  assert(
+    type(textureId) == "number" and textureId % 1 == 0 and textureId >= 0,
+    "particle texture ids are non-negative integers"
+  )
+  return ASSET_DIR .. "/scenes/" .. sceneStem(sceneKey) .. "-particles-" .. setIndex .. "-" .. textureId .. ".png"
 end
 
 ---@param sceneKey string semantic scene key
@@ -429,6 +455,14 @@ local function hasSceneImageClosure(cacheFs, record)
     width, height = PngWriter.completeDimensions(cacheFs:read(sprite.image))
     if width ~= sprite.width or height ~= sprite.height then
       return false
+    end
+  end
+  for _, set in ipairs(record.encounterParticles) do
+    for _, texture in ipairs(set.textures) do
+      width, height = PngWriter.completeDimensions(cacheFs:read(texture.image))
+      if width ~= texture.width or height ~= texture.height then
+        return false
+      end
     end
   end
   return true

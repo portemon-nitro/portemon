@@ -27,6 +27,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local Spl = require("libs.nds.src.nitro.particle.Spl")
+local SplEmitterCompiler = require("romdump.src.digest.particle.SplEmitterCompiler")
 local Rgb555 = require("libs.codec.src.Rgb555")
 local bit = require("bit")
 
@@ -955,6 +956,7 @@ end
 ---@field terrain { archiveSymbol: string, paletteMember: integer, type0Member: integer, type1Member: integer }
 ---@field palette { archiveSymbol: string, member: integer, variant: integer, selection: string }
 ---@field screen { archiveSymbol: string, member: integer }
+---@field encounterParticles { archiveSymbol: string, sets: { member: integer, particleMemberHash: string }[] }
 
 ---@class BattlePresentationCompiler.SceneRecord : BattlePresentationCache.SceneRecord
 ---@field layers BattlePresentationCache.SceneLayer[]
@@ -963,6 +965,7 @@ end
 ---@field image string RGBA pixels for the static PNG optimization
 ---@field introImage string RGBA pixels for the unbaked BG3 intro layer
 ---@field terrainSpritePixels table<string, string> RGBA pixels keyed by player/foe
+---@field encounterParticleImages table<string, string> staged particle texture PNG bytes by cache path
 
 -- Compile the source-selected per-species height and facing animation data
 -- into semantic keys. Physical member identities remain in the source
@@ -4719,6 +4722,62 @@ local function bakeType0(dest, cells)
   end
 end
 
+-- Compile the two terrain particle sets the retail encounter animation
+-- plays for one scene terrain: the emitter records, plus every texture as a
+-- staged PNG keyed by its cache path. The member emitter counts are the
+-- retail per-member counts the encounter task creates.
+---@param romFs RomFs
+---@param sceneKey string semantic scene key
+---@param terrain string scene terrain key
+---@return BattlePresentationCache.EncounterParticleSet[] sets
+---@return table<string, string> images PNG bytes by cache path
+---@return { archiveSymbol: string, sets: { member: integer, particleMemberHash: string }[] } provenance
+local function compileEncounterParticles(romFs, sceneKey, terrain)
+  local archiveSymbol = Sources.ENCOUNTER_PARTICLES.archiveSymbol
+  local archive = openArchive(romFs, archiveSymbol, "encounter particles")
+  local sets, images, provenanceSets = {}, {}, {}
+  for setIndex, source in ipairs(Sources.encounterParticleSets(terrain)) do
+    local label = terrain .. " encounter particles " .. setIndex
+    local bytes = decodeMember(archive, source.member, label)
+    local function texturePath(textureId)
+      return BattlePresentationCache.sceneParticleTexturePath(sceneKey, setIndex, textureId)
+    end
+    local compiled, compileErr = SplEmitterCompiler.compile(bytes, {
+      emitterCount = source.emitterCount,
+      texturePath = texturePath,
+    })
+    if compiled == nil then
+      error(
+        Errors.new("BATTLE_PARTICLES_INVALID", label .. " failed to compile", {
+          label = label,
+          memberId = source.member,
+          cause = tostring(compileErr),
+        }),
+        0
+      )
+    end
+    local textures = {}
+    for _, texture in ipairs(compiled.particles.textures) do
+      textures[#textures + 1] =
+        { id = texture.id, width = texture.width, height = texture.height, image = texture.image }
+    end
+    sets[setIndex] = {
+      startTick = BattlePresentationSchema.ENCOUNTER_START_TICKS[setIndex],
+      seed = compiled.particles.seed,
+      emitters = compiled.particles.emitters,
+      textures = textures,
+    }
+    for path, png in pairs(compiled.files) do
+      images[path] = png
+    end
+    provenanceSets[setIndex] = {
+      member = source.member,
+      particleMemberHash = compiled.dependencies.particleMemberHash,
+    }
+  end
+  return sets, images, { archiveSymbol = archiveSymbol, sets = provenanceSets }
+end
+
 -- Compile the exact requested persistent scene: the background base with
 -- its time-variant palette, the terrain bake, and the common screen
 -- rasterized over the result. Returns the source-canvas record with its
@@ -4850,6 +4909,8 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
       }
       terrainSpritePixels[side] = spriteRaster.pixels
     end
+    local encounterParticles, encounterParticleImages, encounterProvenance =
+      compileEncounterParticles(romFs, sceneKey, parsed.terrain)
     local raster = G2dRasterizer.renderScreen({ depth = 4, tiles = concatChars(dest) }, { colors = combined }, screen, {
       asset = Sources.LOWER_NARC,
       role = "persistent scene " .. sceneKey,
@@ -4893,6 +4954,7 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
         height = introRaster.height,
       },
       terrainSprites = terrainSprites,
+      encounterParticles = encounterParticles,
       layerPayloads = {
         {
           characters = concatChars(dest),
@@ -4925,10 +4987,12 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
           selection = paletteSelection,
         },
         screen = { archiveSymbol = Sources.LOWER_NARC, member = ROLES.backdropScreen },
+        encounterParticles = encounterProvenance,
       },
       image = raster.pixels,
       introImage = introRaster.pixels,
       terrainSpritePixels = terrainSpritePixels,
+      encounterParticleImages = encounterParticleImages,
       imagePath = BattlePresentationCache.sceneImagePath(sceneKey),
     }
     local sceneOk, sceneErr = pcall(BattlePresentationSchema.assertScene, {
@@ -4944,6 +5008,7 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
       imagePath = record.imagePath,
       introLayer = record.introLayer,
       terrainSprites = record.terrainSprites,
+      encounterParticles = record.encounterParticles,
     })
     if not sceneOk then
       error(
@@ -5039,6 +5104,14 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
   for _, sprite in pairs(scene.terrainSprites) do
     artifact:addOwnedRoot(sprite.image)
   end
+  local particlePaths = {}
+  for path in pairs(scene.encounterParticleImages) do
+    particlePaths[#particlePaths + 1] = path
+  end
+  table.sort(particlePaths)
+  for _, path in ipairs(particlePaths) do
+    artifact:addOwnedRoot(path)
+  end
   artifact:addOwnedRoot(scene.layers[1].characters.path)
   artifact:addOwnedRoot(scene.layers[1].map.path)
   artifact:addOwnedRoot(scene.layers[1].palette.path)
@@ -5057,6 +5130,7 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
     imagePath = scene.imagePath,
     introLayer = scene.introLayer,
     terrainSprites = scene.terrainSprites,
+    encounterParticles = scene.encounterParticles,
   })
   local payload = assert(scene.layerPayloads[1], "the scene carries its BG3 payload")
   stage:write(scene.layers[1].characters.path, payload.characters)
@@ -5077,6 +5151,9 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
       encodeImage(scene.terrainSpritePixels[side], sprite.width, sprite.height, scene.key .. " terrain " .. side)
     )
   end
+  for _, path in ipairs(particlePaths) do
+    stage:write(path, scene.encounterParticleImages[path])
+  end
   stage:write(BattlePresentationCache.sceneMarkerPath(scene.key), marker)
   return marker
 end
@@ -5086,6 +5163,10 @@ end
 ---@param scene BattlePresentationCompiler.SceneRecord compileScene record
 ---@return string marker
 function BattlePresentationCompiler.sceneMarker(romSha1, scene)
+  local particleImageHashes = {}
+  for path, png in pairs(scene.encounterParticleImages) do
+    particleImageHashes[path] = Hashing.sha1hex(png)
+  end
   return BattlePresentationCache.marker(
     romSha1,
     Hashing.hashLua({
@@ -5096,6 +5177,8 @@ function BattlePresentationCompiler.sceneMarker(romSha1, scene)
       layers = scene.layers,
       introLayer = scene.introLayer,
       terrainSprites = scene.terrainSprites,
+      encounterParticles = scene.encounterParticles,
+      encounterParticleImages = particleImageHashes,
       image = Hashing.sha1hex(scene.image),
       introImage = Hashing.sha1hex(scene.introImage),
       terrainSpritePixels = {

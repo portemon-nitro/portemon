@@ -6,6 +6,8 @@
 
 local Assert = require("tests.support.Assert")
 local G2dBankFixture = require("tests.support.G2dBankFixture")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local SplMemberFixture = require("tests.support.SplMemberFixture")
 
 local T = {}
 
@@ -136,6 +138,8 @@ local function sceneRomFs(screenTile, type0overrides, type1overrides)
     ["NARC_a_0_0_8:129"] = terrainSpriteAnimation,
     ["NARC_a_0_0_8:131"] = terrainSpriteCells,
     ["NARC_a_0_0_8:132"] = terrainSpriteAnimation,
+    ["NARC_a_0_2_9:5"] = SplMemberFixture.member(5, 1),
+    ["NARC_a_0_2_9:6"] = SplMemberFixture.member(11, 2),
   })
 end
 
@@ -234,6 +238,37 @@ function T.unknown_scene_keys_and_missing_members_fail_precisely()
   local missing, missingErr = compile(fs)
   Assert.isNil(missing, "a missing source member never compiles")
   Assert.notNil(missingErr, "the missing member explains itself")
+end
+
+-- The grass scene stages the two retail encounter members (5 and 6) in start
+-- order with their emitter counts, every texture as a PNG under the scene's
+-- particle paths, and the scene marker follows the particle art.
+function T.grass_scene_stages_both_encounter_particle_sets()
+  local Compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local scene = assert(compile(sceneRomFs(0, {}, {})), "the grass scene compiles with its particle members")
+  local sets = scene.encounterParticles
+  Assert.equal(#sets, 2, "two emitter sets stage")
+  Assert.deepEqual({ #sets[1].emitters, #sets[2].emitters }, { 5, 11 }, "each set keeps its retail emitter count")
+  Assert.deepEqual({ #sets[1].textures, #sets[2].textures }, { 1, 2 }, "each set stages its member textures")
+  Assert.deepEqual({ sets[1].startTick, sets[2].startTick }, { 1, 20 }, "the sets start in retail order")
+  local members = scene.buildMetadata.encounterParticles.sets
+  Assert.deepEqual({ members[1].member, members[2].member }, { 5, 6 }, "the second set is the member after the first")
+  local staged = 0
+  for setIndex, set in ipairs(sets) do
+    for _, texture in ipairs(set.textures) do
+      Assert.notNil(scene.encounterParticleImages[texture.image], "each texture stages a PNG: " .. texture.image)
+      Assert.equal(texture.image, BattlePresentationCache.sceneParticleTexturePath(scene.key, setIndex, texture.id))
+      staged = staged + 1
+    end
+  end
+  Assert.equal(staged, 3, "only the member textures stage")
+  local before = Compiler.sceneMarker("synthetic-rom-sha", scene)
+  local path = sets[1].textures[1].image
+  scene.encounterParticleImages[path] = scene.encounterParticleImages[path] .. "x"
+  Assert.isTrue(
+    Compiler.sceneMarker("synthetic-rom-sha", scene) ~= before,
+    "a changed particle texture changes the scene completion marker"
+  )
 end
 
 return { tests = T }

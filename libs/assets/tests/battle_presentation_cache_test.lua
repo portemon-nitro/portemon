@@ -3,6 +3,7 @@
 -- readiness over staged files. Staged fixtures are synthetic; the ROM
 -- suite proves the compiler stages the same shapes.
 
+local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
@@ -190,7 +191,7 @@ local function stageBattle(cache, manifest, sceneKey)
     stagePng(cache, path, geometry.width, geometry.height)
   end
   local record = {
-    schema = "g4-battle-scene-v3",
+    schema = "g4-battle-scene-v4",
     key = sceneKey,
     background = "general",
     terrain = "grass",
@@ -241,6 +242,7 @@ local function stageBattle(cache, manifest, sceneKey)
         origin = { x = -40, y = -40 },
       },
     },
+    encounterParticles = ParticlesFixture.sets(sceneKey),
   }
   cache:writeLua(BattlePresentationCache.scenePath(sceneKey), record)
   cache:write(BattlePresentationCache.sceneMarkerPath(sceneKey), "marker")
@@ -259,6 +261,43 @@ local function stageBattle(cache, manifest, sceneKey)
   stagePng(cache, BattlePresentationCache.sceneIntroImagePath(sceneKey), 512, 256)
   stagePng(cache, BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player"), 80, 80)
   stagePng(cache, BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe"), 80, 80)
+  for _, set in ipairs(record.encounterParticles) do
+    for _, texture in ipairs(set.textures) do
+      stagePng(cache, texture.image, texture.width, texture.height)
+    end
+  end
+end
+
+function T.encounter_particle_textures_are_part_of_the_scene_readiness_closure()
+  Assert.equal(
+    BattlePresentationCache.sceneParticleTexturePath("general/grass/day", 2, 3),
+    "assets/generated/battle/scenes/general-grass-day-particles-2-3.png",
+    "particle textures have set- and id-specific scene paths"
+  )
+  local sceneKey = "general/grass/day"
+  local cache = staging()
+  stageBattle(cache, validManifest(), sceneKey)
+  Assert.isTrue(BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"), "a complete scene reads ready")
+  local second = ParticlesFixture.sets(sceneKey)[2].textures[2]
+  local staged = assert(cache:read(second.image), "the particle texture is staged")
+
+  cache:write(second.image, "truncated")
+  Assert.isFalse(
+    BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
+    "a corrupt particle texture never reads as ready"
+  )
+  stagePng(cache, second.image, second.width + 1, second.height)
+  Assert.isFalse(
+    BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
+    "a wrongly sized particle texture never reads as ready"
+  )
+  cache:write(second.image, staged)
+  Assert.isTrue(BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"), "a restored texture reads ready")
+  cache:remove(second.image)
+  Assert.isFalse(
+    BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
+    "a missing particle texture never reads as ready"
+  )
 end
 
 function T.battle_ball_frames_are_part_of_the_exact_readiness_closure()

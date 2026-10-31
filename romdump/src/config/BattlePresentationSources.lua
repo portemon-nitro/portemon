@@ -397,6 +397,61 @@ BattlePresentationSources.TERRAIN = {
   giratina = { ordinal = 23, type0 = 175, type1 = 176, day = 67, evening = 68, night = 69 },
 }
 
+-- The encounter animation's terrain particles (Task_PlayEncounterAnimation
+-- in src/battle/battle_controller_opponent.c): the terrain ordinal selects
+-- the first SPL member of gBattleEncounterTerrains and the member after it
+-- is the second set. Each member's emitter count is sBattleAnimEmitterCounts
+-- indexed by member - 5. Frontier terrains past the ordinary scene axes
+-- (ordinals 18..23) use the generic member 11.
+BattlePresentationSources.ENCOUNTER_PARTICLES = {
+  archiveSymbol = "NARC_a_0_2_9",
+  firstMemberByOrdinal = {
+    [0] = 9,
+    23,
+    5,
+    19,
+    13,
+    17,
+    15,
+    7,
+    21,
+    11,
+    25,
+    11,
+    11,
+    11,
+    11,
+    11,
+    11,
+    21,
+    11,
+    11,
+    11,
+    11,
+    11,
+    11,
+  },
+  emitterCountsFromMember5 = { 5, 11, 6, 7, 2, 1, 2, 1, 1, 4, 3, 3, 2, 9, 1, 1, 1, 2, 1, 1, 1, 1 },
+}
+
+-- The two SPL members the encounter animation plays for one terrain, in
+-- start order, with their required emitter counts.
+---@param terrain string terrain key of the scene
+---@return { member: integer, emitterCount: integer }[] sets
+function BattlePresentationSources.encounterParticleSets(terrain)
+  local recipe = assert(BattlePresentationSources.TERRAIN[terrain], "encounter terrain has a recipe")
+  local catalog = BattlePresentationSources.ENCOUNTER_PARTICLES
+  local first = assert(catalog.firstMemberByOrdinal[recipe.ordinal], "encounter terrain selects a particle member")
+  local sets = {}
+  for _, member in ipairs({ first, first + 1 }) do
+    sets[#sets + 1] = {
+      member = member,
+      emitterCount = assert(catalog.emitterCountsFromMember5[member - 4], "encounter particle member has a count"),
+    }
+  end
+  return sets
+end
+
 -- battle_terrain.c's side-specific character tables indexed by terrain ordinal.
 local terrainPlayerCharacters = {
   0x87,

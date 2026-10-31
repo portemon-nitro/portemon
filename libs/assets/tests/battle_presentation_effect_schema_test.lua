@@ -107,7 +107,7 @@ function T.contract_identities_version_the_new_catalog_shapes()
   )
   Assert.equal(
     Contract.battlePresentation.sceneSchema,
-    "g4-battle-scene-v3",
+    "g4-battle-scene-v4",
     "the shared contract versions scenes with intro and terrain sprite images"
   )
   Assert.isTrue(

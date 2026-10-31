@@ -265,6 +265,85 @@ function T.persistent_scene_compiles_for_one_context(romFs, versionId)
   Assert.equal(dayAgain.image, day.image, versionId .. ": scene compilation is deterministic")
 end
 
+-- The encounter animation plays two terrain particle sets chosen through the
+-- retail gBattleEncounterTerrains table (grass 5, water 7, cave 17, sand 23,
+-- building 11, great marsh 25), each as the member and its successor with
+-- the retail per-member emitter counts. The compiled scene stages both sets
+-- in start order with every texture image decoded to a PNG.
+function T.encounter_particles_stage_the_terrain_member_pair_per_scene(romFs, versionId)
+  local compiler, cache = presentationBoundary(romFs, versionId)
+  local expected = {
+    ["general/grass/day"] = { members = { 5, 6 }, emitters = { 5, 11 } },
+    ["ocean/water/night"] = { members = { 7, 8 }, emitters = { 6, 7 } },
+    ["cave_1/cave/day"] = { members = { 17, 18 }, emitters = { 2, 9 } },
+    ["general/sand/evening"] = { members = { 23, 24 }, emitters = { 1, 1 } },
+    ["building_1/building/day"] = { members = { 11, 12 }, emitters = { 2, 1 } },
+    ["general/great_marsh/day"] = { members = { 25, 26 }, emitters = { 1, 1 } },
+  }
+  local sceneKeys = {}
+  for sceneKey in pairs(expected) do
+    sceneKeys[#sceneKeys + 1] = sceneKey
+  end
+  table.sort(sceneKeys)
+  for _, sceneKey in ipairs(sceneKeys) do
+    local want = expected[sceneKey]
+    local scene = assert(
+      compiler.compileScene(romFs, { versionId = versionId }, sceneKey),
+      versionId .. ": " .. sceneKey .. " compiles from the dump"
+    )
+    Assert.equal(#scene.encounterParticles, 2, versionId .. ": " .. sceneKey .. " stages two emitter sets")
+    for setIndex, set in ipairs(scene.encounterParticles) do
+      local source = scene.buildMetadata.encounterParticles.sets[setIndex]
+      Assert.equal(
+        source.member,
+        want.members[setIndex],
+        versionId .. ": " .. sceneKey .. " set " .. setIndex .. " selects its retail member"
+      )
+      Assert.equal(
+        #set.emitters,
+        want.emitters[setIndex],
+        versionId .. ": " .. sceneKey .. " set " .. setIndex .. " keeps the member emitter count"
+      )
+      Assert.equal(set.startTick, setIndex == 1 and 1 or 20, versionId .. ": the sets start in retail order")
+      for _, texture in ipairs(set.textures) do
+        Assert.equal(texture.image, cache.sceneParticleTexturePath(sceneKey, setIndex, texture.id))
+        Assert.notNil(
+          scene.encounterParticleImages[texture.image],
+          versionId .. ": " .. sceneKey .. " stages " .. texture.image
+        )
+      end
+    end
+  end
+end
+
+-- Every ordinary scene terrain compiles its encounter particles through the
+-- retail gBattleEncounterTerrains table (indexed by terrain ordinal; the
+-- bytes are the ROM's 24-entry table) and stages every texture it names.
+function T.every_scene_terrain_maps_to_its_retail_encounter_members(romFs, versionId)
+  local compiler, cache = presentationBoundary(romFs, versionId)
+  local retailTable = { 9, 23, 5, 19, 13, 17, 15, 7, 21, 11, 25, 11, 11, 11, 11, 11, 11, 21 }
+  Assert.equal(#cache.TERRAINS, #retailTable, versionId .. ": the scene terrains match the retail ordinals")
+  for ordinal, terrain in ipairs(cache.TERRAINS) do
+    local sceneKey = cache.sceneKey("general", terrain, "day")
+    local scene = assert(
+      compiler.compileScene(romFs, { versionId = versionId }, sceneKey),
+      versionId .. ": " .. sceneKey .. " compiles from the dump"
+    )
+    local members = scene.buildMetadata.encounterParticles.sets
+    Assert.deepEqual(
+      { members[1].member, members[2].member },
+      { retailTable[ordinal], retailTable[ordinal] + 1 },
+      versionId .. ": " .. terrain .. " plays the retail member pair"
+    )
+    for setIndex, set in ipairs(scene.encounterParticles) do
+      Assert.isTrue(#set.emitters > 0, versionId .. ": " .. terrain .. " set " .. setIndex .. " carries emitters")
+      for _, texture in ipairs(set.textures) do
+        Assert.notNil(scene.encounterParticleImages[texture.image], versionId .. ": " .. texture.image .. " stages")
+      end
+    end
+  end
+end
+
 -- Admission is a static contract, not a decode result: the global bundle
 -- publishes BattlePresentationCache.sceneInventory() verbatim, so this
 -- test checks that inventory plus the production rejection path.

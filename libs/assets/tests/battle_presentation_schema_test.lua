@@ -5,6 +5,7 @@
 
 local Assert = require("tests.support.Assert")
 local Schema = require("libs.assets.src.battle.BattlePresentationSchema")
+local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
 
 local T = {}
 
@@ -891,7 +892,7 @@ end
 ---@return table valid composed scene record
 local function scene()
   return {
-    schema = "g4-battle-scene-v3",
+    schema = "g4-battle-scene-v4",
     key = "general/grass/day",
     background = "general",
     terrain = "grass",
@@ -942,7 +943,76 @@ local function scene()
         origin = { x = -40, y = -40 },
       },
     },
+    encounterParticles = ParticlesFixture.sets("general/grass/day"),
   }
+end
+
+function T.encounter_particle_sets_require_resolvable_textures_and_the_retail_start_order()
+  Assert.isTrue(Schema.isValidScene(scene()), "plain, texture-animated, and child emitters validate")
+
+  local missingSets = scene()
+  missingSets.encounterParticles = nil
+  Assert.isFalse(Schema.isValidScene(missingSets), "a scene must stage both encounter emitter sets")
+
+  local oneSet = scene()
+  oneSet.encounterParticles[2] = nil
+  Assert.isFalse(Schema.isValidScene(oneSet), "the encounter animation always starts two emitter sets")
+
+  local startOrder = scene()
+  startOrder.encounterParticles[1].startTick = 20
+  Assert.isFalse(Schema.isValidScene(startOrder), "the first set starts on the first retail tick")
+
+  local seeded = scene()
+  seeded.encounterParticles[1].seed = 7
+  Assert.isFalse(Schema.isValidScene(seeded), "particle sets keep the retail zero seed")
+
+  local emitterTexture = scene()
+  emitterTexture.encounterParticles[1].emitters[1].texture = 5
+  Assert.isFalse(Schema.isValidScene(emitterTexture), "an emitter must name a staged texture of its set")
+
+  local emitterImage = scene()
+  emitterImage.encounterParticles[1].emitters[1].textureImage = "assets/generated/battle/scenes/other.png"
+  Assert.isFalse(Schema.isValidScene(emitterImage), "an emitter image must be its texture's staged image")
+
+  local animTexture = scene()
+  animTexture.encounterParticles[2].emitters[1].textureAnim.textures[2] = 9
+  Assert.isFalse(Schema.isValidScene(animTexture), "a texture animation must name staged textures of its set")
+
+  local childTexture = scene()
+  childTexture.encounterParticles[2].emitters[1].child.texNo = 9
+  Assert.isFalse(Schema.isValidScene(childTexture), "a child emitter must name a staged texture of its set")
+
+  local otherSetTexture = scene()
+  otherSetTexture.encounterParticles[1].emitters[1].texture = 3
+  Assert.isFalse(Schema.isValidScene(otherSetTexture), "textures resolve inside their own set only")
+
+  local foreignImage = scene()
+  foreignImage.encounterParticles[2].textures[2].image = ParticlesFixture.texturePath("general/grass/night", 2, 3)
+  Assert.isFalse(Schema.isValidScene(foreignImage), "texture images stay under their own scene and set")
+
+  local duplicate = scene()
+  duplicate.encounterParticles[2].textures[2].id = 0
+  Assert.isFalse(Schema.isValidScene(duplicate), "a set stages each texture id once")
+
+  local noEmitters = scene()
+  noEmitters.encounterParticles[1].emitters = {}
+  Assert.isFalse(Schema.isValidScene(noEmitters), "a set carries emitters")
+
+  local unknownField = scene()
+  unknownField.encounterParticles[1].emitters[1].mystery = true
+  Assert.isFalse(Schema.isValidScene(unknownField), "emitter records reject unknown fields")
+
+  local badBlock = scene()
+  badBlock.encounterParticles[1].emitters[1].animations.alpha.start = 99
+  Assert.isFalse(Schema.isValidScene(badBlock), "animation blocks keep their five-bit alpha levels")
+
+  local badField = scene()
+  badField.encounterParticles[1].emitters[1].fields[1].kind = "wind"
+  Assert.isFalse(Schema.isValidScene(badField), "emitter fields keep the observed kinds")
+
+  local badImageSize = scene()
+  badImageSize.encounterParticles[1].textures[1].width = 0
+  Assert.isFalse(Schema.isValidScene(badImageSize), "texture images keep positive dimensions")
 end
 
 function T.scene_records_validate_their_key_and_viewport()
