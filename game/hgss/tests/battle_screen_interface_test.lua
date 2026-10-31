@@ -60,8 +60,8 @@ function T.native_menu_regions_use_source_pixel_bounds()
     {
       layout = "two-option",
       expected = {
-        { id = "confirm", x = 0, y = 32, w = 256, h = 64 },
-        { id = "back", x = 0, y = 104, w = 256, h = 64 },
+        { id = "confirm", x = 8, y = 40, w = 240, h = 56 },
+        { id = "back", x = 8, y = 112, w = 240, h = 56 },
       },
     },
   }) do
@@ -92,6 +92,11 @@ function T.child_titles_and_learn_prompts_use_staged_source_labels()
     BattleChildText.subtitle({ kind = "learn", sourcePrompt = "Which move should be forgotten?" }),
     "Which move should be forgotten?",
     "learn prompt uses the staged battle choice message"
+  )
+  Assert.equal(
+    BattleChildText.subtitle({ kind = "move", sourcePrompt = "Restore which move?" }),
+    "Restore which move?",
+    "move prompt uses the staged battle party message"
   )
 end
 

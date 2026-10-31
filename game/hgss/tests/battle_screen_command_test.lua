@@ -1164,7 +1164,19 @@ function T.navigation_follows_the_native_topology()
   Assert.equal(rig.screen:view().selection, "run", "left from the lower-right reaches Run")
   rig.screen:input({ { type = "navigate", direction = "up" } })
   rig.pump(1)
-  Assert.equal(rig.screen:view().selection, "fight", "up returns to the top command")
+  Assert.equal(rig.screen:view().selection, "run", "up from Run stays put like the native cursor")
+  rig.screen:input({ { type = "navigate", direction = "left" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:view().selection, "bag", "left from Run reaches Bag")
+  rig.screen:input({ { type = "navigate", direction = "up" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:view().selection, "fight", "up from Bag returns to the top command")
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:view().selection, "bag", "down from Fight keeps its left column")
+  rig.screen:input({ { type = "navigate", direction = "up" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:view().selection, "fight", "up from the lower row returns to Fight")
   rig.screen:input({ { type = "confirm" } })
   rig.pump(1)
   rig.screen:input({ { type = "navigate", direction = "down" } })
@@ -1179,6 +1191,31 @@ function T.navigation_follows_the_native_topology()
   rig.battle:dispose()
 end
 
+-- The Fight row is one wide button: dropping from it keeps the entry
+-- column instead of always landing on Run.
+function T.command_cursor_preserves_its_column_beneath_the_fight_row()
+  local rig = openRig({ launchId = "launch-screen-command-column" })
+  driveToMode(rig, "command")
+  rig.screen:input({ { type = "navigate", direction = "right" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:view().selection, "pokemon", "right from Fight reaches Pokemon")
+  rig.screen:input({ { type = "navigate", direction = "up" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:view().selection, "fight", "up from Pokemon returns to Fight")
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
+  Assert.equal(
+    rig.screen:view().selection,
+    "pokemon",
+    "down from Fight keeps the right column instead of landing on Run"
+  )
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- Confirming a move remembers its fight-menu cell, and reopening
+-- reselects it while the slot stays enabled, matching the native
+-- move-cursor save and restore.
 function T.first_keyboard_edge_reveals_then_fight_left_and_right_follow_native_slots()
   local rig = openRig({ launchId = "launch-screen-native-cursor-reveal" })
   driveToMode(rig, "command", true)
@@ -1656,6 +1693,225 @@ function T.double_ally_targets_keep_both_native_slots()
   Assert.equal(view.targets[2].id, "target:1", "side type 4 maps to the upper-right control")
   screen:dispose()
 end
+
+---@param screen table live battle screen under target setup
+local function doubleAllyBattlers(screen)
+  local lead = assert(screen._timeline._battlers[1], "the opening retains its lead battler")
+  lead.position = 1
+  screen._timeline._battlers[2] = {
+    combatant = 2,
+    activation = 2,
+    side = 1,
+    position = 2,
+    active = true,
+    visible = true,
+    hp = 30,
+    maxHp = 30,
+  }
+  screen._timeline._order[#screen._timeline._order + 1] = 2
+end
+
+-- The target menu opens on the native priority cell, not on the first
+-- kernel candidate: the upper-left foe outranks a kernel-first
+-- upper-right ally.
+function T.target_focus_prefers_the_native_priority_over_kernel_order()
+  local rig = openSealingScreen("launch-screen-target-priority", {
+    {
+      id = "move:0",
+      slot = 0,
+      move = "HELPING_HAND",
+      name = "Helping Hand",
+      pp = 20,
+      maxPp = 20,
+      target = { kind = "position", position = 1 },
+    },
+  }, 4313)
+  local screen = rig.screen
+  doubleAllyBattlers(screen)
+  screen:_submitMove({
+    id = "move:0",
+    display = { move = "HELPING_HAND" },
+    targets = {
+      { id = "ally-right", combatant = 2, enabled = true, choice = { target = 2 } },
+      { id = "ally-left", combatant = 1, enabled = true, choice = { target = 1 } },
+    },
+  })
+  Assert.equal(screen:status().mode, "target", "a double ally move opens the native target menu")
+  Assert.equal(
+    screen:view().selection,
+    "target:3",
+    "the upper-left cell wins over the kernel-first upper-right candidate"
+  )
+  screen:dispose()
+end
+
+-- Reopening the same move range reselects the remembered target cell
+-- while it stays enabled; a changed range falls back to the native
+-- priority order.
+function T.target_focus_returns_to_the_remembered_cell_for_the_same_range()
+  local rig = openSealingScreen("launch-screen-target-recall", {
+    {
+      id = "move:0",
+      slot = 0,
+      move = "HELPING_HAND",
+      name = "Helping Hand",
+      pp = 20,
+      maxPp = 20,
+      target = { kind = "position", position = 1 },
+    },
+  }, 4314)
+  local screen = rig.screen
+  doubleAllyBattlers(screen)
+  local entry = {
+    id = "move:0",
+    display = { move = "HELPING_HAND" },
+    targets = {
+      { id = "ally-left", combatant = 1, enabled = true, choice = { target = 1 } },
+      { id = "ally-right", combatant = 2, enabled = true, choice = { target = 2 } },
+    },
+  }
+  screen:_submitMove(entry)
+  Assert.equal(screen:view().selection, "target:3", "the first opening follows the native priority")
+  local combatant = assert(screen:_actingCombatant(), "the target choice answers the acting entry")
+  local rangeKey = assert(screen._targetRangeKey, "the open target choice names its move range")
+  screen._savedTargetCursor[combatant] = { id = "target:1", range = rangeKey }
+  screen:_submitMove(entry)
+  Assert.equal(
+    screen:view().selection,
+    "target:1",
+    "the same range reopens on the remembered cell"
+  )
+  screen._savedTargetCursor[combatant] = { id = "target:1", range = "range:changed" }
+  screen:_submitMove(entry)
+  Assert.equal(
+    screen:view().selection,
+    "target:3",
+    "a changed range falls back to the native priority"
+  )
+  screen:dispose()
+end
+
+-- Pressing an illegal target cell arms nothing: the native touch
+-- callback answers it with no input and no button feedback.
+function T.disabled_target_presses_arm_nothing()
+  local rig = openSealingScreen("launch-screen-target-press-gate", {
+    {
+      id = "move:0",
+      slot = 0,
+      move = "TACKLE",
+      name = "Tackle",
+      pp = 35,
+      maxPp = 35,
+      target = { kind = "position", position = 2 },
+    },
+  }, 4315)
+  local screen = rig.screen
+  screen._mode = "target"
+  screen._menuGateTicks = 0
+  screen._selection = "target:3"
+  screen._targetCandidates = {
+    { id = "upper-left", controlId = "target:3", enabled = true },
+    { id = "upper-right", controlId = "target:1", enabled = false, reason = "no target" },
+  }
+  screen:_consume({
+    type = "battle_press",
+    control = { scope = "target", id = "target:1" },
+    pointerId = "touch:illegal",
+  })
+  Assert.isNil(screen._armed, "an illegal target press arms no capture")
+  Assert.equal(screen._selection, "target:3", "an illegal target press moves no focus")
+  screen:_consume({
+    type = "battle_press",
+    control = { scope = "target", id = "target:3" },
+    pointerId = "touch:legal",
+  })
+  Assert.notNil(screen._armed, "an admitted target press still arms its capture")
+  screen:dispose()
+end
+
+-- Special kinds keep the native four-slot touch topology under new
+-- labels: pressing the Fight band in safari focuses the ball command
+-- instead of being ignored.
+function T.safari_presses_follow_the_relabelled_command_topology()
+  local rig = openRig({ launchId = "launch-screen-safari-topology" })
+  driveToMode(rig, "command")
+  rig.screen._kind = "safari"
+  rig.screen:_restoreCommandSelection()
+  Assert.equal(rig.screen:view().selection, "safari-ball", "safari opens on its ball command")
+  rig.screen:_consume({
+    type = "battle_press",
+    control = { scope = "command", id = "fight" },
+    pointerId = "touch:ball",
+  })
+  Assert.equal(
+    rig.screen:view().selection,
+    "safari-ball",
+    "the Fight band press selects the relabelled ball slot"
+  )
+  Assert.notNil(rig.screen._armed, "the relabelled press arms its capture")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+function T.move_cursor_returns_to_the_last_selected_slot()
+  local rig = openSealingScreen("launch-screen-move-cursor-memory", {
+    {
+      id = "move:0",
+      slot = 0,
+      move = "TACKLE",
+      name = "Tackle",
+      pp = 35,
+      maxPp = 35,
+      target = { kind = "position", position = 2 },
+    },
+    {
+      id = "move:1",
+      slot = 1,
+      move = "GROWL",
+      name = "Growl",
+      pp = 40,
+      maxPp = 40,
+      target = { kind = "position", position = 2 },
+    },
+  }, 4320)
+  local screen = rig.screen
+  local combatant = assert(screen:_actingCombatant(), "the move choice answers the acting entry")
+  screen:input({ { type = "confirm" } })
+  rig.pump(2)
+  Assert.equal(screen:status().mode, "moves", "confirming Fight opens move selection")
+  Assert.equal(screen:view().selection, "move:0", "the move menu opens on the first slot")
+  screen:input({ { type = "navigate", direction = "right" } })
+  rig.pump(1)
+  Assert.equal(screen:view().selection, "move:1", "right steps to the second slot")
+  -- A previous turn's confirm left its cell behind: reopening reselects
+  -- it while the slot stays enabled and falls back otherwise.
+  screen._savedMoveCursor[combatant] = { x = 1, y = 0 }
+  Assert.equal(
+    screen:_restoreMoveSelection(),
+    "move:1",
+    "reopening reselects the remembered slot"
+  )
+  screen._savedMoveCursor[combatant] = { x = 0, y = 1 }
+  Assert.equal(
+    screen:_restoreMoveSelection(),
+    "move:0",
+    "a disabled remembered slot falls back to the first enabled move"
+  )
+  screen._savedMoveCursor[combatant] = nil
+  screen:input({ { type = "navigate", direction = "right" } })
+  rig.pump(1)
+  Assert.equal(screen:view().selection, "move:1", "right steps back to the second slot")
+  screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, 1, "confirming the second slot seals exactly once")
+  Assert.deepEqual(
+    screen._savedMoveCursor[combatant],
+    { x = 1, y = 0 },
+    "confirming a move remembers its fight-menu cell"
+  )
+  screen:dispose()
+end
+
 
 -- A Fight with no usable move refuses with the kernel reason instead
 -- of opening a dead move list: the decision stays open, nothing
