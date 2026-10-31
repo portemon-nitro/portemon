@@ -73,6 +73,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _resultMusicPlayed boolean true once the result music swap was attempted for the launch
 ---@field _pool table<string, unknown>? borrowed shared generated-image owner, required once graphics resolve pixels
 ---@field _leases table<string, FieldBattlePresentation.PooledHandle> shared-owner leases by drawable key
+---@field _warmParticles table<string, FieldBattlePresentation.ParticleEntry[]> encounter particle textures each scene group holding or acquiring pins must carry
 ---@field _fieldRenderer table<string, unknown>? field-local native plane compositor
 ---@field _fieldCamera fun(): table<string, unknown>? current field camera provider
 ---@field _captureFieldLayers fun(): table<string, unknown>? fresh launch-owned native field planes
@@ -210,19 +211,51 @@ local function stagedDoc(envelope, path)
   return doc
 end
 
+---@class FieldBattlePresentation.ParticleEntry
+---@field key string drawable key of one encounter particle texture
+---@field path string cache-relative staged texture image
+---@field set integer 1-based encounter emitter set
+---@field texture table<string, unknown> staged texture record
+
+-- The encounter particle textures of one staged scene record in set, then
+-- texture order. Their drawable keys belong to the scene group.
+---@param sceneKey string validated scene key
+---@param record table<string, unknown> validated scene record
+---@return FieldBattlePresentation.ParticleEntry[]
+local function particleEntries(sceneKey, record)
+  local entries = {}
+  for setIndex, set in ipairs(record.encounterParticles) do
+    for _, texture in ipairs(set.textures) do
+      entries[#entries + 1] = {
+        key = "scene-particle:" .. sceneKey .. ":" .. setIndex .. ":" .. texture.id,
+        path = texture.image,
+        set = setIndex,
+        texture = texture,
+      }
+    end
+  end
+  return entries
+end
+
 -- The exact drawable keys forming one predicted scene group, in stable
--- adoption order: the scene image first, then its intro and terrain art.
--- These are the same keys the launch preparation resolves, so a warmed
--- group answers through the canonical drawable without a second owner.
+-- adoption order: the scene image first, then its intro, terrain, and
+-- encounter particle art. These are the same keys the launch preparation
+-- resolves, so a warmed group answers through the canonical drawable
+-- without a second owner.
+---@param envelope FieldBattlePresentation
 ---@param sceneKey string validated scene key behind the group
 ---@return string[] exact scene-group drawable keys in adoption order
-local function warmSceneKeys(sceneKey)
-  return {
+local function warmSceneKeys(envelope, sceneKey)
+  local keys = {
     "scene:" .. sceneKey,
     "scene-intro:" .. sceneKey,
     "scene-terrain:" .. sceneKey .. ":player",
     "scene-terrain:" .. sceneKey .. ":foe",
   }
+  for _, entry in ipairs(envelope._warmParticles[sceneKey] or {}) do
+    keys[#keys + 1] = entry.key
+  end
+  return keys
 end
 
 -- Names the scene behind one scene-group drawable key, or nil for fixed
@@ -248,7 +281,36 @@ local function warmSceneOfKey(key)
   if foeScene ~= nil and BattlePresentationCache.parseSceneKey(foeScene) ~= nil then
     return foeScene
   end
+  local particleScene = text:match("^scene%-particle:(.+):%d+:%d+$")
+  if particleScene ~= nil and BattlePresentationCache.parseSceneKey(particleScene) ~= nil then
+    return particleScene
+  end
   return nil
+end
+
+-- Records the particle texture keys a scene group must hold before it reads
+-- complete. Registration precedes every pin of the group and drops the
+-- registrations of other scenes that no longer hold any pin.
+---@param envelope FieldBattlePresentation
+---@param sceneKey string validated scene key
+---@param record table<string, unknown> validated scene record
+---@return FieldBattlePresentation.ParticleEntry[] entries
+local function registerParticleEntries(envelope, sceneKey, record)
+  local pinnedScenes = {} ---@type table<string, boolean>
+  for key in pairs(envelope._warmPinned) do
+    local pinnedScene = warmSceneOfKey(key)
+    if pinnedScene ~= nil then
+      pinnedScenes[pinnedScene] = true
+    end
+  end
+  for registered in pairs(envelope._warmParticles) do
+    if registered ~= sceneKey and pinnedScenes[registered] == nil then
+      envelope._warmParticles[registered] = nil
+    end
+  end
+  local entries = particleEntries(sceneKey, record)
+  envelope._warmParticles[sceneKey] = entries
+  return entries
 end
 
 -- Whether one scene group reads fully warm: every exact group key holds
@@ -258,7 +320,7 @@ end
 ---@param sceneKey string predicted scene key under inspection
 ---@return boolean complete
 local function warmGroupComplete(envelope, sceneKey)
-  for _, groupKey in ipairs(warmSceneKeys(sceneKey)) do
+  for _, groupKey in ipairs(warmSceneKeys(envelope, sceneKey)) do
     if envelope._warmPinned[groupKey] == nil then
       return false
     end
@@ -831,6 +893,7 @@ function FieldBattlePresentation.new(opts)
     _stagedMembersOk = false,
     _pool = opts.imagePool,
     _leases = {},
+    _warmParticles = {},
   }, FieldBattlePresentation)
   -- Pool interface validation stays at composition: graphical resolution
   -- requires the pool at first use (acquirePooled asserts it), so pending
@@ -1667,11 +1730,33 @@ function FieldBattlePresentation:_preparationServices()
   local trainerPictureManifest = nil
   local battleBallManifest = nil
   local stagedSceneKey = nil
+  local stagedSceneParticleKeys = {} ---@type string[]
   local stagedSceneLayer = nil
   local backgroundPixels = nil
   local backgroundImage = nil
   local effectRefs = {} ---@type table<string, integer> outstanding texture leases by semantic resource key
   local services = {}
+  -- Whether every encounter particle texture of the staged scene still
+  -- answers through its live warm pin, matching the staged drawables.
+  ---@param layer table<string, unknown>?
+  ---@return boolean
+  local function particlePinsHold(layer)
+    local registered = envelope._warmParticles[stagedSceneKey]
+    if layer == nil or registered == nil then
+      return false
+    end
+    local nextTexture = {} ---@type table<integer, integer>
+    for _, entry in ipairs(registered) do
+      local index = (nextTexture[entry.set] or 0) + 1
+      nextTexture[entry.set] = index
+      local pin = envelope._warmPinned[entry.key]
+      local texture = layer.encounterParticles[entry.set].textures[index]
+      if pin == nil or texture == nil or pin.handle ~= texture.drawable then
+        return false
+      end
+    end
+    return true
+  end
   function services.prepare(demand)
     if type(demand) ~= "table" then
       return nil, "battle demands arrive as records"
@@ -1738,6 +1823,7 @@ function FieldBattlePresentation:_preparationServices()
             or playerPin.handle ~= playerSprite.drawable
             or type(foeSprite) ~= "table"
             or foePin.handle ~= foeSprite.drawable
+            or not particlePinsHold(layer)
           then
             stagedSceneKey = nil
             stagedSceneLayer = nil
@@ -1745,6 +1831,7 @@ function FieldBattlePresentation:_preparationServices()
         end
         if stagedSceneKey ~= sceneKey then
           local previousSceneKey = stagedSceneKey
+          local previousParticleKeys = stagedSceneParticleKeys
           local layer = record.layers[1]
           -- An idle-warmed exact scene reuses its staged BG3 source
           -- values instead of rereading them; anything else takes the
@@ -1774,7 +1861,13 @@ function FieldBattlePresentation:_preparationServices()
           assert(layer.characters.format == "indexed8", "persistent BG3 uses the staged 8bpp character format")
           local intro = record.introLayer
           local sprites = record.terrainSprites
-          for _, imagePath in ipairs({ intro.image, sprites.player.image, sprites.foe.image }) do
+          local imagePaths = { intro.image, sprites.player.image, sprites.foe.image }
+          for _, set in ipairs(record.encounterParticles) do
+            for _, texture in ipairs(set.textures) do
+              imagePaths[#imagePaths + 1] = texture.image
+            end
+          end
+          for _, imagePath in ipairs(imagePaths) do
             if not cacheFs:exists(imagePath, "file") then
               return nil, "battle scene intro art is not staged: " .. tostring(sceneKey) .. ": " .. imagePath
             end
@@ -1790,54 +1883,71 @@ function FieldBattlePresentation:_preparationServices()
           for pinnedKey in pairs(envelope._warmPinned) do
             warmBefore[pinnedKey] = true
           end
+          local particles = registerParticleEntries(envelope, sceneKey, record)
+          local acquiredKeys = {} ---@type string[]
+          -- A failed attempt returns its own partial pins to the shared
+          -- owner: services.release forgets the launch lease but retains
+          -- the pin by design, so an attempt-installed pin is dropped
+          -- here before its borrow is returned. Pins the attempt only
+          -- reused (already present above) stay warm.
+          local function failAttempt(failure)
+            for _, key in ipairs(acquiredKeys) do
+              services.release(key)
+              local attemptPin = envelope._warmPinned[key]
+              if attemptPin ~= nil and warmBefore[key] == nil then
+                envelope._warmPinned[key] = nil
+                if envelope._warmPaths ~= nil then
+                  envelope._warmPaths[key] = nil
+                end
+                local attemptPool = envelope._pool
+                if attemptPool ~= nil then
+                  pcall(attemptPool.release, attemptPool, attemptPin.lease)
+                end
+              end
+            end
+            return nil, failure
+          end
           local introDrawable, introFailure = acquirePooled(envelope, introKey, intro.image)
           if introDrawable == nil then
             return nil, assert(introFailure, "scene intro lease failures carry a reason")
           end
+          acquiredKeys[#acquiredKeys + 1] = introKey
           local playerKey = "scene-terrain:" .. sceneKey .. ":player"
           local playerDrawable, playerFailure = acquirePooled(envelope, playerKey, sprites.player.image)
           if playerDrawable == nil then
-            -- A failed attempt returns its own partial pins to the shared
-            -- owner: services.release forgets the launch lease but retains
-            -- the pin by design, so an attempt-installed pin is dropped
-            -- here before its borrow is returned. Pins the attempt only
-            -- reused (already present above) stay warm.
-            for _, key in ipairs({ introKey }) do
-              services.release(key)
-              local attemptPin = envelope._warmPinned[key]
-              if attemptPin ~= nil and warmBefore[key] == nil then
-                envelope._warmPinned[key] = nil
-                if envelope._warmPaths ~= nil then
-                  envelope._warmPaths[key] = nil
-                end
-                local attemptPool = envelope._pool
-                if attemptPool ~= nil then
-                  pcall(attemptPool.release, attemptPool, attemptPin.lease)
-                end
-              end
-            end
-            return nil, assert(playerFailure, "player terrain lease failures carry a reason")
+            return failAttempt(assert(playerFailure, "player terrain lease failures carry a reason"))
           end
+          acquiredKeys[#acquiredKeys + 1] = playerKey
           local foeKey = "scene-terrain:" .. sceneKey .. ":foe"
           local foeDrawable, foeFailure = acquirePooled(envelope, foeKey, sprites.foe.image)
           if foeDrawable == nil then
-            for _, key in ipairs({ introKey, playerKey }) do
-              services.release(key)
-              local attemptPin = envelope._warmPinned[key]
-              if attemptPin ~= nil and warmBefore[key] == nil then
-                envelope._warmPinned[key] = nil
-                if envelope._warmPaths ~= nil then
-                  envelope._warmPaths[key] = nil
-                end
-                local attemptPool = envelope._pool
-                if attemptPool ~= nil then
-                  pcall(attemptPool.release, attemptPool, attemptPin.lease)
-                end
-              end
+            return failAttempt(assert(foeFailure, "foe terrain lease failures carry a reason"))
+          end
+          acquiredKeys[#acquiredKeys + 1] = foeKey
+          local particleSets = {}
+          for setIndex, set in ipairs(record.encounterParticles) do
+            particleSets[setIndex] =
+              { startTick = set.startTick, seed = set.seed, emitters = set.emitters, textures = {} }
+          end
+          for _, entry in ipairs(particles) do
+            local drawable, failure = acquirePooled(envelope, entry.key, entry.path)
+            if drawable == nil then
+              return failAttempt(assert(failure, "encounter particle lease failures carry a reason"))
             end
-            return nil, assert(foeFailure, "foe terrain lease failures carry a reason")
+            acquiredKeys[#acquiredKeys + 1] = entry.key
+            local textures = particleSets[entry.set].textures
+            textures[#textures + 1] = {
+              id = entry.texture.id,
+              width = entry.texture.width,
+              height = entry.texture.height,
+              drawable = drawable,
+            }
           end
           stagedSceneKey = sceneKey
+          stagedSceneParticleKeys = {}
+          for _, entry in ipairs(particles) do
+            stagedSceneParticleKeys[#stagedSceneParticleKeys + 1] = entry.key
+          end
           stagedSceneLayer = {
             characters = characters,
             map = map,
@@ -1862,6 +1972,7 @@ function FieldBattlePresentation:_preparationServices()
                 origin = { x = sprites.foe.origin.x, y = sprites.foe.origin.y },
               },
             },
+            encounterParticles = particleSets,
           }
           if previousSceneKey ~= nil then
             for _, key in ipairs({
@@ -1869,6 +1980,9 @@ function FieldBattlePresentation:_preparationServices()
               "scene-terrain:" .. previousSceneKey .. ":player",
               "scene-terrain:" .. previousSceneKey .. ":foe",
             }) do
+              services.release(key)
+            end
+            for _, key in ipairs(previousParticleKeys) do
               services.release(key)
             end
           end
@@ -2647,7 +2761,7 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   then
     local settledFast = warmGroupComplete(self, sceneKey)
     if settledFast then
-      for _, groupKey in ipairs(warmSceneKeys(sceneKey)) do
+      for _, groupKey in ipairs(warmSceneKeys(self, sceneKey)) do
         if self._warmPinned[groupKey] == nil or self._warmPaths[groupKey] == nil then
           settledFast = false
           break
@@ -2752,11 +2866,15 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
       return false, cause
     end
     local grouped = {} ---@type { key: string, path: string }[]
-    local groupKeys = warmSceneKeys(sceneKey)
+    local particles = registerParticleEntries(self, sceneKey, stagedRecord)
+    local groupKeys = warmSceneKeys(self, sceneKey)
     grouped[#grouped + 1] = { key = groupKeys[1], path = BattlePresentationCache.sceneImagePath(sceneKey) }
     grouped[#grouped + 1] = { key = groupKeys[2], path = introLayer.image }
     grouped[#grouped + 1] = { key = groupKeys[3], path = terrainSprites.player.image }
     grouped[#grouped + 1] = { key = groupKeys[4], path = terrainSprites.foe.image }
+    for _, entry in ipairs(particles) do
+      grouped[#grouped + 1] = { key = entry.key, path = entry.path }
+    end
     local planned = {} ---@type { key: string, path: string }[]
     for _, entry in ipairs(grouped) do
       planned[#planned + 1] = entry
@@ -4243,6 +4361,7 @@ function FieldBattlePresentation:dispose()
     self._imageFailures[key] = nil
   end
   cancelWarmTickets(self)
+  self._warmParticles = {}
   self._warmDesired = nil
   self._warmFailed = {}
   self._warmPlan = nil

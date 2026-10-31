@@ -9,6 +9,7 @@
 
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
+local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
@@ -1784,6 +1785,13 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
   local introImagePath = BattlePresentationCache.sceneIntroImagePath(sceneKey)
   local playerTerrainPath = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player")
   local foeTerrainPath = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe")
+  local particleSets = ParticlesFixture.sets(sceneKey)
+  local sceneArt = { [introImagePath] = true, [playerTerrainPath] = true, [foeTerrainPath] = true }
+  for _, set in ipairs(particleSets) do
+    for _, texture in ipairs(set.textures) do
+      sceneArt[texture.image] = true
+    end
+  end
   local charactersPath = BattlePresentationCache.sceneCharactersPath(sceneKey)
   local mapPath = BattlePresentationCache.sceneMapPath(sceneKey)
   local palettePath = BattlePresentationCache.scenePalettePath(sceneKey)
@@ -1845,6 +1853,7 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
           origin = { x = 48, y = 24 },
         },
       },
+      encounterParticles = particleSets,
     }
     local revealed = false
     local imageStaged = false
@@ -1867,7 +1876,7 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
         -- through exists, so staged bytes stay out of this channel.
         return nil
       end
-      if path == introImagePath or path == playerTerrainPath or path == foeTerrainPath then
+      if sceneArt[path] then
         return nil
       end
       if path == charactersPath then
@@ -1876,7 +1885,7 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       return cacheFs:read(path)
     end
     function view.exists(_, path, expectedType)
-      if path == imagePath or path == introImagePath or path == playerTerrainPath or path == foeTerrainPath then
+      if path == imagePath or sceneArt[path] then
         return imageStaged
       end
       return cacheFs:exists(path, expectedType)

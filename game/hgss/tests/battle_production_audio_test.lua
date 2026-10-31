@@ -10,6 +10,7 @@
 
 local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local Assert = require("tests.support.Assert")
+local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
@@ -213,7 +214,7 @@ local function stageBattlePresentation(cache)
     paletteColors[index] = { r = 0, g = 0, b = 0 }
   end
   cache:writeLua(BattlePresentationCache.scenePath(SCENE_KEY), {
-    schema = "g4-battle-scene-v3",
+    schema = "g4-battle-scene-v4",
     key = SCENE_KEY,
     background = "general",
     terrain = "grass",
@@ -264,11 +265,17 @@ local function stageBattlePresentation(cache)
         origin = { x = -40, y = -40 },
       },
     },
+    encounterParticles = ParticlesFixture.sets(SCENE_KEY),
   })
   cache:write(BattlePresentationCache.sceneImagePath(SCENE_KEY), solidPng(512, 256))
   cache:write(BattlePresentationCache.sceneIntroImagePath(SCENE_KEY), solidPng(512, 256))
   cache:write(BattlePresentationCache.sceneTerrainSpritePath(SCENE_KEY, "player"), solidPng(80, 80))
   cache:write(BattlePresentationCache.sceneTerrainSpritePath(SCENE_KEY, "foe"), solidPng(80, 80))
+  for _, set in ipairs(ParticlesFixture.sets(SCENE_KEY)) do
+    for _, texture in ipairs(set.textures) do
+      cache:write(texture.image, solidPng(texture.width, texture.height))
+    end
+  end
   cache:write(charactersPath, string.rep("\0", 65536))
   cache:writeLua(mapPath, { width = 512, height = 256, entries = mapEntries })
   cache:writeLua(palettePath, { colors = paletteColors })

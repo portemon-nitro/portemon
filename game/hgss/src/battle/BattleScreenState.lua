@@ -1751,6 +1751,7 @@ function BattleScreenState:_snapshot()
   local sceneAssets = self._assets:sceneLayer()
   local introLayer = type(sceneAssets) == "table" and sceneAssets.introLayer or nil
   local terrainSprites = type(sceneAssets) == "table" and sceneAssets.terrainSprites or nil
+  local encounterParticles = type(sceneAssets) == "table" and sceneAssets.encounterParticles or nil
   if openingPresentation ~= nil then
     local trainerEntries = self._manifest.trainerPictures.entries
     for _, slide in ipairs(openingPresentation.trainerSlides or {}) do
@@ -2124,6 +2125,7 @@ function BattleScreenState:_snapshot()
     openingPresentation = openingPresentation,
     introScene = type(introLayer) == "table" and introLayer.drawable or nil,
     terrainSprites = terrainSprites,
+    encounterParticles = encounterParticles,
     playerTrainer = type(latest) == "table" and latest.playerTrainer or nil,
     foeTrainers = type(latest) == "table" and latest.foeTrainers or nil,
     levelUpStats = levelUpStats,
@@ -2413,6 +2415,7 @@ function BattleScreenState:view()
     openingPresentation = copyValue(snapshot.openingPresentation),
     introScene = snapshot.introScene,
     terrainSprites = snapshot.terrainSprites,
+    encounterParticles = snapshot.encounterParticles,
     playerTrainer = copyValue((self._pendingFinal or self._latestView or {}).playerTrainer),
     foeTrainers = copyValue((self._pendingFinal or self._latestView or {}).foeTrainers),
     actor = copyValue(snapshot.actor),

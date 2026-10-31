@@ -6,6 +6,7 @@
 -- counts.
 
 local Assert = require("tests.support.Assert")
+local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local StubLease = require("tests.support.StubLease")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
@@ -925,6 +926,11 @@ local function layoutOnlyCache(portraitEntries)
   cache.files[BattlePresentationCache.sceneIntroImagePath(PORTRAIT_SCENE_KEY)] = solidPortraitPng(512, 256)
   cache.files[BattlePresentationCache.sceneTerrainSpritePath(PORTRAIT_SCENE_KEY, "player")] = solidPortraitPng(80, 80)
   cache.files[BattlePresentationCache.sceneTerrainSpritePath(PORTRAIT_SCENE_KEY, "foe")] = solidPortraitPng(80, 80)
+  for _, set in ipairs(ParticlesFixture.sets(PORTRAIT_SCENE_KEY)) do
+    for _, texture in ipairs(set.textures) do
+      cache.files[texture.image] = solidPortraitPng(texture.width, texture.height)
+    end
+  end
   cache.files[charactersPath] = string.rep("\0", 65536)
   local mapEntries = {}
   for index = 1, 2048 do
@@ -938,7 +944,7 @@ local function layoutOnlyCache(portraitEntries)
   cache.lua[mapPath] = { width = 512, height = 256, entries = mapEntries }
   cache.lua[palettePath] = { colors = paletteColors }
   cache.lua[BattlePresentationCache.scenePath(PORTRAIT_SCENE_KEY)] = {
-    schema = "g4-battle-scene-v3",
+    schema = "g4-battle-scene-v4",
     key = PORTRAIT_SCENE_KEY,
     background = "general",
     terrain = "grass",
@@ -989,6 +995,7 @@ local function layoutOnlyCache(portraitEntries)
         origin = { x = -40, y = -40 },
       },
     },
+    encounterParticles = ParticlesFixture.sets(PORTRAIT_SCENE_KEY),
   }
   cache.lua[MonCache.portraitManifestPath()] = { entries = portraitEntries }
   function cache:loadLua(path)

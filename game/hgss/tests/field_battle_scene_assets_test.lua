@@ -1,4 +1,5 @@
 local Assert = require("tests.support.Assert")
+local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
@@ -97,10 +98,43 @@ local function sceneRecord(sceneKey)
       player = { image = playerPath, width = 48, height = 24, origin = { x = 24, y = 12 } },
       foe = { image = foePath, width = 40, height = 20, origin = { x = 20, y = 10 } },
     },
+    encounterParticles = ParticlesFixture.sets(sceneKey),
   }
 end
 
 local SCENE_KEY = "general/plain/day"
+
+-- Every staged encounter particle texture image of one scene record.
+local function particlePaths(record)
+  local paths = {}
+  for _, set in ipairs(record.encounterParticles) do
+    for _, texture in ipairs(set.textures) do
+      paths[#paths + 1] = texture.image
+    end
+  end
+  return paths
+end
+
+-- The scene image, intro, terrain, and particle texture images of one record.
+local function sceneArtPaths(record)
+  local paths = { record.imagePath, record.introLayer.image, record.terrainSprites.player.image }
+  paths[#paths + 1] = record.terrainSprites.foe.image
+  for _, path in ipairs(particlePaths(record)) do
+    paths[#paths + 1] = path
+  end
+  return paths
+end
+
+-- The drawable keys of one scene's encounter particle textures.
+local function particleKeys(record)
+  local keys = {}
+  for setIndex, set in ipairs(record.encounterParticles) do
+    for _, texture in ipairs(set.textures) do
+      keys[#keys + 1] = "scene-particle:" .. record.key .. ":" .. setIndex .. ":" .. texture.id
+    end
+  end
+  return keys
+end
 
 local function stagedCacheFs(record)
   local mapEntries = {}
@@ -225,7 +259,27 @@ function T.preparation_retains_intro_and_terrain_drawables_with_source_metadata(
   local ready, failure = prepareScene(services)
   Assert.isTrue(ready, "the staged scene and its intro assets prepare: " .. tostring(failure))
   local layer = assert(services.sceneLayer(), "the prepared scene layer is retained")
-  Assert.equal(#pool.acquired, 3, "the intro and both terrain images are leased from the shared pool")
+  Assert.equal(
+    #pool.acquired,
+    3 + #particlePaths(record),
+    "the intro, both terrain, and every encounter particle texture image are leased from the shared pool"
+  )
+  for setIndex, set in ipairs(record.encounterParticles) do
+    local staged = layer.encounterParticles[setIndex]
+    Assert.equal(staged.startTick, set.startTick, "set " .. setIndex .. " keeps its start tick")
+    Assert.equal(staged.seed, set.seed, "set " .. setIndex .. " keeps its seed")
+    Assert.equal(staged.emitters, set.emitters, "set " .. setIndex .. " carries its staged emitters")
+    Assert.equal(#staged.textures, #set.textures, "set " .. setIndex .. " carries every texture")
+    for index, texture in ipairs(set.textures) do
+      local resolved = staged.textures[index]
+      Assert.deepEqual(
+        { resolved.id, resolved.width, resolved.height },
+        { texture.id, texture.width, texture.height },
+        "set " .. setIndex .. " texture " .. texture.id .. " keeps its identity and size"
+      )
+      Assert.isTrue(resolved.drawable ~= nil, "set " .. setIndex .. " texture " .. texture.id .. " is a pooled drawable")
+    end
+  end
   Assert.isTrue(layer.introLayer.drawable ~= nil, "the unbaked intro layer carries its pooled drawable")
   Assert.equal(layer.introLayer.width, record.introLayer.width, "the intro canvas size is retained")
   Assert.equal(layer.introLayer.height, record.introLayer.height, "the intro canvas size is retained")
@@ -263,6 +317,31 @@ function T.failed_terrain_upload_returns_the_leases_it_already_holds()
     leasePaths(pool.acquired),
     "every lease taken before the failure is returned"
   )
+  local releasedBefore = #pool.released
+  envelope:dispose()
+  Assert.equal(#pool.released, releasedBefore, "disposal does not release rolled-back leases twice")
+end
+
+function T.failed_particle_texture_upload_returns_every_lease_it_already_holds()
+  local record = sceneRecord(SCENE_KEY)
+  local lastSet = record.encounterParticles[#record.encounterParticles]
+  local failing = lastSet.textures[#lastSet.textures].image
+  local pool = ledgerPool(0, { [failing] = "probe-particle-upload-failed" })
+  local envelope = newEnvelope(stagedCacheFs(record), pool)
+  local services = envelope:_preparationServices()
+  local ready, failure = prepareScene(services)
+  Assert.isNil(ready, "a failed particle texture upload never prepares the scene")
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("probe-particle-upload-failed", 1, true) ~= nil,
+    "the failed upload preserves its pool cause"
+  )
+  Assert.equal(#pool.acquired, 3 + #particlePaths(record) - 1, "every other scene image was leased first")
+  Assert.deepEqual(
+    leasePaths(pool.released),
+    leasePaths(pool.acquired),
+    "every lease taken before the failure is returned"
+  )
+  Assert.isNil(services.sceneLayer(), "a failed attempt publishes no scene layer")
   local releasedBefore = #pool.released
   envelope:dispose()
   Assert.equal(#pool.released, releasedBefore, "disposal does not release rolled-back leases twice")
@@ -658,6 +737,9 @@ function T.warmup_keeps_one_scene_group_and_never_publishes_stale_tickets()
   pool.readyPaths[recordB.introLayer.image] = true
   pool.readyPaths[recordB.terrainSprites.player.image] = true
   pool.readyPaths[recordB.terrainSprites.foe.image] = true
+  for _, path in ipairs(particlePaths(recordB)) do
+    pool.readyPaths[path] = true
+  end
   local spent = 0
   for _ = 1, 8 do
     local acquiredBefore = #pool.acquired
@@ -690,6 +772,9 @@ function T.warmup_keeps_one_scene_group_and_never_publishes_stale_tickets()
   pool.readyPaths[recordA.introLayer.image] = true
   pool.readyPaths[recordA.terrainSprites.player.image] = true
   pool.readyPaths[recordA.terrainSprites.foe.image] = true
+  for _, path in ipairs(particlePaths(recordA)) do
+    pool.readyPaths[path] = true
+  end
   local acquiredBefore = #pool.acquired
   for _ = 1, 4 do
     local _, failure = envelope:advanceWarmup(SCENE_B_KEY, 1)
@@ -697,13 +782,9 @@ function T.warmup_keeps_one_scene_group_and_never_publishes_stale_tickets()
   end
   for index = acquiredBefore + 1, #pool.acquired do
     local path = pool.acquired[index].path
-    Assert.isTrue(
-      path ~= recordA.imagePath
-        and path ~= recordA.introLayer.image
-        and path ~= recordA.terrainSprites.player.image
-        and path ~= recordA.terrainSprites.foe.image,
-      "a late abandoned-ticket result never publishes the old scene: " .. tostring(path)
-    )
+    for _, oldPath in ipairs(sceneArtPaths(recordA)) do
+      Assert.isTrue(path ~= oldPath, "a late abandoned-ticket result never publishes the old scene: " .. tostring(path))
+    end
   end
   envelope:dispose()
 end
@@ -906,6 +987,9 @@ function T.speculative_cancellation_and_dispose_keep_foreground_leases_exactly_o
   pool.readyPaths[recordB.introLayer.image] = true
   pool.readyPaths[recordB.terrainSprites.player.image] = true
   pool.readyPaths[recordB.terrainSprites.foe.image] = true
+  for _, path in ipairs(particlePaths(recordB)) do
+    pool.readyPaths[path] = true
+  end
   driveWarmup(envelope, SCENE_B_KEY, 1, 64)
   local cancelled = {}
   for _, token in ipairs(pool.cancelled) do
@@ -922,6 +1006,9 @@ function T.speculative_cancellation_and_dispose_keep_foreground_leases_exactly_o
   pool.readyPaths[recordA.introLayer.image] = true
   pool.readyPaths[recordA.terrainSprites.player.image] = true
   pool.readyPaths[recordA.terrainSprites.foe.image] = true
+  for _, path in ipairs(particlePaths(recordA)) do
+    pool.readyPaths[path] = true
+  end
   local services = envelope:_preparationServices()
   local launchReady, launchFailure = services.prepare({
     launchId = "launch-survives-speculation",
@@ -974,19 +1061,23 @@ function T.speculative_cancellation_and_dispose_keep_foreground_leases_exactly_o
 end
 
 -- Launch-path pinning keeps one complete scene group: warming A then
--- cold-launching B retires A's whole 4-key group exactly once (no split
+-- cold-launching B retires A's whole group exactly once (no split
 -- pin set), and warming A then idle-warming B to completion leaves a
 -- single surviving group.
 function T.launch_and_idle_replacement_keep_a_single_scene_group()
   local recordA = sceneRecord(SCENE_KEY)
   local recordB = sceneRecord(SCENE_B_KEY)
   local function groupKeys(sceneKey)
-    return {
+    local keys = {
       "scene:" .. sceneKey,
       "scene-intro:" .. sceneKey,
       "scene-terrain:" .. sceneKey .. ":player",
       "scene-terrain:" .. sceneKey .. ":foe",
     }
+    for _, key in ipairs(particleKeys(sceneRecord(sceneKey))) do
+      keys[#keys + 1] = key
+    end
+    return keys
   end
   local function pinnedSceneKeys(envelope)
     local keys = {}
@@ -1203,15 +1294,10 @@ function T.launch_and_idle_replacement_keep_a_single_scene_group()
     local cacheFs = dualSceneCacheFs(recordA, recordB, recordC)
     local pool = scriptedPool(1000000, {})
     local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
-    for _, path in ipairs({
-      recordA.imagePath,
-      recordA.introLayer.image,
-      recordA.terrainSprites.player.image,
-      recordA.terrainSprites.foe.image,
-      "assets/generated/battle/synthetic.png",
-    }) do
+    for _, path in ipairs(sceneArtPaths(recordA)) do
       pool.readyPaths[path] = true
     end
+    pool.readyPaths["assets/generated/battle/synthetic.png"] = true
     driveWarmup(envelope, SCENE_KEY, 1, 128)
     Assert.deepEqual(
       pinnedSceneKeys(envelope),
@@ -1303,6 +1389,9 @@ function T.launch_and_idle_replacement_keep_a_single_scene_group()
     pool.readyPaths[recordC.introLayer.image] = true
     pool.readyPaths[recordC.terrainSprites.player.image] = true
     pool.readyPaths[recordC.terrainSprites.foe.image] = true
+    for _, path in ipairs(particlePaths(recordC)) do
+      pool.readyPaths[path] = true
+    end
     driveWarmup(envelope, SCENE_C_KEY, 1, 128)
     Assert.notNil(
       envelope:_preparationServices().drawable("scene:" .. SCENE_C_KEY),
@@ -1392,15 +1481,10 @@ function T.replacement_prediction_validates_once_and_keeps_predecessor_until_com
   local scenePathA = BattlePresentationCache.scenePath(SCENE_KEY)
   local scenePathB = BattlePresentationCache.scenePath(SCENE_B_KEY)
   local manifestPath = BattlePresentationCache.manifestPath()
-  for _, path in ipairs({
-    recordA.imagePath,
-    recordA.introLayer.image,
-    recordA.terrainSprites.player.image,
-    recordA.terrainSprites.foe.image,
-    "assets/generated/battle/synthetic.png",
-  }) do
+  for _, path in ipairs(sceneArtPaths(recordA)) do
     pool.readyPaths[path] = true
   end
+  pool.readyPaths["assets/generated/battle/synthetic.png"] = true
   driveWarmup(envelope, SCENE_KEY, 1, 128)
   Assert.notNil(
     envelope:_preparationServices().drawable("scene:" .. SCENE_KEY),
@@ -1409,13 +1493,10 @@ function T.replacement_prediction_validates_once_and_keeps_predecessor_until_com
   local function acquiredSceneACount()
     local count = 0
     for _, entry in ipairs(pool.acquired) do
-      if
-        entry.path == recordA.imagePath
-        or entry.path == recordA.introLayer.image
-        or entry.path == recordA.terrainSprites.player.image
-        or entry.path == recordA.terrainSprites.foe.image
-      then
-        count = count + 1
+      for _, path in ipairs(sceneArtPaths(recordA)) do
+        if entry.path == path then
+          count = count + 1
+        end
       end
     end
     return count
@@ -1452,12 +1533,7 @@ function T.replacement_prediction_validates_once_and_keeps_predecessor_until_com
     envelope:_preparationServices().drawable("scene:" .. SCENE_KEY),
     "the complete predecessor stays usable while the replacement stays pending"
   )
-  for _, path in ipairs({
-    recordB.imagePath,
-    recordB.introLayer.image,
-    recordB.terrainSprites.player.image,
-    recordB.terrainSprites.foe.image,
-  }) do
+  for _, path in ipairs(sceneArtPaths(recordB)) do
     pool.readyPaths[path] = true
   end
   driveWarmup(envelope, SCENE_B_KEY, 1, 128)

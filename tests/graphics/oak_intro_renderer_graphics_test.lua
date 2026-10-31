@@ -1,4 +1,5 @@
 local Assert = require("tests.support.Assert")
+local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -1187,7 +1188,7 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
     end
   end
   cache:writeLua(BattlePresentationCache.scenePath(sceneKey), {
-    schema = "g4-battle-scene-v3",
+    schema = "g4-battle-scene-v4",
     key = sceneKey,
     background = "general",
     terrain = "grass",
@@ -1238,6 +1239,7 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
         origin = { x = -40, y = -40 },
       },
     },
+    encounterParticles = ParticlesFixture.sets(sceneKey),
   })
   cache:write(BattlePresentationCache.sceneCharactersPath(sceneKey), string.rep("\0", 65536))
   local sceneEntries = {}
@@ -1263,6 +1265,12 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
     BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe"),
     PngWriter.encode(80, 80, string.rep(string.char(12, 34, 56, 255), 80 * 80))
   )
+  for _, set in ipairs(ParticlesFixture.sets(sceneKey)) do
+    for _, texture in ipairs(set.textures) do
+      local pixels = string.rep(string.char(12, 34, 56, 255), texture.width * texture.height)
+      cache:write(texture.image, PngWriter.encode(texture.width, texture.height, pixels))
+    end
+  end
   local seed = 7
   for _, path in pairs(artPaths) do
     seed = seed + 11
