@@ -749,6 +749,30 @@ local function checkTrainerPictures(envelope, selectors)
   return true
 end
 
+-- Every staged image of one ball entry: its animation frames, then the
+-- textures of its seal and burst particle sets.
+---@param entry table<string, unknown> staged ball entry with validated frames
+---@return string[] paths cache-relative image paths
+local function ballImagePaths(entry)
+  local paths = {}
+  for _, frame in
+    ipairs(entry.frames --[[@as table<string, unknown>[] ]])
+  do
+    paths[#paths + 1] = frame.image --[[@as string]]
+  end
+  local particles = entry.particles --[[@as { seal: table<string, unknown>, burst: table<string, unknown> }?]]
+  if particles ~= nil then
+    for _, set in ipairs({ particles.seal, particles.burst }) do
+      for _, texture in
+        ipairs(set.textures --[[@as table<string, unknown>[] ]])
+      do
+        paths[#paths + 1] = texture.image --[[@as string]]
+      end
+    end
+  end
+  return paths
+end
+
 ---@param envelope FieldBattlePresentation
 ---@param selectors string[] semantic `ball:<key>` selectors
 ---@return boolean? ready true when every ball frame is staged, false while building
@@ -799,16 +823,16 @@ local function checkBattleBalls(envelope, selectors)
       if ready ~= true then
         waiting = true
       elseif envelope._graphics ~= nil then
-        for _, frame in ipairs(frames) do
-          if not envelope._cacheFs:exists(frame.image, "file") then
-            return nil, "battle ball image is not staged: " .. selector .. ": " .. frame.image
+        for _, path in ipairs(ballImagePaths(entry)) do
+          if not envelope._cacheFs:exists(path, "file") then
+            return nil, "battle ball image is not staged: " .. selector .. ": " .. path
           end
         end
       end
     elseif envelope._graphics ~= nil then
-      for _, frame in ipairs(frames) do
-        if not envelope._cacheFs:exists(frame.image, "file") then
-          return nil, "battle ball image is not staged: " .. selector .. ": " .. frame.image
+      for _, path in ipairs(ballImagePaths(entry)) do
+        if not envelope._cacheFs:exists(path, "file") then
+          return nil, "battle ball image is not staged: " .. selector .. ": " .. path
         end
       end
     end
@@ -2061,12 +2085,9 @@ function FieldBattlePresentation:_preparationServices()
       -- pends, like trainer art above.
       for _, selector in ipairs(demand.battleBalls or {}) do
         local entry = battleBallManifest.entries[selector]
-        local frames = type(entry) == "table" and entry.frames or nil
-        if type(frames) == "table" then
-          for _, frame in ipairs(frames) do
-            if type(frame) == "table" and type(frame.image) == "string" then
-              enrollUpload(envelope, frame.image)
-            end
+        if type(entry) == "table" and type(entry.frames) == "table" then
+          for _, path in ipairs(ballImagePaths(entry)) do
+            enrollUpload(envelope, path)
           end
         end
       end
@@ -2471,6 +2492,40 @@ function FieldBattlePresentation:_preparationServices()
         return nil
       end
       local path = frame.image --[[@as string]]
+      local image = nil
+      local failure = nil
+      if envelope._pool ~= nil then
+        image, failure = acquirePooled(envelope, key, path)
+      else
+        local bytes = cacheFs:read(path)
+        if type(bytes) == "string" then
+          image, failure = uploadStaged(graphics, key, path, bytes)
+        end
+      end
+      if image == nil then
+        if failure ~= nil then
+          failures[key] = failure
+        end
+        return nil, failure
+      end
+      images[key] = image
+      return image
+    end
+    local particleBall, particleKind, particleTexture = key:match("^battle%-ball%-particle:([%w_]+):(%a+):(%d+)$")
+    if particleBall ~= nil and (particleKind == "seal" or particleKind == "burst") and battleBallManifest ~= nil then
+      local entry = battleBallManifest.entries["ball:" .. particleBall]
+      local particles = type(entry) == "table" and entry.particles or nil
+      local set = type(particles) == "table" and particles[particleKind] or nil
+      local textureId = assert(tonumber(particleTexture), "ball particle drawable names a numeric texture")
+      local path = nil
+      for _, texture in ipairs(type(set) == "table" and set.textures or {}) do
+        if texture.id == textureId then
+          path = texture.image
+        end
+      end
+      if path == nil then
+        return nil
+      end
       local image = nil
       local failure = nil
       if envelope._pool ~= nil then

@@ -228,4 +228,42 @@ function T.compile_rejects_mirrored_texture_coordinates()
   Assert.isNil(compileOne(emitterBase(SELF_DEST, 0, 1)), "a mirrored emitter texture fails")
 end
 
+-- An emitter base whose axis vector (s16 fixed point, offset 28) is set.
+local function emitterBaseWithAxis(flag, x, y, z)
+  local base = emitterBase(flag, 0)
+  return base:sub(1, 28) .. u16(x) .. u16(y) .. u16(z) .. base:sub(35)
+end
+
+function T.compile_accepts_the_emitter_axis_circle_only_with_an_axis_direction()
+  local circleAxis3 = SELF_DEST + 3 * 64
+  local oriented, err = compileOne(emitterBaseWithAxis(circleAxis3, 0, 4096, 0))
+  Assert.notNil(oriented, "an emitter-axis circle with a direction compiles: " .. tostring(err))
+  Assert.equal(oriented.particles.emitters[1].circleAxis, 3, "the emitter-axis circle is kept")
+  Assert.deepEqual(oriented.particles.emitters[1].axis, { x = 0, y = 1, z = 0 }, "its axis stays in the record")
+  Assert.isNil(compileOne(emitterBase(circleAxis3, 0)), "an emitter-axis circle without an axis never compiles")
+end
+
+-- A 20-byte child block with the given flag word.
+local function childBlock(flag)
+  return u16(flag) .. u16(0) .. u16(0) .. u16(10) .. string.char(0, 0) .. u16(0) .. string.char(1, 0, 1, 0) .. u32(0)
+end
+
+function T.compile_keeps_child_draw_and_rotation_kinds_and_rejects_the_rest()
+  local USE_CHILD = 2 ^ 16
+  local plain = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(0))
+  Assert.equal(plain.particles.emitters[1].child.drawType, 0, "a billboard child keeps draw kind 0")
+  Assert.isNil(plain.particles.emitters[1].child.rotationType, "an unrotated child carries no rotation kind")
+  local directional = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(1 * 128 + 2 * 8))
+  Assert.equal(directional.particles.emitters[1].child.drawType, 1, "a directional child keeps its draw kind")
+  Assert.equal(directional.particles.emitters[1].child.rotationType, 2, "a spinning child keeps its rotation kind")
+  Assert.isNil(
+    compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(2 * 128)),
+    "a polygon child never compiles"
+  )
+  Assert.isNil(
+    compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(3 * 8)),
+    "an unknown child rotation kind never compiles"
+  )
+end
+
 return { tests = T }

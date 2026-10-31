@@ -3,8 +3,8 @@
 -- projection of 24 pixels per world unit centered on the pane origin, depth
 -- clipped to 1..900 from a camera 4 units out. Hardware depth testing is
 -- approximated by far-first painter ordering. Billboards and directional
--- billboards (draw type 1) are supported; children always draw as billboards
--- with their own texture.
+-- billboards (draw type 1) are supported for emitters and children alike;
+-- children draw with their own texture and the emitter's scale parameters.
 
 local M = {}
 
@@ -79,11 +79,11 @@ end
 
 ---@param record table<string, unknown> emitter record
 ---@param particle table<string, unknown>
----@param isChild boolean
+---@param child table<string, unknown>|nil the emitter's child record when the particle is a child
 ---@return number|nil rotation radians, nil when the particle draws nothing
 ---@return number sx
 ---@return number sy
-local function billboardShape(record, particle, isChild)
+local function billboardShape(record, particle, child)
   local baseScale = particle.baseScale / 4096
   local animScale = particle.animScale / 4096
   local sx = baseScale * record.aspect
@@ -96,7 +96,7 @@ local function billboardShape(record, particle, isChild)
   else
     sy = sy * animScale
   end
-  if isChild or record.drawType == 0 then
+  if (child or record).drawType == 0 then
     return particle.rtt / 65536 * 2 * math.pi, sx, sy
   end
   -- Directional billboards stretch along the 3D velocity: the quad x-axis
@@ -144,7 +144,7 @@ function M.draw(graphics, simulation, options)
     local worldZ = particle.z + particle.ez
     local depth = CAMERA_DISTANCE - worldZ
     if alpha > 0 and depth >= DEPTH_NEAR and depth <= DEPTH_FAR then
-      local rotation, sx, sy = billboardShape(record, particle, draw.child ~= nil)
+      local rotation, sx, sy = billboardShape(record, particle, draw.child)
       local image = rotation ~= nil and resolveTexture(runtime, particle, draw.child) or nil
       if image ~= nil then
         local repeatPowers = (draw.child or record).texRepeat

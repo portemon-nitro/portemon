@@ -10,7 +10,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattlePresentationSchema
 local BattlePresentationSchema = {}
 
-BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v9"
+BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v10"
 BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v4"
 
 local fail = SchemaCheck.fail
@@ -641,6 +641,7 @@ local function checkEmitterChild(child, textures, context, field)
     useChildColor = true,
     childColor = true,
     drawType = true,
+    rotationType = true,
     initVelRandom = true,
     scaleEnd = true,
     life = true,
@@ -657,8 +658,9 @@ local function checkEmitterChild(child, textures, context, field)
     checkBool(child[name], context, field .. "." .. name)
   end
   checkRgb555(child.childColor, context, field .. ".childColor")
-  if child.drawType ~= 0 then
-    fail(CODE_SCENE, field .. ".drawType must be the billboard kind", context)
+  checkInt(child.drawType, 0, 1, context, CODE_SCENE, field .. ".drawType")
+  if child.rotationType ~= nil then
+    checkInt(child.rotationType, 1, 2, context, CODE_SCENE, field .. ".rotationType")
   end
   checkFinite(child.initVelRandom, context, field .. ".initVelRandom")
   checkFinite(child.scaleEnd, context, field .. ".scaleEnd")
@@ -760,7 +762,7 @@ local function checkEncounterEmitter(emitter, textures, context, field)
   checkInt(emitter.generation.countFx, nil, nil, context, CODE_SCENE, field .. ".generation.countFx")
   checkInt(emitter.generation.interval, 1, nil, context, CODE_SCENE, field .. ".generation.interval")
   checkInt(emitter.initPosType, 0, 9, context, CODE_SCENE, field .. ".initPosType")
-  checkInt(emitter.circleAxis, 0, 2, context, CODE_SCENE, field .. ".circleAxis")
+  checkInt(emitter.circleAxis, 0, 3, context, CODE_SCENE, field .. ".circleAxis")
   checkInt(emitter.drawType, 0, 1, context, CODE_SCENE, field .. ".drawType")
   checkFinite(emitter.radius, context, field .. ".radius")
   checkFinite(emitter.length, context, field .. ".length")
@@ -3798,6 +3800,53 @@ local function checkTrainerPictures(manifest, context)
   end
 end
 
+-- One ball particle set: the retail zero seed, one staged PNG per texture
+-- under the ball's particle texture path, and compiled emitters naming only
+-- those textures.
+local function checkBallParticleSet(set, itemKey, kind, context, field)
+  SchemaCheck.checkRecord(set, { seed = true, emitters = true, textures = true }, context, CODE_MANIFEST, field)
+  if set.seed ~= 0 then
+    fail(CODE_MANIFEST, field .. ".seed must be the retail zero seed", context)
+  end
+  if not Validate.isArray(set.textures) or #set.textures == 0 then
+    fail(CODE_MANIFEST, field .. ".textures must carry the set's staged textures", context)
+  end
+  local byId = {}
+  for index, texture in ipairs(set.textures) do
+    local textureField = field .. ".textures[" .. index .. "]"
+    SchemaCheck.checkRecord(
+      texture,
+      { id = true, width = true, height = true, image = true },
+      context,
+      CODE_MANIFEST,
+      textureField
+    )
+    checkInt(texture.id, 0, 255, context, CODE_MANIFEST, textureField .. ".id")
+    if byId[texture.id] ~= nil then
+      fail(CODE_MANIFEST, textureField .. ".id repeats a texture of its set", context)
+    end
+    checkInt(texture.width, 1, 1024, context, CODE_MANIFEST, textureField .. ".width")
+    checkInt(texture.height, 1, 1024, context, CODE_MANIFEST, textureField .. ".height")
+    local expected = "assets/generated/battle/battle-ball-particles-"
+      .. itemKey:lower()
+      .. "-"
+      .. kind
+      .. "-"
+      .. texture.id
+      .. ".png"
+    if texture.image ~= expected then
+      fail(CODE_MANIFEST, textureField .. ".image must be the staged particle texture PNG of its ball", context)
+    end
+    byId[texture.id] = texture
+  end
+  if not Validate.isArray(set.emitters) or #set.emitters == 0 then
+    fail(CODE_MANIFEST, field .. ".emitters must carry the set's emitters", context)
+  end
+  for index, emitter in ipairs(set.emitters) do
+    checkEncounterEmitter(emitter, byId, context, field .. ".emitters[" .. index .. "]")
+  end
+end
+
 local function checkBattleBalls(manifest, context)
   local section = manifest.battleBalls
   SchemaCheck.checkRecord(section, { entries = true }, context, CODE_MANIFEST, "manifest battleBalls")
@@ -3810,8 +3859,37 @@ local function checkBattleBalls(manifest, context)
       fail(CODE_MANIFEST, "manifest battle ball selector is not semantic", context)
     end
     local field = "manifest battleBalls.entries[" .. selector .. "]"
-    SchemaCheck.checkRecord(record, { frames = true, fadeColor = true }, context, CODE_MANIFEST, field)
+    SchemaCheck.checkRecord(
+      record,
+      { frames = true, fadeColor = true, particles = true },
+      context,
+      CODE_MANIFEST,
+      field
+    )
     checkInt(record.fadeColor, 0, 0x7FFF, context, CODE_MANIFEST, field .. ".fadeColor")
+    local particles = record.particles
+    if particles ~= nil then
+      local particleField = field .. ".particles"
+      SchemaCheck.checkRecord(
+        particles,
+        { seal = true, burst = true, clickEmitter = true, burstStartTick = true },
+        context,
+        CODE_MANIFEST,
+        particleField
+      )
+      local itemKey = selector:sub(6)
+      checkBallParticleSet(particles.seal, itemKey, "seal", context, particleField .. ".seal")
+      checkBallParticleSet(particles.burst, itemKey, "burst", context, particleField .. ".burst")
+      checkInt(
+        particles.clickEmitter,
+        0,
+        #particles.burst.emitters - 1,
+        context,
+        CODE_MANIFEST,
+        particleField .. ".clickEmitter"
+      )
+      checkInt(particles.burstStartTick, 1, 255, context, CODE_MANIFEST, particleField .. ".burstStartTick")
+    end
     if not Validate.isArray(record.frames) or #record.frames == 0 then
       fail(CODE_MANIFEST, field .. ".frames must carry ordered animation frames", context)
     end

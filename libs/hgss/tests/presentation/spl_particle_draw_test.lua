@@ -74,7 +74,7 @@ local function record(overrides)
     drawType = 0,
     dbbScale = 0,
     texRepeat = { s = 0, t = 0 },
-    child = { texRepeat = { s = 1, t = 0 }, texNo = 9 },
+    child = { drawType = 0, texRepeat = { s = 1, t = 0 }, texNo = 9 },
   }
   for key, v in pairs(overrides or {}) do
     value[key] = v
@@ -183,6 +183,17 @@ function T.directional_billboard_rotates_along_velocity()
   SplParticleDraw.draw(graphics, sim, options({ [0] = image("a") }))
   Assert.equal(graphics.calls[1].rotation, 0, "a +y velocity aligns the quad x-axis with screen x")
   Assert.equal(graphics.calls[1].sy, 2 * 24 * 2 / 8, "screen-parallel motion stretches the y extent")
+end
+
+function T.directional_children_follow_their_velocity_with_the_emitter_stretch()
+  local graphics = recorder()
+  local rec = record({ dbbScale = 4096 })
+  rec.child.drawType = 1
+  local child = particle({ vx = 0, vy = 1, vz = 0, rtt = 16384 })
+  local sim = simulate({ runtime(rec, {}, { child }) })
+  SplParticleDraw.draw(graphics, sim, options({ child = image("c") }))
+  Assert.equal(graphics.calls[1].rotation, 0, "a directional child ignores its own angle and follows velocity")
+  Assert.equal(graphics.calls[1].sy, 2 * 24 * 2 / 8, "screen-parallel motion stretches the child like its emitter")
 end
 
 return { tests = T }

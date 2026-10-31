@@ -273,4 +273,21 @@ function T.tests.children_inherit_the_parent_rotation_by_their_rotation_type()
   Assert.equal(childRotation(2).rtt, 2000, "type 2 also keeps turning by the parent spin")
 end
 
+function T.tests.emitter_axis_circle_axis_orients_the_circle_across_the_emitter_axis()
+  -- Circle axis 3 takes the emitter's own axis: an x axis puts the ring in
+  -- the y/z plane, an axis tilted off +y keeps the ring perpendicular to it.
+  local _, onX = spawnBurst({ initPosType = 3, circleAxis = 3, axis = { x = 2, y = 0, z = 0 } }, 8)
+  for _, particle in ipairs(onX.particles) do
+    Assert.isTrue(math.abs(particle.x) < EPSILON, "a ring about the x axis stays in the y/z plane")
+    Assert.isTrue(math.abs(distance(particle) - RADIUS) < 1e-6, "the ring keeps its radius")
+  end
+  local tilt = { x = 0, y = 0.99, z = 0.15 }
+  local length = math.sqrt(tilt.x ^ 2 + tilt.y ^ 2 + tilt.z ^ 2)
+  local _, tilted = spawnBurst({ initPosType = 3, circleAxis = 3, axis = tilt }, 8)
+  for _, particle in ipairs(tilted.particles) do
+    local along = (particle.x * tilt.x + particle.y * tilt.y + particle.z * tilt.z) / length
+    Assert.isTrue(math.abs(along) < 1e-6, "a tilted-axis ring stays perpendicular to its axis")
+  end
+end
+
 return T

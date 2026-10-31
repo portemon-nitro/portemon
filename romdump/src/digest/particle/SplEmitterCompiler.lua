@@ -238,7 +238,8 @@ local function normalizeChild(child, byTexture, emitterId)
   if childBit(0) then
     reject("particle child is field-driven")
   end
-  if math.floor(child.flag / 128) % 4 ~= 0 then
+  local drawType = math.floor(child.flag / 128) % 4
+  if drawType > 1 then
     reject("particle child uses an unrepresented draw kind")
   end
   if child.reverseS or child.reverseT then
@@ -265,7 +266,7 @@ local function normalizeChild(child, byTexture, emitterId)
     useChildColor = childBit(6),
     childColor = child.colorRgb,
     rotationType = rotationType ~= 0 and rotationType or nil,
-    drawType = 0,
+    drawType = drawType,
     initVelRandom = child.initVelMagRndm,
     scaleEnd = child.scaleEnd,
     life = child.life,
@@ -292,9 +293,11 @@ local function validateEmitter(emitter)
   if emitter.flag % 16 > 9 then
     reject("particle emitter uses an unrepresented placement kind", { placement = emitter.flag % 16 })
   end
+  -- Circle axis 3 orients the circle across the emitter's own axis, which
+  -- must have a direction.
   local circleAxis = math.floor(emitter.flag / 64) % 4
-  if circleAxis == 3 then
-    reject("particle emitter uses an unrepresented circle axis", { axis = circleAxis })
+  if circleAxis == 3 and emitter.axis.x == 0 and emitter.axis.y == 0 and emitter.axis.z == 0 then
+    reject("particle emitter circle axis names a zero emitter axis", { axis = circleAxis })
   end
   local drawType = math.floor(emitter.flag / 16) % 4
   if drawType ~= 0 and drawType ~= 1 then
@@ -438,7 +441,7 @@ end
 
 -- Compile one SPL member into normalized per-emitter emission records plus
 -- staged texture art. The emitter-level `textureAnim` and `textureOffset`
--- fields, `drawChildFirst`, and the `loop`/`random` flags on animation blocks, are absent
+-- fields, `drawChildFirst`, a child's `rotationType`, and the `loop`/`random` flags on animation blocks, are absent
 -- unless the source sets them. Returns the normalized particle set, its
 -- staged files, and the producer dependencies for the job receipt.
 ---@param memberBytes string raw SPL member bytes

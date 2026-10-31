@@ -42,6 +42,8 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _lastStruck integer? most recent strike recipient, the source of a following drain
 ---@field _playerName string? player trainer name from the views
 ---@field _inBall integer? capture target drawn into the thrown ball, awaiting its outcome
+---@field _captureBall { ballKey: string, x: integer, y: integer }? thrown capture ball key and its resting source-pixel position after the fall
+---@field _ballParticleStarts table<string, unknown>[] started ball particle effects awaiting their consumer
 ---@field _foeHpMark integer? lead foe health at the last switch-in (source hpTemp)
 ---@field _ownMoves table<string, string> own move display names by combatant and move identity
 ---@field _moveName (fun(move: string): string?)? borrowed move display-name resolver for foe narration
@@ -187,6 +189,7 @@ function BattleTimeline.new(opts)
     _messageTextContext = opts.messageTextContext,
     _revealPolicy = revealPolicy,
     _effects = opts.effects,
+    _ballParticleStarts = {},
     _nativeSeen = {},
     _announced = {},
     _pendingSounds = {},
@@ -414,6 +417,8 @@ function BattleTimeline:reset(view)
   self._terrainSlideTracks = {}
   self._wildIntroTrack = nil
   self._encounterAnimation = nil
+  self._ballParticleStarts = {}
+  self._captureBall = nil
   -- A fresh opening starts new actions: occurrence and narration claims
   -- never leak from the previous launch into the next one.
   self._nativeSeen = {}
@@ -1719,6 +1724,54 @@ local function enqueueBallSound(self, combatant)
   })
 end
 
+-- The semantic ball a battler left or enters: the newest view's record, then
+-- the displayed one.
+---@param self BattleTimeline
+---@param combatant integer battler under lookup
+---@return string? ballKey
+local function ballKeyOf(self, combatant)
+  local view = self._latest
+  for _, group in ipairs({ view and view.own, view and view.foes }) do
+    if type(group) == "table" then
+      for _, record in ipairs(group) do
+        if type(record) == "table" and record.combatant == combatant and type(record.ballKey) == "string" then
+          return record.ballKey --[[@as string]]
+        end
+      end
+    end
+  end
+  local shown = self._battlers[combatant]
+  return shown ~= nil and type(shown.ballKey) == "string" and shown.ballKey or nil --[[@as string?]]
+end
+
+-- BATTLER_TYPE_* of a battler: solo in single battles, otherwise the first or
+-- second side slot by native slot order.
+---@param self BattleTimeline
+---@param combatant integer battler under lookup
+---@return integer battlerType
+local function battlerTypeOf(self, combatant)
+  local own = self._addressing[combatant] == "own"
+  local slots = { [true] = {}, [false] = {} }
+  for _, id in ipairs(self._order) do
+    local shown = self._battlers[id]
+    if shown ~= nil and type(shown.position) == "number" then
+      local list = slots[shown.side == 1]
+      list[#list + 1] = shown.position --[[@as integer]]
+    end
+  end
+  if #slots[true] < 2 and #slots[false] < 2 then
+    return own and 0 or 1
+  end
+  local sameSide = slots[own]
+  table.sort(sameSide)
+  local shown = self._battlers[combatant]
+  local second = shown ~= nil and sameSide[1] ~= nil and shown.position ~= sameSide[1]
+  if own then
+    return second and 4 or 2
+  end
+  return second and 5 or 3
+end
+
 -- ShowPartyGauge/HidePartyGauge: the trainer's ball gauge slides in with its
 -- start sound, or fades out, before the command completes. The gauge sprites
 -- are not staged, so only the retail pacing and sound are reproduced.
@@ -1911,6 +1964,17 @@ function enqueueSendOut(self, incoming, event, switching)
   end
   enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
   enqueueBallSound(self, incoming)
+  -- Task_PokemonSendOut starts the ball's seal particles with its ball sound.
+  local sendOutBall = ballKeyOf(self, incoming)
+  if sendOutBall ~= nil then
+    enqueue(self, {
+      kind = "ball-particles",
+      effect = "seal",
+      ballKey = sendOutBall,
+      battlerType = battlerTypeOf(self, incoming),
+      duration = 0,
+    })
+  end
   local species, form = speciesOf(self, incoming)
   if species ~= nil then
     enqueue(self, {
@@ -2609,6 +2673,8 @@ local BALL_THROW_LEAD_TICKS, BALL_THROW_TICKS = 2, 20
 local BALL_DEFLECT_TARGET_X, BALL_DEFLECT_TARGET_Y = 60, 180
 local BALL_DEFLECT_ARC_HEIGHT, BALL_DEFLECT_MOTION_TICKS = 12, 10
 local BALL_DEFLECT_LEAD_TICKS, BALL_DEFLECT_TICKS = 3, 15
+-- CaptureStateDrop lowers the opened ball by 32 pixels over 10 frames.
+local BALL_DROP_PIXELS = 32
 -- gBattleAnimBattlerScreenPositions plus 8: foe slot -> ball target.
 local BALL_THROW_FOE_TARGETS = {
   single = { x = 192, y = 56 },
@@ -2730,6 +2796,18 @@ local function translateThrow(self, event)
     -- BtlCmd_ThrowPokeball opens the ball with SEQ_SE_DP_BOWA4 at the
     -- throw's end.
     enqueue(self, { kind = "sound", cue = ballCue(BattleAudio.SINK_SOUNDS.captureOpen), duration = 0 })
+    -- BallThrow_CaptureStateOpen bursts the ball open where the arc ended;
+    -- the fall then drops it 32 pixels and the bounce returns to that height.
+    local resting = ballThrowTarget(self, event)
+    enqueue(self, {
+      kind = "ball-particles",
+      effect = "burst",
+      ballKey = ballKey,
+      x = resting.x,
+      y = resting.y,
+      duration = 0,
+    })
+    self._captureBall = { ballKey = ballKey, x = resting.x, y = resting.y + BALL_DROP_PIXELS }
     -- STATE_GET_POKEMON_CALCULATE_SHAKES counts 23 frames before the
     -- target enters the ball.
     enqueue(self, { kind = "wait", duration = 23 })
@@ -2791,6 +2869,20 @@ end
 ---@param self BattleTimeline
 ---@param event table<string, unknown> native capture success event under translation
 local function translateCaught(self, event)
+  -- STATE_GET_POKEMON_BALL_CLICK runs BALL_ANIM_CLICK, whose burst plays the
+  -- ball's click emitter at the ball's resting spot.
+  local ball = self._captureBall
+  self._captureBall = nil
+  if ball ~= nil then
+    enqueue(self, {
+      kind = "ball-particles",
+      effect = "click",
+      ballKey = ball.ballKey,
+      x = ball.x,
+      y = ball.y,
+      duration = 0,
+    })
+  end
   enqueue(self, {
     kind = "sound",
     cue = fanfareCue(BattleAudio.SINK_SOUNDS.caught, false),
@@ -3722,6 +3814,14 @@ local function startCue(self, cue)
         visible = true,
       }
     end
+  elseif cue.kind == "ball-particles" then
+    self._ballParticleStarts[#self._ballParticleStarts + 1] = {
+      effect = cue.effect,
+      ballKey = cue.ballKey,
+      battlerType = cue.battlerType,
+      x = cue.x,
+      y = cue.y,
+    }
   elseif cue.kind == "sound" then
     emitSound(self, cue.cue --[[@as table<string, unknown>]])
   elseif cue.kind == "exp" then
@@ -4010,6 +4110,8 @@ local function tickCue(self, cue, soundComplete)
     if type(sound) == "table" and sound.waitForVoice == true and soundComplete ~= nil then
       return soundComplete(sound) == true
     end
+    return true
+  elseif cue.kind == "ball-particles" then
     return true
   elseif cue.kind == "stats-window" then
     return cue.acknowledged == true
@@ -4497,6 +4599,29 @@ function BattleTimeline:battlers()
     end
   end
   return out
+end
+
+-- Hands over the ball particle effects whose cues started since the last
+-- call, in start order: `effect` is "seal", "burst" or "click", the seal
+-- names its `battlerType`, the others the ball's source-pixel `x`/`y`.
+---@return table<string, unknown>[] starts
+function BattleTimeline:takeBallParticleStarts()
+  local starts = self._ballParticleStarts
+  self._ballParticleStarts = {}
+  return starts
+end
+
+---@return table<string, boolean> ball keys of queued, not yet started ball particle cues
+function BattleTimeline:queuedParticleBalls()
+  local keys = {}
+  for _, cue in ipairs(self._queue) do
+    if cue.kind == "ball-particles" and cue.started ~= true then
+      keys[
+        cue.ballKey --[[@as string]]
+      ] = true
+    end
+  end
+  return keys
 end
 
 ---@return table<string, unknown>? detached visibility facts for the current intro stage

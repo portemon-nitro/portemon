@@ -316,7 +316,7 @@ local function manifest()
     end
   end
   local old = {
-    schema = "g4-battle-presentation-v9",
+    schema = "g4-battle-presentation-v10",
     version = { id = "soulsilver", language = "en" },
     scenes = {
       { key = "general/grass/day", background = "general", terrain = "grass", time = "day" },

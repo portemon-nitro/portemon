@@ -2144,8 +2144,9 @@ end
 ---@field payloads table<string, unknown>
 ---@field trainerPictures table<string, BattleTrainerPictureEntry>? semantic trainer portrait entries during global compilation
 ---@field trainerImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only trainer portrait pixels
----@field battleBalls table<string, { frames: { drawableKey: string, image: string, width: integer, height: integer }[], fadeColor: integer }>? semantic ball animation frames during global compilation
+---@field battleBalls table<string, BattlePresentationCache.BallEntry>? semantic ball animation frames and particles during global compilation
 ---@field ballImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only ball animation pixels
+---@field ballParticlePngs table<string, string>? staged ball particle texture PNG bytes by cache path
 
 ---@param staging BattleGlobalStaging
 ---@param resourceKey string semantic catalog key
@@ -3731,15 +3732,58 @@ local function readBallFadeColors(romFs, source)
   return colors
 end
 
+-- Compile one ball particle member into its emitter records and stage its
+-- textures as PNGs keyed by cache path.
+---@param archive Narc particle archive
+---@param memberId integer SPL member
+---@param emitterCount integer required retail emitter count
+---@param itemKey string semantic ball key
+---@param kind "seal"|"burst"
+---@param pngs table<string, string> receives the staged texture PNG bytes by cache path
+---@return BattlePresentationCache.BallParticleSet set
+local function compileBallParticleSet(archive, memberId, emitterCount, itemKey, kind, pngs)
+  local label = "ball " .. itemKey .. " " .. kind .. " particles"
+  local bytes = decodeMember(archive, memberId, label)
+  local function texturePath(textureId)
+    return BattlePresentationCache.ballParticleTexturePath(itemKey, kind, textureId)
+  end
+  local compiled, compileErr = SplEmitterCompiler.compile(bytes, {
+    emitterCount = emitterCount,
+    texturePath = texturePath,
+  })
+  if compiled == nil then
+    error(
+      Errors.new("BATTLE_PARTICLES_INVALID", label .. " failed to compile", {
+        label = label,
+        memberId = memberId,
+        cause = tostring(compileErr),
+      }),
+      0
+    )
+  end
+  local textures = {}
+  for _, texture in ipairs(compiled.particles.textures) do
+    textures[#textures + 1] = { id = texture.id, width = texture.width, height = texture.height, image = texture.image }
+  end
+  for path, png in pairs(compiled.files) do
+    pngs[path] = png
+  end
+  return { seed = compiled.particles.seed, emitters = compiled.particles.emitters, textures = textures }
+end
+
 ---@param romFs RomFs
----@return table<string, { frames: { drawableKey: string, image: string, width: integer, height: integer }[], fadeColor: integer }> entries keyed by semantic ball selector
+---@return table<string, BattlePresentationCache.BallEntry> entries keyed by semantic ball selector
 ---@return table<string, { width: integer, height: integer, pixels: string }> image slices keyed by generated image name
+---@return table<string, string> particle texture PNG bytes keyed by cache path
 function BattlePresentationCompiler.compileBattleBalls(romFs)
   local source = Sources.BALL_PICTURES
   local archive = openArchive(romFs, source.archive, "ball sprites")
+  local particleSources = Sources.BALL_PARTICLES
+  local particleArchive = openArchive(romFs, particleSources.archive, "ball particles")
   local fadeColors = readBallFadeColors(romFs, source.fadeColors)
   local entries = {}
   local imageSlices = {}
+  local particlePngs = {}
   for itemKey, resource in pairs(source.entries) do
     local ballId = resource.ballId
     local label = "battle ball " .. itemKey
@@ -3777,9 +3821,38 @@ function BattlePresentationCompiler.compileBattleBalls(romFs)
       }
     end
     assert(#frames > 0, "ball animation exposes at least one rendered frame for ball " .. tostring(ballId))
-    entries[selector] = { frames = frames, fadeColor = fadeColors[ballId] }
+    local entry = { frames = frames, fadeColor = fadeColors[ballId] }
+    local particleSource = assert(particleSources.entries[itemKey], "every ball sprite has its particle sources")
+    if particleSources.unrepresented[itemKey] == nil then
+      -- BallThrow_CaptureStateOpen starts the burst once the opening
+      -- animation (sequence 1) reaches its third frame, one task step after
+      -- the first two frames' durations elapsed.
+      local opening = assert(animationData.anims[2], label .. " has its opening animation")
+      assert(#opening.frames >= 3, label .. " opening animation reaches its third frame")
+      entry.particles = {
+        seal = compileBallParticleSet(
+          particleArchive,
+          particleSource.sealMember,
+          particleSource.sealEmitterCount,
+          itemKey,
+          "seal",
+          particlePngs
+        ),
+        burst = compileBallParticleSet(
+          particleArchive,
+          particleSource.burstMember,
+          particleSource.burstEmitterCount,
+          itemKey,
+          "burst",
+          particlePngs
+        ),
+        clickEmitter = particleSource.burstClickEmitter,
+        burstStartTick = opening.frames[1].duration + opening.frames[2].duration + 1,
+      }
+    end
+    entries[selector] = entry
   end
-  return entries, imageSlices
+  return entries, imageSlices, particlePngs
 end
 
 function BattlePresentationCompiler.compileGlobal(romFs, opts)
@@ -3820,7 +3893,8 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     for imageName, raster in pairs(staging.trainerImageSlices) do
       stageSlice(imageName, raster.pixels, raster.width, raster.height)
     end
-    staging.battleBalls, staging.ballImageSlices = BattlePresentationCompiler.compileBattleBalls(romFs)
+    staging.battleBalls, staging.ballImageSlices, staging.ballParticlePngs =
+      BattlePresentationCompiler.compileBattleBalls(romFs)
     for imageName, raster in pairs(staging.ballImageSlices) do
       stageSlice(imageName, raster.pixels, raster.width, raster.height)
     end
@@ -4567,6 +4641,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     return {
       manifest = partialManifest,
       images = images,
+      pngImages = staging.ballParticlePngs,
       resourcePayloads = resourcePayloads,
       provenance = provenance,
       blockers = blockers,
@@ -4988,7 +5063,7 @@ end
 -- manifest, the producer provenance, every staged slice PNG, and the
 -- completion marker. Returns the marker.
 ---@param artifact PreparedArtifact
----@param bundle { manifest: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, resourcePayloads: table<string, table<string, unknown>>, provenance: table<string, unknown> } compileGlobal bundle
+---@param bundle { manifest: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, resourcePayloads: table<string, table<string, unknown>>, provenance: table<string, unknown> } compileGlobal bundle
 ---@param marker string completion marker
 ---@return string marker
 function BattlePresentationCompiler.stageGlobal(artifact, bundle, marker)
@@ -5010,6 +5085,15 @@ function BattlePresentationCompiler.stageGlobal(artifact, bundle, marker)
     artifact:addOwnedRoot(path)
     stage:write(path, encodeImage(image.pixels, image.width, image.height, name))
   end
+  local pngPaths = {}
+  for path in pairs(bundle.pngImages) do
+    pngPaths[#pngPaths + 1] = path
+  end
+  table.sort(pngPaths)
+  for _, path in ipairs(pngPaths) do
+    artifact:addOwnedRoot(path)
+    stage:write(path, bundle.pngImages[path])
+  end
   local resourcePaths = {}
   for path in pairs(bundle.resourcePayloads) do
     resourcePaths[#resourcePaths + 1] = path
@@ -5026,12 +5110,16 @@ end
 -- The content identity behind the global completion marker: the verified
 -- manifest plus every staged image and decoded resource payload.
 ---@param romSha1 string
----@param bundle { manifest: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, resourcePayloads: table<string, table<string, unknown>>, provenance: table<string, unknown> } compileGlobal bundle
+---@param bundle { manifest: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, resourcePayloads: table<string, table<string, unknown>>, provenance: table<string, unknown> } compileGlobal bundle
 ---@return string marker
 function BattlePresentationCompiler.globalMarker(romSha1, bundle)
   local imageHashes = {}
   for name, image in pairs(bundle.images) do
     imageHashes[name] = Hashing.sha1hex(image.pixels)
+  end
+  local pngHashes = {}
+  for path, png in pairs(bundle.pngImages) do
+    pngHashes[path] = Hashing.sha1hex(png)
   end
   local resourceHashes = {}
   for path, payload in pairs(bundle.resourcePayloads) do
@@ -5039,7 +5127,12 @@ function BattlePresentationCompiler.globalMarker(romSha1, bundle)
   end
   return BattlePresentationCache.marker(
     romSha1,
-    Hashing.hashLua({ manifest = bundle.manifest, images = imageHashes, resources = resourceHashes })
+    Hashing.hashLua({
+      manifest = bundle.manifest,
+      images = imageHashes,
+      pngImages = pngHashes,
+      resources = resourceHashes,
+    })
   )
 end
 

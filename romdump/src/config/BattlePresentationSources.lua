@@ -914,6 +914,36 @@ BattlePresentationSources.BALL_PICTURES = {
   fadeColors = { cpu = "arm9", overlayId = 12, address = 0x0226D15A, count = 25 },
 }
 
+-- BallSealEffect and BallBurstEffect (src/battle/battle_anim_ball.c) play
+-- one SPL member of NARC_a_0_9_5 per ball: gBallAnimSealParticles (the
+-- send-out sparkle) and gBallAnimBurstParticles (the opening ball), both in
+-- asm/battle_anim_data.s and indexed by ballId - 1. Seal members are ball
+-- ids 1..24 and burst members 27..50; the tables carry each member's
+-- required emitter count and, for bursts, the one emitter the capture click
+-- plays on its own and the opening burst skips.
+local sealEmitterCounts = { 5, 4, 3, 3, 3, 4, 3, 4, 3, 5, 4, 3, 3, 3, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3 }
+local burstClickEmitters = { 0, 2, 1, 3, 1, 1, 1, 1, 2, 3, 1, 0, 1, 0, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3 }
+local burstEmitterCounts = { 5, 5, 5, 5, 5, 6, 5, 5, 5, 7, 6, 5, 5, 5, 6, 6, 5, 5, 5, 5, 5, 5, 5, 5 }
+local ballParticles = {}
+for ballId, itemKey in ipairs(ballPictureKeys) do
+  ballParticles[itemKey] = {
+    ballId = ballId,
+    sealMember = ballId,
+    sealEmitterCount = sealEmitterCounts[ballId],
+    burstMember = 26 + ballId,
+    burstEmitterCount = burstEmitterCounts[ballId],
+    burstClickEmitter = burstClickEmitters[ballId],
+  }
+end
+
+BattlePresentationSources.BALL_PARTICLES = {
+  archive = "NARC_a_0_9_5",
+  entries = ballParticles,
+  -- Balls whose members draw polygon quads, a draw kind the runtime does
+  -- not reproduce; they keep their sprite without particles.
+  unrepresented = { CHERISH_BALL = "polygon particle draw kind" },
+}
+
 -- Exact battle-menu text selectors from battle_input.c's message-bank
 -- constructors. Dynamic mon/move names and other battle dialogue are
 -- published by their own source routes, not guessed into this static set.

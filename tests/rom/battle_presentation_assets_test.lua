@@ -484,4 +484,34 @@ function T.global_catalog_compiles_without_per_effect_closures(romFs, versionId)
   end
 end
 
+-- Every ball whose retail seal and burst members the runtime reproduces
+-- stages both sets with their textures; the unrepresented ball keeps only
+-- its sprite, and its exclusion is still warranted.
+function T.ball_particles_stage_for_every_reproducible_ball(romFs, versionId)
+  local compiler = requireBoundary("romdump.src.digest.battle.BattlePresentationCompiler", "compiler loads")
+  local Sources = requireBoundary("romdump.src.config.BattlePresentationSources", "sources load")
+  local entries, _, pngs = compiler.compileBattleBalls(romFs)
+  for itemKey in pairs(Sources.BALL_PARTICLES.entries) do
+    local entry = entries["ball:" .. itemKey]
+    if Sources.BALL_PARTICLES.unrepresented[itemKey] ~= nil then
+      Assert.isNil(entry.particles, versionId .. ": " .. itemKey .. " stages no particles")
+    else
+      local particles = entry.particles
+      Assert.notNil(particles, versionId .. ": " .. itemKey .. " stages its particles")
+      Assert.isTrue(particles.burstStartTick > 1, versionId .. ": " .. itemKey .. " waits for its opening frames")
+      Assert.isTrue(particles.clickEmitter < #particles.burst.emitters, versionId .. ": the click emitter exists")
+      for _, set in ipairs({ particles.seal, particles.burst }) do
+        for _, texture in ipairs(set.textures) do
+          Assert.notNil(pngs[texture.image], versionId .. ": " .. texture.image .. " stages")
+        end
+      end
+    end
+  end
+  Assert.equal(
+    entries["ball:POKE_BALL"].particles.burstStartTick,
+    21,
+    versionId .. ": ball opening is 20 ticks plus a step"
+  )
+end
+
 return RomSuite.fromFacts(T)

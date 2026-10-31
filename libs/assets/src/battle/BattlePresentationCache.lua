@@ -98,6 +98,26 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field emitters table<string, unknown>[] compiled emitter records
 ---@field textures BattlePresentationCache.EncounterParticleTexture[]
 
+---@class BattlePresentationCache.BallParticleSet
+---@field seed integer particle random seed
+---@field emitters table<string, unknown>[] compiled emitter records
+---@field textures BattlePresentationCache.EncounterParticleTexture[]
+
+-- The ball particles of one ball: its send-out sparkle and opening burst
+-- (with the burst's capture-click emitter and its start tick after the ball
+-- begins opening). Absent for balls whose source members use unsupported
+-- draw kinds.
+---@class BattlePresentationCache.BallParticles
+---@field seal BattlePresentationCache.BallParticleSet
+---@field burst BattlePresentationCache.BallParticleSet
+---@field clickEmitter integer burst emitter the capture click plays alone and the opening burst skips
+---@field burstStartTick integer ticks after the ball starts opening until the burst emits
+
+---@class BattlePresentationCache.BallEntry
+---@field frames { drawableKey: string, image: string, width: integer, height: integer }[]
+---@field fadeColor integer
+---@field particles BattlePresentationCache.BallParticles|nil
+
 ---@class BattlePresentationCache.SceneRecord
 ---@field schema string
 ---@field key string
@@ -187,6 +207,20 @@ end
 function BattlePresentationCache.sceneTerrainSpritePath(sceneKey, side)
   assert(side == "player" or side == "foe", "terrain sprite side is player or foe")
   return ASSET_DIR .. "/scenes/" .. sceneStem(sceneKey) .. "-terrain-" .. side .. ".png"
+end
+
+---@param itemKey string semantic ball key
+---@param kind "seal"|"burst" ball particle set
+---@param textureId integer texture id within the set
+---@return string cache-relative staged ball particle texture image path
+function BattlePresentationCache.ballParticleTexturePath(itemKey, kind, textureId)
+  assert(type(itemKey) == "string" and itemKey:match("^[A-Z][A-Z0-9_]*$"), "ball particle textures name a ball key")
+  assert(kind == "seal" or kind == "burst", "ball particle sets are seal or burst")
+  assert(
+    type(textureId) == "number" and textureId % 1 == 0 and textureId >= 0,
+    "particle texture ids are non-negative integers"
+  )
+  return ASSET_DIR .. "/battle-ball-particles-" .. itemKey:lower() .. "-" .. kind .. "-" .. textureId .. ".png"
 end
 
 ---@param sceneKey string semantic scene key
@@ -763,6 +797,17 @@ function BattlePresentationCache.isReady(cacheFs, demand)
       local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
       if width ~= frame.width or height ~= frame.height then
         return false
+      end
+    end
+    local particles = entry.particles
+    if particles ~= nil then
+      for _, set in ipairs({ particles.seal, particles.burst }) do
+        for _, texture in ipairs(set.textures) do
+          local width, height = PngWriter.completeDimensions(cacheFs:read(texture.image))
+          if width ~= texture.width or height ~= texture.height then
+            return false
+          end
+        end
       end
     end
   end

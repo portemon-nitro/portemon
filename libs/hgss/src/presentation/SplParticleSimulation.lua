@@ -125,9 +125,13 @@ local function circleFrame(record)
     ax, ay, az = 1, 0, 0
   elseif circleAxis == 1 then
     ax, ay, az = 0, 1, 0
+  elseif circleAxis == 3 then
+    -- spl_set_cross_to_axis: the emitter's own axis, normalized.
+    local axis = record.axis --[[@as { x: number, y: number, z: number }]]
+    ax, ay, az = normalize3(axis.x, axis.y, axis.z)
   end
   local bx, by, bz = 0, 1, 0
-  if ay == 1 or ay == -1 then
+  if math.abs(ay) >= 1 - 1 / 8192 then
     bx, by, bz = 1, 0, 0
   end
   local c1x, c1y, c1z = normalize3(ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)

@@ -518,4 +518,44 @@ function T.wild_intro_settles_without_a_trailing_product_wait()
   )
 end
 
+-- BallThrow_CaptureStateOpen bursts the ball open where the throw arc ended;
+-- the click after the last shake plays at the ball's resting spot, 32 pixels
+-- lower after the fall.
+function T.capture_ball_bursts_open_at_the_throw_end_and_clicks_at_the_resting_spot()
+  local timeline = BattleTimeline.new({ sound = function(_) end, textSpeed = "fastest" })
+  timeline:reset(openingView())
+  local throw = event("throw", {
+    actors = { { combatant = 1 } },
+    targets = { { combatant = 3 } },
+    payload = { user = 1, ball = "POKE_BALL", target = 3 },
+    after = { hp = { [1] = 52, [3] = 57 } },
+  })
+  local caught = event("caught", {
+    actors = { { combatant = 1 } },
+    targets = { { combatant = 3 } },
+    payload = { shakes = 3 },
+    after = { hp = { [1] = 52, [3] = 20 } },
+  })
+  Assert.isTrue(timeline:present(packet(1, { throw, caught }, openingView())), "the capture is accepted")
+  Assert.isTrue(timeline:queuedParticleBalls().POKE_BALL, "the queued effects name their ball for texture warming")
+  local starts = {}
+  for _ = 1, 600 do
+    advance(timeline)
+    for _, start in ipairs(timeline:takeBallParticleStarts()) do
+      starts[#starts + 1] = start
+    end
+  end
+  Assert.equal(#starts, 2, "the burst and the click start once each")
+  Assert.deepEqual(
+    { starts[1].effect, starts[1].ballKey, starts[1].x, starts[1].y },
+    { "burst", "POKE_BALL", 192, 56 },
+    "the burst opens where the single-battle arc ends"
+  )
+  Assert.deepEqual(
+    { starts[2].effect, starts[2].x, starts[2].y },
+    { "click", 192, 88 },
+    "the click plays at the dropped resting spot"
+  )
+end
+
 return { tests = T }
