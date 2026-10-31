@@ -34,6 +34,8 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _trainerSlideTracks table<integer, table<string, unknown>> source animation and slide tracks
 ---@field _trainerPictures table<string, table<string, unknown>> staged trainer frame and throw metadata
 ---@field _terrainSlideTracks table<integer, { role: "player"|"foe", delay: integer, elapsed: integer, direction: integer, targetX: integer, speed: integer }> source timing for both terrain bases
+---@field _encounterFadeColor "white"|"black" background fade color of the encounter animation
+---@field _encounterAnimation { elapsed: integer }? Task_PlayEncounterAnimation frame counter, nil while no animation runs
 ---@field _wildIntroTrack { combatant: integer, delay: integer, elapsed: integer, x: integer, targetX: integer, speed: integer, arrived: boolean, fadeElapsed: integer }? source timing for the wild foe entrance
 ---@field _names table<integer, string> visible names by combatant identity across packets
 ---@field _addressing table<integer, "own"|"wild"|"foe"> source nickname-tag variant by combatant identity
@@ -153,6 +155,7 @@ end
 ---@field battleItemUse (fun(item: string): table<string, unknown>?)? generated battle-use facts for item narration
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
 ---@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire, absent without a screen owner
+---@field encounterFadeColor "white"|"black" gBattleEncounterFadeColors entry of the scene background
 ---@field ballFadeColor (fun(ballKey: string): integer)? source recall and send-out fade color of a ball
 ---@field faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts for fainting
 ---@field trainerPictures table<string, table<string, unknown>>? staged source trainer metadata
@@ -165,6 +168,10 @@ function BattleTimeline.new(opts)
   opts = opts or {}
   assert(type(opts) == "table", "the cue player requires options")
   assert(type(opts.messageText) == "function", "battle narration requires its staged message resolver")
+  assert(
+    opts.encounterFadeColor == "white" or opts.encounterFadeColor == "black",
+    "the encounter animation needs its background fade color"
+  )
   local revealPolicy = TextSpeedPolicy.forSpeed(opts.textSpeed or "mid")
   return setmetatable({
     _sound = opts.sound,
@@ -173,6 +180,8 @@ function BattleTimeline.new(opts)
     _itemName = opts.itemName,
     _battleItemUse = opts.battleItemUse,
     _ballFadeColor = opts.ballFadeColor,
+    _encounterFadeColor = opts.encounterFadeColor,
+    _encounterAnimation = nil,
     _faintAppearance = opts.faintAppearance,
     _messageText = opts.messageText,
     _messageTextContext = opts.messageTextContext,
@@ -404,6 +413,7 @@ function BattleTimeline:reset(view)
   self._wildVictoryMusicStarted = false
   self._terrainSlideTracks = {}
   self._wildIntroTrack = nil
+  self._encounterAnimation = nil
   -- A fresh opening starts new actions: occurrence and narration claims
   -- never leak from the previous launch into the next one.
   self._nativeSeen = {}
@@ -418,6 +428,7 @@ function BattleTimeline:dispose()
   self._trainerSlideTracks = {}
   self._terrainSlideTracks = {}
   self._wildIntroTrack = nil
+  self._encounterAnimation = nil
 end
 
 ---@param cue table<string, unknown>
@@ -3157,6 +3168,9 @@ function BattleTimeline:intro(view, wild)
   self._trainerSlideTracks = trainerTracks
   self._terrainSlideTracks = terrainTracks
   self._wildIntroTrack = nil
+  -- PlayEncounterAnimation starts its task in the script's first tick on
+  -- every encounter path.
+  self._encounterAnimation = { elapsed = 0 }
   for _, battler in ipairs(self:battlers()) do
     local shown = self:_shown(battler.combatant --[[@as integer]])
     if shown ~= nil then
@@ -3191,6 +3205,12 @@ function BattleTimeline:intro(view, wild)
     enqueue(self, { kind = "wait", duration = 61 })
     if type(foeSpecies) == "string" then
       enqueue(self, { kind = "sound", cue = cryCue(foeSpecies, foeForm, true), duration = 0 })
+    end
+    -- WaitTime 122 runs from the script's first tick; HealthbarSlideInDelay
+    -- slides the foe box in and the encounter line prints after that slide.
+    enqueue(self, { kind = "wait", duration = 61 })
+    if type(wildFoe.combatant) == "number" then
+      enqueue(self, { kind = "hud-slide", combatant = wildFoe.combatant, direction = "in" })
     end
     enqueueEncounterMessage(self, true, foeName)
   else
@@ -3490,7 +3510,6 @@ local function tickWildIntro(self)
       intensity = 8 - track.fadeElapsed,
     }
     if track.fadeElapsed == 8 then
-      shown.hudVisible = true
       local presentation = assert(self._openingPresentation, "the wild intro keeps its opening terrain")
       local slides = presentation.terrainSlides --[[@as table<integer, table<string, unknown>>]]
       for _, slide in ipairs(slides) do
@@ -3498,6 +3517,59 @@ local function tickWildIntro(self)
       end
     end
   end
+end
+
+-- Task_PlayEncounterAnimation, phase one: its frame counter voices PASA2
+-- on frame 1 and PASA3 on frame 23, fades the main screen toward the
+-- background color from frame 10 (sixteen steps up, restored from frame
+-- 28), and runs the lower screen's gray ramp (one level per frame from
+-- frame 10) before revealing it from white from frame 28.
+local ENCOUNTER_FADE_STEPS = 16
+local ENCOUNTER_FADE_START = 10
+local ENCOUNTER_RESTORE = 28
+local ENCOUNTER_SETTLE_SOUND = 23
+local ENCOUNTER_END = ENCOUNTER_RESTORE + ENCOUNTER_FADE_STEPS
+
+---@param self BattleTimeline
+local function tickEncounterAnimation(self)
+  local track = self._encounterAnimation
+  local presentation = self._openingPresentation
+  if track == nil or presentation == nil then
+    return
+  end
+  local frame = track.elapsed + 1
+  track.elapsed = frame
+  if frame == 1 then
+    emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.encounterStart))
+  elseif frame == ENCOUNTER_SETTLE_SOUND then
+    emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.encounterSettle))
+  end
+  if frame >= ENCOUNTER_END + 1 then
+    presentation.encounterFlash = nil
+    presentation.encounterLower = nil
+    self._encounterAnimation = nil
+    return
+  end
+  if frame < ENCOUNTER_FADE_START then
+    presentation.encounterLower = { level = 0 }
+    return
+  end
+  if frame < ENCOUNTER_RESTORE then
+    local step = math.min(ENCOUNTER_FADE_STEPS, frame - ENCOUNTER_FADE_START)
+    presentation.encounterFlash = { color = self._encounterFadeColor, coefficient = step }
+    presentation.encounterLower = { level = math.min(ENCOUNTER_FADE_STEPS, frame - ENCOUNTER_FADE_START + 1) }
+    return
+  end
+  local remaining = ENCOUNTER_FADE_STEPS - (frame - ENCOUNTER_RESTORE)
+  presentation.encounterFlash = { color = self._encounterFadeColor, coefficient = remaining }
+  presentation.encounterLower = { whiteCoefficient = remaining }
+end
+
+---@param self BattleTimeline
+local function tickOpeningTracks(self)
+  tickTerrainSlides(self)
+  tickWildIntro(self)
+  tickEncounterAnimation(self)
 end
 
 ---@param self BattleTimeline
@@ -4229,8 +4301,7 @@ function BattleTimeline:update(dt, isAvailable, soundComplete)
       local nextSound = next.kind == "sound" and next.cue or nil
       if type(nextSound) == "table" and nextSound.waitForVoice == true and soundComplete ~= nil then
         self._accum = self._accum - step
-        tickTerrainSlides(self)
-        tickWildIntro(self)
+        tickOpeningTracks(self)
         if math.abs(self._accum) < SOURCE_TICK_EPSILON then
           self._accum = 0
         end
@@ -4240,8 +4311,7 @@ function BattleTimeline:update(dt, isAvailable, soundComplete)
         self._active = nil
       else
         self._accum = self._accum - step
-        tickTerrainSlides(self)
-        tickWildIntro(self)
+        tickOpeningTracks(self)
         if math.abs(self._accum) < SOURCE_TICK_EPSILON then
           self._accum = 0
         end
@@ -4273,16 +4343,14 @@ function BattleTimeline:update(dt, isAvailable, soundComplete)
             break
           end
           self._accum = self._accum - step
-          tickTerrainSlides(self)
-          tickWildIntro(self)
+          tickOpeningTracks(self)
           if math.abs(self._accum) < SOURCE_TICK_EPSILON then
             self._accum = 0
           end
           self._active = nil
         else
           self._accum = self._accum - step
-          tickTerrainSlides(self)
-          tickWildIntro(self)
+          tickOpeningTracks(self)
           if math.abs(self._accum) < SOURCE_TICK_EPSILON then
             self._accum = 0
           end

@@ -14,6 +14,7 @@ local BattleAnimationPlayer = require("libs.hgss.src.presentation.BattleAnimatio
 local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local MonCache = require("libs.assets.src.MonCache")
 local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
@@ -1180,7 +1181,10 @@ function BattleScreenState.new(opts)
     local entry = assert(balls.entries["ball:" .. ballKey], "recall and send-out balls are in the ball inventory")
     return entry.fadeColor
   end
+  -- gBattleEncounterFadeColors is black for the three cave backgrounds.
+  local background = assert(BattlePresentationCache.parseSceneKey(sceneKey), "the scene key was validated").background
   self._timeline = BattleTimeline.new({
+    encounterFadeColor = background:match("^cave_") and "black" or "white",
     ballFadeColor = ballFadeColor,
     trainerPictures = self._manifest.trainerPictures.entries,
     moveName = moveNameOf,

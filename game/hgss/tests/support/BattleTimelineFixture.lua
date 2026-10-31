@@ -128,6 +128,7 @@ end
 function BattleTimelineFixture.new(opts)
   opts = opts or {}
   opts.messageText = opts.messageText or resolve
+  opts.encounterFadeColor = opts.encounterFadeColor or "white"
   opts.moveName = opts.moveName or function(move)
     return move == "TACKLE" and "Tackle" or move
   end

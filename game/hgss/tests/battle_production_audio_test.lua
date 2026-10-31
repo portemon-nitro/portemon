@@ -644,7 +644,18 @@ function T.selection_and_cry_reach_the_bound_controller_once()
   Assert.equal(foeCries[1].pattern, 0, "the foe cry uses the plain pattern")
   Assert.isTrue(leadCries[1].form == 0, "the lead cry names its form")
   Assert.isTrue(foeCries[1].pan ~= leadCries[1].pan, "foe and lead cries voice from their own sides")
-  Assert.equal(#plays, 0, "no selection plays before an accepted reply")
+  local encounter = {}
+  local selections = 0
+  for _, call in ipairs(plays) do
+    if call.symbol == "SEQ_SE_DP_PASA2" or call.symbol == "SEQ_SE_DP_PASA3" then
+      encounter[call.symbol] = (encounter[call.symbol] or 0) + 1
+    else
+      selections = selections + 1
+    end
+  end
+  Assert.equal(encounter.SEQ_SE_DP_PASA2, 1, "the encounter animation voices PASA2 once")
+  Assert.equal(encounter.SEQ_SE_DP_PASA3, 1, "the encounter animation voices PASA3 once")
+  Assert.equal(selections, 0, "no selection plays before an accepted reply")
   rig.screen:input({ { type = "confirm" } })
   pump(rig)
   Assert.equal(rig.screen:status().mode, "moves", "confirming Fight opens move selection")
@@ -652,7 +663,7 @@ function T.selection_and_cry_reach_the_bound_controller_once()
   rig.screen:input({ { type = "confirm" } })
   pump(rig)
   Assert.equal(rig.screen:status().mode, "awaiting_resolution", "confirming the known slot submits")
-  Assert.equal(countCalls(audio.calls, "play"), 1, "the accepted reply plays its selection exactly once")
+  Assert.equal(countCalls(audio.calls, "play"), 3, "the accepted reply plays its selection once beside the two encounter sounds")
   local select
   for _, call in ipairs(audio.calls) do
     if call.method == "play" then
@@ -665,7 +676,7 @@ function T.selection_and_cry_reach_the_bound_controller_once()
   pump(rig)
   pump(rig)
   Assert.equal(countCalls(audio.calls, "playCry"), 2, "settling replays no cry")
-  Assert.equal(countCalls(audio.calls, "play"), 1, "settling replays no selection")
+  Assert.equal(countCalls(audio.calls, "play"), 3, "settling replays no selection or encounter sound")
   rig.battle:dispose()
   state:dispose()
 end

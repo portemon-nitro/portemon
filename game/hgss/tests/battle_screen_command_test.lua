@@ -3138,7 +3138,7 @@ function T.rejecting_cue_sink_fails_the_screen_with_context()
   Assert.notNil(failed, "the rejecting sink fails the screen")
   local context = tostring(failed.error)
   Assert.isTrue(context:find("launch-cue-failure", 1, true) ~= nil, "the failure names its launch: " .. context)
-  Assert.isTrue(context:find("cry:EEVEE", 1, true) ~= nil, "the failure names its cue role: " .. context)
+  Assert.isTrue(context:find("SEQ_SE_DP_PASA2", 1, true) ~= nil, "the failure names its cue role: " .. context)
   Assert.isTrue(dispatches >= 1, "the faulty cue was dispatched before failing")
   Assert.equal(#rig.submits, 0, "no decision commits behind a failed cue")
   for _ = 1, 30 do

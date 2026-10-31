@@ -1345,8 +1345,13 @@ function T.target_pickers_name_projected_recipients_on_both_layouts()
         .. " selection="
         .. tostring(tapRig.screen:view().selection)
     )
-    tap("touch:move", touch.move)
-    tap("touch:move", touch.move)
+    -- A press on the unfocused slot only focuses it; a matched press on
+    -- the focused slot seals. The target picker is the contract here.
+    for _ = 1, 2 do
+      if tapRig.screen:status().mode ~= "target" then
+        tap("touch:move", touch.move)
+      end
+    end
     Assert.equal(
       tapRig.screen:status().mode,
       "target",

@@ -1021,7 +1021,12 @@ function T.wild_intro_slides_the_dark_foe_in_before_cry_and_fades_it_at_arrival(
   end
   foe = battler(timeline:battlers(), 3)
   Assert.equal(foe.paletteFade.intensity, 0, "the source palette fade completes in eight ticks")
-  Assert.isTrue(foe.hudVisible, "the foe HUD appears when the source intro fade completes")
+  Assert.isFalse(foe.hudVisible == true, "the foe HUD waits for the script's WaitTime 122 and its slide")
+  for _ = 1, 62 do
+    advance(timeline, TICK)
+  end
+  foe = battler(timeline:battlers(), 3)
+  Assert.isTrue(foe.hudVisible, "the foe HUD slides in after the 122-tick hold")
 end
 
 function T.intro_slides_both_terrain_bases_after_the_source_delay()
@@ -1229,6 +1234,7 @@ function T.trainer_animation_tracks_preserve_reverse_modes_and_loop_boundaries()
       durationTicks = 1,
     }
     local timeline = BattleTimelineCore.new({
+      encounterFadeColor = "white",
       sound = function(_) end,
       messageText = function() return "" end,
       trainerPictures = trainerPictures,
@@ -3084,6 +3090,8 @@ function T.wild_opening_follows_the_source_encounter_order()
   local timeline = BattleTimeline.new({ sound = sounds.sound })
   timeline:intro(openingView(), true)
   Assert.deepEqual(transcript(timeline, sounds), {
+    "effect:SEQ_SE_DP_PASA2",
+    "effect:SEQ_SE_DP_PASA3",
     "cry:EEVEE:foe",
     "A wild FOE appeared!",
     "Go! LEAD!",

@@ -1251,6 +1251,7 @@ function T.serial_completed_occurrences_leave_no_retained_records()
     end,
   }
   local timeline = BattleTimeline.new({
+    encounterFadeColor = "white",
     effects = effects,
     messageText = function(_, key)
       return key

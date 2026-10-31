@@ -2436,6 +2436,41 @@ local function drawCompactScene(resources, view, content)
   graphics.pop()
 end
 
+-- Task_PlayEncounterAnimation palette work as screen-wide overlays: the
+-- main screen blends toward its fade color by coefficient/16, and the lower
+-- screen shows the opaque gray ramp, then reveals from white.
+---@param graphics table<string, unknown> injected host graphics
+---@param view table<string, unknown> internal semantic snapshot
+---@param lower boolean true for the lower screen's overlay
+local function drawEncounterOverlay(graphics, view, lower)
+  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
+  if opening == nil then
+    return
+  end
+  local r, g, b, a = saveColor(graphics)
+  if lower then
+    local state = opening.encounterLower --[[@as table<string, unknown>?]]
+    if state ~= nil then
+      if type(state.level) == "number" then
+        local gray = state.level / 16
+        graphics.setColor(gray, gray, gray, 1)
+        graphics.rectangle("fill", 0, 0, 256, 192)
+      elseif type(state.whiteCoefficient) == "number" and state.whiteCoefficient > 0 then
+        graphics.setColor(1, 1, 1, state.whiteCoefficient / 16)
+        graphics.rectangle("fill", 0, 0, 256, 192)
+      end
+    end
+  else
+    local flash = opening.encounterFlash --[[@as table<string, unknown>?]]
+    if flash ~= nil and type(flash.coefficient) == "number" and flash.coefficient > 0 then
+      local channel = flash.color == "white" and 1 or 0
+      graphics.setColor(channel, channel, channel, flash.coefficient / 16)
+      graphics.rectangle("fill", 0, 0, 256, 192)
+    end
+  end
+  restoreColor(graphics, r, g, b, a)
+end
+
 -- Draws one pane in its logical space: "detail" for the battlefield,
 -- "interaction" for the lower menu, or "compact" for the single-pane
 -- scene viewport. Unknown pane identities draw nothing.
@@ -2451,8 +2486,10 @@ function BattleRenderer.drawPane(resources, view, paneId, content, placement)
     drawCompactScene(resources, view, content or {})
   elseif paneId == "detail" then
     drawDetail(resources, view)
+    drawEncounterOverlay(assert(resources.graphics, "the battle render borrows its host graphics"), view, false)
   elseif paneId == "interaction" then
     drawInteraction(resources, view, content or {}, placement)
+    drawEncounterOverlay(assert(resources.graphics, "the battle render borrows its host graphics"), view, true)
   end
 end
 
