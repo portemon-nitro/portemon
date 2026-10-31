@@ -1799,13 +1799,16 @@ function T.shared_source_time_agrees_across_host_partitions()
     advance(paced, TICK)
   end
   Assert.equal(paced:message(), "AB", "five source ticks reveal two glyphs at the middle pace")
+  -- A page with no script wait behind it carries no hold of its own:
+  -- the middle pace reveals the twentieth glyph on tick 47 and the
+  -- cue releases once printing ends instead of holding an invented beat.
   local bounded = announced()
-  for _ = 1, 58 do
+  for _ = 1, 47 do
     advance(bounded, TICK)
   end
-  Assert.isFalse(bounded:settled(), "the final text hold remains active after 58 source ticks")
+  Assert.isFalse(bounded:settled(), "the revealing page is still active after 47 source ticks")
   advance(bounded, TICK)
-  Assert.isTrue(bounded:settled(), "the paced page settles on its 59th source tick")
+  Assert.isTrue(bounded:settled(), "the paced page settles on its 48th source tick")
   Assert.equal(bounded:message(), text, "the settled page shows its full wording")
   -- Partition equivalence over six accepted seconds: 30 Hz, 60 Hz,
   -- 144 Hz, and an irregular schedule with zero-step calls all land the

@@ -65,7 +65,15 @@ local FOE_BALL_START_BY_BATTLER_TYPE = {
 }
 
 BattleTimeline.TICKS_PER_SECOND = SourceTick.HZ
-BattleTimeline.MESSAGE_HOLD_TICKS = 12
+-- Multi-page narration turns its page after this beat. Single-page
+-- holds always come from the retail script wait behind the line:
+-- BtlCmd_WaitTime and BtlCmd_WaitButtonABTime counts, task frame
+-- counters, and the printer's own \r auto-scroll all run one-to-one in
+-- source ticks (battle_command.c, battle_controller_opponent.c,
+-- battle_anim_ball.c), while the controller serializes each display
+-- task on print completion. A line with no script wait behind it
+-- therefore carries no hold of its own.
+BattleTimeline.PAGE_TURN_TICKS = 12
 BattleTimeline.HIT_TICKS = 6
 BattleTimeline.HIT_DISPLACEMENT = 2
 BattleTimeline.VANISH_TICKS = 12
@@ -892,7 +900,7 @@ end
 
 ---@param text string narration wording under presentation
 ---@param ackable boolean true when the page waits for acknowledgement instead of holding
----@param holdTicks integer? explicit post-text hold in internal ticks, defaulting to the narration hold
+---@param holdTicks integer? explicit post-text hold in source ticks; absent means the script continues immediately
 ---@param ackSkipsHold boolean? whether acknowledgement skips this explicit hold
 ---@return table<string, unknown> queued narration cue
 local function enqueueMessage(self, text, ackable, holdTicks, ackSkipsHold)
@@ -1036,8 +1044,10 @@ local function queueOpening(self, view)
   if type(foeSpecies) == "string" then
     enqueue(self, { kind = "sound", cue = cryCue(foeSpecies, foeForm, true), duration = 0 })
   end
+  -- subscript_0000_StartEncounter prints Go! and starts the send-out on
+  -- the next command: the line carries no hold of its own.
   enqueueEncounterMessage(self, wild, foeName)
-  enqueueMessage(self, messageText(self, "battle/narration/player-sent-out", { ownName }), false)
+  enqueueMessage(self, messageText(self, "battle/narration/player-sent-out", { ownName }), false, 0)
   enqueueBallThrow(self, own.combatant --[[@as integer]], "player")
   if type(ownSpecies) == "string" then
     enqueue(self, { kind = "sound", cue = cryCue(ownSpecies, ownForm, false), duration = 0 })
@@ -1317,8 +1327,9 @@ local function translateStruck(self, event, packet, narrated)
   if type(hp) == "table" and type(hp[target]) == "number" then
     enqueueHealth(self, target, hp[target] --[[@as integer]], payload.noBlink == true)
   end
-  -- subscript_0016_CriticalHit, then subscript_0021_MoveFollowupMessage
-  -- (WaitButtonABTime 15 before the effectiveness line).
+  -- subscript_0016_CriticalHit, then subscript_0021_MoveFollowupMessage:
+  -- WaitButtonABTime 15 holds the previous page before the
+  -- effectiveness line, and A/B skips that beat.
   if payload.critical == true then
     enqueueMessage(self, messageText(self, "battle/narration/critical-hit", {}), false, 30, true)
   end
@@ -1326,7 +1337,7 @@ local function translateStruck(self, event, packet, narrated)
   local sequenceHitTotal = payload.sequenceHitTotal
   local finalHit = type(sequenceHitTotal) ~= "number" or sequenceHitIndex == sequenceHitTotal
   if finalHit and (effectiveness == "super" or effectiveness == "weak") then
-    enqueue(self, { kind = "wait", duration = 15 })
+    enqueue(self, { kind = "wait", duration = 15, skippable = true })
     local key = effectiveness == "super" and "battle/narration/super-effective" or "battle/narration/not-very-effective"
     local line = messageText(self, key, {})
     enqueueMessage(self, line, false, 30, true)
@@ -1564,11 +1575,13 @@ local function translateExp(self, event, packet)
     })
     if levelUp ~= nil then
       local nextLevel = levelUp.level --[[@as integer]]
+      -- The level line ends in \r (msg_0197_00003): the task waits only
+      -- for the printer, including its hundred-update auto-scroll.
       enqueueMessage(
         self,
         messageText(self, "battle/narration/level-up", { combatName(self, target), tostring(nextLevel) }),
         false,
-        0,
+        BattleTimeline.AUTO_SCROLL_TICKS,
         true
       )
       enqueue(self, {
@@ -1976,8 +1989,9 @@ local function translateStage(self, event)
     if type(cause) == "table" and cause.kind == "item" and type(cause.item) == "string" then
       local name = combatName(self, assert(target, "stage narration names its target"))
       if shown ~= nil and shown.side == 1 then
-        -- The player's bag task prints msg_0197_01203.
-        enqueueMessage(self, messageText(self, "battle/narration/bag-stat-up", { name, stat }), false)
+        -- The player's bag task prints msg_0197_01203 and counts 30
+        -- frames once printing ends.
+        enqueueMessage(self, messageText(self, "battle/narration/bag-stat-up", { name, stat }), false, 30)
       else
         local strength = math.abs(after - before) >= 2 and "sharp" or "normal"
         enqueueMessage(
@@ -2013,10 +2027,12 @@ end
 local function translateItem(self, event, packet)
   local payload = event.payload --[[@as table<string, unknown>]]
   if type(payload.refused) == "string" then
+    -- Bag-task invalid use prints hold like every other bag line: the
+    -- task counts 30 frames once printing ends.
     if payload.refused == "no_effect" or payload.refused == "invalid_target" then
-      enqueueMessage(self, messageText(self, "battle/narration/item-no-effect", {}), false)
+      enqueueMessage(self, messageText(self, "battle/narration/item-no-effect", {}), false, 30)
     else
-      enqueueMessage(self, messageText(self, "battle/narration/item-could-not-be-used", {}), false)
+      enqueueMessage(self, messageText(self, "battle/narration/item-could-not-be-used", {}), false, 30)
     end
     return
   end
@@ -2038,11 +2054,14 @@ local function translateItem(self, event, packet)
     duration = 0,
   })
   if playerUse then
-    -- The player's bag task narrates msg_0197_01206.
-    enqueueMessage(self, messageText(self, "battle/narration/bag-used-item", { itemText }), false)
+    -- The player's bag task narrates msg_0197_01206 and counts 30 frames
+    -- once printing ends (battle_controller_opponent.c bag menu task).
+    enqueueMessage(self, messageText(self, "battle/narration/bag-used-item", { itemText }), false, 30)
   else
     local trainer = assert(firstTrainer(self), "trainer item use carries its trainer identity")
     local trainerName = assert(trainer.name, "trainer item use carries the trainer name")
+    -- The foe trainer scripts print their use line with
+    -- WaitButtonABTime 30 (subscript_0267 and siblings).
     enqueueMessage(
       self,
       messageText(
@@ -2050,7 +2069,9 @@ local function translateItem(self, event, packet)
         "battle/narration/trainer-used-item",
         { trainerClassText(self, trainer), trainerName, itemText }
       ),
-      false
+      false,
+      30,
+      true
     )
   end
   local target = type(payload.target) == "table" and payload.target.combatant or nil
@@ -2078,7 +2099,7 @@ local function translateItem(self, event, packet)
       }
       local cureKey = cureKeys[beforeCondition]
       if playerUse and cureKey ~= nil then
-        enqueueMessage(self, messageText(self, "battle/narration/" .. cureKey, { who }), false)
+        enqueueMessage(self, messageText(self, "battle/narration/" .. cureKey, { who }), false, 30)
       end
     end
     if type(payload.restored) == "number" and payload.restored > 0 then
@@ -2087,21 +2108,23 @@ local function translateItem(self, event, packet)
         enqueueMessage(
           self,
           messageText(self, "battle/narration/bag-restored-hp", { who, tostring(payload.restored) }),
-          false
+          false,
+          30
         )
       end
     end
   end
   if type(payload.restoredPp) == "number" and payload.restoredPp > 0 then
-    -- Battle party-menu result for PP servings (msg_0006_00087).
-    enqueueMessage(self, messageText(self, "battle/narration/pp-restored", {}), false)
+    -- Battle party-menu result for PP servings (msg_0006_00087): the bag
+    -- task counts 30 frames once printing ends.
+    enqueueMessage(self, messageText(self, "battle/narration/pp-restored", {}), false, 30)
   end
   if type(payload.item) == "string" and type(self._battleItemUse) == "function" then
     local effects = self._battleItemUse(payload.item)
     if type(effects) == "table" then
       if effects.guardSpec == true then
         if playerUse then
-          enqueueMessage(self, messageText(self, "battle/narration/bag-guard-spec", {}), false)
+          enqueueMessage(self, messageText(self, "battle/narration/bag-guard-spec", {}), false, 30)
         end
       end
       local stages = effects.stages
@@ -2117,7 +2140,8 @@ local function translateItem(self, event, packet)
           messageText(self, "battle/narration/bag-getting-pumped", {
             combatName(self, target --[[@as integer]]),
           }),
-          false
+          false,
+          30
         )
       end
     end
@@ -2138,10 +2162,15 @@ local function moveOutcome(messageKey, targetField, moveField)
     local move = payload[moveField]
     assert(type(move) == "string", "move outcome names its move")
     move = move --[[@as string]]
+    -- The learned and declined lines end in \r (msg_0197_00004 and
+    -- msg_0197_01188): the task waits only for the printer, including
+    -- its hundred-update auto-scroll.
     enqueueMessage(
       self,
       messageText(self, messageKey, { combatName(self, target), moveName(self, target, move) }),
-      false
+      false,
+      BattleTimeline.AUTO_SCROLL_TICKS,
+      true
     )
   end
   return translate
@@ -2166,7 +2195,8 @@ local function translateTransformed(self, event, packet)
     local speciesKey = assert(donor.species, "transform donor view carries its species")
     local speciesName = type(self._speciesName) == "function" and self._speciesName(speciesKey) or nil
     assert(type(speciesName) == "string" and speciesName ~= "", "transform source tags resolve the species name")
-    enqueueMessage(self, messageText(self, "battle/narration/transformed", { who, speciesName }), false)
+    -- subscript_0092_Transform prints the line with WaitButtonABTime 30.
+    enqueueMessage(self, messageText(self, "battle/narration/transformed", { who, speciesName }), false, 30, true)
   end
   if nativeEffectKeyOf(event) ~= nil then
     enqueueNativeEffect(self, event, packet)
@@ -2255,7 +2285,9 @@ local function translateStatusGate(self, event)
   local key = "battle/narration/status-gate/" .. tostring(route) .. "/" .. side
   assert(type(target) == "number", "status gate narration names its battler")
   local name = combatName(self, target)
-  enqueueMessage(self, messageText(self, key, { name }), false)
+  -- The gate lines print with WaitButtonABTime 30 (subscript_0020 and
+  -- its freeze, paralysis, and confusion siblings).
+  enqueueMessage(self, messageText(self, key, { name }), false, 30, true)
 end
 
 -- Forcing and item moves narrate through their target: any following
@@ -2361,9 +2393,11 @@ local function translateCured(self, event)
     or key == "confusion" and "confusion-cured"
     or nil
   if route ~= nil then
+    -- The cure lines print with WaitButtonABTime 30 (subscript_0029
+    -- ThawOut and its paralysis, burn, and confusion siblings).
     local messageKey = "battle/narration/cured/" .. route .. "/" .. side
     assert(type(target) == "number", "cured-status narration names its target")
-    enqueueMessage(self, messageText(self, messageKey, { combatName(self, target) }), false)
+    enqueueMessage(self, messageText(self, messageKey, { combatName(self, target) }), false, 30, true)
   end
 end
 
@@ -2465,7 +2499,13 @@ local function translateCharged(self, event)
   local target = targetValue --[[@as integer]]
   local address = self._addressing[target]
   local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
-  enqueueMessage(self, messageText(self, "battle/narration/charged/" .. side, { combatName(self, target) }), false)
+  enqueueMessage(
+    self,
+    messageText(self, "battle/narration/charged/" .. side, { combatName(self, target) }),
+    false,
+    30,
+    true
+  )
 end
 local function translateProtected(self, event)
   local target = (event.payload --[[@as table<string, unknown>]]).target
@@ -2474,7 +2514,9 @@ local function translateProtected(self, event)
   local key = "battle/narration/protected/" .. variant
   assert(type(target) == "number", "protection narration names its battler")
   local name = combatName(self, target)
-  enqueueMessage(self, messageText(self, key, { name }), false)
+  -- The prepared lines print with WaitButtonABTime 30
+  -- (subscript_0057_ShowPreparedMessage).
+  enqueueMessage(self, messageText(self, key, { name }), false, 30, true)
 end
 local function translateSubstituteBroke(self, event)
   local target = (event.payload --[[@as table<string, unknown>]]).target
@@ -2484,7 +2526,9 @@ local function translateSubstituteBroke(self, event)
   enqueueMessage(
     self,
     messageText(self, "battle/narration/substitute-broke/" .. side, { combatName(self, target) }),
-    false
+    false,
+    30,
+    true
   )
 end
 
@@ -2495,7 +2539,14 @@ local function translateDelayed(self, event)
   if type(target) == "number" then
     local address = self._addressing[target]
     local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
-    enqueueMessage(self, messageText(self, "battle/narration/foretold/" .. side, { combatName(self, target) }), false)
+    -- subscript_0123_FutureSightStart prints the foretold line with no
+    -- timed wait behind it: the script continues on the link barrier.
+    enqueueMessage(
+      self,
+      messageText(self, "battle/narration/foretold/" .. side, { combatName(self, target) }),
+      false,
+      0
+    )
   end
 end
 
@@ -2655,8 +2706,10 @@ local function translateThrow(self, event)
       duration = BALL_DEFLECT_TICKS,
       hideAtEnd = true,
     })
-    enqueueMessage(self, messageText(self, "battle/narration/ball-blocked", {}), false)
-    enqueueMessage(self, messageText(self, "battle/narration/no-stealing", {}), false)
+    -- STATE_GET_POKEMON_BALL_BLOCKED/_NO_STEALING print each line, then
+    -- count 30 frames once printing ends. Neither line ends in \r.
+    enqueueMessage(self, messageText(self, "battle/narration/ball-blocked", {}), false, 30)
+    enqueueMessage(self, messageText(self, "battle/narration/no-stealing", {}), false, 30)
     return
   end
   -- Task_GetPokemon draws the target into the ball before any shake.
@@ -2693,9 +2746,10 @@ local function translateShake(self, event)
   local _ = event
   -- The source shakes the ball with its sound only; no line prints.
   -- BallThrow_CaptureStateShakeWait holds 14 frames, the wobble sounds
-  -- BOWA on its fifth frame and ends on its twelfth, and
+  -- BOWA on its fifth frame and ends on its twelfth (19 frames to the
+  -- sound, 7 more to the end), and
   -- STATE_GET_POKEMON_BALL_SHAKE_DECREMENT then waits 12 frames.
-  enqueue(self, { kind = "wait", duration = 20 })
+  enqueue(self, { kind = "wait", duration = 19 })
   enqueue(self, {
     kind = "sound",
     cue = ballCue(BattleAudio.SINK_SOUNDS.shake),
@@ -2719,18 +2773,25 @@ local function captureFoeName(self)
   return name
 end
 
+-- STATE_GET_POKEMON_GOTCHA prints msg_0197_00867 (which ends in \r,
+-- so the printer's own hundred-update auto-scroll extends it) while the
+-- capture BGM starts, and STATE_GET_POKEMON_CHECK_MON_DATA then counts
+-- 30 more frames once printing ends. The music never gates the message.
 ---@param self BattleTimeline
 ---@param event table<string, unknown> native capture success event under translation
 local function translateCaught(self, event)
-  -- msg_0197_00867 opens with {WAIT 3}: the capture fanfare starts as
-  -- the Gotcha line begins printing.
   enqueue(self, {
     kind = "sound",
-    cue = fanfareCue(BattleAudio.SINK_SOUNDS.caught, true),
+    cue = fanfareCue(BattleAudio.SINK_SOUNDS.caught, false),
     duration = 0,
   })
   local caughtName = captureFoeName(self)
-  enqueueMessage(self, messageText(self, "battle/narration/gotcha", { caughtName }), false)
+  enqueueMessage(
+    self,
+    messageText(self, "battle/narration/gotcha", { caughtName }),
+    false,
+    BattleTimeline.AUTO_SCROLL_TICKS + 30
+  )
   -- The target already entered the ball at the throw; a capture that
   -- never threw still hides it here.
   local target = captureTargetOf(self, event)
@@ -2744,7 +2805,6 @@ local function translateCaught(self, event)
       requiresImage = self:_imageKeyFor(target --[[@as integer]]),
     })
   end
-  enqueue(self, { kind = "wait", duration = BattleTimeline.MESSAGE_HOLD_TICKS })
 end
 
 ---@param self BattleTimeline
@@ -2757,9 +2817,12 @@ local function translateBrokeFree(self, event)
   if target ~= nil and self._inBall == target then
     enqueueReveal(self, target)
   end
+  -- BREAK_OUT sends the target back out before its line prints, and
+  -- STATE_GET_POKEMON_BREAK_OUT_MESSAGE/_DONE prints the selected
+  -- outcome line (msg_0197_00863 and siblings have no \r), then counts
+  -- 30 frames once printing ends.
   self._inBall = nil
-  enqueueMessage(self, sourceText, false)
-  enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
+  enqueueMessage(self, sourceText, false, 30)
 end
 
 ---@param self BattleTimeline
@@ -2830,12 +2893,15 @@ local function translateOther(self, event, packet)
     -- use announcement. A striking action owns the same occurrence
     -- through its strike, so whichever event claims it first wins and
     -- the other stays silent: one action still plays one visual.
+    -- subscript_0076_AttackMessageAndAnimation prints the line, waits
+    -- only for the link barrier, and starts the move animation, so the
+    -- announcement carries no hold of its own.
     local nativeKey = nativeEffectKeyOf(event)
     local occurrence = (nativeKey ~= nil or event.actionId ~= nil)
         and occurrenceIdentityOf(launchOf(packet), event, packet)
       or nil
     if occurrence == nil or self._announced[occurrence] ~= true then
-      translateMoveUsed(self, event)
+      translateMoveUsed(self, event, 0)
       if occurrence ~= nil then
         self._announced[occurrence] = true
       end
@@ -3160,7 +3226,14 @@ function BattleTimeline:intro(view, wild)
       end
     end
   end
-  enqueue(self, { kind = "wait", duration = 96 })
+  -- subscript_0000_StartEncounter paces the player send-out with
+  -- WaitTime 96 before the hide that releases command input: the wild
+  -- path shows ThrowPokeball, PokemonSlideIn, WaitTime 96,
+  -- HealthbarSlideInDelay, then Wait, and both trainer variants pace
+  -- their player-side throw the same way.
+  if wild then
+    enqueue(self, { kind = "wait", duration = 96 })
+  end
   enqueueOpeningPresentation(self, {
     playerTrainerVisible = false,
     foeTrainerVisible = false,
@@ -3309,6 +3382,12 @@ local function tickTrainerSlides(self)
           slide.x = track.exitTargetX
           slide.visible = false
           slide.phase = "intro-settle"
+          -- The stage flag tracks its sprite: once no same-role sprite
+          -- remains, the role reads hidden even while the closing
+          -- opening-presentation cue (and its send-out reveal) still
+          -- runs. The reveal always follows the exit by the poof tail,
+          -- so readers that need post-reveal settling must wait for the
+          -- reveal first instead of breaking on this earlier hide.
           local stillVisible = false
           for _, other in ipairs(slides) do
             stillVisible = stillVisible or (other.role == slide.role and other.visible == true)
@@ -3732,7 +3811,7 @@ local function tickMessage(self, cue)
       return false
     end
     cue.hold = (cue.hold or 0) + 1
-    if cue.hold >= BattleTimeline.MESSAGE_HOLD_TICKS then
+    if cue.hold >= BattleTimeline.PAGE_TURN_TICKS then
       cue.page = cue.page --[[@as integer]] + 1
       cue.hold = 0
       cue.revealedCount = 0
@@ -3748,7 +3827,8 @@ local function tickMessage(self, cue)
   cue.hold = (cue.hold or 0) + 1
   local need = cue.holdTicks --[[@as integer?]]
   if type(need) ~= "number" then
-    need = BattleTimeline.MESSAGE_HOLD_TICKS
+    -- No script wait behind the line: the cue releases once printing ends.
+    need = 0
   end
   return cue.hold >= need
 end
@@ -4124,6 +4204,12 @@ end
 function BattleTimeline:update(dt, isAvailable, soundComplete)
   assert(type(dt) == "number" and dt == dt and dt >= 0, "the cue player advances on accepted seconds")
   self._accum = self._accum + dt
+  -- A completed narration page owns the line through the tick its hold
+  -- completes: the page stays up while nothing else has run yet, and
+  -- ownership transfers to the next cue without losing a tick.
+  if self._active ~= nil and self._active.finished == true then
+    self._active = nil
+  end
   local step = SourceTick.DT
   while self._accum + SOURCE_TICK_EPSILON >= step do
     if self._active == nil then
@@ -4161,41 +4247,55 @@ function BattleTimeline:update(dt, isAvailable, soundComplete)
         end
         next.elapsed = (next.elapsed or 0) + 1
         if tickCue(self, next) then
-          self._active = nil
+          if next.kind == "message" then
+            next.finished = true
+          else
+            self._active = nil
+          end
         end
       end
     else
       local current = assert(self._active, "advancement consumes its active cue")
-      if not cueReady(current, isAvailable) then
-        self._accum = 0
-        break
-      end
-      tickTrainerSlides(self)
-      local currentSound = current.kind == "sound" and current.cue or nil
-      if type(currentSound) == "table" and currentSound.waitForVoice == true then
-        if soundComplete ~= nil and soundComplete(currentSound) ~= true then
+      if current.finished == true then
+        -- The retained page transfers ownership within the same update:
+        -- drop it here so the next cue starts without losing a tick.
+        self._active = nil
+      else
+        if not cueReady(current, isAvailable) then
           self._accum = 0
           break
         end
-        self._accum = self._accum - step
-        tickTerrainSlides(self)
-        tickWildIntro(self)
-        if math.abs(self._accum) < SOURCE_TICK_EPSILON then
-          self._accum = 0
-        end
-        self._active = nil
-      else
-        self._accum = self._accum - step
-        tickTerrainSlides(self)
-        tickWildIntro(self)
-        if math.abs(self._accum) < SOURCE_TICK_EPSILON then
-          self._accum = 0
-        end
-        local elapsed = current.elapsed
-        assert(type(elapsed) == "number", "active cues carry their elapsed ticks")
-        current.elapsed = elapsed + 1
-        if tickCue(self, current, soundComplete) then
+        tickTrainerSlides(self)
+        local currentSound = current.kind == "sound" and current.cue or nil
+        if type(currentSound) == "table" and currentSound.waitForVoice == true then
+          if soundComplete ~= nil and soundComplete(currentSound) ~= true then
+            self._accum = 0
+            break
+          end
+          self._accum = self._accum - step
+          tickTerrainSlides(self)
+          tickWildIntro(self)
+          if math.abs(self._accum) < SOURCE_TICK_EPSILON then
+            self._accum = 0
+          end
           self._active = nil
+        else
+          self._accum = self._accum - step
+          tickTerrainSlides(self)
+          tickWildIntro(self)
+          if math.abs(self._accum) < SOURCE_TICK_EPSILON then
+            self._accum = 0
+          end
+          local elapsed = current.elapsed
+          assert(type(elapsed) == "number", "active cues carry their elapsed ticks")
+          current.elapsed = elapsed + 1
+          if tickCue(self, current, soundComplete) then
+            if current.kind == "message" then
+              current.finished = true
+            else
+              self._active = nil
+            end
+          end
         end
       end
     end
@@ -4233,6 +4333,12 @@ function BattleTimeline:ack()
     local finalPage = current.page == "total"
     self._active = nil
     return true, finalPage
+  end
+  -- A BtlCmd_WaitButtonABTime-style beat ends early on acknowledgement,
+  -- matching the retail button skip; task frame counters ignore input.
+  if current.kind == "wait" and current.skippable == true then
+    current.elapsed = current.duration
+    return true, false
   end
   if current.kind ~= "message" then
     return false, false
@@ -4281,19 +4387,34 @@ function BattleTimeline:ack()
     current.hold = current.holdTicks --[[@as integer]]
   elseif current.holdTicks == nil then
     -- Ordinary narration keeps its existing fast-forward behavior.
-    current.hold = BattleTimeline.MESSAGE_HOLD_TICKS
+    current.hold = BattleTimeline.PAGE_TURN_TICKS
   end
   return true, false
 end
 
 ---@return boolean true when no cue is waiting or consuming ticks
 function BattleTimeline:settled()
-  return self._active == nil and #self._queue == 0
+  if #self._queue ~= 0 then
+    return false
+  end
+  local current = self._active
+  if current == nil then
+    return true
+  end
+  -- A retained page owns only its completion tick: it schedules no
+  -- further work, so exact source waits still settle on time.
+  return current.finished == true
 end
 
 ---@return boolean true while a cue is waiting or consuming ticks
 function BattleTimeline:busy()
-  return self._active ~= nil or #self._queue > 0
+  if #self._queue > 0 then
+    return true
+  end
+  local current = self._active
+  -- A retained page schedules no further work: like settled, busyness
+  -- ignores the owned completion tick so drains keep their cadence.
+  return current ~= nil and current.finished ~= true
 end
 
 ---@return table<integer, table<string, unknown>> displayed battler facts, player side first
