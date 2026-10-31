@@ -17,12 +17,11 @@ SplResource.ERROR = { SOURCE_INVALID = "SPL_SOURCE_INVALID" }
 
 local HEADER_SIZE = 0x20
 -- Optional animation block sizes in resource order (scale, color, alpha).
--- The texture animation block has no size here: use_tex_anm is unsupported
--- and fails the decode before any block is walked.
 local BASE_SIZE = 88
 local SCL_ANM_SIZE = 12
 local CLR_ANM_SIZE = 12
 local ALP_ANM_SIZE = 8
+local TEX_ANM_SIZE = 12
 local CHILD_SIZE = 20
 
 -- Field parameter blocks in the resource after the base/animation/child
@@ -59,11 +58,10 @@ local function hasBit(flag, bit)
   return math.floor(flag / (2 ^ bit)) % 2 == 1
 end
 
--- Bits the observed opening-movie starter emitters never set. Any of them
+-- Bits no observed retail emitter sets. Any of them
 -- fails the decode with emitter and flag context instead of silently
 -- dropping an effect the runtime cannot reproduce.
 local UNSUPPORTED_BITS = {
-  [11] = "use_tex_anm",
   [15] = "follow_emtr",
   [20] = "ptcl_random_loop_anm",
   [25] = "use_fld_rndm",
@@ -173,6 +171,9 @@ local function decodeEmitter(reader, baseOffset, emitterId)
   end
   if hasBit(flag, 10) then
     blocks.alphaOffset = take(ALP_ANM_SIZE, "alpha")
+  end
+  if hasBit(flag, 11) then
+    blocks.textureAnimOffset = take(TEX_ANM_SIZE, "texture animation")
   end
   if hasBit(flag, 16) then
     blocks.childOffset = take(CHILD_SIZE, "child")

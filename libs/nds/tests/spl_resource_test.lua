@@ -93,7 +93,7 @@ function T.spl_decoder_rejects_implausible_counts()
 end
 
 function T.spl_decoder_rejects_unsupported_animation_and_field_flags()
-  for _, flag in ipairs({ 2 ^ 11, 2 ^ 15, 2 ^ 20, 2 ^ 25, 2 ^ 28, 2 ^ 29, 2 ^ 30, 2 ^ 31 }) do
+  for _, flag in ipairs({ 2 ^ 15, 2 ^ 20, 2 ^ 25, 2 ^ 28, 2 ^ 29, 2 ^ 30, 2 ^ 31 }) do
     local member = blob(1, 1, { emitter(flag) }, { textureBlock() })
     local decoded, err = SplResource.decode(member)
     Assert.isNil(decoded, "an unsupported feature bit never decodes silently: " .. tostring(flag))
@@ -110,6 +110,18 @@ function T.spl_decoder_accepts_the_observed_anchor_feature_set()
   local decoded, err = SplResource.decode(member)
   Assert.notNil(decoded, "the observed anchor set decodes: " .. tostring(err))
   Assert.equal(#decoded.emitters[1].fields, 3, "the three observed fields normalize")
+end
+
+function T.spl_decoder_walks_the_texture_animation_block_between_alpha_and_child()
+  local flag = 2 ^ 10 + 2 ^ 11 + 2 ^ 16
+  local record = emitter(flag, 18, 15, 0) .. string.rep("\0", 8 + 12 + 20)
+  local member = blob(1, 1, { record }, { textureBlock() })
+  local decoded, err = SplResource.decode(member)
+  Assert.notNil(decoded, "a texture animation block decodes: " .. tostring(err))
+  local blocks = decoded.emitters[1].blocks
+  Assert.equal(blocks.alphaOffset, 0x20 + 88, "alpha precedes the texture animation block")
+  Assert.equal(blocks.textureAnimOffset, 0x20 + 88 + 8, "the texture animation block follows alpha")
+  Assert.equal(blocks.childOffset, 0x20 + 88 + 8 + 12, "the child block follows the texture animation block")
 end
 
 function T.spl_decoder_rejects_truncation_and_trailing_bytes()
