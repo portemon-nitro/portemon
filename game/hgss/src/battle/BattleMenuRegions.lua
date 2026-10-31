@@ -25,8 +25,8 @@ local REGIONS = {
     { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
   },
   ["two-option"] = {
-    { id = "confirm", x = 0, y = 32, w = 256, h = 64 },
-    { id = "back", x = 0, y = 104, w = 256, h = 64 },
+    { id = "confirm", x = 8, y = 40, w = 240, h = 56 },
+    { id = "back", x = 8, y = 112, w = 240, h = 56 },
   },
 }
 

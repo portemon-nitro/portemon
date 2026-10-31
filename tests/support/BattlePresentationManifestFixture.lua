@@ -1071,6 +1071,7 @@ local function manifest()
         ["battle/narration/got-away"] = messageRecord({ "Got away safely!" }),
         ["battle/child/party-title"] = messageRecord({ "Choose a Pokémon." }),
         ["battle/child/target-title"] = messageRecord({ "Use on which Pokémon?" }),
+        ["battle/child/move-prompt"] = messageRecord({ "Restore which move?" }),
         ["battle/child/command-prompt"] = commandPromptRecord(),
         ["battle/child/learn-prompt"] = messageRecord({ "Which move should be forgotten?" }),
         ["battle/narration/experience"] = messageRecord({ false, " gained ", false, " Exp. Points!" }),

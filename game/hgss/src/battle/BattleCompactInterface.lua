@@ -722,8 +722,8 @@ local function childRegions(child)
   end
   if child.twoOption == true then
     return {
-      { id = "confirm", x = 0, y = 32, width = 256, height = 64, scope = "child" },
-      { id = "back", x = 0, y = 104, width = 256, height = 64, scope = "child" },
+      { id = "confirm", x = 8, y = 40, width = 240, height = 56, scope = "child" },
+      { id = "back", x = 8, y = 112, width = 240, height = 56, scope = "child" },
     }
   end
   local regions = {}

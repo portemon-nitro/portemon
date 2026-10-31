@@ -434,7 +434,10 @@ end
 ---@param rig table live screen rig under test driving, resting on its command prompt
 local function openPartyFromCommand(rig)
   waitForMenuInput(rig)
+  -- Source 3x2 cursor grid: Fight spans the upper row while Bag, Run,
+  -- and Pokemon fill the lower row, so Pokemon takes down, right, right.
   press(rig, { type = "navigate", direction = "down" })
+  press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "confirm" })
   local status = rig.screen:status()

@@ -1427,6 +1427,7 @@ BattlePresentationSources.MESSAGE_RECORDS = {
   ["battle/narration/no-stealing"] = { bank = "scriptController", messageId = 860 },
   ["battle/child/party-title"] = { bank = "partyResult", messageId = 6 },
   ["battle/child/target-title"] = { bank = "partyResult", messageId = 7 },
+  ["battle/child/move-prompt"] = { bank = "partyResult", messageId = 94 },
   ["battle/child/command-prompt"] = { bank = "scriptController", messageId = 921 },
   ["battle/child/learn-prompt"] = { bank = "scriptController", messageId = 1183 },
   ["battle/narration/trainer-victory"] = { bank = "scriptController", messageId = 839 },

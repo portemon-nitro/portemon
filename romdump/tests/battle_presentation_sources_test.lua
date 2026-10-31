@@ -40,6 +40,7 @@ function T.battle_narration_records_keep_semantic_keys_and_source_bank_ids()
     ["battle/narration/trainer-used-item"] = 858,
     ["battle/child/party-title"] = 6,
     ["battle/child/target-title"] = 7,
+    ["battle/child/move-prompt"] = 94,
     ["battle/child/learn-prompt"] = 1183,
     ["battle/child/command-prompt"] = 921,
     ["battle/narration/trainer-victory"] = 839,
@@ -55,6 +56,7 @@ function T.battle_narration_records_keep_semantic_keys_and_source_bank_ids()
   local banks = {
     ["battle/child/party-title"] = "partyResult",
     ["battle/child/target-title"] = "partyResult",
+    ["battle/child/move-prompt"] = "partyResult",
   }
   for key, messageId in pairs(expected) do
     local record = assert(records[key], key .. " is a staged battle message")

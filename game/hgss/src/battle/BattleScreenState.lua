@@ -57,6 +57,11 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field _inventorySnapshot table<string, integer>? latest detached battle stock
 ---@field _mode string closed controller mode
 ---@field _selection string? highlighted semantic identity
+---@field _commandX integer source main-menu cursor column behind keypad focus
+---@field _commandY integer source main-menu cursor row behind keypad focus
+---@field _savedCommandCursor table<integer, { x: integer, y: integer }> per-combatant main-menu cursor memory
+---@field _savedMoveCursor table<integer, { x: integer, y: integer }> per-combatant fight-menu cursor memory
+---@field _savedTargetCursor table<integer, { id: string, range: string }> per-combatant target cursor memory
 ---@field _keyboardFocus boolean true while the last battle-menu input came from keys
 ---@field _armed table<string, unknown>? pressed control awaiting release
 ---@field _buttonFeedback table<string, unknown>? native release feedback task owning a pending activation
@@ -69,6 +74,7 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field _targetCandidates table<integer, table<string, unknown>>? projected target variants behind the pending move
 ---@field _lastTargetSelection string? previous native target slot beneath cancel
 ---@field _targetGroup table<string, unknown>? native selected move target grouping
+---@field _targetRangeKey string? move range identity behind the open target choice
 ---@field _pendingMoveId string? move control identity behind the pending target choice
 ---@field _pendingFinal table<string, unknown>? retained final view behind playing cues
 ---@field _pendingRequest table<string, unknown>? retained request behind playing cues
@@ -119,22 +125,35 @@ local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 -- One accepted HGSS source tick shared with the field session.
 BattleScreenState.SOURCE_FRAME = SourceTick.DT
 
--- Native command navigation follows the source touch topology, not a
--- compact grid order.
-local COMMAND_NAV = {
-  fight = { up = "fight", down = "run", left = "bag", right = "pokemon" },
-  bag = { up = "fight", down = "bag", left = "bag", right = "run" },
-  run = { up = "fight", down = "run", left = "bag", right = "pokemon" },
-  pokemon = { up = "fight", down = "pokemon", left = "run", right = "pokemon" },
-  -- Special contexts keep the native four-slot touch topology with
-  -- swapped labels: every special identity navigates exactly like the
-  -- ordinary slot it replaces.
-  ["safari-ball"] = { up = "safari-ball", down = "run", left = "safari-bait", right = "safari-mud" },
-  ["pal-park-ball"] = { up = "pal-park-ball", down = "run", left = "safari-bait", right = "safari-mud" },
-  ["safari-bait"] = { up = "safari-ball", down = "safari-bait", left = "safari-bait", right = "run" },
-  ["safari-mud"] = { up = "safari-ball", down = "safari-mud", left = "run", right = "safari-mud" },
-  ["bug-contest-ball"] = { up = "fight", down = "bug-contest-ball", left = "bug-contest-ball", right = "run" },
+-- Native command navigation follows the source 3x2 cursor grid
+-- (battle_input.c sCursorArrayMainMenu): the upper row is one wide Fight
+-- button and the lower row holds Bag, Run, and Pokemon. Keypad motion
+-- clamps at the grid edges; a horizontal edge on the Fight row wraps to
+-- the lower-row ends, and pushing up from Run is a native no-op. Grid
+-- cells name ordinary slots so special contexts navigate by the slot
+-- their command replaces: safari, pal-park, and bug-contest keep the
+-- same four-slot touch topology with swapped labels.
+local COMMAND_GRID = {
+  { "fight", "fight", "fight" },
+  { "bag", "run", "pokemon" },
 }
+local COMMAND_GRID_WIDTH = 3
+local COMMAND_GRID_HEIGHT = 2
+
+-- Source cursor cell behind one ordinary command slot: the touch
+-- rectangle the native cursor frames, inset by the source cursor.
+local COMMAND_SLOT_CELLS = {
+  fight = { x = 0, y = 0 },
+  bag = { x = 0, y = 1 },
+  pokemon = { x = 2, y = 1 },
+  run = { x = 1, y = 1 },
+}
+
+-- Native target-cursor priority behind the opening cell
+-- (battle_input.c BattleInput_CursorMove_TargetMenu): the upper-left
+-- foe, the upper-right foe, the lower-left ally, else the lower-right
+-- ally. Cells name source buttons, not target-choice ordinals.
+local TARGET_PRIORITY = { "target:3", "target:1", "target:0", "target:2" }
 
 -- Source target text slots are positional and do not share target-choice
 -- ordinals. Native source slot types map to their visible button IDs.
@@ -1002,6 +1021,11 @@ function BattleScreenState.new(opts)
     _inventorySnapshot = nil,
     _mode = "preparing",
     _selection = "fight",
+    _commandX = 0,
+    _commandY = 0,
+    _savedCommandCursor = {},
+    _savedMoveCursor = {},
+    _savedTargetCursor = {},
     _keyboardFocus = false,
     _armed = nil,
     _buttonFeedback = nil,
@@ -1014,6 +1038,7 @@ function BattleScreenState.new(opts)
     _targetCandidates = nil,
     _lastTargetSelection = nil,
     _targetGroup = nil,
+    _targetRangeKey = nil,
     _pendingMoveId = nil,
     _pendingFinal = nil,
     _pendingRequest = nil,
@@ -2033,6 +2058,8 @@ function BattleScreenState:_snapshot()
       childView.sourceTitle = stagedBattleText(self._manifest, "battle/child/party-title", {})
     elseif childView.kind == "target" then
       childView.sourceTitle = stagedBattleText(self._manifest, "battle/child/target-title", {})
+    elseif childView.kind == "move" then
+      childView.sourcePrompt = stagedBattleText(self._manifest, "battle/child/move-prompt", {})
     elseif childView.kind == "learn" and childView.twoOption == nil then
       childView.sourcePrompt = stagedBattleText(self._manifest, "battle/child/learn-prompt", {})
     end
@@ -3773,10 +3800,135 @@ function BattleScreenState:_submitStaged()
   self:_playCue("select")
 end
 
+-- Names the acting combatant behind per-battler cursor memory: the
+-- native cursor position is saved per battler, not per screen.
+---@return integer? acting combatant, nil without an open request
+function BattleScreenState:_actingCombatant()
+  if self._request == nil or type(self._request.actors) ~= "table" then
+    return nil
+  end
+  local addressed = self._request.actors[self._actorIndex]
+  if type(addressed) == "table" and type(addressed.combatant) == "number" then
+    return addressed.combatant
+  end
+  return nil
+end
+
+-- Maps one ordinary command slot to the launch kind surface identity.
+---@param slot string ordinary command slot behind the cursor cell
+---@return string? offered surface identity, nil while the kind hides the slot
+function BattleScreenState:_surfaceCommand(slot)
+  local ids = self:_surfaceIds()
+  for index, key in ipairs(SURFACE_LABEL_KEYS) do
+    if key == slot then
+      local id = ids[index]
+      if type(id) == "string" and self:_isOfferedCommand(id) then
+        return id
+      end
+      return nil
+    end
+  end
+  return nil
+end
+
+-- Syncs the keypad cursor cell to one offered command identity without
+-- saving: presses move the cell while only the accepted choice
+-- remembers it, like the native touch/keypad split.
+---@param id string offered command identity under syncing
+function BattleScreenState:_syncCommandCursor(id)
+  local ids = self:_surfaceIds()
+  for index, offered in ipairs(ids) do
+    if offered == id then
+      local slot = SURFACE_LABEL_KEYS[index]
+      local cell = slot ~= nil and COMMAND_SLOT_CELLS[slot] or nil
+      if cell ~= nil then
+        self._commandX, self._commandY = cell.x, cell.y
+      end
+      return
+    end
+  end
+end
+
+-- Restores the acting entry's remembered main-menu cursor: the saved
+-- per-combatant cell while it still names an offered command, else the
+-- first surface slot. Matches the native cursor save/restore behind
+-- menu opens (battle_input.c cursor save/CheckCursorInput).
+function BattleScreenState:_restoreCommandSelection()
+  local combatant = self:_actingCombatant()
+  local saved = combatant ~= nil and self._savedCommandCursor[combatant] or nil
+  if type(saved) == "table" and type(saved.x) == "number" and type(saved.y) == "number" then
+    local row = COMMAND_GRID[saved.y + 1]
+    local slot = row ~= nil and row[saved.x + 1] or nil
+    local destination = type(slot) == "string" and self:_surfaceCommand(slot) or nil
+    if destination ~= nil then
+      self._commandX, self._commandY = saved.x, saved.y
+      self._selection = destination
+      return
+    end
+  end
+  self._commandX, self._commandY = 0, 0
+  self._selection = self:_defaultCommandSelection()
+end
+
+-- Restores the acting entry's remembered fight-menu cursor: the saved
+-- per-combatant cell while its slot stays enabled, else the first
+-- enabled slot. Matches the native move-cursor save/reset behind
+-- fight-menu opens.
+---@return string restored move selection
+function BattleScreenState:_restoreMoveSelection()
+  local combatant = self:_actingCombatant()
+  local saved = combatant ~= nil and self._savedMoveCursor[combatant] or nil
+  if type(saved) == "table" and type(saved.x) == "number" and type(saved.y) == "number" then
+    local slot = saved.y * 2 + saved.x
+    for _, move in ipairs(self:_moves()) do
+      if move.slot == slot and move.enabled == true then
+        self._selection = "move:" .. tostring(slot)
+        return self._selection
+      end
+    end
+  end
+  self._selection = self:_defaultMoveSelection()
+  return self._selection
+end
+
+-- Picks the opening target cell for the projected candidates: the saved
+-- per-combatant cell while its range still applies and the cell stays
+-- enabled, else the native priority order (upper-left foe,
+-- upper-right foe, lower-left ally, lower-right ally).
+---@param candidates table<integer, table<string, unknown>>? projected target variants under selection
+---@param rangeKey string? move range identity behind the open target choice
+---@return string? first enabled control by native priority, nil without an enabled candidate
+function BattleScreenState:_initialTargetSelection(candidates, rangeKey)
+  if type(candidates) == "table" then
+    local combatant = self:_actingCombatant()
+    local saved = combatant ~= nil and self._savedTargetCursor[combatant] or nil
+    if saved ~= nil and saved.range == rangeKey then
+      for _, candidate in ipairs(candidates) do
+        if type(candidate) == "table" and candidate.controlId == saved.id and candidate.enabled == true then
+          return saved.id
+        end
+      end
+    end
+    local enabled = {}
+    for _, candidate in ipairs(candidates) do
+      if type(candidate) == "table" and type(candidate.controlId) == "string" and candidate.enabled == true then
+        enabled[candidate.controlId] = true
+      end
+    end
+    for _, id in ipairs(TARGET_PRIORITY) do
+      if enabled[id] == true then
+        return id
+      end
+    end
+  end
+  return nil
+end
+
 -- Moves the prompt to the acting entry: command selection for ordinary
 -- turns, or the forced child for replacement and learning decisions.
 function BattleScreenState:_enterActorPrompt()
   self._targetCandidates = nil
+  self._targetRangeKey = nil
   self._pendingMoveId = nil
   self:cancelPointerCapture()
   self._notice = nil
@@ -3784,7 +3936,7 @@ function BattleScreenState:_enterActorPrompt()
   if mode ~= "child" then
     self._subflows:closeChild()
     self._mode = "command"
-    self._selection = self:_defaultCommandSelection()
+    self:_restoreCommandSelection()
     self._menuRevealStep = 0
     self._menuGateTicks = 5
     self._child = nil
@@ -4008,6 +4160,13 @@ function BattleScreenState:_activateCommand(id)
     self:_refuse(nil)
     return
   end
+  -- The accepted choice remembers its cursor cell per battler, like
+  -- the native cursor save behind touch and keypad confirms.
+  self:_syncCommandCursor(id)
+  local combatant = self:_actingCombatant()
+  if combatant ~= nil then
+    self._savedCommandCursor[combatant] = { x = self._commandX, y = self._commandY }
+  end
   if id == "fight" then
     local struggle = self:_struggleOnlyOption()
     if struggle ~= nil then
@@ -4022,7 +4181,7 @@ function BattleScreenState:_activateCommand(id)
       return
     end
     self._mode = "moves"
-    self._selection = self:_defaultMoveSelection()
+    self:_restoreMoveSelection()
     self._menuRevealStep = 4
     self._menuGateTicks = 1
     self._notice = nil
@@ -4099,7 +4258,7 @@ end
 function BattleScreenState:_activateMove(id, armed)
   if id == "cancel" then
     self._mode = "command"
-    self._selection = self:_defaultCommandSelection()
+    self:_restoreCommandSelection()
     self._notice = nil
     self:_playCancelFeedback()
     return
@@ -4143,11 +4302,12 @@ function BattleScreenState:_activateTarget(id, armed)
     self._targetCandidates = nil
     self._lastTargetSelection = nil
     self._targetGroup = nil
+    self._targetRangeKey = nil
     self:_playCancelFeedback()
     if self._pendingMoveId == "move:struggle" then
       self._pendingMoveId = nil
       self._mode = "command"
-      self._selection = self:_defaultCommandSelection()
+      self:_restoreCommandSelection()
     else
       self._mode = "moves"
       if self._pendingMoveId ~= nil then
@@ -4168,6 +4328,13 @@ function BattleScreenState:_activateTarget(id, armed)
   self._targetCandidates = nil
   self._lastTargetSelection = nil
   self._targetGroup = nil
+  -- The sealed target remembers its cell beside its move range, like
+  -- the native target-cursor save behind the accepted choice.
+  local combatant = self:_actingCombatant()
+  if combatant ~= nil and self._targetRangeKey ~= nil then
+    self._savedTargetCursor[combatant] = { id = id, range = self._targetRangeKey }
+  end
+  self._targetRangeKey = nil
   self._pendingMoveId = nil
   self:_seal(copyValue(candidate.choice) --[[@as table<string, unknown>]])
 end
@@ -4202,9 +4369,16 @@ function BattleScreenState:_startButtonFeedback(scope, id, armed)
   if not known then
     return
   end
-  if scope == "command" and not self:_isOfferedCommand(id) then
-    self:_refuse(nil)
-    return
+  if scope == "command" then
+    -- Pointer regions name ordinary slots while special kinds relabel
+    -- the same four-slot topology: the feedback arms the resolved
+    -- surface identity exactly like the press path.
+    local offered = self:_isOfferedCommand(id) and id or self:_surfaceCommand(id)
+    if offered == nil then
+      self:_refuse(nil)
+      return
+    end
+    id = offered
   elseif scope == "moves" and id ~= "cancel" then
     local entry = self:_moveEntry(id)
     if entry == nil or entry.enabled ~= true then
@@ -4459,12 +4633,28 @@ function BattleScreenState:_consume(event)
       if not knownMenuControl(scope, id) then
         return
       end
-      if scope == "command" and not self:_isOfferedCommand(id) then
-        return
+      if scope == "command" then
+        -- Pointer regions name ordinary slots while special kinds
+        -- relabel the same four-slot topology: resolve the press to
+        -- the offered surface identity before arming.
+        local offered = self:_isOfferedCommand(id) and id or self:_surfaceCommand(id)
+        if offered == nil then
+          return
+        end
+        id = offered
       end
-      self._armed = { scope = scope, id = id, pointerId = event.pointerId }
-      if event.control.scope == "command" then
-        self._selection = event.control.id --[[@as string]]
+      if scope == "target" and id ~= "cancel" then
+        -- The native touch callback ignores illegal target cells
+        -- without feedback: only an admitted candidate arms.
+        local candidate = self:_targetVariant(id)
+        if candidate == nil or candidate.enabled ~= true then
+          return
+        end
+      end
+      self._armed = { scope = scope, id = event.control.id, pointerId = event.pointerId }
+      if scope == "command" then
+        self._selection = id
+        self:_syncCommandCursor(id)
       elseif event.control.scope == "moves" then
         if id ~= "cancel" then
           local entry = self:_moveEntry(id)
@@ -4612,6 +4802,15 @@ function BattleScreenState:_submitMove(entry)
   -- fragment: a single admitted position seals its projected fragment
   -- unchanged, while several admitted positions open the projected
   -- target list for an explicit choice. Nothing here rewrites targets.
+  -- The accepted move remembers its fight-menu cell per battler, like
+  -- the native move-cursor save behind keypad and touch confirms.
+  local combatant = self:_actingCombatant()
+  if combatant ~= nil and type(entry.id) == "string" then
+    local slot = tonumber(entry.id:match("^move:(%d+)$") or "")
+    if slot ~= nil and slot < 4 then
+      self._savedMoveCursor[combatant] = { x = math.floor(slot % 2), y = math.floor(slot / 2) }
+    end
+  end
   local candidates = nil
   if type(entry.targets) == "table" then
     candidates = {}
@@ -4650,21 +4849,23 @@ function BattleScreenState:_submitMove(entry)
   self._pendingMoveId = entry.id
   self._targetCandidates = copyValue(entry.targets)
   self._lastTargetSelection = nil
-  local firstControlId = nil
   for _, candidate in ipairs(self._targetCandidates) do
-    local combatant = candidate.combatant
-    local sideType = type(combatant) == "number" and sideTypes[combatant] or nil
+    local candidateCombatant = candidate.combatant
+    local sideType = type(candidateCombatant) == "number" and sideTypes[candidateCombatant] or nil
     candidate.controlId = type(sideType) == "number" and TARGET_CONTROL_BY_SIDE_TYPE[sideType] or nil
-    candidate.side = type(combatant) == "number" and sides[combatant] or nil
-    if candidate.enabled == true and candidate.controlId ~= nil and firstControlId == nil then
-      firstControlId = candidate.controlId
-    end
+    candidate.side = type(candidateCombatant) == "number" and sides[candidateCombatant] or nil
   end
   self._targetGroup = nil
   local display = entry.display
   local moveKey = type(display) == "table" and (display.move or display.name) or nil
+  -- The target cursor is remembered per move range, matching the
+  -- native per-battler target position saved beside its target type.
+  local rangeKey = "move:" .. tostring(moveKey)
   if type(moveKey) == "string" and self._monCatalog ~= nil then
     local range = self._monCatalog:move(moveKey).range
+    if type(range) == "number" then
+      rangeKey = "range:" .. tostring(range)
+    end
     local includeSide = range == 4 and 2 or range == 32 and 1 or range == 128 and 2 or nil
     local groups = { own = {}, foes = {} }
     for _, candidate in ipairs(self._targetCandidates) do
@@ -4684,9 +4885,12 @@ function BattleScreenState:_submitMove(entry)
       self._targetGroup = { range = range, groups = groups }
     end
   end
+  self._targetRangeKey = rangeKey
   self._mode = "target"
+  local firstControlId = self:_initialTargetSelection(self._targetCandidates, rangeKey)
   if firstControlId == nil then
     self._targetCandidates = nil
+    self._targetRangeKey = nil
     self._pendingMoveId = nil
     self._targetGroup = nil
     self:_refuse(nil)
@@ -4702,7 +4906,7 @@ function BattleScreenState:_cancel()
     self:_activateTarget("cancel")
   elseif self._mode == "moves" then
     self._mode = "command"
-    self._selection = self:_defaultCommandSelection()
+    self:_restoreCommandSelection()
     self._notice = nil
     self:_playCancelFeedback()
   elseif self._mode == "command" then
@@ -4713,7 +4917,7 @@ function BattleScreenState:_cancel()
     if self._request ~= nil and self._actorIndex > 1 then
       self._actorIndex = self._actorIndex - 1
       self._mode = "command"
-      self._selection = self:_defaultCommandSelection()
+      self:_restoreCommandSelection()
       self._notice = nil
       self:cancelPointerCapture()
     end
@@ -4755,34 +4959,64 @@ function BattleScreenState:_navigate(direction)
     self:_navigateTargets(direction)
     return
   end
-  local table_ = nil
   if self._mode == "command" then
-    table_ = COMMAND_NAV
-  elseif self._mode == "moves" then
-    table_ = MOVE_NAV
-  end
-  if table_ == nil or type(self._selection) ~= "string" then
+    self:_navigateCommand(direction)
     return
   end
-  local links = table_[
-    self._selection --[[@as string]]
-  ]
-  local destination = links ~= nil and links[
-    direction --[[@as string]]
-  ] or nil
-  if self._mode == "command" and self._kind == "bug-contest" and self._selection == "fight" then
-    if direction == "left" then
-      destination = "bug-contest-ball"
-    elseif direction == "right" then
-      destination = "pokemon"
-    end
+  if self._mode ~= "moves" or type(self._selection) ~= "string" then
+    return
   end
-  if self._mode == "command" and type(destination) == "string" and not self:_isOfferedCommand(destination) then
-    destination = self._selection
-  end
+  local links = MOVE_NAV[self._selection]
+  local destination = links ~= nil and links[direction] or nil
   if type(direction) == "string" and type(destination) == "string" then
     self._selection = destination
   end
+end
+
+-- Steps the main-menu cursor across the source 3x2 grid: motion clamps
+-- at the edges, a horizontal edge on the wide Fight row wraps to the
+-- lower-row ends, and pushing up from Run is a native no-op. The
+-- cursor only settles on offered kind slots.
+---@param direction string? source keypad direction under selection
+function BattleScreenState:_navigateCommand(direction)
+  if type(direction) ~= "string" then
+    return
+  end
+  local x, y = self._commandX, self._commandY
+  -- The native cursor ignores an upward edge from the Run cell.
+  if x == 1 and y == 1 and direction == "up" then
+    return
+  end
+  if direction == "left" then
+    x = x - 1
+  elseif direction == "right" then
+    x = x + 1
+  elseif direction == "up" then
+    y = y - 1
+  elseif direction == "down" then
+    y = y + 1
+  else
+    return
+  end
+  x = math.max(0, math.min(COMMAND_GRID_WIDTH - 1, x))
+  y = math.max(0, math.min(COMMAND_GRID_HEIGHT - 1, y))
+  local before = COMMAND_GRID[self._commandY + 1][self._commandX + 1]
+  local slot = COMMAND_GRID[y + 1][x + 1]
+  if slot == before and slot == "fight" and (direction == "left" or direction == "right") then
+    if direction == "left" then
+      x = 0
+    else
+      x = 2
+    end
+    y = 1
+    slot = COMMAND_GRID[y + 1][x + 1]
+  end
+  local destination = self:_surfaceCommand(slot)
+  if destination == nil then
+    return
+  end
+  self._commandX, self._commandY = x, y
+  self._selection = destination
 end
 
 ---@param direction string? source keypad direction under selection
