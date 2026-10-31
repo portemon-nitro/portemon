@@ -69,7 +69,8 @@ local PartyMenuComposition = {}
 ---@field effect (fun(sequence: string))? the production semantic sound boundary for bag children
 ---@field playCry (fun(species: integer, pattern: integer, form: integer))? the production cry boundary for summary children
 ---@field isCryFinished (fun(): boolean)? the production cry completion boundary for field moves
----@field textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
+---@field textPolicyForOpen fun(): table<string, unknown> the live player text-speed cadence per opened child
+---@field textPolicy nil removed boot-time snapshot; cadence now resolves per open through textPolicyForOpen
 ---@field summaryManifest table<string, unknown>? the borrowed summary family for summary children
 ---@field summaryContext fun(): table<string, unknown>? the explicit summary display context per refresh
 ---@field dexMode ("regional"|"national"|fun(): string)? the dex numbering the info panel prints; a provider observes unlocks after composition
@@ -148,7 +149,12 @@ function PartyMenuComposition.create(deps)
   local overrides = deps.overrides
   assert(deps.effect == nil or type(deps.effect) == "function", "the menu composition carries an effect function")
   assert(deps.playCry == nil or type(deps.playCry) == "function", "the menu composition carries a cry function")
-  assert(deps.textPolicy == nil or type(deps.textPolicy) == "table", "the menu composition carries a text policy")
+  -- The text cadence resolves per opened child through this callback, so a
+  -- confirmed option lands on the next child without rebuilding the
+  -- composition. No boot-time snapshot is kept here.
+  local textPolicyForOpen = assert(deps.textPolicyForOpen, "the menu composition resolves its text policy per open")
+  assert(type(textPolicyForOpen) == "function", "the menu composition resolves its text policy per open")
+  assert(deps.textPolicy == nil, "the boot-time text policy snapshot moved to textPolicyForOpen")
   if deps.summaryManifest ~= nil then
     assert(type(deps.summaryManifest) == "table", "the menu composition borrows the summary family")
   end
@@ -222,12 +228,30 @@ function PartyMenuComposition.create(deps)
   local function checkPort(request)
     return checkFieldMove(contextSources, request)
   end
+  -- One fresh policy per constructed child: the callback reads the live
+  -- player cadence, and the copy keeps the child immune to later edits.
+  local function freshPolicy()
+    local resolved = textPolicyForOpen()
+    assert(type(resolved) == "table", "the text policy callback returns the printer cadence")
+    assert(
+      type(resolved.interGlyphDelay) == "number"
+        and type(resolved.glyphBudget) == "number"
+        and type(resolved.abAcceleration) == "boolean",
+      "the text policy callback returns the printer cadence shape"
+    )
+    return {
+      interGlyphDelay = resolved.interGlyphDelay,
+      glyphBudget = resolved.glyphBudget,
+      abAcceleration = resolved.abAcceleration,
+    }
+  end
   local function makeFlow(root)
+    local textPolicy = freshPolicy()
     return PartyMenuFlow.new({
       root = root,
       effect = deps.effect,
       playCry = deps.playCry,
-      textPolicy = deps.textPolicy,
+      textPolicy = textPolicy,
       summaryContext = deps.summaryContext,
       readSummaryNavigation = deps.readSummaryNavigation,
       acquireSummaryPreparation = deps.acquireSummaryPreparation,
@@ -310,7 +334,7 @@ function PartyMenuComposition.create(deps)
         context = "pick_held",
         partyEmpty = mons:partyCount() == 0,
         effect = deps.effect,
-        textPolicy = deps.textPolicy,
+        textPolicy = freshPolicy(),
       })
     end
     local function makeSummary(request)
@@ -373,7 +397,7 @@ function PartyMenuComposition.create(deps)
         acquirePreparation = assert(deps.acquireSummaryPreparation, "boxed summaries require preparation"),
         effect = deps.effect,
         playCry = deps.playCry,
-        textPolicy = deps.textPolicy,
+        textPolicy = freshPolicy(),
       })
     end
     local function makeBoxName(request)

@@ -372,6 +372,25 @@ function ScriptDialogueHost:isOpen()
   return self._controller:isModal()
 end
 
+-- Replaces the player frame index future dialogue and choice requests
+-- carry. An open dialogue or choice keeps the frame it opened with;
+-- changing the default underneath it is an invariant fault with no
+-- mutation. Script-specific window styles stay distinct from this default.
+---@param index integer the validated zero-based user-frame index
+function ScriptDialogueHost:setFrameIndex(index)
+  assert(
+    type(index) == "number" and index % 1 == 0 and index >= 0,
+    "script dialogue frame index must be a non-negative integer"
+  )
+  if self:isOpen() or self:yesNoPresentation() ~= nil then
+    Errors.raise(
+      ScriptErrors.SCRIPT_SERVICE_MISSING,
+      "the dialogue host owns an open request; defaults change only while idle"
+    )
+  end
+  self._frameIndex = index
+end
+
 ---@return { yesText: string, noText: string, frameIndex: integer? }
 function ScriptDialogueHost:yesNoOptions()
   local yes = self:resolveMessage({ message = "external", bank = 191, id = 42 }, {}, {})

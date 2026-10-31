@@ -7,6 +7,7 @@ local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local AuxiliaryFieldUi = require("libs.hgss.src.ui.AuxiliaryFieldUi")
 local ContextChoiceProvider = require("libs.hgss.src.interaction.ContextChoiceProvider")
 local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
+local Errors = require("libs.errors.src.Errors")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldApplicationRegistry = require("libs.hgss.src.field.FieldApplicationRegistry")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
@@ -17,6 +18,7 @@ local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local FieldAudio = require("game.hgss.src.audio.FieldAudio")
+local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FollowingMonTransitionController = require("libs.hgss.src.field.FollowingMonTransitionController")
@@ -25,6 +27,7 @@ local PcCache = require("libs.assets.src.PcCache")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
+local PlayerData = require("libs.hgss.src.save.PlayerData")
 local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local StartMenuState = require("game.hgss.src.field.StartMenuState")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
@@ -540,9 +543,14 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
   local function isFieldCryFinished()
     return runtime.audio == nil or runtime.audio:isCryFinished()
   end
-  local bagTextPolicy = TextSpeedPolicy.forSpeed(
-    assert(runtime.playerData and runtime.playerData.options and runtime.playerData.options.textSpeed)
-  )
+  -- Future menu children resolve their text cadence per open from the
+  -- live player options: a confirmed option lands on the next child
+  -- without rebuilding this composition.
+  local function textPolicyForOpen()
+    local options =
+      assert(runtime.playerData and runtime.playerData.options, "menu children read the live player options")
+    return TextSpeedPolicy.forSpeed(assert(options.textSpeed, "menu children read the live text speed"))
+  end
   local summaryManifest = SummaryCache.loadManifest(cacheFs)
   -- The preparation factory stays late-bound through the runtime
   -- because presentation resources postdate this composition: the
@@ -583,7 +591,7 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
     effect = playBagSequence,
     playCry = playSummaryCry,
     isCryFinished = isFieldCryFinished,
-    textPolicy = bagTextPolicy,
+    textPolicyForOpen = textPolicyForOpen,
     summaryManifest = summaryManifest,
     summaryContext = summaryContextProvider(runtime, summaryManifest),
     dexMode = readLiveDexMode,
@@ -1024,6 +1032,99 @@ function FieldMenuCompositionCoordinator:composeModalHosts(boot, callbacks)
   composeStarterHosts(runtime, boot)
   composeModalKeys(runtime)
   composeApplicationHost(runtime, self:applicationDescriptors(), callbacks)
+end
+
+-- Whether the signpost still owns an unfinished typed print: a presented
+-- window or a live printer keeps its cadence, while a finished or absent
+-- print leaves the defaults free.
+---@param signpost table<string, unknown> FieldSignpostController-shaped
+---@return boolean
+local function signpostHoldsPrint(signpost)
+  if signpost:isModal() then
+    return true
+  end
+  local status = signpost:status()
+  return status.totalGlyphs > 0 and not status.printDone
+end
+
+-- Prepares one validated player-options application against the live
+-- composition. Validation runs once here; preparation never mutates. The
+-- returned closure publishes the six fields into the existing options
+-- table, refreshes future printer and frame defaults, and consumes
+-- itself exactly once during the same paused-menu lifetime. Abandoning
+-- the closure changes nothing. No filesystem, audio-host, GPU, or field
+-- rebuild work occurs anywhere on this path.
+---@param values table<string, unknown> the candidate gameplay options
+---@return (fun())? apply the one-use synchronous application, nil with the validation failure
+---@return Errors.Error? the typed failure when invalid or an owner is busy
+function FieldMenuCompositionCoordinator:preparePlayerOptions(values)
+  local runtime = self.runtime
+  local playerData = assert(runtime.playerData, "player options adoption requires the live player data")
+  local options = assert(playerData.options, "player options adoption requires the live options table")
+  local context = assert(runtime.playerDataContext, "player options adoption requires the generated validation context")
+  local canonical, invalid = PlayerData.validateOptions(values, context)
+  if canonical == nil then
+    return nil, invalid
+  end
+  local dialogue = runtime.dialogue
+  local signpost = runtime.signpost
+  local scripts = runtime.scripts
+  local dialogueHost = scripts ~= nil and scripts.dialogueHost or nil
+  local starter = runtime.starterChoice
+  local function busyOwner()
+    if dialogue ~= nil and dialogue:isModal() then
+      return "dialogue"
+    end
+    if signpost ~= nil and signpostHoldsPrint(signpost) then
+      return "signpost"
+    end
+    if dialogueHost ~= nil and (dialogueHost:isOpen() or dialogueHost:yesNoPresentation() ~= nil) then
+      return "script dialogue"
+    end
+    if starter ~= nil and starter:isActive() then
+      return "starter choice"
+    end
+    return nil
+  end
+  local owner = busyOwner()
+  if owner ~= nil then
+    return nil,
+      Errors.new(
+        FieldErrors.PLAYER_DATA_INVALID,
+        "player options stay unchanged while " .. owner .. " owns the field",
+        { owner = owner }
+      )
+  end
+  local consumed = false
+  local function apply()
+    assert(not consumed, "a prepared player-options application applies exactly once")
+    assert(
+      runtime.playerData == playerData and playerData.options == options,
+      "a prepared player-options application ends with its runtime identity"
+    )
+    assert(busyOwner() == nil, "player options apply only while every affected owner stays idle")
+    options.textSpeed = canonical.textSpeed
+    options.textFrame = canonical.textFrame
+    options.battleStyle = canonical.battleStyle
+    options.battleScene = canonical.battleScene
+    options.soundMode = canonical.soundMode
+    options.battleSpeed = canonical.battleSpeed
+    local policy = TextSpeedPolicy.forSpeed(canonical.textSpeed)
+    if dialogue ~= nil then
+      dialogue:setPolicy(policy)
+    end
+    if signpost ~= nil then
+      signpost:setPolicy(policy)
+    end
+    if dialogueHost ~= nil then
+      dialogueHost:setFrameIndex(canonical.textFrame)
+    end
+    if starter ~= nil then
+      starter:setFrameIndex(canonical.textFrame)
+    end
+    consumed = true
+  end
+  return apply
 end
 
 -- Releases the dialogue, signpost, and application modal hosts in the boot

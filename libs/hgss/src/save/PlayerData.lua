@@ -20,6 +20,16 @@ PlayerData.GENDERS = { [0] = true, [1] = true }
 -- migration and new games.
 PlayerData.BATTLE_STYLES = { shift = true, set = true }
 PlayerData.DEFAULT_BATTLE_STYLE = "shift"
+-- Per-save presentation/audio gameplay options beyond the original three:
+-- the battle-scene switch, the output channel mode, and the battle
+-- presentation speed multiplier. Additive evolution: records predating
+-- these fields take the defaults below, while explicit malformed values
+-- are rejected like any other gameplay value.
+PlayerData.SOUND_MODES = { stereo = true, mono = true }
+PlayerData.DEFAULT_SOUND_MODE = "stereo"
+PlayerData.DEFAULT_BATTLE_SCENE = true
+PlayerData.BATTLE_SPEEDS = { [1] = true, [2] = true, [4] = true }
+PlayerData.DEFAULT_BATTLE_SPEED = 1
 PlayerData.MIN_NAME_GLYPHS = 1
 PlayerData.MAX_NAME_GLYPHS = 7
 PlayerData.MAX_TRAINER_ID = 0xFFFFFFFF
@@ -129,37 +139,10 @@ local function validate(record, context)
   if type(options) ~= "table" then
     Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player gameplay options must be a table", {})
   end
-  local textFrame = options.textFrame
-  if type(textFrame) ~= "number" or textFrame % 1 ~= 0 or context.frameIndexes[textFrame] ~= true then
-    Errors.raise(
-      FieldErrors.PLAYER_DATA_TEXT_FRAME_INVALID,
-      "text frame index must resolve to an imported frame style",
-      {
-        textFrame = textFrame,
-      }
-    )
-  end
-  if PlayerData.TEXT_SPEEDS[options.textSpeed] == nil then
-    Errors.raise(
-      FieldErrors.PLAYER_DATA_TEXT_SPEED_INVALID,
-      "text speed must be an explicitly supported gameplay value",
-      {
-        textSpeed = options.textSpeed,
-      }
-    )
-  end
-  -- The native battle style defaults to shift for records predating the
-  -- option (migration and new games); a present unknown style is rejected
-  -- like any other malformed gameplay value.
-  local battleStyle = options.battleStyle
-  if battleStyle == nil then
-    battleStyle = PlayerData.DEFAULT_BATTLE_STYLE
-  end
-  if PlayerData.BATTLE_STYLES[battleStyle] ~= true then
-    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "battle style must be shift or set", {
-      battleStyle = options.battleStyle,
-    })
-  end
+  -- Gameplay options canonicalize through the shared option boundary:
+  -- absent newer fields take their defaults while malformed present
+  -- values fail with the established option diagnostics.
+  local canonicalOptions = PlayerData.validateOptionsOrRaise(options, context)
   local badges = {}
   for key, owned in pairs(profile.badges) do
     badges[key] = owned
@@ -176,7 +159,7 @@ local function validate(record, context)
       runningShoes = profile.runningShoes,
       runningShoesLock = profile.runningShoesLock,
     },
-    options = { textFrame = textFrame, textSpeed = options.textSpeed, battleStyle = battleStyle },
+    options = canonicalOptions,
   }
 end
 
@@ -199,7 +182,121 @@ function PlayerData.validate(record, context)
 end
 
 function PlayerData.defaultOptions()
-  return { textSpeed = "fastest", textFrame = 0, battleStyle = PlayerData.DEFAULT_BATTLE_STYLE }
+  return {
+    textSpeed = "fastest",
+    textFrame = 0,
+    battleStyle = PlayerData.DEFAULT_BATTLE_STYLE,
+    battleScene = PlayerData.DEFAULT_BATTLE_SCENE,
+    soundMode = PlayerData.DEFAULT_SOUND_MODE,
+    battleSpeed = PlayerData.DEFAULT_BATTLE_SPEED,
+  }
+end
+
+-- Validates one gameplay-options record in isolation and returns a detached
+-- canonical copy: the six owned fields with absent newer fields defaulted.
+-- Unknown keys are discarded, never rejected. Raises the established typed
+-- player-data failures for malformed present values; never mutates the
+-- caller's record. Frame resolution uses the same imported frame-index set
+-- as full-record validation.
+---@param values table<string, unknown>
+---@param context table<string, unknown> { frameIndexes: table<integer, true> }
+---@return table<string, unknown>
+function PlayerData.validateOptionsOrRaise(values, context)
+  assert(
+    type(context) == "table" and type(context.frameIndexes) == "table",
+    "PlayerData option validation requires the imported frame-index context"
+  )
+  if type(values) ~= "table" then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player gameplay options must be a table", {})
+  end
+  assert(type(values) == "table")
+  local textFrame = values.textFrame
+  if type(textFrame) ~= "number" or textFrame % 1 ~= 0 or context.frameIndexes[textFrame] ~= true then
+    Errors.raise(
+      FieldErrors.PLAYER_DATA_TEXT_FRAME_INVALID,
+      "text frame index must resolve to an imported frame style",
+      {
+        textFrame = textFrame,
+      }
+    )
+  end
+  if PlayerData.TEXT_SPEEDS[values.textSpeed] == nil then
+    Errors.raise(
+      FieldErrors.PLAYER_DATA_TEXT_SPEED_INVALID,
+      "text speed must be an explicitly supported gameplay value",
+      {
+        textSpeed = values.textSpeed,
+      }
+    )
+  end
+  -- The native battle style defaults to shift for records predating the
+  -- option (migration and new games); a present unknown style is rejected
+  -- like any other malformed gameplay value.
+  local battleStyle = values.battleStyle
+  if battleStyle == nil then
+    battleStyle = PlayerData.DEFAULT_BATTLE_STYLE
+  end
+  if PlayerData.BATTLE_STYLES[battleStyle] ~= true then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "battle style must be shift or set", {
+      battleStyle = values.battleStyle,
+    })
+  end
+  local battleScene = values.battleScene
+  if battleScene == nil then
+    battleScene = PlayerData.DEFAULT_BATTLE_SCENE
+  end
+  if type(battleScene) ~= "boolean" then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "battle scene must be a boolean", {
+      battleScene = values.battleScene,
+    })
+  end
+  local soundMode = values.soundMode
+  if soundMode == nil then
+    soundMode = PlayerData.DEFAULT_SOUND_MODE
+  end
+  if PlayerData.SOUND_MODES[soundMode] ~= true then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "sound mode must be stereo or mono", {
+      soundMode = values.soundMode,
+    })
+  end
+  local battleSpeed = values.battleSpeed
+  if battleSpeed == nil then
+    battleSpeed = PlayerData.DEFAULT_BATTLE_SPEED
+  end
+  if type(battleSpeed) ~= "number" or battleSpeed % 1 ~= 0 or PlayerData.BATTLE_SPEEDS[battleSpeed] ~= true then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "battle speed must be 1, 2, or 4", {
+      battleSpeed = values.battleSpeed,
+    })
+  end
+  return {
+    textSpeed = values.textSpeed,
+    textFrame = textFrame,
+    battleStyle = battleStyle,
+    battleScene = battleScene,
+    soundMode = soundMode,
+    battleSpeed = battleSpeed,
+  }
+end
+
+-- The non-throwing option boundary: a detached six-field canonical record
+-- or the existing typed player-data validation failure. Follows the
+-- current PlayerData validation return convention.
+---@param values table<string, unknown>
+---@param context table<string, unknown> { frameIndexes: table<integer, true> }
+---@return table<string, unknown>|nil, Errors.Error?
+function PlayerData.validateOptions(values, context)
+  assert(
+    type(context) == "table" and type(context.frameIndexes) == "table",
+    "PlayerData.validateOptions requires the imported frame-index context"
+  )
+  local ok, result = pcall(PlayerData.validateOptionsOrRaise, values, context)
+  if ok then
+    return result
+  end
+  if Errors.is(result) then
+    return nil, result --[[@as Errors.Error]]
+  end
+  error(result)
 end
 
 ---@param moneyDelta integer

@@ -1719,14 +1719,16 @@ function FieldRuntime:_composeMart(boot)
       audio:play(sequence)
     end
   end
-  local textPolicy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed)
+  -- Mart children resolve their text cadence per open from the live
+  -- player options, so a confirmed option lands on the next buy/sell
+  -- without recomposing inventory, scripts, or audio.
   local function createBuy(session)
     return MartScreenState.new({
       session = session,
       manifest = MartCache.loadManifest(boot.cacheFs),
       uiManifest = self.uiManifest,
       fontDef = boot.fontDef,
-      textPolicy = textPolicy,
+      textPolicy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed),
       effect = playSequence,
       measureDisplay = measureDisplay,
       frameIndex = self.playerData.options.textFrame,
@@ -1736,7 +1738,7 @@ function FieldRuntime:_composeMart(boot)
   local function createSell(session)
     return BagScreenState.new({
       effect = playSequence,
-      textPolicy = textPolicy,
+      textPolicy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed),
       service = self.bagService,
       cursor = self.bagCursor,
       manifest = BagCache.loadManifest(boot.cacheFs),

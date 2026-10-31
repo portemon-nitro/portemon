@@ -387,6 +387,18 @@ function BagRenderer.new(opts)
   return self
 end
 
+-- Replaces the borrowed player frame style future message windows draw
+-- with. The index arrives already validated through the composed player
+-- options; no allocation or GPU work occurs here.
+---@param index integer the validated zero-based user-frame index
+function BagRenderer:setFrameIndex(index)
+  assert(
+    type(index) == "number" and index % 1 == 0 and index >= 0,
+    "bag renderer frame index must be a non-negative integer"
+  )
+  self._frameIndex = index
+end
+
 ---@param text string
 ---@param x number
 ---@param y number

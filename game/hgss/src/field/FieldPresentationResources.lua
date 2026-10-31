@@ -85,6 +85,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field renderer FieldRenderer?
 ---@field windowRenderer FieldWindowRenderer? the one shared frame-strip atlas owner lent to dialogue rendering
 ---@field applicationFrameIndex integer? the snapshotted player-owned frame choice for application borders
+---@field _seenFrameIndex integer? the last committed frame observed by option synchronization
 ---@field dialogueRenderer FieldDialogueRenderer?
 ---@field yesNoRenderer FieldYesNoRenderer
 ---@field menuRenderer FieldMenuRenderer
@@ -513,6 +514,7 @@ function FieldPresentationResources.new(runtime)
     )
     ---@cast textFrame integer
     self.applicationFrameIndex = textFrame
+    self._seenFrameIndex = textFrame
     self.dialogueRenderer = FieldDialogueRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = runtime.uiManifest,
@@ -1479,6 +1481,32 @@ function FieldPresentationResources:pokedex()
   })
   self.pokedexResources = created
   return created
+end
+
+-- Synchronizes the field-owned cached frame with the committed player
+-- options. When the committed frame changed, the application border index
+-- and the present Bag/Party/Mart renderer defaults follow before the next
+-- draw; unchanged frames cost one comparison. Scalar-only: no image
+-- acquisition, no draw, and no presentation-graph reconstruction.
+---@param options table<string, unknown> the live committed player options
+function FieldPresentationResources:syncPlayerOptions(options)
+  local committed = assert(options, "frame synchronization reads the live player options")
+  local frame = assert(committed.textFrame, "frame synchronization reads the committed frame")
+  assert(type(frame) == "number" and frame % 1 == 0 and frame >= 0, "frame synchronization reads the committed frame")
+  if frame == self._seenFrameIndex then
+    return
+  end
+  self._seenFrameIndex = frame
+  self.applicationFrameIndex = frame
+  if self.bagRenderer ~= nil then
+    self.bagRenderer:setFrameIndex(frame)
+  end
+  if self.partyScreenRenderer ~= nil then
+    self.partyScreenRenderer:setFrameIndex(frame)
+  end
+  if self.martRenderer ~= nil then
+    self.martRenderer:setFrameIndex(frame)
+  end
 end
 
 ---@return ApricornBoxRenderer renderer owned by this field presentation lifetime

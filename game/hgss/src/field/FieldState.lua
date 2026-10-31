@@ -329,6 +329,17 @@ end
 
 function FieldState:update(dt)
   self.runtime:update(dt)
+  -- Publish committed player-frame changes before presentation: the owned
+  -- resources follow the live options with scalar defaults, so the next
+  -- draw uses the confirmed frame without rebuilding the field.
+  local presentation = self.presentationResources
+  local runtime = self.runtime
+  if presentation ~= nil and runtime ~= nil and runtime.playerData ~= nil then
+    local options = runtime.playerData.options
+    if options ~= nil then
+      presentation:syncPlayerOptions(options)
+    end
+  end
   -- The presented battle envelope runs its fixed cover, screen, and
   -- launch driver on the same accepted time, exactly once. The runtime
   -- never advances presented launches through its own update as well.

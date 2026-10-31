@@ -1,0 +1,619 @@
+-- Live player-options adoption through the real field composition: preparing
+-- changed values validates without mutating, one application publishes the
+-- six fields into the live record, and the next dialogue, signpost, script
+-- and menu uses observe the committed speed and frame without any reload.
+-- Busy owners refuse preparation, an abandoned preparation changes nothing,
+-- and a consumed or stale application faults. No options screen exists on
+-- this path. Headless: layouts, audio, message and display collaborators
+-- are deterministic stubs, every controller and menu object is production.
+
+local Assert = require("tests.support.Assert")
+local BagCursor = require("libs.hgss.src.items.BagCursor")
+local BagPresentationFixture = require("tests.support.BagPresentationFixture")
+local CacheFs = require("libs.storage.src.CacheFs")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local Errors = require("libs.errors.src.Errors")
+local FakeCache = require("tests.support.FakeCache")
+local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
+local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
+local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
+local FieldYesNoController = require("libs.hgss.src.ui.FieldYesNoController")
+local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+local ItemFixture = require("libs.items.tests.item_fixture")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
+local PlayerData = require("libs.hgss.src.save.PlayerData")
+local ScriptDialogueHost = require("libs.hgss.src.script.ScriptDialogueHost")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local StarterChoiceState = require("game.hgss.src.starters.StarterChoiceState")
+local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
+
+local T = {
+  metadata = { tags = { "options", "adoption" } },
+  tests = {},
+}
+
+local CHARMAP = {
+  G = 305,
+  O = 313,
+  L = 310,
+  D = 302,
+  H = 306,
+  I = 307,
+  K = 309,
+  A = 299,
+  R = 316,
+}
+local FRAME_INDEXES = { [0] = true, [1] = true, [2] = true }
+local CURSOR = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9 }
+local GLYPH_COUNT = 12
+local SIGN_GLYPHS = 6
+
+local function glyph(text, code)
+  return { kind = "glyph", code = code, text = text, raw = { code } }
+end
+
+local function dialoguePages()
+  local tokens = {}
+  for index = 1, GLYPH_COUNT do
+    tokens[#tokens + 1] = glyph("A", index)
+  end
+  return { { lines = { { tokens = tokens, width = 0 } }, breakKind = "eos" } }
+end
+
+local function dialogueMessage()
+  local tokens = {}
+  for index = 1, GLYPH_COUNT do
+    tokens[#tokens + 1] = glyph("A", index)
+  end
+  return { bankId = 543, messageId = 5, text = "", tokens = tokens, hadUnresolvedSubstitutions = false }
+end
+
+local function signLines()
+  local tokens = {}
+  for index = 1, SIGN_GLYPHS do
+    tokens[#tokens + 1] = glyph("B", index)
+  end
+  return { { tokens = tokens } }
+end
+
+local function signMessage()
+  local lines = signLines()
+  local tokens = {}
+  for _, line in ipairs(lines) do
+    for _, token in ipairs(line.tokens) do
+      tokens[#tokens + 1] = token
+    end
+  end
+  return { bankId = 543, messageId = 6, text = "", tokens = tokens, hadUnresolvedSubstitutions = false, _lines = lines }
+end
+
+local function nullAudio()
+  return { play = function() end }
+end
+
+local function openDialogue(policy)
+  return FieldDialogueController.new({
+    layout = function()
+      return { pages = dialoguePages(), warnings = {}, lineHeight = 16, lineSpacing = 0 }
+    end,
+    policy = policy,
+    audio = nullAudio(),
+    continueCursor = CURSOR,
+  })
+end
+
+local function openSignpost(policy)
+  return FieldSignpostController.new({
+    layout = function(message)
+      return { lines = message._lines or signLines() }
+    end,
+    policy = policy,
+  })
+end
+
+local function messageProvider()
+  local provider = {}
+  function provider:acquireBank(_)
+    return true
+  end
+  function provider:get(bankId, messageId)
+    return { bankId = bankId, messageId = messageId, text = "Yes", tokens = { glyph("A", 1) } }
+  end
+  function provider:format(template)
+    return { tokens = template.tokens, text = template.text, hadUnresolvedSubstitutions = false }
+  end
+  function provider:releaseBank(_) end
+  return provider
+end
+
+local function playerFacade()
+  return {
+    name = function()
+      return "GOLD"
+    end,
+    rivalName = function()
+      return "HIKARI"
+    end,
+    gender = function()
+      return 0
+    end,
+  }
+end
+
+local function scriptLayout()
+  return function()
+    return { pages = dialoguePages(), warnings = {}, lineHeight = 16, lineSpacing = 0 }
+  end
+end
+
+local function openScriptHost(dialogue, frameIndex)
+  return ScriptDialogueHost.new({
+    controller = dialogue,
+    yesNoController = FieldYesNoController.new({ audio = nullAudio() }),
+    provider = messageProvider(),
+    layout = scriptLayout(),
+    fontDef = { charmap = CHARMAP },
+    player = playerFacade(),
+    frameIndex = frameIndex,
+  })
+end
+
+local function stubMeasurement()
+  return {
+    width = 256,
+    height = 192,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 256, height = 192 },
+      touch = true,
+      role = "world",
+    }),
+    pixelRatio = 1,
+    signature = "options-adoption-test:256x192",
+  }
+end
+
+local function openStarter(frameIndex)
+  return StarterChoiceState.new({
+    catalog = CatalogFixture.makeCatalog(),
+    cacheFs = CacheFs.forVersion("heartgold", FakeCache.new()),
+    frameIndex = frameIndex,
+    measureDisplay = stubMeasurement,
+  })
+end
+
+local function openMons()
+  local catalog = CatalogFixture.makeCatalog()
+  local Lcrng = require("libs.mons.src.gen4.Lcrng")
+  local MonsSave = require("libs.mons.src.MonsSave")
+  local Party = require("libs.mons.src.Party")
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  local mons = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(41):capture()),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+  })
+  Assert.isTrue(
+    mons:giveMon({
+      species = "CHIKORITA",
+      level = 5,
+      heldItem = "NONE",
+      form = 0,
+      location = 7,
+      date = CatalogFixture.metDate(),
+    }),
+    "setup gift must enter the party"
+  )
+  return mons
+end
+
+local function pcManifest()
+  local stationery = {}
+  for stationeryType = 0, 11 do
+    stationery[stationeryType] = { itemKey = "MAIL_" .. stationeryType }
+  end
+  return {
+    schema = "g4-pc-v3",
+    mailbox = { background = {}, geometry = { visibleLetters = 10 }, pageSize = 10 },
+    mail = { stationery = stationery, geometry = { iconSlots = 3 }, text = { templates = {} }, wordDictionary = {} },
+  }
+end
+
+-- The composed harness: a validated live player record beside the real
+-- dialogue, signpost, script and starter owners plus the production menu
+-- composition whose per-open policy closure reads the live options.
+local function openHarness()
+  local playerData = assert(PlayerData.validate({
+    profile = {
+      name = "GOLD",
+      rivalName = "HIKARI",
+      gender = 0,
+      trainerId = 0,
+      money = 3000,
+      badges = 0,
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+    },
+    options = {
+      textSpeed = "mid",
+      textFrame = 0,
+      battleStyle = "shift",
+      battleScene = true,
+      soundMode = "stereo",
+      battleSpeed = 1,
+    },
+  }, { charmap = CHARMAP, frameIndexes = FRAME_INDEXES }))
+  local dialogue = openDialogue(TextSpeedPolicy.forSpeed("mid"))
+  local signpost = openSignpost(TextSpeedPolicy.forSpeed("mid"))
+  local host = openScriptHost(dialogue, 0)
+  local starter = openStarter(0)
+  local harness
+  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  local Composition = require("game.hgss.src.field.PartyMenuComposition")
+  local composition = Composition.create({
+    mons = openMons(),
+    bag = bag,
+    bagCursor = BagCursor.new(),
+    itemCatalog = bag:catalog(),
+    monCatalog = CatalogFixture.makeCatalog(),
+    mailbox = Mailbox.new(),
+    photoAlbum = PhotoAlbum.new(),
+    pcManifest = pcManifest(),
+    bagManifest = BagPresentationFixture.manifest(),
+    partyManifest = {},
+    uiManifest = FieldUiFixture.manifest(),
+    profile = playerData.profile,
+    versionId = "heartgold",
+    cacheFs = {},
+    derivedAssets = {},
+    charmap = CatalogFixture.CHARMAP,
+    heroGender = "male",
+    measureDisplay = stubMeasurement,
+    prepareIcons = function(_)
+      return true
+    end,
+    cancelIconPreparation = function() end,
+    contextSources = function()
+      return {}
+    end,
+    worldPorts = {
+      actors = {
+        getActor = function()
+          return nil
+        end,
+        actorsOf = function()
+          return {}
+        end,
+        getPosition = function()
+          return nil
+        end,
+        partnerId = function()
+          return nil
+        end,
+        getCollisionAt = function()
+          return nil
+        end,
+        beginScriptedAction = function() end,
+        advanceScriptedAction = function() end,
+        commitScriptedAction = function() end,
+        cancelScriptedMovement = function() end,
+        isScriptedMoving = function()
+          return false
+        end,
+        removePresence = function() end,
+        syncEventStateChanges = function() end,
+      },
+      events = {
+        setFlag = function() end,
+        isFlagSet = function()
+          return false
+        end,
+      },
+      maps = {
+        current = function()
+          return { symbol = "test-map", id = 61, fieldUse = {} }
+        end,
+        runtimeMap = function()
+          return {}
+        end,
+      },
+      player = {
+        position = function()
+          return { fieldX = 4, fieldZ = 5, worldY = 0 }
+        end,
+        facing = function()
+          return "south"
+        end,
+        beginScriptedAction = function() end,
+        advanceScriptedAction = function() end,
+        commitScriptedAction = function() end,
+        cancelScriptedMovement = function() end,
+        isScriptedMoving = function()
+          return false
+        end,
+        queueAvatarTransition = function() end,
+        applyAvatarTransitions = function() end,
+      },
+      profile = { badges = 0xFFFF },
+      weather = {
+        change = function() end,
+      },
+      reactions = {
+        dispatch = function() end,
+      },
+    },
+    textPolicyForOpen = function()
+      return TextSpeedPolicy.forSpeed(assert(harness.playerData.options.textSpeed))
+    end,
+  })
+  harness = {
+    playerData = playerData,
+    playerDataContext = { charmap = CHARMAP, frameIndexes = FRAME_INDEXES },
+    dialogue = dialogue,
+    signpost = signpost,
+    scripts = { dialogueHost = host },
+    starterChoice = starter,
+    partyMenu = composition,
+  }
+  harness.coordinator = FieldMenuCompositionCoordinator.new(harness)
+  return harness
+end
+
+local function changedOptions()
+  return {
+    textSpeed = "fastest",
+    textFrame = 1,
+    battleStyle = "set",
+    battleScene = false,
+    soundMode = "mono",
+    battleSpeed = 4,
+  }
+end
+
+local function changedOptionsWith(overrides)
+  local value = changedOptions()
+  for key, item in pairs(overrides) do
+    value[key] = item
+  end
+  return value
+end
+
+local function stepsToDone(dialogue, limit)
+  for _ = 1, limit do
+    local status = dialogue:status()
+    if status.state == "WAITING_CLOSE" or status.state == "CLOSING" or status.state == "CLOSED" then
+      return true
+    end
+    dialogue:step({})
+  end
+  local status = dialogue:status()
+  return status.state == "WAITING_CLOSE" or status.state == "CLOSING" or status.state == "CLOSED"
+end
+
+function T.tests.next_dialogue_uses_the_committed_speed_without_a_reload()
+  local harness = openHarness()
+  harness.dialogue:open({ id = "baseline", message = dialogueMessage(), allowCancel = false, frameIndex = 0 })
+  Assert.isFalse(stepsToDone(harness.dialogue, 4), "the mid cadence must still be revealing after four steps")
+  harness.dialogue:close()
+  local apply = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  apply()
+  harness.dialogue:open({ id = "adopted", message = dialogueMessage(), allowCancel = false, frameIndex = 1 })
+  Assert.isTrue(stepsToDone(harness.dialogue, 4), "the committed fastest cadence finishes the same text quickly")
+  harness.dialogue:close()
+  harness.partyMenu.dispose()
+end
+
+function T.tests.next_signpost_and_script_uses_observe_the_committed_values()
+  local harness = openHarness()
+  local apply = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  apply()
+  harness.signpost:printTyped(signMessage())
+  for _ = 1, 2 do
+    harness.signpost:updateFixed({})
+  end
+  Assert.isTrue(harness.signpost:isPrintDone(), "the committed fastest cadence completes the typed sign quickly")
+  harness.signpost:finishPrint()
+  harness.scripts.dialogueHost:startPrint("msg.hgss.1.2", {}, {})
+  local status = harness.dialogue:status()
+  Assert.equal(status.frameIndex, 1, "the next script request carries the committed frame")
+  Assert.isTrue(stepsToDone(harness.dialogue, 4), "the script request reveals at the committed cadence")
+  harness.dialogue:close()
+  local options = harness.scripts.dialogueHost:yesNoOptions()
+  Assert.equal(options.frameIndex, 1, "later choice prompts carry the committed frame")
+  harness.partyMenu.dispose()
+end
+
+function T.tests.future_menu_children_capture_the_current_policy_at_creation()
+  local harness = openHarness()
+  local BagScreenState = require("game.hgss.src.field.BagScreenState")
+  local before = harness.partyMenu
+  Assert.deepEqual(
+    (function()
+      return TextSpeedPolicy.forSpeed(harness.playerData.options.textSpeed)
+    end)(),
+    TextSpeedPolicy.forSpeed("mid")
+  )
+  local apply = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  apply()
+  local flow = before.makeBagFlow()
+  Assert.notNil(flow, "menu flows still construct after adoption")
+  local fresh = TextSpeedPolicy.forSpeed(harness.playerData.options.textSpeed)
+  Assert.deepEqual(fresh, TextSpeedPolicy.forSpeed("fastest"))
+  local child = BagScreenState.new({
+    service = HgssBagService.new({ catalog = ItemFixture.makeCatalog() }),
+    cursor = BagCursor.new(),
+    manifest = BagPresentationFixture.manifest(),
+    uiManifest = FieldUiFixture.manifest(),
+    monCatalog = CatalogFixture.makeCatalog(),
+    heroGender = "male",
+    measureDisplay = stubMeasurement,
+    context = "field",
+    partyEmpty = true,
+    effect = function() end,
+    textPolicy = fresh,
+  })
+  Assert.notNil(child:status(), "a child built from the current policy opens normally")
+  child:dispose()
+  before.dispose()
+end
+
+function T.tests.preparation_validates_without_mutating_and_applies_exactly_once()
+  local harness = openHarness()
+  local before = PlayerData.validate(
+    { profile = harness.playerData.profile, options = harness.playerData.options },
+    harness.playerDataContext
+  )
+  Assert.deepEqual(before.options, {
+    textSpeed = "mid",
+    textFrame = 0,
+    battleStyle = "shift",
+    battleScene = true,
+    soundMode = "stereo",
+    battleSpeed = 1,
+  })
+  local profileIdentity = harness.playerData.profile
+  local optionsIdentity = harness.playerData.options
+  local broken, err = harness.coordinator:preparePlayerOptions(changedOptionsWith({ battleSpeed = 8 }))
+  Assert.isNil(broken, "an invalid candidate never prepares")
+  Assert.isTrue(Errors.is(err), "an invalid candidate reports a structured failure")
+  Assert.deepEqual(harness.playerData.options, before.options, "a refused preparation mutates nothing")
+  local apply = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  Assert.deepEqual(harness.playerData.options, before.options, "preparation alone mutates nothing")
+  apply()
+  Assert.isTrue(rawequal(harness.playerData.profile, profileIdentity), "adoption keeps the live profile identity")
+  Assert.isTrue(rawequal(harness.playerData.options, optionsIdentity), "adoption keeps the live options table")
+  Assert.deepEqual(harness.playerData.options, changedOptions())
+  Assert.equal(harness.playerData.profile.money, 3000, "adoption touches options, never the profile")
+  Assert.throws(function()
+    apply()
+  end, "a consumed application faults instead of publishing twice")
+  local revalidated = assert(
+    PlayerData.validate(
+      { profile = harness.playerData.profile, options = harness.playerData.options },
+      harness.playerDataContext
+    )
+  )
+  Assert.deepEqual(revalidated.options, changedOptions(), "the live record revalidates after adoption")
+  local settled = PlayerData.prepareBattleChanges(
+    { profile = harness.playerData.profile, options = harness.playerData.options },
+    harness.playerDataContext,
+    { moneyDelta = 100 }
+  )
+  Assert.deepEqual(settled.options, changedOptions(), "reward settlement preserves every adopted value")
+  harness.partyMenu.dispose()
+end
+
+function T.tests.abandoned_preparation_and_stale_application_change_nothing()
+  local harness = openHarness()
+  local snapshot = {
+    textSpeed = "mid",
+    textFrame = 0,
+    battleStyle = "shift",
+    battleScene = true,
+    soundMode = "stereo",
+    battleSpeed = 1,
+  }
+  assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  Assert.deepEqual(harness.playerData.options, snapshot, "abandoning a preparation changes nothing")
+  local apply = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  harness.playerData = {
+    profile = harness.playerData.profile,
+    options = {
+      textSpeed = "mid",
+      textFrame = 0,
+      battleStyle = "shift",
+      battleScene = true,
+      soundMode = "stereo",
+      battleSpeed = 1,
+    },
+  }
+  Assert.throws(function()
+    apply()
+  end, "an application after a record replacement faults before writing")
+  harness.partyMenu.dispose()
+end
+
+function T.tests.busy_owners_refuse_preparation_without_mutation()
+  local harness = openHarness()
+  harness.dialogue:open({ id = "held", message = dialogueMessage(), allowCancel = false, frameIndex = 0 })
+  local busy, err = harness.coordinator:preparePlayerOptions(changedOptions())
+  Assert.isNil(busy, "an open dialogue refuses preparation")
+  Assert.isTrue(Errors.is(err), "a busy owner reports a structured failure")
+  harness.dialogue:close()
+  harness.signpost:printTyped(signMessage())
+  local signBusy, signErr = harness.coordinator:preparePlayerOptions(changedOptions())
+  Assert.isNil(signBusy, "a live signpost print refuses preparation")
+  Assert.isTrue(Errors.is(signErr), "a live sign reports a structured failure")
+  harness.signpost:finishPrint()
+  harness.scripts.dialogueHost:startPrint("msg.hgss.1.2", {}, {})
+  local scriptBusy = harness.coordinator:preparePlayerOptions(changedOptions())
+  Assert.isNil(scriptBusy, "an open script request refuses preparation")
+  harness.dialogue:close()
+  harness.scripts.dialogueHost:askYesNo(7)
+  local choiceBusy = harness.coordinator:preparePlayerOptions(changedOptions())
+  Assert.isNil(choiceBusy, "an open choice refuses preparation")
+  harness.scripts.dialogueHost:closeYesNo()
+  local snapshot = {
+    textSpeed = "mid",
+    textFrame = 0,
+    battleStyle = "shift",
+    battleScene = true,
+    soundMode = "stereo",
+    battleSpeed = 1,
+  }
+  Assert.deepEqual(harness.playerData.options, snapshot, "busy refusals mutate nothing")
+  local starterBusy = openHarness()
+  starterBusy.starterChoice = {
+    isActive = function()
+      return true
+    end,
+    setFrameIndex = function()
+      error("a busy starter must never be retouched", 0)
+    end,
+  }
+  starterBusy.coordinator = FieldMenuCompositionCoordinator.new(starterBusy)
+  Assert.isNil(starterBusy.coordinator:preparePlayerOptions(changedOptions()), "an active starter refuses preparation")
+  harness.partyMenu.dispose()
+  starterBusy.partyMenu.dispose()
+end
+
+function T.tests.idle_setters_reject_active_owners()
+  local harness = openHarness()
+  harness.dialogue:open({ id = "held", message = dialogueMessage(), allowCancel = false, frameIndex = 0 })
+  Assert.throws(function()
+    harness.dialogue:setPolicy(TextSpeedPolicy.forSpeed("fastest"))
+  end, "an active dialogue keeps its policy")
+  harness.dialogue:close()
+  harness.dialogue:setPolicy(TextSpeedPolicy.forSpeed("fastest"))
+  harness.dialogue:open({ id = "reseated", message = dialogueMessage(), allowCancel = false, frameIndex = 0 })
+  Assert.isTrue(stepsToDone(harness.dialogue, 4), "an idle policy change lands on the next request")
+  harness.dialogue:close()
+  harness.signpost:printTyped(signMessage())
+  Assert.throws(function()
+    harness.signpost:setPolicy(TextSpeedPolicy.forSpeed("fastest"))
+  end, "a live signpost print keeps its policy")
+  harness.signpost:finishPrint()
+  harness.signpost:setPolicy(TextSpeedPolicy.forSpeed("fastest"))
+  harness.scripts.dialogueHost:startPrint("msg.hgss.1.2", {}, {})
+  Assert.throws(function()
+    harness.scripts.dialogueHost:setFrameIndex(2)
+  end, "an open script request keeps its frame")
+  harness.dialogue:close()
+  harness.scripts.dialogueHost:setFrameIndex(2)
+  Assert.equal(harness.scripts.dialogueHost:yesNoOptions().frameIndex, 2)
+  harness.starterChoice:setFrameIndex(2)
+  Assert.isFalse(harness.starterChoice:isActive(), "an idle frame change leaves the starter closed")
+  harness.partyMenu.dispose()
+end
+
+return T

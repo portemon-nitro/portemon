@@ -78,6 +78,20 @@ function StarterChoiceState:isActive()
   return self._controller ~= nil
 end
 
+-- Replaces the player frame index the next starter presentation is
+-- constructed with. An open chooser keeps the frame it opened with;
+-- changing the inactive default underneath it is an invariant fault with
+-- no mutation and no texture work.
+---@param index integer the validated zero-based user-frame index
+function StarterChoiceState:setFrameIndex(index)
+  assert(
+    type(index) == "number" and index % 1 == 0 and index >= 0,
+    "starter choice frame index must be a non-negative integer"
+  )
+  assert(not self:isActive(), "a starter choice is already active; defaults change only while idle")
+  self._frameIndex = index
+end
+
 -- Whether the presentation scene is fully prepared and drawable.
 -- Presentation-only: controller and script semantics never depend on it.
 ---@return boolean

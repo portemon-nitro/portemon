@@ -169,6 +169,18 @@ function MartRenderer.new(opts)
   return self
 end
 
+-- Replaces the default mart text frame future description and message
+-- windows draw with. The index arrives already validated through the
+-- composed player options; no source map is redrawn or regenerated here.
+---@param index integer the validated zero-based user-frame index
+function MartRenderer:setFrameIndex(index)
+  assert(
+    type(index) == "number" and index % 1 == 0 and index >= 0,
+    "mart renderer frame index must be a non-negative integer"
+  )
+  self._frameIndex = index
+end
+
 function MartRenderer:_palette(role)
   local colors = assert(self._text.fontDef.palette, "field text renderer carries the generated field palette")
   local roles = role == "stock" and STOCK_COLORS or SYSTEM_COLORS

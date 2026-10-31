@@ -131,6 +131,31 @@ function FieldSignpostController:isModal()
   return self._active
 end
 
+-- Replaces the cadence future typed prints reveal at. The copied table
+-- keeps later external edits from retiming this controller. A presented
+-- window or a live typed print keeps its cadence; changing defaults
+-- mid-print is an invariant fault with no mutation.
+---@param policy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean }
+function FieldSignpostController:setPolicy(policy)
+  assert(type(policy) == "table", "signpost policy must be a record")
+  assert(
+    type(policy.interGlyphDelay) == "number"
+      and type(policy.glyphBudget) == "number"
+      and type(policy.abAcceleration) == "boolean",
+    "signpost policy carries the printer cadence shape"
+  )
+  local print = self._print
+  if self:isModal() or (print ~= nil and print.live) then
+    error("a signpost is already printing; defaults change only while idle", 0)
+  end
+  self._policy = {
+    interGlyphDelay = policy.interGlyphDelay,
+    glyphBudget = policy.glyphBudget,
+    abAcceleration = policy.abAcceleration,
+  }
+  self:_invalidatePresentation()
+end
+
 -- The borrowed presentation record: plain data only, retained across reads
 -- until the next owner mutation. Consumers must treat it as read-only
 -- and ephemeral: never mutate it and never retain it past the next
