@@ -236,4 +236,41 @@ function T.tests.looping_blocks_run_on_the_loop_frame_life_rate()
   Assert.equal(looping.texNo, 6, "the looping texture animation reaches its second stage")
 end
 
+-- spl_generate.c spawns children with rotation type 0 (none), 1 (the parent
+-- angle), or 2 (the parent angle and spin); children then turn by their own
+-- spin each tick like every particle.
+function T.tests.children_inherit_the_parent_rotation_by_their_rotation_type()
+  local function childRotation(rotationType)
+    local _, runtime = spawnBurst({
+      initRotation = 1000,
+      useRotationAnim = true,
+      rotation = { min = 500, max = 500 },
+      child = {
+        rotationType = rotationType,
+        useScaleAnm = false,
+        useAlphaAnm = false,
+        followEmitter = false,
+        useChildColor = false,
+        childColor = { r = 0, g = 0, b = 0 },
+        initVelRandom = 0,
+        scaleEnd = 0,
+        life = 5,
+        velRatio = 0,
+        sclRatio = 63,
+        genNum = 1,
+        genStart = 0,
+        genInterval = 1,
+        texNo = 1,
+        texRepeat = { s = 0, t = 0 },
+      },
+    }, 1)
+    Assert.equal(#runtime.particles, 1, "the parent spawns")
+    Assert.equal(#runtime.children, 1, "the parent spawns its child on its birth tick")
+    return runtime.children[1]
+  end
+  Assert.equal(childRotation(nil).rtt, 0, "a child without rotation type starts unrotated")
+  Assert.equal(childRotation(1).rtt, 1500, "type 1 copies the parent angle without its spin")
+  Assert.equal(childRotation(2).rtt, 2000, "type 2 also keeps turning by the parent spin")
+end
+
 return T

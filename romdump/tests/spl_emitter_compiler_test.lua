@@ -91,6 +91,18 @@ function T.compile_stages_textures_under_the_caller_paths_and_omits_unused_field
   Assert.isNil(next(record.animations), "an emitter without animation blocks carries none")
 end
 
+function T.compile_can_carry_raw_texture_pixels_instead_of_staged_images()
+  local compiled, err = SplEmitterCompiler.compile(member({ emitterBase(SELF_DEST, 0) }, 2), { embedPixels = true })
+  Assert.notNil(compiled, "an embedding caller needs no texture paths: " .. tostring(err))
+  Assert.isNil(next(compiled.files), "embedded textures stage no files")
+  for index, texture in ipairs(compiled.particles.textures) do
+    Assert.equal(texture.id, index - 1, "textures keep their source order")
+    Assert.equal(#texture.pixels, texture.width * texture.height * 4, "each texture carries its RGBA pixels")
+    Assert.isNil(texture.image, "an embedded texture names no staged image")
+  end
+  Assert.isNil(compiled.particles.emitters[1].textureImage, "an embedded emitter names no staged image")
+end
+
 function T.compile_enforces_the_caller_emitter_count_and_groups()
   local bytes = member({ emitterBase(SELF_DEST, 0), emitterBase(SELF_DEST, 0) }, 1)
   local compiled = SplEmitterCompiler.compile(
@@ -185,6 +197,31 @@ function T.compile_records_child_first_drawing_only_when_set()
   Assert.isTrue(first.particles.emitters[1].drawChildFirst, "the child-first draw flag is kept")
   local plain = compileOne(emitterBase(SELF_DEST, 0))
   Assert.isNil(plain.particles.emitters[1].drawChildFirst, "an unset child-first flag stays absent")
+end
+
+-- One 20-byte child block: `flag` selects the child behaviors, with a
+-- five-tick life and one particle per tick over texture 0.
+local function childBlock(flag)
+  return u16(flag) .. u16(0) .. u16(0) .. u16(5) .. string.char(0, 30) .. u16(0) .. u32(1 + 2 ^ 16) .. u32(0)
+end
+
+function T.compile_records_the_child_rotation_inheritance_only_when_set()
+  local USE_CHILD = 2 ^ 16
+  local plain = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(0))
+  Assert.isNil(plain.particles.emitters[1].child.rotationType, "a child with no rotation carries no rotation type")
+  for rotationType = 1, 2 do
+    local compiled, err = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(rotationType * 8))
+    Assert.notNil(compiled, "child rotation type " .. rotationType .. " compiles: " .. tostring(err))
+    Assert.equal(
+      compiled.particles.emitters[1].child.rotationType,
+      rotationType,
+      "the child keeps how it inherits the parent rotation"
+    )
+  end
+  Assert.isNil(
+    compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(3 * 8)),
+    "a child rotation type the retail generator never handles fails"
+  )
 end
 
 function T.compile_rejects_mirrored_texture_coordinates()

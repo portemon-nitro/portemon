@@ -42,8 +42,8 @@ end
 
 ---@param block string raw SPL member bytes
 ---@param record table<string, unknown> decoded SplResource texture record
----@return string pngBytes
-local function decodeTexturePng(block, record)
+---@return table<string, unknown> decoded width, height, and RGBA pixels
+local function decodeTexture(block, record)
   local texels = block:sub(record.texelOffset + 1, record.texelOffset + record.texelSize)
   local palette = block:sub(record.paletteOffset + 1, record.paletteOffset + record.paletteSize)
   local ok, decoded = pcall(TextureDecoder.decode, {
@@ -61,6 +61,13 @@ local function decodeTexturePng(block, record)
     })
   end
   assert(type(decoded) == "table" and type(decoded.pixels) == "string", "particle texture decode is malformed")
+  return decoded
+end
+
+---@param record table<string, unknown> decoded SplResource texture record
+---@param decoded table<string, unknown> decoded texture pixels
+---@return string pngBytes
+local function encodeTexturePng(record, decoded)
   local png = PngWriter.encode(decoded.width, decoded.height, decoded.pixels)
   if png == nil then
     sourceError("particle texture could not be encoded", { texture = record.id })
@@ -222,7 +229,10 @@ local function normalizeChild(child, byTexture, emitterId)
   local function reject(message)
     sourceError(message, { emitter = emitterId, offset = child.offset })
   end
-  if math.floor(child.flag / 8) % 4 ~= 0 then
+  -- spl_generate.c handles rotation types 0 (none), 1 (parent angle), and
+  -- 2 (parent angle and spin); type 3 leaves the angle uninitialized.
+  local rotationType = math.floor(child.flag / 8) % 4
+  if rotationType == 3 then
     reject("particle child uses an unrepresented rotation")
   end
   if childBit(0) then
@@ -254,6 +264,7 @@ local function normalizeChild(child, byTexture, emitterId)
     followEmitter = childBit(5),
     useChildColor = childBit(6),
     childColor = child.colorRgb,
+    rotationType = rotationType ~= 0 and rotationType or nil,
     drawType = 0,
     initVelRandom = child.initVelMagRndm,
     scaleEnd = child.scaleEnd,
@@ -420,7 +431,8 @@ local function normalizeEmitter(memberBytes, emitter, byTexture, group)
 end
 
 ---@class SplEmitterCompileOptions
----@field texturePath fun(textureId: integer): string output path a staged texture image takes
+---@field texturePath (fun(textureId: integer): string)|nil output path a staged texture image takes; nil exactly when embedPixels is set
+---@field embedPixels boolean|nil true to carry each texture's RGBA pixels in its record instead of staging a PNG
 ---@field emitterCount integer|nil required emitter count, or nil for no requirement
 ---@field group (fun(emitterId: integer): string|nil)|nil group tag per emitter; returning nil rejects the emitter
 
@@ -451,19 +463,23 @@ local function compileEmitters(memberBytes, options)
   local textures = {}
   local byTexture = {}
   for _, texture in ipairs(decoded.textures) do
-    local path = options.texturePath(texture.id)
-    files[path] = decodeTexturePng(memberBytes, texture)
+    local pixels = decodeTexture(memberBytes, texture)
     local staged = {
       id = texture.id,
       format = texture.format,
       width = texture.width,
       height = texture.height,
-      image = path,
       sourceHash = Hashing.sha1hex(
         memberBytes:sub(texture.texelOffset + 1, texture.texelOffset + texture.texelSize)
           .. memberBytes:sub(texture.paletteOffset + 1, texture.paletteOffset + texture.paletteSize)
       ),
     }
+    if options.embedPixels then
+      staged.pixels = pixels.pixels
+    else
+      staged.image = options.texturePath(texture.id)
+      files[staged.image] = encodeTexturePng(texture, pixels)
+    end
     textures[#textures + 1] = staged
     byTexture[texture.id] = staged
   end
@@ -492,8 +508,8 @@ end
 function SplEmitterCompiler.compile(memberBytes, options)
   assert(type(memberBytes) == "string", "particle compilation requires the source member bytes")
   assert(
-    type(options) == "table" and type(options.texturePath) == "function",
-    "particle compilation names its texture paths"
+    type(options) == "table" and (type(options.texturePath) == "function") ~= (options.embedPixels == true),
+    "particle compilation names its texture paths or embeds pixels"
   )
   -- Per-emitter failures raise with emitter context; the boundary converts
   -- structured failures back to the nil-plus-cause contract.

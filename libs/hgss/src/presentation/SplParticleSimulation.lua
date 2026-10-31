@@ -500,6 +500,9 @@ local function spawnChild(sim, runtime, parent)
     local inherited = parent.colorRgb --[[@as table<string, integer>]]
     colorRgb = { r = inherited.r, g = inherited.g, b = inherited.b }
   end
+  -- Rotation type 1 inherits the parent angle, 2 also its spin; absent
+  -- means unrotated.
+  local rotationType = child.rotationType --[[@as integer|nil]]
   runtime.children[#runtime.children + 1] = {
     x = parent.x,
     y = parent.y,
@@ -507,8 +510,8 @@ local function spawnChild(sim, runtime, parent)
     vx = spreadAxis(parent.vx --[[@as number]]),
     vy = spreadAxis(parent.vy --[[@as number]]),
     vz = spreadAxis(parent.vz --[[@as number]]),
-    rtt = 0,
-    rttVel = 0,
+    rtt = rotationType ~= nil and parent.rtt or 0,
+    rttVel = rotationType == 2 and parent.rttVel or 0,
     life = child.life --[[@as integer]],
     age = 0,
     baseScale = math.floor(
