@@ -3545,11 +3545,13 @@ local function tickEncounterAnimation(self)
     emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.encounterSettle))
   end
   if frame >= ENCOUNTER_END + 1 then
+    presentation.encounterFrame = nil
     presentation.encounterFlash = nil
     presentation.encounterLower = nil
     self._encounterAnimation = nil
     return
   end
+  presentation.encounterFrame = frame
   if frame < ENCOUNTER_FADE_START then
     presentation.encounterLower = { level = 0 }
     return

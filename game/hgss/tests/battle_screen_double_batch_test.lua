@@ -1457,14 +1457,10 @@ local function arrangementMeasurement(name, width, height, topology)
   }
 end
 
--- Both sides field two battlers with their own pictures and health:
--- the opening snapshot keys four live records by native slot with
--- distinct portraits, every native arrangement paints all four at
--- four distinct destinations, a strike moves only its target's
--- health, and the public view leaks no reserves.
--- The staged scene layer's resolved encounter particle sets reach the
--- snapshot and the renderer view untouched, drawables included.
-function T.encounter_particle_sets_reach_the_snapshot_and_view()
+-- The staged scene layer's encounter particle sets run through the opening:
+-- the first set starts with the encounter animation and its live system, with
+-- the staged drawables by texture id, reaches the renderer view.
+function T.encounter_particle_sets_start_with_the_opening_and_reach_the_view()
   local rig = openDoubleRig({
     launchId = "launch-encounter-particles",
     layout = "paired",
@@ -1473,18 +1469,35 @@ function T.encounter_particle_sets_reach_the_snapshot_and_view()
     foeSpecies = { "EEVEE", "TOTODILE" },
     foeLevels = { 4, 5 },
   })
-  driveToMode(rig, "command")
   stageRendererIntro(rig)
   local drawable = rig.screen._assets._sceneLayer.introLayer.drawable
-  local sets = {
-    { startTick = 1, seed = 0, emitters = {}, textures = { { id = 0, width = 32, height = 32, drawable = drawable } } },
-    { startTick = 20, seed = 0, emitters = {}, textures = { { id = 3, width = 16, height = 64, drawable = drawable } } },
-  }
+  local sets = require("tests.support.BattleEncounterParticlesFixture").sets("grass/day/forest")
+  for _, set in ipairs(sets) do
+    for _, texture in ipairs(set.textures) do
+      texture.drawable = drawable
+    end
+  end
   rig.screen._assets._sceneLayer.encounterParticles = sets
-  Assert.equal(rig.screen:_snapshot().encounterParticles, sets, "the snapshot carries the staged sets")
-  Assert.equal(rig.screen:view().encounterParticles, sets, "the view carries the staged sets")
+  rig.screen._sceneHasBackground = true
+  Assert.equal(#rig.screen:view().encounterParticleSystems, 0, "no particles run before the opening")
+  local systems = nil
+  for _ = 1, 600 do
+    acknowledgeOpening(rig)
+    rig.pump(1)
+    systems = rig.screen:view().encounterParticleSystems
+    if #systems > 0 then
+      break
+    end
+  end
+  Assert.isTrue(#systems > 0, "the encounter animation starts the first set")
+  Assert.equal(systems[1].textures[sets[1].textures[1].id], drawable, "the view carries the staged drawables by id")
 end
 
+-- Both sides field two battlers with their own pictures and health:
+-- the opening snapshot keys four live records by native slot with
+-- distinct portraits, every native arrangement paints all four at
+-- four distinct destinations, a strike moves only its target's
+-- health, and the public view leaks no reserves.
 function T.both_sides_field_two_battlers_with_their_own_pictures_and_health()
   local rig = openDoubleRig({
     launchId = "launch-double-four-pictures",

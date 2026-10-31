@@ -14,6 +14,7 @@ local BattleRenderer = {}
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+local SplParticleDraw = require("libs.hgss.src.presentation.SplParticleDraw")
 local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
@@ -2471,6 +2472,35 @@ local function drawEncounterOverlay(graphics, view, lower)
   restoreColor(graphics, r, g, b, a)
 end
 
+-- Draws the live encounter terrain particles over the main screen. The 3D
+-- layer sits above the faded BG and OBJ planes, so the grass is not tinted by
+-- the encounter fade.
+---@param graphics table<string, unknown> injected host graphics
+---@param view table<string, unknown> internal semantic snapshot
+local function drawEncounterParticles(graphics, view)
+  local systems = view.encounterParticleSystems --[[@as BattleEncounterParticleSystem[]?]]
+  if systems == nil then
+    return
+  end
+  for _, system in ipairs(systems) do
+    ---@param runtime table<string, unknown>
+    ---@param particle table<string, unknown>
+    ---@param child table<string, unknown>|nil
+    ---@return love.Image
+    local function resolveTexture(runtime, particle, child)
+      local record = child or runtime.record --[[@as table<string, unknown>]]
+      local texNo = child ~= nil and child.texNo or particle.texNo
+      local image = assert(system.textures[texNo], "encounter particle texture is staged")
+      local repeating = record.texRepeat --[[@as { s: integer, t: integer }]]
+      if (repeating.s ~= 0 or repeating.t ~= 0) and image.setWrap ~= nil then
+        image:setWrap("repeat", "repeat")
+      end
+      return image
+    end
+    SplParticleDraw.draw(graphics, system.simulation, { centerX = 128, centerY = 96, resolveTexture = resolveTexture })
+  end
+end
+
 -- Draws one pane in its logical space: "detail" for the battlefield,
 -- "interaction" for the lower menu, or "compact" for the single-pane
 -- scene viewport. Unknown pane identities draw nothing.
@@ -2486,7 +2516,9 @@ function BattleRenderer.drawPane(resources, view, paneId, content, placement)
     drawCompactScene(resources, view, content or {})
   elseif paneId == "detail" then
     drawDetail(resources, view)
-    drawEncounterOverlay(assert(resources.graphics, "the battle render borrows its host graphics"), view, false)
+    local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
+    drawEncounterOverlay(graphics, view, false)
+    drawEncounterParticles(graphics, view)
   elseif paneId == "interaction" then
     drawInteraction(resources, view, content or {}, placement)
     drawEncounterOverlay(assert(resources.graphics, "the battle render borrows its host graphics"), view, true)

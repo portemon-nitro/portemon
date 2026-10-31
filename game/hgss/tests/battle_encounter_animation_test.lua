@@ -62,7 +62,7 @@ local function runWildOpening(fadeColor, ticks)
   local view = openingView()
   timeline:reset(view)
   timeline:intro(view, true)
-  local log = { sounds = sounds, flash = {}, lower = {}, messageTick = nil, foeHud = {} }
+  local log = { sounds = sounds, flash = {}, lower = {}, frame = {}, messageTick = nil, foeHud = {} }
   for index = 1, ticks do
     tick = index
     timeline:update(TICK, function(_)
@@ -71,6 +71,7 @@ local function runWildOpening(fadeColor, ticks)
     local opening = timeline:openingPresentation() or {}
     log.flash[index] = opening.encounterFlash
     log.lower[index] = opening.encounterLower
+    log.frame[index] = opening.encounterFrame
     if log.messageTick == nil and timeline:message() ~= "" then
       log.messageTick = index
     end
@@ -95,6 +96,14 @@ function T.encounter_animation_voices_its_two_source_sounds_on_their_frames()
   end
   Assert.equal(first, 1, "PASA2 voices on the task's first frame")
   Assert.equal(second, 23, "PASA3 voices on the task's 23rd frame")
+end
+
+function T.encounter_animation_publishes_its_frame_until_it_ends()
+  local _, log = runWildOpening("white", 60)
+  Assert.equal(log.frame[1], 1, "the first tick is animation frame 1")
+  Assert.equal(log.frame[20], 20, "frames count one per tick")
+  Assert.equal(log.frame[44], 44, "the last fade frame is still published")
+  Assert.isNil(log.frame[45], "the animation publishes no frame after it ends")
 end
 
 function T.encounter_animation_fades_the_main_screen_toward_the_background_color_and_back()

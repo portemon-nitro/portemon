@@ -13,6 +13,7 @@ local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleAnimationPlayer = require("libs.hgss.src.presentation.BattleAnimationPlayer")
 local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks")
+local BattleEncounterParticles = require("game.hgss.src.battle.BattleEncounterParticles")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local MonCache = require("libs.assets.src.MonCache")
@@ -113,6 +114,7 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field _menuPulseDirection 0|1 source palette pulse direction
 ---@field _iconAnimationTick integer mon icon animation clock in source ticks
 ---@field _scene table<string, unknown> native visual-state owner for entry travel and scroll
+---@field _encounterParticles BattleEncounterParticles encounter terrain particle systems driven by the opening animation
 ---@field _gaugeVisuals table<string, { sideType: integer, kind: string }> active native HUD gauge task destinations
 ---@field _sceneHasBackground boolean true after staged BG3 state installs
 ---@field _outcomeDone boolean terminal narration and timed holds have settled
@@ -1076,6 +1078,7 @@ function BattleScreenState.new(opts)
     _menuPulseDirection = 0,
     _iconAnimationTick = 0,
     _scene = BattleScene.new(),
+    _encounterParticles = BattleEncounterParticles.new(),
     _gaugeVisuals = {},
     _sceneHasBackground = false,
     _sceneAccum = 0,
@@ -1751,7 +1754,6 @@ function BattleScreenState:_snapshot()
   local sceneAssets = self._assets:sceneLayer()
   local introLayer = type(sceneAssets) == "table" and sceneAssets.introLayer or nil
   local terrainSprites = type(sceneAssets) == "table" and sceneAssets.terrainSprites or nil
-  local encounterParticles = type(sceneAssets) == "table" and sceneAssets.encounterParticles or nil
   if openingPresentation ~= nil then
     local trainerEntries = self._manifest.trainerPictures.entries
     for _, slide in ipairs(openingPresentation.trainerSlides or {}) do
@@ -2125,7 +2127,6 @@ function BattleScreenState:_snapshot()
     openingPresentation = openingPresentation,
     introScene = type(introLayer) == "table" and introLayer.drawable or nil,
     terrainSprites = terrainSprites,
-    encounterParticles = encounterParticles,
     playerTrainer = type(latest) == "table" and latest.playerTrainer or nil,
     foeTrainers = type(latest) == "table" and latest.foeTrainers or nil,
     levelUpStats = levelUpStats,
@@ -2415,7 +2416,7 @@ function BattleScreenState:view()
     openingPresentation = copyValue(snapshot.openingPresentation),
     introScene = snapshot.introScene,
     terrainSprites = snapshot.terrainSprites,
-    encounterParticles = snapshot.encounterParticles,
+    encounterParticleSystems = self._encounterParticles:systems(),
     playerTrainer = copyValue((self._pendingFinal or self._latestView or {}).playerTrainer),
     foeTrainers = copyValue((self._pendingFinal or self._latestView or {}).foeTrainers),
     actor = copyValue(snapshot.actor),
@@ -5341,6 +5342,19 @@ function BattleScreenState:_reconcile(view)
   apply(view.foes)
 end
 
+-- Steps the encounter terrain particles with the opening timeline: the
+-- timeline's animation frame starts each staged set, and a reset opening
+-- drops them.
+function BattleScreenState:_stepEncounterParticles()
+  local presentation = self._timeline:openingPresentation()
+  if presentation == nil then
+    self._encounterParticles:clear()
+    return
+  end
+  local layer = self._assets:sceneLayer()
+  self._encounterParticles:step(presentation.encounterFrame, layer ~= nil and layer.encounterParticles or nil)
+end
+
 -- One fixed update: prepare, cancel held presses across remeasure, map
 -- one queued batch batch per waiting slot in order, advance the cue
 -- player on accepted time, then reconcile drained deliveries and
@@ -5414,6 +5428,7 @@ function BattleScreenState:updateFixed(dt)
       end
       self._player:stepSourceTick({ tick = 1 })
       self._scene:stepSourceTick()
+      self:_stepEncounterParticles()
       self._iconAnimationTick = self._iconAnimationTick + 1
       self._messageScrollY = math.min(0, self._messageScrollY + 6)
       if self._menuPulseDirection == 0 then
@@ -5627,6 +5642,7 @@ function BattleScreenState:dispose()
     return
   end
   self._disposed = true
+  self._encounterParticles:clear()
   local wasFailed = self._mode == "failed"
   if self._player ~= nil then
     local keys = {}
