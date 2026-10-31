@@ -1,6 +1,7 @@
 -- Routes installed transition roles through the production family factory.
 
 local Assert = require("tests.support.Assert")
+local TransitionParticlesFixture = require("tests.support.TransitionParticlesFixture")
 local WildCellOrdersFixture = require("tests.support.WildCellOrdersFixture")
 local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFamilyFactory")
 
@@ -85,8 +86,7 @@ function T.factory_routes_elite_callbacks_with_the_captured_trainer_gender()
     end
     resources[prefix] = spriteGroup(group)
   end
-  resources["particle-intro"] = { format = "APS12_1", emitters = { {}, {}, {} }, resources = {} }
-  resources["particle-followup"] = { format = "APS12_1", emitters = { {}, {}, {}, {} }, resources = {} }
+  resources["particle-intro"], resources["particle-followup"] = TransitionParticlesFixture.pair()
   local route = {
     key = "trainer/lance",
     role = "trainer-intro",

@@ -1,9 +1,19 @@
--- Runs the pinned leaders encounter tasks from `src/field/encounter_effect_leaders.c`.
+-- Runs the pinned leaders encounter tasks from `src/field/encounter_effect_leaders.c`
+-- and the particle mode they share (`src/field/encounter_effect_particles.c`):
+-- the Elite Four intro owns one SPL particle system at a time, simulated every
+-- tick of its states 5 through 13 and drawn by the transition compositor.
 
 local Overlay114Sprites = require("libs.hgss.src.transition.battle.Overlay114Sprites")
+local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSimulation")
 
 local Overlay115Effect = {}
 Overlay115Effect.__index = Overlay115Effect
+
+-- Emitters the intro creates from each loaded member (members 151 and 152).
+local ELITE_EMITTER_COUNT = { intro = 3, followup = 4 }
+
+-- Priority every Elite Four sprite takes (EliteFourIntro_CreateSprites).
+local ELITE_SPRITE_PRIORITY = 1
 
 local function newParticleOwner()
   return {
@@ -13,7 +23,7 @@ local function newParticleOwner()
     setupDone = false,
     graphicsReady = false,
     resource = nil,
-    emitters = {},
+    simulation = nil,
     resourceLoads = 0,
     resourceFrees = 0,
   }
@@ -257,12 +267,14 @@ function Overlay115Effect.new(route, resources, context, _)
     spriteResources(groups.nameplate, resources)
     spriteResources(groups.fixedSprite, resources)
     local particles = assert(groups.particles, "Elite Four intro declares both particle resources")
-    local intro = loaded(particles.intro, resources)
-    local followup = loaded(particles.followup, resources)
-    assert(
-      intro.format == "APS12_1" and followup.format == "APS12_1",
-      "elite particle groups are decoded APS 12.1 resources"
-    )
+    for name, count in pairs(ELITE_EMITTER_COUNT) do
+      local set = loaded(particles[name], resources)
+      assert(
+        type(set.seed) == "number" and type(set.textures) == "table" and type(set.emitters) == "table",
+        "elite particle groups are staged emitter sets"
+      )
+      assert(#set.emitters >= count, "elite particle set declares every emitter the intro creates")
+    end
     integer(task.parameters.shakeTicks, "Elite Four source shake duration")
     state._particles = newParticleOwner()
   else
@@ -308,11 +320,28 @@ function Overlay115Effect:prepareGraphics(graphics)
         end
       end
     end
+    if self.kind == "elite" then
+      self._particleImages = {}
+      for name, key in pairs(self.groups.particles) do
+        local images = {}
+        for _, texture in ipairs(loaded(key, self.resources).textures) do
+          local imageData = love.image.newImageData(texture.width, texture.height, "rgba8", texture.pixels)
+          local image = assert(graphics.newImage(imageData), "graphics driver uploads an overlay 115 particle texture")
+          -- The retail 3D engine samples nearest and repeats emitter textures.
+          image:setFilter("nearest", "nearest")
+          image:setWrap("repeat", "repeat")
+          images[texture.id] = image
+          handles[#handles + 1] = image
+        end
+        self._particleImages[name] = images
+      end
+    end
   end)
   if not ok then
     for _, image in ipairs(handles) do
       image:release()
     end
+    self._particleImages = nil
     error(result, 0)
   end
   self.uploadedImages = uploaded
@@ -366,10 +395,10 @@ function Overlay115Effect:frame()
       setupDone = self._particles.setupDone,
       graphicsReady = self._particles.graphicsReady,
       resource = self._particles.resource,
-      emitters = self._particles.emitters,
+      simulation = self._particles.simulation,
       resourceLoads = self._particles.resourceLoads,
       resourceFrees = self._particles.resourceFrees,
-      rendererSupport = "APS simulation and Nitro 3D particle drawing are unavailable",
+      draw = self:_particleDraw(),
     } or nil,
     requiresCurrentFieldLayers = true,
   }
@@ -658,7 +687,7 @@ function Overlay115Effect:_stepElite()
     end
   elseif state == 12 then
     self._shakeTick = self._shakeTick + 1
-    local x = stepQuadratic(self._shakeX)
+    local x, shakeDone = stepQuadratic(self._shakeX)
     local y = stepQuadratic(self._shakeY)
     local playerX, opponentX = self._eliteBase.playerX, self._eliteBase.opponentX
     if math.floor(self._shakeTick / 2) % 2 == 0 then
@@ -667,9 +696,9 @@ function Overlay115Effect:_stepElite()
       playerX, opponentX = playerX - x, opponentX + x
     end
     self:_placeEliteSprites(playerX, opponentX, y)
-    if self._shakeX.tick > self._shakeX.duration then
+    if shakeDone then
       self._eliteBase.playerX, self._eliteBase.opponentX = playerX, opponentX
-      self.planes = { bg2 = false }
+      self.planes.bg2 = false
       self._outwardX = newQuadratic(0, 192 * FX32, 24 * FX32, 16)
       self._outwardY = newQuadratic(0, 192 * FX32, 24 * FX32, 16)
       self.paletteFade = { color = "white", duration = 8, frame = 0 }
@@ -698,10 +727,9 @@ function Overlay115Effect:_stepElite()
   else
     error("overlay 115 Elite Four task entered an unknown native state")
   end
-  if self.phase > 4 and self.phase < 14 then
-    if particles.resource ~= nil then
-      particles.updates = (particles.updates or 0) + 1
-    end
+  -- EncounterEffect_UpdateParticles runs after the state body in states 5..13.
+  if self.phase > 4 and self.phase < 14 and particles.simulation ~= nil then
+    SplParticleSimulation.advance(particles.simulation)
   end
 end
 
@@ -721,33 +749,35 @@ function Overlay115Effect:_stepParticleTasks()
   end
 end
 
+-- EncounterEffect_LoadParticles: a fresh particle system whose random stream
+-- opens at the staged seed.
 function Overlay115Effect:_loadParticles(name)
   local particles = self._particles
   assert(particles.mode and particles.setupDone, "native particle loading follows graphics setup")
   assert(particles.resource == nil, "native particle system has only one loaded set")
   local key = assert(self.groups.particles[name], "selected particle resource is declared")
-  local data = loaded(key, self.resources)
-  assert(data.format == "APS12_1", "transition particles use decoded APS 12.1 resources")
+  local set = loaded(key, self.resources)
   particles.resource = name
-  particles.resourceData = data
-  particles.emitters = {}
+  particles.set = set
+  -- Emitters keep their resource position (EncounterEffect_CreateEmitters).
+  particles.simulation = SplParticleSimulation.new(set.seed, 0)
   particles.resourceLoads = particles.resourceLoads + 1
   self.particleResource = name
 end
 
+-- EncounterEffect_CreateEmitters: emitters 0..count-1 of the loaded member.
 function Overlay115Effect:_createParticleEmitters(count)
   local particles = self._particles
-  assert(particles.resourceData ~= nil, "native emitter creation follows APS loading")
-  assert(#particles.resourceData.emitters >= count, "APS declares every source emitter index")
-  particles.emitters = {}
+  assert(particles.simulation ~= nil, "native emitter creation follows particle loading")
   for index = 1, count do
-    particles.emitters[index] = { resourceIndex = index - 1, active = true }
+    local record = assert(particles.set.emitters[index], "particle set declares every created emitter")
+    SplParticleSimulation.addEmitter(particles.simulation, record.id, nil, record)
   end
-  particles.activeEmitterCount = count
 end
 
+-- EncounterEffect_AreParticlesDone: no emitter remains in the system.
 function Overlay115Effect:_areParticlesDone()
-  return (self._particles.activeEmitterCount or 0) == 0
+  return #assert(self._particles.simulation, "particle completion follows particle loading").emitters == 0
 end
 
 function Overlay115Effect:_freeParticles()
@@ -756,11 +786,27 @@ function Overlay115Effect:_freeParticles()
     return
   end
   particles.resource = nil
-  particles.resourceData = nil
-  particles.emitters = {}
-  particles.activeEmitterCount = 0
+  particles.set = nil
+  particles.simulation = nil
   particles.resourceFrees = particles.resourceFrees + 1
   self.particleResource = nil
+end
+
+-- The 3D layer the compositor draws: the loaded system once BG0 is shown, and
+-- whether it sits above the sprites (a BG wins only with a strictly smaller
+-- priority value; ties go to the sprite plane).
+---@return { simulation: SplParticleSimulation, textures: table<integer, love.Image>, aboveSprites: boolean }|nil
+function Overlay115Effect:_particleDraw()
+  local particles = self._particles
+  if particles.simulation == nil or self._particleImages == nil or not (self.planes and self.planes.bg0) then
+    return nil
+  end
+  local priority = self.priority and self.priority.bg0 or 0
+  return {
+    simulation = particles.simulation,
+    textures = self._particleImages[particles.resource],
+    aboveSprites = priority < ELITE_SPRITE_PRIORITY,
+  }
 end
 
 function Overlay115Effect:_createEliteSprites()
@@ -864,6 +910,7 @@ function Overlay115Effect:_release()
     image:release()
   end
   self.imageHandles = {}
+  self._particleImages = nil
   self.uploadedImages = {}
   self.resources = {}
   self._scale = nil

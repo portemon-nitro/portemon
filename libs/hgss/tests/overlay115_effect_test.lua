@@ -1,5 +1,6 @@
 local Assert = require("tests.support.Assert")
 local Overlay115Effect = require("libs.hgss.src.transition.battle.Overlay115Effect")
+local TransitionParticlesFixture = require("tests.support.TransitionParticlesFixture")
 
 local T = {}
 
@@ -68,8 +69,7 @@ local function eliteFixture(shakeTicks)
     end
     resources[prefix] = spriteGroup(group)
   end
-  resources["particle-intro"] = { format = "APS12_1", emitters = { {}, {}, {} }, resources = {} }
-  resources["particle-followup"] = { format = "APS12_1", emitters = { {}, {}, {}, {} }, resources = {} }
+  resources["particle-intro"], resources["particle-followup"] = TransitionParticlesFixture.pair()
   local route = {
     key = "trainer/lance",
     role = "trainer-intro",
@@ -151,14 +151,89 @@ function T.elite_routes_keep_gender_art_and_own_native_particle_setup()
   end
   Assert.equal(effect:frame().sourcePhase, 7, "elite source waits while source emitters are active")
   Assert.equal(
-    effect:frame().particleSystem.emitters[1].resourceIndex,
+    effect:frame().particleSystem.simulation.emitters[1].id,
     0,
     "particle emitters preserve source resource indices"
   )
   effect:dispose()
-  Assert.equal(effect._particles.resource, nil, "failure or cancellation releases the owned APS record")
+  Assert.equal(effect._particles.resource, nil, "failure or cancellation releases the owned particle set")
   Assert.equal(effect._particles.resourceFrees, 1, "particle resource cleanup is exactly once")
   Assert.equal(effect._particles.mode, false, "particle mode is ended during cleanup")
+end
+
+-- EncounterEffect_LoadParticles / CreateEmitters / UpdateParticles /
+-- AreParticlesDone / FreeParticles: each member is a fresh system whose
+-- emitters appear on their source tick, simulate in states 5 through 13, and
+-- leave through completion rather than a timer.
+function T.elite_particle_systems_follow_the_source_load_create_free_sequence()
+  local route, resources = eliteFixture(9)
+  local effect = Overlay115Effect.new(route, resources, { playerGender = "male" })
+  effect:prepareGraphics(love.graphics)
+  effect:start()
+  local function particleSystem()
+    return effect:frame().particleSystem
+  end
+  local function stepUntil(done)
+    for _ = 1, 500 do
+      if done() then
+        return
+      end
+      effect:stepSourceTick()
+    end
+    error("the intro did not reach the awaited source state, stuck in " .. tostring(effect:frame().sourcePhase))
+  end
+
+  stepUntil(function()
+    return effect:frame().sourcePhase == 5
+  end)
+  Assert.equal(#particleSystem().simulation.emitters, 0, "loading a member creates no emitter")
+  Assert.isNil(particleSystem().draw, "the 3D layer stays hidden until its source tick")
+
+  local ticks = 0
+  while #particleSystem().simulation.emitters == 0 do
+    effect:stepSourceTick()
+    ticks = ticks + 1
+  end
+  Assert.equal(ticks, 4, "the intro emitters appear after the source's three-tick counter")
+  Assert.equal(#particleSystem().simulation.emitters, 3, "the intro creates emitters 0 through 2")
+  Assert.isTrue(particleSystem().draw.aboveSprites, "the intro layer outranks the priority-one sprites")
+  Assert.isTrue(particleSystem().draw.textures[0] ~= nil, "the layer draws the member's uploaded textures")
+  effect:stepSourceTick()
+  local livingParticles = 0
+  for _, runtime in ipairs(particleSystem().simulation.emitters) do
+    livingParticles = livingParticles + #runtime.particles
+  end
+  Assert.isTrue(livingParticles > 0, "created emitters simulate on the ticks that follow")
+
+  local firstSimulation = particleSystem().simulation
+  local lastPhaseSevenEmitters
+  while effect:frame().sourcePhase < 8 do
+    if effect:frame().sourcePhase == 7 then
+      lastPhaseSevenEmitters = #firstSimulation.emitters
+    end
+    effect:stepSourceTick()
+  end
+  Assert.equal(lastPhaseSevenEmitters, 0, "the intro leaves its wait only once every emitter retired")
+  Assert.isNil(particleSystem().simulation, "completion frees the intro system")
+  Assert.equal(particleSystem().resourceFrees, 1, "the intro system is freed exactly once")
+
+  stepUntil(function()
+    return effect:frame().sourcePhase == 10
+  end)
+  Assert.equal(particleSystem().resource, "followup", "the second member loads after the brightness ramp")
+  Assert.equal(particleSystem().resourceLoads, 2, "each member loads exactly once")
+  Assert.isTrue(particleSystem().simulation ~= firstSimulation, "the follow-up is a fresh system")
+  Assert.equal(#particleSystem().simulation.emitters, 4, "the follow-up creates emitters 0 through 3")
+  Assert.isFalse(particleSystem().draw.aboveSprites, "the follow-up layer drops to the sprites' priority")
+
+  stepUntil(function()
+    return effect.complete
+  end)
+  Assert.isNil(particleSystem().simulation, "the intro ends with no live particle system")
+  Assert.equal(particleSystem().resourceFrees, 2, "the follow-up system is freed exactly once")
+  Assert.isNil(effect._particleImages, "particle textures release with the task")
+  effect:dispose()
+  Assert.equal(effect._particles.resourceFrees, 2, "disposal after completion frees nothing twice")
 end
 
 function T.unknown_tasks_and_invalid_particle_payloads_fail_closed()
@@ -168,9 +243,9 @@ function T.unknown_tasks_and_invalid_particle_payloads_fail_closed()
   Assert.equal(ok, false, "unknown normalized callback task is rejected")
 
   route, resources = eliteFixture(32)
-  resources["particle-intro"].format = "unknown"
+  resources["particle-intro"].emitters[3] = nil
   ok = pcall(Overlay115Effect.new, route, resources, { playerGender = "male" })
-  Assert.equal(ok, false, "elite route rejects particle data outside the decoded APS contract")
+  Assert.equal(ok, false, "elite route rejects a particle set missing an emitter the intro creates")
 end
 
 function T.gym_route_uploads_native_sprite_cells_before_start()

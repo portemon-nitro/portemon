@@ -4,6 +4,7 @@
 local FieldLightProfile = require("libs.assets.src.field.FieldLightProfile")
 local GxRenderer = require("libs.nds.src.love.GxRenderer")
 local RenderQueue = require("libs.hgss.src.presentation.RenderQueue")
+local SplParticleDraw = require("libs.hgss.src.presentation.SplParticleDraw")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 local NATIVE_VIEWPORT = {
@@ -23,6 +24,11 @@ local NATIVE_VIEWPORT = {
 ---@field screenBrightness number? source engine master-brightness value, -16..16
 ---@field brightness number|table<string, unknown>? source engine master-brightness value or an opaque native task record
 ---@field scanlineOffsets integer[]? source HBlank BG0 horizontal offsets, one per native scanline
+---@field particleSystem { draw: FieldRenderer.TransitionParticles? }? source particle mode state
+---@class FieldRenderer.TransitionParticles the 3D particle layer of a source task
+---@field simulation SplParticleSimulation live emitters and particles
+---@field textures table<integer, love.Image> repeat-wrapped drawable by source texture id
+---@field aboveSprites boolean true when the layer outranks the sprite plane
 
 ---@class FieldRenderer.MotionBlur
 ---@field previous GxRenderer.Canvas
@@ -215,6 +221,26 @@ function FieldRenderer:captureTransitionLayers(
   )
 end
 
+-- Draws a source task's particle layer under the retail particle camera,
+-- scaled from the native 256x192 screen to the destination viewport.
+---@param graphics table<string, function> host graphics namespace
+---@param particles FieldRenderer.TransitionParticles
+---@param destination { x: number, y: number, width: number, height: number }
+local function drawTransitionParticles(graphics, particles, destination)
+  local function resolveTexture(_, particle, child)
+    return assert(particles.textures[child ~= nil and child.texNo or particle.texNo], "particle texture is uploaded")
+  end
+  graphics.push()
+  graphics.translate(destination.x, destination.y)
+  graphics.scale(destination.width / NativeDisplay.WIDTH, destination.height / NativeDisplay.HEIGHT)
+  SplParticleDraw.draw(graphics, particles.simulation, {
+    centerX = NativeDisplay.WIDTH / 2,
+    centerY = NativeDisplay.HEIGHT / 2,
+    resolveTexture = resolveTexture,
+  })
+  graphics.pop()
+end
+
 ---@param capture { world: GxRenderer.Canvas, objects: GxRenderer.Canvas? } immutable native launch planes
 ---@param transitionFrame FieldRenderer.TransitionFrame source transition sprites and coefficients
 ---@param destination { x: number, y: number, width: number, height: number } live field viewport
@@ -325,6 +351,10 @@ function FieldRenderer:drawTransition(capture, transitionFrame, destination)
         graphics.draw(capture.objects, destination.x, destination.y, 0, scaleX, scaleY)
       end
     end
+    local particles = transitionFrame.particleSystem and transitionFrame.particleSystem.draw
+    if particles ~= nil and not particles.aboveSprites then
+      drawTransitionParticles(graphics, particles, destination)
+    end
     for _, sprite in ipairs(transitionFrame.sprites or {}) do
       if sprite.visible then
         assert(sprite.imageHandle ~= nil, "visible source sprites have launch-owned GPU images")
@@ -359,6 +389,9 @@ function FieldRenderer:drawTransition(capture, transitionFrame, destination)
           -sprite.image.origin.y
         )
       end
+    end
+    if particles ~= nil and particles.aboveSprites then
+      drawTransitionParticles(graphics, particles, destination)
     end
     if wipe ~= nil then
       graphics.setStencilTest()
