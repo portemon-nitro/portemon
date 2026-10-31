@@ -35,6 +35,14 @@ PhoneCall.__index = PhoneCall
 PhoneCall.DIRECTIONS = { incoming = true, outgoing = true }
 PhoneCall.KINDS = { ordinary = true, rematch = true, predefined = true, incoming = true }
 
+-- Source call tones: the connecting stage dials PHONE0 twice and waits
+-- on that sequence, and hangup plays PHONE_OFF. The generic audio
+-- boundary resolves them by symbol exactly like every other effect;
+-- bespoke playDialing/playHangup fakes keep working where the generic
+-- play entry is absent.
+PhoneCall.DIAL_SEQUENCE = "SEQ_SE_GS_PHONE0"
+PhoneCall.HANGUP_SEQUENCE = "SEQ_SE_GS_PHONE_OFF"
+
 -- World facts frozen at the call boundary for program dispatch. Only
 -- these keys are snapshotted; a long call never switches its greeting
 -- or program after midnight.
@@ -344,6 +352,10 @@ function PhoneCall:begin(args)
     local dial = audio.playDialing --[[@as fun(self: table<string, unknown>)]]
     dial(audio)
     dial(audio)
+  elseif type(audio) == "table" and type(audio.play) == "function" then
+    local play = audio.play --[[@as fun(self: table<string, unknown>, sequence: string)]]
+    play(audio, PhoneCall.DIAL_SEQUENCE)
+    play(audio, PhoneCall.DIAL_SEQUENCE)
   end
   return { id = args.id }
 end
@@ -369,8 +381,8 @@ function PhoneCall:_audioWait()
   if type(audio) ~= "table" or audio.isEffectWaitComplete == nil then
     return false
   end
-  local done = audio.isEffectWaitComplete --[[@as fun(self: table<string, unknown>): boolean]]
-  return done(audio) ~= true
+  local done = audio.isEffectWaitComplete --[[@as fun(self: table<string, unknown>, sequence: string): boolean]]
+  return done(audio, PhoneCall.DIAL_SEQUENCE) ~= true
 end
 
 ---@param session table<string, unknown>
@@ -546,6 +558,9 @@ function PhoneCall:_finishHangup(session)
     if type(audio) == "table" and audio.playHangup ~= nil then
       local hangup = audio.playHangup --[[@as fun(self: table<string, unknown>)]]
       hangup(audio)
+    elseif type(audio) == "table" and type(audio.play) == "function" then
+      local play = audio.play --[[@as fun(self: table<string, unknown>, sequence: string)]]
+      play(audio, PhoneCall.HANGUP_SEQUENCE)
     end
     local count = self._hangups
     self._hangups = count + 1
@@ -772,6 +787,9 @@ function PhoneCall:cancel(handle, reason)
       if type(audio) == "table" and audio.playHangup ~= nil then
         local hangup = audio.playHangup --[[@as fun(self: table<string, unknown>)]]
         hangup(audio)
+      elseif type(audio) == "table" and type(audio.play) == "function" then
+        local play = audio.play --[[@as fun(self: table<string, unknown>, sequence: string)]]
+        play(audio, PhoneCall.HANGUP_SEQUENCE)
       end
       session.hangupDone = true
       local count = self._hangups

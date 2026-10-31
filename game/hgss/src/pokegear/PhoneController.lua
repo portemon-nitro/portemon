@@ -34,6 +34,7 @@ local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhoneP
 ---@field _scrollAnim { from: integer, to: integer, elapsed: integer }? the running viewport slide
 ---@field _mode string list, menu, sort, manual, or call
 ---@field _tooltips string[]? the owned context labels for normal browse entry
+---@field _menuLabels string[]? the owned action and sort option labels for normal browse entry
 ---@field _entryOwner string menu or host, fixed by the initial entry path
 ---@field _menuCursor integer zero-based menu cursor
 ---@field _grab integer? the grabbed absolute index while moving
@@ -59,8 +60,25 @@ local MOVE_STRIP_X0 = 4
 local MOVE_STRIP_X1 = 36
 local LIST_TOP = 8
 
-local MENU_OPTIONS = { "Call", "Sort", "Quit" }
-local SORT_OPTIONS = { "Title", "Alphabet", "Location", "Move", "Quit" }
+-- Source menu option counts: the action menu names three entries, the
+-- sort menu five. The labels themselves ride the injected ROM-derived
+-- menu labels, never hardcoded text.
+local MAIN_OPTION_COUNT = 3
+local SORT_OPTION_COUNT = 5
+
+---@param self PhoneController
+---@return string[] the three action option labels in source order
+local function mainOptions(self)
+  local labels = assert(self._menuLabels, "the action menu reads its composed labels")
+  return { labels[1], labels[2], labels[3] }
+end
+
+---@param self PhoneController
+---@return string[] the five sort option labels in source order
+local function sortOptions(self)
+  local labels = assert(self._menuLabels, "the sort menu reads its composed labels")
+  return { labels[4], labels[5], labels[6], labels[7], labels[8] }
+end
 
 -- Source context-menu frames in tiles (sContextMenuParam): the list
 -- menu sizes to its longest entry, so the window frames two
@@ -182,6 +200,7 @@ end
 ---@field assets table<string, unknown>? the compiled asset family
 ---@field request { id: string, contact: string, direction: string, kind: string }? direct call entry
 ---@field tooltips string[]? the eight context labels for normal browse entry
+---@field menuLabels string[]? the eight action and sort option labels for normal browse entry, in source bank order
 
 ---@param opts PhoneController.Options
 ---@return PhoneController
@@ -204,10 +223,12 @@ function PhoneController.new(opts)
   assert(opts.audio == nil or type(opts.audio) == "table", "the phone card uses the audio boundary as a record")
   assert(opts.random == nil or type(opts.random) == "table", "the phone card draws through the companion streams")
   assert(opts.assets == nil or type(opts.assets) == "table", "the phone card borrows its asset family as a record")
-  -- Normal browse entry carries its eight context labels from the
-  -- composition; direct call entry never reaches the menus and omits
-  -- them. The stored array is a detached copy, never the caller's.
+  -- Normal browse entry carries its eight context labels and its eight
+  -- action/sort option labels from the composition; direct call entry
+  -- never reaches the menus and omits them. The stored arrays are
+  -- detached copies, never the caller's.
   local tooltips = nil
+  local menuLabels = nil
   if opts.request == nil then
     local given = opts.tooltips
     assert(type(given) == "table", "the phone card reads its context labels through the composition")
@@ -219,6 +240,16 @@ function PhoneController.new(opts)
       copy[index] = text
     end
     tooltips = copy
+    local givenOptions = opts.menuLabels
+    assert(type(givenOptions) == "table", "the phone card reads its menu labels through the composition")
+    assert(#givenOptions == 8, "the phone card reads its eight menu labels")
+    local optionsCopy = {}
+    for index = 1, 8 do
+      local text = givenOptions[index]
+      assert(type(text) == "string" and text ~= "", "the phone card reads its eight menu labels")
+      optionsCopy[index] = text
+    end
+    menuLabels = optionsCopy
   end
   -- UI tones ride the shared one-shot effect boundary when the audio
   -- owner plays named sequences; toneless fakes simply stay silent.
@@ -258,6 +289,7 @@ function PhoneController.new(opts)
     _mode = "list",
     _entryOwner = opts.request == nil and "menu" or "host",
     _tooltips = tooltips,
+    _menuLabels = menuLabels,
     _menuCursor = 0,
     _grab = nil,
     _callHandle = nil,
@@ -781,10 +813,10 @@ end
 function PhoneController:_handleMenu(event)
   if event.type == "navigate" and type(event.direction) == "string" then
     if event.direction == "up" then
-      self._menuCursor = (self._menuCursor - 1) % #MENU_OPTIONS
+      self._menuCursor = (self._menuCursor - 1) % MAIN_OPTION_COUNT
       playEffect(self, CURSOR_SOUND)
     elseif event.direction == "down" then
-      self._menuCursor = (self._menuCursor + 1) % #MENU_OPTIONS
+      self._menuCursor = (self._menuCursor + 1) % MAIN_OPTION_COUNT
       playEffect(self, CURSOR_SOUND)
     end
   elseif event.type == "confirm" then
@@ -797,9 +829,9 @@ function PhoneController:_handleMenu(event)
     self._mode = "list"
     self._held = nil
   elseif event.type == "pointer_down" or event.type == "pointer_move" then
-    menuPointerRow(self, event, "menu", #MENU_OPTIONS)
+    menuPointerRow(self, event, "menu", MAIN_OPTION_COUNT)
   elseif event.type == "pointer_up" then
-    local row = menuPointerRow(self, event, "menu", #MENU_OPTIONS)
+    local row = menuPointerRow(self, event, "menu", MAIN_OPTION_COUNT)
     if row ~= nil then
       self:_chooseMain(row)
     end
@@ -827,10 +859,10 @@ end
 function PhoneController:_handleSort(event)
   if event.type == "navigate" and type(event.direction) == "string" then
     if event.direction == "up" then
-      self._menuCursor = (self._menuCursor - 1) % #SORT_OPTIONS
+      self._menuCursor = (self._menuCursor - 1) % SORT_OPTION_COUNT
       playEffect(self, CURSOR_SOUND)
     elseif event.direction == "down" then
-      self._menuCursor = (self._menuCursor + 1) % #SORT_OPTIONS
+      self._menuCursor = (self._menuCursor + 1) % SORT_OPTION_COUNT
       playEffect(self, CURSOR_SOUND)
     end
   elseif event.type == "confirm" then
@@ -845,9 +877,9 @@ function PhoneController:_handleSort(event)
     self._menuCursor = 1
     self._held = nil
   elseif event.type == "pointer_down" or event.type == "pointer_move" then
-    menuPointerRow(self, event, "sort", #SORT_OPTIONS)
+    menuPointerRow(self, event, "sort", SORT_OPTION_COUNT)
   elseif event.type == "pointer_up" then
-    local row = menuPointerRow(self, event, "sort", #SORT_OPTIONS)
+    local row = menuPointerRow(self, event, "sort", SORT_OPTION_COUNT)
     if row ~= nil then
       self:_chooseSort(row)
     end
@@ -1139,19 +1171,11 @@ end
 ---@return table<string, unknown>? the detached menu projection, if open
 function PhoneController:_menuView()
   if self._mode == "menu" then
-    local options = {}
-    for index, option in ipairs(MENU_OPTIONS) do
-      options[index] = option
-    end
-    return { options = options, cursor = self._menuCursor, frame = menuFrame("menu") }
+    return { options = mainOptions(self), cursor = self._menuCursor, frame = menuFrame("menu") }
   end
   if self._mode == "sort" then
-    local options = {}
-    for index, option in ipairs(SORT_OPTIONS) do
-      options[index] = option
-    end
     return {
-      options = options,
+      options = sortOptions(self),
       cursor = self._menuCursor,
       frame = menuFrame("sort"),
     }
@@ -1239,6 +1263,17 @@ function PhoneController:_planContent(skin)
   local palettes = section.listPalette
   if type(palettes) == "table" then
     content.listPalette = (palettes --[[@as table<integer, table>]])[skin]
+  end
+  -- The context menus frame through the shared touchscreen list-menu
+  -- tiles staged beside the Fly card: the same sbox source art every
+  -- framed app menu draws.
+  local fly = (assets --[[@as table<string, unknown>]]).fly
+  if type(fly) == "table" then
+    local menuTiles = (fly --[[@as table<string, unknown>]]).menuTiles
+    if type(menuTiles) == "table" and type(menuTiles.image) == "string" then
+      content.menuTiles = menuTiles.image
+    end
+    content.menuPalette = (fly --[[@as table<string, unknown>]]).menuPalette
   end
   local panel = section.panel
   if type(panel) == "table" then

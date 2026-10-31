@@ -34,6 +34,35 @@ local function browseTooltips()
   }
 end
 
+-- Recognizable browse-mode menu labels: the source bank entries 0-7 in
+-- order, beside the eight tooltip labels. Synthetic non-English strings
+-- keep the assertions off any fixed language.
+---@return string[]
+local function browseMenuLabels()
+  return {
+    "browse-menu-\u{03b1}-0",
+    "browse-menu-\u{03b1}-1",
+    "browse-menu-\u{03b1}-2",
+    "browse-menu-\u{03b1}-3",
+    "browse-menu-\u{03b1}-4",
+    "browse-menu-\u{03b1}-5",
+    "browse-menu-\u{03b1}-6",
+    "browse-menu-\u{03b1}-7",
+  }
+end
+
+---@return string[]
+local function browseMenuLabelsMain()
+  local labels = browseMenuLabels()
+  return { labels[1], labels[2], labels[3] }
+end
+
+---@return string[]
+local function browseMenuLabelsSort()
+  local labels = browseMenuLabels()
+  return { labels[4], labels[5], labels[6], labels[7], labels[8] }
+end
+
 -- Loads a phone module that does not exist yet at this baseline. The
 -- failure names the missing behaviour instead of surfacing as a suite
 -- load error, so the pre-implementation red stays attributable.
@@ -540,6 +569,7 @@ function T.tests.menu_calls_return_to_list_while_host_calls_retain_their_result(
     audio = audio,
     random = PokegearRandom.new(77),
     tooltips = browseTooltips(),
+    menuLabels = browseMenuLabels(),
   })
 
   local function dialSelected()
@@ -607,6 +637,7 @@ function T.tests.call_cancellation_is_terminal_at_each_stage_and_disposal_releas
     audio = audio,
     random = PokegearRandom.new(99),
     tooltips = browseTooltips(),
+    menuLabels = browseMenuLabels(),
   })
 
   -- List cancellation selects nothing and opens nothing.
@@ -626,13 +657,13 @@ function T.tests.call_cancellation_is_terminal_at_each_stage_and_disposal_releas
   controller:updateFixed({ { type = "confirm" } })
   Assert.deepEqual(
     assert(controller:status().view, "the sort state exports its view").contextMenu.options,
-    { "Title", "Alphabet", "Location", "Move", "Quit" },
+    browseMenuLabelsSort(),
     "choosing Sort opens its submenu"
   )
   controller:updateFixed({ { type = "cancel" } })
   Assert.deepEqual(
     assert(controller:status().view, "the menu state exports its view").contextMenu.options,
-    { "Call", "Sort", "Quit" },
+    browseMenuLabelsMain(),
     "sort cancellation returns to the action menu"
   )
   controller:updateFixed({ { type = "cancel" } })
@@ -709,6 +740,7 @@ function T.tests.phone_uses_saved_contact_order_and_keeps_automatic_sort_tempora
       world = worldFixture(),
       random = PokegearRandom.new(99),
       tooltips = browseTooltips(),
+      menuLabels = browseMenuLabels(),
     })
   end
 
@@ -987,6 +1019,143 @@ function T.tests.direct_call_entry_opens_without_context_labels()
   Assert.notNil(controller:status().view.call, "direct entry starts its conversation without menu labels")
   Assert.isNil(controller:status().view.tooltip, "direct entry shows no context tooltip")
   controller:dispose()
+end
+
+-- Menu options ride the injected ROM-derived labels, never hardcoded
+-- English: the browse card carries its three action labels and five
+-- sort labels through the composition, and the detached menus publish
+-- those exact strings.
+function T.tests.context_menus_publish_their_injected_labels()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: context menus cannot publish injected labels"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  state:registerContact("custom.mom")
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = { greeting = "custom.greeting" },
+    world = worldFixture(),
+    audio = countingAudio(),
+    random = PokegearRandom.new(4242),
+    tooltips = browseTooltips(),
+    menuLabels = browseMenuLabels(),
+    menuLabels = {
+      "denwa-label-\u{03b1}-0",
+      "denwa-label-\u{03b1}-1",
+      "denwa-label-\u{03b1}-2",
+      "denwa-label-\u{03b1}-3",
+      "denwa-label-\u{03b1}-4",
+      "denwa-label-\u{03b1}-5",
+      "denwa-label-\u{03b1}-6",
+      "denwa-label-\u{03b1}-7",
+    },
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  local menu = assert(controller:status().view.contextMenu, "confirming a row opens its action menu") --[[@as table]]
+  Assert.deepEqual(menu.options, {
+    "denwa-label-\u{03b1}-0",
+    "denwa-label-\u{03b1}-1",
+    "denwa-label-\u{03b1}-2",
+  }, "the action menu publishes its injected labels")
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  local submenu = assert(controller:status().view.contextMenu, "choosing Sort opens its submenu") --[[@as table]]
+  Assert.deepEqual(submenu.options, {
+    "denwa-label-\u{03b1}-3",
+    "denwa-label-\u{03b1}-4",
+    "denwa-label-\u{03b1}-5",
+    "denwa-label-\u{03b1}-6",
+    "denwa-label-\u{03b1}-7",
+  }, "the sort menu publishes its injected labels")
+  controller:dispose()
+end
+
+-- Production audio speaks generic sequence identities: dialing plays the
+-- source dial tone twice and waits on that sequence, and hangup plays
+-- the source hangup tone. A strict boundary that rejects a nil
+-- reference exactly like the production provider proves the call never
+-- asks for an unindexed sequence.
+function T.tests.phone_calls_dial_and_hang_up_through_indexed_sequences()
+  local PhoneCall = requireFeature(
+    "game.hgss.src.pokegear.PhoneCall",
+    "the phone card has no conversation engine yet: calls cannot dial through indexed sequences"
+  )
+  local AudioErrors = require("libs.hgss.src.audio.AudioErrors")
+  local played = {}
+  local waits = {}
+  local audio = {
+    play = function(_, sequence)
+      if sequence == nil then
+        local Errors = require("libs.errors.src.Errors")
+        error(
+          Errors.new(
+            AudioErrors.AUDIO_PROVIDER_SEQUENCE_UNKNOWN,
+            "no indexed audio sequence for reference " .. tostring(sequence),
+            { reference = sequence }
+          ),
+          0
+        )
+      end
+      played[#played + 1] = sequence
+    end,
+    isEffectWaitComplete = function(_, sequence)
+      if sequence == nil then
+        local Errors = require("libs.errors.src.Errors")
+        error(
+          Errors.new(
+            AudioErrors.AUDIO_PROVIDER_SEQUENCE_UNKNOWN,
+            "no indexed audio sequence for reference " .. tostring(sequence),
+            { reference = sequence }
+          ),
+          0
+        )
+      end
+      waits[#waits + 1] = sequence
+      return true
+    end,
+  }
+  local call = PhoneCall.new({
+    state = {
+      readPhone = function()
+        return { contacts = { ["custom.mom"] = true }, contactOrder = { "custom.mom" } }
+      end,
+    },
+    catalog = {
+      contacts = {
+        { key = "custom.mom", family = "mother", messageBank = 664, greeting = 23, sortWeight = 1 },
+      },
+      contactOrder = { "custom.mom" },
+    },
+    messages = {
+      greeting = "custom.greeting",
+      resolveLine = function()
+        return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+    },
+    world = worldFixture(),
+    audio = audio,
+  })
+  local handle = call:begin({ id = "seq-call", contact = "custom.mom", direction = "outgoing", kind = "ordinary" })
+  Assert.deepEqual(
+    played,
+    { "SEQ_SE_GS_PHONE0", "SEQ_SE_GS_PHONE0" },
+    "opening a call dials the source dial tone twice"
+  )
+  call:step(handle, { advance = true })
+  Assert.isTrue(#waits >= 1, "the connecting stage waits on the dial sequence")
+  for _, sequence in ipairs(waits) do
+    Assert.equal(sequence, "SEQ_SE_GS_PHONE0", "every dial wait names the source dial tone")
+  end
+  call:cancel(handle, "test-hangup")
+  Assert.equal(played[#played], "SEQ_SE_GS_PHONE_OFF", "hanging up plays the source hangup tone")
 end
 
 return T

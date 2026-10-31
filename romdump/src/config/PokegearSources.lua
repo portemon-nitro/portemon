@@ -167,6 +167,12 @@ PokegearSources.regionMapMessageBank = 273
 -- The setup card reads its CHANGE/QUIT context labels from this bank.
 PokegearSources.configureMessageBank = 270
 
+-- The phone card reads its action/sort option labels (entries 0-7) and
+-- its context tooltips (entries 20-27) from this bank: the source
+-- sContextMenuParam option order behind the Call/Sort/Quit and
+-- Title/Alphabet/Location/Move/Quit menus.
+PokegearSources.phoneMenuMessageBank = 271
+
 -- Text colors of the map windows: the upper windows print with sub palette
 -- bank 1 (member 14+s), the marking-mode landmark name with main palette
 -- bank 10 (member 20+s), and the marking word text objects with object

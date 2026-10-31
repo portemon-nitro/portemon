@@ -14,6 +14,7 @@
 local PokegearPhoneRenderer = {}
 
 local PokegearMapLayers = require("libs.hgss.src.presentation.PokegearMapLayers")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 local drawSprite = PokegearMapLayers.drawSprite
 
@@ -88,14 +89,8 @@ local PANEL_RECT = { x = 8, y = 0, width = 240, height = 48 }
 local PANEL_CLOSED_CELL = 10
 local PANEL_OPEN_CELL = 11
 
-local MENU_RECT = { x = 128, y = 32, width = 120, height = 16 }
+-- Choice row pitch inside the call speech window.
 local MENU_ROW_HEIGHT = 14
-
--- The context window at its source frame with its options and cursor
--- highlight: sixteen-pixel text rows on the shared twenty-four pitch.
-local MENU_FRAME_ROW_PITCH = 24
-local MENU_FRAME_TEXT_TOP = 8
-local MENU_FRAME_TEXT_HEIGHT = 16
 
 local NAME_WINDOW = { x = 32, y = 128, width = 72, height = 16 }
 local SPEECH_WINDOW = { x = 16, y = 152, width = 216, height = 32 }
@@ -369,7 +364,6 @@ local function drawList(graphics, images, text, list, sprites, palette)
   assert(type(scrollOffset) == "number", "the list projection carries its scroll offset")
   local pixels = slidePixels(list)
   local slideActive = type(list.slide) == "table"
-  local outerX, outerY, outerW, outerH = graphics.getScissor()
   local function paintRows()
     if slideActive then
       for _, node in ipairs(rows) do
@@ -417,60 +411,45 @@ local function drawList(graphics, images, text, list, sprites, palette)
       end
     end
   end
-  local ok, fault = pcall(function()
-    graphics.setScissor(LIST_X, LIST_Y, ROW_WIDTH, VISIBLE_ROWS * ROW_HEIGHT)
-    paintRows()
-  end)
-  if outerX == nil then
-    graphics.setScissor()
-  else
-    graphics.setScissor(outerX, outerY, outerW, outerH)
-  end
-  if not ok then
-    error(fault, 0)
-  end
+  -- The viewport clip follows the active placement transform, so the
+  -- rows stay inside the list window on every display configuration.
+  -- A raw device scissor would pin unscaled pixels and hide the list
+  -- whenever the placement scales or offsets the surface.
+  LogicalSurface.clip(
+    graphics,
+    { x = LIST_X, y = LIST_Y, width = ROW_WIDTH, height = VISIBLE_ROWS * ROW_HEIGHT },
+    paintRows
+  )
   graphics.setColor(1, 1, 1, 1)
   drawListChrome(graphics, images, list, sprites)
 end
 
--- Draws the context window with its options and cursor highlight.
+-- Draws the context menu through the shared touchscreen list-menu
+-- frame: the same staged tile strip every framed app menu draws. The
+-- detached frame arrives in pixels; the frame tiles at eight pixels.
 ---@param graphics love.graphics
+---@param images table<string, unknown>
 ---@param text table<string, unknown>?
 ---@param menu table<string, unknown>
-local function drawMenu(graphics, text, menu)
+---@param content table<string, unknown>
+local function drawMenu(graphics, images, text, menu, content)
   local options = menu.options --[[@as string[] ]]
-  assert(type(options) == "table", "context menus carry their options")
+  assert(type(options) == "table" and #options > 0, "context menus carry their options")
   local cursor = menu.cursor
   if type(cursor) ~= "number" then
     cursor = 0
   end
-  local frame = menu.frame --[[@as table<string, integer>?]]
-  local x, y, width, height = MENU_RECT.x, MENU_RECT.y, MENU_RECT.width, MENU_RECT.height
-  if type(frame) == "table" then
-    x = frame.x or x
-    y = frame.y or y
-    width = frame.width or width
-    height = frame.height or height
-  else
-    height = height + #options * MENU_ROW_HEIGHT
-  end
-  fillRect(graphics, { 0.10, 0.10, 0.14 }, x, y, width, height)
-  graphics.setColor(1, 1, 1, 1)
-  graphics.rectangle("line", x + 0.5, y + 0.5, width - 1, height - 1)
-  local pitch = MENU_ROW_HEIGHT
-  local textHeight = MENU_ROW_HEIGHT
-  if type(frame) == "table" then
-    pitch, textHeight = MENU_FRAME_ROW_PITCH, MENU_FRAME_TEXT_HEIGHT
-  end
-  for index, option in ipairs(options) do
-    local rowY = y + MENU_FRAME_TEXT_TOP + (index - 1) * pitch
-    if index - 1 == cursor then
-      fillRect(graphics, SELECTED_NAME_FILL, x + 4, rowY - 2, width - 8, textHeight)
-    end
-    graphics.setColor(1, 1, 1, 1)
-    drawLine(text, tostring(option), x + 8, rowY)
-  end
-  graphics.setColor(1, 1, 1, 1)
+  local frame = assert(menu.frame, "context menus carry their window frame") --[[@as table<string, integer>]]
+  local tiles =
+    PokegearMapLayers.imageAt(images, assert(content.menuTiles, "the phone plan resolves its list-menu tile strip"))
+  local palette = assert(content.menuPalette, "the phone plan resolves its list-menu palette")
+  PokegearMapLayers.drawListMenuFrame(graphics, tiles, palette --[[@as table<integer, table<string, number>>]], text, {
+    x = math.floor(frame.x / 8),
+    y = math.floor(frame.y / 8),
+    width = math.floor(frame.width / 8),
+    labels = options,
+    cursor = cursor,
+  })
 end
 
 -- Draws the call speech/name windows from the conversation projection:
@@ -621,8 +600,10 @@ function PokegearPhoneRenderer.draw(resources, view, content)
   if type(menu) == "table" then
     drawMenu(
       graphics --[[@as love.graphics]],
+      images --[[@as table<string, unknown>]],
       text --[[@as table<string, unknown>?]],
-      menu --[[@as table<string, unknown>]]
+      menu --[[@as table<string, unknown>]],
+      content
     )
   end
   local call = view.call
